@@ -8,15 +8,16 @@
  * image, so a minimised panel uses no GPU. Hovering or focusing the bubble
  * shows a small card that spells out what its badge and dot mean.
  *
- * Under the 3D view the panel lists the last few spoken messages (what, about
- * which task, how long ago, heard or not), each with its own Replay button.
+ * Under the 3D view the panel lists the last few spoken messages in full (what, about
+ * which task, how long ago, heard or not), each with its own Replay button. The list is
+ * a keyboard-focusable scroll region, so a long message is read by scrolling, not cut off.
  *
  * This file and everything it imports (three.js, the avatar file) is loaded
  * only when the operator has switched the panel on — see the lazy import in
  * App.tsx and `store/avatar-panel-prefs.ts`.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
+import type { FocusEvent as ReactFocusEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { formatRelativeTime } from './relative-time.js';
 import avatarUrl from './assets/lucy-bust.glb?url';
 import { AvatarStage, type AvatarState } from './avatar-stage.js';
@@ -87,10 +88,19 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
 const findingsText = (n: number): string => `${plural(n, 'finding needs', 'findings need')} your attention`;
 const unheardText = (n: number): string => plural(n, 'unheard message', 'unheard messages');
 
+/**
+ * What a screen reader hears after the header Replay button's name. That button replays only the newest
+ * message, so its marker is about that one message and always reads "Unheard message" (singular), however
+ * many older messages are still unheard; the count belongs to the bubble.
+ */
+function replayDescriptionText(newestUnheard: boolean, unavailable: string | null): string {
+  return [newestUnheard ? 'Unheard message' : null, unavailable].filter(Boolean).join('. ');
+}
+
 /** Rough height of the bubble's card at its fullest (two rows and the hint); decides whether it fits above the bubble. */
-const BUBBLE_CARD_HEIGHT = 100;
-const BUBBLE_CARD_WIDTH = 206;
-const BUBBLE_CARD_GAP = 10;
+export const BUBBLE_CARD_HEIGHT = 100;
+export const BUBBLE_CARD_WIDTH = 206;
+export const BUBBLE_CARD_GAP = 10;
 
 /**
  * Where the bubble's card goes: above the bubble with its right edge on the bubble's right edge, unless that
@@ -339,9 +349,8 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
 
   // Read by assistive technology when the Replay button gets focus: the unheard marker (a dot) and why it is unavailable.
   const statusNotice = replayNotice ?? unavailableNotice;
-  const replayDescription = [lastClip.unheard ? (lastClip.unheardCount === 1 ? 'Unheard message' : unheardText(lastClip.unheardCount)) : null, replayUnavailable]
-    .filter(Boolean)
-    .join('. ');
+  const newestUnheard = clips[0]?.heard === false;
+  const replayDescription = replayDescriptionText(newestUnheard, replayUnavailable);
 
   // The bubble's card: what the badge and the dot mean. It only repeats what the bubble's label says, so it is
   // hidden from assistive technology; keyboard users get it through focus, Escape closes it.
@@ -355,6 +364,20 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [cardVisible]);
+
+  const onBubbleEnter = (): void => {
+    setHovered(true);
+    setCardDismissed(false);
+  };
+  const onBubbleLeave = (): void => setHovered(false);
+  const onBubbleFocus = (event: ReactFocusEvent<HTMLButtonElement>): void => {
+    // Only keyboard focus: a mouse press that moved focus here (or the hand-over after a mouse
+    // minimise) must not open the card by itself.
+    if (!matchesFocusVisible(event.currentTarget)) return;
+    setFocused(true);
+    setCardDismissed(false);
+  };
+  const onBubbleBlur = (): void => setFocused(false);
 
   if (prefs.minimized) {
     const activity = state === 'idle' ? '' : `, ${STATE_LABEL[state]}`;
@@ -375,16 +398,10 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
           className={`avatar-bubble avatar-bubble-${state}`}
           style={{ left: bubblePosition.x, top: bubblePosition.y, backgroundImage: still ? `url(${still})` : undefined }}
           onClick={open}
-          onMouseEnter={() => { setHovered(true); setCardDismissed(false); }}
-          onMouseLeave={() => setHovered(false)}
-          onFocus={(event) => {
-            // Only keyboard focus: a mouse press that moved focus here (or the hand-over after a mouse
-            // minimise) must not open the card by itself.
-            if (!matchesFocusVisible(event.currentTarget)) return;
-            setFocused(true);
-            setCardDismissed(false);
-          }}
-          onBlur={() => setFocused(false)}
+          onMouseEnter={onBubbleEnter}
+          onMouseLeave={onBubbleLeave}
+          onFocus={onBubbleFocus}
+          onBlur={onBubbleBlur}
           aria-label={label}
           // The card says the same on hover, so the browser's own tooltip would only get in its way.
           title={cardVisible ? undefined : label}
@@ -430,7 +447,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     );
   }
 
-  const replayTitleSuffix = lastClip.unheard ? ' (unheard)' : '';
+  const replayTitleSuffix = newestUnheard ? ' (unheard)' : '';
   const newestId = clips[0]?.clipId;
   return (
     <section
@@ -464,7 +481,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
           data-testid="avatar-replay"
         >
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v3h3" /><path d="M7 6v4l3-2z" /></svg>
-          {lastClip.unheard && (
+          {newestUnheard && (
             <span className="avatar-unheard-dot avatar-dock-unheard" data-testid="avatar-unheard-dot" aria-hidden="true" />
           )}
           {replayDescription && <span id={REPLAY_DESCRIPTION_ID} className="sr-only">{replayDescription}</span>}
@@ -489,13 +506,19 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
                 : 'Loading…'}
         </span>
       </div>
-      <div className="avatar-dock-transcript" data-testid="avatar-transcript">
+      {/* With messages, the list is a scroll region of its own that the keyboard can reach: the full text of a
+          long message is in the layout, so scrolling is the only way to the rest of it. */}
+      <div
+        className="avatar-dock-transcript"
+        data-testid="avatar-transcript"
+        {...(clips.length > 0 ? { role: 'region', 'aria-label': 'Recent messages', tabIndex: 0 } : {})}
+      >
         {clips.length === 0 ? (
           <p className="avatar-dock-hint" data-testid="avatar-hint">{IDLE_HINT}</p>
         ) : (
           <>
             {replayUnavailable && <span id={REPLAY_REASON_ID} className="sr-only">{replayUnavailable}</span>}
-            <ol className="avatar-msg-list" aria-label="Recent messages" data-testid="avatar-messages">
+            <ol className="avatar-msg-list" data-testid="avatar-messages">
               {clips.map((clip) => {
                 const time = formatRelativeTime(clip.at, now);
                 const newest = clip.clipId === newestId;
@@ -507,7 +530,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
                     data-testid="avatar-message"
                     data-clip-id={clip.clipId}
                   >
-                    <p className="avatar-msg-text" title={clip.text}>{clip.text}</p>
+                    <p className="avatar-msg-text">{clip.text}</p>
                     <div className="avatar-msg-meta">
                       {clip.subject && (
                         <>

@@ -5,6 +5,9 @@
  * Each unit starts exactly at its boundary (60 s, 60 min, 24 h) and rounds down,
  * so a label never claims more time than has passed. A time in the future (clock
  * adjusted backwards) counts as "just now".
+ *
+ * This does not reuse `formatRelativeTimeAgo` in `presentation.ts`: that one gives terse "5m ago" /
+ * "3h 5m ago" forms, while this panel uses the longer, spoken-style wording above.
  */
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;

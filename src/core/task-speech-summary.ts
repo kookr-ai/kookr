@@ -10,7 +10,7 @@ import {
   type ToolGroup,
 } from './activity-summary.js';
 import { identifierToWords, makeSpeakable, spokenFindingPhrase, stripGeneratedPhrases } from './speakable-text.js';
-import { spokenTaskName } from './spoken-task-name.js';
+import { GENERIC_TASK_NAME, spokenTaskName } from './spoken-task-name.js';
 
 const TIMEOUT_MS = 5_000;
 const MAX_FIELD_CHARS = 180;
@@ -77,7 +77,7 @@ export interface TaskSpeechSummaryInput {
 }
 
 export interface TaskSpeechSummary {
-  /** The speakable text: synthesised by TTS and shown as the avatar caption. */
+  /** The speakable text: synthesised by TTS and listed in the avatar's message list. */
   text: string;
   usedFallback: boolean;
   /** The wording before the speakable-text step. Set only when that step changed it. */
@@ -209,7 +209,10 @@ function taskName(input: TaskSpeechSummaryInput): string {
  * first, so a secret never reaches the length check or the sentence.
  */
 function spokenName(input: TaskSpeechSummaryInput): string {
-  return spokenTaskName(redactedTaskName(input.taskName));
+  const spoken = spokenTaskName(redactedTaskName(input.taskName));
+  // The sentence adds its own end mark, so one the title ended with ("Fix login bug.") would be spliced
+  // into the middle of it; a title of nothing but marks ("?!") has nothing left to say.
+  return spoken.replace(/[.!?…\s]+$/u, '') || GENERIC_TASK_NAME;
 }
 
 function statusLabel(status: TaskStatus | null | undefined): string {

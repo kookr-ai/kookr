@@ -117,12 +117,53 @@ describe('last-clip store', () => {
     expect(getClipHistory()).toEqual([]);
   });
 
+  test('discarding an unheard clip among several drops the unheard count by one and keeps the others', () => {
+    captureLastClip({ clipId: 'one', text: 'first', audio: bytes(1) });
+    captureLastClip({ clipId: 'two', text: 'second', audio: bytes(2) });
+    captureLastClip({ clipId: 'three', text: 'third', audio: bytes(3) });
+    markClipHeard('three');
+    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, unheardCount: 2 });
+
+    discardLastClip('two'); // unheard, in the middle
+    expect(getClipHistory().map((c) => c.clipId)).toEqual(['three', 'one']);
+    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, unheardCount: 1 });
+
+    discardLastClip('one'); // the last unheard one
+    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: false, unheardCount: 0 });
+  });
+
+  test('capturing an id that is already there, with the history full, replaces it and evicts no other clip', () => {
+    captureLastClip({ clipId: 'one', text: 'first', audio: bytes(1) });
+    captureLastClip({ clipId: 'two', text: 'second', audio: bytes(2) });
+    captureLastClip({ clipId: 'three', text: 'third', audio: bytes(3) });
+    expect(getClipHistory()).toHaveLength(MAX_CLIP_HISTORY);
+
+    captureLastClip({ clipId: 'two', text: 'second, again', audio: bytes(22) });
+    expect(getClipHistory().map((c) => c.clipId)).toEqual(['two', 'three', 'one']);
+    expect(getClipHistory()[0].text).toBe('second, again');
+    expect(new Uint8Array(getClip('two')!.audio)).toEqual(new Uint8Array([22]));
+    expect(getClip('one')).not.toBeNull(); // the oldest survives: nothing was pushed off the end
+  });
+
+  test('a heard clip that is captured again becomes unheard again', () => {
+    captureLastClip({ clipId: 'one', text: 'first', audio: bytes(1) });
+    captureLastClip({ clipId: 'two', text: 'second', audio: bytes(2) });
+    markClipHeard('one');
+    markClipHeard('two');
+    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: false, unheardCount: 0 });
+
+    captureLastClip({ clipId: 'one', text: 'first, again', audio: bytes(1) });
+    expect(getClip('one')!.heard).toBe(false);
+    expect(getClipHistory().map((c) => [c.clipId, c.heard])).toEqual([['one', false], ['two', true]]);
+    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, unheardCount: 1 });
+  });
+
   test('the history view carries no audio and is a stable, immutable array between changes', () => {
     captureLastClip({ clipId: 'one', text: 'first', subject: 'UI', audio: bytes(1, 2), durationMs: 900 });
     const view = getClipHistory();
     expect(getClipHistory()).toBe(view);
     expect(Object.isFrozen(view)).toBe(true);
-    expect(view[0]).toEqual({ clipId: 'one', text: 'first', subject: 'UI', at: expect.any(Number), heard: false, durationMs: 900 });
+    expect(view[0]).toEqual({ clipId: 'one', text: 'first', subject: 'UI', at: expect.any(Number), heard: false });
     expect('audio' in view[0]).toBe(false);
 
     markClipHeard('one');

@@ -401,7 +401,7 @@ things she said.
   and every message's Replay button can be reached with Tab. With "reduce motion" set in your operating
   system, the decorative rings and particles stand still; only her mouth and a slight sway remain.
 - **Recent messages.** Under the 3D view, the last three things she said are listed, newest first.
-  Each shows the text (cut to a few lines; hover for all of it), the task it was about and how long
+  Each shows its full text (the list scrolls when it is long, and can be focused with Tab to scroll it by keyboard), the task it was about and how long
   ago ("just now", "5 min ago", "3 h ago", "2 d ago"), plus a Replay button of its own. Before she has
   said anything the list shows a hint instead. The list is kept in memory only: a page reload forgets
   it, and a fourth message pushes the oldest one (and its audio) out.
@@ -409,7 +409,7 @@ things she said.
   is kept. A message's own Replay button plays that message again with the same lip-sync; the
   **Replay last message** button in the title bar plays the newest one. Until at least 80% of a message
   has played while the tab was visible, it is marked "unheard" in the list (a dot and the word), and
-  the title-bar button and the minimised bubble carry a dot while any message is unheard. Replaying a
+  the minimised bubble carries a dot while any message is unheard, and the title-bar button while the newest one is. Replaying a
   message marks only that message heard. Replay respects the global sound switch.
 - **It cannot break the dashboard.** If the panel fails to load or crashes, it disappears until the
   next reload and everything else keeps working.

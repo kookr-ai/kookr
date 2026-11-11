@@ -8,6 +8,7 @@ import type {
 } from '../shared/contracts/speech.js';
 import { identifierToWords, makeSpeakable, spokenFindingPhrase, stripGeneratedPhrases } from './speakable-text.js';
 import { isGenericTaskName, spokenTaskName } from './spoken-task-name.js';
+import { redactedTaskName } from './task-speech-summary.js';
 
 /**
  * Verbs that imply an action recommendation. Carried forward from the v1 spec
@@ -46,7 +47,7 @@ const SCHEMA = {
 };
 
 export interface SummarizeAgentResult {
-  /** The speakable text: synthesised by TTS and shown as the avatar caption. */
+  /** The speakable text: synthesised by TTS and listed in the avatar's message list. */
   text: string;
   usedFallback: boolean;
   fallbackReason: SpeakAgentFallbackReason | null;
@@ -211,13 +212,15 @@ function validateRecap(raw: string, verbosity: VerbosityScale): RecapCheck {
 }
 
 /**
- * The task title as spoken in a sentence: the title when it is short and complete,
- * otherwise "This task" (see {@link spokenTaskName}). The helper sees the title with its
+ * The task title as spoken in a sentence: the redacted title when it is short and
+ * complete, otherwise "This task" (see {@link spokenTaskName}). The helper sees the title with its
  * trailing marks intact, so a title cut off with "..." is recognised before the marks
  * are stripped.
  */
 function spokenName(taskName: string): string {
-  return stripTrailingTerminalPunctuation(spokenTaskName(taskName)) || spokenTaskName(null);
+  // Secrets and prompt delimiters are hidden first, so a title such as "Rotate key sk-..." becomes
+  // "This task" and is never spoken (the redacted placeholder is not speakable text).
+  return stripTrailingTerminalPunctuation(spokenTaskName(redactedTaskName(taskName))) || spokenTaskName(null);
 }
 
 /**

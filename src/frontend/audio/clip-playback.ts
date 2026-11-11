@@ -7,8 +7,8 @@
  * - replay: the avatar panel's Replay buttons play a clip remembered in
  *   `last-clip.ts` again (`replayClip` / `replayLastClip` below).
  *
- * Both announce themselves on the speech bus, so the avatar lip-syncs, shows
- * the caption and the "speaking" state identically. Both also go through
+ * Both announce themselves on the speech bus, so the avatar lip-syncs and
+ * shows the "speaking" state identically. Both also go through
  * `beginClipPlayback`, which owns two things in one place: the rule for when a
  * clip counts as heard, and the `lucy_clip_started` / `lucy_clip_ended`
  * telemetry events.
@@ -234,7 +234,7 @@ export async function replayClip(clipId: string): Promise<ReplayResult> {
 
     replay.playback = beginClipPlayback({ clipId: clip.clipId, totalMs: durationMs, trigger: 'replay' });
     active = replay;
-    emitSpeechPlaying(replayOwner, ctx, source, clip.text);
+    emitSpeechPlaying(replayOwner, ctx, source);
     return 'started';
   } catch {
     if (ctx && ctx.state !== 'closed') void ctx.close();

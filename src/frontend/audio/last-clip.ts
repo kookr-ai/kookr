@@ -43,7 +43,6 @@ export interface ClipHistoryItem {
   subject?: string;
   at: number;
   heard: boolean;
-  durationMs: number;
 }
 
 /** What the avatar panel needs to know; deliberately small so it re-renders rarely. */
@@ -81,7 +80,6 @@ function publish(): void {
         ...(c.subject ? { subject: c.subject } : {}),
         at: c.at,
         heard: c.heard,
-        durationMs: c.durationMs,
       })),
     );
   }

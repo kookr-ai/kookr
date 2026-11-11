@@ -519,7 +519,7 @@ export function useSpeakAgent(
       playbackRef.current = beginClipPlayback({ clipId: clip.clipId, totalMs, trigger: 'click' });
       setState({ status: 'playing', cached: payload.cached, timings: playTimings });
       // The clip is audibly playing: let observers follow its loudness and show its text.
-      emitSpeechPlaying(busOwnerRef.current, ctx, source, payload.text);
+      emitSpeechPlaying(busOwnerRef.current, ctx, source);
     })();
   }, [agentId, anomalyType, ttsAvailable, endpoint, state.status, stop, fetcher, cleanup, clearClientTimeout]);
 

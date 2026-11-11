@@ -26,20 +26,20 @@ describe('speech-bus', () => {
 
   test('with nobody listening, a playing clip creates no audio node at all', () => {
     const { ctx, source } = fakeAudio();
-    emitSpeechPlaying(a, ctx, source, 'hello');
+    emitSpeechPlaying(a, ctx, source);
     expect(ctx.createAnalyser).not.toHaveBeenCalled();
     expect(source.connect).not.toHaveBeenCalled();
   });
 
-  test('a listener gets a tap on the clip and its text', () => {
+  test('a listener gets a tap on the clip', () => {
     const { analyser, ctx, source } = fakeAudio();
     const events: SpeechBusEvent[] = [];
     subscribeSpeechBus((e) => events.push(e));
     emitSpeechGenerating(a);
-    emitSpeechPlaying(a, ctx, source, 'Two tasks need you.');
+    emitSpeechPlaying(a, ctx, source);
     emitSpeechIdle(a);
     expect(events.map((e) => e.type)).toEqual(['idle', 'generating', 'playing', 'idle']);
-    expect(events[2]).toEqual({ type: 'playing', analyser, text: 'Two tasks need you.' });
+    expect(events[2]).toEqual({ type: 'playing', analyser });
     // The tap is attached to the source but never to the speakers.
     expect(source.connect).toHaveBeenCalledTimes(1);
     expect(source.connect).toHaveBeenCalledWith(analyser);
@@ -68,7 +68,7 @@ describe('speech-bus', () => {
     const seen: string[] = [];
     subscribeSpeechBus((e) => seen.push(e.type));
 
-    emitSpeechPlaying(b, ctx, source, 'B is speaking');
+    emitSpeechPlaying(b, ctx, source);
     // A was never speaking; it being stopped or removed must not silence B's clip on the avatar.
     emitSpeechIdle(a);
     expect(seen).toEqual(['idle', 'playing']);
@@ -82,12 +82,12 @@ describe('speech-bus', () => {
     const seen: string[] = [];
     subscribeSpeechBus((e) => seen.push(e.type));
 
-    emitSpeechPlaying(a, ctx, source, 'A');
+    emitSpeechPlaying(a, ctx, source);
     emitSpeechGenerating(b);
     emitSpeechIdle(a);
     expect(seen).toEqual(['idle', 'playing', 'generating']);
 
-    emitSpeechPlaying(b, ctx, source, 'B');
+    emitSpeechPlaying(b, ctx, source);
     emitSpeechIdle(b);
     expect(seen).toEqual(['idle', 'playing', 'generating', 'playing', 'idle']);
   });
@@ -121,6 +121,6 @@ describe('speech-bus', () => {
     const events: SpeechBusEvent[] = [];
     subscribeSpeechBus((e) => events.push(e));
     emitSpeechPlaying(a, ctx, source);
-    expect(events[1]).toEqual({ type: 'playing', analyser: null, text: null });
+    expect(events[1]).toEqual({ type: 'playing', analyser: null });
   });
 });

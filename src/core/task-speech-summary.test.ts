@@ -105,14 +105,14 @@ describe('summarizeTaskForSpeech', () => {
   });
 
   describe('a long, cut or missing title is never read aloud (#3605)', () => {
-    const observed = 'i lost approximetaly 6-7 kookr tasks that had hitten limits, can you check whic... is terminated unexpectedly.';
     const longTitle = 'i lost approximetaly 6-7 kookr tasks that had hitten limits, can you check which ones are broken';
 
     test('the observed prod title is spoken as "This task"', () => {
       const text = fallbackTaskSpeechSummary({ taskName: longTitle, taskStatus: 'terminated' });
       expect(text).toBe('This task is terminated unexpectedly.');
       expect(text).not.toContain('lost');
-      expect(observed).toContain('whic...'); // documents the old, spliced wording
+      // Nothing of the title, and none of its cut-off ("whic...") splice, reaches the sentence.
+      expect(text).not.toMatch(/approximetaly|kookr|limits|whic|\.\.\./i);
     });
 
     test('finding, digest, launch warning and plain-status sentences all use "This task"', () => {
@@ -146,6 +146,25 @@ describe('summarizeTaskForSpeech', () => {
     test('a short complete title is unchanged', () => {
       expect(fallbackTaskSpeechSummary({ taskName: 'Fix auth', taskStatus: 'inProgress', turnState: 'working' })).toBe(
         'Fix auth is running, working.',
+      );
+    });
+
+    test.each(['Fix login bug.', 'Fix login bug?', 'Fix login bug!', 'Fix login bug?!', 'Fix login bug.  '])(
+      'a title ending in a sentence mark (%j) is not spliced with the mark',
+      (taskName) => {
+        const running = { taskStatus: 'inProgress' as const, turnState: 'working' as const };
+        expect(fallbackTaskSpeechSummary({ taskName, ...running })).toBe('Fix login bug is running, working.');
+        expect(fallbackTaskSpeechSummary({
+          taskName,
+          ...running,
+          activeFinding: { type: 'needs_input', severity: 'info', explanation: '' },
+        })).toBe('Fix login bug needs your input.');
+      },
+    );
+
+    test.each(['.', '?', '?!', '!!!', ' . '])('a title of nothing but marks (%j) is spoken as "This task"', (taskName) => {
+      expect(fallbackTaskSpeechSummary({ taskName, taskStatus: 'inProgress', turnState: 'working' })).toBe(
+        'This task is running, working.',
       );
     });
 

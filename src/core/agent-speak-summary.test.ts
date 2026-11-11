@@ -401,3 +401,60 @@ describe('multi-line markdown reaches the fallback as sentences', () => {
   });
 });
 
+
+describe('the task title in the spoken text (#3605)', () => {
+  const prodTitle = 'i lost approximetaly 6-7 kookr tasks that had hitten limits, can you check whic...';
+  const secretTitle = 'Rotate key sk-abcdefghijklmnopqrstuvwxyz123456';
+  const anomaly = { type: 'needs_input', severity: 'warning', explanation: 'Agent asked which branch to use.' };
+  const rungs = ['terse', 'brief', 'medium', 'detailed'] as const;
+
+  describe('LLM success path', () => {
+    test('a long, cut-off title is not spoken: the text is the recap and a period', async () => {
+      const client = mkClient('{"recap":"Working through the limit checks"}');
+      const result = await summarizeAgent(client, { ...baseContext, taskName: prodTitle }, 'medium', 'activity');
+      expect(result.usedFallback).toBe(false);
+      expect(result.text).toBe('Working through the limit checks.');
+      expect(result.text).not.toMatch(/approximetaly|kookr|whic/i);
+    });
+
+    test('a short complete title still leads the text (control)', async () => {
+      const client = mkClient('{"recap":"Working through the limit checks"}');
+      const result = await summarizeAgent(client, { ...baseContext, taskName: 'Refactor auth.' }, 'medium', 'activity');
+      expect(result.text).toBe('Refactor auth. Working through the limit checks.');
+    });
+
+    test('a title that holds a secret is never spoken, and the text is the recap and a period', async () => {
+      const client = mkClient('{"recap":"Working through the key rotation"}');
+      const result = await summarizeAgent(client, { ...baseContext, taskName: secretTitle }, 'medium', 'activity');
+      expect(result.text).toBe('Working through the key rotation.');
+      expect(result.text).not.toMatch(/sk-|abcdefgh|Rotate|redacted/i);
+      expect(result.rawText).toBeUndefined();
+    });
+  });
+
+  describe('fallback path: a title that holds a secret is never spoken', () => {
+    test.each(rungs)('%s: no title, no secret, no placeholder', (verbosity) => {
+      for (const withAnomaly of [false, true]) {
+        const context = { ...baseContext, taskName: secretTitle, ...(withAnomaly ? { anomaly } : {}) };
+        const text = buildFallbackText(context, verbosity);
+        expect(text).not.toMatch(/sk-|abcdefgh|Rotate|redacted/i);
+      }
+    });
+
+    test.each(['terse', 'brief'] as const)('%s: the task is called "This task"', (verbosity) => {
+      expect(buildFallbackText({ ...baseContext, taskName: secretTitle }, verbosity)).toBe('This task is working.');
+      expect(buildFallbackText({ ...baseContext, taskName: secretTitle, anomaly }, verbosity)).toBe('This task needs your input.');
+    });
+
+    test.each(['medium', 'detailed'] as const)('%s: the name sentence is left out', (verbosity) => {
+      const text = buildFallbackText({ ...baseContext, taskName: secretTitle }, verbosity);
+      expect(text).toContain('read 2 files');
+      expect(text).not.toContain('This task.');
+    });
+
+    test('through summarizeAgent without a client', async () => {
+      const result = await summarizeAgent(null, { ...baseContext, taskName: secretTitle }, 'terse', 'activity');
+      expect(result.text).toBe('This task is working.');
+    });
+  });
+});

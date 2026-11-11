@@ -431,7 +431,7 @@ test.describe('avatar panel: hearing a message again', () => {
         await expect(page.getByTestId('avatar-dock')).toHaveAttribute('data-avatar-state', 'idle');
       }
       await expect(page.getByTestId('avatar-hint')).toHaveCount(0);
-      await expect(page.getByRole('list', { name: 'Recent messages' })).toBeVisible();
+      await expect(page.getByRole('region', { name: 'Recent messages' })).toBeVisible();
       await expect(items).toHaveCount(3);
       await expect(items.locator('.avatar-msg-subject')).toHaveText(['Task 4', 'Task 3', 'Task 2']);
       await expect(items.first().locator('.avatar-msg-text')).toHaveText(`${CLIP_TEXT} (4)`);
@@ -456,7 +456,7 @@ test.describe('avatar panel: hearing a message again', () => {
       await expect(items.nth(0).getByTestId('avatar-msg-unheard')).toHaveCount(1);
       await expect(items.nth(1).getByTestId('avatar-msg-unheard')).toHaveCount(1);
       await expect(oldest).toBeFocused();
-      // The header dot stays while other messages are unheard.
+      // The header dot follows the newest message, which is still unheard.
       await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(1);
       expect(speakRequests(), 'replay asks the server for nothing').toBe(4);
     }, { timeout: 15_000 });

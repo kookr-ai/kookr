@@ -331,7 +331,7 @@ describe('useSpeakAgent request shape', () => {
       expect(probeHandle!.state.status).toBe('playing');
       const ctx = FakeAudioContext.instances[0];
       expect(events.map((event) => event.type)).toEqual(['idle', 'generating', 'playing']);
-      expect(events[2]).toEqual({ type: 'playing', text: 'Two tasks need you.', analyser: ctx.analyser });
+      expect(events[2]).toEqual({ type: 'playing', analyser: ctx.analyser });
 
       const source = ctx.createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
       // The tap is an extra connection: the clip still goes to the speakers exactly as before.

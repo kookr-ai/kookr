@@ -16850,7 +16850,8 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   cursor: pointer;
 }
 .avatar-dock-button:hover { background: var(--bg-card); color: var(--text-bright); }
-.avatar-dock-button:focus-visible, .avatar-bubble:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.avatar-dock-button:focus-visible, .avatar-bubble:focus-visible, .avatar-dock-transcript:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.avatar-dock-transcript:focus-visible { outline-offset: -2px; }
 .avatar-dock-button svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .avatar-dock-replay { position: relative; }
 .avatar-dock-button[aria-disabled="true"] { opacity: 0.6; cursor: default; }
@@ -16883,8 +16884,8 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   /* It lies over the 3D view and is empty once the view is ready; it must never take clicks from it. */
   pointer-events: none;
 }
-/* The message list under the 3D view: the last few spoken messages, newest first. It takes what it needs up to
-   a cap and scrolls beyond that, so the 3D view keeps the rest of the window. */
+/* The message list under the 3D view: the last few spoken messages, newest first, each in full. It takes what it
+   needs up to a cap and scrolls beyond that (keyboard-focusable), so the 3D view keeps the rest of the window. */
 .avatar-dock-transcript {
   flex: none;
   max-height: 176px;
@@ -16909,14 +16910,8 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .avatar-msg-text {
   grid-column: 1;
   margin: 0;
-  overflow: hidden;
   overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
 }
-.avatar-msg-newest .avatar-msg-text { -webkit-line-clamp: 3; line-clamp: 3; }
 .avatar-msg-meta {
   grid-column: 1;
   display: flex;

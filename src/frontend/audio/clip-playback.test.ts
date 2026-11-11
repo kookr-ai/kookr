@@ -287,7 +287,7 @@ describe('replayLastClip', () => {
     expect(source.connect).toHaveBeenCalledWith(ctx.destination);
     expect(source.connect).toHaveBeenCalledWith(ctx.analyser);
     expect(events.map((e) => e.type)).toEqual(['idle', 'playing']);
-    expect(events[1]).toEqual({ type: 'playing', analyser: ctx.analyser, text: 'Two tasks need you.' });
+    expect(events[1]).toEqual({ type: 'playing', analyser: ctx.analyser });
     expect(ofType('lucy_clip_started')[0]).toMatchObject({ clipId: 'c1', trigger: 'replay' });
     expect(getLastClipSnapshot().unheard).toBe(true);
 
@@ -484,7 +484,7 @@ describe('replayLastClip', () => {
       const ctx = FakeAudioContext.instances[0];
       expect(ctx.decodeAudioData).toHaveBeenCalledTimes(1);
       expect(new Uint8Array(ctx.decodeAudioData.mock.calls[0][0])).toEqual(new Uint8Array([3])); // "mid".length
-      expect(events[events.length - 1]).toMatchObject({ type: 'playing', text: 'text mid' });
+      expect(events[events.length - 1]).toMatchObject({ type: 'playing' });
       expect(ofType('lucy_clip_started')[0]).toMatchObject({ clipId: 'mid', trigger: 'replay' });
 
       now = 2_000;

@@ -51,7 +51,7 @@ vi.mock('../audio/clip-playback.js', async (importOriginal) => {
   };
 });
 
-import { AvatarDock } from './AvatarDock.js';
+import { AvatarDock, BUBBLE_CARD_GAP, BUBBLE_CARD_HEIGHT, BUBBLE_CARD_WIDTH } from './AvatarDock.js';
 import { stopReplay } from '../audio/clip-playback.js';
 import { __resetLastClipForTests, captureLastClip, markClipHeard } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
@@ -62,6 +62,7 @@ import {
   emitSpeechPlaying,
 } from '../audio/speech-bus.js';
 import {
+  AVATAR_BUBBLE_SIZE,
   AVATAR_PANEL_HEIGHT,
   AVATAR_PANEL_KEY,
   AVATAR_PANEL_MARGIN,
@@ -183,7 +184,6 @@ describe('AvatarDock', () => {
         SPEAKER,
         { createAnalyser: () => analyser },
         { connect: vi.fn() } as unknown as AudioNode,
-        'Two tasks need you.',
       );
     });
     expect(dock()!.getAttribute('data-avatar-state')).toBe('speaking');
@@ -232,7 +232,7 @@ describe('AvatarDock', () => {
     render();
     const analyser = {} as AnalyserNode;
     act(() => {
-      emitSpeechPlaying(SPEAKER, { createAnalyser: () => analyser }, { connect: vi.fn() } as unknown as AudioNode, 'hi');
+      emitSpeechPlaying(SPEAKER, { createAnalyser: () => analyser }, { connect: vi.fn() } as unknown as AudioNode);
     });
 
     act(() => bubble()!.click());
@@ -502,7 +502,7 @@ describe('AvatarDock', () => {
       expect(replay.calls).toBe(0);
 
       act(() => {
-        emitSpeechPlaying(SPEAKER, { createAnalyser: () => ({}) as AnalyserNode }, { connect: vi.fn() } as unknown as AudioNode, 'x');
+        emitSpeechPlaying(SPEAKER, { createAnalyser: () => ({}) as AnalyserNode }, { connect: vi.fn() } as unknown as AudioNode);
       });
       expect(button.getAttribute('aria-disabled')).toBe('true');
 
@@ -835,6 +835,16 @@ describe('AvatarDock', () => {
       expect(card()).toBeNull();
     });
 
+    test('when the browser cannot answer :focus-visible (matches throws), focus is treated as keyboard focus and opens the card', () => {
+      startWith({ minimized: true });
+      render(2);
+      vi.spyOn(bubble()!, 'matches').mockImplementation(() => {
+        throw new SyntaxError('unsupported selector');
+      });
+      act(() => bubble()!.focus());
+      expect(card()).not.toBeNull();
+    });
+
     test('Escape also closes a card that is open only because of the pointer, and the next hover shows it again', () => {
       startWith({ minimized: true });
       render(2);
@@ -854,8 +864,8 @@ describe('AvatarDock', () => {
       hover();
       const bubbleLeft = parseFloat(bubble()!.style.left);
       const bubbleTop = parseFloat(bubble()!.style.top);
-      expect(card()!.style.bottom).toBe(`${VIEWPORT.height - bubbleTop + 10}px`);
-      expect(card()!.style.right).toBe(`${VIEWPORT.width - (bubbleLeft + 58)}px`);
+      expect(card()!.style.bottom).toBe(`${VIEWPORT.height - bubbleTop + BUBBLE_CARD_GAP}px`);
+      expect(card()!.style.right).toBe(`${VIEWPORT.width - (bubbleLeft + AVATAR_BUBBLE_SIZE)}px`);
       expect(card()!.style.top).toBe('');
       expect(card()!.style.left).toBe('');
     });
@@ -868,10 +878,61 @@ describe('AvatarDock', () => {
       hover();
       const bubbleLeft = parseFloat(bubble()!.style.left);
       const bubbleTop = parseFloat(bubble()!.style.top);
-      expect(card()!.style.top).toBe(`${bubbleTop + 58 + 10}px`);
+      expect(card()!.style.top).toBe(`${bubbleTop + AVATAR_BUBBLE_SIZE + BUBBLE_CARD_GAP}px`);
       expect(card()!.style.left).toBe(`${bubbleLeft}px`);
       expect(card()!.style.bottom).toBe('');
       expect(card()!.style.right).toBe('');
+    });
+
+    // The bubble is pushed into the bottom-right corner of a small window, so its position is set by the window size:
+    // the smallest window in which the card still fits above / to the left of the bubble is
+    //   height = margin + gap + card height + bubble + margin,  width = margin + card width + margin.
+    const FITS_ABOVE_HEIGHT = AVATAR_PANEL_MARGIN + BUBBLE_CARD_GAP + BUBBLE_CARD_HEIGHT + AVATAR_BUBBLE_SIZE + AVATAR_PANEL_MARGIN;
+    const FITS_RIGHT_WIDTH = AVATAR_PANEL_MARGIN + BUBBLE_CARD_WIDTH + AVATAR_PANEL_MARGIN;
+    const BIG = { width: 1024, height: 768 };
+
+    test.each([
+      ['above, right edges aligned', BIG.width, BIG.height, true, false],
+      ['below, right edges aligned', BIG.width, FITS_ABOVE_HEIGHT - 1, false, false],
+      ['above, left edges aligned', FITS_RIGHT_WIDTH - 1, BIG.height, true, true],
+      ['below, left edges aligned', FITS_RIGHT_WIDTH - 1, FITS_ABOVE_HEIGHT - 1, false, true],
+      ['above and right-aligned at exactly the margin (not one pixel less)', FITS_RIGHT_WIDTH, FITS_ABOVE_HEIGHT, true, false],
+    ])('card placement: %s', (_name, width, height, above, alignLeft) => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: height });
+      startWith({ minimized: true });
+      render(2);
+      hover();
+      const bubbleLeft = parseFloat(bubble()!.style.left);
+      const bubbleTop = parseFloat(bubble()!.style.top);
+      const style = card()!.style;
+      if (above) {
+        expect(bubbleTop - BUBBLE_CARD_GAP - BUBBLE_CARD_HEIGHT).toBeGreaterThanOrEqual(AVATAR_PANEL_MARGIN);
+        expect(style.bottom).toBe(`${height - bubbleTop + BUBBLE_CARD_GAP}px`);
+        expect(style.top).toBe('');
+      } else {
+        expect(bubbleTop - BUBBLE_CARD_GAP - BUBBLE_CARD_HEIGHT).toBeLessThan(AVATAR_PANEL_MARGIN);
+        expect(style.top).toBe(`${bubbleTop + AVATAR_BUBBLE_SIZE + BUBBLE_CARD_GAP}px`);
+        expect(style.bottom).toBe('');
+      }
+      if (alignLeft) {
+        expect(bubbleLeft + AVATAR_BUBBLE_SIZE - BUBBLE_CARD_WIDTH).toBeLessThan(AVATAR_PANEL_MARGIN);
+        expect(style.left).toBe(`${bubbleLeft}px`);
+        expect(style.right).toBe('');
+      } else {
+        expect(bubbleLeft + AVATAR_BUBBLE_SIZE - BUBBLE_CARD_WIDTH).toBeGreaterThanOrEqual(AVATAR_PANEL_MARGIN);
+        expect(style.right).toBe(`${width - (bubbleLeft + AVATAR_BUBBLE_SIZE)}px`);
+        expect(style.left).toBe('');
+      }
+    });
+
+    test('the exact-margin case really sits on the boundary (card edge == margin), so the test above can tell >= from >', () => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: FITS_RIGHT_WIDTH });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: FITS_ABOVE_HEIGHT });
+      startWith({ minimized: true });
+      render(2);
+      expect(parseFloat(bubble()!.style.top) - BUBBLE_CARD_GAP - BUBBLE_CARD_HEIGHT).toBe(AVATAR_PANEL_MARGIN);
+      expect(parseFloat(bubble()!.style.left) + AVATAR_BUBBLE_SIZE - BUBBLE_CARD_WIDTH).toBe(AVATAR_PANEL_MARGIN);
     });
 
     test('opening the panel while hovering does not leave the card stuck on for the next minimise', () => {
@@ -918,7 +979,7 @@ describe('AvatarDock', () => {
       clip('a', 'first');
       clip('b', 'second');
       clip('c', 'third');
-      const list = container.querySelector('ol[aria-label="Recent messages"]')!;
+      const list = container.querySelector('[role="region"][aria-label="Recent messages"] > ol')!;
       expect(list).not.toBeNull();
       expect(textsOf()).toEqual(['third', 'second', 'first']);
       expect(hint()).toBeNull();
@@ -929,16 +990,18 @@ describe('AvatarDock', () => {
       expect(messages()[1].classList.contains('avatar-msg-newest')).toBe(false);
     });
 
-    test('each message has its subject and age, the full text in a tooltip, and "unheard" in words until it is heard', () => {
+    test('each message has its subject and age, its full text, and "unheard" in words until it is heard', () => {
       startWith({});
       render();
       clip('a', 'Build finished; review is ready. Please look at the second approach in detail.', 'UI refactor');
       const item = messages()[0];
       expect(item.querySelector('.avatar-msg-subject')!.textContent).toBe('UI refactor');
       expect(item.querySelector('.avatar-msg-time')!.textContent).toBe('just now');
-      expect(item.querySelector('.avatar-msg-text')!.getAttribute('title')).toBe(
+      expect(item.querySelector('.avatar-msg-text')!.textContent).toBe(
         'Build finished; review is ready. Please look at the second approach in detail.',
       );
+      // No hover-only copy of the text: the full message is in the layout.
+      expect(item.querySelector('.avatar-msg-text')!.hasAttribute('title')).toBe(false);
       expect(item.querySelector('[data-testid="avatar-msg-unheard"]')!.textContent).toBe('unheard');
 
       act(() => markClipHeard('a'));
@@ -1032,16 +1095,85 @@ describe('AvatarDock', () => {
       expect(panelActions()).toEqual([{ type: 'lucy_panel_action', action: 'replay', clipId: 'b' }]);
     });
 
-    test('the header dot shows while ANY message is unheard, even when the newest was heard', () => {
+    test('the header marker, title and description follow the NEWEST message only, which is what that button replays', () => {
       startWith({});
+      render();
+      const headerDot = () => headerReplay().querySelector('[data-testid="avatar-unheard-dot"]');
+      const description = () => container.querySelector(`#${headerReplay().getAttribute('aria-describedby')}`)?.textContent;
+      clip('a', 'first');
+      clip('b', 'second');
+      // Two unheard: the marker is about the one message the button replays, so it is singular.
+      expect(headerDot()).not.toBeNull();
+      expect(headerReplay().title).toBe('Replay last message (unheard)');
+      expect(description()).toBe('Unheard message');
+
+      // The newest was heard, an older one was not: no marker on the header (the list still shows the older one).
+      act(() => markClipHeard('b'));
+      expect(headerDot()).toBeNull();
+      expect(headerReplay().title).toBe('Replay last message');
+      expect(headerReplay().hasAttribute('aria-describedby')).toBe(false);
+      expect(container.querySelectorAll('[data-testid="avatar-msg-unheard"]')).toHaveLength(1);
+
+      // The newest is unheard again (a new message), older ones heard.
+      act(() => markClipHeard('a'));
+      clip('c', 'third');
+      expect(headerDot()).not.toBeNull();
+      expect(description()).toBe('Unheard message');
+    });
+
+    test('the bubble still counts every unheard message, not just the newest', () => {
+      startWith({ minimized: true });
       render();
       clip('a', 'first');
       clip('b', 'second');
       act(() => markClipHeard('b'));
-      expect(container.querySelector('[data-testid="avatar-unheard-dot"]')).not.toBeNull();
-      expect(headerReplay().title).toBe('Replay last message (unheard)');
-      act(() => markClipHeard('a'));
-      expect(container.querySelector('[data-testid="avatar-unheard-dot"]')).toBeNull();
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 1 unheard message.');
+      clip('c', 'third');
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 2 unheard messages.');
+      expect(bubble()!.querySelector('[data-testid="avatar-unheard-dot"]')).not.toBeNull();
+    });
+
+    test('the message list is a keyboard-focusable scroll region holding the full text of a long message', () => {
+      startWith({});
+      render();
+      expect(container.querySelector('[role="region"][aria-label="Recent messages"]')).toBeNull(); // nothing to scroll yet
+      const long = 'A long message about the task. '.repeat(10).trim();
+      clip('a', long);
+      const region = container.querySelector<HTMLElement>('[role="region"][aria-label="Recent messages"]')!;
+      expect(region).not.toBeNull();
+      expect(region.tabIndex).toBe(0);
+      expect(region.getAttribute('data-testid')).toBe('avatar-transcript');
+      expect(region.querySelectorAll('ol')).toHaveLength(1);
+      expect(region.querySelector('ol')!.hasAttribute('aria-label')).toBe(false); // the region carries the name
+      expect(region.querySelector('.avatar-msg-text')!.textContent).toBe(long);
+      region.focus();
+      expect(document.activeElement).toBe(region);
+    });
+
+    test('a per-message Replay pressed while a replay is pending is ignored: the pending state is shared', async () => {
+      startWith({});
+      render();
+      clip('a', 'first');
+      clip('b', 'second');
+      let finish!: () => void;
+      replay.gate = new Promise<void>((resolve) => { finish = resolve; });
+      const [newer, older] = replayButtons();
+
+      act(() => newer.click());
+      expect(replay.ids).toEqual(['b']);
+      expect(replayButtons().every((b) => b.getAttribute('aria-disabled') === 'true')).toBe(true);
+      expect(headerReplay().getAttribute('aria-disabled')).toBe('true');
+
+      act(() => older.click());
+      act(() => headerReplay().click());
+      expect(replay.calls).toBe(1);
+      expect(replay.ids).toEqual(['b']);
+      expect(panelActions()).toEqual([{ type: 'lucy_panel_action', action: 'replay', clipId: 'b' }]);
+
+      await act(async () => {
+        finish();
+      });
+      expect(replayButtons().every((b) => b.getAttribute('aria-disabled') === null)).toBe(true);
     });
 
     test('the Replay buttons stay focusable but unavailable while she is busy or sound is off, with the reason described', () => {
