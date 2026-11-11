@@ -286,6 +286,8 @@ test.describe('Task lifecycle', () => {
 
     await page.locator('.finding-card').click();
     page.on('dialog', (dialog) => dialog.accept());
+    // #3561 4b: Cancel lives in the header's More actions menu.
+    await page.getByTestId('detail-more-actions').click();
     await page.locator('[data-testid="action-cancel"]').click();
 
     // Wait for cancel to process

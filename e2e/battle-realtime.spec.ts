@@ -261,7 +261,7 @@ test.describe('Agent detail metadata', () => {
 
     await page.locator('.finding-card').click();
     // CWD is shown as a project badge with short label; full path is in the title attribute
-    await expect(page.locator('.detail-header-right .project-badge')).toHaveAttribute('title', '/custom/work/dir');
+    await expect(page.locator('[data-testid="detail-facts"] .project-badge')).toHaveAttribute('title', '/custom/work/dir');
   });
 
   test('detail panel shows task completion and cancellation actions', async ({ page, request }) => {
@@ -273,6 +273,9 @@ test.describe('Agent detail metadata', () => {
     await page.locator('.finding-card').click();
     await expect(page.locator('[data-testid="action-attach"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="action-complete"]')).toBeVisible();
+    // #3561 4b: Cancel is destructive, so it waits in the More actions menu.
+    await expect(page.locator('[data-testid="action-cancel"]')).toHaveCount(0);
+    await page.getByTestId('detail-more-actions').click();
     await expect(page.locator('[data-testid="action-cancel"]')).toBeVisible();
   });
 

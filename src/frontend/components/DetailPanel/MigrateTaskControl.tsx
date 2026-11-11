@@ -31,21 +31,46 @@ type EligibilityPreview =
  * with the batch "Migrate interrupted…" dialog, so the picker is a proper modal
  * rather than a cramped popover in the panel corner.
  */
+export function migrationTargetOptions<T extends { type: AgentType }>(available: readonly T[], currentAgentType?: AgentType): T[] {
+  // Same-agent continuation is Restore, not Migrate — exclude the task's own agent.
+  return available.filter((a) => a.type !== currentAgentType);
+}
+
 export function MigrateTaskControl({
   taskId,
   currentAgentType,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   taskId: string;
   currentAgentType?: AgentType;
+  /**
+   * Controlled mode (#3561 slice 4b): the reading-pane "More actions" menu owns
+   * the trigger, so this component renders only the dialog. It stays mounted
+   * outside the menu popup, so closing the menu does not close the dialog.
+   */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const { availableAgentTypes, handleAlert } = useKookrStore();
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const controlled = controlledOpen !== undefined;
+  const open = controlled ? controlledOpen : ownOpen;
+  const setOpen = (next: boolean) => {
+    if (!controlled) setOwnOpen(next);
+    onOpenChange?.(next);
+  };
   const [target, setTarget] = useState<AgentTypeSelectorValue>('');
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<EligibilityPreview | null>(null);
 
-  // Same-agent continuation is Restore, not Migrate — exclude the task's own agent.
-  const options = availableAgentTypes.filter((a) => a.type !== currentAgentType);
+  const options = migrationTargetOptions(availableAgentTypes, currentAgentType);
+
+  // A controlled open starts on the first target, the same as the own trigger.
+  const firstTarget = options[0]?.type ?? '';
+  useEffect(() => {
+    if (controlled && controlledOpen) setTarget(firstTarget);
+  }, [controlled, controlledOpen, firstTarget]);
 
   // Preview this task's eligibility for the chosen target before the operator
   // confirms, so a single interrupted-task recovery no longer confirms blind and
@@ -140,14 +165,14 @@ export function MigrateTaskControl({
 
   return (
     <>
-      <button
+      {!controlled && <button
         type="button"
         className="action-btn action-btn--neutral"
         title="Continue this task's work under a different agent"
         onClick={openDialog}
       >
         Migrate to…
-      </button>
+      </button>}
       {open && (
         <ConfirmDialog
           title="Migrate this task"

@@ -93,10 +93,14 @@ describe('DetailPanel migrate action (RFC: rfc-cross-agent-task-migration)', () 
 
     root = renderDetailPanel(container, () => true);
 
+    // #3561 4b: Migrate to… is an item of the header's More actions menu.
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="detail-more-actions"]')!.click());
     const openButton = Array.from(container.querySelectorAll('button'))
       .find((b) => b.textContent === 'Migrate to…') as HTMLButtonElement | undefined;
     expect(openButton).toBeInstanceOf(HTMLButtonElement);
     act(() => openButton!.click());
+    // The menu closes; the dialog it opened stays.
+    expect(container.querySelector('.detail-more-actions-popup')).toBeNull();
 
     // The control now opens a centered confirm dialog; its confirm button is
     // labelled "Migrate" (not an inline "Go").

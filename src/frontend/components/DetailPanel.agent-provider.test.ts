@@ -90,12 +90,13 @@ describe('DetailPanel agent provider header controls', () => {
     expect(headerRight.querySelector(':scope > .detail-agent-provider')).toBeNull();
     expect(headerRight.querySelector(':scope > .detail-agent-provider-icon')).toBeNull();
     expect(headerRight.querySelector(':scope > .detail-agent-type-group')).toBeNull();
-    expect(headerRight.querySelector('summary')?.textContent).toBe('Details');
+    expect(container.querySelector('.detail-header .detail-agent-provider')).toBeNull();
 
-    const metaMenu = headerRight.querySelector('.detail-meta-menu')!;
-    expect(metaMenu.querySelector('.detail-agent-provider')?.textContent).toContain(label);
+    // #3561 4b: the agent and its hooks view live in the facts column.
+    const facts = container.querySelector('[data-testid="detail-facts"]')!;
+    expect(facts.querySelector('.detail-agent-provider')?.textContent).toContain(label);
 
-    const hooksButton = metaMenu.querySelector<HTMLButtonElement>('.detail-hook-settings-btn');
+    const hooksButton = facts.querySelector<HTMLButtonElement>('.detail-hook-settings-btn');
     expect(hooksButton?.textContent).toBe('hooks');
     expect(hooksButton?.getAttribute('aria-label')).toBe(`Hooks: view effective hook settings for ${label} session`);
     expect(hooksButton?.getAttribute('title')).toBe(`Hooks: view effective hook settings for ${label} session`);

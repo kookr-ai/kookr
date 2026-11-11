@@ -564,6 +564,8 @@ test.describe('Supervisor flow — task lifecycle', () => {
 
     // Accept the confirm dialog
     page.on('dialog', (dialog) => dialog.accept());
+    // #3561 4b: Cancel lives in the header's More actions menu.
+    await page.getByTestId('detail-more-actions').click();
     await page.locator('[data-testid="action-cancel"]').click();
 
     // Wait for the agent to disappear

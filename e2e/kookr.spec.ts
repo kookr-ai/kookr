@@ -413,6 +413,8 @@ test.describe('Kookr E2E — nominal paths', () => {
     // Accept the confirm dialog
     page.on('dialog', (dialog) => dialog.accept());
 
+    // #3561 4b: Cancel lives in the header's More actions menu.
+    await page.getByTestId('detail-more-actions').click();
     await page.locator('[data-testid="action-cancel"]').click();
 
     // Agent should be removed from findings
