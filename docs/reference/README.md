@@ -57,7 +57,7 @@ reachable only over a phone.
 - [Lucy prod update watchdog](lucy-prod-update-watchdog.md) — spec for the daily schedule that redeploys lucy (a separate project Kookr supervises) and must prove the deploy converged before reporting green.
 - [Kookr self-batch schedule](kookr-self-batch-schedule.md) — spec for the schedule that drains Kookr's own issue backlog through the `parallel-issue-batch` pipeline.
 - [Agent-notebook janitor schedule](nb-janitor-schedule.md) — spec for the weekly, read-only, fail-open schedule that runs the shipped agent-notebook janitor over `NB_DIR` and surfaces its hygiene report to the operator.
-- [Notebook lesson retrofit schedule](notebook-lesson-retrofit-schedule.md) — spec for the monthly, read-only review that reads what the notebook lessons say, proposes tooling changes that would make them unnecessary, and reports which entries can be retired.
+- [Notebook lesson retrofit schedule](notebook-lesson-retrofit-schedule.md) — spec for the monthly review that reads what the notebook lessons say (it never removes or edits an entry), proposes tooling changes that would make them unnecessary, and reports which entries can be retired.
 
 ## Sharing a session with someone else
 

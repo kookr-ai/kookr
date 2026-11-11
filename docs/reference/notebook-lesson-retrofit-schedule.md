@@ -19,7 +19,7 @@ schedule. The schedule itself is **operator state** (it lives in
 | Playbook | Looks at | Cadence |
 | --- | --- | --- |
 | `nb-janitor.md` ([schedule](nb-janitor-schedule.md)) | Store hygiene: duplicates, eviction loss, silent shelves | Weekly |
-| `agent-notebook-reflection.md` | How the harness uses `nb`: error rates, surfacing metrics, wiring against the tool's docs | Weekly |
+| `agent-notebook-reflection.md` | How the harness uses `nb`: error rates, surfacing metrics, wiring against the tool's docs | On demand, or on whatever schedule the operator has given it |
 | `notebook-lesson-retrofit.md` | What the lessons say about the harness and the repositories, and what would make each lesson unnecessary | Monthly |
 
 ## Status: proven by one manual analysis, not yet by a playbook run
@@ -30,14 +30,18 @@ The playbook itself has not completed a run. Before enabling the schedule, launc
 it once by hand with `fileIssues=no` and compare its report with the baseline in
 `~/.kookr/reports/notebook-retrofit-2026-11-11.md`. A good first run carries the
 baseline map forward, proposes nothing the baseline already holds, and lists
-"ready to retire" entries only for leaves that are closed and verified.
+"ready to retire" entries only for leaves that are closed, verified and live.
+
+A run never overwrites an earlier run's files, because the newest earlier map
+and snapshot are its baseline. A second run on the same date writes
+`notebook-retrofit-<date>-run2.*` and diffs against the first.
 
 ## Install the playbook where the schedule can find it
 
 A `project`-scope playbook is read from `<cwd>/.kookr/playbooks/` on disk. The
 primary checkout is often on an old branch, so it may not contain this file.
-Install a copy in the user tier instead, as the weekly reflection schedule does,
-and refresh the copy when the playbook changes:
+Install a copy in the user tier instead (`~/.kookr/playbooks/`, where a
+`user`-scope schedule looks), and refresh the copy when the playbook changes:
 
 ```bash
 cp .kookr/playbooks/notebook-lesson-retrofit.md ~/.kookr/playbooks/
@@ -53,11 +57,11 @@ Run that from a checkout that is current with `origin/main`.
 | `enabled` | `true` |
 | `cron` | `52 5 1 * *` |
 | `cwd` | `/home/<user>/git/kookr` |
-| `agentType` | `default` |
 | `playbook.path` | `notebook-lesson-retrofit.md` |
 | `playbook.scope` | `user` |
 
-Do not set `modelTier: "small"`. The work is cross-shelf synthesis followed by
+Leave `agentType` out so the schedule follows the server's default agent, and
+do not set `modelTier: "small"`. The work is cross-shelf synthesis followed by
 verification against several repositories; a small model produces confident
 proposals for things that already exist.
 
@@ -83,7 +87,6 @@ curl -sS -X POST http://127.0.0.1:4800/api/schedules \
     "enabled": true,
     "cron": "52 5 1 * *",
     "cwd": "/home/<user>/git/kookr",
-    "agentType": "default",
     "playbook": {
       "path": "notebook-lesson-retrofit.md",
       "scope": "user",
@@ -110,7 +113,7 @@ jq '.[] | select(.playbook.path == "notebook-lesson-retrofit.md") | {enabled, cr
 ### Run once, hold, or release
 
 ```bash
-SID=$(jq -r '.[] | select(.playbook.path=="notebook-lesson-retrofit.md") | .id' ~/.kookr/schedules.json)
+SID=$(jq -r 'first(.[] | select(.playbook.path=="notebook-lesson-retrofit.md")) | .id' ~/.kookr/schedules.json)
 kookr schedule run "$SID"        # fire now
 kookr schedule disable "$SID"    # hold
 kookr schedule enable "$SID"     # release
@@ -122,7 +125,7 @@ kookr schedule enable "$SID"     # release
 
 - **Monthly**, because lessons accrue slowly and a proposal needs time to be
   implemented before the next run can close its loop. The janitor and the
-  reflection playbook already run weekly on the faster-moving signals.
+  reflection playbook cover the faster-moving signals.
 - **Minute `:52`** is not used by any schedule in the live set on 2026-11-11.
 - **Hour `5`** comes after the 02:23 issue batch and the 03:00 and 04:00 nightly
   jobs, and before the 07:00 and later daytime jobs.
@@ -137,7 +140,7 @@ on this.
   remote ref.
 - **Writes** three dated files to the reports directory (report, entry map,
   shelf snapshot), its own retrospective votes, and at most one new lesson.
-- **Never** removes, moves, merges or edits a notebook entry, and never changes
+- **Never** removes, moves, merges or edits an existing notebook entry, and never changes
   host configuration, hooks, settings or schedules. Retiring entries is the
   operator's step; the report prints the exact commands.
 - **Issues** are touched only when `fileIssues` is not `no`. Public issues carry
@@ -145,4 +148,5 @@ on this.
   from or about a private repository. A leaf that changes what every agent
   session does is filed with the `automation-blocked` label, so the issue batch
   ([Kookr self-batch schedule](kookr-self-batch-schedule.md)) leaves it alone
-  until the operator removes the label.
+  until the operator removes the label. In a repository without that label the
+  leaf is not filed; it stays on the umbrella, marked held.
