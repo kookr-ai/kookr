@@ -320,6 +320,9 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   });
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
+  // Once docked, a later undock starts closed instead of reopening the overlay.
+  const factsDockedNow = paneWide && layout === 'tabs';
+  useEffect(() => { if (factsDockedNow) setFactsOpen(false); }, [factsDockedNow]);
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
   const replyDraftScope = { taskId: agent?.taskId, agentId: agent?.agentId };
 
@@ -862,10 +865,11 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   const shareHeaderStatus = deriveTaskShareHeaderStatus(agent.taskId, shareHeaderShares);
   const rightOnlyMode = layout === 'focus';
   const tabbedLayout = layout === 'tabs';
-  // Split view keeps the width for its two panes; terminal focus hides facts.
+  // Split view and terminal focus keep the width for the panes: there the
+  // column opens over the pane from the Details button, like a narrow pane.
   const factsDocked = paneWide && tabbedLayout;
-  const showFactsToggle = !rightOnlyMode && !factsDocked;
-  const factsVisible = !rightOnlyMode && (factsDocked || factsOpen);
+  const showFactsToggle = !factsDocked;
+  const factsVisible = factsDocked || factsOpen;
   function closeFacts() {
     setFactsOpen(false);
     factsToggleRef.current?.focus();
@@ -879,6 +883,14 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   const decisionCardVisible = !!agent.anomaly && !completionDigestShown && !rightOnlyMode
     && !(tabbedLayout && narrowTab === 'terminal');
   const showEvolutionPanel = Boolean(agent.taskId && agent.playbookId === 'autonomous-evolution.md');
+  // Skip and Snooze decide what happens to the finding, so they sit in the
+  // decision card when it shows; the reply row keeps input, voice and Send.
+  const findingTriageButtons = (
+    <>
+      <button type="button" className="btn-secondary" data-testid="finding-skip" onClick={() => handleSkip()}>Skip</button>
+      <button type="button" className="btn-secondary" data-testid="finding-snooze" onClick={() => setShowSnooze(true)}>Snooze</button>
+    </>
+  );
   const quickActionButtons = quickActions.length > 0 ? (
     <div className="quick-actions">
       {isPermissionActions
@@ -1162,7 +1174,11 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                   </>
                 )}
                 {decisionCardVisible && (
-                  <DecisionCard agent={agent} actions={quickActionButtons} hasActions={quickActions.length > 0} />
+                  <DecisionCard
+                    agent={agent}
+                    actions={quickActionButtons}
+                    triage={findingTriageButtons}
+                  />
                 )}
               </div>}
 
@@ -1362,8 +1378,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
               Send & Next
             </button>
           )}
-          {!isDirectReply && <button className="btn-secondary" onClick={() => handleSkip()}>Skip</button>}
-          {!isDirectReply && <button className="btn-secondary" onClick={() => setShowSnooze(true)}>Snooze</button>}
+          {!isDirectReply && !decisionCardVisible && findingTriageButtons}
         </div>
         {showSnooze && agent && (
           <SnoozeDialog

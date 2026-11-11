@@ -5,19 +5,20 @@ import { findingKindClass, findingTypeLabel, formatDuration } from '../../presen
 /**
  * The decision card docked above the reply box (issue #3561 slice 4b): what
  * the agent is waiting on, the agent's last message, and the buttons that
- * answer it. It sits inside the reply area, so it stays on screen with the
- * Terminal tab and in terminal focus. A leaf component owns the minute clock
- * for "waiting 4m", so the tick does not re-render the terminal.
+ * answer it, plus Skip and Snooze. DetailPanel docks it at the foot of the
+ * conversation pane, right above the reply box. A leaf component owns the
+ * minute clock for "waiting 4m", so the tick does not re-render the terminal.
  */
 export function DecisionCard({
   agent,
   actions,
-  hasActions,
+  triage,
 }: {
   agent: AgentState;
   /** The finding's quick-action buttons (the existing `.quick-actions` block). */
   actions: React.ReactNode;
-  hasActions: boolean;
+  /** Skip and Snooze for the finding. */
+  triage: React.ReactNode;
 }) {
   const [, setClock] = useState(0);
   useEffect(() => {
@@ -55,7 +56,10 @@ export function DecisionCard({
         </div>
       )}
       {actions}
-      <span className="decision-card-hint">{hasActions ? 'or reply below' : 'Reply below to answer'}</span>
+      <div className="decision-card-acts">
+        {triage}
+        <span className="decision-card-hint">or reply below</span>
+      </div>
     </section>
   );
 }

@@ -80,7 +80,8 @@ test.describe('Triage loop', () => {
     await injectStopEvent(request, tmuxName);
 
     await page.locator('.finding-card').click();
-    await page.locator('.response-row .btn-secondary:has-text("Skip")').click();
+    // #3561 4b: Skip and Snooze sit in the finding's decision card.
+    await page.getByTestId('finding-skip').click();
 
     // After skipping, the finding card should still exist but it should move to the end of the queue
     // The detail panel should either show next finding or empty state
@@ -113,7 +114,7 @@ test.describe('Triage loop', () => {
     await injectStopEvent(request, tmuxName);
 
     await page.locator('.finding-card').click();
-    await page.locator('.response-row .btn-secondary:has-text("Snooze")').click();
+    await page.getByTestId('finding-snooze').click();
     await page.locator('.snooze-dialog-btn:has-text("5m")').click();
 
     await expect(page.locator('.finding-card')).not.toBeVisible({ timeout: 3000 });

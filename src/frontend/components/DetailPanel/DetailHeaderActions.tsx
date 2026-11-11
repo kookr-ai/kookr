@@ -69,7 +69,10 @@ export function DetailHeaderActions({
   const firstItemRef = useRef<HTMLButtonElement>(null);
 
   // A different task, or a status change that drops the menu, closes it.
-  useEffect(() => { setMenuOpen(false); }, [taskId, taskStatus]);
+  useEffect(() => {
+    setMenuOpen(false);
+    setMigrateOpen(false);
+  }, [taskId, taskStatus]);
 
   useEffect(() => {
     if (!menuOpen) return;

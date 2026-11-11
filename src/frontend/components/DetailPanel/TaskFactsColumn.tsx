@@ -90,6 +90,7 @@ export function TaskFactsColumn({
   const tokenCount = usage ? usage.inputTokens + usage.outputTokens : 0;
   const hasCacheReads = !!usage && usage.cacheReadTokens > 0;
   const firstPr = prs[0];
+  const finished = agent.taskStatus === 'completed' || agent.taskStatus === 'cancelled' || agent.taskStatus === 'terminated';
   const closeRef = useRef<HTMLButtonElement>(null);
   // Opened over the pane: move focus into it; Escape closes it (DetailPanel
   // returns focus to the Details toggle).
@@ -188,7 +189,7 @@ export function TaskFactsColumn({
             </span>
           </Fact>
         )}
-        {agent.taskId && (
+        {agent.taskId && (firstPr || !finished) && (
           <Fact label="Pull request" testId="detail-fact-pr">
             {firstPr ? (
               <a href={firstPr.ref.url} target="_blank" rel="noopener noreferrer" title={firstPr.title}>

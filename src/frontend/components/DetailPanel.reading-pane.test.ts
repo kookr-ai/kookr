@@ -150,6 +150,10 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     expect(facts.querySelector('.detail-facts-prompt summary')?.textContent).toBe('View full prompt');
     expect(facts.querySelector('.detail-facts-prompt-text')?.textContent).toContain('Full prompt text here.');
     expect(facts.querySelector('[data-testid="detail-fact-pr"]')?.textContent).toContain('none yet');
+    act(() => root!.unmount());
+    render(makeAgent({ taskStatus: 'completed' }));
+    // A finished task without a pull request does not promise one.
+    expect(q('detail-fact-pr')).toBeNull();
     // Docked on a wide pane, so there is no Details toggle.
     expect(q('detail-facts-toggle')).toBeNull();
   });
@@ -168,10 +172,25 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     expect(document.activeElement).toBe(toggle);
   });
 
-  test('terminal focus hides the facts column and its toggle', () => {
+  test('terminal focus keeps the facts reachable from the Details toggle', () => {
     render(makeAgent(), { terminalFocusMode: true });
     expect(q('detail-facts')).toBeNull();
-    expect(q('detail-facts-toggle')).toBeNull();
+    act(() => q('detail-facts-toggle')!.click());
+    const facts = q('detail-facts')!;
+    expect(facts.className).toContain('detail-facts--overlay');
+    expect(facts.querySelector('.detail-hook-settings-btn')).not.toBeNull();
+    expect(facts.querySelector('[data-testid="task-share-button"]')).not.toBeNull();
+  });
+
+  test('the overlay closes when the column docks, so a later undock starts closed', () => {
+    useKookrStore.getState().setDetailPaneMode('split');
+    render(makeAgent());
+    act(() => q('detail-facts-toggle')!.click());
+    expect(q('detail-facts')?.className).toContain('detail-facts--overlay');
+    act(() => useKookrStore.getState().setDetailPaneMode('tabs'));
+    expect(q('detail-facts')?.className).not.toContain('detail-facts--overlay');
+    act(() => useKookrStore.getState().setDetailPaneMode('split'));
+    expect(q('detail-facts')).toBeNull();
   });
 
   test('a completion digest still shows the facts column', () => {
@@ -216,6 +235,11 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     expect(card.querySelector('[data-testid="detail-transcript-context"]')?.textContent).toContain('I need to migrate the database.');
     expect([...card.querySelectorAll('.btn-quick-action')].map((b) => b.textContent)).toEqual(['Allow once', 'Deny']);
     expect(card.textContent).toContain('or reply below');
+    // Skip and Snooze moved into the card; the reply row keeps input and Send.
+    expect(card.querySelector('[data-testid="finding-skip"]')).not.toBeNull();
+    expect(card.querySelector('[data-testid="finding-snooze"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="finding-skip"]')).toHaveLength(1);
+    expect(reply.querySelector('[data-testid="finding-skip"]')).toBeNull();
     // The answers moved: nothing duplicates them outside the card.
     expect(container.querySelectorAll('.quick-actions')).toHaveLength(1);
     expect(container.querySelectorAll('[data-testid="detail-transcript-context"]')).toHaveLength(1);
@@ -244,9 +268,16 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     act(() => q('detail-tab-terminal')!.click());
     expect(q('decision-card')).toBeNull();
     expect([...container.querySelectorAll('.response-area .btn-quick-action')].map((b) => b.textContent)).toEqual(['Allow once']);
+    expect(container.querySelector('.response-row [data-testid="finding-skip"]')).not.toBeNull();
     act(() => root!.unmount());
     render(makeAgent({ anomaly } as unknown as Partial<AgentState>), { terminalFocusMode: true });
     expect(q('decision-card')).toBeNull();
     expect(container.querySelectorAll('.response-area .btn-quick-action')).toHaveLength(1);
+  });
+
+  test('Snooze in the decision card opens the snooze dialog', () => {
+    render(makeAgent({ anomaly: { type: 'needs_input', severity: 'info', explanation: 'x', detectedAt: new Date().toISOString() } } as unknown as Partial<AgentState>));
+    act(() => q('finding-snooze')!.click());
+    expect(container.querySelector('.snooze-dialog')).not.toBeNull();
   });
 });

@@ -13421,6 +13421,11 @@ a.oss-productivity-empty-docs-link:visited:hover {
   .detail-header-right {
     width: 100%;
   }
+  /* The header actions wrap to the left edge here, so open the menu rightward. */
+  .detail-more-actions-popup {
+    left: 0;
+    right: auto;
+  }
   .dependency-edge-row {
     grid-template-columns: 1fr;
     gap: 2px;
@@ -16630,6 +16635,11 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   max-height: min(320px, 40vh);
   overflow-y: auto;
 }
+.detail-split-left > .decision-card {
+  /* Pinned to the pane's foot from the first frame: the conversation loads
+     lazily, and the card must not jump down when it arrives. */
+  margin-top: auto;
+}
 .decision-card--bad { border-color: rgba(248,113,113,0.35); background: rgba(248,113,113,0.06); }
 .decision-card-head {
   display: flex;
@@ -16648,4 +16658,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .decision-card .detail-transcript-context { margin: 0; border-left-color: var(--border); background: transparent; }
 .decision-card .detail-transcript-context-label { color: var(--text-secondary); text-transform: none; font-weight: 600; }
 .decision-card .quick-actions { margin-bottom: 0; }
+.decision-card-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.decision-card-acts .btn-secondary { padding: 6px 12px; }
 .decision-card-hint { color: var(--text-secondary); font-size: 12px; }
