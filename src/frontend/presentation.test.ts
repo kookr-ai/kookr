@@ -796,6 +796,24 @@ describe('formatDuration (issue #2737)', () => {
 });
 
 describe('archivedTaskToAgentState (issue #2760)', () => {
+  test('drops prompt openers from a prompt-derived archived name (#3561 slice 3)', () => {
+    const record = (task: Record<string, unknown>) => archivedTaskToAgentState({
+      archivedAt: '2026-11-01T00:00:00.000Z',
+      lastActivityMs: Date.parse('2026-11-01T12:00:00.000Z'),
+      task: { id: 'task-a', status: 'completed', cwd: '/tmp/kookr', ...task },
+    });
+    // Stored before the flag survived: the name repeats the prompt's first line.
+    expect(record({
+      name: 'Can you resolve the failing PR pipeline',
+      userPrompt: 'Can you resolve the failing PR pipeline\nDetails…',
+    }).taskName).toBe('Resolve the failing PR pipeline');
+    expect(record({ name: 'Your job is to fix X', autoNamed: true, userPrompt: '' }).taskName).toBe('Fix X');
+    // No name: the prompt fallback is stripped too.
+    expect(record({ userPrompt: 'Please tidy the docs' }).taskName).toBe('Tidy the docs');
+    // A chosen name that does not repeat the prompt is shown as written.
+    expect(record({ name: 'You are here map', userPrompt: 'Draw the venue map' }).taskName).toBe('You are here map');
+  });
+
   test('projects an archive record into a Completed-row AgentState', () => {
     const agent = archivedTaskToAgentState({
       archivedAt: '2026-08-01T00:00:00.000Z',

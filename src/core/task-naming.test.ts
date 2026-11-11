@@ -378,6 +378,8 @@ describe('stripPromptOpeners (#3561 slice 3: titles are not prompts)', () => {
     ['I want you to rename the config keys', 'Rename the config keys'],
     ['Please fix the flaky test', 'Fix the flaky test'],
     ['Could you please look at the CPU spike', 'Look at the CPU spike'],
+    ['You’re reviewing PR 12', 'Reviewing PR 12'],
+    ['Please, tidy the docs', 'Tidy the docs'],
     // A role sentence names no work; it goes when more text follows it.
     ['You are a careful reviewer. Review PR 12 for races', 'Review PR 12 for races'],
     ['You are an expert. Your job is to triage issue 9', 'Triage issue 9'],
@@ -386,7 +388,7 @@ describe('stripPromptOpeners (#3561 slice 3: titles are not prompts)', () => {
   });
 
   test('leaves names without an opener untouched', () => {
-    for (const name of ['Fix auth refresh token race', 'Youth league scheduler', 'Pleased-users survey', 'Context pack — repo map']) {
+    for (const name of ['Fix auth refresh token race', 'Youth league scheduler', 'Pleased-users survey', 'Context pack — repo map', 'You must not push to main', 'You should rotate the keys']) {
       expect(stripPromptOpeners(name)).toBe(name);
     }
   });

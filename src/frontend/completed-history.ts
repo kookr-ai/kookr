@@ -29,6 +29,7 @@ export interface ArchivedTaskJson {
   id?: unknown;
   taskId?: unknown;
   name?: unknown;
+  autoNamed?: unknown;
   status?: unknown;
   cwd?: unknown;
   prompt?: unknown;
