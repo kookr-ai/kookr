@@ -201,7 +201,7 @@ async function isForeignRepo(runner: GitRunner, slug: string): Promise<boolean> 
   if (r.exitCode !== 0 || !r.stdout.trim()) return false;
   const want = slug.toLowerCase();
   for (const line of r.stdout.split('\n')) {
-    const url = (line.split(/\s+/)[1] ?? '').toLowerCase().replace(/\.git$/, '');
+    const url = (line.split(/\s+/)[1] ?? '').toLowerCase().replace(/\/+$/, '').replace(/\.git$/, '');
     if (url.endsWith(`/${want}`) || url.endsWith(`:${want}`)) return false;
   }
   return true;

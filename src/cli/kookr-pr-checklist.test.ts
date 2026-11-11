@@ -422,6 +422,18 @@ describe('runPrChecklistCli doctor', () => {
         expect(await go('gh pr create -R acme/own --fill', remotes('https://github.com/acme/own'))).toBe(EXIT_VERIFICATION_FAILURE);
       });
 
+      it('an unresolvable or non-literal -R target is judged, never skipped as foreign', async () => {
+        const git = remotes('git@github.com:acme/own.git');
+        for (const flag of ['-R "$REPO"', '-R ${UPSTREAM}', '-R github.com/acme/own', '-R https://github.com/acme/own/']) {
+          expect(await go(`gh pr create ${flag} --fill`, git)).toBe(EXIT_VERIFICATION_FAILURE);
+        }
+      });
+
+      it('a trailing-slash or ssh:// remote URL still matches its own repo', async () => {
+        expect(await go('gh pr create -R acme/own --fill', remotes('https://github.com/acme/own/'))).toBe(EXIT_VERIFICATION_FAILURE);
+        expect(await go('gh pr create -R acme/own --fill', remotes('ssh://git@github.com/acme/own.git'))).toBe(EXIT_VERIFICATION_FAILURE);
+      });
+
       it('unreadable remotes mean "cannot tell": the PR is judged, not skipped', async () => {
         const git = fakeGit({
           'ls-files -- .github/PULL_REQUEST_TEMPLATE.md': { stdout: '.github/PULL_REQUEST_TEMPLATE.md' },

@@ -124,7 +124,7 @@ exits `0`, and runs none of its structural diff rules).
 The probe looks at the repo toplevel, so a session inside a subdirectory still
 finds the template. The hook does not try to guess which repo a command targets:
 it hands marker repos to `kookr pr-checklist verify`, whose tokenizer reads the
-real `--repo`/`-R` value (any spelling — `-R x/y`, `--repo=x/y`, quoted) and
+real `--repo`/`-R` value (`-R x/y`, `--repo=x/y`, quoted, `HOST/OWNER/REPO` or URL forms; a value that is expanded, repeated or unparseable is never treated as foreign) and
 ignores `-R` prose inside heredoc or multi-line quoted bodies. If that value is
 not one of the session repo's git remotes, the engine reports "No opinion" — a PR
 for some other repo run from a Kookr checkout is not judged by Kookr's template

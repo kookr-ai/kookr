@@ -147,7 +147,12 @@ export function tokenize(command: string): string[] {
     const c = command[i];
     if (quote) {
       if (c === quote) quote = null;
-      else cur += c;
+      else if (quote === '"' && c === '\\' && '"\\$`'.includes(command[i + 1] ?? '')) {
+        // Inside double quotes a backslash escapes only these four characters; keep
+        // an escaped `"` from ending the string (it would leak body text into args).
+        cur += command[i + 1];
+        i += 1;
+      } else cur += c;
       continue;
     }
     if (c === '"' || c === "'") {
@@ -221,6 +226,34 @@ function ghPrCreateArgs(tokens: string[]): string[] | null {
   return null;
 }
 
+/**
+ * The `--repo`/`-R` target as a bare `owner/repo`, or null when it is absent,
+ * given more than once (gh would use the last; we refuse to guess), carries a
+ * shell expansion, or is not a recognisable repo reference. Accepts gh's
+ * `[HOST/]OWNER/REPO` and URL forms by dropping the host. Callers treat null as
+ * "unknown target", never as "foreign".
+ */
+function repoTarget(args: string[]): string | null {
+  const values: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === '--repo' || a === '-R') values.push(args[i + 1] ?? '');
+    else if (a.startsWith('--repo=')) values.push(a.slice('--repo='.length));
+    else if (a.startsWith('-R=')) values.push(a.slice('-R='.length));
+    else if (a.startsWith('-R') && !a.startsWith('--')) values.push(a.slice(2));
+  }
+  if (values.length !== 1 || hasExpansion(values[0])) return null;
+  const cleaned = values[0]
+    .replace(/^(?:https?|ssh|git):\/\//i, '')
+    .replace(/^[^/@\s]+@/, '')
+    .replace(/\/+$/, '')
+    .replace(/\.git$/i, '');
+  const segments = cleaned.split('/');
+  const slug = segments.length === 3 ? segments.slice(1) : segments;
+  if (slug.length !== 2 || !slug.every((s) => /^[A-Za-z0-9_.-]+$/.test(s))) return null;
+  return slug.join('/');
+}
+
 /** Value of `--flag value` / `--flag=value` / `-x value`; null if absent. Sets `expanded` on `$(...)`. */
 function flagValue(args: string[], names: string[]): { value: string | null; expanded: boolean } {
   for (let i = 0; i < args.length; i += 1) {
@@ -253,7 +286,7 @@ export function extractFromGhCommand(rawCommand: string): GhExtract | null {
   if (args === null) return null;
 
   const base = flagValue(args, ['--base', '-B']).value;
-  const repo = flagValue(args, ['--repo', '-R']).value;
+  const repo = repoTarget(args);
 
   const file = flagValue(args, ['--body-file', '-F']);
   if (file.value !== null) {

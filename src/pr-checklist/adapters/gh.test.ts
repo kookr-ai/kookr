@@ -194,6 +194,32 @@ describe('extractFromGhCommand', () => {
       expect(extractFromGhCommand(cmd)?.repo).toBe(repo);
     });
 
+    it.each([
+      ['gh pr create -R github.com/acme/w --fill', 'acme/w'],
+      ['gh pr create -R https://github.com/acme/w --fill', 'acme/w'],
+      ['gh pr create -R https://github.com/acme/w.git/ --fill', 'acme/w'],
+      ['gh pr create -Racme/w --fill', 'acme/w'],
+    ])('accepts gh [HOST/]OWNER/REPO and URL spellings: %s -> %s', (cmd, repo) => {
+      expect(extractFromGhCommand(cmd)?.repo).toBe(repo);
+    });
+
+    it.each([
+      'gh pr create -R "$REPO" --fill',
+      'gh pr create -R ${REPO} --fill',
+      'gh pr create -R $(gh repo view --json nameWithOwner -q .nameWithOwner) --fill',
+      'gh pr create -R "${UPSTREAM}" --fill',
+      'gh pr create -R justonepart --fill',
+      'gh pr create -R a/b -R c/d --fill',
+    ])('is unknown (null, never "foreign") for %s', (cmd) => {
+      expect(extractFromGhCommand(cmd)?.repo).toBeNull();
+    });
+
+    it('an escaped quote inside a double-quoted body does not leak body text into the args', () => {
+      const r = extractFromGhCommand('gh pr create --title t --body "a \\"quoted\\" and gh pr create -R foo/bar here"');
+      expect(r?.repo).toBeNull();
+      expect(r?.bodySource).toEqual({ kind: 'inline', text: 'a "quoted" and gh pr create -R foo/bar here' });
+    });
+
     it('ignores -R/--repo text inside a heredoc body and inside a multi-line quoted body', () => {
       expect(extractFromGhCommand(`gh pr create --body "$(cat <<'EOF'\nuse gh -R src/lib or --repo a/b\nEOF\n)"`)?.repo).toBeNull();
       expect(extractFromGhCommand('gh pr create --title t --body "\nsee gh pr create\n -R x/y\n"')?.repo).toBeNull();
