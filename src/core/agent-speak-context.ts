@@ -112,7 +112,7 @@ function buildRecentMessages(items: ActivityItem[]): string {
   if (lastAgent) parts.push(`Agent: ${truncateAtWord(lastAgent, MESSAGE_MAX_CHARS)}`);
   if (lastUser) parts.push(`User: ${truncateAtWord(lastUser, MESSAGE_MAX_CHARS)}`);
   if (parts.length === 0) return '(no recent messages)';
-  return parts.join(' | ');
+  return parts.join('; ');
 }
 
 export interface BuildAgentSpeakContextOptions {
