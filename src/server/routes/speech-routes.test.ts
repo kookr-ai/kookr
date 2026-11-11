@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { registerSpeechRoutes } from './speech-routes.js';
@@ -8,6 +11,7 @@ import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { Anomaly } from '../../shared/contracts/anomalies.js';
 import type { AgentSpeakContext } from '../../shared/contracts/speech.js';
 import { TaskStore } from '../../core/tasks.js';
+import { createLucyInteractionLog, type LucyInteractionLog, type LucySaidRecordInput } from '../lucy-interaction-log.js';
 
 function fakeAnomaly(overrides: Partial<Anomaly> = {}): Anomaly {
   return {
@@ -52,6 +56,9 @@ function mkApp(opts: {
   defaultVerbosity?: () => 'terse' | 'brief' | 'medium' | 'detailed';
   isDebugEnabled?: () => boolean;
   newRequestId?: () => string;
+  lucyLog?: LucyInteractionLog;
+  lucyLogPath?: string;
+  ttsVoice?: string;
 }): Hono {
   const app = new Hono();
   const deps = {
@@ -66,6 +73,9 @@ function mkApp(opts: {
     defaultVerbosity: opts.defaultVerbosity,
     isDebugEnabled: opts.isDebugEnabled,
     newRequestId: opts.newRequestId ?? (() => 'req-fixed'),
+    lucyLog: opts.lucyLog,
+    lucyLogPath: opts.lucyLogPath,
+    ttsVoice: opts.ttsVoice,
   });
   return app;
 }
@@ -82,6 +92,7 @@ function fakeCache(result: {
     fallbackReason: import('../../shared/contracts/speech.js').SpeakAgentFallbackReason | null;
     llmMs: number;
     ttsMs: number;
+    rawText?: string;
   };
 }): AgentSpeakCache {
   return {
@@ -511,5 +522,274 @@ describe('POST /api/tasks/:taskId/speak-summary (unchanged from PR1)', () => {
         explanation: 'approval needed for edit',
       },
     });
+  });
+});
+
+describe('Lucy interaction log wiring', () => {
+  function captureLog(): { log: LucyInteractionLog; said: LucySaidRecordInput[] } {
+    const said: LucySaidRecordInput[] = [];
+    return {
+      said,
+      log: { recordSaid: (r) => { said.push(r); }, recordUi: () => {}, flush: async () => {} },
+    };
+  }
+
+  const agentResult = {
+    text: 'Refactor auth needs approval.',
+    audioBase64: 'AUDIO',
+    mimeType: 'audio/wav' as const,
+    durationMs: 1800,
+    usedFallback: false,
+    fallbackReason: null,
+    llmMs: 120,
+    ttsMs: 340,
+  };
+
+  test('agent speak: response carries clipId and rawText, and the said record matches', async () => {
+    const { log, said } = captureLog();
+    const cache = fakeCache({ result: { ...agentResult, rawText: 'Refactor auth (PR #12) needs approval.' } });
+    const app = mkApp({ agents: [fakeAgent({ taskId: 'task-9' })], cache, ttsUrl: 'http://tts', lucyLog: log });
+    const res = await app.request('/api/agents/agent-1/speak', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.clipId).toEqual(expect.any(String));
+    expect(body.rawText).toBe('Refactor auth (PR #12) needs approval.');
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatchObject({
+      clipId: body.clipId,
+      source: 'agent_speak',
+      agentId: 'agent-1',
+      taskId: 'task-9',
+      taskName: 'Refactor auth',
+      text: 'Refactor auth needs approval.',
+      rawText: 'Refactor auth (PR #12) needs approval.',
+      usedFallback: false,
+      cached: false,
+      findingType: 'permission_blocked',
+      llmMs: 120,
+      ttsMs: 340,
+      durationMs: 1800,
+      words: 4,
+    });
+    expect(JSON.stringify(said[0])).not.toContain('AUDIO');
+  });
+
+  test('agent speak: omits rawText when the speakable step changed nothing, new clipId on a cache hit', async () => {
+    const { log, said } = captureLog();
+    const cache = fakeCache({ cached: true, result: agentResult });
+    const app = mkApp({ agents: [fakeAgent()], cache, ttsUrl: 'http://tts', lucyLog: log });
+    const first = await (await app.request('/api/agents/agent-1/speak', { method: 'POST' })).json();
+    const second = await (await app.request('/api/agents/agent-1/speak', { method: 'POST' })).json();
+    expect('rawText' in first).toBe(false);
+    expect(said[0].rawText).toBeUndefined();
+    expect(said[0].cached).toBe(true);
+    expect(first.clipId).not.toBe(second.clipId);
+  });
+
+  test('task summary: response carries clipId and rawText, and the said record matches', async () => {
+    const { log, said } = captureLog();
+    const taskCache = fakeTaskCache({
+      text: 'Fix login is done.',
+      rawText: 'Fix login (#12) is done.',
+      audioBase64: 'AUDIO',
+      mimeType: 'audio/wav',
+      durationMs: 1500,
+      usedFallback: true,
+      llmMs: 0,
+      ttsMs: 200,
+      cached: false,
+    });
+    const app = mkApp({
+      agents: [fakeAgent({ taskId: 'task-1', taskName: 'Fix login', anomaly: null })],
+      taskCache,
+      ttsUrl: 'http://tts',
+      lucyLog: log,
+    });
+    const res = await app.request('/api/tasks/task-1/speak-summary', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.clipId).toEqual(expect.any(String));
+    expect(body.rawText).toBe('Fix login (#12) is done.');
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatchObject({
+      clipId: body.clipId,
+      source: 'task_summary',
+      taskId: 'task-1',
+      agentId: 'agent-1',
+      taskName: 'Fix login',
+      text: 'Fix login is done.',
+      rawText: 'Fix login (#12) is done.',
+      usedFallback: true,
+      cached: false,
+      durationMs: 1500,
+      words: 4,
+    });
+    expect(JSON.stringify(said[0])).not.toContain('AUDIO');
+  });
+
+  test('task summary: the said record redacts a secret in the task name, like the speech does', async () => {
+    const { log, said } = captureLog();
+    const taskCache = fakeTaskCache({
+      text: 'Rotate the key is done.',
+      audioBase64: 'AUDIO',
+      mimeType: 'audio/wav',
+      durationMs: 1500,
+      usedFallback: true,
+      llmMs: 0,
+      ttsMs: 200,
+      cached: false,
+    });
+    const token = 'ghp_abcdefghijklmnop1234567890';
+    const app = mkApp({
+      agents: [fakeAgent({ taskId: 'task-1', taskName: `Rotate ${token}\nthen  retry`, anomaly: null })],
+      taskCache,
+      ttsUrl: 'http://tts',
+      lucyLog: log,
+    });
+    const res = await app.request('/api/tasks/task-1/speak-summary', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(said).toHaveLength(1);
+    expect(said[0].taskName).toBe('Rotate [redacted] then retry');
+    expect(JSON.stringify(said[0])).not.toContain('ghp_');
+  });
+
+  test('error responses write no said record', async () => {
+    const { log, said } = captureLog();
+    const app = mkApp({ agents: [], taskCache: fakeTaskCache({} as never), ttsUrl: 'http://tts', lucyLog: log });
+    await app.request('/api/tasks/missing/speak-summary', { method: 'POST' });
+    expect(said).toEqual([]);
+  });
+
+  test('agent speak: the said record carries the voice and the effective verbosity', async () => {
+    const { log, said } = captureLog();
+    const cache = fakeCache({ result: agentResult });
+    const app = mkApp({ agents: [fakeAgent()], cache, ttsUrl: 'http://tts', ttsVoice: 'alba', lucyLog: log, defaultVerbosity: () => 'brief' });
+    await app.request('/api/agents/agent-1/speak', { method: 'POST' });
+    await app.request('/api/agents/agent-1/speak', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verbosity: 'detailed' }),
+    });
+    expect(said[0]).toMatchObject({ voice: 'alba', verbosity: 'brief' });
+    expect(said[1]).toMatchObject({ voice: 'alba', verbosity: 'detailed' });
+  });
+
+  test('task summary: findingType comes from the active finding; rawText is absent when unchanged', async () => {
+    const { log, said } = captureLog();
+    const taskCache = fakeTaskCache({
+      text: 'Fix login needs approval.', audioBase64: 'AUDIO', mimeType: 'audio/wav',
+      durationMs: 1, usedFallback: false, llmMs: 1, ttsMs: 1, cached: false,
+    });
+    const app = mkApp({
+      agents: [fakeAgent({ taskId: 'task-1', taskName: 'Fix login' })],
+      taskCache,
+      ttsUrl: 'http://tts',
+      ttsVoice: 'alba',
+      lucyLog: log,
+    });
+    const body = await (await app.request('/api/tasks/task-1/speak-summary', { method: 'POST' })).json();
+    expect('rawText' in body).toBe(false);
+    expect(said).toHaveLength(1);
+    expect(said[0].findingType).toBe('permission_blocked');
+    expect(said[0].rawText).toBeUndefined();
+    expect(said[0].voice).toBe('alba');
+  });
+
+  test('TTS failure and abort paths write no said record', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { log, said } = captureLog();
+    const failingCache = {
+      get: vi.fn().mockRejectedValue(new Error('upstream down')),
+      clear: vi.fn(), getStats: vi.fn(), getCachedEntry: vi.fn().mockReturnValue(null), listRedactedEntries: vi.fn().mockReturnValue([]),
+    } as unknown as AgentSpeakCache;
+    const failingTaskCache = { get: vi.fn().mockRejectedValue(new Error('tts down')) } as unknown as TaskSpeechSummaryCache;
+    const app = mkApp({
+      agents: [fakeAgent({ taskId: 'task-1' })], cache: failingCache, taskCache: failingTaskCache, ttsUrl: 'http://tts', lucyLog: log,
+    });
+    expect((await app.request('/api/agents/agent-1/speak', { method: 'POST' })).status).toBe(500);
+    expect((await app.request('/api/tasks/task-1/speak-summary', { method: 'POST' })).status).toBe(500);
+
+    const aborting = { get: vi.fn().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' })) } as unknown as TaskSpeechSummaryCache;
+    const abortApp = mkApp({ agents: [fakeAgent({ taskId: 'task-1' })], taskCache: aborting, ttsUrl: 'http://tts', lucyLog: log });
+    const controller = new AbortController();
+    controller.abort();
+    const res = await abortApp.request('/api/tasks/task-1/speak-summary', { method: 'POST', signal: controller.signal });
+    expect(res.status).toBe(503);
+    expect(said).toEqual([]);
+  });
+
+  test('a throwing log never turns a successful speak into an error response', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log: LucyInteractionLog = {
+      recordSaid: () => { throw new Error('log exploded'); },
+      recordUi: () => {},
+      flush: async () => {},
+    };
+    const cache = fakeCache({ result: agentResult });
+    const taskCache = fakeTaskCache({
+      text: 'Fix login is done.', audioBase64: 'AUDIO', mimeType: 'audio/wav',
+      durationMs: 1, usedFallback: false, llmMs: 1, ttsMs: 1, cached: false,
+    });
+    const app = mkApp({ agents: [fakeAgent({ taskId: 'task-1' })], cache, taskCache, ttsUrl: 'http://tts', lucyLog: log });
+    const agentRes = await app.request('/api/agents/agent-1/speak', { method: 'POST' });
+    const taskRes = await app.request('/api/tasks/task-1/speak-summary', { method: 'POST' });
+    expect(agentRes.status).toBe(200);
+    expect(taskRes.status).toBe(200);
+    expect((await agentRes.json()).audioBase64).toBe('AUDIO');
+    expect((await taskRes.json()).clipId).toEqual(expect.any(String));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('log exploded'));
+  });
+
+  describe('GET /api/diagnostics/lucy-interactions/summary', () => {
+    let dir: string;
+    afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+    async function appWithLog(): Promise<Hono> {
+      dir = mkdtempSync(join(tmpdir(), 'lucy-route-'));
+      const lucyLogPath = join(dir, 'lucy-interactions.jsonl');
+      const log = createLucyInteractionLog({ filePath: lucyLogPath });
+      const cache = fakeCache({ result: agentResult });
+      const app = mkApp({ agents: [fakeAgent()], cache, ttsUrl: 'http://tts', lucyLog: log, lucyLogPath });
+      // Two clips: the second request must show up without any explicit flush (the route flushes).
+      await app.request('/api/agents/agent-1/speak', { method: 'POST' });
+      await app.request('/api/agents/agent-1/speak', { method: 'POST' });
+      return app;
+    }
+
+    test('returns the aggregated summary of what the real log wrote', async () => {
+      const app = await appWithLog();
+      const res = await app.request('/api/diagnostics/lucy-interactions/summary');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({
+        schemaVersion: 'lucy-interactions-summary.v1',
+        days: 7,
+        corruptLines: 0,
+        filesRead: 1,
+        said: { count: 2, bySource: { agent_speak: { count: 2 } } },
+      });
+    });
+
+    test.each([
+      [undefined, 7],
+      ['abc', 7],
+      ['0', 7],
+      ['-5', 7],
+      ['', 7],
+      ['1000', 90],
+      ['90', 90],
+      ['7.9', 7],
+      ['30', 30],
+    ])('days=%s is read as %i', async (raw, expected) => {
+      const app = await appWithLog();
+      const url = raw === undefined ? '/api/diagnostics/lucy-interactions/summary' : `/api/diagnostics/lucy-interactions/summary?days=${raw}`;
+      const body = await (await app.request(url)).json();
+      expect(body.days).toBe(expected);
+    });
+  });
+
+  test('summary endpoint is 503 without a configured log path', async () => {
+    const res = await mkApp({}).request('/api/diagnostics/lucy-interactions/summary');
+    expect(res.status).toBe(503);
   });
 });

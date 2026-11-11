@@ -107,6 +107,7 @@ import {
 } from '../adapters/grok-auth-availability.js';
 import { DrainController } from './drain-state.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
+import { createLucyInteractionLog, defaultLucyInteractionLogPath } from './lucy-interaction-log.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
 import { saveSettings, type KookrSettings } from '../core/settings-store.js';
 import { advertisedAgentTypes } from '../core/agent-types.js';
@@ -2860,7 +2861,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // loads; otherwise the routes answer 503 delegation_disabled and the decision is logged.
   const delegationRuntime = await createDelegationRuntime({ kookrDir });
 
+  // Local record of Lucy's clips and the operator's reactions (issue #3605).
+  // Shared by the speak routes (what she said) and the websocket handler (how
+  // the operator reacted); the `lucyInteractionLog` setting is read live.
+  const lucyInteractionLogPath = defaultLucyInteractionLogPath(kookrDir);
+  const lucyInteractionLog = createLucyInteractionLog({
+    filePath: lucyInteractionLogPath,
+    isEnabled: () => currentSettings.lucyInteractionLog,
+  });
+
   const app = createRoutes({
+    lucyInteractionLog,
+    lucyInteractionLogPath,
     supervisionService,
     delegationService: delegationRuntime.service,
     ...(delegationRuntime.disabled ? { delegationDisabled: delegationRuntime.disabled } : {}),
@@ -3695,6 +3707,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
     serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,
+    lucyInteractionLog,
     lifecycleExtras: {
       hookWatcher, watchdog, shadowRegistry, tokenTracker,
       taskTailStore,

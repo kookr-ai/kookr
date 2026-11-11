@@ -70,6 +70,17 @@ export interface SpeakAudioResponse {
   /** TTS synthesis time. 0 when the cache hit. */
   ttsMs: number;
   cached: boolean;
+  /**
+   * Unique id of this delivery (new on every response, including cache hits).
+   * Joins the server-side record in lucy-interactions.jsonl with the client
+   * `lucy_*` telemetry events.
+   */
+  clipId?: string;
+  /**
+   * The wording before the speakable-text step, present only when that step
+   * changed it. `text` is what was actually synthesised and shown as caption.
+   */
+  rawText?: string;
 }
 
 /**
@@ -129,6 +140,11 @@ export interface AgentSpeakResultCore {
   fallbackReason: SpeakAgentFallbackReason | null;
   llmMs: number;
   ttsMs: number;
+  /**
+   * Wording before the speakable-text step; set only when that step changed
+   * it. `text` is what was synthesised and shown as caption.
+   */
+  rawText?: string;
 }
 
 /**
@@ -155,6 +171,10 @@ export interface SpeakAgentResponse {
    * lookup and the `/api/diagnostics/speak-cache` listing.
    */
   cacheKey: string;
+  /** Wording before the speakable-text step; present only when that step changed it. */
+  rawText?: string;
+  /** Unique id of this delivery; joins lucy-interactions.jsonl with client `lucy_*` telemetry. */
+  clipId?: string;
 }
 
 export type SpeakAgentErrorReason =

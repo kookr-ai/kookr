@@ -70,6 +70,7 @@ describe('Settings API', () => {
       roundRobinIndex: 0,
       shortcutBindings: {},
       speakVerbosity: 'medium',
+      lucyInteractionLog: true,
       agentEffort: {},
       quietHours: [],
       replySnippets: [],
@@ -320,5 +321,31 @@ describe('Settings API', () => {
 
     const statusAfter = await (await fetch(`${baseUrl}/api/github/status`)).json();
     expect(statusAfter.active).toBe(false);
+  });
+
+  test('PUT /api/settings persists the lucyInteractionLog off switch', async () => {
+    const before = await (await fetch(`${baseUrl}/api/settings`)).json();
+    expect(before.lucyInteractionLog).toBe(true);
+    const res = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lucyInteractionLog: false }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).lucyInteractionLog).toBe(false);
+    const persisted = JSON.parse(readFileSync(join(tempDir, 'settings.json'), 'utf-8'));
+    expect(persisted.lucyInteractionLog).toBe(false);
+  });
+
+  test('GET /api/diagnostics/lucy-interactions/summary aggregates the local log', async () => {
+    const line = JSON.stringify({
+      v: 1, ts: new Date().toISOString(), kind: 'said', clipId: 'c1', source: 'task_summary',
+      text: 'Done.', usedFallback: false, cached: false, llmMs: 1, ttsMs: 1, durationMs: 900, words: 1,
+    });
+    writeFileSync(join(tempDir, 'lucy-interactions.jsonl'), `${line}\nnot json\n`);
+    const res = await fetch(`${baseUrl}/api/diagnostics/lucy-interactions/summary?days=3`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ days: 3, corruptLines: 1, filesRead: 1, said: { count: 1 } });
   });
 });

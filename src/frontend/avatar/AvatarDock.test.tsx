@@ -28,7 +28,26 @@ vi.mock('./avatar-stage.js', () => ({
 }));
 vi.mock('./assets/lucy-bust.glb?url', () => ({ default: '/lucy-bust.glb' }));
 
+const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
+const replay = vi.hoisted(() => ({ result: 'started' as string, calls: 0, gate: null as Promise<void> | null }));
+vi.mock('../audio/clip-playback.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../audio/clip-playback.js')>();
+  return {
+    ...actual,
+    replayLastClip: vi.fn(async () => {
+      replay.calls += 1;
+      if (replay.gate) await replay.gate;
+      return replay.result;
+    }),
+    stopReplay: vi.fn(),
+  };
+});
+
 import { AvatarDock } from './AvatarDock.js';
+import { stopReplay } from '../audio/clip-playback.js';
+import { __resetLastClipForTests, captureLastClip, markClipHeard } from '../audio/last-clip.js';
+import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
 import {
   __resetSpeechBusForTests,
   emitSpeechGenerating,
@@ -91,6 +110,13 @@ describe('AvatarDock', () => {
     document.body.innerHTML = '';
     localStorage.clear();
     stages.length = 0;
+    tracked.length = 0;
+    replay.result = 'started';
+    replay.calls = 0;
+    replay.gate = null;
+    vi.mocked(stopReplay).mockClear();
+    __resetLastClipForTests();
+    __resetSoundPreferenceForTests();
     __resetSpeechBusForTests();
     __resetAvatarPanelPrefsForTests();
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: VIEWPORT.width });
@@ -105,6 +131,9 @@ describe('AvatarDock', () => {
     act(() => root?.unmount());
     root = null;
     localStorage.clear();
+    __resetLastClipForTests();
+    setSoundEnabled(true);
+    __resetSoundPreferenceForTests();
     __resetSpeechBusForTests();
     __resetAvatarPanelPrefsForTests();
     HTMLElement.prototype.setPointerCapture = realSetPointerCapture;
@@ -406,5 +435,301 @@ describe('AvatarDock', () => {
 
     expect(caption()!.tabIndex).toBe(0);
     expect(caption()!.getAttribute('aria-label')).toBe('Spoken text');
+  });
+  describe('replay and the unheard marker', () => {
+    const replayButton = () => container.querySelector<HTMLButtonElement>('[data-testid="avatar-replay"]');
+    const dot = () => container.querySelector('[data-testid="avatar-unheard-dot"]');
+    const playClip = (): void => {
+      act(() => {
+        captureLastClip({ clipId: 'c1', text: 'Two tasks need you.', audio: new ArrayBuffer(4), durationMs: 2000 });
+      });
+    };
+    const busy = (): void => {
+      act(() => emitSpeechGenerating(SPEAKER));
+    };
+    const panelActions = () => tracked.filter((e) => e.type === 'lucy_panel_action');
+
+    test('the open panel has a "Replay last message" button next to move and minimise, unavailable until there is a clip', () => {
+      startWith({});
+      render();
+
+      const button = replayButton()!;
+      expect(button.getAttribute('aria-label')).toBe('Replay last message');
+      expect(button.getAttribute('aria-disabled')).toBe('true');
+      expect(button.title).toBe('No message to replay yet');
+      expect(button.querySelector('svg')).not.toBeNull();
+      const header = container.querySelector('.avatar-dock-header')!;
+      expect(Array.from(header.querySelectorAll('button')).map((b) => b.getAttribute('aria-label'))).toEqual([
+        'Replay last message',
+        'Move Lucy to the next corner',
+        'Minimise Lucy',
+      ]);
+
+      act(() => button.click());
+      expect(replay.calls).toBe(0);
+      expect(panelActions()).toEqual([]);
+    });
+
+    test('with a clip it is available; pressing it replays, records the action with the clip id and keeps focus', async () => {
+      startWith({});
+      render();
+      playClip();
+      const button = replayButton()!;
+      expect(button.getAttribute('aria-disabled')).toBeNull();
+      expect(button.title).toBe('Replay last message (unheard)');
+
+      button.focus();
+      await act(async () => {
+        button.click();
+      });
+
+      expect(replay.calls).toBe(1);
+      expect(panelActions()).toEqual([{ type: 'lucy_panel_action', action: 'replay', clipId: 'c1' }]);
+      expect(document.activeElement).toBe(button);
+    });
+
+    test('it is unavailable, but stays focusable, while she is preparing or speaking', () => {
+      startWith({});
+      render();
+      playClip();
+      const button = replayButton()!;
+      button.focus();
+
+      busy();
+      expect(button.getAttribute('aria-disabled')).toBe('true');
+      expect(button.disabled).toBe(false);
+      expect(button.title).toContain('busy');
+      expect(document.activeElement).toBe(button);
+      act(() => button.click());
+      expect(replay.calls).toBe(0);
+
+      act(() => {
+        emitSpeechPlaying(SPEAKER, { createAnalyser: () => ({}) as AnalyserNode }, { connect: vi.fn() } as unknown as AudioNode, 'x');
+      });
+      expect(button.getAttribute('aria-disabled')).toBe('true');
+
+      act(() => emitSpeechIdle(SPEAKER));
+      expect(button.getAttribute('aria-disabled')).toBeNull();
+    });
+
+    test('it is unavailable while sound is switched off in Settings', () => {
+      startWith({});
+      render();
+      playClip();
+      act(() => setSoundEnabled(false));
+      expect(replayButton()!.getAttribute('aria-disabled')).toBe('true');
+      expect(replayButton()!.title).toBe('Sound is off in Settings');
+      act(() => setSoundEnabled(true));
+      expect(replayButton()!.getAttribute('aria-disabled')).toBeNull();
+    });
+
+    test('when the browser blocks the replay, a message appears in the persistent status region', async () => {
+      startWith({});
+      render();
+      playClip();
+      replay.result = 'blocked';
+      await act(async () => {
+        replayButton()!.click();
+      });
+      const status = container.querySelector('[role="status"]')!;
+      expect(status.textContent).toContain('blocked audio');
+    });
+
+    test('pressing the unavailable button says why in the status region, and the reason is also in its description', async () => {
+      startWith({});
+      render();
+      const status = () => container.querySelector('[role="status"]')!.textContent;
+      const description = () => container.querySelector(`#${replayButton()!.getAttribute('aria-describedby')}`)?.textContent;
+
+      // nothing to replay
+      expect(description()).toBe('No message to replay yet');
+      act(() => replayButton()!.click());
+      expect(status()).toContain('No message to replay yet');
+
+      // sound off
+      playClip();
+      act(() => setSoundEnabled(false));
+      expect(status()).not.toContain('No message');
+      expect(description()).toBe('Unheard message. Sound is off in Settings');
+      act(() => replayButton()!.click());
+      expect(status()).toContain('Sound is off in Settings, so the message was not replayed.');
+      expect(replay.calls).toBe(0);
+
+      // the notice goes away once replay is available again
+      act(() => setSoundEnabled(true));
+      expect(status()).not.toContain('Sound is off');
+      expect(description()).toBe('Unheard message');
+
+      // busy
+      busy();
+      expect(description()).toContain('busy');
+      act(() => replayButton()!.click());
+      expect(status()).toContain('busy');
+    });
+
+    test('the unavailable notice names the real reason: nothing to replay or busy win over sound being off', () => {
+      startWith({});
+      render();
+      const status = () => container.querySelector('[role="status"]')!.textContent;
+
+      // no clip and sound off: the reason is that there is nothing to replay
+      act(() => setSoundEnabled(false));
+      act(() => replayButton()!.click());
+      expect(status()).toBe('No message to replay yet');
+      expect(status()).not.toContain('Sound is off');
+
+      // busy and sound off: the reason is that she is busy
+      playClip();
+      busy();
+      act(() => replayButton()!.click());
+      expect(status()).toContain('busy');
+      expect(status()).not.toContain('Sound is off');
+    });
+
+    test('pressing the unavailable button again re-announces the notice by replacing the live-region node', () => {
+      startWith({});
+      render();
+      const notice = () => container.querySelector('[role="status"] > span');
+      act(() => replayButton()!.click());
+      const first = notice();
+      expect(first?.textContent).toBe('No message to replay yet');
+      act(() => replayButton()!.click());
+      const second = notice();
+      expect(second?.textContent).toBe('No message to replay yet');
+      expect(second).not.toBe(first);
+    });
+
+    test('while a replay is starting, a second press is ignored and the button counts as busy', async () => {
+      startWith({});
+      render();
+      playClip();
+      let finish!: () => void;
+      replay.gate = new Promise<void>((resolve) => { finish = resolve; });
+      const button = replayButton()!;
+
+      act(() => button.click());
+      expect(replay.calls).toBe(1);
+      expect(button.getAttribute('aria-disabled')).toBe('true');
+      act(() => button.click());
+      expect(replay.calls).toBe(1);
+      expect(panelActions()).toHaveLength(1);
+
+      await act(async () => {
+        finish();
+      });
+      expect(button.getAttribute('aria-disabled')).toBeNull();
+    });
+
+    test.each([
+      ['muted', 'Sound is off in Settings'],
+      ['error', 'could not be played again'],
+    ])('a %s replay result is announced in the status region', async (result, text) => {
+      startWith({});
+      render();
+      playClip();
+      replay.result = result;
+      await act(async () => {
+        replayButton()!.click();
+      });
+      expect(container.querySelector('[role="status"]')!.textContent).toContain(text);
+    });
+
+    test('a notice from a failed replay goes away when a new clip starts', async () => {
+      startWith({});
+      render();
+      playClip();
+      replay.result = 'blocked';
+      await act(async () => {
+        replayButton()!.click();
+      });
+      const status = container.querySelector('[role="status"]')!;
+      expect(status.textContent).toContain('blocked audio');
+
+      act(() => emitSpeechGenerating(SPEAKER));
+      expect(status.textContent).not.toContain('blocked audio');
+    });
+
+    test('closing the panel stops a replay that is playing', () => {
+      startWith({});
+      render();
+      expect(stopReplay).not.toHaveBeenCalled();
+      act(() => root!.unmount());
+      root = null;
+      expect(stopReplay).toHaveBeenCalledWith('user_stop');
+    });
+
+    test('an unheard clip puts a dot on the replay button, described to screen readers; hearing it removes the dot', () => {
+      startWith({});
+      render();
+      expect(dot()).toBeNull();
+
+      playClip();
+      expect(dot()).not.toBeNull();
+      const button = replayButton()!;
+      const note = container.querySelector(`#${button.getAttribute('aria-describedby')}`);
+      expect(note?.textContent).toBe('Unheard message');
+      expect(button.getAttribute('aria-label')).toBe('Replay last message');
+
+      act(() => markClipHeard('c1'));
+      expect(dot()).toBeNull();
+      expect(button.getAttribute('aria-describedby')).toBeNull();
+    });
+
+    test('the minimised bubble shows the dot and says "unheard message" in its name', () => {
+      startWith({ minimized: true });
+      render(2);
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 2 items need your attention.');
+      expect(dot()).toBeNull();
+
+      playClip();
+      expect(dot()).not.toBeNull();
+      expect(dot()!.getAttribute('aria-hidden')).toBe('true');
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy, unheard message. 2 items need your attention.');
+
+      act(() => emitSpeechGenerating(SPEAKER));
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy, preparing, unheard message. 2 items need your attention.');
+      act(() => emitSpeechIdle(SPEAKER));
+
+      act(() => markClipHeard('c1'));
+      expect(dot()).toBeNull();
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 2 items need your attention.');
+    });
+
+    test('minimising and restoring does not count as hearing the clip', () => {
+      startWith({});
+      render();
+      playClip();
+      act(() => button('Minimise Lucy')!.click());
+      expect(dot()).not.toBeNull();
+      act(() => bubble()!.click());
+      expect(dot()).not.toBeNull();
+      expect(replayButton()).not.toBeNull();
+    });
+
+    test('records minimise, restore and move (button and drag) as panel actions, with the clip id once there is one', () => {
+      startWith({});
+      render();
+      act(() => button('Move Lucy to the next corner')!.click());
+      act(() => button('Minimise Lucy')!.click());
+      act(() => bubble()!.click());
+      playClip();
+      act(() => button('Minimise Lucy')!.click());
+      act(() => bubble()!.click());
+
+      const header = container.querySelector('.avatar-dock-header')!;
+      const from = { clientX: dock()!.offsetLeft + 20, clientY: dock()!.offsetTop + 10 };
+      act(() => { header.dispatchEvent(pointer('pointerdown', from)); });
+      act(() => { header.dispatchEvent(pointer('pointermove', { clientX: from.clientX - 100, clientY: from.clientY - 60 })); });
+      act(() => { header.dispatchEvent(pointer('pointerup', { clientX: from.clientX - 100, clientY: from.clientY - 60 })); });
+
+      expect(panelActions()).toEqual([
+        { type: 'lucy_panel_action', action: 'move' },
+        { type: 'lucy_panel_action', action: 'minimize' },
+        { type: 'lucy_panel_action', action: 'restore' },
+        { type: 'lucy_panel_action', action: 'minimize', clipId: 'c1' },
+        { type: 'lucy_panel_action', action: 'restore', clipId: 'c1' },
+        { type: 'lucy_panel_action', action: 'move', clipId: 'c1' },
+      ]);
+    });
   });
 });

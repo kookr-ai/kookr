@@ -5,6 +5,7 @@ import {
   summarizeActivity,
 } from '../shared/contracts/activity-summary.js';
 import type { AgentSpeakContext } from '../shared/contracts/speech.js';
+import { makeSpeakable } from './speakable-text.js';
 
 const DESCRIPTION_MAX_CHARS = 200;
 const MESSAGE_MAX_CHARS = 200;
@@ -105,14 +106,47 @@ function findLastByType(items: ActivityItem[], type: 'agent_message' | 'user_mes
   return null;
 }
 
-function buildRecentMessages(items: ActivityItem[]): string {
+/**
+ * One message, ready to sit after an "Agent: " or "User: " prefix. It is made
+ * speakable here, while it still has its own line breaks: a heading, bullet or
+ * table row only counts at the start of a line, and a prefix hides that for the
+ * first line. A delimiter sequence in the raw message is rejected first, because
+ * the rewrite would turn `<<<TASK_NAME>>>` into words that no check could find.
+ */
+function speakableMessage(
+  text: string,
+  agentId: string | undefined,
+  logger: StripDelimitersLogger,
+): string {
+  const safe = stripDelimiters(text, 'recentMessages', agentId, logger);
+  const spoken = safe === DELIMITER_REPLACEMENT ? safe : makeSpeakable(safe);
+  return truncateAtWord(spoken, MESSAGE_MAX_CHARS);
+}
+
+/** Join with "; ", except after a message that already ends a sentence. */
+function joinMessages(parts: string[]): string {
+  let joined = '';
+  for (const part of parts) {
+    if (joined === '') joined = part;
+    else joined += /[.!?]["')\]”’]?$/u.test(joined) ? ` ${part}` : `; ${part}`;
+  }
+  return joined;
+}
+
+function buildRecentMessages(
+  items: ActivityItem[],
+  agentId: string | undefined,
+  logger: StripDelimitersLogger,
+): string {
   const lastAgent = findLastByType(items, 'agent_message');
   const lastUser = findLastByType(items, 'user_message');
   const parts: string[] = [];
-  if (lastAgent) parts.push(`Agent: ${truncateAtWord(lastAgent, MESSAGE_MAX_CHARS)}`);
-  if (lastUser) parts.push(`User: ${truncateAtWord(lastUser, MESSAGE_MAX_CHARS)}`);
+  const agentText = lastAgent ? speakableMessage(lastAgent, agentId, logger) : '';
+  const userText = lastUser ? speakableMessage(lastUser, agentId, logger) : '';
+  if (agentText) parts.push(`Agent: ${agentText}`);
+  if (userText) parts.push(`User: ${userText}`);
   if (parts.length === 0) return '(no recent messages)';
-  return parts.join(' | ');
+  return joinMessages(parts);
 }
 
 export interface BuildAgentSpeakContextOptions {
@@ -151,7 +185,7 @@ export function buildAgentSpeakContext(
   );
 
   const recentActivity = stripDelimiters(buildRecentActivity(items), 'recentActivity', agentId, logger);
-  const recentMessages = stripDelimiters(buildRecentMessages(items), 'recentMessages', agentId, logger);
+  const recentMessages = stripDelimiters(buildRecentMessages(items, agentId, logger), 'recentMessages', agentId, logger);
 
   const context: AgentSpeakContext = {
     taskName,

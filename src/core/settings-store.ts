@@ -103,6 +103,12 @@ export interface KookrSettings {
    */
   speakVerbosity: VerbosityScale;
   /**
+   * Keep a local JSONL log of what the avatar ("Lucy") says and how the operator
+   * reacts (`<kookrDir>/lucy-interactions.jsonl`, issue #3605). Default true; the
+   * file never leaves this machine. When false nothing is written. Read live.
+   */
+  lucyInteractionLog: boolean;
+  /**
    * Per-agent-type reasoning-effort default (#681). Maps an agent type to the
    * effort level its spawned sessions launch at (claude-code → `--effort`;
    * codex-cli → `-c model_reasoning_effort`). Sparse by design: a missing
@@ -438,6 +444,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   roundRobinIndex: 0,
   shortcutBindings: {},
   speakVerbosity: DEFAULT_VERBOSITY,
+  lucyInteractionLog: true,
   agentEffort: {},
   quietHours: [],
   replySnippets: [],
@@ -957,6 +964,10 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     }
   }
 
+  const lucyInteractionLog = typeof raw.lucyInteractionLog === 'boolean'
+    ? raw.lucyInteractionLog
+    : DEFAULT_SETTINGS.lucyInteractionLog;
+
   // Missing or empty agentEffort means "no configured defaults" — each agent
   // uses its own CLI/model default effort. Explicit keys are validated and
   // kept; unknown agents / invalid levels are dropped with warnings.
@@ -993,6 +1004,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       roundRobinIndex,
       shortcutBindings: shortcutValidation.overrides,
       speakVerbosity,
+      lucyInteractionLog,
       agentEffort,
       quietHours: quietHoursValidation.windows,
       replySnippets: replySnippetValidation.snippets,

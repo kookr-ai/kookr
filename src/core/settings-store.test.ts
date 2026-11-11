@@ -514,6 +514,23 @@ describe('validateSettings', () => {
     expect(result.warnings).toEqual(['Invalid replySnippets (expected an array); ignored']);
   });
 
+  describe('lucyInteractionLog', () => {
+    it('defaults to true (log kept unless the operator opts out)', () => {
+      expect(DEFAULT_SETTINGS.lucyInteractionLog).toBe(true);
+      expect(validateSettings({}).lucyInteractionLog).toBe(true);
+    });
+
+    it('accepts an explicit false (the off switch) and true', () => {
+      expect(validateSettings({ lucyInteractionLog: false }).lucyInteractionLog).toBe(false);
+      expect(validateSettings({ lucyInteractionLog: true }).lucyInteractionLog).toBe(true);
+    });
+
+    it('falls back to the default for non-boolean values', () => {
+      expect(validateSettings({ lucyInteractionLog: 'no' as unknown as boolean }).lucyInteractionLog).toBe(true);
+      expect(validateSettings({ lucyInteractionLog: 0 as unknown as boolean }).lucyInteractionLog).toBe(true);
+    });
+  });
+
   it('accepts valid speakVerbosity values', () => {
     for (const value of ['terse', 'brief', 'medium', 'detailed'] as const) {
       const result = validateSettingsWithWarnings({ speakVerbosity: value });
@@ -798,6 +815,7 @@ describe('loadSettings / saveSettings', () => {
         mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
       },
       speakVerbosity: 'detailed' as const,
+      lucyInteractionLog: false,
       agentEffort: { 'claude-code': 'high' as const, 'codex-cli': 'minimal' as const },
       quietHours: [{ start: '22:00', end: '08:00' }],
       replySnippets: [{ label: 'Continue', text: 'continue' }],

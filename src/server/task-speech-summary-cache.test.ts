@@ -87,4 +87,43 @@ describe('TaskSpeechSummaryCache', () => {
     expect(result.text).toBe('Shared task summary.');
     expect(fetchSpy).toHaveBeenCalledOnce();
   });
+
+  test('synthesises and stores the speakable text, and carries rawText through cache hits', async () => {
+    const raw = 'Fixed `src/core/foo-bar.ts` and opened #3608.';
+    const client = mockClient(raw);
+    const spoken: string[] = [];
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = await new Request(input, init).json() as { text: string };
+      spoken.push(body.text);
+      return new Response(JSON.stringify(ttsResponse(body.text)), { status: 200 });
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof globalThis.fetch;
+
+    const cache = new TaskSpeechSummaryCache({ llmClient: client, ttsUrl: 'http://tts.local', voice: 'matilda' });
+    const input = { taskName: 'Auth task', taskStatus: 'completed' as const };
+
+    const first = await cache.get(input);
+    const second = await cache.get(input);
+
+    expect(spoken).toEqual(['Fixed foo-bar.ts and opened number 3608.']);
+    expect(first.text).toBe('Fixed foo-bar.ts and opened number 3608.');
+    expect(first.rawText).toBe(raw);
+    expect(second.cached).toBe(true);
+    expect(second.text).toBe(first.text);
+    expect(second.rawText).toBe(raw);
+  });
+
+  test('omits rawText when the speakable step changed nothing', async () => {
+    const client = mockClient('Auth task completed.');
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = await new Request(input, init).json() as { text: string };
+      return new Response(JSON.stringify(ttsResponse(body.text)), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const cache = new TaskSpeechSummaryCache({ llmClient: client, ttsUrl: 'http://tts.local', voice: 'matilda' });
+    const result = await cache.get({ taskName: 'Auth task', taskStatus: 'completed' as const });
+
+    expect(result.text).toBe('Auth task completed.');
+    expect('rawText' in result).toBe(false);
+  });
 });

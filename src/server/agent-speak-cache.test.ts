@@ -70,6 +70,36 @@ describe('AgentSpeakCache.get', () => {
     vi.restoreAllMocks();
   });
 
+  test('speaks the speakable text, and carries rawText on miss and hit', async () => {
+    const client = {
+      provider: 'test',
+      model: 'test-model',
+      complete: vi.fn().mockResolvedValue(JSON.stringify({ recap: 'Edited `src/core/foo.ts` for #12.' })),
+    };
+    const cache = new AgentSpeakCache({ llmClient: client, ttsUrl: 'http://tts', voice: 'matilda' });
+    const key = { agentId: 'a1', resolvedMode: 'activity' as const, verbosity: 'medium' as const, lastEventSeq: 1, anomalyDetectedAt: null };
+
+    const first = await cache.get(key, fakeContext);
+    expect(first.result.text).toBe('Refactor auth. Edited foo.ts for number 12.');
+    expect(first.result.rawText).toBe('Refactor auth. Edited `src/core/foo.ts` for #12.');
+    const body = JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls[0][1]?.body)) as { text: string };
+    expect(body.text).toBe(first.result.text);
+
+    const second = await cache.get(key, fakeContext);
+    expect(second.cached).toBe(true);
+    expect(second.result.rawText).toBe(first.result.rawText);
+    expect(cache.getCachedEntry(first.cacheKey)?.rawText).toBe(first.result.rawText);
+  });
+
+  test('omits rawText when nothing needed rewriting', async () => {
+    const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
+    const key = { agentId: 'a2', resolvedMode: 'finding' as const, verbosity: 'terse' as const, lastEventSeq: 1, anomalyDetectedAt: null };
+    const ctx: AgentSpeakContext = { ...fakeContext, anomaly: { type: 'needs_input', severity: 'info', explanation: 'x' } };
+    const { result } = await cache.get(key, ctx);
+    expect(result.text).toBe('Refactor auth needs your input.');
+    expect('rawText' in result).toBe(false);
+  });
+
   test('first call is a miss; second call with the same key is a hit', async () => {
     const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
     const key = { agentId: 'a1', resolvedMode: 'activity' as const, verbosity: 'brief' as const, lastEventSeq: 1, anomalyDetectedAt: null };

@@ -21,6 +21,8 @@ export interface TaskSpeakResult {
   llmMs: number;
   ttsMs: number;
   cached: boolean;
+  /** Wording before the speakable-text step; present only when that step changed it. `text` is what TTS spoke. */
+  rawText?: string;
 }
 
 export interface TaskSpeechSummaryCacheConfig {
@@ -129,6 +131,7 @@ export class TaskSpeechSummaryCache {
       usedFallback: summary.usedFallback,
       llmMs,
       ttsMs,
+      ...(summary.rawText !== undefined ? { rawText: summary.rawText } : {}),
     };
     this.insert(cacheKey, result);
     return result;

@@ -66,6 +66,8 @@ interface ServerSettings {
   agentEffort?: AgentEffortMap;
   shortcutBindings: PlatformShortcutBindingOverrides;
   speakVerbosity?: VerbosityScale;
+  /** Keep a local log of Lucy's interactions (server default true; absent = on). */
+  lucyInteractionLog?: boolean;
   quietHours?: QuietHoursWindow[];
   replySnippets?: ReplySnippet[];
   autoCloseCompletionReadyDelayMin: number;
@@ -803,6 +805,16 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     void saveSettings(updated);
   }
 
+  // Server default is on, so an absent value (older server) reads as on.
+  const lucyLogEnabled = settings?.lucyInteractionLog !== false;
+
+  function handleLucyLogToggle() {
+    if (!settings) return;
+    const updated = { ...settings, lucyInteractionLog: !lucyLogEnabled };
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
   function handleNumberChange(field: keyof ServerSettings, value: string, min: number, max: number) {
     if (!settings) return;
     const val = parseInt(value, 10);
@@ -1199,6 +1211,23 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         onClick={() => updateAvatarPanelPrefs({ enabled: !avatarPanel.enabled, minimized: false })}
                         aria-label="Toggle avatar panel"
                         aria-pressed={avatarPanel.enabled}
+                      >
+                        <span className="settings-toggle-knob" />
+                      </button>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span id="lucy-log-label" className="settings-label">Keep a local log of Lucy&apos;s interactions</span>
+                        <span id="lucy-log-desc" className="settings-desc">
+                          Saved on this machine only (~/.kookr/lucy-interactions.jsonl). Used to improve how she talks.
+                        </span>
+                      </div>
+                      <button
+                        className={`settings-toggle ${lucyLogEnabled ? 'active' : ''}`}
+                        onClick={() => handleLucyLogToggle()}
+                        aria-labelledby="lucy-log-label"
+                        aria-describedby="lucy-log-desc"
+                        aria-pressed={lucyLogEnabled}
                       >
                         <span className="settings-toggle-knob" />
                       </button>

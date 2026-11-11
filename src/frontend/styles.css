@@ -16853,6 +16853,23 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .avatar-dock-button:focus-visible, .avatar-bubble:focus-visible, .avatar-dock-caption:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .avatar-dock-caption:focus-visible { outline-offset: -2px; }
 .avatar-dock-button svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.avatar-dock-replay { position: relative; }
+.avatar-dock-button[aria-disabled="true"] { opacity: 0.6; cursor: default; }
+.avatar-dock-button[aria-disabled="true"]:hover { background: none; color: var(--text-secondary); }
+/* "Unheard" marker: a filled dot inside a ring of the panel colour, so it reads as a shape and not only as a colour.
+   The text for assistive technology is carried by the control's label / description. */
+.avatar-unheard-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 0 2px var(--bg-panel);
+  pointer-events: none;
+  animation: avatar-dock-pulse 2s ease-in-out infinite;
+}
+.avatar-dock-unheard { right: 0; top: 0; }
+.avatar-bubble-unheard { left: -2px; top: -2px; width: 12px; height: 12px; }
 .avatar-dock-view { position: relative; flex: 1; min-height: 0; background: #07050d; }
 .avatar-stage-canvas { display: block; width: 100%; height: 100%; }
 .avatar-dock-status {
@@ -16912,6 +16929,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 @media (prefers-reduced-motion: reduce) {
   .avatar-dock-thinking .avatar-dock-state::before,
   .avatar-dock-speaking .avatar-dock-state::before { animation: none; }
+  .avatar-unheard-dot { animation: none; }
 }
 
 /* #3561 4b: the decision card docked above the reply box. */

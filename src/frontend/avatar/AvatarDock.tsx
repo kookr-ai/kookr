@@ -16,6 +16,10 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import avatarUrl from './assets/lucy-bust.glb?url';
 import { AvatarStage, type AvatarState } from './avatar-stage.js';
 import { subscribeSpeechBus } from '../audio/speech-bus.js';
+import { getLastClip, useLastClip } from '../audio/last-clip.js';
+import { replayLastClip, stopReplay, type ReplayResult } from '../audio/clip-playback.js';
+import { useSoundPreference } from '../audio/sound-preference.js';
+import { track } from '../telemetry.js';
 import {
   AVATAR_BUBBLE_SIZE,
   AVATAR_PANEL_HEIGHT,
@@ -34,6 +38,21 @@ const STATE_LABEL: Record<AvatarState, string> = {
   speaking: 'speaking',
 };
 const IDLE_HINT = 'Press a speaker button on a task and I will read its summary to you.';
+const REPLAY_LABEL = 'Replay last message';
+
+/** Shown in the status region when a replay could not start; the three other results need no message. */
+const REPLAY_MUTED_TITLE = 'Sound is off in Settings';
+
+const REPLAY_NOTICE: Partial<Record<ReplayResult, string>> = {
+  muted: 'Sound is off in Settings, so the message was not replayed.',
+  blocked: 'Your browser blocked audio. Press Replay again to allow it.',
+  error: 'The message could not be played again.',
+};
+
+function trackPanelAction(action: 'minimize' | 'restore' | 'move' | 'replay'): void {
+  const clipId = getLastClip()?.clipId;
+  track({ type: 'lucy_panel_action', action, ...(clipId ? { clipId } : {}) });
+}
 
 function viewportSize(): { width: number; height: number } {
   return { width: window.innerWidth, height: window.innerHeight };
@@ -44,6 +63,8 @@ export interface AvatarDockProps {
   attentionCount: number;
 }
 
+const REPLAY_DESCRIPTION_ID = 'avatar-replay-description';
+
 export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
   const [viewport, setViewport] = useState(viewportSize);
@@ -53,6 +74,14 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [still, setStill] = useState<string | null>(null);
+  const [replayPending, setReplayPending] = useState(false);
+  const [replayNotice, setReplayNotice] = useState<string | null>(null);
+  // Why a press on the unavailable Replay button did nothing; cleared as soon as that reason changes or goes away.
+  const [unavailableNotice, setUnavailableNotice] = useState<string | null>(null);
+  // Bumped on every press of the unavailable button so the live region speaks the same text again.
+  const [unavailableNoticeSeq, setUnavailableNoticeSeq] = useState(0);
+  const lastClip = useLastClip();
+  const sound = useSoundPreference();
 
   const viewRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<AvatarStage | null>(null);
@@ -91,8 +120,10 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         stateRef.current = 'thinking';
         analyserRef.current = null;
         setCaption(null);
+        setReplayNotice(null);
       } else if (event.type === 'playing') {
         stateRef.current = 'speaking';
+        setReplayNotice(null);
         analyserRef.current = event.analyser;
         setCaption(event.text);
       } else {
@@ -104,6 +135,9 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
       stageRef.current?.setAnalyser(analyserRef.current);
     });
   }, []);
+
+  // A replay must not keep talking after the panel is gone.
+  useEffect(() => () => stopReplay('user_stop'), []);
 
   // The 3D view exists only while the panel is open.
   useLayoutEffect(() => {
@@ -133,10 +167,12 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     const image = stageRef.current?.snapshot();
     if (image) setStill(image);
     restoreFocusRef.current = true;
+    trackPanelAction('minimize');
     updateAvatarPanelPrefs({ minimized: true });
   }, []);
   const open = useCallback(() => {
     restoreFocusRef.current = true;
+    trackPanelAction('restore');
     updateAvatarPanelPrefs({ minimized: false });
   }, []);
 
@@ -172,6 +208,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         nearest = index;
       }
     });
+    trackPanelAction('move');
     updateAvatarPanelPrefs({ position: corners[(nearest + 1) % corners.length] });
   }, [prefs.position]);
 
@@ -202,16 +239,52 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
     // Save where it was dropped. A press and release without movement is not a move.
-    if (drag.last) updateAvatarPanelPrefs({ position: drag.last });
+    if (drag.last) {
+      trackPanelAction('move');
+      updateAvatarPanelPrefs({ position: drag.last });
+    }
     setDragPos(null);
   }, []);
 
+  // Replay is unavailable (not hidden) when there is nothing to play, she is busy, or sound is off in Settings.
+  const replayUnavailable = !lastClip.hasClip
+    ? 'No message to replay yet'
+    : state !== 'idle' || replayPending
+      ? `${NAME} is busy; replay is available when she has finished`
+      : !sound.enabled
+        ? REPLAY_MUTED_TITLE
+        : null;
+  useEffect(() => {
+    setUnavailableNotice(null);
+  }, [replayUnavailable]);
+  const onReplay = (): void => {
+    if (replayUnavailable) {
+      // The button stays focusable and `title` does not reach keyboard or touch users, so say it in the live region.
+      // The longer muted wording only when sound-off is the real reason; "nothing to replay" and "busy" are not.
+      setUnavailableNotice(replayUnavailable === REPLAY_MUTED_TITLE ? (REPLAY_NOTICE.muted ?? replayUnavailable) : replayUnavailable);
+      setUnavailableNoticeSeq((n) => n + 1);
+      return;
+    }
+    trackPanelAction('replay');
+    setReplayNotice(null);
+    setReplayPending(true);
+    void replayLastClip().then((result) => {
+      setReplayPending(false);
+      setReplayNotice(REPLAY_NOTICE[result] ?? null);
+    });
+  };
+
+  // Read by assistive technology when the Replay button gets focus: the unheard marker (a dot) and why it is unavailable.
+  const statusNotice = replayNotice ?? unavailableNotice;
+  const replayDescription = [lastClip.unheard ? 'Unheard message' : null, replayUnavailable].filter(Boolean).join('. ');
+
   if (prefs.minimized) {
     const activity = state === 'idle' ? '' : `, ${STATE_LABEL[state]}`;
+    const unheard = lastClip.unheard ? ', unheard message' : '';
     const label =
       attentionCount > 0
-        ? `Open ${NAME}${activity}. ${attentionCount} ${attentionCount === 1 ? 'item needs' : 'items need'} your attention.`
-        : `Open ${NAME}${activity}`;
+        ? `Open ${NAME}${activity}${unheard}. ${attentionCount} ${attentionCount === 1 ? 'item needs' : 'items need'} your attention.`
+        : `Open ${NAME}${activity}${unheard}`;
     return (
       <button
         type="button"
@@ -224,6 +297,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         data-testid="avatar-bubble"
       >
         {!still && <span className="avatar-bubble-initial" aria-hidden="true">{NAME[0]}</span>}
+        {lastClip.unheard && <span className="avatar-unheard-dot avatar-bubble-unheard" data-testid="avatar-unheard-dot" aria-hidden="true" />}
         {attentionCount > 0 && (
           <span className="avatar-bubble-badge" aria-hidden="true">{attentionCount > 99 ? '99+' : attentionCount}</span>
         )}
@@ -250,6 +324,24 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         <span className="avatar-dock-name">{NAME.toUpperCase()}</span>
         <span className="avatar-dock-state">{STATE_LABEL[state]}</span>
         <span className="avatar-dock-spacer" />
+        <button
+          type="button"
+          className="avatar-dock-button avatar-dock-replay"
+          onClick={onReplay}
+          // aria-disabled rather than disabled: a disabled button drops keyboard focus, and focus must stay
+          // here after Replay is pressed (she is then busy until the clip ends).
+          aria-disabled={replayUnavailable ? 'true' : undefined}
+          aria-label={REPLAY_LABEL}
+          aria-describedby={replayDescription ? REPLAY_DESCRIPTION_ID : undefined}
+          title={replayUnavailable ?? (lastClip.unheard ? `${REPLAY_LABEL} (unheard)` : REPLAY_LABEL)}
+          data-testid="avatar-replay"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v3h3" /><path d="M7 6v4l3-2z" /></svg>
+          {lastClip.unheard && (
+            <span className="avatar-unheard-dot avatar-dock-unheard" data-testid="avatar-unheard-dot" aria-hidden="true" />
+          )}
+          {replayDescription && <span id={REPLAY_DESCRIPTION_ID} className="sr-only">{replayDescription}</span>}
+        </button>
         <button type="button" className="avatar-dock-button" onClick={moveToNextCorner} aria-label={`Move ${NAME} to the next corner`} title="Move to the next corner">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h12M6 4l2-2 2 2M6 12l2 2 2-2M4 6L2 8l2 2M12 6l2 2-2 2" /></svg>
         </button>
@@ -263,9 +355,11 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         <span className="avatar-dock-status" role="status">
           {error
             ? `The 3D view could not start (${error}). Spoken summaries still play.`
-            : loaded
-              ? ''
-              : 'Loading…'}
+            : statusNotice
+              ? <span key={replayNotice ? 'replay' : `unavailable-${unavailableNoticeSeq}`}>{statusNotice}</span>
+              : loaded
+                ? ''
+                : 'Loading…'}
         </span>
       </div>
       <div className="avatar-dock-caption" data-testid="avatar-caption" tabIndex={0} role="group" aria-label="Spoken text">

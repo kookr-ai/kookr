@@ -2,11 +2,19 @@ import { randomUUID } from 'node:crypto';
 import type { Context, Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
 import { AgentSpeakCache } from '../agent-speak-cache.js';
-import { TaskSpeechSummaryCache } from '../task-speech-summary-cache.js';
+import { TaskSpeechSummaryCache, type TaskSpeakResult } from '../task-speech-summary-cache.js';
+import {
+  countSpokenWords,
+  DISABLED_LUCY_INTERACTION_LOG,
+  type LucyInteractionLog,
+  type LucySaidRecordInput,
+} from '../lucy-interaction-log.js';
+import { summarizeLucyInteractionFiles } from '../lucy-interaction-summary.js';
 import { getAgentStateProjected, getTaskAgentsProjected } from '../use-cases/get-snapshot.js';
 import { buildTaskSpeechSubject } from '../use-cases/task-speech-summary-input.js';
 import { TTSClientError } from '../../adapters/tts-client.js';
 import { buildAgentSpeakContext } from '../../core/agent-speak-context.js';
+import { redactedTaskName } from '../../core/task-speech-summary.js';
 import {
   buildSystemPrompt,
   buildFallbackText,
@@ -54,7 +62,17 @@ export interface SpeechRouteOptions {
   newRequestId?: () => string;
   /** KOOKR_DEBUG gate for the preview / debug endpoints. Default reads `process.env.KOOKR_DEBUG`. */
   isDebugEnabled?: () => boolean;
+  /**
+   * Local record of what Lucy said (and, via the websocket, how the operator
+   * reacted). Defaults to a no-op so lightweight harnesses write nothing.
+   */
+  lucyLog?: LucyInteractionLog;
+  /** Path of the Lucy log, read by the summary endpoint. Omitted → endpoint reports no log. */
+  lucyLogPath?: string;
 }
+
+const LUCY_SUMMARY_DEFAULT_DAYS = 7;
+const LUCY_SUMMARY_MAX_DAYS = 90;
 
 function jsonAgentError(c: Context, status: 400 | 404 | 503 | 500, body: SpeakAgentErrorResponse) {
   return c.json(body, status);
@@ -142,6 +160,7 @@ function buildResponse(
   resolvedMode: SpeakMode,
   verbosity: VerbosityScale,
   requestId: string,
+  clipId: string,
   result: AgentSpeakResultCore,
 ): SpeakAgentResponse {
   return {
@@ -158,16 +177,33 @@ function buildResponse(
     effectiveVerbosity: verbosity,
     requestId,
     cacheKey,
+    clipId,
+    ...(result.rawText !== undefined ? { rawText: result.rawText } : {}),
   };
 }
 
-function countOutputWords(text: string): number {
-  return text.split(/\s+/).filter(Boolean).length;
+function buildTaskResponse(clipId: string, result: TaskSpeakResult): SpeakTaskSummaryResponse {
+  return { ...result, clipId };
+}
+
+function parseSummaryDays(raw: string | undefined): number {
+  const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return LUCY_SUMMARY_DEFAULT_DAYS;
+  return Math.min(n, LUCY_SUMMARY_MAX_DAYS);
 }
 
 export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: SpeechRouteOptions): void {
   const newRequestId = options.newRequestId ?? (() => randomUUID());
   const isDebugEnabled = options.isDebugEnabled ?? isDebugDefault;
+  const lucyLog = options.lucyLog ?? DISABLED_LUCY_INTERACTION_LOG;
+  // Logging is best-effort: a broken log must never turn a delivered clip into an error response.
+  const recordSaid = (input: LucySaidRecordInput): void => {
+    try {
+      lucyLog.recordSaid(input);
+    } catch (err) {
+      console.warn(`[lucy-log] recordSaid threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   const readDefaultVerbosity = options.defaultVerbosity ?? ((): VerbosityScale => {
     const fromSettings = deps.settings?.get?.()?.speakVerbosity;
     return clampVerbosity(fromSettings, DEFAULT_VERBOSITY);
@@ -240,13 +276,32 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
         usedFallback: result.usedFallback,
         fallbackReason: result.fallbackReason,
         outputChars: result.text.length,
-        outputWords: countOutputWords(result.text),
+        outputWords: countSpokenWords(result.text),
         lastEventSeq,
         abortedAtPhase: null,
         outcome: result.usedFallback ? 'fallback' : 'success',
       });
 
-      const response = buildResponse(cacheKey, cached, resolvedMode, verbosity, requestId, result);
+      const clipId = randomUUID();
+      const response = buildResponse(cacheKey, cached, resolvedMode, verbosity, requestId, clipId, result);
+      recordSaid({
+        clipId,
+        source: 'agent_speak',
+        taskId: agent.taskId,
+        agentId: agent.agentId,
+        taskName: agent.taskName,
+        text: result.text,
+        rawText: result.rawText,
+        usedFallback: result.usedFallback,
+        cached,
+        verbosity,
+        voice: options.ttsVoice,
+        findingType: resolvedMode === 'finding' ? agent.anomaly?.type : undefined,
+        llmMs: result.llmMs,
+        ttsMs: result.ttsMs,
+        durationMs: result.durationMs,
+        words: countSpokenWords(result.text),
+      });
       return c.json(response, 200);
     } catch (err) {
       if (requestSignal.aborted) {
@@ -334,6 +389,18 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
     });
   });
 
+  // Aggregates over the local Lucy interaction log. Reads only this machine's
+  // file; the response includes spoken phrasings (topEarlyStopped), so it sits
+  // behind the same API auth as the other diagnostics routes.
+  app.get('/api/diagnostics/lucy-interactions/summary', async (c) => {
+    if (!options.lucyLogPath) {
+      return c.json({ error: 'lucy-log-not-configured' }, 503);
+    }
+    await lucyLog.flush();
+    const days = parseSummaryDays(c.req.query('days'));
+    return c.json(await summarizeLucyInteractionFiles(options.lucyLogPath, { days }));
+  });
+
   app.post('/api/tasks/:taskId/speak-summary', async (c) => {
     if (!options.enabled) {
       return c.json({ error: 'feature-disabled' }, 503);
@@ -360,7 +427,25 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
     try {
       const startedAt = Date.now();
       const result = await options.taskCache.get(subject.input, requestSignal);
-      const response: SpeakTaskSummaryResponse = result;
+      const clipId = randomUUID();
+      const response = buildTaskResponse(clipId, result);
+      recordSaid({
+        clipId,
+        source: 'task_summary',
+        taskId,
+        agentId: subject.agentState?.agentId,
+        taskName: redactedTaskName(subject.input.taskName),
+        text: result.text,
+        rawText: result.rawText,
+        usedFallback: result.usedFallback,
+        cached: result.cached,
+        voice: options.ttsVoice,
+        findingType: subject.input.activeFinding?.type,
+        llmMs: result.llmMs,
+        ttsMs: result.ttsMs,
+        durationMs: result.durationMs,
+        words: countSpokenWords(result.text),
+      });
       console.log(
         `[task-speak] task=${taskId} agent=${subject.agentState?.agentId ?? 'none'} status=${subject.input.taskStatus ?? 'unknown'} cached=${result.cached} usedFallback=${result.usedFallback} collectMs=${collectMs} llmMs=${result.llmMs} ttsMs=${result.ttsMs} totalMs=${Date.now() - startedAt + collectMs}`,
       );
