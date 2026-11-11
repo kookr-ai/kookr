@@ -3,7 +3,7 @@
 // NB_DIR to the kookr location, and (Objective C) commits every notebook
 // mutation when NB_DIR is a git repo so a daily job can push the history.
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, copyFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -323,5 +323,78 @@ describe('bin/nb.js — placement advisories on `add` (stderr only, never a refu
   test('a read of fleet-global prints no advisory', () => {
     nbErr(['add', 'fleet-global', 'host fact'], { KOOKR_NB_CURATOR: '1' });
     expect(nbErr(['show', 'fleet-global'], {}).err).not.toMatch(/advisory/);
+  });
+});
+
+describe('bin/nb.js — the advisory classifies shelves with the shared layers module', () => {
+  /** Like nb() but keeps stderr; pins KOOKR_REPO_SLUG and drops KOOKR_NB_CURATOR. */
+  function nbErr(args: string[], slug: string | undefined, bin = BIN): { code: number; err: string } {
+    const base = cleanGitEnv();
+    delete base.KOOKR_REPO_SLUG;
+    delete base.KOOKR_NB_CURATOR;
+    if (slug !== undefined) base.KOOKR_REPO_SLUG = slug;
+    const r = spawnSync('node', [bin, ...args], { env: { ...base, NB_DIR: dir }, encoding: 'utf-8' });
+    return { code: r.status ?? -1, err: r.stderr ?? '' };
+  }
+
+  test('case-insensitive: Code-Review@Kookr-AI-Kookr is this repo\'s shelf for slug kookr-ai-kookr', () => {
+    expect(nbErr(['add', 'Code-Review@Kookr-AI-Kookr', 'a'], 'kookr-ai-kookr').err).toBe('');
+  });
+
+  test('last @ wins: a@b@c is scoped to c (silent for slug c, advisory for slug b)', () => {
+    expect(nbErr(['add', 'a@b@c', 'x'], 'c').err).toBe('');
+    expect(nbErr(['add', 'a@b@c', 'y'], 'b').err).toMatch(/scoped to 'c'.*slug is 'b'/);
+  });
+
+  test('a legacy slug is the same repo as its canonical slug, in either direction', () => {
+    expect(nbErr(['add', 'x@agent-notebook', 'a'], 'jeanibarz-agent-notebook').err).toBe('');
+    expect(nbErr(['add', 'x@jeanibarz-agent-notebook', 'b'], 'agent-notebook').err).toBe('');
+  });
+
+  test('a@@c is a project shelf of slug c (base `a@`)', () => {
+    expect(nbErr(['add', 'a@@c', 'x'], 'c').err).toBe('');
+    expect(nbErr(['add', 'a@@c', 'y'], 'd').err).toMatch(/scoped to 'c'.*slug is 'd'/);
+  });
+
+  test('the slug is trimmed and a whitespace-only slug counts as unset', () => {
+    expect(nbErr(['add', 'x@mine', 'a'], '  mine  ').err).toBe('');
+    expect(nbErr(['add', 'x@theirs', 'b'], '   ').err).toBe('');
+  });
+
+  describe('guarded import: the shim never breaks when the module cannot be loaded', () => {
+    let tree: string;
+    beforeEach(() => {
+      // A copy of the shim in its own tree. node_modules is linked in so the real
+      // agent-notebook package still resolves; plugin/ is left out or sabotaged per test.
+      tree = mkdtempSync(join(tmpdir(), 'kookr-nb-shim-tree-'));
+      mkdirSync(join(tree, 'bin'));
+      copyFileSync(BIN, join(tree, 'bin', 'nb.js'));
+      symlinkSync(join(process.cwd(), 'node_modules'), join(tree, 'node_modules'));
+    });
+    afterEach(() => rmSync(tree, { recursive: true, force: true }));
+    const shim = () => join(tree, 'bin', 'nb.js');
+
+    test('control: with the module present the case-insensitive check applies', () => {
+      mkdirSync(join(tree, 'plugin', 'hooks', 'lib'), { recursive: true });
+      copyFileSync(join(process.cwd(), 'plugin/hooks/lib/notebook-layers.mjs'), join(tree, 'plugin/hooks/lib/notebook-layers.mjs'));
+      expect(nbErr(['add', 'Code-Review@Kookr-AI-Kookr', 'a'], 'kookr-ai-kookr', shim()).err).toBe('');
+    });
+
+    test('module missing: nb add still succeeds and the advisory falls back to the first-@, case-sensitive check', () => {
+      const r = nbErr(['add', 'Code-Review@Kookr-AI-Kookr', 'lesson-xyz'], 'kookr-ai-kookr', shim());
+      expect(r.code).toBe(0); // the nb call is unaffected
+      expect(r.err).toMatch(/advisory: shelf Code-Review@Kookr-AI-Kookr is scoped to 'Kookr-AI-Kookr'/); // old, case-sensitive rule
+      expect(nb(['show', 'Code-Review@Kookr-AI-Kookr']).out).toContain('lesson-xyz');
+      expect(nbErr(['add', 'x@mine', 'b'], 'mine', shim()).err).toBe(''); // own shelf is still silent
+      expect(nbErr(['show', 'x@mine'], 'mine', shim()).code).toBe(0); // reads are untouched
+    });
+
+    test('module present but broken (syntax error): same fallback, exit 0', () => {
+      mkdirSync(join(tree, 'plugin', 'hooks', 'lib'), { recursive: true });
+      writeFileSync(join(tree, 'plugin/hooks/lib/notebook-layers.mjs'), 'export const x = ;\n');
+      const r = nbErr(['add', 'Code-Review@Kookr-AI-Kookr', 'a'], 'kookr-ai-kookr', shim());
+      expect(r.code).toBe(0);
+      expect(r.err).toMatch(/advisory: shelf Code-Review@Kookr-AI-Kookr is scoped to/);
+    });
   });
 });

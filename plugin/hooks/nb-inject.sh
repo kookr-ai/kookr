@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # SessionStart hook — inject the Agent Notebook INDEX into context.
 #
-# Role-agnostic: it injects `nb list` (every notebook/shelf and its one-line
-# description) for every session, and the agent opens the shelves that fit its
-# task. There is no NB_ROLE and nothing guesses a per-repo shelf. Delegates the
-# work to nb-inject.mjs.
+# Role-agnostic: it injects the `nb list` index (each notebook/shelf and its
+# one-line description; grouped by layer when the repo slug is known) for every
+# session, and the agent opens the shelves that fit its task. There is no NB_ROLE
+# and the hook never opens a shelf for the agent. Delegates the work to
+# nb-inject.mjs.
 #
 # Exit 0 always — a context injector must never block or fail a session start.
 set -u

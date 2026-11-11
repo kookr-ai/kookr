@@ -4,11 +4,12 @@
 // spending a call.
 //
 // This follows the published agent-notebook harness recipe
-// (examples/hooks/claude-code/nb-session-start.sh): inject `nb list` — the index
-// of every notebook (shelf) with its one-line "open me when…" description — and
+// (examples/hooks/claude-code/nb-session-start.sh): inject the `nb list`
+// index — each notebook (shelf) with its one-line "open me when…" description — and
 // let the agent open the shelves that fit its task. It is deliberately
-// role-agnostic: there is no NB_ROLE and nothing guesses a per-repo shelf. The
-// same injection runs for every session, so a lesson the agent would never
+// role-agnostic: there is no NB_ROLE and the hook never opens a shelf for the agent.
+// With a repo slug it only groups and filters the index by shelf name (see "Layered
+// view" below). The same injection runs for every session, so a lesson the agent would never
 // think to search for still reaches it by meeting a shelf's trigger in the index.
 //
 // The index is small by construction (one line per shelf), so we inject it directly
@@ -24,48 +25,88 @@
 //     STDOUT. Only stdout reaches the agent; stderr from a SessionStart hook never does.
 // The injected index is bounded (60 rows / 8 KB) so a large store cannot overflow the
 // session context; the rest stays one `nb list` away.
+//
+// Layered view (RFC docs/rfc/rfc-notebook-memory-layers.md, issue #3592). Memory is
+// layered project > domain > global, and a shelf's layer is derived from its NAME
+// (plugin/hooks/lib/notebook-layers.mjs, the one place that decides it). When the
+// repo's slug is known (`KOOKR_REPO_SLUG`, trimmed; empty = unset) and the kill switch
+// `KOOKR_NB_LAYERS=0` is off, the index shows this repo's own shelves first (never
+// truncated), then the domain shelves, then `fleet-global`, hides other repos' shelves
+// behind a count, and states which layer wins and where a new lesson goes. Without a
+// slug, with the kill switch on, or when the layers module cannot be loaded or `nb`
+// answers in an unexpected shape, it prints today's flat index instead.
 import { execFileSync } from 'node:child_process';
 
 const TIMEOUT_MS = 4000;
 const MAX_ROWS = 60;
 const MAX_BYTES = 8 * 1024;
 const TAIL_RESERVE = 96; // bytes kept free for the "N more" line
+const DESC_WIDTH = 80; // `nb list` bounds a description column to 80 characters
 
-let index = '';
-try {
-  // `nb list` shows 50 rows by default; ask for more so the cap applied below is ours.
-  index = execFileSync('nb', ['list', '--limit', '1000'], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: TIMEOUT_MS,
-    maxBuffer: 8 * 1024 * 1024,
-  }).trim();
-} catch (err) {
-  const e = /** @type {{ code?: string, status?: number | null, signal?: string | null, stderr?: unknown }} */ (err ?? {});
-  if (e.code === 'ENOENT') process.exit(0); // nb not installed — nothing to say
-  const why =
-    e.code === 'ETIMEDOUT'
-      ? `timed out after ${TIMEOUT_MS / 1000}s`
-      : e.status != null
-        ? `exited with status ${e.status}`
-        : e.signal
-          ? `was killed by ${e.signal}`
-          : `could not run (${e.code ?? 'unknown error'})`;
-  const detail = String(e.stderr ?? '').trim().split('\n')[0].slice(0, 200);
-  process.stdout.write(
-    `## Your agent-notebook index\n` +
-      `WARNING: \`nb list\` ${why}${detail ? `: ${detail}` : ''}. The notebook index is ` +
-      `unavailable this session; that is not the same as an empty store. ` +
-      `Run \`nb list\` yourself to see the error.\n`,
-  );
-  process.exit(0);
+/**
+ * Run `nb <args>` and return its trimmed stdout. A missing `nb` exits 0 silently; a
+ * present-but-failing `nb` prints a one-line WARNING on STDOUT (the only stream that
+ * reaches the agent) and exits 0, so a broken store is never mistaken for an empty one.
+ */
+function runNb(args) {
+  try {
+    return execFileSync('nb', args, {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: TIMEOUT_MS,
+      maxBuffer: 8 * 1024 * 1024,
+    }).trim();
+  } catch (err) {
+    const e = /** @type {{ code?: string, status?: number | null, signal?: string | null, stderr?: unknown }} */ (err ?? {});
+    if (e.code === 'ENOENT') process.exit(0); // nb not installed — nothing to say
+    const why =
+      e.code === 'ETIMEDOUT'
+        ? `timed out after ${TIMEOUT_MS / 1000}s`
+        : e.status != null
+          ? `exited with status ${e.status}`
+          : e.signal
+            ? `was killed by ${e.signal}`
+            : `could not run (${e.code ?? 'unknown error'})`;
+    const detail = String(e.stderr ?? '').trim().split('\n')[0].slice(0, 200);
+    process.stdout.write(
+      `## Your agent-notebook index\n` +
+        `WARNING: \`nb list\` ${why}${detail ? `: ${detail}` : ''}. The notebook index is ` +
+        `unavailable this session; that is not the same as an empty store. ` +
+        `Run \`nb list\` yourself to see the error.\n`,
+    );
+    process.exit(0);
+  }
 }
 
-// Empty store → `nb list` leaves stdout empty (its "no notebooks yet" notice
-// goes to stderr). Nothing to surface → stay silent.
-if (!index) process.exit(0);
+// The layers module is loaded through a guarded dynamic import: a missing or broken file
+// must degrade to the flat index, never fail the session start.
+let layers = null;
+try {
+  layers = await import('./lib/notebook-layers.mjs');
+} catch {
+  /* flat index */
+}
 
-index = boundIndex(index);
+const slug = layers ? layers.repoSlugFromEnv() : undefined;
+const layered = layers !== null && slug !== undefined && (process.env.KOOKR_NB_LAYERS ?? '').trim() !== '0';
+
+let body = null;
+if (layered) {
+  try {
+    body = layeredIndex(runNb(['list', '--json', '--limit', '1000']), slug);
+  } catch {
+    body = null; // unexpected shape: fall back to the flat index below
+  }
+}
+if (body === null) {
+  // `nb list` shows 50 rows by default; ask for more so the cap applied below is ours.
+  const index = runNb(['list', '--limit', '1000']);
+  // Empty store → `nb list` leaves stdout empty (its "no notebooks yet" notice
+  // goes to stderr). Nothing to surface → stay silent.
+  if (!index) process.exit(0);
+  body = boundIndex(index);
+}
+if (body === '') process.exit(0);
 
 /**
  * Keep the header line plus at most MAX_ROWS rows and MAX_BYTES bytes (whole rows
@@ -98,6 +139,108 @@ function boundIndex(text) {
   return out.join('\n');
 }
 
+/** One row of the layered view, laid out like `nb list`'s own rows. */
+function renderRow(r, nameWidth, countWidth) {
+  const trigger = r.desc ?? r.auto;
+  let text = typeof trigger === 'string' ? trigger.replace(/\s+/g, ' ').trim() : '';
+  if (text.length > DESC_WIDTH) text = `${text.slice(0, DESC_WIDTH - 1)}…`;
+  const descPart = text ? `  ${text}${r.desc == null ? '  (auto)' : ''}` : '';
+  return `  ${r.shelf.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`;
+}
+
+/**
+ * Group `nb list --json` rows by layer for the repo `slug` and render the index block.
+ * Returns '' for an empty store; throws on a shape it does not recognise (the caller
+ * then falls back to the flat index).
+ *
+ * Caps: the project group is never truncated (it is the shelves most likely to apply
+ * and is small). Domain and global rows fill what is left of the 60-row / 8 KB budget,
+ * after the project rows and every fixed line; `fleet-global` is placed before the
+ * domain rows so a long domain list can never push out the one host-wide shelf.
+ */
+function layeredIndex(raw, slug) {
+  const listing = JSON.parse(raw);
+  const rows = listing?.rows;
+  if (!Array.isArray(rows) || rows.some((r) => typeof r?.shelf !== 'string')) throw new Error('unexpected nb list --json shape');
+  if (rows.length === 0) return '';
+
+  const aliases = layers.loadSlugAliases();
+  const mine = layers.canonicalSlug(slug, aliases);
+  const project = [];
+  const domain = [];
+  const global = [];
+  let hidden = 0;
+  let malformed = 0;
+  for (const r of rows) {
+    const c = layers.classifyShelf(r.shelf, aliases);
+    if (c.layer === 'global') global.push(r);
+    else if (c.layer === 'domain') domain.push(r);
+    else if (c.layer === 'project') {
+      if (c.canonical === mine) project.push(r);
+      else hidden++;
+    } else malformed++; // an `@` with an empty base or slug belongs to no layer
+  }
+
+  const width = (group) => ({
+    name: group.reduce((w, r) => Math.max(w, r.shelf.length), 0),
+    count: group.reduce((w, r) => Math.max(w, String(r.lessons).length), 0),
+  });
+  const render = (group) => {
+    const w = width(group);
+    return group.map((r) => renderRow(r, w.name, w.count));
+  };
+
+  const noun = (n) => `${n} shel${n === 1 ? 'f' : 'ves'}`;
+  const projectTitle = `Project shelves — true only in this repo (${slug}):`;
+  const domainTitle = 'Domain shelves — true in any repo:';
+  const globalTitle = 'Global — host-wide facts, written only by promotion:';
+  const hiddenLine =
+    (project.length
+      ? `${noun(hidden)} for other projects hidden (slug: ${slug}); \`nb list\` shows all`
+      : `No shelf is scoped to this project yet (slug: ${slug}); ${noun(hidden)} for other projects hidden; \`nb list\` shows all`) +
+    (malformed ? `; ${noun(malformed)} with a malformed name skipped` : '');
+  const precedence = 'Precedence: when shelves disagree, the more specific layer wins: project > domain > global.';
+  const placement =
+    `Placement: add to <situation>@<slug> (slug = $KOOKR_REPO_SLUG (here: ${slug})) unless the lesson ` +
+    `would be true in another repo, then add it to the unscoped <situation> shelf instead. ` +
+    `Never write fleet-global directly.`;
+  const header = `agent-notebook notebooks — ${rows.length} of ${rows.length} in ${listing.dir ?? 'the notebook store'}`;
+  const moreTail = `… ${rows.length} more shelves not shown: run \`nb list --limit 1000\` (or \`nb list <prefix>\`) to see them`;
+  // Bytes every line that is always printed takes, plus the header and the "more" tail
+  // at their longest, so the rows below can fill exactly what is left of the budget.
+  const fixed = [projectTitle, domainTitle, globalTitle, hiddenLine, precedence, placement, header, moreTail];
+  let used = fixed.reduce((n, l) => n + Buffer.byteLength(l) + 1, 0);
+
+  const projectRows = render(project);
+  for (const l of projectRows) used += Buffer.byteLength(l) + 1;
+  let count = projectRows.length;
+  const take = (group) => {
+    const out = [];
+    for (const l of render(group)) {
+      const cost = Buffer.byteLength(l) + 1;
+      if (count >= MAX_ROWS || used + cost > MAX_BYTES) break; // the "more" tail is already in `fixed`
+      out.push(l);
+      used += cost;
+      count++;
+    }
+    return out;
+  };
+  const globalRows = take(global);
+  const domainRows = take(domain);
+  const cut = domain.length + global.length - domainRows.length - globalRows.length;
+
+  const out = [`agent-notebook notebooks — ${count} of ${rows.length} in ${listing.dir ?? 'the notebook store'}`];
+  const section = (title, lines) => {
+    if (lines.length) out.push(title, ...lines);
+  };
+  section(projectTitle, projectRows);
+  section(domainTitle, domainRows);
+  section(globalTitle, globalRows);
+  if (cut > 0) out.push(`… ${cut} more shel${cut === 1 ? 'f' : 'ves'} not shown: run \`nb list --limit 1000\` (or \`nb list <prefix>\`) to see them`);
+  out.push(hiddenLine, precedence, placement);
+  return out.join('\n');
+}
+
 process.stdout.write(
   `## Your agent-notebook index\n` +
     `Below is an index of your notebooks. Each one is a "shelf": a short, bounded list of ` +
@@ -111,7 +254,7 @@ process.stdout.write(
     `Vote by the \`<id>\` \`nb show\` prints at the start of each line, not a fuzzy text query (a ` +
     `non-unique query errors; the tool then prints the candidate ids). A new lesson is one line, ≤200 ` +
     `characters — an over-length \`nb add\` is rejected, not truncated.\n\n` +
-    index +
+    body +
     '\n',
 );
 process.exit(0);

@@ -115,12 +115,12 @@ function autoCommit(dir, argv) {
 }
 
 /**
- * Legacy short slugs that still mean `slug` (e.g. `agent-notebook` for
+ * Fallback alias lookup, used only when the shared layers module cannot be loaded:
+ * legacy short slugs that still mean `slug` (e.g. `agent-notebook` for
  * `jeanibarz-agent-notebook`), read from plugin/notebooks/slug-aliases.json as
- * `{ "<legacy>": "<canonical slug>" }`. The file arrives with a later change; until
- * it exists (or when it cannot be parsed) no aliases are applied and the alias
- * check is skipped, never an error. The file lives in the repo's plugin/ tree, so it
- * is only found when `nb` runs from a repo checkout, which is where Kookr runs it.
+ * `{ "<legacy>": "<canonical slug>" }`. A missing or unparsable file means no aliases,
+ * never an error. The file lives in the repo's plugin/ tree, so it is only found when
+ * `nb` runs from a repo checkout, which is where Kookr runs it.
  */
 function aliasesOf(slug) {
   try {
@@ -135,11 +135,48 @@ function aliasesOf(slug) {
 }
 
 /**
+ * The shared shelf classifier (plugin/hooks/lib/notebook-layers.mjs), or null when it
+ * cannot be loaded. It is imported dynamically and guarded on purpose: this shim
+ * wraps EVERY `nb` call, so a missing or broken plugin file must cost only the
+ * advisory's precision (it falls back to the older first-`@`, case-sensitive check),
+ * never a failed `nb` command. A static import would crash the shim at startup.
+ */
+async function loadLayers() {
+  try {
+    const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'hooks', 'lib', 'notebook-layers.mjs');
+    return await import(pathToFileURL(file).href);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `shelf` is a `<situation>@<other-slug>` shelf of a different repo than
+ * `slug`; `shelfSlug` is the slug it is scoped to. With the shared module this uses the
+ * same rules as the SessionStart index (last `@`, case-insensitive, trimmed, legacy
+ * slugs resolved), so the two can never classify one shelf differently. Without it,
+ * the older rules apply (first `@`, case-sensitive).
+ */
+async function foreignProjectShelf(shelf, slug) {
+  const layers = await loadLayers();
+  if (layers) {
+    const aliases = layers.loadSlugAliases();
+    const c = layers.classifyShelf(shelf, aliases);
+    if (c.layer !== 'project') return null;
+    return c.canonical === layers.canonicalSlug(slug, aliases) ? null : c.slug;
+  }
+  const at = shelf.indexOf('@');
+  if (at <= 0) return null;
+  const shelfSlug = shelf.slice(at + 1);
+  return shelfSlug !== slug && !aliasesOf(slug).has(shelfSlug) ? shelfSlug : null;
+}
+
+/**
  * One-line stderr advisories after a successful `nb add`. Never a refusal: the
  * lesson is already written and the shim stays fail-open. They only make a wrong
  * layer or another repo's shelf visible to the agent that just wrote it.
  */
-function adviseOnAdd(argv) {
+async function adviseOnAdd(argv) {
   try {
     if ((argv[0] ?? '').trim() !== 'add') return;
     // First positional after `add`; `--reason`/`--note` take a value that is not the shelf.
@@ -161,11 +198,10 @@ function adviseOnAdd(argv) {
       }
       return;
     }
-    const at = shelf.indexOf('@');
     const slug = (process.env.KOOKR_REPO_SLUG ?? '').trim();
-    if (at <= 0 || slug === '') return; // not a project shelf, or no repo slug to compare with
-    const shelfSlug = shelf.slice(at + 1);
-    if (shelfSlug !== slug && !aliasesOf(slug).has(shelfSlug)) {
+    if (slug === '') return; // no repo slug to compare with
+    const shelfSlug = await foreignProjectShelf(shelf, slug);
+    if (shelfSlug !== null) {
       console.error(
         `[nb] advisory: shelf ${shelf} is scoped to '${shelfSlug}', but this repo's slug is '${slug}'; ` +
           `if the lesson is about this repo use <situation>@${slug}.`,
@@ -202,7 +238,7 @@ async function main() {
   const code = await mod.runNbCli(argv);
   process.exitCode = code;
 
-  if (code === 0) adviseOnAdd(argv);
+  if (code === 0) await adviseOnAdd(argv);
 
   // One commit per successful notebook modification (Objective C).
   if (code === 0 && MUTATING.has((argv[0] ?? '').trim())) {

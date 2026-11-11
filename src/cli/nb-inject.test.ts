@@ -12,6 +12,14 @@ import { execFileSync } from 'node:child_process';
 const BIN = join(process.cwd(), 'bin/nb.js');
 const HOOK = join(process.cwd(), 'plugin/hooks/nb-inject.mjs');
 
+/** process.env minus the layering knobs, so these flat-index tests behave the same on a host (or CI) that sets them. */
+function flatEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.KOOKR_REPO_SLUG;
+  delete env.KOOKR_NB_LAYERS;
+  return env;
+}
+
 let dir: string; // NB_DIR
 let binDir: string; // holds an `nb` symlink → bin/nb.js, prepended to PATH
 
@@ -34,7 +42,7 @@ function seed(args: string[]): void {
 function inject(): { code: number; out: string } {
   try {
     const out = execFileSync('node', [HOOK], {
-      env: { ...process.env, NB_DIR: dir, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+      env: { ...flatEnv(), NB_DIR: dir, PATH: `${binDir}:${process.env.PATH ?? ''}` },
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
@@ -79,7 +87,7 @@ describe('nb-inject SessionStart hook', () => {
     try {
       expect(() => execFileSync('nb', ['--version'], { env: { PATH: emptyDir }, stdio: 'ignore' })).toThrow();
       const out = execFileSync(process.execPath, [HOOK], {
-        env: { ...process.env, NB_DIR: dir, PATH: emptyDir },
+        env: { ...flatEnv(), NB_DIR: dir, PATH: emptyDir },
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'ignore'],
       });
@@ -106,7 +114,7 @@ describe('nb-inject — a failing `nb list` is reported, not mistaken for an emp
     chmodSync(nb, 0o755);
     try {
       const out = execFileSync('node', [HOOK], {
-        env: { ...process.env, NB_DIR: dir, PATH: `${stubDir}:${dirname(process.execPath)}:/usr/bin:/bin` },
+        env: { ...flatEnv(), NB_DIR: dir, PATH: `${stubDir}:${dirname(process.execPath)}:/usr/bin:/bin` },
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
