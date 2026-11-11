@@ -407,8 +407,9 @@ describe('summarizeTaskForSpeech', () => {
       if (!usedFallback) expect(result.text.split(' ')).toHaveLength(plain + refs * 2);
     });
 
-    // Real model replies that the former "any occurrence" rule threw away.
-    test.each([
+    // Summaries that must be spoken: real model replies the former "any occurrence" rule threw
+    // away, and descriptions an earlier version of this rule wrongly rejected.
+    const SPOKEN: string[] = [
       'The export branch was rebased onto main and two conflicts were resolved. The agent now needs your permission to force-push the branch so the pull request updates.',
       'The flaky login test fails about one run in five. The agent traced it to a race, added a wait, and planned to commit and run the suite ten times, but the session ended unexpectedly.',
       'The agent finished the cleanup and will delete the old worktree after the merge lands.',
@@ -437,13 +438,25 @@ describe('summarizeTaskForSpeech', () => {
       'The agent added a safe default for the timeout.',
       'The agent safely migrated the data to the new table.',
       'Confirm dialog styling was fixed.',
-    ])('a summary that describes an action is spoken: %s', async (summary) => {
-      const client = mockClient(JSON.stringify({ summary }));
-      const result = await summarizeTaskForSpeech(client, baseInput);
-      expect(result).toEqual({ text: summary, usedFallback: false });
-    });
-
-    test.each([
+      "The agent applied the reviewer's suggestions and is running the tests again.",
+      'The agent applied the recommended fix before committing.',
+      'The agent is running the benchmark to find which setting is best.',
+      'The agent is running the tests and everything looks fine so far.',
+      'CI rerun passed.',
+      'The user asked the agent to rerun the failing tests.',
+      'The agent made the cache thread-safe to avoid a race.',
+      'The agent added a null check to be safe.',
+      'The dialog now closes when users hit Enter.',
+      // Not caught before either: the rule only ever looked at eight verbs in their base form.
+      'Pushing is safe.',
+      'Consider merging it.',
+      'The agent recommends merging the pull request today.',
+      // Shapes the first version of this rule got wrong.
+      'The agent upgraded Node.js and will run the tests next.',
+      'Pull request 42 is ready to merge.',
+    ];
+    // Summaries that must be replaced by the template: [what it shows, the summary].
+    const REJECTED: Array<[string, string]> = [
       ['an imperative opening the summary', 'Run the migration before the deploy.'],
       ['an imperative opening a later sentence', 'The tests pass. Merge the branch into main.'],
       ['an imperative behind "please"', 'The build is green. Please push the branch.'],
@@ -451,7 +464,6 @@ describe('summarizeTaskForSpeech', () => {
       ['advice addressed to the listener', 'The migration is ready and you should run it now.'],
       ['advice with an adverb in between', 'The branch is green, so you can safely merge it.'],
       ['a request relayed to the listener', 'The agent asks you to push the branch by hand.'],
-      ['a recommendation', 'The agent recommends merging the pull request today.'],
       ['a safety claim', 'The agent says it is safe to delete the old data.'],
       ['a decision word used descriptively', 'The agent is waiting for you to allow the command.'],
       ['an imperative after a semicolon', 'The build is green; run the deploy.'],
@@ -461,19 +473,14 @@ describe('summarizeTaskForSpeech', () => {
       ['advice with "you have to"', 'The agent says you have to cancel the old job.'],
       ['advice with "go ahead and"', 'The agent says to go ahead and merge the pull request.'],
       ['advice with "make sure to"', 'The agent says to make sure to run the migration.'],
-      ['a suggestion in the -ing form', 'The agent suggests deleting the old branch.'],
-      ['an instruction that only appears once an identifier is spoken', 'Next step is run_tests on the branch.'],
       ['the decision word "deny"', 'The agent expects the operator to deny the request.'],
       ['the decision word "reject"', 'The reviewer may reject the change.'],
       ['the decision word "dismiss" in capitals', 'DISMISS the finding.'],
-      ['a safety claim without "to"', 'Pushing is safe.'],
-      ['a safety claim about something else', 'The agent is waiting for your permission to wipe the database; it is safe.'],
       ['"fine to"', 'The agent says it is fine to force-push the branch.'],
       ['"feel free"', 'Feel free to merge.'],
       ['"let us"', "Let's merge it."],
       ['"don\'t forget"', "Don't forget to push the branch."],
       ['"be sure"', 'Be sure to push the branch.'],
-      ['"consider"', 'Consider merging it.'],
       ['"time to"', 'Time to merge.'],
       ['an adverb between "you" and the verb', 'You really should merge this.'],
       ['"let it"', 'Let it push to main.'],
@@ -492,9 +499,6 @@ describe('summarizeTaskForSpeech', () => {
       ['an emphatic "do"', 'Do merge it now.'],
       ['an imperative after a comma with a noun object', "It's green, push the branch."],
       ['an imperative after an ellipsis character', 'The agent finished\u2026 merge it now.'],
-      ['reassurance with "fine"', 'Force-pushing is fine here.'],
-      ['reassurance with "no risk"', 'Pushing carries no risk.'],
-      ['reassurance with "wise"', 'Merging it now would be wise.'],
       ['a one-letter answer to a prompt', 'Type y to push.'],
       ['a key press as the answer', 'Hit enter to push the branch.'],
       ['a request for a secret', 'Paste your token so it can push.'],
@@ -508,10 +512,40 @@ describe('summarizeTaskForSpeech', () => {
       ['an action word opening a sentence as a noun', 'Pull request 12 was closed. Merge conflicts blocked it.'],
       ['an action word opening a clause after a colon', 'It reran the tests: push failed with a timeout.'],
       ['an action word in a sentence that does not open with its subject', 'Waiting to run the migration.'],
-    ])('a summary that instructs the listener is rejected: %s', async (_label, summary) => {
+      ['a command straight after a full stop, in lower case', 'The agent finished.merge it now.'],
+      ['reassurance about an action', 'The agent says it is fine to delete the folder.'],
+      ['a safety claim about an action', 'The cleanup is safe, and the agent will delete the folder.'],
+      ['a recommendation with the verb in its base form', 'The agent recommends that we merge the pull request today.'],
+    ];
+    /** The rule this one replaces: any of these words, anywhere. */
+    const FORMER_RULE = /\b(approve|deny|reject|allow|dismiss|execute|run|delete|cancel|merge|push|commit|click)\b/i;
+
+    test.each(SPOKEN)('a summary that describes an action is spoken: %s', async (summary) => {
+      const client = mockClient(JSON.stringify({ summary }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(false);
+    });
+
+    test.each(REJECTED)('a summary that instructs the listener is rejected: %s', async (_label, summary) => {
       const client = mockClient(JSON.stringify({ summary }));
       const result = await summarizeTaskForSpeech(client, baseInput);
       expect(result.usedFallback).toBe(true);
+    });
+
+    test('the rule only relaxes the former one: everything it rejects, the former rule rejected too', () => {
+      // If this fails, a rule was added that looks at words the former rule never looked at,
+      // and it will reject descriptions that used to be spoken.
+      const notRejectedBefore = REJECTED.map(([, summary]) => summary).filter((summary) => !FORMER_RULE.test(summary));
+      expect(notRejectedBefore).toEqual([]);
+    });
+
+    test('summaries the former rule accepted are still spoken, whatever else they say', async () => {
+      const untouched = SPOKEN.filter((summary) => !FORMER_RULE.test(summary));
+      expect(untouched.length).toBeGreaterThan(20);
+      for (const summary of untouched) {
+        const result = await summarizeTaskForSpeech(mockClient(JSON.stringify({ summary })), baseInput);
+        expect(result.usedFallback, summary).toBe(false);
+      }
     });
 
     test('fallback output is made speakable and reports rawText when it changed', async () => {

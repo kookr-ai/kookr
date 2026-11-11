@@ -44,57 +44,43 @@ const FINDING_EXPLANATION_CHARS = 300;
 const DECISION_WORD_DENYLIST = /\b(approve|deny|reject|allow|dismiss)\b/i;
 
 /**
- * A claim that something is safe to do. The summary is built from untrusted agent
- * output, and reassurance is how an injected instruction would lower the operator's
- * guard, so it is never spoken. An adjective or adverb that describes the work ("a safe
- * default", "safely migrated", "thread-safe") is not such a claim.
- */
-const SAFETY_CLAIM = /\b(?:is|are|be|was|it's|that's|looks|seems)\s+(?:(?:now|also|still|quite|very|perfectly|totally|completely|entirely)\s+)?safe\b(?!-)|\bsafe to\b|\bharmless\b|\brisk-free\b|\bno risk\b|\b(?:fine|okay|ok|alright|all right) to\b/i;
-
-/** Telling the listener how to answer a prompt ("say yes", "type y", "hit enter") or to hand over a secret. */
-const ANSWER_PROMPT = /\b(?:say|type|answer|reply|enter|press|hit|tap|choose|select)(?: with)? ["'“]?(?:yes|y|ok|okay|enter|return)\b|\bpaste (?:your|the|a|an) (?:\w+ )?(?:tokens?|keys?|passwords?|secrets?|credentials?)\b/i;
-
-/**
- * Everyday verbs for the work itself. Before, any summary containing one was replaced by
- * the template, which threw away about half of the model's summaries, and those were
- * the ones about permission prompts and failed commands ("needs your permission to
- * force-push the branch", "fails one run in five").
+ * Everyday verbs for the work itself: the same eight words as before, matched the same
+ * way. Any summary containing one used to be replaced by the template, which threw away
+ * about half of the model's summaries, and those were the ones about permission
+ * prompts and failed commands ("needs your permission to force-push the branch",
+ * "fails one run in five").
  *
- * The list is the same as before on purpose. A sentence containing one of these verbs
- * is still rejected by default; it is spoken only when it has the shape of a plain
- * description (see {@link describesAction}). Being strict here costs nothing that was
- * spoken before, because every such sentence used to be rejected.
+ * A sentence containing one of these words is still rejected by default. It is spoken
+ * only when it has the shape of a plain description (see {@link describesAction}).
+ * Text without these words is not looked at here at all, exactly as before, so this
+ * change can only let more summaries through, never fewer.
  */
-const ACTION = '(?:force-|re-?)?(?:execute|run|delete|cancel|merge|push|commit|click)';
-const ACTION_ING = '(?:force-|re-?)?(?:executing|running|deleting|cancell?ing|merging|pushing|committing|clicking)';
+const ACTION = '(?:execute|run|delete|cancel|merge|push|commit|click)';
 const MENTIONS_ACTION = new RegExp(`\\b${ACTION}\\b`, 'i');
 
 /** How a descriptive sentence starts: with its subject, or with a clause that leads to it. Anything else may be a command. */
 const DESCRIPTIVE_OPENER = /^(?:the|it|its|it's|this|that|these|those|a|an|both|all|each|every|no|none|nothing|everything|some|several|most|many|another|one|two|three|four|five|six|seven|eight|nine|ten|\d+|there|after|once|when|while|before|since|because|although|though|during|until|with|without|in|on|at|for|from|by|meanwhile|earlier|currently|agents?|tests?|pull request|issue|task|work|his|her|their|our|your|my|we|they|he|she|i)\b/i;
 
 /**
- * Words that aim a sentence at the listener: "you should run", "please merge", "the
- * operator needs to push". "your" is not one: "needs your permission to push" describes.
+ * Words that turn a sentence about an action into advice, reassurance or a request:
+ * "you should run", "please merge", "the operator needs to push", "it is safe to
+ * delete", "say yes so it can push". Only sentences that contain an action verb are
+ * checked against this list, and all of those used to be rejected, so a broad list
+ * costs nothing that was spoken before. "your" is not on it: "needs your permission
+ * to push" describes.
  */
-const LISTENER_CUE = /\b(?:you|please|kindly|let's|let us|let (?:it|them|him|her)|feel free|free to|don't forget|do not forget|be sure|make sure|remember to|consider|go ahead|go on|should|must|ought|needs? to|has to|have to|best to|better to|recommend\w*|suggest\w*|advis\w*|next step|wise|okay|ok|fine(?!-)|risk|operator|user|(?:it's|it is) time to)\b/i;
+const LISTENER_CUE = /\b(?:you|please|kindly|let's|let us|let (?:it|them|him|her)|feel free|free to|don't forget|do not forget|be sure|make sure|remember to|consider|go ahead|go on|should|must|ought|needs? to|has to|have to|best to|better to|(?:it's|it is) time to|recommend\w*|suggest\w*|advis\w*|next step|safe|safely|harmless|risk|wise|fine(?!-)|okay|ok|yes|operator|user)\b/i;
 
-/** A command inside a sentence: after a comma or an opening quote, after "so/then/now/just", or after "says/tells". */
+/**
+ * A command inside a sentence: after a comma or an opening quote, after "so/then/now/
+ * just", after "says/tells", or straight after punctuation with no space ("done.merge it").
+ */
 const INNER_COMMAND = new RegExp(
   `,\\s*(?:(?:then|and|now|just|so|go)\\s+)*${ACTION}\\s+(?:it|this|that|them|these|those|the|a|an|your|all|everything|now)\\b`
   + `|["'\\u201c\\u2018(]\\s*${ACTION}\\b`
+  + `|[.!?;:\\u2026]${ACTION}\\b`
   + `|\\b(?:so|then|now|just)\\s+${ACTION}\\b`
   + `|\\b(?:says?|said|tells?|told)\\s+(?:to\\s+)?${ACTION}\\b`,
-  'i',
-);
-
-/**
- * Advice about an action in its -ing form: "consider merging it", "recommends pushing",
- * "merging now would be wise". The -ing forms were never checked before, so only these
- * narrow shapes are rejected; "the agent is running the tests you asked for" is spoken.
- */
-const ADVICE_ON_ACTION = new RegExp(
-  `\\b(?:consider|recommend\\w*|suggest\\w*|advis\\w*)\\s+(?:\\w+\\s+){0,2}?${ACTION_ING}\\b`
-  + `|\\b${ACTION_ING}\\b[^.!?;]*\\b(?:is|would be|will be|seems|looks)\\s+(?:\\w+\\s+){0,2}?(?:fine|wise|okay|ok|advisable|recommended|best|a good idea)\\b`,
   'i',
 );
 
@@ -103,22 +89,25 @@ function describesAction(sentence: string): boolean {
   return DESCRIPTIVE_OPENER.test(sentence) && !LISTENER_CUE.test(sentence) && !INNER_COMMAND.test(sentence);
 }
 
+/** Sentence ends: punctuation followed by a space or a capital. "Node.js" and "2.5" are not ends. */
+const SENTENCE_BREAK = /(?<=[.!?;:…])(?=\s|[A-Z"'“(])|[—–\n]|\s-\s/;
+
 /**
- * True when the text tells the listener what to do, how to answer, or that something is
- * safe, rather than describing what happened.
+ * True when the text tells the listener what to do rather than describing what happened.
  *
- * This is a heuristic, not a security boundary. An instruction can still get through
- * when it uses a verb outside the list ("ship it"), as it could before these rules
- * existed, or when it is dressed as a description ("the agent will merge it once the
- * tests pass" reads the same whether it is a report or a plan the operator is being
- * walked into). The boundary is elsewhere: the summary is only spoken and shown, and
- * the operator decides in the dashboard with the real prompt in front of them.
+ * This is a heuristic, not a security boundary. It never rejects anything the former
+ * rule accepted, and it accepts one thing the former rule rejected: a plain description
+ * that uses an action verb. An instruction can therefore get through in two ways. It
+ * can use a verb outside the list ("ship it"), as it always could. Or it can be dressed
+ * as a description ("the agent will merge it once the tests pass" reads the same
+ * whether it is a report or a plan the operator is being walked into). The boundary is
+ * elsewhere: the summary is only spoken and shown, and the operator decides in the
+ * dashboard with the real prompt in front of them.
  */
 function givesInstruction(text: string): boolean {
-  if (DECISION_WORD_DENYLIST.test(text) || SAFETY_CLAIM.test(text) || ANSWER_PROMPT.test(text)) return true;
-  if (ADVICE_ON_ACTION.test(text)) return true;
+  if (DECISION_WORD_DENYLIST.test(text)) return true;
   return text
-    .split(/(?<=[.!?;:…])\s*|[—–\n]|\s-\s/)
+    .split(SENTENCE_BREAK)
     .map((sentence) => sentence.trim())
     .some((sentence) => MENTIONS_ACTION.test(sentence) && !describesAction(sentence));
 }
@@ -273,7 +262,10 @@ function withinSummaryLimits(summary: string): boolean {
 function spokenWithinLimits(spoken: string): boolean {
   return spoken.length <= MAX_SUMMARY_CHARS * SPOKEN_CEILING
     && wordCount(spoken) <= MAX_SUMMARY_WORDS * SPOKEN_CEILING
-    && !givesInstruction(stripGeneratedPhrases(spoken));
+    // The generated phrases are removed so that "a commit" (spoken for a hash) is not taken for an
+    // action. Removing "pull request 42" can also remove a sentence's subject, so the text is only
+    // rejected when it reads as an instruction both with and without them.
+    && !(givesInstruction(stripGeneratedPhrases(spoken)) && givesInstruction(spoken));
 }
 
 function normalizeSummary(raw: string): string | null {
