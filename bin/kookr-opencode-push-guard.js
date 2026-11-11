@@ -112,6 +112,9 @@ function substitutions(text, literalQuotes = false) {
         j++;
       }
       out.push(text.slice(i + 2, depth === 0 ? j - 1 : j));
+      // The inside is classified on its own (with its own quoting rules). Do not also scan it here under the OUTER
+      // quote state: `git commit -m "$(cat <<'EOF' ... `git push` ... EOF)"` only quotes the backticks.
+      i = depth === 0 ? j - 1 : text.length;
     } else if (c === '`') {
       let end = i + 1;
       while (end < text.length && text[end] !== '`') end += text[end] === '\\' ? 2 : 1;
