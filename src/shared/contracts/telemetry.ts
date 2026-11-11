@@ -41,6 +41,20 @@ export const TELEMETRY_EVENT_TYPES = [
   'terminal_switch_latency',
   /** Renderer selection and subsequent GPU context-loss fallback. */
   'terminal_renderer_changed',
+  /**
+   * Avatar panel ("Lucy") interaction events. Each carries a `clipId` that
+   * matches the `clipId` on the speak response and on the server-side record
+   * in `lucy-interactions.jsonl`, so what she said and what the operator did
+   * can be joined. Shapes:
+   * - lucy_clip_started: { clipId, trigger: 'click' | 'replay', panelState: 'open' | 'minimized' | 'off', tabVisible: boolean }
+   * - lucy_clip_ended: { clipId, endedBy: 'finished' | 'user_stop' | 'superseded' | 'error', playedMs, totalMs }
+   * - lucy_clip_unheard: { clipId, reason: 'muted' | 'dnd' | 'audio_suspended' | 'error' }
+   * - lucy_panel_action: { action: 'enable' | 'disable' | 'minimize' | 'restore' | 'move' | 'replay', clipId?: string }
+   */
+  'lucy_clip_started',
+  'lucy_clip_ended',
+  'lucy_clip_unheard',
+  'lucy_panel_action',
 ] as const;
 
 export type TelemetryEventType = typeof TELEMETRY_EVENT_TYPES[number];

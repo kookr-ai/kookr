@@ -70,6 +70,17 @@ export interface SpeakAudioResponse {
   /** TTS synthesis time. 0 when the cache hit. */
   ttsMs: number;
   cached: boolean;
+  /**
+   * Unique id of this delivery (new on every response, including cache hits).
+   * Joins the server-side record in lucy-interactions.jsonl with the client
+   * `lucy_*` telemetry events.
+   */
+  clipId?: string;
+  /**
+   * The wording before the speakable-text step, present only when that step
+   * changed it. `text` is what was actually synthesised and shown as caption.
+   */
+  rawText?: string;
 }
 
 /**
