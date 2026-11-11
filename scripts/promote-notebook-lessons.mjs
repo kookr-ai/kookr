@@ -59,6 +59,11 @@
 //     "PROJECT COPIES of a lesson the domain shelf already holds" with the `nb rm`
 //     to run by hand; they are never removed on the strength of a different run.
 //
+// RESUMING. The end of an `--apply` run prints its tag. Re-running the same command
+// with `--tag <that tag>` resumes it exactly: the tag's tree is the baseline for the
+// minimum-score rule, so the aging that run's moves caused cannot lower the bar for
+// the rest. Without `--tag` a run judges the store as it is at that moment.
+//
 // ROLLBACK. `--apply` tags the store with a fresh `pre-lesson-promotion-<UTC time>`
 // anchor each run (an explicit --tag that already exists is kept). Every move and
 // removal is its own commit (the bin/nb.js shim commits each mutation; `--apply`
@@ -90,6 +95,7 @@ import {
   refreshShelves,
   removeCommand,
   snapshotStore,
+  storeAtTag,
   tagStore,
 } from './lib/nb-client.mjs';
 import { applyMove, applyRemove, cloneStore, decideStep, entryId, exactKey, fullShelfFloors, maxLines, shelfNameProblem } from './lib/nb-sim.mjs';
@@ -246,9 +252,8 @@ export function destinationFor(group, toGlobal) {
  * Build the step list for the groups an `--apply` would act on, simulating them
  * in order against `store` (mutated). `selected` is a Set of group ids.
  */
-export function planPromotion({ groups, selected, toGlobal, store, cap = maxLines(), forceLow = false }) {
+export function planPromotion({ groups, selected, toGlobal, store, cap = maxLines(), forceLow = false, floors = fullShelfFloors(store, cap) }) {
   const steps = [];
-  const floors = fullShelfFloors(store, cap);
   // Highest-scored groups first, so a strong lesson is admitted before weaker ones can crowd a full shelf.
   const ordered = [...groups].sort((a, b) => b.best.score - a.best.score || (a.id < b.id ? -1 : 1));
   for (const group of ordered) {
@@ -401,8 +406,14 @@ export function runPromotion({
     return { ok: false, error, usage: true, steps: [], performed: [], skipped: [], removed: [], warnings: [] };
   }
 
+  // The bar a mover must clear: the store as it was at the start of the run. To
+  // RESUME an earlier run, pass its tag (--tag <name>, printed at the end of that
+  // run): the tag's tree is then the baseline, so the aging its moves caused cannot
+  // lower the bar. Without an existing tag, the store as it is now.
+  const baseline = (tag && isStoreGitRepo(snapshot.dir) ? storeAtTag(snapshot.dir, tag, [...snapshot.store.keys()]) : null) ?? snapshot.store;
+  const floors = fullShelfFloors(baseline, cap);
   const sim = cloneStore(snapshot.store);
-  const steps = planPromotion({ groups: found.groups, selected, toGlobal, store: sim, cap, forceLow });
+  const steps = planPromotion({ groups: found.groups, selected, toGlobal, store: sim, cap, forceLow, floors });
   printReport({ snapshot, found, steps, cap, threshold, toGlobal, only, log });
 
   const result = { ok: true, steps, performed: [], skipped: [], removed: [], warnings: [], error: null };
@@ -441,7 +452,6 @@ export function runPromotion({
   // was promoted earlier in this run; a copy may only be removed while the
   // destination demonstrably still holds the lesson.
   const working = cloneStore(snapshot.store);
-  const floors = fullShelfFloors(snapshot.store, cap);
   const pendingRemovals = [];
   for (const step of steps) {
     if (!step.selected) continue;
@@ -552,6 +562,7 @@ export function runPromotion({
     }
   }
 
+  log(`\nRollback anchor and resume handle for this run: --tag ${tagName}`);
   log(`\nDone: ${result.performed.length} moved, ${result.removed.length} duplicate copies removed, ${result.skipped.length} skipped.`);
   return result;
 }

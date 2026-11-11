@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSlugAliases } from '../plugin/hooks/lib/notebook-layers.mjs';
@@ -528,6 +528,24 @@ describe('migrate-notebook-slugs: --apply guards', { timeout: 120_000 }, () => {
     expect(readLessons(dir, 'code-review@agent-notebook').map(([, t]) => t).sort()).toEqual(['weak a', 'weak b']);
   });
 
+  test('RESUME keeps the bar: re-running the same command does not let through what the first run refused, even after its aging', () => {
+    const dir = store();
+    writeShelf(dir, `code-review@${CANON}`, L([1, 'o1'], [1, 'o2'], [1, 'o3']));
+    writeShelf(dir, 'code-review@agent-notebook', L([5, 'strong'], [1, 'weak a'], [1, 'weak b']));
+    commitAll(dir);
+    run(dir, { apply: true, cap: 3 });
+    const afterFirst = readLessons(dir, `code-review@${CANON}`);
+    expect(afterFirst.map(([, t]) => t).sort()).toEqual(['o2', 'o3', 'strong']);
+    expect(afterFirst).toContainEqual([0, 'o2']); // aged by the first run: the live minimum is now 0
+    // The dry-run and the apply of the second run both judge against the rollback tag's baseline (min 1), not the aged store.
+    const dry = run(dir, { cap: 3 });
+    expect(dry.text).toContain('SKIP low score');
+    const second = run(dir, { apply: true, cap: 3 });
+    expect(second.result.performed).toEqual([]);
+    expect(readLessons(dir, `code-review@${CANON}`)).toEqual(afterFirst);
+    expect(readLessons(dir, 'code-review@agent-notebook').map(([, t]) => t).sort()).toEqual(['weak a', 'weak b']);
+  });
+
   test('a set-but-blank NB_DIR (an unset shell variable) is refused instead of falling back to the live store', () => {
     const script = join(repoRoot, 'scripts', 'migrate-notebook-slugs.mjs');
     const r = spawnSync(process.execPath, [script, '--nb', RAW_NB], { encoding: 'utf-8', env: cleanEnv({ NB_DIR: '' }) });
@@ -563,6 +581,15 @@ describe('store/client guards', () => {
     const rel = relative(process.cwd(), DEFAULT_NB);
     const client = createNbClient({ dir: '/nonexistent-never-used', nb: rel, env: cleanEnv({ NB_GIT_AUTOCOMMIT: '0' }) });
     expect(client.autocommitOff).toBe(true);
+  });
+
+  test('a symlink to the shim is still the shim (the NB_GIT_AUTOCOMMIT guard applies to `--nb $(which nb)`)', () => {
+    const holder = store({ git: false });
+    const link = join(holder, 'nb-link');
+    symlinkSync(DEFAULT_NB, link);
+    const client = createNbClient({ dir: holder, nb: link, env: cleanEnv({ NB_GIT_AUTOCOMMIT: '0' }) });
+    expect(client.autocommitOff).toBe(true);
+    expect(createNbClient({ dir: holder, nb: RAW_NB, env: cleanEnv({ NB_GIT_AUTOCOMMIT: '0' }) }).autocommitOff).toBe(false);
   });
 
   test('a stray .git that is not a repository, inside a real repository, does not count as the store\'s own repo', () => {

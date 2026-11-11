@@ -232,6 +232,15 @@ export function checkArgv(argv, { switches = [], values = [] }) {
 // running nb
 // ---------------------------------------------------------------------------
 
+/** True when two paths name the same file, following symlinks (`which nb` is a symlink to the shim). */
+function samePath(a, b) {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
+}
+
 /** A runner for one notebooks directory. */
 export function createNbClient({ dir, nb = DEFAULT_NB, env = process.env } = {}) {
   const runEnv = { ...env };
@@ -261,7 +270,7 @@ export function createNbClient({ dir, nb = DEFAULT_NB, env = process.env } = {})
    * so --apply refuses when they are switched off. (A custom --nb is the caller's
    * responsibility.)
    */
-  const usesShim = resolve(nb) === DEFAULT_NB;
+  const usesShim = samePath(nb, DEFAULT_NB);
   const autocommitOff = usesShim && runEnv.NB_GIT_AUTOCOMMIT === '0';
   return { run, runJson, dir: runEnv.NB_DIR, autocommitOff, expectsCommits: usesShim && !autocommitOff };
 }
@@ -273,11 +282,31 @@ export function createNbClient({ dir, nb = DEFAULT_NB, env = process.env } = {})
 const META_RE = /^#\s*([a-z][a-z0-9_-]*):\s?(.*)$/;
 
 /**
+ * Parse the text of a shelf file, read-only, the way `nb` does: leading `# key:`
+ * lines are metadata, every later non-blank line is `<score>\t<lesson>`.
+ * Returns entries `{ id, score, text }` in FILE order (least-recently-touched first).
+ */
+export function parseShelfText(body) {
+  const entries = [];
+  let inMeta = true;
+  for (const line of body.split('\n')) {
+    if (inMeta && META_RE.test(line)) continue;
+    inMeta = false;
+    if (line.trim() === '') continue;
+    const tab = line.indexOf('\t');
+    const text = (tab === -1 ? line : line.slice(tab + 1)).replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (text === '') continue;
+    const n = tab === -1 ? 0 : Number.parseInt(line.slice(0, tab), 10);
+    entries.push({ id: entryId(text), score: Number.isFinite(n) ? n : 0, text });
+  }
+  return entries;
+}
+
+/**
  * Entry ids of a shelf file in FILE order (least-recently-touched first), parsed
- * read-only the way `nb` parses it (leading `# key:` lines are metadata; every
- * later non-blank line is `<score>\t<lesson>`). `nb show --json` lists highest
- * score first and drops this order, but eviction ties and the one-point aging
- * both depend on it, so the simulation needs it. Returns `null` if unreadable.
+ * read-only. `nb show --json` lists highest score first and drops this order, but
+ * eviction ties and the one-point aging both depend on it, so the simulation needs
+ * it. Returns `null` if the file is unreadable.
  */
 export function readFileOrderIds(dir, shelf) {
   let body;
@@ -286,17 +315,24 @@ export function readFileOrderIds(dir, shelf) {
   } catch {
     return null;
   }
-  const ids = [];
-  let inMeta = true;
-  for (const line of body.split('\n')) {
-    if (inMeta && META_RE.test(line)) continue;
-    inMeta = false;
-    if (line.trim() === '') continue;
-    const tab = line.indexOf('\t');
-    const text = (tab === -1 ? line : line.slice(tab + 1)).replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
-    if (text !== '') ids.push(entryId(text));
+  return parseShelfText(body).map((e) => e.id);
+}
+
+/**
+ * The store as it was at git ref `tag` (a rollback tag), for `shelves`: a
+ * Map<shelf, entries in file order>. Returns `null` when the tag does not exist.
+ * A resumed run judges its moves against this baseline, not against the store as
+ * the earlier part of the run left it, so the one-point aging that earlier moves
+ * caused cannot lower the bar for the rest.
+ */
+export function storeAtTag(dir, tag, shelves) {
+  if (!git(dir, ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]).ok) return null;
+  const store = new Map();
+  for (const shelf of shelves) {
+    const r = git(dir, ['show', `refs/tags/${tag}:${shelf}.md`]);
+    store.set(shelf, r.ok ? parseShelfText(r.stdout) : []);
   }
-  return ids;
+  return store;
 }
 
 /**

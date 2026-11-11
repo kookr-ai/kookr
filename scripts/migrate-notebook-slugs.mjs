@@ -83,6 +83,7 @@ import {
   reapZeroByteShelf,
   refreshShelves,
   snapshotStore,
+  storeAtTag,
   tagStore,
 } from './lib/nb-client.mjs';
 import { cloneStore, applyMove, decideStep, entryId, fullShelfFloors, maxLines, shelfNameProblem } from './lib/nb-sim.mjs';
@@ -115,13 +116,12 @@ function chooseTarget(cls, canonicalAsWritten, shelfNames, aliases) {
  * step is `{ from, to, id, score, text, decision }` with `decision` from
  * {@link decideStep} as simulated in order.
  */
-export function planMigration({ snapshot, aliases, cap = maxLines(), forceLow = false }) {
+export function planMigration({ snapshot, aliases, cap = maxLines(), forceLow = false, floors = fullShelfFloors(snapshot.store, cap) }) {
   const names = [...snapshot.store.keys()].sort();
   const legacy = [];
   const invalid = [];
   const steps = [];
   const sim = cloneStore(snapshot.store);
-  const floors = fullShelfFloors(snapshot.store, cap);
 
   for (const name of names) {
     const cls = classifyShelf(name, aliases);
@@ -258,7 +258,12 @@ export function runMigration({
 }) {
   const snapshot = snapshotStore(client);
   const dir = snapshot.dir;
-  const plan = planMigration({ snapshot, aliases, cap, forceLow });
+  // The bar a mover must clear comes from the store as it was when the migration
+  // began: the rollback tag's tree on a resumed run, else the store now. Otherwise
+  // the aging that run 1's moves caused would lower the bar for run 2.
+  const baseline = (isStoreGitRepo(dir) ? storeAtTag(dir, tag, [...snapshot.store.keys()]) : null) ?? snapshot.store;
+  const floors = fullShelfFloors(baseline, cap);
+  const plan = planMigration({ snapshot, aliases, cap, forceLow, floors });
   printPlan({ plan, snapshot, cap, forceLow, log });
 
   const result = { ok: true, plan, performed: [], skipped: [], reaped: [], remaining: [], warnings: [], error: null };
@@ -313,7 +318,6 @@ export function runMigration({
 
   // The moves: each one re-reads the two shelves it touches.
   const working = cloneStore(snapshot.store);
-  const floors = fullShelfFloors(snapshot.store, cap);
   let moved = 0;
   for (const step of plan.steps) {
     if (moved >= stopAfter) break;

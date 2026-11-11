@@ -62,6 +62,7 @@ function run(dir: string, o: Opts = {}) {
 const groupsOf = (dir: string, threshold?: number) =>
   findGroups({ store: snapshotStore(createNbClient({ dir, nb: RAW_NB, env: cleanEnv() })).store, aliases, threshold });
 
+const T2 = 'Pin the node version in CI: an unpinned runner upgrades under you and breaks the lockfile install again.';
 const SAME = 'Run the full suite before pushing: a green unit lane alone hides integration breakage.';
 
 describe('findGroups', () => {
@@ -634,6 +635,24 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
       expect(holders, lesson).not.toEqual([]);
     }
     expect(result.ok).toBe(true);
+  });
+
+  test('RESUME with the run\'s tag keeps the bar: the aging the first run caused does not let a tying group through the second time', () => {
+    const dir = store();
+    const U = 'Run migrations before the integration suite: a stale schema makes half of it fail for no good reason.';
+    writeShelf(dir, 'code-review', L([1, 'o1'], [1, 'o2'], [1, 'o3']));
+    writeShelf(dir, 'code-review@repo-one', L([5, SAME], [1, T2], [1, U]));
+    writeShelf(dir, 'code-review@repo-two', L([5, SAME], [1, T2], [1, U]));
+    commitAll(dir);
+    const first = run(dir, { apply: true, cap: 3, tag: 'resume-anchor' });
+    expect(first.result.ok).toBe(true);
+    expect(readLessons(dir, 'code-review').map(([, t]) => t)).toContain(SAME);
+    expect(readLessons(dir, 'code-review').some(([s]) => s === 0)).toBe(true); // aged by the first run
+    expect(first.text).toContain('--tag resume-anchor');
+    const second = run(dir, { apply: true, cap: 3, tag: 'resume-anchor' });
+    expect(second.result.performed).toEqual([]);
+    expect(readLessons(dir, 'code-review@repo-one').map(([, t]) => t).sort()).toEqual([T2, U].sort());
+    expect(readLessons(dir, 'code-review@repo-two').map(([, t]) => t).sort()).toEqual([T2, U].sort());
   });
 
   test('groups are applied highest-scored first', () => {
