@@ -341,7 +341,13 @@ export interface TriageNavigationSlice {
   armShortcuts: () => void;
 }
 
-export type DetailPaneMode = 'split' | 'left' | 'right';
+/**
+ * Layout of the task reading pane (#3561 slice 4a).
+ * - `tabs` (default): one pane at a time, chosen by `narrowTab` (Conversation, Terminal, GitHub).
+ * - `split`: Split view, the conversation and the terminal side by side (wide screens only).
+ * - `right`: terminal focus, the terminal alone without the tab bar.
+ */
+export type DetailPaneMode = 'tabs' | 'split' | 'right';
 
 export type DiscoveryStatus = SkillDiscoveryStateSnapshot;
 

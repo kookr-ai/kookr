@@ -3,6 +3,7 @@ import {
   getTmuxNameForPrompt,
   launchViaUI,
   resetServer,
+  openTerminalTab,
 } from './battle-helpers.js';
 import type { APIRequestContext, Page } from '@playwright/test';
 
@@ -22,14 +23,7 @@ async function getKeysReceived(request: APIRequestContext, tmuxName: string): Pr
 
 async function waitForTerminal(page: Page): Promise<void> {
   await page.locator('.healthy-row').first().click();
-  const restore = page.getByRole('button', { name: 'Show terminal/diff pane' });
-  if (await restore.isVisible()) {
-    await restore.click();
-  }
-  const terminalTab = page.locator('.detail-split-right').getByRole('button', { name: 'Terminal', exact: true });
-  if (await terminalTab.isVisible()) {
-    await terminalTab.click();
-  }
+  await openTerminalTab(page);
   await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible({ timeout: 10_000 });
   await page.locator('.terminal-xterm .xterm-screen').click();
 }

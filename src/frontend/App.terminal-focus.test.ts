@@ -150,7 +150,7 @@ describe('App terminal focus mode', () => {
     await flush();
 
     expect(useKookrStore.getState().terminalFocusMode).toBe(false);
-    expect(useKookrStore.getState().detailPaneMode).toBe('split');
+    expect(useKookrStore.getState().detailPaneMode).toBe('tabs');
     expect(localStorage.getItem('kookr-detail-panel-mode')).toBeNull();
   });
 
@@ -365,7 +365,7 @@ describe('App terminal focus mode', () => {
     });
     await flush();
 
-    expect(useKookrStore.getState().detailPaneMode).toBe('split');
+    expect(useKookrStore.getState().detailPaneMode).toBe('tabs');
     expect(useKookrStore.getState().terminalFocusMode).toBe(false);
 
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1301 });
@@ -412,7 +412,7 @@ describe('App terminal focus mode', () => {
     expect(useKookrStore.getState().detailPaneMode).toBe('right');
   });
 
-  test('preserves selected left subpane when activity-only mode collapses below the wide breakpoint', async () => {
+  test('a stored split view collapses to tabs below the wide breakpoint and keeps the selected tab', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1000 });
     localStorage.removeItem('kookr-detail-panel-mode');
     syncGlobalStore();
@@ -435,14 +435,16 @@ describe('App terminal focus mode', () => {
     ]);
     useKookrStore.getState().selectProject('github.com/me/focus');
     useKookrStore.getState().setLeftPane('github');
-    useKookrStore.getState().setDetailPaneMode('left');
+    useKookrStore.getState().setNarrowTab('github');
+    useKookrStore.getState().setDetailPaneMode('split');
 
     await act(async () => {
       root.render(React.createElement(App));
     });
     await waitForElement(container, '[data-testid="detail-panel"]');
 
-    expect(useKookrStore.getState().detailPaneMode).toBe('left');
+    // The stored preference survives; only the rendering falls back to tabs.
+    expect(useKookrStore.getState().detailPaneMode).toBe('split');
     expect(useKookrStore.getState().leftPane).toBe('github');
     expect(useKookrStore.getState().narrowTab).toBe('github');
   });

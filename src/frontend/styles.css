@@ -6667,14 +6667,13 @@ label.task-share-row {
 .detail-split-terminal-focus .detail-split-right {
   flex: 1 1 auto;
 }
-.detail-split-left-only {
-  background: var(--bg-panel);
-}
-.detail-split-left-only .detail-split-left {
+/* #3561 slice 4a: the tabbed layout shows one pane at full width. */
+.detail-split-tabbed .detail-split-left,
+.detail-split-tabbed .detail-split-right {
   flex: 1 1 auto;
   border-right: none;
 }
-.pane-hidden-wide {
+.pane-hidden-tab {
   display: none !important;
 }
 
@@ -6738,46 +6737,47 @@ label.task-share-row {
   cursor: default;
 }
 
-/* Narrow-mode tab bar (hidden on wide viewports) */
-.detail-tabs-narrow {
-  display: none;
+/* Reading-pane tab bar (#3561 slice 4a): Conversation, Terminal and GitHub at
+   every width, with the Split view toggle at the right end on wide windows. */
+.detail-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-panel);
   flex-shrink: 0;
+  min-width: 0;
 }
 .detail-tab {
-  padding: 6px 16px;
+  padding: 8px 10px;
+  margin-bottom: -1px;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
+  white-space: nowrap;
   transition: color 0.15s, border-color 0.15s;
 }
 .detail-tab:hover { color: var(--text); }
+.detail-tab:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+}
 .detail-tab.active {
   color: var(--teal);
   border-bottom-color: var(--teal);
 }
+.detail-split-toggle {
+  margin-left: auto;
+}
 
-/* Narrow viewport fallback — show tab bar, hide split headers, single-pane view */
+/* Narrow viewport: the pane's own Terminal/Diff header gives way to the tab bar. */
 @media (max-width: 1200px) {
-  .detail-tabs-narrow {
-    display: flex;
-  }
   .detail-pane-header {
     display: none;
-  }
-  .detail-split-left,
-  .detail-split-right {
-    flex: 1;
-  }
-  .detail-split-left {
-    border-right: none;
-  }
-  .pane-hidden-narrow {
-    display: none !important;
   }
 }
 
@@ -8702,10 +8702,10 @@ button.completed-row-rating:focus-visible {
   word-break: break-word;
   max-width: 72ch;
 }
-/* When the terminal/diff pane is hidden the activity pane fills the width;
+/* In the tabbed layout the conversation pane fills the width;
    relax the prose cap so text uses more of the space and needs less vertical
    scrolling, while keeping a generous bound for readability on wide screens. */
-.detail-split-left-only .act-msg-text {
+.detail-split-tabbed .act-msg-text {
   max-width: 110ch;
 }
 .act-msg-collapsed .act-msg-text {
@@ -13297,10 +13297,6 @@ a.oss-productivity-empty-docs-link:visited:hover {
   .dependency-edge-row {
     grid-template-columns: 1fr;
     gap: 2px;
-  }
-
-  .detail-tabs-narrow {
-    display: flex;
   }
 
   .detail-tab {

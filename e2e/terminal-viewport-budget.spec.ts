@@ -7,6 +7,7 @@ import {
   injectSessionStart,
   injectEditEvent,
   injectStopEvent,
+  openTerminalTab,
 } from './battle-helpers.js';
 import type { APIRequestContext, Page } from '@playwright/test';
 import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
@@ -56,6 +57,7 @@ async function selectBudgetTask(page: Page) {
   await page.locator(`[data-testid="project-icon-${PROJECT_ID}"]`).click();
   await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
   await page.locator('.finding-card').first().click();
+  await openTerminalTab(page);
   await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
 }
 
@@ -123,11 +125,16 @@ test.describe('Terminal viewport budgets', () => {
     expect(githubResponse.ok()).toBe(true);
 
     await selectBudgetTask(page);
-    await expect(page.locator('.detail-split-left')).toBeVisible();
     await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
-    await expect(page.locator('.detail-split-left').getByRole('button', { name: /^GitHub/ })).toBeVisible();
+    await expect(page.getByTestId('detail-tabs').getByRole('button', { name: /^GitHub/ })).toBeVisible();
 
     await expectTerminalBudget(page, { width: 400, height: 480, cols: 50, rows: 34 }, 'desktop terminal');
+
+    // #3561 4a: Split view puts the conversation back beside the terminal; the
+    // terminal must still meet the same budget there.
+    await page.getByTestId('detail-split-toggle').click();
+    await expect(page.locator('.detail-split-left')).toBeVisible();
+    await expectTerminalBudget(page, { width: 400, height: 480, cols: 50, rows: 34 }, 'desktop terminal in split view');
   });
 
   test('terminal focus mode restores a wide desktop terminal budget', async ({ page, request }) => {

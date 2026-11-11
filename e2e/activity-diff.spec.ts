@@ -41,8 +41,9 @@ test.describe('Activity panel → diff pane', () => {
     const editEntry = page.locator('button.act-tool-entry.is-clickable', { hasText: 'foo.ts' });
     await expect(editEntry).toBeVisible();
 
-    // Terminal pane is visible, Diff tab not present yet
-    await expect(page.locator('.right-pane-slot-terminal')).toBeVisible();
+    // #3561 4a: the tabbed layout opens on the conversation, so the terminal
+    // is off screen and no Diff exists yet.
+    await expect(page.locator('.right-pane-slot-terminal')).toBeHidden();
     await expect(page.locator('.right-pane-slot-diff')).toHaveCount(0);
 
     // Click the edit entry — diff pane opens
@@ -122,6 +123,9 @@ test.describe('Activity panel → diff pane', () => {
     await expect(page.locator('.diff-line.diff-add')).toContainText('+Y');
     await expect(page.locator('.diff-line.diff-del')).toContainText('-X');
 
+    // #3561 4a: the diff replaced the conversation tab; go back to it.
+    await page.locator('.detail-tab', { hasText: 'Conversation' }).click();
+
     // Click the SECOND group's foo.ts entry → expect diff with +B / -A (tu_second)
     const secondEntry = page.locator('button.act-tool-entry.is-clickable').nth(1);
     await secondEntry.click();
@@ -146,6 +150,9 @@ test.describe('Activity panel → diff pane', () => {
     await entries.filter({ hasText: 'a.ts' }).click();
     await expect(page.locator('.diff-pane-path')).toContainText('a.ts');
     await expect(page.locator('.diff-line.diff-add')).toContainText('+2');
+
+    // #3561 4a: the diff replaced the conversation tab; go back to it.
+    await page.locator('.detail-tab', { hasText: 'Conversation' }).click();
 
     // Click second edit — same pane updates, no close
     await entries.filter({ hasText: 'b.ts' }).click();

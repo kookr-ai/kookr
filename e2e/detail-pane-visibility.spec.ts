@@ -71,55 +71,77 @@ test.describe('Detail pane visibility controls', () => {
     await expect(page.locator('.logo')).toHaveText('KOOKR');
   });
 
-  test('supports split, activity-only, terminal-only, restore, and reload persistence', async ({ page, request }) => {
+  test('#3561 4a: tabs by default, Split view toggle, terminal focus, and reload persistence', async ({ page, request }) => {
     await seedDetailTask(page, request);
     await selectDetailTask(page);
 
-    await expect(page.locator('.detail-split-left')).toBeVisible();
-    await expect(page.locator('.detail-split-right')).toBeVisible();
-    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
-
-    await page.getByRole('button', { name: 'Hide terminal/diff pane' }).click();
-    await expect(page.locator('.detail-panel.detail-left-only')).toBeVisible();
+    // Default: one pane at a time, the conversation first, the terminal off screen.
+    const tabs = page.getByTestId('detail-tabs');
+    const conversationTab = tabs.getByRole('button', { name: 'Conversation', exact: true });
+    const terminalTab = tabs.getByRole('button', { name: 'Terminal', exact: true });
+    const splitToggle = page.getByTestId('detail-split-toggle');
+    await expect(page.locator('.detail-panel.detail-tabbed')).toBeVisible();
+    await expect(conversationTab).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('.detail-split-left')).toBeVisible();
     await expect(page.locator('.detail-split-right')).toBeHidden();
-    await expect(page.getByRole('button', { name: 'Show terminal/diff pane' })).toBeVisible();
     await expect(page.locator('.terminal-xterm')).toBeHidden();
-    await expect.poll(
-      () => page.evaluate((key) => localStorage.getItem(key), DETAIL_PANE_MODE_STORAGE_KEY),
-    ).toBe('left');
-
-    await page.getByRole('button', { name: 'Show terminal/diff pane' }).click();
-    await expect(page.locator('.detail-split-left')).toBeVisible();
-    await expect(page.locator('.detail-split-right')).toBeVisible();
+    await expect(splitToggle).toHaveAttribute('aria-pressed', 'false');
     await expect.poll(
       () => page.evaluate((key) => localStorage.getItem(key), DETAIL_PANE_MODE_STORAGE_KEY),
     ).toBeNull();
 
+    // The Terminal tab swaps the conversation out for the terminal.
+    await terminalTab.click();
+    await expect(terminalTab).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.detail-split-left')).toBeHidden();
+    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
+
+    // Split view shows both side by side and is remembered.
+    await splitToggle.click();
+    await expect(splitToggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.detail-split-left')).toBeVisible();
+    await expect(page.locator('.detail-split-right')).toBeVisible();
+    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
+    await expect(terminalTab).toHaveCount(0);
+    await expect.poll(
+      () => page.evaluate((key) => localStorage.getItem(key), DETAIL_PANE_MODE_STORAGE_KEY),
+    ).toBe('split');
+
+    // Terminal focus hides the tab bar; "Show conversation" returns to tabs.
     await page.getByRole('button', { name: /terminal focus/i }).click();
     await expect(page.locator('.detail-panel.terminal-focus')).toBeVisible();
     await expect(page.locator('.detail-split-left')).toHaveCount(0);
-    await expect(page.locator('.detail-split-right')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Show Activity/GitHub pane' })).toBeVisible();
+    await expect(tabs).toHaveCount(0);
     await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
     await expect.poll(
       () => page.evaluate((key) => localStorage.getItem(key), DETAIL_PANE_MODE_STORAGE_KEY),
     ).toBe('right');
 
-    await page.getByRole('button', { name: 'Show Activity/GitHub pane' }).click();
+    await page.getByRole('button', { name: 'Show conversation' }).click();
+    await expect(page.locator('.detail-panel.detail-tabbed')).toBeVisible();
+    await expect(conversationTab).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('.detail-split-left')).toBeVisible();
-    await expect(page.locator('.detail-split-right')).toBeVisible();
 
-    await page.getByRole('button', { name: 'Hide terminal/diff pane' }).click();
+    // Split view survives a reload.
+    await splitToggle.click();
     await page.reload();
     await expect(page.locator('.logo')).toHaveText('KOOKR');
     await selectDetailTask(page);
 
-    await expect(page.locator('.detail-panel.detail-left-only')).toBeVisible();
+    await expect(page.getByTestId('detail-split-toggle')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('.detail-split-left')).toBeVisible();
-    await expect(page.locator('.detail-split-right')).toBeHidden();
-    await expect.poll(
-      () => page.evaluate((key) => localStorage.getItem(key), DETAIL_PANE_MODE_STORAGE_KEY),
-    ).toBe('left');
+    await expect(page.locator('.detail-split-right')).toBeVisible();
+  });
+
+  test('#3561 4a: narrow windows keep the tabs and offer no Split view', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1180, height: 900 });
+    await seedDetailTask(page, request);
+    await selectDetailTask(page);
+
+    await expect(page.getByTestId('detail-tabs')).toBeVisible();
+    await expect(page.getByTestId('detail-split-toggle')).toHaveCount(0);
+    await page.getByTestId('detail-tab-terminal').click();
+    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
+    await expect(page.locator('.detail-split-left')).toBeHidden();
   });
 });

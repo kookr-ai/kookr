@@ -479,15 +479,22 @@ describe('Kookr Zustand Store', () => {
     });
   });
 
-  test('selectAgent resets leftPane and narrowTab to activity', () => {
+  test('selectAgent resets the GitHub tab to the conversation', () => {
     store.getState().setLeftPane('github');
-    store.getState().setNarrowTab('terminal');
-    expect(store.getState().leftPane).toBe('github');
-    expect(store.getState().narrowTab).toBe('terminal');
+    store.getState().setNarrowTab('github');
 
     store.getState().selectAgent('agent-1');
     expect(store.getState().leftPane).toBe('activity');
     expect(store.getState().narrowTab).toBe('activity');
+  });
+
+  test('#3561 4a: selectAgent keeps the Terminal tab so terminal watchers stay on it', () => {
+    store.getState().setLeftPane('github');
+    store.getState().setNarrowTab('terminal');
+
+    store.getState().selectAgent('agent-1');
+    expect(store.getState().leftPane).toBe('activity');
+    expect(store.getState().narrowTab).toBe('terminal');
   });
 
   test('selectAgent persists the selected task for reload restore', () => {
@@ -528,7 +535,7 @@ describe('Kookr Zustand Store', () => {
 
   test('detail pane mode persists and keeps terminal focus mode compatible', () => {
     expect(store.getState().terminalFocusMode).toBe(false);
-    expect(store.getState().detailPaneMode).toBe('split');
+    expect(store.getState().detailPaneMode).toBe('tabs');
 
     store.getState().setNarrowTab('activity');
     store.getState().setDetailPaneMode('right');
@@ -544,20 +551,31 @@ describe('Kookr Zustand Store', () => {
 
     freshStore.getState().toggleTerminalFocusMode();
     expect(freshStore.getState().terminalFocusMode).toBe(false);
-    expect(freshStore.getState().detailPaneMode).toBe('split');
+    expect(freshStore.getState().detailPaneMode).toBe('tabs');
+    // Leaving focus keeps the terminal in view on its tab.
+    expect(freshStore.getState().narrowTab).toBe('terminal');
     expect(localStore.has('kookr-detail-panel-mode')).toBe(false);
   });
 
-  test('left detail pane mode persists without enabling terminal focus mode', () => {
-    store.getState().setDetailPaneMode('left');
+  test('split view persists without enabling terminal focus mode', () => {
+    store.getState().setDetailPaneMode('split');
 
-    expect(store.getState().detailPaneMode).toBe('left');
+    expect(store.getState().detailPaneMode).toBe('split');
     expect(store.getState().terminalFocusMode).toBe(false);
-    expect(localStore.get('kookr-detail-panel-mode')).toBe('left');
+    expect(localStore.get('kookr-detail-panel-mode')).toBe('split');
 
     const freshStore = createKookrStore();
-    expect(freshStore.getState().detailPaneMode).toBe('left');
+    expect(freshStore.getState().detailPaneMode).toBe('split');
     expect(freshStore.getState().terminalFocusMode).toBe(false);
+  });
+
+  test('a stored activity-only mode from an earlier build loads as the tabbed layout', () => {
+    localStore.set('kookr-detail-panel-mode', 'left');
+
+    const freshStore = createKookrStore();
+
+    expect(freshStore.getState().detailPaneMode).toBe('tabs');
+    expect(localStore.has('kookr-detail-panel-mode')).toBe(false);
   });
 
   test('legacy terminal focus preference migrates to right detail pane mode', () => {
@@ -574,20 +592,20 @@ describe('Kookr Zustand Store', () => {
   test('saving detail pane mode clears stale legacy terminal focus preference', () => {
     localStore.set('kookr-terminal-focus-mode', '1');
 
-    store.getState().setDetailPaneMode('split');
+    store.getState().setDetailPaneMode('tabs');
 
-    expect(store.getState().detailPaneMode).toBe('split');
+    expect(store.getState().detailPaneMode).toBe('tabs');
     expect(localStore.has('kookr-detail-panel-mode')).toBe(false);
     expect(localStore.has('kookr-terminal-focus-mode')).toBe(false);
   });
 
-  test('invalid persisted detail pane mode falls back to split', () => {
+  test('invalid persisted detail pane mode falls back to tabs', () => {
     localStore.set('kookr-detail-panel-mode', 'sideways');
     localStore.set('kookr-terminal-focus-mode', '1');
 
     const freshStore = createKookrStore();
 
-    expect(freshStore.getState().detailPaneMode).toBe('split');
+    expect(freshStore.getState().detailPaneMode).toBe('tabs');
     expect(freshStore.getState().terminalFocusMode).toBe(false);
     expect(localStore.has('kookr-detail-panel-mode')).toBe(false);
     expect(localStore.get('kookr-terminal-focus-mode')).toBe('1');
@@ -608,7 +626,7 @@ describe('Kookr Zustand Store', () => {
     expect(freshStore.getState().narrowTab).toBe('terminal');
 
     freshStore.getState().toggleTerminalFocusMode();
-    expect(freshStore.getState().detailPaneMode).toBe('split');
+    expect(freshStore.getState().detailPaneMode).toBe('tabs');
     expect(freshStore.getState().terminalFocusMode).toBe(false);
   });
 
@@ -1435,6 +1453,25 @@ describe('Kookr Zustand Store', () => {
     store.getState().nextBottleneck();
     expect(store.getState().selectedAgentId).toBeNull();
     expect(store.getState().shortcutsArmed).toBe(false);
+  });
+
+  test('#3561 4a: keyboard navigation keeps the Terminal tab and resets the GitHub tab', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'healthy-1', events: [], anomaly: null },
+      { agentId: 'healthy-2', events: [], anomaly: null },
+    ]);
+
+    store.getState().setNarrowTab('terminal');
+    store.getState().nextTask();
+    expect(store.getState().narrowTab).toBe('terminal');
+    store.getState().previousTask();
+    expect(store.getState().narrowTab).toBe('terminal');
+
+    store.getState().setLeftPane('github');
+    store.getState().setNarrowTab('github');
+    store.getState().nextTask();
+    expect(store.getState().narrowTab).toBe('activity');
+    expect(store.getState().leftPane).toBe('activity');
   });
 
   test('nextTask cycles through findings then healthy in round-robin', () => {

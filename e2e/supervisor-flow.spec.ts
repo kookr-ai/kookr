@@ -185,7 +185,9 @@ test.describe('Supervisor flow — auto-advance', () => {
     // mount before clicking Skip so the button does not move during the click.
     await page.keyboard.press('Alt+n');
     await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
-    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
+    // #3561 4a: the lazily loaded conversation is what settles the layout now
+    // that the terminal sits behind its tab.
+    await expect(page.locator('.detail-split-left .activity-panel')).toBeVisible();
     const firstSelected = await page.locator('.finding-card.selected .finding-task').textContent();
     expect(firstSelected).toMatch(/^Skip Agent [AB]$/);
 
@@ -216,7 +218,9 @@ test.describe('Supervisor flow — auto-advance', () => {
     // Select first finding
     await page.keyboard.press('Alt+n');
     await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
-    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
+    // #3561 4a: the lazily loaded conversation is what settles the layout now
+    // that the terminal sits behind its tab.
+    await expect(page.locator('.detail-split-left .activity-panel')).toBeVisible();
     const firstSelected = await page.locator('.finding-card.selected .finding-task').textContent();
     expect(firstSelected).toMatch(/^Snooze Agent [AB]$/);
 
@@ -289,7 +293,7 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
     });
 
     // GitHub tab should appear
-    const githubTab = page.locator('.pane-tab:has-text("GitHub")');
+    const githubTab = page.locator('.detail-tab:has-text("GitHub")');
     await expect(githubTab).toBeVisible();
     await expect(githubTab).toContainText('1');
 
@@ -357,7 +361,7 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
       },
     });
 
-    const githubTab = page.locator('.pane-tab:has-text("GitHub")');
+    const githubTab = page.locator('.detail-tab:has-text("GitHub")');
     await expect(githubTab).toBeVisible();
     await githubTab.click();
 
@@ -386,7 +390,7 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
 
     // Without any githubUpdate, there should be no GitHub tab at all
     // (the tab only appears when ghCount > 0)
-    await expect(page.locator('.pane-tab:has-text("GitHub")')).not.toBeVisible();
+    await expect(page.locator('.detail-tab:has-text("GitHub")')).not.toBeVisible();
   });
 
   test('GitHub tab shows issue cards', async ({ page, request }) => {
@@ -425,7 +429,7 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
       },
     });
 
-    const githubTab = page.locator('.pane-tab:has-text("GitHub")');
+    const githubTab = page.locator('.detail-tab:has-text("GitHub")');
     await expect(githubTab).toBeVisible();
     await githubTab.click();
 
@@ -470,13 +474,13 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
     });
 
     // Switch left pane to GitHub
-    const githubTab = page.locator('.pane-tab:has-text("GitHub")');
+    const githubTab = page.locator('.detail-tab:has-text("GitHub")');
     await expect(githubTab).toBeVisible();
     await githubTab.click();
     await expect(page.locator('.gh-pr-card')).toBeVisible();
 
-    // Switch left pane back to Activity
-    await page.locator('.pane-tab:has-text("Activity")').click();
+    // Switch back to the conversation
+    await page.locator('.detail-tab:has-text("Conversation")').click();
 
     // GitHub panel should not be visible anymore
     await expect(page.locator('.gh-pr-card')).not.toBeVisible();

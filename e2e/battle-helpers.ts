@@ -266,3 +266,14 @@ async function currentTaskCount(page: Page): Promise<number> {
 export async function waitForFindingCount(page: Page, count: number) {
   await expect(page.locator('.statusbar')).toContainText(`${count} finding`, { timeout: 5000 });
 }
+
+/**
+ * #3561 slice 4a: the terminal is a tab of the task reading pane. Select it
+ * when the pane offers the tab (the default tabbed layout). Split view and
+ * terminal focus already show the terminal, so there is nothing to click.
+ */
+export async function openTerminalTab(page: Page): Promise<void> {
+  await expect(page.getByTestId('detail-panel')).toBeVisible();
+  const tab = page.getByTestId('detail-tab-terminal');
+  if (await tab.isVisible()) await tab.click();
+}

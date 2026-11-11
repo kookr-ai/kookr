@@ -125,7 +125,7 @@ Use the dense-supervision controls before resizing your browser:
 
 1. Press `Alt+T` on desktop to enter terminal focus mode.
 2. Press `Alt+P` if the project sidebar is still visible and you want it hidden.
-3. On narrow desktop windows, select the **Terminal** detail tab.
+3. Otherwise select the **Terminal** tab of the task pane; on windows wider than 1200 px, **Split view** keeps the conversation beside it.
 4. On mobile, use the **Task** tab; terminal focus mode is intentionally desktop-only.
 5. Press `?` for the current shortcut list.
 

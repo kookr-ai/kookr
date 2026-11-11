@@ -4,6 +4,15 @@
 
 **Draft (v4 - post-round-3 revision)** (2026-05-25)
 
+> **Superseded in part (2026-11, #3561 slice 4a).** The reading pane now opens
+> as tabs at every width: Conversation (the former Activity pane), Terminal and
+> GitHub. A **Split view** toggle at the right end of the tab bar restores the
+> side-by-side layout on windows wider than 1200 px. Terminal focus is
+> unchanged, and its restore control is now "Show conversation". The stored
+> modes are `tabs` (the default, kept as no stored key), `split` and `right`;
+> an old stored `left` loads as `tabs`. The "Hide terminal/diff pane" and
+> "Show terminal/diff pane" controls described below no longer exist.
+
 ---
 
 ## Problem
