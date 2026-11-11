@@ -440,17 +440,6 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     };
   }, [agent?.taskId]);
 
-  // Clear diff/file state when the selected agent changes. Avoids showing stale
-  // content bound to a different agent's toolUseId or worktree.
-  useEffect(() => {
-    setActiveDiff(null);
-    setActiveFile(null);
-    setRightPane('terminal');
-    diffTriggerRef.current = null;
-    fileTriggerRef.current = null;
-    tabBeforeRightPaneRef.current = null;
-  }, [agent?.agentId]);
-
   // Bring the right pane (terminal, diff or file) on screen in the tabbed
   // layout, remembering the tab to return to. Reads the tab from the store
   // directly so the callbacks below keep a stable identity (FR-TERM-005).
@@ -467,6 +456,37 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     tabBeforeRightPaneRef.current = null;
     if (previousTab && useKookrStore.getState().narrowTab === 'terminal') setNarrowTab(previousTab);
   }, [setNarrowTab]);
+
+  // Leaving the Terminal tab ends the diff's claim on it: if the operator
+  // comes back to Terminal later, that is their own pick, so closing the diff
+  // must then stay on Terminal rather than jump to the tab the diff was opened
+  // from (#3618).
+  useEffect(() => {
+    if (narrowTab !== 'terminal') tabBeforeRightPaneRef.current = null;
+  }, [narrowTab]);
+
+  // The diff and the memory of the tab it came from both live in this
+  // component, but the tab lives in the store. If the pane unmounts while a
+  // diff holds the Terminal tab (on mobile, picking another task goes through
+  // the Findings view, which unmounts it), hand the tab back now, or the next
+  // task would open on Terminal by accident (#3618).
+  useEffect(() => () => restoreTabAfterRightPane(), [restoreTabAfterRightPane]);
+
+  // Clear diff/file state when the selected agent changes. Avoids showing stale
+  // content bound to a different agent's toolUseId or worktree. If only the
+  // diff put the pane on the Terminal tab, the next task opens on Conversation,
+  // as any task switch does when the operator did not pick Terminal themselves
+  // (`tabAfterTaskSwitch`), instead of keeping Terminal by accident (#3618).
+  useEffect(() => {
+    setActiveDiff(null);
+    setActiveFile(null);
+    setRightPane('terminal');
+    diffTriggerRef.current = null;
+    fileTriggerRef.current = null;
+    const diffHeldTerminal = tabBeforeRightPaneRef.current !== null;
+    tabBeforeRightPaneRef.current = null;
+    if (diffHeldTerminal && useKookrStore.getState().narrowTab === 'terminal') setNarrowTab('activity');
+  }, [agent?.agentId, setNarrowTab]);
 
   function handleOpenDiff(target: DiffClickTarget) {
     if (!agent) return;
