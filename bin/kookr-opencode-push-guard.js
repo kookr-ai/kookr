@@ -25,8 +25,8 @@ const MAX_DEPTH = 5;
 
 const GIT_BLOCKED = new Set(['push', 'send-pack']);
 const GIT_OPTS_WITH_ARG = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env']);
-const GH_PR_BLOCKED = new Set(['merge', 'create', 'new', 'ready', 'close', 'reopen', 'review', 'comment', 'edit', 'lock', 'unlock', 'update-branch']);
-const GH_RELEASE_BLOCKED = new Set(['create', 'delete', 'edit', 'upload']);
+const GH_PR_BLOCKED = new Set(['merge', 'create', 'new', 'ready', 'close', 'reopen', 'revert', 'review', 'comment', 'edit', 'lock', 'unlock', 'update-branch']);
+const GH_RELEASE_BLOCKED = new Set(['create', 'delete', 'delete-asset', 'edit', 'upload']);
 // Every subcommand of `gh pr` / `gh release`: the action is the FIRST of these words, so a flag value that happens to
 // spell a blocked action (`gh pr list --search merge`, `--label review`) is not mistaken for it.
 const GH_PR_ACTIONS = new Set(['checkout', 'checks', 'close', 'comment', 'create', 'new', 'diff', 'edit', 'list', 'lock', 'merge', 'ready', 'reopen', 'revert', 'review', 'status', 'unlock', 'update-branch', 'view']);
@@ -128,8 +128,9 @@ function toSegments(text) {
   let cur = '';
   let has = false;
   let quote = null;
-  const pushTok = () => { if (has) tokens.push(cur); cur = ''; has = false; };
-  const pushSeg = () => { pushTok(); if (tokens.length) segments.push(tokens); tokens = []; };
+  let redirNext = false; // the word after < or > is a file name, not part of the command
+  const pushTok = () => { if (has && !redirNext) tokens.push(cur); if (has) redirNext = false; cur = ''; has = false; };
+  const pushSeg = () => { pushTok(); redirNext = false; if (tokens.length) segments.push(tokens); tokens = []; };
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (quote) {
@@ -145,7 +146,12 @@ function toSegments(text) {
     if (c === '\n' || c === ';' || c === '|' || c === '&' || c === '(' || c === ')') { pushSeg(); continue; }
     if (/\s/.test(c)) { pushTok(); continue; }
     // Redirections end a word (`git push>/dev/null`); the target becomes its own, harmless, word.
-    if (c === '>' || c === '<') { pushTok(); continue; }
+    if (c === '>' || c === '<') {
+      if (has && /^[0-9]+$/.test(cur)) { cur = ''; has = false; } // `2>file`: the 2 is a descriptor
+      else pushTok();
+      redirNext = true;
+      continue;
+    }
     cur += c;
     has = true;
   }
@@ -153,7 +159,12 @@ function toSegments(text) {
   return segments;
 }
 
+function isHelp(t) {
+  return t.some((tok) => tok === '--help' || tok === '-h');
+}
+
 function gitVerdict(t) {
+  if (isHelp(t)) return null; // `git push --help` prints the manual page
   let i = 1;
   while (i < t.length && t[i].startsWith('-')) {
     i += GIT_OPTS_WITH_ARG.has(t[i]) ? 2 : 1;
@@ -189,6 +200,7 @@ function ghApiVerdict(t, from) {
 }
 
 function ghVerdict(t) {
+  if (isHelp(t)) return null;
   let i = 1;
   while (i < t.length && t[i].startsWith('-')) {
     i += GH_GLOBAL_OPTS_WITH_ARG.has(t[i]) ? 2 : 1;
