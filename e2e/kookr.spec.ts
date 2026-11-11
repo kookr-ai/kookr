@@ -108,12 +108,12 @@ async function launchViaUI(page: Page, prompt: string, cwd: string) {
 
 /** Wait for the WebSocket snapshot to deliver agent state. */
 async function waitForAgentCount(page: Page, count: number) {
-  // The status bar shows "N tasks"
-  await expect(page.locator('.statusbar')).toContainText(`${count} task`, { timeout: 5000 });
+  // The list header shows "N tasks · M findings" (#3561 slice 5b)
+  await expect(page.getByTestId('task-counts')).toContainText(`${count} task`, { timeout: 5000 });
 }
 
 async function currentTaskCount(page: Page): Promise<number> {
-  const status = await page.locator('.statusbar').textContent();
+  const status = await page.getByTestId('task-counts').textContent();
   const match = status?.match(/(\d+)\s+tasks?/);
   return match ? Number(match[1]) : 0;
 }
@@ -135,8 +135,8 @@ test.describe('Kookr E2E — nominal paths', () => {
   test('dashboard loads with empty state', async ({ page }) => {
     await expect(page.locator('.logo')).toHaveText('KOOKR');
     await expect(page.locator('.findings-empty')).toContainText('No agents running');
-    await expect(page.locator('.statusbar')).toContainText('0 tasks');
-    await expect(page.locator('.statusbar')).toContainText('0 findings');
+    await expect(page.getByTestId('task-counts')).toContainText('0 tasks');
+    await expect(page.getByTestId('task-counts')).toContainText('0 findings');
     await expect(page.locator('.btn-launch')).toBeVisible();
     await expect(page.locator('[data-testid="overview-empty-state"]')).toContainText('No agents running');
     const overview = page.locator('[data-testid="overview-empty-state"]');
@@ -159,7 +159,7 @@ test.describe('Kookr E2E — nominal paths', () => {
 
     // Agent should appear (healthy, no anomaly yet)
     await expect(page.locator('.healthy-section')).toBeVisible();
-    await expect(page.locator('.statusbar')).toContainText('0 findings');
+    await expect(page.getByTestId('task-counts')).toContainText('0 findings');
   });
 
   test('launch dialog validates required fields', async ({ page }) => {
@@ -190,7 +190,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.finding-card')).toBeVisible();
     // A normal Stop is a completed turn awaiting follow-up, not a hung agent.
     await expect(page.locator('.finding-severity')).toContainText('Signaled Complete');
-    await expect(page.locator('.statusbar')).toContainText('1 finding');
+    await expect(page.getByTestId('task-counts')).toContainText('1 finding');
   });
 
   test('permission_blocked anomaly appears as finding', async ({ page, request }) => {
@@ -452,7 +452,7 @@ test.describe('Kookr E2E — nominal paths', () => {
 
     // Both findings visible
     await expect(page.locator('.finding-card')).toHaveCount(2);
-    await expect(page.locator('.statusbar')).toContainText('2 findings');
+    await expect(page.getByTestId('task-counts')).toContainText('2 findings');
 
     // Navigate to highest-priority finding (permission_blocked)
     await page.keyboard.press('Alt+n');
@@ -477,7 +477,7 @@ test.describe('Kookr E2E — nominal paths', () => {
 
     // TopBar should show the finding queue without duplicating status counts
     await expect(page.locator('.queue-info')).toContainText('1 finding waiting');
-    await expect(page.locator('.statusbar')).toContainText('1 task · 1 finding');
+    await expect(page.getByTestId('task-counts')).toContainText('1 task · 1 finding');
     await expect(page.locator('.topbar-stat')).toHaveCount(0);
 
     // Launch a healthy agent
@@ -486,10 +486,10 @@ test.describe('Kookr E2E — nominal paths', () => {
     await injectSessionStart(request, tmux2);
     await injectToolUse(request, tmux2);
 
-    // Healthy task state lives in the task list section; aggregate counts live in the status bar.
+    // Healthy task state lives in the task list section; aggregate counts live in the list header.
     await expect(page.locator('.healthy-section')).toBeVisible();
     await expect(page.locator('.healthy-label')).toContainText('Working');
-    await expect(page.locator('.statusbar')).toContainText('2 tasks');
+    await expect(page.getByTestId('task-counts')).toContainText('2 tasks');
     await expect(page.locator('.topbar-stat')).toHaveCount(0);
   });
 

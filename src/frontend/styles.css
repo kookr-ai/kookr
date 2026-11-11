@@ -485,13 +485,6 @@ kbd {
   justify-content: flex-end;
   min-width: 360px;
 }
-.topbar-spend-group {
-  min-width: 64px;
-  justify-content: flex-end;
-  /* Tighter than .metric-group's 12px: the figure and its "all-time" scope
-     label read as one unit. */
-  gap: 4px;
-}
 .metric-group { display: inline-flex; align-items: center; gap: 12px; }
 /* --- Health Dot (System indicator) --- */
 .health-dot {
@@ -516,41 +509,6 @@ kbd {
 @keyframes health-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.2; }
-}
-
-.topbar-spend {
-  display: inline-block;
-  min-width: 58px;
-  text-align: right;
-  color: var(--amber);
-  font-weight: 600;
-  font-size: 12px;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-.topbar-spend-placeholder { visibility: hidden; }
-/* Visible scope cue: the header figure is all-time spend, not current burn. */
-.topbar-spend-scope {
-  color: var(--text-muted);
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
-  white-space: nowrap;
-}
-/* Issue #3398: the all-time spend figure is a button when App supplies the Cost
-   Comparison opener. Reset native button chrome so it stays a compact metric. */
-button.topbar-spend {
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-}
-button.topbar-spend:hover {
-  color: var(--text-bright);
-}
-button.topbar-spend:focus-visible {
-  outline: 1px solid var(--text-secondary);
-  outline-offset: 1px;
 }
 
 .btn-settings,
@@ -682,10 +640,27 @@ button.topbar-spend:focus-visible {
 }
 .findings-header-main {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+/* "Tasks" and the "N tasks · M findings" counts that replaced the status bar
+   (#3561 slice 5b). The actions wrap onto the next line when they do not fit
+   beside it, so the counts never leave the visible header. */
+.findings-header-heading {
+  display: flex;
+  align-items: baseline;
   gap: 8px;
   min-width: 0;
+  flex: 0 1 auto;
+}
+.findings-header-heading .findings-count {
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
 }
 .findings-header-title {
   min-width: 0;
@@ -698,7 +673,7 @@ button.topbar-spend:focus-visible {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex-shrink: 0;
+  max-width: 100%;
   /* Wrap when the rail is dragged to its 280px floor: the non-shrinking action
      row (Snooze/Abort/Collapse + count + severity breakdown) then flows onto a
      second right-aligned line instead of pushing the rightmost item offscreen
@@ -3840,42 +3815,6 @@ a.overview-tour-link:visited:hover {
 .btn-quick-action.permission-action:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-/* --- Status Bar --- */
-.statusbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 16px;
-  min-height: 26px;
-  background: var(--bg-panel);
-  border-top: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.statusbar-compact-actions {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.statusbar-action {
-  background: none;
-  border: 1px solid var(--border-dim);
-  border-radius: 999px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  padding: 4px 10px;
-  cursor: pointer;
-}
-
-.statusbar-action:hover {
-  color: var(--text);
-  border-color: var(--border);
 }
 
 /* --- Dialog Tabs --- */
@@ -7324,21 +7263,13 @@ label.task-share-row {
   cursor: pointer;
 }
 
-/* --- Focus Zone Indicator --- */
-.statusbar-left {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-/* Spend and quota sit at the right end of the status bar (issue #3561 slice 2). */
-.statusbar-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* --- Focus Zone Indicator (end of the reading pane's tab bar, #3561 5b) --- */
+.detail-tabs .focus-zone-pill {
+  margin-left: auto;
   flex-shrink: 0;
+}
+.detail-tabs .detail-split-toggle + .focus-zone-pill {
+  margin-left: 8px;
 }
 .focus-zone-pill {
   font-size: 12px;
@@ -7553,21 +7484,26 @@ label.task-share-row {
   color: var(--text-muted);
 }
 
+/* A notice at the top of the task list since the status bar went away
+   (#3561 slice 5b): it wraps instead of running past the list's edge. */
 .reflection-prompt {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   min-width: 0;
-  padding: 2px 8px;
+  margin: 6px 8px 0;
+  padding: 6px 8px;
   border-radius: 8px;
   background: rgba(45,212,191,0.08);
   border: 1px solid rgba(45,212,191,0.2);
 }
 
 .reflection-prompt-copy {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 160px;
+  gap: 2px;
   min-width: 0;
 }
 
@@ -7579,7 +7515,6 @@ label.task-share-row {
 
 .reflection-prompt-copy span:last-child {
   color: var(--text-secondary);
-  white-space: nowrap;
 }
 
 .btn-reflection {
@@ -9415,27 +9350,6 @@ button.completed-row-rating:focus-visible {
   pointer-events: none;
 }
 
-/* Quota status display in status bar */
-.quota-display {
-  display: inline-flex;
-  gap: 6px;
-  margin-left: 8px;
-}
-.quota-display.quota-stale { opacity: 0.5; }
-.quota-pill {
-  display: inline-block;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  padding: 1px 6px;
-  border-radius: 4px;
-}
-.quota-pill.quota-low { background: rgba(45,212,191,0.12); color: var(--teal); }
-.quota-pill.quota-medium { background: rgba(251,191,36,0.12); color: var(--amber); }
-.quota-pill.quota-high { background: rgba(251,146,60,0.15); color: #fb923c; }
-.quota-pill.quota-critical { background: rgba(248,113,113,0.15); color: var(--red); }
-.quota-reset { margin-left: 3px; font-weight: 400; }
-
 .resource-status {
   position: relative;
   display: inline-flex;
@@ -10252,6 +10166,201 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   .project-sidebar.labelled .project-icon.all.at-cap {
     box-shadow: inset 0 0 0 1px var(--state-bad);
   }
+}
+
+/*
+ * Spend and quota (#3561 slice 5b, the variant B navigation footer). The
+ * status bar is gone. The same summary renders in two places: pinned to the
+ * bottom of the navigation, and as the Usage section of the System detail,
+ * which is reachable where the navigation is not shown. In the 52 px icon
+ * rail only the quota percentages fit; the labelled layout shows every row.
+ */
+.usage-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.usage-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.usage-label {
+  white-space: nowrap;
+}
+.usage-label-short {
+  display: none;
+}
+.usage-value,
+button.usage-value {
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+button.usage-value {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: inherit;
+  cursor: pointer;
+}
+button.usage-value:hover {
+  background: none;
+  text-decoration: underline;
+}
+.usage-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+.usage-summary .launched-24h-pill,
+.usage-summary .completed-24h-pill {
+  margin-left: 0;
+}
+.usage-quotas {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.usage-quota .quota-reset {
+  color: var(--text-secondary);
+}
+.usage-quota.quota-medium .usage-value,
+.usage-quota.quota-high .usage-value {
+  color: var(--state-need);
+}
+.usage-quota.quota-critical .usage-value {
+  color: var(--state-bad);
+}
+.usage-quotas.quota-stale .usage-value {
+  color: var(--text-secondary);
+}
+.usage-bar {
+  height: 4px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: var(--border-dim);
+  overflow: hidden;
+}
+.usage-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--state-work);
+}
+.quota-medium .usage-bar > i,
+.quota-high .usage-bar > i {
+  background: var(--state-need);
+}
+.quota-critical .usage-bar > i {
+  background: var(--state-bad);
+}
+.usage-quotas.quota-stale .usage-bar > i {
+  background: var(--text-secondary);
+}
+
+/* Navigation footer: pinned to the bottom so a long project list scrolls
+   under it. Icon rail (the default): quota percentages only. */
+.usage-summary--nav {
+  position: sticky;
+  bottom: -8px;
+  z-index: 1;
+  flex-shrink: 0;
+  align-self: stretch;
+  margin: 0 -4px -8px;
+  padding: 8px 4px;
+  gap: 6px;
+  background: var(--bg);
+  border-top: 1px solid var(--border-dim);
+  text-align: center;
+}
+.usage-summary--nav.usage-summary--no-quota,
+.usage-summary--nav .usage-spend,
+.usage-summary--nav .usage-counts,
+.usage-summary--nav .usage-label-long,
+.usage-summary--nav .quota-reset {
+  display: none;
+}
+.usage-summary--nav .usage-label-short {
+  display: inline;
+}
+.usage-summary--nav .usage-line {
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+@media (min-width: 1280px) {
+  .project-sidebar.labelled .usage-summary--nav {
+    margin: 0 -8px -8px;
+    padding: 12px 18px 8px;
+    gap: 8px;
+    text-align: left;
+  }
+  .project-sidebar.labelled .usage-summary--nav.usage-summary--no-quota,
+  .project-sidebar.labelled .usage-summary--nav .usage-spend {
+    display: flex;
+  }
+  .project-sidebar.labelled .usage-summary--nav .usage-counts {
+    display: flex;
+  }
+  .project-sidebar.labelled .usage-summary--nav .usage-label-long,
+  .project-sidebar.labelled .usage-summary--nav .quota-reset {
+    display: inline;
+  }
+  .project-sidebar.labelled .usage-summary--nav .usage-label-short {
+    display: none;
+  }
+  .project-sidebar.labelled .usage-summary--nav .usage-line {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+  }
+}
+
+/* Phones: the navigation is a horizontal strip; spend and quota live in the
+   System detail instead. */
+@media (max-width: 768px) {
+  .project-sidebar .usage-summary--nav {
+    display: none;
+  }
+}
+
+/* System detail: the full summary under a Usage heading. */
+.usage-summary--system {
+  padding: 2px 0 8px;
+}
+.system-help-button {
+  display: block;
+  margin: 4px 0 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-dim);
+  border-radius: 8px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.system-help-button:hover {
+  color: var(--text-bright);
+  border-color: var(--border);
+}
+
+/* The oldest-wait chip sits on the right of the list's "Needs you" header. */
+.findings-needs-you .oldest-finding-wait-pill {
+  margin-left: auto;
+  margin-right: 8px;
+  flex-shrink: 0;
 }
 
 .project-sidebar-drop-target {
@@ -13461,14 +13570,6 @@ a.oss-productivity-empty-docs-link:visited:hover {
     min-width: 92px;
   }
 
-  .topbar.compact .topbar-spend-group {
-    min-width: 54px;
-  }
-
-  .topbar.compact .topbar-spend {
-    font-size: 12px;
-  }
-
   .topbar.compact .btn-settings,
   .topbar.compact .btn-launch {
     min-height: 38px;
@@ -13658,17 +13759,6 @@ a.oss-productivity-empty-docs-link:visited:hover {
   .response-row > .btn-primary,
   .response-row > .btn-secondary {
     flex: 1;
-  }
-
-  .statusbar.compact {
-    padding: 8px 10px 10px;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-  }
-
-  .statusbar.compact .statusbar-left {
-    gap: 6px;
   }
 
   .reflection-prompt {
@@ -16322,17 +16412,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 @media (max-width: 900px) {
   .command-trigger-kbd { display: none; }
-}
-/* Same squeeze for the all-time spend figure: below 1180 px drop its
-   "all-time" scope word (the tooltip keeps it), and below 900 px hide the
-   figure, which Cost Comparison and the 24-hour cost chip still show. It must
-   never print over the logo or the Bypass mode chip. Desktop only: the compact
-   (phone) bar already hides this group. */
-@media (min-width: 769px) and (max-width: 1179px) {
-  .topbar-spend-scope { display: none; }
-}
-@media (min-width: 769px) and (max-width: 900px) {
-  .topbar-spend-group { display: none; }
 }
 .command-trigger-kbd {
   margin-left: auto;

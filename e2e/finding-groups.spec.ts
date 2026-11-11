@@ -73,7 +73,7 @@ async function launchViaUI(page: Page, prompt: string, cwd: string) {
 }
 
 async function waitForAgentCount(page: Page, count: number) {
-  await expect(page.locator('.statusbar')).toContainText(`${count} task`, { timeout: 5000 });
+  await expect(page.getByTestId('task-counts')).toContainText(`${count} task`, { timeout: 5000 });
 }
 
 /** Launch N agents with permission_blocked anomaly. Returns tmux names. */

@@ -1,16 +1,16 @@
 // @vitest-environment jsdom
 
 /**
- * Status-bar 24h completed-task chip click-through (issue #3333). The visible
+ * Usage-summary 24h completed-task chip click-through (issue #3333). The visible
  * chip becomes a button that expands the Completed rail when App supplies the
- * opener. Isolated StatusBar tests still render a non-button status chip.
+ * opener. Isolated UsageSummary tests still render a non-button status chip.
  */
 
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { StatusBar } from './StatusBar.js';
+import { UsageSummary } from './UsageSummary.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
@@ -30,7 +30,7 @@ async function flushEffects() {
   });
 }
 
-describe('StatusBar 24h completed chip click-through (issue #3333)', () => {
+describe('UsageSummary 24h completed chip click-through (issue #3333)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -70,11 +70,9 @@ describe('StatusBar 24h completed chip click-through (issue #3333)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
+        React.createElement(UsageSummary, {
+          placement: 'nav',
           completedLast24h: 3,
-          onShowShortcuts: vi.fn(),
           onExpandCompleted,
           onOpenDiagnostics,
         }),
@@ -98,14 +96,12 @@ describe('StatusBar 24h completed chip click-through (issue #3333)', () => {
     expect(onOpenDiagnostics).not.toHaveBeenCalled();
   });
 
-  test('isolated StatusBar tests still render a non-button chip without App wiring', async () => {
+  test('isolated UsageSummary tests still render a non-button chip without App wiring', async () => {
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
+        React.createElement(UsageSummary, {
+          placement: 'nav',
           completedLast24h: 3,
-          onShowShortcuts: vi.fn(),
         }),
       );
     });
@@ -123,11 +119,9 @@ describe('StatusBar 24h completed chip click-through (issue #3333)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
+        React.createElement(UsageSummary, {
+          placement: 'nav',
           completedLast24h: 0,
-          onShowShortcuts: vi.fn(),
           onExpandCompleted,
         }),
       );

@@ -386,7 +386,7 @@ describe('TopBar triage-queue indicator (#2684)', () => {
   });
 });
 
-describe('TopBar all-time spend Cost Comparison opener (issue #3398)', () => {
+describe('TopBar spend and the System Usage section (issue #3561 slice 5b)', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -428,69 +428,47 @@ describe('TopBar all-time spend Cost Comparison opener (issue #3398)', () => {
     });
   }
 
-  test('clicking a visible non-zero spend figure calls the Cost Comparison opener', () => {
-    const onOpenCostComparison = vi.fn();
-    const onCommandPalette = vi.fn();
-    useKookrStore.setState({ totalSpendUsd: 12.3 });
-    render({ onOpenCostComparison, onCommandPalette });
-
-    const chip = container.querySelector<HTMLButtonElement>('.topbar-spend');
-    expect(chip?.tagName).toBe('BUTTON');
-    expect(chip?.textContent).toBe('$12.30');
-    expect(chip?.getAttribute('aria-label')).toBe('$12.30. Open Cost Comparison');
-    expect(chip?.classList.contains('topbar-spend-placeholder')).toBe(false);
-
-    act(() => {
-      chip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    expect(onOpenCostComparison).toHaveBeenCalledOnce();
-    expect(onCommandPalette).not.toHaveBeenCalled();
-  });
-
-  test('non-zero spend shows a visible all-time scope label outside the figure', () => {
-    useKookrStore.setState({ totalSpendUsd: 12.3 });
-    render({ onOpenCostComparison: vi.fn() });
-
-    const scope = container.querySelector('.topbar-spend-scope');
-    expect(scope).not.toBeNull();
-    expect(scope?.textContent).toBe('all-time');
-    expect(scope?.getAttribute('aria-hidden')).toBeNull();
-    // Label is a sibling of the figure, so the figure text stays exactly the cost.
-    expect(container.querySelector('.topbar-spend')?.textContent).toBe('$12.30');
-  });
-
-  test('zero spend renders no scope label', () => {
-    useKookrStore.setState({ totalSpendUsd: 0 });
-    render();
-    expect(container.querySelector('.topbar-spend-scope')).toBeNull();
-  });
-
-  test('isolated TopBar without the opener still renders a span', () => {
+  test('all-time spend is no longer a top-bar figure, even when non-zero', () => {
     useKookrStore.setState({ totalSpendUsd: 12.3 });
     render();
 
-    const chip = container.querySelector('.topbar-spend');
-    expect(chip).not.toBeNull();
-    expect(chip?.tagName).toBe('SPAN');
-    expect(chip?.textContent).toBe('$12.30');
-    expect(chip?.getAttribute('aria-label')).toBeNull();
+    expect(container.querySelector('.topbar-spend')).toBeNull();
+    expect(container.querySelector('.topbar')?.textContent).not.toContain('$12.30');
   });
 
-  test('zero spend stays a non-interactive placeholder even when the opener is wired', () => {
-    const onOpenCostComparison = vi.fn();
-    useKookrStore.setState({ totalSpendUsd: 0 });
-    render({ onOpenCostComparison });
-
-    const chip = container.querySelector('.topbar-spend');
-    expect(chip).not.toBeNull();
-    expect(chip?.tagName).toBe('SPAN');
-    expect(chip?.classList.contains('topbar-spend-placeholder')).toBe(true);
-    expect(chip?.getAttribute('aria-hidden')).toBe('true');
+  test('System shows the Usage slot under its own heading', () => {
+    render({ usage: React.createElement('div', { 'data-testid': 'usage-slot' }, 'usage here') });
+    expect(container.querySelector('[data-testid="usage-slot"]')).toBeNull();
 
     act(() => {
-      chip?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      container.querySelector<HTMLButtonElement>('[data-testid="system-indicator"]')!.click();
     });
-    expect(onOpenCostComparison).not.toHaveBeenCalled();
+
+    const popover = container.querySelector('#system-popover');
+    expect(popover?.querySelector('[data-testid="system-usage-heading"]')?.textContent).toBe('Usage');
+    expect(popover?.querySelector('[data-testid="usage-slot"]')?.textContent).toBe('usage here');
+  });
+
+  test('System has no Usage heading when App passes no usage', () => {
+    render();
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="system-indicator"]')!.click();
+    });
+    expect(container.querySelector('[data-testid="system-usage-heading"]')).toBeNull();
+  });
+
+  test('Help & shortcuts in System closes the detail and opens the help', () => {
+    const onShowShortcuts = vi.fn();
+    render({ onShowShortcuts });
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="system-indicator"]')!.click();
+    });
+
+    const help = container.querySelector<HTMLButtonElement>('[data-testid="system-help-shortcuts"]');
+    expect(help?.textContent).toBe('Help & shortcuts');
+    act(() => help!.click());
+
+    expect(onShowShortcuts).toHaveBeenCalledOnce();
+    expect(container.querySelector('#system-popover')).toBeNull();
   });
 });

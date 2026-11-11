@@ -250,7 +250,7 @@ test.describe('Toast notifications — auto-dismiss behavior', () => {
   test('toasts do not overlap detail-header action buttons', async ({ page, request }) => {
     // Launch an agent and create a finding so detail panel shows
     await launchViaUI(page, 'Test overlap', '/test/project');
-    await expect(page.locator('.statusbar')).toContainText('1 task', { timeout: 5000 });
+    await expect(page.getByTestId('task-counts')).toContainText('1 task', { timeout: 5000 });
 
     const tmuxName = await getLatestTmuxName(request);
     await injectSessionStart(request, tmuxName);

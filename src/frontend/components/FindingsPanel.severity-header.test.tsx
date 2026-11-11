@@ -124,7 +124,7 @@ describe('FindingsPanel severity header summary', () => {
 
   const summary = () => container.querySelector<HTMLElement>('[data-testid="findings-severity-summary"]');
 
-  test('renders a compact breakdown in severity order (critical first), beside the active count', () => {
+  test('renders a compact breakdown in severity order (critical first), beside the task and finding counts', () => {
     renderPanel(root, [
       makeFinding('info-1', 'info'),
       makeFinding('crit-1', 'critical'),
@@ -132,7 +132,7 @@ describe('FindingsPanel severity header summary', () => {
       makeFinding('crit-2', 'critical'),
     ]);
 
-    expect(container.querySelector('.findings-count')?.textContent).toBe('4 active');
+    expect(container.querySelector('.findings-count')?.textContent).toBe('4 tasks · 4 findings');
 
     const el = summary();
     expect(el).not.toBeNull();
@@ -161,7 +161,7 @@ describe('FindingsPanel severity header summary', () => {
 
   test('no findings renders no severity summary', () => {
     renderPanel(root, []);
-    expect(container.querySelector('.findings-count')?.textContent).toBe('0 active');
+    expect(container.querySelector('.findings-count')?.textContent).toBe('0 tasks · 0 findings');
     expect(summary()).toBeNull();
   });
 });

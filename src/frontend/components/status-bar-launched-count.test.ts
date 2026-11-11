@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 /**
- * Status-bar 24-hour launched-task count (issue #2632). Counts live
+ * Usage-summary 24-hour launched-task count (issue #2632). Counts live
  * agents whose startedAt falls in the shared 24-hour window — sibling
  * of the completed-task chip from #2618.
  */
@@ -10,7 +10,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { StatusBar } from './StatusBar.js';
+import { UsageSummary } from './UsageSummary.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
@@ -65,7 +65,7 @@ describe('launched-in-window chip copy (issue #2632)', () => {
   });
 });
 
-describe('StatusBar launched-task count (issue #2632)', () => {
+describe('UsageSummary launched-task count (issue #2632)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -102,11 +102,9 @@ describe('StatusBar launched-task count (issue #2632)', () => {
   test('renders the launched chip from the launchedLast24h prop', async () => {
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 2,
-          total: 5,
+        React.createElement(UsageSummary, {
+          placement: 'nav',
           launchedLast24h: 3,
-          onShowShortcuts: vi.fn(),
         }),
       );
     });
@@ -120,17 +118,14 @@ describe('StatusBar launched-task count (issue #2632)', () => {
     expect(chip?.getAttribute('title')).toBe(
       '3 tasks started in the last 24 hours. Lower bound — may miss tasks that launched and then aged out of the live list.',
     );
-    expect(container.textContent).toContain('5 tasks · 2 findings');
   });
 
   test('hides the chip when launchedLast24h is 0', async () => {
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
+        React.createElement(UsageSummary, {
+          placement: 'nav',
           launchedLast24h: 0,
-          onShowShortcuts: vi.fn(),
         }),
       );
     });
@@ -138,7 +133,6 @@ describe('StatusBar launched-task count (issue #2632)', () => {
 
     expect(container.querySelector('[data-testid="launched-24h-chip"]')).toBeNull();
     expect(container.textContent).not.toContain('launched /');
-    expect(container.textContent).toContain('2 tasks · 1 finding');
   });
 
   test('keeps the completed chip unchanged when both counts are present', async () => {
@@ -152,25 +146,21 @@ describe('StatusBar launched-task count (issue #2632)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 4,
+        React.createElement(UsageSummary, {
+          placement: 'nav',
           completedLast24h: 3,
           launchedLast24h: 5,
-          oldestFindingWaitStartedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
-          onShowShortcuts: vi.fn(),
         }),
       );
     });
     await flushEffects();
 
-    expect(container.textContent).toContain('4 tasks · 1 finding');
     expect(container.querySelector('[data-testid="launched-24h-chip"]')?.textContent)
       .toBe('5 launched / 24h');
     expect(container.querySelector('[data-testid="completed-24h-chip"]')?.textContent)
       .toBe('3 completed / 24h');
-    expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')?.textContent)
-      .toContain('oldest');
+    // The oldest-wait chip lives in OldestFindingWaitChip, not the usage summary.
+    expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')).toBeNull();
     // The median-unblock chip moved behind the System indicator (#3561 slice 2).
     expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).toBeNull();
     expect(container.querySelector('[data-testid="launched-24h-chip"]')?.textContent)

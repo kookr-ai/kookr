@@ -93,11 +93,11 @@ async function launchViaUI(page: Page, prompt: string, cwd: string) {
 }
 
 async function waitForAgentCount(page: Page, count: number) {
-  await expect(page.locator('.statusbar')).toContainText(`${count} task`, { timeout: 5000 });
+  await expect(page.getByTestId('task-counts')).toContainText(`${count} task`, { timeout: 5000 });
 }
 
 async function currentTaskCount(page: Page): Promise<number> {
-  const status = await page.locator('.statusbar').textContent();
+  const status = await page.getByTestId('task-counts').textContent();
   const match = status?.match(/(\d+)\s+tasks?/);
   return match ? Number(match[1]) : 0;
 }
@@ -406,7 +406,7 @@ test.describe('Multi-Project Tracking', () => {
     await expect(projectB.locator('.project-icon-badge')).not.toBeVisible();
   });
 
-  test('statusbar reflects filtered count when project selected', async ({ page, request }) => {
+  test('task counts reflect the filtered count when project selected', async ({ page, request }) => {
     await launchViaUI(page, 'Task A', '/test/a');
     const tmuxA = await getLatestTmuxName(request);
     const taskA = await getLatestTaskId(request);
@@ -422,7 +422,7 @@ test.describe('Multi-Project Tracking', () => {
     await setProjectId(request, taskB, 'github.com/org/repo-b');
 
     // Total should be 2
-    await expect(page.locator('.statusbar')).toContainText('2 tasks', { timeout: 5000 });
+    await expect(page.getByTestId('task-counts')).toContainText('2 tasks', { timeout: 5000 });
 
     // Broadcast summaries and filter to project A
     await broadcastProjectSummaries(request);
@@ -430,7 +430,7 @@ test.describe('Multi-Project Tracking', () => {
     await page.locator('[data-testid="project-icon-github.com/org/repo-a"]').click();
 
     // Filtered count should be 1
-    await expect(page.locator('.statusbar')).toContainText('1 task', { timeout: 3000 });
+    await expect(page.getByTestId('task-counts')).toContainText('1 task', { timeout: 3000 });
   });
 
   test('project icon shows executing task count instead of contribution count', async ({ page, request }) => {

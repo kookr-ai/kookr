@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import { DndPill } from './DndPill.js';
 import { FollowPill } from './FollowPill.js';
-import { formatCost } from '../presentation.js';
 import {
   TOOLKIT_MARKETPLACE_SLUG,
   marketplaceNameFromPluginId,
@@ -61,10 +60,15 @@ interface Props {
   /** Resolved platform/user bindings for FollowPill and related hints. */
   shortcutBindings?: ShortcutBindingMap;
   /**
-   * Open Cost Comparison when the all-time spend figure is clicked (issue #3398).
-   * Optional so isolated TopBar tests keep today's non-interactive span.
+   * Spend and quota for the System detail's Usage section (issue #3561 slice
+   * 5b). The status bar is gone and the navigation footer is not shown on
+   * phones, with no tracked project, after Alt+P or in terminal focus, so the
+   * same summary is always one click away here. All-time spend left the top
+   * bar for the footer, as in the variant B frames.
    */
-  onOpenCostComparison?: () => void;
+  usage?: React.ReactNode;
+  /** Open Help & shortcuts (the phone status bar's Shortcuts button moved here). */
+  onShowShortcuts?: () => void;
   /** Openers for the readouts inside the System detail (moved from the status
    *  bar, issue #3561 slice 2). Optional so isolated TopBar tests need no App
    *  wiring. */
@@ -109,7 +113,8 @@ export function TopBar({
   readOnly = false,
   scheduleHintActive = false,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
-  onOpenCostComparison,
+  usage,
+  onShowShortcuts,
   onOpenCapacity,
   onOpenLiveFriction,
   onOpenDiagnostics,
@@ -119,7 +124,6 @@ export function TopBar({
     connected,
     buildInfo,
     serverStartedAt,
-    totalSpendUsd,
     circuitBreakers,
     diagnosticReport,
     coordinator,
@@ -344,10 +348,6 @@ export function TopBar({
       : `${totalFindings} finding${totalFindings !== 1 ? 's' : ''} waiting`
     : undefined;
   const queueDotCount = Math.max(totalFindings, 1);
-  const spendLabel = totalSpendUsd > 0 ? formatCost(totalSpendUsd) : '$0.00';
-  const spendTitle = totalSpendUsd > 0
-    ? 'All-time agent spend recorded by this Kookr server — includes cleared and deleted tasks'
-    : undefined;
   const connectionLabel = connected ? 'Dashboard WebSocket connected' : 'Dashboard WebSocket disconnected';
   // One quiet indicator for everything the chrome no longer shows at rest:
   // amber (waiting on you) when a hidden readout is degraded. An available
@@ -414,30 +414,6 @@ export function TopBar({
         </button>
       </div>
       <div className="topbar-right">
-        <div className="metric-group topbar-spend-group">
-          {totalSpendUsd > 0 && onOpenCostComparison ? (
-            <button
-              type="button"
-              className="topbar-spend"
-              title={spendTitle}
-              aria-label={`${spendLabel}. Open Cost Comparison`}
-              onClick={onOpenCostComparison}
-            >
-              {spendLabel}
-            </button>
-          ) : (
-            <span
-              className={`topbar-spend${totalSpendUsd > 0 ? '' : ' topbar-spend-placeholder'}`}
-              title={spendTitle}
-              aria-hidden={totalSpendUsd > 0 ? undefined : true}
-            >
-              {spendLabel}
-            </span>
-          )}
-          {totalSpendUsd > 0 && (
-            <span className="topbar-spend-scope" title={spendTitle}>all-time</span>
-          )}
-        </div>
         <div className="metric-group">
           <div className="system-indicator-wrap" ref={systemWrapRef}>
             <button
@@ -483,6 +459,25 @@ export function TopBar({
                   onOpenSchedules={onOpenSchedules}
                   shortcutBindings={shortcutBindings}
                 />
+                {usage && (
+                  <>
+                    <h3 className="system-popover-heading" data-testid="system-usage-heading">Usage</h3>
+                    {usage}
+                  </>
+                )}
+                {onShowShortcuts && (
+                  <button
+                    type="button"
+                    className="system-help-button"
+                    data-testid="system-help-shortcuts"
+                    onClick={() => {
+                      setShowPopover(false);
+                      onShowShortcuts();
+                    }}
+                  >
+                    Help &amp; shortcuts
+                  </button>
+                )}
                 <h3 className="system-popover-heading" data-testid="system-about-heading">About</h3>
                 {isDev ? (
                   <div className="version-row">Running in dev mode (no build info)</div>

@@ -364,7 +364,7 @@ test.describe('Snoozed agents', () => {
 
     // Finding visible
     await expect(page.locator('.finding-card')).toBeVisible();
-    await expect(page.locator('.statusbar')).toContainText('1 finding');
+    await expect(page.getByTestId('task-counts')).toContainText('1 finding');
 
     // Snooze it — click "Snooze" then select "5m" from dialog
     await page.locator('.finding-actions .btn-xs:has-text("Snooze")').click();
@@ -372,7 +372,7 @@ test.describe('Snoozed agents', () => {
 
     // Finding should be gone, snoozed section should show
     await expect(page.locator('.finding-card')).not.toBeVisible({ timeout: 3000 });
-    await expect(page.locator('.statusbar')).toContainText('0 findings');
+    await expect(page.getByTestId('task-counts')).toContainText('0 findings');
     await expandSnoozedSection(page);
     await expect(page.locator('.snoozed-row')).toBeVisible();
   });

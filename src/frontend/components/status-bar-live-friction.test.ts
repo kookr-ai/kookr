@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 /**
- * Status-bar live skip / snooze chip (issue #2596). Fetch is stubbed in
- * this file only so shared StatusBar tests keep their existing fetch
+ * System-detail live skip / snooze chip (issue #2596). Fetch is stubbed in
+ * this file only so shared usage-summary tests keep their existing fetch
  * isolation (same pattern as time-to-unblock).
  */
 

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 /**
- * App wiring for the oldest-finding-wait chip (issue #3343). StatusBar tests
+ * App wiring for the oldest-finding-wait chip (issue #3343). Chip tests
  * inject a click handler; this file checks that the live findings list
  * identifies the oldest unanswered finding and that clicking the chip
  * selects that agent — not a completed or healthy row.
@@ -41,17 +41,37 @@ vi.mock('./telemetry.js', () => ({
   track: vi.fn(),
 }));
 
+// The status bar is gone (#3561 slice 5b): spend, quota and the 24h counts
+// render in the System detail's Usage section (and the navigation footer,
+// which needs a tracked project). The stub renders that Usage slot.
 vi.mock('./components/TopBar.js', () => ({
-  TopBar: () => React.createElement('div', { 'data-testid': 'top-bar' }),
+  TopBar: (props: { usage?: React.ReactNode }) => React.createElement('div', { 'data-testid': 'top-bar' }, props.usage),
 }));
 
 vi.mock('./components/DetailPanel.js', () => ({
   DetailPanel: () => React.createElement('div', { 'data-testid': 'detail-panel' }),
 }));
 
-vi.mock('./components/FindingsPanel.js', () => ({
-  FindingsPanel: () => React.createElement('div', { 'data-testid': 'findings-panel' }),
-}));
+// The oldest-wait chip moved into the list's "Needs you" header (#3561 slice
+// 5b). The stub renders the real chip from the props App passes the list.
+vi.mock('./components/FindingsPanel.js', async () => {
+  const { OldestFindingWaitChip } = await vi.importActual<typeof import('./components/OldestFindingWaitChip.js')>('./components/OldestFindingWaitChip.js');
+  return {
+    FindingsPanel: (props: {
+      findings: unknown[];
+      oldestFindingWaitStartedAt?: Date | string;
+      onSelectOldestFinding?: () => void;
+    }) => React.createElement(
+      'div',
+      { 'data-testid': 'findings-panel' },
+      React.createElement(OldestFindingWaitChip, {
+        findings: props.findings.length,
+        startedAt: props.oldestFindingWaitStartedAt,
+        onSelect: props.onSelectOldestFinding,
+      }),
+    ),
+  };
+});
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();

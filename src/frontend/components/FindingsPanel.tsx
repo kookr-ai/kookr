@@ -50,6 +50,7 @@ import { SnoozeAllButton } from './FindingsPanel/SnoozeAllButton.js';
 import { ResumeAllButton } from './FindingsPanel/ResumeAllButton.js';
 import { MigrateInterruptedButton } from './FindingsPanel/MigrateInterruptedButton.js';
 import { SectionToggleButton } from './FindingsPanel/SectionToggleButton.js';
+import { OldestFindingWaitChip } from './OldestFindingWaitChip.js';
 
 // Re-export the section-collapsed storage keys so existing importers
 // (App.tsx, the collapsed/keyboard tests) keep resolving them from this module.
@@ -170,6 +171,18 @@ interface Props {
    * per-instance ref.
    */
   consumedExpandHealthyNonceRef?: { current: number };
+  /**
+   * Task total for the header's "N tasks · M findings" line, which replaced
+   * the status bar's counts (#3561 slice 5b). App passes its filtered agent
+   * count; isolated tests fall back to the rows this list holds.
+   */
+  totalTasks?: number;
+  /** Earliest live wait among {@link findings}, for the "Needs you" header. */
+  oldestFindingWaitStartedAt?: Date | string;
+  /** Select the oldest unanswered finding from the header's wait chip. */
+  onSelectOldestFinding?: () => void;
+  /** A moment-only notice (the reflection prompt) shown above the list. */
+  notice?: React.ReactNode;
 }
 
 /** Class names of the state sections that follow the findings in the list. */
@@ -222,6 +235,10 @@ export function FindingsPanel({
   consumedExpandNonceRef,
   expandHealthyNonce = 0,
   consumedExpandHealthyNonceRef,
+  totalTasks,
+  oldestFindingWaitStartedAt,
+  onSelectOldestFinding,
+  notice,
 }: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const archivedAgents = useKookrStore((s) => s.archivedAgents);
@@ -245,6 +262,7 @@ export function FindingsPanel({
     && !archiveError
     && !archiveLoading;
   const totalAgents = findings.length + healthy.length + pending.length + visibleCompleted.length + snoozed.length;
+  const taskTotal = totalTasks ?? totalAgents;
   // One list (#3561 slice 3): findings ("Needs you") and every other state
   // section share this single scroll container, so the rail fills with tasks
   // whatever the mix instead of reserving space for findings that are absent.
@@ -407,7 +425,17 @@ export function FindingsPanel({
     <div className="findings-panel kookr-tour-target-findings kookr-tour-target-layout" onClick={handlePanelClick}>
       <div className="findings-header">
         <div className="findings-header-main">
-          <span className="findings-header-title">Tasks</span>
+          {/* Title and counts first, so crowded actions wrap below them
+              instead of pushing the counts out of view (#3561 slice 5b). */}
+          <span className="findings-header-heading">
+            <span className="findings-header-title">Tasks</span>
+            <span
+              className={`findings-count${findings.length === 0 ? ' findings-count-empty' : ''}`}
+              data-testid="task-counts"
+            >
+              {taskTotal} task{taskTotal !== 1 ? 's' : ''} · {findings.length} finding{findings.length !== 1 ? 's' : ''}
+            </span>
+          </span>
           <span className="findings-header-actions">
             <SnoozeAllButton findings={visibleFindings} send={send} />
             <AbortActiveMenu taskIds={abortActiveTaskIds} send={send} />
@@ -421,9 +449,6 @@ export function FindingsPanel({
             >
               {allRenderedSectionsCollapsed ? 'Expand all' : 'Collapse all'}
             </button>
-            <span className={`findings-count${findings.length === 0 ? ' findings-count-empty' : ''}`}>
-              {findings.length} active
-            </span>
             {severitySummary.length > 0 && (
               <span
                 className="findings-severity-summary"
@@ -511,6 +536,7 @@ export function FindingsPanel({
         )}
       </div>
       <ReapWarningBanners agents={[...findings, ...healthy]} send={send} />
+      {notice}
       <div className="findings-scroll-area" ref={scrollAreaRef}>
         {findings.length === 0 && totalAgents === 0 && (
           <div className="findings-empty">
@@ -535,6 +561,11 @@ export function FindingsPanel({
           >
             <span className="findings-needs-you-label">Needs you ({findings.length})</span>
             {findings.length === 0 && <span className="findings-needs-you-hint">nothing waiting</span>}
+            <OldestFindingWaitChip
+              findings={findings.length}
+              startedAt={oldestFindingWaitStartedAt}
+              onSelect={onSelectOldestFinding}
+            />
           </div>
         )}
         {nameFilterMatchedNothing && (

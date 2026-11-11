@@ -53,7 +53,6 @@ test.describe('UI layout', () => {
         scheduleSection: rect('.schedule-section'),
         queueInfo: rect('.queue-info'),
         topbarRight: rect('.topbar-right'),
-        topbarSpend: rect('.topbar-spend'),
       };
     });
 
@@ -62,7 +61,6 @@ test.describe('UI layout', () => {
     expect(initial.scheduleSection?.height).toBeGreaterThanOrEqual(40);
     expect(initial.queueInfo?.width).toBeGreaterThanOrEqual(132);
     expect(initial.topbarRight?.width).toBeGreaterThanOrEqual(360);
-    expect(initial.topbarSpend?.width).toBeGreaterThan(0);
 
     await launchViaUI(page, 'Stable dashboard chrome', '/test/layout');
     const tmuxName = await getTmuxNameForPrompt(request, 'Stable dashboard chrome');
@@ -86,20 +84,6 @@ test.describe('UI layout', () => {
     await expect(overview).toContainText('pnpm run doctor');
     await overview.getByRole('button', { name: 'Check setup' }).click();
     await expect(page.getByRole('dialog', { name: 'Diagnostics' })).toBeVisible();
-  });
-
-  // Keyboard-hint affordances were moved out of the statusbar at some point
-  // (the current StatusBar.tsx renders task/finding counts, sound/achievement
-  // controls, and the reflection prompt — no Alt+N / Alt+J / Alt+L / Enter
-  // chrome). Marking fixme rather than deleting so the intent ("verify the
-  // common shortcuts are surfaced *somewhere* the user can see them") is
-  // preserved if the hints come back.
-  test.fixme('statusbar shows keyboard hints', async ({ page }) => {
-    const bar = page.locator('.statusbar');
-    await expect(bar).toContainText('Alt+N');
-    await expect(bar).toContainText('Enter');
-    await expect(bar).toContainText('Alt+J');
-    await expect(bar).toContainText('Alt+L');
   });
 
   test('topbar queue dots show when findings exist', async ({ page, request }) => {
@@ -161,13 +145,16 @@ test.describe('UI layout', () => {
   test('top bar never covers the logo at narrow desktop widths, even with spend', async ({ page, request }) => {
     // #3561 slice 2 review: the System indicator widened the right-hand
     // controls, which slid left over the logo (and the Bypass mode chip beside
-    // it) at 769-945 px; with spend above $0 the all-time figure did too. The
-    // search trigger and the spend figure shed text below 1180 px.
+    // it) at 769-945 px. Slice 5b moved the all-time spend out of the top bar
+    // (navigation footer, and the System detail's Usage section).
     await request.post('/api/test/set-spend', { data: { lifetimeSpendUsd: 12345.67 } });
     await page.reload();
     await expect(page.locator('.health-dot-connected')).toBeVisible();
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await expect(page.locator('.topbar-spend')).toHaveText('$12345.67');
+    await expect(page.locator('.topbar .topbar-spend')).toHaveCount(0);
+    await page.getByTestId('system-indicator').click();
+    await expect(page.getByTestId('system-usage').getByTestId('all-time-spend')).toHaveText('$12345.67');
+    await page.keyboard.press('Escape');
     for (const width of [769, 834, 900, 1024, 1179]) {
       await page.setViewportSize({ width, height: 1000 });
       const layout = await page.evaluate(() => {
@@ -395,7 +382,7 @@ test.describe('Keyboard shortcuts', () => {
     await page.keyboard.press('Alt+l');
     await page.keyboard.press('Enter');
     // Quick launch should close (onBlur) but no task created
-    await expect(page.locator('.statusbar')).toContainText('0 tasks');
+    await expect(page.getByTestId('task-counts')).toContainText('0 tasks');
   });
 });
 

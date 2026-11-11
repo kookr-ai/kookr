@@ -39,7 +39,7 @@ async function seedTask(request: APIRequestContext) {
 
 async function openSelectedTask(page: Page, request: APIRequestContext) {
   await seedTask(request);
-  await expect(page.locator('.statusbar')).toContainText('1 task');
+  await expect(page.getByTestId('task-counts')).toContainText('1 task');
   const shareButton = page.getByRole('button', { name: 'Share this task' });
   if (await shareButton.isVisible().catch(() => false)) return;
   await page.locator('.healthy-row, .finding-card').first().click();

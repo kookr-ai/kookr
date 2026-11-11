@@ -121,9 +121,7 @@ code, kbd { font-family: var(--font-mono); }
 .metric-group,
 .queue-info,
 .queue-info-reserved,
-.queue-dots,
-.statusbar-left,
-.statusbar-compact-actions {
+.queue-dots {
   display: flex;
   align-items: center;
 }
@@ -153,7 +151,6 @@ code, kbd { font-family: var(--font-mono); }
 .btn-settings,
 .btn-icon,
 .terminal-btn,
-.statusbar-action,
 .project-sidebar-organizer {
   background: none;
   border: 1px solid var(--border-dim);
@@ -313,6 +310,9 @@ code, kbd { font-family: var(--font-mono); }
    layout lives in styles.css. The width rule keeps the first paint stable. */
 .project-nav-queues, .project-nav-heading, .project-nav-name, .project-nav-dot, .project-nav-idle-toggle { display: none; }
 @media (min-width: 1280px) { .project-sidebar.labelled { width: 212px; min-width: 212px; } }
+/* Spend and quota (#3561 slice 5b): unstyled until styles.css loads, so the
+   footer never flashes as loose text. */
+.usage-summary { display: none; }
 
 .project-icon {
   position: relative;
@@ -498,19 +498,6 @@ code, kbd { font-family: var(--font-mono); }
   outline: none;
 }
 
-.statusbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 26px;
-  padding: 4px 16px;
-  background: var(--bg-panel);
-  border-top: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
 
 .mobile-dashboard-tabs,
 .mobile-quick-actions { display: none; }
