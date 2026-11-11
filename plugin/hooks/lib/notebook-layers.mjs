@@ -60,15 +60,23 @@ export function repoSlugFromEnv(env = process.env) {
 /**
  * Read a legacy->canonical slug map. Returns a `Map` keyed by the normalized
  * legacy slug whose value is the canonical slug exactly as written in the file
- * (trimmed). Never throws: a missing or malformed file yields the built-in map,
- * and malformed entries (non-string, blank, self-alias) are dropped.
+ * (trimmed). By default it never throws: a missing or malformed file yields the
+ * built-in map. With `{ strict: true }` (used when the operator names a file with
+ * `--map`) a missing, unparsable or non-object file throws instead. Malformed
+ * entries (non-string, blank, self-alias) are dropped either way.
  */
-export function loadSlugAliases(path = DEFAULT_ALIASES_PATH) {
+export function loadSlugAliases(path = DEFAULT_ALIASES_PATH, { strict = false } = {}) {
   let raw;
   try {
     raw = existsSync(path) ? JSON.parse(readFileSync(path, 'utf-8')) : undefined;
-  } catch {
+  } catch (err) {
+    if (strict) throw new Error(`slug alias map ${path} cannot be parsed: ${err instanceof Error ? err.message : String(err)}`);
     raw = undefined;
+  }
+  if (strict && (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw))) {
+    // An alias map the operator named explicitly must be used or refused, never
+    // silently replaced by the built-in one (that changes which shelves count as legacy).
+    throw new Error(`slug alias map ${path} ${raw === undefined ? 'does not exist' : 'is not a JSON object'}`);
   }
   if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     raw = BUILTIN_SLUG_ALIASES;

@@ -191,7 +191,7 @@ export function findGroups({ store, aliases, threshold = DEFAULT_THRESHOLD }) {
       members.forEach((m) => taken.add(m));
       members.sort(byBest);
       const group = {
-        id: `c-${hash6(`${base}\0${anchor.id}`)}`,
+        id: `c-${hash6(`${base}\0${anchor.shelf}\0${anchor.id}`)}`,
         tier: 'candidate',
         base,
         members,
@@ -559,7 +559,7 @@ export function main(argv = process.argv.slice(2)) {
   try {
     result = runPromotion({
       client: createNbClient({ nb: arg(argv, '--nb') }),
-      aliases: loadSlugAliases(arg(argv, '--map')),
+      aliases: loadSlugAliases(arg(argv, '--map'), { strict: arg(argv, '--map') !== undefined }),
       apply: argv.includes('--apply'),
       only: onlyRaw === undefined ? null : parseIdList(onlyRaw),
       toGlobal: parseIdList(arg(argv, '--to-global')),

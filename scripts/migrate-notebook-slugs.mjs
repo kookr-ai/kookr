@@ -459,9 +459,16 @@ export function main(argv = process.argv.slice(2)) {
     console.error(`migrate-notebook-slugs: ${flagProblem}. Nothing was changed.`);
     return 2;
   }
-  const aliases = loadSlugAliases(arg(argv, '--map'));
-  const manifestPath = arg(argv, '--manifest') ?? join(REPO_ROOT, 'plugin', 'notebooks', 'shelves.json');
-  const manifestShelves = JSON.parse(readFileSync(manifestPath, 'utf-8')).shelves ?? {};
+  let aliases;
+  let manifestShelves;
+  try {
+    aliases = loadSlugAliases(arg(argv, '--map'), { strict: arg(argv, '--map') !== undefined });
+    const manifestPath = arg(argv, '--manifest') ?? join(REPO_ROOT, 'plugin', 'notebooks', 'shelves.json');
+    manifestShelves = JSON.parse(readFileSync(manifestPath, 'utf-8')).shelves ?? {};
+  } catch (err) {
+    console.error(`migrate-notebook-slugs: ${err instanceof Error ? err.message : String(err)}. Nothing was changed.`);
+    return 2;
+  }
   const client = createNbClient({ nb: arg(argv, '--nb') });
   let result;
   try {

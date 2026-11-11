@@ -41,6 +41,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyShelf, loadSlugAliases } from '../plugin/hooks/lib/notebook-layers.mjs';
+import { checkArgv } from './lib/nb-client.mjs';
 
 /** `nb describe` rejects text over NB_MAX_CHARS (default 200). */
 const MAX_DESC_CHARS = 200;
@@ -210,6 +211,11 @@ function notebooksDir() {
 }
 
 function main(argv) {
+  const argProblem = checkArgv(argv, { switches: ['--dry-run'], values: ['--manifest', '--map'] });
+  if (argProblem) {
+    console.error(`apply-shelf-descriptions: ${argProblem}. Nothing was changed.`);
+    process.exit(2);
+  }
   const dryRun = argv.includes('--dry-run');
   const manifestIdx = argv.indexOf('--manifest');
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -218,6 +224,14 @@ function main(argv) {
       ? argv[manifestIdx + 1]
       : join(repoRoot, 'plugin', 'notebooks', 'shelves.json');
 
+  const mapIdx = argv.indexOf('--map');
+  let aliases;
+  try {
+    aliases = loadSlugAliases(mapIdx >= 0 ? argv[mapIdx + 1] : undefined, { strict: mapIdx >= 0 });
+  } catch (err) {
+    console.error(`apply-shelf-descriptions: ${err instanceof Error ? err.message : String(err)}. Nothing was changed.`);
+    process.exit(2);
+  }
   let dir;
   try {
     dir = notebooksDir();
@@ -226,8 +240,6 @@ function main(argv) {
     process.exit(0);
   }
 
-  const mapIdx = argv.indexOf('--map');
-  const aliases = loadSlugAliases(mapIdx >= 0 && argv[mapIdx + 1] ? argv[mapIdx + 1] : undefined);
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
   const seed = buildSeed({ dir, manifestShelves: manifest.shelves ?? {}, aliases });
   for (const legacy of legacyShelfNames({ dir, aliases })) console.log(`  skip (legacy slug) ${legacy}`);

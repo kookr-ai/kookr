@@ -135,6 +135,21 @@ describe('loadSlugAliases', () => {
     }
   });
 
+  test('strict mode (an explicit --map) throws on a missing, unparsable or non-object file instead of using the built-in map', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aliases-'));
+    try {
+      expect(() => loadSlugAliases(join(dir, 'nope.json'), { strict: true })).toThrow(/does not exist/);
+      writeFileSync(join(dir, 'bad.json'), '{not json');
+      expect(() => loadSlugAliases(join(dir, 'bad.json'), { strict: true })).toThrow(/cannot be parsed/);
+      writeFileSync(join(dir, 'arr.json'), '[1]');
+      expect(() => loadSlugAliases(join(dir, 'arr.json'), { strict: true })).toThrow(/not a JSON object/);
+      writeFileSync(join(dir, 'ok.json'), '{}');
+      expect(loadSlugAliases(join(dir, 'ok.json'), { strict: true }).size).toBe(0); // an empty map is a valid choice
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('the module lives where the shim and the hook expect it', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     expect(DEFAULT_ALIASES_PATH).toBe(join(here, '..', 'plugin', 'notebooks', 'slug-aliases.json'));

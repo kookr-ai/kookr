@@ -12,6 +12,7 @@ import {
   legacyShelfNames,
   listShelfFiles,
 } from './apply-shelf-descriptions.mjs';
+import { spawnSync } from 'node:child_process';
 import { classifyShelf, loadSlugAliases } from '../plugin/hooks/lib/notebook-layers.mjs';
 
 // Validity guard for the Slice C seed manifest (plugin/notebooks/shelves.json)
@@ -354,5 +355,22 @@ describe('seed coverage on a copy of the live store (2026-11-11 snapshot)', () =
     expect(readFileSync(join(dir, 'code-review.md'), 'utf-8')).toContain('# desc: written by a human');
     const second = applyDescriptions({ dir, shelves: buildSeed({ dir, manifestShelves: shelves, aliases }), aliases, describe: describeStub });
     expect(second.described).toBe(0);
+  });
+});
+
+describe('apply-shelf-descriptions CLI argument checking', () => {
+  const script = join(repoRoot, 'scripts', 'apply-shelf-descriptions.mjs');
+  const go = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf-8', env: { ...process.env, NB_DIR: join(tmpdir(), 'nbstore-never-used') } });
+
+  test.each([
+    [['--dry-run', '--bogus'], 'unknown argument'],
+    [['--dry-run', '--map=/tmp/x.json'], 'unknown argument'],
+    [['--map', ''], 'needs a value'],
+    [['--map', join(tmpdir(), 'no-such-aliases.json')], 'does not exist'],
+    [['--manifest', 'a', '--manifest', 'b'], 'more than once'],
+  ])('%j is refused with exit 2 before anything runs', (args, message) => {
+    const r = go(...(args as string[]));
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(message);
   });
 });

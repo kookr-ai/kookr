@@ -88,7 +88,10 @@ export function tagStore(dir, tag) {
     return { ok: true, created: false, snapshotCommitted: false };
   }
   const snapshotCommitted = commitAll(dir, `snapshot before ${tag}`);
-  const r = git(dir, ['tag', tag]);
+  const r = git(dir, ['tag', '--', tag]);
+  if (r.ok && !git(dir, ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]).ok) {
+    return { ok: false, created: false, snapshotCommitted, error: `git did not create tag ${JSON.stringify(tag)}` };
+  }
   return r.ok ? { ok: true, created: true, snapshotCommitted } : { ok: false, created: false, snapshotCommitted, error: r.stderr };
 }
 
@@ -125,14 +128,19 @@ export function reapZeroByteShelf(dir, shelf) {
  * as a plain `--apply`.
  */
 export function checkArgv(argv, { switches = [], values = [] }) {
+  const seen = new Set();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (switches.includes(a)) continue;
     if (values.includes(a)) {
       const v = argv[i + 1];
-      if (v === undefined || v.trim() === '' || v.startsWith('--')) {
-        return `${a} needs a value${v === '' ? ' (it was empty: is a shell variable unset?)' : ''}`;
+      if (v === undefined || v.trim() === '' || v.startsWith('-')) {
+        return `${a} needs a value${v === '' ? ' (it was empty: is a shell variable unset?)' : ''}${v?.startsWith('-') ? ` (got "${v}", which looks like a flag)` : ''}`;
       }
+      // Only the first occurrence of a value flag would be read, so a repeat
+      // would be silently dropped (`--only a --only b` applying just a).
+      if (seen.has(a)) return `${a} was given more than once; pass one value (comma-separated for several ids)`;
+      seen.add(a);
       i++;
       continue;
     }

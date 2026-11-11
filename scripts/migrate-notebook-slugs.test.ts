@@ -470,6 +470,25 @@ describe('migrate-notebook-slugs: --apply guards', { timeout: 120_000 }, () => {
     }
   });
 
+  test('a value that looks like a flag (--tag -l), a repeated value flag, or a missing --map file is refused before anything changes', () => {
+    const dir = store();
+    writeShelf(dir, 'tester@agent-notebook', L([2, 'tester one']));
+    commitAll(dir);
+    const before = dirContents(dir);
+    const script = join(repoRoot, 'scripts', 'migrate-notebook-slugs.mjs');
+    const env = cleanEnv({ NB_DIR: dir });
+    const go = (...args: string[]) => spawnSync(process.execPath, [script, ...args, '--nb', RAW_NB], { encoding: 'utf-8', env });
+    const tagFlag = go('--apply', '--tag', '-l');
+    expect(tagFlag.status).toBe(2);
+    expect(tagFlag.stderr).toContain('looks like a flag');
+    expect(go('--apply', '--tag', 'a', '--tag', 'b').status).toBe(2);
+    const noMap = go('--apply', '--map', join(dir, 'missing-aliases.json'));
+    expect(noMap.status).toBe(2);
+    expect(noMap.stderr).toContain('does not exist');
+    expect(dirContents(dir)).toEqual(before);
+    expect(git(dir, 'tag')).toBe('');
+  });
+
   test('a tag that already exists is kept (the anchor of the first run)', () => {
     const dir = store();
     writeShelf(dir, 'tester@agent-notebook', L([2, 'tester one']));

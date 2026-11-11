@@ -504,6 +504,45 @@ describe('promote: --apply guards', { timeout: 120_000 }, () => {
     expect(git(dir, 'tag')).toBe('');
   });
 
+  test('a value that looks like a flag (--tag -l), a repeated value flag, or a missing --map file is refused before anything changes', () => {
+    const dir = store();
+    writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
+    writeShelf(dir, 'code-review@repo-two', L([5, SAME]));
+    commitAll(dir);
+    const before = dirContents(dir);
+    const script = join(repoRoot, 'scripts', 'promote-notebook-lessons.mjs');
+    const env = cleanEnv({ NB_DIR: dir });
+    const go = (...args: string[]) => spawnSync(process.execPath, [script, ...args, '--nb', RAW_NB], { encoding: 'utf-8', env });
+    const tagFlag = go('--apply', '--tag', '-l');
+    expect(tagFlag.status).toBe(2);
+    expect(tagFlag.stderr).toContain('looks like a flag');
+    const twice = go('--apply', '--only', 'e-000001', '--only', 'e-000002');
+    expect(twice.status).toBe(2);
+    expect(twice.stderr).toContain('more than once');
+    const twiceGlobal = go('--apply', '--to-global', 'e-000001', '--to-global', 'e-000002');
+    expect(twiceGlobal.status).toBe(2);
+    const noMap = go('--apply', '--map', join(dir, 'missing-aliases.json'));
+    expect(noMap.status).toBe(2);
+    expect(noMap.stderr).toContain('does not exist');
+    expect(dirContents(dir)).toEqual(before);
+    expect(git(dir, 'tag')).toBe('');
+  });
+
+  test('candidate group ids are unique even when the same lesson sits under a legacy and a canonical slug (the shelf is part of the id)', () => {
+    const dir = store();
+    const A1 = 'gh pr merge --delete-branch errors locally in a linked worktree but the remote merge succeeds';
+    const A2 = 'gh pr merge delete branch errors locally in a linked worktree but the remote merge succeeds.'; // same nb dedup key as A1
+    const B1 = 'gh pr merge --delete-branch fails locally in a linked worktree; the remote merge still succeeds';
+    const B2 = 'gh pr merge --delete-branch fails locally in a linked worktree and the remote merge still succeeds';
+    writeShelf(dir, 'orchestrator@agent-notebook', L([6, A1]));
+    writeShelf(dir, `orchestrator@${CANON}`, L([5, A2]));
+    writeShelf(dir, 'orchestrator@repo-b', L([2, B1]));
+    writeShelf(dir, 'orchestrator@repo-c', L([2, B2]));
+    const ids = groupsOf(dir, 0.5).groups.map((g: { id: string }) => g.id);
+    expect(ids.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   test('the CLI: bad --threshold exits 2, a dry-run exits 0, --apply on a non-git store exits 2', () => {
     const dir = store({ git: false });
     writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
