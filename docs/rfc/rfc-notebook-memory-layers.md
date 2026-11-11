@@ -1,6 +1,6 @@
 # RFC: Notebook memory layers (project > domain > global) for every Kookr agent
 
-**Status:** Draft (v3, after review round 1 and the independent merge review). Progress: K1 merged (#3595); upstream janitor signals merged (agent-notebook #362 via #364, #365); K2-K4 pending.
+**Status:** Draft (v4, after review round 1 and two independent merge reviews). Progress: K1 merged (#3595); upstream janitor signals merged (agent-notebook #362 via #364, #365); K2-K4 pending.
 **Date:** 2026-11-10
 **Author:** Jean Ibarz (with Claude)
 
@@ -45,7 +45,7 @@ rejected.
 pins it. So there are two separate gaps:
 
 - **Released features Kookr does not use correctly** (0.6/0.7): evidence below.
-- **Unreleased work on upstream `main`** (52 commits at last count: `nb doctor`, new-shelf
+- **Unreleased work on upstream `main`** (53 commits at last count: `nb doctor`, new-shelf
   notice #354, case-collision refusal #337, merge-marker refusal #352, per-shelf
   add-rate stats #353). Using it needs a 0.8.0 release. Publishing to npm is
   irreversible, so it is an operator decision, not part of this RFC's slices.
@@ -58,13 +58,13 @@ pins it. So there are two separate gaps:
 | E2 | 44 shelves: 24 project-scoped (`name@slug`, 9 distinct slugs), 20 bare. An agent working in `jeanibarz-agent-notebook` is shown all 44: 15 belong to other projects, 2 are its own, and 7 more carry the legacy short slug of this very repo (see E3). | Noise in every session, and lessons from other repos are one `nb show` away (no isolation). |
 | E3 | The same repo has two slugs: 7 shelves use `@agent-notebook`, 2 use `@jeanibarz-agent-notebook` (the form `KOOKR_REPO_SLUG` produces). `nb-janitor` section 2 reports "no suspiciously similar shelf names" for both. | A project filter would hide the 7 legacy shelves from the very project they describe. |
 | E4 | All 24 project shelves have no `# desc:` trigger; 7 of 20 bare shelves have none, including `fleet-global`. The janitor lists a dozen shown-but-never-voted shelves. | Index rows fall back to a lesson fragment, so agents choose shelves by guesswork. |
-| E5 | Placement is ambiguous. `orchestrator@kookr-ai-kookr` and `orchestrator@jeanibarz-agent-notebook` both hold the same merge-gate lesson ("Codex lane `model_not_found`, fall back to Claude reviewer") and a host-wide git-worktree lesson; `fleet-global` holds 3 lessons. | Cross-project lessons sit in project shelves and are never promoted. |
+| E5 | Placement is ambiguous. `orchestrator@kookr-ai-kookr` and `orchestrator@jeanibarz-agent-notebook` both hold a **paraphrase** of the same merge-gate lesson ("Codex lane `model_not_found`, fall back to Claude reviewer", worded differently) and a host-wide git-worktree lesson; a scan of all 368 project lessons found **0 exact duplicates** across shelves of the same base, so cross-project overlap exists but is not exact; `fleet-global` holds 3 lessons. | Cross-project lessons sit in project shelves and are never promoted. |
 | E6 | `code-review@X` and `orchestrator@X` are shown together in 5/5, 2/2 sessions (janitor co-access). | Project shelves are consumed as one bundle, so the project layer should be injected as a group. |
 | E7 | `nb stats`: `add` 35% errors over 883 calls, 96% of the classified ones `too_long`; `vote` 16% errors; `move` 2/2 failed. Kookr's retro hook text says "≤200 chars" without upstream's "aim ~150" guidance, passes free text as `--reason` where `nb` expects a code (accepted as `other`, so `nb stats` cannot group the reasons), and teaches single-id votes though batch voting exists. | The write path itself is wasting calls, and it is where layer placement must be taught. |
 | E8 | `bin/nb.js` copies its own `MUTATING` set (`add vote merge rm split describe`). `move` is missing, so a promotion is never auto-committed to the store's git history (0 `nb move` commits in the store log). Upstream fixed the same bug in its example wrapper (#253). | Promotion is the verb that moves lessons up a layer; it must be recoverable. |
 | E9 | `nb-inject.mjs` swallows a failing `nb list` and injects nothing; upstream's example hook prints a warning. | A broken store looks like an empty one. |
 | E10 | Hermes shadow runs: memory had no measurable effect because "the packs held almost no lessons relevant to the issue" (operator-published Hermes shadow-run findings; not in this repo). | Layer content must be relevant (project-first), not merely larger. |
-| E11 | Of the 25 `plugin/agents/*.md`, 14 hardcode only a bare shelf (`nb show change-verifier`), 9 already name only a project shelf (`X@<owner>-<repo>`, no domain read), and 2 (`product-owner`, `user-test-simulator`) have no notebook section. None mention `KOOKR_REPO_SLUG` as a variable, and they teach quoted-id votes and a "≤120 chars" target. They say plainly that "a subagent gets no SessionStart index injection". The `notebook-role-reuse` skill offers project *or* domain, "pick one per spawn", never both. The most-opened shelves (`orchestrator@…`, `code-review@…`, `change-verifier`, `test-quality-reviewer`) are opened by name from these files. | The routing layer for subagents is the agent definitions, not the hook. A hook-only change would leave most memory use where it is. |
+| E11 | Of the 25 `plugin/agents/*.md`, 14 hardcode only a bare shelf (`nb show change-verifier`), 9 already name only a project shelf (`X@<owner>-<repo>`, no domain read), and 2 (`product-owner`, `user-test-simulator`) have no notebook section. None mention `KOOKR_REPO_SLUG` as a variable, and they teach quoted-id votes and a "≤120 chars" target. They say plainly that "a subagent gets no SessionStart index injection". The `notebook-role-reuse` skill offers project *or* domain, "pick one per spawn", never both. Two of the most-opened shelves, `change-verifier` and `test-quality-reviewer`, are opened by name from these files; the other two, `orchestrator@…` and `code-review@…`, are routed elsewhere (the orchestrator skill, `plugin/reviewer-specialists/*.md`, `plugin/skills/pre-pr-review/SKILL.md` and `src/core/reviewer-fanout.ts`, which still picks a single shelf), covered by slice K5. | The routing layer for subagents is the agent definitions, not the hook. A hook-only change would leave most memory use where it is. |
 
 E7-E9 describe the state before slice K1; K1 (#3595) has since fixed E8, E9 and the retro-text parts of E7.
 
@@ -123,11 +123,11 @@ still never opens a shelf *for* the agent.
 
 1. Read `KOOKR_REPO_SLUG`. Missing, or `KOOKR_NB_LAYERS=0` (the kill switch) →
    behave as today (flat index, still capped by item 6 below).
-2. Run `nb list --json` (works on 0.7.0). Classify each row with the shared
+2. Run `nb list --json --limit 1000` (works on 0.7.0; without the limit it returns only 50 rows and the hidden count would be wrong). Classify each row with the shared
    classifier (D3). A shelf `base@s` is in the project layer when `s` equals the
    slug **or** `plugin/notebooks/slug-aliases.json` maps `s` to the slug (today:
    `agent-notebook` → `jeanibarz-agent-notebook`). Aliases make the filter safe
-   before the store migration runs, and the file is deleted once the K2 migration has been applied.
+   before the store migration runs, and the file is deleted only once **no legacy-slug shelf remains** (the migration may refuse to move a low-scored lesson, which would otherwise be hidden from its own repo).
 3. Print three groups, project first, then one line that always states what was
    hidden: `3 shelves for other projects hidden (slug: owner-repo); nb list
    shows all`:
@@ -170,8 +170,9 @@ right and goes beyond it where it is not (batch vote `id1,id2`, reason codes
 cap, so those two points are Kookr's, not synced), and its
 `nb add` step names the placement rule: "add to `<situation>@<slug>` unless the
 lesson would be true in another repo; never write `fleet-global` directly". The
-sentinel claim becomes atomic (`wx` flag, exit 0 only on `EEXIST`, as upstream
-did in #245) and the sentinel TTL follows upstream (7 days, `NB_RETRO_TTL_DAYS`),
+sentinel claim becomes atomic (`wx` flag, as upstream did in #245; the merged hook
+exits 0 on `EEXIST` and also, deliberately, on any other write failure so a stop can
+never loop) and the sentinel TTL follows upstream (7 days, `NB_RETRO_TTL_DAYS`),
 because the current 24 h prune would re-nudge a session that runs longer than a
 day. `SubagentStop` fires with the parent's session id, so in a fan-out the
 **first** agent to stop, often a subagent, receives the one nudge. That is
@@ -251,22 +252,34 @@ this RFC). Claude Code gets an **index**; opencode will get **content packs**
 A promotion needs to find lessons that appear in more than one project shelf.
 Kookr can do that with `nb list --json` + `nb show --json`, so it does:
 
-- `scripts/promote-notebook-lessons.mjs` (new, **dry-run by default**) groups
-  lessons across `*@<slug>` shelves of the same base by **exact text equality
-  after trimming, collapsing whitespace and case-folding** (conservative; `nb`
-  0.7.0's `show --json` has no dedup key). Only an exact group is eligible for
-  `nb rm`. A fuzzy near-match (similarity score printed) is **report-only**: a
-  lesson and its negation can score as near-identical (#286), and a lesson found in
-  only one copy would be lost. For each exact group it prints the
-  `nb move` of the highest-scored copy to the domain shelf (or `fleet-global`
-  when the lesson names no work type) plus the `nb rm --reason obsolete --note duplicate` of the
-  others. `--apply` tags the store first and shares the migration script's
-  sequential-simulation, minimum-score and resumability rules.
+- `scripts/promote-notebook-lessons.mjs` (new, **dry-run by default**) finds
+  lessons that look shared across `*@<slug>` shelves of the same base, in two
+  tiers:
+  - **Exact group**: equal text after trimming, collapsing whitespace and
+    case-folding (conservative; `nb` 0.7.0's `show --json` has no dedup key). The
+    script prints the `nb move` of the highest-scored copy to the domain shelf (or
+    `fleet-global` when the lesson names no work type) plus the
+    `nb rm --reason obsolete --note duplicate` of the other copies. Only an exact
+    group's other copies are ever removed.
+  - **Candidate group** (token-overlap above a printed threshold, so paraphrases
+    such as the E5 pair): **report-only by default**, with both texts, scores and
+    shelf ids side by side. `--apply --only <group-id,...>` lets a reviewer
+    promote chosen groups: it `nb move`s the highest-scored copy up (score kept)
+    and **removes nothing**; the other paraphrases stay in their project shelves
+    (project wins on conflict) until a reviewer `nb rm`s them by hand. Fuzzy
+    matching never deletes, because a lesson and its negation can score as
+    near-identical (#286) and a lesson found in one copy only would be lost.
+  `--apply` tags the store first and shares the migration script's
+  sequential-simulation (evictions **and** the one-point aging `nb` applies to the
+  oldest surviving line on every over-cap admit), minimum-score and resumability
+  rules.
 - `.kookr/playbooks/agent-notebook-reflection.md` runs it and runs the shipped
   janitor, and sets `KOOKR_NB_CURATOR=1` for its own `nb` calls.
-- First use is a one-shot **seed pass** over the duplicates already in the store
-  (E5), so `fleet-global` is populated by evidence on day one, as an operator
-  action with the same dry-run discipline.
+- First use is a one-shot **seed pass**. Measured today: 0 exact groups in the
+  store, so the pass yields **candidate groups only**, and `fleet-global` is
+  populated by a human choosing which candidates to promote, not automatically.
+  That is slower than "populated by evidence on day one" but is the honest
+  outcome of the data; it is an operator action with the same dry-run discipline.
 
 ### D6. Upstream `agent-notebook` additions (neutral primitives only)
 
@@ -307,8 +320,10 @@ No Kookr slice depends on an upstream change or release.
   (`plugin/hooks/lib/notebook-layers.mjs`). The session-start hook **and the
   `bin/nb.js` shim** (whose K1 advisory currently splits on the first `@`,
   case-sensitively, unlike the last-`@`, case-insensitive rule above) SHALL import
-  it; a second implementation (opencode S3) SHALL import it too, or ship with a
-  parity test and an RFC amendment.
+  it (the shim through a **guarded dynamic import** that falls back to its current
+  behavior if the module cannot be loaded, so a missing file can never break every
+  `nb` call); a second implementation (opencode S3) SHALL import it too, or ship
+  with a parity test and an RFC amendment.
 - **FR-6** Slices that ship before an `agent-notebook` release SHALL work on
   0.7.0. No slice publishes to npm.
 - **FR-7** The store migration and promotion scripts SHALL default to dry-run
@@ -333,9 +348,10 @@ it relies on is described and alias-covered.
 | K2 | Store tooling: project-shelf descriptions in the seed (applied to the live store, idempotent, never overwrites a human description) + `fleet-global` trigger; `migrate-notebook-slugs.mjs` and `promote-notebook-lessons.mjs`, both dry-run by default; the reflection playbook's promotion step (it runs the promotion script, sets `KOOKR_NB_CURATOR=1`, and only reports). | K1 (`move` auto-commit) |
 | K3 | `notebook-layers.mjs`, layered index, the shim advisory moved onto it, `slug-aliases.json`, kill switch, fixture test on a snapshot of the 44-shelf store, baseline numbers in the PR. | K1, K2 (descriptions applied) |
 | K4 | D2b: shared Notebook Protocol block in the `notebook-role-reuse` skill, applied to the 23 agent docs that have a notebook section, by script + guard test; skill scope rule ("open both layers"). | K1 (can ship before or with K3) |
+| K5 | Reviewer and orchestrator routing: `plugin/reviewer-specialists/*.md`, `plugin/skills/pre-pr-review/SKILL.md` and `src/core/reviewer-fanout.ts` (still one shelf, "≤120 chars") get the same two-layer read and placement rule. | K4 |
 
-Upstream (`jeanibarz/agent-notebook`): **A2** (neutral janitor signals), **A3**
-(layers documentation; written to describe what Kookr does, no code).
+Upstream (`jeanibarz/agent-notebook`): **A2** (neutral janitor signals; merged as #364/#365) and **A3**
+(layers documentation; written to describe what Kookr does, no code; merged as #366).
 
 Operator actions left, deliberately: run the slug migration `--apply`, run the
 promotion seed pass `--apply`, and any `agent-notebook` release.
@@ -360,7 +376,8 @@ comparison is like for like. Read a week after K1+K2+K3:
   behavior and D1 should be questioned.
 - Mid-task `list`/`search` volume (decides whether the shim filter is worth it).
 - `nb move` commits appear in the store log; after the seed pass, `fleet-global`
-  holds evidence-promoted lessons rather than 3.
+  holds the candidate lessons a reviewer chose to promote (the script cannot
+  populate it unattended, see D5).
 
 Honest limit: the usage log records the shelf and the session but not whether
 the caller was the main agent or a subagent, so the log cannot separate "the
@@ -435,7 +452,7 @@ and cuts, not new design.
 | Upstream `NB_PROJECT` filter (A1) is unjustified: Kookr owns the shim and hook; it makes `nb` define slug grammar | minimalist, boundary, failure-mode | **Incorporated.** A1 deferred; the upstream-release slice removed; no Kookr slice needs a release. |
 | Filter shipped before the slug repair hides 7 legacy shelves from their own repo; no kill switch | delivery, ambition | **Incorporated.** `slug-aliases.json`, `KOOKR_NB_LAYERS=0`, always-printed hidden count, K2 (descriptions, tooling) before K3 (filter). |
 | `@` parsing unspecified (`a@b@c`, case) | failure-mode | **Incorporated.** Last-`@` split, case-insensitive, trimmed slug, in the layer rules and tests. |
-| Global layer stays empty; no promotion without unreleased A2 | ambition, failure-mode | **Incorporated.** Harness-side promotion script and a one-shot seed pass; A2 no longer on the critical path. |
+| Global layer stays empty; no promotion without unreleased A2 | ambition, failure-mode | **Incorporated, then narrowed.** Harness-side promotion script (A2 off the critical path). The second independent review showed the real duplicates are paraphrases (0 exact groups in 368 lessons), so the script reports paraphrase candidates and a reviewer chooses what to promote; it does not populate `fleet-global` unattended. |
 | Classifier duplicated in `.mjs` and TS with a parity test | minimalist, boundary | **Incorporated.** One `.mjs` owner; no TS copy until opencode S3 exists. |
 | `nb move` into a full shelf evicts the lowest-scored line; "stalest" was wrong; dry-run order-dependent; `reset --hard` rollback unsafe | failure-mode | **Incorporated.** Sequential simulation, minimum-score refusal, resumable, rollback by `git revert`. Verified by probe. |
 | `nb rm --reason duplicate` is not a valid code | failure-mode | **Incorporated.** Verified; now `--reason obsolete --note duplicate`. |
@@ -449,9 +466,8 @@ and cuts, not new design.
 | Slug length and collisions (`a-b/c` vs `a/b-c`), per-worktree `local-` slugs | failure-mode | **Incorporated as documented edge cases**; capping `deriveRepoSlug` is a separate issue. |
 
 Adversarial pair (design-minimalist vs ambition-amplifier): I agreed with
-ambition that promotion must not wait for upstream, because the store already
-holds real cross-project duplicates (E5) and the global layer would otherwise be
-three lines; I agreed with minimalist that nothing upstream blocks it and that
+ambition that promotion must not wait for upstream, because the store holds real cross-project overlap (E5, as paraphrases) and the
+global layer would otherwise be three lines; I agreed with minimalist that nothing upstream blocks it and that
 the TS classifier, the filter, and the release dependency are speculative and
 cut. Result: a small harness-side dry-run script instead of an upstream feature.
 
@@ -468,6 +484,20 @@ counts (14 bare-only, 9 project-only, 2 without a notebook section, so 23 docs n
 25), the subagent-slug caveat in D2b, "lowest-scored" eviction wording, the K3→K2
 migration reference, the D1 fallback wording, slice table, FR/alternative order,
 and stale status text.
+
+Second independent merge review (blind Opus-class, exact head `427cea06`):
+**BLOCK**, one confirmed defect, fixed in v4: the v3 exact-match-only promotion
+yields nothing on the real store (368 project lessons, 0 exact cross-shelf groups;
+the E5 pair are paraphrases), which undercut the claim that the global layer is
+populated on day one. D5 now has two tiers (exact groups are eligible for removal;
+paraphrase candidates are report-only and a reviewer promotes chosen groups with a
+score-preserving move and no deletion) and every claim and measure that assumed
+automatic population was narrowed. Non-blocking notes fixed: `--limit 1000` on
+`nb list --json`, alias-file deletion gated on no legacy shelf remaining, the
+migration simulation now models the one-point aging as well as eviction, the
+sentinel description matches the merged hook, E11's routing claim corrected and the
+reviewer/orchestrator routing split out as slice K5, a guarded dynamic import for
+the shim, and stale upstream status.
 
 Intent preservation check: the operator asked for (1) check what changed in the
 release and adapt the harness, (2) make agents aware of project > domain > global
