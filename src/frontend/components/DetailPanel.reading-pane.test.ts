@@ -6,10 +6,13 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import type { TaskGitHub } from '../store/store-types.js';
+import type { GitHubPRState } from '../../shared/contracts/github.js';
 import { DetailPanel } from './DetailPanel.js';
 
 vi.mock('../telemetry.js', () => ({ track: vi.fn(), trackClick: vi.fn() }));
 vi.mock('./ActivityPanel.js', () => ({ ActivityPanel: () => React.createElement('div', { 'data-testid': 'activity-panel' }) }));
+vi.mock('./GitHubPanel.js', () => ({ GitHubPanel: () => React.createElement('div', { 'data-testid': 'github-panel' }) }));
 vi.mock('./TerminalPanel.js', () => ({ TerminalPanel: () => React.createElement('div', { 'data-testid': 'terminal-panel' }) }));
 vi.mock('./EffectiveHookSettingsModal.js', () => ({
   EffectiveHookSettingsModal: ({ onClose }: { onClose: () => void }) => React.createElement(
@@ -78,6 +81,29 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     act(() => root?.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  test.each(['split', 'tabs'] as const)('in the %s layout, Conversation takes the highlight when the open GitHub tab loses its references (#3618)', async (detailPaneMode) => {
+    const pr: GitHubPRState = {
+      ref: { type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 7, url: 'https://github.com/kookr-ai/kookr/pull/7', detectedAt: new Date(0), detectedFrom: 'test', taskId: 'task-1' },
+      title: 'PR', status: 'open', mergeable: 'MERGEABLE', author: 'me', branch: 'b', baseBranch: 'main',
+      reviewDecision: null, reviewers: [], unresolvedThreads: [], totalComments: 0, checks: [], lastFetchedAt: new Date(0),
+    };
+    const withRefs: TaskGitHub = { taskId: 'task-1', prs: [pr], issues: [], changes: [] };
+    useKookrStore.setState({ narrowTab: 'github', leftPane: 'github', detailPaneMode, githubState: { 'task-1': withRefs } });
+    render(makeAgent());
+    const tab = (label: string) => [...container.querySelectorAll<HTMLButtonElement>('.detail-tab')]
+      .find((button) => button.textContent?.startsWith(label));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(tab('GitHub')?.getAttribute('aria-pressed')).toBe('true');
+    expect(q('github-panel')).not.toBeNull();
+
+    act(() => useKookrStore.setState({ githubState: { 'task-1': { ...withRefs, prs: [] } } }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(tab('GitHub')).toBeUndefined();
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelectorAll('.detail-tab.active:not(.detail-split-toggle)')).toHaveLength(1);
+    expect(q('activity-panel')).not.toBeNull();
   });
 
   test.each([
