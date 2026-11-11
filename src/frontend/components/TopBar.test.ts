@@ -436,7 +436,7 @@ describe('TopBar spend and the System Usage section (issue #3561 slice 5b)', () 
     expect(container.querySelector('.topbar')?.textContent).not.toContain('$12.30');
   });
 
-  test('System shows the Usage slot under its own heading', () => {
+  test('System shows the Usage slot', () => {
     render({ usage: React.createElement('div', { 'data-testid': 'usage-slot' }, 'usage here') });
     expect(container.querySelector('[data-testid="usage-slot"]')).toBeNull();
 
@@ -445,17 +445,9 @@ describe('TopBar spend and the System Usage section (issue #3561 slice 5b)', () 
     });
 
     const popover = container.querySelector('#system-popover');
-    expect(popover?.querySelector('[data-testid="system-usage-heading"]')?.textContent).toBe('Usage');
     expect(popover?.querySelector('[data-testid="usage-slot"]')?.textContent).toBe('usage here');
   });
 
-  test('System has no Usage heading when App passes no usage', () => {
-    render();
-    act(() => {
-      container.querySelector<HTMLButtonElement>('[data-testid="system-indicator"]')!.click();
-    });
-    expect(container.querySelector('[data-testid="system-usage-heading"]')).toBeNull();
-  });
 
   test('Help & shortcuts in System closes the detail and opens the help', () => {
     const onShowShortcuts = vi.fn();

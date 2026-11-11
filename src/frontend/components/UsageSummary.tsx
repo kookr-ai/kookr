@@ -206,7 +206,7 @@ export function UsageSummary({
   const allTimeLabel = formatCost(totalSpendUsd);
   const allTimeTitle = 'All-time agent spend recorded by this Kookr server — includes cleared and deleted tasks';
 
-  return (
+  const summary = (
     <div
       className={`usage-summary usage-summary--${placement}${hasQuota ? '' : ' usage-summary--no-quota'}`}
       data-testid={placement === 'nav' ? 'nav-footer' : 'system-usage'}
@@ -305,5 +305,14 @@ export function UsageSummary({
       )}
       {quotaStatus && hasQuota && <QuotaRows quota={quotaStatus} />}
     </div>
+  );
+  if (placement === 'nav') return summary;
+  // In the System detail the summary brings its own heading, so an empty
+  // summary leaves no orphan "Usage" title behind.
+  return (
+    <>
+      <h3 className="system-popover-heading" data-testid="system-usage-heading">Usage</h3>
+      {summary}
+    </>
   );
 }

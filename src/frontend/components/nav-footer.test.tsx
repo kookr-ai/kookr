@@ -6,7 +6,8 @@
  * - "N tasks · M findings" sits in the list header;
  * - the oldest-wait chip sits on the right of the "Needs you" header;
  * - the reflection prompt is a notice at the top of the list.
- * The icon-rail and phone layouts are CSS-only and are checked in Playwright.
+ * The icon-rail and phone layouts are CSS-only; they were measured in Chromium
+ * for the PR (no committed Playwright spec covers them).
  */
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -64,7 +65,7 @@ function finding(agentId: string, detectedAt: string): AgentState {
     anomaly: { type: 'needs_input', severity: 'warning', explanation: 'needs you', detectedAt },
     taskStatus: 'inProgress',
     cwd: '/tmp/project',
-  } as AgentState;
+  } as unknown as AgentState;
 }
 
 describe('navigation footer: spend and quota (#3561 slice 5b)', () => {
@@ -112,6 +113,7 @@ describe('navigation footer: spend and quota (#3561 slice 5b)', () => {
 
     const footer = container.querySelector('[data-testid="nav-footer"]');
     expect(footer?.getAttribute('aria-label')).toBe('Spend and quota');
+    expect(container.querySelector('[data-testid="system-usage-heading"]')).toBeNull();
     expect(footer?.querySelector('[data-testid="cost-24h-chip"]')?.textContent).toBe('$47.25 (24h)');
     expect(footer?.querySelector('[data-testid="all-time-spend"]')?.textContent).toBe('$1234.50');
 
@@ -163,6 +165,12 @@ describe('navigation footer: spend and quota (#3561 slice 5b)', () => {
     expect(container.innerHTML).toBe('');
   });
 
+  test('an empty System summary leaves no orphan Usage heading', () => {
+    useKookrStore.setState({ quotaStatus: null, totalSpendUsd: 0 });
+    render(<UsageSummary placement="system" cost24h={null} />);
+    expect(container.innerHTML).toBe('');
+  });
+
   test('without quota the footer is marked so the icon rail can hide it', () => {
     useKookrStore.setState({ quotaStatus: null, totalSpendUsd: 5 });
     render(<UsageSummary placement="nav" />);
@@ -173,6 +181,7 @@ describe('navigation footer: spend and quota (#3561 slice 5b)', () => {
     useKookrStore.setState({ quotaStatus: quota(10, 20), totalSpendUsd: 0 });
     render(<UsageSummary placement="system" launchedLast24h={2} completedLast24h={1} />);
 
+    expect(container.querySelector('[data-testid="system-usage-heading"]')?.textContent).toBe('Usage');
     const usage = container.querySelector('[data-testid="system-usage"]');
     expect(usage?.classList.contains('usage-summary--system')).toBe(true);
     expect(usage?.querySelector('[data-testid="launched-24h-chip"]')?.textContent).toBe('2 launched / 24h');

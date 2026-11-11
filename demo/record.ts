@@ -1812,9 +1812,9 @@ async function record() {
     await setSpend(request, allTaskIds, [0.18, 0.42, 0.15, 0.31, 0.41]); // $1.47
     await wait(page, 400);
     // The session_value narration quotes "one dollar forty-seven" — fail the
-    // run (check mode included) if the header doesn't actually show $1.47,
+    // run (check mode included) if the navigation footer doesn't actually show $1.47,
     // so the cost data and the narration can't drift apart silently.
-    await page.locator('.topbar-spend').filter({ hasText: '$1.47' }).first()
+    await page.locator('[data-testid="nav-footer"] [data-testid="all-time-spend"]').filter({ hasText: '$1.47' }).first()
       .waitFor({ state: 'visible', timeout: 3000 });
 
     await selectCompletedRowByText(page, 'Refactor auth middleware to async/await');
@@ -1831,12 +1831,12 @@ async function record() {
     await hideCaption(page);
     await zoomReset(page);
 
-    // Every number in this line is real and on screen: the TopBar session
+    // Every number in this line is real and on screen: the footer's session
     // cost and the completed digest. No invented metrics, no footnotes.
     await showCaption(page, NARRATIONS.session_value);
     tracker.mark('session_value');
     await wait(page, 1200);
-    await zoomTo(page, '.topbar-spend-group', 2.2);
+    await zoomTo(page, '[data-testid="nav-footer"]', 2.2);
     await wait(page, Math.max(0, holdTime(audioClips, 'session_value', 6500) - 3300));
     await zoomReset(page);
     await wait(page, 1300);

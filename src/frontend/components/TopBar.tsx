@@ -459,12 +459,8 @@ export function TopBar({
                   onOpenSchedules={onOpenSchedules}
                   shortcutBindings={shortcutBindings}
                 />
-                {usage && (
-                  <>
-                    <h3 className="system-popover-heading" data-testid="system-usage-heading">Usage</h3>
-                    {usage}
-                  </>
-                )}
+                {/* Usage (#3561 5b): the summary renders its own heading. */}
+                {usage}
                 {onShowShortcuts && (
                   <button
                     type="button"
