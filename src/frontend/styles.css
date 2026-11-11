@@ -2215,7 +2215,7 @@ button.section-header.detection-stats-header:focus-visible {
 .branch-label {
   font-size: 12px;
   color: var(--text-muted, #888);
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, monospace);
   white-space: nowrap;
 }
 .branch-icon {
@@ -2229,7 +2229,7 @@ button.section-header.detection-stats-header:focus-visible {
   font-size: 12px;
 }
 .detail-branch {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, monospace);
   font-size: 12px;
   color: var(--text-secondary, #aaa);
   white-space: nowrap;
@@ -4346,7 +4346,7 @@ a.playbook-empty-docs-link:visited:hover {
 }
 .ralph-needs-human-exit {
   color: var(--text-secondary);
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, monospace);
   font-size: 12px;
 }
 
@@ -4370,7 +4370,7 @@ a.playbook-empty-docs-link:visited:hover {
   color: var(--text-bright);
 }
 .ralph-conflict-detail code {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, monospace);
   background: var(--bg-elev, rgba(255, 255, 255, 0.05));
   padding: 1px 4px;
   border-radius: 4px;
@@ -8520,7 +8520,7 @@ button.completed-row-rating:focus-visible {
   min-width: 0;
   overflow-x: auto;
   white-space: pre;
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, monospace);
   font-size: 12px;
   color: var(--text-bright);
   background: var(--bg-card);
@@ -12612,7 +12612,7 @@ a.project-drawer-stat-row-link:focus-visible {
   border-color: rgba(255, 255, 255, 0.1);
 }
 .pending-pr-number {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, monospace);
   font-size: 12px;
   color: var(--text-muted);
   flex-shrink: 0;
@@ -16115,7 +16115,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 
 .related-task-evidence-snippet {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, monospace);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
