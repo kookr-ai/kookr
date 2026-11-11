@@ -602,6 +602,21 @@ describe('DetailPanel dense metadata', () => {
     expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
   });
 
+  test('#3618: "Show conversation" from terminal focus returns to Split view when focus was entered from it', () => {
+    useKookrStore.getState().setDetailPaneMode('split');
+    useKookrStore.getState().setDetailPaneMode('right');
+    root = renderDetailPanel(container, makeAgent());
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Show conversation"]')!.click();
+    });
+
+    expect(useKookrStore.getState().detailPaneMode).toBe('split');
+    expect(container.querySelector('.detail-split-left')).not.toBeNull();
+    expect(useKookrStore.getState().leftPane).toBe('activity');
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
   test('right-only diff mode keeps hidden terminal inactive', async () => {
     root = renderDetailPanel(container, makeAgent());
 

@@ -102,6 +102,11 @@ function matchesSelection(agent: AgentState, selectedAgentId: string | null, sel
 
 export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): TriageNavigationSlice {
   const initialDetailPaneMode = loadDetailPaneMode();
+  // Layout to return to when terminal focus ends, so Split view survives a
+  // round trip through terminal focus (#3618). Kept in memory only: after a
+  // reload that lands in terminal focus, leaving it falls back to the tabs.
+  let modeBeforeTerminalFocus: Exclude<DetailPaneMode, 'right'> =
+    initialDetailPaneMode === 'split' ? 'split' : 'tabs';
 
   function getPriorityOrderContext() {
     const state = get();
@@ -391,6 +396,8 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     },
 
     setDetailPaneMode: (mode) => {
+      const current = get().detailPaneMode;
+      if (mode === 'right' && current !== 'right') modeBeforeTerminalFocus = current;
       saveDetailPaneMode(mode);
       set({
         detailPaneMode: mode,
@@ -399,11 +406,19 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       });
     },
 
-    // Leaving terminal focus returns to the default tabbed layout on the
-    // Terminal tab, so the terminal the operator was reading stays in view.
+    // Leaving terminal focus returns to the layout it was entered from. From
+    // the tabs it lands on the Terminal tab, so the terminal the operator was
+    // reading stays in view; Split view shows the terminal on its right pane
+    // and the tab its left pane had (#3618).
     setTerminalFocusMode: (enabled) => {
-      get().setDetailPaneMode(enabled ? 'right' : 'tabs');
-      if (!enabled) set({ narrowTab: 'terminal' });
+      if (enabled) {
+        get().setDetailPaneMode('right');
+        return;
+      }
+      if (get().detailPaneMode !== 'right') return;
+      const restored = modeBeforeTerminalFocus;
+      get().setDetailPaneMode(restored);
+      set({ narrowTab: restored === 'split' ? get().leftPane : 'terminal' });
     },
 
     toggleTerminalFocusMode: () => {
