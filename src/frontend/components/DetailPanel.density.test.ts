@@ -493,7 +493,7 @@ describe('DetailPanel dense metadata', () => {
     });
   }
 
-  test('#3618: moving to another task after a diff auto-selected Terminal returns to the tab the diff came from', async () => {
+  test('#3618: moving to another task after a diff auto-selected Terminal opens the next task on Conversation', async () => {
     root = renderDetailPanel(container, makeAgent());
 
     act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });

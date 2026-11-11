@@ -467,16 +467,19 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
 
   // Clear diff/file state when the selected agent changes. Avoids showing stale
   // content bound to a different agent's toolUseId or worktree. If only the
-  // diff put the pane on the Terminal tab, return to the tab it came from, so
-  // the next task does not open on Terminal by accident (#3618).
+  // diff put the pane on the Terminal tab, the next task opens on Conversation,
+  // as any task switch does when the operator did not pick Terminal themselves
+  // (`tabAfterTaskSwitch`), instead of keeping Terminal by accident (#3618).
   useEffect(() => {
     setActiveDiff(null);
     setActiveFile(null);
     setRightPane('terminal');
     diffTriggerRef.current = null;
     fileTriggerRef.current = null;
-    restoreTabAfterRightPane();
-  }, [agent?.agentId, restoreTabAfterRightPane]);
+    const diffHeldTerminal = tabBeforeRightPaneRef.current !== null;
+    tabBeforeRightPaneRef.current = null;
+    if (diffHeldTerminal && useKookrStore.getState().narrowTab === 'terminal') setNarrowTab('activity');
+  }, [agent?.agentId, setNarrowTab]);
 
   function handleOpenDiff(target: DiffClickTarget) {
     if (!agent) return;
