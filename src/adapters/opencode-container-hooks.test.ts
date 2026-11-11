@@ -16,8 +16,9 @@ describe('container hook path map', () => {
       pluginHooksDir: join(repo, 'plugin', 'hooks'), binDir: join(repo, 'bin'), nodePath: process.execPath,
       deliverable: { kind: 'commit-and-pr-body' }, containerPaths: CONTAINER_PATHS,
     })!;
-    const all = [...(hooks.hooks.SessionStart ?? []), ...(hooks.hooks.Stop ?? [])].flatMap((g) => g.hooks.map((h) => h.command)).join('\n');
+    const all = [...(hooks.hooks.SessionStart ?? []), ...(hooks.hooks.PreToolUse ?? []), ...(hooks.hooks.Stop ?? [])].flatMap((g) => g.hooks.map((h) => h.command)).join('\n');
     expect(all).toContain("'/usr/local/bin/node' '/kookr-hooks/bin/kookr-opencode-gate.js' --kind 'commit-and-pr-body'");
+    expect(all).toContain("'/usr/local/bin/node' '/kookr-hooks/bin/kookr-opencode-push-guard.js'");
     expect(all).toContain("bash '/kookr-hooks/plugin-hooks/nb-inject.sh'");
     expect(all).toContain("bash '/kookr-hooks/plugin-hooks/nb-retro.sh'");
     expect(all).toContain('/kookr-hooks/bin/kookr-stop-nudge.js');
@@ -39,6 +40,9 @@ describe('container hook path map', () => {
     expect(existsSync(join(out, 'bin', 'kookr-opencode-gate.js'))).toBe(false);
     expect(statSync(join(out, 'bin', 'kookr-hook-writer.js')).mode & 0o111).not.toBe(0);
     expect(existsSync(join(out, 'plugin-hooks', 'nb-retro.mjs'))).toBe(true);
+    // The push guard is part of the staged set and the MANIFEST, so a worker image never lacks it.
+    expect(staged.manifest).toContain('/kookr-hooks/bin/kookr-opencode-push-guard.js');
+    expect(statSync(join(out, 'bin', 'kookr-opencode-push-guard.js')).mode & 0o111).not.toBe(0);
   });
 
   test('ledger command appends to the spool, never to localhost', () => {

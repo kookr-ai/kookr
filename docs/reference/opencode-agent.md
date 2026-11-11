@@ -117,7 +117,21 @@ The generated opencode plugin runs Claude-shaped hooks with Claude semantics
 at most 4 times):
 
 1. `SessionStart`: `nb-inject.sh` injects the Agent Notebook index.
-2. `Stop`, in this order:
+2. `PreToolUse` on `Bash`, only when the profile declares a deliverable:
+   **push guard** (`bin/kookr-opencode-push-guard.js`). A profiled worker
+   delivers a local commit or file; the operator pushes after review. The
+   guard fails the tool call (exit 2, with an explanation the worker sees) for
+   `git push` / `git send-pack` / `git subtree push`, `gh pr merge|create|ready|
+   close|reopen|review|comment|edit|lock|unlock|update-branch`, `gh release
+   create|delete|edit|upload` and mutating `gh api` calls (`-X` other than GET, request fields, GraphQL
+   `mutation`). It sees through `env`/`sudo`/`time`/`xargs`, `bash -c`, `eval`,
+   `$(...)`, backticks, heredocs fed to a shell and `&&`/`;`/`|` chains. It is a
+   guardrail against a compliant-but-careless model, not a sandbox (it looks for `git` / `gh` at any word position, so the odd harmless command such as `echo git push` is blocked too and the worker has to rephrase): a worker
+   that deliberately builds a command from variables, or publishes with `curl`,
+   is not stopped. Unprofiled workers are not guarded (they keep Kookr's generic
+   worktree/PR guidance). A missing script is skipped with a warning and fails
+   open, like the other hooks.
+3. `Stop`, in this order:
    1. **Deliverable gate** (`bin/kookr-opencode-gate.js`, only when the profile
       declares a deliverable). `file:X` requires `X` to exist and be non-empty.
       `commit-and-pr-body` requires no uncommitted tracked changes, at least

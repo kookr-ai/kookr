@@ -54,6 +54,31 @@ describe('defaultKookrClaudeHooks', () => {
     expect(pr.hooks.Stop![0]!.hooks[0]!.command).toContain("--kind 'commit-and-pr-body'");
   });
 
+  it('blocks Bash publishing for profiled workers: PreToolUse push guard only when there is a deliverable', () => {
+    const f = fixture(['nb-inject.sh', 'nb-retro.sh', 'bin/kookr-stop-nudge.js', 'bin/kookr-opencode-gate.js', 'bin/kookr-opencode-push-guard.js']);
+    const base = { pluginHooksDir: f.hooks, binDir: f.bin };
+    for (const deliverable of [{ kind: 'commit-and-pr-body' as const }, { kind: 'file' as const, name: 'AUDIT.md' }]) {
+      const cfg = defaultKookrClaudeHooks({ ...base, deliverable })!;
+      expect(cfg.hooks.PreToolUse).toHaveLength(1);
+      expect(cfg.hooks.PreToolUse![0]!.matcher).toBe('Bash');
+      expect(cfg.hooks.PreToolUse![0]!.hooks).toHaveLength(1);
+      expect(cfg.hooks.PreToolUse![0]!.hooks[0]!.command).toContain('kookr-opencode-push-guard.js');
+    }
+    // No profile deliverable (or deliverable none): the worker keeps the generic worktree/PR flow.
+    expect(defaultKookrClaudeHooks(base)!.hooks.PreToolUse).toBeUndefined();
+    expect(defaultKookrClaudeHooks({ ...base, deliverable: { kind: 'none' } })!.hooks.PreToolUse).toBeUndefined();
+  });
+
+  it('warns and still returns the rest when the push guard script is missing', () => {
+    const f = fixture(['nb-inject.sh', 'nb-retro.sh', 'bin/kookr-stop-nudge.js', 'bin/kookr-opencode-gate.js']);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cfg = defaultKookrClaudeHooks({ pluginHooksDir: f.hooks, binDir: f.bin, deliverable: { kind: 'commit-and-pr-body' } })!;
+    expect(cfg.hooks.PreToolUse).toBeUndefined();
+    expect(cfg.hooks.Stop![0]!.hooks[0]!.command).toContain('kookr-opencode-gate.js');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('push guard skipped'));
+    warn.mockRestore();
+  });
+
   it('adds no gate for deliverable none, and warns (still returns the rest) when the gate script is missing', () => {
     const f = fixture(['nb-inject.sh', 'nb-retro.sh', 'bin/kookr-stop-nudge.js']);
     const none = defaultKookrClaudeHooks({ pluginHooksDir: f.hooks, binDir: f.bin, deliverable: { kind: 'none' } })!;
