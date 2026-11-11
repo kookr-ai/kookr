@@ -43,13 +43,13 @@ test('a working task shows one main action; Cancel waits in More actions and Esc
 
   // On a phone the header actions wrap to the left edge; the menu must still
   // open fully on screen.
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 320, height: 700 });
   await expect(more).toBeVisible();
   await more.click();
   const popup = page.getByRole('menu', { name: 'More actions' });
   await expect(popup).toBeVisible();
   const box = await popup.boundingBox();
-  expect(box && box.x >= 0 && box.x + box.width <= 390).toBe(true);
+  expect(box && box.x >= 0 && box.x + box.width <= 320).toBe(true);
 });
 
 test('the facts column docks on a wide pane and opens over a narrow one from Details', async ({ page, request }) => {

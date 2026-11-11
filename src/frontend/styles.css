@@ -13421,10 +13421,15 @@ a.oss-productivity-empty-docs-link:visited:hover {
   .detail-header-right {
     width: 100%;
   }
-  /* The header actions wrap to the left edge here, so open the menu rightward. */
+  /* The header actions wrap to the left edge here: anchor the menu to the
+     full-width actions row, so it opens from the pane's left edge and never
+     runs off a narrow phone. */
+  .detail-header-right { position: relative; }
+  .detail-more-actions { position: static; }
   .detail-more-actions-popup {
     left: 0;
     right: auto;
+    max-width: 100%;
   }
   .dependency-edge-row {
     grid-template-columns: 1fr;

@@ -257,7 +257,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await injectStopEvent(request, tmuxName);
 
     await page.locator('.finding-card').click();
-    await page.locator('.response-row .btn-secondary:has-text("Skip")').click();
+    await page.getByTestId('finding-skip').click(); // #3561 4b: in the decision card
   });
 
   test('snooze finding via detail panel', async ({ page, request }) => {
@@ -268,7 +268,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await injectStopEvent(request, tmuxName);
 
     await page.locator('.finding-card').click();
-    await page.locator('.response-row .btn-secondary:has-text("Snooze")').click();
+    await page.getByTestId('finding-snooze').click(); // #3561 4b: in the decision card
     await page.locator('.snooze-dialog-btn:has-text("5m")').click();
   });
 
@@ -572,8 +572,8 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('[data-testid="send-button"]')).not.toContainText('Send & Next');
 
     // Skip and Snooze buttons should not be visible for healthy agents
-    await expect(page.locator('.response-row .btn-secondary:has-text("Skip")')).not.toBeVisible();
-    await expect(page.locator('.response-row .btn-secondary:has-text("Snooze")')).not.toBeVisible();
+    await expect(page.getByTestId('finding-skip')).toHaveCount(0);
+    await expect(page.getByTestId('finding-snooze')).toHaveCount(0);
 
     // Type and send a message
     await page.locator('.response-row textarea').fill('Please also add dark mode support');
