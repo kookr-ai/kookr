@@ -388,6 +388,8 @@ interface RalphPlaybookLaunchBody {
   projectId?: unknown;
   parameterValues?: unknown;
   agentType?: string;
+  effort?: unknown;
+  model?: unknown;
   scope?: unknown;
   parentTaskId?: unknown;
 }
@@ -458,6 +460,11 @@ function validateRalphPlaybookBody(body: RalphPlaybookLaunchBody): string | null
   if (body.parentTaskId !== undefined && (typeof body.parentTaskId !== 'string' || body.parentTaskId.length === 0)) {
     return 'parentTaskId must be a non-empty string';
   }
+  for (const pin of ['effort', 'model'] as const) {
+    if (body[pin] !== undefined && (typeof body[pin] !== 'string' || (body[pin] as string).trim().length === 0)) {
+      return `${pin} must be a non-empty string when supplied`;
+    }
+  }
   if (body.scope !== undefined && body.scope !== 'project' && body.scope !== 'user' && body.scope !== 'plugin') {
     return 'scope must be "project", "user", or "plugin"';
   }
@@ -472,6 +479,8 @@ function ralphPlaybookLaunchOptions(body: RalphPlaybookLaunchBody) {
     taskTargetCwdExplicit: typeof body.taskTargetCwd === 'string' && body.taskTargetCwd.trim().length > 0,
     projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
     parentTaskId: typeof body.parentTaskId === 'string' ? body.parentTaskId : undefined,
+    ...(typeof body.effort === 'string' ? { effort: body.effort } : {}),
+    ...(typeof body.model === 'string' ? { model: body.model } : {}),
     playbookPath: body.playbookPath as string,
     parameterValues: body.parameterValues as Record<string, string>,
   };

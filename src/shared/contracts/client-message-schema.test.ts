@@ -219,6 +219,24 @@ describe('ClientMessageSchema — happy path sanity', () => {
     }
   });
 
+  test('accepts effort and model pins on launchPlaybook and rejects empty ones', () => {
+    const base = {
+      type: 'launchPlaybook',
+      playbookPath: 'repository-idea-scout.md',
+      cwd: '/tmp',
+      parameterValues: {},
+    };
+    const pinned = ClientMessageSchema.safeParse({ ...base, effort: 'high', model: 'claude-fable-5-2' });
+    expect(pinned.success).toBe(true);
+    if (pinned.success && pinned.data.type === 'launchPlaybook') {
+      expect(pinned.data.effort).toBe('high');
+      expect(pinned.data.model).toBe('claude-fable-5-2');
+    }
+    expect(ClientMessageSchema.safeParse(base).success).toBe(true);
+    expect(ClientMessageSchema.safeParse({ ...base, effort: '' }).success).toBe(false);
+    expect(ClientMessageSchema.safeParse({ ...base, model: '' }).success).toBe(false);
+  });
+
   test('rejects empty relaunch lineage ids', () => {
     expect(ClientMessageSchema.safeParse({
       type: 'launch', prompt: 'retry', cwd: '/tmp', parentTaskId: '',

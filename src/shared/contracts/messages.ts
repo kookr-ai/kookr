@@ -332,6 +332,13 @@ type LaunchPlaybookBaseMessage = {
   playbookPath: string;
   parameterValues: Record<string, string>;
   agentType?: AgentSelection;
+  /**
+   * Optional per-launch reasoning-effort / model pins. Same semantics as the
+   * `launch` message: omitted means "agent default", and the server validates
+   * them against the resolved agent in `launchTask`.
+   */
+  effort?: string;
+  model?: string;
   scope?: PlaybookScope;
   /** Explicit user-relaunch lineage; never inferred from playbook content. */
   parentTaskId?: string;

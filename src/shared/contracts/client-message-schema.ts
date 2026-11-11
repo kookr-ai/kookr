@@ -87,6 +87,8 @@ const launchPlaybookMessage = z.object({
   projectId: z.string().optional(),
   parameterValues: z.record(z.string(), z.string()),
   agentType: agentSelection.optional(),
+  effort: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
   scope: playbookScope.optional(),
   parentTaskId: z.string().min(1).optional(),
 }).superRefine((value, ctx) => {

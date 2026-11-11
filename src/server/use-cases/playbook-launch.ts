@@ -35,6 +35,10 @@ export interface PreparePlaybookLaunchInput {
   playbookPath: string;
   parameterValues: Record<string, string>;
   agentType?: AgentSelection;
+  /** Optional per-launch reasoning-effort pin, forwarded to `launchTask` unchanged. */
+  effort?: string;
+  /** Optional per-launch model pin, forwarded to `launchTask` unchanged. */
+  model?: string;
   /** Explicit user-relaunch lineage; never inferred from playbook identity. */
   parentTaskId?: string;
   /** Where to read the playbook file from. Defaults to 'project' for back-compat. */
@@ -174,6 +178,8 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       },
       playbookParameterValues: parameterValues,
       agentType: input.agentType,
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.model ? { model: input.model } : {}),
       projectId,
       dependencies: playbook.dependencies,
       ...(input.parentTaskId !== undefined ? { disableDedup: true } : {}),

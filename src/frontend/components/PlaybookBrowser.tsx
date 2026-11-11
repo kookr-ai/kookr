@@ -19,6 +19,9 @@ import { mergeParamDefaults } from '../store/playbook-params.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/playbook-source-resolver.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
+import { optionalLaunchPins, restoreLastLaunchPins, sanitizeLaunchPins } from './launch-effort-model.js';
+import { saveLastLaunchPins } from '../store/last-launch-pins.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.js';
 import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
@@ -308,6 +311,11 @@ export function PlaybookBrowser({
   const [agentType, setAgentType] = useState<AgentSelection>(() =>
     defaultAgentType || 'claude-code'
   );
+  // Per-launch effort/model pins (same pickers and persistence as the manual
+  // Launch tab). "" means "Agent default" and is omitted from the payload.
+  const [initialPins] = useState(() => restoreLastLaunchPins(agentType));
+  const [effort, setEffort] = useState(initialPins.effort);
+  const [model, setModel] = useState(initialPins.model);
   const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
   const grokAuthBlocksLaunch = shouldDisableLaunchForGrokAuth(
     agentType,
@@ -580,6 +588,7 @@ export function PlaybookBrowser({
           setSubmitting(false);
           return;
         }
+        saveLastLaunchPins(effort, model);
         useKookrStore.getState().handleAlert('', `Starting looped playbook: ${excerpt}`, 'info');
       } catch (err) {
         useKookrStore.getState().handleAlert(
@@ -596,6 +605,7 @@ export function PlaybookBrowser({
         ...launchPayload,
       });
       if (sent) {
+        saveLastLaunchPins(effort, model);
         useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
       } else {
         useKookrStore.getState().handleAlert(
@@ -695,6 +705,7 @@ export function PlaybookBrowser({
       playbookPath,
       parameterValues: paramValues,
       agentType,
+      ...optionalLaunchPins(effort, model),
       ...(relaunchParentTaskId ? { parentTaskId: relaunchParentTaskId } : {}),
       ...(selected?.scope ? { scope: selected.scope } : {}),
     };
@@ -927,10 +938,22 @@ export function PlaybookBrowser({
 
         <AgentTypeSelector
           value={agentType}
-          onChange={setAgentType}
+          onChange={(next) => {
+            setAgentType(next);
+            const nextPins = sanitizeLaunchPins(next, effort, model);
+            setEffort(nextPins.effort);
+            setModel(nextPins.model);
+          }}
           options={agentOptions}
           roundRobinIndex={roundRobinIndex}
           grokAuthUsable={grokAuth ? !grokAuth.launchWouldRefuse : undefined}
+        />
+        <LaunchEffortModelPickers
+          agentType={agentType}
+          effort={effort}
+          model={model}
+          onEffortChange={setEffort}
+          onModelChange={setModel}
         />
         {showGrokAuthBanner && grokAuth?.message && (
           <GrokAuthPreflightBanner message={grokAuth.message} />

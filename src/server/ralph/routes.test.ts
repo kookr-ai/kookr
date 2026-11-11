@@ -375,6 +375,55 @@ Loop route.
     );
   });
 
+  test('forwards effort and model pins into the launch', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+
+    const res = await mkApp(mkRalphDeps(taskStore)).request('/api/playbooks/ralph-loop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        playbookPath: 'workflow.md',
+        cwd: sourceCwd,
+        parameterValues: {},
+        effort: 'high',
+        model: 'claude-fable-5-2',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ effort: 'high', model: 'claude-fable-5-2' }),
+      expect.anything(),
+    );
+  });
+
+  test.each([
+    ['effort', ''],
+    ['effort', 3],
+    ['model', '   '],
+    ['model', {}],
+  ])('rejects invalid %s pin %j', async (field, value) => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+
+    const res = await mkApp(mkRalphDeps(taskStore)).request('/api/playbooks/ralph-loop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        playbookPath: 'workflow.md',
+        cwd: sourceCwd,
+        parameterValues: {},
+        [field]: value,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: `${field} must be a non-empty string when supplied` });
+    expect(launchTask).not.toHaveBeenCalled();
+  });
+
   test('creates a linked successor when a relaunch supplies parentTaskId', async () => {
     const taskStore = new TaskStore();
     const original = taskStore.createTask('Original loop', targetCwd);
@@ -534,6 +583,48 @@ Loop {{target}}.
   afterEach(() => {
     rmSync(sourceCwd, { recursive: true, force: true });
     rmSync(targetCwd, { recursive: true, force: true });
+  });
+
+  test('forwards effort and model pins into the replacement launch', async () => {
+    const taskStore = new TaskStore();
+    const old = createTaskForMutation(taskStore, {
+      prompt: 'old loop',
+      cwd: targetCwd,
+      playbookParameterValues: { target: 'repo' },
+    });
+    taskStore.getTaskForMutation(old.id)!.playbookId = 'workflow.md';
+    taskStore.getTaskForMutation(old.id)!.ralphLoop = {
+      prompt: 'old loop',
+      iterationCap: 6,
+      currentIteration: 2,
+      status: 'running',
+      lastIterationStartedAt: Date.now(),
+      cumulativeIterations: 2,
+    };
+    mockRouteLaunchTask(taskStore);
+
+    const res = await mkApp(mkRalphDeps(taskStore)).request(
+      `/api/tasks/${old.id}/ralph-loop/replace-with-new`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          playbookPath: 'workflow.md',
+          playbookSourceCwd: sourceCwd,
+          taskTargetCwd: targetCwd,
+          parameterValues: { target: 'repo' },
+          effort: 'high',
+          model: 'claude-fable-5-2',
+        }),
+      },
+    );
+
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ effort: 'high', model: 'claude-fable-5-2' }),
+      expect.anything(),
+    );
   });
 
   test('keeps playbook replace available by default and matches keys against target cwd', async () => {
