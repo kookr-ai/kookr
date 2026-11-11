@@ -126,7 +126,7 @@ at most 4 times):
    create|delete|edit|upload` and mutating `gh api` calls (`-X` other than GET, request fields, GraphQL
    `mutation`). It sees through `env`/`sudo`/`time`/`xargs`, `bash -c`, `eval`,
    `$(...)`, backticks, heredocs fed to a shell and `&&`/`;`/`|` chains. It is a
-   guardrail against a compliant-but-careless model, not a sandbox: a worker
+   guardrail against a compliant-but-careless model, not a sandbox (it looks for `git` / `gh` at any word position, so the odd harmless command such as `echo git push` is blocked too and the worker has to rephrase): a worker
    that deliberately builds a command from variables, or publishes with `curl`,
    is not stopped. Unprofiled workers are not guarded (they keep Kookr's generic
    worktree/PR guidance). A missing script is skipped with a warning and fails

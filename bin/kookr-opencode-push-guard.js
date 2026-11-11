@@ -37,23 +37,42 @@ const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
 const WRAPPERS = new Set(['sudo', 'command', 'exec', 'time', 'nohup', 'nice', 'builtin', 'setsid', 'stdbuf']);
 const KEYWORDS = new Set(['{', '}', '(', ')', '!', 'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'for']);
 
-/** Replaces each heredoc body with nothing, except a body fed to a shell, which is returned for scanning. */
+/** Finds the first `<<DELIM` / `<<-DELIM` that sits OUTSIDE quotes on one line (not a `<<<` here-string). */
+function findHeredoc(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) { if (c === quote) quote = null; else if (c === '\\' && quote === '"') i++; continue; }
+    if (c === '\\') { i++; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) return null; // comment: nothing after it runs
+    if (c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
+      const m = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/.exec(line.slice(i));
+      if (m) return { index: i, delim: m[1] ?? m[2] ?? m[3], expands: m[3] !== undefined };
+    }
+  }
+  return null;
+}
+
+/**
+ * Removes heredoc bodies from the command text. A body fed to a shell is returned in `shellBodies` (it is run as
+ * commands); the body of an unquoted-delimiter heredoc is returned in `expandingBodies` (only `$(...)` in it runs).
+ */
 function splitHeredocs(command) {
   const lines = command.split('\n');
   const kept = [];
   const shellBodies = [];
-  const expandingBodies = []; // unquoted-delimiter heredoc bodies: `$(...)` inside them still executes
+  const expandingBodies = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     kept.push(line);
-    const m = /<<-?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/.exec(line);
-    if (!m) continue;
-    const delim = m[1] ?? m[2] ?? m[3];
+    const h = findHeredoc(line);
+    if (!h) continue;
     const body = [];
     let j = i + 1;
-    while (j < lines.length && lines[j].trim() !== delim) body.push(lines[j++]);
-    if (/(^|[\s;&|(])(?:bash|sh|zsh|dash|ksh|source|\.)\b/.test(line.slice(0, m.index))) shellBodies.push(body.join('\n'));
-    else if (m[3] !== undefined) expandingBodies.push(body.join('\n'));
+    while (j < lines.length && lines[j].trim() !== h.delim) body.push(lines[j++]);
+    if (/(^|[\s;&|(])(?:bash|sh|zsh|dash|ksh|source|\.)\b/.test(line.slice(0, h.index))) shellBodies.push(body.join('\n'));
+    else if (h.expands) expandingBodies.push(body.join('\n'));
     i = j; // skip body and the delimiter line
   }
   return { text: kept.join('\n'), shellBodies, expandingBodies };
@@ -64,7 +83,7 @@ function splitHeredocs(command) {
  * Text inside single quotes is literal, and so is anything after a backslash, so `git commit -m 'explain `git push`'`
  * is not a push. Double quotes still expand.
  */
-function substitutions(text) {
+function substitutions(text, literalQuotes = false) {
   const out = [];
   let inSingle = false;
   let inDouble = false;
@@ -72,8 +91,13 @@ function substitutions(text) {
     const c = text[i];
     if (inSingle) { if (c === "'") inSingle = false; continue; }
     if (c === '\\') { i++; continue; }
-    if (c === "'" && !inDouble) { inSingle = true; continue; }
-    if (c === '"') { inDouble = !inDouble; continue; }
+    // Inside a heredoc body quote characters are plain text, so only the substitutions matter.
+    if (!literalQuotes) {
+      if (c === "'" && !inDouble) { inSingle = true; continue; }
+      if (c === '"') { inDouble = !inDouble; continue; }
+      // A comment (`#` at the start of a word, outside quotes) never runs, whatever it quotes.
+      if (c === '#' && !inDouble && (i === 0 || /\s/.test(text[i - 1]))) { while (i < text.length && text[i] !== '\n') i++; continue; }
+    }
     if (c === '$' && text[i + 1] === '(') {
       let depth = 1;
       let j = i + 2;
@@ -174,24 +198,22 @@ function ghVerdict(t) {
   return null;
 }
 
-function segmentVerdict(rawTokens, depth) {
-  let t = rawTokens.slice();
-  for (;;) {
-    while (t.length && (KEYWORDS.has(t[0]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0]))) t = t.slice(1);
-    if (!t.length) return null;
-    const head = basename(t[0]);
-    if (head === 'env') { t = t.slice(1); while (t.length && (t[0].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0]))) t = t.slice(1); continue; }
-    if (head === 'xargs') { t = t.slice(1); while (t.length && t[0].startsWith('-')) t = t.slice(1); continue; }
-    if (WRAPPERS.has(head)) { t = t.slice(1); while (t.length && t[0].startsWith('-')) t = t.slice(1); continue; }
-    break;
-  }
-  const head = basename(t[0]);
-  if (head === 'git') return gitVerdict(t);
-  if (head === 'gh') return ghVerdict(t);
-  if (head === 'eval') return classifyCommand(t.slice(1).join(' '), depth + 1);
-  if (SHELLS.has(head)) {
-    const c = t.findIndex((tok, idx) => idx > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(tok));
-    if (c > 0 && t[c + 1] !== undefined) return classifyCommand(t[c + 1], depth + 1);
+function segmentVerdict(t, depth) {
+  // Any token may be the program (`env -u X git push`, `> /dev/null git push`, `nohup git push`, `xargs git push`),
+  // so look at every position instead of guessing which leading words are wrappers or redirections. The cost is a
+  // few conservative blocks (`echo git push` is blocked); a worker can rephrase those.
+  for (let k = 0; k < t.length; k++) {
+    const head = basename(t[k]);
+    const rest = t.slice(k);
+    let v = null;
+    if (head === 'git') v = gitVerdict(rest);
+    else if (head === 'gh') v = ghVerdict(rest);
+    else if (head === 'eval') v = classifyCommand(rest.slice(1).join(' '), depth + 1);
+    else if (SHELLS.has(head)) {
+      const c = rest.findIndex((tok, idx) => idx > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(tok));
+      if (c > 0 && rest[c + 1] !== undefined) v = classifyCommand(rest[c + 1], depth + 1);
+    }
+    if (v) return v;
   }
   return null;
 }
@@ -201,7 +223,7 @@ export function classifyCommand(command, depth = 0) {
   if (typeof command !== 'string' || !command.trim() || depth > MAX_DEPTH) return null;
   // A backslash-newline is a line continuation: `git push \\\n origin` is one command.
   const { text, shellBodies, expandingBodies } = splitHeredocs(command.replace(/\\\r?\n/g, ' '));
-  for (const inner of [...substitutions(text), ...expandingBodies.flatMap(substitutions), ...shellBodies]) {
+  for (const inner of [...substitutions(text), ...expandingBodies.flatMap((b) => substitutions(b, true)), ...shellBodies]) {
     const v = classifyCommand(inner, depth + 1);
     if (v) return v;
   }
