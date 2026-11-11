@@ -722,7 +722,8 @@ kookr/
 │       ├── terminal-send.ts               # Terminal send helpers
 │       ├── terminal-paste.ts              # Terminal paste helpers
 │       ├── api/                           # Typed data-access client (issue #1826) — the single fetch() seam for components and the app root
-│       ├── audio/                         # Browser sound preferences + alert log
+│       ├── audio/                         # Browser sound preferences + alert log + speech-bus (playback events the avatar panel observes)
+│       ├── avatar/                        # Optional, lazy-loaded 3D avatar panel (three.js stage, lip-sync, dock); assets/ holds the CC BY-NC model
 │       ├── group-findings.ts              # Finding grouping for FindingsPanel
 │       ├── markdown.ts                    # Markdown rendering helpers
 │       ├── oss-trends.ts                  # OSS contribution trend aggregation for the dashboard

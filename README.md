@@ -178,5 +178,6 @@ Kookr collects no telemetry. Optional features that call network services are di
 ## License
 
 Kookr is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for required attribution.
+One bundled file is the exception: the 3D model used by the optional avatar panel is CC BY-NC 4.0 (non-commercial); see NOTICE.
 
 Copyright 2026 Jean Ibarz.
