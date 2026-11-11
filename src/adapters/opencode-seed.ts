@@ -11,7 +11,7 @@
  * Seed failure is never fatal: the composer simply falls back to unseeded.
  */
 import { spawn } from 'node:child_process';
-import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -130,7 +130,12 @@ async function acquireLock(lockDir: string, staleMs: number, waitMs: number, see
 export async function prepareOpenCodeSeed(opts: PrepareOpenCodeSeedOptions): Promise<string | undefined> {
   const { bin, seedDir } = opts;
   const warn = opts.warn ?? ((m: string) => console.warn(m));
-  if (isOpenCodeSeedReady(seedDir)) return seedDir;
+  if (isOpenCodeSeedReady(seedDir)) {
+    // The build path below is never reached once a seed exists, so a scratch dir left by an earlier crash that
+    // was still fresh when the seed got built would otherwise stay for ever. Best effort, errors only warn.
+    await cleanStaleScratchDirs(seedDir, opts.scratchStaleMs ?? 3_600_000, warn);
+    return seedDir;
+  }
   const lockDir = `${seedDir}.lock`;
   let scratch: string | undefined;
   let locked = false;
@@ -185,6 +190,16 @@ async function linkTree(src: string, dst: string): Promise<void> {
   if (st.isDirectory()) {
     await mkdir(dst, { recursive: true });
     for (const name of await readdir(src)) await linkTree(join(src, name), join(dst, name));
+    return;
+  }
+  if (st.isSymbolicLink()) {
+    // Recreate the link itself. `link()` on a symlink is platform dependent (macOS may follow it) and the copy
+    // fallback below would dereference it (a directory symlink then fails with EISDIR).
+    try {
+      await symlink(await readlink(src), dst);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
     return;
   }
   try {

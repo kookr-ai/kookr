@@ -1,9 +1,16 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OPENCODE_PINNED_VERSION } from './opencode-preflight.js';
+import * as fsp from 'node:fs/promises';
 import { isOpenCodeSeedReady, prepareOpenCodeSeed, resolveOpenCodeSeedDir, seedConfigDir, type SeedRunner } from './opencode-seed.js';
+
+// `link` delegates to the real one; one test makes it fail with EXDEV (seed and session on different devices).
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, link: vi.fn(actual.link) };
+});
 
 let tmp: string;
 beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'oc-seed-')); });
@@ -138,6 +145,23 @@ describe('prepareOpenCodeSeed', () => {
     expect(readFileSync(unrelated, 'utf8')).toBe('keep me');
   });
 
+  it('also reclaims stale scratch dirs when the seed is already ready (the build path is never reached again)', async () => {
+    const tools = join(tmp, 'tools');
+    const seedDir = join(tools, 'seed');
+    expect(await prepareOpenCodeSeed({ bin: 'oc', seedDir, runner: vi.fn(populate) })).toBe(seedDir);
+    const old = new Date(Date.now() - 3_600_000);
+    const stale = join(tools, 'seed-build-crashed-earlier');
+    mkdirSync(stale, { recursive: true });
+    utimesSync(stale, old, old);
+    const fresh = join(tools, 'seed-build-inflight');
+    mkdirSync(fresh, { recursive: true });
+    const runner = vi.fn(populate);
+    expect(await prepareOpenCodeSeed({ bin: 'oc', seedDir, runner, scratchStaleMs: 60_000 })).toBe(seedDir);
+    expect(runner).not.toHaveBeenCalled();
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
   it('breaks a stale lock', async () => {
     const seedDir = join(tmp, 'seed');
     mkdirSync(`${seedDir}.lock`, { recursive: true });
@@ -159,6 +183,32 @@ describe('seedConfigDir', () => {
     const loopDst = join(target, 'node_modules', 'loop');
     expect(lstatSync(loopDst).isSymbolicLink()).toBe(true);
     expect(readdirSync(join(target, 'node_modules')).sort()).toEqual(['@opencode-ai', 'alias', 'loop']);
+  });
+
+  it('recreates symlinks as symlinks even when hardlinking fails (EXDEV), instead of copying through them', async () => {
+    const seedDir = join(tmp, 'seed');
+    await prepareOpenCodeSeed({ bin: 'oc', seedDir, runner: populate });
+    const nm = join(seedDir, 'node_modules');
+    symlinkSync('@opencode-ai', join(nm, 'dir-alias')); // a directory symlink: copyFile on it would throw EISDIR
+    symlinkSync('../package.json', join(nm, 'file-alias'));
+    const exdev = Object.assign(new Error('cross-device link not permitted'), { code: 'EXDEV' });
+    vi.mocked(fsp.link).mockRejectedValue(exdev);
+    try {
+      const target = join(tmp, 'sess', 'cfg');
+      await seedConfigDir(seedDir, target);
+      const dirDst = join(target, 'node_modules', 'dir-alias');
+      const fileDst = join(target, 'node_modules', 'file-alias');
+      expect(lstatSync(dirDst).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(dirDst)).toBe('@opencode-ai');
+      expect(lstatSync(fileDst).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(fileDst)).toBe('../package.json');
+      // regular files still fall back to a copy
+      expect(readFileSync(join(target, 'node_modules/@opencode-ai/plugin/index.js'), 'utf8')).toBe('x');
+    } finally {
+      const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      vi.mocked(fsp.link).mockReset();
+      vi.mocked(fsp.link).mockImplementation(actual.link);
+    }
   });
 
   it('hardlinks files (no extra disk) and preserves the tree', async () => {
