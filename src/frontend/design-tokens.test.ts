@@ -112,6 +112,39 @@ function mix(top: Rgb, alpha: number, under: Rgb): Rgb {
   return top.map((c, i) => Math.round(c * alpha + under[i] * (1 - alpha))) as Rgb;
 }
 
+/** Every colour a declaration block can render: hex, rgb(a), var() with fallbacks. */
+function colorsIn(block: string, tokens: Record<string, string>, depth = 0): Rgb[] {
+  const found: Rgb[] = [];
+  for (const m of block.matchAll(/#([0-9a-f]{6}|[0-9a-f]{3})\b/gi)) {
+    const hex = m[1].length === 3 ? m[1].replace(/./g, (c) => c + c) : m[1];
+    found.push([0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16)) as Rgb);
+  }
+  for (const m of block.matchAll(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/gi)) {
+    found.push([Number(m[1]), Number(m[2]), Number(m[3])]);
+  }
+  if (depth < 4) {
+    for (const m of block.matchAll(/var\((--[\w-]+)/g)) {
+      if (tokens[m[1]]) found.push(...colorsIn(tokens[m[1]], tokens, depth + 1));
+    }
+  }
+  return found;
+}
+
+/** Clearly coloured (not a navy-grey surface) with a hue between cyan-blue and violet-blue (190-260 degrees). */
+function isBlue([r, g, b]: Rgb): boolean {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const chroma = max - min;
+  // The dark navy surfaces (#1b1f2e and kin) are bluish but nearly grey.
+  if (chroma < 60 || chroma / max < 0.3) return false;
+  let hue: number;
+  if (max === r) hue = ((g - b) / chroma) % 6;
+  else if (max === g) hue = (b - r) / chroma + 2;
+  else hue = (r - g) / chroma + 4;
+  hue = (hue * 60 + 360) % 360;
+  return hue >= 190 && hue <= 260;
+}
+
 const TYPE_SCALE = new Set(['12px', '13px', '14px', '16px', '20px']);
 
 describe('type scale', () => {
@@ -141,9 +174,8 @@ describe('type scale', () => {
         if (entry.isDirectory()) walk(path);
         else if (/\.tsx$/.test(entry.name) && !/\.test\.tsx$/.test(entry.name)) {
           const src = readFileSync(path, 'utf8');
-          // The onboarding diagram is a scaled illustration (SVG viewBox),
-          // not UI text; its user units are not CSS pixels.
-          if (entry.name === 'OnboardingLayoutDiagram.tsx') continue;
+          // OnboardingLayoutDiagram.tsx is checked too: it is drawn at 1:1,
+          // so its SVG user units are CSS pixels (issue #3619).
           // Style objects (fontSize: 11 / '11px' / '0.8em') and JSX attributes (fontSize="11").
           for (const m of src.matchAll(/fontSize\s*[:=]\s*\{?\s*['"`]?(\d+(?:\.\d+)?)(px|r?em)?\b/g)) {
             if (!TYPE_SCALE.has(`${m[1]}${m[2] ?? 'px'}`)) offenders.push(`${path}: fontSize ${m[0]}`);
@@ -213,9 +245,31 @@ describe('text contrast', () => {
     // Selected rows: --bg-card-selected is teal at 10% over a card or panel.
     ['selected card', (t) => mix(parseColor(t['--teal'], t), 0.1, parseColor(t['--bg-card'], t))],
     ['selected over panel', (t) => mix(parseColor(t['--teal'], t), 0.1, parseColor(t['--bg-panel'], t))],
-    // Selected/active chips (filters, role chips, cost chips) tint teal at 18%.
-    ['selected chip', (t) => mix(parseColor(t['--teal'], t), 0.18, parseColor(t['--bg-panel'], t))],
   ];
+  // Selected/active chips (filters, role chips, cost chips) tint teal at 18%,
+  // over a panel, a card or a hovered row (issue #3619). Secondary text falls
+  // under 4.5:1 on the darker two, so chip text must be one of CHIP_TEXT.
+  const chipSurfaces: Array<[string, (t: Record<string, string>) => Rgb]> = [
+    ['selected chip', (t) => mix(parseColor(t['--teal'], t), 0.18, parseColor(t['--bg-panel'], t))],
+    ['selected chip over card', (t) => mix(parseColor(t['--teal'], t), 0.18, parseColor(t['--bg-card'], t))],
+    ['selected chip over hover', (t) => mix(parseColor(t['--teal'], t), 0.18, parseColor(t['--bg-card-hover'], t))],
+  ];
+  const CHIP_TEXT = ['--text-bright', '--text', '--text-primary'];
+
+  test('every teal-tinted selected chip sets its own readable text colour', () => {
+    // An inherited colour could be --text-secondary, which fails on a chip.
+    const offenders: string[] = [];
+    for (const file of ['styles.css', 'critical.css']) {
+      for (const match of stripComments(STYLESHEETS[file]).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (!/background(-color)?\s*:\s*rgba\(\s*45,\s*212,\s*191,\s*0?\.18\s*\)/.test(match[2])) continue;
+        const color = match[2].match(/(?<![\w-])color\s*:\s*var\((--[\w-]+)\)\s*(;|$)/)?.[1];
+        if (!color || !CHIP_TEXT.includes(color)) {
+          offenders.push(`${file} ${match[1].trim().replace(/\s+/g, ' ')} color ${color ?? '(inherited)'}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
 
   test('text is never dimmed with partial opacity at rest', () => {
     // Opacity multiplies contrast down (--text-muted at 0.7 fell to 3.6:1),
@@ -249,9 +303,28 @@ describe('text contrast', () => {
     expect(offenders).toEqual([]);
   });
 
+  // State-coloured text (a red stalled count, an amber or teal pill) sits on
+  // the plain surfaces or on a 10% tint of its own colour (issue #3619).
+  for (const role of ['--state-need', '--state-bad', '--state-work']) {
+    test(`${role} text reaches 4.5:1 on every surface and on its own 10% tint`, () => {
+      const fg = parseColor(styles[role], styles);
+      const failures = (['--bg', '--bg-panel', '--bg-card', '--bg-card-hover'] as const)
+        .flatMap((name) => {
+          const plain = parseColor(styles[name], styles);
+          return [
+            [name, contrast(fg, plain)] as const,
+            [`${name} + 10% tint`, contrast(fg, mix(fg, 0.1, plain))] as const,
+          ];
+        })
+        .filter(([, ratio]) => ratio < 4.5)
+        .map(([name, ratio]) => `${name} ${ratio.toFixed(2)}:1`);
+      expect(failures).toEqual([]);
+    });
+  }
+
   for (const tier of ['--text-bright', '--text', '--text-secondary', '--text-muted', '--text-primary']) {
     test(`${tier} reaches 4.5:1 on every surface`, () => {
-      const failures = surfaces
+      const failures = [...surfaces, ...(CHIP_TEXT.includes(tier) ? chipSurfaces : [])]
         .map(([name, surface]) => [name, contrast(parseColor(styles[tier], styles), surface(styles))] as const)
         .filter(([, ratio]) => ratio < 4.5)
         .map(([name, ratio]) => `${name} ${ratio.toFixed(2)}:1`);
@@ -305,19 +378,31 @@ describe('state colours: four roles, one shape each', () => {
   });
 
   test('no selected, active or pressed state is drawn in blue', () => {
-    // Blue literals seen in this stylesheet, plus `var(--accent, …)`: --accent
-    // is not defined, so its (blue) fallback is what renders.
-    const blue = /var\(--blue\)|var\(--accent\s*,|#60a5fa|#4a8eff|#61dafb|rgba\(\s*(96,\s*165,\s*250|120,\s*200,\s*255|122,\s*162,\s*247|64,\s*128,\s*255)\s*,/i;
+    // Hue-based (issue #3619), so a new blue literal cannot slip past a list
+    // of known values. `var(--accent, …)` counts as its fallback, because
+    // --accent is not defined.
+    const tokens = rootTokens(STYLESHEETS['styles.css']);
     const offenders: string[] = [];
     for (const file of ['styles.css', 'critical.css']) {
       for (const match of stripComments(STYLESHEETS[file]).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
         const selector = match[1].trim().replace(/\s+/g, ' ');
         // `.selected`, `.active`, BEM `--active` / `-active` modifiers, aria state.
         if (!/[-.](selected|active)\b|\[aria-(pressed|selected)="true"\]/.test(selector)) continue;
-        if (blue.test(match[2])) offenders.push(`${file} ${selector}`);
+        const blue = colorsIn(match[2], tokens).find(isBlue);
+        if (blue) offenders.push(`${file} ${selector} rgb(${blue.join(',')})`);
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  test('the blue detector catches blues and spares teal, cyan-free greens and greys', () => {
+    const tokens = rootTokens(STYLESHEETS['styles.css']);
+    for (const value of ['var(--blue)', 'var(--accent, #4a8eff)', '#61dafb', 'rgba(64, 128, 255, 0.2)', '#00f', '#3b82f6']) {
+      expect(colorsIn(`color: ${value};`, tokens).some(isBlue), value).toBe(true);
+    }
+    for (const value of ['var(--teal)', 'var(--state-work)', 'var(--green)', 'var(--text-secondary)', 'rgba(45, 212, 191, 0.18)']) {
+      expect(colorsIn(`color: ${value};`, tokens).some(isBlue), value).toBe(false);
+    }
   });
 
   test('a pending (queued) task is neutral everywhere, not amber', () => {

@@ -15,7 +15,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { TopBar } from './TopBar.js';
 import { UsageSummary } from './UsageSummary.js';
-import { systemAttentionReasons } from './SystemStatusDetails.js';
+import { systemAttentionReasons, systemQuietNotes, useSystemAttentionReasons } from './SystemStatusDetails.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
@@ -36,7 +36,7 @@ async function flush(): Promise<void> {
   });
 }
 
-function resources(overrides: { cpu?: number; loopMs?: number } = {}): SystemResourceStatus {
+function resources(overrides: { cpu?: number; loopMs?: number; memory?: number } = {}): SystemResourceStatus {
   return {
     source: { kind: 'server-host' },
     sampledAt: new Date().toISOString(),
@@ -44,7 +44,7 @@ function resources(overrides: { cpu?: number; loopMs?: number } = {}): SystemRes
     timerDriftMs: 0,
     host: {
       cpuUsagePercent: overrides.cpu ?? 42,
-      memoryUsedPercent: 50,
+      memoryUsedPercent: overrides.memory ?? 50,
       memoryFreeBytes: 6_000_000_000,
       memoryTotalBytes: 12_000_000_000,
       dataDirectory: {
@@ -105,10 +105,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderTopBar(): Promise<void> {
+async function renderTopBar(extraProps: Record<string, unknown> = {}): Promise<void> {
   act(() => {
     root.render(
       React.createElement(TopBar, {
+        ...extraProps,
         findings: 0,
         currentIndex: -1,
         totalFindings: 0,
@@ -309,5 +310,124 @@ describe('systemAttentionReasons', () => {
 
   test('a stale resource sample raises nothing', () => {
     expect(systemAttentionReasons({ resourceStatus: resources({ cpu: 99 }), resourceStale: true })).toEqual([]);
+  });
+});
+
+describe('TopBar: quiet notes at rest (issue #3619)', () => {
+  test('muted alert sounds show a neutral glyph on System, not an amber dot', async () => {
+    await renderTopBar();
+    expect(container.querySelector('[data-testid="system-muted-glyph"]')).toBeNull();
+
+    const popover = await openSystem();
+    await act(async () => {
+      popover.querySelector<HTMLButtonElement>('.btn-sound-toggle')!.click();
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="system-muted-glyph"]')).not.toBeNull();
+    expect(systemButton().getAttribute('aria-label')).toContain('alert sounds muted');
+    expect(systemButton().classList.contains('needs-attention')).toBe(false);
+  });
+
+  test('elevated (below high) CPU shows a neutral dot and is named in the label', async () => {
+    useKookrStore.setState({ resourceStatus: resources({ cpu: 75 }), resourceStatusReceivedAtMs: Date.now() });
+    await renderTopBar();
+
+    expect(container.querySelector('[data-testid="system-note-dot"]')).not.toBeNull();
+    expect(systemButton().querySelector('.system-attention-dot')).toBeNull();
+    expect(systemButton().getAttribute('aria-label')).toContain('CPU elevated');
+  });
+
+  test('normal resources and sound on show neither glyph nor note dot', async () => {
+    useKookrStore.setState({ resourceStatus: resources(), resourceStatusReceivedAtMs: Date.now() });
+    await renderTopBar();
+    expect(container.querySelector('[data-testid="system-muted-glyph"]')).toBeNull();
+    expect(container.querySelector('[data-testid="system-note-dot"]')).toBeNull();
+  });
+});
+
+describe('useSystemAttentionReasons: staleness is re-evaluated as time passes (issue #3619)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // A bare consumer, so nothing but the hook itself can trigger a re-render.
+  function AttentionProbe() {
+    const reasons = useSystemAttentionReasons();
+    return React.createElement('span', { 'data-testid': 'probe' }, reasons.join('|'));
+  }
+  const probeText = () => container.querySelector('[data-testid="probe"]')?.textContent;
+
+  test('a frozen high-CPU sample stops raising attention once it goes stale', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    useKookrStore.setState({ resourceStatus: resources({ cpu: 95 }), resourceStatusReceivedAtMs: Date.now() });
+    act(() => root.render(React.createElement(AttentionProbe)));
+    expect(probeText()).toBe('CPU high');
+
+    // No store update: only the clock moves past the 10 s stale threshold.
+    await act(async () => {
+      vi.advanceTimersByTime(10_001);
+    });
+    expect(probeText()).toBe('');
+  });
+
+  test('a fresh sample after a stale one raises attention again', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    useKookrStore.setState({ resourceStatus: resources({ cpu: 95 }), resourceStatusReceivedAtMs: Date.now() - 60_000 });
+    act(() => root.render(React.createElement(AttentionProbe)));
+    expect(probeText()).toBe('');
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      useKookrStore.setState({ resourceStatus: resources({ cpu: 96 }), resourceStatusReceivedAtMs: Date.now() });
+    });
+    expect(probeText()).toBe('CPU high');
+  });
+});
+
+describe('TopBar: dialogs opened from System close it first (issue #3619)', () => {
+  test('the paused-schedules pill closes System and opens Schedules', async () => {
+    useKookrStore.setState({
+      pausedSchedules: { schedulesPausedByFailure: [{ name: 'nightly' }] } as never,
+    });
+    const onOpenSchedules = vi.fn();
+    await renderTopBar({ onOpenSchedules });
+    const popover = await openSystem();
+
+    await act(async () => {
+      popover.querySelector<HTMLButtonElement>('button[data-testid="ops-health-paused-schedules-pill"]')!.click();
+    });
+
+    expect(onOpenSchedules).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('#system-popover')).toBeNull();
+  });
+
+  test('a button in the Usage section closes System and still runs its action', async () => {
+    const onUsageClick = vi.fn();
+    await renderTopBar({
+      usage: React.createElement('button', { type: 'button', 'data-testid': 'usage-button', onClick: onUsageClick }, 'Spend'),
+    });
+    const popover = await openSystem();
+
+    await act(async () => {
+      popover.querySelector<HTMLButtonElement>('[data-testid="usage-button"]')!.click();
+    });
+
+    expect(onUsageClick).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('#system-popover')).toBeNull();
+  });
+});
+
+describe('systemQuietNotes', () => {
+  test('names muted sound and elevated CPU or memory', () => {
+    expect(systemQuietNotes({ soundMuted: true })).toEqual(['alert sounds muted']);
+    expect(systemQuietNotes({ resourceStatus: resources({ cpu: 75, memory: 85 }) }))
+      .toEqual(['CPU elevated', 'memory elevated']);
+  });
+
+  test('normal, high (already amber) and stale readings add no note', () => {
+    expect(systemQuietNotes({ resourceStatus: resources() })).toEqual([]);
+    expect(systemQuietNotes({ resourceStatus: resources({ cpu: 95 }) })).toEqual([]);
+    expect(systemQuietNotes({ resourceStatus: resources({ cpu: 75 }), resourceStale: true })).toEqual([]);
   });
 });

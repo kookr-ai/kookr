@@ -179,6 +179,20 @@ test.describe('Onboarding tour', () => {
       .evaluate((el) => getComputedStyle(el).outlineColor);
     expect(ringColor).toMatch(/251,\s*191,\s*36/);
 
+    // The layout diagram is drawn at 1:1 (issue #3619): every label renders
+    // at the 12 px type-scale floor or larger once the viewBox is scaled.
+    const diagramLabelPx = await page.locator('.onboarding-layout-diagram').evaluate((svg) => {
+      const el = svg as SVGSVGElement;
+      const scale = el.getBoundingClientRect().width / el.viewBox.baseVal.width;
+      return Array.from(el.querySelectorAll('text')).map(
+        (t) => `${t.textContent} ${(Number(t.getAttribute('font-size')) * scale).toFixed(1)}`,
+      );
+    });
+    expect(diagramLabelPx.length).toBeGreaterThan(0);
+    for (const label of diagramLabelPx) {
+      expect(Number(label.split(' ').pop()), label).toBeGreaterThanOrEqual(12);
+    }
+
     // Card 3 = launch.
     await page.keyboard.press('ArrowRight');
     await expect(page.locator('body')).toHaveClass(/kookr-tour-active-launch/);

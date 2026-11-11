@@ -305,9 +305,11 @@ async function pulseHighlight(target: Locator, pulses = 2) {
 }
 
 async function waitForDetailTitle(page: Page, title: string, timeout = 3000) {
+  // A function, not a string: the dashboard's CSP (script-src 'self', no
+  // 'unsafe-eval') refuses to evaluate string predicates.
   await page.waitForFunction(
-    `document.querySelector('.detail-header-left')?.textContent?.includes(${JSON.stringify(title)}) === true`,
-    undefined,
+    (expected) => document.querySelector('.detail-header-left')?.textContent?.includes(expected) === true,
+    title,
     { timeout },
   );
 }
@@ -1489,7 +1491,9 @@ async function record() {
     await zoomTo(page, '.quick-actions', 1.5);
     await wait(page, 2400);
     await showKeystroke(page, '1');
-    await page.locator('.btn-quick-action', { hasText: 'Allow' }).click();
+    // The finding card has its own Allow button too; click the one in the
+    // reading pane's quick actions, which is what the zoom shows.
+    await page.locator('.quick-actions .btn-quick-action', { hasText: 'Allow' }).click();
     await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
     await wait(page, 900);
     await zoomReset(page);
@@ -1558,17 +1562,13 @@ async function record() {
     await codexRow.click();
     await waitForDetailTitle(page, 'Add rate limiting to pagination endpoint');
     await wait(page, 400);
-    // The provider badge lives in the collapsed "Details" popover — open it
-    // on screen, then punch in on the Codex CLI badge.
-    const metaMenuSummary = page.locator('.detail-meta-menu > summary').first();
-    await metaMenuSummary.waitFor({ state: 'visible', timeout: 5000 });
-    await metaMenuSummary.click();
-    await page.locator('.detail-agent-provider').first().waitFor({ state: 'visible', timeout: 5000 });
+    // The provider badge sits in the reading pane's facts column (#3561):
+    // punch in on it, the Codex CLI badge.
+    await page.locator('.detail-facts .detail-agent-provider').first().waitFor({ state: 'visible', timeout: 5000 });
     await wait(page, 300);
-    await zoomTo(page, '.detail-meta-popover', 1.8);
-    await wait(page, Math.max(0, holdTime(audioClips, 'providers_mixed', 5600) - 3400));
+    await zoomTo(page, '.detail-facts .detail-agent-provider', 1.8);
+    await wait(page, Math.max(0, holdTime(audioClips, 'providers_mixed', 5600) - 3100));
     await zoomReset(page);
-    await metaMenuSummary.click();
     await hideCaption(page);
     // Selecting the Codex task synced the project filter to api-service —
     // return to the all-projects view so Act 3's two competing interruptions
@@ -1633,7 +1633,7 @@ async function record() {
     // least readable — zoom in so the viewer can actually read the options.
     await zoomTo(page, '.quick-actions', 1.55);
     await wait(page, Math.max(0, aiSuggestTotal - (Date.now() - aiSuggestStartedAt) - 1200));
-    const aiBtn = page.locator('.btn-quick-action.ai-suggestion').first();
+    const aiBtn = page.locator('.quick-actions .btn-quick-action.ai-suggestion').first();
     await aiBtn.waitFor({ state: 'visible', timeout: 5000 });
     await aiBtn.click();
     await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
@@ -1749,7 +1749,7 @@ async function record() {
     };
     await broadcastPr({ status: 'in_progress' });
 
-    const githubTab = page.locator('.pane-tab').filter({ hasText: 'GitHub' });
+    const githubTab = page.locator('.detail-tab').filter({ hasText: 'GitHub' });
     await githubTab.waitFor({ state: 'visible', timeout: 5000 });
     await pulseHighlight(githubTab);
     await wait(page, 700);
@@ -1800,7 +1800,7 @@ async function record() {
 
     const completedRow = page.locator('.completed-row').filter({ hasText: 'Refactor auth middleware to async/await' }).first();
     if (!(await completedRow.isVisible({ timeout: 1000 }).catch(() => false))) {
-      const completedHeader = page.locator('.section-header').filter({ hasText: 'Completed' }).first();
+      const completedHeader = page.locator('.completed-section .section-header').first();
       await completedHeader.waitFor({ state: 'visible', timeout: 5000 });
       await completedHeader.click();
       await wait(page, 400);
