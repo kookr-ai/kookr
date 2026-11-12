@@ -47,6 +47,34 @@ describe('runLucyTurn', () => {
     expect(messages.at(-1)).toEqual({ role: 'user', content: 'What is running?' });
   });
 
+  test('timings are measured from the start of the turn: first text, then the whole turn', async () => {
+    const { deps, advance } = setup([
+      { calls: [{ name: 'read_board' }], before: () => advance(700) },
+      { text: 'All quiet.', before: () => advance(400) },
+    ]);
+    const { summary } = await run(deps, { text: 'Anything?' });
+    // 700 ms in the first model call, 400 ms in the second, before the first word arrives.
+    expect(summary.done).toMatchObject({ end: 'answered', firstTextMs: 1100, totalMs: 1100 });
+  });
+
+  test('a turn that says nothing reports no first-text time but still a total', async () => {
+    const { deps, advance } = setup([{ before: () => advance(250) }]);
+    const { summary } = await run(deps, { text: 'Hi' });
+    expect(summary.done).toMatchObject({ end: 'error', firstTextMs: null, totalMs: 250 });
+  });
+
+  test('a key pasted into the question, or remembered from an earlier turn, is not sent to the model', async () => {
+    const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+    const { deps, model } = setup([{ text: 'I cannot check keys.' }]);
+    await run(deps, {
+      text: `Is ${secret} still valid?`,
+      history: [{ role: 'user', content: `my key is ${secret}` }, { role: 'assistant', content: `You said ${secret}.` }],
+    });
+    const sent = JSON.stringify(model.requests[0]!.messages);
+    expect(sent).not.toContain(secret);
+    expect(model.requests[0]!.messages.at(-1)).toEqual({ role: 'user', content: 'Is [redacted] still valid?' });
+  });
+
   test('earlier turns are sent between her instructions and the new sentence', async () => {
     const { deps, model } = setup([{ text: 'Yes.' }]);
     await run(deps, { text: 'And the other one?', history: [{ role: 'user', content: 'Is the report done?' }, { role: 'assistant', content: 'It is waiting for your review.' }] });
@@ -65,7 +93,7 @@ describe('runLucyTurn', () => {
     const { events, summary } = await run(deps, { text: 'What is the research agent doing?' });
 
     expect(events.map((e) => e.type)).toEqual(['tool_call', 'tool_result', 'text', 'done']);
-    expect(events[0]).toMatchObject({ type: 'tool_call', id: 'c1', name: 'read_task_output', args: { task: 'bbbb', lines: 40 } });
+    expect(events[0]).toEqual({ type: 'tool_call', id: 'c1', name: 'read_task_output', args: { task: 'bbbb' } });
     expect(events[1]).toMatchObject({ type: 'tool_result', id: 'c1', ok: true });
     expect(source.calls.taskOutput).toEqual(['bbbb2222-0000']);
     expect(summary.done).toMatchObject({ end: 'answered', steps: 2, inputTokens: 200, outputTokens: 40 });
@@ -111,7 +139,7 @@ describe('runLucyTurn', () => {
     // 1 board read for the prompt + 3 look-ups that ran; the fourth was dropped.
     expect(source.calls.board).toBe(4);
     expect(events.filter((e) => e.type === 'tool_call')).toHaveLength(3);
-    expect(summary.answer).toBe(`One more look. ${LUCY_CAP_SENTENCES.step_cap}`);
+    expect(summary.answer).toBe('One more look. I ran out of steps before I could finish, so please ask me something narrower.');
     expect(events.at(-1)).toMatchObject({ type: 'done', end: 'step_cap' });
   });
 
@@ -120,14 +148,21 @@ describe('runLucyTurn', () => {
     const { summary } = await run(deps, { text: 'Slow one.' });
     expect(model.requests).toHaveLength(1);
     expect(summary.done.end).toBe('time_cap');
-    expect(summary.answer).toBe(LUCY_CAP_SENTENCES.time_cap);
+    expect(summary.answer).toBe('That was taking too long, so I stopped. Please ask me again.');
+  });
+
+  test('the time cap applies at exactly the limit, and not one millisecond before', async () => {
+    const at = setup([{ calls: [{ name: 'read_board' }], before: () => at.advance(30_000) }, { text: 'never reached' }]);
+    expect((await run(at.deps, { text: 'x' })).summary.done.end).toBe('time_cap');
+    const before = setup([{ calls: [{ name: 'read_board' }], before: () => before.advance(29_999) }, { text: 'Made it.' }]);
+    expect((await run(before.deps, { text: 'x' })).summary.done.end).toBe('answered');
   });
 
   test('the time cap also stops a model that never answers', async () => {
     const model = scriptedModel([{ hang: true }]);
     const { summary } = await run({ model: model.port, source: fakeSource({ tasks: TASKS }), limits: { maxMs: 30 } }, { text: 'Hello?' });
     expect(summary.done.end).toBe('time_cap');
-    expect(summary.answer).toBe(LUCY_CAP_SENTENCES.time_cap);
+    expect(summary.answer).toBe('That was taking too long, so I stopped. Please ask me again.');
     expect(model.requests[0]!.signal?.aborted).toBe(true);
   });
 
@@ -136,7 +171,18 @@ describe('runLucyTurn', () => {
     const { summary } = await run(deps, { text: 'Read everything.' });
     expect(model.requests).toHaveLength(1);
     expect(summary.done).toMatchObject({ end: 'token_cap', inputTokens: 39_000, outputTokens: 1_500 });
-    expect(summary.answer).toBe(LUCY_CAP_SENTENCES.token_cap);
+    expect(summary.answer).toBe('That needed more reading than I am allowed in one turn, so I stopped.');
+  });
+
+  test('the token cap applies at exactly the budget, and not one token before', async () => {
+    const at = setup([{ calls: [{ name: 'read_board' }], usage: { inputTokens: 39_000, outputTokens: 1_000 } }, { text: 'never reached' }]);
+    expect((await run(at.deps, { text: 'x' })).summary.done.end).toBe('token_cap');
+    const under = setup([{ calls: [{ name: 'read_board' }], usage: { inputTokens: 39_000, outputTokens: 999 } }, { text: 'Made it.' }]);
+    expect((await run(under.deps, { text: 'x' })).summary.done.end).toBe('answered');
+  });
+
+  test('each cap sentence is one complete sentence', () => {
+    for (const sentence of Object.values(LUCY_CAP_SENTENCES)) expect(sentence).toMatch(/^[A-Z][^.!?]*(?:\. [A-Z][^.!?]*)?\.$/);
   });
 
   test('task output that carries an instruction: a changing tool is refused, nothing is called, and she reports it', async () => {
@@ -189,6 +235,25 @@ describe('runLucyTurn', () => {
     expect(warnings.join('\n')).toContain('HTTP 402');
   });
 
+  test.each([
+    [new LucyModelError('http', 'rate limited: slow down, key sk-or-v1-zzz', 429), 'The model provider is limiting requests right now.'],
+    [new LucyModelError('timeout', 'stalled for 20000ms'), 'The model stopped responding.'],
+    [new LucyModelError('provider', 'Upstream said: internal-host-17 exploded'), 'The model provider returned an error.'],
+    [new LucyModelError('bad-response', 'no body'), 'The model provider returned an error.'],
+  ])('a %s failure is explained in plain words', async (failure, reason) => {
+    const model = scriptedModel([{ fail: failure }]);
+    const { events, summary } = await run({ model: model.port, source: fakeSource() }, { text: 'Hi' });
+    expect(summary.done).toMatchObject({ end: 'error', reason });
+    expect(JSON.stringify(events)).not.toMatch(/sk-or-v1|internal-host/);
+  });
+
+  test('a failure that is not a model failure still ends the turn, with a generic reason', async () => {
+    const model = scriptedModel([]); // the script throws a plain Error: "the script has no step 1"
+    const { events, summary } = await run({ model: model.port, source: fakeSource() }, { text: 'Hi' });
+    expect(summary.done).toMatchObject({ end: 'error', reason: 'Something went wrong while preparing the answer.' });
+    expect(JSON.stringify(events)).not.toContain('script');
+  });
+
   test('text already said is kept when the model fails midway', async () => {
     const model = scriptedModel([{ text: 'Let me', fail: new LucyModelError('network', 'socket hang up') }]);
     const { summary } = await run({ model: model.port, source: fakeSource() }, { text: 'Hi' });
@@ -211,6 +276,78 @@ describe('runLucyTurn', () => {
     const { summary } = await turn;
     expect(summary.done.end).toBe('aborted');
     expect(summary.answer).toBe('');
+  });
+
+  test('a look-up is announced before it runs', async () => {
+    const order: string[] = [];
+    const source = fakeSource({ tasks: TASKS, outputs: { 'bbbb2222-0000': { text: 'ok', source: 'live' } } });
+    const readOutput = source.taskOutput.bind(source);
+    source.taskOutput = async (taskId, lines) => { order.push('look-up ran'); return readOutput(taskId, lines); };
+    const model = scriptedModel([{ calls: [{ name: 'read_task_output', args: { task: 'bbbb' } }] }, { text: 'Done.' }]);
+    const turn = runLucyTurn({ model: model.port, source }, { text: 'x', history: [] });
+    for (;;) {
+      const next = await turn.next();
+      if (next.done) break;
+      if (next.value.type === 'tool_call' || next.value.type === 'tool_result') order.push(next.value.type);
+    }
+    expect(order).toEqual(['tool_call', 'look-up ran', 'tool_result']);
+  });
+
+  test('a look-up that never returns does not outlive the time limit', async () => {
+    const source = fakeSource({ tasks: TASKS });
+    source.taskOutput = () => new Promise(() => {});
+    const model = scriptedModel([{ calls: [{ name: 'read_task_output', args: { task: 'bbbb' }, id: 'h1' }] }]);
+    const { events, summary } = await run({ model: model.port, source, limits: { maxMs: 40 } }, { text: 'x' });
+    expect(events.map((e) => e.type)).toEqual(['tool_call', 'text', 'done']);
+    expect(summary.done).toMatchObject({ end: 'time_cap', steps: 1 });
+    expect(summary.answer).toBe('That was taking too long, so I stopped. Please ask me again.');
+  });
+
+  test('a look-up that never returns does not hold a turn whose caller has gone', async () => {
+    const source = fakeSource({ tasks: TASKS });
+    source.taskOutput = () => new Promise(() => {});
+    const gone = new AbortController();
+    const model = scriptedModel([{ calls: [{ name: 'read_task_output', args: { task: 'bbbb' } }] }]);
+    const turn = run({ model: model.port, source }, { text: 'x', signal: gone.signal });
+    setTimeout(() => gone.abort(), 5);
+    expect((await turn).summary.done).toMatchObject({ end: 'aborted', steps: 1 });
+  });
+
+  test('a task list that cannot be read ends the turn with an error instead of a broken stream', async () => {
+    const warnings: string[] = [];
+    const source = fakeSource();
+    source.board = () => { throw new Error('store exploded at /srv/work/secret-path'); };
+    const model = scriptedModel([{ text: 'never' }]);
+    const { events, summary } = await run({ model: model.port, source, warn: (m) => warnings.push(m) }, { text: 'x' });
+    expect(events).toEqual([expect.objectContaining({ type: 'done', end: 'error', reason: 'Kookr could not read the task list.' })]);
+    expect(summary.done.steps).toBe(0);
+    expect(model.requests).toHaveLength(0);
+    expect(warnings[0]).toContain('store exploded');
+  });
+
+  test('onSettled gets the same summary the turn returns', async () => {
+    const seen: LucyTurnSummary[] = [];
+    const { deps } = setup([{ text: 'Two.' }]);
+    const { summary } = await run({ ...deps, onSettled: (s) => seen.push(s) }, { text: 'x' });
+    expect(seen).toEqual([summary]);
+  });
+
+  test('a caller that stops reading still gets the figures so far through onSettled, as aborted', async () => {
+    const seen: LucyTurnSummary[] = [];
+    const { deps } = setup([
+      { calls: [{ name: 'read_board' }], usage: { inputTokens: 900, outputTokens: 30, costUsd: 0.0002 }, provider: 'Cohere' },
+      { text: ['It ', 'is fine.'] },
+    ]);
+    const turn = runLucyTurn({ ...deps, onSettled: (s) => seen.push(s) }, { text: 'x', history: [] });
+    // Read up to her first word, then walk away.
+    for (;;) {
+      const next = await turn.next();
+      if (next.done || next.value.type === 'text') break;
+    }
+    await turn.return(undefined as never);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ answer: 'It ', tools: ['read_board'] });
+    expect(seen[0]!.done).toMatchObject({ end: 'aborted', steps: 2, inputTokens: 900, outputTokens: 30, costUsd: 0.0002, provider: 'Cohere' });
   });
 
   test('at most four look-ups are run from one model call', async () => {

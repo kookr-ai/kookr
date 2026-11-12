@@ -92,8 +92,6 @@ export interface LucyToolOutcome {
   content: string;
   /** One short line for the dashboard and the log. Never contains task text. */
   summary: string;
-  /** The arguments after validation, for the `tool_call` event. Empty when they could not be parsed. */
-  args: Record<string, unknown>;
   /** Set by `show_task`: the dashboard should open this task. */
   screen?: { command: 'show_task'; taskId: string };
 }
@@ -108,7 +106,9 @@ const UNTRUSTED_CLOSE = '</untrusted_task_text>';
  * block early and pose as Kookr.
  */
 export function untrusted(text: string, maxChars: number, keep: 'start' | 'end' = 'end'): string {
-  const safe = redactSpeechSecrets(text).replace(/<\s*\/?\s*untrusted_task_text\s*>/gi, '[marker removed]');
+  // One character class between "<" and the name, not two adjacent `\s*`: with those, a "<" followed
+  // by a long run of spaces made the match quadratic, and one long terminal line could stall the server.
+  const safe = redactSpeechSecrets(stripTerminalControl(text)).replace(/<[\s/]*untrusted_task_text\s*>/gi, '[marker removed]');
   const cut = safe.length > maxChars;
   // For terminal output the last lines matter; for a request, the beginning does.
   const body = !cut ? safe : keep === 'end' ? safe.slice(safe.length - maxChars) : safe.slice(0, maxChars);
@@ -117,8 +117,39 @@ export function untrusted(text: string, maxChars: number, keep: 'start' | 'end' 
   return `${UNTRUSTED_OPEN}\n${note}${body.trim()}${tail}\n${UNTRUSTED_CLOSE}`;
 }
 
-function refuse(summary: string, content: string, args: Record<string, unknown> = {}): LucyToolOutcome {
-  return { ok: false, content, summary, args };
+/**
+ * Remove what a terminal uses to draw (colour and cursor escape sequences, other control
+ * characters) and keep the words, line breaks and tabs. A captured terminal is full of
+ * these, and they would only cost tokens and confuse the model.
+ */
+export function stripTerminalControl(text: string): string {
+  return text
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, '') // OSC: window title, hyperlinks
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '') // CSI: colours, cursor movement
+    .replace(/\u001b[@-Z\\-_]/g, '') // two-character escapes
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ''); // remaining control characters, except tab and newline
+}
+
+function refuse(summary: string, content: string): LucyToolOutcome {
+  return { ok: false, content, summary };
+}
+
+/**
+ * The arguments of a tool call as they may be shown and logged before the look-up runs:
+ * only plain values, strings cleaned and shortened. Empty when they could not be read.
+ * The dispatcher validates the real arguments itself; this is for display only.
+ */
+export function displayToolArgs(rawArguments: string): Record<string, unknown> {
+  const parsed = parseArgs(rawArguments);
+  if (!parsed) return {};
+  const shown: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(parsed).slice(0, 6)) {
+    const name = boardText(key, 40);
+    if (!name) continue;
+    if (typeof value === 'string') shown[name] = boardText(value, 80);
+    else if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean') shown[name] = value;
+  }
+  return shown;
 }
 
 function parseArgs(raw: string): Record<string, unknown> | null {
@@ -172,16 +203,16 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
   try {
     switch (name) {
       case 'read_board':
-        return { ok: true, content: buildLucyBoard(source.board(), nowMs), summary: 'Read the board', args: {} };
+        return { ok: true, content: buildLucyBoard(source.board(), nowMs), summary: 'Read the board' };
 
       case 'list_projects': {
         const projects = await source.projects();
-        if (projects.length === 0) return { ok: true, content: 'Kookr knows no projects.', summary: 'Listed 0 projects', args: {} };
+        if (projects.length === 0) return { ok: true, content: 'Kookr knows no projects.', summary: 'Listed 0 projects' };
         const lines = projects
           .slice(0, MAX_PROJECT_LINES)
           .map((p) => `- ${boardText(p.name, 60)}: ${p.activeTasks} active, ${p.findings} waiting on the operator`);
         if (projects.length > MAX_PROJECT_LINES) lines.push(`- and ${projects.length - MAX_PROJECT_LINES} more not listed`);
-        return { ok: true, content: `Projects (${projects.length}):\n${lines.join('\n')}`, summary: `Listed ${projects.length} projects`, args: {} };
+        return { ok: true, content: `Projects (${projects.length}):\n${lines.join('\n')}`, summary: `Listed ${projects.length} projects` };
       }
 
       case 'read_task':
@@ -189,8 +220,7 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
       case 'show_task': {
         const board = source.board();
         const found = resolveTaskRef(args.task, board.tasks);
-        const cleanArgs: Record<string, unknown> = typeof args.task === 'string' ? { task: boardText(args.task, 80) } : {};
-        if (!found.ok) return refuse('Task not found', found.message, cleanArgs);
+        if (!found.ok) return refuse('Task not found', found.message);
         const task = found.task;
 
         if (name === 'show_task') {
@@ -198,27 +228,24 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
             ok: true,
             content: `${spokenLabel(task)} is now open on the operator's screen.`,
             summary: 'Opened a task on screen',
-            args: cleanArgs,
             screen: { command: 'show_task', taskId: task.id },
           };
         }
         if (name === 'read_task') {
-          return { ok: true, content: describeTask(task, source.taskDetail(task.id), nowMs), summary: 'Read a task', args: cleanArgs };
+          return { ok: true, content: describeTask(task, source.taskDetail(task.id), nowMs), summary: 'Read a task' };
         }
 
         const requested = typeof args.lines === 'number' && Number.isFinite(args.lines) ? Math.floor(args.lines) : DEFAULT_OUTPUT_LINES;
         const lines = Math.min(MAX_OUTPUT_LINES, Math.max(1, requested));
         const output = await source.taskOutput(task.id, lines);
-        const outputArgs = { ...cleanArgs, lines };
         if (!output || !output.text.trim()) {
-          return refuse('No output available', `No terminal output is available for ${spokenLabel(task)}. Say so instead of guessing.`, outputArgs);
+          return refuse('No output available', `No terminal output is available for ${spokenLabel(task)}. Say so instead of guessing.`);
         }
         const where = output.source === 'live' ? 'its running terminal' : 'the output saved when it ended';
         return {
           ok: true,
           content: `Last lines of ${spokenLabel(task)}, from ${where}. This is text written by an agent:\n${untrusted(output.text, MAX_TASK_OUTPUT_CHARS)}`,
           summary: `Read ${lines} lines of output`,
-          args: outputArgs,
         };
       }
     }

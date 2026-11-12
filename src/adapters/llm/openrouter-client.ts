@@ -47,12 +47,6 @@ export interface OpenRouterClientOptions {
    * fast free-tier providers cannot abort OpenRouter prematurely.
    */
   timeoutMs?: number;
-  /**
-   * OpenRouter-specific top-level request fields, for example provider routing
-   * (`provider: { order, only }`) or a reasoning level (`reasoning: { effort }`).
-   * Fields the client sets for a request (`model`, `messages`, `max_tokens`, …) win.
-   */
-  extraBody?: Record<string, unknown>;
 }
 
 type OpenRouterEnv = Record<string, string | undefined>;
@@ -106,7 +100,6 @@ export class OpenRouterLlmClient implements LlmClient {
       model: this.model,
       baseUrl,
       extraHeaders,
-      ...(options.extraBody ? { extraBody: options.extraBody } : {}),
       timeoutMs: options.timeoutMs,
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
     });

@@ -490,8 +490,6 @@ export interface RouteDeps {
    * the environment at start-up. Absent or `{ enabled: false }`: the route answers 404.
    */
   lucyOperatorConfig?: import('../lucy-operator/config.js').LucyOperatorConfigResult;
-  /** Model seam for tests: used instead of the OpenRouter stream when the conversation is enabled. */
-  lucyOperatorModel?: import('../../core/lucy-operator/model-port.js').LucyModelPort;
   projectConfigStore?: ProjectConfigStore;
   projectSidebarStore?: ProjectSidebarStore;
   ossAttemptStore?: OssAttemptStore;

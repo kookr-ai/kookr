@@ -23,6 +23,8 @@ export const MAX_HISTORY_MESSAGES = 20;
 export const MAX_HISTORY_MESSAGE_CHARS = 2000;
 export const MAX_CONVERSATIONS = 50;
 export const CONVERSATION_TTL_MS = 2 * 60 * 60 * 1000;
+/** Most turns running at once, over all conversations. Each one is a paid model call. */
+export const MAX_CONCURRENT_TURNS = 4;
 
 export interface LucyOperatorDeps {
   model: LucyModelPort;
@@ -38,6 +40,8 @@ export interface LucyOperatorDeps {
 export interface LucyOperatorService {
   /** True while a turn of this conversation is running; the route answers 409 instead of starting another. */
   isBusy(conversationId: string): boolean;
+  /** True while as many turns are running as are allowed at once; the route answers 429 instead of starting another. */
+  atCapacity(): boolean;
   /**
    * Run one turn. The stream always ends with one `done` event, unless the caller stops
    * reading first; either way the conversation is released and the turn is recorded.
@@ -109,64 +113,40 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
 
   return {
     isBusy: (conversationId) => running.has(conversationId),
+    atCapacity: () => running.size >= MAX_CONCURRENT_TURNS,
 
     async *runTurn(request, signal) {
       const startedAt = now();
-      if (running.has(request.conversationId)) {
-        // Two requests raced past the route's check: the second one ends at once and changes nothing.
-        yield { type: 'done', end: 'error', reason: 'Another turn of this conversation is still running.', firstTextMs: null, totalMs: 0, steps: 0, inputTokens: 0, outputTokens: 0, costUsd: null };
+      if (running.has(request.conversationId) || running.size >= MAX_CONCURRENT_TURNS) {
+        // Two requests raced past the route's checks: the later one ends at once and changes nothing.
+        const reason = running.has(request.conversationId) ? 'Another turn of this conversation is still running.' : 'Too many turns are running at once.';
+        yield { type: 'done', end: 'error', reason, firstTextMs: null, totalMs: 0, steps: 0, inputTokens: 0, outputTokens: 0, costUsd: null };
         return;
       }
       running.add(request.conversationId);
 
+      // Filled by the loop when the turn is over, including when this generator is abandoned mid-way.
+      let settled: LucyTurnSummary | undefined;
       const inner = runLucyTurn(
-        { model: deps.model, source: deps.source, limits: deps.limits, now, warn },
+        { model: deps.model, source: deps.source, limits: deps.limits, now, warn, onSettled: (summary) => { settled = summary; } },
         { text: request.text, history: historyOf(request.conversationId, startedAt), signal },
       );
-      let summary: LucyTurnSummary | undefined;
-      // Followed as events pass, so a turn the caller walked away from is still recorded.
-      let partialAnswer = '';
-      const partialTools: string[] = [];
-      let firstTextMs: number | null = null;
-      // The loop's own closing event, kept in case the caller stops reading right after it.
-      let lastDone: LucyTurnDoneEvent | undefined;
       try {
-        for (;;) {
-          const next = await inner.next();
-          if (next.done) {
-            summary = next.value;
-            break;
-          }
-          const event = next.value;
-          if (event.type === 'text') {
-            if (firstTextMs === null) firstTextMs = Math.max(0, now() - startedAt);
-            partialAnswer += event.delta;
-          } else if (event.type === 'tool_call') {
-            partialTools.push(event.name);
-          } else if (event.type === 'done') {
-            lastDone = event;
-          }
-          yield event;
-        }
+        yield* inner;
       } finally {
         // Runs on a normal end, on a thrown error and when the caller stops reading: the conversation is always released.
         running.delete(request.conversationId);
         try {
-          if (!summary) await inner.return(undefined as never).catch(() => undefined);
-          const answer = summary?.answer ?? partialAnswer;
-          const done: LucyTurnDoneEvent = summary?.done ?? lastDone ?? {
-            type: 'done',
-            end: 'aborted',
-            firstTextMs,
-            totalMs: Math.max(0, now() - startedAt),
-            steps: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-            costUsd: null,
+          // A caller that stopped reading leaves the loop suspended; closing it makes it report what it had.
+          await inner.return(undefined as never).catch(() => undefined);
+          const summary: LucyTurnSummary = settled ?? {
+            answer: '',
+            tools: [],
+            done: { type: 'done', end: 'error', reason: 'The turn ended without a result.', firstTextMs: null, totalMs: Math.max(0, now() - startedAt), steps: 0, inputTokens: 0, outputTokens: 0, costUsd: null },
           };
           // Remember only an exchange the operator actually heard something from.
-          if (answer.trim()) remember(request.conversationId, request.text, answer, now());
-          record(request, answer, summary?.tools ?? partialTools, done);
+          if (summary.answer.trim()) remember(request.conversationId, request.text, summary.answer, now());
+          record(request, summary.answer, summary.tools, summary.done);
         } catch (err) {
           warn(`could not record a turn: ${err instanceof Error ? err.message : String(err)}`);
         }

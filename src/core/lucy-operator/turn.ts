@@ -19,10 +19,11 @@
  */
 
 import type { LucyTurnDoneEvent, LucyTurnEnd, LucyTurnEvent } from '../../shared/contracts/lucy-turn.js';
+import { redactSpeechSecrets } from '../task-speech-summary.js';
 import { boardText, buildLucyBoard } from './board.js';
 import { LucyModelError, type LucyChatMessage, type LucyModelPort, type LucyToolCall } from './model-port.js';
 import { buildLucyOperatorPrompt, LUCY_CAP_SENTENCES } from './prompt.js';
-import { dispatchLucyTool, LUCY_LOOK_TOOLS, type LucyLookSource } from './tools.js';
+import { dispatchLucyTool, displayToolArgs, LUCY_LOOK_TOOLS, type LucyLookSource, type LucyToolOutcome } from './tools.js';
 
 export interface LucyTurnLimits {
   /** Most model calls in one turn. */
@@ -58,6 +59,13 @@ export interface LucyTurnDeps {
   now?: () => number;
   /** Receives the detail of a model failure for the server log. It may quote the provider, so it is never sent to a client. */
   warn?: (message: string) => void;
+  /**
+   * Called exactly once when the turn is over, however it ended, with the same summary the
+   * generator returns. When the caller stopped reading before the end, this is the only
+   * place the figures so far (model calls, tokens, cost, what she had said) are available;
+   * the turn is then reported as `aborted`.
+   */
+  onSettled?: (summary: LucyTurnSummary) => void;
 }
 
 export interface LucyTurnInput {
@@ -151,18 +159,38 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
     },
   });
 
+  /** The summary the turn ended with; unset while it runs, and when the caller stops reading early. */
+  let settled: LucyTurnSummary | undefined;
+  const end = (kind: LucyTurnEnd, reason?: string): LucyTurnSummary => (settled = summary(kind, reason));
+  /** Resolves when the turn is cancelled (the caller left, or the time limit passed), so a slow look-up cannot hold it. */
+  const cancelled = new Promise<null>((resolve) => {
+    if (controller.signal.aborted) resolve(null);
+    else controller.signal.addEventListener('abort', () => resolve(null), { once: true });
+  });
+
   try {
+    let board: string;
+    try {
+      board = buildLucyBoard(deps.source.board(), startedAt);
+    } catch (err) {
+      deps.warn?.(`could not build the board: ${err instanceof Error ? err.message : String(err)}`);
+      const result = end('error', 'Kookr could not read the task list.');
+      yield result.done;
+      return result;
+    }
     const messages: LucyChatMessage[] = [
-      { role: 'system', content: buildLucyOperatorPrompt(buildLucyBoard(deps.source.board(), startedAt)) },
-      ...input.history,
-      { role: 'user', content: input.text },
+      { role: 'system', content: buildLucyOperatorPrompt(board) },
+      // The question and the remembered exchanges leave the machine too, so they get the same
+      // secret hiding as the board and the look-ups (a key pasted into a question is not sent on).
+      ...input.history.map((message) => ({ role: message.role, content: redactSpeechSecrets(message.content) })),
+      { role: 'user', content: redactSpeechSecrets(input.text) },
     ];
 
     for (;;) {
       // Checked before every model call, in this order: gone, too slow, too many calls, too much read.
       let cap: 'step_cap' | 'time_cap' | 'token_cap' | null = null;
       if (controller.signal.aborted && !timedOut) {
-        const result = summary('aborted');
+        const result = end('aborted');
         yield result.done;
         return result;
       }
@@ -171,7 +199,7 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
       else if (steps > 0 && inputTokens + outputTokens >= limits.maxTokens) cap = 'token_cap';
       if (cap) {
         yield textEvent(joined(LUCY_CAP_SENTENCES[cap]));
-        const result = summary(cap);
+        const result = end(cap);
         yield result.done;
         return result;
       }
@@ -202,18 +230,18 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
       } catch (err) {
         if (timedOut) continue; // the check at the top of the loop says the time-limit sentence
         if (input.signal?.aborted) {
-          const result = summary('aborted');
+          const result = end('aborted');
           yield result.done;
           return result;
         }
         deps.warn?.(`model call failed at step ${steps}: ${err instanceof Error ? err.message : String(err)}`);
-        const result = summary('error', plainReason(err));
+        const result = end('error', plainReason(err));
         yield result.done;
         return result;
       }
 
       if (calls.length === 0) {
-        const result = answer.trim() ? summary('answered') : summary('error', 'The model returned an empty reply.');
+        const result = answer.trim() ? end('answered') : end('error', 'The model returned an empty reply.');
         yield result.done;
         return result;
       }
@@ -229,9 +257,12 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
       for (const call of run) {
         // The name comes from the model, so it is cleaned before it is logged or shown.
         const name = boardText(call.name, 40) || 'unnamed';
-        const outcome = await dispatchLucyTool(call.name, call.arguments, deps.source, now());
         tools.push(name);
-        yield { type: 'tool_call', id: call.id, name, args: outcome.args };
+        // Announced before it runs, so the operator sees what she is doing while she does it.
+        yield { type: 'tool_call', id: call.id, name, args: displayToolArgs(call.arguments) };
+        // A look-up cannot be interrupted, but the turn does not have to wait for one that hangs.
+        const outcome: LucyToolOutcome | null = await Promise.race([dispatchLucyTool(call.name, call.arguments, deps.source, now()), cancelled]);
+        if (outcome === null) break; // the check at the top of the loop ends the turn
         if (outcome.screen) yield { type: 'screen', ...outcome.screen };
         yield { type: 'tool_result', id: call.id, name, ok: outcome.ok, summary: outcome.summary };
         messages.push({ role: 'tool', tool_call_id: call.id, content: outcome.content });
@@ -240,5 +271,11 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
   } finally {
     clearTimeout(timer);
     input.signal?.removeEventListener('abort', onCallerAbort);
+    // Reached without an ending only when the caller stopped reading: report what happened so far.
+    try {
+      deps.onSettled?.(settled ?? summary('aborted'));
+    } catch {
+      // A record keeper that throws must not turn a finished turn into a failure.
+    }
   }
 }

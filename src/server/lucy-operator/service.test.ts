@@ -1,15 +1,14 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { LucyTurnEvent } from '../../shared/contracts/lucy-turn.js';
 import { boardTask, fakeSource, scriptedModel, type ScriptedStep } from '../../core/lucy-operator/__fixtures__/scripted.js';
 import { getLucyOperatorDiagnosticsSnapshot, resetLucyOperatorDiagnosticsForTest } from '../../core/lucy-operator/diagnostics.js';
 import { LucyModelError } from '../../core/lucy-operator/model-port.js';
 import type { LucyInteractionLog, LucyOperatorTurnRecordInput } from '../lucy-interaction-log.js';
-import { CONVERSATION_TTL_MS, createLucyOperator, MAX_HISTORY_MESSAGES } from './service.js';
+import { CONVERSATION_TTL_MS, createLucyOperator, MAX_CONCURRENT_TURNS, MAX_CONVERSATIONS, MAX_HISTORY_MESSAGE_CHARS, MAX_HISTORY_MESSAGES } from './service.js';
 
 const SECRET = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
 
-function setup(steps: ScriptedStep[]) {
-  const model = scriptedModel(steps);
+function setup(steps: Array<ScriptedStep & { advanceMs?: number }>) {
   const records: LucyOperatorTurnRecordInput[] = [];
   const log: LucyInteractionLog = {
     recordSaid: () => {},
@@ -19,6 +18,8 @@ function setup(steps: ScriptedStep[]) {
     flush: async () => {},
   };
   let clock = 1_000_000;
+  // Each scripted step may move the clock, so a turn can be given a duration.
+  const model = scriptedModel(steps.map((step) => ({ ...step, before: () => { clock += step.advanceMs ?? 0; step.before?.(); } })));
   const service = createLucyOperator({
     model: model.port,
     modelName: 'test/model',
@@ -95,6 +96,26 @@ describe('createLucyOperator', () => {
     expect(service.isBusy('c1')).toBe(false);
   });
 
+  test('at most four turns run at once; a fifth conversation is turned away until one ends', async () => {
+    const { service, model } = setup([...Array.from({ length: MAX_CONCURRENT_TURNS }, () => ({ hang: true })), { text: 'Hi.' }]);
+    const controllers = Array.from({ length: MAX_CONCURRENT_TURNS }, () => new AbortController());
+    const turns = controllers.map((controller, i) => drain(service.runTurn({ text: 'hi', conversationId: `c${i}` }, controller.signal)));
+    await vi.waitFor(() => expect(model.requests).toHaveLength(MAX_CONCURRENT_TURNS));
+    expect(service.atCapacity()).toBe(true);
+
+    const refused = await drain(service.runTurn({ text: 'hi', conversationId: 'one-too-many' }));
+    expect(refused).toEqual([expect.objectContaining({ type: 'done', end: 'error', reason: 'Too many turns are running at once.' })]);
+    expect(model.requests).toHaveLength(MAX_CONCURRENT_TURNS);
+
+    controllers[0]!.abort();
+    await turns[0];
+    expect(service.atCapacity()).toBe(false);
+    const accepted = await drain(service.runTurn({ text: 'hi', conversationId: 'one-too-many' }));
+    expect(accepted.at(-1)).toMatchObject({ type: 'done', end: 'answered' });
+    for (const controller of controllers) controller.abort();
+    await Promise.all(turns);
+  });
+
   test('a second turn that slipped past the busy check ends at once and calls no model', async () => {
     const { service, model } = setup([{ text: 'Hi.' }]);
     const first = service.runTurn({ text: 'hi', conversationId: 'c1' });
@@ -123,8 +144,23 @@ describe('createLucyOperator', () => {
 
     expect(service.isBusy('c1')).toBe(false);
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ end: 'aborted', asked: 'hi', answer: 'Let me ' });
+    expect(records[0]).toMatchObject({ end: 'aborted', asked: 'hi', answer: 'Let me ', steps: 1 });
     expect(getLucyOperatorDiagnosticsSnapshot().byEnd).toEqual({ aborted: 1 });
+  });
+
+  test('a caller that leaves after a finished model call is recorded with that call\'s tokens and cost', async () => {
+    const { service, records } = setup([
+      { calls: [{ name: 'read_board' }], usage: { inputTokens: 900, outputTokens: 30, costUsd: 0.0002 }, provider: 'Cohere' },
+      { text: ['It ', 'is fine.'] },
+    ]);
+    const turn = service.runTurn({ text: 'hi', conversationId: 'c1' });
+    for (;;) {
+      const next = await turn.next();
+      if (next.done || next.value.type === 'text') break;
+    }
+    await turn.return();
+    expect(records[0]).toMatchObject({ end: 'aborted', steps: 2, inputTokens: 900, outputTokens: 30, costUsd: 0.0002, provider: 'Cohere', tools: ['read_board'], answer: 'It ' });
+    expect(service.isBusy('c1')).toBe(false);
   });
 
   test('a caller that leaves right after the closing event still gets the real figures recorded', async () => {
@@ -177,6 +213,31 @@ describe('createLucyOperator', () => {
     ]);
   });
 
+  test('the record carries the turn\'s real timings', async () => {
+    const { service, records } = setup([{ calls: [{ name: 'read_board' }], advanceMs: 700 }, { text: 'One task.', advanceMs: 400 }]);
+    await drain(service.runTurn({ text: 'How many?', conversationId: 'c1' }));
+    expect(records[0]).toMatchObject({ firstTextMs: 1100, totalMs: 1100 });
+  });
+
+  test('a remembered message is cut to its length limit', async () => {
+    const { service, model } = setup([{ text: 'so it goes. '.repeat(MAX_HISTORY_MESSAGE_CHARS / 10) }, { text: 'ok' }]);
+    await drain(service.runTurn({ text: 'long one', conversationId: 'c1' }));
+    await drain(service.runTurn({ text: 'next', conversationId: 'c1' }));
+    const remembered = model.requests[1]!.messages[2] as { content: string };
+    expect(remembered.content).toHaveLength(MAX_HISTORY_MESSAGE_CHARS);
+  });
+
+  test('only the most recently used conversations are kept', async () => {
+    const total = MAX_CONVERSATIONS + 1;
+    const { service, model } = setup([...Array.from({ length: total }, () => ({ text: 'noted' })), { text: 'again' }, { text: 'again' }]);
+    for (let i = 0; i < total; i++) await drain(service.runTurn({ text: `hello ${i}`, conversationId: `c${i}` }));
+    // The first conversation was the least recently used, so it was forgotten; the last one was kept.
+    await drain(service.runTurn({ text: 'still there?', conversationId: 'c0' }));
+    await drain(service.runTurn({ text: 'still there?', conversationId: `c${total - 1}` }));
+    expect(model.requests[total]!.messages.slice(1)).toEqual([{ role: 'user', content: 'still there?' }]);
+    expect(model.requests[total + 1]!.messages.slice(1).map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+  });
+
   test('secrets are hidden in the record, in the question and in the answer', async () => {
     const { service, records } = setup([{ text: `The token is ${SECRET}.` }]);
     await drain(service.runTurn({ text: `Is ${SECRET} still valid?`, conversationId: 'c1' }));
@@ -187,8 +248,8 @@ describe('createLucyOperator', () => {
 
   test('counts turns apart from the helper model: by ending, with model calls, tokens and cost', async () => {
     const { service } = setup([
-      { text: 'One.', usage: { inputTokens: 100, outputTokens: 10, costUsd: 0.0002 } },
-      { fail: new LucyModelError('network', 'down') },
+      { text: 'One.', usage: { inputTokens: 100, outputTokens: 10, costUsd: 0.0002 }, advanceMs: 900 },
+      { fail: new LucyModelError('network', 'down'), advanceMs: 300 },
     ]);
     await drain(service.runTurn({ text: 'a', conversationId: 'c1' }));
     await drain(service.runTurn({ text: 'b', conversationId: 'c1' }));
@@ -203,9 +264,10 @@ describe('createLucyOperator', () => {
       outputTokens: 10,
       costUsd: 0.0002,
       turnsWithCost: 1,
-      averageTurnMs: 0,
-      maxTurnMs: 0,
-      averageFirstTextMs: 0,
+      averageTurnMs: 600,
+      maxTurnMs: 900,
+      // Only the turn that said something counts toward the first-text average.
+      averageFirstTextMs: 900,
     });
   });
 });

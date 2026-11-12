@@ -77,6 +77,28 @@ describe('POST /api/lucy/turn', () => {
     expect(events.at(-1)).toMatchObject({ type: 'done', end: 'answered', steps: 2, provider: 'Cohere' });
   });
 
+  test('a client that goes away stops the model call and frees the conversation', async () => {
+    const { service, model } = serviceWith([{ hang: true }]);
+    const res = await post(appWith({ service }), { text: 'hi', conversationId: 'c1' });
+    expect(res.status).toBe(200);
+    // Start reading so the stream is running, then drop the connection.
+    const reader = res.body!.getReader();
+    const pending = reader.read();
+    await vi.waitFor(() => expect(model.requests).toHaveLength(1));
+    await reader.cancel();
+    await pending.catch(() => undefined);
+
+    await vi.waitFor(() => expect(model.requests[0]!.signal?.aborted).toBe(true));
+    await vi.waitFor(() => expect(service.isBusy('c1')).toBe(false));
+  });
+
+  test('the longest allowed sentence and conversation id are accepted', async () => {
+    const { service } = serviceWith([{ text: 'ok' }]);
+    const res = await post(appWith({ service }), { text: 'x'.repeat(MAX_LUCY_TURN_TEXT_CHARS), conversationId: 'c'.repeat(64) });
+    expect(res.status).toBe(200);
+    await res.text();
+  });
+
   test('the sentence is trimmed before it reaches the model', async () => {
     const { service, model } = serviceWith([{ text: 'Hello.' }]);
     await (await post(appWith({ service }), { text: '  hi  ', conversationId: 'c1' })).text();
@@ -86,11 +108,23 @@ describe('POST /api/lucy/turn', () => {
   test('a second request for a conversation whose turn is still running gets 409', async () => {
     const busy: LucyOperatorService = {
       isBusy: (id) => id === 'c1',
+      atCapacity: () => false,
       runTurn: () => { throw new Error('must not start'); },
     };
     const res = await post(appWith({ service: busy }), { text: 'hi', conversationId: 'c1' });
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: 'turn_in_progress' });
+  });
+
+  test('when as many turns as allowed are already running, a further request gets 429', async () => {
+    const full: LucyOperatorService = {
+      isBusy: () => false,
+      atCapacity: () => true,
+      runTurn: () => { throw new Error('must not start'); },
+    };
+    const res = await post(appWith({ service: full }), { text: 'hi', conversationId: 'c9' });
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ error: 'too_many_turns' });
   });
 
   test('a model failure still ends the stream with done, and the provider\'s words never reach the client', async () => {

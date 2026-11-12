@@ -41,7 +41,11 @@ export type LucyTurnEnd = 'answered' | 'step_cap' | 'time_cap' | 'token_cap' | '
 export type LucyTurnEvent =
   /** A piece of her reply, in the order it was generated. Concatenate them to get the whole reply. */
   | { type: 'text'; delta: string }
-  /** She is looking something up. `args` are the arguments the model gave, already validated. */
+  /**
+   * She is about to look something up. Sent before the look-up runs. `args` are the arguments
+   * the model gave, reduced to plain values and shortened for display. A `tool_result` with
+   * the same `id` follows, unless the turn ends first (a limit, or the client going away).
+   */
   | { type: 'tool_call'; id: string; name: string; args: Record<string, unknown> }
   /** The look-up finished. `ok: false` means it failed or was refused; `summary` is one short line for display. */
   | { type: 'tool_result'; id: string; name: string; ok: boolean; summary: string }
@@ -73,4 +77,5 @@ export type LucyTurnErrorCode =
   | 'lucy_operator_disabled'
   | 'bad_request'
   | 'turn_in_progress'
+  | 'too_many_turns'
   | 'lucy_operator_unavailable';

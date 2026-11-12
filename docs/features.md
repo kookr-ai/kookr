@@ -473,7 +473,6 @@ know something. She cannot act on tasks yet.
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
   `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
 
-
 #### Ask Lucy a question (optional, off by default, no screen yet)
 
 With `KOOKR_LUCY_OPERATOR=true`, Kookr answers questions about your tasks at `POST /api/lucy/turn`:
@@ -513,7 +512,7 @@ line; it rotates at 10 MB and keeps three older files).
   recognition and the first sentence took. Your voice is never stored: the audio is sent to the
   recogniser and discarded. No audio is stored. Task names and summary text can contain project details, so treat the
   file like your other local logs.
-- **Conversation turns.** If the operator conversation is switched on (see below), every turn is
+- **Conversation turns.** If the operator conversation is switched on (see above), every turn is
   recorded too (`kind: "operator_turn"`): what you asked and what she answered (secret-looking
   tokens replaced first), the names of the look-ups she made, how the turn ended, timings, tokens
   and cost. What her look-ups returned is not recorded.

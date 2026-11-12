@@ -69,7 +69,7 @@ reasoning is never sent on.
 | `read_board` | The board again, freshly built |
 | `read_task` | One task: what it was asked to do, where it runs, what it waits for, its closing summary |
 | `read_task_output` | The last lines of one task's terminal (40 by default, 120 at most) |
-| `show_task` | Nothing to her; it asks the dashboard to open the task (a `screen` event in the stream) |
+| `show_task` | A short confirmation; it asks the dashboard to open the task (a `screen` event in the stream) |
 | `list_projects` | The projects Kookr knows, with how many tasks are active in each |
 
 ### How she names a task
@@ -88,6 +88,10 @@ to say or write it, and in the trial below she never did.
 | Time | 30 s | The model call in progress is cancelled |
 | Tokens read and written | 40,000 | No further model call is made |
 | Look-ups from one model call | 4 | Any beyond the fourth are dropped |
+| Turns running at once, over all conversations | 4 | A further request is refused with `429` |
+
+The limits are checked before each model call. The time limit also cancels a model call that is in
+progress, and it stops waiting for a look-up that is still running.
 
 When a limit ends a turn, her last sentence says so ("I ran out of steps before I could finish, so
 please ask me something narrower."), and the `done` event carries `step_cap`, `time_cap` or
@@ -126,7 +130,9 @@ that sends what you said and the task names, and never a task's request or termi
 | The last lines of a task's terminal | When she reads that task's output |
 
 Before any of it is sent, secret-looking tokens (API keys and similar) are replaced with
-`[redacted]`, using the same rule as the spoken summaries, and each look-up is cut to a fixed length.
+`[redacted]`, using the same rule as the spoken summaries. That includes the operator's own sentence
+and the earlier exchanges. Terminal output also has its colour and cursor codes removed, and each
+look-up is cut to a fixed length.
 The redaction recognises token shapes. It does not know which words are confidential. If task names
 or terminal output must not leave the machine, leave the setting off.
 

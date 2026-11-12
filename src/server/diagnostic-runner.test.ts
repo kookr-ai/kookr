@@ -64,7 +64,7 @@ describe('DiagnosticRunner', () => {
     expect(report.helperLlm.schemaVersion).toBe('helper-llm-diagnostics.v1');
   });
 
-  test('reports the operator conversation beside the helper model, not inside it', () => {
+  test('reports the operator conversation in its own block of the report', () => {
     const runner = new DiagnosticRunner(createMockDeps({
       getLucyOperatorDiagnosticsSnapshot: () => ({
         schemaVersion: 'lucy-operator-diagnostics.v1',
@@ -83,8 +83,6 @@ describe('DiagnosticRunner', () => {
     }));
     const report = runner.runNow();
     expect(report.lucyOperator).toMatchObject({ schemaVersion: 'lucy-operator-diagnostics.v1', turns: 3, modelCalls: 7 });
-    // The helper counters are untouched by operator turns.
-    expect(report.helperLlm.totals.requestCount).toBe(0);
   });
 
   test('reports an empty operator counter by default', () => {

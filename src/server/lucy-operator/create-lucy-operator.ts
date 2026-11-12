@@ -11,15 +11,13 @@ import { createOpenRouterChatStream } from '../../adapters/llm/openrouter-chat-s
 import { listProjectSummaries } from '../routes/project-routes.js';
 import type { LucyOperatorRouteDeps } from '../routes/lucy-operator-routes.js';
 import type { RouteDeps } from '../routes/shared.js';
+import type { LucyLookSource } from '../../core/lucy-operator/tools.js';
 import { createLucyLookSource } from './look-source.js';
 import { createLucyOperator } from './service.js';
 
-export function buildLucyOperator(deps: RouteDeps): LucyOperatorRouteDeps['lucyOperator'] {
-  const config = deps.lucyOperatorConfig;
-  if (!config || !config.enabled) return undefined;
-  if (!config.ok) return { unavailableReason: config.reason };
-
-  const source = createLucyLookSource({
+/** Connect her look-ups to the server's stores. Exported so the connections can be tested one by one. */
+export function buildLucyLookSource(deps: RouteDeps): LucyLookSource {
+  return createLucyLookSource({
     getTasks: () => deps.taskStore.viewTasks(),
     getFindings: () => deps.queue.getAll(),
     getLifetimeSpendUsd: () => deps.taskStore.getLifetimeSpendUsd(),
@@ -29,12 +27,18 @@ export function buildLucyOperator(deps: RouteDeps): LucyOperatorRouteDeps['lucyO
     getReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
     listProjects: deps.ledgerAnalytics && deps.projectConfigStore ? () => listProjectSummaries(deps) : undefined,
   });
+}
+
+export function buildLucyOperator(deps: RouteDeps): LucyOperatorRouteDeps['lucyOperator'] {
+  const config = deps.lucyOperatorConfig;
+  if (!config || !config.enabled) return undefined;
+  if (!config.ok) return { unavailableReason: config.reason };
 
   return {
     service: createLucyOperator({
-      model: deps.lucyOperatorModel ?? createOpenRouterChatStream(config.model),
+      model: createOpenRouterChatStream(config.model),
       modelName: config.model.model,
-      source,
+      source: buildLucyLookSource(deps),
       log: deps.lucyInteractionLog,
     }),
   };

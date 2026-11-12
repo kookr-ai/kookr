@@ -8,7 +8,7 @@ import { createServer, type Server } from 'node:http';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { taskHandles } from '../core/lucy-operator/board.js';
 import type { LucyTurnEvent } from '../shared/contracts/lucy-turn.js';
@@ -51,6 +51,7 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await server?.close();
     server = undefined;
     await new Promise<void>((resolve) => provider.close(() => resolve()));
@@ -91,7 +92,27 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
   const turn = (baseUrl: string, text: string): Promise<Response> =>
     fetch(`${baseUrl}/api/lucy/turn`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, conversationId: 'wiring' }) });
 
-  test('off by default: the route answers 404 and the provider is never contacted', async () => {
+  test('off by default: with nothing set in the environment the route answers 404', async () => {
+    vi.stubEnv('KOOKR_LUCY_OPERATOR', '');
+    const baseUrl = await start();
+    const res = await turn(baseUrl, 'What is running?');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: 'lucy_operator_disabled' });
+    expect(received).toHaveLength(0);
+  });
+
+  test('KOOKR_LUCY_OPERATOR=true in the environment switches it on; without a key it answers 503', async () => {
+    vi.stubEnv('KOOKR_LUCY_OPERATOR', 'true');
+    vi.stubEnv('KOOKR_OPENROUTER_API_KEY', '');
+    vi.stubEnv('OPENROUTER_API_KEY', '');
+    const baseUrl = await start();
+    const res = await turn(baseUrl, 'What is running?');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: 'lucy_operator_unavailable', message: expect.stringContaining('OpenRouter key') });
+    expect(received).toHaveLength(0);
+  });
+
+  test('switched off explicitly: the route answers 404 and the provider is never contacted', async () => {
     const baseUrl = await start({ enabled: false });
     const res = await turn(baseUrl, 'What is running?');
     expect(res.status).toBe(404);
@@ -146,7 +167,9 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
     // The log is written off the request path, so wait for the line to land.
     const logPath = join(tempDir, 'lucy-interactions.jsonl');
     const deadline = Date.now() + 5000;
-    while (!existsSync(logPath) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    // The file exists before its first line is complete, so wait for the closing newline.
+    const complete = (): boolean => existsSync(logPath) && readFileSync(logPath, 'utf8').endsWith('\n');
+    while (!complete() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
     const logLines = readFileSync(logPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     expect(logLines).toHaveLength(1);
     expect(logLines[0]).toMatchObject({

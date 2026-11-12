@@ -67,25 +67,6 @@ describe('OpenRouterLlmClient', () => {
     expect(client.model).toBe('deepseek/deepseek-v4-flash');
   });
 
-  test('carries provider routing and a reasoning level as extra body fields, without replacing its own', async () => {
-    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
-    const client = new OpenRouterLlmClient({
-      apiKey: API_KEY,
-      extraBody: {
-        provider: { order: ['cohere/fp8', 'deepinfra/fp8'], only: ['cohere', 'deepinfra'] },
-        reasoning: { effort: 'medium' },
-        model: 'some/other-model',
-      },
-    });
-
-    await client.complete(baseReq);
-
-    const body = requestBody(fetchMock);
-    expect(body.provider).toEqual({ order: ['cohere/fp8', 'deepinfra/fp8'], only: ['cohere', 'deepinfra'] });
-    expect(body.reasoning).toEqual({ effort: 'medium' });
-    expect(body.model).toBe('deepseek/deepseek-v4-flash');
-  });
-
   test('honors a custom model id', () => {
     const client = new OpenRouterLlmClient({ apiKey: API_KEY, model: 'openai/gpt-5-mini' });
     expect(client.model).toBe('openai/gpt-5-mini');

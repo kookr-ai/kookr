@@ -114,7 +114,14 @@ describe('OpenRouterChatStreamParser', () => {
 
   test('an error reported inside the stream is thrown as a provider failure', () => {
     const parser = new OpenRouterChatStreamParser();
-    expect(() => parser.push(data({ error: { code: 502, message: 'Upstream provider failed' } }))).toThrowError(LucyModelError);
+    let thrown: unknown;
+    try {
+      parser.push(data({ error: { code: 502, message: 'Upstream provider failed' } }));
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(LucyModelError);
+    expect(thrown).toMatchObject({ kind: 'provider' });
   });
 });
 

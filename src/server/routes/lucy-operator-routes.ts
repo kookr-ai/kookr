@@ -60,6 +60,10 @@ export function registerLucyOperatorRoutes(app: Hono, deps: LucyOperatorRouteDep
       return c.json(refuse('turn_in_progress', 'A turn of this conversation is still running. Wait for it to end, or use another conversation id.'), 409);
     }
 
+    if (service.atCapacity()) {
+      return c.json(refuse('too_many_turns', 'Too many turns are running at once. Try again in a moment.'), 429);
+    }
+
     // Aborted when the client goes away, so the model call stops instead of running (and costing) to the end.
     const gone = new AbortController();
     c.header('Content-Type', LUCY_TURN_CONTENT_TYPE);
