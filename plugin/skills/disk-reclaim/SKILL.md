@@ -65,7 +65,7 @@ Linux and macOS, no dependencies). The commands below call it through
 
 | Tier | Items | Action |
 |---|---|---|
-| SAFE worktree | Linked worktree, clean, unlocked, no stash entries, no edits hidden by skip-worktree or assume-unchanged, no untracked paths, no git operation in progress (rebase, merge, cherry-pick, revert, bisect), no commit that only its reflogs or `ORIG_HEAD` still point at (on no branch, tag or remote, e.g. after `reset --hard`), HEAD merged into `origin/HEAD` (or its upstream is exactly `[gone]`), idle at least `--min-idle-days` (default 2), not in use, and EVERY git-ignored entry is either a `node_modules/` (with `package.json` and a lockfile in its parent directory and no nested `.git` inside) or a tool cache (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.turbo/`, `.next/cache/`, `.eslintcache`, `*.tsbuildinfo`). Ignored `out/`, `build/`, `dist/`, `target/`, `.cache/`, `coverage/`, `.venv/` and the like are content, not cache | `git worktree remove` from the main repo, then `git branch -d` (never `-D`) |
+| SAFE worktree | Linked worktree, clean, unlocked, no stash entries, no edits hidden by skip-worktree or assume-unchanged, no untracked paths, no git operation in progress (rebase, merge, cherry-pick, revert, bisect), no git clean filter (other than LFS) applying to its files, as `git check-attr` resolves them, because a filter makes `git status` blind to working-copy-only content, no commit that only its reflogs or `ORIG_HEAD` still point at (on no branch, tag or remote, e.g. after `reset --hard`), HEAD merged into `origin/HEAD` (or its upstream is exactly `[gone]`), idle at least `--min-idle-days` (default 2), not in use, and EVERY git-ignored entry is either a `node_modules/` (with `package.json` and a lockfile in its parent directory and no nested `.git` inside) or a tool cache (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.turbo/`, `.next/cache/`, `.eslintcache`, `*.tsbuildinfo`). Ignored `out/`, `build/`, `dist/`, `target/`, `.cache/`, `coverage/`, `.venv/` and the like are content, not cache | `git worktree remove` from the main repo, then `git branch -d` (never `-D`) |
 | SAFE dependencies | Untracked top-level `node_modules` of an idle, unused checkout, with a `package.json` and a lockfile beside it and no nested `.git` inside (a worktree held back by other ignored content can still lose its `node_modules`) | Remove the directory; rebuild with `pnpm install` or `npm ci` |
 | SAFE tool caches | pnpm store, npm, uv, pip caches (only installed tools), only while no Kookr task is live and no package manager is running | The tool's own prune/clean command |
 | SAFE Kookr data | Aged artifacts under the data dir | `kookr maintenance prune` with the default ages |
@@ -94,7 +94,7 @@ SAFE, caches and Kookr data included: tell the operator and fix the probe.
   script did not classify SAFE in the same run.
 - Ignored files are part of what a worktree removal deletes (`git worktree
   remove` takes git-ignored content with it). A worktree holding ignored files
-  other than rebuildable build output (`node_modules`, `dist`, caches) is
+  other than a verified `node_modules` or a named tool cache (`dist/`, `build/` and `out/` count as content) is
   REVIEW, even if merged and clean. Edits hidden by skip-worktree or
   assume-unchanged also make it REVIEW.
 - Only space on the data directory's filesystem helps. Items on another

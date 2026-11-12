@@ -83,6 +83,9 @@ export function classifyIgnoredEntry(entry) {
   return last === '.eslintcache' || last.endsWith('.tsbuildinfo') ? 'cache' : 'content';
 }
 
+/** Paths per `git check-attr` call (keeps the argument list well under ARG_MAX). */
+const ATTR_CHUNK = 1000;
+
 /** Above this many distinct reflog tips the reflog check is skipped and the worktree treated as not SAFE. */
 const REFLOG_TIP_LIMIT = 2000;
 
@@ -551,28 +554,31 @@ export async function inspectDir(dir, opts, deps, { light = false, fetched = new
   return e;
 }
 
-/** Names of non-LFS clean filters declared in this checkout's attributes AND configured in git. */
-async function configuredCleanFilters(dir, commonDir, git) {
-  const files = [];
-  const tracked = await git(['ls-files', '--', '.gitattributes', '*/.gitattributes']);
-  if (tracked.code === 0) files.push(...tracked.stdout.split('\n').filter(Boolean).map((f) => join(dir, f)));
-  files.push(join(commonDir, 'info', 'attributes'));
-  const global = await git(['config', '--path', '--get', 'core.attributesFile']);
-  if (global.code === 0 && global.stdout.trim()) files.push(global.stdout.trim());
+/**
+ * Non-LFS filters that apply to tracked files here, as git itself resolves them (committed and
+ * nested `.gitattributes`, `info/attributes`, `core.attributesFile`, the default global file under
+ * `$XDG_CONFIG_HOME/git` or `~/.config/git`, and the system file), and that git has a `clean` or
+ * `process` command for. Returns null when the answer is unknown (then the caller fails closed).
+ */
+async function configuredCleanFilters(git) {
+  const files = await git(['ls-files', '-z']);
+  if (files.code !== 0) return null;
+  const paths = files.stdout.split('\0').filter(Boolean);
   const names = new Set();
-  for (const f of files) {
-    let text = '';
-    try {
-      text = readFileSync(f, 'utf8');
-    } catch {
-      continue;
+  for (let i = 0; i < paths.length; i += ATTR_CHUNK) {
+    const r = await git(['check-attr', '-z', 'filter', '--', ...paths.slice(i, i + ATTR_CHUNK)]);
+    if (r.code !== 0) return null;
+    const f = r.stdout.split('\0');
+    for (let j = 0; j + 2 < f.length; j += 3) {
+      const value = f[j + 2];
+      if (value && value !== 'unspecified' && value !== 'unset' && value !== 'lfs') names.add(value);
     }
-    for (const m of text.matchAll(/(?:^|\s)filter=([^\s]+)/g)) if (m[1] !== 'lfs') names.add(m[1]);
   }
   const out = [];
   for (const name of names) {
-    const clean = await git(['config', '--get', `filter.${name}.clean`]);
-    if (clean.code === 0 && clean.stdout.trim()) out.push(name);
+    // `set` (a bare `filter` attribute) names no driver; keep it conservative and report it.
+    const [clean, proc] = await Promise.all([git(['config', '--get', `filter.${name}.clean`]), git(['config', '--get', `filter.${name}.process`])]);
+    if ((clean.code === 0 && clean.stdout.trim()) || (proc.code === 0 && proc.stdout.trim()) || name === 'set') out.push(name);
   }
   return out;
 }
@@ -619,6 +625,7 @@ async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
     if (lsv.code !== 0) e.errors.push('git ls-files -v failed');
     else e.hiddenEdits = lsv.stdout.split('\n').filter((l) => l && (/^[a-z]/.test(l) || l[0] === 'S')).map((l) => l.slice(2));
   }
+  if (e.kind === 'worktree' && gitDir && gitDir.code !== 0) e.errors.push(gitDir.timedOut ? 'git rev-parse --git-dir timed out' : 'git rev-parse --git-dir failed');
   if (e.kind === 'worktree' && gitDir && gitDir.code === 0) {
     const wtGitDir = resolve(dir, gitDir.stdout.trim());
     // An operation in progress holds state (todo lists, conflict resolutions) that removal discards.
@@ -651,7 +658,9 @@ async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
     // FILTERED file, so working-copy-only content (notebook outputs, results) looks clean. Any
     // non-LFS filter that is both declared in an attributes file and configured with a clean
     // command makes the worktree not SAFE.
-    e.cleanFilters = await configuredCleanFilters(dir, commonDir, git);
+    const filters = await configuredCleanFilters(git);
+    if (filters === null) e.errors.push('could not resolve git filter attributes');
+    else e.cleanFilters = filters;
   }
   if (ignored) {
     if (ignored.code !== 0) e.errors.push(ignored.timedOut ? 'git ls-files timed out' : 'git ls-files failed');

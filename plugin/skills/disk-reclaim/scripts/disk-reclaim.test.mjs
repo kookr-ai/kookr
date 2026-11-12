@@ -462,6 +462,30 @@ describe('ignored files and hidden edits', () => {
     expect(find(r, wt).reason).toMatch(/clean filter configured \(strip\)/);
   });
 
+  test('a clean filter declared only in the default GLOBAL attributes file keeps the worktree REVIEW', async () => {
+    const xdg = join(tmp, 'xdg');
+    mkdirSync(join(xdg, 'git'), { recursive: true });
+    writeFileSync(join(xdg, 'git', 'attributes'), '*.ipynb filter=strip\n');
+    const env = { ...GIT_ENV, XDG_CONFIG_HOME: xdg };
+    setExecEnvForTests(env);
+    try {
+      const wt = addWorktree('globalattr');
+      git(main, 'config', 'filter.strip.clean', "sed '/^OUTPUT/d'");
+      writeFileSync(join(wt, 'run.ipynb'), 'cell1\nOUTPUT: accuracy=0.93\n');
+      execFileSync('git', ['add', '-A'], { cwd: wt, env });
+      execFileSync('git', ['commit', '-q', '-m', 'notebook'], { cwd: wt, env });
+      mergeBranch('globalattr');
+      // The committed blob was filtered, yet git reports the worktree clean.
+      expect(execFileSync('git', ['show', 'HEAD:run.ipynb'], { cwd: wt, env, encoding: 'utf8' })).toBe('cell1\n');
+      expect(execFileSync('git', ['status', '--porcelain'], { cwd: wt, env, encoding: 'utf8' }).trim()).toBe('');
+      const r = await buildReport(opts(), deps());
+      expect(find(r, wt)).toMatchObject({ tier: 'REVIEW' });
+      expect(find(r, wt).reason).toMatch(/clean filter configured \(strip\)/);
+    } finally {
+      setExecEnvForTests(GIT_ENV);
+    }
+  });
+
   test('a git operation in progress keeps the worktree REVIEW', async () => {
     const wt = addWorktree('mid-merge', { merge: true });
     // Simulate a paused operation: git leaves MERGE_HEAD in the worktree's git dir.
