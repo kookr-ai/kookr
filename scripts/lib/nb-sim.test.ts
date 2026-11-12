@@ -42,6 +42,14 @@ describe('keys', () => {
     expect(maxLines({ NB_MAX_LINES: '999999' })).toBe(5000);
     expect(maxLines({ NB_MAX_LINES: 'abc' })).toBe(50);
   });
+  test('maxLines honors only a whole integer, like nb 0.8.0 (a partial number falls back to the default)', () => {
+    for (const partial of ['60.5', '1e3', '50abc', '', '  ', '6 0']) {
+      expect(maxLines({ NB_MAX_LINES: partial }), JSON.stringify(partial)).toBe(50);
+    }
+    expect(maxLines({ NB_MAX_LINES: ' 60 ' })).toBe(60);
+    expect(maxLines({ NB_MAX_LINES: '+7' })).toBe(7);
+    expect(maxLines({ NB_MAX_LINES: '-3' })).toBe(1);
+  });
 });
 
 describe('predictMove (pure model)', () => {
@@ -251,6 +259,18 @@ describe('parity with the real nb binary', () => {
     expect(readShelf(client, dir, 'tgt@canon').entries.map((x) => [x.id, x.score])).toEqual(model.get('tgt@canon')!.map((x) => [x.id, x.score]));
   });
 
+  test('maxLines agrees with the cap the real nb reports for the same NB_MAX_LINES', () => {
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    for (const raw of ['60', '60.5', '1e3', '50abc', ' 12 ', '0', '999999', '']) {
+      const env = cleanEnv({ NB_MAX_LINES: raw });
+      const client = createNbClient({ dir, nb: RAW_NB, env });
+      const config = client.runJson(['config', '--json']);
+      expect(config.ok, JSON.stringify(raw)).toBe(true);
+      expect(maxLines(env), JSON.stringify(raw)).toBe(config.json.maxLines.value);
+    }
+  });
+
   test('nb counts a duplicate as "duplicate" in --json while exiting 0', () => {
     const dir = makeStore({ git: false });
     dirs.push(dir);
@@ -393,5 +413,16 @@ describe('readFileOrderIds', () => {
     writeShelf(dir, 's', [[1, 'first'], [9, 'second'], [3, 'third']], 'a description');
     expect(readFileOrderIds(dir, 's')).toEqual([entryId('first'), entryId('second'), entryId('third')]);
     expect(readFileOrderIds(dir, 'missing')).toBeNull();
+  });
+  test('reads a CRLF file with a leading byte-order mark the way nb 0.8.0 does', () => {
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    writeFileSync(join(dir, 's.md'), '\uFEFF# desc: a description\r\n+1\tfirst\r\n+9\tsecond\r\n');
+    expect(readFileOrderIds(dir, 's')).toEqual([entryId('first'), entryId('second')]);
+    // The real nb agrees on what the lessons are.
+    const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv() });
+    const shown = client.runJson(['show', 's', '--json']);
+    expect(shown.json.description).toBe('a description');
+    expect(shown.json.entries.map((e: { text: string }) => e.text).sort()).toEqual(['first', 'second']);
   });
 });

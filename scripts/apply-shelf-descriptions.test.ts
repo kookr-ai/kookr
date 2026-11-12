@@ -99,6 +99,14 @@ describe('hasDescription', () => {
       expect(hasDescription(write(`${header}\n+1\tlesson\n`))).toBe(true);
     },
   );
+  test('true for a file with CRLF line ends or a leading byte-order mark, which nb 0.8.0 reads as described', () => {
+    expect(hasDescription(write('# desc: human trigger text\r\n+3\tfirst lesson\r\n'))).toBe(true);
+    expect(hasDescription(write('\uFEFF# desc: human trigger text\n+3\tfirst lesson\n'))).toBe(true);
+    expect(hasDescription(write('\uFEFF# desc: human trigger text\r\n+3\tfirst lesson\r\n'))).toBe(true);
+    // Still false when such a file really has no description.
+    expect(hasDescription(write('+3\tfirst lesson\r\n'))).toBe(false);
+    expect(hasDescription(write('\uFEFF+3\tfirst lesson\n'))).toBe(false);
+  });
   test('false when the desc value is empty (a cleared description)', () => {
     expect(hasDescription(write('# desc:\n+1\tlesson\n'))).toBe(false);
   });
@@ -139,6 +147,19 @@ describe('applyDescriptions', () => {
     expect(r).toMatchObject({ described: 1, skippedDescribed: 1, skippedAbsent: 1, failed: [] });
     expect(existsSync(join(dir, 'absent.md'))).toBe(false); // orphan NOT created
     expect(readFileSync(join(dir, 'described.md'), 'utf-8')).toContain('#desc: human wrote this'); // not overwritten (non-canonical spacing preserved)
+  });
+
+  test('never overwrites a description in a CRLF or byte-order-mark file (nb 0.8.0 reads both as described)', () => {
+    dir = mkdtempSync(join(tmpdir(), 'nbstore-'));
+    const crlf = '# desc: human trigger text\r\n+3\tfirst lesson\r\n';
+    const bom = '\uFEFF# desc: human trigger text\n+3\tfirst lesson\n';
+    writeFileSync(join(dir, 'crlf.md'), crlf);
+    writeFileSync(join(dir, 'bom.md'), bom);
+    const calls: Array<[string, string]> = [];
+    applyDescriptions({ dir, shelves: { crlf: 'auto-A', bom: 'auto-B' }, describe: makeDescribe(calls) });
+    expect(calls).toEqual([]);
+    expect(readFileSync(join(dir, 'crlf.md'), 'utf-8')).toBe(crlf);
+    expect(readFileSync(join(dir, 'bom.md'), 'utf-8')).toBe(bom);
   });
 
   test('is idempotent — a second run describes nothing', () => {

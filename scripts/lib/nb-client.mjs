@@ -328,7 +328,9 @@ const META_RE = /^#\s*([a-z][a-z0-9_-]*):\s?(.*)$/;
 export function parseShelfText(body) {
   const entries = [];
   let inMeta = true;
-  for (const line of body.split('\n')) {
+  // Line splitting as nb does it since 0.8.0: one leading byte-order mark is
+  // dropped and CRLF line ends are accepted.
+  for (const line of (body.charCodeAt(0) === 0xfeff ? body.slice(1) : body).split(/\r?\n/)) {
     if (inMeta && META_RE.test(line)) continue;
     inMeta = false;
     if (line.trim() === '') continue;
@@ -436,14 +438,15 @@ export function snapshotStore(client) {
   if (typeof listed.json.total === 'number' && listed.json.rows.length < listed.json.total) {
     throw new Error(`nb list --json returned ${listed.json.rows.length} of ${listed.json.total} shelves; refusing to plan from a partial index`);
   }
-  // Since agent-notebook 0.8.0 an unreadable shelf no longer fails `nb list`: it is
-  // left out of `rows` and named in `skipped`. That is a partial index too.
+  // Since agent-notebook 0.8.0 a shelf file nb cannot read, or whose name is not a
+  // valid shelf name, no longer fails `nb list`: it is left out of `rows` and named
+  // in `skipped`. That is a partial index too.
   if (Array.isArray(listed.json.skipped) && listed.json.skipped.length > 0) {
     // The names come from disk, so show control characters as visible escapes
     // rather than sending them to the operator's terminal.
     const visible = (v) => String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
     const names = listed.json.skipped.map((s) => `${visible(s?.shelf ?? '?')} (${visible(s?.code ?? 'unreadable')})`).join(', ');
-    throw new Error(`nb list --json skipped ${listed.json.skipped.length} shelf file(s) it could not read: ${names}; refusing to plan from a partial index`);
+    throw new Error(`nb list --json skipped ${listed.json.skipped.length} shelf file(s) it could not use (unreadable, or not a valid shelf name): ${names}; refusing to plan from a partial index`);
   }
   const dir = listed.json.dir;
   const store = new Map();
