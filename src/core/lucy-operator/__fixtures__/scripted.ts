@@ -94,7 +94,7 @@ export function fakeSource(options: {
     },
     async taskOutput(taskId) {
       calls.taskOutput.push(taskId);
-      if (options.failOutput) throw new Error('terminal host exploded at /home/someone/secret-path');
+      if (options.failOutput) throw new Error('terminal host exploded at /srv/work/secret-path');
       return options.outputs?.[taskId] ?? null;
     },
     async projects() {

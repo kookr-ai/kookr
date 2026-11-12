@@ -17,7 +17,7 @@ describe('createLucyLookSource', () => {
     const board = source({
       tasks: [
         task({ id: 't1', name: 'Bake-off report', projectId: 'github.com/kookr-ai/kookr', tokenUsage: { costUsd: 2.07 } }),
-        task({ id: 't2', name: 'Scratch', cwd: '/home/op/git/local-research-agent' }),
+        task({ id: 't2', name: 'Scratch', cwd: '/srv/work/local-research-agent' }),
       ],
       getLifetimeSpendUsd: () => 698.26,
       getQuota: () => ({ fiveHour: null, sevenDay: { utilization: 42, resetsAt: '2026-11-15T00:00:00Z' } }),
@@ -62,7 +62,7 @@ describe('createLucyLookSource', () => {
         prompt: 'expanded prompt with injected rules',
         userPrompt: 'Write the bake-off report',
         agentType: 'claude-code',
-        cwd: '/home/op/git/kookr',
+        cwd: '/srv/work/kookr',
         createdAt: NOW,
         pendingSignal: { kind: 'completion_ready', note: 'PR merged' },
         completionDigest: { bullets: ['Wrote the report', 'Opened PR'], testSummary: '12 passed' },
@@ -73,7 +73,7 @@ describe('createLucyLookSource', () => {
     expect(detail).toEqual({
       prompt: 'Write the bake-off report',
       agentType: 'claude-code',
-      cwd: '/home/op/git/kookr',
+      cwd: '/srv/work/kookr',
       createdAt: NOW,
       pendingSignal: 'completion_ready: PR merged',
       completionSummary: 'Wrote the report\nOpened PR\nTests: 12 passed',

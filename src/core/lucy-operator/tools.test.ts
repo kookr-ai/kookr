@@ -50,7 +50,7 @@ describe('dispatchLucyTool', () => {
   test('read_task separates Kookr\'s facts from what agents wrote, and hides secrets', async () => {
     const source = fakeSource({
       tasks,
-      details: { aaaa1111: { prompt: `Write the report. Token: ${SECRET}`, agentType: 'claude-code', cwd: '/home/op/git/kookr', createdAt: NOW - 20 * 60_000, references: ['PR #3620'] } },
+      details: { aaaa1111: { prompt: `Write the report. Token: ${SECRET}`, agentType: 'claude-code', cwd: '/srv/work/kookr', createdAt: NOW - 20 * 60_000, references: ['PR #3620'] } },
     });
     const outcome = await dispatchLucyTool('read_task', '{"task":"aaaa"}', source, NOW);
 
@@ -60,7 +60,7 @@ describe('dispatchLucyTool', () => {
     expect(facts).toContain('Started: 20 minutes ago');
     expect(facts).toContain('Linked: PR #3620');
     expect(written).toContain('Write the report.');
-    expect(written).toContain('Folder: /home/op/git/kookr');
+    expect(written).toContain('Folder: /srv/work/kookr');
     expect(outcome.content).not.toContain(SECRET);
     // The summary shown in the dashboard never carries task text.
     expect(outcome.summary).not.toContain('report');
