@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'vitest';
-import { applySafe, buildReport, buildUsage, isLiveTask, isRebuildableIgnored, parseArgs, realDeps, resolveApiBase, setExecEnvForTests } from './disk-reclaim.mjs';
+import { applySafe, buildReport, buildUsage, classifyIgnoredEntry, isLiveTask, parseArgs, realDeps, resolveApiBase, setExecEnvForTests } from './disk-reclaim.mjs';
 
 // Hermetic git: temp repos only, no ambient config (also injected into the script's own git calls).
 const GIT_ENV = {
@@ -80,7 +80,18 @@ function opts(over = {}) {
 
 const find = (report, path) => [...report.safe, ...report.review].find((i) => i.path === path);
 const runReal = (cmd, args) => Promise.resolve({ code: 0, stdout: execFileSync(cmd, args, { env: GIT_ENV, encoding: 'utf8' }), stderr: '' });
-const readLog = () => readFileSync(join(dataDir, 'disk-reclaim.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+const readAudit = () => readFileSync(join(dataDir, 'disk-reclaim.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+const readLog = () => readAudit().filter((l) => l.phase === 'outcome');
+
+/** Commit package.json + a lockfile in `dir` of a worktree (tracked, so the tree stays clean). */
+function commitManifest(wt, sub = '') {
+  const d = join(wt, sub);
+  mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, 'package.json'), '{}');
+  writeFileSync(join(d, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n');
+  git(wt, 'add', '-A');
+  git(wt, 'commit', '-q', '-m', `manifest ${sub}`);
+}
 
 beforeEach(() => {
   tmp = realpathSync(mkdtempSync(join(tmpdir(), 'disk-reclaim-test-')));
@@ -95,7 +106,7 @@ beforeEach(() => {
   git(main, 'init', '-q', '-b', 'main');
   git(main, 'remote', 'add', 'origin', origin);
   commitFile(main, 'README');
-  commitFile(main, '.gitignore', 'runs/\nnode_modules/\ndist/\n*.ckpt\n*.log\n.cache/\ndata/out/\n');
+  commitFile(main, '.gitignore', 'runs/\nnode_modules/\ndist/\nout/\n.venv/\n__pycache__/\n*.tsbuildinfo\n.eslintcache\n*.ckpt\n*.log\n.cache/\ndata/out/\n');
   git(main, 'push', '-q', '-u', 'origin', 'main');
   git(main, 'remote', 'set-head', 'origin', 'main');
 });
@@ -189,6 +200,7 @@ describe('classification', () => {
     expect(isLiveTask({ status: 'terminated', terminationReason: 'server-restart', terminatedAt: iso(now - DAY) }, now)).toBe(true);
     expect(isLiveTask({ status: 'terminated', terminationReason: 'server-restart', terminatedAt: iso(now - 30 * DAY) }, now)).toBe(false);
     expect(isLiveTask({ status: 'terminated', terminationReason: 'manual', terminatedAt: iso(now) }, now)).toBe(false);
+    expect(isLiveTask({ status: 'terminated', terminatedAt: iso(now - DAY) }, now)).toBe(true); // no reason: server treats as recoverable
     expect(isLiveTask({ status: 'completed' }, now)).toBe(false);
     expect(isLiveTask({ status: 'pending' }, now)).toBe(true);
   });
@@ -284,43 +296,87 @@ describe('classification', () => {
 });
 
 describe('ignored files and hidden edits', () => {
-  test('rebuildable detection is directory-only and first-component based', () => {
-    expect(isRebuildableIgnored('node_modules/')).toBe(true);
-    expect(isRebuildableIgnored('packages/a/node_modules/')).toBe(true);
-    expect(isRebuildableIgnored('dist/')).toBe(true);
-    expect(isRebuildableIgnored('data/dist/')).toBe(false);
-    expect(isRebuildableIgnored('out/model.ckpt')).toBe(false);
-    expect(isRebuildableIgnored('eval.log')).toBe(false);
-    expect(isRebuildableIgnored('.eslintcache')).toBe(false);
-    expect(isRebuildableIgnored('tsconfig.tsbuildinfo')).toBe(false);
+  test('ignored-entry classification: only node_modules/ and tool caches are removable', () => {
+    expect(classifyIgnoredEntry('node_modules/')).toBe('node_modules');
+    expect(classifyIgnoredEntry('packages/a/node_modules/')).toBe('node_modules');
+    for (const c of ['__pycache__/', 'src/__pycache__/', '.pytest_cache/', '.mypy_cache/', '.ruff_cache/', '.turbo/', 'web/.next/cache/', '.eslintcache', 'x.tsbuildinfo']) {
+      expect(classifyIgnoredEntry(c)).toBe('cache');
+    }
+    for (const c of ['out/', 'build/', 'dist/', 'target/', '.cache/', 'coverage/', '.venv/', 'venv/', 'test-results/', 'playwright-report/', '.vite/', '.next/', 'out/model.ckpt', 'eval.log', 'data/out/', 'cache/']) {
+      expect(classifyIgnoredEntry(c)).toBe('content');
+    }
   });
 
-  test('ignored content makes a merged worktree REVIEW; only node_modules/dist stays SAFE', async () => {
-    const holds = addWorktree('holds-ignored', { merge: true });
-    const rebuildable = addWorktree('only-rebuildable', { merge: true });
-    mkdirSync(join(holds, 'runs'));
-    writeFileSync(join(holds, 'runs', 'result.json'), '{}');
-    for (const d of ['node_modules', 'dist']) {
-      mkdirSync(join(rebuildable, d));
-      writeFileSync(join(rebuildable, d, 'x.js'), '1');
-    }
+  test('a node_modules with manifest and lockfile plus tool caches stays SAFE', async () => {
+    const wt = addWorktree('only-rebuildable');
+    commitManifest(wt);
+    mergeBranch('only-rebuildable');
+    mkdirSync(join(wt, 'node_modules'));
+    writeFileSync(join(wt, 'node_modules', 'x.js'), '1');
+    mkdirSync(join(wt, '__pycache__'));
+    writeFileSync(join(wt, '__pycache__', 'a.pyc'), '1');
+    writeFileSync(join(wt, 'app.tsbuildinfo'), '{}');
     const r = await buildReport(opts(), deps());
-    expect(find(r, holds)).toMatchObject({ tier: 'REVIEW' });
-    expect(find(r, holds).reason).toMatch(/holds ignored files that would be deleted: runs\//);
-    expect(find(r, rebuildable)).toMatchObject({ tier: 'SAFE', kind: 'worktree' });
+    expect(find(r, wt)).toMatchObject({ tier: 'SAFE', kind: 'worktree' });
   });
 
   test.each([
-    ['an ignored file under a rebuildable-looking directory', 'out/model.ckpt', 'out/model.ckpt'],
+    ['an ignored out/ directory (checkpoints live there)', 'out/results.json', 'out/'],
+    ['a hand-installed .venv with no requirements file', '.venv/lib/pkg.py', '.venv/'],
+    ['dist/', 'dist/bundle.js', 'dist/'],
     ['an ignored directory nested below a normal one', 'data/out/x.bin', 'data/out/'],
     ['an ignored log file', 'eval.log', 'eval.log'],
-  ])('%s is content, so REVIEW', async (_label, file, shown) => {
+    ['an ignored checkpoint file', 'weights/model.ckpt', 'weights/model.ckpt'],
+  ])('%s is content, so REVIEW and never applied', async (_label, file, shown) => {
     const wt = addWorktree('ign-case', { merge: true });
     mkdirSync(join(wt, file, '..'), { recursive: true });
     writeFileSync(join(wt, file), 'x');
-    const r = await buildReport(opts(), deps());
+    const d = deps();
+    const o = opts();
+    const r = await buildReport(o, d);
     expect(find(r, wt)).toMatchObject({ tier: 'REVIEW' });
     expect(find(r, wt).reason).toContain(shown);
+    const res = await applySafe(r, o, d);
+    expect(res.actions).toHaveLength(0);
+    expect(existsSync(join(wt, file))).toBe(true);
+  });
+
+  test('an ignored node_modules without package.json or without a lockfile is content', async () => {
+    const noPkg = addWorktree('nm-ign-nopkg', { merge: true });
+    const noLock = addWorktree('nm-ign-nolock', { merge: true });
+    for (const wt of [noPkg, noLock]) {
+      mkdirSync(join(wt, 'node_modules'));
+      writeFileSync(join(wt, 'node_modules', 'hand-patched.js'), 'x');
+    }
+    writeFileSync(join(noLock, 'package.json'), '{}');
+    git(noLock, 'add', 'package.json');
+    git(noLock, 'commit', '-q', '-m', 'pkg');
+    const r = await buildReport(opts(), deps());
+    expect(find(r, noPkg).reason).toMatch(/node_modules\/ \(no package\.json beside it\)/);
+    expect(find(r, noLock).reason).toMatch(/node_modules\/ \(no lockfile beside it\)/);
+  });
+
+  test.each([
+    ['top-level', '', 'node_modules/foo'],
+    ['nested package', 'packages/a', 'packages/a/node_modules/foo'],
+  ])('a nested .git inside a %s node_modules blocks both worktree removal and the dependencies item', async (_label, sub, repoPath) => {
+    const wt = addWorktree('nm-nested-git');
+    commitManifest(wt, sub);
+    if (sub) commitManifest(wt, '');
+    const inner = join(wt, repoPath);
+    mkdirSync(inner, { recursive: true });
+    git(inner, 'init', '-q', '-b', 'main');
+    commitFile(inner, 'local-only.txt');
+    const d = deps();
+    const o = opts();
+    const r = await buildReport(o, d);
+    expect(r.safe.filter((i) => i.path.startsWith(wt))).toHaveLength(0);
+    expect(find(r, wt).reason).toMatch(/nested \.git at /);
+    // Even if the item were forged, the apply-time re-check refuses it.
+    const forged = { safe: [{ tier: 'SAFE', kind: 'dependencies', path: join(wt, 'node_modules'), checkoutPath: wt, bytes: 9 }] };
+    const res = await applySafe(forged, o, d);
+    expect(res.actions[0].ok).toBe(false);
+    expect(existsSync(join(inner, 'local-only.txt'))).toBe(true);
   });
 
   test('a nested worktree inside an ignored .cache/ directory makes the parent REVIEW', async () => {
@@ -329,7 +385,8 @@ describe('ignored files and hidden edits', () => {
     writeFileSync(join(parent, '.cache', 'wt', 'wip.txt'), 'uncommitted');
     const r = await buildReport(opts(), deps());
     expect(find(r, parent)).toMatchObject({ tier: 'REVIEW' });
-    expect(find(r, parent).reason).toMatch(/nested \.git/);
+    expect(find(r, parent)).toMatchObject({ tier: 'REVIEW' });
+    expect(find(r, parent).reason).toMatch(/\.cache\//);
   });
 
   test.each([
@@ -516,6 +573,49 @@ describe('--apply safe', () => {
     expect(res.actions[0].error).toMatch(/not a direct child of a scanned root/);
     expect(res.actions[1].error).toMatch(/skipped: no longer SAFE/);
     expect(res.actions[2].error).toMatch(/not tier SAFE/);
+  });
+});
+
+describe('in-use ancestors', () => {
+  test('a process in a repo-root ancestor blocks; one in a plain container does not', async () => {
+    mkdirSync(join(main, '.wts'));
+    const wt = join(main, '.wts', 'inner');
+    git(main, 'worktree', 'add', '-q', '-b', 'inner', wt, 'origin/main');
+    commitFile(wt, 'inner.txt');
+    mergeBranch('inner');
+    const nested = opts({ roots: [join(main, '.wts')] });
+    const blocked = await buildReport(nested, deps({ processCwds: async () => ({ ok: true, paths: [main] }) }));
+    expect(find(blocked, wt)).toMatchObject({ tier: 'REVIEW' });
+    expect(find(blocked, wt).reason).toMatch(/in use \(process cwd/);
+    const free = await buildReport(nested, deps());
+    expect(find(free, wt)).toMatchObject({ tier: 'SAFE' });
+
+    const sibling = addWorktree('container-sibling', { merge: true });
+    const container = await buildReport(opts(), deps({ processCwds: async () => ({ ok: true, paths: [root] }) }));
+    expect(find(container, sibling)).toMatchObject({ tier: 'SAFE' }); // `root` has no .git
+  });
+});
+
+describe('write-ahead audit', () => {
+  test('an intent line precedes each action and an outcome line follows', async () => {
+    addWorktree('audited', { merge: true });
+    const d = deps();
+    const o = opts();
+    await applySafe(await buildReport(o, d), o, d);
+    const lines = readAudit();
+    expect(lines.map((l) => l.phase)).toEqual(['intent', 'outcome']);
+    expect(lines[0].command).toMatch(/worktree remove .*audited/);
+    expect(lines[1]).toMatchObject({ ok: true, path: lines[0].path });
+  });
+
+  test('if the intent cannot be written, apply aborts and deletes nothing', async () => {
+    const wt = addWorktree('unauditable', { merge: true });
+    mkdirSync(join(dataDir, 'disk-reclaim.log')); // appending to a directory fails like a full disk
+    const d = deps();
+    const o = opts();
+    const report = await buildReport(o, d);
+    await expect(applySafe(report, o, d)).rejects.toThrow(/cannot write the audit log/);
+    expect(existsSync(wt)).toBe(true);
   });
 });
 

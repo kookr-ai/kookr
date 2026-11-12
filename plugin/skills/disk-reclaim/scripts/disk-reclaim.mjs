@@ -44,7 +44,7 @@ const DEFAULT_FLOOR_PERCENT = 5;
 const DEFAULT_FLOOR_BYTES = 2 * GIB;
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
 /** `terminated` tasks with these reasons are relaunched by crash recovery (isRecoverableTermination), so they count as live. */
-const RECOVERABLE_TERMINATION = new Set(['server-restart', 'oom', 'timeout', 'unknown']);
+const RECOVERABLE_TERMINATION = new Set(['server-restart', 'oom', 'timeout', 'unknown', undefined]); // undefined: server's isRecoverableTermination(undefined)
 const RECOVERY_WINDOW_MS = 7 * 86_400_000;
 /**
  * Lowered-age prune flags. Deletes up to ~29 days of finished-task history that
@@ -59,28 +59,29 @@ const PRUNE_FLAGS = [
 ];
 
 /**
- * Git-ignored content that is safe to lose with a worktree because a build or
- * test run recreates it. `git worktree remove` deletes ALL ignored files, so
- * any ignored entry that is not clearly build output makes the worktree REVIEW.
- *
- * An ignored entry is rebuildable only if it is a DIRECTORY entry (trailing
- * `/`) whose FIRST path component is in this set; `node_modules` is also
- * accepted at any depth because the name is unambiguous. Deeper matches such as
- * `data/out/x.bin`, files such as `eval.log` or `.eslintcache`, and anything
- * with a nested `.git` are content.
+ * `git worktree remove` deletes ALL git-ignored files, so a worktree is SAFE
+ * only if every ignored entry is one of:
+ *  - a `node_modules/` directory with a `package.json` AND a lockfile in its
+ *    parent directory and no nested `.git` inside it (checked by the caller);
+ *  - a tool-owned cache whose name never holds user data (listed below).
+ * Everything else, notably `out/`, `build/`, `dist/`, `target/`, `.cache/`,
+ * `.venv/`, `coverage/` (they routinely hold checkpoints, results or
+ * hand-installed packages), is content and sends the worktree to REVIEW.
  */
-export const REBUILDABLE_DIRS = new Set([
-  'node_modules', 'dist', 'build', 'out', '.next', '.vite', '.turbo', '.cache', 'coverage', 'target',
-  '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.venv', 'venv', 'test-results', 'playwright-report',
-]);
+const TOOL_CACHE_DIRS = new Set(['__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.turbo']);
+const LOCKFILES = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lockb', 'bun.lock'];
 
-export function isRebuildableIgnored(entry) {
-  if (!entry.endsWith('/')) return false;
+/** @returns {'cache' | 'node_modules' | 'content'} */
+export function classifyIgnoredEntry(entry) {
   const parts = entry.split('/').filter(Boolean);
-  return REBUILDABLE_DIRS.has(parts[0]) || parts.includes('node_modules');
+  const last = parts[parts.length - 1] ?? '';
+  if (entry.endsWith('/')) {
+    if (last === 'node_modules') return 'node_modules';
+    if (TOOL_CACHE_DIRS.has(last) || (last === 'cache' && parts[parts.length - 2] === '.next')) return 'cache';
+    return 'content';
+  }
+  return last === '.eslintcache' || last.endsWith('.tsbuildinfo') ? 'cache' : 'content';
 }
-
-// ---------------------------------------------------------------- arguments
 
 /** Test-only: extra environment for every spawned command (e.g. hermetic git config). */
 let extraEnv = {};
@@ -454,6 +455,19 @@ export async function homeReviewProbe(opts, home = homedir()) {
  * Inspect one top-level directory. `light` skips `du` (used by the apply-time
  * re-check, which only needs git/activity state).
  */
+/**
+ * Is it safe to treat this `node_modules` as rebuildable? Needs a nested-`.git`
+ * search (no symlink following) that finds nothing and does not time out.
+ * Returns null when fine, else a short reason.
+ */
+async function nodeModulesProblem(abs, timeoutMs) {
+  const f = await exec('find', [abs, '-name', '.git', '-print', '-quit'], { timeoutMs });
+  if (f.timedOut) return 'nested .git search timed out';
+  if (f.code !== 0) return 'nested .git search failed';
+  const hit = f.stdout.split('\n').filter(Boolean)[0];
+  return hit ? `nested .git at ${hit}` : null;
+}
+
 export async function inspectDir(dir, opts, deps, { light = false, fetched = new Map() } = {}) {
   const deadline = deps.now() + opts.timeoutS * 1000;
   const left = () => Math.max(1000, deadline - deps.now());
@@ -481,6 +495,7 @@ export async function inspectDir(dir, opts, deps, { light = false, fetched = new
     hasPackageJson: false,
     hasLockfile: false,
     nodeModulesTracked: false,
+    nodeModulesProblem: null,
     lastActivityMs: null,
     errors: [],
   };
@@ -492,8 +507,13 @@ export async function inspectDir(dir, opts, deps, { light = false, fetched = new
     e.hasNodeModules = false;
   }
 
+  const nmMemo = new Map();
+  const nmCheck = (abs) => {
+    if (!nmMemo.has(abs)) nmMemo.set(abs, nodeModulesProblem(abs, left()));
+    return nmMemo.get(abs);
+  };
   e.hasPackageJson = existsSync(join(dir, 'package.json'));
-  e.hasLockfile = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lockb', 'bun.lock'].some((f) => existsSync(join(dir, f)));
+  e.hasLockfile = LOCKFILES.some((f) => existsSync(join(dir, f)));
 
   const duPromise = light ? null : duTop(dir, left());
   const dirMtime = statSync(dir).mtimeMs;
@@ -507,10 +527,11 @@ export async function inspectDir(dir, opts, deps, { light = false, fetched = new
   }
   if (gitStat) {
     e.kind = gitStat.isFile() ? 'worktree' : 'main';
-    await inspectGit(dir, e, opts, deps, left, fetched);
+    await inspectGit(dir, e, opts, deps, left, fetched, nmCheck);
     if (e.lastActivityMs != null) activity = Math.max(activity, e.lastActivityMs);
   }
   e.lastActivityMs = activity;
+  if (e.hasNodeModules) e.nodeModulesProblem = await nmCheck(nmPath);
 
   if (duPromise) {
     const du = await duPromise;
@@ -521,7 +542,7 @@ export async function inspectDir(dir, opts, deps, { light = false, fetched = new
   return e;
 }
 
-async function inspectGit(dir, e, opts, deps, left, fetched) {
+async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
   const git = (args) => exec('git', ['-C', dir, ...args], { timeoutMs: left() });
   const bail = (r, what) => {
     if (r.timedOut) e.errors.push(`git ${what} timed out`);
@@ -566,18 +587,27 @@ async function inspectGit(dir, e, opts, deps, left, fetched) {
   if (ignored) {
     if (ignored.code !== 0) e.errors.push(ignored.timedOut ? 'git ls-files timed out' : 'git ls-files failed');
     else {
-      const all = ignored.stdout.split('\n').filter(Boolean);
-      e.ignoredEntries = all.filter((l) => !isRebuildableIgnored(l));
-      // A nested repo or worktree inside an "allowed" ignored directory may hold unique work.
-      const allowedDirs = all.filter((l) => isRebuildableIgnored(l) && !/(^|\/)node_modules\/$/.test(l));
-      if (allowedDirs.length) {
-        const f = await exec('find', allowedDirs.map((d) => `./${d}`).concat(['(', '-name', 'node_modules', '-prune', ')', '-o', '-name', '.git', '-print']), { cwd: dir, timeoutMs: left() });
-        if (f.code !== 0) e.errors.push('find for nested .git failed');
-        for (const g of f.stdout.split('\n').filter(Boolean)) e.ignoredEntries.push(`${g.replace(/^\.\//, '')} (nested .git)`);
+      const raw = [];
+      for (const entry of ignored.stdout.split('\n').filter(Boolean)) {
+        const kind = classifyIgnoredEntry(entry);
+        if (kind === 'cache') continue;
+        if (kind === 'content') {
+          raw.push(entry);
+          e.ignoredEntries.push(entry);
+          continue;
+        }
+        const parent = join(dir, dirname(entry.replace(/\/$/, '')));
+        let why = null;
+        if (!existsSync(join(parent, 'package.json'))) why = 'no package.json beside it';
+        else if (!LOCKFILES.some((f) => existsSync(join(parent, f)))) why = 'no lockfile beside it';
+        else why = await nmCheck(join(dir, entry));
+        if (why) {
+          raw.push(entry);
+          e.ignoredEntries.push(`${entry} (${why})`);
+        }
       }
-      if (e.ignoredEntries.length) {
-        const targets = e.ignoredEntries.slice(0, 200).map((x) => `./${x.replace(/ \(nested \.git\)$/, '')}`);
-        const du = await exec('du', ['-sk', '--', ...targets], { cwd: dir, timeoutMs: left() });
+      if (raw.length) {
+        const du = await exec('du', ['-sk', '--', ...raw.slice(0, 200).map((x) => `./${x}`)], { cwd: dir, timeoutMs: left() });
         e.ignoredBytes = du.stdout.split('\n').reduce((n, l) => n + (/^(\d+)/.test(l) ? Number(/^(\d+)/.exec(l)[1]) * KIB : 0), 0);
       }
     }
@@ -601,7 +631,8 @@ async function inspectGit(dir, e, opts, deps, left, fetched) {
     e.dirty = status.stdout
       .split('\n')
       .filter(Boolean)
-      .some((l) => e.nodeModulesTracked || !/(^|\/)node_modules(\/|$)/.test(l.slice(3)));
+      // Only UNTRACKED node_modules entries are ignorable; modified tracked files count anywhere.
+      .some((l) => !(l.startsWith('?? ') && /(^|\/)node_modules(\/|$)/.test(l.slice(3))));
   } else if (!status.timedOut) e.errors.push('git status failed');
 
   if (stash.code === 0) {
@@ -650,6 +681,11 @@ export function isLiveTask(t, nowMs) {
 export function buildUsage(procs, tasksResult, nowMs = Date.now(), installs = { ok: true, procs: [] }) {
   const live = tasksResult.ok ? tasksResult.tasks.filter((t) => isLiveTask(t, nowMs)) : [];
   const taskCwds = live.flatMap((t) => [t.cwd, ...(t.sessionCwds ?? [])].filter(Boolean).map((c) => ({ id: t.id, cwd: safeRealpath(c) })));
+  const repoRootMemo = new Map();
+  const isRepoRoot = (c) => {
+    if (!repoRootMemo.has(c)) repoRootMemo.set(c, existsSync(join(c, '.git')));
+    return repoRootMemo.get(c);
+  };
   return {
     procsOk: procs.ok,
     tasksOk: tasksResult.ok,
@@ -659,9 +695,11 @@ export function buildUsage(procs, tasksResult, nowMs = Date.now(), installs = { 
     installers: installs.ok ? installs.procs : null,
     inUse(realPath) {
       const by = [];
-      const proc = procs.paths.find((p) => under(p, realPath));
+      // A cwd that is an ANCESTOR counts only when it is a repo/worktree root, not a container like ~/git.
+      const covers = (c) => under(c, realPath) || (under(realPath, c) && isRepoRoot(c));
+      const proc = procs.paths.find(covers);
       if (proc) by.push(`process cwd ${proc}`);
-      const task = taskCwds.find((t) => under(t.cwd, realPath));
+      const task = taskCwds.find((t) => covers(t.cwd));
       if (task) by.push(`task ${task.id}`);
       if (by.length) return { state: 'yes', detail: by.join(', ') };
       if (!procs.ok || !tasksResult.ok) return { state: 'unknown', detail: tasksResult.ok ? 'process probe failed' : tasksResult.error ?? 'Kookr API unreachable' };
@@ -724,6 +762,7 @@ export function classifyEntry(e, opts, usage, nowMs) {
     if (!e.hasPackageJson) depsBlockers.push('no package.json beside node_modules');
     if (!e.hasLockfile) depsBlockers.push('no lockfile beside node_modules (cannot rebuild reproducibly)');
     if (e.nodeModulesTracked) depsBlockers.push('node_modules is tracked by git');
+    if (e.nodeModulesProblem) depsBlockers.push(`node_modules: ${e.nodeModulesProblem}`);
     if (e.kind === 'worktree' && e.locked) depsBlockers.push('worktree is locked');
   }
   if (e.hasNodeModules && e.nodeModulesBytes >= opts.minSafeBytes && depsBlockers.length > blockers.length) {
@@ -892,31 +931,44 @@ export async function applySafe(report, opts, deps) {
   const actions = [];
   let current = before;
 
+  const audit = (line) => appendFileSync(logFile, `${JSON.stringify(line)}\n`);
+
   for (const item of queue) {
     if (current.freePercent >= opts.untilFreePercent) break;
-    const log = { ts: new Date(deps.now()).toISOString(), path: item.path, tier: item.tier, kind: item.kind, bytes: item.bytes, command: null, ok: false };
+    const log = { phase: 'outcome', ts: new Date(deps.now()).toISOString(), path: item.path, tier: item.tier, kind: item.kind, bytes: item.bytes, command: null, ok: false };
     const freeBefore = current.freeBytes;
+    let verdict = null;
     try {
       if (item.tier !== 'SAFE') throw new Error('refusing: item is not tier SAFE');
-      const verdict = await recheck(item, opts, deps);
-      if (verdict) {
-        log.error = `skipped: ${verdict}`;
-      } else {
+      verdict = await recheck(item, opts, deps);
+      if (verdict) log.error = `skipped: ${verdict}`;
+    } catch (err) {
+      verdict = err.message;
+      log.error = err.message;
+    }
+    if (!verdict) {
+      // Write-ahead audit: if the intent cannot be recorded (disk full, no inodes), delete nothing more.
+      try {
+        audit({ phase: 'intent', ts: log.ts, path: item.path, tier: item.tier, kind: item.kind, bytes: item.bytes, command: describeCommand(item) });
+      } catch (err) {
+        throw new Error(`cannot write the audit log ${logFile} (${err.message}); aborting before acting on ${item.path}`);
+      }
+      try {
         await execute(item, log, opts, deps);
         log.ok = true;
+      } catch (err) {
+        log.ok = false;
+        log.error = err.message;
       }
-    } catch (err) {
-      log.ok = false;
-      log.error = err.message;
     }
     current = await deps.df(opts.dataDir);
     log.freeDeltaBytes = current.freeBytes - freeBefore;
     if (log.ok) freedByTier[item.kind] = (freedByTier[item.kind] ?? 0) + item.bytes;
     actions.push(log);
     try {
-      appendFileSync(logFile, `${JSON.stringify(log)}\n`);
+      audit(log);
     } catch (err) {
-      log.auditError = err.message;
+      log.auditError = err.message; // the action already happened; the next intent write will abort if the log is still broken
     }
   }
   return { before, after: current, freedByKind: freedByTier, actions, logFile };
@@ -945,6 +997,15 @@ async function recheck(item, opts, deps) {
   if (again) return null;
   const why = classifyEntry(fresh, opts, usage, deps.now()).map((i) => i.reason).join('; ');
   return `no longer SAFE (${why || 'state changed'})`;
+}
+
+/** The command an item will run, for the write-ahead audit line. */
+function describeCommand(item) {
+  if (item.kind === 'worktree') {
+    return `git -C ${item.mainRepo} worktree remove ${item.path}${item.branch ? ` && git -C ${item.mainRepo} branch -d ${item.branch}` : ''}`;
+  }
+  if (item.kind === 'dependencies') return `rm -rf ${item.path}`;
+  return Array.isArray(item.command) ? item.command.join(' ') : String(item.kind);
 }
 
 async function execute(item, log, opts, deps) {

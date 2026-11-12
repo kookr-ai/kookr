@@ -45,7 +45,9 @@ Linux and macOS, no dependencies). The commands below call it through
    `node "${CLAUDE_SKILL_DIR}/scripts/disk-reclaim.mjs" --roots ~/git --data-dir ~/.kookr --apply safe`
    It works biggest item first, re-checks each item right before acting, and
    stops once free space reaches `--until-free-percent` (default 10) or SAFE is
-   exhausted. Each action is appended to `<data-dir>/disk-reclaim.log` (JSONL).
+   exhausted. Each action is logged to `<data-dir>/disk-reclaim.log` (JSONL) as an
+   `intent` line before it runs and an `outcome` line after; if the intent
+   cannot be written, the apply aborts without deleting anything more.
 3. **Re-check free space.** The apply summary shows free space before and
    after. If it is comfortably above the floor, stop and tell the operator what
    was freed.
@@ -63,8 +65,8 @@ Linux and macOS, no dependencies). The commands below call it through
 
 | Tier | Items | Action |
 |---|---|---|
-| SAFE worktree | Linked worktree, clean, unlocked, no stash entries, no edits hidden by skip-worktree or assume-unchanged, no git-ignored files other than build output, HEAD merged into `origin/HEAD` (or its upstream is exactly `[gone]`), idle at least `--min-idle-days` (default 2), not in use | `git worktree remove` from the main repo, then `git branch -d` (never `-D`) |
-| SAFE dependencies | Untracked `node_modules` of an idle, unused checkout that has a `package.json` and a lockfile beside it | Remove the directory; rebuild with `pnpm install` or `npm ci` |
+| SAFE worktree | Linked worktree, clean, unlocked, no stash entries, no edits hidden by skip-worktree or assume-unchanged, HEAD merged into `origin/HEAD` (or its upstream is exactly `[gone]`), idle at least `--min-idle-days` (default 2), not in use, and EVERY git-ignored entry is either a `node_modules/` (with `package.json` and a lockfile in its parent directory and no nested `.git` inside) or a tool cache (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.turbo/`, `.next/cache/`, `.eslintcache`, `*.tsbuildinfo`). Ignored `out/`, `build/`, `dist/`, `target/`, `.cache/`, `coverage/`, `.venv/` and the like are content, not cache | `git worktree remove` from the main repo, then `git branch -d` (never `-D`) |
+| SAFE dependencies | Untracked top-level `node_modules` of an idle, unused checkout, with a `package.json` and a lockfile beside it and no nested `.git` inside (a worktree held back by other ignored content can still lose its `node_modules`) | Remove the directory; rebuild with `pnpm install` or `npm ci` |
 | SAFE tool caches | pnpm store, npm, uv, pip caches (only installed tools), only while no Kookr task is live and no package manager is running | The tool's own prune/clean command |
 | SAFE Kookr data | Aged artifacts under the data dir | `kookr maintenance prune` with the default ages |
 | REVIEW | Everything else at least 500 MB, the lowered-age prune (deletes up to ~29 days of finished-task history the default policy keeps; the report prints the exact command and extra size), plus large directories outside the roots (`~/.ollama`, big `~/.cache` entries, other `~/.nvm` Node versions, `~/.rustup/toolchains`, `~/.local/share`) and reclaimable Docker data | Report only |
@@ -75,7 +77,11 @@ live Kookr task has its `cwd` or any session `cwd` there. Live means not
 completed, cancelled or terminated, or terminated for a reason crash recovery
 relaunches (`server-restart`, `oom`, `timeout`, `unknown`) within 7 days. The API
 port must match the data dir (`~/.kookr` is 4800, `~/.kookr-<port>` is
-`<port>`; `KOOKR_PORT` or `KOOKR_API_BASE_URL` must agree). If the API, the
+`<port>`; `KOOKR_PORT` or `KOOKR_API_BASE_URL` must agree). A process or task
+whose cwd is an ancestor of the item counts too, but only when that ancestor is
+a git repo or worktree root, not a plain container such as `~/git`. Open files
+are NOT checked: an editor or tool holding a file open without a cwd there is
+not detected. If the API, the
 port match or the process probe fails, in-use state is unknown and NOTHING is
 SAFE, caches and Kookr data included: tell the operator and fix the probe.
 
