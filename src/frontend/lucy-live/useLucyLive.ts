@@ -43,6 +43,7 @@ async function fetchStatus(): Promise<LucyLiveStatus | null> {
     if (!body || typeof body.available !== 'boolean') return null;
     return {
       available: body.available,
+      ...(body.starting === true ? { starting: true } : {}),
       ...(typeof body.reason === 'string' ? { reason: body.reason } : {}),
       ...(body.bargeInConfirmation === 'silero' || body.bargeInConfirmation === 'off' ? { bargeInConfirmation: body.bargeInConfirmation } : {}),
     };

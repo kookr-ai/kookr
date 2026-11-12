@@ -252,7 +252,7 @@ export function createRoutes(deps: RouteDeps): Hono {
     lucyLog: deps.lucyInteractionLog,
     lucyLogPath: deps.lucyInteractionLogPath,
   });
-  registerLucyLiveRoutes(app, { lucyLiveStatus: deps.lucyLiveStatus });
+  registerLucyLiveRoutes(app, { lucyLiveStatus: deps.lucyLiveStatus, getLucyLiveStatus: deps.getLucyLiveStatus });
 
   // Dashboard response headers:
   // - security headers apply to HTML and static assets

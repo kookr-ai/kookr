@@ -484,6 +484,7 @@ export interface RouteDeps {
   lucyInteractionLogPath?: string;
   /** Whether Lucy live can be switched on, decided at startup (see lucy-live/config.ts). */
   lucyLiveStatus?: import('../../shared/contracts/lucy-live.js').LucyLiveStatus;
+  getLucyLiveStatus?: () => import('../../shared/contracts/lucy-live.js').LucyLiveStatus;
   projectConfigStore?: ProjectConfigStore;
   projectSidebarStore?: ProjectSidebarStore;
   ossAttemptStore?: OssAttemptStore;

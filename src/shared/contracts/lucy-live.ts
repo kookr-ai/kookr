@@ -52,6 +52,13 @@ export interface LucyLiveStatus {
    * older servers, which the browser treats as `off`.
    */
   bargeInConfirmation?: 'silero' | 'off';
+  /**
+   * True while Kookr is still bringing up the speech recogniser it manages (`KOOKR_LUCY_EARS=true`;
+   * the first start downloads about 2.4 GB). `available` is false and `reason` says so; Lucy live
+   * switches on by itself when the recogniser is healthy, so the dashboard can show "starting"
+   * instead of "unavailable" and poll again.
+   */
+  starting?: boolean;
   /** Why it is unavailable, in words the operator can act on. Absent when available. */
   reason?: string;
 }
