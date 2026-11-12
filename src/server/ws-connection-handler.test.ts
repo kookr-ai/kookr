@@ -504,3 +504,95 @@ describe('handleWsConnection initial burst (#809 actor-aware)', () => {
     );
   });
 });
+
+describe('handleWsConnection — kookr ask in Lucy\'s panel (operatorAsks / answerAsk)', () => {
+  const pendingAsk = {
+    id: 'a1b2c3d4e5f6', taskId: 't1', question: 'Ship it?', options: ['Yes', 'No'], allowText: true,
+    state: 'pending' as const, createdAt: 1, expiresAt: 2,
+  };
+
+  function depsWithAsks(answer = vi.fn(async () => ({ ok: true as const, ask: {} as never }))) {
+    const operatorAsks = { list: vi.fn(() => [pendingAsk]), answer };
+    return { deps: { ...makeDeps(), operatorAsks } as unknown as WsConnectionDeps, operatorAsks };
+  }
+
+  const sentOf = (ws: FakeWs) => ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('sends an owner the current questions on connect', () => {
+    const ws = makeFakeWs();
+    const { deps } = depsWithAsks();
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+    const asks = sentOf(ws).filter((m) => m.type === 'operatorAsks');
+    expect(asks).toEqual([{ type: 'operatorAsks', asks: [pendingAsk] }]);
+  });
+
+  it('never sends the questions to a viewer, even an all-scope one', () => {
+    for (const viewer of [VIEWER, VIEWER_PROJECTS]) {
+      const ws = makeFakeWs();
+      const { deps, operatorAsks } = depsWithAsks();
+      handleWsConnection(ws as unknown as WebSocket, registrar, deps, viewer);
+      expect(sentOf(ws).some((m) => m.type === 'operatorAsks')).toBe(false);
+      expect(operatorAsks.list).not.toHaveBeenCalled();
+    }
+  });
+
+  it('records an owner\'s answer through the ask service, without the router or a snapshot broadcast', async () => {
+    const ws = makeFakeWs();
+    const { deps, operatorAsks } = depsWithAsks();
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+    ws.send.mockClear();
+
+    await dispatch(ws, { type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 1 });
+
+    expect(operatorAsks.answer).toHaveBeenCalledWith({ askId: 'a1b2c3d4e5f6', optionIndex: 1 });
+    expect(handleMessageSafe).not.toHaveBeenCalled();
+    expect(deps.broadcastToAll).not.toHaveBeenCalled();
+    expect(sentOf(ws)).toEqual([{ type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: true }]);
+  });
+
+  it('passes typed text through and reports a refusal with a fresh list', async () => {
+    const ws = makeFakeWs();
+    const answer = vi.fn(async () => ({ ok: false as const, reason: 'already_answered' as const }));
+    const { deps } = depsWithAsks(answer as never);
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+    ws.send.mockClear();
+
+    await dispatch(ws, { type: 'answerAsk', askId: 'a1b2c3d4e5f6', text: 'do both' });
+
+    expect(answer).toHaveBeenCalledWith({ askId: 'a1b2c3d4e5f6', text: 'do both' });
+    expect(sentOf(ws)).toEqual([
+      { type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: false, reason: 'already_answered' },
+      { type: 'operatorAsks', asks: [pendingAsk] },
+    ]);
+  });
+
+  it('refuses a viewer\'s answer before it reaches the ask service', async () => {
+    const ws = makeFakeWs();
+    const { deps, operatorAsks } = depsWithAsks();
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, VIEWER);
+    ws.send.mockClear();
+
+    await dispatch(ws, { type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 0 });
+
+    expect(operatorAsks.answer).not.toHaveBeenCalled();
+    expect(sentOf(ws).some((m) => m.type === 'alert' && /read-only/i.test(m.summary))).toBe(true);
+    expect(isAllowedViewerInbound(VIEWER, 'answerAsk')).toBe(false);
+  });
+
+  it('answers "unavailable" when asks are not configured, and rejects a malformed ask id', async () => {
+    const ws = makeFakeWs();
+    handleWsConnection(ws as unknown as WebSocket, registrar, makeDeps(), OWNER);
+    ws.send.mockClear();
+
+    await dispatch(ws, { type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 0 });
+    expect(sentOf(ws)).toEqual([{ type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: false, reason: 'unavailable' }]);
+
+    ws.send.mockClear();
+    await dispatch(ws, { type: 'answerAsk', askId: '../../etc', optionIndex: 0 });
+    expect(sentOf(ws).some((m) => m.type === 'alert' && /schema validation/.test(m.summary))).toBe(true);
+  });
+});

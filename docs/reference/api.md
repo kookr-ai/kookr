@@ -824,7 +824,7 @@ Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with
 
 ## Agent Asks (`kookr ask`)
 
-An agent asks the operator a multiple-choice question over Telegram; the answer is recorded once and typed back into the asking task's session. Design: `docs/rfc/rfc-kookr-ask.md`. Available only when Telegram remote chat is configured; otherwise `POST` returns `503 {"code":"not_configured"}`, `GET /api/asks` returns an empty list, and nothing is written to disk. There is deliberately **no** HTTP route that records an answer — the only answer channel is the allowlisted Telegram user, so an agent cannot answer its own question.
+An agent asks the operator a multiple-choice question over Telegram; the answer is recorded once and typed back into the asking task's session. Design: `docs/rfc/rfc-kookr-ask.md`. Available only when Telegram remote chat is configured; otherwise `POST` returns `503 {"code":"not_configured"}`, `GET /api/asks` returns an empty list, and nothing is written to disk. The operator can answer in two places, and both write the same record: on Telegram (allowlisted user), or in the dashboard, where Lucy (the avatar panel) shows and reads out the same question (WebSocket `operatorAsks` / `answerAsk`, owner connections only). Whichever answers first wins; the other side is updated (the Telegram message is edited to "Already answered in Kookr", Lucy's card shows "Answered on Telegram"). There is deliberately **no** HTTP route that records an answer, so an agent cannot answer its own question.
 
 | Endpoint | Description |
 | --- | --- |
@@ -832,6 +832,7 @@ An agent asks the operator a multiple-choice question over Telegram; the answer 
 | `GET /api/asks?taskId=&state=` | List asks (newest first) plus the enforced `limits`. `state` is `pending`, `answered`, `expired` or `cancelled` |
 | `GET /api/asks/:id` | One ask. `state`, `answer` (`{kind:"option",index,label}` or `{kind:"text",text}`), `resolution` (`answered`, `expired`, `cancelled`, `task_gone`, `delivery_failed`) and `taskDelivery` (`delivered`/`failed`) tell a waiting CLI what happened |
 | `POST /api/asks/:id/cancel` | Cancel a pending ask (edits the Telegram message); `409` when it is no longer pending |
+| `POST /api/asks/:id/speak` | Lucy's voice for a pending ask: who is asking, the question and the choices (the longer `context` is not read out). Returns the same shape as the other speak routes (`text`, `audioBase64` WAV, `durationMs`, `clipId`, `subject?`). `404` unknown ask, `409 not_pending`, `503 tts_not_configured`, `502 tts_failed`. Does not change the ask |
 
 Question and context text is credential-scrubbed (a matching field is replaced by a sentinel and listed in `redacted`). Defaults: 30 min timeout (30 s..24 h), at most 4 options of 48 characters, 3 pending / 6 per hour per task and 20 per hour globally.
 
@@ -1690,6 +1691,8 @@ delta sequence number.
 | `wsBackpressureNotice` | Compact dashboard fan-out notice (issue #1725): `resyncNeeded` after one socket drains from bufferedAmount backpressure (it may have missed frames while skipped); `loadShedActive`/`loadShedRecovered` when the event-loop-delay load-shed gate engages/disengages (full snapshots are suspended while active). Older clients ignore unknown `type`s, so this is forward-compatible with no required frontend change. | `kind`, optional `scopeKey`, optional `eventLoopDelayP95Ms` |
 | `dictationLaunchResult` | Correlated result for a dictation submission. A task ID is sent only after the server records the successful launch receipt; an error leaves the submission unassociated. | `submissionId`, optional `taskId` or `error` |
 | `deployLifecycle` | Pre-blackout deploy notice (issue #1980). Broadcast on successful `POST /api/deploy/trigger` **before** `prod-update` is spawned so connected dashboards can set the sticky session deploy flag (ConnectionBanner “Redeploying”) while the WebSocket is still open. Older clients ignore unknown `type`s safely. **Not emitted** by script-path `pnpm prod:restart` / `scripts/prod-restart.sh` without the trigger route — see [low-downtime redeploy runbook](../runbooks/low-downtime-redeploy.md#deploylifecycle-coverage). | `phase` (`starting`) |
+| `operatorAsks` | The `kookr ask` questions Lucy shows in the avatar panel: every question still waiting for the operator, plus those closed in the last 10 minutes (answered in Kookr or on Telegram, expired, cancelled). Always the whole list (at most 8, newest first). Sent to **owner** connections only, on connect and whenever a question is sent or closed on either channel. | `asks` (each `id`, `taskId`, `taskName?`, `question`, `context?`, `options`, `allowText`, `state`, `createdAt`, `expiresAt`, `answer?`, `answeredVia?` (`telegram`/`dashboard`), `resolvedAt?`, `resolution?`), `announce?` (id of the question just created; Lucy reads that one aloud once) |
+| `operatorAskResult` | Reply to the sender of `answerAsk`: whether the answer was recorded. A refusal is followed by a fresh `operatorAsks`. | `askId`, `ok`, `reason?` (`already_answered`, `expired`, `cancelled`, `task_gone`, `bad_option`, `text_not_allowed`, `not_found`, `unavailable`) |
 
 ### Client-to-server messages
 
@@ -1744,6 +1747,7 @@ delta sequence number.
 | `workspace:requestSweepReport` | Request reconstruction of a completed sweep's Removed manifest from the ledger. | `runId` |
 | `workspace:bulkRemoveProbablySafe` | Bulk-remove selected Probably-safe worktree paths, keeping their branches. | `rows` (each `projectId`, `worktreePath`, `branch`, optional `fingerprint`) |
 | `worktree:inspectCleanup` | Ask whether this task's worktrees can be removed. Read-only; replies with `worktreeCleanupVerdicts`. | `taskId` |
+| `answerAsk` | The operator answers a `kookr ask` question in Lucy's panel. Exactly one of `optionIndex` or `text`. Owner connections only; the answer is typed into the asking task and the Telegram message is edited to say it was answered in Kookr. | `askId`, `optionIndex?` (0–3), `text?` (at most 1000 characters) |
 
 ## Data Directory
 

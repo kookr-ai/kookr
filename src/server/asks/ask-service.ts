@@ -7,6 +7,14 @@
  * one-time answer compare-and-set, task liveness and expiry — so the Telegram
  * integration stays a thin transport.
  *
+ * There is one record per question and two ways to answer it: Telegram
+ * (`answer`) and the dashboard, where Lucy asks the same question
+ * (`answerFromDashboard`). Each entry point runs its own channel checks and
+ * then the same closing steps (`settle`), so whichever channel answers first
+ * wins and the other one is told. Listeners registered with `onChange` hear
+ * about every question sent and every question that left `pending`; that is
+ * how the dashboard learns of an answer given on Telegram.
+ *
  * Every state transition is a synchronous compare-and-set on
  * `state === 'pending'` against the in-memory store, so two concurrent taps
  * produce exactly one winner.
@@ -19,12 +27,15 @@ import {
   ASK_LIMITS,
   type AnswerInput,
   type AnswerResult,
+  type AskChange,
+  type AskChannel,
   type AskNotifier,
   type AskRecord,
   type AskState,
   type AskView,
   type CreateAskInput,
   type CreateAskResult,
+  type DashboardAnswerInput,
 } from '../../shared/contracts/asks.js';
 import type { AskStore } from './ask-store.js';
 
@@ -61,10 +72,36 @@ export class AskService {
   private readonly now: () => number;
   private readonly log: (message: string) => void;
   private timer: NodeJS.Timeout | null = null;
+  private readonly listeners = new Set<(change: AskChange) => void>();
 
   constructor(private readonly deps: AskServiceDeps) {
     this.now = deps.now ?? Date.now;
     this.log = deps.log ?? (() => undefined);
+  }
+
+  // ---------------------------------------------------------------- listeners
+
+  /**
+   * Hear about every question sent (`created`, once its Telegram message exists)
+   * and every question that left `pending` (`resolved`: answered on either
+   * channel, expired, cancelled, or its task went away). Returns an unsubscribe
+   * function. A listener that throws is logged and never affects the ask.
+   */
+  onChange(listener: (change: AskChange) => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  private emit(kind: AskChange['kind'], id: string): void {
+    const ask = this.deps.store.get(id);
+    if (!ask) return;
+    for (const listener of this.listeners) {
+      try {
+        listener({ kind, ask });
+      } catch (err) {
+        this.log(`[asks] change listener failed ask=${id}: ${String(err)}`);
+      }
+    }
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -183,6 +220,10 @@ export class AskService {
       const current = this.deps.store.get(ask.id) as AskRecord;
       if (current.state !== 'pending') {
         await this.finalize(current, current.state === 'expired' ? '⌛ Expired — no answer.' : '🚫 Cancelled by the asking task.');
+      } else {
+        // Announced only now, with the Telegram message in place: an answer given
+        // in the dashboard can then always close that message.
+        this.emit('created', ask.id);
       }
     } catch (err) {
       this.transition(ask.id, 'cancelled', 'delivery_failed');
@@ -228,6 +269,11 @@ export class AskService {
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  /** Every stored ask, without the expiry sweep `list` runs first. For synchronous callers (the dashboard push). */
+  all(): AskRecord[] {
+    return this.deps.store.all();
+  }
+
   findByMessage(chatId: number, messageId: number): AskRecord | undefined {
     return this.deps.store.all().find((a) => a.delivery?.chatId === chatId && a.delivery.messageId === messageId);
   }
@@ -262,7 +308,7 @@ export class AskService {
    * method verifies everything bound to the ask itself.
    */
   async answer(input: AnswerInput): Promise<AnswerResult> {
-    let ask = this.deps.store.get(input.askId);
+    const ask = this.deps.store.get(input.askId);
     if (!ask) return { ok: false, reason: 'not_found' };
 
     if (input.option) {
@@ -278,21 +324,60 @@ export class AskService {
     if (!ask.delivery || ask.delivery.chatId !== input.chatId || ask.delivery.messageId !== input.messageId) {
       return { ok: false, reason: 'wrong_chat', ask };
     }
+    return this.settle(
+      ask.id,
+      input.option ? { optionIndex: input.option.index } : { text: input.text },
+      { via: 'telegram', senderId: input.senderId },
+    );
+  }
+
+  /**
+   * Record an operator answer given in the dashboard, where Lucy asked the same
+   * question. The caller (the dashboard socket) has already verified that the
+   * connection belongs to the owner; there is no button MAC or chat to check.
+   * The Telegram message is then edited to say the question was answered in
+   * Kookr, so the operator's phone stops asking.
+   */
+  async answerFromDashboard(input: DashboardAnswerInput): Promise<AnswerResult> {
+    // A question with no Telegram message yet was never shown in the dashboard either.
+    if (!this.deps.store.get(input.askId)?.delivery) return { ok: false, reason: 'not_found' };
+    const hasOption = input.optionIndex !== undefined;
+    const hasText = input.text !== undefined;
+    if (hasOption === hasText) return { ok: false, reason: 'bad_option', ask: this.deps.store.get(input.askId) };
+    return this.settle(
+      input.askId,
+      hasOption ? { optionIndex: input.optionIndex } : { text: input.text },
+      { via: 'dashboard' },
+    );
+  }
+
+  /**
+   * The closing steps shared by both channels: expiry, state, the chosen option
+   * or text, task liveness, the one-time compare-and-set, typing the answer into
+   * the task, and closing the Telegram message.
+   */
+  private async settle(
+    askId: string,
+    choice: { optionIndex?: number; text?: string },
+    source: { via: AskChannel; senderId?: number },
+  ): Promise<AnswerResult> {
+    let ask = this.deps.store.get(askId);
+    if (!ask) return { ok: false, reason: 'not_found' };
 
     if (ask.state === 'pending' && ask.expiresAt <= this.now()) await this.expire(ask.id);
-    ask = this.deps.store.get(input.askId) as AskRecord;
+    ask = this.deps.store.get(askId) as AskRecord;
     if (ask.state === 'expired') return { ok: false, reason: 'expired', ask };
     if (ask.state === 'cancelled') return { ok: false, reason: 'cancelled', ask };
     if (ask.state === 'answered') return { ok: false, reason: 'already_answered', ask };
 
     let answer: AskRecord['answer'];
-    if (input.option) {
-      const label = ask.options[input.option.index];
-      if (!Number.isInteger(input.option.index) || label === undefined) return { ok: false, reason: 'bad_option', ask };
-      answer = { kind: 'option', index: input.option.index, label };
+    if (choice.optionIndex !== undefined) {
+      const label = Number.isInteger(choice.optionIndex) ? ask.options[choice.optionIndex] : undefined;
+      if (label === undefined) return { ok: false, reason: 'bad_option', ask };
+      answer = { kind: 'option', index: choice.optionIndex, label };
     } else {
       if (!ask.allowText) return { ok: false, reason: 'text_not_allowed', ask };
-      const text = (input.text ?? '').trim();
+      const text = (choice.text ?? '').trim();
       if (text.length === 0 || text.length > MAX_ANSWER_TEXT_CHARS) return { ok: false, reason: 'bad_option', ask };
       answer = { kind: 'text', text };
     }
@@ -306,7 +391,8 @@ export class AskService {
       return { ok: false, reason: 'task_gone', ask: gone };
     }
 
-    // One-time answer: synchronous CAS, so a concurrent tap loses here.
+    // One-time answer: synchronous CAS, so a concurrent answer (a second tap, or
+    // the other channel) loses here.
     if (this.deps.store.get(ask.id)?.state !== 'pending') {
       return { ok: false, reason: 'already_answered', ask: this.deps.store.get(ask.id) };
     }
@@ -315,9 +401,13 @@ export class AskService {
       a.resolution = 'answered';
       a.answer = answer;
       a.answeredAt = this.now();
-      a.answeredBy = input.senderId;
+      a.resolvedAt = a.answeredAt;
+      a.answeredVia = source.via;
+      if (source.senderId !== undefined) a.answeredBy = source.senderId;
     });
+    this.emit('resolved', ask.id);
 
+    // The text typed into the task is the same on both channels, so agents need not care which one answered.
     const label = answer.kind === 'option' ? answer.label : `(free text) ${oneLine(answer.text)}`;
     const delivered = await this.deps.deliverToTask(ask.taskId, `Operator answered ask ${ask.id}: ${label}`)
       .catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
@@ -325,11 +415,14 @@ export class AskService {
 
     const done = this.deps.store.get(ask.id) as AskRecord;
     const chosen = answer.kind === 'option' ? answer.label : answer.text;
+    const headline = source.via === 'dashboard'
+      ? `✅ Already answered in Kookr: ${chosen}\nNothing more is needed here.`
+      : `✅ Answered: ${chosen}`;
     await this.finalize(
       done,
       delivered.ok
-        ? `✅ Answered: ${chosen}`
-        : `✅ Answered: ${chosen}\n⚠️ Could not type it into the task (${delivered.reason ?? 'unknown'}). It can still read the answer via kookr ask --wait.`,
+        ? headline
+        : `${headline}\n⚠️ Could not type it into the task (${delivered.reason ?? 'unknown'}). It can still read the answer via kookr ask --wait.`,
     );
     return { ok: true, ask: done };
   }
@@ -360,7 +453,8 @@ export class AskService {
   private transition(id: string, state: AskState, resolution: NonNullable<AskRecord['resolution']>): boolean {
     const ask = this.deps.store.get(id);
     if (!ask || ask.state !== 'pending') return false;
-    this.deps.store.update(id, (a) => { a.state = state; a.resolution = resolution; });
+    this.deps.store.update(id, (a) => { a.state = state; a.resolution = resolution; a.resolvedAt = this.now(); });
+    this.emit('resolved', id);
     return true;
   }
 

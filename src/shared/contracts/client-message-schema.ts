@@ -255,6 +255,13 @@ const ClientMessageSchemaImpl = z.union([
     permissionRequest: permissionRequestBinding,
   }),
   z.object({ type: z.literal('rearmCircuitBreaker'), name: z.string() }),
+  // `kookr ask` answered in Lucy's panel. The service rejects a message that carries both or neither.
+  z.object({
+    type: z.literal('answerAsk'),
+    askId: z.string().regex(/^[0-9a-f]{12}$/),
+    optionIndex: z.number().int().min(0).max(3).optional(),
+    text: z.string().max(1000).optional(),
+  }),
   z.object({
     type: z.literal('findingFeedback'),
     agentId: z.string(),

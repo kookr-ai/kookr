@@ -35,6 +35,7 @@ import { stampSnapshotPosition, type StreamPosition } from './snapshot-stream-se
 import type { Actor } from './auth.js';
 import type { Scope } from './viewer-data-policy.js';
 import type { SnapshotMessage } from '../shared/contracts/messages.js';
+import type { AnswerResult, DashboardAnswerInput, OperatorAskView } from '../shared/contracts/asks.js';
 import type { SocketRegistrar } from './viewer-connection-registry.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 import { isLucyTelemetryType, MAX_LUCY_EVENTS_PER_TELEMETRY_MESSAGE, type LucyInteractionLog } from './lucy-interaction-log.js';
@@ -206,6 +207,18 @@ export interface WsConnectionDeps {
    * Omitted by lightweight/test wirings → snapshots byte-identical to pre-#1754.
    */
   getStreamPosition?: () => StreamPosition | undefined;
+  /**
+   * `kookr ask` questions as Lucy shows them (the same records Telegram carries).
+   * `list` is sent to an owner on connect; `answer` records what the operator
+   * chose in her panel. Absent when asks are unavailable (Telegram not configured).
+   */
+  operatorAsks?: OperatorAsksPort;
+}
+
+/** The slice of the ask service the dashboard socket uses. */
+export interface OperatorAsksPort {
+  list(): OperatorAskView[];
+  answer(input: DashboardAnswerInput): Promise<AnswerResult>;
 }
 
 function sendServerMessage(
@@ -381,6 +394,12 @@ export function handleWsConnection(
     }
   }
 
+  // Questions waiting for the operator (`kookr ask`), so Lucy's panel shows them
+  // after a reload too. Owner path only: this code is never reached by a viewer.
+  if (deps.operatorAsks && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'operatorAsks', asks: deps.operatorAsks.list() } satisfies ServerMessage));
+  }
+
   wireWsMessageHandlers(ws, registrar, router, actor, deps, connectionId);
 }
 
@@ -523,6 +542,37 @@ function wireWsMessageHandlers(
           }
         } else {
           sendServerMessage(ws, router.buildConnectSnapshot(), 'all', deps.snapshotPayloadSizePolicy);
+        }
+        return;
+      }
+
+      // `kookr ask` answered in Lucy's panel. Handled here, before the router,
+      // because it changes no task state by itself: the ask service types the
+      // answer into the task and closes the Telegram message. Gate 3 above has
+      // already turned viewers away; the explicit owner check keeps that true if
+      // the viewer allow-list ever grows.
+      if (msg.type === 'answerAsk') {
+        if (actor.kind !== 'owner') return;
+        const asks = deps.operatorAsks;
+        const result = asks
+          ? await asks.answer({
+            askId: msg.askId,
+            ...(msg.optionIndex !== undefined ? { optionIndex: msg.optionIndex } : {}),
+            ...(msg.text !== undefined ? { text: msg.text } : {}),
+          })
+          : undefined;
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({
+            type: 'operatorAskResult',
+            askId: msg.askId,
+            ok: result?.ok === true,
+            ...(result === undefined ? { reason: 'unavailable' as const } : result.ok ? {} : { reason: result.reason }),
+          } satisfies ServerMessage));
+          // A refused answer usually means this tab's list is out of date (answered
+          // on Telegram a moment ago, expired): send the current one.
+          if (asks && result?.ok !== true) {
+            ws.send(JSON.stringify({ type: 'operatorAsks', asks: asks.list() } satisfies ServerMessage));
+          }
         }
         return;
       }

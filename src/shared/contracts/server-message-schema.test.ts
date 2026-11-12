@@ -242,6 +242,15 @@ const serverMessageCases = [
     type: 'deployLifecycle',
     phase: 'starting',
   }),
+  serverMessageCase({
+    type: 'operatorAsks',
+    asks: [{
+      id: 'a1b2c3d4e5f6', taskId: 'task-1', taskName: 'Fix login', question: 'Ship it?', options: ['Yes', 'No'],
+      allowText: true, state: 'pending', createdAt: 1790000000000, expiresAt: 1790001800000,
+    }],
+    announce: 'a1b2c3d4e5f6',
+  }),
+  serverMessageCase({ type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: false, reason: 'already_answered' }),
   // Delta envelope (#1754, Stage 1) — ships dark, but part of the wire contract.
   serverMessageCase({
     type: 'delta',

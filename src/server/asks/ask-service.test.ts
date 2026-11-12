@@ -429,6 +429,55 @@ describe('ask routes', () => {
     expect((await post(app, { ...base, taskId: 't2', options: ['ghp_' + 'a'.repeat(30), 'b'] })).status).toBe(422);
   });
 
+  describe('POST /api/asks/:id/speak (Lucy reads the question)', () => {
+    function speakApp(over: { ttsUrl?: string; synthesize?: ReturnType<typeof vi.fn> } = {}) {
+      const synthesize = over.synthesize ?? vi.fn(async () => ({ audioBase64: 'UklGRg==', durationMs: 1234, generationTimeMs: 50 }));
+      const recordSaid = vi.fn();
+      const app = new Hono();
+      registerAskRoutes(app, {
+        service: h.service,
+        speech: {
+          ttsUrl: 'ttsUrl' in over ? over.ttsUrl : 'http://tts.test',
+          getVoice: () => 'af_heart',
+          taskName: (id) => (id === 't1' ? 'Fix login' : undefined),
+          lucyLog: { recordSaid, recordLiveTurn: vi.fn(), recordUi: vi.fn(), flush: async () => undefined },
+          synthesize: synthesize as never,
+        },
+      });
+      return { app, synthesize, recordSaid };
+    }
+    const speak = (app: Hono, id: string) => app.request(`/api/asks/${id}/speak`, { method: 'POST' });
+
+    it('returns the spoken question as a clip and logs what Lucy said', async () => {
+      const ask = await createOk({ context: 'Background nobody should hear' });
+      const { app, synthesize, recordSaid } = speakApp();
+      const res = await speak(app, ask.id);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({
+        text: 'The task Fix login needs your input. Ship it? You can answer: Yes or No.',
+        audioBase64: 'UklGRg==', mimeType: 'audio/wav', durationMs: 1234, subject: 'Fix login', cached: false, usedFallback: false,
+      });
+      expect(body.clipId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(synthesize).toHaveBeenCalledWith(expect.objectContaining({ ttsUrl: 'http://tts.test', voice: 'af_heart', text: body.text }));
+      expect(recordSaid).toHaveBeenCalledWith(expect.objectContaining({ clipId: body.clipId, source: 'operator_ask', taskId: 't1', text: body.text }));
+      expect(h.store.get(ask.id)?.state).toBe('pending');
+    });
+
+    it('404s an unknown ask, 409s a closed one, 503s without a speech service and 502s when it fails', async () => {
+      const ask = await createOk();
+      expect((await speak(speakApp().app, 'ffffffffffff')).status).toBe(404);
+      expect((await speak(speakApp({ ttsUrl: undefined }).app, ask.id)).status).toBe(503);
+      const failing = speakApp({ synthesize: vi.fn(async () => { throw new Error('tts down'); }) });
+      expect((await speak(failing.app, ask.id)).status).toBe(502);
+      expect(failing.recordSaid).not.toHaveBeenCalled();
+      await h.service.answerFromDashboard({ askId: ask.id, optionIndex: 0 });
+      const closed = speakApp();
+      expect((await speak(closed.app, ask.id)).status).toBe(409);
+      expect(closed.synthesize).not.toHaveBeenCalled();
+    });
+  });
+
   it('exposes no route that records an answer', async () => {
     const app = appFor(h.service);
     const created = await (await post(app, base)).json();
@@ -437,5 +486,134 @@ describe('ask routes', () => {
       expect((await app.request(path, { method: 'PUT', body: '{"option":0}' })).status).toBe(404);
     }
     expect(h.store.get(created.ask.id)?.state).toBe('pending');
+  });
+});
+
+describe('AskService.answerFromDashboard (Lucy) and channel sync', () => {
+  it('records a button answer, types the same text into the task and tells Telegram it was answered in Kookr', async () => {
+    const ask = await createOk();
+    const r = await h.service.answerFromDashboard({ askId: ask.id, optionIndex: 1 });
+    expect(r.ok).toBe(true);
+    expect(h.store.get(ask.id)).toMatchObject({
+      state: 'answered', answeredVia: 'dashboard', answer: { kind: 'option', index: 1, label: 'No' }, taskDelivery: 'delivered',
+    });
+    expect(h.store.get(ask.id)?.answeredBy).toBeUndefined();
+    expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${ask.id}: No`);
+    const [, text] = h.notifier.finalizeAsk.mock.calls.at(-1) as [AskRecord, string];
+    expect(text).toContain('Already answered in Kookr: No');
+    expect(text).toContain('Nothing more is needed here.');
+  });
+
+  it('marks a Telegram answer with its channel and keeps the Telegram wording', async () => {
+    const ask = await createOk();
+    expect((await tap(ask, 0)).ok).toBe(true);
+    expect(h.store.get(ask.id)).toMatchObject({ answeredVia: 'telegram', answeredBy: 7 });
+    const [, text] = h.notifier.finalizeAsk.mock.calls.at(-1) as [AskRecord, string];
+    expect(text).toContain('✅ Answered: Yes');
+    expect(text).not.toContain('in Kookr');
+  });
+
+  it('gives exactly one winner when Telegram and the dashboard answer at the same time', async () => {
+    const ask = await createOk();
+    const [fromTelegram, fromDashboard] = await Promise.all([
+      tap(ask, 0),
+      h.service.answerFromDashboard({ askId: ask.id, optionIndex: 1 }),
+    ]);
+    expect([fromTelegram.ok, fromDashboard.ok].filter(Boolean)).toHaveLength(1);
+    const loser = fromTelegram.ok ? fromDashboard : fromTelegram;
+    expect(loser).toMatchObject({ ok: false, reason: 'already_answered' });
+    expect(h.deliver).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a dashboard answer after a Telegram answer, and a Telegram tap after a dashboard answer', async () => {
+    const first = await createOk();
+    await tap(first, 0);
+    expect(await h.service.answerFromDashboard({ askId: first.id, optionIndex: 1 }))
+      .toMatchObject({ ok: false, reason: 'already_answered', ask: { answeredVia: 'telegram' } });
+
+    const second = await createOk({ question: 'Second?' });
+    await h.service.answerFromDashboard({ askId: second.id, optionIndex: 1 });
+    expect(await tap(second, 0)).toMatchObject({ ok: false, reason: 'already_answered', ask: { answeredVia: 'dashboard' } });
+    expect(h.store.get(second.id)?.answer).toEqual({ kind: 'option', index: 1, label: 'No' });
+  });
+
+  it('accepts typed text only when the ask allows it, and rejects both-or-neither and bad indexes', async () => {
+    const open = await createOk();
+    expect(await h.service.answerFromDashboard({ askId: open.id })).toMatchObject({ ok: false, reason: 'bad_option' });
+    expect(await h.service.answerFromDashboard({ askId: open.id, optionIndex: 0, text: 'x' })).toMatchObject({ ok: false, reason: 'bad_option' });
+    expect(await h.service.answerFromDashboard({ askId: open.id, optionIndex: 9 })).toMatchObject({ ok: false, reason: 'bad_option' });
+    expect(await h.service.answerFromDashboard({ askId: open.id, optionIndex: 0.5 })).toMatchObject({ ok: false, reason: 'bad_option' });
+    expect(await h.service.answerFromDashboard({ askId: open.id, text: '   ' })).toMatchObject({ ok: false, reason: 'bad_option' });
+    expect(h.store.get(open.id)?.state).toBe('pending');
+    expect((await h.service.answerFromDashboard({ askId: open.id, text: ' do both ' })).ok).toBe(true);
+    expect(h.store.get(open.id)?.answer).toEqual({ kind: 'text', text: 'do both' });
+    expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${open.id}: (free text) do both`);
+
+    const closed = await createOk({ question: 'Buttons only?', allowText: false });
+    expect(await h.service.answerFromDashboard({ askId: closed.id, text: 'hello' })).toMatchObject({ ok: false, reason: 'text_not_allowed' });
+  });
+
+  it('refuses unknown, expired and task-gone asks the same way Telegram does', async () => {
+    expect(await h.service.answerFromDashboard({ askId: 'ffffffffffff', optionIndex: 0 })).toEqual({ ok: false, reason: 'not_found' });
+
+    const late = await createOk({ timeoutSec: 30 });
+    h.clock.now += 31_000;
+    expect(await h.service.answerFromDashboard({ askId: late.id, optionIndex: 0 })).toMatchObject({ ok: false, reason: 'expired' });
+
+    const gone = await createOk({ taskId: 't2' });
+    h.statuses.delete('t2');
+    expect(await h.service.answerFromDashboard({ askId: gone.id, optionIndex: 0 })).toMatchObject({ ok: false, reason: 'task_gone' });
+    expect(h.deliver).not.toHaveBeenCalledWith('t2', expect.stringContaining('Operator answered'));
+  });
+
+  it('does not accept a dashboard answer for a question whose Telegram message does not exist yet', async () => {
+    let release: (v: { chatId: number; messageId: number }) => void = () => undefined;
+    h.notifier.sendAsk.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const creating = h.service.create(base);
+    await Promise.resolve();
+    const pending = h.store.all()[0];
+    expect(await h.service.answerFromDashboard({ askId: pending.id, optionIndex: 0 })).toEqual({ ok: false, reason: 'not_found' });
+    release({ chatId: 42, messageId: 999 });
+    expect((await creating).ok).toBe(true);
+    expect(h.store.get(pending.id)?.state).toBe('pending');
+  });
+
+  it('announces a question once its Telegram message exists, and every way it can close', async () => {
+    const seen: string[] = [];
+    const off = h.service.onChange((c) => seen.push(`${c.kind}:${c.ask.state}:${c.ask.resolution ?? '-'}:${c.ask.delivery ? 'sent' : 'unsent'}`));
+
+    const answeredOnTelegram = await createOk();
+    await tap(answeredOnTelegram, 0);
+    const answeredInKookr = await createOk({ question: 'Two?' });
+    await h.service.answerFromDashboard({ askId: answeredInKookr.id, optionIndex: 0 });
+    const cancelled = await createOk({ question: 'Three?' });
+    await h.service.cancel(cancelled.id);
+    const expired = await createOk({ taskId: 't2', question: 'Four?', timeoutSec: 30 });
+    h.clock.now += 31_000;
+    await h.service.sweepExpired();
+    expect(h.store.get(expired.id)?.state).toBe('expired');
+
+    expect(seen).toEqual([
+      'created:pending:-:sent', 'resolved:answered:answered:sent',
+      'created:pending:-:sent', 'resolved:answered:answered:sent',
+      'created:pending:-:sent', 'resolved:cancelled:cancelled:sent',
+      'created:pending:-:sent', 'resolved:expired:expired:sent',
+    ]);
+    expect(h.store.get(cancelled.id)?.resolvedAt).toBeTypeOf('number');
+
+    off();
+    await createOk({ taskId: 't2', question: 'Five?' });
+    expect(seen).toHaveLength(8);
+  });
+
+  it('never announces a question that could not be sent, and survives a throwing listener', async () => {
+    const kinds: string[] = [];
+    h.service.onChange(() => { throw new Error('listener bug'); });
+    h.service.onChange((c) => kinds.push(`${c.kind}:${c.ask.resolution ?? '-'}`));
+    h.notifier.sendAsk.mockRejectedValueOnce(new Error('telegram down'));
+    expect((await h.service.create(base)).ok).toBe(false);
+    expect(kinds).toEqual(['resolved:delivery_failed']);
+    const ok = await createOk({ question: 'Again?' });
+    expect((await h.service.answerFromDashboard({ askId: ok.id, optionIndex: 0 })).ok).toBe(true);
   });
 });

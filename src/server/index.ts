@@ -293,7 +293,8 @@ import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js
 import { createTelegramTaskBridge } from './telegram-task-bridge.js';
 import { AskStore } from './asks/ask-store.js';
 import { AskService } from './asks/ask-service.js';
-import type { AskNotifier } from '../shared/contracts/asks.js';
+import type { AskNotifier, DashboardAnswerInput } from '../shared/contracts/asks.js';
+import { listOperatorAsks } from '../core/operator-asks.js';
 import {
   TaskTailStore,
   readTaskTailConfigFromEnv,
@@ -2924,7 +2925,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     faaAckReapWarningCoordinator,
     faaAckReaperMetrics,
     hungTaskReaperMetrics,
-    asks: { service: askService },
+    asks: {
+      service: askService,
+      // Lucy reads a pending question aloud in the avatar panel (POST /api/asks/:id/speak).
+      speech: {
+        ttsUrl,
+        getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
+        taskName: (taskId) => taskStore.getTask(taskId)?.name,
+        lucyLog: lucyInteractionLog,
+      },
+    },
     ...(issueClaimServices ? {
       issueClaims: {
         enabled: true,
@@ -3739,7 +3749,36 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       currentSettings.quotaHeadroomThreshold;
   }
 
+  // `kookr ask` in the dashboard: Lucy shows and asks the same questions Telegram
+  // carries. The list goes to owner connections only (a question can quote
+  // anything a task sees), on connect and whenever a question is sent or closed
+  // on either channel. `announce` marks the one just created, which Lucy speaks.
+  const operatorAsksPort = askService
+    ? {
+      list: () => listOperatorAsks(askService.all(), Date.now(), (taskId) => taskStore.getTask(taskId)?.name),
+      answer: (input: DashboardAnswerInput) => askService.answerFromDashboard(input),
+    }
+    : undefined;
+  if (askService && operatorAsksPort) {
+    askService.onChange((change) => {
+      const data = JSON.stringify({
+        type: 'operatorAsks',
+        asks: operatorAsksPort.list(),
+        ...(change.kind === 'created' ? { announce: change.ask.id } : {}),
+      } satisfies ServerMessage);
+      for (const { ws, actor } of connectionRegistry.snapshotDashboardConnections()) {
+        if (actor.kind !== 'owner' || ws.readyState !== 1) continue;
+        try {
+          ws.send(data);
+        } catch (err) {
+          console.warn('[asks] could not push the question list to a dashboard connection:', err);
+        }
+      }
+    });
+  }
+
   const wsConnectionDeps: WsConnectionDeps = {
+    ...(operatorAsksPort ? { operatorAsks: operatorAsksPort } : {}),
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
     serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,

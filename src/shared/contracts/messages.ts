@@ -1,4 +1,5 @@
 import type { AgentState } from './agent-state.js';
+import type { AnswerRejection, OperatorAskView } from './asks.js';
 import type { AgentSelection, AvailableAgentType } from './agent-types.js';
 import type { AnomalySeverity, AnomalyType } from './anomalies.js';
 import type { BuildInfo } from './build-info.js';
@@ -554,6 +555,26 @@ export type ServerMessage =
        */
       type: 'deployLifecycle';
       phase: 'starting';
+    }
+  | {
+      /**
+       * The `kookr ask` questions Lucy shows in the avatar panel: every one still
+       * waiting for the operator, plus those closed in the last few minutes
+       * (answered here or on Telegram, expired, cancelled). Always the whole list,
+       * sent to owner connections only, on connect and on every change, so a
+       * reload or a reconnect converges. `announce` is set only on the message
+       * sent the moment a question is created: Lucy reads that one aloud, once.
+       */
+      type: 'operatorAsks';
+      asks: OperatorAskView[];
+      announce?: string;
+    }
+  | {
+      /** Reply to the sender of an `answerAsk`: whether the answer was recorded, and if not, why. */
+      type: 'operatorAskResult';
+      askId: string;
+      ok: boolean;
+      reason?: AnswerRejection | 'unavailable';
     };
 
 export type ClientMessage =
@@ -691,7 +712,12 @@ export type ClientMessage =
   | { type: 'workspace:runCleanupDiagnostic'; projectId: string; worktreePath: string; reviewFingerprint: string }
   | { type: 'workspace:sweep' }
   | { type: 'workspace:requestSweepReport'; runId: string }
-  | { type: 'workspace:bulkRemoveProbablySafe'; rows: WorkspaceBulkRemoveRow[] };
+  | { type: 'workspace:bulkRemoveProbablySafe'; rows: WorkspaceBulkRemoveRow[] }
+  /**
+   * The operator answers a `kookr ask` question in Lucy's panel: exactly one of
+   * a button (`optionIndex`) or typed text. Owner connections only.
+   */
+  | { type: 'answerAsk'; askId: string; optionIndex?: number; text?: string };
 
 export const SERVER_MESSAGE_TYPES = [
   'snapshot',
@@ -727,6 +753,8 @@ export const SERVER_MESSAGE_TYPES = [
   'wsBackpressureNotice',
   'dictationLaunchResult',
   'deployLifecycle',
+  'operatorAsks',
+  'operatorAskResult',
 ] as const satisfies readonly ServerMessage['type'][];
 
 /** Upper bound on task IDs accepted by one batch-abort request (issue #1325). */
@@ -782,6 +810,7 @@ export const CLIENT_MESSAGE_TYPES = [
   'workspace:requestSweepReport',
   'workspace:bulkRemoveProbablySafe',
   'worktree:inspectCleanup',
+  'answerAsk',
 ] as const satisfies readonly ClientMessage['type'][];
 
 type _MissingServerMessageType = Exclude<ServerMessage['type'], (typeof SERVER_MESSAGE_TYPES)[number]>;
