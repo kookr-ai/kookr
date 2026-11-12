@@ -207,6 +207,9 @@ print("resourceWatchdog", h.get("resourceWatchdog"))
 PY
 ```
 
+0. To free byte space safely, run the `disk-reclaim` plugin skill: report first
+   (`node "${CLAUDE_SKILL_DIR}/scripts/disk-reclaim.mjs" --roots ~/git --data-dir "$KOOKR_DIR"`,
+   deletes nothing), then `--apply safe`. Its REVIEW tier needs an operator yes.
 1. Inspect the launch 503 `pressureCause`: `data_directory_free_space_critical`
    identifies byte pressure; `data_directory_inodes_exhausted` identifies zero
    free inodes.

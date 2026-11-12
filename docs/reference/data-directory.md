@@ -25,6 +25,13 @@ under `~/.kookr-4801/`.
 values. If the server was launched with `KOOKR_PORT=auto`, pass `--dir` because
 the CLI cannot know which port the running server selected.
 
+When the data directory's filesystem is low on space (Kookr refuses task
+launches at or below 5% or 2 GiB free), run the `disk-reclaim` plugin skill
+(`plugin/skills/disk-reclaim/`). It reports reclaimable space by safety tier
+(finished worktrees, `node_modules`, tool caches and aged Kookr data are
+reclaimed automatically; everything else goes to the operator for review).
+`kookr maintenance prune` alone only frees the aged files in this directory.
+
 ## Directory Map
 
 The exact set of files grows as features are enabled. Treat unrecognized files

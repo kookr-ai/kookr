@@ -477,12 +477,12 @@ export function evaluateDiskAdmission(input: {
       + `${inodeCounts?.diskTotalInodes ?? 'unknown'} total`
       + `${path ? ` at ${path}` : ''}). Refusing new task launches to avoid ENOSPC. `
       + `Retry after ${retryAfterSeconds}s once a data-directory inode is available. `
-      + `Reclaim/reap paths remain available.`
+      + `Reclaim/reap paths remain available; run the disk-reclaim skill to free space safely.`
     : `Data-directory disk free is critical (${freePctText} / ${freeBytesText}`
       + `${path ? ` at ${path}` : ''}). Refusing new task launches to avoid ENOSPC. `
       + `Retry after ${retryAfterSeconds}s once free space recovers above the floors `
       + `(percent≤${percentThreshold || 'off'}, bytes≤${bytesThreshold || 'off'}). `
-      + `Reclaim/reap paths remain available.`;
+      + `Reclaim/reap paths remain available; run the disk-reclaim skill to free space safely.`;
 
   return {
     admit: false,
