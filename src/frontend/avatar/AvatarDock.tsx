@@ -1,7 +1,8 @@
 /**
  * The optional avatar panel: a small floating window, by default in the
- * bottom-right corner, showing a 3D character who lip-syncs Kookr's spoken
- * summaries (the clips played by the speaker buttons on tasks).
+ * bottom-right corner, showing a 3D character who lip-syncs what Kookr says
+ * aloud: the spoken summaries played by the speaker buttons on tasks, and the
+ * questions tasks ask the operator (described below).
  *
  * It can be dragged by its title bar and minimised to a round bubble. While
  * minimised the 3D view is shut down completely, and the bubble shows a still
@@ -47,7 +48,7 @@ import {
   useOperatorAsks,
   visibleOperatorAsks,
 } from '../store/operator-asks.js';
-import { AskCard, type AskAnswerChoice } from './AskCard.js';
+import { AskCard, askOutcome, type AskAnswerChoice } from './AskCard.js';
 import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
 import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
 import {
@@ -191,6 +192,12 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   // reader announces it once. Drafts change under the reader and are not announced. Lucy's own words are
   // never announced: she is already speaking them, and a second voice would overlap hers and reach the open microphone.
   const [heardFinal, setHeardFinal] = useState<{ seq: number; text: string } | null>(null);
+  // What a screen reader is told about questions from tasks: that one arrived (Lucy speaks the question
+  // itself, so only a short notice) and how one ended (which she does not say). A new entry per event.
+  const [askNotice, setAskNotice] = useState<{ seq: number; text: string } | null>(null);
+  // The card that last held keyboard focus. A card is replaced when its question closes and removed when
+  // it is dismissed, which would drop focus to the top of the page.
+  const focusedAskIdRef = useRef<string | null>(null);
 
   const viewRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<AvatarStage | null>(null);
@@ -261,8 +268,15 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   // panel switched off nothing is spoken (the question is still on Telegram). If it is answered,
   // withdrawn or expires while she is reading it out, she stops.
   useEffect(() => {
-    const offAnnounced = onAskAnnounced((ask) => { void announceAsk(ask.id); });
-    const offClosed = onAskClosed((ask) => stopAskAnnouncement(ask.id));
+    const notice = (text: string): void => setAskNotice((previous) => ({ seq: (previous?.seq ?? 0) + 1, text }));
+    const offAnnounced = onAskAnnounced((ask) => {
+      notice(ask.taskName ? `New question from ${ask.taskName}.` : 'New question from a task.');
+      void announceAsk(ask.id);
+    });
+    const offClosed = onAskClosed((ask) => {
+      notice(`${askOutcome(ask).text}. Question: ${ask.question}`);
+      stopAskAnnouncement(ask.id);
+    });
     return () => {
       offAnnounced();
       offClosed();
@@ -274,6 +288,18 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
     markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
   }, [onAnswerAsk]);
+  // After the cards change: if the control that had focus is gone (its card closed or was dismissed),
+  // put focus on that card's new first button, or on the panel itself, never back at the top of the page.
+  const askSignature = asks.map((ask) => `${ask.id}:${ask.state}`).join(',');
+  useLayoutEffect(() => {
+    const askId = focusedAskIdRef.current;
+    const dock = dockRef.current;
+    if (!askId || !dock || dock.contains(document.activeElement)) return;
+    const card = dock.querySelector<HTMLElement>(`[data-ask-id="${askId}"]`);
+    const target = card?.querySelector<HTMLElement>('button') ?? dock;
+    if (!card) focusedAskIdRef.current = null;
+    target.focus();
+  }, [askSignature]);
 
   // A replay must not keep talking after the panel is gone.
   useEffect(() => () => stopReplay('user_stop'), []);
@@ -658,11 +684,22 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
       <div className="sr-only" role="status" data-testid="avatar-live-announce">
         {announcement && <span key={`notice-${talkNoticeSeq}-${announcement}`}>{announcement}</span>}
         {heardFinal && <span key={`heard-${heardFinal.seq}`}>You said: {heardFinal.text}</span>}
+        {askNotice && <span key={`ask-${askNotice.seq}`} data-testid="avatar-ask-announce">{askNotice.text}</span>}
       </div>
       {asks.length > 0 && (
         // Questions from tasks (`kookr ask`), above everything else she shows: a task is waiting on these.
         <ol
           className="avatar-asks"
+          // Stated because `list-style: none` makes some browsers drop the list role, and its label with it.
+          role="list"
+          onFocus={(event) => {
+            focusedAskIdRef.current = (event.target as HTMLElement).closest<HTMLElement>('[data-ask-id]')?.dataset.askId ?? null;
+          }}
+          onBlur={(event) => {
+            // Focus moved somewhere else on purpose. A control that is removed while focused reports no
+            // destination; that case is the one the effect above repairs.
+            if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) focusedAskIdRef.current = null;
+          }}
           aria-label={pendingAskCount > 0 ? `Questions waiting for your answer (${pendingAskCount})` : 'Recent questions'}
           data-testid="avatar-asks"
         >

@@ -158,10 +158,55 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     push([ask()], ASK);
     push([answered('telegram')]);
     expect(q('avatar-ask-outcome')!.textContent).toBe('Answered on Telegram: Yes, ship it');
-    expect(q('avatar-ask-outcome')!.getAttribute('role')).toBe('status');
+    // Told to a screen reader from the panel's always-present status region, not from the card that just appeared.
+    expect(q('avatar-ask-announce')!.textContent).toBe('Answered on Telegram: Yes, ship it. Question: Ship the migration now?');
+    expect(q('avatar-ask-announce')!.closest('[role="status"]')).not.toBeNull();
     expect(all('avatar-ask-option')).toHaveLength(0);
     expect(speech.stopAskAnnouncement).toHaveBeenCalledWith(ASK);
     expect(q('avatar-asks')!.getAttribute('aria-label')).toBe('Recent questions');
+  });
+
+  test('a new question is announced to a screen reader briefly; Lucy speaks the question itself', () => {
+    render();
+    push([ask()], ASK);
+    expect(q('avatar-ask-announce')!.textContent).toBe('New question from Fix login.');
+  });
+
+  test('the answers form one group named by its question, so two cards cannot be confused', () => {
+    render();
+    push([ask(), ask({ id: 'bbbbbbbbbbbb', question: 'Second?' })]);
+    const groups = [...container.querySelectorAll('[role="group"]')];
+    expect(groups).toHaveLength(2);
+    const names = groups.map((group) => document.getElementById(group.getAttribute('aria-labelledby')!)!.textContent);
+    expect(names).toEqual(['Ship the migration now?', 'Second?']);
+    expect(groups[0].querySelector('[data-testid="avatar-ask-input"]')).not.toBeNull();
+    expect(q('avatar-asks')!.getAttribute('role')).toBe('list');
+  });
+
+  test('keyboard focus stays on the card when it closes under the pressed button', () => {
+    render();
+    push([ask()]);
+    const option = all<HTMLButtonElement>('avatar-ask-option')[0];
+    act(() => { option.focus(); });
+    click(option);
+    push([answered('dashboard')]);
+    expect(document.activeElement).toBe(q('avatar-ask-dismiss'));
+  });
+
+  test('keyboard focus moves to the panel, not the top of the page, when the focused card is dismissed', () => {
+    render();
+    push([answered('telegram')]);
+    const dismiss = q<HTMLButtonElement>('avatar-ask-dismiss')!;
+    act(() => { dismiss.focus(); });
+    click(dismiss);
+    expect(document.activeElement).toBe(q('avatar-dock'));
+  });
+
+  test('focus is left alone when the operator was not in a card', () => {
+    render();
+    push([ask()]);
+    push([answered('telegram')]);
+    expect(document.activeElement).toBe(document.body);
   });
 
   test('a refused answer says why and leaves the buttons usable', () => {

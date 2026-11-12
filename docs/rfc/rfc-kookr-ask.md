@@ -26,7 +26,8 @@ often away from the terminal and need to unblock agents from a phone.
    opencode).
 3. The CLI is non-blocking by default (prints the ask id); `--wait` polls until
    answered/expired and prints the chosen label with distinct exit codes.
-4. Only allowlisted Telegram users can answer; callbacks are HMAC-bound to
+4. Only allowlisted Telegram users can answer on Telegram (since 2026-11-12 the
+   owner can also answer in the dashboard, see "Dashboard channel"); callbacks are HMAC-bound to
    (ask id, option index, per-ask nonce); stale, duplicate, forged, wrong-chat
    callbacks are rejected and audited.
 5. Feature is inert unless Telegram is configured. No new outbound hosts, no
@@ -95,9 +96,12 @@ interface AskRecord {
 ### HTTP API
 
 `POST /api/asks`, `GET /api/asks` (`?taskId=&state=`), `GET /api/asks/:id`,
-`POST /api/asks/:id/cancel`. Documented in `docs/reference/api.md`. There is
-deliberately **no** HTTP answer route: the only answer channel is the
-authenticated Telegram path, so an agent cannot answer its own question.
+`POST /api/asks/:id/cancel`, and since 2026-11-12 `POST /api/asks/:id/speak`
+(Lucy's spoken version of a pending question; changes nothing on the ask).
+Documented in `docs/reference/api.md`. There is deliberately **no** HTTP answer
+route. When this was written the only answer channel was the authenticated
+Telegram path; the dashboard socket is now a second one (see "Dashboard
+channel", which also says what that does to the trust boundary).
 When Telegram is not configured, `POST` returns `503 { code: "not_configured" }`
 and creates nothing (flag-off behaviour unchanged, pinned by a test).
 
@@ -174,14 +178,22 @@ deferred dashboard panel. What changed, and what did not:
   (`resolved`). The server pushes the whole current list (pending, plus closed
   in the last 10 minutes) to dashboard sockets as `operatorAsks`, on connect
   and on each event, so a reload or a reconnect converges without replay.
-* **Still no HTTP answer route.** The reason it was rejected stands: `/api/*`
-  is not per-task scoped, so an agent could answer its own question with one
-  `curl`. The dashboard answers over the dashboard WebSocket (`answerAsk`),
-  which sits behind the same gates as every other owner action there
-  (`respond`, `permissionChoice`): viewers are refused by the read-only inbound
-  gate, and the handler checks for the owner again. The trust boundary named
-  under "Rejected / accepted as limits" is unchanged: a same-user agent that
-  opens the owner socket could already type into any session.
+* **Still no HTTP answer route, but the boundary did move.** The dashboard
+  answers over the dashboard WebSocket (`answerAsk`). That socket is
+  authenticated exactly like `/api/*`: a bearer token or session cookie when
+  the server requires one, and on a loopback-only server without a token any
+  local process that is not a cross-origin browser page. Viewers are refused
+  twice (the read-only inbound gate, then an explicit owner check). So the
+  socket is **not** a stronger boundary than an HTTP route would have been. What
+  keeping the route out buys is small and stated plainly: self-answering is not
+  one `curl` away and is not part of the documented HTTP API.
+  What changed: before, only a Telegram tap could write the authoritative
+  record (`GET /api/asks/:id`, what `--wait` prints). Now a same-user process
+  that opens the owner socket can write it too. Such a process could already
+  type "Operator answered ask …" into the task's session with `kookr reply`, and
+  an agent that wants to skip a question can simply not ask it, so this is
+  accepted for a single-operator machine. A per-task credential, which would
+  close it, still does not exist.
 * **Owner only.** `operatorAsks` is sent to owner connections only, not through
   the shared fan-out that also reaches all-scope viewers: a question can quote
   anything a task sees.

@@ -126,7 +126,7 @@ export function onAskClosed(listener: (ask: OperatorAskView) => void): () => voi
 }
 
 /** When a closed question closed, as far as the record says. */
-export function askClosedAt(ask: OperatorAskView): number {
+function askClosedAt(ask: OperatorAskView): number {
   return ask.resolvedAt ?? ask.expiresAt;
 }
 

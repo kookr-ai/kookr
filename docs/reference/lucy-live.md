@@ -177,8 +177,8 @@ way.
 
 A closed card (answered, expired, or withdrawn by the task) stays for 10 minutes and can be dismissed.
 
-**When she speaks.** Until this feature Lucy only spoke when you pressed a speaker button. A question
-is the one thing she says unprompted, under these rules:
+**When she speaks.** Everything else Lucy says follows a press on a speaker button or something you
+said to her. A question is the one thing she says unprompted, under these rules:
 
 - once, when the question arrives. A reload or a reconnect lists the question again but does not make
   her ask again;
@@ -197,8 +197,9 @@ send the wrong decision to a task, and that cannot be undone. Press the choice i
 on Telegram.
 
 **What it needs.** Telegram remote chat configured (without it `kookr ask` is unavailable altogether),
-and the speech service (`KOOKR_TTS`) for her voice; without the speech service the card is shown and
-nothing is played. With the avatar panel switched off nothing is shown or spoken in the dashboard and
+and the speech service (`KOOKR_TTS`) for her voice; without the speech service, or when it fails or
+takes more than 15 seconds (a voice loading for the first time can), the card is shown and nothing is
+played. With the avatar panel switched off nothing is shown or spoken in the dashboard and
 the question is on Telegram only. Questions are sent only to the owner's dashboard, never to a
 read-only shared view.
 
@@ -222,7 +223,11 @@ conversation carries on with the next thing you say. A session-level `error` mes
   [question from a task](#questions-from-tasks): she can tell you about it, but an answer you say out
   loud is not recorded.
 - With Talk on, a question from a task is read through the ordinary clip player, not the conversation's
-  own audio. Talking over it does not stop it, and her volume is not lowered while you speak.
+  own audio. Talking over it does not stop it, and her volume is not lowered while you speak. The
+  conversation also does not know that this voice is hers: on loudspeakers, if the browser's echo
+  cancellation lets her reading reach the open microphone, she can take it for something you said and
+  answer it. This was not tested. Use headphones, or answer the question before talking to her
+  ([#3680](https://github.com/kookr-ai/kookr/issues/3680)).
 - She always answers in English: her voices are English voices.
 - Headphones work best. Echo cancellation is on and a candidate interruption must be loud for 0.15 s
   and then pass Silero, but speaker-to-microphone echo was not tested: her own voice leaking into the

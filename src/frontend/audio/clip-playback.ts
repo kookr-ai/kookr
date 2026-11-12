@@ -9,8 +9,8 @@
  * - ask: Lucy reads out a question a task just asked (`ask-announcement.ts`),
  *   through the same remembered-clip path, with no click behind it.
  *
- * Both announce themselves on the speech bus, so the avatar lip-syncs and
- * shows the "speaking" state identically. Both also go through
+ * All of them announce themselves on the speech bus, so the avatar lip-syncs and
+ * shows the "speaking" state identically. All of them also go through
  * `beginClipPlayback`, which owns two things in one place: the rule for when a
  * clip counts as heard, and the `lucy_clip_started` / `lucy_clip_ended`
  * telemetry events.
@@ -25,6 +25,13 @@ import { getClip, getLastClip, markClipHeard } from './last-clip.js';
 export type ClipTrigger = 'click' | 'replay' | 'ask';
 export type ClipEndedBy = 'finished' | 'user_stop' | 'superseded';
 export type ClipUnheardReason = 'muted' | 'dnd' | 'audio_suspended' | 'error';
+
+/**
+ * Longest wait for the browser to let an audio context start. A page nobody has clicked in yet
+ * may never be allowed to (autoplay policy), and in that case `resume()` neither resolves nor
+ * rejects; waiting for it forever would leave replay stuck on "busy" for every later press.
+ */
+export const AUDIO_UNLOCK_TIMEOUT_MS = 1500;
 
 /** A clip counts as heard when at least this share of it played while the tab was visible. */
 export const HEARD_FRACTION = 0.8;
@@ -197,7 +204,8 @@ export async function replayLastClip(): Promise<ReplayResult> {
  *
  * Respects an explicit "sound off" in Settings, like the speaker buttons do. It
  * deliberately does not look at Do Not Disturb: that silences unprompted alerts,
- * and this is the operator asking to hear something right now.
+ * and a replay is the operator asking to hear something right now. The unprompted
+ * caller (`ask-announcement.ts`) checks Do Not Disturb itself before calling this.
  */
 export async function replayClip(clipId: string, trigger: Extract<ClipTrigger, 'replay' | 'ask'> = 'replay'): Promise<ReplayResult> {
   const clip = getClip(clipId);
@@ -218,7 +226,13 @@ export async function replayClip(clipId: string, trigger: Extract<ClipTrigger, '
     const unlock = ctx.state === 'suspended' && typeof ctx.resume === 'function' ? ctx.resume() : Promise.resolve();
     // decodeAudioData takes ownership of the bytes it is given, so hand it a copy and keep ours for the next replay.
     const buffer = await ctx.decodeAudioData(clip.audio.slice(0));
-    await unlock;
+    // Bounded: if the browser never unlocks, carry on; the context is then still suspended and the
+    // check after `start()` below reports 'blocked'.
+    let unlockTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      unlock,
+      new Promise<void>((resolve) => { unlockTimer = setTimeout(resolve, AUDIO_UNLOCK_TIMEOUT_MS); }),
+    ]).finally(() => clearTimeout(unlockTimer));
     // A live clip started, or the panel closed, while this was preparing: do not play over it.
     if (generation !== startGeneration) {
       if (ctx.state !== 'closed') void ctx.close();

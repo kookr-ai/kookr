@@ -12,7 +12,7 @@ import {
   announceAsk,
   stopAskAnnouncement,
 } from './ask-announcement.js';
-import { __resetClipPlaybackForTests, replayingClipId } from './clip-playback.js';
+import { AUDIO_UNLOCK_TIMEOUT_MS, __resetClipPlaybackForTests, replayClip, replayingClipId } from './clip-playback.js';
 import { __resetLastClipForTests, getClipHistory } from './last-clip.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from './sound-preference.js';
 import { __resetSpeechBusForTests, emitSpeechGenerating, emitSpeechIdle } from './speech-bus.js';
@@ -33,8 +33,10 @@ class FakeAudioContext {
   }
   createAnalyser = vi.fn(() => ({ fftSize: 0, smoothingTimeConstant: 0 }) as unknown as AnalyserNode);
   decodeAudioData = vi.fn(async () => ({ duration: 2 }) as AudioBuffer);
-  // The browser's autoplay policy: without a click, resume() leaves the context suspended.
-  resume = vi.fn(async () => undefined);
+  static resumeNeverSettles = false;
+  // The browser's autoplay policy: without a click, resume() leaves the context suspended,
+  // and in real Chrome its promise may never settle at all.
+  resume = vi.fn(() => (FakeAudioContext.resumeNeverSettles ? new Promise<void>(() => undefined) : Promise.resolve()));
   close = vi.fn(async () => { this.state = 'closed'; });
   createBufferSource = vi.fn(() => {
     const source: FakeSource = { buffer: null, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn(), onended: null };
@@ -64,6 +66,7 @@ describe('announceAsk', () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
     FakeAudioContext.instances = [];
     FakeAudioContext.initialState = 'running';
+    FakeAudioContext.resumeNeverSettles = false;
     vi.stubGlobal('AudioContext', FakeAudioContext);
     localStorage.clear();
     __resetSoundPreferenceForTests();
@@ -133,6 +136,37 @@ describe('announceAsk', () => {
     expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('blocked');
     expect(replayingClipId()).toBeNull();
     expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1', heard: false });
+  });
+
+  test('a page nobody has clicked in yet does not even try to start audio', async () => {
+    vi.stubGlobal('navigator', { userActivation: { hasBeenActive: false } });
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('blocked');
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1', heard: false });
+    expect(tracked).toContainEqual({ type: 'lucy_clip_unheard', clipId: 'clip-ask-1', reason: 'audio_suspended' });
+  });
+
+  test('a browser that never answers the unlock request does not leave replay stuck', async () => {
+    vi.useFakeTimers();
+    try {
+      FakeAudioContext.initialState = 'suspended';
+      FakeAudioContext.resumeNeverSettles = true;
+      const pending = announceAsk(ASK, { fetcher: fetcherOk() });
+      await vi.advanceTimersByTimeAsync(AUDIO_UNLOCK_TIMEOUT_MS + 10);
+      expect(await pending).toBe('blocked');
+      // The existing Replay button must still work afterwards (a click unlocks audio).
+      FakeAudioContext.initialState = 'running';
+      FakeAudioContext.resumeNeverSettles = false;
+      expect(await replayClip('clip-ask-1')).toBe('started');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('gives the question back to other tabs when the clip could not be fetched', async () => {
+    expect(await announceAsk(ASK, { fetcher: vi.fn(async () => speakResponse({}, 502)) as unknown as typeof fetch })).toBe('error');
+    expect(JSON.parse(localStorage.getItem(SPOKEN_ASKS_STORAGE_KEY) ?? '[]')).toEqual([]);
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('started');
   });
 
   test('waits for Lucy to finish what she is saying before asking', async () => {

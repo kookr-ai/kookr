@@ -391,10 +391,11 @@ things she said.
   avatar file.
 - **A window you can move and minimise.** Drag it by its title bar; it remembers where you left it
   and stays inside the viewport when the window is resized. Minimising collapses it to a round
-  bubble that shows an amber badge with the number of findings needing your attention, and an amber dot
+  bubble that shows an amber badge with the number of things waiting for you (findings needing your
+  attention, plus questions from tasks, described below), and an amber dot
   when a message is unheard. Hover the bubble, or focus it with the keyboard, and a small card says
-  it in words: "2 findings need you", "1 unheard message" (each row only when it applies) and "Click
-  to open Lucy". Escape closes the card; screen readers get the same sentence from the bubble's label
+  it in words: "1 question for you", "2 findings need you", "1 unheard message" (each row only when it
+  applies) and "Click to open Lucy". Escape closes the card; screen readers get the same sentence from the bubble's label
   instead. A minimised panel shuts its 3D view down and uses no graphics memory.
 - **Usable from the keyboard.** A button in the title bar moves the window to the next corner of the
   screen, so dragging is never required. Focus stays on the panel when you minimise or reopen it,
@@ -418,8 +419,9 @@ things she said.
 - **Choose the voice.** Settings → General → **Voice** (server setting `speakVoice`, next to
   `speakVerbosity`) picks Heart, Sky, Sarah or Matilda, or **Install default** to follow `TTS_VOICE`.
   It applies to the next spoken clip with no restart. Heart, Sky and Sarah need a GPU to respond quickly.
-- **What it does not do.** It never speaks on its own; it only accompanies clips you asked for or
-  answers you while hands-free is on (below). Its mouth follows the loudness of the clip, not the
+- **What it does not do.** With one exception it never speaks on its own: it accompanies clips you
+  asked for and answers you while hands-free is on (below). The exception is a question a task asks
+  you, which she reads out once when it arrives (next section). Its mouth follows the loudness of the clip, not the
   individual sounds, so the lip-sync is approximate.
 
 #### Lucy asks you what a task needs to know

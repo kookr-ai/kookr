@@ -20,6 +20,10 @@
  *      Telegram" without a reload;
  *   4. minimised, the bubble counts the waiting question;
  *   5. a reload shows the same cards and does not make her ask again.
+ * Not covered here: a browser that refuses to start audio because nobody has
+ * clicked in the page yet. Headless Chromium never refuses (it reports the page
+ * as already interacted with, whatever autoplay flag is passed), so that path
+ * is exercised only by the unit tests in `ask-announcement.test.ts`.
  * Never touches ~/.kookr or port 4800; only kills the server PID it spawned.
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
@@ -230,8 +234,10 @@ async function main(): Promise<void> {
     await page.getByRole('button', { name: 'Minimise Lucy' }).click();
     const q3 = await ask('Delete the old feature flag as well?', ['Delete it', 'Leave it'], { allowText: false });
     const bubble = page.getByTestId('avatar-bubble');
-    const badged = await waitFor(async () => (await bubble.locator('.avatar-bubble-badge').innerText().catch(() => '')) === '1', 15_000);
-    record('minimised, the bubble counts the waiting question', badged && /1 question is waiting for your answer/.test((await bubble.getAttribute('aria-label')) ?? ''), (await bubble.getAttribute('aria-label')) ?? '');
+    // The badge adds findings to waiting questions, and this task may have raised one; the label names each.
+    const badged = await waitFor(async () => /1 question is waiting for your answer/.test((await bubble.getAttribute('aria-label')) ?? ''), 15_000);
+    const badge = await bubble.locator('.avatar-bubble-badge').innerText().catch(() => '');
+    record('minimised, the bubble counts the waiting question', badged && Number(badge) >= 1, `badge=${badge}; label: ${(await bubble.getAttribute('aria-label')) ?? ''}`);
     console.log(`     screenshot: ${await shot(page, '04-bubble.png')}`);
 
     // 5. reload: same cards, and she does not ask again

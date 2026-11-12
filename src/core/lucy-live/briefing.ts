@@ -32,9 +32,9 @@ export interface BriefingTask {
 export const MAX_BRIEFING_CHARS = 2500;
 export const MAX_LISTED_ACTIVE_TASKS = 15;
 export const MAX_LISTED_RECENT_ENDED = 6;
-export const MAX_LISTED_ASKS = 4;
+const MAX_LISTED_ASKS = 4;
 /** A question longer than this is cut in the briefing; the full text is on the card and on Telegram. */
-export const MAX_BRIEFING_QUESTION_CHARS = 220;
+const MAX_BRIEFING_QUESTION_CHARS = 220;
 
 const STATUS_WORDS: Record<TaskStatus, string> = {
   open: 'open',
@@ -92,7 +92,7 @@ function askOutcome(ask: OperatorAskView, nowMs: number): string {
 }
 
 /** The lines about questions from tasks; empty when there is nothing to say. */
-export function buildAskBriefingLines(asks: readonly OperatorAskView[], nowMs: number): string[] {
+function buildAskBriefingLines(asks: readonly OperatorAskView[], nowMs: number): string[] {
   const pending = asks.filter((a) => a.state === 'pending');
   const closed = asks.filter((a) => a.state !== 'pending');
   if (pending.length === 0 && closed.length === 0) return [];

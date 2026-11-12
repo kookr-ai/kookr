@@ -1,15 +1,16 @@
 /**
  * Lucy reads out a question a task just asked the operator (`kookr ask`).
  *
- * Until now Lucy only spoke when a speaker button was pressed. A question is
+ * Everything else Lucy says follows a press on a speaker button. A question is
  * different: the task is waiting, so she says it unprompted, once, the moment
  * it arrives. The rules that keep that from being a nuisance:
  *
  *  - Sound off in Settings, or Do Not Disturb: nothing is played. The clip is
  *    still fetched and kept in her message list, marked unheard, so the
  *    operator can press Replay.
- *  - The browser refuses to start audio without a click (autoplay policy): same
- *    outcome, the clip waits as unheard.
+ *  - The browser refuses to start audio because nobody has clicked in the page
+ *    yet (autoplay policy): same outcome, the clip waits as unheard. This is
+ *    checked up front, so no audio context is created that could never start.
  *  - Several Kookr tabs open: exactly one speaks. Tabs agree through a Web Lock
  *    plus a short list of already-spoken ask ids in `localStorage`; a hidden tab
  *    waits a moment first so a visible tab wins. A browser without Web Locks
@@ -48,7 +49,7 @@ const SPOKEN_ASKS_KEPT = 20;
 /** A hidden tab waits this long before claiming a question, so a visible tab gets there first. */
 export const HIDDEN_TAB_DELAY_MS = 600;
 /** How long a question waits for Lucy to stop talking before it is left as an unheard clip. */
-export const BUSY_WAIT_MS = 45_000;
+const BUSY_WAIT_MS = 45_000;
 
 /** ask id -> clip id, for the questions this tab fetched a clip for. */
 const clipByAsk = new Map<string, string>();
@@ -74,6 +75,27 @@ function claimLocally(askId: string): boolean {
     // Storage unavailable (private mode, quota): this tab speaks; a duplicate is the lesser harm.
   }
   return true;
+}
+
+/**
+ * Give the question back when this tab could not even fetch its clip, so the claim does not
+ * silence every tab for a question nobody was able to speak.
+ */
+function releaseClaim(askId: string): void {
+  try {
+    const spoken = readSpoken();
+    if (spoken.includes(askId)) {
+      globalThis.localStorage?.setItem(SPOKEN_ASKS_STORAGE_KEY, JSON.stringify(spoken.filter((id) => id !== askId)));
+    }
+  } catch {
+    // Storage unavailable: there was no shared claim to give back.
+  }
+}
+
+/** False only when the browser says outright that nobody has interacted with this page yet. */
+function pageMayStartAudio(): boolean {
+  const activation = typeof navigator !== 'undefined' ? navigator.userActivation : undefined;
+  return activation ? activation.hasBeenActive : true;
 }
 
 async function claim(askId: string): Promise<boolean> {
@@ -136,11 +158,23 @@ export async function announceAsk(askId: string, options: AnnounceAskOptions = {
     if (closedAsks.has(askId)) return 'cancelled';
     if (!(await claim(askId))) return 'other-tab';
 
-    const response = await fetcher(`/api/asks/${encodeURIComponent(askId)}/speak`, { method: 'POST' });
-    // 409: closed in the meantime. 503: no speech service; the card alone carries the question.
-    if (!response.ok) return response.status === 409 ? 'cancelled' : 'error';
-    const payload = (await response.json().catch(() => null)) as SpeakAudioResponse | null;
-    if (!payload || typeof payload.audioBase64 !== 'string') return 'error';
+    let payload: SpeakAudioResponse | null = null;
+    let status = 0;
+    try {
+      const response = await fetcher(`/api/asks/${encodeURIComponent(askId)}/speak`, { method: 'POST' });
+      status = response.status;
+      if (response.ok) payload = (await response.json().catch(() => null)) as SpeakAudioResponse | null;
+    } catch {
+      // Network failure: handled as "no clip" below.
+    }
+    // 409: closed in the meantime. Anything else without a clip (503: no speech service, 502: it
+    // failed, offline): the card alone carries the question, and another tab or a later attempt
+    // may still speak it.
+    if (status === 409) return 'cancelled';
+    if (!payload || typeof payload.audioBase64 !== 'string') {
+      releaseClaim(askId);
+      return 'error';
+    }
 
     const clip = captureLastClip({
       clipId: payload.clipId,
@@ -159,6 +193,10 @@ export async function announceAsk(askId: string, options: AnnounceAskOptions = {
     if (getDndState().enabled) {
       reportClipUnheard(clip.clipId, 'dnd');
       return 'dnd';
+    }
+    if (!pageMayStartAudio()) {
+      reportClipUnheard(clip.clipId, 'audio_suspended');
+      return 'blocked';
     }
 
     // She may be talking already (a summary, a hands-free answer): say it when she has finished.

@@ -9,9 +9,11 @@
  * see that the two agree.
  *
  * Purely presentational: the list, the sending state and the socket live in
- * `store/operator-asks.ts` and `AvatarDock.tsx`.
+ * `store/operator-asks.ts` and `AvatarDock.tsx`. So do two things a card cannot
+ * do for itself, because it is replaced or removed when its question closes:
+ * telling a screen reader the outcome, and keeping keyboard focus in the panel.
  */
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import type { AskSubmitState } from '../store/operator-asks.js';
@@ -42,6 +44,12 @@ function chosenText(ask: OperatorAskView): string {
   return ask.answer.kind === 'option' ? ask.answer.label : ask.answer.text;
 }
 
+/** A question shortened for a button's accessible name; the full text is in the card. */
+function shortQuestion(question: string): string {
+  const flat = question.replace(/\s+/g, ' ').trim();
+  return flat.length > 60 ? `${flat.slice(0, 59).trimEnd()}…` : flat;
+}
+
 /** What a closed card says, and whether it is a good ending (answered) or not. */
 export function askOutcome(ask: OperatorAskView): { text: string; answered: boolean } {
   if (ask.state === 'answered') {
@@ -59,6 +67,7 @@ export function askOutcome(ask: OperatorAskView): { text: string; answered: bool
 
 export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss }: AskCardProps) {
   const [text, setText] = useState('');
+  const questionId = useId();
   const who = ask.taskName ? `${ask.taskName} asks` : 'A task asks';
 
   if (ask.state !== 'pending') {
@@ -67,13 +76,14 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss }: AskCardProp
       <li className={`avatar-ask avatar-ask-closed${outcome.answered ? ' avatar-ask-answered' : ''}`} data-testid="avatar-ask" data-ask-id={ask.id} data-ask-state={ask.state}>
         <div className="avatar-ask-head">
           <span className={outcome.answered ? 'avatar-ask-check' : 'avatar-ask-dash'} aria-hidden="true" />
-          {/* A status region: a screen reader announces the outcome when the card changes under it. */}
-          <span className="avatar-ask-outcome" role="status" data-testid="avatar-ask-outcome">{outcome.text}</span>
+          {/* Not a live region: this card is mounted with its text already in it, which screen readers
+              announce unreliably. The outcome is announced from the panel's always-present status region. */}
+          <span className="avatar-ask-outcome" data-testid="avatar-ask-outcome">{outcome.text}</span>
           <button
             type="button"
             className="avatar-dock-button avatar-ask-dismiss"
             onClick={() => onDismiss(ask.id)}
-            aria-label={`Dismiss the question "${ask.question}"`}
+            aria-label={`Dismiss the question "${shortQuestion(ask.question)}"`}
             title="Dismiss"
             data-testid="avatar-ask-dismiss"
           >
@@ -99,20 +109,23 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss }: AskCardProp
   };
 
   return (
-    <li className="avatar-ask avatar-ask-pending" data-testid="avatar-ask" data-ask-id={ask.id} data-ask-state="pending" aria-busy={sending}>
+    <li className="avatar-ask avatar-ask-pending" data-testid="avatar-ask" data-ask-id={ask.id} data-ask-state="pending">
       <div className="avatar-ask-head">
         <span className="avatar-mark-diamond" aria-hidden="true" />
         <span className="avatar-ask-who" title={who}>{who}</span>
         <span className="avatar-ask-time">{timeLeftText(ask.expiresAt, nowMs)}</span>
       </div>
-      <p className="avatar-ask-question" data-testid="avatar-ask-question">{ask.question}</p>
+      <p className="avatar-ask-question" id={questionId} data-testid="avatar-ask-question">{ask.question}</p>
       {ask.context && (
         <details className="avatar-ask-context">
           <summary>Background</summary>
           <p>{ask.context}</p>
         </details>
       )}
-      <div className="avatar-ask-options" role="group" aria-label="Answers">
+      {/* One group named by the question, so with several cards open each choice, text box and Send
+          button is announced with the question it belongs to. */}
+      <div className="avatar-ask-answers" role="group" aria-labelledby={questionId}>
+      <div className="avatar-ask-options">
         {ask.options.map((label, index) => (
           <button
             key={`${index}-${label}`}
@@ -144,6 +157,7 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss }: AskCardProp
           </button>
         </form>
       )}
+      </div>
       {/* Always present, only emptied, so a refusal is announced when it appears. */}
       <p className="avatar-ask-note" role="status" data-testid="avatar-ask-note">
         {sending ? 'Sending your answer…' : refusal ?? 'Also on Telegram. The first answer wins.'}

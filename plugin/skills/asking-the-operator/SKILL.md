@@ -3,8 +3,8 @@ name: asking-the-operator
 group: agent-automation
 description: >
   Ask the human operator a multiple-choice question from inside a Kookr task
-  with `kookr ask` (delivered to their phone over Telegram, and asked aloud by
-  Lucy in the dashboard when it is open) and act on the answer. Use when you are blocked on a decision that is genuinely theirs to
+  with `kookr ask` (delivered to their phone over Telegram, and asked aloud
+  by Lucy in the dashboard when it is open) and act on the answer. Use when you are blocked on a decision that is genuinely theirs to
   make, with 2-4 concrete options, and the operator is probably away from the
   terminal. Covers when to ask, how to write options, and how to read the
   answer; also when NOT to ask.
