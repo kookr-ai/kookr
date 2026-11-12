@@ -269,14 +269,38 @@ export function createNbClient({ dir, nb = DEFAULT_NB, env = process.env } = {})
     return { status: r.status, stdout: r.stdout ?? '', stderr: (r.stderr ?? '').trim(), error: r.error };
   }
 
+  /**
+   * Run an `nb … --json` command. `ok` is false when the process could not be
+   * started, when stdout is not JSON, and when `nb` reports a failure. Since
+   * agent-notebook 0.8.0 a failed `--json` command prints
+   * `{ ok: false, command, error: { class, message } }` on stdout (0.7.0 printed
+   * nothing there), so "stdout parses" alone no longer means success: that object
+   * is a failure, and its message becomes `error` (`errorClass` is nb's error
+   * class). A refusal that `nb` reports as a normal result, such as a move
+   * skipped as a duplicate, has no `ok: false` and stays `ok: true`.
+   */
   function runJson(args) {
     const r = run(args);
-    if (r.error) return { ok: false, error: r.error.message, ...r };
+    // `...r` goes first: `r.error` is spawn's error (undefined on a normal exit)
+    // and must not overwrite the message set here.
+    if (r.error) return { ...r, ok: false, error: r.error.message };
+    let json;
     try {
-      return { ok: true, json: JSON.parse(r.stdout), ...r };
+      json = JSON.parse(r.stdout);
     } catch {
-      return { ok: false, error: r.stderr || `non-JSON output from nb ${args[0]}`, ...r };
+      return { ...r, ok: false, error: r.stderr || `non-JSON output from nb ${args[0]}` };
     }
+    if (json !== null && typeof json === 'object' && json.ok === false) {
+      const message = typeof json.error?.message === 'string' ? json.error.message : '';
+      return {
+        ...r,
+        ok: false,
+        error: message || r.stderr || `nb ${args[0]} failed`,
+        errorClass: typeof json.error?.class === 'string' ? json.error.class : undefined,
+        json,
+      };
+    }
+    return { ...r, ok: true, json };
   }
 
   /**
@@ -411,6 +435,12 @@ export function snapshotStore(client) {
   }
   if (typeof listed.json.total === 'number' && listed.json.rows.length < listed.json.total) {
     throw new Error(`nb list --json returned ${listed.json.rows.length} of ${listed.json.total} shelves; refusing to plan from a partial index`);
+  }
+  // Since agent-notebook 0.8.0 an unreadable shelf no longer fails `nb list`: it is
+  // left out of `rows` and named in `skipped`. That is a partial index too.
+  if (Array.isArray(listed.json.skipped) && listed.json.skipped.length > 0) {
+    const names = listed.json.skipped.map((s) => `${s?.shelf ?? '?'} (${s?.code ?? 'unreadable'})`).join(', ');
+    throw new Error(`nb list --json skipped ${listed.json.skipped.length} shelf file(s) it could not read: ${names}; refusing to plan from a partial index`);
   }
   const dir = listed.json.dir;
   const store = new Map();

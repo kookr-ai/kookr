@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSlugAliases } from '../plugin/hooks/lib/notebook-layers.mjs';
@@ -696,6 +696,23 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
     expect(readLessons(dir, 'code-review@repo-one')).toHaveLength(1);
   });
 
+  test('a move that nb fails stops the run with nb\'s message; it is not logged as a skip', () => {
+    // nb 0.8.0 refuses to write a shelf that holds git merge-conflict markers, and reports that under
+    // --json as an error object on stdout. The run must stop there with both copies still in place.
+    const dir = store();
+    writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
+    writeShelf(dir, 'code-review@repo-two', L([5, SAME]));
+    writeFileSync(join(dir, 'code-review.md'), '<<<<<<< HEAD\n+2\tours\n=======\n+2\ttheirs\n>>>>>>> other\n');
+    commitAll(dir);
+    const { result, text } = run(dir, { apply: true, shim: true });
+    expect(result.ok, text).toBe(false);
+    expect(result.error).toMatch(/nb move failed for .*code-review/);
+    expect(text).toContain('FAILED');
+    expect(text).not.toMatch(/SKIP unknown/);
+    expect(readLessons(dir, 'code-review@repo-one')).toEqual([[3, SAME]]);
+    expect(readLessons(dir, 'code-review@repo-two')).toEqual([[5, SAME]]);
+  });
+
   test('moving a shelf\'s last lesson leaves no file behind and nothing uncommitted', () => {
     const dir = store();
     writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
@@ -704,8 +721,10 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
     const { result } = run(dir, { apply: true, shim: true });
     expect(result.ok).toBe(true);
     // nb 0.8.0 deletes a shelf file itself once it is emptied, by a move as well as by an rm, and the
-    // shim commits that deletion with the command. (nb before 0.8.0 left a 0-byte file after a move; the
-    // script still deletes one if it finds it, which scripts/lib/nb-sim.test.ts covers.)
+    // shim commits that deletion with the command. (nb before 0.8.0 left a 0-byte file after a move. The
+    // script still has the loop that deletes and commits one, for a run against an older nb; with the
+    // pinned 0.8.0 that loop finds nothing, so no test here exercises it. The helper it calls,
+    // reapZeroByteShelf, is covered in scripts/lib/nb-sim.test.ts.)
     expect(fileExists(dir, 'code-review@repo-two')).toBe(false); // best copy moved out
     expect(fileExists(dir, 'code-review@repo-one')).toBe(false); // other copy rm'd
     expect(git(dir, 'status', '--porcelain')).toBe('');

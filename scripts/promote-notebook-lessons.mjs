@@ -552,7 +552,8 @@ export function runPromotion({
   }
   // nb before 0.8.0 left a 0-byte file when a move took a shelf's last lesson
   // (hidden from `nb list`, still on disk). 0.8.0 deletes the file itself, so this
-  // finds nothing there; it stays for a run against an older `nb`. Delete exactly
+  // finds nothing there; it stays for a run against an older `nb` (`--nb`) and is
+  // not exercised by the tests, which run the pinned version. Delete exactly
   // such files (size 0, only shelves this run moved a lesson out of) and commit
   // each deletion.
   for (const shelf of [...new Set(result.performed.map((p) => p.from))].sort()) {

@@ -5,7 +5,7 @@
 // Most tests put a fake `nb` (a shell script) first on PATH that answers
 // `nb list --json --limit 1000` from a fixture, and fails loudly on any other call,
 // so they also prove WHICH `nb` command the hook runs. One test runs the real
-// `nb` 0.7.0 through bin/nb.js against a throwaway NB_DIR (never the live store).
+// `nb` (the pinned agent-notebook) through bin/nb.js against a throwaway NB_DIR (never the live store).
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync, chmodSync, readFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -117,7 +117,7 @@ describe('nb-inject layered index — the 44-shelf store snapshot', () => {
   test('jeanibarz-agent-notebook: 9 project (legacy @agent-notebook shelves included), 15 hidden, 29 shown', () => {
     const r = inject(fixtureRows, { KOOKR_REPO_SLUG: 'jeanibarz-agent-notebook' });
     expect(r.code).toBe(0);
-    expect(r.calls.trim()).toBe('list --json --limit 1000'); // 0.7.0 returns 50 rows without the limit
+    expect(r.calls.trim()).toBe('list --json --limit 1000'); // a bare `nb list` returns only 50 rows
     const project = group(r.out, PROJECT);
     expect(project).toHaveLength(9);
     expect(project).toContain('code-review@agent-notebook'); // legacy slug, resolved by slug-aliases.json
@@ -359,7 +359,7 @@ describe('nb-inject layered index — the 60-row / 8 KB cap', () => {
   });
 });
 
-describe('nb-inject layered index — the real nb 0.7.0 against a throwaway NB_DIR', () => {
+describe('nb-inject layered index — the real nb against a throwaway NB_DIR', () => {
   test('groups real shelves and the hidden count is right', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-nb-layers-real-'));
     const binDir = mkdtempSync(join(tmpdir(), 'kookr-nb-layers-realbin-'));

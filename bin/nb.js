@@ -179,6 +179,12 @@ async function foreignProjectShelf(shelf, slug) {
 async function adviseOnAdd(argv) {
   try {
     if ((argv[0] ?? '').trim() !== 'add') return;
+    // `nb add <shelf> --help` (or `-h`) prints usage and writes nothing since
+    // agent-notebook 0.8.0, so there is no lesson to advise about. A help token
+    // after `--` is literal text, as in the package's own parsing.
+    const end = argv.indexOf('--');
+    const options = end === -1 ? argv : argv.slice(0, end);
+    if (options.includes('--help') || options.includes('-h')) return;
     // First positional after `add`; `--reason`/`--note` take a value that is not the shelf.
     let shelf;
     for (let i = 1; i < argv.length; i++) {

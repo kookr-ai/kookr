@@ -42,19 +42,6 @@ afterEach(() => {
 });
 
 /** Run `node bin/nb.js <argv>` with NB_DIR=dir; capture stdout/exit. */
-/**
- * The shim's own stderr: everything except the `note: created new shelf "<name>"`
- * line that agent-notebook itself prints (since 0.8.0) when an `add` starts a
- * shelf. The advisory tests assert what the SHIM says, and most of them add to a
- * shelf that does not exist yet.
- */
-function shimStderr(stderr: string | null): string {
-  return (stderr ?? '')
-    .split('\n')
-    .filter((line) => !line.startsWith('note: created new shelf '))
-    .join('\n');
-}
-
 function nb(args: string[], extraEnv: Record<string, string> = {}): { code: number; out: string } {
   try {
     const out = execFileSync('node', [BIN, ...args], {
@@ -67,6 +54,19 @@ function nb(args: string[], extraEnv: Record<string, string> = {}): { code: numb
     const err = e as { status?: number; stdout?: Buffer | string };
     return { code: err.status ?? -1, out: err.stdout?.toString() ?? '' };
   }
+}
+
+/**
+ * The shim's own stderr: everything except the `note: created new shelf "<name>"`
+ * line that agent-notebook itself prints (since 0.8.0) when an `add` starts a
+ * shelf. The advisory tests assert what the SHIM says, and most of them add to a
+ * shelf that does not exist yet.
+ */
+function shimStderr(stderr: string | null): string {
+  return (stderr ?? '')
+    .split('\n')
+    .filter((line) => !line.startsWith('note: created new shelf '))
+    .join('\n');
 }
 
 function git(args: string[]): string {
@@ -292,6 +292,20 @@ describe('bin/nb.js — placement advisories on `add` (stderr only, never a refu
     expect(r.code).toBe(0);
     expect(r.err).toMatch(/advisory: fleet-global is written only by promotion/);
     expect(nb(['show', 'fleet-global']).out).toContain('host fact');
+  });
+
+  test('asking for help on add writes nothing, so it gets no advisory', () => {
+    for (const flag of ['--help', '-h']) {
+      const r = nbErr(['add', 'fleet-global', flag], {});
+      expect(r.code, flag).toBe(0);
+      expect(r.err, flag).toBe('');
+    }
+    expect(nb(['show', 'fleet-global']).out).not.toContain('--help');
+    // After `--` the token is the lesson text: it is written, and the advisory applies.
+    const literal = nbErr(['add', 'fleet-global', '--', '--help'], {});
+    expect(literal.code).toBe(0);
+    expect(literal.err).toMatch(/advisory: fleet-global is written only by promotion/);
+    expect(nb(['show', 'fleet-global']).out).toContain('--help');
   });
 
   test('add to fleet-global is silent when KOOKR_NB_CURATOR is set', () => {

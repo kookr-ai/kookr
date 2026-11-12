@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { applyMove, baselineScores, cloneStore, decideStep, noteMoved, dedupKey, entryId, exactKey, maxLines, predictMove, shelfNameProblem } from './nb-sim.mjs';
-import { createNbClient, nbMove, readShelf, reapZeroByteShelf, readFileOrderIds } from './nb-client.mjs';
+import { createNbClient, nbMove, readShelf, reapZeroByteShelf, readFileOrderIds, snapshotStore } from './nb-client.mjs';
 import { RAW_NB, cleanEnv, destroy, makeStore, readLessons, writeShelf, type Lesson } from './nb-test-helpers';
 import { existsSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -277,12 +277,33 @@ describe('parity with the real nb binary', () => {
     const listed = client.runJson(['list', '--json']);
     expect(listed.json.rows.map((r: { shelf: string }) => r.shelf)).toEqual(['t@canon']);
     expect(reapZeroByteShelf(dir, 's@legacy')).toBe('absent'); // nothing left to reap
+  });
 
-    // nb before 0.8.0 left a 0-byte file behind; one that is already in a store is still reaped.
-    writeFileSync(join(dir, 'old@legacy.md'), '');
-    expect(reapZeroByteShelf(dir, 'old@legacy')).toBe('deleted');
-    expect(existsSync(join(dir, 'old@legacy.md'))).toBe(false);
-    expect(reapZeroByteShelf(dir, 'old@legacy')).toBe('absent');
+  test('a move that nb fails is an error carrying nb\'s message, not a skip (0.8.0 prints a JSON error object on stdout)', () => {
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv() });
+    writeShelf(dir, 's@legacy', [[2, 'only lesson']]);
+    // The raw result: stdout parses, but it is nb's failure object, so runJson must not call it ok.
+    const raw = client.runJson(['move', 's@legacy', 't@canon', 'ffffff', '--json', '--reason', 'consolidate']);
+    expect(raw.status).toBe(1);
+    expect(raw.ok).toBe(false);
+    expect(raw.errorClass).toBe('no_match');
+    expect(raw.error).toContain('no entry matches');
+    const r = nbMove(client, 's@legacy', 't@canon', 'ffffff');
+    expect(r).toMatchObject({ moved: false, reason: 'error' });
+    expect(r.error).toContain('no entry matches');
+    expect(readLessons(dir, 's@legacy')).toHaveLength(1); // nothing was written
+  });
+
+  test('snapshotStore refuses a listing that skipped a shelf file (0.8.0 lists the rest and exits 0)', () => {
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv() });
+    writeShelf(dir, 'good', [[1, 'a lesson']]);
+    expect(snapshotStore(client).store.has('good')).toBe(true);
+    writeFileSync(join(dir, 'bad name.md'), '+1\tnot a valid shelf name\n');
+    expect(() => snapshotStore(client)).toThrow(/skipped 1 shelf file\(s\).*bad name.*partial index/);
   });
 });
 

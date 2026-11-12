@@ -11,7 +11,7 @@
 //
 // Rules this module owns, so no caller re-implements them:
 //   * Split on the LAST `@`. `a@b@c` is base `a@b`, slug `c`; `a@@c` is base `a@`.
-//   * The slug is compared case-insensitively after trimming (`nb` 0.7.0 accepts
+//   * The slug is compared case-insensitively after trimming (`nb` accepts
 //     `Code-Review@Kookr-AI-Kookr`).
 //   * A legacy slug (an alias source in plugin/notebooks/slug-aliases.json, e.g.
 //     `agent-notebook`) is the SAME repo as its canonical slug

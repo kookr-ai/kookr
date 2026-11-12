@@ -245,7 +245,7 @@ export function printPlan({ plan, snapshot, cap, forceLow, log }) {
   log(`  existing lessons lowered by one point (aging): ${lowered.length}`);
   for (const t of lowered) log(`    ${t.shelf} ${t.id} ${fmtScore(t.start)} -> ${fmtScore(t.end)} ${clip(t.text, 60)}${t.wasMoved ? '   [a lesson moved earlier in this plan]' : ''}`);
   log(`  moves: ${steps.filter((s) => s.decision.action === 'move').length}   skipped: ${steps.filter((s) => s.decision.action === 'skip').length}`);
-  log(`  legacy shelves emptied (their 0-byte leftovers will be deleted): ${emptied.length ? emptied.join(', ') : 'none'}`);
+  log(`  legacy shelves emptied (nb removes each file; a 0-byte leftover from an older nb is deleted by this script): ${emptied.length ? emptied.join(', ') : 'none'}`);
   log(`  legacy shelves that will still hold lessons (manual decision): ${holding.length ? holding.join(', ') : 'none'}`);
   log(`  new canonical shelves (described by the seed re-run): ${plan.created.length ? plan.created.join(', ') : 'none'}`);
 }
