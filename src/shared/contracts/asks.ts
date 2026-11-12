@@ -125,7 +125,7 @@ export interface DashboardAnswerInput {
 
 /**
  * A question as the dashboard shows it: no Telegram coordinates, no nonce, plus
- * the short task name Lucy uses. Pending asks and the ones resolved in the last
+ * the short task name Lucy uses. Every pending ask and the ones resolved in the last
  * few minutes are sent together, so a reload or a reconnect ends up with the
  * same list as a tab that saw every change.
  */
@@ -143,18 +143,24 @@ export interface OperatorAskView {
   expiresAt: number;
   answer?: AskAnswer;
   answeredVia?: AskChannel;
+  /** When it closed. Always present on a closed ask (the server works it out for older records). */
   resolvedAt?: number;
   resolution?: AskResolution;
+  /** Whether the answer could be typed into the task's session; `failed` is shown on the card. */
+  taskDelivery?: AskRecord['taskDelivery'];
 }
 
 /** How long a resolved ask stays in the dashboard list, so "answered on Telegram" can be seen. */
 export const OPERATOR_ASK_RESOLVED_VISIBLE_MS = 10 * 60 * 1000;
-/** Most asks sent to the dashboard at once (newest first). */
+/** Most asks sent to the dashboard at once (newest first). Pending asks are never cut; closed ones fill the rest. */
 export const OPERATOR_ASK_MAX_LISTED = 8;
 
-/** A change the ask service announces to listeners: a question was sent, or one left `pending`. */
+/**
+ * A change the ask service announces to listeners: a question was sent (`created`), one left `pending`
+ * (`resolved`), or a closed one learned whether its answer reached the task (`updated`).
+ */
 export interface AskChange {
-  kind: 'created' | 'resolved';
+  kind: 'created' | 'resolved' | 'updated';
   ask: AskRecord;
 }
 

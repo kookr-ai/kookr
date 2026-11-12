@@ -70,11 +70,36 @@ describe('listOperatorAsks', () => {
     expect(list).toEqual([]);
   });
 
-  it('caps the list', () => {
-    const many = Array.from({ length: OPERATOR_ASK_MAX_LISTED + 5 }, (_, i) => ask({ id: `ask-${i}`, createdAt: NOW - i }));
-    const list = listOperatorAsks(many, NOW, names);
+  it('caps the closed questions but never drops a pending one', () => {
+    const closedNewer = Array.from({ length: OPERATOR_ASK_MAX_LISTED + 5 }, (_, i) => ask({
+      id: `closed-${i}`, state: 'answered', resolvedAt: NOW - i, createdAt: NOW - 1000 - i,
+    }));
+    const list = listOperatorAsks([ask({ id: 'old-pending', createdAt: NOW - 9 * 60_000 }), ...closedNewer], NOW, names);
     expect(list).toHaveLength(OPERATOR_ASK_MAX_LISTED);
-    expect(list[0].id).toBe('ask-0');
+    expect(list.map((a) => a.id)).toContain('old-pending');
+    expect(list[0].id).toBe('closed-0');
+    expect(list.at(-1)?.id).toBe('old-pending');
+  });
+
+  it('lists every pending question even beyond the cap', () => {
+    const many = Array.from({ length: OPERATOR_ASK_MAX_LISTED + 1 }, (_, i) => ask({ id: `pending-${i}`, createdAt: NOW - i }));
+    const list = listOperatorAsks([...many, ask({ id: 'closed', state: 'answered', resolvedAt: NOW })], NOW, names);
+    expect(list.map((a) => a.id)).toEqual(many.map((a) => a.id));
+  });
+
+  it('always states when a closed question closed, and does not list an old cancellation as recent', () => {
+    const list = listOperatorAsks([
+      ask({ id: 'answered-old-format', state: 'answered', answeredAt: NOW - 2_000 }),
+      // Written before resolvedAt existed: cancelled 17 hours ago, with a 24-hour timeout still in the future.
+      ask({ id: 'cancelled-old-format', state: 'cancelled', resolution: 'cancelled', createdAt: NOW - 17 * 3_600_000, expiresAt: NOW + 7 * 3_600_000 }),
+    ], NOW, names);
+    expect(list.map((a) => a.id)).toEqual(['answered-old-format']);
+    expect(list[0].resolvedAt).toBe(NOW - 2_000);
+  });
+
+  it('carries whether the answer reached the task', () => {
+    const [view] = listOperatorAsks([ask({ state: 'answered', resolvedAt: NOW, taskDelivery: 'failed' })], NOW, names);
+    expect(view.taskDelivery).toBe('failed');
   });
 });
 

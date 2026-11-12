@@ -190,7 +190,44 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     act(() => { option.focus(); });
     click(option);
     push([answered('dashboard')]);
-    expect(document.activeElement).toBe(q('avatar-ask-dismiss'));
+    // On the card itself, where a stray Enter or Space does nothing.
+    expect(document.activeElement).toBe(q('avatar-ask'));
+    expect(q('avatar-ask')!.dataset.askState).toBe('answered');
+  });
+
+  test('focus the operator moved elsewhere is never pulled back onto a question', () => {
+    render();
+    push([ask()]);
+    const input = q<HTMLInputElement>('avatar-ask-input')!;
+    const elsewhere = document.createElement('input');
+    document.body.appendChild(elsewhere);
+    act(() => { input.focus(); });
+    // A click on a blank part of the page: the box loses focus and the browser names no destination.
+    act(() => { input.blur(); });
+    act(() => { elsewhere.focus(); });
+    // The list changes while they type somewhere else: a second question arrives, then the first is answered on Telegram.
+    push([ask({ id: 'bbbbbbbbbbbb', question: 'Second?' }), ask()], 'bbbbbbbbbbbb');
+    expect(document.activeElement).toBe(elsewhere);
+    push([ask({ id: 'bbbbbbbbbbbb', question: 'Second?' }), answered('telegram')]);
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  test('focus that fell to the page with a blur on a blank click is not moved when the list changes', () => {
+    render();
+    push([ask()]);
+    const input = q<HTMLInputElement>('avatar-ask-input')!;
+    act(() => { input.focus(); });
+    act(() => { input.blur(); });
+    push([ask({ id: 'bbbbbbbbbbbb', question: 'Second?' }), ask()], 'bbbbbbbbbbbb');
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  test('says so on the card when the answer could not be typed into the task', () => {
+    render();
+    push([answered('dashboard', { taskDelivery: 'failed' })]);
+    expect(q('avatar-ask-undelivered')!.textContent).toContain('could not type your answer into the task');
+    push([answered('dashboard', { taskDelivery: 'delivered' })]);
+    expect(q('avatar-ask-undelivered')).toBeNull();
   });
 
   test('keyboard focus moves to the panel, not the top of the page, when the focused card is dismissed', () => {

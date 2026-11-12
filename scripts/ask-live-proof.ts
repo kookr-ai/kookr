@@ -219,6 +219,8 @@ async function main(): Promise<void> {
     const kb1 = ((msg1?.reply_markup as any)?.inline_keyboard ?? []).flat() as Array<{ text: string; callback_data: string }>;
     record('operator receives the question with one button per option', sent1 && kb1.map((b) => b.text).join('|') === 'Deploy|Hold',
       `to chat ${msg1?.chat_id}: ${JSON.stringify(msg1?.text)}\nbuttons: ${kb1.map((b) => b.text).join(' | ')}`);
+    // The agent writes the exit code a moment after the id: wait for it rather than race the two files.
+    await waitFor(() => read('ask1-exit.txt') !== '', 10_000);
     const askId = read('ask1-stdout.txt').trim();
     record('non-blocking `kookr ask` printed the ask id and exited 0', /^[0-9a-f]{12}$/.test(askId) && read('ask1-exit.txt').trim() === '0', `stdout=${askId} exit=${read('ask1-exit.txt').trim()}`);
     const ask1 = (await api('GET', `/api/asks/${askId}`)).json.ask as Rec;

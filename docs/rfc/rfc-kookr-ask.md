@@ -174,8 +174,9 @@ deferred dashboard panel. What changed, and what did not:
   moment therefore still give exactly one winner. The record keeps
   `answeredVia` (`telegram` or `dashboard`) and `resolvedAt`.
 * **Change events.** `onChange` announces every question sent (`created`, once
-  its Telegram message exists) and every question that left `pending`
-  (`resolved`). The server pushes the whole current list (pending, plus closed
+  its Telegram message exists), every question that left `pending`
+  (`resolved`), and for an answered one whether the answer could be typed into
+  the task (`updated`). The server pushes the whole current list (pending, plus closed
   in the last 10 minutes) to dashboard sockets as `operatorAsks`, on connect
   and on each event, so a reload or a reconnect converges without replay.
 * **Still no HTTP answer route, but the boundary did move.** The dashboard
@@ -193,7 +194,10 @@ deferred dashboard panel. What changed, and what did not:
   type "Operator answered ask …" into the task's session with `kookr reply`, and
   an agent that wants to skip a question can simply not ask it, so this is
   accepted for a single-operator machine. A per-task credential, which would
-  close it, still does not exist.
+  close it, still does not exist. Every answer sent over the socket, accepted
+  or refused, is written to `<kookrDir>/audit.jsonl` (`ask.dashboardAnswer`),
+  and the Telegram message says "Already answered in Kookr", so an answer the
+  operator did not give is visible in two places.
 * **Owner only.** `operatorAsks` is sent to owner connections only, not through
   the shared fan-out that also reaches all-scope viewers: a question can quote
   anything a task sees.

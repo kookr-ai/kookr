@@ -32,6 +32,8 @@ export interface BriefingTask {
 export const MAX_BRIEFING_CHARS = 2500;
 export const MAX_LISTED_ACTIVE_TASKS = 15;
 export const MAX_LISTED_RECENT_ENDED = 6;
+/** The questions' share of the briefing, so long questions cannot push the task counts and list out of it. */
+const MAX_ASK_BRIEFING_CHARS = 1100;
 const MAX_LISTED_ASKS = 4;
 /** A question longer than this is cut in the briefing; the full text is on the card and on Telegram. */
 const MAX_BRIEFING_QUESTION_CHARS = 220;
@@ -88,6 +90,7 @@ function askOutcome(ask: OperatorAskView, nowMs: number): string {
     return `the operator answered "${oneLine(chosen, 80)}" ${where} ${when}`;
   }
   if (ask.state === 'expired') return `it expired with no answer ${when}`;
+  if (ask.resolution === 'task_gone') return `the task ended before an answer was given ${when}`;
   return `the task withdrew it ${when}`;
 }
 
@@ -112,8 +115,7 @@ function buildAskBriefingLines(asks: readonly OperatorAskView[], nowMs: number):
       lines.push(`- ${askWho(ask)} asked: ${oneLine(ask.question, MAX_BRIEFING_QUESTION_CHARS)} Outcome: ${askOutcome(ask, nowMs)}.`);
     }
   }
-  lines.push('');
-  return lines;
+  return [capLines(lines, MAX_ASK_BRIEFING_CHARS), ''];
 }
 
 export function buildLucyLiveBriefing(tasks: readonly BriefingTask[], nowMs: number, asks: readonly OperatorAskView[] = []): string {

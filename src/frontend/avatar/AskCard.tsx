@@ -44,6 +44,9 @@ function chosenText(ask: OperatorAskView): string {
   return ask.answer.kind === 'option' ? ask.answer.label : ask.answer.text;
 }
 
+/** Shown, and announced, when the answer was recorded but Kookr could not type it into the task's session. */
+export const UNDELIVERED_TEXT = 'Kookr could not type your answer into the task. It is recorded, and the task can still read it.';
+
 /** A question shortened for a button's accessible name; the full text is in the card. */
 function shortQuestion(question: string): string {
   const flat = question.replace(/\s+/g, ' ').trim();
@@ -73,7 +76,8 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss }: AskCardProp
   if (ask.state !== 'pending') {
     const outcome = askOutcome(ask);
     return (
-      <li className={`avatar-ask avatar-ask-closed${outcome.answered ? ' avatar-ask-answered' : ''}`} data-testid="avatar-ask" data-ask-id={ask.id} data-ask-state={ask.state}>
+      // Focusable from script only: the panel moves focus here when the control that had it went away with the pending card.
+      <li className={`avatar-ask avatar-ask-closed${outcome.answered ? ' avatar-ask-answered' : ''}`} tabIndex={-1} data-testid="avatar-ask" data-ask-id={ask.id} data-ask-state={ask.state}>
         <div className="avatar-ask-head">
           <span className={outcome.answered ? 'avatar-ask-check' : 'avatar-ask-dash'} aria-hidden="true" />
           {/* Not a live region: this card is mounted with its text already in it, which screen readers
@@ -91,6 +95,9 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss }: AskCardProp
           </button>
         </div>
         <p className="avatar-ask-question avatar-ask-question-closed">{ask.question}</p>
+        {ask.state === 'answered' && ask.taskDelivery === 'failed' && (
+          <p className="avatar-ask-warning" data-testid="avatar-ask-undelivered">{UNDELIVERED_TEXT}</p>
+        )}
       </li>
     );
   }
@@ -109,7 +116,7 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss }: AskCardProp
   };
 
   return (
-    <li className="avatar-ask avatar-ask-pending" data-testid="avatar-ask" data-ask-id={ask.id} data-ask-state="pending">
+    <li className="avatar-ask avatar-ask-pending" tabIndex={-1} data-testid="avatar-ask" data-ask-id={ask.id} data-ask-state="pending">
       <div className="avatar-ask-head">
         <span className="avatar-mark-diamond" aria-hidden="true" />
         <span className="avatar-ask-who" title={who}>{who}</span>

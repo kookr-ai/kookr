@@ -195,9 +195,10 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   // What a screen reader is told about questions from tasks: that one arrived (Lucy speaks the question
   // itself, so only a short notice) and how one ended (which she does not say). A new entry per event.
   const [askNotice, setAskNotice] = useState<{ seq: number; text: string } | null>(null);
-  // The card that last held keyboard focus. A card is replaced when its question closes and removed when
-  // it is dismissed, which would drop focus to the top of the page.
-  const focusedAskIdRef = useRef<string | null>(null);
+  // The control inside a question card that holds keyboard focus, and its card. A card is replaced when its
+  // question closes and removed when it is dismissed; the focused control then disappears and the browser
+  // drops focus to the top of the page. Only that case is repaired (see the effect below).
+  const focusedAskControlRef = useRef<{ element: HTMLElement; askId: string } | null>(null);
 
   const viewRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<AvatarStage | null>(null);
@@ -288,17 +289,21 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
     markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
   }, [onAnswerAsk]);
-  // After the cards change: if the control that had focus is gone (its card closed or was dismissed),
-  // put focus on that card's new first button, or on the panel itself, never back at the top of the page.
+  // After the cards change: if the control that had focus was removed with its card, put focus on what
+  // replaced the card, or on the panel when the card is gone. Two rules keep this from ever doing harm:
+  // it acts only when that control really left the page and focus fell to the document (focus the operator
+  // moved elsewhere is never taken back), and it lands on the card itself, never on an answer button, so a
+  // stray Enter or Space cannot send an answer.
   const askSignature = asks.map((ask) => `${ask.id}:${ask.state}`).join(',');
   useLayoutEffect(() => {
-    const askId = focusedAskIdRef.current;
+    const focused = focusedAskControlRef.current;
+    if (!focused || focused.element.isConnected) return;
+    focusedAskControlRef.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
     const dock = dockRef.current;
-    if (!askId || !dock || dock.contains(document.activeElement)) return;
-    const card = dock.querySelector<HTMLElement>(`[data-ask-id="${askId}"]`);
-    const target = card?.querySelector<HTMLElement>('button') ?? dock;
-    if (!card) focusedAskIdRef.current = null;
-    target.focus();
+    if (!dock) return;
+    (dock.querySelector<HTMLElement>(`[data-ask-id="${focused.askId}"]`) ?? dock).focus();
   }, [askSignature]);
 
   // A replay must not keep talking after the panel is gone.
@@ -693,12 +698,15 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
           // Stated because `list-style: none` makes some browsers drop the list role, and its label with it.
           role="list"
           onFocus={(event) => {
-            focusedAskIdRef.current = (event.target as HTMLElement).closest<HTMLElement>('[data-ask-id]')?.dataset.askId ?? null;
+            const element = event.target as HTMLElement;
+            const askId = element.closest<HTMLElement>('[data-ask-id]')?.dataset.askId;
+            focusedAskControlRef.current = askId ? { element, askId } : null;
           }}
           onBlur={(event) => {
-            // Focus moved somewhere else on purpose. A control that is removed while focused reports no
-            // destination; that case is the one the effect above repairs.
-            if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) focusedAskIdRef.current = null;
+            // A control that is still in the page lost focus because the operator moved it (another field,
+            // a click on the page, another window): forget it. A control removed while focused is no longer
+            // in the page here, or never reports a blur at all; that is the case the effect above repairs.
+            if ((event.target as HTMLElement).isConnected) focusedAskControlRef.current = null;
           }}
           aria-label={pendingAskCount > 0 ? `Questions waiting for your answer (${pendingAskCount})` : 'Recent questions'}
           data-testid="avatar-asks"

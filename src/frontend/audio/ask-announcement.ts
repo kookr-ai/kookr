@@ -12,11 +12,16 @@
  *    yet (autoplay policy): same outcome, the clip waits as unheard. This is
  *    checked up front, so no audio context is created that could never start.
  *  - Several Kookr tabs open: exactly one speaks. Tabs agree through a Web Lock
- *    plus a short list of already-spoken ask ids in `localStorage`; a hidden tab
- *    waits a moment first so a visible tab wins. A browser without Web Locks
+ *    plus a short list of already-spoken ask ids in `localStorage`; a hidden tab,
+ *    or one that may not start audio yet, waits a moment first so a tab that can
+ *    be heard wins. A browser without Web Locks
  *    (plain http on a LAN address) falls back to the list alone.
- *  - Lucy is already talking (a summary, or a hands-free answer): the question
- *    waits for her to finish, then plays, unless it was answered meanwhile.
+ *  - Lucy is already talking (a summary, a hands-free answer, or an earlier
+ *    question): the question waits for her to finish, then plays, unless it was
+ *    answered meanwhile. Questions are spoken one at a time, in arrival order.
+ *  - A question closed before she got to it is not spoken, and its clip is
+ *    taken out of her message list: an unheard marker for a question that is
+ *    already answered would only mislead.
  *  - The question is answered, cancelled or expired while she is reading it:
  *    she stops ({@link stopAskAnnouncement}).
  *
@@ -27,7 +32,7 @@
 import type { SpeakAudioResponse } from '../../shared/contracts/speech.js';
 import { getDndState } from '../hooks/useDnd.js';
 import { replayClip, replayingClipId, reportClipUnheard, stopReplay, type ReplayResult } from './clip-playback.js';
-import { captureLastClip } from './last-clip.js';
+import { captureLastClip, discardLastClip, getClip } from './last-clip.js';
 import { getSoundPreferenceState } from './sound-preference.js';
 import { subscribeSpeechBus } from './speech-bus.js';
 
@@ -48,6 +53,8 @@ export const SPOKEN_ASKS_STORAGE_KEY = 'kookr.lucy.spokenAsks';
 const SPOKEN_ASKS_KEPT = 20;
 /** A hidden tab waits this long before claiming a question, so a visible tab gets there first. */
 export const HIDDEN_TAB_DELAY_MS = 600;
+/** Pause before the single retry when another clip started first, so that clip is audible (and on the speech bus) by then. */
+const RETRY_PAUSE_MS = 400;
 /** How long a question waits for Lucy to stop talking before it is left as an unheard clip. */
 const BUSY_WAIT_MS = 45_000;
 
@@ -146,15 +153,36 @@ export interface AnnounceAskOptions {
   busyWaitMs?: number;
 }
 
+/** Announcements run one after another: two that start together would both find Lucy silent and one would be dropped. */
+let announcements: Promise<unknown> = Promise.resolve();
+
 /**
  * Fetch Lucy's spoken version of the pending question `askId` and play it,
  * subject to the rules in this file's header. Never throws.
  */
-export async function announceAsk(askId: string, options: AnnounceAskOptions = {}): Promise<AskAnnouncementResult> {
+export function announceAsk(askId: string, options: AnnounceAskOptions = {}): Promise<AskAnnouncementResult> {
+  const run = announcements.then(() => announceNow(askId, options));
+  announcements = run.catch(() => undefined);
+  return run;
+}
+
+/** The clip of a question that closed before or while it was read: stop it, and drop it if nobody heard it. */
+function retireClip(askId: string): void {
+  const clipId = clipByAsk.get(askId);
+  clipByAsk.delete(askId);
+  if (!clipId) return;
+  if (replayingClipId() === clipId) stopReplay('superseded');
+  if (getClip(clipId)?.heard === false) discardLastClip(clipId);
+}
+
+async function announceNow(askId: string, options: AnnounceAskOptions): Promise<AskAnnouncementResult> {
   const fetcher = options.fetcher ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
   const wait = options.sleep ?? sleep;
   try {
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') await wait(HIDDEN_TAB_DELAY_MS);
+    // A tab that is hidden, or that the browser will not let start audio yet, lets the others go first:
+    // if it claimed the question at once, a tab that could have spoken it would stand down for nothing.
+    const hidden = typeof document !== 'undefined' && document.visibilityState !== 'visible';
+    if (hidden || !pageMayStartAudio()) await wait(HIDDEN_TAB_DELAY_MS);
     if (closedAsks.has(askId)) return 'cancelled';
     if (!(await claim(askId))) return 'other-tab';
 
@@ -168,8 +196,8 @@ export async function announceAsk(askId: string, options: AnnounceAskOptions = {
       // Network failure: handled as "no clip" below.
     }
     // 409: closed in the meantime. Anything else without a clip (503: no speech service, 502: it
-    // failed, offline): the card alone carries the question, and another tab or a later attempt
-    // may still speak it.
+    // failed, offline): the card alone carries the question. Nothing retries; the claim is given back
+    // only so a tab that is still about to try (a hidden one, waiting its turn) is not turned away.
     if (status === 409) return 'cancelled';
     if (!payload || typeof payload.audioBase64 !== 'string') {
       releaseClaim(askId);
@@ -184,7 +212,11 @@ export async function announceAsk(askId: string, options: AnnounceAskOptions = {
       durationMs: payload.durationMs,
     });
     clipByAsk.set(askId, clip.clipId);
-    if (closedAsks.has(askId)) return 'cancelled';
+    const cancelled = (): AskAnnouncementResult => {
+      retireClip(askId);
+      return 'cancelled';
+    };
+    if (closedAsks.has(askId)) return cancelled();
 
     if (!getSoundPreferenceState().enabled) {
       reportClipUnheard(clip.clipId, 'muted');
@@ -202,15 +234,18 @@ export async function announceAsk(askId: string, options: AnnounceAskOptions = {
     // She may be talking already (a summary, a hands-free answer): say it when she has finished.
     const busyWaitMs = options.busyWaitMs ?? BUSY_WAIT_MS;
     if (!(await waitForSilence(busyWaitMs))) return 'blocked';
-    if (closedAsks.has(askId)) return 'cancelled';
+    if (closedAsks.has(askId)) return cancelled();
     let result: ReplayResult = await replayClip(clip.clipId, 'ask');
     if (result === 'busy' || result === 'cancelled') {
-      // Another clip started in the same instant: one more try once it is quiet again.
+      // A replay or a speaker button got in first: one more try once that one has had time to start and finish.
+      await wait(RETRY_PAUSE_MS);
       const silent = await waitForSilence(busyWaitMs);
-      if (closedAsks.has(askId)) return 'cancelled';
+      if (closedAsks.has(askId)) return cancelled();
       if (!silent) return 'blocked';
       result = await replayClip(clip.clipId, 'ask');
     }
+    // It may have closed while the audio was being prepared: do not read out an answered question.
+    if (result === 'started' && closedAsks.has(askId)) return cancelled();
     if (result === 'started') return 'started';
     if (result === 'muted') return 'muted';
     if (result === 'blocked' || result === 'busy' || result === 'cancelled') return 'blocked';
@@ -227,11 +262,11 @@ export async function announceAsk(askId: string, options: AnnounceAskOptions = {
 export function stopAskAnnouncement(askId: string): void {
   closedAsks.add(askId);
   if (closedAsks.size > 200) closedAsks.delete(closedAsks.values().next().value as string);
-  const clipId = clipByAsk.get(askId);
-  if (clipId && replayingClipId() === clipId) stopReplay('superseded');
+  retireClip(askId);
 }
 
 export function __resetAskAnnouncementForTests(): void {
   clipByAsk.clear();
   closedAsks.clear();
+  announcements = Promise.resolve();
 }

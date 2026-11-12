@@ -32,6 +32,9 @@ export function askTaskName(rawName: string | undefined): string | undefined {
 
 export function toOperatorAskView(ask: AskRecord, taskName: TaskNameLookup): OperatorAskView {
   const name = askTaskName(taskName(ask.taskId));
+  // A closed ask always carries the time it closed, worked out here once, so the browser and Lucy's
+  // briefing never have to guess it from other fields.
+  const resolvedAt = ask.state === 'pending' ? undefined : closedAt(ask);
   return {
     id: ask.id,
     taskId: ask.taskId,
@@ -45,28 +48,39 @@ export function toOperatorAskView(ask: AskRecord, taskName: TaskNameLookup): Ope
     expiresAt: ask.expiresAt,
     ...(ask.answer !== undefined ? { answer: ask.answer } : {}),
     ...(ask.answeredVia !== undefined ? { answeredVia: ask.answeredVia } : {}),
-    ...(ask.resolvedAt !== undefined ? { resolvedAt: ask.resolvedAt } : {}),
+    ...(resolvedAt !== undefined ? { resolvedAt } : {}),
     ...(ask.resolution !== undefined ? { resolution: ask.resolution } : {}),
+    ...(ask.taskDelivery !== undefined ? { taskDelivery: ask.taskDelivery } : {}),
   };
 }
 
-/** When a closed ask closed; older records carry no `resolvedAt`, so fall back to what they do carry. */
+/**
+ * When a closed ask closed. Records written before `resolvedAt` existed carry less: an answered one
+ * has `answeredAt`, an expired one closed at `expiresAt`, and for a cancelled one the time is not
+ * recorded at all, so the earliest moment it could have been (`createdAt`) is used; that keeps an old
+ * cancellation from being listed as "just closed" until its long-gone expiry.
+ */
 function closedAt(ask: AskRecord): number {
-  return ask.resolvedAt ?? ask.answeredAt ?? ask.expiresAt;
+  if (ask.resolvedAt !== undefined) return ask.resolvedAt;
+  if (ask.answeredAt !== undefined) return ask.answeredAt;
+  return ask.state === 'expired' ? ask.expiresAt : ask.createdAt;
 }
 
 /**
- * The asks the dashboard shows, newest first: pending ones, then those closed
- * within {@link OPERATOR_ASK_RESOLVED_VISIBLE_MS}. A question whose Telegram
- * message was never sent is left out on both counts: it was never asked.
+ * The asks the dashboard shows, newest first. Every pending question is listed, however many closed
+ * ones are newer: a task is waiting on it. Questions closed within
+ * {@link OPERATOR_ASK_RESOLVED_VISIBLE_MS} then fill what is left of {@link OPERATOR_ASK_MAX_LISTED}.
+ * A question whose Telegram message was never sent is left out on both counts: it was never asked.
  */
 export function listOperatorAsks(asks: readonly AskRecord[], nowMs: number, taskName: TaskNameLookup): OperatorAskView[] {
-  return asks
-    .filter((ask) => ask.delivery !== undefined && ask.resolution !== 'delivery_failed')
-    .filter((ask) => ask.state === 'pending' || nowMs - closedAt(ask) <= OPERATOR_ASK_RESOLVED_VISIBLE_MS)
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, OPERATOR_ASK_MAX_LISTED)
-    .map((ask) => toOperatorAskView(ask, taskName));
+  const asked = asks.filter((ask) => ask.delivery !== undefined && ask.resolution !== 'delivery_failed');
+  const newestFirst = (a: AskRecord, b: AskRecord): number => b.createdAt - a.createdAt;
+  const pending = asked.filter((ask) => ask.state === 'pending').sort(newestFirst);
+  const closed = asked
+    .filter((ask) => ask.state !== 'pending' && nowMs - closedAt(ask) <= OPERATOR_ASK_RESOLVED_VISIBLE_MS)
+    .sort(newestFirst)
+    .slice(0, Math.max(0, OPERATOR_ASK_MAX_LISTED - pending.length));
+  return [...pending, ...closed].sort(newestFirst).map((ask) => toOperatorAskView(ask, taskName));
 }
 
 function endSentence(text: string): string {

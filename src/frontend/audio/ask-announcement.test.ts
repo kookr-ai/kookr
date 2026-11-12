@@ -180,6 +180,36 @@ describe('announceAsk', () => {
     expect(FakeAudioContext.instances).toHaveLength(1);
   });
 
+  test('two questions waiting for her to finish are both spoken, one after the other', async () => {
+    const speaker = {};
+    emitSpeechGenerating(speaker);
+    const fetcher = vi.fn(async (url: RequestInfo | URL) => speakResponse({ clipId: String(url).includes(ASK) ? 'clip-ask-1' : 'clip-ask-2' })) as unknown as typeof fetch;
+    const first = announceAsk(ASK, { fetcher });
+    const second = announceAsk('bbbbbbbbbbbb', { fetcher });
+    await vi.waitFor(() => expect(getClipHistory()).toHaveLength(1));
+    emitSpeechIdle(speaker);
+    expect(await first).toBe('started');
+    expect(replayingClipId()).toBe('clip-ask-1');
+    // The second one waits while the first is being read, then plays.
+    await vi.waitFor(() => expect(getClipHistory()).toHaveLength(2));
+    expect(FakeAudioContext.instances).toHaveLength(1);
+    FakeAudioContext.instances[0].sources[0].onended?.();
+    expect(await second).toBe('started');
+    expect(replayingClipId()).toBe('clip-ask-2');
+  });
+
+  test('a tab that may not start audio waits before claiming, so a tab that can speak goes first', async () => {
+    vi.stubGlobal('navigator', { userActivation: { hasBeenActive: false } });
+    const sleep = vi.fn(async () => {
+      // While this tab waited, a tab the operator has clicked in claimed the question.
+      localStorage.setItem(SPOKEN_ASKS_STORAGE_KEY, JSON.stringify([ASK]));
+    });
+    const fetcher = fetcherOk();
+    expect(await announceAsk(ASK, { fetcher, sleep })).toBe('other-tab');
+    expect(sleep).toHaveBeenCalledWith(HIDDEN_TAB_DELAY_MS);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   test('gives up, leaving an unheard message, when she is still talking after the wait', async () => {
     emitSpeechGenerating({});
     expect(await announceAsk(ASK, { fetcher: fetcherOk(), busyWaitMs: 5 })).toBe('blocked');
@@ -191,6 +221,16 @@ describe('announceAsk', () => {
     stopAskAnnouncement(ASK);
     expect(replayingClipId()).toBeNull();
     expect(FakeAudioContext.instances[0].sources[0].stop).toHaveBeenCalled();
+    // Nobody heard it to the end, and the question is closed: no unheard marker is left behind.
+    expect(getClipHistory()).toHaveLength(0);
+  });
+
+  test('a question answered while muted leaves no unheard message behind', async () => {
+    setSoundEnabled(false);
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('muted');
+    expect(getClipHistory()).toHaveLength(1);
+    stopAskAnnouncement(ASK);
+    expect(getClipHistory()).toHaveLength(0);
   });
 
   test('does not stop another clip when a different question closes', async () => {
@@ -206,6 +246,7 @@ describe('announceAsk', () => {
     }) as unknown as typeof fetch;
     expect(await announceAsk(ASK, { fetcher, sleep: noWait })).toBe('cancelled');
     expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(getClipHistory()).toHaveLength(0);
   });
 
   test('reports a closed question (409) and a missing speech service without throwing', async () => {

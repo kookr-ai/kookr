@@ -3,7 +3,7 @@
  * and stays in step with Telegram (NOT part of `pnpm test`).
  *
  *   pnpm build:frontend
- *   node --import tsx scripts/ask-lucy-browser-proof.ts [--out <dir>] [--tts-url http://127.0.0.1:8004]
+ *   node --import tsx scripts/ask-lucy-browser-proof.ts [--out <dir>] [--tts-url http://127.0.0.1:8004] [--autoplay-blocked]
  *
  * Companion to `ask-live-proof.ts`, which proves the same record is shared by
  * both channels at the API level. This one looks at what the operator sees: a
@@ -20,10 +20,14 @@
  *      Telegram" without a reload;
  *   4. minimised, the bubble counts the waiting question;
  *   5. a reload shows the same cards and does not make her ask again.
- * Not covered here: a browser that refuses to start audio because nobody has
- * clicked in the page yet. Headless Chromium never refuses (it reports the page
- * as already interacted with, whatever autoplay flag is passed), so that path
- * is exercised only by the unit tests in `ask-announcement.test.ts`.
+ * By default the browser is started with autoplay allowed, which is what the
+ * operator's browser does once they have clicked anywhere in the page.
+ * `--autoplay-blocked` keeps the browser's own policy and covers the other
+ * case: a page nobody has interacted with. Chromium then refuses to start
+ * audio, so Lucy must stay silent, keep the question as an unheard message,
+ * and the Replay button (a real click) must still play it. That run touches
+ * the page with nothing but `goto` until the first question has been decided,
+ * because Playwright's own page scripts and clicks count as interaction.
  * Never touches ~/.kookr or port 4800; only kills the server PID it spawned.
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
@@ -47,6 +51,7 @@ const arg = (name: string): string | undefined => {
   return i > 0 ? process.argv[i + 1] : undefined;
 };
 const ttsUrl = arg('--tts-url');
+const autoplayBlocked = process.argv.includes('--autoplay-blocked');
 
 const results: Array<{ name: string; pass: boolean; evidence: string }> = [];
 function record(name: string, pass: boolean, evidence: string): void {
@@ -132,7 +137,7 @@ async function shot(page: Page, name: string): Promise<string> {
 async function main(): Promise<void> {
   port = await freePort();
   const fake = await startFakeTelegram();
-  const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required', '--mute-audio'] });
+  const browser = await chromium.launch({ args: autoplayBlocked ? ['--mute-audio'] : ['--autoplay-policy=no-user-gesture-required', '--mute-audio'] });
   try {
     // Hermetic: nothing from the operator's shell (telegram, relay, KOOKR_TASK_ID, ...) leaks in.
     server = spawn(process.execPath, ['--import', 'tsx', 'src/server/start.ts'], {
@@ -175,8 +180,18 @@ async function main(): Promise<void> {
     });
     await page.goto(base());
     const dock = page.getByTestId('avatar-dock');
-    await dock.waitFor({ state: 'visible', timeout: 30_000 });
-    record('the dashboard shows Lucy with no question yet', (await page.getByTestId('avatar-ask').count()) === 0, 'avatar panel open, no cards');
+    const lucyLog = (): Rec[] => {
+      try {
+        return readFileSync(join(home, `.kookr-${port}`, 'lucy-interactions.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Rec);
+      } catch { return []; }
+    };
+    if (autoplayBlocked) {
+      // No page script and no click before the first question: either would count as the operator interacting.
+      await sleep(8000);
+    } else {
+      await dock.waitFor({ state: 'visible', timeout: 30_000 });
+      record('the dashboard shows Lucy with no question yet', (await page.getByTestId('avatar-ask').count()) === 0, 'avatar panel open, no cards');
+    }
 
     const ask = async (question: string, options: string[], extra: Rec = {}): Promise<Rec> => {
       const r = await api('POST', '/api/asks', { taskId, question, options, ...extra });
@@ -188,10 +203,27 @@ async function main(): Promise<void> {
     // 1. a question appears, and she reads it out
     const q1 = await ask('The migration renames two billing tables. Run it on production now?', ['Run it now', 'Run it tonight', 'Do not run it'],
       { context: 'Staging ran clean in 40 seconds. Production has about 3 million rows, so expect a short write lock on invoices.' });
+    if (autoplayBlocked) {
+      // Still hands off the page: wait for the clip to be fetched and for her decision to reach the server's log.
+      await waitFor(() => speakStatuses.length > 0, 30_000);
+      const uiEvents = (): Rec[] => lucyLog().filter((l) => l.kind === 'ui').map((l) => l.event as Rec);
+      const logged = await waitFor(() => uiEvents().some((e) => e.type === 'lucy_clip_unheard'), 20_000);
+      const unheard = uiEvents().find((e) => e.type === 'lucy_clip_unheard');
+      const startedUnprompted = uiEvents().some((e) => e.type === 'lucy_clip_started');
+      record('in a page nobody has interacted with, the browser blocks audio: she stays silent and the question waits as unheard',
+        speakStatuses[0] === 200 && logged && unheard?.reason === 'audio_suspended' && !startedUnprompted,
+        `speak route -> ${speakStatuses.join(',')}; logged: ${JSON.stringify(unheard ? { type: unheard.type, reason: unheard.reason } : null)}; any clip started: ${startedUnprompted}`);
+    }
     await card(q1.id).waitFor({ state: 'visible', timeout: 15_000 });
     const cardText = (await card(q1.id).innerText()).replace(/\s+/g, ' ');
     record('the question appears as a card in Lucy\'s panel, with one button per choice', /asks/.test(cardText) && (await card(q1.id).getByTestId('avatar-ask-option').count()) === 3, cardText);
-    if (ttsUrl) {
+    if (ttsUrl && autoplayBlocked) {
+      const marker = await page.getByTestId('avatar-replay').getByTestId('avatar-unheard-dot').count();
+      await page.getByTestId('avatar-replay').click();
+      const replayed = await waitFor(async () => (await dock.getAttribute('data-avatar-state')) === 'speaking', 10_000, 100);
+      record('the Replay button shows the unheard marker and then plays the question (replay is not left stuck)', marker === 1 && replayed,
+        `unheard marker on Replay: ${marker}; panel state after the click: ${await dock.getAttribute('data-avatar-state')}`);
+    } else if (ttsUrl) {
       const spoke = await waitFor(async () => (await dock.getAttribute('data-avatar-state')) === 'speaking', 30_000, 100);
       const said = (await page.getByTestId('avatar-message').first().innerText().catch(() => '')).replace(/\s+/g, ' ');
       record('Lucy reads the question out by herself (real speech service)', spoke && speakStatuses[0] === 200 && /needs your input/.test(said) && /Run it now, Run it tonight, or Do not run it/.test(said),

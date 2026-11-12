@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { OPERATOR_ASK_RESOLVED_VISIBLE_MS, type OperatorAskView } from '../../shared/contracts/asks.js';
 import {
+  ASK_REPLY_TIMEOUT_MS,
   __resetOperatorAsksForTests,
   dismissOperatorAsk,
   getOperatorAsksSnapshot,
@@ -81,6 +82,35 @@ describe('operator asks store', () => {
     expect(getOperatorAsksSnapshot().submit['a1b2c3d4e5f6']).toEqual({ status: 'refused', message: 'The answer was refused.' });
     markAskSubmitting('a1b2c3d4e5f6', false);
     expect(getOperatorAsksSnapshot().submit['a1b2c3d4e5f6']).toMatchObject({ status: 'refused', message: expect.stringContaining('Not connected') });
+  });
+
+  test('an answer nobody confirmed stops "sending" after a while, so the operator can try again', () => {
+    vi.useFakeTimers();
+    try {
+      handleOperatorAsks([ask()]);
+      markAskSubmitting('a1b2c3d4e5f6', true);
+      // Later pushes still list it as pending: the answer never arrived.
+      handleOperatorAsks([ask()]);
+      vi.advanceTimersByTime(ASK_REPLY_TIMEOUT_MS - 1);
+      expect(getOperatorAsksSnapshot().submit['a1b2c3d4e5f6']).toEqual({ status: 'sending' });
+      vi.advanceTimersByTime(1);
+      expect(getOperatorAsksSnapshot().submit['a1b2c3d4e5f6']).toEqual({ status: 'refused', message: 'Kookr did not confirm your answer. Try again.' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a confirmed answer is not turned into a refusal by the timer', () => {
+    vi.useFakeTimers();
+    try {
+      handleOperatorAsks([ask()]);
+      markAskSubmitting('a1b2c3d4e5f6', true);
+      handleOperatorAskResult('a1b2c3d4e5f6', true);
+      vi.advanceTimersByTime(ASK_REPLY_TIMEOUT_MS * 2);
+      expect(getOperatorAsksSnapshot().submit).toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('drops a stale notice once the card itself shows the outcome', () => {

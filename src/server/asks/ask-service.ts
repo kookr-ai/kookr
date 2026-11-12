@@ -82,9 +82,11 @@ export class AskService {
   // ---------------------------------------------------------------- listeners
 
   /**
-   * Hear about every question sent (`created`, once its Telegram message exists)
-   * and every question that left `pending` (`resolved`: answered on either
-   * channel, expired, cancelled, or its task went away). Returns an unsubscribe
+   * Hear about every question sent (`created`, once its Telegram message exists),
+   * every question that left `pending` (`resolved`: answered on either
+   * channel, expired, cancelled, or its task went away) and, for an answered
+   * one, the moment it is known whether the answer could be typed into the
+   * task (`updated`). Returns an unsubscribe
    * function. A listener that throws is logged and never affects the ask.
    */
   onChange(listener: (change: AskChange) => void): () => void {
@@ -412,6 +414,8 @@ export class AskService {
     const delivered = await this.deps.deliverToTask(ask.taskId, `Operator answered ask ${ask.id}: ${label}`)
       .catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
     this.deps.store.update(ask.id, (a) => { a.taskDelivery = delivered.ok ? 'delivered' : 'failed'; });
+    // The dashboard closed its card on `resolved`; tell it now whether the answer reached the task.
+    this.emit('updated', ask.id);
 
     const done = this.deps.store.get(ask.id) as AskRecord;
     const chosen = answer.kind === 'option' ? answer.label : answer.text;

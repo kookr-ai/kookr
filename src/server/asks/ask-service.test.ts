@@ -593,9 +593,10 @@ describe('AskService.answerFromDashboard (Lucy) and channel sync', () => {
     await h.service.sweepExpired();
     expect(h.store.get(expired.id)?.state).toBe('expired');
 
+    // An answered question is announced twice: when it closes, then when it is known whether the answer reached the task.
     expect(seen).toEqual([
-      'created:pending:-:sent', 'resolved:answered:answered:sent',
-      'created:pending:-:sent', 'resolved:answered:answered:sent',
+      'created:pending:-:sent', 'resolved:answered:answered:sent', 'updated:answered:answered:sent',
+      'created:pending:-:sent', 'resolved:answered:answered:sent', 'updated:answered:answered:sent',
       'created:pending:-:sent', 'resolved:cancelled:cancelled:sent',
       'created:pending:-:sent', 'resolved:expired:expired:sent',
     ]);
@@ -603,7 +604,16 @@ describe('AskService.answerFromDashboard (Lucy) and channel sync', () => {
 
     off();
     await createOk({ taskId: 't2', question: 'Five?' });
-    expect(seen).toHaveLength(8);
+    expect(seen).toHaveLength(10);
+  });
+
+  it('tells listeners when the answer could not be typed into the task', async () => {
+    const deliveries: Array<string | undefined> = [];
+    h.service.onChange((c) => { if (c.kind !== 'created') deliveries.push(`${c.kind}:${c.ask.taskDelivery ?? 'unknown'}`); });
+    h.deliver.mockResolvedValueOnce({ ok: false, reason: 'session gone' });
+    const ask = await createOk();
+    expect((await h.service.answerFromDashboard({ askId: ask.id, optionIndex: 0 })).ok).toBe(true);
+    expect(deliveries).toEqual(['resolved:unknown', 'updated:failed']);
   });
 
   it('never announces a question that could not be sent, and survives a throwing listener', async () => {

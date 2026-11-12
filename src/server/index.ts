@@ -295,6 +295,7 @@ import { AskStore } from './asks/ask-store.js';
 import { AskService } from './asks/ask-service.js';
 import type { AskNotifier, DashboardAnswerInput } from '../shared/contracts/asks.js';
 import { listOperatorAsks } from '../core/operator-asks.js';
+import { appendAuditRow } from '../core/audit-log.js';
 import {
   TaskTailStore,
   readTaskTailConfigFromEnv,
@@ -3760,7 +3761,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const operatorAsksPort = askService
     ? {
       list: () => listOperatorAsks(askService.all(), Date.now(), (taskId) => taskStore.getTask(taskId)?.name),
-      answer: (input: DashboardAnswerInput) => askService.answerFromDashboard(input),
+      // Every answer sent from the dashboard leaves a line in the shared audit log, accepted or
+      // refused: on a loopback server any local process can open the owner socket, so this is the
+      // trace that a question was closed from there. Never the answer text.
+      answer: async (input: DashboardAnswerInput) => {
+        const result = await askService.answerFromDashboard(input);
+        await appendAuditRow(join(kookrDir, 'audit.jsonl'), {
+          type: 'ask.dashboardAnswer',
+          timestamp: new Date().toISOString(),
+          actor: 'owner:dashboard',
+          askId: input.askId,
+          ...(result.ask ? { taskId: result.ask.taskId } : {}),
+          choice: input.optionIndex !== undefined ? `option:${input.optionIndex}` : 'text',
+          outcome: result.ok ? 'recorded' : result.reason,
+          ...(result.ok ? { taskDelivery: result.ask.taskDelivery } : {}),
+        });
+        return result;
+      },
     }
     : undefined;
   if (askService && operatorAsksPort) {

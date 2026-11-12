@@ -176,6 +176,9 @@ way.
 | In both at the same moment | Exactly one wins. The other is told the question was already answered. |
 
 A closed card (answered, expired, or withdrawn by the task) stays for 10 minutes and can be dismissed.
+If Kookr recorded your answer but could not type it into the task's session, the card says so; the task
+can still read the answer from Kookr. If Kookr does not confirm an answer within 10 seconds (the
+connection dropped as you pressed), the card says so and you can press again.
 
 **When she speaks.** Everything else Lucy says follows a press on a speaker button or something you
 said to her. A question is the one thing she says unprompted, under these rules:
@@ -187,7 +190,8 @@ said to her. A question is the one thing she says unprompted, under these rules:
 - not with sound off in Settings or Do Not Disturb on. The clip is then kept in her message list,
   marked unheard, and the Replay button plays it;
 - the same when the browser refuses to start audio because you have not clicked in the page yet;
-- after anything she is already saying; she waits up to 45 seconds, then leaves it as unheard;
+- after anything she is already saying, one question at a time; she waits up to 45 seconds, then
+  leaves it as unheard;
 - she stops if the question is answered, withdrawn or expires while she is reading it.
 
 **Hands-free talk.** With Talk on, the status Lucy answers from also lists the questions that are
@@ -204,7 +208,9 @@ the question is on Telegram only. Questions are sent only to the owner's dashboa
 read-only shared view.
 
 `node --import tsx scripts/ask-lucy-browser-proof.ts` runs this end to end in a headless browser
-against a throwaway server and a fake Telegram, and saves screenshots of the card in each state.
+against a throwaway server and a fake Telegram, and saves screenshots of the card in each state. With
+`--autoplay-blocked` it checks the case where the browser will not start audio because nobody has
+clicked in the page yet.
 
 ## When something goes wrong
 

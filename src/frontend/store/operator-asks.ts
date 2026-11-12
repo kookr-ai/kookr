@@ -34,18 +34,33 @@ export interface OperatorAsksSnapshot {
   submit: Readonly<Record<string, AskSubmitState>>;
 }
 
+/**
+ * How long an answer may stay "sending" with no reply. The reply normally takes a moment; none at all
+ * means the message was lost (the connection dropped right after it left, or the server restarted),
+ * and without this the card would refuse every further press until a reload. Trying again is safe: if
+ * the first answer did get through, the server says "already answered" and the card shows it.
+ */
+export const ASK_REPLY_TIMEOUT_MS = 10_000;
+
 const EMPTY: OperatorAsksSnapshot = Object.freeze({ asks: Object.freeze([]) as readonly OperatorAskView[], submit: Object.freeze({}) });
 
 let serverAsks: readonly OperatorAskView[] = [];
 let dismissed = new Set<string>();
 let submit: Record<string, AskSubmitState> = {};
+const replyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearReplyTimer(askId: string): void {
+  const timer = replyTimers.get(askId);
+  if (timer !== undefined) clearTimeout(timer);
+  replyTimers.delete(askId);
+}
 let snapshot: OperatorAsksSnapshot = EMPTY;
 const listeners = new Set<() => void>();
 const announceListeners = new Set<(ask: OperatorAskView) => void>();
 const closedListeners = new Set<(ask: OperatorAskView) => void>();
 
 /** Words for a refusal the server reported; the fresh list that follows shows the real state of the card. */
-const REFUSAL_TEXT: Record<AnswerRejection | 'unavailable' | 'offline', string> = {
+const REFUSAL_TEXT: Record<AnswerRejection | 'unavailable' | 'offline' | 'no_reply', string> = {
   not_found: 'This question no longer exists.',
   forged: 'The answer was refused.',
   already_answered: 'This question was already answered.',
@@ -57,6 +72,7 @@ const REFUSAL_TEXT: Record<AnswerRejection | 'unavailable' | 'offline', string> 
   task_gone: 'The task is no longer running, so the answer was not delivered.',
   unavailable: 'Questions are not available on this server.',
   offline: 'Not connected to Kookr. Try again in a moment.',
+  no_reply: 'Kookr did not confirm your answer. Try again.',
 };
 
 function publish(): void {
@@ -77,7 +93,10 @@ export function handleOperatorAsks(asks: readonly OperatorAskView[], announce?: 
   for (const id of Object.keys(submit)) {
     const ask = asks.find((a) => a.id === id);
     // The card now shows what happened (answered, expired...), which says more than a stale notice.
-    if (!ask || ask.state !== 'pending') delete submit[id];
+    if (!ask || ask.state !== 'pending') {
+      delete submit[id];
+      clearReplyTimer(id);
+    }
   }
   publish();
   for (const ask of asks) {
@@ -94,6 +113,7 @@ export function handleOperatorAsks(asks: readonly OperatorAskView[], announce?: 
 
 /** Apply an `operatorAskResult` message: the reply to an answer this tab sent. */
 export function handleOperatorAskResult(askId: string, ok: boolean, reason?: string): void {
+  clearReplyTimer(askId);
   if (ok) delete submit[askId];
   else submit[askId] = { status: 'refused', message: REFUSAL_TEXT[(reason ?? 'unavailable') as keyof typeof REFUSAL_TEXT] ?? 'The answer was refused.' };
   publish();
@@ -101,7 +121,16 @@ export function handleOperatorAskResult(askId: string, ok: boolean, reason?: str
 
 /** Note that an answer is on its way, or could not even be sent (`sent` false: the socket is down). */
 export function markAskSubmitting(askId: string, sent: boolean): void {
+  clearReplyTimer(askId);
   submit[askId] = sent ? { status: 'sending' } : { status: 'refused', message: REFUSAL_TEXT.offline };
+  if (sent) {
+    replyTimers.set(askId, setTimeout(() => {
+      replyTimers.delete(askId);
+      if (submit[askId]?.status !== 'sending') return;
+      submit[askId] = { status: 'refused', message: REFUSAL_TEXT.no_reply };
+      publish();
+    }, ASK_REPLY_TIMEOUT_MS));
+  }
   publish();
 }
 
@@ -125,7 +154,7 @@ export function onAskClosed(listener: (ask: OperatorAskView) => void): () => voi
   return () => { closedListeners.delete(listener); };
 }
 
-/** When a closed question closed, as far as the record says. */
+/** When a closed question closed. The server always sends it; the fallback covers an older server. */
 function askClosedAt(ask: OperatorAskView): number {
   return ask.resolvedAt ?? ask.expiresAt;
 }
@@ -157,6 +186,8 @@ export function __resetOperatorAsksForTests(): void {
   serverAsks = [];
   dismissed = new Set();
   submit = {};
+  for (const timer of replyTimers.values()) clearTimeout(timer);
+  replyTimers.clear();
   snapshot = EMPTY;
   listeners.clear();
   announceListeners.clear();
