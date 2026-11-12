@@ -8,6 +8,7 @@ import { inFlightRequestRegistry, startInFlightRequestShutdownLogger } from './i
  * real server — `exit`/`logger` default to `process.exit`/`console`.
  *
  * Fast-prod-restart P1 (docs/rfc/rfc-fast-prod-restart.md): STT/TTS managers
+ * (and Lucy's ears, which has no manager on this deps object)
  * remain on the deps object for callers that still hold them, but routine
  * SIGTERM/SIGINT **detaches** — it does not call `stop()`. Sidecar teardown is
  * operator-driven via `pnpm prod:stop --with-sidecars` or the failed-start

@@ -30,8 +30,7 @@ in [features](../features.md#talk-to-lucy-hands-free-optional-off-by-default).
    `KOOKR_LUCY_EARS_URL=ws://127.0.0.1:8095` (or the address of a recogniser on another machine).
    When `KOOKR_LUCY_EARS_URL` is set, Kookr uses that recogniser and never starts or stops one,
    even if `KOOKR_LUCY_EARS=true` is also set.
-3. Restart Kookr if you changed `.env`.
-4. Open the avatar panel (Settings → Notifications & Alerts → Avatar panel) and press **Talk**.
+3. Open the avatar panel (Settings → Notifications & Alerts → Avatar panel) and press **Talk**.
 
 `GET /api/lucy-live/status` reports whether everything is configured, and if not, what is missing.
 While Kookr is still bringing the recogniser up it answers `available: false, starting: true` with a

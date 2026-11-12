@@ -25,9 +25,9 @@ Usage: prod-stop.sh [--with-sidecars]
   Stop the Kookr production Node process on KOOKR_PORT (default 4800).
 
   --with-sidecars
-      After Node stops, tear down bundled STT/TTS via the shared stop-sidecars
+      After Node stops, tear down bundled STT/TTS and Lucy's ears (KOOKR_LUCY_EARS) via the shared stop-sidecars
       entrypoint (same compose flags as start). Skips foreign stacks when only
-      external KOOKR_STT_URL / KOOKR_TTS_URL are configured.
+      external KOOKR_STT_URL / KOOKR_TTS_URL / KOOKR_LUCY_EARS_URL are configured.
 
   Without --with-sidecars, speech containers are left running (warm restart
   path). Free GPU memory with: pnpm prod:stop --with-sidecars
@@ -196,7 +196,7 @@ stop_node() {
 }
 
 print_gpu_hint() {
-  echo "NOTE: Bundled STT/TTS containers (if any) were left running so the next start can reuse them."
+  echo "NOTE: Bundled STT/TTS/Lucy's-ears containers (if any) were left running so the next start can reuse them."
   echo "      Free GPU / stop speech sidecars with: pnpm prod:stop --with-sidecars"
 }
 

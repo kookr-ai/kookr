@@ -34,6 +34,8 @@ export interface UseLucyLiveResult extends Omit<LucyLiveView, 'errorMessage'> {
   serverStatus: LucyLiveStatus | null;
 }
 
+const STATUS_POLL_MS = 5000;
+
 /** Ask the server whether Lucy live is configured. Null when the question could not be answered. */
 async function fetchStatus(): Promise<LucyLiveStatus | null> {
   try {
@@ -81,6 +83,23 @@ export function useLucyLive(): UseLucyLiveResult {
       cancelled = true;
     };
   }, []);
+
+  // While the server is still bringing up the speech recogniser, ask again so the button
+  // enables itself when it is healthy (the first start downloads about 2.4 GB).
+  const serverStarting = serverStatus?.starting === true;
+  useEffect(() => {
+    if (!serverStarting) return undefined;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      void fetchStatus().then((status) => {
+        if (!cancelled && status) setServerStatus(status);
+      });
+    }, STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [serverStarting]);
 
   useEffect(() => {
     if (!enabled) return undefined;

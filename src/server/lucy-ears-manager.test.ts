@@ -45,6 +45,12 @@ describe('startLucyEars', () => {
     expect(h.getState().phase).toBe('unavailable');
   });
 
+  it('adopts a healthy recogniser even when the nvidia-runtime probe says no GPU (CDI hosts)', async () => {
+    const h = startLucyEars({ earsDir: '/d', io: fakeIo({ hasNvidia: async () => false, isHealthy: async () => true }) });
+    await h.settled;
+    expect(h.getState().phase).toBe('ready');
+  });
+
   it('adopts an already healthy recogniser with no compose call (hand-started or previous run)', async () => {
     const composeUp = vi.fn();
     const composeDown = vi.fn();
@@ -71,7 +77,7 @@ describe('startLucyEars', () => {
     expect(io.clock.t).toBeGreaterThan(0);
   });
 
-  it('tears the container down and explains when health never arrives', async () => {
+  it('leaves the container running (it may be the operator\'s) and explains when health never arrives', async () => {
     const composeDown = vi.fn(async () => {});
     const h = startLucyEars({ earsDir: '/d', io: fakeIo({ composeDown }), startupTimeoutMs: 10_000 });
     await h.settled;
@@ -79,7 +85,17 @@ describe('startLucyEars', () => {
     expect(s.phase).toBe('unavailable');
     expect((s as { reason: string }).reason).toContain('within 10s');
     expect((s as { reason: string }).reason).toContain('KOOKR_LUCY_EARS_HEALTH_TIMEOUT_S');
-    expect(composeDown).toHaveBeenCalledTimes(1);
+    expect(composeDown).not.toHaveBeenCalled();
+  });
+
+  it('spends one startup budget across compose up and the health wait', async () => {
+    const io = fakeIo({ composeUp: async () => { io.clock.t += 8_000; } });
+    const upTimeouts: number[] = [];
+    io.composeUp = async (_f, _e, t) => { upTimeouts.push(t); io.clock.t += 8_000; };
+    const h = startLucyEars({ earsDir: '/d', io, startupTimeoutMs: 10_000, pollIntervalMs: 1000 });
+    await h.settled;
+    expect(upTimeouts).toEqual([10_000]);
+    expect(io.clock.t).toBeLessThanOrEqual(12_000); // not 8s + a fresh 10s
   });
 
   it('reports a failed compose up with its stderr and does not tear down', async () => {

@@ -97,8 +97,6 @@ export function startLucyEars(config: LucyEarsConfig): LucyEarsHandle {
   };
 
   const bringUp = async (): Promise<void> => {
-    if (!(await io.hasNvidia())) return fail(NO_GPU_REASON);
-
     // Warm path: a healthy recogniser (ours from a previous run, or one started by hand
     // under the same compose project) is used as is: no compose change, no download.
     if (await io.isHealthy(port)) {
@@ -106,16 +104,20 @@ export function startLucyEars(config: LucyEarsConfig): LucyEarsHandle {
       return set({ phase: 'ready', url: `ws://127.0.0.1:${port}` });
     }
 
+    // Only now is a GPU needed: adopting a healthy recogniser above must not depend on how
+    // Docker exposes the GPU (a named runtime, CDI), which this probe cannot see.
+    if (!(await io.hasNvidia())) return fail(NO_GPU_REASON);
+
+    const deadline = io.now() + timeoutMs;
     console.log(`[lucy-ears] Starting speech recogniser (port ${port}); the first start downloads about 2.4 GB...`);
     try {
-      await io.composeUp(flags, env, timeoutMs);
+      await io.composeUp(flags, env, Math.max(1000, deadline - io.now()));
     } catch (err) {
       const stderr = (err as { stderr?: string }).stderr ?? '';
       const msg = err instanceof Error ? err.message : String(err);
       return fail(`Failed to start the speech recogniser container: ${msg}${stderr ? ` (${stderr.trim()})` : ''}`);
     }
 
-    const deadline = io.now() + timeoutMs;
     while (io.now() < deadline) {
       if (await io.isHealthy(port)) {
         console.log('[lucy-ears] Speech recogniser is ready');
@@ -123,10 +125,10 @@ export function startLucyEars(config: LucyEarsConfig): LucyEarsHandle {
       }
       await io.sleep(pollMs);
     }
-    // Same as STT: free the GPU on a failed start. The weights volume survives `down`,
-    // so the next start resumes from what was downloaded.
-    await io.composeDown(flags, env).catch(() => {});
-    fail(`The speech recogniser did not become healthy within ${Math.round(timeoutMs / 1000)}s (raise KOOKR_LUCY_EARS_HEALTH_TIMEOUT_S on a slow connection).`);
+    // Not torn down: the container may be an operator's own or still downloading (the weights
+    // volume keeps partial progress), and the next Kookr start adopts it. `pnpm prod:stop
+    // --with-sidecars` frees the GPU.
+    fail(`The speech recogniser did not become healthy within ${Math.round(timeoutMs / 1000)}s (raise KOOKR_LUCY_EARS_HEALTH_TIMEOUT_S on a slow connection). The container was left running; restart Kookr to pick it up.`);
   };
 
   const settled = bringUp().catch((err: unknown) => {

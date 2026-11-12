@@ -103,6 +103,20 @@ describe('createLucyLiveRuntime', () => {
     expect(ws.close).not.toHaveBeenCalled();
   });
 
+  it('a throw while evaluating does not wedge later evaluations', async () => {
+    const ears = fakeEars({ phase: 'starting' });
+    let boom = true;
+    const rt = createLucyLiveRuntime({
+      env: { ...KEYED }, ttsUrl: 'http://tts', ears: ears.handle, warn: () => {},
+      build: async (c) => { if (boom) { boom = false; throw new Error('first'); } return { service: { handleConnection: vi.fn() } as never, bargeIn: 'off' as const,}; },
+    });
+    await rt.ready;
+    ears.set({ phase: 'ready', url: 'ws://127.0.0.1:8095' });
+    await vi.waitFor(() => expect(rt.status().reason).toContain('first'));
+    ears.set({ phase: 'ready', url: 'ws://127.0.0.1:8095' });
+    await vi.waitFor(() => expect(rt.status().available).toBe(true));
+  });
+
   it('a build failure is reported, not thrown', async () => {
     const warn = vi.fn();
     const rt = createLucyLiveRuntime({

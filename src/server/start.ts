@@ -227,7 +227,7 @@ async function main(): Promise<void> {
       port: parseLucyEarsPort(),
       startupTimeoutMs: parseLucyEarsTimeoutMs(),
     });
-  } else if (process.env.KOOKR_LUCY_EARS === 'true' && process.env.KOOKR_LUCY_EARS_URL?.trim()) {
+  } else if ((process.env.KOOKR_LUCY_EARS === 'true' || process.env.KOOKR_LUCY_EARS === '1') && process.env.KOOKR_LUCY_EARS_URL?.trim()) {
     console.log('[lucy-ears] KOOKR_LUCY_EARS_URL is set: using that external recogniser, not managing one');
   }
 

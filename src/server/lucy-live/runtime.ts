@@ -72,7 +72,16 @@ export function createLucyLiveRuntime(deps: LucyLiveRuntimeDeps): LucyLiveRuntim
       warn(status.reason ?? '');
     }
   };
-  const schedule = (): Promise<void> => (evaluating = evaluating.then(evaluate));
+  const safeEvaluate = async (): Promise<void> => {
+    try {
+      await evaluate();
+    } catch (err) {
+      current = undefined;
+      status = { available: false, reason: `Lucy live failed to start: ${err instanceof Error ? err.message : String(err)}` };
+      warn(status.reason ?? '');
+    }
+  };
+  const schedule = (): Promise<void> => (evaluating = evaluating.then(safeEvaluate));
 
   const ready = schedule();
   deps.ears?.onChange(() => { void schedule(); });

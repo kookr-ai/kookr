@@ -1,5 +1,5 @@
 /**
- * Shared STT/TTS compose teardown for `pnpm prod:stop --with-sidecars` (R14).
+ * Shared STT/TTS/Lucy's-ears compose teardown for `pnpm prod:stop --with-sidecars` (R14).
  *
  * Uses the same compose project identity / GPU overlay flags as
  * stt-manager.ts and tts-manager.ts so operator reclaim tears down the
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
       );
     } else if (!sttEnabled && !ttsEnabled) {
       console.warn(
-        '[stop-sidecars] Bundled STT/TTS not enabled (KOOKR_STT / KOOKR_TTS); nothing to tear down.',
+        '[stop-sidecars] Bundled STT/TTS/Lucy ears not enabled (KOOKR_STT / KOOKR_TTS / KOOKR_LUCY_EARS); nothing to tear down.',
       );
     } else {
       console.warn('[stop-sidecars] No bundled speech stack owned by this instance; skipping.');
