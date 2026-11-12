@@ -156,8 +156,16 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
     const text = buildAskSpeech(ask, taskName);
     const voice = speech.getVoice();
     const startedAt = Date.now();
+    const synthesize = speech.synthesize ?? synthesizeSpeech;
+    const request = { ttsUrl: speech.ttsUrl, text, voice, signal: c.req.raw.signal };
     try {
-      const audio = await (speech.synthesize ?? synthesizeSpeech)({ ttsUrl: speech.ttsUrl, text, voice, signal: c.req.raw.signal });
+      // The speech service loads a voice the first time it is used, which can take longer than one
+      // request is allowed (measured: 13 s to load, against a 15 s limit). Questions are rare, so that
+      // first use is often a question. One more try then finds the voice loaded.
+      const audio = await synthesize(request).catch((err: unknown) => {
+        if (err instanceof TTSClientError && err.kind === 'timeout' && !c.req.raw.signal.aborted) return synthesize(request);
+        throw err;
+      });
       const ttsMs = Date.now() - startedAt;
       const clipId = randomUUID();
       try {

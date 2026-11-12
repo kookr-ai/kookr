@@ -201,9 +201,9 @@ send the wrong decision to a task, and that cannot be undone. Press the choice i
 on Telegram.
 
 **What it needs.** Telegram remote chat configured (without it `kookr ask` is unavailable altogether),
-and the speech service (`KOOKR_TTS`) for her voice; without the speech service, or when it fails or
-takes more than 15 seconds (a voice loading for the first time can), the card is shown and nothing is
-played. With the avatar panel switched off nothing is shown or spoken in the dashboard and
+and the speech service (`KOOKR_TTS`) for her voice; without the speech service, or when it fails, the
+card is shown and nothing is played. A voice used for the first time since the speech service started
+takes several seconds to load; Kookr allows for that by trying a second time before giving up. With the avatar panel switched off nothing is shown or spoken in the dashboard and
 the question is on Telegram only. Questions are sent only to the owner's dashboard, never to a
 read-only shared view.
 

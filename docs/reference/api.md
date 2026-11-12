@@ -832,7 +832,7 @@ An agent asks the operator a multiple-choice question over Telegram; the answer 
 | `GET /api/asks?taskId=&state=` | List asks (newest first) plus the enforced `limits`. `state` is `pending`, `answered`, `expired` or `cancelled` |
 | `GET /api/asks/:id` | One ask. `state`, `answer` (`{kind:"option",index,label}` or `{kind:"text",text}`), `resolution` (`answered`, `expired`, `cancelled`, `task_gone`, `delivery_failed`) and `taskDelivery` (`delivered`/`failed`) tell a waiting CLI what happened |
 | `POST /api/asks/:id/cancel` | Cancel a pending ask (edits the Telegram message); `409` when it is no longer pending |
-| `POST /api/asks/:id/speak` | Lucy's voice for a pending ask: who is asking, the question and the choices (the longer `context` is not read out). Returns the same shape as the other speak routes (`text`, `audioBase64` WAV, `durationMs`, `clipId`, `subject?`). `404` unknown ask, `409 not_pending`, `503 tts_not_configured`, `502 tts_failed`. Does not change the ask |
+| `POST /api/asks/:id/speak` | Lucy's voice for a pending ask: who is asking, the question and the choices (the longer `context` is not read out). Returns the same shape as the other speak routes (`text`, `audioBase64` WAV, `durationMs`, `clipId`, `subject?`). `404` unknown ask, `409 not_pending`, `503 tts_not_configured`, `502 tts_failed` (after one retry when the speech service timed out). Does not change the ask |
 
 Question and context text is credential-scrubbed (a matching field is replaced by a sentinel and listed in `redacted`). Defaults: 30 min timeout (30 s..24 h), at most 4 options of 48 characters, 3 pending / 6 per hour per task and 20 per hour globally.
 

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import type { AskNotifier, AskRecord } from '../../shared/contracts/asks.js';
+import { TTSClientError } from '../../adapters/tts-client.js';
 import type { TaskStatus } from '../../core/task-status.js';
 import { registerAskRoutes } from '../routes/ask-routes.js';
 import { AskService } from './ask-service.js';
@@ -462,6 +463,24 @@ describe('ask routes', () => {
       expect(synthesize).toHaveBeenCalledWith(expect.objectContaining({ ttsUrl: 'http://tts.test', voice: 'af_heart', text: body.text }));
       expect(recordSaid).toHaveBeenCalledWith(expect.objectContaining({ clipId: body.clipId, source: 'operator_ask', taskId: 't1', text: body.text }));
       expect(h.store.get(ask.id)?.state).toBe('pending');
+    });
+
+    it('tries once more when the speech service times out, as it does while loading a voice for the first time', async () => {
+      const ask = await createOk();
+      const synthesize = vi.fn()
+        .mockRejectedValueOnce(new TTSClientError('timeout', 'TTS synthesize timed out after 15000ms'))
+        .mockResolvedValueOnce({ audioBase64: 'UklGRg==', durationMs: 900, generationTimeMs: 40 });
+      const { app } = speakApp({ synthesize });
+      expect((await speak(app, ask.id)).status).toBe(200);
+      expect(synthesize).toHaveBeenCalledTimes(2);
+
+      const alwaysSlow = vi.fn().mockRejectedValue(new TTSClientError('timeout', 'still loading'));
+      expect((await speak(speakApp({ synthesize: alwaysSlow }).app, ask.id)).status).toBe(502);
+      expect(alwaysSlow).toHaveBeenCalledTimes(2);
+
+      const broken = vi.fn().mockRejectedValue(new TTSClientError('http', 'TTS returned 500'));
+      expect((await speak(speakApp({ synthesize: broken }).app, ask.id)).status).toBe(502);
+      expect(broken).toHaveBeenCalledTimes(1);
     });
 
     it('404s an unknown ask, 409s a closed one, 503s without a speech service and 502s when it fails', async () => {
