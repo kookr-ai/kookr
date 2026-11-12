@@ -90,15 +90,15 @@ describe('buildAskSpeech', () => {
   });
 
   it('never reads the background context', () => {
-    const spoken = buildAskSpeech(ask({ context: 'See /home/jean/git/kookr/src/server/index.ts line 4268' }), 'Fix login');
+    const spoken = buildAskSpeech(ask({ context: 'See /srv/app/src/server/index.ts line 4268' }), 'Fix login');
     expect(spoken).not.toContain('index');
   });
 
   it('does not read a secret or a path out loud', () => {
     const spoken = buildAskSpeech(ask({
-      question: 'Use the key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 from /home/jean/.kookr/asks/secret?',
+      question: 'Use the key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 from /srv/app/data/asks/secret?',
     }), undefined);
     expect(spoken).not.toContain('sk-ant-api03');
-    expect(spoken).not.toContain('/home/jean');
+    expect(spoken).not.toContain('/srv/app');
   });
 });
