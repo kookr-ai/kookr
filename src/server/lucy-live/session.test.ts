@@ -4,7 +4,6 @@ import {
   CANDIDATE_MAX_FRAMES,
   DRAFT_INTERVAL_BYTES,
   LucyLiveSession,
-  MAX_REQUEST_PARTS,
   type ChatTurn,
   type EarsTurnPort,
   type LiveTurnRecord,
@@ -718,19 +717,21 @@ describe('LucyLiveSession', () => {
       expect(h.brain.calls[1].user).toBe('Check the build.');
     });
 
-    it('starts afresh once a request has too many parts', async () => {
+    it('does not lose an older exchange from history when a thinking turn is retired', async () => {
       const h = harness();
-      for (let i = 1; i <= MAX_REQUEST_PARTS; i++) {
-        const e = begin(h, `t${i}`);
-        h.session.handleMessage({ type: 'speech_end', turnId: `t${i}` });
-        e.result.resolve(`part number ${i}`);
+      for (let i = 1; i <= 8; i++) {
+        await speak(h, `h${i}`, `question number ${i}`);
+        h.brain.feed('An answer.'); h.brain.end();
+        await tick(); await tick();
       }
-      const last = begin(h, 'tx');
-      h.session.handleMessage({ type: 'speech_end', turnId: 'tx' });
-      last.result.resolve('a fresh request');
+      await speak(h, 'a', 'the first half');
+      const e = begin(h, 'b');
+      h.session.handleMessage({ type: 'speech_end', turnId: 'b' });
+      e.result.resolve('the second half');
       await tick(); await tick();
-      expect(h.brain.calls.at(-1)?.user).toBe('a fresh request');
-      expect(h.records.some((r) => r.turnId === `t${MAX_REQUEST_PARTS}` && r.transcript === `part number ${MAX_REQUEST_PARTS}`)).toBe(true);
+      const history = h.brain.calls.at(-1)!.history;
+      expect(history).toHaveLength(16);
+      expect(history[0].content).toBe('question number 1');
     });
 
     it('still interrupts her once she has started speaking', async () => {

@@ -16,7 +16,7 @@
  * `thinking`) is not an interruption: it is the rest of the same request, spoken after a
  * pause. The earlier part is retired as `interrupted` (reason "continued"), its text is
  * kept, and the new turn joins it to what is said next, so Lucy answers the whole request
- * once. A request is at most {@link MAX_REQUEST_PARTS} parts long.
+ * once.
  *
  * Interruptions are confirmed. When a `speech_start` arrives while Lucy is thinking or
  * speaking, the audio is only a *candidate*: it is buffered and fed to Silero (a speech
@@ -57,8 +57,6 @@ export const MAX_HISTORY_EXCHANGES = 8;
 export const DRAFT_INTERVAL_BYTES = LUCY_LIVE_SAMPLE_RATE * 2;
 const MAX_TURN_BYTES = LUCY_LIVE_MAX_TURN_SECONDS * LUCY_LIVE_SAMPLE_RATE * 2;
 const INTERRUPTED_MARKER = '(interrupted)';
-/** Parts one spoken request may be joined from; past this, new speech starts a fresh request. */
-export const MAX_REQUEST_PARTS = 8;
 const CONTINUED_REASON = 'continued: the operator kept talking before Lucy answered; this text was joined to the next turn';
 
 function joinParts(...parts: string[]): string {
@@ -166,6 +164,8 @@ interface Turn {
   firstSentenceMs?: number;
   firstAudioMs?: number;
   memory?: ExchangeMemory;
+  /** The oldest exchange pushed out of the history when this turn's was added. */
+  evicted?: ExchangeMemory;
   /** Silero detector fed with this turn's audio; null when unavailable. */
   vad: VadTurnPort | null;
   /** Highest speech probability Silero reported so far. */
@@ -193,6 +193,8 @@ interface Candidate {
   vad: VadTurnPort;
   chunks: Buffer[];
   bytes: number;
+  /** The turn in progress had not begun to speak when this candidate started. */
+  startedBeforeSpeech: boolean;
   /** Frames scored so far, and how many of them were speech. */
   frames: number;
   speechFrames: number;
@@ -291,7 +293,10 @@ export class LucyLiveSession {
     const answering = previous?.phase === 'thinking' || previous?.phase === 'speaking';
     const lucyBusy = lucyAudible ?? answering;
     if (vad && lucyBusy) {
-      this.candidate = { id: turnId, vad, chunks: [], bytes: 0, frames: 0, speechFrames: 0, maxSpeechProb: 0 };
+      this.candidate = {
+        id: turnId, vad, chunks: [], bytes: 0,
+        startedBeforeSpeech: previous?.phase === 'transcribing' || previous?.phase === 'thinking',
+        frames: 0, speechFrames: 0, maxSpeechProb: 0 };
       return;
     }
     const carried = this.retire(previous);
@@ -345,20 +350,21 @@ export class LucyLiveSession {
    *   so it is retired with its text kept, and the new turn continues it;
    * - already speaking: a real interruption, as before.
    */
-  private retire(previous: Turn | null): { priorText: Promise<string>; parts: number } | undefined {
+  private retire(previous: Turn | null, startedBeforeSpeech = false): { priorText: Promise<string>; parts: number } | undefined {
     if (!previous) return undefined;
     if (previous.phase === 'listening') {
       this.discard(previous);
       return previous.parts > 1 ? { priorText: previous.priorText, parts: previous.parts } : undefined;
     }
-    const sameRequest = previous.phase === 'transcribing' || previous.phase === 'thinking';
+    // `startedBeforeSpeech`: the operator began before Lucy said anything and only the voice check
+    // delayed the verdict, so a sentence that slipped out meanwhile does not make this an interruption.
+    const sameRequest = previous.phase === 'transcribing' || previous.phase === 'thinking'
+      || (startedBeforeSpeech && previous.phase === 'speaking');
     if (!sameRequest) {
       this.endTurn(previous, 'interrupted', undefined, false);
       return undefined;
     }
-    const carry = previous.parts < MAX_REQUEST_PARTS;
     this.supersede(previous);
-    if (!carry) return undefined;
     // Everything said so far in this request: the earlier parts, then this one.
     const priorText = previous.transcript !== undefined
       ? Promise.resolve(previous.transcript)
@@ -380,6 +386,7 @@ export class LucyLiveSession {
     if (turn.memory) {
       const at = this.memory.indexOf(turn.memory);
       if (at >= 0) this.memory.splice(at, 1);
+      if (turn.evicted) this.memory.unshift(turn.evicted); // this exchange is not kept, so nothing else is lost
     }
     this.ports.send({ type: 'turn_done', turnId: turn.id, end: 'interrupted', reason: CONTINUED_REASON });
     const record = (transcript: string | undefined): void => {
@@ -427,7 +434,7 @@ export class LucyLiveSession {
     if (this.candidate !== candidate || this.closedForGood) return;
     this.candidate = null;
     this.ports.send({ type: 'speech_confirmed', turnId: candidate.id });
-    const carried = this.retire(this.turn);
+    const carried = this.retire(this.turn, candidate.startedBeforeSpeech);
     // The candidate becomes a normal listening turn that already holds its audio.
     const turn = this.newTurn(candidate.id, candidate.vad, carried);
     // A browser-forced promotion (barge_in) is the operator's own word that this is speech.
@@ -568,6 +575,8 @@ export class LucyLiveSession {
       if (!turn.skipOwn && !this.heardNoSpeech(turn)) {
         const heard = await this.transcribe(turn);
         own = isEmptyTranscript(heard) ? '' : heard;
+      } else {
+        turn.ears.abort(); // never asked for a transcript, so close the recogniser session here
       }
       turn.ownTranscript = own;
       turn.settleOwnText(own);
@@ -584,6 +593,10 @@ export class LucyLiveSession {
       this.setState('thinking');
       await this.answer(turn, transcript);
     } catch (err) {
+      if (turn.superseded) {
+        this.ports.warn(`lucy-live: an earlier part of the request could not be transcribed: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
       if (turn.closed) return;
       if (err instanceof StageError) this.endTurn(turn, 'error', describeFailure(err.stage, err.cause));
       else this.endTurn(turn, 'error', `Something went wrong: ${err instanceof Error ? err.message : String(err)}`);
@@ -611,7 +624,7 @@ export class LucyLiveSession {
     };
     turn.memory = memory;
     this.memory.push(memory);
-    if (this.memory.length > MAX_HISTORY_EXCHANGES) this.memory.shift();
+    if (this.memory.length > MAX_HISTORY_EXCHANGES) turn.evicted = this.memory.shift();
 
     const splitter = new SentenceSplitter();
     let seq = 0;
@@ -710,6 +723,7 @@ export class LucyLiveSession {
       if (end === 'error' && turn.sentences.length === 0) {
         const at = this.memory.indexOf(turn.memory);
         if (at >= 0) this.memory.splice(at, 1);
+        if (turn.evicted) this.memory.unshift(turn.evicted);
       }
     }
     this.ports.send({ type: 'turn_done', turnId: turn.id, end, ...(reason ? { reason } : {}) });

@@ -83,8 +83,9 @@ or thinking (`transcribing` or `thinking`), nothing has been said yet, so the ne
 the same request: the earlier part ends as `interrupted` with the reason "continued", the new part
 carries its text, and she answers the whole request once, as one turn. The panel shows the request
 growing: the earlier text first, then drafts of the whole. A new sound that turns out not to be speech
-(`speech_cancel`) leaves the earlier parts to be answered alone. A request joins at most 8 parts
-(`MAX_REQUEST_PARTS`); after that, new speech starts a fresh request. Every part's text is written to
+(`speech_cancel`) leaves the earlier parts to be answered alone. With the voice check on, the
+choice is made by when you started: if you began before she said anything, the part joins even if one
+of her sentences slipped out while the check was deciding. Every part's text is written to
 the interaction log (redacted as usual), including parts that ended `interrupted`; a part that was
 joined to a later one says so in its `reason`. Cutting a turn at 30 s no longer changes the browser's
 noise floor, so the words that follow are heard at the usual bar.
