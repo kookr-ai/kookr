@@ -1,13 +1,18 @@
 /**
  * Contract for `kookr ask`: an agent asks the operator a multiple-choice
- * question (delivered over Telegram) and the answer is routed back to the
- * asking task. See docs/rfc/rfc-kookr-ask.md.
+ * question and the answer is routed back to the asking task. The question goes
+ * out on Telegram and, when the dashboard is open, Lucy (the avatar panel) asks
+ * it too. Both channels read and write the same record, so an answer given on
+ * one closes the question on the other. See docs/rfc/rfc-kookr-ask.md.
  */
 
 export type AskState = 'pending' | 'answered' | 'expired' | 'cancelled';
 
 /** Why an ask reached its current state (more specific than `state`). */
 export type AskResolution = 'answered' | 'expired' | 'cancelled' | 'task_gone' | 'delivery_failed';
+
+/** Where the operator answered: the Telegram chat, or Lucy's panel in the dashboard. */
+export type AskChannel = 'telegram' | 'dashboard';
 
 export type AskAnswer =
   | { kind: 'option'; index: number; label: string }
@@ -32,7 +37,12 @@ export interface AskRecord {
   delivery?: { chatId: number; messageId: number };
   answer?: AskAnswer;
   answeredAt?: number;
+  /** Telegram user id of the operator who answered. Absent for an answer given in the dashboard. */
   answeredBy?: number;
+  /** The channel the answer came from. Absent on asks answered before this field existed (all Telegram). */
+  answeredVia?: AskChannel;
+  /** When the ask left `pending`, whatever the reason. Absent on older records. */
+  resolvedAt?: number;
   resolution?: AskResolution;
   /** Outcome of typing the answer into the asking task's session. */
   taskDelivery?: 'delivered' | 'failed' | 'skipped';
@@ -54,6 +64,8 @@ export const ASK_LIMITS = {
   minTimeoutSec: 30,
   maxTimeoutSec: 24 * 60 * 60,
   maxIdempotencyKeyChars: 128,
+  /** Longest free-text answer, on either channel. */
+  maxAnswerTextChars: 1000,
   /** Terminal asks are kept this long for `--wait` pollers and audit, then pruned. */
   retentionMs: 7 * 24 * 60 * 60 * 1000,
 } as const;
@@ -106,6 +118,54 @@ export interface AnswerInput {
   text?: string;
 }
 
+/** Input for recording an operator answer given in the dashboard (Lucy's panel). Exactly one of the two. */
+export interface DashboardAnswerInput {
+  askId: string;
+  optionIndex?: number;
+  text?: string;
+}
+
+/**
+ * A question as the dashboard shows it: no Telegram coordinates, no nonce, plus
+ * the short task name Lucy uses. Every pending ask and the ones resolved in the last
+ * few minutes are sent together, so a reload or a reconnect ends up with the
+ * same list as a tab that saw every change.
+ */
+export interface OperatorAskView {
+  id: string;
+  taskId: string;
+  /** Short, redacted task title for display; absent when the task has no usable title. */
+  taskName?: string;
+  question: string;
+  context?: string;
+  options: string[];
+  allowText: boolean;
+  state: AskState;
+  createdAt: number;
+  expiresAt: number;
+  answer?: AskAnswer;
+  answeredVia?: AskChannel;
+  /** When it closed. Always present on a closed ask (the server works it out for older records). */
+  resolvedAt?: number;
+  resolution?: AskResolution;
+  /** Whether the answer could be typed into the task's session; `failed` is shown on the card. */
+  taskDelivery?: AskRecord['taskDelivery'];
+}
+
+/** How long a resolved ask stays in the dashboard list, so "answered on Telegram" can be seen. */
+export const OPERATOR_ASK_RESOLVED_VISIBLE_MS = 10 * 60 * 1000;
+/** Most closed asks sent to the dashboard at once (the most recently closed). Pending asks are all sent. */
+export const OPERATOR_ASK_MAX_LISTED = 8;
+
+/**
+ * A change the ask service announces to listeners: a question was sent (`created`), one left `pending`
+ * (`resolved`), or a closed one learned whether its answer reached the task (`updated`).
+ */
+export interface AskChange {
+  kind: 'created' | 'resolved' | 'updated';
+  ask: AskRecord;
+}
+
 /**
  * What the ask service offers the Telegram integration: record an answer, and
  * recognise which ask a Telegram message belongs to. Plain functions only, so
@@ -114,7 +174,7 @@ export interface AnswerInput {
 export interface AskAnswerPort {
   answer(input: AnswerInput): Promise<AnswerResult>;
   /** The ask whose Telegram message is (chatId, messageId), in any state. */
-  findByMessage(chatId: number, messageId: number): Pick<AskRecord, 'id' | 'state'> | undefined;
+  findByMessage(chatId: number, messageId: number): Pick<AskRecord, 'id' | 'state' | 'answeredVia'> | undefined;
 }
 
 /**

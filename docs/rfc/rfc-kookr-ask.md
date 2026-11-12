@@ -1,6 +1,6 @@
 # RFC: `kookr ask` — agent-to-operator multiple-choice questions over Telegram
 
-**Status:** Draft (v2 — post-review revision)
+**Status:** Built. Amended 2026-11-12: the dashboard is a second answer channel (see "Dashboard channel").
 **Date:** 2026-11-09
 **Author:** Jean Ibarz (with Claude)
 
@@ -26,7 +26,8 @@ often away from the terminal and need to unblock agents from a phone.
    opencode).
 3. The CLI is non-blocking by default (prints the ask id); `--wait` polls until
    answered/expired and prints the chosen label with distinct exit codes.
-4. Only allowlisted Telegram users can answer; callbacks are HMAC-bound to
+4. Only allowlisted Telegram users can answer on Telegram (since 2026-11-12 the
+   owner can also answer in the dashboard, see "Dashboard channel"); callbacks are HMAC-bound to
    (ask id, option index, per-ask nonce); stale, duplicate, forged, wrong-chat
    callbacks are rejected and audited.
 5. Feature is inert unless Telegram is configured. No new outbound hosts, no
@@ -95,9 +96,12 @@ interface AskRecord {
 ### HTTP API
 
 `POST /api/asks`, `GET /api/asks` (`?taskId=&state=`), `GET /api/asks/:id`,
-`POST /api/asks/:id/cancel`. Documented in `docs/reference/api.md`. There is
-deliberately **no** HTTP answer route: the only answer channel is the
-authenticated Telegram path, so an agent cannot answer its own question.
+`POST /api/asks/:id/cancel`, and since 2026-11-12 `POST /api/asks/:id/speak`
+(Lucy's spoken version of a pending question; changes nothing on the ask).
+Documented in `docs/reference/api.md`. There is deliberately **no** HTTP answer
+route. When this was written the only answer channel was the authenticated
+Telegram path; the dashboard socket is now a second one (see "Dashboard
+channel", which also says what that does to the trust boundary).
 When Telegram is not configured, `POST` returns `503 { code: "not_configured" }`
 and creates nothing (flag-off behaviour unchanged, pinned by a test).
 
@@ -154,6 +158,71 @@ A plugin skill `asking-the-operator` (when to ask, 2–4 concrete options, one
 open ask at a time, don't spam, prefer `--wait` only when nothing else can
 proceed) with a `plugin.json` version bump. Documented in `docs/reference/`.
 
+## Dashboard channel (amendment, 2026-11-12)
+
+The operator asked for the same question to be asked by Lucy, the avatar panel
+in the dashboard, with the state kept in step: answer in Kookr and Telegram
+says so, answer on Telegram and Lucy knows. This reverses one recorded choice
+("the only answer channel is the authenticated Telegram path") and builds the
+deferred dashboard panel. What changed, and what did not:
+
+* **One record, two transports.** There is no second store to synchronise. The
+  ask service gains `answerFromDashboard`, which skips the Telegram-only checks
+  (button MAC, chat and message binding) and then runs the same closing steps
+  as `answer`: expiry, state, task liveness, the compare-and-set, typing the
+  answer into the task, editing the Telegram message. Two answers at the same
+  moment therefore still give exactly one winner. The record keeps
+  `answeredVia` (`telegram` or `dashboard`) and `resolvedAt`.
+* **Change events.** `onChange` announces every question sent (`created`, once
+  its Telegram message exists), every question that left `pending`
+  (`resolved`), and for an answered one whether the answer could be typed into
+  the task (`updated`). The server pushes the whole current list (pending, plus closed
+  in the last 10 minutes) to dashboard sockets as `operatorAsks`, on connect
+  and on each event, so a reload or a reconnect converges without replay.
+* **Still no HTTP answer route, but the boundary did move.** The dashboard
+  answers over the dashboard WebSocket (`answerAsk`). That socket is
+  authenticated exactly like `/api/*`: a bearer token or session cookie when
+  the server requires one, and on a loopback-only server without a token any
+  local process that is not a cross-origin browser page. Viewers are refused
+  twice (the read-only inbound gate, then an explicit owner check). So the
+  socket is **not** a stronger boundary than an HTTP route would have been. What
+  keeping the route out buys is small and stated plainly: self-answering is not
+  one `curl` away and is not part of the documented HTTP API.
+  What changed: before, only a Telegram tap could write the authoritative
+  record (`GET /api/asks/:id`, what `--wait` prints). Now a same-user process
+  that opens the owner socket can write it too. Such a process could already
+  type "Operator answered ask …" into the task's session with `kookr reply`, and
+  an agent that wants to skip a question can simply not ask it, so this is
+  accepted for a single-operator machine. A per-task credential, which would
+  close it, still does not exist. Every answer sent over the socket, accepted
+  or refused, is written to `<kookrDir>/audit.jsonl` (`ask.dashboardAnswer`),
+  and the Telegram message says "Already answered in Kookr", so an answer the
+  operator did not give is visible in two places.
+* **Owner only.** `operatorAsks` is sent to owner connections only, not through
+  the shared fan-out that also reaches all-scope viewers: a question can quote
+  anything a task sees.
+* **Telegram stays mandatory.** The service still exists only with a bot token
+  and `create` still fails without a notifier, so every question has a Telegram
+  message and boot reconciliation ("pending with no delivery is a crash") stays
+  true. A question is announced to the dashboard only after that message exists.
+* **Telegram wording.** A dashboard answer edits the message to "✅ Already
+  answered in Kookr: <choice>. Nothing more is needed here." A late tap or
+  reply gets "You already answered this one in Kookr."
+* **Speech.** `POST /api/asks/:id/speak` returns Lucy's spoken version (who
+  asks, the question, the choices; never the context). It records nothing on
+  the ask. The browser decides whether to play it (once, one tab, not on
+  reload, not with sound off or Do Not Disturb).
+* **Not built: answering by voice.** With hands-free talk on, Lucy is told
+  which questions are waiting and where closed ones were answered, but cannot
+  record a spoken answer: a misheard word would send an irreversible decision
+  to a task. It needs a read-back and an explicit confirmation, and is tracked
+  as a follow-up.
+
+Proof: `scripts/ask-live-proof.ts` (API level, including the two-channel race)
+and `scripts/ask-lucy-browser-proof.ts` (the card in a real browser, with
+screenshots). User-facing description: `docs/reference/lucy-live.md`,
+"Questions from tasks".
+
 ## Slices
 
 1. RFC (this doc). 2. Contract + store + service + routes + docs (no Telegram,
@@ -186,14 +255,17 @@ safe to ship.
 
 ## Alternatives considered
 
-* **HTTP answer endpoint** — rejected; lets the asking agent self-answer.
+* **HTTP answer endpoint** — rejected; lets the asking agent self-answer. Still
+  rejected after the dashboard channel was added: the dashboard answers over the
+  owner's WebSocket instead.
 * **Telegram `getUpdates` in the CLI** — rejected; the server already owns the
   single poller (lock-protected) and the token must not reach agents.
 * **Reusing `sentNotifications` for correlation** — rejected for buttons (needs
   the nonce/MAC and durable state with a 7 day life vs 24 h), but the free-text
   path mirrors it.
 * **Blocking-only CLI** — rejected; agents usually have other work to do.
-* **Dashboard pending-ask panel** — deferred; not required for slice 1.
+* **Dashboard pending-ask panel** — deferred at first; built on 2026-11-12 as
+  cards in Lucy's panel (see "Dashboard channel").
 
 ## Verification
 

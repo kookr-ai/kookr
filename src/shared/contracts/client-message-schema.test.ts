@@ -1,3 +1,4 @@
+import { ASK_LIMITS } from './asks.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, test, expect } from 'vitest';
@@ -670,6 +671,7 @@ const clientMessageRoundTripCases = [
   clientMessageCase({ type: 'achievement:setEnabled', enabled: true }),
   clientMessageCase({ type: 'permissionChoice', agentId: 'agent-1', keystroke: '1', permissionRequest }),
   clientMessageCase({ type: 'rearmCircuitBreaker', name: 'github-refresh' }),
+  clientMessageCase({ type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 1 }),
   clientMessageCase({
     type: 'findingFeedback',
     agentId: 'agent-1',
@@ -716,6 +718,24 @@ const clientMessageRoundTripCases = [
 ] as const;
 
 const coveredClientMessageTypes = clientMessageRoundTripCases.map((message) => message.type);
+
+describe('ClientMessageSchema — answerAsk limits', () => {
+  const answer = (over: Record<string, unknown>) => ClientMessageSchema.safeParse({ type: 'answerAsk', askId: 'a1b2c3d4e5f6', ...over }).success;
+
+  test('accepts every option index a question can have, and text up to the limit', () => {
+    expect(answer({ optionIndex: 0 })).toBe(true);
+    expect(answer({ optionIndex: ASK_LIMITS.maxOptions - 1 })).toBe(true);
+    expect(answer({ text: 'x'.repeat(ASK_LIMITS.maxAnswerTextChars) })).toBe(true);
+  });
+
+  test('rejects an index outside the options, a fractional one, over-long text and a malformed ask id', () => {
+    expect(answer({ optionIndex: ASK_LIMITS.maxOptions })).toBe(false);
+    expect(answer({ optionIndex: -1 })).toBe(false);
+    expect(answer({ optionIndex: 1.5 })).toBe(false);
+    expect(answer({ text: 'x'.repeat(ASK_LIMITS.maxAnswerTextChars + 1) })).toBe(false);
+    expect(ClientMessageSchema.safeParse({ type: 'answerAsk', askId: 'not-an-id', optionIndex: 0 }).success).toBe(false);
+  });
+});
 
 describe('ClientMessageSchema — JSON round trips', () => {
   test('covers every known client message type', () => {

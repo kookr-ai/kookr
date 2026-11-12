@@ -86,6 +86,7 @@ import {
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
 import { useAvatarPanelPrefs } from './store/avatar-panel-prefs.js';
+import { buildAnswerAskMessage, type AskAnswerChoice } from './store/operator-asks.js';
 import { AvatarErrorBoundary } from './avatar/AvatarErrorBoundary.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { computeAbortActiveTaskIds } from './abort-active-tasks.js';
@@ -354,6 +355,12 @@ export function App() {
   // one place — the server gate (#806) already drops viewer inbound frames, so
   // sending is pointless; we no-op and surface the read-only notice instead.
   const send = useViewerGuardedSend(rawSend, isViewer);
+  // A `kookr ask` question answered in Lucy's panel (the same question is on Telegram; the server
+  // closes it there). Returns whether the message left this tab.
+  const answerOperatorAsk = useCallback(
+    (askId: string, choice: AskAnswerChoice): boolean => send(buildAnswerAskMessage(askId, choice)),
+    [send],
+  );
   useEffect(() => {
     installReadOnlyNoticeListener();
   }, []);
@@ -1897,7 +1904,7 @@ export function App() {
       {avatarPanelEnabled && (
         <AvatarErrorBoundary>
           <Suspense fallback={null}>
-            <AvatarDock attentionCount={findings.length} />
+            <AvatarDock attentionCount={findings.length} onAnswerAsk={answerOperatorAsk} />
           </Suspense>
         </AvatarErrorBoundary>
       )}

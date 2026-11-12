@@ -72,7 +72,8 @@ export interface LucyLiveTurnRecordInput {
   answerWords: number;
 }
 
-export type LucySaidSource = 'task_summary' | 'agent_speak';
+/** `operator_ask`: Lucy read out a `kookr ask` question (see routes/ask-routes.ts). */
+export type LucySaidSource = 'task_summary' | 'agent_speak' | 'operator_ask';
 
 export interface LucySaidRecordInput {
   clipId: string;
@@ -251,7 +252,7 @@ function pickSaidFields(input: LucySaidRecordInput): Record<string, unknown> {
   return out;
 }
 
-const TRIGGERS = ['click', 'replay'] as const;
+const TRIGGERS = ['click', 'replay', 'ask'] as const;
 const PANEL_STATES = ['open', 'minimized', 'off'] as const;
 const ENDED_BY = ['finished', 'user_stop', 'superseded'] as const;
 const UNHEARD_REASONS = ['muted', 'dnd', 'audio_suspended', 'error'] as const;

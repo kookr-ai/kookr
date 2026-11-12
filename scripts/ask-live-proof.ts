@@ -16,8 +16,14 @@
  *   3. the real button records the answer, edits the message, and the answer
  *      arrives in the task's terminal as "Operator answered ask <id>: <label>";
  *   4. `kookr ask --wait` prints the chosen label and exits 0;
- *   5. an unanswered ask expires: message edited, `--wait` exits 5;
- *   6. with Telegram unconfigured, `kookr ask` exits 7 and nothing is written.
+ *   5. the dashboard is a second answer channel on the same record (this is
+ *      where Lucy asks the question): an owner dashboard socket is told about
+ *      each question and about an answer given on Telegram; an answer sent
+ *      over that socket reaches the task and edits the Telegram message to
+ *      "Already answered in Kookr"; a late Telegram tap is told the same; and
+ *      when both channels answer at the same moment exactly one wins;
+ *   6. an unanswered ask expires: message edited, `--wait` exits 5;
+ *   7. with Telegram unconfigured, `kookr ask` exits 7 and nothing is written.
  * Never touches ~/.kookr or port 4800; only kills the server PID it spawned.
  * Env: E2E_PORT, E2E_KEEP=1 (keep the temp dir).
  */
@@ -26,6 +32,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import WebSocket from 'ws';
 import { startFakeTelegram } from '../src/integrations/telegram/fake-telegram-server.js';
 
 const REPO = resolve(__dirname, '..');
@@ -106,6 +113,18 @@ echo $? > "$P/ask2-exit.txt"
 nextmsg 60; LINE2="$MSG"
 fire UserPromptSubmit "$LINE2"
 printf '%s\\n' "$LINE2" > "$P/typed-reply-2.txt"
+# 2b. an ask the operator answers in the dashboard (Lucy's panel) instead of Telegram
+kookr ask --question "Merge the pull request now?" --option "Merge" --option "Wait" > "$P/ask4-stdout.txt" 2> "$P/ask4-stderr.txt"
+nextmsg 120; LINE4="$MSG"
+fire UserPromptSubmit "$LINE4"
+printf '%s\\n' "$LINE4" > "$P/typed-reply-4.txt"
+# 2c. an ask both channels answer at the same moment
+kookr ask --question "Which channel answers first?" --option "Telegram" --option "Lucy" > "$P/ask5-stdout.txt" 2> "$P/ask5-stderr.txt"
+nextmsg 120; LINE5="$MSG"
+fire UserPromptSubmit "$LINE5"
+printf '%s\\n' "$LINE5" > "$P/typed-reply-5.txt"
+# a second answer would arrive as one more line: record whatever else is typed in the next seconds
+if nextmsg 6; then printf '%s\\n' "$MSG" > "$P/typed-reply-5-extra.txt"; fi
 # 3. an ask nobody answers: expires
 kookr ask --question "Anyone there?" --option "Yes" --option "No" --timeout 30s --wait > "$P/ask3-stdout.txt" 2> "$P/ask3-stderr.txt"
 echo $? > "$P/ask3-exit.txt"
@@ -172,6 +191,21 @@ async function main(): Promise<void> {
     record('server boots (isolated, Telegram -> fake server)', up, `pid=${server?.pid} port=${port} dataDir=${home}/.kookr-${port}`);
     if (!up) return;
 
+    // The dashboard, as Lucy's panel sees the server: one owner socket, kept open for the whole run.
+    const dash = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const pushes: Rec[] = [];
+    dash.on('message', (data) => {
+      try {
+        const msg = JSON.parse(String(data)) as Rec;
+        if (msg.type === 'operatorAsks' || msg.type === 'operatorAskResult') pushes.push(msg);
+      } catch { /* not JSON: ignore */ }
+    });
+    const dashOpen = await waitFor(() => dash.readyState === WebSocket.OPEN, 15_000);
+    const firstList = await waitFor(() => pushes.some((m) => m.type === 'operatorAsks'), 15_000);
+    record('a dashboard connection is sent the (empty) question list on connect', dashOpen && firstList && pushes.find((m) => m.type === 'operatorAsks')?.asks.length === 0,
+      JSON.stringify(pushes.find((m) => m.type === 'operatorAsks')));
+    const lastList = (): Rec[] => ([...pushes].reverse().find((m) => m.type === 'operatorAsks')?.asks ?? []) as Rec[];
+
     const launched = await api('POST', '/api/tasks', { prompt: 'ask-proof', cwd: repo, agentType: 'claude-code' });
     const taskId: string | undefined = launched.json?.task?.id ?? launched.json?.id ?? launched.json?.taskId;
     record('task launched through POST /api/tasks', (launched.status === 201 || launched.status === 200) && !!taskId, `status=${launched.status} taskId=${taskId} ${JSON.stringify(launched.json).slice(0, 200)}`);
@@ -185,11 +219,18 @@ async function main(): Promise<void> {
     const kb1 = ((msg1?.reply_markup as any)?.inline_keyboard ?? []).flat() as Array<{ text: string; callback_data: string }>;
     record('operator receives the question with one button per option', sent1 && kb1.map((b) => b.text).join('|') === 'Deploy|Hold',
       `to chat ${msg1?.chat_id}: ${JSON.stringify(msg1?.text)}\nbuttons: ${kb1.map((b) => b.text).join(' | ')}`);
+    // The agent writes the exit code a moment after the id: wait for it rather than race the two files.
+    await waitFor(() => read('ask1-exit.txt') !== '', 10_000);
     const askId = read('ask1-stdout.txt').trim();
     record('non-blocking `kookr ask` printed the ask id and exited 0', /^[0-9a-f]{12}$/.test(askId) && read('ask1-exit.txt').trim() === '0', `stdout=${askId} exit=${read('ask1-exit.txt').trim()}`);
     const ask1 = (await api('GET', `/api/asks/${askId}`)).json.ask as Rec;
     record('ask is pending and its view never exposes the nonce', ask1?.state === 'pending' && !JSON.stringify(ask1).includes('nonce'), JSON.stringify(ask1));
     const messageId: number = ask1.delivery.messageId;
+    const announced1 = pushes.find((m) => m.type === 'operatorAsks' && m.announce === askId);
+    const shown1 = (announced1?.asks as Rec[] | undefined)?.find((a) => a.id === askId);
+    record('the dashboard is told about the question the moment it is created (this is what Lucy reads out)',
+      !!shown1 && shown1.state === 'pending' && shown1.options.join('|') === 'Deploy|Hold' && !('delivery' in shown1) && !JSON.stringify(announced1).includes('nonce'),
+      JSON.stringify({ announce: announced1?.announce, ask: shown1 }));
 
     // 2. forged and unauthorised taps change nothing
     const tap = (data: string, from = USER, msgId = messageId, chatId = USER) => fake.queueUpdates([{
@@ -214,6 +255,17 @@ async function main(): Promise<void> {
     record('the answer arrives in the task terminal as a normal reply', typed && read('typed-reply-1.txt').trim() === `Operator answered ask ${askId}: Hold`, `agent received: ${JSON.stringify(read('typed-reply-1.txt').trim())}`);
     const edited = fake.outbound.editMessageText.find((e) => e.message_id === messageId);
     record('the Telegram message is edited to show the chosen option', !!edited && edited.text.startsWith('✅ Answered: Hold'), JSON.stringify(edited?.text));
+    const syncedToDash = await waitFor(() => lastList().some((a) => a.id === askId && a.state === 'answered'), 10_000);
+    const dashAsk1 = lastList().find((a) => a.id === askId);
+    record('an answer given on Telegram reaches the dashboard: the card becomes "Answered on Telegram"',
+      syncedToDash && dashAsk1?.answeredVia === 'telegram' && dashAsk1?.answer?.label === 'Hold',
+      JSON.stringify({ state: dashAsk1?.state, answeredVia: dashAsk1?.answeredVia, answer: dashAsk1?.answer }));
+    dash.send(JSON.stringify({ type: 'answerAsk', askId, optionIndex: 0 }));
+    const refused = await waitFor(() => pushes.some((m) => m.type === 'operatorAskResult' && m.askId === askId), 10_000);
+    const refusal = pushes.find((m) => m.type === 'operatorAskResult' && m.askId === askId);
+    record('answering in the dashboard after Telegram is refused as already answered; the answer stays "Hold"',
+      refused && refusal?.ok === false && refusal?.reason === 'already_answered' && ((await api('GET', `/api/asks/${askId}`)).json.ask as Rec).answer.label === 'Hold',
+      JSON.stringify(refusal));
     tap(kb1[0]!.callback_data);
     await waitFor(() => fake.outbound.answerCallbackQuery.some((a) => a.text === 'Already answered.'), 10_000);
     record('a second tap is rejected as already answered', fake.outbound.answerCallbackQuery.some((a) => a.text === 'Already answered.') && ((await api('GET', `/api/asks/${askId}`)).json.ask as Rec).answer.label === 'Hold', 'answer stays "Hold"');
@@ -231,7 +283,59 @@ async function main(): Promise<void> {
     const typed2 = await waitFor(() => read('typed-reply-2.txt').includes('Operator answered ask'), 30_000);
     record('(--wait also types the same answer into the terminal; both carry the same label)', typed2 && read('typed-reply-2.txt').includes(': Postgres'), JSON.stringify(read('typed-reply-2.txt').trim()));
 
-    // 5. expiry
+    // 5. the dashboard as the answering channel (Lucy's panel)
+    const sent4 = await waitFor(() => fake.outbound.sendMessage.some((m) => m.text.includes('Merge the pull request now?')), 30_000);
+    const msg4 = fake.outbound.sendMessage.find((m) => m.text.includes('Merge the pull request now?'));
+    const kb4 = ((msg4?.reply_markup as any)?.inline_keyboard ?? []).flat() as Array<{ text: string; callback_data: string }>;
+    const ask4Id = read('ask4-stdout.txt').trim();
+    const ask4 = (await api('GET', `/api/asks/${ask4Id}`)).json.ask as Rec;
+    const speak = await api('POST', `/api/asks/${ask4Id}/speak`);
+    record('with no speech service, the speak route says so and leaves the question pending (Lucy then only shows the card)',
+      sent4 && speak.status === 503 && speak.json?.code === 'tts_not_configured' && ((await api('GET', `/api/asks/${ask4Id}`)).json.ask as Rec).state === 'pending',
+      `http=${speak.status} ${JSON.stringify(speak.json)}`);
+    dash.send(JSON.stringify({ type: 'answerAsk', askId: ask4Id, optionIndex: 0 }));
+    const accepted = await waitFor(() => pushes.some((m) => m.type === 'operatorAskResult' && m.askId === ask4Id), 15_000);
+    const ans4 = (await api('GET', `/api/asks/${ask4Id}`)).json.ask as Rec;
+    record('an answer given in the dashboard is recorded once, with its channel',
+      accepted && pushes.find((m) => m.type === 'operatorAskResult' && m.askId === ask4Id)?.ok === true && ans4.state === 'answered' && ans4.answer?.label === 'Merge' && ans4.answeredVia === 'dashboard' && ans4.answeredBy === undefined,
+      JSON.stringify({ state: ans4.state, answer: ans4.answer, answeredVia: ans4.answeredVia, taskDelivery: ans4.taskDelivery }));
+    const typed4 = await waitFor(() => read('typed-reply-4.txt').includes('Operator answered ask'), 30_000);
+    record('the dashboard answer arrives in the task terminal in the same words as a Telegram answer',
+      typed4 && read('typed-reply-4.txt').trim() === `Operator answered ask ${ask4Id}: Merge`, `agent received: ${JSON.stringify(read('typed-reply-4.txt').trim())}`);
+    const edited4 = await waitFor(() => fake.outbound.editMessageText.some((e) => e.message_id === ask4.delivery.messageId), 10_000);
+    const edit4 = fake.outbound.editMessageText.find((e) => e.message_id === ask4.delivery.messageId);
+    record('Telegram is told the question was answered in Kookr and needs nothing more',
+      edited4 && !!edit4 && edit4.text.startsWith('✅ Already answered in Kookr: Merge') && edit4.text.includes('Nothing more is needed here.'), JSON.stringify(edit4?.text));
+    tap(kb4[1]!.callback_data, USER, ask4.delivery.messageId);
+    const lateToast = await waitFor(() => fake.outbound.answerCallbackQuery.some((a) => (a.text ?? '').startsWith('You already answered this one in Kookr')), 10_000);
+    record('a late tap on the old Telegram button changes nothing and says it was answered in Kookr',
+      lateToast && ((await api('GET', `/api/asks/${ask4Id}`)).json.ask as Rec).answer.label === 'Merge',
+      `toast=${JSON.stringify(fake.outbound.answerCallbackQuery.at(-1)?.text)}`);
+
+    // both channels at the same moment: exactly one wins
+    const sent5 = await waitFor(() => fake.outbound.sendMessage.some((m) => m.text.includes('Which channel answers first?')), 30_000);
+    const msg5 = fake.outbound.sendMessage.find((m) => m.text.includes('Which channel answers first?'));
+    const kb5 = ((msg5?.reply_markup as any)?.inline_keyboard ?? []).flat() as Array<{ text: string; callback_data: string }>;
+    const ask5Id = read('ask5-stdout.txt').trim();
+    const ask5 = (await api('GET', `/api/asks/${ask5Id}`)).json.ask as Rec;
+    const toastsBefore = fake.outbound.answerCallbackQuery.length;
+    tap(kb5[0]!.callback_data, USER, ask5.delivery.messageId);
+    dash.send(JSON.stringify({ type: 'answerAsk', askId: ask5Id, optionIndex: 1 }));
+    await waitFor(() => pushes.some((m) => m.type === 'operatorAskResult' && m.askId === ask5Id) && fake.outbound.answerCallbackQuery.length > toastsBefore, 15_000);
+    await waitFor(() => read('typed-reply-5.txt') !== '', 30_000);
+    await sleep(7000); // the fake agent listens this long for a second, duplicate answer
+    const ans5 = (await api('GET', `/api/asks/${ask5Id}`)).json.ask as Rec;
+    const dashWon = pushes.find((m) => m.type === 'operatorAskResult' && m.askId === ask5Id)?.ok === true;
+    const expected5 = dashWon ? { via: 'dashboard', label: 'Lucy' } : { via: 'telegram', label: 'Telegram' };
+    const edits5 = fake.outbound.editMessageText.filter((e) => e.message_id === ask5.delivery.messageId);
+    record('Telegram and the dashboard answering at the same moment: exactly one answer is recorded and typed',
+      sent5 && ans5.state === 'answered' && ans5.answeredVia === expected5.via && ans5.answer?.label === expected5.label
+        && read('typed-reply-5.txt').trim() === `Operator answered ask ${ask5Id}: ${expected5.label}` && !existsSync(join(proof, 'typed-reply-5-extra.txt')) && edits5.length === 1,
+      `winner=${ans5.answeredVia} answer=${ans5.answer?.label}\nagent received: ${JSON.stringify(read('typed-reply-5.txt').trim())} (no second line)\n`
+        + `dashboard result: ${JSON.stringify(pushes.find((m) => m.type === 'operatorAskResult' && m.askId === ask5Id))}\ntelegram toast: ${JSON.stringify(fake.outbound.answerCallbackQuery.at(-1)?.text)}\ntelegram edit: ${JSON.stringify(edits5[0]?.text)}`);
+    dash.close();
+
+    // 6. expiry
     const expiredExit = await waitFor(() => read('ask3-exit.txt') !== '', 90_000, 1000);
     const msg3 = fake.outbound.sendMessage.find((m) => m.text.includes('Anyone there?'));
     const ask3 = ((await api('GET', '/api/asks?state=expired')).json.asks as Rec[]).find((a) => a.question === 'Anyone there?');
@@ -253,7 +357,7 @@ async function main(): Promise<void> {
     await fake.stop();
   }
 
-  // 6. flag-off: Telegram unconfigured
+  // 7. flag-off: Telegram unconfigured
   port = await freePort();
   const up2 = await startServer(serverEnv({}));
   record('flag-off: server boots without Telegram', up2, `port=${port}`);

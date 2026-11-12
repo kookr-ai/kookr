@@ -14,6 +14,7 @@ import { synthesize } from '../../adapters/tts-client.js';
 import { buildLucyLiveBriefing, type BriefingTask } from '../../core/lucy-live/briefing.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
 import { countSpokenWords, DISABLED_LUCY_INTERACTION_LOG, type LucyInteractionLog } from '../lucy-interaction-log.js';
+import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import type { LucyLiveConfig } from './config.js';
 import { LucyLiveSession, type LucyLivePorts } from './session.js';
 import { bindLucyLiveSocket } from './ws-handler.js';
@@ -24,6 +25,8 @@ export interface LucyLiveDeps {
   vad?: SileroVad | null;
   /** Live task list; read fresh for every turn. */
   getTasks: () => readonly BriefingTask[];
+  /** Questions tasks asked the operator (`kookr ask`): pending and recently closed. Read fresh for every turn. */
+  getAsks?: () => readonly OperatorAskView[];
   /** Voice resolved at call time, like the speech routes (settings first, then the install default). */
   getVoice: () => string;
   log?: LucyInteractionLog;
@@ -60,7 +63,7 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
             const result = await synthesize({ ttsUrl, text, voice: deps.getVoice(), signal });
             return { wavBase64: result.audioBase64, durationMs: result.durationMs };
           },
-          buildBriefing: () => buildLucyLiveBriefing(deps.getTasks(), now()),
+          buildBriefing: () => buildLucyLiveBriefing(deps.getTasks(), now(), deps.getAsks?.() ?? []),
           now,
           warn,
           recordTurn: (r) => {

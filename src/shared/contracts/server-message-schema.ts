@@ -470,6 +470,19 @@ const dictationLaunchResultMessage = z.object({
   error: z.string().optional(),
 });
 
+const operatorAsksMessage = z.object({
+  type: z.literal('operatorAsks'),
+  asks: z.array(jsonObject),
+  announce: z.string().optional(),
+});
+
+const operatorAskResultMessage = z.object({
+  type: z.literal('operatorAskResult'),
+  askId: z.string(),
+  ok: z.boolean(),
+  reason: z.string().optional(),
+});
+
 const ServerMessageSchemaImpl = z.union([
   dictationLaunchResultMessage,
   snapshotMessage,
@@ -504,6 +517,8 @@ const ServerMessageSchemaImpl = z.union([
   ossAttemptsMessage,
   wsBackpressureNoticeMessage,
   deployLifecycleMessage,
+  operatorAsksMessage,
+  operatorAskResultMessage,
 ]);
 
 export const ServerMessageSchema = ServerMessageSchemaImpl;

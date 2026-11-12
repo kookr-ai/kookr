@@ -1,8 +1,9 @@
 /**
  * Remembers the most recent spoken clips, so the operator can hear them again.
  *
- * Why it exists: Lucy only speaks when a speaker button is pressed, but the
- * operator may have looked away, had the tab in the background, or had the
+ * Why it exists: Lucy speaks when a speaker button is pressed, and by herself
+ * when a task asks the operator a question (`ask-announcement.ts`). Either way
+ * the operator may have looked away, had the tab in the background, or had the
  * browser refuse to start audio. Without this, a clip that nobody heard is gone.
  *
  * The last {@link MAX_CLIP_HISTORY} clips are kept (bounded memory: a clip that

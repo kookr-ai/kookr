@@ -11,6 +11,7 @@ import type { ScheduleListResponse } from '../../shared/protocol.js';
 import { DeltaSequenceTracker } from '../delta-sequence.js';
 import { measureSync } from '../debug-timeline.js';
 import { acknowledgeDictationLaunch, resumeDictationCorpusRetries } from '../store/dictation-corpus.js';
+import { handleOperatorAskResult, handleOperatorAsks } from '../store/operator-asks.js';
 
 // Stale-socket callbacks are ignored silently in the controller; here we count
 // them and emit at most one compact telemetry event per window so a burst of
@@ -378,6 +379,13 @@ export function useWebSocket() {
               break;
             case 'circuitBreakerStatus':
               store.handleCircuitBreakerStatus(msg.breakers);
+              break;
+            // `kookr ask` questions for Lucy's panel; kept in their own small store so only the panel re-renders.
+            case 'operatorAsks':
+              handleOperatorAsks(msg.asks, msg.announce);
+              break;
+            case 'operatorAskResult':
+              handleOperatorAskResult(msg.askId, msg.ok, msg.reason);
               break;
             case 'diagnosticReport':
               store.handleDiagnosticReport(msg.report);

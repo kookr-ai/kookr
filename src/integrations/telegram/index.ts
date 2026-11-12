@@ -693,6 +693,12 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     task_gone: 'The task is no longer running, so the answer was not delivered.',
   };
 
+  /** Said on Telegram when the operator answers here a question they already answered in the dashboard (to Lucy). */
+  const ANSWERED_IN_KOOKR_TEXT = 'You already answered this one in Kookr. Nothing more is needed here.';
+  function askRejectionText(reason: AnswerRejection, ask: Pick<AskRecord, 'answeredVia'> | undefined): string {
+    return reason === 'already_answered' && ask?.answeredVia === 'dashboard' ? ANSWERED_IN_KOOKR_TEXT : ASK_REJECTION_TEXT[reason];
+  }
+
   /**
    * `kookr ask` button tap. Order (docs/rfc/rfc-kookr-ask.md): allowlist, rate
    * limit, strict pattern, then the ask service (lookup, MAC, state, chat and
@@ -729,7 +735,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       await api.answerCallbackQuery(cb.id, result.ask.taskDelivery === 'failed' ? 'Recorded, but could not reach the task' : 'Sent').catch(() => undefined);
     } else {
       audit({ kind: 'ask_rejected', askId, sender: cb.from.id, via: 'button', reason: result.reason });
-      await api.answerCallbackQuery(cb.id, ASK_REJECTION_TEXT[result.reason]).catch(() => undefined);
+      await api.answerCallbackQuery(cb.id, askRejectionText(result.reason, result.ask)).catch(() => undefined);
     }
   }
 
@@ -738,13 +744,13 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     chatId: number,
     userId: number,
     replyToId: number,
-    hit: { id: string; state: AskRecord['state'] },
+    hit: Pick<AskRecord, 'id' | 'state' | 'answeredVia'>,
     text: string,
   ): Promise<void> {
     if (!deps.asks) return;
     if (hit.state !== 'pending') {
       audit({ kind: 'ask_rejected', askId: hit.id, sender: userId, via: 'text', reason: 'closed' });
-      await sendMessageSafe(chatId, 'This question is already closed.');
+      await sendMessageSafe(chatId, hit.answeredVia === 'dashboard' ? ANSWERED_IN_KOOKR_TEXT : 'This question is already closed.');
       return;
     }
     const result = await deps.asks.answer({ askId: hit.id, senderId: userId, chatId, messageId: replyToId, text });
@@ -752,7 +758,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       audit({ kind: 'ask_answered', askId: hit.id, taskId: result.ask.taskId, sender: userId, via: 'text', taskDelivery: result.ask.taskDelivery });
     } else {
       audit({ kind: 'ask_rejected', askId: hit.id, sender: userId, via: 'text', reason: result.reason });
-      await sendMessageSafe(chatId, ASK_REJECTION_TEXT[result.reason]);
+      await sendMessageSafe(chatId, askRejectionText(result.reason, result.ask));
     }
   }
 
@@ -1068,7 +1074,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       async finalizeAsk(ask, text) {
         if (!ask.delivery) return;
         await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, text);
-        audit({ kind: 'ask_finalized', askId: ask.id, taskId: ask.taskId, state: ask.state, resolution: ask.resolution });
+        audit({ kind: 'ask_finalized', askId: ask.id, taskId: ask.taskId, state: ask.state, resolution: ask.resolution, ...(ask.answeredVia ? { answeredVia: ask.answeredVia } : {}) });
       },
     }
     : undefined;

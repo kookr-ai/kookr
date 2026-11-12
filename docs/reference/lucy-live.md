@@ -153,6 +153,66 @@ Silero's measured output with the shipped model: probabilities up to 0.998 on a 
 sustained loud noise and silence (none above 0.5). The noise tests are in
 `src/adapters/lucy-live/silero-vad.real.test.ts`.
 
+## Questions from tasks
+
+A running task can ask you a multiple-choice question with [`kookr ask`](cli.md#kookr-ask). The
+question goes to your phone over Telegram. If the dashboard is open and the avatar panel is on, Lucy
+asks it as well, whether or not hands-free talk is switched on.
+
+**What you see and hear.** The panel shows a card: which task is asking, the question, the background
+the task gave (folded under "Background"), one button per choice, a box for a typed answer when the
+task accepts one, and how long the question stays open. Lucy reads out who is asking, the question and
+the choices. She does not read the background: it usually holds paths and numbers that are easier to
+read than to hear. While a question is waiting, the list of recent messages is hidden to make room.
+
+**One question, two places to answer.** Telegram and the panel show the same record, kept by the Kookr
+server. Whichever answer arrives first is the answer; the task gets it as the same typed line either
+way.
+
+| You answer | What happens in the other place |
+|---|---|
+| In Lucy's panel | The Telegram message is edited to "✅ Already answered in Kookr: *choice*. Nothing more is needed here." and its buttons disappear. A later tap or reply there is told the same. |
+| On Telegram | The card turns into "Answered on Telegram: *choice*" within a moment, with no reload, and Lucy stops reading the question if she was. |
+| In both at the same moment | Exactly one wins. The other is told the question was already answered. |
+
+A closed card (answered, expired, or withdrawn by the task) stays for 10 minutes and can be dismissed.
+If Kookr recorded your answer but could not type it into the task's session, the card says so; the task
+can still read the answer from Kookr. If Kookr does not confirm an answer within 10 seconds (the
+connection dropped as you pressed), the card says so and you can press again.
+
+**When she speaks.** Everything else Lucy says follows a press on a speaker button or something you
+said to her. A question is the one thing she says unprompted, under these rules:
+
+- once, when the question arrives. A reload or a reconnect lists the question again but does not make
+  her ask again;
+- in one browser tab. With several Kookr tabs open they agree on which one speaks, and a visible tab
+  goes first;
+- not with sound off in Settings or Do Not Disturb on. The clip is then kept in her message list,
+  marked unheard, and the Replay button plays it;
+- the same when the browser refuses to start audio because you have not clicked in the page yet;
+- after anything she is already saying, one question at a time; she waits up to 45 seconds, then
+  leaves it as unheard;
+- she stops if the question is answered, withdrawn or expires while she is reading it.
+
+**Hands-free talk.** With Talk on, the status Lucy answers from also lists the questions that are
+waiting and the ones closed in the last 10 minutes, with where the answer came from. Ask her "does
+anything need me?" and she can tell you. She cannot take an answer by voice: a misheard word would
+send the wrong decision to a task, and that cannot be undone. Press the choice in her panel or answer
+on Telegram.
+
+**What it needs.** Telegram remote chat configured (without it `kookr ask` is unavailable altogether),
+and the speech service (`KOOKR_TTS`) for her voice; without the speech service, or when it fails, the
+card is shown and nothing is played. A voice used for the first time since the speech service started
+takes several seconds to load, and a busy machine makes speech slow; Kookr allows up to 30 seconds and
+tries a second time before giving up, so she may ask a little after the card appears. With the avatar panel switched off nothing is shown or spoken in the dashboard and
+the question is on Telegram only. Questions are sent only to the owner's dashboard, never to a
+read-only shared view.
+
+`node --import tsx scripts/ask-lucy-browser-proof.ts` runs this end to end in a headless browser
+against a throwaway server and a fake Telegram, and saves screenshots of the card in each state. With
+`--autoplay-blocked` it checks the case where the browser will not start audio because nobody has
+clicked in the page yet.
+
 ## When something goes wrong
 
 A failure in one turn (the recogniser, the helper model or the speech service) ends that turn with
@@ -166,7 +226,15 @@ conversation carries on with the next thing you say. A session-level `error` mes
 - Owner only. Lucy live answers from the status of every task and spends model credit, so the
   `/ws/lucy-live` upgrade is refused (403) for any viewer or other non-owner actor.
 
-- She answers questions only. She cannot launch, stop or approve anything yet.
+- She answers questions only. She cannot launch, stop or approve anything yet. That includes a
+  [question from a task](#questions-from-tasks): she can tell you about it, but an answer you say out
+  loud is not recorded.
+- With Talk on, a question from a task is read through the ordinary clip player, not the conversation's
+  own audio. Talking over it does not stop it, and her volume is not lowered while you speak. The
+  conversation also does not know that this voice is hers: on loudspeakers, if the browser's echo
+  cancellation lets her reading reach the open microphone, she can take it for something you said and
+  answer it. This was not tested. Use headphones, or answer the question before talking to her
+  ([#3680](https://github.com/kookr-ai/kookr/issues/3680)).
 - She always answers in English: her voices are English voices.
 - Headphones work best. Echo cancellation is on and a candidate interruption must be loud for 0.15 s
   and then pass Silero, but speaker-to-microphone echo was not tested: her own voice leaking into the

@@ -391,10 +391,11 @@ things she said.
   avatar file.
 - **A window you can move and minimise.** Drag it by its title bar; it remembers where you left it
   and stays inside the viewport when the window is resized. Minimising collapses it to a round
-  bubble that shows an amber badge with the number of findings needing your attention, and an amber dot
+  bubble that shows an amber badge with the number of things waiting for you (findings needing your
+  attention, plus questions from tasks, described below), and an amber dot
   when a message is unheard. Hover the bubble, or focus it with the keyboard, and a small card says
-  it in words: "2 findings need you", "1 unheard message" (each row only when it applies) and "Click
-  to open Lucy". Escape closes the card; screen readers get the same sentence from the bubble's label
+  it in words: "1 question for you", "2 findings need you", "1 unheard message" (each row only when it
+  applies) and "Click to open Lucy". Escape closes the card; screen readers get the same sentence from the bubble's label
   instead. A minimised panel shuts its 3D view down and uses no graphics memory.
 - **Usable from the keyboard.** A button in the title bar moves the window to the next corner of the
   screen, so dragging is never required. Focus stays on the panel when you minimise or reopen it,
@@ -418,9 +419,32 @@ things she said.
 - **Choose the voice.** Settings → General → **Voice** (server setting `speakVoice`, next to
   `speakVerbosity`) picks Heart, Sky, Sarah or Matilda, or **Install default** to follow `TTS_VOICE`.
   It applies to the next spoken clip with no restart. Heart, Sky and Sarah need a GPU to respond quickly.
-- **What it does not do.** It never speaks on its own; it only accompanies clips you asked for or
-  answers you while hands-free is on (below). Its mouth follows the loudness of the clip, not the
+- **What it does not do.** With one exception it never speaks on its own: it accompanies clips you
+  asked for and answers you while hands-free is on (below). The exception is a question a task asks
+  you, which she reads out once when it arrives (next section). Its mouth follows the loudness of the clip, not the
   individual sounds, so the lip-sync is approximate.
+
+#### Lucy asks you what a task needs to know
+
+When a task asks you a question with `kookr ask` (the multiple-choice questions that reach your phone
+over Telegram), Lucy asks it too if the dashboard is open with the avatar panel on. She reads the
+question and its choices aloud once, and the panel shows a card with one button per choice, the
+background the task gave, and a box for a typed answer when the task accepts one.
+
+- **Answer where you are.** Press a choice in her panel, or answer on Telegram. It is one question
+  with two ways to answer: the first answer wins, the task receives it the same way, and the other
+  place is updated. Answer in Kookr and the Telegram message changes to "Already answered in Kookr:
+  … Nothing more is needed here." Answer on Telegram and the card changes to "Answered on Telegram: …".
+- **She does not nag.** She speaks a question only when it arrives, never again on a reload, and in
+  one browser tab only. With sound off or Do Not Disturb on she stays silent and the question waits
+  in her message list as unheard. If it is answered while she is reading it, she stops.
+- **Minimised**, the bubble's badge counts the questions still waiting, with the findings.
+- **Needs** Telegram remote chat (that is what makes `kookr ask` available) and, for her voice, the
+  speech service. With the avatar panel off nothing changes: the question is on Telegram only.
+- **Not by voice yet.** With hands-free talk on she knows which questions are waiting and which were
+  answered, and can tell you, but she cannot record an answer you say out loud.
+
+Details: [Lucy live](reference/lucy-live.md#questions-from-tasks).
 
 #### Talk to Lucy hands-free (optional, off by default)
 

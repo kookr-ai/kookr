@@ -54,7 +54,7 @@ export type AuditEvent =
   | { kind: 'ask_sent'; askId: string; taskId: string; chatId: number }
   | { kind: 'ask_answered'; askId: string; taskId: string; sender: number; via: 'button' | 'text'; taskDelivery?: string }
   | { kind: 'ask_rejected'; askId?: string; sender: number; via: 'button' | 'text'; reason: string }
-  | { kind: 'ask_finalized'; askId: string; taskId: string; state: string; resolution?: string }
+  | { kind: 'ask_finalized'; askId: string; taskId: string; state: string; resolution?: string; answeredVia?: string }
   | { kind: 'handle_failed'; updateId: number; err: string }
   | { kind: 'offset_persist_failed'; err: string }
   | { kind: 'loop_died'; err: string }

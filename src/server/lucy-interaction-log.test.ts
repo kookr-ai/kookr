@@ -246,6 +246,13 @@ describe('LucyInteractionLog hardening (client-controlled input)', () => {
     expect(existsSync(file)).toBe(false);
   });
 
+  it('keeps the "ask" trigger: a clip Lucy played by herself because a task asked a question', async () => {
+    const log = createLucyInteractionLog({ filePath: file, now });
+    log.recordUi('s1', { ...base, type: 'lucy_clip_started', clipId: 'c', trigger: 'ask', panelState: 'open', tabVisible: true });
+    await log.flush();
+    expect(events()[0]).toMatchObject({ type: 'lucy_clip_started', trigger: 'ask' });
+  });
+
   it('replaces enum values outside the documented set with "other"', async () => {
     const log = createLucyInteractionLog({ filePath: file, now });
     log.recordUi('s1', { ...base, platform: 'plan9', type: 'lucy_clip_started', clipId: 'c', trigger: 'drag', panelState: '<script>', tabVisible: 'yes' });

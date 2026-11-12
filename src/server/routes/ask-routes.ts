@@ -1,10 +1,35 @@
+import { randomUUID } from 'node:crypto';
 import type { Hono } from 'hono';
+import { synthesize as synthesizeSpeech, TTSClientError } from '../../adapters/tts-client.js';
+import { askTaskName, buildAskSpeech, type TaskNameLookup } from '../../core/operator-asks.js';
 import { ASK_LIMITS, type AskState, type CreateAskError } from '../../shared/contracts/asks.js';
+import type { SpeakAudioResponse } from '../../shared/contracts/speech.js';
 import { toAskView, type AskService } from '../asks/ask-service.js';
+import { countSpokenWords, type LucyInteractionLog } from '../lucy-interaction-log.js';
+
+/**
+ * How long one attempt at speaking a question may take, twice the speech client's usual limit. A
+ * question waits for the operator for many minutes, so hearing it half a minute late is far better
+ * than not hearing it; the speaker buttons keep the short limit because someone is waiting on a click.
+ */
+export const ASK_SPEECH_TIMEOUT_MS = 30_000;
+
+/** What `POST /api/asks/:id/speak` needs to turn a question into Lucy's voice. */
+export interface AskSpeechDeps {
+  /** The speech service; undefined when it is not configured (the route then answers 503). */
+  ttsUrl?: string;
+  /** Voice resolved per request, like the other speech routes (settings first, then the install default). */
+  getVoice: () => string;
+  taskName: TaskNameLookup;
+  lucyLog?: LucyInteractionLog;
+  /** Test seam; production calls the speech service. */
+  synthesize?: typeof synthesizeSpeech;
+}
 
 export interface AskRouteDeps {
   /** Undefined when Telegram is not configured: POST then 503s and reads are empty (flag-off behaviour). */
   service?: AskService;
+  speech?: AskSpeechDeps;
 }
 
 const ASK_STATES: readonly AskState[] = ['pending', 'answered', 'expired', 'cancelled'];
@@ -29,9 +54,10 @@ function errorResponse(error: CreateAskError): { status: 400 | 404 | 409 | 422 |
 }
 
 /**
- * `kookr ask` routes. Deliberately no route that records an answer: the only
- * answer channel is the authenticated Telegram path, so an agent cannot answer
- * its own question over HTTP.
+ * `kookr ask` routes. Deliberately no route that records an answer, so an agent
+ * cannot answer its own question over HTTP. The operator answers on Telegram, or
+ * in the dashboard through the owner's socket (`answerAsk`, see
+ * `ws-connection-handler.ts`); both end in the same ask service.
  */
 export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
   const { service } = deps;
@@ -120,5 +146,54 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
         : c.json({ error: 'ask is no longer pending', code: 'not_pending' }, 409);
     }
     return c.json({ ask: toAskView(result.ask) });
+  });
+
+  // Lucy's voice for a pending question: who is asking, the question and the
+  // choices. The dashboard calls this when a question arrives and plays the clip
+  // in the avatar panel. Read-only for the ask itself.
+  app.post('/api/asks/:id/speak', async (c) => {
+    const speech = deps.speech;
+    if (!service) return c.json({ error: 'ask not found', code: 'not_found' }, 404);
+    const ask = await service.get(c.req.param('id'));
+    if (!ask) return c.json({ error: 'ask not found', code: 'not_found' }, 404);
+    if (ask.state !== 'pending') return c.json({ error: 'ask is no longer pending', code: 'not_pending' }, 409);
+    if (!speech?.ttsUrl) return c.json({ error: 'the speech service is not configured', code: 'tts_not_configured' }, 503);
+
+    const taskName = askTaskName(speech.taskName(ask.taskId));
+    const text = buildAskSpeech(ask, taskName);
+    const voice = speech.getVoice();
+    const startedAt = Date.now();
+    const synthesize = speech.synthesize ?? synthesizeSpeech;
+    const request = { ttsUrl: speech.ttsUrl, text, voice, timeoutMs: ASK_SPEECH_TIMEOUT_MS, signal: c.req.raw.signal };
+    try {
+      // The speech service loads a voice the first time it is used (measured: 13 s), and on a busy
+      // machine a sentence that normally takes 3 s was seen to take more than 15 s twice in a row.
+      // Questions are rare, so that first use is often a question. One more try then finds the voice loaded.
+      const audio = await synthesize(request).catch((err: unknown) => {
+        if (err instanceof TTSClientError && err.kind === 'timeout' && !c.req.raw.signal.aborted) return synthesize(request);
+        throw err;
+      });
+      const ttsMs = Date.now() - startedAt;
+      const clipId = randomUUID();
+      try {
+        speech.lucyLog?.recordSaid({
+          clipId, source: 'operator_ask', taskId: ask.taskId, taskName, text,
+          usedFallback: false, cached: false, voice, llmMs: 0, ttsMs,
+          durationMs: audio.durationMs, words: countSpokenWords(text),
+        });
+      } catch (err) {
+        console.warn(`[lucy-log] recordSaid threw: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const response: SpeakAudioResponse = {
+        text, audioBase64: audio.audioBase64, mimeType: 'audio/wav', durationMs: audio.durationMs,
+        usedFallback: false, llmMs: 0, ttsMs, cached: false, clipId,
+        ...(taskName !== undefined ? { subject: taskName } : {}),
+      };
+      return c.json(response);
+    } catch (err) {
+      const kind = err instanceof TTSClientError ? err.kind : 'unknown';
+      console.warn(`[asks] speak failed ask=${ask.id} kind=${kind}: ${err instanceof Error ? err.message : String(err)}`);
+      return c.json({ error: 'the speech service failed', code: 'tts_failed' }, 502);
+    }
   });
 }

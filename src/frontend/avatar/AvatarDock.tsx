@@ -1,7 +1,8 @@
 /**
  * The optional avatar panel: a small floating window, by default in the
- * bottom-right corner, showing a 3D character who lip-syncs Kookr's spoken
- * summaries (the clips played by the speaker buttons on tasks).
+ * bottom-right corner, showing a 3D character who lip-syncs what Kookr says
+ * aloud: the spoken summaries played by the speaker buttons on tasks, and the
+ * questions tasks ask the operator (described below).
  *
  * It can be dragged by its title bar and minimised to a round bubble. While
  * minimised the 3D view is shut down completely, and the bubble shows a still
@@ -13,6 +14,12 @@
  * and can be interrupted by speaking over her. It lives in this component, not in the
  * 3D view, so it keeps running while the panel is minimised, and it is never saved:
  * every page load starts with the microphone closed.
+ *
+ * When a task asks the operator a question (`kookr ask`, the same question that
+ * goes to Telegram), Lucy reads it out once and the panel shows it as a card with
+ * one button per choice (`AskCard.tsx`). Answering there closes the question on
+ * Telegram too, and an answer given on Telegram turns the card into "Answered on
+ * Telegram". While minimised, the bubble's badge counts the waiting questions.
  *
  * Under the 3D view the panel lists the last few spoken messages in full (what, about
  * which task, how long ago, heard or not), each with its own Replay button. The list is
@@ -32,6 +39,16 @@ import { getLastClip, useClipHistory, useLastClip } from '../audio/last-clip.js'
 import { replayClip, replayLastClip, stopReplay, type ReplayResult } from '../audio/clip-playback.js';
 import { useSoundPreference } from '../audio/sound-preference.js';
 import { track } from '../telemetry.js';
+import { announceAsk, stopAskAnnouncement } from '../audio/ask-announcement.js';
+import {
+  dismissOperatorAsk,
+  markAskSubmitting,
+  onAskAnnounced,
+  onAskClosed,
+  useOperatorAsks,
+  visibleOperatorAsks,
+} from '../store/operator-asks.js';
+import { AskCard, askOutcome, type AskAnswerChoice } from './AskCard.js';
 import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
 import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
 import {
@@ -90,6 +107,12 @@ function viewportSize(): { width: number; height: number } {
 export interface AvatarDockProps {
   /** How many tasks are waiting for the operator; shown as a badge on the bubble. */
   attentionCount: number;
+  /**
+   * Send the operator's answer to a `kookr ask` question over the dashboard socket.
+   * Returns false when it could not be sent (not connected). Without it the cards are
+   * still shown, and an answer reports "not connected".
+   */
+  onAnswerAsk?: (askId: string, choice: AskAnswerChoice) => boolean;
 }
 
 const REPLAY_DESCRIPTION_ID = 'avatar-replay-description';
@@ -108,6 +131,7 @@ function matchesFocusVisible(element: HTMLElement): boolean {
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 const findingsText = (n: number): string => `${plural(n, 'finding needs', 'findings need')} your attention`;
 const unheardText = (n: number): string => plural(n, 'unheard message', 'unheard messages');
+const questionsText = (n: number): string => `${plural(n, 'question is', 'questions are')} waiting for your answer`;
 
 /**
  * What a screen reader hears after the header Replay button's name. That button replays only the newest
@@ -137,7 +161,7 @@ function bubbleCardPlacement(
   };
 }
 
-export function AvatarDock({ attentionCount }: AvatarDockProps) {
+export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
   const [viewport, setViewport] = useState(viewportSize);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
@@ -159,6 +183,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const clips = useClipHistory();
   const sound = useSoundPreference();
   const live = useLucyLive();
+  const operatorAsks = useOperatorAsks();
   // Why a press on the unavailable Talk button did nothing, for people who cannot see its tooltip.
   const [talkNotice, setTalkNotice] = useState<string | null>(null);
   // Bumped on every press of the unavailable Talk button so the announcement is spoken again.
@@ -167,6 +192,13 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   // reader announces it once. Drafts change under the reader and are not announced. Lucy's own words are
   // never announced: she is already speaking them, and a second voice would overlap hers and reach the open microphone.
   const [heardFinal, setHeardFinal] = useState<{ seq: number; text: string } | null>(null);
+  // What a screen reader is told about questions from tasks: that one arrived (Lucy speaks the question
+  // itself, so only a short notice) and how one ended (which she does not say). A new entry per event.
+  const [askNotice, setAskNotice] = useState<{ seq: number; text: string } | null>(null);
+  // The control inside a question card that holds keyboard focus, and its card. A card is replaced when its
+  // question closes and removed when it is dismissed; the focused control then disappears and the browser
+  // drops focus to the top of the page. Only that case is repaired (see the effect below).
+  const focusedAskControlRef = useRef<{ element: HTMLElement; askId: string } | null>(null);
 
   const viewRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<AvatarStage | null>(null);
@@ -224,13 +256,55 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   // Keep the "N min ago" labels current while the list is on screen: one timer, gone when the panel
   // is minimised, closed or the list is empty.
   const [now, setNow] = useState(() => Date.now());
-  const listVisible = !prefs.minimized && clips.length > 0;
+  // Questions are kept current while minimised too: the bubble's badge counts the ones still waiting.
+  const listVisible = (!prefs.minimized && clips.length > 0) || operatorAsks.asks.length > 0;
   useEffect(() => {
     if (!listVisible) return undefined;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), RELATIVE_TIME_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [listVisible]);
+
+  // A task just asked a question: Lucy says it, once. Only while this panel exists, so with the avatar
+  // panel switched off nothing is spoken (the question is still on Telegram). If it is answered,
+  // withdrawn or expires while she is reading it out, she stops.
+  useEffect(() => {
+    const notice = (text: string): void => setAskNotice((previous) => ({ seq: (previous?.seq ?? 0) + 1, text }));
+    const offAnnounced = onAskAnnounced((ask) => {
+      notice(ask.taskName ? `New question from ${ask.taskName}.` : 'New question from a task.');
+      void announceAsk(ask.id);
+    });
+    const offClosed = onAskClosed((ask) => {
+      notice(`${askOutcome(ask).text}. Question: ${ask.question}`);
+      stopAskAnnouncement(ask.id);
+    });
+    return () => {
+      offAnnounced();
+      offClosed();
+    };
+  }, []);
+
+  const asks = visibleOperatorAsks(operatorAsks.asks, now);
+  const pendingAskCount = asks.reduce((n, ask) => (ask.state === 'pending' ? n + 1 : n), 0);
+  const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
+    markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
+  }, [onAnswerAsk]);
+  // After the cards change: if the control that had focus was removed with its card, put focus on what
+  // replaced the card, or on the panel when the card is gone. Two rules keep this from ever doing harm:
+  // it acts only when that control really left the page and focus fell to the document (focus the operator
+  // moved elsewhere is never taken back), and it lands on the card itself, never on an answer button, so a
+  // stray Enter or Space cannot send an answer.
+  const askSignature = asks.map((ask) => `${ask.id}:${ask.state}`).join(',');
+  useLayoutEffect(() => {
+    const focused = focusedAskControlRef.current;
+    if (!focused || focused.element.isConnected) return;
+    focusedAskControlRef.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const dock = dockRef.current;
+    if (!dock) return;
+    (dock.querySelector<HTMLElement>(`[data-ask-id="${focused.askId}"]`) ?? dock).focus();
+  }, [askSignature]);
 
   // A replay must not keep talking after the panel is gone.
   useEffect(() => () => stopReplay('user_stop'), []);
@@ -423,7 +497,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
 
   // The bubble's card: what the badge and the dot mean. It only repeats what the bubble's label says, so it is
   // hidden from assistive technology; keyboard users get it through focus, Escape closes it.
-  const cardHasContent = attentionCount > 0 || lastClip.unheardCount > 0;
+  const cardHasContent = attentionCount > 0 || lastClip.unheardCount > 0 || pendingAskCount > 0;
   const cardVisible = prefs.minimized && cardHasContent && (hovered || focused) && !cardDismissed;
   useEffect(() => {
     if (!cardVisible) return undefined;
@@ -452,11 +526,14 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     const activity = state !== 'idle' ? `, ${STATE_LABEL[state]}` : liveReady ? ', listening' : '';
     const label = [
       `Open ${NAME}${activity}`,
+      pendingAskCount > 0 ? questionsText(pendingAskCount) : null,
       attentionCount > 0 ? findingsText(attentionCount) : null,
       lastClip.unheardCount > 0 ? unheardText(lastClip.unheardCount) : null,
     ]
       .filter(Boolean)
-      .join('. ') + (attentionCount > 0 || lastClip.unheardCount > 0 ? '.' : '');
+      .join('. ') + (cardHasContent ? '.' : '');
+    // One number on the bubble: everything that is waiting for the operator.
+    const badgeCount = attentionCount + pendingAskCount;
     const cardPlacement = bubbleCardPlacement(bubblePosition, viewport);
     const cardRight = bubblePosition.x + AVATAR_BUBBLE_SIZE;
     return (
@@ -479,8 +556,8 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
           {!still && <span className="avatar-bubble-initial" aria-hidden="true">{NAME[0]}</span>}
           {live.enabled && <span className="avatar-bubble-mic" data-testid="avatar-bubble-mic" aria-hidden="true" />}
           {lastClip.unheard && <span className="avatar-unheard-dot avatar-bubble-unheard" data-testid="avatar-unheard-dot" aria-hidden="true" />}
-          {attentionCount > 0 && (
-            <span className="avatar-bubble-badge" aria-hidden="true">{attentionCount > 99 ? '99+' : attentionCount}</span>
+          {badgeCount > 0 && (
+            <span className="avatar-bubble-badge" aria-hidden="true">{badgeCount > 99 ? '99+' : badgeCount}</span>
           )}
         </button>
         {cardVisible && (
@@ -498,6 +575,12 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
             aria-hidden="true"
             data-testid="avatar-bubble-card"
           >
+            {pendingAskCount > 0 && (
+              <div className="avatar-bubble-card-row" data-testid="avatar-bubble-card-asks">
+                <span className="avatar-mark-diamond" />
+                {plural(pendingAskCount, 'question', 'questions')} for you
+              </div>
+            )}
             {attentionCount > 0 && (
               <div className="avatar-bubble-card-row">
                 <span className="avatar-mark-diamond" />
@@ -521,7 +604,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const newestId = clips[0]?.clipId;
   return (
     <section
-      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
+      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${asks.length > 0 ? ' avatar-dock-asking' : ''}${pendingAskCount > 0 ? ' avatar-dock-ask-waiting' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
       style={{ left: position.x, top: position.y, width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT }}
       aria-label={`${NAME} avatar`}
       ref={dockRef}
@@ -606,7 +689,40 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
       <div className="sr-only" role="status" data-testid="avatar-live-announce">
         {announcement && <span key={`notice-${talkNoticeSeq}-${announcement}`}>{announcement}</span>}
         {heardFinal && <span key={`heard-${heardFinal.seq}`}>You said: {heardFinal.text}</span>}
+        {askNotice && <span key={`ask-${askNotice.seq}`} data-testid="avatar-ask-announce">{askNotice.text}</span>}
       </div>
+      {asks.length > 0 && (
+        // Questions from tasks (`kookr ask`), above everything else she shows: a task is waiting on these.
+        <ol
+          className="avatar-asks"
+          // Stated because `list-style: none` makes some browsers drop the list role, and its label with it.
+          role="list"
+          onFocus={(event) => {
+            const element = event.target as HTMLElement;
+            const askId = element.closest<HTMLElement>('[data-ask-id]')?.dataset.askId;
+            focusedAskControlRef.current = askId ? { element, askId } : null;
+          }}
+          onBlur={(event) => {
+            // A control that is still in the page lost focus because the operator moved it (another field,
+            // a click on the page, another window): forget it. A control removed while focused is no longer
+            // in the page here, or never reports a blur at all; that is the case the effect above repairs.
+            if ((event.target as HTMLElement).isConnected) focusedAskControlRef.current = null;
+          }}
+          aria-label={pendingAskCount > 0 ? `Questions waiting for your answer (${pendingAskCount})` : 'Recent questions'}
+          data-testid="avatar-asks"
+        >
+          {asks.map((ask) => (
+            <AskCard
+              key={ask.id}
+              ask={ask}
+              submit={operatorAsks.submit[ask.id]}
+              nowMs={now}
+              onAnswer={onAnswer}
+              onDismiss={dismissOperatorAsk}
+            />
+          ))}
+        </ol>
+      )}
       {showLive && (
         // A log, but not a live one: Lucy's answer is spoken aloud already, so it is not announced.
         // Focusable because it scrolls.

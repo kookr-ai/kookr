@@ -263,6 +263,30 @@ describe('kookr ask over Telegram', () => {
     expect(deliver).toHaveBeenCalledTimes(1);
   });
 
+  it('an answer given in the dashboard edits the Telegram message, and a later tap or reply is told it was answered in Kookr', async () => {
+    await boot();
+    const a = await ask();
+    const messageId = store.get(a.id)!.delivery!.messageId;
+    expect((await service!.answerFromDashboard({ askId: a.id, optionIndex: 1 })).ok).toBe(true);
+
+    await waitFor(() => expect(fake.outbound.editMessageText.some((e) => e.message_id === messageId)).toBe(true));
+    const edit = fake.outbound.editMessageText.find((e) => e.message_id === messageId)!;
+    expect(edit.text).toContain('✅ Already answered in Kookr: No');
+    expect(edit.text).toContain('Nothing more is needed here.');
+    expect(edit.text).toContain('Ship it?');
+    await waitFor(() => expect(audit().some((e) => e.kind === 'ask_finalized' && e.answeredVia === 'dashboard')).toBe(true));
+
+    tap(keyboard()[0].callback_data, { messageId });
+    await waitFor(() => expect(toasts()).toContain('You already answered this one in Kookr. Nothing more is needed here.'));
+    // A forged button on the same question is still called forged, not "answered in Kookr".
+    tap(`ask:${a.id}:0:${'0'.repeat(16)}`, { messageId });
+    await waitFor(() => expect(toasts()).toContain('Invalid button.'));
+    reply('actually yes', messageId);
+    await waitFor(() => expect(fake.outbound.sendMessage.some((m) => m.text === 'You already answered this one in Kookr. Nothing more is needed here.')).toBe(true));
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(store.get(a.id)).toMatchObject({ answeredVia: 'dashboard', answer: { label: 'No' } });
+  });
+
   it('a rate-limited tap is rejected before the ask service is consulted', async () => {
     await boot();
     const a = await ask();

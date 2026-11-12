@@ -294,6 +294,8 @@ import { createTelegramTaskBridge } from './telegram-task-bridge.js';
 import { AskStore } from './asks/ask-store.js';
 import { AskService } from './asks/ask-service.js';
 import type { AskNotifier } from '../shared/contracts/asks.js';
+import { listOperatorAsks } from '../core/operator-asks.js';
+import { createOperatorAsksPort, pushOperatorAsks } from './asks/operator-asks-port.js';
 import {
   TaskTailStore,
   readTaskTailConfigFromEnv,
@@ -2894,6 +2896,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           config: liveConfig,
           vad,
           getTasks: () => taskStore.viewTasks(),
+          // So she knows which questions are waiting and which were answered, and where.
+          getAsks: () => (askService
+            ? listOperatorAsks(askService.all(), Date.now(), (taskId) => taskStore.getTask(taskId)?.name)
+            : []),
           getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
           log: lucyInteractionLog,
         }),
@@ -2924,7 +2930,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     faaAckReapWarningCoordinator,
     faaAckReaperMetrics,
     hungTaskReaperMetrics,
-    asks: { service: askService },
+    asks: {
+      service: askService,
+      // Lucy reads a pending question aloud in the avatar panel (POST /api/asks/:id/speak).
+      speech: {
+        ttsUrl,
+        getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
+        taskName: (taskId) => taskStore.getTask(taskId)?.name,
+        lucyLog: lucyInteractionLog,
+      },
+    },
     ...(issueClaimServices ? {
       issueClaims: {
         enabled: true,
@@ -3739,7 +3754,25 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       currentSettings.quotaHeadroomThreshold;
   }
 
+  // `kookr ask` in the dashboard: Lucy shows and asks the same questions Telegram
+  // carries. The list goes to owner connections only, on connect and whenever a
+  // question is sent or closed on either channel; the rules live in
+  // asks/operator-asks-port.ts.
+  const operatorAsksPort = askService
+    ? createOperatorAsksPort({
+      service: askService,
+      taskName: (taskId) => taskStore.getTask(taskId)?.name,
+      auditLogPath: join(kookrDir, 'audit.jsonl'),
+    })
+    : undefined;
+  if (askService && operatorAsksPort) {
+    askService.onChange((change) => {
+      pushOperatorAsks(connectionRegistry.snapshotDashboardConnections(), operatorAsksPort.list(), change);
+    });
+  }
+
   const wsConnectionDeps: WsConnectionDeps = {
+    ...(operatorAsksPort ? { operatorAsks: operatorAsksPort } : {}),
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
     serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,
