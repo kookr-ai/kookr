@@ -89,9 +89,16 @@ function dollars(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-/** One line of text with secrets hidden, safe to place in a prompt. */
+/** Control characters (escape, bell and the like, 7-bit and 8-bit). None belongs in a prompt. */
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]+/g;
+
+/**
+ * One line of text with secrets hidden and control characters removed, safe to place in
+ * a prompt. Secrets are hidden first, while a control character still stands as a break
+ * between a token and the word before it.
+ */
 export function boardText(value: string | undefined, max = 80): string {
-  const flat = redactSpeechSecrets(value ?? '').replace(/\s+/g, ' ').trim();
+  const flat = redactSpeechSecrets(value ?? '').replace(CONTROL_CHARACTERS, ' ').replace(/\s+/g, ' ').trim();
   return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
 }
 
@@ -144,7 +151,7 @@ export function taskHandles(tasks: readonly { id: string }[]): Map<string, strin
 
 /** How she may call the task aloud: its short name in quotes, or a description when it has none. */
 export function spokenLabel(task: Pick<LucyBoardTask, 'name' | 'project'>): string {
-  const spoken = spokenTaskName(redactedTaskName(task.name));
+  const spoken = spokenTaskName(redactedTaskName(task.name)?.replace(CONTROL_CHARACTERS, ' '));
   if (!isGenericTaskName(spoken)) return `"${spoken}"`;
   const project = boardText(task.project, 40);
   return project ? `an unnamed task in ${project}` : 'an unnamed task';

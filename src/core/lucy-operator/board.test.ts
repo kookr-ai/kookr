@@ -138,6 +138,25 @@ describe('buildLucyBoard', () => {
     expect(board).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789');
   });
 
+  test('control characters in a name, a project or a reason never reach the board', () => {
+    const escape = '\u001b';
+    const board = buildLucyBoard(
+      {
+        tasks: [
+          boardTask({ id: 'eeee5555', name: `Fix${escape}[31m login`, project: `web${escape}]0;title\u0007app`, attention: `it asked\u0000 you` }),
+          boardTask({ id: 'ffff6666', name: 'Done one', status: 'terminated', terminatedAt: NOW, terminationReason: `killed\u009b5A by hand` }),
+        ],
+        lifetimeSpendUsd: null,
+        quota: null,
+      },
+      NOW,
+    );
+    expect(board).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(board).toContain('project web ]0;title app');
+    expect(board).toContain('waiting on the operator: it asked you');
+    expect(board).toContain('(killed 5A by hand)');
+  });
+
   test('a long list is cut, and the cut is stated', () => {
     const many = Array.from({ length: MAX_BOARD_WORKING + 5 }, (_, i) => boardTask({ id: `id${String(i).padStart(6, '0')}`, name: `Task ${i}` }));
     const board = buildLucyBoard({ tasks: many, lifetimeSpendUsd: null, quota: null }, NOW);

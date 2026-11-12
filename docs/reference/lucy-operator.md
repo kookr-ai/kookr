@@ -133,9 +133,17 @@ Before any of it is sent, secret-looking tokens (API keys and similar) are repla
 `[redacted]`, using the same rule as the spoken summaries. That includes the operator's own sentence
 and the earlier exchanges. Terminal output also has its colour and cursor codes removed, and each
 look-up is cut to a fixed length.
-The redaction recognises token shapes. It does not know which words are confidential. On terminal
-output it reads the stream of characters and does not rebuild the screen, so a token that only
-appears on screen because characters were overwritten in place is not recognised. If task names
+The redaction recognises token shapes. It does not know which words are confidential.
+
+On terminal output, the codes a terminal uses to draw (colours, cursor moves, erases) sit between
+the words, so a token is looked for with those codes treated in several ways, and it is hidden when
+codes stand before it, after it or inside it. Two cases are not covered, because this reads the
+stream of characters and does not rebuild the screen:
+
+- a long random-looking run with no known prefix that a cursor move splits in two is read as two
+  pieces, and a piece shorter than 32 characters is not hidden;
+- a token that only appears on screen because characters were overwritten in place (backspace, then
+  retype) is not recognised. If task names
 or terminal output must not leave the machine, leave the setting off.
 
 ## Records

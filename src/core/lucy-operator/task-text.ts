@@ -15,40 +15,56 @@
  *
  * ## How it works
  *
- * 1. One pass over the text finds every terminal code, as a range of the raw text. A
- *    code is "zero-width" (a colour, an erase, a window title: it takes no room on
- *    screen) or a "gap" (it moves the cursor, so what follows is apart from what came
- *    before). The scanner follows the terminal-code grammar (ECMA-48), and every
- *    escape, 8-bit control and control character ends up inside a range, whole.
- * 2. Secrets are looked for in five readings of the text, because no single reading
- *    is right for every case:
+ * 1. One pass over the text finds every terminal code, as a range of the raw text,
+ *    reading them the way a terminal does (the ECMA-48 grammar, malformed codes
+ *    included). Every escape, 8-bit control and control character ends up inside a
+ *    range, whole.
+ * 2. Each code either joins its neighbours or separates them. **Only the codes that
+ *    move the cursor separate**, and they are a short, fixed list (see
+ *    `CURSOR_MOVE_FINALS`, `CURSOR_MOVE_ESCAPES`, `CURSOR_MOVE_CONTROLS`). Every other
+ *    code joins, including any code the list has never heard of. That is the safe
+ *    direction: joining can make more text look like one token, never less.
+ * 3. Secrets are looked for in five readings of the text, because no single reading is
+ *    right for every case:
  *    - every code separates words (finds a token standing right after a code);
- *    - zero-width codes join, gaps separate (finds a token a colour runs through);
- *    - every code joins, looking only for tokens with a known prefix (finds such a
- *      token whatever runs through it, without mistaking ordinary words placed by
- *      cursor jumps for one long token);
+ *    - joining codes join, cursor moves separate (finds a token that a colour, an
+ *      erase or a mode change runs through);
+ *    - every code joins, looking only for tokens with a known prefix (a net under the
+ *      list above: such a token is found even if a code was wrongly taken for a
+ *      cursor move);
  *    - only the escape or control character itself separates, and the rest of the
  *      code counts as text (known prefixes only); and, separately, the code separates
  *      but its last character counts as text. Between them these find a token whose
  *      first letter the scanner read as the end of a code that was in fact cut off
  *      (`ESC[35;1` + `ghp_…`).
  *
- *    The readings that join ordinary text together look only for known prefixes: with
- *    the "any run of 32 or more characters" rule they would hide ordinary words. On
- *    150 real saved terminal tails (34 million characters) the five readings hid one
- *    span more than laying the text out and redacting it once, and never one less.
- * 3. Every span any reading found is hidden, in the raw text, in one go. Then the
- *    codes that remain are rendered: nothing for a zero-width code, a space for a gap.
+ *    The readings that put ordinary text together where a cursor move stood look only
+ *    for known prefixes: with the "any run of 32 or more characters" rule they would
+ *    hide ordinary words that a terminal placed side by side.
+ * 4. Every span any reading found is hidden, in the raw text, in one go. Then the
+ *    codes that remain are rendered: nothing for a joining code, a space for a cursor
+ *    move.
  *
  * Text with no control characters gets exactly the ordinary redaction.
  *
- * ## What it does not do
+ * ## The guarantee, and what it does not cover
  *
- * It reads the stream, it does not emulate a screen. A token that only exists on screen
- * because characters were overwritten (backspace, cursor-left and retype) is not put
- * back together, and a long random run with no known prefix is not joined across a
- * cursor move. Rendering the screen with a real emulator needs a worker with a deadline
- * (see `server/streaming-attach-snapshot.ts`) and is a follow-up.
+ * A token that the ordinary redaction would hide in plain text is hidden when any
+ * codes stand before it, after it, or inside it, with two exceptions:
+ *
+ * - **A token with no known prefix that a cursor move splits.** On screen the two
+ *   halves are usually apart. They are read as two pieces, and a piece shorter than 32
+ *   characters is not hidden. (Tokens with a known prefix are hidden even then.)
+ * - **A token that exists only on screen**, because characters were overwritten in
+ *   place (backspace or cursor-left, then retype). This reads the stream; it does not
+ *   emulate a screen.
+ *
+ * Side effect of the net: a word glued straight onto a prefixed token by a code is
+ * hidden with it.
+ *
+ * Rendering the screen with a real emulator removes both exceptions, but an emulator
+ * fed untrusted output needs a worker with a deadline (see
+ * `server/streaming-attach-snapshot.ts`); that is a follow-up.
  */
 
 import { redactSpeechSecrets, speechSecretSpans } from '../task-speech-summary.js';
@@ -57,26 +73,48 @@ interface CodeRange {
   start: number;
   /** Exclusive. */
   end: number;
-  /** True when the code takes no room on screen; false when what follows it is apart from what came before. */
-  zeroWidth: boolean;
+  /**
+   * True when what stands before the code and what stands after it are next to each other on
+   * screen, so the code may run through the middle of one word. False for the codes that move
+   * the cursor (the short list below): what follows one of those is apart from what came before.
+   */
+  joins: boolean;
 }
 
 const ESC = 0x1b;
 const BEL = 0x07;
+const DEL = 0x7f;
 /** Longest string code (window title, hyperlink) accepted without its terminator, so one cannot swallow the rest of the text. */
 const MAX_UNTERMINATED_STRING = 2048;
-/** Final bytes of the control sequences that move the cursor. Every other control sequence is zero-width. */
-const CURSOR_MOVE_FINALS = new Set('@ABCDEFGHIZ`adefsu');
+/** Longest control sequence or short escape followed to its final byte. Real ones are a few characters. */
+const MAX_SEQUENCE = 256;
 
-const isParameter = (code: number): boolean => code >= 0x30 && code <= 0x3f;
-const isIntermediate = (code: number): boolean => code >= 0x20 && code <= 0x2f;
-const isControl = (code: number): boolean => (code <= 0x1f && code !== 0x09 && code !== 0x0a) || (code >= 0x7f && code <= 0x9f);
+/*
+ * The codes that move the cursor. This list is the whole of it: every other code, known
+ * or not, is taken to join its neighbours. That is the safe direction for a code this
+ * list has never heard of: joining can only make more text look like one token, never
+ * split a token in two.
+ */
+/** Final bytes of cursor-moving control sequences: up, down, forward, back, next line, previous line, column, position, tab stops, row, restore. */
+const CURSOR_MOVE_FINALS = new Set('ABCDEFGHIZ`adefu');
+/** Short escapes that move the cursor: index, next line, reverse index, restore cursor, full reset. */
+const CURSOR_MOVE_ESCAPES = new Set(['D', 'E', 'M', '8', 'c']);
+/** Control characters that move the cursor: backspace, vertical tab, form feed, carriage return, and the 8-bit index, next line, reverse index. */
+const CURSOR_MOVE_CONTROLS = new Set([0x08, 0x0b, 0x0c, 0x0d, 0x84, 0x85, 0x8d]);
+
+/** Tab and line feed are ordinary text here; every other control character, 7-bit or 8-bit, is a code. */
+const isControl = (code: number): boolean => (code <= 0x1f && code !== 0x09 && code !== 0x0a) || (code >= DEL && code <= 0x9f);
+/** Inside a sequence a terminal acts on a control character (or ignores DEL) and carries on reading the sequence. */
+const isPassedOverInSequence = (code: number): boolean => (code <= 0x1f && code !== ESC) || code === DEL;
 /** After ESC, these open a string code: OSC `]`, DCS `P`, SOS `X`, PM `^`, APC `_`. */
 const STRING_OPENERS_7BIT = new Set([0x5d, 0x50, 0x58, 0x5e, 0x5f]);
 /** The same openers as single 8-bit controls. */
 const STRING_OPENERS_8BIT = new Set([0x9d, 0x90, 0x98, 0x9e, 0x9f]);
 
-/** Find every terminal code in `text`. Linear: each character is looked at a bounded number of times. */
+/**
+ * Find every terminal code in `text`, the way a terminal reads them. Linear: a sequence
+ * is followed for a bounded number of characters, and no character is read twice.
+ */
 function scanCodes(text: string): CodeRange[] {
   const ranges: CodeRange[] = [];
   const length = text.length;
@@ -91,17 +129,26 @@ function scanCodes(text: string): CodeRange[] {
     const next = i + 1 < length ? text.charCodeAt(i + 1) : -1;
 
     if ((code === ESC && next === 0x5b) || code === 0x9b) {
-      // Control sequence: parameters, intermediates, one final byte.
-      let j = code === ESC ? i + 2 : i + 1;
-      while (j < length && isParameter(text.charCodeAt(j))) j += 1;
-      while (j < length && isIntermediate(text.charCodeAt(j))) j += 1;
+      // Control sequence: any run of parameter and intermediate bytes (0x20 to 0x3f), then one
+      // final byte. A terminal reads a malformed one (a parameter after an intermediate, a
+      // control character in the middle) through to its final byte all the same, so this does too.
+      const body = code === ESC ? i + 2 : i + 1;
+      const limit = Math.min(length, body + MAX_SEQUENCE);
+      let j = body;
+      while (j < limit) {
+        const c = text.charCodeAt(j);
+        if ((c >= 0x20 && c <= 0x3f) || isPassedOverInSequence(c)) j += 1;
+        else break;
+      }
       const final = j < length ? text.charCodeAt(j) : -1;
-      if (final >= 0x40 && final <= 0x7e) {
-        ranges.push({ start, end: j + 1, zeroWidth: !CURSOR_MOVE_FINALS.has(text[j]!) });
+      if (j < limit && final >= 0x40 && final <= 0x7e) {
+        const first = body < length ? text.charCodeAt(body) : -1;
+        const privatePrefix = first >= 0x3c && first <= 0x3f; // "<", "=", ">", "?": a terminal-specific code, not a cursor move
+        ranges.push({ start, end: j + 1, joins: privatePrefix || !CURSOR_MOVE_FINALS.has(text[j]!) });
         i = j + 1;
       } else {
         // Cut off before its final byte: what was read of it is still a code, not text.
-        ranges.push({ start, end: j, zeroWidth: false });
+        ranges.push({ start, end: j, joins: true });
         i = j;
       }
       continue;
@@ -128,25 +175,36 @@ function scanCodes(text: string): CodeRange[] {
         }
         j += 1;
       }
-      if (end === -1) end = j;
-      ranges.push({ start, end, zeroWidth: true });
+      if (end === -1) {
+        // Never terminated and too long to follow. Stop here, but not in the middle of a word:
+        // the rest of a token that straddles this point must not be left behind as ordinary text.
+        const wordLimit = Math.min(length, j + MAX_SEQUENCE);
+        while (j < wordLimit && !/\s/.test(text[j]!) && !isControl(text.charCodeAt(j))) j += 1;
+        end = j;
+      }
+      ranges.push({ start, end, joins: true });
       i = end;
       continue;
     }
 
     if (code === ESC) {
-      // Short escape: intermediates, then one final byte.
+      // Short escape: any intermediates (0x20 to 0x2f), then one final byte.
+      const limit = Math.min(length, i + 1 + MAX_SEQUENCE);
       let j = i + 1;
-      while (j < length && isIntermediate(text.charCodeAt(j))) j += 1;
+      while (j < limit) {
+        const c = text.charCodeAt(j);
+        if ((c >= 0x20 && c <= 0x2f) || isPassedOverInSequence(c)) j += 1;
+        else break;
+      }
       const final = j < length ? text.charCodeAt(j) : -1;
-      const end = final >= 0x30 && final <= 0x7e ? j + 1 : j;
-      ranges.push({ start, end, zeroWidth: false });
+      const end = j < limit && final >= 0x30 && final <= 0x7e ? j + 1 : j;
+      ranges.push({ start, end, joins: !(end - start === 2 && CURSOR_MOVE_ESCAPES.has(text[start + 1]!)) });
       i = end;
       continue;
     }
 
-    // A lone control character. A carriage return that only precedes a line feed takes no room.
-    ranges.push({ start, end: i + 1, zeroWidth: code === 0x0d && next === 0x0a });
+    // A lone control character. A carriage return that only precedes a line feed is part of the line break.
+    ranges.push({ start, end: i + 1, joins: !CURSOR_MOVE_CONTROLS.has(code) || (code === 0x0d && next === 0x0a) });
     i += 1;
   }
   return ranges;
@@ -218,7 +276,7 @@ export function cleanTaskText(text: string): string {
 
   const spans: Span[] = [
     ...secretsInReading(text, ranges, () => 'separate', 'all'),
-    ...secretsInReading(text, ranges, (range) => (range.zeroWidth ? 'drop' : 'separate'), 'all'),
+    ...secretsInReading(text, ranges, (range) => (range.joins ? 'drop' : 'separate'), 'all'),
     ...secretsInReading(text, ranges, () => 'drop', 'prefixed'),
     ...secretsInReading(text, ranges, () => 'first', 'prefixed'),
     ...secretsInReading(text, ranges, () => 'last', 'all'),
@@ -238,15 +296,23 @@ export function cleanTaskText(text: string): string {
         return;
       }
       out += text.slice(cursor, Math.max(cursor, range.start));
-      out += range.zeroWidth ? '' : ' ';
+      out += range.joins ? '' : ' ';
       cursor = Math.max(cursor, range.end);
     }
   };
+  let hiddenUpTo = -1; // where the latest hidden span ends, or -1 before the first one
   for (const [start, end] of spans) {
     if (end <= cursor) continue; // inside a span already hidden
+    if (start <= hiddenUpTo) {
+      // Overlaps or touches the span just hidden (two readings found the same token): one marker covers both.
+      cursor = Math.max(cursor, end);
+      hiddenUpTo = cursor;
+      continue;
+    }
     writePlain(Math.max(cursor, start));
     out += '[redacted]';
     cursor = Math.max(cursor, end);
+    hiddenUpTo = cursor;
   }
   writePlain(text.length);
   // The ordinary redaction once more, over what will actually be sent: it also handles the
@@ -263,7 +329,7 @@ export function stripTerminalControl(text: string): string {
   let out = '';
   let cursor = 0;
   for (const range of ranges) {
-    out += text.slice(cursor, range.start) + (range.zeroWidth ? '' : ' ');
+    out += text.slice(cursor, range.start) + (range.joins ? '' : ' ');
     cursor = range.end;
   }
   return out + text.slice(cursor);
