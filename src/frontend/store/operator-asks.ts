@@ -22,6 +22,15 @@ import {
   type AnswerRejection,
   type OperatorAskView,
 } from '../../shared/contracts/asks.js';
+import type { ClientMessage } from '../../shared/contracts/messages.js';
+
+/** What the operator chose on a card: one of the buttons, or typed text. */
+export type AskAnswerChoice = { optionIndex: number } | { text: string };
+
+/** The socket message that carries an answer given in Lucy's panel. */
+export function buildAnswerAskMessage(askId: string, choice: AskAnswerChoice): Extract<ClientMessage, { type: 'answerAsk' }> {
+  return { type: 'answerAsk', askId, ...choice };
+}
 
 export type AskSubmitState =
   | { status: 'sending' }

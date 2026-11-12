@@ -1,3 +1,4 @@
+import { ASK_LIMITS } from './asks.js';
 import { z } from 'zod';
 import { type ClientMessage, MAX_BATCH_ABORT_TASKS } from './messages.js';
 import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
@@ -259,8 +260,8 @@ const ClientMessageSchemaImpl = z.union([
   z.object({
     type: z.literal('answerAsk'),
     askId: z.string().regex(/^[0-9a-f]{12}$/),
-    optionIndex: z.number().int().min(0).max(3).optional(),
-    text: z.string().max(1000).optional(),
+    optionIndex: z.number().int().min(0).max(ASK_LIMITS.maxOptions - 1).optional(),
+    text: z.string().max(ASK_LIMITS.maxAnswerTextChars).optional(),
   }),
   z.object({
     type: z.literal('findingFeedback'),

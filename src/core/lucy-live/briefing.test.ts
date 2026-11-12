@@ -117,12 +117,32 @@ describe('buildLucyLiveBriefing: questions from tasks (kookr ask)', () => {
     expect(buildLucyLiveBriefing(tasks, NOW, [closed[0]])).toContain('Outcome: the task ended before an answer was given 1 minute ago.');
   });
 
+  it('lists four waiting questions and says how many more there are', () => {
+    const six = Array.from({ length: 6 }, (_, i) => ask({ id: `p${i}`, question: `Question ${i}?` }));
+    const text = buildLucyLiveBriefing(tasks, NOW, six);
+    expect(text).toContain('Question 3?');
+    expect(text).not.toContain('Question 4?');
+    expect(text).toContain('- and 2 more questions not listed');
+  });
+
+  it('says a withdrawn question was withdrawn, and keeps a choice of the longest allowed length whole', () => {
+    const text = buildLucyLiveBriefing(tasks, NOW, [
+      ask({ id: 'w', state: 'cancelled', resolution: 'cancelled', resolvedAt: NOW - 60_000 }),
+      ask({ id: 'p', options: ['Delete the one hundred and one merged worktrees', 'No'] }),
+    ]);
+    expect(text).toContain('Outcome: the task withdrew it 1 minute ago.');
+    expect(text).toContain('Choices: Delete the one hundred and one merged worktrees; No.');
+  });
+
   it('redacts a secret and shortens a very long question', () => {
     const text = buildLucyLiveBriefing(tasks, NOW, [
       ask({ question: `Use sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 here? ${'really '.repeat(80)}` }),
     ]);
     expect(text).not.toContain('sk-ant-api03');
     expect(text).toContain('…');
+    // The rest of the briefing is still there: the redaction did not empty it.
+    expect(text).toContain('The task "Fix login" asked 3 minutes ago: Use');
+    expect(text).toContain('Choices: Yes, ship it; No, wait.');
   });
 
   it('the persona tells her she cannot take an answer by voice', () => {

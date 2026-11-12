@@ -13,7 +13,7 @@ import {
   stopAskAnnouncement,
 } from './ask-announcement.js';
 import { AUDIO_UNLOCK_TIMEOUT_MS, __resetClipPlaybackForTests, replayClip, replayingClipId } from './clip-playback.js';
-import { __resetLastClipForTests, getClipHistory } from './last-clip.js';
+import { __resetLastClipForTests, captureLastClip, getClipHistory } from './last-clip.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from './sound-preference.js';
 import { __resetSpeechBusForTests, emitSpeechGenerating, emitSpeechIdle } from './speech-bus.js';
 import { __resetDndForTests, enableDnd } from '../hooks/useDnd.js';
@@ -79,6 +79,8 @@ describe('announceAsk', () => {
   });
 
   afterEach(() => {
+    // Here, not in a test's `finally`: a test that hangs under fake timers would otherwise leave them on for the next one.
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     localStorage.clear();
@@ -136,6 +138,7 @@ describe('announceAsk', () => {
     expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('blocked');
     expect(replayingClipId()).toBeNull();
     expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1', heard: false });
+    expect(tracked).toContainEqual({ type: 'lucy_clip_unheard', clipId: 'clip-ask-1', reason: 'audio_suspended' });
   });
 
   test('a page nobody has clicked in yet does not even try to start audio', async () => {
@@ -148,19 +151,69 @@ describe('announceAsk', () => {
 
   test('a browser that never answers the unlock request does not leave replay stuck', async () => {
     vi.useFakeTimers();
-    try {
-      FakeAudioContext.initialState = 'suspended';
-      FakeAudioContext.resumeNeverSettles = true;
-      const pending = announceAsk(ASK, { fetcher: fetcherOk() });
-      await vi.advanceTimersByTimeAsync(AUDIO_UNLOCK_TIMEOUT_MS + 10);
-      expect(await pending).toBe('blocked');
-      // The existing Replay button must still work afterwards (a click unlocks audio).
-      FakeAudioContext.initialState = 'running';
-      FakeAudioContext.resumeNeverSettles = false;
-      expect(await replayClip('clip-ask-1')).toBe('started');
-    } finally {
-      vi.useRealTimers();
-    }
+    FakeAudioContext.initialState = 'suspended';
+    FakeAudioContext.resumeNeverSettles = true;
+    const pending = announceAsk(ASK, { fetcher: fetcherOk() });
+    await vi.advanceTimersByTimeAsync(AUDIO_UNLOCK_TIMEOUT_MS + 10);
+    expect(await pending).toBe('blocked');
+    // The existing Replay button must still work afterwards (a click unlocks audio).
+    FakeAudioContext.initialState = 'running';
+    FakeAudioContext.resumeNeverSettles = false;
+    expect(await replayClip('clip-ask-1')).toBe('started');
+  });
+
+  test('plays in a browser that reports the page as already interacted with (the case in every real browser)', async () => {
+    vi.stubGlobal('navigator', { userActivation: { hasBeenActive: true } });
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('started');
+    expect(FakeAudioContext.instances).toHaveLength(1);
+  });
+
+  test('tabs agree through a Web Lock when the browser has one, and fall back when it fails', async () => {
+    const request = vi.fn(async (_name: string, callback: () => boolean) => callback());
+    vi.stubGlobal('navigator', { locks: { request } });
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('started');
+    expect(request).toHaveBeenCalledWith('kookr-lucy-ask-claim', expect.any(Function));
+    const second = fetcherOk();
+    expect(await announceAsk(ASK, { fetcher: second })).toBe('other-tab');
+    expect(second).not.toHaveBeenCalled();
+
+    // The first question has been read to the end; a browser whose lock request fails still lets one tab speak.
+    FakeAudioContext.instances[0].sources[0].onended?.();
+    vi.stubGlobal('navigator', { locks: { request: vi.fn(async () => { throw new Error('locks unavailable'); }) } });
+    expect(await announceAsk('bbbbbbbbbbbb', { fetcher: fetcherOk() })).toBe('started');
+    expect(JSON.parse(localStorage.getItem(SPOKEN_ASKS_STORAGE_KEY) ?? '[]')).toEqual([ASK, 'bbbbbbbbbbbb']);
+  });
+
+  test('a question closed while a hidden tab was waiting is neither claimed nor fetched', async () => {
+    visibility = 'hidden';
+    const fetcher = fetcherOk();
+    const sleep = vi.fn(async () => { stopAskAnnouncement(ASK); });
+    expect(await announceAsk(ASK, { fetcher, sleep })).toBe('cancelled');
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(localStorage.getItem(SPOKEN_ASKS_STORAGE_KEY)).toBeNull();
+  });
+
+  test('a question closed while it waited for her to finish is not started', async () => {
+    const speaker = {};
+    emitSpeechGenerating(speaker);
+    const pending = announceAsk(ASK, { fetcher: fetcherOk() });
+    await vi.waitFor(() => expect(getClipHistory()).toHaveLength(1));
+    stopAskAnnouncement(ASK);
+    emitSpeechIdle(speaker);
+    expect(await pending).toBe('cancelled');
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(getClipHistory()).toHaveLength(0);
+  });
+
+  test('closing a question leaves another clip that is playing alone', async () => {
+    // Question A gets a clip but is not played (sound off); then the operator replays another message.
+    setSoundEnabled(false);
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('muted');
+    setSoundEnabled(true);
+    captureLastClip({ clipId: 'summary-clip', text: 'A summary', audio: new ArrayBuffer(4), durationMs: 2000 });
+    expect(await replayClip('summary-clip')).toBe('started');
+    stopAskAnnouncement(ASK);
+    expect(replayingClipId()).toBe('summary-clip');
   });
 
   test('gives the question back to other tabs when the clip could not be fetched', async () => {
@@ -214,6 +267,7 @@ describe('announceAsk', () => {
     emitSpeechGenerating({});
     expect(await announceAsk(ASK, { fetcher: fetcherOk(), busyWaitMs: 5 })).toBe('blocked');
     expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1', heard: false });
   });
 
   test('stops reading the question out when it is answered meanwhile', async () => {

@@ -86,6 +86,7 @@ import {
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
 import { useAvatarPanelPrefs } from './store/avatar-panel-prefs.js';
+import { buildAnswerAskMessage, type AskAnswerChoice } from './store/operator-asks.js';
 import { AvatarErrorBoundary } from './avatar/AvatarErrorBoundary.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { computeAbortActiveTaskIds } from './abort-active-tasks.js';
@@ -357,7 +358,7 @@ export function App() {
   // A `kookr ask` question answered in Lucy's panel (the same question is on Telegram; the server
   // closes it there). Returns whether the message left this tab.
   const answerOperatorAsk = useCallback(
-    (askId: string, choice: { optionIndex: number } | { text: string }): boolean => send({ type: 'answerAsk', askId, ...choice }),
+    (askId: string, choice: AskAnswerChoice): boolean => send(buildAnswerAskMessage(askId, choice)),
     [send],
   );
   useEffect(() => {

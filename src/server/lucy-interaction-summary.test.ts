@@ -73,6 +73,17 @@ describe('summarizeLucyInteractionLines', () => {
     expect(s.ui.panelActions).toEqual({ minimize: 2, move: 1 });
   });
 
+  it('counts a question Lucy read out by herself as a started clip, and its replay as a replay', () => {
+    const s = summarizeLucyInteractionLines([
+      said('q', { source: 'operator_ask' }),
+      ui({ type: 'lucy_clip_started', clipId: 'q', trigger: 'ask' }),
+      ui({ type: 'lucy_clip_started', clipId: 'q', trigger: 'replay' }),
+    ], { days: 7, now: NOW });
+    expect(s.ui.clipsStarted).toBe(1);
+    expect(s.ui.replays).toEqual({ count: 1, clipsReplayed: 1, rate: 1 });
+    expect(s.said.bySource.operator_ask).toMatchObject({ count: 1 });
+  });
+
   it('rates replays by distinct replayed clips, not by replay events, and ignores replays for clipsStarted', () => {
     const s = summarizeLucyInteractionLines([
       ui({ type: 'lucy_clip_started', clipId: 'a', trigger: 'click' }),

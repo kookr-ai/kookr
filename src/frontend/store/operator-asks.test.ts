@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { OPERATOR_ASK_RESOLVED_VISIBLE_MS, type OperatorAskView } from '../../shared/contracts/asks.js';
+import { ClientMessageSchema } from '../../shared/contracts/client-message-schema.js';
 import {
   ASK_REPLY_TIMEOUT_MS,
   __resetOperatorAsksForTests,
+  buildAnswerAskMessage,
   dismissOperatorAsk,
   getOperatorAsksSnapshot,
   handleOperatorAskResult,
@@ -117,6 +119,22 @@ describe('operator asks store', () => {
     handleOperatorAsks([ask()]);
     handleOperatorAskResult('a1b2c3d4e5f6', false, 'already_answered');
     handleOperatorAsks([answeredOnTelegram()]);
+    expect(getOperatorAsksSnapshot().submit).toEqual({});
+  });
+
+  test('the answer message carries the choice, including the first button, and is one the server accepts', () => {
+    const first = buildAnswerAskMessage('a1b2c3d4e5f6', { optionIndex: 0 });
+    expect(first).toEqual({ type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 0 });
+    expect(ClientMessageSchema.safeParse(first).success).toBe(true);
+    const typed = buildAnswerAskMessage('a1b2c3d4e5f6', { text: 'do both' });
+    expect(typed).toEqual({ type: 'answerAsk', askId: 'a1b2c3d4e5f6', text: 'do both' });
+    expect(ClientMessageSchema.safeParse(typed).success).toBe(true);
+  });
+
+  test('a notice for a question that left the list is dropped with it', () => {
+    handleOperatorAsks([ask()]);
+    handleOperatorAskResult('a1b2c3d4e5f6', false, 'bad_option');
+    handleOperatorAsks([]);
     expect(getOperatorAsksSnapshot().submit).toEqual({});
   });
 

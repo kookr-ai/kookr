@@ -15,13 +15,13 @@
  */
 import { useId, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { OperatorAskView } from '../../shared/contracts/asks.js';
-import type { AskSubmitState } from '../store/operator-asks.js';
+import { ASK_LIMITS, type OperatorAskView } from '../../shared/contracts/asks.js';
+import type { AskAnswerChoice, AskSubmitState } from '../store/operator-asks.js';
+
+export type { AskAnswerChoice };
 
 /** Longest typed answer the server accepts. */
-const MAX_ANSWER_CHARS = 1000;
-
-export type AskAnswerChoice = { optionIndex: number } | { text: string };
+const MAX_ANSWER_CHARS = ASK_LIMITS.maxAnswerTextChars;
 
 export interface AskCardProps {
   ask: OperatorAskView;

@@ -546,9 +546,10 @@ describe('handleWsConnection — kookr ask in Lucy\'s panel (operatorAsks / answ
     handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
     ws.send.mockClear();
 
-    await dispatch(ws, { type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 1 });
+    // The first button: index 0 must not be mistaken for "no option".
+    await dispatch(ws, { type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 0 });
 
-    expect(operatorAsks.answer).toHaveBeenCalledWith({ askId: 'a1b2c3d4e5f6', optionIndex: 1 });
+    expect(operatorAsks.answer).toHaveBeenCalledWith({ askId: 'a1b2c3d4e5f6', optionIndex: 0 });
     expect(handleMessageSafe).not.toHaveBeenCalled();
     expect(deps.broadcastToAll).not.toHaveBeenCalled();
     expect(sentOf(ws)).toEqual([{ type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: true }]);
@@ -581,6 +582,22 @@ describe('handleWsConnection — kookr ask in Lucy\'s panel (operatorAsks / answ
     expect(operatorAsks.answer).not.toHaveBeenCalled();
     expect(sentOf(ws).some((m) => m.type === 'alert' && /read-only/i.test(m.summary))).toBe(true);
     expect(isAllowedViewerInbound(VIEWER, 'answerAsk')).toBe(false);
+  });
+
+  it('still replies when recording the answer throws, so the card does not wait for nothing', async () => {
+    const ws = makeFakeWs();
+    const { deps } = depsWithAsks(vi.fn(async () => { throw new Error('store exploded'); }) as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+    ws.send.mockClear();
+
+    await dispatch(ws, { type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 1 });
+
+    expect(sentOf(ws)).toEqual([
+      { type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: false, reason: 'unavailable' },
+      { type: 'operatorAsks', asks: [pendingAsk] },
+    ]);
+    warn.mockRestore();
   });
 
   it('answers "unavailable" when asks are not configured, and rejects a malformed ask id', async () => {

@@ -28,7 +28,7 @@ vi.mock('../audio/ask-announcement.js', () => speech);
 
 import { AvatarDock } from './AvatarDock.js';
 import { askOutcome, timeLeftText } from './AskCard.js';
-import type { OperatorAskView } from '../../shared/contracts/asks.js';
+import { OPERATOR_ASK_RESOLVED_VISIBLE_MS, type OperatorAskView } from '../../shared/contracts/asks.js';
 import { __resetLastClipForTests } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
@@ -286,6 +286,45 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     expect(bubble.querySelector('.avatar-bubble-badge')!.textContent).toBe('3');
     expect(bubble.getAttribute('aria-label')).toContain('1 question is waiting for your answer');
     expect(speech.announceAsk).toHaveBeenCalledWith(ASK);
+  });
+
+  test('the time left counts down, and a closed card leaves ten minutes after it closed', () => {
+    vi.useFakeTimers({ now: Date.now() });
+    try {
+      render();
+      push([ask(), answered('telegram', { id: 'bbbbbbbbbbbb', question: 'Second?' })]);
+      expect(q('avatar-ask')!.textContent).toContain('29 min left');
+      act(() => { vi.advanceTimersByTime(61_000); });
+      expect(container.querySelector('[data-ask-state="pending"]')!.textContent).toContain('28 min left');
+      expect(container.querySelector('[data-ask-id="bbbbbbbbbbbb"]')).not.toBeNull();
+      act(() => { vi.advanceTimersByTime(OPERATOR_ASK_RESOLVED_VISIBLE_MS); });
+      expect(container.querySelector('[data-ask-id="bbbbbbbbbbbb"]')).toBeNull();
+      expect(container.querySelector('[data-ask-state="pending"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a question that closed more than ten minutes ago is not shown', () => {
+    render();
+    push([answered('telegram', { resolvedAt: Date.now() - OPERATOR_ASK_RESOLVED_VISIBLE_MS - 60_000 })]);
+    expect(q('avatar-asks')).toBeNull();
+  });
+
+  test('with the panel gone, a new question is not spoken', () => {
+    render();
+    act(() => root?.unmount());
+    root = null;
+    push([ask()], ASK);
+    expect(speech.announceAsk).not.toHaveBeenCalled();
+  });
+
+  test('the minimised bubble says in its card that a question is waiting', () => {
+    render({ minimized: true });
+    push([ask()]);
+    const bubble = q('avatar-bubble')!;
+    act(() => { bubble.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+    expect(q('avatar-bubble-card-asks')!.textContent).toContain('1 question for you');
   });
 
   test('words: time left and outcomes', () => {

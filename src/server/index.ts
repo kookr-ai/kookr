@@ -293,9 +293,9 @@ import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js
 import { createTelegramTaskBridge } from './telegram-task-bridge.js';
 import { AskStore } from './asks/ask-store.js';
 import { AskService } from './asks/ask-service.js';
-import type { AskNotifier, DashboardAnswerInput } from '../shared/contracts/asks.js';
+import type { AskNotifier } from '../shared/contracts/asks.js';
 import { listOperatorAsks } from '../core/operator-asks.js';
-import { appendAuditRow } from '../core/audit-log.js';
+import { createOperatorAsksPort, pushOperatorAsks } from './asks/operator-asks-port.js';
 import {
   TaskTailStore,
   readTaskTailConfigFromEnv,
@@ -3755,46 +3755,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   }
 
   // `kookr ask` in the dashboard: Lucy shows and asks the same questions Telegram
-  // carries. The list goes to owner connections only (a question can quote
-  // anything a task sees), on connect and whenever a question is sent or closed
-  // on either channel. `announce` marks the one just created, which Lucy speaks.
+  // carries. The list goes to owner connections only, on connect and whenever a
+  // question is sent or closed on either channel; the rules live in
+  // asks/operator-asks-port.ts.
   const operatorAsksPort = askService
-    ? {
-      list: () => listOperatorAsks(askService.all(), Date.now(), (taskId) => taskStore.getTask(taskId)?.name),
-      // Every answer sent from the dashboard leaves a line in the shared audit log, accepted or
-      // refused: on a loopback server any local process can open the owner socket, so this is the
-      // trace that a question was closed from there. Never the answer text.
-      answer: async (input: DashboardAnswerInput) => {
-        const result = await askService.answerFromDashboard(input);
-        await appendAuditRow(join(kookrDir, 'audit.jsonl'), {
-          type: 'ask.dashboardAnswer',
-          timestamp: new Date().toISOString(),
-          actor: 'owner:dashboard',
-          askId: input.askId,
-          ...(result.ask ? { taskId: result.ask.taskId } : {}),
-          choice: input.optionIndex !== undefined ? `option:${input.optionIndex}` : 'text',
-          outcome: result.ok ? 'recorded' : result.reason,
-          ...(result.ok ? { taskDelivery: result.ask.taskDelivery } : {}),
-        });
-        return result;
-      },
-    }
+    ? createOperatorAsksPort({
+      service: askService,
+      taskName: (taskId) => taskStore.getTask(taskId)?.name,
+      auditLogPath: join(kookrDir, 'audit.jsonl'),
+    })
     : undefined;
   if (askService && operatorAsksPort) {
     askService.onChange((change) => {
-      const data = JSON.stringify({
-        type: 'operatorAsks',
-        asks: operatorAsksPort.list(),
-        ...(change.kind === 'created' ? { announce: change.ask.id } : {}),
-      } satisfies ServerMessage);
-      for (const { ws, actor } of connectionRegistry.snapshotDashboardConnections()) {
-        if (actor.kind !== 'owner' || ws.readyState !== 1) continue;
-        try {
-          ws.send(data);
-        } catch (err) {
-          console.warn('[asks] could not push the question list to a dashboard connection:', err);
-        }
-      }
+      pushOperatorAsks(connectionRegistry.snapshotDashboardConnections(), operatorAsksPort.list(), change);
     });
   }
 

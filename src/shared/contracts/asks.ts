@@ -64,6 +64,8 @@ export const ASK_LIMITS = {
   minTimeoutSec: 30,
   maxTimeoutSec: 24 * 60 * 60,
   maxIdempotencyKeyChars: 128,
+  /** Longest free-text answer, on either channel. */
+  maxAnswerTextChars: 1000,
   /** Terminal asks are kept this long for `--wait` pollers and audit, then pruned. */
   retentionMs: 7 * 24 * 60 * 60 * 1000,
 } as const;

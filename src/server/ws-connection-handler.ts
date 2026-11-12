@@ -35,7 +35,8 @@ import { stampSnapshotPosition, type StreamPosition } from './snapshot-stream-se
 import type { Actor } from './auth.js';
 import type { Scope } from './viewer-data-policy.js';
 import type { SnapshotMessage } from '../shared/contracts/messages.js';
-import type { AnswerResult, DashboardAnswerInput, OperatorAskView } from '../shared/contracts/asks.js';
+import type { AnswerResult } from '../shared/contracts/asks.js';
+import type { OperatorAsksPort } from './asks/operator-asks-port.js';
 import type { SocketRegistrar } from './viewer-connection-registry.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 import { isLucyTelemetryType, MAX_LUCY_EVENTS_PER_TELEMETRY_MESSAGE, type LucyInteractionLog } from './lucy-interaction-log.js';
@@ -215,11 +216,6 @@ export interface WsConnectionDeps {
   operatorAsks?: OperatorAsksPort;
 }
 
-/** The slice of the ask service the dashboard socket uses. */
-export interface OperatorAsksPort {
-  list(): OperatorAskView[];
-  answer(input: DashboardAnswerInput): Promise<AnswerResult>;
-}
 
 function sendServerMessage(
   ws: WebSocket,
@@ -554,13 +550,19 @@ function wireWsMessageHandlers(
       if (msg.type === 'answerAsk') {
         if (actor.kind !== 'owner') return;
         const asks = deps.operatorAsks;
-        const result = asks
-          ? await asks.answer({
-            askId: msg.askId,
-            ...(msg.optionIndex !== undefined ? { optionIndex: msg.optionIndex } : {}),
-            ...(msg.text !== undefined ? { text: msg.text } : {}),
-          })
-          : undefined;
+        let result: AnswerResult | undefined;
+        try {
+          result = asks
+            ? await asks.answer({
+              askId: msg.askId,
+              ...(msg.optionIndex !== undefined ? { optionIndex: msg.optionIndex } : {}),
+              ...(msg.text !== undefined ? { text: msg.text } : {}),
+            })
+            : undefined;
+        } catch (err) {
+          // Always answer the sender: with no reply its card would sit on "sending" until its own timeout.
+          console.warn('[asks] recording a dashboard answer failed:', err);
+        }
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({
             type: 'operatorAskResult',

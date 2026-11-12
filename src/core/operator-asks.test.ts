@@ -117,6 +117,7 @@ describe('buildAskSpeech', () => {
   it('never reads the background context', () => {
     const spoken = buildAskSpeech(ask({ context: 'See /srv/app/src/server/index.ts line 4268' }), 'Fix login');
     expect(spoken).not.toContain('index');
+    expect(spoken).toBe('The task Fix login needs your input. Ship it? You can answer: Yes or No.');
   });
 
   it('does not read a secret or a path out loud', () => {
@@ -125,5 +126,8 @@ describe('buildAskSpeech', () => {
     }), undefined);
     expect(spoken).not.toContain('sk-ant-api03');
     expect(spoken).not.toContain('/srv/app');
+    // The rest of the sentence survives the redaction.
+    expect(spoken).toMatch(/^A task needs your input\. Use the key/);
+    expect(spoken).toMatch(/You can answer: Yes or No\.$/);
   });
 });

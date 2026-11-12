@@ -589,7 +589,7 @@ describe('AskService.answerFromDashboard (Lucy) and channel sync', () => {
     let release: (v: { chatId: number; messageId: number }) => void = () => undefined;
     h.notifier.sendAsk.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
     const creating = h.service.create(base);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(h.notifier.sendAsk).toHaveBeenCalled());
     const pending = h.store.all()[0];
     expect(await h.service.answerFromDashboard({ askId: pending.id, optionIndex: 0 })).toEqual({ ok: false, reason: 'not_found' });
     release({ chatId: 42, messageId: 999 });
@@ -624,6 +624,39 @@ describe('AskService.answerFromDashboard (Lucy) and channel sync', () => {
     off();
     await createOk({ taskId: 't2', question: 'Five?' });
     expect(seen).toHaveLength(10);
+  });
+
+  it('stamps when each question closed, whatever closed it', async () => {
+    const answeredHere = await createOk();
+    h.clock.now += 5_000;
+    await h.service.answerFromDashboard({ askId: answeredHere.id, optionIndex: 0 });
+    expect(h.store.get(answeredHere.id)).toMatchObject({ resolvedAt: h.clock.now, answeredAt: h.clock.now });
+
+    const answeredThere = await createOk({ question: 'Two?' });
+    h.clock.now += 7_000;
+    await tap(answeredThere, 1);
+    expect(h.store.get(answeredThere.id)).toMatchObject({ resolvedAt: h.clock.now, answeredAt: h.clock.now });
+
+    const cancelled = await createOk({ question: 'Three?' });
+    h.clock.now += 9_000;
+    await h.service.cancel(cancelled.id);
+    expect(h.store.get(cancelled.id)?.resolvedAt).toBe(h.clock.now);
+
+    const gone = await createOk({ taskId: 't2', question: 'Four?' });
+    h.clock.now += 11_000;
+    h.statuses.delete('t2');
+    await h.service.answerFromDashboard({ askId: gone.id, optionIndex: 0 });
+    expect(h.store.get(gone.id)).toMatchObject({ resolution: 'task_gone', resolvedAt: h.clock.now });
+  });
+
+  it('tells Telegram both that it was answered in Kookr and that the task could not be reached', async () => {
+    h.deliver.mockResolvedValueOnce({ ok: false, reason: 'session gone' });
+    const ask = await createOk();
+    await h.service.answerFromDashboard({ askId: ask.id, optionIndex: 0 });
+    const [, text] = h.notifier.finalizeAsk.mock.calls.at(-1) as [AskRecord, string];
+    expect(text).toContain('Already answered in Kookr: Yes');
+    expect(text).toContain('Could not type it into the task (session gone)');
+    expect(h.store.get(ask.id)?.taskDelivery).toBe('failed');
   });
 
   it('tells listeners when the answer could not be typed into the task', async () => {

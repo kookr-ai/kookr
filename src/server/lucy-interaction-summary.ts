@@ -10,8 +10,9 @@
  *
  * Definitions (all over records whose `ts` falls in the window):
  *  - said: `kind:"said"` lines. Share = count / total said.
- *  - clipsStarted: distinct `clipId`s with a LIVE (`trigger:"click"`)
- *    `lucy_clip_started` event. Replays reuse the clipId, so they never add to it.
+ *  - clipsStarted: distinct `clipId`s with a LIVE `lucy_clip_started` event:
+ *    `trigger:"click"` (a speaker button) or `trigger:"ask"` (Lucy read out a
+ *    question a task asked). Replays reuse the clipId, so they never add to it.
  *  - replays: `count` = `lucy_clip_started` events with `trigger:"replay"`;
  *    `clipsReplayed` = distinct clipIds replayed; `rate` = clipsReplayed /
  *    clipsStarted (so one clip replayed five times counts once; the rate only
@@ -165,7 +166,8 @@ export function createLucySummaryAccumulator(options: LucySummaryOptions): LucyS
     switch (event.type) {
       case 'lucy_clip_started':
         if (clipId) startedAnyClips.add(clipId);
-        if (event.trigger === 'click' && clipId) liveStartedClips.add(clipId);
+        // A first play: the operator pressed a speaker button, or Lucy read out a question by herself.
+        if ((event.trigger === 'click' || event.trigger === 'ask') && clipId) liveStartedClips.add(clipId);
         if (event.trigger === 'replay') {
           replays++;
           if (clipId) replayedClips.add(clipId);

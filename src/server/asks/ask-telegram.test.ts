@@ -278,6 +278,9 @@ describe('kookr ask over Telegram', () => {
 
     tap(keyboard()[0].callback_data, { messageId });
     await waitFor(() => expect(toasts()).toContain('You already answered this one in Kookr. Nothing more is needed here.'));
+    // A forged button on the same question is still called forged, not "answered in Kookr".
+    tap(`ask:${a.id}:0:${'0'.repeat(16)}`, { messageId });
+    await waitFor(() => expect(toasts()).toContain('Invalid button.'));
     reply('actually yes', messageId);
     await waitFor(() => expect(fake.outbound.sendMessage.some((m) => m.text === 'You already answered this one in Kookr. Nothing more is needed here.')).toBe(true));
     expect(deliver).toHaveBeenCalledTimes(1);

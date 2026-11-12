@@ -43,7 +43,7 @@ const HOUR_MS = 60 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 30_000;
 const MAC_HEX_CHARS = 16;
 const STALE_EXPIRY_NOTICE_MS = 5 * 60 * 1000;
-const MAX_ANSWER_TEXT_CHARS = 1000;
+const MAX_ANSWER_TEXT_CHARS = ASK_LIMITS.maxAnswerTextChars;
 /** Stands in for a question/context that looked like a credential (the detector's own sentinel points at a dashboard view asks do not have). */
 const REDACTED_PLACEHOLDER = '[redacted — looked like a credential]';
 
@@ -393,8 +393,9 @@ export class AskService {
       return { ok: false, reason: 'task_gone', ask: gone };
     }
 
-    // One-time answer: synchronous CAS, so a concurrent answer (a second tap, or
-    // the other channel) loses here.
+    // One-time answer. There is no `await` between the state checks above and this write, so a
+    // concurrent answer (a second tap, or the other channel) is normally refused by those checks; this
+    // re-check guards the one await that can sit in between, the task-liveness branch above.
     if (this.deps.store.get(ask.id)?.state !== 'pending') {
       return { ok: false, reason: 'already_answered', ask: this.deps.store.get(ask.id) };
     }
