@@ -230,4 +230,47 @@ describe('createVoiceDetector', () => {
     expect(d.noiseFloorDb).toBe(floor);
     expect(types(feed(d, QUIET_DB, 1500))).toEqual([]);
   });
+
+  describe('absorbRejectedSound', () => {
+    const DRONE_DB = -30;
+
+    test('a steady drone that was rejected does not start again, in either mode', () => {
+      const d = createVoiceDetector({ guardedStartMs: CONFIRMED_GUARDED_START_MS });
+      feed(d, QUIET_DB, 1500);
+      expect(types(feed(d, DRONE_DB, 600, 'guarded'))).toContain('start');
+      d.absorbRejectedSound();
+      expect(d.speaking).toBe(false);
+      expect(d.noiseFloorDb).toBeGreaterThan(DRONE_DB - 6);
+      expect(types(feed(d, DRONE_DB, 5000, 'guarded'))).not.toContain('start');
+      expect(types(feed(d, DRONE_DB, 2000, 'normal'))).not.toContain('start');
+    });
+
+    test('without absorbing, the same drone restarts straight away (the problem being fixed)', () => {
+      const d = createVoiceDetector({ guardedStartMs: CONFIRMED_GUARDED_START_MS });
+      feed(d, QUIET_DB, 1500);
+      feed(d, DRONE_DB, 600, 'guarded');
+      d.reset();
+      expect(types(feed(d, DRONE_DB, 600, 'guarded'))).toContain('start');
+    });
+
+    test('real speech louder than the new floor plus the margin is still detected over the drone', () => {
+      const d = createVoiceDetector({ guardedStartMs: CONFIRMED_GUARDED_START_MS });
+      feed(d, QUIET_DB, 1500);
+      feed(d, DRONE_DB, 600, 'guarded');
+      d.absorbRejectedSound();
+      feed(d, DRONE_DB, 1000, 'guarded');
+      expect(types(feed(d, -8, 600, 'guarded'))).toContain('start');
+    });
+
+    test('the floor falls back once the noise stops', () => {
+      const d = createVoiceDetector({ guardedStartMs: CONFIRMED_GUARDED_START_MS });
+      feed(d, QUIET_DB, 1500);
+      feed(d, DRONE_DB, 600, 'guarded');
+      d.absorbRejectedSound();
+      const raised = d.noiseFloorDb;
+      feed(d, QUIET_DB, 6000);
+      expect(d.noiseFloorDb).toBeLessThan(raised - 15);
+      expect(types(feed(d, SPEECH_DB, 600))).toContain('start');
+    });
+  });
 });

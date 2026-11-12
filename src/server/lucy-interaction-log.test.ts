@@ -362,6 +362,24 @@ describe('helpers', () => {
   });
 });
 
+describe('lucy_live_timing ui events', () => {
+  it('keeps kind and ms and drops anything else', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lucy-log-timing-'));
+    const file = join(dir, 'l.jsonl');
+    try {
+      const log = createLucyInteractionLog({ filePath: file, now: () => new Date('2026-11-11T10:00:00.000Z') });
+      log.recordUi('s1', { type: 'lucy_live_timing', kind: 'barge_in_stop', ms: 42.5, transcript: 'secret' });
+      log.recordUi('s1', { type: 'lucy_live_timing', kind: 'surprise', ms: 'x' });
+      await log.flush();
+      const lines = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { event: Record<string, unknown> });
+      expect(lines[0].event).toEqual({ type: 'lucy_live_timing', kind: 'barge_in_stop', ms: 42.5 });
+      expect(lines[1].event).toEqual({ type: 'lucy_live_timing', kind: 'other' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('live_turn records', () => {
   it('writes the documented fields and nothing else', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'lucy-log-live-'));
@@ -375,8 +393,11 @@ describe('live_turn records', () => {
       } as never);
       await log.flush();
       const rec = JSON.parse(readFileSync(file, 'utf8').trim()) as Record<string, unknown>;
-      expect(rec).toMatchObject({ v: 1, kind: 'live_turn', turnId: 't1', end: 'answered', asrMs: 200, firstAudioMs: 600 });
-      expect('audioBase64' in rec).toBe(false);
+      expect(rec).toEqual({
+        v: 1, ts: expect.any(String), kind: 'live_turn', turnId: 't1', language: 'en', end: 'answered',
+        transcript: 'hello', answer: 'Hi.', voice: 'v',
+        asrMs: 200, firstSentenceMs: 470, firstAudioMs: 600, sentences: 1, transcriptWords: 1, answerWords: 1,
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

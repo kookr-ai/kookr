@@ -61,7 +61,8 @@ const LIVE_STATE_LABEL: Record<LucyLiveState, string> = {
   thinking: 'thinking',
   speaking: 'speaking',
 };
-const TALK_LABEL = 'Talk to Lucy hands-free';
+/** The Talk button's accessible name; constant, because `aria-pressed` carries on/off. */
+const TALK_LABEL = `Talk to ${NAME} hands-free`;
 const TALK_STOP_LABEL = 'Stop hands-free';
 const TALK_REASON_ID = 'avatar-talk-reason';
 const REPLAY_LABEL = 'Replay last message';
@@ -160,6 +161,12 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const live = useLucyLive();
   // Why a press on the unavailable Talk button did nothing, for people who cannot see its tooltip.
   const [talkNotice, setTalkNotice] = useState<string | null>(null);
+  // Bumped on every press of the unavailable Talk button so the announcement is spoken again.
+  const [talkNoticeSeq, setTalkNoticeSeq] = useState(0);
+  // The operator's latest FINAL transcript, as a new entry each time one becomes final, so a screen
+  // reader announces it once. Drafts change under the reader and are not announced. Lucy's own words are
+  // never announced: she is already speaking them, and a second voice would overlap hers and reach the open microphone.
+  const [heardFinal, setHeardFinal] = useState<{ seq: number; text: string } | null>(null);
 
   const viewRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<AvatarStage | null>(null);
@@ -167,6 +174,8 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const stateRef = useRef<AvatarState>('idle');
   const dragRef = useRef<{ pointerId: number; dx: number; dy: number; last: { x: number; y: number } | null } | null>(null);
   const minimiseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const talkFocusedRef = useRef(false);
+  const dockRef = useRef<HTMLElement | null>(null);
   const bubbleRef = useRef<HTMLButtonElement | null>(null);
   // Set when the operator minimises or reopens, so keyboard focus can follow to the control that replaced the one they used.
   const restoreFocusRef = useRef(false);
@@ -354,14 +363,29 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const onTalk = (): void => {
     if (talkUnavailable) {
       setTalkNotice(talkUnavailable);
+      setTalkNoticeSeq((n) => n + 1);
       return;
     }
     setTalkNotice(null);
     live.setEnabled(!live.enabled);
   };
   const liveMessage = talkNotice ?? live.errorMessage;
+  useEffect(() => {
+    if (!live.enabled) setHeardFinal(null);
+    else if (live.operatorFinal && live.operatorText) setHeardFinal((previous) => ({ seq: (previous?.seq ?? 0) + 1, text: live.operatorText }));
+  }, [live.enabled, live.operatorFinal, live.operatorText]);
+  // If the Talk button disappears while it has focus, keyboard focus would fall to the page; keep it in the dock.
+  useLayoutEffect(() => {
+    if (!talkVisible && talkFocusedRef.current) {
+      talkFocusedRef.current = false;
+      dockRef.current?.focus();
+    }
+  }, [talkVisible]);
   const liveStateLabel = liveReady ? LIVE_STATE_LABEL[live.lucyState] : live.status === 'connecting' ? 'connecting' : null;
   const showLive = live.enabled || liveMessage !== null;
+  // Spoken by the always-present announcement region below (a live region must exist before its text does).
+  const connectingNotice = live.status === 'connecting' ? 'Connecting\u2026' : null;
+  const announcement = liveMessage ?? connectingNotice;
 
   // Replay is unavailable (not hidden) when there is nothing to play, she is busy, or sound is off in Settings.
   const replayUnavailable = !lastClip.hasClip
@@ -500,6 +524,8 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
       className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
       style={{ left: position.x, top: position.y, width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT }}
       aria-label={`${NAME} avatar`}
+      ref={dockRef}
+      tabIndex={-1}
       data-testid="avatar-dock"
       data-avatar-state={state}
       data-lucy-live={live.status}
@@ -523,7 +549,9 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
             aria-pressed={live.enabled}
             // aria-disabled, like Replay: it stays focusable so the reason can be read and pressing it can say why.
             aria-disabled={talkUnavailable ? 'true' : undefined}
-            aria-label={live.enabled ? TALK_STOP_LABEL : TALK_LABEL}
+            aria-label={TALK_LABEL}
+            onFocus={() => { talkFocusedRef.current = true; }}
+            onBlur={() => { talkFocusedRef.current = false; }}
             aria-describedby={talkUnavailable ? TALK_REASON_ID : undefined}
             title={talkUnavailable ?? (live.enabled ? TALK_STOP_LABEL : TALK_LABEL)}
             data-testid="avatar-talk"
@@ -573,22 +601,28 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
                 : 'Loading…'}
         </span>
       </div>
+      {/* Always present, only emptied: the Talk-unavailable reason, errors, "Connecting\u2026" and the operator's
+          final words are announced from here. Each change is a new element so it is spoken again. */}
+      <div className="sr-only" role="status" data-testid="avatar-live-announce">
+        {announcement && <span key={`notice-${talkNoticeSeq}-${announcement}`}>{announcement}</span>}
+        {heardFinal && <span key={`heard-${heardFinal.seq}`}>You said: {heardFinal.text}</span>}
+      </div>
       {showLive && (
+        // A log, but not a live one: Lucy's answer is spoken aloud already, so it is not announced.
+        // Focusable because it scrolls.
         <div
           className="avatar-live"
-          role="region"
-          aria-label="Conversation with Lucy"
-          aria-live="polite"
+          role="log"
+          aria-live="off"
+          aria-label={`Conversation with ${NAME}`}
           tabIndex={0}
           data-testid="avatar-live"
         >
           {liveMessage && <p className="avatar-live-notice" data-testid="avatar-live-notice">{liveMessage}</p>}
-          {live.status === 'connecting' && <p className="avatar-live-notice">Connecting{'\u2026'}</p>}
+          {connectingNotice && <p className="avatar-live-notice">{connectingNotice}</p>}
           {live.operatorText && (
-            // A draft changes under the reader every moment, so only the final text is read out.
             <p
               className={`avatar-live-you${live.operatorFinal ? '' : ' avatar-live-draft'}`}
-              aria-hidden={live.operatorFinal ? undefined : true}
               data-testid="avatar-live-you"
               data-final={live.operatorFinal ? 'true' : 'false'}
             >

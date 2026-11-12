@@ -9,7 +9,7 @@
 /** Known silence hallucinations, lower-case with punctuation removed. */
 const HALLUCINATIONS = new Set([
   'merci', 'merci beaucoup', 'merci a tous', 'thank you', 'thanks', 'thank you very much',
-  'thanks for watching', 'thank you for watching', 'merci davoir regarde cette video',
+  'thanks for watching', 'thank you for watching', 'merci d avoir regarde cette video',
   'you', 'bye', 'bye bye', 'au revoir', 'okay', 'ok',
 ]);
 
@@ -36,6 +36,6 @@ export function isEmptyTranscript(text: string): boolean {
   const trimmed = text.trim();
   if ((trimmed.match(/\p{L}/gu) ?? []).length < 2) return true;
   const norm = normalise(trimmed);
-  if (HALLUCINATIONS.has(norm.replace(/'/g, ''))) return true;
+  if (HALLUCINATIONS.has(norm)) return true;
   return HALLUCINATION_PATTERNS.some((re) => re.test(norm));
 }

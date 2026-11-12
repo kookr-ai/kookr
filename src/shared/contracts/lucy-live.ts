@@ -67,8 +67,9 @@ export type LucyLiveClientMessage =
    * The operator started speaking. Binary audio frames follow, starting with a short
    * stretch from just before speech was detected so the first syllable is not lost.
    *
-   * If Lucy is thinking or speaking (or `lucyAudible` is true) and the server has Silero,
-   * this is only a candidate interruption: the server answers with `speech_confirmed` or
+   * If the browser says Lucy is audible or busy (`lucyAudible` true; when an older client
+   * omits it, the server falls back to whether it is itself answering) and the server has
+   * Silero, this is only a candidate interruption: the server answers with `speech_confirmed` or
    * `speech_rejected`, and the answer in progress is left alone until then. Without
    * Silero it interrupts her at once, as the browser has already stopped her audio.
    */
@@ -80,7 +81,13 @@ export type LucyLiveClientMessage =
    * click). Drop the audio of this turn without answering.
    */
   | { type: 'speech_cancel'; turnId: string }
-  /** The operator talked over Lucy. Abandon the current answer; a `speech_start` may follow. */
+  /**
+   * The operator talked over Lucy. Abandon the current answer; a `speech_start` may follow.
+   * If a candidate interruption is still undecided (the browser gave up waiting for a
+   * verdict and keeps streaming that audio), it is treated as confirmed: the server
+   * answers `speech_confirmed`, abandons the answer and listens to the candidate's audio
+   * as a normal turn, so the operator's words are not lost.
+   */
   | { type: 'barge_in' }
   /**
    * The browser finished playing an answer sentence (or cut it short). Lets the server
@@ -130,16 +137,20 @@ export type LucyLiveServerMessage =
    * answer continues untouched.
    */
   | { type: 'speech_rejected'; turnId: string }
-  /** A problem with the session as a whole; the browser shows `message` and may reconnect. */
+  /**
+   * A problem with the session as a whole (not with one turn: a failed recogniser, model or
+   * speech service is reported as `turn_done` with `end: 'error'` and a `reason`, and the
+   * session carries on). The browser shows `message`. Only `unavailable` ends the session;
+   * with the socket still open, `bad_message` and `internal` are shown and the conversation continues.
+   */
   | { type: 'error'; code: LucyLiveErrorCode; message: string };
 
-export type LucyLiveErrorCode =
-  | 'unavailable'
-  | 'recogniser_failed'
-  | 'model_failed'
-  | 'speech_failed'
-  | 'bad_message'
-  | 'internal';
+/**
+ * `bad_message`: a frame was malformed, unknown or too large. `internal`: the server failed
+ * while handling a message. `unavailable` is reserved for a server that cannot run Lucy live
+ * at all (today that is reported by the status route and the upgrade refusal instead).
+ */
+export type LucyLiveErrorCode = 'unavailable' | 'bad_message' | 'internal';
 
 export function isLucyLiveClientMessage(value: unknown): value is LucyLiveClientMessage {
   if (typeof value !== 'object' || value === null) return false;

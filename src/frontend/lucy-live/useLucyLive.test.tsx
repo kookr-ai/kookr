@@ -55,6 +55,7 @@ interface FakeGainNode {
 }
 const gains: FakeGainNode[] = [];
 const contexts: FakeAudioContext[] = [];
+const scriptProcessorSizes: Array<number | undefined> = [];
 const processors: Array<{ onaudioprocess: ((e: unknown) => void) | null }> = [];
 const sources: FakeSource[] = [];
 /** Decoding a sentence waits for its gate when one exists; lets a test finish decoding out of order. */
@@ -69,7 +70,8 @@ class FakeAudioContext {
   closed = false;
   constructor(public options?: { sampleRate?: number }) { contexts.push(this); }
   createMediaStreamSource() { return { connect: vi.fn() }; }
-  createScriptProcessor() {
+  createScriptProcessor(size?: number) {
+    scriptProcessorSizes.push(size);
     const processor = { onaudioprocess: null as ((e: unknown) => void) | null, connect: vi.fn(), disconnect: vi.fn() };
     processors.push(processor);
     return processor;
@@ -162,6 +164,7 @@ describe('useLucyLive', () => {
     sockets.length = 0;
     contexts.length = 0;
     processors.length = 0;
+    scriptProcessorSizes.length = 0;
     sources.length = 0;
     gains.length = 0;
     decodeGates.clear();
@@ -191,6 +194,36 @@ describe('useLucyLive', () => {
     act(() => { root?.unmount(); });
     root = null;
     vi.unstubAllGlobals();
+  });
+
+  test('the ScriptProcessor fallback asks for 1024-sample chunks', async () => {
+    await turnOn();
+    expect(scriptProcessorSizes).toEqual([1024]);
+  });
+
+  test('with an AudioWorklet the node is built with a 1024-sample buffer and its chunks reach the detector', async () => {
+    const port: { onmessage: ((e: { data: unknown }) => void) | null } = { onmessage: null };
+    const nodeArgs: unknown[][] = [];
+    class WorkletContext extends FakeAudioContext {
+      audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) } as never;
+    }
+    vi.stubGlobal('AudioContext', WorkletContext);
+    vi.stubGlobal('AudioWorkletNode', class {
+      port = port;
+      connect = vi.fn();
+      disconnect = vi.fn();
+      constructor(...args: unknown[]) { nodeArgs.push(args.slice(1)); }
+    });
+    const ws = await turnOn();
+    expect(nodeArgs).toEqual([['pcm-processor', { processorOptions: { bufferSize: 1024 } }]]);
+    expect(scriptProcessorSizes).toEqual([]);
+    expect(processors).toHaveLength(0);
+    const chunk = (db: number): Float32Array => Float32Array.from({ length: 1024 }, (_, i) => (i % 2 === 0 ? 10 ** (db / 20) : -(10 ** (db / 20))));
+    act(() => { for (let i = 0; i < 16; i++) port.onmessage?.({ data: chunk(QUIET) }); });
+    act(() => { for (let i = 0; i < 20; i++) port.onmessage?.({ data: chunk(SPEECH) }); });
+    expect(sent.some((m) => m.type === 'speech_start')).toBe(true);
+    expect(wire).toContain('pcm');
+    expect(ws.closed).toBe(false);
   });
 
   test('is off at mount and learns whether the feature exists without opening the microphone', async () => {
@@ -293,6 +326,25 @@ describe('useLucyLive', () => {
 
     await act(async () => { ws.receive({ type: 'state', state: 'idle' }); second.onended!(); });
     expect(sent.filter((m) => m.type === 'played').at(-1)).toEqual({ type: 'played', turnId: id, seq: 1, complete: true });
+    expect(events.at(-1)).toEqual({ type: 'idle' });
+  });
+
+  test('turn_done while an earlier sentence is still decoding plays both in order and ends idle', async () => {
+    const events: SpeechBusEvent[] = [];
+    subscribeSpeechBus((e) => events.push(e));
+    const ws = await turnOn();
+    speakTurn();
+    const id = lastTurnId();
+    holdDecoding = new Set([`${id}:0`]);
+    await act(async () => { ws.receive({ type: 'state', state: 'speaking' }); ws.receive(sentence(id, 0)); ws.receive(sentence(id, 1)); });
+    await settle();
+    await act(async () => { ws.receive({ type: 'turn_done', turnId: id, end: 'answered' }); ws.receive({ type: 'state', state: 'idle' }); });
+    expect(sources).toHaveLength(0); // seq 0 is still decoding: nothing was skipped
+    await act(async () => { decodeGates.get(`${id}:0`)!(); });
+    await settle();
+    expect(sources.map((s) => s.buffer!.tag)).toEqual([`${id}:0`, `${id}:1`]);
+    await act(async () => { sources[0].onended!(); sources[1].onended!(); });
+    expect(sent.filter((m) => m.type === 'played').map((m) => m.seq)).toEqual([0, 1]);
     expect(events.at(-1)).toEqual({ type: 'idle' });
   });
 
@@ -457,6 +509,29 @@ describe('useLucyLive', () => {
       expect(latest.operatorText).toBe('stop');
     });
 
+    test('sound while her answer is still being prepared is a candidate too, so a rejected noise keeps the question', async () => {
+      statusResponse = { ok: true, body: { available: true, bargeInConfirmation: 'silero' } };
+      const ws = await turnOn();
+      speakTurn(); // the operator asked something; it is being transcribed, nothing is audible yet
+      const question = lastTurnId();
+      await act(async () => { ws.receive({ type: 'state', state: 'transcribing' }); });
+      sent.length = 0;
+      talkOver();
+      const start = sent.find((m) => m.type === 'speech_start');
+      expect(start).toMatchObject({ lucyAudible: true });
+      const candidate = lastTurnId();
+      expect(candidate).not.toBe(question);
+      await act(async () => { ws.receive({ type: 'speech_rejected', turnId: candidate }); });
+      // The answer to the original question still plays.
+      await act(async () => {
+        ws.receive({ type: 'state', state: 'speaking' });
+        ws.receive(sentence(question, 0));
+      });
+      await settle();
+      expect(sources.length).toBeGreaterThan(0);
+      expect(sent.map((m) => m.type)).not.toContain('barge_in');
+    });
+
     test('speech_rejected turns her back up and the queued sentences keep playing in order', async () => {
       const { ws, id, events } = await lucyIsSpeaking();
       talkOver();
@@ -518,6 +593,21 @@ describe('useLucyLive', () => {
         expect(wire).toContain('barge_in');
         expect(sent.find((m) => m.type === 'played')).toEqual({ type: 'played', turnId: id, seq: 0, complete: false });
         expect(timing('barge_in_stop')).toHaveLength(1);
+      });
+
+      test('after the timeout the operator\'s words keep flowing under the same turn id and end with speech_end', async () => {
+        await lucyIsSpeaking();
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        talkOver();
+        const turnId = lastTurnId();
+        act(() => { vi.advanceTimersByTime(CONFIRMATION_TIMEOUT_MS + 10); });
+        const bargeAt = wire.indexOf('barge_in');
+        expect(bargeAt).toBeGreaterThan(-1);
+        wire.length = 0;
+        mic(SPEECH, 200);
+        expect(wire).toContain('pcm');
+        mic(QUIET, 800);
+        expect(sent.filter((m) => m.type === 'speech_end')).toEqual([{ type: 'speech_end', turnId }]);
       });
 
       test('a verdict that arrives in time cancels the timeout', async () => {
@@ -624,10 +714,40 @@ describe('useLucyLive', () => {
     expect(trackStop).toHaveBeenCalled();
   });
 
-  test('a per-turn server error is shown without ending the session', async () => {
+  test('a failed turn shows the server reason and keeps the session running; the next turn clears it', async () => {
     const ws = await turnOn();
-    await act(async () => { ws.receive({ type: 'error', code: 'recogniser_failed', message: 'I could not hear that' }); });
+    speakTurn();
+    const id = lastTurnId();
+    await act(async () => { ws.receive({ type: 'turn_done', turnId: id, end: 'error', reason: 'I could not hear that: the speech recogniser failed (boom).' }); });
     expect(latest.status).toBe('ready');
-    expect(latest.errorMessage).toBe('I could not hear that');
+    expect(latest.lastTurnEnd).toBe('error');
+    expect(latest.errorMessage).toBe('I could not hear that: the speech recogniser failed (boom).');
+    speakTurn();
+    expect(latest.errorMessage).toBeNull();
+  });
+
+  test('a failed turn without a reason still shows a plain message', async () => {
+    const ws = await turnOn();
+    speakTurn();
+    await act(async () => { ws.receive({ type: 'turn_done', turnId: lastTurnId(), end: 'error' }); });
+    expect(latest.errorMessage).toMatch(/problem/);
+  });
+
+  test('an internal or bad_message server error is shown while the socket is open, without ending the session', async () => {
+    const ws = await turnOn();
+    await act(async () => { ws.receive({ type: 'error', code: 'internal', message: 'Lucy live hit an internal error' }); });
+    expect(latest.status).toBe('ready');
+    expect(latest.enabled).toBe(true);
+    expect(latest.errorMessage).toBe('Lucy live hit an internal error');
+    await act(async () => { ws.receive({ type: 'error', code: 'bad_message', message: 'Unknown or malformed message' }); });
+    expect(latest.status).toBe('ready');
+    expect(latest.errorMessage).toBe('Unknown or malformed message');
+  });
+
+  test('an unavailable server error ends the session', async () => {
+    const ws = await turnOn();
+    await act(async () => { ws.receive({ type: 'error', code: 'unavailable', message: 'Lucy live is not available' }); });
+    expect(latest.status).toBe('unavailable');
+    expect(latest.enabled).toBe(false);
   });
 });

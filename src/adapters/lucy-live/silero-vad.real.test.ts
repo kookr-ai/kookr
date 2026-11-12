@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { loadSileroVad, type SileroVad } from './silero-vad.js';
 
@@ -32,9 +33,10 @@ const click = (ms: number, total: number): Buffer => {
   return pcm(samples);
 };
 
-// Opt-in: point LUCY_LIVE_SPEECH_WAV at a 16 kHz mono PCM16 WAV of someone speaking to also check
-// that real speech scores high. No speech recording is committed, so this case skips by default.
-const SPEECH_WAV = process.env.LUCY_LIVE_SPEECH_WAV ?? '';
+// The committed fixture (synthesised speech, see __fixtures__/README.md) is used by default.
+// Point LUCY_LIVE_SPEECH_WAV at another 16 kHz mono PCM16 WAV to check your own recording instead.
+const FIXTURE_WAV = fileURLToPath(new URL('./__fixtures__/speech-16k.wav', import.meta.url));
+const SPEECH_WAV = process.env.LUCY_LIVE_SPEECH_WAV || FIXTURE_WAV;
 
 function wavPcm(path: string): Buffer {
   const b = readFileSync(path);
@@ -62,17 +64,16 @@ describe('Silero VAD with the real model', () => {
       noise150: await probs(Buffer.concat([silence(200), noise(150, 20000), silence(200)])),
       noiseLoud: await probs(noise(500, 32000, 3)),
     };
-    for (const [name, p] of Object.entries(results)) {
-      
+    for (const p of Object.values(results)) {
       expect(p.length).toBeGreaterThan(0);
       expect(p.filter((x) => x >= 0.5).length).toBeLessThan(3);
     }
   });
 
-  it.skipIf(!SPEECH_WAV || !existsSync(SPEECH_WAV))('gives high probabilities for real speech', async () => {
+  it('gives high probabilities for real speech', async () => {
+    expect(existsSync(SPEECH_WAV)).toBe(true);
     const p = await probs(wavPcm(SPEECH_WAV));
     const speechFrames = p.filter((x) => x >= 0.5).length;
-    
     expect(speechFrames).toBeGreaterThan(10);
   });
 });

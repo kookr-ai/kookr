@@ -432,7 +432,7 @@ know something. She cannot act on tasks yet.
 - **The microphone is on only while Talk is on**, and Talk is off again after every page reload.
   Audio goes to your own Kookr server and to a speech recogniser running on your machine; only the
   text of what you said goes to the helper model, with the task status, to write her answer.
-- **Interrupting.** Start speaking while she is thinking or speaking and her volume drops at once.
+- **Interrupting.** Start speaking while she is busy (preparing or speaking an answer) and her volume drops at once.
   The Kookr server then checks the sound with Silero, a small speech detector, which takes a fraction
   of a second. If it hears a voice, she stops and listens to you; if it was a cough, a click or a
   door, her volume comes back and she carries on. If the check is not available (the model failed to
@@ -461,7 +461,11 @@ line; it rotates at 10 MB and keeps three older files).
   (click or replay), how it ended (finished, stopped by you, replaced) and how much of it
   played, clips that were never heard (muted, do-not-disturb, audio blocked), and avatar-panel
   actions (enable, disable, minimise, restore, move, replay). Each clip has an id that links the two
-  sides. No audio is stored. Task names and summary text can contain project details, so treat the
+  sides. If you use hands-free talk, every turn is also recorded (`kind: "live_turn"`): what you said,
+  as text (secret-looking tokens such as API keys are replaced first), her answer, how the turn ended
+  (answered, interrupted, nothing heard, or failed, with the reason), and timings such as how long
+  recognition and the first sentence took. Your voice is never stored: the audio is sent to the
+  recogniser and discarded. No audio is stored. Task names and summary text can contain project details, so treat the
   file like your other local logs.
 - **It stays on this machine.** Nothing is sent anywhere; Kookr only writes the file.
 - **Turn it off.** Settings → Notifications & Alerts → **Keep a local log of Lucy's interactions**

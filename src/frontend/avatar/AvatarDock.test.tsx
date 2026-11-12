@@ -1207,8 +1207,10 @@ describe('AvatarDock', () => {
       startWith({});
       render();
       clip('a', 'first');
-      expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
-      expect(container.querySelector('[role="status"]')!.closest('.avatar-dock-transcript')).toBeNull();
+      // Two always-present regions: the view's (replay and loading notices) and the hands-free announcements.
+      const statuses = [...container.querySelectorAll('[role="status"]')];
+      expect(statuses).toHaveLength(2);
+      for (const status of statuses) expect(status.closest('.avatar-dock-transcript')).toBeNull();
     });
   });
 });

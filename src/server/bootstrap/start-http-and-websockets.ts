@@ -233,7 +233,9 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   });
   const lucyLiveWss = new WebSocketServer({
     noServer: true,
-    maxPayload: MAX_LUCY_LIVE_FRAME_BYTES,
+    // Above the handler's own limit, so an oversize frame reaches it and gets the documented
+    // `bad_message` reply; at exactly the limit `ws` would close the socket with 1009 first.
+    maxPayload: MAX_LUCY_LIVE_FRAME_BYTES * 2,
     perMessageDeflate: false,
   });
   const terminalWss = new WebSocketServer({
@@ -265,6 +267,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     // browser-origin-crossing loopback upgrades before any handshake. The
     // dashboard WS carries the full live snapshot stream and terminal I/O, so
     // it must be gated alongside state-changing HTTP routes.
+    let authenticatedActor: Actor | null = null;
     if (deps.apiAuth) {
       if (!isLoopbackUpgradeOriginAllowed(deps.apiAuth, req)) {
         console.warn(JSON.stringify({
@@ -277,6 +280,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
         return;
       }
       const upgradeActor = resolveUpgradeIdentity(deps.apiAuth, req);
+      authenticatedActor = upgradeActor;
       if (!upgradeActor) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
@@ -300,6 +304,22 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
       });
     } else if (path === LUCY_LIVE_WS_PATH && deps.lucyLive) {
       const lucyLive = deps.lucyLive;
+      // Owner only. The briefing Lucy answers from is built from every task (unscoped) and
+      // each turn spends model credit, so a scoped viewer must never reach it. Resolve the
+      // actor the way the terminal path does; any doubt or failure denies.
+      let allowed = false;
+      try {
+        const actor = deps.resolveTerminalActor?.(req) ?? { kind: 'owner' as const };
+        allowed = actor.kind === 'owner' && (authenticatedActor === null || authenticatedActor.kind === 'owner');
+      } catch (err) {
+        console.warn('[lucy-live] upgrade gate threw; denying', err);
+      }
+      if (!allowed) {
+        console.warn(JSON.stringify({ event: 'lucy_live_upgrade_denied', reason: 'not-owner' }));
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       lucyLiveWss.handleUpgrade(req, socket, head, (ws) => {
         lucyLive.handleConnection(ws, req);
       });

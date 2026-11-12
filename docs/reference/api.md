@@ -261,7 +261,7 @@ capacity).
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
 | `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings |
 | `GET /api/grok-auth-status` | Offline Grok credential-cache verdict for the Launch dialog. Returns `{ status: "ok" \| "missing" \| "expired" \| "invalid", loginCommand, message, launchWouldRefuse, roundRobinIndex }`. Secret-free (no access tokens, refresh tokens, or API keys). `launchWouldRefuse` is true when an explicit `grok-build` launch would be refused before a terminal exists. `loginCommand` is `grok login --device-code`. The SPA fails open: a missing verdict must not disable Launch. |
-| `GET /api/lucy-live/status` | Whether Lucy live (the spoken conversation over `/ws/lucy-live`) can be switched on. Returns `{ available: boolean, reason?: string }`; `reason` names the missing piece (speech recogniser `KOOKR_LUCY_EARS_URL`, Baseten key, or speech service) and is absent when available. |
+| `GET /api/lucy-live/status` | Whether Lucy live (the spoken conversation over `/ws/lucy-live`) can be switched on. Returns `{ available: boolean, bargeInConfirmation?: "silero" | "off", reason?: string }`; `reason` names the missing piece (speech recogniser `KOOKR_LUCY_EARS_URL`, Baseten key, or speech service) and is absent when available. `bargeInConfirmation` is `"silero"` when the server confirms with a speech-detection model that the operator really spoke before Lucy stops; `"off"` means that model failed to load, so interruptions stop her on loudness alone. |
 
 ### Task id field naming
 
@@ -1624,14 +1624,16 @@ for the review workflow, privacy boundary and capture limits.
 | --- | --- |
 | `ws://host:port/ws` | Real-time updates, snapshots, alerts, and suggestions |
 | `ws://host:port/ws/terminal/:sessionId` | Interactive terminal bridge using binary frames over the dtach session |
+| `ws://host:port/ws/lucy-live` | Hands-free spoken conversation with Lucy (owner only; JSON control messages plus binary PCM16 16 kHz microphone audio; see [Lucy live](lucy-live.md)) |
 
 ### WebSocket message protocol
 
 The `/ws` channel carries UTF-8 JSON objects. Every application message has a
 string `type` discriminator. Unknown or malformed client messages are rejected
 with an `alert` frame instead of being routed to a handler. The
-`/ws/terminal/:sessionId` channel is separate and uses binary terminal frames;
-the message tables below apply only to `/ws`.
+`/ws/terminal/:sessionId` and `/ws/lucy-live` channels are separate (binary
+terminal frames; Lucy live's own message contract in
+`src/shared/contracts/lucy-live.ts`); the message tables below apply only to `/ws`.
 
 Inbound messages are limited to 1,000,000 bytes on `/ws` and 8,000,000 bytes on
 `/ws/terminal/:sessionId`. The server closes connections that exceed the

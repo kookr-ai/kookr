@@ -511,6 +511,7 @@ kookr/
 │   │   ├── oss-source-watcher.ts          # Watches OSS source files for refresh triggers
 │   │   ├── achievement-watcher.ts         # Detect achievement unlocks, persist
 │   │   ├── ledger-watcher.ts              # Watch OSS contribution ledger
+│   │   ├── lucy-live/                     # Hands-free conversation with Lucy: per-socket session state machine (turns, Silero-confirmed interruptions, sentence streaming), `/ws/lucy-live` handler, config and real-adapter wiring
 │   │   ├── resource-status-service.ts     # System resource sampling surface
 │   │   ├── system-resource-sampler.ts     # CPU/memory/disk sampling
 │   │   ├── resource-watchdog-service.ts   # Host-pressure actuator (issue #1724; opt-in)
@@ -524,7 +525,6 @@ kookr/
 │   │   ├── hash-prompt.ts                 # Prompt hashing helper
 │   │   ├── prompt-file-paths.ts           # Per-agent prompt file resolution
 │   │   ├── stt-manager.ts                 # Docker lifecycle for bundled STT (Qwen GPU / Whisper CPU)
-│   │   ├── lucy-live/                     # Hands-free conversation with Lucy: per-socket session state machine (turns, Silero-confirmed interruptions, sentence streaming), `/ws/lucy-live` handler, config and real-adapter wiring
 │   │   └── tts-manager.ts                 # Docker lifecycle for bundled TTS
 │   │
 │   ├── core/                              # Domain logic, contracts, and lightweight local persistence/helpers
@@ -533,7 +533,6 @@ kookr/
 │   │   ├── agent-types.ts                 # AgentType + AVAILABLE_AGENT_TYPES
 │   │   ├── activity-summary.ts            # Activity summarizer + tool categorization (frontend-facing)
 │   │   ├── completion-digest.ts           # Task completion summary
-│   │   ├── lucy-live/                     # Pure Lucy live logic: task-status briefing, persona prompt, incremental sentence splitter, silence-hallucination filter
 │   │   ├── build-info.ts                  # Build metadata (commit, branch, timestamp)
 │   │   ├── ports/                         # Ports-and-adapters interfaces owned by core:
 │   │   │                                  #   agent-interaction, terminal-input-writer, terminal-session-stream
@@ -585,6 +584,7 @@ kookr/
 │   │   ├── llm-client.ts                  # Provider-agnostic LLM interface (re-export shim)
 │   │   ├── llm-factory.ts                 # Fallback / audit / diagnostics policy for LLM clients
 │   │   ├── llm-types.ts                   # Provider DTOs
+│   │   ├── lucy-live/                     # Pure Lucy live logic: task-status briefing, persona prompt, incremental sentence splitter, silence-hallucination filter
 │   │   ├── circuit-breaker.ts             # Generic circuit-breaker primitive
 │   │   ├── circuit-breaker-llm-client.ts  # LLM client wrapped in a breaker
 │   │   # GitHub awareness (F7 / ADR-012)
@@ -656,7 +656,6 @@ kookr/
 │   │   ├── file-based-agents.ts           # File-backed agent inventory helpers
 │   │   ├── probe-agent-binary.ts          # Agent binary probe helpers
 │   │   ├── quota-adapter.ts               # Usage-quota surface for LLM providers
-│   │   ├── lucy-live/                     # Lucy live adapters: llama.cpp `/v1/realtime` speech-recogniser client (`ears-client.ts`), Silero voice activity model in Node (`silero-vad.ts`)
 │   │   ├── llm/                           # LLM provider implementations + selection:
 │   │   │   ├── factory.ts                 #   env-driven provider construction/selection
 │   │   │   ├── anthropic-client.ts        #   Anthropic SDK implementation
@@ -666,6 +665,7 @@ kookr/
 │   │   │   ├── openai-compatible-client.ts #   Shared OpenAI-compatible base client
 │   │   │   ├── baseten-client.ts          #   Baseten implementation
 │   │   │   └── requesty-client.ts         #   Requesty gateway implementation
+│   │   ├── lucy-live/                     # Lucy live adapters: llama.cpp `/v1/realtime` speech-recogniser client (`ears-client.ts`), Silero voice activity model in Node (`silero-vad.ts`)
 │   │   ├── grok-build-instrumentation/    # Grok Build monitoring-hook instrumentation
 │   │   ├── github-fetcher.ts              # `gh` CLI wrapper (REST + GraphQL)
 │   │   ├── circuit-breaker-github-fetcher.ts    # Circuit-breaker wrapper

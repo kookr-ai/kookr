@@ -256,6 +256,7 @@ const PANEL_STATES = ['open', 'minimized', 'off'] as const;
 const ENDED_BY = ['finished', 'user_stop', 'superseded'] as const;
 const UNHEARD_REASONS = ['muted', 'dnd', 'audio_suspended', 'error'] as const;
 const PANEL_ACTIONS = ['enable', 'disable', 'minimize', 'restore', 'move', 'replay'] as const;
+const LIVE_TIMING_KINDS = ['end_to_first_audio', 'barge_in_duck', 'barge_in_stop', 'barge_in_rejected'] as const;
 const PLATFORMS = ['linux', 'darwin', 'wsl2', 'unknown'] as const;
 
 /** Documented enum values per field; mirrors the comment in shared/contracts/telemetry.ts. */
@@ -265,6 +266,7 @@ export const LUCY_EVENT_ENUMS = {
   endedBy: ENDED_BY,
   reason: UNHEARD_REASONS,
   action: PANEL_ACTIONS,
+  kind: LIVE_TIMING_KINDS,
 } as const;
 
 /** Bucket for a client enum value outside the documented set. */
@@ -276,6 +278,7 @@ const EVENT_FIELDS: Record<string, readonly string[]> = {
   lucy_clip_ended: ['clipId', 'endedBy', 'playedMs', 'totalMs'],
   lucy_clip_unheard: ['clipId', 'reason'],
   lucy_panel_action: ['action', 'clipId'],
+  lucy_live_timing: ['kind', 'ms'],
 };
 
 function clampString(value: unknown): string | undefined {
@@ -321,6 +324,8 @@ export function sanitizeLucyUiEvent(event: unknown): Record<string, unknown> | u
       case 'endedBy': set(field, enumOrOther(value, ENDED_BY)); break;
       case 'reason': set(field, enumOrOther(value, UNHEARD_REASONS)); break;
       case 'action': set(field, enumOrOther(value, PANEL_ACTIONS)); break;
+      case 'kind': set(field, enumOrOther(value, LIVE_TIMING_KINDS)); break;
+      case 'ms': set(field, clampMs(value)); break;
       case 'tabVisible': set(field, typeof value === 'boolean' ? value : undefined); break;
       case 'playedMs':
       case 'totalMs': set(field, clampMs(value)); break;

@@ -64,6 +64,8 @@ export const MAX_TURN_MS = 30_000;
 const FLOOR_FALL_RATE = 0.05;
 /** How fast it follows a louder room: slowly, so speech onsets are not absorbed into it. */
 const FLOOR_RISE_RATE = 0.005;
+/** How fast the "recent loudness" used to absorb a rejected sound follows the latest frames (per frame, 0..1). */
+const RECENT_LEVEL_RATE = 0.25;
 
 /** `normal` when nobody else is talking, `guarded` while Lucy thinks or speaks. */
 export type DetectorMode = 'normal' | 'guarded';
@@ -87,6 +89,14 @@ export interface VoiceDetector {
   push(frame: Float32Array, mode: DetectorMode): VoiceEvent[];
   /** Forget any turn in progress (the caller dropped the connection, say). The noise floor is kept. */
   reset(): void;
+  /**
+   * The sound that is going on right now was judged not to be speech (the server rejected it).
+   * Forget the turn and raise the noise floor to that sound's level, so a steady loud noise
+   * (a drone, a fan switched on) is absorbed instead of starting a new candidate over and over.
+   * Real speech louder than the new floor plus the usual margin is still detected, and the
+   * floor falls back on its own once the room is quieter.
+   */
+  absorbRejectedSound(): void;
   /** Current noise floor estimate, dBFS. */
   readonly noiseFloorDb: number;
   /** Level of the latest frame, dBFS. */
@@ -122,6 +132,9 @@ export function createVoiceDetector(options: VoiceDetectorOptions = {}): VoiceDe
   let turnMs = 0;
   let quietRunMs = 0;
 
+  // Smoothed loudness of the latest frames, for absorbRejectedSound().
+  let recentLevelDb: number | null = null;
+
   const clampFloor = (db: number): number => Math.min(MAX_NOISE_FLOOR_DB, Math.max(MIN_NOISE_FLOOR_DB, db));
 
   function resetTurn(): void {
@@ -138,6 +151,7 @@ export function createVoiceDetector(options: VoiceDetectorOptions = {}): VoiceDe
     const frameMs = (frame.length / DETECTOR_SAMPLE_RATE) * 1000;
     const level = frameLevelDb(frame);
     lastLevelDb = level;
+    recentLevelDb = recentLevelDb === null ? level : recentLevelDb + (level - recentLevelDb) * RECENT_LEVEL_RATE;
     const events: VoiceEvent[] = [];
 
     if (!speaking) {
@@ -193,6 +207,10 @@ export function createVoiceDetector(options: VoiceDetectorOptions = {}): VoiceDe
   return {
     push,
     reset: resetTurn,
+    absorbRejectedSound() {
+      resetTurn();
+      if (recentLevelDb !== null) floorDb = Math.max(floorDb, clampFloor(recentLevelDb));
+    },
     get noiseFloorDb() { return floorDb; },
     get levelDb() { return lastLevelDb; },
     get speaking() { return speaking; },

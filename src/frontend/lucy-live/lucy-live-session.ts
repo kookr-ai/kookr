@@ -104,9 +104,6 @@ const STABLE_CONNECTION_MS = 30_000;
 const LEVEL_REPORT_INTERVAL_MS = 80;
 const WS_OPEN = 1;
 
-/** Server error codes that spoil one turn but not the session. */
-const PER_TURN_ERRORS = new Set(['recogniser_failed', 'model_failed', 'speech_failed']);
-
 let turnCounter = 0;
 function newTurnId(): string {
   const uuid = globalThis.crypto?.randomUUID?.();
@@ -180,8 +177,12 @@ export class LucyLiveSession {
   /** True between `speech_start` and `speech_end`/`speech_cancel`: microphone audio is being sent. */
   private sending = false;
   private endedAt: number | null = null;
+  /** The operator's turn that has ended but not yet been answered (`turn_done` not received). */
+  private awaitingAnswer: string | null = null;
   private firstAudioSeen = false;
   private lucyText = '';
+  /** A per-turn problem is on screen; it clears when the next turn starts. */
+  private errorShown = false;
 
   private leftover = new Float32Array(0);
   private lastLevelReport = 0;
@@ -191,6 +192,8 @@ export class LucyLiveSession {
   private active: ScheduledSentence[] = [];
   private pending = new Map<number, AudioBuffer | null>();
   private nextSeq = 0;
+  /** Sequence numbers handed to the audio decoder whose result has not come back yet. */
+  private decoding = new Set<number>();
   private playHead = 0;
   /** Bumped whenever playback is cut or a new turn begins, so sentences still being decoded are dropped. */
   private playGeneration = 0;
@@ -319,6 +322,7 @@ export class LucyLiveSession {
     this.settleBus();
     this.ws = null;
     this.lucyState = 'idle';
+    this.awaitingAnswer = null; // the server forgot that turn with the connection
     if (this.reconnectsUsed >= 1) {
       this.options.onFatal('error', 'Lost the connection to Lucy. Turn hands-free off and on to try again.');
       return;
@@ -355,13 +359,17 @@ export class LucyLiveSession {
         this.onSentence(message);
         break;
       case 'turn_done':
+        if (message.turnId === this.awaitingAnswer) this.awaitingAnswer = null;
         if (message.turnId !== this.currentTurnId) break;
-        // A sentence that never arrived must not hold back the ones behind it.
-        if (this.pending.size > 0 && !this.pending.has(this.nextSeq)) {
-          this.nextSeq = Math.min(...this.pending.keys());
-          this.pump();
-        }
-        this.options.onView({ lastTurnEnd: message.end });
+        // Sentence numbers are contiguous and arrive before `turn_done`, so a missing one is
+        // still being decoded: it will fill the gap, and nothing is skipped here.
+        this.options.onView({
+          lastTurnEnd: message.end,
+          ...(message.end === 'error'
+            ? { errorMessage: message.reason ?? 'Lucy hit a problem with that turn. Please try again.' }
+            : {}),
+        });
+        if (message.end === 'error') this.errorShown = true;
         this.settleBus();
         break;
       case 'speech_confirmed':
@@ -371,10 +379,14 @@ export class LucyLiveSession {
         this.onRejected(message.turnId);
         break;
       case 'error':
-        if (PER_TURN_ERRORS.has(message.code)) {
-          this.options.onView({ errorMessage: message.message });
-        } else {
+        // Only `unavailable` ends the session. Anything else (`internal`, `bad_message`) means
+        // the server rejected or failed one message while the socket is still up: say so
+        // and keep going. If the socket is in fact gone, the close handler reconnects.
+        if (message.code === 'unavailable' || this.ws?.readyState !== WS_OPEN) {
           this.options.onFatal(message.code === 'unavailable' ? 'unavailable' : 'error', message.message);
+        } else {
+          this.options.onView({ errorMessage: message.message });
+          this.errorShown = true;
         }
         break;
     }
@@ -399,9 +411,16 @@ export class LucyLiveSession {
     this.leftover = joined.slice(offset);
   }
 
-  /** Lucy is thinking, talking, or has sound queued: the operator speaking now means "stop". */
+  /**
+   * Lucy is working on an answer (from the end of the operator's turn until that turn is done),
+   * talking, or has sound queued. New sound in this window may be an interruption, so it goes
+   * through the server's speech check instead of silently replacing the unanswered question:
+   * a cough while she transcribes must not throw the question away.
+   */
   private lucyBusy(): boolean {
-    return this.lucyState === 'thinking' || this.lucyState === 'speaking' || this.active.length > 0 || this.pending.size > 0;
+    return this.awaitingAnswer !== null
+      || this.lucyState === 'transcribing' || this.lucyState === 'thinking' || this.lucyState === 'speaking'
+      || this.active.length > 0 || this.pending.size > 0 || this.decoding.size > 0;
   }
 
   private onFrame(frame: Float32Array): void {
@@ -470,12 +489,18 @@ export class LucyLiveSession {
   /** The operator's turn `turnId` is now the current one: a fresh answer will follow it. */
   private beginOperatorTurn(turnId: string): void {
     this.currentTurnId = turnId;
+    this.awaitingAnswer = null;
     this.endedAt = null;
     this.firstAudioSeen = false;
     // A new turn starts a fresh answer; sentences still decoding for the last one are dropped.
     this.playGeneration += 1;
     this.pending.clear();
+    this.decoding.clear();
     this.nextSeq = 0;
+    if (this.errorShown) {
+      this.errorShown = false;
+      this.options.onView({ errorMessage: null });
+    }
   }
 
   private onSpeechEnd(): void {
@@ -488,6 +513,7 @@ export class LucyLiveSession {
       return;
     }
     this.endedAt = performance.now();
+    this.awaitingAnswer = this.micTurnId;
     this.lucyText = '';
     this.options.onView({ lucyText: '', operatorText: '', operatorFinal: false });
   }
@@ -529,16 +555,22 @@ export class LucyLiveSession {
     if (!duck || duck.turnId !== turnId) return;
     this.clearDuck();
     this.rampGain(1);
-    // A rejection by timeout can arrive while the detector still thinks the sound is going on; let it re-evaluate.
+    // A rejection can arrive while the detector still thinks the sound is going on. Stop
+    // sending it, and let the detector treat that sound as background noise so a steady
+    // drone does not start (and duck Lucy for) a new candidate every moment.
     if (this.sending) {
       this.sending = false;
-      this.detector.reset();
+      this.detector.absorbRejectedSound();
     }
     const ms = performance.now() - duck.detectedAt;
     track({ type: 'lucy_live_timing', kind: 'barge_in_rejected', ms: Math.round(ms * 10) / 10 });
   }
 
-  /** No verdict in time: stop her anyway, and tell the server to abandon the answer itself. */
+  /**
+   * No verdict in time: stop her anyway. `barge_in` tells the server to abandon the answer
+   * and, because this candidate is still undecided there, to promote it to a listening turn,
+   * so the audio still being streamed under this turn id (and its `speech_end`) is kept.
+   */
   private onConfirmationTimeout(turnId: string): void {
     const duck = this.duck;
     if (!duck || duck.turnId !== turnId || this.stopped) return;
@@ -618,6 +650,7 @@ export class LucyLiveSession {
       this.pump();
       return;
     }
+    this.decoding.add(message.seq);
     context.decodeAudioData(bytes).then(
       (buffer) => this.onDecoded(generation, message.seq, buffer),
       () => this.onDecoded(generation, message.seq, null),
@@ -626,8 +659,11 @@ export class LucyLiveSession {
 
   private onDecoded(generation: number, seq: number, buffer: AudioBuffer | null): void {
     if (this.stopped || generation !== this.playGeneration) return;
+    this.decoding.delete(seq);
     this.pending.set(seq, buffer);
     this.pump();
+    // A sentence that could not be decoded may have been the last thing the bus was waiting for.
+    if (this.active.length === 0) this.settleBus();
   }
 
   /** Schedule every decoded sentence that is next in `seq` order. */
@@ -702,6 +738,7 @@ export class LucyLiveSession {
     }
     this.active = [];
     this.pending.clear();
+    this.decoding.clear();
     this.playHead = 0;
     this.playGeneration += 1;
     return heard;
@@ -709,7 +746,7 @@ export class LucyLiveSession {
 
   /** Bring the speech bus in line with what is audible: "preparing" while Lucy thinks, otherwise idle. */
   private settleBus(): void {
-    if (this.active.length > 0 || this.pending.size > 0) return;
+    if (this.active.length > 0 || this.pending.size > 0 || this.decoding.size > 0) return;
     if (this.lucyState === 'thinking') emitSpeechGenerating(this.busOwner);
     else emitSpeechIdle(this.busOwner);
   }

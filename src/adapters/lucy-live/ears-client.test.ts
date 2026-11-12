@@ -90,6 +90,18 @@ describe('ears client', () => {
     await expect(turn.finish()).rejects.toThrow('too long');
   });
 
+  it('keeps a ready session alive past the connect timeout while audio streams in', async () => {
+    fake = await startFake();
+    const turn = openEarsTurn({ url: fake.url, language: 'en', connectTimeoutMs: 100 });
+    turn.append(Buffer.from([1, 2]));
+    await new Promise((r) => setTimeout(r, 60));
+    turn.append(Buffer.from([3, 4]));
+    await new Promise((r) => setTimeout(r, 200)); // well past the connect timeout, session is ready
+    turn.append(Buffer.from([5, 6]));
+    await expect(turn.finish()).resolves.toBe('Hello world');
+    expect(fake.received.filter((m) => m.type === 'input_audio_buffer.append')).toHaveLength(3);
+  });
+
   it('rejects when nothing is listening', async () => {
     const turn = openEarsTurn({ url: 'ws://127.0.0.1:1', language: 'en' });
     await expect(turn.finish()).rejects.toThrow(/failed/);

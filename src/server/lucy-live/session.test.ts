@@ -494,12 +494,63 @@ describe('LucyLiveSession', () => {
       expect(h.ears).toHaveLength(2);
     });
 
-    it('an explicit barge_in abandons a pending candidate and the answer', async () => {
+    it('an explicit barge_in promotes a pending candidate: the answer stops and the operator\'s words are kept', async () => {
       const h = await answeringHarness();
+      h.sent.length = 0;
       h.session.handleMessage({ type: 'speech_start', turnId: 'q2' });
+      h.session.handleAudio(Buffer.alloc(3200)); // held by the candidate
       h.session.handleMessage({ type: 'barge_in' });
-      expect(h.session.acceptingAudio).toBe(false);
-      expect(types(h)).toContain('done:interrupted');
+      expect(h.session.acceptingAudio).toBe(true);
+      expect(types(h)).toEqual(['speech_confirmed', 'done:interrupted', 'state:listening']);
+      expect(h.ears).toHaveLength(2);
+      expect(h.ears[1].appended).toHaveLength(1); // the buffered audio went to the recogniser
+      h.session.handleAudio(Buffer.alloc(3200)); // and later audio under the same turn id still counts
+      h.session.handleMessage({ type: 'speech_end', turnId: 'q2' });
+      h.ears[1].result.resolve('Actually, stop');
+      await tick();
+      expect(h.sent.some((m) => m.type === 'transcript' && m.turnId === 'q2' && m.final && m.text === 'Actually, stop')).toBe(true);
+    });
+
+    it('decides "candidate" from lucyAudible when the browser sends it', async () => {
+      const h = await answeringHarness();
+      h.sent.length = 0;
+      // Browser says she is not audible: interrupt at once even though the server is mid-answer.
+      h.session.handleMessage({ type: 'speech_start', turnId: 'q2', lucyAudible: false });
+      expect(types(h)).toEqual(['done:interrupted', 'state:listening']);
+      expect(h.sent.some((m) => m.type === 'speech_confirmed' || m.type === 'speech_rejected')).toBe(false);
+    });
+
+    it('a rejected noise while the question is still being transcribed keeps the question', async () => {
+      const h = harness({ vad: true });
+      h.session.handleMessage({ type: 'speech_start', turnId: 'q1' });
+      h.vads[0].script.push([0.9, 0.9]);
+      h.session.handleAudio(Buffer.alloc(3200));
+      h.session.handleMessage({ type: 'speech_end', turnId: 'q1' }); // transcribing; recogniser not answered yet
+      await tick();
+      h.sent.length = 0;
+      // The browser counts "question not answered yet" as busy, so the noise comes as a candidate.
+      h.session.handleMessage({ type: 'speech_start', turnId: 'noise', lucyAudible: true });
+      h.vads[1].script.push(NOISE);
+      h.session.handleAudio(Buffer.alloc(3200));
+      await tick();
+      h.session.handleMessage({ type: 'speech_end', turnId: 'noise' });
+      expect(h.sent).toEqual([{ type: 'speech_rejected', turnId: 'noise' }]);
+      // The original question is then transcribed and answered.
+      h.ears[0].result.resolve('Which tasks need me?');
+      await tick();
+      h.brain.feed('Nothing needs you.');
+      h.brain.end();
+      await tick(); await tick();
+      expect(types(h)).toContain('done:answered');
+      expect(types(h)).not.toContain('done:interrupted');
+    });
+
+    it('falls back to the server view of the answer when an old client omits lucyAudible', async () => {
+      const h = await answeringHarness();
+      h.sent.length = 0;
+      h.session.handleMessage({ type: 'speech_start', turnId: 'q2' });
+      expect(h.sent).toEqual([]); // candidate: still undecided
+      expect(h.session.acceptingAudio).toBe(true);
     });
 
     it('a turn with no speech frame ends empty without calling the recogniser or the model', async () => {

@@ -206,7 +206,7 @@ export class LucyLiveSession {
         this.ports.send({ type: 'ready' });
         return;
       case 'speech_start':
-        this.onSpeechStart(msg.turnId, msg.lucyAudible === true);
+        this.onSpeechStart(msg.turnId, msg.lucyAudible);
         return;
       case 'speech_end':
         this.onSpeechEnd(msg.turnId);
@@ -254,14 +254,16 @@ export class LucyLiveSession {
 
   // -- message handlers ------------------------------------------------------
 
-  private onSpeechStart(turnId: string, lucyAudible: boolean): void {
+  private onSpeechStart(turnId: string, lucyAudible: boolean | undefined): void {
     this.candidate = null; // a new start replaces an undecided candidate
     const previous = this.turn;
     const vad = this.openVad();
-    // Lucy is mid-answer (or the browser says she is still audible after the answer was sent):
-    // hold the audio aside and let Silero decide whether it is really the operator.
+    // Lucy is busy: hold the audio aside and let Silero decide whether it is really the operator.
+    // The browser's `lucyAudible` is the authority (it is what made the browser duck her);
+    // old clients do not send it, so fall back to what the server knows of the answer.
     const answering = previous?.phase === 'thinking' || previous?.phase === 'speaking';
-    if (vad && (answering || lucyAudible)) {
+    const lucyBusy = lucyAudible ?? answering;
+    if (vad && lucyBusy) {
       this.candidate = { id: turnId, vad, chunks: [], bytes: 0, frames: 0, speechFrames: 0, maxSpeechProb: 0 };
       return;
     }
@@ -328,7 +330,7 @@ export class LucyLiveSession {
     else if (candidate.frames >= CANDIDATE_MAX_FRAMES) this.rejectCandidate(candidate);
   }
 
-  private confirmCandidate(candidate: Candidate): void {
+  private confirmCandidate(candidate: Candidate, trusted = false): void {
     if (this.candidate !== candidate || this.closedForGood) return;
     this.candidate = null;
     this.ports.send({ type: 'speech_confirmed', turnId: candidate.id });
@@ -339,7 +341,8 @@ export class LucyLiveSession {
     }
     // The candidate becomes a normal listening turn that already holds its audio.
     const turn = this.newTurn(candidate.id, candidate.vad);
-    turn.maxSpeechProb = candidate.maxSpeechProb;
+    // A browser-forced promotion (barge_in) is the operator's own word that this is speech.
+    turn.maxSpeechProb = trusted ? Math.max(candidate.maxSpeechProb, SPEECH_PROBABILITY) : candidate.maxSpeechProb;
     turn.chunks = candidate.chunks;
     turn.bytes = candidate.bytes;
     for (const chunk of candidate.chunks) turn.ears.append(chunk);
@@ -381,7 +384,15 @@ export class LucyLiveSession {
   }
 
   private onBargeIn(): void {
-    this.candidate = null; // an explicit stop settles any undecided candidate
+    // An explicit stop while a candidate is undecided means the browser gave up waiting for
+    // a verdict (or has no patience for one) and keeps streaming the operator's words under
+    // the candidate's turn id. Treat it as a confirmation so those words are not lost:
+    // interrupt the answer and promote the candidate to a listening turn. The browser gets
+    // `speech_confirmed` as for any confirmation.
+    if (this.candidate) {
+      this.confirmCandidate(this.candidate, true);
+      return;
+    }
     const turn = this.turn;
     if (!turn || turn.phase === 'listening') return; // a speech_start follows and handles it
     this.endTurn(turn, 'interrupted');

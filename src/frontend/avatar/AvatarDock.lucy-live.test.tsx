@@ -114,7 +114,9 @@ describe('AvatarDock hands-free talk', () => {
 
     update(base({ enabled: true, status: 'ready' }));
     expect(talk()!.getAttribute('aria-pressed')).toBe('true');
-    expect(talk()!.getAttribute('aria-label')).toBe('Stop hands-free');
+    // The name stays the same; aria-pressed carries on/off, the tooltip may change.
+    expect(talk()!.getAttribute('aria-label')).toBe('Talk to Lucy hands-free');
+    expect(talk()!.title).toBe('Stop hands-free');
     act(() => talk()!.click());
     expect(live.setEnabled).toHaveBeenLastCalledWith(false);
   });
@@ -175,19 +177,71 @@ describe('AvatarDock hands-free talk', () => {
     expect(label()).toBe('connecting');
   });
 
-  test('shows what the operator said (draft muted, final normal) and Lucy’s answer in a polite live region', () => {
+  const announce = () => container.querySelector<HTMLElement>('[data-testid="avatar-live-announce"]')!;
+
+  test('shows what the operator said (draft muted, final normal) and Lucy’s answer in a log that is not live', () => {
     update(base({ enabled: true, status: 'ready', operatorText: 'any news on', operatorFinal: false, lucyText: '' }));
     const region = container.querySelector<HTMLElement>('[data-testid="avatar-live"]')!;
-    expect(region.getAttribute('aria-live')).toBe('polite');
+    expect(region.getAttribute('role')).toBe('log');
+    expect(region.getAttribute('aria-label')).toBe('Conversation with Lucy');
+    expect(region.getAttribute('aria-live')).toBe('off'); // the log role would otherwise be polite
+    expect(region.getAttribute('tabindex')).toBe('0');
     const you = () => container.querySelector<HTMLElement>('[data-testid="avatar-live-you"]')!;
     expect(you().textContent).toContain('any news on');
     expect(you().className).toContain('avatar-live-draft');
-    expect(you().getAttribute('aria-hidden')).toBe('true'); // a moving draft is not read out
+    expect(you().hasAttribute('aria-hidden')).toBe(false);
 
     update(base({ enabled: true, status: 'ready', operatorText: 'any news on the build?', operatorFinal: true, lucyText: 'The build passed.' }));
     expect(you().className).not.toContain('avatar-live-draft');
-    expect(you().getAttribute('aria-hidden')).toBeNull();
     expect(container.querySelector('[data-testid="avatar-live-lucy"]')!.textContent).toContain('The build passed.');
+  });
+
+  test('the announcement region exists before anything is announced', () => {
+    render();
+    const region = announce();
+    expect(region.getAttribute('role')).toBe('status');
+    expect(region.textContent).toBe('');
+    update(base({ enabled: true, status: 'ready' }));
+    expect(announce()).toBe(region); // the same element, never remounted
+  });
+
+  test('announces only the operator’s final words, as a new element each time, never drafts or Lucy’s answer', () => {
+    update(base({ enabled: true, status: 'ready', operatorText: 'any news', operatorFinal: false }));
+    expect(announce().textContent).toBe('');
+    update(base({ enabled: true, status: 'ready', operatorText: 'any news on the build?', operatorFinal: true, lucyText: '' }));
+    expect(announce().textContent).toBe('You said: any news on the build?');
+    const first = announce().firstElementChild;
+    update(base({ enabled: true, status: 'ready', operatorText: 'any news on the build?', operatorFinal: true, lucyText: 'The build passed.' }));
+    expect(announce().textContent).not.toContain('The build passed.');
+    expect(announce().firstElementChild).toBe(first); // not announced again
+    update(base({ enabled: true, status: 'ready', operatorText: 'and tests?', operatorFinal: true, lucyText: 'The build passed.' }));
+    expect(announce().textContent).toBe('You said: and tests?');
+    expect(announce().firstElementChild).not.toBe(first);
+    update(base());
+    expect(announce().textContent).toBe('');
+  });
+
+  test('announces Connecting…, errors and the Talk-unavailable reason', () => {
+    update(base({ enabled: true, status: 'connecting' }));
+    expect(announce().textContent).toBe('Connecting\u2026');
+    update(base({ enabled: true, status: 'ready', errorMessage: 'I could not hear that: the speech recogniser failed.' }));
+    expect(announce().textContent).toBe('I could not hear that: the speech recogniser failed.');
+    expect(container.querySelector('[data-testid="avatar-live-notice"]')!.textContent).toBe('I could not hear that: the speech recogniser failed.');
+    update(base({ serverStatus: { available: false, reason: 'No speech recogniser configured' } }));
+    act(() => talk()!.click());
+    expect(announce().textContent).toBe('No speech recogniser configured');
+    const first = announce().firstElementChild;
+    act(() => talk()!.click());
+    expect(announce().firstElementChild).not.toBe(first); // pressing again says it again
+  });
+
+  test('moves focus to the dock if the Talk button disappears while focused', () => {
+    update(base({ enabled: true, status: 'ready' }));
+    act(() => talk()!.focus());
+    expect(document.activeElement).toBe(talk());
+    update(base({ serverStatus: null }));
+    expect(talk()).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector('[data-testid="avatar-dock"]'));
   });
 
   test('shows a start failure in the live area', () => {

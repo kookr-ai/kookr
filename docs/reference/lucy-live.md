@@ -43,7 +43,8 @@ turned into audio and sent to the browser, so the first sentence plays while the
 written.
 
 **Interrupting her.** The browser's detector only knows that something loud happened, so it does
-not stop her on its own. When you start speaking while she is thinking or speaking, three things
+not stop her on its own. When you start speaking while she is busy (from the moment you finish a
+question until she has finished answering it, or while any of her audio is still playing), three things
 happen:
 
 1. The browser turns her volume down to a quarter within about 30 ms and sends your audio to the
@@ -58,7 +59,14 @@ happen:
    sound ends first, or about 0.7 s pass with no voice, the server sends `speech_rejected`, drops the
    audio, and the browser brings her volume back and plays on. If neither message arrives within
    1.5 s the browser stops her anyway, because a stuck connection is more likely to mean "stop" than
-   "keep talking".
+   "keep talking". It then sends `barge_in`; because the server still holds that candidate undecided,
+   it treats `barge_in` as a confirmation (abandons the answer and listens to the candidate's audio
+   as your turn), so the words you keep saying are not lost.
+
+If a loud sound goes on and on (a fan switched on, a drone) and Silero rejects it, the browser treats
+that sound as background noise: its noise floor rises to the sound's level, so the same sound does not
+duck her again every moment. Speech clearly louder than the noise is still heard, and the floor falls
+back by itself once the room is quiet.
 
 Because Silero filters the noise, the browser's own bar for a candidate while she talks is 0.15 s of
 loud sound, down from 0.3 s. Silero also guards ordinary turns: if a whole turn never contains a
@@ -101,9 +109,11 @@ microphone, against a Kookr dev server, the recogniser, the speech service and t
 | A noise-only turn while she is quiet | Dropped as empty, the recogniser was never asked |
 
 Some turns were slow: the final transcript took 1–3.9 s instead of about 0.3 s, in about one turn in
-four. Talking to the recogniser directly at the same time was fast, and the slow turns happened
-before and after the Silero change, so the likely cause is other models sharing the same GPU (an
-unrelated model server was running two GPU processes). `asrMs` in the log shows which turns it hit.
+four, and a later run timed out once. The GPU was shared during all of these measurements: an
+unrelated model server ran two GPU processes, and the operator was fine-tuning a language model on
+the same card. Requests sent straight to the recogniser during the same period were mostly fast, so
+the likely cause is GPU contention, but it is unconfirmed. Re-measure on an idle GPU before treating
+any number on this page as typical. `asrMs` in the log shows which turns were slow.
 
 On 16 real French dictation recordings the recogniser was about as accurate as Kookr's CPU Whisper
 backend: better on some phrases, worse on names (it heard "Kookr" as "Cooker" and "Lucy" as
@@ -115,7 +125,18 @@ Silero's measured output with the shipped model: probabilities up to 0.998 on a 
 sustained loud noise and silence (none above 0.5). The noise tests are in
 `src/adapters/lucy-live/silero-vad.real.test.ts`.
 
+## When something goes wrong
+
+A failure in one turn (the recogniser, the helper model or the speech service) ends that turn with
+`turn_done` and `end: "error"` plus a plain-words `reason`; the panel shows the reason and the
+conversation carries on with the next thing you say. A session-level `error` message with code
+`bad_message` or `internal` is shown the same way while the connection is still open; only
+`unavailable` or a lost connection (one automatic reconnect) turns hands-free off.
+
 ## Limits
+
+- Owner only. Lucy live answers from the status of every task and spends model credit, so the
+  `/ws/lucy-live` upgrade is refused (403) for any viewer or other non-owner actor.
 
 - She answers questions only. She cannot launch, stop or approve anything yet.
 - She always answers in English: her voices are English voices.

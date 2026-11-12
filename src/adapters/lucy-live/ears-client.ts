@@ -152,6 +152,9 @@ export function openEarsTurn(opts: EarsOptions): EarsTurn {
           });
           break;
         case 'session.updated':
+          // The connect timer guards only the wait for readiness; a healthy session
+          // may then stay open for as long as the operator speaks.
+          if (!finishRequested) clearTimeout(timer); // else it is already the finish timer
           ready = true;
           flush();
           maybeCommit();
