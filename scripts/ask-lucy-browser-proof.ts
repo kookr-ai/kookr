@@ -224,7 +224,8 @@ async function main(): Promise<void> {
       record('the Replay button shows the unheard marker and then plays the question (replay is not left stuck)', marker === 1 && replayed,
         `unheard marker on Replay: ${marker}; panel state after the click: ${await dock.getAttribute('data-avatar-state')}`);
     } else if (ttsUrl) {
-      const spoke = await waitFor(async () => (await dock.getAttribute('data-avatar-state')) === 'speaking', 30_000, 100);
+      // The server allows the speech service two attempts of 30 s each.
+      const spoke = await waitFor(async () => (await dock.getAttribute('data-avatar-state')) === 'speaking', 75_000, 100);
       const said = (await page.getByTestId('avatar-message').first().innerText().catch(() => '')).replace(/\s+/g, ' ');
       record('Lucy reads the question out by herself (real speech service)', spoke && speakStatuses[0] === 200 && /needs your input/.test(said) && /Run it now, Run it tonight, or Do not run it/.test(said),
         `speak route -> ${speakStatuses.join(',')}; panel state went to "speaking"; she said: ${JSON.stringify(said.slice(0, 220))}`);
