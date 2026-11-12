@@ -590,7 +590,14 @@ async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
       const raw = [];
       for (const entry of ignored.stdout.split('\n').filter(Boolean)) {
         const kind = classifyIgnoredEntry(entry);
-        if (kind === 'cache') continue;
+        if (kind === 'cache') {
+          // A tool cache is disposable only if nobody put a git repo inside it.
+          const why = await nmCheck(join(dir, entry));
+          if (!why) continue;
+          raw.push(entry);
+          e.ignoredEntries.push(`${entry} (${why})`);
+          continue;
+        }
         if (kind === 'content') {
           raw.push(entry);
           e.ignoredEntries.push(entry);
@@ -628,11 +635,14 @@ async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
   e.detached = e.branch == null;
 
   if (status.code === 0) {
-    e.dirty = status.stdout
-      .split('\n')
-      .filter(Boolean)
-      // Only UNTRACKED node_modules entries are ignorable; modified tracked files count anywhere.
-      .some((l) => !(l.startsWith('?? ') && /(^|\/)node_modules(\/|$)/.test(l.slice(3))));
+    const lines = status.stdout.split('\n').filter(Boolean);
+    // A linked worktree is removed whole, so ANY untracked path is content, node_modules
+    // included: an untracked (not ignored) node_modules never went through the manifest,
+    // lockfile and nested-.git checks. In a main checkout only untracked node_modules
+    // entries are ignorable (they are handled by the dependencies item's own checks).
+    e.dirty = e.kind === 'worktree'
+      ? lines.length > 0
+      : lines.some((l) => !(l.startsWith('?? ') && /(^|\/)node_modules(\/|$)/.test(l.slice(3))));
   } else if (!status.timedOut) e.errors.push('git status failed');
 
   if (stash.code === 0) {
@@ -1002,7 +1012,7 @@ async function recheck(item, opts, deps) {
 /** The command an item will run, for the write-ahead audit line. */
 function describeCommand(item) {
   if (item.kind === 'worktree') {
-    return `git -C ${item.mainRepo} worktree remove ${item.path}${item.branch ? ` && git -C ${item.mainRepo} branch -d ${item.branch}` : ''}`;
+    return `git -c status.showUntrackedFiles=normal -C ${item.mainRepo} worktree remove ${item.path}${item.branch ? ` && git -C ${item.mainRepo} branch -d ${item.branch}` : ''}`;
   }
   if (item.kind === 'dependencies') return `rm -rf ${item.path}`;
   return Array.isArray(item.command) ? item.command.join(' ') : String(item.kind);
@@ -1011,7 +1021,9 @@ function describeCommand(item) {
 async function execute(item, log, opts, deps) {
   if (item.kind === 'worktree') {
     if (!item.mainRepo) throw new Error("refusing: main repository unknown");
-    const wtArgs = ['-C', item.mainRepo, 'worktree', 'remove', item.path]; // no --force: git refuses dirty/locked trees
+    // No --force: git refuses dirty or locked trees. Force untracked files to be shown so a
+    // repo with status.showUntrackedFiles=no cannot switch that refusal off.
+    const wtArgs = ['-c', 'status.showUntrackedFiles=normal', '-C', item.mainRepo, 'worktree', 'remove', item.path];
     log.command = ['git', ...wtArgs].join(' ');
     const r = await deps.run('git', wtArgs);
     if (r.code !== 0) throw new Error(`git worktree remove failed: ${r.stderr.trim() || r.stdout.trim()}`);

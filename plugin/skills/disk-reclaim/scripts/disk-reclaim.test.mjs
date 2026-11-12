@@ -389,6 +389,35 @@ describe('ignored files and hidden edits', () => {
     expect(find(r, parent).reason).toMatch(/\.cache\//);
   });
 
+  test('an untracked, NOT ignored node_modules makes a worktree REVIEW even with status.showUntrackedFiles=no', async () => {
+    const wt = addWorktree('untracked-nm');
+    // This branch does not ignore node_modules at all.
+    writeFileSync(join(wt, '.gitignore'), 'runs/\n');
+    git(wt, 'add', '.gitignore');
+    git(wt, 'commit', '-q', '-m', 'stop ignoring node_modules');
+    mergeBranch('untracked-nm');
+    mkdirSync(join(wt, 'node_modules', 'mine'), { recursive: true });
+    writeFileSync(join(wt, 'node_modules', 'mine', 'unique.js'), 'hand-written, exists nowhere else');
+    git(main, 'config', 'status.showUntrackedFiles', 'no');
+    const r = await buildReport(opts(), deps());
+    expect(find(r, wt)).toMatchObject({ tier: 'REVIEW' });
+    // Even a forged SAFE item cannot slip past git: the removal forces untracked files on.
+    const forged = { ...find(r, wt), tier: 'SAFE', kind: 'worktree', branch: 'untracked-nm', mainRepo: main };
+    await applySafe({ ...r, safe: [forged] }, opts(), deps({ run: runReal }));
+    expect(existsSync(join(wt, 'node_modules', 'mine', 'unique.js'))).toBe(true);
+  });
+
+  test('a git repo nested inside an ignored tool cache makes the worktree REVIEW', async () => {
+    const wt = addWorktree('cache-repo', { merge: true });
+    const nested = join(wt, '__pycache__', 'lib');
+    mkdirSync(nested, { recursive: true });
+    git(nested, 'init', '-q', '-b', 'main');
+    commitFile(nested, 'local.py', 'unpushed work');
+    const r = await buildReport(opts(), deps());
+    expect(find(r, wt)).toMatchObject({ tier: 'REVIEW' });
+    expect(find(r, wt).reason).toMatch(/__pycache__\//);
+  });
+
   test.each([
     ['skip-worktree', '--skip-worktree'],
     ['assume-unchanged', '--assume-unchanged'],
