@@ -21,13 +21,23 @@ import { hasDescription } from '../apply-shelf-descriptions.mjs';
 import { parseShelfText } from './nb-client.mjs';
 import { dedupKey, entryId, maxLines, shelfNameProblem } from './nb-sim.mjs';
 
-/** A small deterministic generator, so a reported input can be reproduced. */
+/**
+ * A small deterministic generator, so a reported input can be reproduced.
+ * `Math.imul` keeps the multiplication in 32 bits (a plain `*` overflows what a
+ * double holds exactly and the sequence collapses), and the result is taken from
+ * the high bits because the low bits of this kind of generator barely vary.
+ */
 function makeRandom(seed: number): (n: number) => number {
   let state = seed;
   return (n) => {
-    state = (state * 1103515245 + 12345) & 0x7fffffff;
-    return state % n;
+    state = (Math.imul(state, 1103515245) + 12345) & 0x7fffffff;
+    return (state >>> 16) % n;
   };
+}
+
+/** A generated input with every non-ASCII or control character spelled out, for a readable failure message. */
+function show(input: string): string {
+  return JSON.stringify(input).replace(/[^\x20-\x7e]/gu, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
 }
 
 // Text fragments chosen to hit the rules that have changed or could: case,
@@ -36,9 +46,9 @@ function makeRandom(seed: number): (n: number) => number {
 // byte-order mark, bidi controls, C0/C1 controls, a Unicode Tag character).
 const TEXT_ATOMS = [
   'a', 'B', 'z', '0', '9', ' ', '  ', '\t', '.', ',', '-', '_', '@', '!', '?', '(', ')', '"', "'", '/', '\\',
-  'é', 'É', 'ß', '中', '😀', '👨‍👩‍👧', '­', '​', '‍', '⁠', '﻿', '‮', '⁦',
-  '\u0001', '\u001b', '\u007f', '\u009b', '\u000b', '\u000c', ' ', ' ', '\u{E0041}', '#', '+', '1',
-  'desc:', 'key:', 'foo', 'bar', 'Lesson', '́',
+  'é', 'É', 'ß', '中', '😀', '👨\u200d👩\u200d👧', '\u00ad', '\u200b', '\u200d', '\u2060', '\ufeff', '\u202e', '\u2066',
+  '\u0001', '\u001b', '\u007f', '\u009b', '\u000b', '\u000c', '\u00a0', '\u2028', '\u{E0041}', '#', '+', '1',
+  'desc:', 'key:', 'foo', 'bar', 'Lesson', '\u0301',
 ];
 
 function text(random: (n: number) => number, maxAtoms: number): string {
@@ -54,41 +64,52 @@ describe('hand-copied nb rules agree with the installed agent-notebook', () => {
 
   test('duplicate key and lesson id', () => {
     const random = makeRandom(1);
+    const seen = new Set<string>();
     for (let i = 0; i < 5000; i++) {
       const t = text(random, 8);
-      expect(dedupKey(t), JSON.stringify(t)).toBe(pkg.dedupKey(t));
-      expect(entryId(t), JSON.stringify(t)).toBe(pkg.entryId(t));
+      seen.add(t);
+      expect(dedupKey(t), show(t)).toBe(pkg.dedupKey(t));
+      expect(entryId(t), show(t)).toBe(pkg.entryId(t));
     }
+    expect(seen.size).toBeGreaterThan(3000); // the generator really varies
   });
 
   test('shelf-name validity', () => {
     const random = makeRandom(2);
     const atoms = ['a', 'Z', '0', '.', '..', '_', '@', '-', 'con', 'nul', 'readme', 'README', 'com1', 'x'.repeat(60), ' ', '/', 'é', ''];
+    let valid = 0;
     for (let i = 0; i < 5000; i++) {
       let name = '';
       const count = random(5) + 1;
       for (let j = 0; j < count; j++) name += atoms[random(atoms.length)];
-      expect(shelfNameProblem(name) === null, JSON.stringify(name)).toBe(pkg.isValidShelfName(name));
+      expect(shelfNameProblem(name) === null, show(name)).toBe(pkg.isValidShelfName(name));
+      if (pkg.isValidShelfName(name)) valid++;
     }
+    // Both outcomes must occur, or the comparison proves nothing.
+    expect(valid).toBeGreaterThan(200);
+    expect(valid).toBeLessThan(4800);
   });
 
   test('per-shelf cap from NB_MAX_LINES', () => {
+    // The package's own default and bounds for the cap, so a change to them is caught too.
+    const { dflt, lo, hi } = pkg.MAX_LINES;
     const values = ['60', '60.5', '1e3', '60abc', ' 12 ', '+7', '-3', '0', '007', '999999', '', '  ', '6 0', '٣', '0x10', '1_000', '+', '-', '+-3', '9'.repeat(400)];
     for (const raw of values) {
-      expect(maxLines({ NB_MAX_LINES: raw }), JSON.stringify(raw)).toBe(pkg.resolveIntEnv(raw, 50, 1, 5000).value);
+      expect(maxLines({ NB_MAX_LINES: raw }), show(raw)).toBe(pkg.resolveIntEnv(raw, dflt, lo, hi).value);
     }
-    expect(maxLines({})).toBe(pkg.resolveIntEnv(undefined, 50, 1, 5000).value);
+    expect(maxLines({})).toBe(pkg.resolveIntEnv(undefined, dflt, lo, hi).value);
   });
 
   test('a shelf file: its lessons (id and score, in file order) and whether it is described', () => {
     const random = makeRandom(3);
     const lineEnds = ['\n', '\r\n', '\r', '\n\n'];
-    let compared = 0;
-    let described = 0;
+    // What the generator produced, so a generator that stops covering a case fails
+    // the test instead of passing with nothing checked.
+    const produced = { crlf: 0, byteOrderMark: 0, severalLessons: 0, invisibleInWord: 0, described: 0 };
     for (let i = 0; i < 1500; i++) {
       // A byte-order mark at the start of some files, and a second one in a few.
-      let body = random(6) === 0 ? '﻿' : '';
-      if (random(40) === 0) body += '﻿';
+      let body = random(6) === 0 ? '\ufeff' : '';
+      if (random(40) === 0) body += '\ufeff';
       const lines = random(8) + 1;
       for (let j = 0; j < lines; j++) {
         const kind = random(10);
@@ -107,19 +128,27 @@ describe('hand-copied nb rules agree with the installed agent-notebook', () => {
       const fromNb = pkg.readShelf(dir, 's');
       const nbLessons = fromNb.entries.map((e) => `${pkg.entryId(e.text)}:${e.score}`);
       const ours = parseShelfText(body).map((e) => `${e.id}:${e.score}`);
-      expect(ours, JSON.stringify(body)).toEqual(nbLessons);
-      compared++;
+      expect(ours, show(body)).toEqual(nbLessons);
+      if (body.includes('\r\n')) produced.crlf++;
+      if (body.startsWith('\ufeff')) produced.byteOrderMark++;
+      if (nbLessons.length >= 2) produced.severalLessons++;
+      if (/[a-z0-9][\u00ad\u200b\u2060\u202e\u2066\u0001\u001b\u007f\u009b][a-z0-9]/i.test(body)) produced.invisibleInWord++;
 
       // The description seeder must never take a shelf nb reads as described for an
       // undescribed one: that is the case where it would overwrite the description.
+      // Only that direction is checked. The seeder may call a shelf described when nb
+      // does not (a description made only of characters nb drops, for example); it
+      // then leaves the shelf alone, which loses nothing.
       const row = pkg.listNotebooks(dir).rows.find((r) => r.shelf === 's');
       if (row && typeof row.desc === 'string' && row.desc.trim() !== '') {
-        described++;
-        expect(hasDescription(join(dir, 's.md')), JSON.stringify(body)).toBe(true);
+        produced.described++;
+        expect(hasDescription(join(dir, 's.md')), show(body)).toBe(true);
       }
     }
-    // The generator must really produce both kinds of file, or the checks above prove nothing.
-    expect(compared).toBe(1500);
-    expect(described).toBeGreaterThan(100);
+    expect(produced.crlf).toBeGreaterThan(100);
+    expect(produced.byteOrderMark).toBeGreaterThan(100);
+    expect(produced.severalLessons).toBeGreaterThan(300);
+    expect(produced.invisibleInWord).toBeGreaterThan(20);
+    expect(produced.described).toBeGreaterThan(100);
   });
 });

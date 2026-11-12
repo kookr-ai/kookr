@@ -70,10 +70,27 @@ function resolveNbCliEntry() {
   return entry;
 }
 
-/** The notebooks directory the CLI will use (mirrors the package's resolution). */
+/**
+ * A leading `~` in a path, expanded to the home directory the way agent-notebook
+ * 0.8.0 expands it in NB_DIR (its `expandHomeDir`): only `~` and `~/…` (and
+ * `~\…` on Windows); `~user/…` and everything else is returned as it is. An
+ * NB_DIR set where no shell expands it (settings.json, systemd, cron) reaches
+ * the process with the `~` still in it.
+ */
+function expandHomeDir(value) {
+  if (value === '~') return homedir();
+  if (value.startsWith('~/')) return join(homedir(), value.slice(2));
+  if (process.platform === 'win32' && value.startsWith('~\\')) return join(homedir(), value.slice(2));
+  return value;
+}
+
+/**
+ * The notebooks directory the CLI will use: NB_DIR with a leading `~` expanded,
+ * as the package resolves it, or Kookr's default when NB_DIR is unset or blank.
+ */
 function notebooksDir() {
   const fromEnv = process.env.NB_DIR;
-  return fromEnv && fromEnv.trim() !== '' ? fromEnv : join(homedir(), '.kookr', 'notebooks');
+  return fromEnv && fromEnv.trim() !== '' ? expandHomeDir(fromEnv) : join(homedir(), '.kookr', 'notebooks');
 }
 
 /**
@@ -234,10 +251,10 @@ async function adviseOnAdd(argv) {
 
 async function main() {
   // Pin the kookr notebooks location so dogfooding the package does not relocate
-  // existing notebooks or the usage ring.
-  if (!process.env.NB_DIR || process.env.NB_DIR.trim() === '') {
-    process.env.NB_DIR = notebooksDir();
-  }
+  // existing notebooks or the usage ring. Always store the resolved path: the
+  // package and the auto-commit below must act on the same directory, and since
+  // 0.8.0 the package expands a leading `~` that a raw NB_DIR would still carry.
+  process.env.NB_DIR = notebooksDir();
 
   // No command interception: the shim is a thin wrapper that only pins NB_DIR
   // and git-backs mutating writes. Discovery (`nb list` and its `ls`/`roles`

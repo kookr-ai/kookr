@@ -126,7 +126,16 @@ describe('bin/nb.js — per-change git auto-commit (Objective C)', () => {
     nb(['add', 'patcher', 'a committed lesson']);
     const before = git(['rev-list', '--count', 'HEAD']);
     writeFileSync(join(dir, 'stray.md'), '+1\ta hand edit nobody committed\n');
-    for (const args of [['add', 'patcher', '--help'], ['vote', 'patcher', '-h'], ['rm', 'patcher', '--help']]) {
+    const helpCalls = [
+      ['add', 'patcher', '--help'],
+      ['vote', 'patcher', '-h'],
+      ['rm', 'patcher', '--help'],
+      ['merge', 'patcher', '-h'],
+      ['split', 'patcher', '--help'],
+      ['move', 'patcher', 'other', '-h'],
+      ['describe', 'patcher', '--help'],
+    ];
+    for (const args of helpCalls) {
       expect(nb(args).code, args.join(' ')).toBe(0);
       expect(git(['rev-list', '--count', 'HEAD']), args.join(' ')).toBe(before);
     }
@@ -134,6 +143,27 @@ describe('bin/nb.js — per-change git auto-commit (Objective C)', () => {
     // A real mutation still commits, and a help-looking value of --note is not a help request.
     expect(nb(['add', 'patcher', 'a second lesson', '--note', '-h']).code).toBe(0);
     expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(Number(before) + 1);
+  });
+
+  test('NB_DIR with a leading ~ is committed in the directory nb writes to', () => {
+    // nb 0.8.0 expands a leading `~` in NB_DIR itself. The shim used the raw value for its
+    // git check, found no repository at `./~/store`, and left the change uncommitted.
+    const home = dir; // a fake home directory; the store is a git repository inside it
+    const store = join(home, 'store');
+    mkdirSync(store);
+    dir = store; // point git() and initRepo() at the store
+    try {
+      initRepo();
+      const before = Number(git(['rev-list', '--count', 'HEAD']));
+      const r = nb(['add', 'patcher', 'tilde lesson'], { HOME: home, NB_DIR: '~/store' });
+      expect(r.code).toBe(0);
+      expect(existsSync(join(store, 'patcher.md'))).toBe(true); // written under the fake home, not under ./~
+      expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before + 1);
+      expect(git(['log', '-1', '--format=%s'])).toBe('nb add patcher');
+      expect(git(['status', '--porcelain'])).toBe('');
+    } finally {
+      dir = home; // afterEach removes the whole fake home
+    }
   });
 
   test('NB_GIT_AUTOCOMMIT=0 disables the auto-commit', () => {
