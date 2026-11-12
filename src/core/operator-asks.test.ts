@@ -75,15 +75,28 @@ describe('listOperatorAsks', () => {
       id: `closed-${i}`, state: 'answered', resolvedAt: NOW - i, createdAt: NOW - 1000 - i,
     }));
     const list = listOperatorAsks([ask({ id: 'old-pending', createdAt: NOW - 9 * 60_000 }), ...closedNewer], NOW, names);
-    expect(list).toHaveLength(OPERATOR_ASK_MAX_LISTED);
+    expect(list).toHaveLength(OPERATOR_ASK_MAX_LISTED + 1);
     expect(list.map((a) => a.id)).toContain('old-pending');
     expect(list[0].id).toBe('closed-0');
     expect(list.at(-1)?.id).toBe('old-pending');
   });
 
+  it('keeps a question answered a moment ago in the list however many are waiting or were asked later', () => {
+    const waiting = Array.from({ length: OPERATOR_ASK_MAX_LISTED + 2 }, (_, i) => ask({ id: `pending-${i}`, createdAt: NOW - i }));
+    const olderClosed = Array.from({ length: OPERATOR_ASK_MAX_LISTED }, (_, i) => ask({
+      id: `closed-${i}`, state: 'answered', resolvedAt: NOW - 60_000 - i, createdAt: NOW - 100 - i,
+    }));
+    // Asked long ago, answered just now: the newest outcome, though the oldest question.
+    const justAnswered = ask({ id: 'just-answered', state: 'answered', resolvedAt: NOW - 10, createdAt: NOW - 20 * 60_000 });
+    const ids = listOperatorAsks([...waiting, ...olderClosed, justAnswered], NOW, names).map((a) => a.id);
+    expect(ids).toContain('just-answered');
+    expect(ids.filter((id) => id.startsWith('pending-'))).toHaveLength(OPERATOR_ASK_MAX_LISTED + 2);
+    expect(ids.filter((id) => !id.startsWith('pending-'))).toHaveLength(OPERATOR_ASK_MAX_LISTED);
+  });
+
   it('lists every pending question even beyond the cap', () => {
     const many = Array.from({ length: OPERATOR_ASK_MAX_LISTED + 1 }, (_, i) => ask({ id: `pending-${i}`, createdAt: NOW - i }));
-    const list = listOperatorAsks([...many, ask({ id: 'closed', state: 'answered', resolvedAt: NOW })], NOW, names);
+    const list = listOperatorAsks(many, NOW, names);
     expect(list.map((a) => a.id)).toEqual(many.map((a) => a.id));
   });
 

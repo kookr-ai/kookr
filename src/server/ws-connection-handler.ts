@@ -551,6 +551,7 @@ function wireWsMessageHandlers(
         if (actor.kind !== 'owner') return;
         const asks = deps.operatorAsks;
         let result: AnswerResult | undefined;
+        let threw = false;
         try {
           result = asks
             ? await asks.answer({
@@ -561,6 +562,7 @@ function wireWsMessageHandlers(
             : undefined;
         } catch (err) {
           // Always answer the sender: with no reply its card would sit on "sending" until its own timeout.
+          threw = true;
           console.warn('[asks] recording a dashboard answer failed:', err);
         }
         if (ws.readyState === 1) {
@@ -568,7 +570,7 @@ function wireWsMessageHandlers(
             type: 'operatorAskResult',
             askId: msg.askId,
             ok: result?.ok === true,
-            ...(result === undefined ? { reason: 'unavailable' as const } : result.ok ? {} : { reason: result.reason }),
+            ...(result === undefined ? { reason: threw ? 'failed' as const : 'unavailable' as const } : result.ok ? {} : { reason: result.reason }),
           } satisfies ServerMessage));
           // A refused answer usually means this tab's list is out of date (answered
           // on Telegram a moment ago, expired): send the current one.

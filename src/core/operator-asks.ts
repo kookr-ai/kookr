@@ -67,9 +67,11 @@ function closedAt(ask: AskRecord): number {
 }
 
 /**
- * The asks the dashboard shows, newest first. Every pending question is listed, however many closed
- * ones are newer: a task is waiting on it. Questions closed within
- * {@link OPERATOR_ASK_RESOLVED_VISIBLE_MS} then fill what is left of {@link OPERATOR_ASK_MAX_LISTED}.
+ * The asks the dashboard shows, newest first. Every pending question is listed: a task is waiting on
+ * it (and the rate limits keep their number small). Beside them, the questions closed within
+ * {@link OPERATOR_ASK_RESOLVED_VISIBLE_MS}, at most {@link OPERATOR_ASK_MAX_LISTED} of them, most
+ * recently closed first; they have their own allowance so that a question answered a moment ago
+ * always shows its outcome, however many others are waiting.
  * A question whose Telegram message was never sent is left out on both counts: it was never asked.
  */
 export function listOperatorAsks(asks: readonly AskRecord[], nowMs: number, taskName: TaskNameLookup): OperatorAskView[] {
@@ -78,8 +80,8 @@ export function listOperatorAsks(asks: readonly AskRecord[], nowMs: number, task
   const pending = asked.filter((ask) => ask.state === 'pending').sort(newestFirst);
   const closed = asked
     .filter((ask) => ask.state !== 'pending' && nowMs - closedAt(ask) <= OPERATOR_ASK_RESOLVED_VISIBLE_MS)
-    .sort(newestFirst)
-    .slice(0, Math.max(0, OPERATOR_ASK_MAX_LISTED - pending.length));
+    .sort((a, b) => closedAt(b) - closedAt(a))
+    .slice(0, OPERATOR_ASK_MAX_LISTED);
   return [...pending, ...closed].sort(newestFirst).map((ask) => toOperatorAskView(ask, taskName));
 }
 

@@ -53,6 +53,8 @@ export const SPOKEN_ASKS_STORAGE_KEY = 'kookr.lucy.spokenAsks';
 const SPOKEN_ASKS_KEPT = 20;
 /** A hidden tab waits this long before claiming a question, so a visible tab gets there first. */
 export const HIDDEN_TAB_DELAY_MS = 600;
+/** Longest wait for the server to return the clip; a little more than the two 30 s attempts it gives the speech service. */
+const SPEAK_FETCH_TIMEOUT_MS = 75_000;
 /** Pause before the single retry when another clip started first, so that clip is audible (and on the speech bus) by then. */
 const RETRY_PAUSE_MS = 400;
 /** How long a question waits for Lucy to stop talking before it is left as an unheard clip. */
@@ -153,106 +155,132 @@ export interface AnnounceAskOptions {
   busyWaitMs?: number;
 }
 
-/** Announcements run one after another: two that start together would both find Lucy silent and one would be dropped. */
-let announcements: Promise<unknown> = Promise.resolve();
+/**
+ * Clips are played one after another: two that became ready together would both find Lucy
+ * silent, and one would be dropped. Only playing waits in this line. Claiming the question
+ * and fetching its clip start at once, so a tab that can speak claims a second question
+ * while it is still busy with the first, before a tab that cannot speak takes it.
+ */
+let playLine: Promise<unknown> = Promise.resolve();
 
 /**
  * Fetch Lucy's spoken version of the pending question `askId` and play it,
  * subject to the rules in this file's header. Never throws.
  */
 export function announceAsk(askId: string, options: AnnounceAskOptions = {}): Promise<AskAnnouncementResult> {
-  const run = announcements.then(() => announceNow(askId, options));
-  announcements = run.catch(() => undefined);
-  return run;
+  return prepareClip(askId, options)
+    .then((prepared) => {
+      if (typeof prepared === 'string') return prepared;
+      const run = playLine.then(() => playClip(askId, prepared.clipId, options));
+      playLine = run.catch(() => undefined);
+      return run;
+    })
+    .catch((): AskAnnouncementResult => 'error');
 }
 
-/** The clip of a question that closed before or while it was read: stop it, and drop it if nobody heard it. */
-function retireClip(askId: string): void {
-  const clipId = clipByAsk.get(askId);
+/**
+ * The clip of a question that closed before or while it was read: stop it, and drop it if nobody
+ * heard it. `knownClipId` is for a caller that holds the clip id itself; by then the map entry may
+ * already have been removed by {@link stopAskAnnouncement}.
+ */
+function retireClip(askId: string, knownClipId?: string): void {
+  const clipId = knownClipId ?? clipByAsk.get(askId);
   clipByAsk.delete(askId);
   if (!clipId) return;
   if (replayingClipId() === clipId) stopReplay('superseded');
   if (getClip(clipId)?.heard === false) discardLastClip(clipId);
 }
 
-async function announceNow(askId: string, options: AnnounceAskOptions): Promise<AskAnnouncementResult> {
+/** Claim the question for this tab and fetch its clip. A string is a final result; an object means "ready to play". */
+async function prepareClip(askId: string, options: AnnounceAskOptions): Promise<AskAnnouncementResult | { clipId: string }> {
   const fetcher = options.fetcher ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
   const wait = options.sleep ?? sleep;
+  // A tab that is hidden, or that the browser will not let start audio yet, lets the others go first:
+  // if it claimed the question at once, a tab that could have spoken it would stand down for nothing.
+  const hidden = typeof document !== 'undefined' && document.visibilityState !== 'visible';
+  if (hidden || !pageMayStartAudio()) await wait(HIDDEN_TAB_DELAY_MS);
+  if (closedAsks.has(askId)) return 'cancelled';
+  if (!(await claim(askId))) return 'other-tab';
+
+  let payload: SpeakAudioResponse | null = null;
+  let status = 0;
   try {
-    // A tab that is hidden, or that the browser will not let start audio yet, lets the others go first:
-    // if it claimed the question at once, a tab that could have spoken it would stand down for nothing.
-    const hidden = typeof document !== 'undefined' && document.visibilityState !== 'visible';
-    if (hidden || !pageMayStartAudio()) await wait(HIDDEN_TAB_DELAY_MS);
-    if (closedAsks.has(askId)) return 'cancelled';
-    if (!(await claim(askId))) return 'other-tab';
-
-    let payload: SpeakAudioResponse | null = null;
-    let status = 0;
-    try {
-      const response = await fetcher(`/api/asks/${encodeURIComponent(askId)}/speak`, { method: 'POST' });
-      status = response.status;
-      if (response.ok) payload = (await response.json().catch(() => null)) as SpeakAudioResponse | null;
-    } catch {
-      // Network failure: handled as "no clip" below.
-    }
-    // 409: closed in the meantime. Anything else without a clip (503: no speech service, 502: it
-    // failed, offline): the card alone carries the question. Nothing retries; the claim is given back
-    // only so a tab that is still about to try (a hidden one, waiting its turn) is not turned away.
-    if (status === 409) return 'cancelled';
-    if (!payload || typeof payload.audioBase64 !== 'string') {
-      releaseClaim(askId);
-      return 'error';
-    }
-
-    const clip = captureLastClip({
-      clipId: payload.clipId,
-      text: payload.text,
-      subject: payload.subject,
-      audio: base64ToArrayBuffer(payload.audioBase64),
-      durationMs: payload.durationMs,
+    const response = await fetcher(`/api/asks/${encodeURIComponent(askId)}/speak`, {
+      method: 'POST',
+      // The server gives the speech service two attempts of 30 s; a request that never answers must not hang forever.
+      ...(typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? { signal: AbortSignal.timeout(SPEAK_FETCH_TIMEOUT_MS) }
+        : {}),
     });
-    clipByAsk.set(askId, clip.clipId);
-    const cancelled = (): AskAnnouncementResult => {
-      retireClip(askId);
-      return 'cancelled';
-    };
-    if (closedAsks.has(askId)) return cancelled();
-
-    if (!getSoundPreferenceState().enabled) {
-      reportClipUnheard(clip.clipId, 'muted');
-      return 'muted';
-    }
-    if (getDndState().enabled) {
-      reportClipUnheard(clip.clipId, 'dnd');
-      return 'dnd';
-    }
-    if (!pageMayStartAudio()) {
-      reportClipUnheard(clip.clipId, 'audio_suspended');
-      return 'blocked';
-    }
-
-    // She may be talking already (a summary, a hands-free answer): say it when she has finished.
-    const busyWaitMs = options.busyWaitMs ?? BUSY_WAIT_MS;
-    if (!(await waitForSilence(busyWaitMs))) return 'blocked';
-    if (closedAsks.has(askId)) return cancelled();
-    let result: ReplayResult = await replayClip(clip.clipId, 'ask');
-    if (result === 'busy' || result === 'cancelled') {
-      // A replay or a speaker button got in first: one more try once that one has had time to start and finish.
-      await wait(RETRY_PAUSE_MS);
-      const silent = await waitForSilence(busyWaitMs);
-      if (closedAsks.has(askId)) return cancelled();
-      if (!silent) return 'blocked';
-      result = await replayClip(clip.clipId, 'ask');
-    }
-    // It may have closed while the audio was being prepared: do not read out an answered question.
-    if (result === 'started' && closedAsks.has(askId)) return cancelled();
-    if (result === 'started') return 'started';
-    if (result === 'muted') return 'muted';
-    if (result === 'blocked' || result === 'busy' || result === 'cancelled') return 'blocked';
-    return 'error';
+    status = response.status;
+    if (response.ok) payload = (await response.json().catch(() => null)) as SpeakAudioResponse | null;
   } catch {
+    // Network failure or timeout: handled as "no clip" below.
+  }
+  // 409: closed in the meantime. Anything else without a clip (503: no speech service, 502: it
+  // failed, offline): the card alone carries the question. Nothing retries; the claim is given back
+  // only so a tab that is still about to try (a hidden one, waiting its turn) is not turned away.
+  if (status === 409) return 'cancelled';
+  if (!payload || typeof payload.audioBase64 !== 'string') {
+    releaseClaim(askId);
     return 'error';
   }
+
+  const clip = captureLastClip({
+    clipId: payload.clipId,
+    text: payload.text,
+    subject: payload.subject,
+    audio: base64ToArrayBuffer(payload.audioBase64),
+    durationMs: payload.durationMs,
+  });
+  clipByAsk.set(askId, clip.clipId);
+  if (closedAsks.has(askId)) {
+    retireClip(askId, clip.clipId);
+    return 'cancelled';
+  }
+
+  if (!getSoundPreferenceState().enabled) {
+    reportClipUnheard(clip.clipId, 'muted');
+    return 'muted';
+  }
+  if (getDndState().enabled) {
+    reportClipUnheard(clip.clipId, 'dnd');
+    return 'dnd';
+  }
+  if (!pageMayStartAudio()) {
+    reportClipUnheard(clip.clipId, 'audio_suspended');
+    return 'blocked';
+  }
+  return { clipId: clip.clipId };
+}
+
+/** Play a fetched clip once Lucy is silent, unless its question closed in the meantime. */
+async function playClip(askId: string, clipId: string, options: AnnounceAskOptions): Promise<AskAnnouncementResult> {
+  const wait = options.sleep ?? sleep;
+  const cancelled = (): AskAnnouncementResult => {
+    retireClip(askId, clipId);
+    return 'cancelled';
+  };
+  // She may be talking already (a summary, a hands-free answer, an earlier question): say it when she has finished.
+  const busyWaitMs = options.busyWaitMs ?? BUSY_WAIT_MS;
+  if (closedAsks.has(askId)) return cancelled();
+  if (!(await waitForSilence(busyWaitMs))) return 'blocked';
+  if (closedAsks.has(askId)) return cancelled();
+  let result: ReplayResult = await replayClip(clipId, 'ask');
+  if (result === 'busy' || result === 'cancelled') {
+    // A replay or a speaker button got in first: one more try once that one has had time to start and finish.
+    await wait(RETRY_PAUSE_MS);
+    const silent = await waitForSilence(busyWaitMs);
+    if (closedAsks.has(askId)) return cancelled();
+    if (!silent) return 'blocked';
+    result = await replayClip(clipId, 'ask');
+  }
+  // It may have closed while the audio was being prepared: do not read out an answered question.
+  if (result === 'started' && closedAsks.has(askId)) return cancelled();
+  if (result === 'started') return 'started';
+  if (result === 'muted') return 'muted';
+  if (result === 'blocked' || result === 'busy' || result === 'cancelled') return 'blocked';
+  return 'error';
 }
 
 /**
@@ -268,5 +296,5 @@ export function stopAskAnnouncement(askId: string): void {
 export function __resetAskAnnouncementForTests(): void {
   clipByAsk.clear();
   closedAsks.clear();
-  announcements = Promise.resolve();
+  playLine = Promise.resolve();
 }

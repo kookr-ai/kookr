@@ -222,6 +222,18 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     expect(document.activeElement).toBe(document.body);
   });
 
+  test('focus the operator let go of is not put back on a card when that same card closes', () => {
+    render();
+    push([ask()]);
+    const input = q<HTMLInputElement>('avatar-ask-input')!;
+    act(() => { input.focus(); });
+    // They click a blank part of the page: focus is on nothing, by their choice.
+    act(() => { input.blur(); });
+    // The question is then answered on Telegram, which removes the text box they had been in.
+    push([answered('telegram')]);
+    expect(document.activeElement).toBe(document.body);
+  });
+
   test('says so on the card when the answer could not be typed into the task', () => {
     render();
     push([answered('dashboard', { taskDelivery: 'failed' })]);

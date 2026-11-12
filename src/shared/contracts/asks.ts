@@ -154,7 +154,7 @@ export interface OperatorAskView {
 
 /** How long a resolved ask stays in the dashboard list, so "answered on Telegram" can be seen. */
 export const OPERATOR_ASK_RESOLVED_VISIBLE_MS = 10 * 60 * 1000;
-/** Most asks sent to the dashboard at once (newest first). Pending asks are never cut; closed ones fill the rest. */
+/** Most closed asks sent to the dashboard at once (the most recently closed). Pending asks are all sent. */
 export const OPERATOR_ASK_MAX_LISTED = 8;
 
 /**

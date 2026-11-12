@@ -44,7 +44,7 @@ function chosenText(ask: OperatorAskView): string {
   return ask.answer.kind === 'option' ? ask.answer.label : ask.answer.text;
 }
 
-/** Shown, and announced, when the answer was recorded but Kookr could not type it into the task's session. */
+/** Shown on the closed card when the answer was recorded but Kookr could not type it into the task's session. */
 export const UNDELIVERED_TEXT = 'Kookr could not type your answer into the task. It is recorded, and the task can still read it.';
 
 /** A question shortened for a button's accessible name; the full text is in the card. */

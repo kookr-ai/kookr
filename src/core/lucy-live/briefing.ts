@@ -103,7 +103,8 @@ function buildAskBriefingLines(asks: readonly OperatorAskView[], nowMs: number):
   if (pending.length === 0) {
     lines.push('Questions from tasks waiting for the operator: none.');
   } else {
-    lines.push('Questions from tasks waiting for the operator (answered with the buttons in your panel or on Telegram, not by voice):');
+    // The count is in the first line, which the cap below never drops, so she knows how many wait even when not all fit.
+    lines.push(`Questions from tasks waiting for the operator: ${pending.length} (answered with the buttons in your panel or on Telegram, not by voice):`);
     for (const ask of pending.slice(0, MAX_LISTED_ASKS)) {
       lines.push(`- ${askWho(ask)} asked ${minutesAgo(ask.createdAt, nowMs)}: ${oneLine(ask.question, MAX_BRIEFING_QUESTION_CHARS)} Choices: ${ask.options.map((o) => oneLine(o, 60)).join('; ')}.`);
     }

@@ -32,7 +32,11 @@ class FakeAudioContext {
     FakeAudioContext.instances.push(this);
   }
   createAnalyser = vi.fn(() => ({ fftSize: 0, smoothingTimeConstant: 0 }) as unknown as AnalyserNode);
-  decodeAudioData = vi.fn(async () => ({ duration: 2 }) as AudioBuffer);
+  static decodeGate: Promise<void> | null = null;
+  decodeAudioData = vi.fn(async () => {
+    if (FakeAudioContext.decodeGate) await FakeAudioContext.decodeGate;
+    return { duration: 2 } as AudioBuffer;
+  });
   static resumeNeverSettles = false;
   // The browser's autoplay policy: without a click, resume() leaves the context suspended,
   // and in real Chrome its promise may never settle at all.
@@ -67,6 +71,7 @@ describe('announceAsk', () => {
     FakeAudioContext.instances = [];
     FakeAudioContext.initialState = 'running';
     FakeAudioContext.resumeNeverSettles = false;
+    FakeAudioContext.decodeGate = null;
     vi.stubGlobal('AudioContext', FakeAudioContext);
     localStorage.clear();
     __resetSoundPreferenceForTests();
@@ -91,7 +96,7 @@ describe('announceAsk', () => {
   test('fetches the spoken question, plays it and lists it as a message', async () => {
     const fetcher = fetcherOk();
     expect(await announceAsk(ASK, { fetcher })).toBe('started');
-    expect(fetcher).toHaveBeenCalledWith(`/api/asks/${ASK}/speak`, { method: 'POST' });
+    expect(fetcher).toHaveBeenCalledWith(`/api/asks/${ASK}/speak`, expect.objectContaining({ method: 'POST' }));
     expect(FakeAudioContext.instances[0].sources[0].start).toHaveBeenCalledOnce();
     expect(replayingClipId()).toBe('clip-ask-1');
     expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1', subject: 'Fix login', heard: false });
@@ -205,6 +210,33 @@ describe('announceAsk', () => {
     expect(getClipHistory()).toHaveLength(0);
   });
 
+  test('a question that closes while its audio is being prepared is not read out', async () => {
+    let finishDecode: () => void = () => undefined;
+    FakeAudioContext.decodeGate = new Promise<void>((resolve) => { finishDecode = resolve; });
+    const pending = announceAsk(ASK, { fetcher: fetcherOk() });
+    await vi.waitFor(() => expect(FakeAudioContext.instances).toHaveLength(1));
+    stopAskAnnouncement(ASK);
+    finishDecode();
+    expect(await pending).toBe('cancelled');
+    expect(replayingClipId()).toBeNull();
+    expect(getClipHistory()).toHaveLength(0);
+  });
+
+  test('a second question is claimed at once, while the first is still being fetched', async () => {
+    let answerFirst: (r: Response) => void = () => undefined;
+    const fetcher = vi.fn((url: RequestInfo | URL) => (String(url).includes(ASK)
+      ? new Promise<Response>((resolve) => { answerFirst = resolve; })
+      : Promise.resolve(speakResponse({ clipId: 'clip-ask-2' })))) as unknown as typeof fetch;
+    const first = announceAsk(ASK, { fetcher });
+    const second = announceAsk('bbbbbbbbbbbb', { fetcher });
+    // Both are claimed for this tab before either clip has arrived.
+    await vi.waitFor(() => expect(JSON.parse(localStorage.getItem(SPOKEN_ASKS_STORAGE_KEY) ?? '[]')).toEqual([ASK, 'bbbbbbbbbbbb']));
+    expect(await second).toBe('started');
+    answerFirst(speakResponse());
+    FakeAudioContext.instances[0].sources[0].onended?.();
+    expect(await first).toBe('started');
+  });
+
   test('closing a question leaves another clip that is playing alone', async () => {
     // Question A gets a clip but is not played (sound off); then the operator replays another message.
     setSoundEnabled(false);
@@ -239,12 +271,14 @@ describe('announceAsk', () => {
     const fetcher = vi.fn(async (url: RequestInfo | URL) => speakResponse({ clipId: String(url).includes(ASK) ? 'clip-ask-1' : 'clip-ask-2' })) as unknown as typeof fetch;
     const first = announceAsk(ASK, { fetcher });
     const second = announceAsk('bbbbbbbbbbbb', { fetcher });
-    await vi.waitFor(() => expect(getClipHistory()).toHaveLength(1));
+    // Both clips are fetched at once; neither plays while she is talking.
+    await vi.waitFor(() => expect(getClipHistory()).toHaveLength(2));
+    expect(FakeAudioContext.instances).toHaveLength(0);
     emitSpeechIdle(speaker);
     expect(await first).toBe('started');
     expect(replayingClipId()).toBe('clip-ask-1');
     // The second one waits while the first is being read, then plays.
-    await vi.waitFor(() => expect(getClipHistory()).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(FakeAudioContext.instances).toHaveLength(1);
     FakeAudioContext.instances[0].sources[0].onended?.();
     expect(await second).toBe('started');

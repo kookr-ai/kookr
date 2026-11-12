@@ -594,7 +594,7 @@ describe('handleWsConnection — kookr ask in Lucy\'s panel (operatorAsks / answ
     await dispatch(ws, { type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 1 });
 
     expect(sentOf(ws)).toEqual([
-      { type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: false, reason: 'unavailable' },
+      { type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: false, reason: 'failed' },
       { type: 'operatorAsks', asks: [pendingAsk] },
     ]);
     warn.mockRestore();

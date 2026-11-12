@@ -574,7 +574,8 @@ export type ServerMessage =
       type: 'operatorAskResult';
       askId: string;
       ok: boolean;
-      reason?: AnswerRejection | 'unavailable';
+      /** `unavailable`: asks are not configured on this server. `failed`: recording the answer threw; it may be tried again. */
+      reason?: AnswerRejection | 'unavailable' | 'failed';
     };
 
 export type ClientMessage =

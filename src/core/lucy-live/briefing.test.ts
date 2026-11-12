@@ -84,6 +84,7 @@ describe('buildLucyLiveBriefing: questions from tasks (kookr ask)', () => {
     const text = buildLucyLiveBriefing(tasks, NOW, [ask()]);
     expect(text).toContain('- The task "Fix login" asked 3 minutes ago: Ship the migration now? Choices: Yes, ship it; No, wait.');
     expect(text).toContain('not by voice');
+    expect(text).toContain('Questions from tasks waiting for the operator: 1 (');
     expect(text.indexOf('Questions from tasks waiting')).toBeLessThan(text.indexOf('Task counts'));
   });
 
@@ -112,6 +113,8 @@ describe('buildLucyLiveBriefing: questions from tasks (kookr ask)', () => {
     const pending = Array.from({ length: 4 }, (_, i) => ask({ id: `p${i}`, question: long, options: ['Option number one here', 'Option number two here', 'Option number three', 'Option number four'] }));
     const closed = Array.from({ length: 4 }, (_, i) => ask({ id: `c${i}`, question: long, state: 'cancelled', resolution: 'task_gone', resolvedAt: NOW - 60_000 }));
     const text = buildLucyLiveBriefing(tasks, NOW, [...pending, ...closed]);
+    // Not every long question fits, but she still knows how many are waiting.
+    expect(text).toContain('Questions from tasks waiting for the operator: 4 (');
     expect(text).toContain('Task counts: 1 in progress.');
     expect(text).toContain('"Fix login": in progress');
     expect(buildLucyLiveBriefing(tasks, NOW, [closed[0]])).toContain('Outcome: the task ended before an answer was given 1 minute ago.');

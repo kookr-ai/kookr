@@ -69,7 +69,7 @@ const announceListeners = new Set<(ask: OperatorAskView) => void>();
 const closedListeners = new Set<(ask: OperatorAskView) => void>();
 
 /** Words for a refusal the server reported; the fresh list that follows shows the real state of the card. */
-const REFUSAL_TEXT: Record<AnswerRejection | 'unavailable' | 'offline' | 'no_reply', string> = {
+const REFUSAL_TEXT: Record<AnswerRejection | 'unavailable' | 'offline' | 'no_reply' | 'failed', string> = {
   not_found: 'This question no longer exists.',
   forged: 'The answer was refused.',
   already_answered: 'This question was already answered.',
@@ -82,6 +82,7 @@ const REFUSAL_TEXT: Record<AnswerRejection | 'unavailable' | 'offline' | 'no_rep
   unavailable: 'Questions are not available on this server.',
   offline: 'Not connected to Kookr. Try again in a moment.',
   no_reply: 'Kookr did not confirm your answer. Try again.',
+  failed: 'Kookr could not record your answer. Try again.',
 };
 
 function publish(): void {
