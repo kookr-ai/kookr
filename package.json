@@ -13,6 +13,7 @@
   "files": [
     "bin",
     "dist",
+    "stt/models/silero_vad_v5.onnx",
     "stt/src/transcription-corpus.cjs",
     "stt/src/corpus-api.cjs",
     "stt/src/transcription-corpus.d.cts",
@@ -136,6 +137,7 @@
     "groq-sdk": "^1.6.0",
     "hono": "4.13.13",
     "node-pty": "^1.1.0",
+    "onnxruntime-web": "1.24.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "three": "0.170.0",

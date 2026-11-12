@@ -418,8 +418,34 @@ things she said.
 - **Choose the voice.** Settings → General → **Voice** (server setting `speakVoice`, next to
   `speakVerbosity`) picks Heart, Sky, Sarah or Matilda, or **Install default** to follow `TTS_VOICE`.
   It applies to the next spoken clip with no restart. Heart, Sky and Sarah need a GPU to respond quickly.
-- **What it does not do.** It never speaks on its own; it only accompanies clips you asked for. Its
-  mouth follows the loudness of the clip, not the individual sounds, so the lip-sync is approximate.
+- **What it does not do.** It never speaks on its own; it only accompanies clips you asked for or
+  answers you while hands-free is on (below). Its mouth follows the loudness of the clip, not the
+  individual sounds, so the lip-sync is approximate.
+
+#### Talk to Lucy hands-free (optional, off by default)
+
+The **Talk** button in the panel's title bar starts a spoken conversation: you speak, she answers out
+loud about a second after you stop, and you can talk over her to stop her. She answers from
+the current task status (what is running, stopped or recently finished) and says so when she does not
+know something. She cannot act on tasks yet.
+
+- **The microphone is on only while Talk is on**, and Talk is off again after every page reload.
+  Audio goes to your own Kookr server and to a speech recogniser running on your machine; only the
+  text of what you said goes to the helper model, with the task status, to write her answer.
+- **Interrupting.** Start speaking while she is busy (preparing or speaking an answer) and her volume drops at once.
+  The Kookr server then checks the sound with Silero, a small speech detector, which takes a fraction
+  of a second. If it hears a voice, she stops and listens to you; if it was a cough, a click or a
+  door, her volume comes back and she carries on. If the check is not available (the model failed to
+  load), she stops as soon as the browser hears a loud enough sound, as before. Headphones work best;
+  on speakers her own voice may be picked up.
+- **What you see.** Her state (listening, thinking, speaking), what you said as a draft that improves
+  while you talk, then the final text, and her answer as she speaks it.
+- **Language.** You can speak English or French (it follows the dictation language). She always answers
+  in English, because her voices are English voices.
+- **What it needs.** The speech service (`KOOKR_TTS`), a helper model on Baseten
+  (`KOOKR_BASETEN_API_KEY`), and Lucy's ears: a local speech recogniser (LFM3-Omni-2B in llama.cpp, about
+  3.2 GB of GPU memory, NVIDIA GPU) started from `lucy-ears/docker-compose.yml` and pointed to by
+  `KOOKR_LUCY_EARS_URL`. Setup and measured timings: [Lucy live](reference/lucy-live.md).
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
   `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
 
@@ -435,7 +461,11 @@ line; it rotates at 10 MB and keeps three older files).
   (click or replay), how it ended (finished, stopped by you, replaced) and how much of it
   played, clips that were never heard (muted, do-not-disturb, audio blocked), and avatar-panel
   actions (enable, disable, minimise, restore, move, replay). Each clip has an id that links the two
-  sides. No audio is stored. Task names and summary text can contain project details, so treat the
+  sides. If you use hands-free talk, every turn is also recorded (`kind: "live_turn"`): what you said,
+  as text (secret-looking tokens such as API keys are replaced first), her answer, how the turn ended
+  (answered, interrupted, nothing heard, or failed, with the reason), and timings such as how long
+  recognition and the first sentence took. Your voice is never stored: the audio is sent to the
+  recogniser and discarded. No audio is stored. Task names and summary text can contain project details, so treat the
   file like your other local logs.
 - **It stays on this machine.** Nothing is sent anywhere; Kookr only writes the file.
 - **Turn it off.** Settings → Notifications & Alerts → **Keep a local log of Lucy's interactions**

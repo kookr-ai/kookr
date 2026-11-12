@@ -1,0 +1,65 @@
+# Lucy's ears: a local speech recogniser for the hands-free conversation ("Lucy live").
+#
+# It runs the LFM3-Omni-2B model (Liquid AI) in llama.cpp's server on an NVIDIA GPU and
+# is used ONLY to turn the operator's speech into text: Kookr opens a short realtime
+# session per turn on `/v1/realtime`, streams the audio while the operator talks, and
+# reads the transcript about 0.2 s after they stop. Answers come from Kookr's helper
+# model and are spoken by Kookr's own speech service, so this model never answers.
+#
+# Start:   docker compose -f lucy-ears/docker-compose.yml up -d
+# Then set KOOKR_LUCY_EARS_URL=ws://127.0.0.1:8095 in Kookr's .env and restart Kookr.
+#
+# The first start downloads about 2.4 GB of weights (model + audio projector) from
+# Hugging Face into the `lucy-ears-models` volume; later starts reuse them. It uses about
+# 3.2 GB of GPU memory.
+#
+# Licence: the model weights are under the LFM Open License v1.0 (Apache-2.0-style, with a
+# commercial-use limit for organisations above USD 10M annual revenue). They are downloaded
+# at runtime and are not part of Kookr. See https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF.
+#
+# Security: llama.cpp's server has no API key here and allows any browser origin, so it is
+# published on 127.0.0.1 only. Do not expose this port on a network.
+
+services:
+  lucy-ears:
+    # llama.cpp CUDA 12 server, build 12282 (commit aa75ff323), pinned by digest because the
+    # `server-cuda12` tag moves. `/v1/realtime` conversation sessions need build b11960 or newer.
+    image: ghcr.io/ggml-org/llama.cpp@sha256:17934f68b6efc68671800735f25e209b489f47b610cfbb5c0a5c30965b54023c
+    container_name: kookr-lucy-ears
+    command:
+      - -hf
+      - LiquidAI/LFM3-Omni-2B-GGUF:Q8_0
+      - --reasoning
+      - "off"
+      - --temp
+      - "0"
+      - -ngl
+      - "99"
+      - -c
+      - "8192"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    ports:
+      - "127.0.0.1:${KOOKR_LUCY_EARS_PORT:-8095}:8080"
+    volumes:
+      # llama.cpp's -hf download lands in the Hugging Face cache under /root/.cache.
+      - lucy-ears-models:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 300s
+    restart: unless-stopped
+
+volumes:
+  lucy-ears-models:

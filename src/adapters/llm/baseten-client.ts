@@ -11,8 +11,8 @@
 import { OpenAiCompatibleLlmClient } from './openai-compatible-client.js';
 import type { LlmClient, LlmCompletionDetail, LlmCompletionRequest } from '../../core/llm-types.js';
 
-const DEFAULT_MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash-Fast';
-const DEFAULT_BASE_URL = 'https://inference.baseten.co/v1';
+export const DEFAULT_MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash-Fast';
+export const DEFAULT_BASE_URL = 'https://inference.baseten.co/v1';
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 /**

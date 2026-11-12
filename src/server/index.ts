@@ -282,6 +282,10 @@ import { PostResumeRefillService } from './post-resume-refill-service.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
+import { createLucyLive } from './lucy-live/create-lucy-live.js';
+import { loadSileroVad } from '../adapters/lucy-live/silero-vad.js';
+import { lucyLiveStatusOf, resolveLucyLiveConfig } from './lucy-live/config.js';
+import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import type { SystemdNotifier } from './systemd-notify.js';
 import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
@@ -2870,9 +2874,27 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isEnabled: () => currentSettings.lucyInteractionLog,
   });
 
+  // Lucy live (issue #3659): a spoken conversation. Needs the speech recogniser, a
+  // Baseten key and the speech service; otherwise the status route says which is missing.
+  const lucyLiveConfig = resolveLucyLiveConfig(process.env, ttsUrl);
+  // Silero confirms interruptions; without it Lucy live works as before (one warning is logged).
+  const lucyLiveVad = lucyLiveConfig.ok ? await loadSileroVad() : null;
+  const lucyLiveStatus = lucyLiveStatusOf(lucyLiveConfig, lucyLiveVad ? 'silero' : 'off');
+  const lucyLive = lucyLiveConfig.ok
+    ? createLucyLive({
+        config: lucyLiveConfig.config,
+        vad: lucyLiveVad,
+        getTasks: () => taskStore.viewTasks(),
+        getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
+        log: lucyInteractionLog,
+      })
+    : undefined;
+  if (!lucyLiveConfig.ok) console.log(`[lucy-live] disabled: ${lucyLiveConfig.reason}`);
+
   const app = createRoutes({
     lucyInteractionLog,
     lucyInteractionLogPath,
+    lucyLiveStatus,
     supervisionService,
     delegationService: delegationRuntime.service,
     ...(delegationRuntime.disabled ? { delegationDisabled: delegationRuntime.disabled } : {}),
@@ -4082,6 +4104,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     apiAuth,
     onLocalTerminalActivity: (sessionId) => remoteRelayRuntime?.recordLocalTerminalActivity(sessionId),
     onDashboardConnection: (ws) => handleWsConnection(ws, connectionRegistry, wsConnectionDeps),
+    lucyLive,
     // Register terminal sockets with the connection registry so the revocation
     // sweep owns the terminal pool too (#805/#807). `resolveTerminalActor` is
     // deliberately left unset: viewer-cookie resolution onto terminal streams is

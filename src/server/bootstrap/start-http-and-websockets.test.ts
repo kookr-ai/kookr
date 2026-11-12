@@ -9,6 +9,7 @@ import { WebSocket } from 'ws';
 import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
 import { TERMINAL_V2_PROTOCOL } from '../../shared/terminal-protocol.js';
 import type { Actor } from '../auth.js';
+import { bindLucyLiveSocket, MAX_LUCY_LIVE_FRAME_BYTES } from '../lucy-live/ws-handler.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 import type { TerminalInputWriterPort } from '../../core/ports/terminal-input-writer-port.js';
 import {
@@ -1054,5 +1055,118 @@ describe('dashboard auto-open on listen', () => {
     });
     expect(openedRuntime.httpServer.listening).toBe(true);
     expect(warnSpy).toHaveBeenCalled();
+  });
+});
+
+describe('Lucy live upgrade routing', () => {
+  let runtime: HttpAndWebSockets | undefined;
+  afterEach(async () => {
+    await runtime?.close({ gracefulShutdownMs: 10 });
+    runtime = undefined;
+  });
+
+  async function start(extra: Partial<Parameters<typeof startHttpAndWebSockets>[0]>): Promise<number> {
+    runtime = await startHttpAndWebSockets({
+      app: new Hono(),
+      port: 0,
+      host: '127.0.0.1',
+      tasksFile: '/tmp/tasks.json',
+      hooksDir: '/tmp/hooks',
+      terminalBackend: new FakeTerminalBackend(),
+      terminalDeps: { monitor: {} as never, abortPendingSuggestion: () => {}, broadcastToAll: () => {}, serverCwd: '/repo' },
+      onDashboardConnection: (ws) => ws.close(),
+      ...extra,
+    });
+    return (runtime.httpServer.address() as { port: number }).port;
+  }
+
+  function open(port: number, headers: Record<string, string> = {}): Promise<'open' | number | 'closed'> {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/lucy-live`, { headers });
+      ws.on('open', () => { ws.close(); resolve('open'); });
+      ws.on('unexpected-response', (_req, res) => { res.resume(); resolve(res.statusCode ?? 0); });
+      ws.on('error', () => resolve('closed'));
+    });
+  }
+
+  test('an upgrade reaches the Lucy live handler', async () => {
+    const handled: string[] = [];
+    const port = await start({ lucyLive: { handleConnection: (ws, req) => { handled.push(req.url ?? ''); ws.close(); } } });
+    expect(await open(port)).toBe('open');
+    expect(handled).toEqual(['/ws/lucy-live']);
+  });
+
+  test('without the dependency the socket is destroyed like an unknown path', async () => {
+    const port = await start({});
+    expect(await open(port)).toBe('closed');
+  });
+
+  test('the same authentication gate applies before the handler', async () => {
+    const handled: number[] = [];
+    const port = await start({
+      apiAuth: { required: true, token: 'secret' },
+      lucyLive: { handleConnection: (ws) => { handled.push(1); ws.close(); } },
+    });
+    expect(await open(port)).toBe(401);
+    expect(handled).toEqual([]);
+    expect(await open(port, { authorization: 'Bearer secret' })).toBe('open');
+    expect(handled).toEqual([1]);
+  });
+
+  test('only the owner may open the socket: a viewer is refused with 403 before the handshake', async () => {
+    const handled: number[] = [];
+    const port = await start({
+      resolveTerminalActor: () => ({ kind: 'viewer', grantId: 'g', scope: { kind: 'all' } }),
+      lucyLive: { handleConnection: (ws) => { handled.push(1); ws.close(); } },
+    });
+    expect(await open(port)).toBe(403);
+    expect(handled).toEqual([]);
+  });
+
+  test('a throwing actor resolver fails closed', async () => {
+    const handled: number[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const port = await start({
+      resolveTerminalActor: () => { throw new Error('boom'); },
+      lucyLive: { handleConnection: (ws) => { handled.push(1); ws.close(); } },
+    });
+    expect(await open(port)).toBe(403);
+    expect(handled).toEqual([]);
+    warn.mockRestore();
+  });
+
+  test('an explicit owner actor is admitted', async () => {
+    const handled: number[] = [];
+    const port = await start({
+      resolveTerminalActor: () => ({ kind: 'owner' }),
+      lucyLive: { handleConnection: (ws) => { handled.push(1); ws.close(); } },
+    });
+    expect(await open(port)).toBe('open');
+    expect(handled).toEqual([1]);
+  });
+
+  test('an oversize binary frame gets bad_message from the real handler and the connection stays open', async () => {
+    const port = await start({
+      lucyLive: {
+        handleConnection: (ws) => bindLucyLiveSocket(ws, () => ({
+          acceptingAudio: true, handleMessage: () => {}, handleAudio: () => {}, close: () => {},
+        })),
+      },
+    });
+    const result = await new Promise<{ messages: unknown[]; closeCode: number | null }>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/lucy-live`);
+      const messages: unknown[] = [];
+      let closeCode: number | null = null;
+      ws.on('close', (code) => { closeCode = code; });
+      ws.on('error', reject);
+      ws.on('open', () => ws.send(Buffer.alloc(MAX_LUCY_LIVE_FRAME_BYTES + 1024), { binary: true }));
+      ws.on('message', (data) => {
+        messages.push(JSON.parse(data.toString()));
+        // Still usable afterwards: a normal message is not answered with an error.
+        setTimeout(() => { const code = closeCode; ws.close(); resolve({ messages, closeCode: code }); }, 100);
+      });
+    });
+    expect(result.messages).toEqual([{ type: 'error', code: 'bad_message', message: expect.stringContaining('too large') }]);
+    expect(result.closeCode).toBeNull();
   });
 });

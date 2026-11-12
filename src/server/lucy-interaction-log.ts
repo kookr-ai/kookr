@@ -4,10 +4,12 @@
  * (normally `~/.kookr/`), stays on this machine, and exists so the wording,
  * length and proactivity of her summaries can be analysed after the fact.
  *
- * Two kinds of line, both carrying `v: 1` and an ISO `ts`:
+ * Three kinds of line, all carrying `v: 1` and an ISO `ts`:
  *  - `said`: the server produced a clip (task summary or agent speak). Carries
  *    the final text, the pre-"speakable" wording when it differs, and timings.
  *    Audio bytes are never recorded.
+ *  - `live_turn`: one finished Lucy live conversation turn (issue #3659): the
+ *    transcript, the spoken answer, how it ended and the latencies. No audio.
  *  - `ui`: a `lucy_*` telemetry event the browser sent over the websocket.
  *    The browser is not trusted, so only the documented fields survive
  *    (see {@link sanitizeLucyUiEvent}): enums are validated, strings clamped,
@@ -48,6 +50,28 @@ export const MAX_LUCY_STRING_CHARS = 64;
 /** Client numbers are clamped to 0..one day in ms. */
 export const MAX_LUCY_DURATION_MS = 86_400_000;
 
+/**
+ * One finished Lucy live turn (a spoken conversation exchange). Timings are measured
+ * from the moment the operator stopped speaking. Audio is never recorded.
+ */
+export interface LucyLiveTurnRecordInput {
+  turnId: string;
+  language: string;
+  end: string;
+  reason?: string;
+  /** What the recogniser heard (secrets redacted by the caller). */
+  transcript?: string;
+  /** What Lucy said, as spoken. */
+  answer?: string;
+  voice?: string;
+  asrMs?: number;
+  firstSentenceMs?: number;
+  firstAudioMs?: number;
+  sentences: number;
+  transcriptWords: number;
+  answerWords: number;
+}
+
 export type LucySaidSource = 'task_summary' | 'agent_speak';
 
 export interface LucySaidRecordInput {
@@ -74,6 +98,8 @@ export interface LucySaidRecordInput {
 export interface LucyInteractionLog {
   /** Record a clip the server just delivered. Never throws. */
   recordSaid(input: LucySaidRecordInput): void;
+  /** Record a finished Lucy live turn. Never throws. */
+  recordLiveTurn(input: LucyLiveTurnRecordInput): void;
   /** Record a client `lucy_*` telemetry event as received. Never throws. */
   recordUi(sessionId: string, event: Record<string, unknown>): void;
   /** Await queued writes (tests, orderly shutdown). Never rejects. */
@@ -103,6 +129,7 @@ export interface LucyInteractionLogOptions {
 /** Log that records nothing. Used when the feature is unwired (tests, partial harnesses). */
 export const DISABLED_LUCY_INTERACTION_LOG: LucyInteractionLog = {
   recordSaid: () => {},
+  recordLiveTurn: () => {},
   recordUi: () => {},
   flush: async () => {},
 };
@@ -179,6 +206,9 @@ export function createLucyInteractionLog(options: LucyInteractionLogOptions = {}
     recordSaid(input) {
       enqueue({ kind: 'said', ...pickSaidFields(input) }, MAX_PENDING_LUCY_LINES);
     },
+    recordLiveTurn(input) {
+      enqueue({ kind: 'live_turn', ...pickFields(input, LIVE_TURN_FIELDS) }, MAX_PENDING_LUCY_LINES);
+    },
     recordUi(sessionId, event) {
       const clean = sanitizeLucyUiEvent(event);
       if (!clean) return;
@@ -195,6 +225,19 @@ const SAID_FIELDS = [
   'usedFallback', 'cached', 'verbosity', 'voice', 'findingType',
   'llmMs', 'ttsMs', 'durationMs', 'words',
 ] as const;
+
+const LIVE_TURN_FIELDS = [
+  'turnId', 'language', 'end', 'reason', 'transcript', 'answer', 'voice',
+  'asrMs', 'firstSentenceMs', 'firstAudioMs', 'sentences', 'transcriptWords', 'answerWords',
+] as const;
+
+function pickFields<T extends object, K extends keyof T>(input: T, keys: readonly K[]): Partial<T> {
+  const out: Partial<T> = {};
+  for (const key of keys) {
+    if (input[key] !== undefined) out[key] = input[key];
+  }
+  return out;
+}
 
 /**
  * Copy only the documented fields. An allowlist (not a spread) so a caller that
@@ -213,6 +256,7 @@ const PANEL_STATES = ['open', 'minimized', 'off'] as const;
 const ENDED_BY = ['finished', 'user_stop', 'superseded'] as const;
 const UNHEARD_REASONS = ['muted', 'dnd', 'audio_suspended', 'error'] as const;
 const PANEL_ACTIONS = ['enable', 'disable', 'minimize', 'restore', 'move', 'replay'] as const;
+const LIVE_TIMING_KINDS = ['end_to_first_audio', 'barge_in_duck', 'barge_in_stop', 'barge_in_rejected'] as const;
 const PLATFORMS = ['linux', 'darwin', 'wsl2', 'unknown'] as const;
 
 /** Documented enum values per field; mirrors the comment in shared/contracts/telemetry.ts. */
@@ -222,6 +266,7 @@ export const LUCY_EVENT_ENUMS = {
   endedBy: ENDED_BY,
   reason: UNHEARD_REASONS,
   action: PANEL_ACTIONS,
+  kind: LIVE_TIMING_KINDS,
 } as const;
 
 /** Bucket for a client enum value outside the documented set. */
@@ -233,6 +278,7 @@ const EVENT_FIELDS: Record<string, readonly string[]> = {
   lucy_clip_ended: ['clipId', 'endedBy', 'playedMs', 'totalMs'],
   lucy_clip_unheard: ['clipId', 'reason'],
   lucy_panel_action: ['action', 'clipId'],
+  lucy_live_timing: ['kind', 'ms'],
 };
 
 function clampString(value: unknown): string | undefined {
@@ -278,6 +324,8 @@ export function sanitizeLucyUiEvent(event: unknown): Record<string, unknown> | u
       case 'endedBy': set(field, enumOrOther(value, ENDED_BY)); break;
       case 'reason': set(field, enumOrOther(value, UNHEARD_REASONS)); break;
       case 'action': set(field, enumOrOther(value, PANEL_ACTIONS)); break;
+      case 'kind': set(field, enumOrOther(value, LIVE_TIMING_KINDS)); break;
+      case 'ms': set(field, clampMs(value)); break;
       case 'tabVisible': set(field, typeof value === 'boolean' ? value : undefined); break;
       case 'playedMs':
       case 'totalMs': set(field, clampMs(value)); break;

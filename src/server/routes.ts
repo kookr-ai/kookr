@@ -43,6 +43,7 @@ import { registerCollaborationPairingRoutes } from './routes/collaboration-pairi
 import { registerViewerShareRoutes, isViewerShareRoute } from './routes/viewer-share-routes.js';
 import { registerDictationCorpusRoutes } from './routes/dictation-corpus-routes.js';
 import { registerSpeechRoutes } from './routes/speech-routes.js';
+import { registerLucyLiveRoutes } from './routes/lucy-live-routes.js';
 import { registerPipelineStarvationRoutes } from './routes/pipeline-starvation-routes.js';
 import { PipelineStarvationService } from './pipeline-starvation-service.js';
 import { launchTask } from './launch-service.js';
@@ -251,6 +252,7 @@ export function createRoutes(deps: RouteDeps): Hono {
     lucyLog: deps.lucyInteractionLog,
     lucyLogPath: deps.lucyInteractionLogPath,
   });
+  registerLucyLiveRoutes(app, { lucyLiveStatus: deps.lucyLiveStatus });
 
   // Dashboard response headers:
   // - security headers apply to HTML and static assets

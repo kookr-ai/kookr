@@ -25,6 +25,8 @@ import {
 } from '../auth.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
+import { LUCY_LIVE_WS_PATH } from '../../shared/contracts/lucy-live.js';
+import { MAX_LUCY_LIVE_FRAME_BYTES } from '../lucy-live/ws-handler.js';
 import { maybeOpenDashboardBrowser } from './open-dashboard-browser.js';
 
 type WebSocketServerOptions = ConstructorParameters<typeof WebSocketServer>[0];
@@ -78,6 +80,12 @@ export interface HttpAndWebSocketsDeps {
   onLocalTerminalActivity?: (sessionId: string) => void;
   onDashboardConnection: (ws: WebSocket) => void;
   /**
+   * Lucy live voice conversation (`/ws/lucy-live`). When absent the path is treated
+   * like any unknown one and the socket is destroyed. Upgrades reach it only after the
+   * same authentication gate as `/ws`.
+   */
+  lucyLive?: { handleConnection(ws: WebSocket, req: IncomingMessage): void };
+  /**
    * Registry that owns the terminal socket pool (#805). When present, every
    * terminal socket is registered here on open (`actor` + `sessionName`) and
    * unregistered on close, so the revocation sweep can drop or re-check viewer
@@ -124,6 +132,7 @@ export interface HttpAndWebSockets {
   httpServer: Server;
   wss: WebSocketServer;
   terminalWss: WebSocketServer;
+  lucyLiveWss: WebSocketServer;
   activeBridges: Map<WebSocket, FakeTerminalBridge | SessionBridge>;
   close(options?: HttpAndWebSocketsCloseOptions): Promise<void>;
 }
@@ -202,12 +211,13 @@ function closeHttpServer(httpServer: Server, gracefulShutdownMs: number): Promis
 }
 
 async function closeHttpAndWebSockets(
-  runtime: Pick<HttpAndWebSockets, 'httpServer' | 'wss' | 'terminalWss'>,
+  runtime: Pick<HttpAndWebSockets, 'httpServer' | 'wss' | 'terminalWss' | 'lucyLiveWss'>,
   options: HttpAndWebSocketsCloseOptions = {},
 ): Promise<void> {
   const gracefulShutdownMs = options.gracefulShutdownMs ?? DEFAULT_GRACEFUL_WEBSOCKET_SHUTDOWN_MS;
   await Promise.all([
     closeWebSocketServer(runtime.terminalWss, gracefulShutdownMs),
+    closeWebSocketServer(runtime.lucyLiveWss, gracefulShutdownMs),
     closeWebSocketServer(runtime.wss, gracefulShutdownMs),
   ]);
   await closeHttpServer(runtime.httpServer, gracefulShutdownMs);
@@ -220,6 +230,13 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     noServer: true,
     maxPayload: DASHBOARD_WEBSOCKET_MAX_PAYLOAD_BYTES,
     perMessageDeflate: WEBSOCKET_PER_MESSAGE_DEFLATE,
+  });
+  const lucyLiveWss = new WebSocketServer({
+    noServer: true,
+    // Above the handler's own limit, so an oversize frame reaches it and gets the documented
+    // `bad_message` reply; at exactly the limit `ws` would close the socket with 1009 first.
+    maxPayload: MAX_LUCY_LIVE_FRAME_BYTES * 2,
+    perMessageDeflate: false,
   });
   const terminalWss = new WebSocketServer({
     noServer: true,
@@ -250,6 +267,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     // browser-origin-crossing loopback upgrades before any handshake. The
     // dashboard WS carries the full live snapshot stream and terminal I/O, so
     // it must be gated alongside state-changing HTTP routes.
+    let authenticatedActor: Actor | null = null;
     if (deps.apiAuth) {
       if (!isLoopbackUpgradeOriginAllowed(deps.apiAuth, req)) {
         console.warn(JSON.stringify({
@@ -262,6 +280,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
         return;
       }
       const upgradeActor = resolveUpgradeIdentity(deps.apiAuth, req);
+      authenticatedActor = upgradeActor;
       if (!upgradeActor) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
@@ -282,6 +301,27 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     if (path === '/ws') {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit('connection', ws, req);
+      });
+    } else if (path === LUCY_LIVE_WS_PATH && deps.lucyLive) {
+      const lucyLive = deps.lucyLive;
+      // Owner only. The briefing Lucy answers from is built from every task (unscoped) and
+      // each turn spends model credit, so a scoped viewer must never reach it. Resolve the
+      // actor the way the terminal path does; any doubt or failure denies.
+      let allowed = false;
+      try {
+        const actor = deps.resolveTerminalActor?.(req) ?? { kind: 'owner' as const };
+        allowed = actor.kind === 'owner' && (authenticatedActor === null || authenticatedActor.kind === 'owner');
+      } catch (err) {
+        console.warn('[lucy-live] upgrade gate threw; denying', err);
+      }
+      if (!allowed) {
+        console.warn(JSON.stringify({ event: 'lucy_live_upgrade_denied', reason: 'not-owner' }));
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      lucyLiveWss.handleUpgrade(req, socket, head, (ws) => {
+        lucyLive.handleConnection(ws, req);
       });
     } else if (path.startsWith('/ws/terminal/')) {
       // #810 terminal scope gate. Resolve the actor + canonical (query-stripped)
@@ -511,7 +551,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   });
 
   let closePromise: Promise<void> | undefined;
-  const runtime = { httpServer, wss, terminalWss, activeBridges };
+  const runtime = { httpServer, wss, terminalWss, lucyLiveWss, activeBridges };
   return {
     ...runtime,
     close: (options) => {

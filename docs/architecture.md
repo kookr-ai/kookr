@@ -511,6 +511,7 @@ kookr/
 │   │   ├── oss-source-watcher.ts          # Watches OSS source files for refresh triggers
 │   │   ├── achievement-watcher.ts         # Detect achievement unlocks, persist
 │   │   ├── ledger-watcher.ts              # Watch OSS contribution ledger
+│   │   ├── lucy-live/                     # Hands-free conversation with Lucy: per-socket session state machine (turns, Silero-confirmed interruptions, sentence streaming), `/ws/lucy-live` handler, config and real-adapter wiring
 │   │   ├── resource-status-service.ts     # System resource sampling surface
 │   │   ├── system-resource-sampler.ts     # CPU/memory/disk sampling
 │   │   ├── resource-watchdog-service.ts   # Host-pressure actuator (issue #1724; opt-in)
@@ -583,6 +584,7 @@ kookr/
 │   │   ├── llm-client.ts                  # Provider-agnostic LLM interface (re-export shim)
 │   │   ├── llm-factory.ts                 # Fallback / audit / diagnostics policy for LLM clients
 │   │   ├── llm-types.ts                   # Provider DTOs
+│   │   ├── lucy-live/                     # Pure Lucy live logic: task-status briefing, persona prompt, incremental sentence splitter, silence-hallucination filter
 │   │   ├── circuit-breaker.ts             # Generic circuit-breaker primitive
 │   │   ├── circuit-breaker-llm-client.ts  # LLM client wrapped in a breaker
 │   │   # GitHub awareness (F7 / ADR-012)
@@ -663,6 +665,7 @@ kookr/
 │   │   │   ├── openai-compatible-client.ts #   Shared OpenAI-compatible base client
 │   │   │   ├── baseten-client.ts          #   Baseten implementation
 │   │   │   └── requesty-client.ts         #   Requesty gateway implementation
+│   │   ├── lucy-live/                     # Lucy live adapters: llama.cpp `/v1/realtime` speech-recogniser client (`ears-client.ts`), Silero voice activity model in Node (`silero-vad.ts`)
 │   │   ├── grok-build-instrumentation/    # Grok Build monitoring-hook instrumentation
 │   │   ├── github-fetcher.ts              # `gh` CLI wrapper (REST + GraphQL)
 │   │   ├── circuit-breaker-github-fetcher.ts    # Circuit-breaker wrapper
@@ -724,6 +727,7 @@ kookr/
 │       ├── api/                           # Typed data-access client (issue #1826) — the single fetch() seam for components and the app root
 │       ├── audio/                         # Browser sound preferences + alert log + speech-bus (playback events the avatar panel observes) + last-clip / clip-playback (replay of the last 3 spoken clips, heard/unheard bookkeeping, `lucy_*` telemetry)
 │       ├── avatar/                        # Optional, lazy-loaded 3D avatar panel (three.js stage, lip-sync, dock); assets/ holds the CC BY-NC model
+│       ├── lucy-live/                     # Browser half of the hands-free conversation: energy voice detector, mic capture, sentence playback with duck/stop, `useLucyLive` hook
 │       ├── group-findings.ts              # Finding grouping for FindingsPanel
 │       ├── markdown.ts                    # Markdown rendering helpers
 │       ├── oss-trends.ts                  # OSS contribution trend aggregation for the dashboard
