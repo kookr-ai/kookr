@@ -407,6 +407,36 @@ describe('ignored files and hidden edits', () => {
     expect(existsSync(join(wt, 'node_modules', 'mine', 'unique.js'))).toBe(true);
   });
 
+  test('commits that survive only in the worktree reflog (after reset --hard) keep it REVIEW', async () => {
+    const wt = addWorktree('reset-away', { merge: true });
+    commitFile(wt, 'abandoned.txt', 'work that only the reflog still points at');
+    git(wt, 'reset', '-q', '--hard', 'origin/main');
+    const r = await buildReport(opts(), deps());
+    expect(find(r, wt)).toMatchObject({ tier: 'REVIEW' });
+    expect(find(r, wt).reason).toMatch(/only in this worktree's reflog/);
+  });
+
+  test('a detached worktree that committed and then went back to main keeps it REVIEW', async () => {
+    const path = join(root, 'detached-left');
+    git(main, 'worktree', 'add', '-q', '--detach', path, 'origin/main');
+    commitFile(path, 'detached-work.txt');
+    git(path, 'checkout', '-q', '--detach', 'origin/main');
+    const r = await buildReport(opts(), deps());
+    expect(find(r, path)).toMatchObject({ tier: 'REVIEW' });
+    expect(find(r, path).reason).toMatch(/reflog/);
+  });
+
+  test('a git operation in progress keeps the worktree REVIEW', async () => {
+    const wt = addWorktree('mid-merge', { merge: true });
+    // Simulate a paused operation: git leaves MERGE_HEAD in the worktree's git dir.
+    const wtGitDir = git(wt, 'rev-parse', '--git-dir').trim();
+    const gd = wtGitDir.startsWith('/') ? wtGitDir : join(wt, wtGitDir);
+    writeFileSync(join(gd, 'MERGE_HEAD'), git(wt, 'rev-parse', 'HEAD'));
+    const r = await buildReport(opts(), deps());
+    expect(find(r, wt)).toMatchObject({ tier: 'REVIEW' });
+    expect(find(r, wt).reason).toMatch(/operation in progress: MERGE_HEAD/);
+  });
+
   test('a git repo nested inside an ignored tool cache makes the worktree REVIEW', async () => {
     const wt = addWorktree('cache-repo', { merge: true });
     const nested = join(wt, '__pycache__', 'lib');

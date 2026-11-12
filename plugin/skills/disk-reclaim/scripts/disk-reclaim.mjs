@@ -83,6 +83,9 @@ export function classifyIgnoredEntry(entry) {
   return last === '.eslintcache' || last.endsWith('.tsbuildinfo') ? 'cache' : 'content';
 }
 
+/** Above this many distinct reflog tips the reflog check is skipped and the worktree treated as not SAFE. */
+const REFLOG_TIP_LIMIT = 2000;
+
 /** Test-only: extra environment for every spawned command (e.g. hermetic git config). */
 let extraEnv = {};
 export function setExecEnvForTests(env) {
@@ -584,6 +587,31 @@ async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
     if (lsv.code !== 0) e.errors.push('git ls-files -v failed');
     else e.hiddenEdits = lsv.stdout.split('\n').filter((l) => l && (/^[a-z]/.test(l) || l[0] === 'S')).map((l) => l.slice(2));
   }
+  if (e.kind === 'worktree' && gitDir && gitDir.code === 0) {
+    const wtGitDir = resolve(dir, gitDir.stdout.trim());
+    // An operation in progress holds state (todo lists, conflict resolutions) that removal discards.
+    e.pendingOps = ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG']
+      .filter((f) => existsSync(join(wtGitDir, f)));
+    // Commits kept alive only by this worktree's own reflogs (HEAD, its branch), ORIG_HEAD or
+    // per-worktree refs die with it: after `reset --hard` or leaving a detached HEAD they are on
+    // no branch, and `git gc` deletes them once removal drops the reflogs. Count any commit
+    // those point at that no surviving branch, tag or remote-tracking ref contains.
+    const lines = (r) => (r.code === 0 ? r.stdout.split('\n').map((l) => l.trim()).filter(Boolean) : []);
+    const [headLog, branchLog, orig, wtRefs] = await Promise.all([
+      git(['log', '-g', '--format=%H', 'HEAD', '--']),
+      e.branch ? git(['log', '-g', '--format=%H', `refs/heads/${e.branch}`, '--']) : Promise.resolve({ code: 0, stdout: '' }),
+      git(['rev-parse', '-q', '--verify', 'ORIG_HEAD^{commit}']),
+      git(['for-each-ref', '--format=%(objectname)', 'refs/worktree/', 'refs/bisect/']),
+    ]);
+    if (headLog.code !== 0 && headLog.timedOut) e.errors.push('git reflog timed out');
+    const tips = [...new Set([...lines(headLog), ...lines(branchLog), ...lines(orig), ...lines(wtRefs)])];
+    if (tips.length > REFLOG_TIP_LIMIT) e.reflogOnlyCommits = -1; // too many to check: treat as unknown
+    else if (tips.length) {
+      const r = await git(['rev-list', ...tips, '--not', '--branches', '--tags', '--remotes']);
+      if (r.code !== 0) e.errors.push(r.timedOut ? 'git rev-list timed out' : 'git rev-list (reflog check) failed');
+      else e.reflogOnlyCommits = lines(r).length;
+    }
+  }
   if (ignored) {
     if (ignored.code !== 0) e.errors.push(ignored.timedOut ? 'git ls-files timed out' : 'git ls-files failed');
     else {
@@ -748,6 +776,9 @@ export function classifyEntry(e, opts, usage, nowMs) {
     if (e.dirty) wt.push('uncommitted changes');
     if (e.locked) wt.push('worktree is locked');
     if (e.hiddenEdits.length) wt.push(`edits hidden by skip-worktree/assume-unchanged: ${e.hiddenEdits.slice(0, 3).join(', ')}`);
+    if (e.pendingOps?.length) wt.push(`git operation in progress: ${e.pendingOps.join(', ')}`);
+    if (e.reflogOnlyCommits === -1) wt.push('reflog too long to check for commits on no branch');
+    else if (e.reflogOnlyCommits > 0) wt.push(`${e.reflogOnlyCommits} commit${e.reflogOnlyCommits === 1 ? '' : 's'} only in this worktree's reflog or ORIG_HEAD (on no branch, tag or remote; e.g. after reset or rebase)`);
     if (e.ignoredEntries.length) {
       const shown = e.ignoredEntries.slice(0, 3).join(', ');
       const more = e.ignoredEntries.length > 3 ? ` (+${e.ignoredEntries.length - 3} more)` : '';
