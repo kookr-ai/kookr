@@ -151,9 +151,9 @@ function takeStoreLock(dir) {
 }
 
 /**
- * Delete a leftover 0-byte shelf file (nb 0.7.0's `move` leaves one when it
- * moves a shelf's last lesson; only `rm` deletes it, and the `move` fix is not
- * released). Guarded, because this is the one place a script deletes a file: it
+ * Delete a leftover 0-byte shelf file. `nb` before 0.8.0 left one when `move`
+ * took a shelf's last lesson (only `rm` deleted it); 0.8.0 deletes the file
+ * itself, so this now only finds files an older `nb` left in a store. Guarded, because this is the one place a script deletes a file: it
  * must resolve INSIDE `dir`, be named exactly `<shelf>.md`, and be a regular
  * file of size 0, re-checked while holding nb's store lock so an `nb add` that
  * lands in between cannot be deleted with it. A file with any content (a

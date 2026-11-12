@@ -550,9 +550,11 @@ export function runPromotion({
       }
     }
   }
-  // nb 0.7.0 leaves a 0-byte file when a move takes a shelf's last lesson. It is
-  // hidden from `nb list` but stays on disk; delete exactly such files (size 0,
-  // only shelves this run moved a lesson out of) and commit each deletion.
+  // nb before 0.8.0 left a 0-byte file when a move took a shelf's last lesson
+  // (hidden from `nb list`, still on disk). 0.8.0 deletes the file itself, so this
+  // finds nothing there; it stays for a run against an older `nb`. Delete exactly
+  // such files (size 0, only shelves this run moved a lesson out of) and commit
+  // each deletion.
   for (const shelf of [...new Set(result.performed.map((p) => p.from))].sort()) {
     const outcome = reapZeroByteShelf(dir, shelf);
     if (outcome === 'locked') log(`  NOT reaped      ${shelf}: nb's store lock stayed busy (is a task running?); delete the empty file by hand later`);

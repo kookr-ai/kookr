@@ -42,10 +42,11 @@
 // re-reads the two shelves it touches, so an interrupted run is finished by
 // running the same command again; a second run after completion changes nothing.
 //
-// After the last lesson leaves a legacy shelf, nb 0.7.0 leaves a 0-BYTE file
-// behind (hidden from `nb list`, still on disk; the upstream fix, agent-notebook
-// #355/#356, is unreleased). This script deletes exactly such files (only size 0,
-// only legacy shelves it is migrating) and commits each deletion itself. It then
+// After the last lesson left a legacy shelf, nb before 0.8.0 left a 0-BYTE file
+// behind (hidden from `nb list`, still on disk); 0.8.0 deletes the file itself
+// (agent-notebook #355). A store can still hold such files from earlier runs, so
+// this script deletes exactly them (only size 0, only legacy shelves it is
+// migrating) and commits each deletion itself. It then
 // re-runs the description seed so the new canonical shelves get descriptions, and
 // confirms every legacy shelf is gone from disk AND from `nb list --json`,
 // reporting any that remain.

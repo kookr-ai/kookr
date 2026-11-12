@@ -696,18 +696,22 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
     expect(readLessons(dir, 'code-review@repo-one')).toHaveLength(1);
   });
 
-  test('moving a shelf\'s last lesson leaves a 0-byte file on nb 0.7.0: the promotion deletes it and commits that', () => {
+  test('moving a shelf\'s last lesson leaves no file behind and nothing uncommitted', () => {
     const dir = store();
     writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
     writeShelf(dir, 'code-review@repo-two', L([5, SAME]));
     commitAll(dir);
     const { result } = run(dir, { apply: true, shim: true });
     expect(result.ok).toBe(true);
-    expect(fileExists(dir, 'code-review@repo-two')).toBe(false); // best copy moved out, file reaped
-    expect(fileExists(dir, 'code-review@repo-one')).toBe(false); // other copy rm'd (nb reaps that itself)
+    // nb 0.8.0 deletes a shelf file itself once it is emptied, by a move as well as by an rm, and the
+    // shim commits that deletion with the command. (nb before 0.8.0 left a 0-byte file after a move; the
+    // script still deletes one if it finds it, which scripts/lib/nb-sim.test.ts covers.)
+    expect(fileExists(dir, 'code-review@repo-two')).toBe(false); // best copy moved out
+    expect(fileExists(dir, 'code-review@repo-one')).toBe(false); // other copy rm'd
     expect(git(dir, 'status', '--porcelain')).toBe('');
     const tag = git(dir, 'tag', '-l', 'pre-lesson-promotion-*');
-    expect(git(dir, 'log', '--format=%s', `${tag}..HEAD`)).toContain('lesson promotion: delete empty shelf code-review@repo-two');
+    const subjects = git(dir, 'log', '--format=%s', `${tag}..HEAD`).split('\n');
+    expect(subjects.sort()).toEqual(['nb move code-review@repo-two', 'nb rm code-review@repo-one']);
   });
 });
 

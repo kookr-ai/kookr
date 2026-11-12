@@ -99,13 +99,15 @@ describe('migrate-notebook-slugs: dry-run', { timeout: 120_000 }, () => {
 });
 
 describe('migrate-notebook-slugs: --apply', { timeout: 120_000 }, () => {
-  test('folds legacy shelves into canonical ones, keeping scores, one commit per move, and reaps the 0-byte files', () => {
+  test('folds legacy shelves into canonical ones, keeping scores, one commit per move, and reaps a 0-byte file an older nb left', () => {
     const dir = store();
     writeShelf(dir, 'tester@agent-notebook', L([2, 'tester one'], [5, 'tester two']));
     writeShelf(dir, `code-review@${CANON}`, L([3, 'existing review lesson']));
     writeShelf(dir, 'code-review@agent-notebook', L([4, 'legacy review lesson']));
     writeShelf(dir, 'code-review@other-owner-repo', L([1, 'another repo']), 'kept as is');
     writeShelf(dir, 'planner', L([1, 'a bare domain shelf']));
+    // nb before 0.8.0 left a 0-byte file when a move took a shelf's last lesson; a store can still hold one.
+    writeFileSync(join(dir, 'planner@agent-notebook.md'), '');
     commitAll(dir);
     const preMigration = git(dir, 'rev-parse', 'HEAD');
 
@@ -121,13 +123,16 @@ describe('migrate-notebook-slugs: --apply', { timeout: 120_000 }, () => {
     ]);
     expect(fileExists(dir, 'tester@agent-notebook')).toBe(false);
     expect(fileExists(dir, 'code-review@agent-notebook')).toBe(false);
-    expect(result.reaped.sort()).toEqual(['code-review@agent-notebook', 'tester@agent-notebook']);
+    // nb 0.8.0 deletes a shelf file itself once its last lesson is moved out (inside that move's commit),
+    // so the only file left for the script to reap is the 0-byte one that was already in the store.
+    expect(fileExists(dir, 'planner@agent-notebook')).toBe(false);
+    expect(result.reaped).toEqual(['planner@agent-notebook']);
 
     // Rollback anchor and history: the tag is the pre-migration commit; each move and each deletion is a commit.
     expect(git(dir, 'rev-list', '-n1', DEFAULT_TAG)).toBe(preMigration);
     const log = git(dir, 'log', '--format=%s', `${DEFAULT_TAG}..HEAD`).split('\n');
     expect(log.filter((s) => s.startsWith('nb move'))).toHaveLength(3);
-    expect(log.filter((s) => s.startsWith('slug migration: delete empty legacy shelf'))).toHaveLength(2);
+    expect(log.filter((s) => s.startsWith('slug migration: delete empty legacy shelf'))).toEqual(['slug migration: delete empty legacy shelf planner@agent-notebook']);
     expect(git(dir, 'status', '--porcelain')).toBe('');
 
     // Unrelated shelves are untouched.

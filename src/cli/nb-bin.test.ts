@@ -42,6 +42,19 @@ afterEach(() => {
 });
 
 /** Run `node bin/nb.js <argv>` with NB_DIR=dir; capture stdout/exit. */
+/**
+ * The shim's own stderr: everything except the `note: created new shelf "<name>"`
+ * line that agent-notebook itself prints (since 0.8.0) when an `add` starts a
+ * shelf. The advisory tests assert what the SHIM says, and most of them add to a
+ * shelf that does not exist yet.
+ */
+function shimStderr(stderr: string | null): string {
+  return (stderr ?? '')
+    .split('\n')
+    .filter((line) => !line.startsWith('note: created new shelf '))
+    .join('\n');
+}
+
 function nb(args: string[], extraEnv: Record<string, string> = {}): { code: number; out: string } {
   try {
     const out = execFileSync('node', [BIN, ...args], {
@@ -271,7 +284,7 @@ describe('bin/nb.js — placement advisories on `add` (stderr only, never a refu
       else base[k] = v;
     }
     const r = spawnSync('node', [BIN, ...args], { env: { ...base, NB_DIR: dir }, encoding: 'utf-8' });
-    return { code: r.status ?? -1, err: r.stderr ?? '' };
+    return { code: r.status ?? -1, err: shimStderr(r.stderr) };
   }
 
   test('add to fleet-global without KOOKR_NB_CURATOR warns, but the lesson is still written', () => {
@@ -334,7 +347,7 @@ describe('bin/nb.js — the advisory classifies shelves with the shared layers m
     delete base.KOOKR_NB_CURATOR;
     if (slug !== undefined) base.KOOKR_REPO_SLUG = slug;
     const r = spawnSync('node', [bin, ...args], { env: { ...base, NB_DIR: dir }, encoding: 'utf-8' });
-    return { code: r.status ?? -1, err: r.stderr ?? '' };
+    return { code: r.status ?? -1, err: shimStderr(r.stderr) };
   }
 
   test('case-insensitive: Code-Review@Kookr-AI-Kookr is this repo\'s shelf for slug kookr-ai-kookr', () => {

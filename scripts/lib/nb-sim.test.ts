@@ -266,19 +266,23 @@ describe('parity with the real nb binary', () => {
     expect(readLessons(dir, 's@legacy')).toHaveLength(1); // nothing was written
   });
 
-  test('moving the last lesson leaves a 0-byte file on nb 0.7.0, which only reapZeroByteShelf removes', () => {
+  test('moving the last lesson removes the shelf file (nb 0.8.0); reapZeroByteShelf still deletes a 0-byte file an older nb left', () => {
     const dir = makeStore({ git: false });
     dirs.push(dir);
     const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv() });
     writeShelf(dir, 's@legacy', [[2, 'only lesson']]);
     const id = readShelf(client, dir, 's@legacy').entries[0].id;
     expect(nbMove(client, 's@legacy', 't@canon', id).moved).toBe(true);
-    expect(existsSync(join(dir, 's@legacy.md'))).toBe(true); // still on disk...
+    expect(existsSync(join(dir, 's@legacy.md'))).toBe(false); // nb deletes the emptied file itself
     const listed = client.runJson(['list', '--json']);
-    expect(listed.json.rows.map((r: { shelf: string }) => r.shelf)).toEqual(['t@canon']); // ...but hidden
-    expect(reapZeroByteShelf(dir, 's@legacy')).toBe('deleted');
-    expect(existsSync(join(dir, 's@legacy.md'))).toBe(false);
-    expect(reapZeroByteShelf(dir, 's@legacy')).toBe('absent');
+    expect(listed.json.rows.map((r: { shelf: string }) => r.shelf)).toEqual(['t@canon']);
+    expect(reapZeroByteShelf(dir, 's@legacy')).toBe('absent'); // nothing left to reap
+
+    // nb before 0.8.0 left a 0-byte file behind; one that is already in a store is still reaped.
+    writeFileSync(join(dir, 'old@legacy.md'), '');
+    expect(reapZeroByteShelf(dir, 'old@legacy')).toBe('deleted');
+    expect(existsSync(join(dir, 'old@legacy.md'))).toBe(false);
+    expect(reapZeroByteShelf(dir, 'old@legacy')).toBe('absent');
   });
 });
 
