@@ -5,7 +5,7 @@ export default defineConfig({
     // Agent suites share the host with the supervisor and desktop. Bound each
     // run rather than letting every agent allocate workers for the whole CPU.
     maxWorkers: 4,
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'],
+    include: ['plugin/**/*.test.mjs', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'],
     // Integration-style files run via `pnpm test:integration` /
     // `pnpm test:integration:live` (#2823). Patterns cover hyphen, dot, and e2e
     // naming under both src/ and relay/.

@@ -482,7 +482,7 @@ export function evaluateDiskAdmission(input: {
       + `${path ? ` at ${path}` : ''}). Refusing new task launches to avoid ENOSPC. `
       + `Retry after ${retryAfterSeconds}s once free space recovers above the floors `
       + `(percent≤${percentThreshold || 'off'}, bytes≤${bytesThreshold || 'off'}). `
-      + `Reclaim/reap paths remain available.`;
+      + `Reclaim/reap paths remain available; run the disk-reclaim skill to free space safely.`;
 
   return {
     admit: false,
