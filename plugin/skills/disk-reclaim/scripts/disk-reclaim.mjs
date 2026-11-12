@@ -27,7 +27,9 @@ import { fileURLToPath } from 'node:url';
 
 const usage =
   'Usage: node disk-reclaim.mjs [--roots a,b] [--data-dir D] [--min-idle-days 2] [--json] ' +
-  '[--apply safe] [--until-free-percent 10] [--fetch] [--concurrency 8] [--timeout-s 600] [--top 15]';
+  '[--apply safe] [--until-free-percent 10] [--fetch] [--concurrency 8] [--timeout-s 600] [--top 15]\n' +
+  '  --fetch runs `git fetch --prune` in every repo: it needs the network and UPDATES/DELETES remote-tracking refs.\n' +
+  '  --apply safe deletes the SAFE tier only; without it nothing is deleted.';
 
 const KIB = 1024;
 const MIB = 1024 * KIB;
@@ -41,7 +43,13 @@ export const MIN_SAFE_BYTES = 20 * MIB;
 const DEFAULT_FLOOR_PERCENT = 5;
 const DEFAULT_FLOOR_BYTES = 2 * GIB;
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
-/** Flags for the lowered-age `kookr maintenance prune` from the knowledge base. */
+/** `terminated` tasks with these reasons are relaunched by crash recovery (isRecoverableTermination), so they count as live. */
+const RECOVERABLE_TERMINATION = new Set(['server-restart', 'oom', 'timeout', 'unknown']);
+const RECOVERY_WINDOW_MS = 7 * 86_400_000;
+/**
+ * Lowered-age prune flags. Deletes up to ~29 days of finished-task history that
+ * the operator's default policy keeps, so it is only ever offered as REVIEW.
+ */
 const PRUNE_FLAGS = [
   '--max-age-days', '1',
   '--playbook-max-age-days', '1',
@@ -53,22 +61,32 @@ const PRUNE_FLAGS = [
 /**
  * Git-ignored content that is safe to lose with a worktree because a build or
  * test run recreates it. `git worktree remove` deletes ALL ignored files, so
- * any ignored entry NOT matching this list (a fine-tuned adapter, eval runs,
- * `.env`, data files) makes the worktree REVIEW. Matching is per path component.
+ * any ignored entry that is not clearly build output makes the worktree REVIEW.
+ *
+ * An ignored entry is rebuildable only if it is a DIRECTORY entry (trailing
+ * `/`) whose FIRST path component is in this set; `node_modules` is also
+ * accepted at any depth because the name is unambiguous. Deeper matches such as
+ * `data/out/x.bin`, files such as `eval.log` or `.eslintcache`, and anything
+ * with a nested `.git` are content.
  */
-export const REBUILDABLE_COMPONENTS = new Set([
+export const REBUILDABLE_DIRS = new Set([
   'node_modules', 'dist', 'build', 'out', '.next', '.vite', '.turbo', '.cache', 'coverage', 'target',
   '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.venv', 'venv', 'test-results', 'playwright-report',
 ]);
-/** Rebuildable file names (matched on the last path component). */
-const REBUILDABLE_FILE_RE = /(\.tsbuildinfo|\.log)$|^\.eslintcache$/;
 
 export function isRebuildableIgnored(entry) {
+  if (!entry.endsWith('/')) return false;
   const parts = entry.split('/').filter(Boolean);
-  return parts.some((c) => REBUILDABLE_COMPONENTS.has(c)) || REBUILDABLE_FILE_RE.test(parts[parts.length - 1] ?? '');
+  return REBUILDABLE_DIRS.has(parts[0]) || parts.includes('node_modules');
 }
 
 // ---------------------------------------------------------------- arguments
+
+/** Test-only: extra environment for every spawned command (e.g. hermetic git config). */
+let extraEnv = {};
+export function setExecEnvForTests(env) {
+  extraEnv = env ?? {};
+}
 
 export function parseArgs(argv, env = process.env, home = homedir()) {
   const o = {
@@ -115,6 +133,11 @@ export function parseArgs(argv, env = process.env, home = homedir()) {
   }
   o.roots = o.roots.map((r) => resolve(r));
   o.dataDir = resolve(o.dataDir);
+  for (const r of o.roots) {
+    if (r === '/' || r === resolve(home) || r === o.dataDir || under(o.dataDir, r) || under(join(home, '.ssh'), r) || under(join(home, '.config'), r)) {
+      throw new Error(`refusing --roots entry ${r}: it is, or contains, the home directory, the data directory, ~/.ssh or ~/.config`);
+    }
+  }
   return o;
 }
 
@@ -141,7 +164,7 @@ function exec(cmd, args, { cwd, timeoutMs = 60_000, env } = {}) {
         cwd,
         timeout: timeoutMs,
         maxBuffer: 256 * MIB,
-        env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...env },
+        env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...extraEnv, ...env },
       },
       (err, stdout, stderr) => {
         const timedOut = Boolean(err && err.killed);
@@ -187,7 +210,7 @@ export function fmtBytes(n) {
 
 /** `du -k -d 1 dir`: one walk gives the total and each immediate child. */
 async function duTop(dir, timeoutMs) {
-  const r = await exec('du', ['-k', '-d', '1', dir], { timeoutMs });
+  const r = await exec('du', ['-k', '-d', '1', '--', dir], { timeoutMs });
   const sizes = new Map();
   for (const line of r.stdout.split('\n')) {
     const m = /^(\d+)\s+(.+)$/.exec(line);
@@ -198,7 +221,7 @@ async function duTop(dir, timeoutMs) {
 }
 
 async function duSingle(path, timeoutMs) {
-  const r = await exec('du', ['-sk', path], { timeoutMs });
+  const r = await exec('du', ['-sk', '--', path], { timeoutMs });
   const m = /^(\d+)/.exec(r.stdout);
   return m ? Number(m[1]) * KIB : null;
 }
@@ -210,10 +233,11 @@ export function realDeps(opts) {
     now: () => Date.now(),
     df: dfProbe,
     processCwds: processCwdsProbe,
-    fetchTasks: () => fetchTasksProbe(process.env),
+    fetchTasks: () => fetchTasksProbe(process.env, opts.dataDir),
+    runningInstalls: runningInstallsProbe,
     dockerInfo: dockerProbe,
     toolCaches: () => toolCachesProbe(opts),
-    kookrPrune: (dataDir) => kookrPruneProbe(dataDir),
+    kookrPrune: (dataDir, o) => kookrPruneProbe(dataDir, o),
     homeReview: () => homeReviewProbe(opts),
     run: (cmd, args, o) => exec(cmd, args, { timeoutMs: 30 * 60_000, ...o }),
     removeDir: (p) => rmSync(p, { recursive: true, force: true }),
@@ -250,18 +274,78 @@ export async function processCwdsProbe() {
   return { ok: paths.length > 0, paths, error: paths.length ? undefined : 'lsof returned no cwd entries' };
 }
 
-export async function fetchTasksProbe(env) {
-  const base = env.KOOKR_API_BASE_URL || `http://127.0.0.1:${env.KOOKR_PORT || 4800}`;
+/**
+ * The API port must belong to the data dir being cleaned: `~/.kookr` is port
+ * 4800, `~/.kookr-<port>` is <port>. Returns { base } or { error } (fail closed).
+ */
+export function resolveApiBase(env, dataDir) {
+  const name = basename(dataDir);
+  const implied = name === '.kookr' ? 4800 : /^\.kookr-(\d+)$/.test(name) ? Number(/^\.kookr-(\d+)$/.exec(name)[1]) : null;
+  let base = env.KOOKR_API_BASE_URL;
+  let port = null;
+  if (base) {
+    try {
+      const u = new URL(base);
+      port = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
+    } catch {
+      return { error: `KOOKR_API_BASE_URL is not a valid URL: ${base}` };
+    }
+  } else if (env.KOOKR_PORT && /^\d+$/.test(env.KOOKR_PORT)) {
+    port = Number(env.KOOKR_PORT);
+    base = `http://127.0.0.1:${port}`;
+  } else if (env.KOOKR_PORT) {
+    return { error: `KOOKR_PORT=${env.KOOKR_PORT} is not numeric, so the API port cannot be matched to ${dataDir}` };
+  } else if (implied != null) {
+    port = implied;
+    base = `http://127.0.0.1:${port}`;
+  } else {
+    return { error: `data dir ${dataDir} is not ~/.kookr[-<port>] and no KOOKR_PORT / KOOKR_API_BASE_URL says which instance owns it` };
+  }
+  if (implied != null && port !== implied) {
+    return { error: `API port ${port} does not match data dir ${dataDir} (expects ${implied}); in-use state would come from another instance` };
+  }
+  return { base };
+}
+
+export async function fetchTasksProbe(env, dataDir) {
+  const resolved = resolveApiBase(env, dataDir);
+  if (resolved.error) return { ok: false, error: resolved.error, tasks: [] };
+  const base = resolved.base;
   try {
     const res = await fetch(`${base}/api/tasks`, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return { ok: false, error: `${base}/api/tasks answered HTTP ${res.status}`, tasks: [] };
     const body = await res.json();
     const list = Array.isArray(body) ? body : body.tasks;
     if (!Array.isArray(list)) return { ok: false, error: 'unexpected /api/tasks payload', tasks: [] };
-    return { ok: true, tasks: list.map((t) => ({ id: t.id, status: t.status, cwd: t.cwd })) };
+    return {
+      ok: true,
+      tasks: list.map((t) => ({
+        id: t.id,
+        status: t.status,
+        cwd: t.cwd,
+        sessionCwds: Array.isArray(t.sessions) ? t.sessions.map((x) => x?.cwd).filter(Boolean) : [],
+        terminationReason: t.terminationReason,
+        terminatedAt: t.terminatedAt,
+      })),
+    };
   } catch (e) {
     return { ok: false, error: `Kookr API unreachable at ${base}: ${e.message}`, tasks: [] };
   }
+}
+
+/** True for a package-manager / installer process (a cache prune could break it). */
+const INSTALLER_RE = /^(pnpm|npm|npx|yarn|bun|pip3?|uv)(\.c?js)?$/;
+export async function runningInstallsProbe() {
+  const r = await exec('ps', ['-Ao', 'pid=,args=']);
+  if (r.code !== 0) return { ok: false, procs: [], error: 'ps failed' };
+  const procs = [];
+  for (const line of r.stdout.split('\n')) {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!m || Number(m[1]) === process.pid) continue;
+    const toks = m[2].split(/\s+/);
+    if (toks.slice(0, 2).some((t) => INSTALLER_RE.test(basename(t)))) procs.push(m[2].slice(0, 100));
+  }
+  return { ok: true, procs };
 }
 
 const SIZE_UNITS = { b: 1, kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12 };
@@ -309,13 +393,15 @@ export async function toolCachesProbe() {
   return out;
 }
 
-export async function kookrPruneProbe(dataDir) {
+/** Dry-run `kookr maintenance prune`; `lowered` adds the aggressive age flags. */
+export async function kookrPruneProbe(dataDir, { lowered = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'disk-reclaim-'));
   const file = join(dir, 'prune.json');
+  const flags = lowered ? PRUNE_FLAGS : [];
   try {
     const fd = openSync(file, 'w');
     const code = await new Promise((done) => {
-      const child = spawn('kookr', ['maintenance', 'prune', '--dry-run', '--json', '--dir', dataDir, ...PRUNE_FLAGS], {
+      const child = spawn('kookr', ['maintenance', 'prune', '--dry-run', '--json', '--dir', dataDir, ...flags], {
         stdio: ['ignore', fd, 'ignore'],
       });
       const timer = setTimeout(() => child.kill('SIGKILL'), 120_000);
@@ -328,8 +414,8 @@ export async function kookrPruneProbe(dataDir) {
     closeSync(fd);
     if (code !== 0) return null;
     const body = JSON.parse(readFileSync(file, 'utf8'));
-    const planned = Array.isArray(body.planned) ? body.planned.reduce((s, p) => s + (p.bytes || 0), 0) : 0;
-    return { bytes: Number.isFinite(body.reclaimedBytes) && body.reclaimedBytes > 0 ? body.reclaimedBytes : planned, command: ['kookr', 'maintenance', 'prune', '--dir', dataDir, ...PRUNE_FLAGS] };
+    const planned = Array.isArray(body.planned) ? body.planned.reduce((n, x) => n + (x.bytes || 0), 0) : 0;
+    return { bytes: Number.isFinite(body.reclaimedBytes) && body.reclaimedBytes > 0 ? body.reclaimedBytes : planned, command: ['kookr', 'maintenance', 'prune', '--dir', dataDir, ...flags] };
   } catch {
     return null;
   } finally {
@@ -390,6 +476,11 @@ export async function inspectDir(dir, opts, deps, { light = false, fetched = new
     mainRepo: null,
     ignoredEntries: [],
     ignoredBytes: 0,
+    hiddenEdits: [],
+    locked: false,
+    hasPackageJson: false,
+    hasLockfile: false,
+    nodeModulesTracked: false,
     lastActivityMs: null,
     errors: [],
   };
@@ -400,6 +491,9 @@ export async function inspectDir(dir, opts, deps, { light = false, fetched = new
   } catch {
     e.hasNodeModules = false;
   }
+
+  e.hasPackageJson = existsSync(join(dir, 'package.json'));
+  e.hasLockfile = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lockb', 'bun.lock'].some((f) => existsSync(join(dir, f)));
 
   const duPromise = light ? null : duTop(dir, left());
   const dirMtime = statSync(dir).mtimeMs;
@@ -448,7 +542,7 @@ async function inspectGit(dir, e, opts, deps, left, fetched) {
     if (f.code !== 0) e.errors.push('git fetch failed');
   }
 
-  const [idx, ct, br, status, stash, remotes, symref, track, ignored] = await Promise.all([
+  const [idx, ct, br, status, stash, remotes, symref, track, ignored, lsv, gitDir, nmTracked] = await Promise.all([
     git(['rev-parse', '--git-path', 'index']),
     git(['log', '-1', '--format=%ct']),
     git(['symbolic-ref', '--short', '-q', 'HEAD']),
@@ -456,15 +550,34 @@ async function inspectGit(dir, e, opts, deps, left, fetched) {
     git(['stash', 'list', '--format=%gs']),
     git(['branch', '-r', '--contains', 'HEAD']),
     git(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD']),
-    git(['for-each-ref', '--format=%(refname:short)\t%(upstream:track)', 'refs/heads/']),
+    git(['for-each-ref', '--format=%(refname)\t%(upstream:track)', 'refs/heads/']),
     e.kind === 'worktree' ? git(['ls-files', '--others', '--ignored', '--exclude-standard', '--directory']) : Promise.resolve(null),
+    e.kind === 'worktree' ? git(['ls-files', '-v']) : Promise.resolve(null),
+    e.kind === 'worktree' ? git(['rev-parse', '--git-dir']) : Promise.resolve(null),
+    e.hasNodeModules ? git(['ls-files', '--', 'node_modules']) : Promise.resolve(null),
   ]);
+  e.nodeModulesTracked = Boolean(nmTracked && (nmTracked.code !== 0 || nmTracked.stdout.trim()));
+  if (gitDir && gitDir.code === 0) e.locked = existsSync(join(resolve(dir, gitDir.stdout.trim()), 'locked'));
+  if (lsv) {
+    // Lowercase tags (assume-unchanged) and `S` (skip-worktree) hide edits from `git status` and from git's remove check.
+    if (lsv.code !== 0) e.errors.push('git ls-files -v failed');
+    else e.hiddenEdits = lsv.stdout.split('\n').filter((l) => l && (/^[a-z]/.test(l) || l[0] === 'S')).map((l) => l.slice(2));
+  }
   if (ignored) {
     if (ignored.code !== 0) e.errors.push(ignored.timedOut ? 'git ls-files timed out' : 'git ls-files failed');
     else {
-      e.ignoredEntries = ignored.stdout.split('\n').filter((l) => l && !isRebuildableIgnored(l));
+      const all = ignored.stdout.split('\n').filter(Boolean);
+      e.ignoredEntries = all.filter((l) => !isRebuildableIgnored(l));
+      // A nested repo or worktree inside an "allowed" ignored directory may hold unique work.
+      const allowedDirs = all.filter((l) => isRebuildableIgnored(l) && !/(^|\/)node_modules\/$/.test(l));
+      if (allowedDirs.length) {
+        const f = await exec('find', allowedDirs.map((d) => `./${d}`).concat(['(', '-name', 'node_modules', '-prune', ')', '-o', '-name', '.git', '-print']), { cwd: dir, timeoutMs: left() });
+        if (f.code !== 0) e.errors.push('find for nested .git failed');
+        for (const g of f.stdout.split('\n').filter(Boolean)) e.ignoredEntries.push(`${g.replace(/^\.\//, '')} (nested .git)`);
+      }
       if (e.ignoredEntries.length) {
-        const du = await exec('du', ['-sk', ...e.ignoredEntries.slice(0, 200)], { cwd: dir, timeoutMs: left() });
+        const targets = e.ignoredEntries.slice(0, 200).map((x) => `./${x.replace(/ \(nested \.git\)$/, '')}`);
+        const du = await exec('du', ['-sk', '--', ...targets], { cwd: dir, timeoutMs: left() });
         e.ignoredBytes = du.stdout.split('\n').reduce((n, l) => n + (/^(\d+)/.test(l) ? Number(/^(\d+)/.exec(l)[1]) * KIB : 0), 0);
       }
     }
@@ -488,7 +601,7 @@ async function inspectGit(dir, e, opts, deps, left, fetched) {
     e.dirty = status.stdout
       .split('\n')
       .filter(Boolean)
-      .some((l) => !/(^|\/)node_modules(\/|$)/.test(l.slice(3)));
+      .some((l) => e.nodeModulesTracked || !/(^|\/)node_modules(\/|$)/.test(l.slice(3)));
   } else if (!status.timedOut) e.errors.push('git status failed');
 
   if (stash.code === 0) {
@@ -515,21 +628,35 @@ async function inspectGit(dir, e, opts, deps, left, fetched) {
   }
 
   if (e.branch && track.code === 0) {
-    const row = track.stdout.split('\n').find((l) => l.startsWith(`${e.branch}\t`));
-    e.upstreamGone = Boolean(row && row.includes('gone'));
+    const row = track.stdout.split('\n').find((l) => l.startsWith(`refs/heads/${e.branch}\t`));
+    e.upstreamGone = Boolean(row) && row.split('\t')[1] === '[gone]'; // exact field, not a substring of the branch name
   }
 }
 
 // ---------------------------------------------------------------- classification
 
-export function buildUsage(procs, tasksResult) {
-  const taskCwds = tasksResult.ok
-    ? tasksResult.tasks.filter((t) => t.cwd && !TERMINAL_STATUSES.has(t.status)).map((t) => ({ id: t.id, cwd: safeRealpath(t.cwd) }))
-    : [];
+/** A task is live if it is non-terminal, or was killed for a reason crash recovery will relaunch. */
+export function isLiveTask(t, nowMs) {
+  if (!TERMINAL_STATUSES.has(t.status)) return true;
+  if (t.status !== 'terminated' || !RECOVERABLE_TERMINATION.has(t.terminationReason)) return false;
+  const at = Date.parse(t.terminatedAt ?? '');
+  return Number.isNaN(at) || nowMs - at < RECOVERY_WINDOW_MS;
+}
+
+/**
+ * In-use lookup. A live task occupies its `cwd` AND every session `cwd`
+ * (tasks create sibling worktrees while `task.cwd` stays the main checkout).
+ */
+export function buildUsage(procs, tasksResult, nowMs = Date.now(), installs = { ok: true, procs: [] }) {
+  const live = tasksResult.ok ? tasksResult.tasks.filter((t) => isLiveTask(t, nowMs)) : [];
+  const taskCwds = live.flatMap((t) => [t.cwd, ...(t.sessionCwds ?? [])].filter(Boolean).map((c) => ({ id: t.id, cwd: safeRealpath(c) })));
   return {
     procsOk: procs.ok,
     tasksOk: tasksResult.ok,
     tasksError: tasksResult.error,
+    unknown: !procs.ok || !tasksResult.ok,
+    liveTaskCount: live.length,
+    installers: installs.ok ? installs.procs : null,
     inUse(realPath) {
       const by = [];
       const proc = procs.paths.find((p) => under(p, realPath));
@@ -537,8 +664,16 @@ export function buildUsage(procs, tasksResult) {
       const task = taskCwds.find((t) => under(t.cwd, realPath));
       if (task) by.push(`task ${task.id}`);
       if (by.length) return { state: 'yes', detail: by.join(', ') };
-      if (!procs.ok || !tasksResult.ok) return { state: 'unknown', detail: tasksResult.ok ? 'process probe failed' : 'Kookr API unreachable' };
+      if (!procs.ok || !tasksResult.ok) return { state: 'unknown', detail: tasksResult.ok ? 'process probe failed' : tasksResult.error ?? 'Kookr API unreachable' };
       return { state: 'no', detail: '' };
+    },
+    /** Why a shared package cache must not be pruned right now, or null. */
+    cacheBlocker() {
+      if (!procs.ok || !tasksResult.ok) return `in-use state unknown (${!tasksResult.ok ? tasksResult.error : 'process probe failed'})`;
+      if (live.length) return `${live.length} live Kookr task(s) may be installing`;
+      if (installs.ok === false) return 'cannot list running processes to rule out a live install';
+      if (installs.procs.length) return `package manager running: ${installs.procs[0]}`;
+      return null;
     },
   };
 }
@@ -563,6 +698,8 @@ export function classifyEntry(e, opts, usage, nowMs) {
   if (e.kind === 'worktree') {
     const wt = [...blockers];
     if (e.dirty) wt.push('uncommitted changes');
+    if (e.locked) wt.push('worktree is locked');
+    if (e.hiddenEdits.length) wt.push(`edits hidden by skip-worktree/assume-unchanged: ${e.hiddenEdits.slice(0, 3).join(', ')}`);
     if (e.ignoredEntries.length) {
       const shown = e.ignoredEntries.slice(0, 3).join(', ');
       const more = e.ignoredEntries.length > 3 ? ` (+${e.ignoredEntries.length - 3} more)` : '';
@@ -582,8 +719,18 @@ export function classifyEntry(e, opts, usage, nowMs) {
   else why.push('main checkout');
 
   // SAFE: dependencies in any checkout that is not removed whole.
+  const depsBlockers = [...blockers];
+  if (e.hasNodeModules) {
+    if (!e.hasPackageJson) depsBlockers.push('no package.json beside node_modules');
+    if (!e.hasLockfile) depsBlockers.push('no lockfile beside node_modules (cannot rebuild reproducibly)');
+    if (e.nodeModulesTracked) depsBlockers.push('node_modules is tracked by git');
+    if (e.kind === 'worktree' && e.locked) depsBlockers.push('worktree is locked');
+  }
+  if (e.hasNodeModules && e.nodeModulesBytes >= opts.minSafeBytes && depsBlockers.length > blockers.length) {
+    why.push(`node_modules kept: ${depsBlockers.slice(blockers.length).join('; ')}`);
+  }
   let depsSafe = false;
-  if (e.hasNodeModules && !blockers.length && e.nodeModulesBytes >= opts.minSafeBytes) {
+  if (e.hasNodeModules && !depsBlockers.length && e.nodeModulesBytes >= opts.minSafeBytes) {
     depsSafe = true;
     items.push({
       ...base,
@@ -623,12 +770,13 @@ export async function buildReport(opts, deps) {
     }
   };
 
-  const [procs, tasks, docker] = await Promise.all([
+  const [procs, tasks, docker, installs] = await Promise.all([
     deps.processCwds().catch((err) => ({ ok: false, paths: [], error: err.message })),
     deps.fetchTasks(),
     deps.dockerInfo().catch(() => null),
+    deps.runningInstalls().catch(() => ({ ok: false, procs: [] })),
   ]);
-  const usage = buildUsage(procs, tasks);
+  const usage = buildUsage(procs, tasks, now, installs);
 
   const rootsInfo = [];
   const dirs = [];
@@ -637,7 +785,7 @@ export async function buildReport(opts, deps) {
     rootsInfo.push(info);
     if (!info.exists) continue;
     for (const d of readdirSync(root, { withFileTypes: true })) {
-      if (d.isDirectory() && !d.isSymbolicLink()) dirs.push({ path: join(root, d.name), sameFs: info.sharesDataDirFilesystem });
+      if (d.isDirectory() && !d.isSymbolicLink()) dirs.push({ path: join(root, d.name), sameFs: sameFs(join(root, d.name)) });
     }
   }
 
@@ -659,19 +807,30 @@ export async function buildReport(opts, deps) {
     for (const it of classifyEntry(entry, opts, usage, now)) items.push({ ...it, sameFs: entry.sameFs });
   }
 
-  const [caches, prune, home] = await Promise.all([
+  const [caches, prune, pruneLow, home] = await Promise.all([
     deps.toolCaches().catch(() => []),
-    deps.kookrPrune(opts.dataDir).catch(() => null),
+    deps.kookrPrune(opts.dataDir, { lowered: false }).catch(() => null),
+    deps.kookrPrune(opts.dataDir, { lowered: true }).catch(() => null),
     deps.homeReview().catch(() => []),
   ]);
   for (const c of caches) {
+    const blocker = usage.cacheBlocker();
     items.push({
-      tier: 'SAFE', kind: 'tool-cache', path: c.dir, bytes: c.bytes, sameFs: sameFs(c.dir), tool: c.tool, command: c.command, estimate: c.estimate,
-      reason: `${c.tool} cache, re-downloaded on demand${c.estimate === 'upper-bound' ? ' (size is an upper bound; the tool prunes only unreferenced entries)' : ''}`,
+      tier: blocker ? 'REVIEW' : 'SAFE', kind: 'tool-cache', path: c.dir, bytes: c.bytes, sameFs: sameFs(c.dir), tool: c.tool, command: c.command, estimate: c.estimate,
+      reason: `${c.tool} cache, re-downloaded on demand${c.estimate === 'upper-bound' ? ' (size is an upper bound; the tool prunes only unreferenced entries)' : ''}${blocker ? `; not SAFE now: ${blocker}` : ''}`,
     });
   }
   if (prune && prune.bytes > 0) {
-    items.push({ tier: 'SAFE', kind: 'kookr-data', path: opts.dataDir, bytes: prune.bytes, sameFs: true, command: prune.command, reason: 'aged Kookr artifacts via `kookr maintenance prune` with lowered ages' });
+    items.push({
+      tier: usage.unknown ? 'REVIEW' : 'SAFE', kind: 'kookr-data', path: opts.dataDir, bytes: prune.bytes, sameFs: true, command: prune.command,
+      reason: `aged Kookr artifacts via \`kookr maintenance prune\` with the default ages${usage.unknown ? '; not SAFE now: in-use state unknown' : ''}`,
+    });
+  }
+  if (pruneLow && pruneLow.bytes > (prune?.bytes ?? 0)) {
+    items.push({
+      tier: 'REVIEW', kind: 'kookr-data-aggressive', path: opts.dataDir, bytes: pruneLow.bytes - (prune?.bytes ?? 0), sameFs: true, command: pruneLow.command,
+      reason: `lowered-age prune also deletes finished-task history (up to ~29 days) that the default policy keeps; run: ${pruneLow.command.join(' ')}`,
+    });
   }
   for (const h of home) {
     items.push({ tier: 'REVIEW', kind: 'home-directory', path: h.path, bytes: h.bytes, sameFs: sameFs(h.path), reason: 'large directory outside the roots; owned by another tool' });
@@ -693,7 +852,8 @@ export async function buildReport(opts, deps) {
     generatedAt: new Date(now).toISOString(),
     options: { roots: opts.roots, dataDir: opts.dataDir, minIdleDays: opts.minIdleDays, untilFreePercent: opts.untilFreePercent },
     filesystem: { ...dataFs, dataDir: opts.dataDir, floors: floors(), critical: isCritical(dataFs), roots: rootsInfo },
-    inUseProbes: { processes: procs.ok ? 'ok' : `failed: ${procs.error ?? 'unknown'}`, kookrTasks: tasks.ok ? `ok (${tasks.tasks.length} tasks)` : `failed: ${tasks.error}` },
+    inUseProbes: {
+      liveTasks: usage.liveTaskCount, processes: procs.ok ? 'ok' : `failed: ${procs.error ?? 'unknown'}`, kookrTasks: tasks.ok ? `ok (${tasks.tasks.length} tasks)` : `failed: ${tasks.error}` },
     docker: docker ? { os: docker.os, desktop: docker.desktop, note: docker.desktop ? 'Docker Desktop keeps images and volumes in its own VM disk; docker prune does NOT free this Linux filesystem.' : undefined } : null,
     totals: { safeBytes: safe.reduce((s, i) => s + i.bytes, 0), safeByKind: byKind, reviewBytes: review.reduce((s, i) => s + i.bytes, 0) },
     safe,
@@ -725,7 +885,6 @@ function isCritical(fs) {
  */
 export async function applySafe(report, opts, deps) {
   const logFile = join(opts.dataDir, 'disk-reclaim.log');
-  const authorised = new Set(report.safe.map((i) => `${i.kind}\0${i.path}`));
   const phase = (i) => (i.kind === 'tool-cache' ? 1 : 0);
   const queue = [...report.safe].sort((a, b) => phase(a) - phase(b) || b.bytes - a.bytes);
   const before = await deps.df(opts.dataDir);
@@ -738,7 +897,7 @@ export async function applySafe(report, opts, deps) {
     const log = { ts: new Date(deps.now()).toISOString(), path: item.path, tier: item.tier, kind: item.kind, bytes: item.bytes, command: null, ok: false };
     const freeBefore = current.freeBytes;
     try {
-      if (!authorised.has(`${item.kind}\0${item.path}`)) throw new Error('not classified SAFE in this run');
+      if (item.tier !== 'SAFE') throw new Error('refusing: item is not tier SAFE');
       const verdict = await recheck(item, opts, deps);
       if (verdict) {
         log.error = `skipped: ${verdict}`;
@@ -765,14 +924,19 @@ export async function applySafe(report, opts, deps) {
 
 /** Returns a reason string if the item must NOT be acted on, else null. */
 async function recheck(item, opts, deps) {
-  if (item.kind === 'tool-cache' || item.kind === 'kookr-data') return null;
-  const dir = item.kind === 'dependencies' ? item.checkoutPath : item.path;
-  if (!opts.roots.some((r) => under(safeRealpath(dir), safeRealpath(r)) && dirname(resolve(dir)) === resolve(r))) return 'path is not a direct child of a scanned root';
-  const [procs, tasks] = await Promise.all([
+  const [procs, tasks, installs] = await Promise.all([
     deps.processCwds().catch((err) => ({ ok: false, paths: [], error: err.message })),
     deps.fetchTasks(),
+    deps.runningInstalls().catch(() => ({ ok: false, procs: [] })),
   ]);
-  const usage = buildUsage(procs, tasks);
+  const usage = buildUsage(procs, tasks, deps.now(), installs);
+  if (item.kind === 'tool-cache') {
+    const blocker = usage.cacheBlocker();
+    return blocker ? `not SAFE now: ${blocker}` : null;
+  }
+  if (item.kind === 'kookr-data') return usage.unknown ? 'in-use state unknown' : null;
+  const dir = item.kind === 'dependencies' ? item.checkoutPath : item.path;
+  if (!opts.roots.some((r) => under(safeRealpath(dir), safeRealpath(r)) && dirname(resolve(dir)) === resolve(r))) return 'path is not a direct child of a scanned root';
   const fresh = await inspectDir(dir, opts, deps, { light: true });
   // Light inspection has no size: carry the scan-time sizes so thresholds still hold.
   fresh.sizeBytes = item.bytes;
@@ -785,6 +949,7 @@ async function recheck(item, opts, deps) {
 
 async function execute(item, log, opts, deps) {
   if (item.kind === 'worktree') {
+    if (!item.mainRepo) throw new Error("refusing: main repository unknown");
     const wtArgs = ['-C', item.mainRepo, 'worktree', 'remove', item.path]; // no --force: git refuses dirty/locked trees
     log.command = ['git', ...wtArgs].join(' ');
     const r = await deps.run('git', wtArgs);

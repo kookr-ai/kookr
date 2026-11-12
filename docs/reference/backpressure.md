@@ -224,6 +224,8 @@ or a supported filesystem reports zero free inodes, for the same sustain window
 the ops alerts use, the request is shed with **HTTP 503**,
 `Retry-After`, and body
 `{ error, code: "data_directory_disk_critical", reason: "data_directory_disk_critical", pressureCause, … }`.
+The 503 message also points to the `disk-reclaim` plugin skill, which reports
+reclaimable space by safety tier and can free the SAFE tier automatically.
 `pressureCause` distinguishes `data_directory_free_space_critical` from
 `data_directory_inodes_exhausted`. The response includes `diskFreeInodes` and
 `diskTotalInodes` for either cause; each is `null` when inode accounting is
