@@ -97,13 +97,24 @@ describe('OpenRouterChatStreamParser', () => {
   test('a tool-call index that is not a small whole number is dropped, quickly', () => {
     const parser = new OpenRouterChatStreamParser();
     const started = performance.now();
-    for (const index of [5e7, -1, 1.5, 'x', 16]) {
+    for (const index of [5e7, -1, 1.5, 'x', '0', 16]) {
       parser.push(data({ choices: [{ delta: { tool_calls: [{ index, id: 'bad', function: { name: 'read_board', arguments: '{}' } }] } }] }));
     }
     parser.push(data({ choices: [{ delta: { tool_calls: [{ id: 'ok', function: { name: 'read_board', arguments: '{}' } }] } }] }));
     const events = parser.finish();
     expect(performance.now() - started).toBeLessThan(500);
     expect(events.filter((e) => e.type === 'tool_call')).toEqual([{ type: 'tool_call', call: { id: 'ok', name: 'read_board', arguments: '{}' } }]);
+  });
+
+  test('calls that arrive without an index are told apart by their ids', () => {
+    const parser = new OpenRouterChatStreamParser();
+    parser.push(data({ choices: [{ delta: { tool_calls: [{ index: null, id: 'a', function: { name: 'read_task', arguments: '{"task":' } }] } }] }));
+    parser.push(data({ choices: [{ delta: { tool_calls: [{ function: { arguments: '"3f2a"}' } }] } }] }));
+    parser.push(data({ choices: [{ delta: { tool_calls: [{ id: 'b', function: { name: 'read_board', arguments: '{}' } }] } }] }));
+    expect(parser.finish().filter((e) => e.type === 'tool_call')).toEqual([
+      { type: 'tool_call', call: { id: 'a', name: 'read_task', arguments: '{"task":"3f2a"}' } },
+      { type: 'tool_call', call: { id: 'b', name: 'read_board', arguments: '{}' } },
+    ]);
   });
 
   test('never forwards the model\'s reasoning text', () => {

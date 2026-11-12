@@ -53,7 +53,7 @@ export interface LucyBoardInput {
 }
 
 /** Longest board, in characters. The task lists are cut to fit; the totals, spend and quota never are. */
-export const MAX_BOARD_CHARS = 6000;
+export const MAX_BOARD_CHARS = 8000;
 export const MAX_BOARD_NEEDS_YOU = 12;
 export const MAX_BOARD_WORKING = 15;
 export const MAX_BOARD_FINISHED = 6;
@@ -179,7 +179,7 @@ function quotaLine(label: string, window: LucyQuotaWindow | null): string | null
  * Spend and quota come first and are never cut: when the board is too long it is the
  * task lists, from the end, that give way.
  */
-export function buildLucyBoard(input: LucyBoardInput, nowMs: number): string {
+export function buildLucyBoard(input: LucyBoardInput, nowMs: number, maxChars: number = MAX_BOARD_CHARS): string {
   const handles = taskHandles(input.tasks);
   const handleOf = (task: LucyBoardTask): string => handles.get(task.id) ?? task.id;
   const byRecency = (a: LucyBoardTask, b: LucyBoardTask): number => (toMs(b.updatedAt) ?? 0) - (toMs(a.updatedAt) ?? 0);
@@ -215,21 +215,23 @@ export function buildLucyBoard(input: LucyBoardInput, nowMs: number): string {
   section('Most recently finished', finished, MAX_BOARD_FINISHED, 'ended');
 
   const headText = head.join('\n');
-  return `${headText}\n${capLines(lines, Math.max(0, MAX_BOARD_CHARS - headText.length - 1))}`.trim();
+  return `${headText}\n${capLines(lines, Math.max(0, maxChars - headText.length - 1))}`.trim();
 }
 
 /** Join lines, dropping whole trailing lines rather than cutting one in half. */
 function capLines(lines: readonly string[], max: number): string {
+  const total = lines.reduce((sum, line) => sum + line.length + 1, 0);
+  if (total <= max) return lines.join('\n');
+  // Too long: keep whole lines from the top, leaving room for the line that says so.
+  const cutLine = '(task lists cut short: the board was too long)';
   const kept: string[] = [];
-  let length = 0;
+  let length = cutLine.length;
   for (const line of lines) {
-    if (length + line.length + 1 > max) {
-      kept.push('(task lists cut short: the board was too long)');
-      break;
-    }
+    if (length + line.length + 1 > max) break;
     kept.push(line);
     length += line.length + 1;
   }
+  kept.push(cutLine);
   return kept.join('\n');
 }
 

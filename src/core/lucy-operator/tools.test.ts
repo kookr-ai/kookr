@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { LUCY_LOOK_TOOL_NAMES } from '../../shared/contracts/lucy-turn.js';
 import { boardTask, fakeSource, NOW } from './__fixtures__/scripted.js';
-import { dispatchLucyTool, displayToolArgs, LUCY_LOOK_TOOLS, MAX_OUTPUT_LINES, MAX_TASK_DETAIL_CHARS, MAX_TASK_OUTPUT_CHARS, stripTerminalControl, untrusted } from './tools.js';
+import { dispatchLucyTool, displayToolArgs, LUCY_LOOK_TOOLS, MAX_OUTPUT_LINES, MAX_TASK_DETAIL_CHARS, MAX_TASK_OUTPUT_CHARS, untrusted } from './tools.js';
 
 const SECRET = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
 const tasks = [boardTask({ id: 'aaaa1111', name: 'Bake-off report', project: 'kookr' })];
@@ -85,10 +85,15 @@ describe('dispatchLucyTool', () => {
     expect(outcome.content).not.toContain('(earlier text cut)');
   });
 
-  test('a key that a control character separates from the word before it is still hidden', async () => {
-    const prompt = 'use token\rsk-abcdefghijklmnopqrstuvwxyz0123456789 and colour\u001b[0msk-zyxwvutsrqponmlkjihgfedcba9876543210';
-    const outcome = await dispatchLucyTool('read_task', '{"task":"aaaa"}', fakeSource({ tasks, details: { aaaa1111: { prompt } } }), NOW);
-    expect(outcome.content).not.toMatch(/sk-[a-z0-9]{20}/);
+  test('a token on a terminal line drawn with cursor jumps is hidden from the provider', async () => {
+    // What a terminal really holds: the gap after "Bearer" is a cursor jump, not a space.
+    const text = 'Authorization: Bearer\u001b[35Gghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8\nexport KEY=\u001b[12Gsk-shortkey1234567890\n';
+    const source = fakeSource({ tasks, outputs: { aaaa1111: { text, source: 'live' } } });
+    const outcome = await dispatchLucyTool('read_task_output', '{"task":"aaaa"}', source, NOW);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.content).not.toContain('ghp_A1b2');
+    expect(outcome.content).not.toContain('sk-shortkey');
+    expect(outcome.content).toContain('Authorization: Bearer [redacted]');
   });
 
   test('read_task_output wraps the output as untrusted, hides secrets and keeps the last lines', async () => {
@@ -148,13 +153,6 @@ describe('displayToolArgs', () => {
 
   test.each(['not json', '[1]', '"x"', ''])('gives nothing for arguments %j', (raw) => {
     expect(displayToolArgs(raw)).toEqual({});
-  });
-});
-
-describe('stripTerminalControl', () => {
-  test('removes colour, cursor and title sequences and keeps words, tabs and line breaks', () => {
-    const raw = '\u001b]0;window title\u0007\u001b[1;32mPASS\u001b[0m src/a.test.ts\r\n\u001b[2K\u001b[1Gline\ttwo\u0007\n';
-    expect(stripTerminalControl(raw)).toBe('PASS src/a.test.ts\nline\ttwo \n');
   });
 });
 

@@ -316,6 +316,16 @@ export function redactSpeechSecrets(value: string): string {
   return redactSecrets(value);
 }
 
+/**
+ * Where {@link redactSpeechSecrets} would hide a secret-looking token in `value`, as
+ * `[start, end)` offsets in order. For callers that must hide a token in text whose
+ * characters do not line up one-to-one with what was searched (see
+ * `core/lucy-operator/task-text.ts`).
+ */
+export function speechSecretSpans(value: string): Array<[number, number]> {
+  return [...value.matchAll(SECRET_PATTERN)].map((match) => [match.index, match.index + match[0].length]);
+}
+
 function sanitizeText(value: string | null | undefined, max = MAX_FIELD_CHARS): string {
   const compact = redactSecrets(value).replace(/\s+/g, ' ').trim();
   return truncate(compact, max);

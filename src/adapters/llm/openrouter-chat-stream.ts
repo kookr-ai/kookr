@@ -175,9 +175,15 @@ export class OpenRouterChatStreamParser {
     // `delta.reasoning` (the model thinking aloud) is deliberately not read.
     if (typeof delta.content === 'string' && delta.content) out.push(delta.content);
     for (const fragment of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
-      // The index comes from the provider. An absent one means the first call; anything that is not
-      // a small whole number is dropped, so a wild value cannot make the list of calls enormous.
-      const index = fragment.index === undefined ? 0 : fragment.index;
+      // The index comes from the provider. Anything that is not a small whole number is dropped,
+      // so a wild value cannot make the list of calls enormous.
+      let index: unknown = fragment.index;
+      if (index === undefined || index === null) {
+        // No index at all: a fragment carrying a new id starts a new call; any other continues the latest.
+        const last = this.calls.length - 1;
+        const startsNewCall = last < 0 || (typeof fragment.id === 'string' && fragment.id !== '' && this.calls[last]?.id !== '' && fragment.id !== this.calls[last]?.id);
+        index = startsNewCall ? last + 1 : last;
+      }
       if (typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= MAX_TOOL_CALLS_PER_REPLY) continue;
       const call = (this.calls[index] ??= { id: '', name: '', arguments: '' });
       if (typeof fragment.id === 'string' && fragment.id) call.id = fragment.id;

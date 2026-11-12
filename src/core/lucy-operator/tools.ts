@@ -16,7 +16,7 @@
 
 import type { LlmFunctionTool } from '../llm-types.js';
 import { LUCY_LOOK_TOOL_NAMES, type LucyLookToolName } from '../../shared/contracts/lucy-turn.js';
-import { redactSpeechSecrets } from '../task-speech-summary.js';
+import { cleanTaskText } from './task-text.js';
 import { agoWords, boardText, buildLucyBoard, resolveTaskRef, spokenLabel, type LucyBoardInput, type LucyBoardTask } from './board.js';
 
 /** More about one task than the board shows. Every string here was written by an agent or pasted by the operator. */
@@ -105,39 +105,21 @@ const UNTRUSTED_OPEN = '<untrusted_task_text>';
 const UNTRUSTED_CLOSE = '</untrusted_task_text>';
 
 /**
- * Wrap text that agents wrote so the model can tell it from Kookr's own words. Secrets
- * are hidden, the length is capped (keeping the end or the start, as the caller asks),
+ * Wrap text that agents wrote so the model can tell it from Kookr's own words. Terminal
+ * codes are removed and secrets hidden (`cleanTaskText`), the length is capped (keeping the end or the start, as the caller asks),
  * and any copy of the markers inside the text is broken, so task text cannot close the
  * block early and pose as Kookr.
  */
 export function untrusted(text: string, maxChars: number, keep: 'start' | 'end' = 'end'): string {
   // One character class between "<" and the name, not two adjacent `\s*`: with those, a "<" followed
   // by a long run of spaces made the match quadratic, and one long terminal line could stall the server.
-  // Secrets are hidden before and after the terminal codes go: before, so that removing a code
-  // cannot glue a key to the word in front of it; after, so that a key a code was splitting is caught.
-  const safe = redactSpeechSecrets(stripTerminalControl(redactSpeechSecrets(text))).replace(/<[\s/]*untrusted_task_text\s*>/gi, '[marker removed]');
+  const safe = cleanTaskText(text).replace(/<[\s/]*untrusted_task_text\s*>/gi, '[marker removed]');
   const cut = safe.length > maxChars;
   // For terminal output the last lines matter; for a request, the beginning does.
   const body = !cut ? safe : keep === 'end' ? safe.slice(safe.length - maxChars) : safe.slice(0, maxChars);
   const note = !cut ? '' : keep === 'end' ? '(earlier text cut)\n' : '';
   const tail = cut && keep === 'start' ? '\n(the rest was cut)' : '';
   return `${UNTRUSTED_OPEN}\n${note}${body.trim()}${tail}\n${UNTRUSTED_CLOSE}`;
-}
-
-/**
- * Remove what a terminal uses to draw (colour and cursor escape sequences, other control
- * characters) and keep the words, line breaks and tabs. A captured terminal is full of
- * these, and they would only cost tokens and confuse the model.
- */
-export function stripTerminalControl(text: string): string {
-  return text
-    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, '') // OSC: window title, hyperlinks
-    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '') // CSI: colours, cursor movement
-    .replace(/\u001b[@-Z\\-_]/g, '') // two-character escapes
-    .replace(/\r\n/g, '\n')
-    // Remaining control characters (except tab and newline) become a space, so the words on
-    // either side of one stay apart.
-    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ');
 }
 
 function refuse(summary: string, content: string): LucyToolOutcome {
@@ -189,7 +171,7 @@ function describeTask(task: LucyBoardTask, detail: LucyTaskDetail | null, nowMs:
 
   // Each part is cleaned and cut on its own, so a long request cannot push the closing summary out.
   const part = (text: string, max: number): string => {
-    const clean = redactSpeechSecrets(stripTerminalControl(redactSpeechSecrets(text))).trim();
+    const clean = cleanTaskText(text).trim();
     return clean.length > max ? `${clean.slice(0, max).trimEnd()} (the rest was cut)` : clean;
   };
   const written: string[] = [];

@@ -87,21 +87,42 @@ describe('buildLucyBoard', () => {
     expect(board).toContain('- All-time agent spend recorded by Kookr: $698.26');
     expect(board).toContain('- 5-hour quota: 12 percent used');
     expect(board).toContain('- 7-day quota: 42 percent used');
-    expect(board.length).toBeLessThanOrEqual(MAX_BOARD_CHARS + 60);
+    expect(board.length).toBeLessThanOrEqual(MAX_BOARD_CHARS);
     // The operator's own queue is the first list, so it is the last to give way.
     expect(board).toContain(`Needs the operator (${MAX_BOARD_NEEDS_YOU + 3}):`);
   });
 
-  test('every list full, with projects, reasons and waiting phrases at their longest, fits without a cut', () => {
-    const many = Array.from({ length: MAX_BOARD_NEEDS_YOU }, (_, i) =>
-      boardTask({ id: `n${String(i).padStart(6, '0')}`, name: `Needs review number ${i}`, project: 'p'.repeat(40), attention: 'a'.repeat(60), costUsd: 1 }));
-    const working = Array.from({ length: MAX_BOARD_WORKING }, (_, i) =>
-      boardTask({ id: `w${String(i).padStart(6, '0')}`, name: `Working item number ${i}`, project: 'p'.repeat(40), costUsd: 1 }));
+  test('every list full, with names, projects, reasons and waiting phrases at their longest, fits without a cut', () => {
+    // Ordinary words throughout: a run of one repeated letter would be taken for a secret and shortened.
+    // A title too long to say aloud gives the longest label there is: "an unnamed task in <project>".
+    const name = (i: number): string => `A request pasted in as the title of task number ${i}, far too long to be read aloud`;
+    const project = 'acme-corporation/platform-services-team'; // 39 of the 40 characters shown
+    const attention = 'it stopped and is waiting for your answer about the rollout'; // 59 of 60
+    const reason = 'stopped by the watchdog after a long silence on the terminal'; // 60 of 60
+    const needs = Array.from({ length: MAX_BOARD_NEEDS_YOU }, (_, i) => boardTask({ id: `n${String(i).padStart(6, '0')}`, name: name(i), project, attention, costUsd: 123.45 }));
+    const working = Array.from({ length: MAX_BOARD_WORKING }, (_, i) => boardTask({ id: `w${String(i).padStart(6, '0')}`, name: name(20 + i), project, costUsd: 123.45 }));
     const finished = Array.from({ length: MAX_BOARD_FINISHED }, (_, i) =>
-      boardTask({ id: `f${String(i).padStart(6, '0')}`, name: `Finished item number ${i}`, project: 'p'.repeat(40), status: 'terminated', terminatedAt: NOW, terminationReason: 'r'.repeat(60) }));
-    const fits = buildLucyBoard({ tasks: [...many, ...working, ...finished], lifetimeSpendUsd: 1, quota: null }, NOW);
-    expect(fits).not.toContain('cut short');
-    expect(fits.length).toBeLessThanOrEqual(MAX_BOARD_CHARS);
+      boardTask({ id: `f${String(i).padStart(6, '0')}`, name: name(40 + i), project, status: 'terminated', terminatedAt: NOW, terminationReason: reason, costUsd: 123.45 }));
+
+    const board = buildLucyBoard({ tasks: [...needs, ...working, ...finished], lifetimeSpendUsd: 1, quota: null }, NOW);
+
+    expect(board).not.toContain('[redacted]');
+    expect(board).not.toContain('cut short');
+    expect(board.length).toBeLessThanOrEqual(MAX_BOARD_CHARS);
+    // The longest lines really are in there, whole.
+    expect(board).toContain(`- [n000000] an unnamed task in ${project} · project ${project} · working · last change 3 minutes ago · waiting on the operator: ${attention} · spent $123.45`);
+    expect(board).toContain(`stopped (${reason}) just now · spent $123.45`);
+    expect(board.split('\n').filter((line) => line.startsWith('- [f'))).toHaveLength(MAX_BOARD_FINISHED);
+  });
+
+  test('a board that is still too long keeps spend and quota, cuts task lines from the end, says so, and stays within its size', () => {
+    const board = buildLucyBoard({ tasks, lifetimeSpendUsd: 698.26, quota: { fiveHour: null, sevenDay: { utilization: 42, resetsAt: 'x' } } }, NOW, 420);
+    expect(board).toContain('- All-time agent spend recorded by Kookr: $698.26');
+    expect(board).toContain('- 7-day quota: 42 percent used');
+    expect(board).toContain('[aaaa] "Bake-off report"');
+    expect(board).not.toContain('"Disk cleanup"');
+    expect(board.endsWith('(task lists cut short: the board was too long)')).toBe(true);
+    expect(board.length).toBeLessThanOrEqual(420);
   });
 
   test('says what it does not know instead of leaving it out', () => {

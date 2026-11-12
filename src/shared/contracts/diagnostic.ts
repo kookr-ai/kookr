@@ -144,7 +144,7 @@ export interface DiagnosticReport {
   timestamp: number;
   findings: DiagnosticFinding[];
   helperLlm?: HelperLlmDiagnosticsSnapshot;
-  /** Present once the operator conversation has been used or is enabled; absent on older servers. */
+  /** Counters for Lucy's operator conversation; all zero while it is switched off. Absent on older servers. */
   lucyOperator?: LucyOperatorDiagnosticsSnapshot;
   persistenceHealth?: PersistenceHealthSnapshot;
 }
