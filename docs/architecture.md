@@ -512,6 +512,7 @@ kookr/
 │   │   ├── achievement-watcher.ts         # Detect achievement unlocks, persist
 │   │   ├── ledger-watcher.ts              # Watch OSS contribution ledger
 │   │   ├── lucy-live/                     # Hands-free conversation with Lucy: per-socket session state machine (turns, Silero-confirmed interruptions, sentence streaming), `/ws/lucy-live` handler, config and real-adapter wiring
+│   │   ├── lucy-operator/                 # Lucy's operator conversation (`POST /api/lucy/turn`): settings from the environment, look source over the task list / findings / quota / terminals / projects, conversation memory and records
 │   │   ├── resource-status-service.ts     # System resource sampling surface
 │   │   ├── system-resource-sampler.ts     # CPU/memory/disk sampling
 │   │   ├── resource-watchdog-service.ts   # Host-pressure actuator (issue #1724; opt-in)
@@ -585,6 +586,7 @@ kookr/
 │   │   ├── llm-factory.ts                 # Fallback / audit / diagnostics policy for LLM clients
 │   │   ├── llm-types.ts                   # Provider DTOs
 │   │   ├── lucy-live/                     # Pure Lucy live logic: task-status briefing, persona prompt, incremental sentence splitter, silence-hallucination filter
+│   │   ├── lucy-operator/                 # Pure operator loop: the board she reads, her prompt, the five look-only tools and their dispatcher (the safety boundary), turn limits, model port, counters
 │   │   ├── circuit-breaker.ts             # Generic circuit-breaker primitive
 │   │   ├── circuit-breaker-llm-client.ts  # LLM client wrapped in a breaker
 │   │   # GitHub awareness (F7 / ADR-012)

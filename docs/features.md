@@ -473,6 +473,28 @@ know something. She cannot act on tasks yet.
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
   `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
 
+
+#### Ask Lucy a question (optional, off by default, no screen yet)
+
+With `KOOKR_LUCY_OPERATOR=true`, Kookr answers questions about your tasks at `POST /api/lucy/turn`:
+you send one sentence, and Lucy's reply comes back as it is written. This is the first step toward
+running Kookr through her. There is no panel for it yet, and hands-free talk does not use it yet, so
+today it is for scripts and for building that panel.
+
+- **She looks things up.** Each answer starts from a board of your tasks: what needs you, what is
+  working, what just finished, spend and quota. When that is not enough she can read one task, read
+  the last lines of its terminal, list projects, or ask the dashboard to open a task.
+- **She cannot change anything.** No tool she has launches, replies to, closes, snoozes or stops a
+  task, so text written by an agent cannot make her act. She is told that everything tasks write is
+  information to report, never an instruction.
+- **Limits.** A turn makes at most four model calls and stops after 30 seconds. When a limit ends a
+  turn, her last sentence says so.
+- **What leaves the machine.** Her model runs at OpenRouter. Each turn sends your question, the board
+  (task names, projects, states, costs) and whatever she looks up, with secret-looking tokens replaced
+  first. Leave it off if task names or terminal output must not leave the machine.
+- **What it needs.** An OpenRouter key (`KOOKR_OPENROUTER_API_KEY`). The model, the providers allowed
+  to serve it and how much it thinks are settings. Details: [Lucy operator](reference/lucy-operator.md).
+
 #### Interaction log (on by default, local only)
 
 So that the wording and length of her summaries can be tuned from real use, Kookr keeps a plain-text
@@ -491,6 +513,10 @@ line; it rotates at 10 MB and keeps three older files).
   recognition and the first sentence took. Your voice is never stored: the audio is sent to the
   recogniser and discarded. No audio is stored. Task names and summary text can contain project details, so treat the
   file like your other local logs.
+- **Conversation turns.** If the operator conversation is switched on (see below), every turn is
+  recorded too (`kind: "operator_turn"`): what you asked and what she answered (secret-looking
+  tokens replaced first), the names of the look-ups she made, how the turn ended, timings, tokens
+  and cost. What her look-ups returned is not recorded.
 - **It stays on this machine.** Nothing is sent anywhere; Kookr only writes the file.
 - **Turn it off.** Settings → Notifications & Alerts → **Keep a local log of Lucy's interactions**
   (server setting `lucyInteractionLog`, default on). When off, nothing is written. Existing files are

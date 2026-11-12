@@ -9,23 +9,30 @@ import { parseOwnerRepoSlug } from '../../shared/repo-slug.js';
 import { normalizeProjectWebhookRoutingSettings } from '../../shared/contracts/project-config.js';
 import type { RouteDeps } from './shared.js';
 
+/**
+ * Every project Kookr knows, as `GET /api/projects` returns them. Empty when the project
+ * registry is not wired (minimal test harnesses). Shared with Lucy's `list_projects`
+ * look-up, so she names the same projects the dashboard shows.
+ */
+export async function listProjectSummaries(deps: RouteDeps): Promise<ProjectSummary[]> {
+  if (!deps.ledgerAnalytics || !deps.projectConfigStore) return [];
+  return filterDeadLocalProjects(getProjectSummaries({
+    monitor: deps.monitor,
+    ledgerAnalytics: deps.ledgerAnalytics,
+    projectConfigStore: deps.projectConfigStore,
+    getSkillTrackedProjects: () => deps.skillDiscoveryState?.getProjects() ?? [],
+    getRegistryActiveProjects: deps.getRegistryActiveProjects,
+    getSidebarProjects: () => deps.projectSidebarStore?.getSeedProjects() ?? [],
+    prLessonsHolder: deps.prLessonsState,
+    repoHealthCache: deps.githubScanner.getRepoHealthSnapshot(),
+    getTaskGithubReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
+    getGithubRefOpenState: (ref) => deps.githubStateStore.isRefOpen(ref),
+  }));
+}
+
 export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/projects', async (c) => {
-    if (!deps.ledgerAnalytics || !deps.projectConfigStore) {
-      return c.json([]);
-    }
-    const summaries = await filterDeadLocalProjects(getProjectSummaries({
-      monitor: deps.monitor,
-      ledgerAnalytics: deps.ledgerAnalytics,
-      projectConfigStore: deps.projectConfigStore,
-      getSkillTrackedProjects: () => deps.skillDiscoveryState?.getProjects() ?? [],
-      getRegistryActiveProjects: deps.getRegistryActiveProjects,
-      getSidebarProjects: () => deps.projectSidebarStore?.getSeedProjects() ?? [],
-      prLessonsHolder: deps.prLessonsState,
-      repoHealthCache: deps.githubScanner.getRepoHealthSnapshot(),
-      getTaskGithubReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
-      getGithubRefOpenState: (ref) => deps.githubStateStore.isRefOpen(ref),
-    }));
+    const summaries = await listProjectSummaries(deps);
     if (c.req.query('tracked') === 'true') {
       return c.json(summaries.filter(isTrackedOrLocalProject));
     }

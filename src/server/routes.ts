@@ -44,6 +44,8 @@ import { registerViewerShareRoutes, isViewerShareRoute } from './routes/viewer-s
 import { registerDictationCorpusRoutes } from './routes/dictation-corpus-routes.js';
 import { registerSpeechRoutes } from './routes/speech-routes.js';
 import { registerLucyLiveRoutes } from './routes/lucy-live-routes.js';
+import { registerLucyOperatorRoutes } from './routes/lucy-operator-routes.js';
+import { buildLucyOperator } from './lucy-operator/create-lucy-operator.js';
 import { registerPipelineStarvationRoutes } from './routes/pipeline-starvation-routes.js';
 import { PipelineStarvationService } from './pipeline-starvation-service.js';
 import { launchTask } from './launch-service.js';
@@ -253,6 +255,7 @@ export function createRoutes(deps: RouteDeps): Hono {
     lucyLogPath: deps.lucyInteractionLogPath,
   });
   registerLucyLiveRoutes(app, { lucyLiveStatus: deps.lucyLiveStatus, getLucyLiveStatus: deps.getLucyLiveStatus });
+  registerLucyOperatorRoutes(app, { lucyOperator: buildLucyOperator(sharedDeps) });
 
   // Dashboard response headers:
   // - security headers apply to HTML and static assets
