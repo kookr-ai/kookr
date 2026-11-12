@@ -37,6 +37,12 @@ function feed(detector: ReturnType<typeof createVoiceDetector>, db: number, ms: 
   for (let t = 0; t < ms; t += FRAME_MS) events.push(...detector.push(frameAt(db), mode));
   return events;
 }
+/** Feed speech-like audio (words of 0.4 s with 0.2 s breaths) one frame at a time until the turn is cut for length. */
+function feedUntilEnd(d: ReturnType<typeof createVoiceDetector>, db: (tMs: number) => number = (t) => (t % 600 < 400 ? SPEECH_DB : SPEECH_DB - 24)): VoiceEvent[] {
+  const events: VoiceEvent[] = [];
+  for (let t = 0; t < MAX_TURN_MS * 2 && !events.some((e) => e.type === 'end'); t += FRAME_MS) events.push(...d.push(frameAt(db(t)), 'normal'));
+  return events;
+}
 const types = (events: VoiceEvent[]): string[] => events.map((e) => e.type);
 const firstOf = (events: VoiceEvent[], type: VoiceEvent['type']): VoiceEvent | undefined => events.find((e) => e.type === type);
 
@@ -214,9 +220,29 @@ describe('createVoiceDetector', () => {
   test('a turn that never ends is cut at the maximum length and counts as speech', () => {
     const d = createVoiceDetector();
     feed(d, QUIET_DB, 500);
-    const events = feed(d, SPEECH_DB, MAX_TURN_MS + 1000);
+    const events = feedUntilEnd(d);
     expect(types(events)).toContain('end');
     expect(d.speaking).toBe(false);
+  });
+
+  test('a turn cut for length leaves the noise floor alone, so the next words are heard at the usual bar', () => {
+    const d = createVoiceDetector();
+    feed(d, QUIET_DB, 500);
+    const floor = d.noiseFloorDb;
+    feedUntilEnd(d);
+    expect(d.noiseFloorDb).toBeCloseTo(floor, 5);
+    expect(types(feed(d, SPEECH_DB, 400))).toContain('start');
+  });
+
+  test('a steady noise that starts suddenly is absorbed when its turn is cut, so speech over it ends normally', () => {
+    const d = createVoiceDetector();
+    feed(d, QUIET_DB, 500);
+    feedUntilEnd(d, () => -45); // a fan switched on and never let up
+    expect(d.noiseFloorDb).toBeGreaterThan(-50);
+    expect(types(feed(d, -45, 3000))).not.toContain('start');
+    const spoken = feed(d, -20, 1500);
+    expect(types(spoken)).toContain('start');
+    expect(types(feed(d, -45, 1000))).toContain('end');
   });
 
   test('reset drops a turn in progress but keeps the noise floor', () => {

@@ -169,15 +169,13 @@ describe('LucyLiveSession', () => {
     expect(h.sent.filter((m) => m.type === 'sentence').map((m) => (m.type === 'sentence' ? m.seq : -1))).toEqual([0, 1]);
   });
 
-  it('barge-in during thinking aborts the brain and ends interrupted', async () => {
+  it('a barge_in while thinking leaves the turn for the speech_start that follows', async () => {
     const h = harness();
     await speak(h);
-    const signal = h.brain.calls[0].signal;
     h.session.handleMessage({ type: 'barge_in' });
     await tick();
-    expect(signal.aborted).toBe(true);
-    expect(types(h).slice(-2)).toEqual(['done:interrupted', 'state:idle']);
-    expect(h.records[0]).toMatchObject({ end: 'interrupted', sentences: 0 });
+    expect(h.brain.calls[0].signal.aborted).toBe(false);
+    expect(h.records).toHaveLength(0);
   });
 
   it('barge-in during speaking aborts pending speech', async () => {
@@ -196,12 +194,16 @@ describe('LucyLiveSession', () => {
     expect(h.sent.filter((m) => m.type === 'sentence')).toHaveLength(1);
   });
 
-  it('a new speech_start while thinking interrupts the old turn then listens', async () => {
+  it('a new speech_start while thinking continues the request instead of dropping it', async () => {
     const h = harness();
     await speak(h);
+    const signal = h.brain.calls[0].signal;
     h.session.handleMessage({ type: 'speech_start', turnId: 't2' });
     expect(types(h).slice(-3)).toEqual(['state:thinking', 'done:interrupted', 'state:listening']);
+    expect(signal.aborted).toBe(true);
     expect(h.session.acceptingAudio).toBe(true);
+    expect(h.records[0]).toMatchObject({ turnId: 't1', end: 'interrupted', transcript: 'Which tasks need me?', sentences: 0 });
+    expect(h.records[0].reason).toMatch(/continued/);
   });
 
   it('empty or hallucinated transcript ends empty without calling the brain', async () => {
@@ -618,6 +620,156 @@ describe('LucyLiveSession', () => {
       h.ears[1].result.resolve('Yes');
       await tick();
       expect(h.sent.some((m) => m.type === 'transcript' && m.final)).toBe(true);
+    });
+  });
+
+  describe('a request spoken with pauses', () => {
+    /** Start a part and send audio, without ending it. */
+    const begin = (h: Harness, id: string): FakeEars => {
+      h.session.handleMessage({ type: 'speech_start', turnId: id });
+      h.session.handleAudio(Buffer.alloc(3200));
+      return h.ears[h.ears.length - 1];
+    };
+    const finalTexts = (h: Harness): string[] => h.sent.flatMap((m) => (m.type === 'transcript' && m.final ? [m.text] : []));
+
+    it('joins a second part spoken before the recogniser replied, and answers once', async () => {
+      const h = harness();
+      const first = begin(h, 't1');
+      h.session.handleMessage({ type: 'speech_end', turnId: 't1' });
+      const second = begin(h, 't2'); // the pause was shorter than the recogniser's reply
+      first.result.resolve('Look into the failing build.');
+      second.result.resolve('Then fix it.');
+      h.session.handleMessage({ type: 'speech_end', turnId: 't2' });
+      await tick(); await tick();
+      expect(h.brain.calls).toHaveLength(1);
+      expect(h.brain.calls[0].user).toBe('Look into the failing build. Then fix it.');
+      expect(finalTexts(h)).toEqual(['Look into the failing build. Then fix it.']);
+      expect(first.aborted).toBe(false);
+      h.brain.feed('On it.'); h.brain.end();
+      await tick(); await tick();
+      expect(h.sent.filter((m) => m.type === 'turn_done').map((m) => m.type === 'turn_done' ? [m.turnId, m.end] : [])).toEqual([['t1', 'interrupted'], ['t2', 'answered']]);
+      expect(h.records.find((r) => r.turnId === 't1')).toMatchObject({ end: 'interrupted', transcript: 'Look into the failing build.' });
+    });
+
+    it('joins a second part spoken while the model is thinking about the first', async () => {
+      const h = harness();
+      await speak(h, 't1', 'Check the build.');
+      const second = begin(h, 't2');
+      h.session.handleMessage({ type: 'speech_end', turnId: 't2' });
+      second.result.resolve('And fix it.');
+      await tick(); await tick();
+      expect(h.brain.calls).toHaveLength(2);
+      expect(h.brain.calls[1].user).toBe('Check the build. And fix it.');
+      expect(h.brain.calls[1].history).toEqual([]); // the abandoned first part is not remembered as an exchange
+    });
+
+    it('shows the whole request growing in drafts', async () => {
+      const h = harness();
+      await speak(h, 't1', 'Check the build.');
+      h.session.handleMessage({ type: 'speech_start', turnId: 't2' });
+      await tick();
+      expect(h.sent.filter((m) => m.type === 'transcript' && m.turnId === 't2')).toEqual([
+        { type: 'transcript', turnId: 't2', text: 'Check the build.', final: false },
+      ]);
+      h.session.handleAudio(Buffer.alloc(DRAFT_INTERVAL_BYTES));
+      h.drafts[0].d.resolve('and fix it');
+      await tick();
+      expect(h.sent.at(-1)).toEqual({ type: 'transcript', turnId: 't2', text: 'Check the build. and fix it', final: false });
+    });
+
+    it('joins three parts in a row', async () => {
+      const h = harness();
+      const e1 = begin(h, 't1');
+      h.session.handleMessage({ type: 'speech_end', turnId: 't1' });
+      const e2 = begin(h, 't2');
+      h.session.handleMessage({ type: 'speech_end', turnId: 't2' });
+      const e3 = begin(h, 't3');
+      h.session.handleMessage({ type: 'speech_end', turnId: 't3' });
+      e3.result.resolve('three');
+      e1.result.resolve('one');
+      e2.result.resolve('two');
+      await tick(); await tick();
+      expect(h.brain.calls).toHaveLength(1);
+      expect(h.brain.calls[0].user).toBe('one two three');
+      expect(h.records.filter((r) => r.end === 'interrupted').map((r) => r.transcript)).toEqual(expect.arrayContaining(['one', 'two']));
+    });
+
+    it('treats a part cut at the length cap as the first of several', async () => {
+      const h = harness();
+      h.session.handleMessage({ type: 'speech_start', turnId: 't1' });
+      for (let i = 0; i < 40; i++) h.session.handleAudio(Buffer.alloc(32000));
+      h.session.handleMessage({ type: 'speech_end', turnId: 't1' }); // the browser cuts at 30 s
+      const e2 = begin(h, 't2');
+      h.session.handleMessage({ type: 'speech_end', turnId: 't2' });
+      h.ears[0].result.resolve('a very long beginning');
+      e2.result.resolve('and the end');
+      await tick(); await tick();
+      expect(h.brain.calls[0].user).toBe('a very long beginning and the end');
+    });
+
+    it('answers the earlier parts alone when the new sound turns out not to be speech', async () => {
+      const h = harness();
+      await speak(h, 't1', 'Check the build.');
+      h.session.handleMessage({ type: 'speech_start', turnId: 't2' });
+      h.session.handleMessage({ type: 'speech_cancel', turnId: 't2' });
+      await tick(); await tick();
+      expect(h.brain.calls).toHaveLength(2);
+      expect(h.brain.calls[1].user).toBe('Check the build.');
+    });
+
+    it('does not lose an older exchange from history when a thinking turn is retired', async () => {
+      const h = harness();
+      for (let i = 1; i <= 8; i++) {
+        await speak(h, `h${i}`, `question number ${i}`);
+        h.brain.feed('An answer.'); h.brain.end();
+        await tick(); await tick();
+      }
+      await speak(h, 'a', 'the first half');
+      const e = begin(h, 'b');
+      h.session.handleMessage({ type: 'speech_end', turnId: 'b' });
+      e.result.resolve('the second half');
+      await tick(); await tick();
+      const history = h.brain.calls.at(-1)!.history;
+      expect(history).toHaveLength(16);
+      expect(history[0].content).toBe('question number 1');
+    });
+
+    it('still interrupts her once she has started speaking', async () => {
+      const h = harness();
+      await speak(h, 't1', 'Check the build.');
+      h.brain.feed('First sentence. ');
+      await tick(); await tick();
+      expect(types(h)).toContain('state:speaking');
+      h.session.handleMessage({ type: 'speech_start', turnId: 't2' });
+      expect(h.records.at(-1)).toMatchObject({ turnId: 't1', end: 'interrupted' });
+      expect(h.records.at(-1)?.reason).toBeUndefined();
+      const e2 = h.ears[h.ears.length - 1];
+      h.session.handleAudio(Buffer.alloc(3200));
+      h.session.handleMessage({ type: 'speech_end', turnId: 't2' });
+      e2.result.resolve('Never mind.');
+      await tick(); await tick();
+      expect(h.brain.calls.at(-1)?.user).toBe('Never mind.'); // not joined to the first request
+    });
+
+    it('with Silero, a confirmed candidate while thinking continues the request; while speaking it interrupts', async () => {
+      const h = harness({ vad: true });
+      h.session.handleMessage({ type: 'speech_start', turnId: 't1' });
+      h.vads[0].script.push([0.9, 0.9, 0.9]);
+      h.session.handleAudio(Buffer.alloc(3200));
+      h.session.handleMessage({ type: 'speech_end', turnId: 't1' });
+      h.ears[0].result.resolve('Check the build.');
+      await tick(); await tick();
+      h.session.handleMessage({ type: 'speech_start', turnId: 't2', lucyAudible: true });
+      h.vads[1].script.push([0.9, 0.9, 0.9]);
+      h.session.handleAudio(Buffer.alloc(3200));
+      await tick();
+      expect(h.sent.some((m) => m.type === 'speech_confirmed')).toBe(true);
+      expect(h.records[0]).toMatchObject({ turnId: 't1', transcript: 'Check the build.', end: 'interrupted' });
+      expect(h.records[0].reason).toMatch(/continued/);
+      h.session.handleMessage({ type: 'speech_end', turnId: 't2' });
+      h.ears[1].result.resolve('Then fix it.');
+      await tick(); await tick();
+      expect(h.brain.calls.at(-1)?.user).toBe('Check the build. Then fix it.');
     });
   });
 });

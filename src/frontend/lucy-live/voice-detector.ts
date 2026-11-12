@@ -67,6 +67,11 @@ const FLOOR_RISE_RATE = 0.005;
 /** How fast the "recent loudness" used to absorb a rejected sound follows the latest frames (per frame, 0..1). */
 const RECENT_LEVEL_RATE = 0.25;
 
+/** Frames averaged to find a turn's quietest stretch (about 0.25 s). */
+const QUIET_WINDOW_FRAMES = 8;
+/** A turn cut for length whose average is less than this far above its quietest stretch is steady noise, not speech. */
+const FLAT_NOISE_RANGE_DB = 6;
+
 /** `normal` when nobody else is talking, `guarded` while Lucy thinks or speaks. */
 export type DetectorMode = 'normal' | 'guarded';
 
@@ -131,6 +136,11 @@ export function createVoiceDetector(options: VoiceDetectorOptions = {}): VoiceDe
   let speechMs = 0;
   let turnMs = 0;
   let quietRunMs = 0;
+  // Level statistics of the turn in progress, to tell steady noise from speech when it is cut for length.
+  let turnLevelSum = 0;
+  let turnFrames = 0;
+  let quietestDb = 0;
+  let recentWindow: number[] = [];
 
   // Smoothed loudness of the latest frames, for absorbRejectedSound().
   let recentLevelDb: number | null = null;
@@ -145,6 +155,10 @@ export function createVoiceDetector(options: VoiceDetectorOptions = {}): VoiceDe
     speechMs = 0;
     turnMs = 0;
     quietRunMs = 0;
+    turnLevelSum = 0;
+    turnFrames = 0;
+    quietestDb = 0;
+    recentWindow = [];
   }
 
   function push(frame: Float32Array, mode: DetectorMode): VoiceEvent[] {
@@ -185,6 +199,14 @@ export function createVoiceDetector(options: VoiceDetectorOptions = {}): VoiceDe
 
     turnMs += frameMs;
     events.push({ type: 'frame', frame });
+    turnLevelSum += level;
+    turnFrames += 1;
+    recentWindow.push(level);
+    if (recentWindow.length > QUIET_WINDOW_FRAMES) recentWindow.shift();
+    if (recentWindow.length === QUIET_WINDOW_FRAMES) {
+      const avg = recentWindow.reduce((a, b) => a + b, 0) / QUIET_WINDOW_FRAMES;
+      quietestDb = turnFrames === QUIET_WINDOW_FRAMES ? avg : Math.min(quietestDb, avg);
+    }
     if (level >= Math.max(floorDb + STAY_MARGIN_DB, ABSOLUTE_MIN_SPEECH_DB)) {
       speechMs += frameMs;
       quietRunMs = 0;
@@ -196,8 +218,13 @@ export function createVoiceDetector(options: VoiceDetectorOptions = {}): VoiceDe
     const tooLong = turnMs >= MAX_TURN_MS;
     if (silenceEnded || tooLong) {
       const spoken = speechMs;
-      // A turn cut for length means the "noise" is probably the room itself: accept it as the new floor.
-      if (tooLong && !silenceEnded) floorDb = clampFloor(level);
+      // A turn cut for length is either a long request or a steady noise that never let up.
+      // Speech rises and falls (words, breaths), so its quietest stretch sits well below its
+      // average; a fan or a drone is flat. Only a flat turn is taken as the new floor. Taking the
+      // level of a long request would make the operator's own voice the floor.
+      if (tooLong && !silenceEnded && turnFrames >= QUIET_WINDOW_FRAMES && turnLevelSum / turnFrames - quietestDb < FLAT_NOISE_RANGE_DB) {
+        floorDb = Math.max(floorDb, clampFloor(turnLevelSum / turnFrames));
+      }
       resetTurn();
       events.push(spoken >= MIN_SPEECH_MS ? { type: 'end', speechMs: spoken } : { type: 'misfire' });
     }

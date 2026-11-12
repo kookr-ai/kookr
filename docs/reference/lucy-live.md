@@ -76,6 +76,21 @@ happen:
    it treats `barge_in` as a confirmation (abandons the answer and listens to the candidate's audio
    as your turn), so the words you keep saying are not lost.
 
+**Speaking with pauses.** The browser ends a turn after 0.6 s of quiet, or after 30 s of speech, so a
+long request often arrives as several parts. Talking over her only stops her once she has started to
+speak (the server is in `speaking`). If you start again while she is still turning your words into text
+or thinking (`transcribing` or `thinking`), nothing has been said yet, so the new speech is the rest of
+the same request: the earlier part ends as `interrupted` with the reason "continued", the new part
+carries its text, and she answers the whole request once, as one turn. The panel shows the request
+growing: the earlier text first, then drafts of the whole. A new sound that turns out not to be speech
+(`speech_cancel`) leaves the earlier parts to be answered alone. With the voice check on, the
+choice is made by when you started: if you began before she said anything, the part joins even if one
+of her sentences slipped out while the check was deciding. Every part's text is written to
+the interaction log (redacted as usual), including parts that ended `interrupted`; a part that was
+joined to a later one says so in its `reason`. When a turn is cut at 30 s, the browser raises its noise floor only if the turn was flat like a fan
+(its average is within 6 dB of its quietest quarter second); a long request keeps the floor, so the
+words that follow are heard at the usual bar.
+
 If a loud sound goes on and on (a fan switched on, a drone) and Silero rejects it, the browser treats
 that sound as background noise: its noise floor rises to the sound's level, so the same sound does not
 duck her again every moment. Speech clearly louder than the noise is still heard, and the floor falls
