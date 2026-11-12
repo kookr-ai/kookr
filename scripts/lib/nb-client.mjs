@@ -321,6 +321,22 @@ export function createNbClient({ dir, nb = DEFAULT_NB, env = process.env } = {})
 const META_RE = /^#\s*([a-z][a-z0-9_-]*):\s?(.*)$/;
 
 /**
+ * The characters agent-notebook 0.8.0 drops from a lesson when it reads a shelf
+ * file (its `CONTROL_CHARS_RE`): C0/C1 controls other than tab/newline/CR/VT/FF,
+ * the soft hyphen, the zero-width space, the word joiner, the byte-order mark,
+ * bidi controls and the Unicode Tag block. 0.7.0 kept them. They matter here
+ * because a lesson's id is derived from its text: a file written by an older
+ * `nb` can still hold one inside a word, and `nb` 0.8.0 computes the id from the
+ * text without it.
+ */
+const NB_STRIPPED_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u00AD\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu;
+
+/** A lesson's text as `nb` 0.8.0 reads it from a shelf line (its `sanitizeLesson`). */
+function lessonText(raw) {
+  return raw.replace(NB_STRIPPED_CHARS_RE, '').replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Parse the text of a shelf file, read-only, the way `nb` does: leading `# key:`
  * lines are metadata, every later non-blank line is `<score>\t<lesson>`.
  * Returns entries `{ id, score, text }` in FILE order (least-recently-touched first).
@@ -335,7 +351,7 @@ export function parseShelfText(body) {
     inMeta = false;
     if (line.trim() === '') continue;
     const tab = line.indexOf('\t');
-    const text = (tab === -1 ? line : line.slice(tab + 1)).replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const text = lessonText(tab === -1 ? line : line.slice(tab + 1));
     if (text === '') continue;
     const n = tab === -1 ? 0 : Number.parseInt(line.slice(0, tab), 10);
     entries.push({ id: entryId(text), score: Number.isFinite(n) ? n : 0, text });
