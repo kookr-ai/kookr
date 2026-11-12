@@ -230,6 +230,8 @@ function givesInstruction(text: string): boolean {
  * tokens through ("/api/v1/reset/<24-character token>").
  */
 const SECRET_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/g;
+/** The part of {@link SECRET_PATTERN} that recognises a token by its prefix, without the "any long run" rule. */
+const PREFIXED_SECRET_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,})\b/g;
 
 const SYSTEM_PROMPT = `You write short spoken-audio summaries for a developer supervising coding-agent tasks.
 
@@ -320,10 +322,13 @@ export function redactSpeechSecrets(value: string): string {
  * Where {@link redactSpeechSecrets} would hide a secret-looking token in `value`, as
  * `[start, end)` offsets in order. For callers that must hide a token in text whose
  * characters do not line up one-to-one with what was searched (see
- * `core/lucy-operator/task-text.ts`).
+ * `core/lucy-operator/task-text.ts`). `kind: 'prefixed'` looks only for tokens with a
+ * known prefix (`sk-`, a GitHub token), leaving out the "any run of 32 or more
+ * characters" rule, for searches where ordinary words may have been joined together.
  */
-export function speechSecretSpans(value: string): Array<[number, number]> {
-  return [...value.matchAll(SECRET_PATTERN)].map((match) => [match.index, match.index + match[0].length]);
+export function speechSecretSpans(value: string, kind: 'all' | 'prefixed' = 'all'): Array<[number, number]> {
+  const pattern = kind === 'prefixed' ? PREFIXED_SECRET_PATTERN : SECRET_PATTERN;
+  return [...value.matchAll(pattern)].map((match) => [match.index, match.index + match[0].length]);
 }
 
 function sanitizeText(value: string | null | undefined, max = MAX_FIELD_CHARS): string {

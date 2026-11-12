@@ -220,8 +220,8 @@ export function buildLucyBoard(input: LucyBoardInput, nowMs: number, maxChars: n
 
 /** Join lines, dropping whole trailing lines rather than cutting one in half. */
 function capLines(lines: readonly string[], max: number): string {
-  const total = lines.reduce((sum, line) => sum + line.length + 1, 0);
-  if (total <= max) return lines.join('\n');
+  const joined = lines.join('\n');
+  if (joined.length <= max) return joined;
   // Too long: keep whole lines from the top, leaving room for the line that says so.
   const cutLine = '(task lists cut short: the board was too long)';
   const kept: string[] = [];

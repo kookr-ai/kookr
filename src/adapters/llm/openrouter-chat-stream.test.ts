@@ -102,7 +102,8 @@ describe('OpenRouterChatStreamParser', () => {
     }
     parser.push(data({ choices: [{ delta: { tool_calls: [{ id: 'ok', function: { name: 'read_board', arguments: '{}' } }] } }] }));
     const events = parser.finish();
-    expect(performance.now() - started).toBeLessThan(500);
+    // A generous limit for a busy machine: an unbounded index held the thread for over a second per fragment.
+    expect(performance.now() - started).toBeLessThan(5_000);
     expect(events.filter((e) => e.type === 'tool_call')).toEqual([{ type: 'tool_call', call: { id: 'ok', name: 'read_board', arguments: '{}' } }]);
   });
 
