@@ -3,8 +3,8 @@ name: asking-the-operator
 group: agent-automation
 description: >
   Ask the human operator a multiple-choice question from inside a Kookr task
-  with `kookr ask` (delivered to their phone over Telegram) and act on the
-  answer. Use when you are blocked on a decision that is genuinely theirs to
+  with `kookr ask` (delivered to their phone over Telegram, and asked aloud by
+  Lucy in the dashboard when it is open) and act on the answer. Use when you are blocked on a decision that is genuinely theirs to
   make, with 2-4 concrete options, and the operator is probably away from the
   terminal. Covers when to ask, how to write options, and how to read the
   answer; also when NOT to ask.
@@ -21,6 +21,11 @@ related: autonomous-watch-loop, automation-design
 their phone and routes the answer back into your session. It exists so an
 operator who is away from the terminal can unblock you in one tap. It is a
 scarce resource: every question interrupts a person. Ask rarely, ask well.
+
+The same question is also shown in the Kookr dashboard, where Lucy (the avatar
+panel, when the operator has it on) reads it out and takes the answer. The
+operator answers in whichever place they are; the first answer wins and you
+receive it the same way. Nothing changes in how you ask or read the answer.
 
 ## When to ask
 
@@ -59,9 +64,12 @@ kookr ask \
 ```
 
 - **Question**: one sentence the operator can answer on a lock screen, with
-  the decision in it. Not "what should I do?".
+  the decision in it. Not "what should I do?". It is also **read aloud** in
+  the dashboard, together with the option labels, so write both the way you
+  would say them: no file paths, ids, hashes or code.
 - **Context** (optional, short): the one or two facts that change the answer.
-  Not a transcript.
+  Not a transcript. It is shown but never read aloud, so paths, numbers and
+  names belong here.
 - **Options**: 2-4 labels, each a *complete, mutually exclusive action*
   ("Merge as-is", "Split into two PRs"), at most 48 characters. Put your
   recommended option **first**. No "Other" option: free-text replies are

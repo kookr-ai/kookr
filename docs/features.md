@@ -422,6 +422,28 @@ things she said.
   answers you while hands-free is on (below). Its mouth follows the loudness of the clip, not the
   individual sounds, so the lip-sync is approximate.
 
+#### Lucy asks you what a task needs to know
+
+When a task asks you a question with `kookr ask` (the multiple-choice questions that reach your phone
+over Telegram), Lucy asks it too if the dashboard is open with the avatar panel on. She reads the
+question and its choices aloud once, and the panel shows a card with one button per choice, the
+background the task gave, and a box for a typed answer when the task accepts one.
+
+- **Answer where you are.** Press a choice in her panel, or answer on Telegram. It is one question
+  with two ways to answer: the first answer wins, the task receives it the same way, and the other
+  place is updated. Answer in Kookr and the Telegram message changes to "Already answered in Kookr:
+  … Nothing more is needed here." Answer on Telegram and the card changes to "Answered on Telegram: …".
+- **She does not nag.** She speaks a question only when it arrives, never again on a reload, and in
+  one browser tab only. With sound off or Do Not Disturb on she stays silent and the question waits
+  in her message list as unheard. If it is answered while she is reading it, she stops.
+- **Minimised**, the bubble's badge counts the questions still waiting, with the findings.
+- **Needs** Telegram remote chat (that is what makes `kookr ask` available) and, for her voice, the
+  speech service. With the avatar panel off nothing changes: the question is on Telegram only.
+- **Not by voice yet.** With hands-free talk on she knows which questions are waiting and which were
+  answered, and can tell you, but she cannot record an answer you say out loud.
+
+Details: [Lucy live](reference/lucy-live.md#questions-from-tasks).
+
 #### Talk to Lucy hands-free (optional, off by default)
 
 The **Talk** button in the panel's title bar starts a spoken conversation: you speak, she answers out

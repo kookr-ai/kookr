@@ -1415,7 +1415,11 @@ host), `2` usage error (unknown flag), `3` no server reachable, `5` ambiguous po
 
 Ask the operator a multiple-choice question over Telegram, from inside a task.
 Operators are often away from the terminal; this lets an agent that is blocked
-on a genuine operator decision get an answer on their phone. Design:
+on a genuine operator decision get an answer on their phone. When the dashboard
+is open with the avatar panel on, Lucy also reads the question out and shows it
+as a card with the same choices; the operator answers in either place, the first
+answer wins, and the other place shows that it was answered (see
+[Lucy live](lucy-live.md#questions-from-tasks)). Design:
 `docs/rfc/rfc-kookr-ask.md`; HTTP contract: `docs/reference/api.md`
 ("Agent Asks"). Requires the Telegram remote-chat integration to be configured
 (see "Remote Chat Trigger" in `docs/reference/environment-variables.md`);
@@ -1440,7 +1444,8 @@ kookr ask --question "<text>" --option "<label>" --option "<label>" [--option "<
 
 Without `--wait` the command returns immediately and prints the ask id; the
 operator's answer is typed into the task's session as
-`Operator answered ask <id>: <label>`. With `--wait` it also prints the chosen
+`Operator answered ask <id>: <label>` (the same text whether it was given on
+Telegram or in the dashboard). With `--wait` it also prints the chosen
 label (or the free text) on stdout. Re-running the same question with the same
 options from the same task while it is still pending returns the existing ask
 instead of sending a second Telegram message. Question and context text that

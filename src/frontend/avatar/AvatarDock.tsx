@@ -573,7 +573,7 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   const newestId = clips[0]?.clipId;
   return (
     <section
-      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${asks.length > 0 ? ' avatar-dock-asking' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
+      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${asks.length > 0 ? ' avatar-dock-asking' : ''}${pendingAskCount > 0 ? ' avatar-dock-ask-waiting' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
       style={{ left: position.x, top: position.y, width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT }}
       aria-label={`${NAME} avatar`}
       ref={dockRef}

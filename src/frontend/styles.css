@@ -17094,6 +17094,11 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 .avatar-dock-asking .avatar-dock-view { min-height: 56px; }
 .avatar-dock-asking .avatar-dock-transcript { max-height: 64px; }
+/* While a question is waiting it gets all the room there is: the message list steps aside (its newest entry is
+   the same question, read aloud, and the header's Replay button still plays it) and the cards may grow until
+   only the strip of the 3D view is left. */
+.avatar-dock-ask-waiting .avatar-asks { max-height: none; }
+.avatar-dock-ask-waiting .avatar-dock-transcript { display: none; }
 .avatar-ask {
   display: flex;
   flex-direction: column;
