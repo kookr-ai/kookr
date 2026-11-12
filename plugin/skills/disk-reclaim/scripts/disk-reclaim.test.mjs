@@ -426,6 +426,42 @@ describe('ignored files and hidden edits', () => {
     expect(find(r, path).reason).toMatch(/reflog/);
   });
 
+  test('a commit kept only by the BRANCH reflog (worktree recreated after reset) keeps it REVIEW', async () => {
+    const path = addWorktree('recreated', { merge: true });
+    commitFile(path, 'lost-work.txt');
+    git(path, 'reset', '-q', '--hard', 'origin/main');
+    git(main, 'worktree', 'remove', path);
+    git(main, 'worktree', 'add', '-q', path, 'recreated');
+    // The new worktree's HEAD reflog no longer holds the commit; only refs/heads/recreated's does.
+    const r = await buildReport(opts(), deps());
+    expect(find(r, path)).toMatchObject({ tier: 'REVIEW' });
+    expect(find(r, path).reason).toMatch(/only in this worktree's reflog/);
+  });
+
+  test.each([
+    ['committed .gitattributes', false],
+    ['info/attributes', true],
+  ])('a clean filter declared in %s (nbstripout-style) keeps the worktree REVIEW', async (_label, viaInfo) => {
+    const wt = addWorktree(`filtered${viaInfo ? 'info' : 'attr'}`);
+    git(main, 'config', 'filter.strip.clean', "sed '/^OUTPUT/d'");
+    if (viaInfo) {
+      const common = git(wt, 'rev-parse', '--git-common-dir').trim();
+      const infoDir = join(common.startsWith('/') ? common : join(wt, common), 'info');
+      mkdirSync(infoDir, { recursive: true });
+      writeFileSync(join(infoDir, 'attributes'), '*.ipynb filter=strip\n');
+    } else {
+      writeFileSync(join(wt, '.gitattributes'), '*.ipynb filter=strip\n');
+    }
+    writeFileSync(join(wt, 'run.ipynb'), 'cell1\nOUTPUT: accuracy=0.93\n');
+    git(wt, 'add', '-A');
+    git(wt, 'commit', '-q', '-m', 'notebook');
+    mergeBranch(`filtered${viaInfo ? 'info' : 'attr'}`);
+    expect(git(wt, 'status', '--porcelain').trim()).toBe(''); // git sees no difference
+    const r = await buildReport(opts(), deps());
+    expect(find(r, wt)).toMatchObject({ tier: 'REVIEW' });
+    expect(find(r, wt).reason).toMatch(/clean filter configured \(strip\)/);
+  });
+
   test('a git operation in progress keeps the worktree REVIEW', async () => {
     const wt = addWorktree('mid-merge', { merge: true });
     // Simulate a paused operation: git leaves MERGE_HEAD in the worktree's git dir.

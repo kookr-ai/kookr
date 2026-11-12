@@ -159,6 +159,12 @@ function expandHome(p, home) {
 // ---------------------------------------------------------------- helpers
 
 /** Runs a command; never rejects. `code` is the exit status (number) or null. */
+/** Drop variables that would point every `git -C <dir>` at some other repository (e.g. inside a git hook). */
+function childEnv(env) {
+  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_NAMESPACE']) delete env[k];
+  return env;
+}
+
 function exec(cmd, args, { cwd, timeoutMs = 60_000, env } = {}) {
   return new Promise((done) => {
     execFile(
@@ -168,7 +174,7 @@ function exec(cmd, args, { cwd, timeoutMs = 60_000, env } = {}) {
         cwd,
         timeout: timeoutMs,
         maxBuffer: 256 * MIB,
-        env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...extraEnv, ...env },
+        env: childEnv({ ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...extraEnv, ...env }),
       },
       (err, stdout, stderr) => {
         const timedOut = Boolean(err && err.killed);
@@ -545,6 +551,32 @@ export async function inspectDir(dir, opts, deps, { light = false, fetched = new
   return e;
 }
 
+/** Names of non-LFS clean filters declared in this checkout's attributes AND configured in git. */
+async function configuredCleanFilters(dir, commonDir, git) {
+  const files = [];
+  const tracked = await git(['ls-files', '--', '.gitattributes', '*/.gitattributes']);
+  if (tracked.code === 0) files.push(...tracked.stdout.split('\n').filter(Boolean).map((f) => join(dir, f)));
+  files.push(join(commonDir, 'info', 'attributes'));
+  const global = await git(['config', '--path', '--get', 'core.attributesFile']);
+  if (global.code === 0 && global.stdout.trim()) files.push(global.stdout.trim());
+  const names = new Set();
+  for (const f of files) {
+    let text = '';
+    try {
+      text = readFileSync(f, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const m of text.matchAll(/(?:^|\s)filter=([^\s]+)/g)) if (m[1] !== 'lfs') names.add(m[1]);
+  }
+  const out = [];
+  for (const name of names) {
+    const clean = await git(['config', '--get', `filter.${name}.clean`]);
+    if (clean.code === 0 && clean.stdout.trim()) out.push(name);
+  }
+  return out;
+}
+
 async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
   const git = (args) => exec('git', ['-C', dir, ...args], { timeoutMs: left() });
   const bail = (r, what) => {
@@ -597,13 +629,17 @@ async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
     // no branch, and `git gc` deletes them once removal drops the reflogs. Count any commit
     // those point at that no surviving branch, tag or remote-tracking ref contains.
     const lines = (r) => (r.code === 0 ? r.stdout.split('\n').map((l) => l.trim()).filter(Boolean) : []);
+    const branchName = br.code === 0 ? br.stdout.trim() || null : null;
     const [headLog, branchLog, orig, wtRefs] = await Promise.all([
       git(['log', '-g', '--format=%H', 'HEAD', '--']),
-      e.branch ? git(['log', '-g', '--format=%H', `refs/heads/${e.branch}`, '--']) : Promise.resolve({ code: 0, stdout: '' }),
+      // e.branch is assigned further down; read the branch from the symbolic-ref result here.
+      branchName ? git(['log', '-g', '--format=%H', `refs/heads/${branchName}`, '--']) : Promise.resolve({ code: 0, stdout: '' }),
       git(['rev-parse', '-q', '--verify', 'ORIG_HEAD^{commit}']),
       git(['for-each-ref', '--format=%(objectname)', 'refs/worktree/', 'refs/bisect/']),
     ]);
-    if (headLog.code !== 0 && headLog.timedOut) e.errors.push('git reflog timed out');
+    // Fail closed: if a reflog cannot be read, the commits it protects cannot be checked.
+    if (headLog.code !== 0) e.errors.push(headLog.timedOut ? 'git reflog timed out' : 'git reflog (HEAD) unreadable');
+    if (branchLog.code !== 0) e.errors.push(branchLog.timedOut ? 'git reflog timed out' : 'git reflog (branch) unreadable');
     const tips = [...new Set([...lines(headLog), ...lines(branchLog), ...lines(orig), ...lines(wtRefs)])];
     if (tips.length > REFLOG_TIP_LIMIT) e.reflogOnlyCommits = -1; // too many to check: treat as unknown
     else if (tips.length) {
@@ -611,6 +647,11 @@ async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
       if (r.code !== 0) e.errors.push(r.timedOut ? 'git rev-list timed out' : 'git rev-list (reflog check) failed');
       else e.reflogOnlyCommits = lines(r).length;
     }
+    // A clean filter (nbstripout-style) makes `git status` and git's own remove check compare the
+    // FILTERED file, so working-copy-only content (notebook outputs, results) looks clean. Any
+    // non-LFS filter that is both declared in an attributes file and configured with a clean
+    // command makes the worktree not SAFE.
+    e.cleanFilters = await configuredCleanFilters(dir, commonDir, git);
   }
   if (ignored) {
     if (ignored.code !== 0) e.errors.push(ignored.timedOut ? 'git ls-files timed out' : 'git ls-files failed');
@@ -777,6 +818,7 @@ export function classifyEntry(e, opts, usage, nowMs) {
     if (e.locked) wt.push('worktree is locked');
     if (e.hiddenEdits.length) wt.push(`edits hidden by skip-worktree/assume-unchanged: ${e.hiddenEdits.slice(0, 3).join(', ')}`);
     if (e.pendingOps?.length) wt.push(`git operation in progress: ${e.pendingOps.join(', ')}`);
+    if (e.cleanFilters?.length) wt.push(`clean filter configured (${e.cleanFilters.join(', ')}): working files may hold content git status does not show`);
     if (e.reflogOnlyCommits === -1) wt.push('reflog too long to check for commits on no branch');
     else if (e.reflogOnlyCommits > 0) wt.push(`${e.reflogOnlyCommits} commit${e.reflogOnlyCommits === 1 ? '' : 's'} only in this worktree's reflog or ORIG_HEAD (on no branch, tag or remote; e.g. after reset or rebase)`);
     if (e.ignoredEntries.length) {
