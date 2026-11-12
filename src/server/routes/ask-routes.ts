@@ -7,6 +7,13 @@ import type { SpeakAudioResponse } from '../../shared/contracts/speech.js';
 import { toAskView, type AskService } from '../asks/ask-service.js';
 import { countSpokenWords, type LucyInteractionLog } from '../lucy-interaction-log.js';
 
+/**
+ * How long one attempt at speaking a question may take, twice the speech client's usual limit. A
+ * question waits for the operator for many minutes, so hearing it half a minute late is far better
+ * than not hearing it; the speaker buttons keep the short limit because someone is waiting on a click.
+ */
+export const ASK_SPEECH_TIMEOUT_MS = 30_000;
+
 /** What `POST /api/asks/:id/speak` needs to turn a question into Lucy's voice. */
 export interface AskSpeechDeps {
   /** The speech service; undefined when it is not configured (the route then answers 503). */
@@ -157,11 +164,11 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
     const voice = speech.getVoice();
     const startedAt = Date.now();
     const synthesize = speech.synthesize ?? synthesizeSpeech;
-    const request = { ttsUrl: speech.ttsUrl, text, voice, signal: c.req.raw.signal };
+    const request = { ttsUrl: speech.ttsUrl, text, voice, timeoutMs: ASK_SPEECH_TIMEOUT_MS, signal: c.req.raw.signal };
     try {
-      // The speech service loads a voice the first time it is used, which can take longer than one
-      // request is allowed (measured: 13 s to load, against a 15 s limit). Questions are rare, so that
-      // first use is often a question. One more try then finds the voice loaded.
+      // The speech service loads a voice the first time it is used (measured: 13 s), and on a busy
+      // machine a sentence that normally takes 3 s was seen to take more than 15 s twice in a row.
+      // Questions are rare, so that first use is often a question. One more try then finds the voice loaded.
       const audio = await synthesize(request).catch((err: unknown) => {
         if (err instanceof TTSClientError && err.kind === 'timeout' && !c.req.raw.signal.aborted) return synthesize(request);
         throw err;

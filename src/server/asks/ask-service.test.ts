@@ -460,7 +460,7 @@ describe('ask routes', () => {
         audioBase64: 'UklGRg==', mimeType: 'audio/wav', durationMs: 1234, subject: 'Fix login', cached: false, usedFallback: false,
       });
       expect(body.clipId).toMatch(/^[0-9a-f-]{36}$/);
-      expect(synthesize).toHaveBeenCalledWith(expect.objectContaining({ ttsUrl: 'http://tts.test', voice: 'af_heart', text: body.text }));
+      expect(synthesize).toHaveBeenCalledWith(expect.objectContaining({ ttsUrl: 'http://tts.test', voice: 'af_heart', text: body.text, timeoutMs: 30_000 }));
       expect(recordSaid).toHaveBeenCalledWith(expect.objectContaining({ clipId: body.clipId, source: 'operator_ask', taskId: 't1', text: body.text }));
       expect(h.store.get(ask.id)?.state).toBe('pending');
     });
