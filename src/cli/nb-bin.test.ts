@@ -3,7 +3,7 @@
 // NB_DIR to the kookr location, and (Objective C) commits every notebook
 // mutation when NB_DIR is a git repo so a daily job can push the history.
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, copyFileSync, mkdirSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, copyFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -300,7 +300,12 @@ describe('bin/nb.js — placement advisories on `add` (stderr only, never a refu
       expect(r.code, flag).toBe(0);
       expect(r.err, flag).toBe('');
     }
-    expect(nb(['show', 'fleet-global']).out).not.toContain('--help');
+    expect(existsSync(join(dir, 'fleet-global.md'))).toBe(false); // nothing was written, under any name
+    // The value of --note is not a help request: the lesson is written and the advisory applies.
+    const noted = nbErr(['add', 'fleet-global', 'a host fact', '--note', '-h'], {});
+    expect(noted.code).toBe(0);
+    expect(noted.err).toMatch(/advisory: fleet-global is written only by promotion/);
+    expect(nb(['show', 'fleet-global']).out).toContain('a host fact');
     // After `--` the token is the lesson text: it is written, and the advisory applies.
     const literal = nbErr(['add', 'fleet-global', '--', '--help'], {});
     expect(literal.code).toBe(0);

@@ -266,7 +266,7 @@ describe('parity with the real nb binary', () => {
     expect(readLessons(dir, 's@legacy')).toHaveLength(1); // nothing was written
   });
 
-  test('moving the last lesson removes the shelf file (nb 0.8.0); reapZeroByteShelf still deletes a 0-byte file an older nb left', () => {
+  test('moving the last lesson removes the shelf file (nb 0.8.0), leaving nothing for reapZeroByteShelf', () => {
     const dir = makeStore({ git: false });
     dirs.push(dir);
     const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv() });
@@ -304,6 +304,16 @@ describe('parity with the real nb binary', () => {
     expect(snapshotStore(client).store.has('good')).toBe(true);
     writeFileSync(join(dir, 'bad name.md'), '+1\tnot a valid shelf name\n');
     expect(() => snapshotStore(client)).toThrow(/skipped 1 shelf file\(s\).*bad name.*partial index/);
+    // A control character in a file name is shown as a visible escape, never raw.
+    writeFileSync(join(dir, 'esc\u001b[31m.md'), '+1\tx\n');
+    let message = '';
+    try {
+      snapshotStore(client);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('esc\\u001b[31m');
+    expect(message).not.toContain('\u001b');
   });
 });
 

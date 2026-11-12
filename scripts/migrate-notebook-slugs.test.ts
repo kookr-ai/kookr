@@ -141,6 +141,22 @@ describe('migrate-notebook-slugs: --apply', { timeout: 120_000 }, () => {
     expect(readLessons(dir, 'planner')).toEqual([[1, 'a bare domain shelf']]);
   });
 
+  test('a move that nb fails stops the migration with nb\'s message and keeps the legacy lesson', () => {
+    // nb 0.8.0 refuses to write a shelf that holds git merge-conflict markers and reports it under
+    // --json as an error object on stdout; that must stop the run, not be logged as a skip.
+    const dir = store();
+    writeShelf(dir, 'tester@agent-notebook', L([2, 'tester one']));
+    writeFileSync(join(dir, `tester@${CANON}.md`), '<<<<<<< HEAD\n+2\tours\n=======\n+2\ttheirs\n>>>>>>> other\n');
+    commitAll(dir);
+    const { result, text } = run(dir, { apply: true, shim: true });
+    expect(result.ok, text).toBe(false);
+    expect(result.error).toMatch(/nb move failed for .*merge-conflict marker/);
+    expect(text).toContain('FAILED');
+    expect(text).not.toMatch(/SKIP unknown/);
+    expect(readLessons(dir, 'tester@agent-notebook')).toEqual([[2, 'tester one']]);
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+  });
+
   test('re-runs the description seed for the migrated repo only, and never touches another repo\'s shelf', () => {
     const dir = store();
     writeShelf(dir, 'tester@agent-notebook', L([2, 'tester one']));

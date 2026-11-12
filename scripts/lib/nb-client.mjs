@@ -439,7 +439,10 @@ export function snapshotStore(client) {
   // Since agent-notebook 0.8.0 an unreadable shelf no longer fails `nb list`: it is
   // left out of `rows` and named in `skipped`. That is a partial index too.
   if (Array.isArray(listed.json.skipped) && listed.json.skipped.length > 0) {
-    const names = listed.json.skipped.map((s) => `${s?.shelf ?? '?'} (${s?.code ?? 'unreadable'})`).join(', ');
+    // The names come from disk, so show control characters as visible escapes
+    // rather than sending them to the operator's terminal.
+    const visible = (v) => String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    const names = listed.json.skipped.map((s) => `${visible(s?.shelf ?? '?')} (${visible(s?.code ?? 'unreadable')})`).join(', ');
     throw new Error(`nb list --json skipped ${listed.json.skipped.length} shelf file(s) it could not read: ${names}; refusing to plan from a partial index`);
   }
   const dir = listed.json.dir;

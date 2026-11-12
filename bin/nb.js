@@ -180,11 +180,14 @@ async function adviseOnAdd(argv) {
   try {
     if ((argv[0] ?? '').trim() !== 'add') return;
     // `nb add <shelf> --help` (or `-h`) prints usage and writes nothing since
-    // agent-notebook 0.8.0, so there is no lesson to advise about. A help token
-    // after `--` is literal text, as in the package's own parsing.
-    const end = argv.indexOf('--');
-    const options = end === -1 ? argv : argv.slice(0, end);
-    if (options.includes('--help') || options.includes('-h')) return;
+    // agent-notebook 0.8.0, so there is no lesson to advise about. As in the
+    // package's own parsing, a help token after `--` is literal text and the
+    // value of `--reason`/`--note` is never a help request.
+    for (let i = 1; i < argv.length; i++) {
+      if (argv[i] === '--') break;
+      if (argv[i] === '--reason' || argv[i] === '--note') i++;
+      else if (argv[i] === '--help' || argv[i] === '-h') return;
+    }
     // First positional after `add`; `--reason`/`--note` take a value that is not the shelf.
     let shelf;
     for (let i = 1; i < argv.length; i++) {

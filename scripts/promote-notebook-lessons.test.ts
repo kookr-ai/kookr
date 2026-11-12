@@ -707,10 +707,13 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
     const { result, text } = run(dir, { apply: true, shim: true });
     expect(result.ok, text).toBe(false);
     expect(result.error).toMatch(/nb move failed for .*code-review/);
+    expect(result.error).toMatch(/merge-conflict marker/); // nb's own message, not a generic one
     expect(text).toContain('FAILED');
     expect(text).not.toMatch(/SKIP unknown/);
+    expect(result.performed).toEqual([]);
     expect(readLessons(dir, 'code-review@repo-one')).toEqual([[3, SAME]]);
     expect(readLessons(dir, 'code-review@repo-two')).toEqual([[5, SAME]]);
+    expect(git(dir, 'status', '--porcelain')).toBe(''); // nothing half-written
   });
 
   test('moving a shelf\'s last lesson leaves no file behind and nothing uncommitted', () => {
@@ -724,7 +727,8 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
     // shim commits that deletion with the command. (nb before 0.8.0 left a 0-byte file after a move. The
     // script still has the loop that deletes and commits one, for a run against an older nb; with the
     // pinned 0.8.0 that loop finds nothing, so no test here exercises it. The helper it calls,
-    // reapZeroByteShelf, is covered in scripts/lib/nb-sim.test.ts.)
+    // reapZeroByteShelf, is covered in scripts/lib/nb-sim.test.ts and, end to end with a planted
+    // 0-byte file, in scripts/migrate-notebook-slugs.test.ts.)
     expect(fileExists(dir, 'code-review@repo-two')).toBe(false); // best copy moved out
     expect(fileExists(dir, 'code-review@repo-one')).toBe(false); // other copy rm'd
     expect(git(dir, 'status', '--porcelain')).toBe('');

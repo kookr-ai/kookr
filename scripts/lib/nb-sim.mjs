@@ -7,7 +7,8 @@
 // makes room by (1) evicting the LOWEST-scored line of the target (ties: the
 // stalest, i.e. earliest in the file), and (2) docking one point from the
 // stalest surviving line. So moving a weak lesson into a full shelf can throw away
-// a better one. This module copies those rules from agent-notebook (written against 0.7.0, unchanged in 0.8.0)
+// a better one. This module copies those rules from agent-notebook (written against 0.7.0; the
+// eviction and ageing rules are the same in 0.8.0, whose other refusals it does not model)
 // (`dist/notebook.js` `enforceCap` and `move`); the test file replays random
 // stores through the REAL `nb` binary and asserts the model agrees, so a future
 // `nb` that changes the rules fails loudly instead of silently mis-planning.
