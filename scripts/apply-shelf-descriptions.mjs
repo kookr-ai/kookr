@@ -52,13 +52,17 @@ const MAX_DESC_CHARS = 200;
 // key, not only the canonical `# desc: `. Detecting with a bare
 // `startsWith('# desc:')` would miss a human's non-canonically-spaced line and
 // then overwrite it — the exact hazard property #2 forbids.
+// The same goes for how nb splits the file into lines: since agent-notebook 0.8.0
+// it strips one leading UTF-8 byte-order mark and accepts CRLF line ends, so a
+// description in such a file is one nb reads, and must count as present here too.
 const META_RE = /^#\s*([a-z][a-z0-9_-]*):\s?(.*)$/;
 
 /** True if the <shelf>.md file already carries a non-empty `desc` metadata line. */
 export function hasDescription(file) {
   // Scan the leading header block (metadata + blank lines); stop at the first
   // real lesson line. A `desc` key with a non-empty value means "described".
-  for (const line of readFileSync(file, 'utf-8').split('\n')) {
+  const raw = readFileSync(file, 'utf-8');
+  for (const line of (raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw).split(/\r?\n/)) {
     const m = META_RE.exec(line);
     if (m && m[1] === 'desc' && m[2].trim() !== '') return true;
     if (line.trim() === '' || line.startsWith('#')) continue; // blank or any header line

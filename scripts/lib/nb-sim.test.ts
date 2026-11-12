@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { applyMove, baselineScores, cloneStore, decideStep, noteMoved, dedupKey, entryId, exactKey, maxLines, predictMove, shelfNameProblem } from './nb-sim.mjs';
-import { createNbClient, nbMove, readShelf, reapZeroByteShelf, readFileOrderIds } from './nb-client.mjs';
+import { createNbClient, nbMove, readShelf, reapZeroByteShelf, readFileOrderIds, snapshotStore } from './nb-client.mjs';
 import { RAW_NB, cleanEnv, destroy, makeStore, readLessons, writeShelf, type Lesson } from './nb-test-helpers';
 import { existsSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -41,6 +41,14 @@ describe('keys', () => {
     expect(maxLines({ NB_MAX_LINES: '0' })).toBe(1);
     expect(maxLines({ NB_MAX_LINES: '999999' })).toBe(5000);
     expect(maxLines({ NB_MAX_LINES: 'abc' })).toBe(50);
+  });
+  test('maxLines honors only a whole integer, like nb 0.8.0 (a partial number falls back to the default)', () => {
+    for (const partial of ['60.5', '1e3', '50abc', '', '  ', '6 0']) {
+      expect(maxLines({ NB_MAX_LINES: partial }), JSON.stringify(partial)).toBe(50);
+    }
+    expect(maxLines({ NB_MAX_LINES: ' 60 ' })).toBe(60);
+    expect(maxLines({ NB_MAX_LINES: '+7' })).toBe(7);
+    expect(maxLines({ NB_MAX_LINES: '-3' })).toBe(1);
   });
 });
 
@@ -251,6 +259,18 @@ describe('parity with the real nb binary', () => {
     expect(readShelf(client, dir, 'tgt@canon').entries.map((x) => [x.id, x.score])).toEqual(model.get('tgt@canon')!.map((x) => [x.id, x.score]));
   });
 
+  test('maxLines agrees with the cap the real nb reports for the same NB_MAX_LINES', () => {
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    for (const raw of ['60', '60.5', '1e3', '50abc', ' 12 ', '0', '999999', '']) {
+      const env = cleanEnv({ NB_MAX_LINES: raw });
+      const client = createNbClient({ dir, nb: RAW_NB, env });
+      const config = client.runJson(['config', '--json']);
+      expect(config.ok, JSON.stringify(raw)).toBe(true);
+      expect(maxLines(env), JSON.stringify(raw)).toBe(config.json.maxLines.value);
+    }
+  });
+
   test('nb counts a duplicate as "duplicate" in --json while exiting 0', () => {
     const dir = makeStore({ git: false });
     dirs.push(dir);
@@ -266,19 +286,54 @@ describe('parity with the real nb binary', () => {
     expect(readLessons(dir, 's@legacy')).toHaveLength(1); // nothing was written
   });
 
-  test('moving the last lesson leaves a 0-byte file on nb 0.7.0, which only reapZeroByteShelf removes', () => {
+  test('moving the last lesson removes the shelf file (nb 0.8.0), leaving nothing for reapZeroByteShelf', () => {
     const dir = makeStore({ git: false });
     dirs.push(dir);
     const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv() });
     writeShelf(dir, 's@legacy', [[2, 'only lesson']]);
     const id = readShelf(client, dir, 's@legacy').entries[0].id;
     expect(nbMove(client, 's@legacy', 't@canon', id).moved).toBe(true);
-    expect(existsSync(join(dir, 's@legacy.md'))).toBe(true); // still on disk...
+    expect(existsSync(join(dir, 's@legacy.md'))).toBe(false); // nb deletes the emptied file itself
     const listed = client.runJson(['list', '--json']);
-    expect(listed.json.rows.map((r: { shelf: string }) => r.shelf)).toEqual(['t@canon']); // ...but hidden
-    expect(reapZeroByteShelf(dir, 's@legacy')).toBe('deleted');
-    expect(existsSync(join(dir, 's@legacy.md'))).toBe(false);
-    expect(reapZeroByteShelf(dir, 's@legacy')).toBe('absent');
+    expect(listed.json.rows.map((r: { shelf: string }) => r.shelf)).toEqual(['t@canon']);
+    expect(reapZeroByteShelf(dir, 's@legacy')).toBe('absent'); // nothing left to reap
+  });
+
+  test('a move that nb fails is an error carrying nb\'s message, not a skip (0.8.0 prints a JSON error object on stdout)', () => {
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv() });
+    writeShelf(dir, 's@legacy', [[2, 'only lesson']]);
+    // The raw result: stdout parses, but it is nb's failure object, so runJson must not call it ok.
+    const raw = client.runJson(['move', 's@legacy', 't@canon', 'ffffff', '--json', '--reason', 'consolidate']);
+    expect(raw.status).toBe(1);
+    expect(raw.ok).toBe(false);
+    expect(raw.errorClass).toBe('no_match');
+    expect(raw.error).toContain('no entry matches');
+    const r = nbMove(client, 's@legacy', 't@canon', 'ffffff');
+    expect(r).toMatchObject({ moved: false, reason: 'error' });
+    expect(r.error).toContain('no entry matches');
+    expect(readLessons(dir, 's@legacy')).toHaveLength(1); // nothing was written
+  });
+
+  test('snapshotStore refuses a listing that skipped a shelf file (0.8.0 lists the rest and exits 0)', () => {
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv() });
+    writeShelf(dir, 'good', [[1, 'a lesson']]);
+    expect(snapshotStore(client).store.has('good')).toBe(true);
+    writeFileSync(join(dir, 'bad name.md'), '+1\tnot a valid shelf name\n');
+    expect(() => snapshotStore(client)).toThrow(/skipped 1 shelf file\(s\).*bad name.*partial index/);
+    // A control character in a file name is shown as a visible escape, never raw.
+    writeFileSync(join(dir, 'esc\u001b[31m.md'), '+1\tx\n');
+    let message = '';
+    try {
+      snapshotStore(client);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('esc\\u001b[31m');
+    expect(message).not.toContain('\u001b');
   });
 });
 
@@ -358,5 +413,16 @@ describe('readFileOrderIds', () => {
     writeShelf(dir, 's', [[1, 'first'], [9, 'second'], [3, 'third']], 'a description');
     expect(readFileOrderIds(dir, 's')).toEqual([entryId('first'), entryId('second'), entryId('third')]);
     expect(readFileOrderIds(dir, 'missing')).toBeNull();
+  });
+  test('reads a CRLF file with a leading byte-order mark the way nb 0.8.0 does', () => {
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    writeFileSync(join(dir, 's.md'), '\uFEFF# desc: a description\r\n+1\tfirst\r\n+9\tsecond\r\n');
+    expect(readFileOrderIds(dir, 's')).toEqual([entryId('first'), entryId('second')]);
+    // The real nb agrees on what the lessons are.
+    const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv() });
+    const shown = client.runJson(['show', 's', '--json']);
+    expect(shown.json.description).toBe('a description');
+    expect(shown.json.entries.map((e: { text: string }) => e.text).sort()).toEqual(['first', 'second']);
   });
 });

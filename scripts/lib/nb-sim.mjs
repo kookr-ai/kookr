@@ -7,7 +7,8 @@
 // makes room by (1) evicting the LOWEST-scored line of the target (ties: the
 // stalest, i.e. earliest in the file), and (2) docking one point from the
 // stalest surviving line. So moving a weak lesson into a full shelf can throw away
-// a better one. This module copies those rules from agent-notebook 0.7.0
+// a better one. This module copies those rules from agent-notebook (written against 0.7.0; the
+// eviction and ageing rules are the same in 0.8.0, whose other refusals it does not model)
 // (`dist/notebook.js` `enforceCap` and `move`); the test file replays random
 // stores through the REAL `nb` binary and asserts the model agrees, so a future
 // `nb` that changes the rules fails loudly instead of silently mis-planning.
@@ -40,11 +41,20 @@ export function shelfNameProblem(name) {
   return null;
 }
 
-/** `nb`'s per-shelf line cap (`NB_MAX_LINES`, clamped to 1..5000, default 50). */
+/**
+ * `nb`'s per-shelf line cap (`NB_MAX_LINES`, clamped to 1..5000, default 50).
+ * Mirrors agent-notebook 0.8.0's `resolveIntEnv`: only a whole integer is
+ * honored (surrounding whitespace and a sign allowed). A partial number such as
+ * `60.5`, `1e3` or `50abc` is ignored and the default applies; 0.7.0 took its
+ * numeric prefix. Planning with a different cap than `nb` uses would predict the
+ * wrong evictions.
+ */
 export function maxLines(env = process.env) {
-  const n = Number.parseInt(env.NB_MAX_LINES ?? '', 10);
-  if (!Number.isFinite(n)) return 50;
-  return Math.min(5000, Math.max(1, n));
+  const raw = env.NB_MAX_LINES;
+  if (raw === undefined) return 50;
+  const trimmed = String(raw).trim();
+  if (!/^[+-]?\d+$/.test(trimmed)) return 50;
+  return Math.min(5000, Math.max(1, Number.parseInt(trimmed, 10)));
 }
 
 /** `nb`'s duplicate key: lower-case, punctuation to space, whitespace collapsed. */

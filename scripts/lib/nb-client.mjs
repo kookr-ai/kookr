@@ -151,9 +151,9 @@ function takeStoreLock(dir) {
 }
 
 /**
- * Delete a leftover 0-byte shelf file (nb 0.7.0's `move` leaves one when it
- * moves a shelf's last lesson; only `rm` deletes it, and the `move` fix is not
- * released). Guarded, because this is the one place a script deletes a file: it
+ * Delete a leftover 0-byte shelf file. `nb` before 0.8.0 left one when `move`
+ * took a shelf's last lesson (only `rm` deleted it); 0.8.0 deletes the file
+ * itself, so this now only finds files an older `nb` left in a store. Guarded, because this is the one place a script deletes a file: it
  * must resolve INSIDE `dir`, be named exactly `<shelf>.md`, and be a regular
  * file of size 0, re-checked while holding nb's store lock so an `nb add` that
  * lands in between cannot be deleted with it. A file with any content (a
@@ -269,14 +269,38 @@ export function createNbClient({ dir, nb = DEFAULT_NB, env = process.env } = {})
     return { status: r.status, stdout: r.stdout ?? '', stderr: (r.stderr ?? '').trim(), error: r.error };
   }
 
+  /**
+   * Run an `nb … --json` command. `ok` is false when the process could not be
+   * started, when stdout is not JSON, and when `nb` reports a failure. Since
+   * agent-notebook 0.8.0 a failed `--json` command prints
+   * `{ ok: false, command, error: { class, message } }` on stdout (0.7.0 printed
+   * nothing there), so "stdout parses" alone no longer means success: that object
+   * is a failure, and its message becomes `error` (`errorClass` is nb's error
+   * class). A refusal that `nb` reports as a normal result, such as a move
+   * skipped as a duplicate, has no `ok: false` and stays `ok: true`.
+   */
   function runJson(args) {
     const r = run(args);
-    if (r.error) return { ok: false, error: r.error.message, ...r };
+    // `...r` goes first: `r.error` is spawn's error (undefined on a normal exit)
+    // and must not overwrite the message set here.
+    if (r.error) return { ...r, ok: false, error: r.error.message };
+    let json;
     try {
-      return { ok: true, json: JSON.parse(r.stdout), ...r };
+      json = JSON.parse(r.stdout);
     } catch {
-      return { ok: false, error: r.stderr || `non-JSON output from nb ${args[0]}`, ...r };
+      return { ...r, ok: false, error: r.stderr || `non-JSON output from nb ${args[0]}` };
     }
+    if (json !== null && typeof json === 'object' && json.ok === false) {
+      const message = typeof json.error?.message === 'string' ? json.error.message : '';
+      return {
+        ...r,
+        ok: false,
+        error: message || r.stderr || `nb ${args[0]} failed`,
+        errorClass: typeof json.error?.class === 'string' ? json.error.class : undefined,
+        json,
+      };
+    }
+    return { ...r, ok: true, json };
   }
 
   /**
@@ -297,6 +321,22 @@ export function createNbClient({ dir, nb = DEFAULT_NB, env = process.env } = {})
 const META_RE = /^#\s*([a-z][a-z0-9_-]*):\s?(.*)$/;
 
 /**
+ * The characters agent-notebook 0.8.0 drops from a lesson when it reads a shelf
+ * file (its `CONTROL_CHARS_RE`): C0/C1 controls other than tab/newline/CR/VT/FF,
+ * the soft hyphen, the zero-width space, the word joiner, the byte-order mark,
+ * bidi controls and the Unicode Tag block. 0.7.0 kept them. They matter here
+ * because a lesson's id is derived from its text: a file written by an older
+ * `nb` can still hold one inside a word, and `nb` 0.8.0 computes the id from the
+ * text without it.
+ */
+const NB_STRIPPED_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u00AD\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu;
+
+/** A lesson's text as `nb` 0.8.0 reads it from a shelf line (its `sanitizeLesson`). */
+function lessonText(raw) {
+  return raw.replace(NB_STRIPPED_CHARS_RE, '').replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Parse the text of a shelf file, read-only, the way `nb` does: leading `# key:`
  * lines are metadata, every later non-blank line is `<score>\t<lesson>`.
  * Returns entries `{ id, score, text }` in FILE order (least-recently-touched first).
@@ -304,12 +344,14 @@ const META_RE = /^#\s*([a-z][a-z0-9_-]*):\s?(.*)$/;
 export function parseShelfText(body) {
   const entries = [];
   let inMeta = true;
-  for (const line of body.split('\n')) {
+  // Line splitting as nb does it since 0.8.0: one leading byte-order mark is
+  // dropped and CRLF line ends are accepted.
+  for (const line of (body.charCodeAt(0) === 0xfeff ? body.slice(1) : body).split(/\r?\n/)) {
     if (inMeta && META_RE.test(line)) continue;
     inMeta = false;
     if (line.trim() === '') continue;
     const tab = line.indexOf('\t');
-    const text = (tab === -1 ? line : line.slice(tab + 1)).replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const text = lessonText(tab === -1 ? line : line.slice(tab + 1));
     if (text === '') continue;
     const n = tab === -1 ? 0 : Number.parseInt(line.slice(0, tab), 10);
     entries.push({ id: entryId(text), score: Number.isFinite(n) ? n : 0, text });
@@ -411,6 +453,16 @@ export function snapshotStore(client) {
   }
   if (typeof listed.json.total === 'number' && listed.json.rows.length < listed.json.total) {
     throw new Error(`nb list --json returned ${listed.json.rows.length} of ${listed.json.total} shelves; refusing to plan from a partial index`);
+  }
+  // Since agent-notebook 0.8.0 a shelf file nb cannot read, or whose name is not a
+  // valid shelf name, no longer fails `nb list`: it is left out of `rows` and named
+  // in `skipped`. That is a partial index too.
+  if (Array.isArray(listed.json.skipped) && listed.json.skipped.length > 0) {
+    // The names come from disk, so show control characters as visible escapes
+    // rather than sending them to the operator's terminal.
+    const visible = (v) => String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    const names = listed.json.skipped.map((s) => `${visible(s?.shelf ?? '?')} (${visible(s?.code ?? 'unreadable')})`).join(', ');
+    throw new Error(`nb list --json skipped ${listed.json.skipped.length} shelf file(s) it could not use (unreadable, or not a valid shelf name): ${names}; refusing to plan from a partial index`);
   }
   const dir = listed.json.dir;
   const store = new Map();

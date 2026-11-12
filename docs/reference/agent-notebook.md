@@ -284,8 +284,9 @@ target already holds is left on its legacy shelf and listed for a manual decisio
 never the exit code), and a target name over 128 characters is reported before
 anything runs. The script never removes a lesson.
 
-On `nb` 0.7.0 moving a shelf's last lesson leaves a 0-byte file that `nb list`
-hides but disk keeps; the script deletes exactly those files (size 0, legacy
+`nb` before 0.8.0 left a 0-byte file when a move took a shelf's last lesson
+(`nb list` hides it, disk keeps it); 0.8.0 deletes the file itself. A store can
+still hold such files from earlier runs, so the script deletes exactly those files (size 0, legacy
 shelves only, re-checked while holding `nb`'s own store lock) and commits each deletion, re-runs the description seed for the
 migrated repo's shelves, and confirms every legacy shelf is gone from disk and
 from `nb list --json`, listing any that remain. Re-running resumes: every move
@@ -341,7 +342,8 @@ while the destination demonstrably still holds the lesson (a later move into the
 same full shelf could otherwise push the lesson out). Its rollback is the same as
 the migration's, from the run's own tag, reverting the commits whose subject starts
 `nb move`, `nb rm` or `lesson promotion:`. Like the migration, it deletes the
-0-byte leftover of a shelf it moved the last lesson out of.
+0-byte leftover of a shelf it moved the last lesson out of, which only an `nb`
+older than 0.8.0 leaves.
 
 Both scripts (and the description seed) refuse, with exit 2 and no change, any argument they do not recognise: a misspelled flag, the `--only=<id>` spelling (write `--only <id>`), a value flag with no value (for example `--only "$IDS"` with `IDS` unset) or whose value looks like a flag (`--tag -l`), a value flag given twice, and a `--map` file that does not exist. Ignoring any of these would run a broader or different operation than the one asked for. If a promotion stops between an exact group's move and its removals, the leftover project copies are listed as "PROJECT COPIES of a lesson the domain shelf or fleet-global already holds" with the `nb rm` to run by hand; they are never removed on the strength of a different run. Each promotion run ends by printing its tag; to resume that run exactly, re-run the same command with `--tag <that tag>` (the tag's tree is then the baseline for the minimum-score rule). A run without `--tag` judges the store as it is then and gets a fresh tag. Group ids are stable between runs. Re-running an `--apply --only <ids>` command that already finished is a reported no-op (exit 0, naming the groups that exist now so a typo is obvious); if only some of the ids are gone, the rest are still applied.
 

@@ -70,10 +70,27 @@ function resolveNbCliEntry() {
   return entry;
 }
 
-/** The notebooks directory the CLI will use (mirrors the package's resolution). */
+/**
+ * A leading `~` in a path, expanded to the home directory the way agent-notebook
+ * 0.8.0 expands it in NB_DIR (its `expandHomeDir`): only `~` and `~/…` (and
+ * `~\…` on Windows); `~user/…` and everything else is returned as it is. An
+ * NB_DIR set where no shell expands it (settings.json, systemd, cron) reaches
+ * the process with the `~` still in it.
+ */
+function expandHomeDir(value) {
+  if (value === '~') return homedir();
+  if (value.startsWith('~/')) return join(homedir(), value.slice(2));
+  if (process.platform === 'win32' && value.startsWith('~\\')) return join(homedir(), value.slice(2));
+  return value;
+}
+
+/**
+ * The notebooks directory the CLI will use: NB_DIR with a leading `~` expanded,
+ * as the package resolves it, or Kookr's default when NB_DIR is unset or blank.
+ */
 function notebooksDir() {
   const fromEnv = process.env.NB_DIR;
-  return fromEnv && fromEnv.trim() !== '' ? fromEnv : join(homedir(), '.kookr', 'notebooks');
+  return fromEnv && fromEnv.trim() !== '' ? expandHomeDir(fromEnv) : join(homedir(), '.kookr', 'notebooks');
 }
 
 /**
@@ -171,6 +188,26 @@ async function foreignProjectShelf(shelf, slug) {
   return shelfSlug !== slug && !aliasesOf(slug).has(shelfSlug) ? shelfSlug : null;
 }
 
+// The flags of the package's own argument parser that take a value (its
+// `VALUE_FLAGS`): the token after one of them is that value, never an option.
+const NB_VALUE_FLAGS = new Set(['--reason', '--note', '--limit', '--since']);
+
+/**
+ * True when the call is a help request for a subcommand (`nb add <shelf> --help`
+ * or `-h`). Since agent-notebook 0.8.0 such a call prints usage, exits 0 and
+ * writes nothing, so nothing after it should treat it as a notebook change.
+ * This follows the package's own scan (`helpRequest` in its cli.js): tokens after
+ * the command word, up to a `--`, skipping the value of a value flag.
+ */
+function isHelpRequest(argv) {
+  for (let i = 1; i < argv.length; i++) {
+    if (argv[i] === '--') return false;
+    if (NB_VALUE_FLAGS.has(argv[i])) i++;
+    else if (argv[i] === '--help' || argv[i] === '-h') return true;
+  }
+  return false;
+}
+
 /**
  * One-line stderr advisories after a successful `nb add`. Never a refusal: the
  * lesson is already written and the shim stays fail-open. They only make a wrong
@@ -214,10 +251,10 @@ async function adviseOnAdd(argv) {
 
 async function main() {
   // Pin the kookr notebooks location so dogfooding the package does not relocate
-  // existing notebooks or the usage ring.
-  if (!process.env.NB_DIR || process.env.NB_DIR.trim() === '') {
-    process.env.NB_DIR = notebooksDir();
-  }
+  // existing notebooks or the usage ring. Always store the resolved path: the
+  // package and the auto-commit below must act on the same directory, and since
+  // 0.8.0 the package expands a leading `~` that a raw NB_DIR would still carry.
+  process.env.NB_DIR = notebooksDir();
 
   // No command interception: the shim is a thin wrapper that only pins NB_DIR
   // and git-backs mutating writes. Discovery (`nb list` and its `ls`/`roles`
@@ -238,10 +275,14 @@ async function main() {
   const code = await mod.runNbCli(argv);
   process.exitCode = code;
 
-  if (code === 0) await adviseOnAdd(argv);
+  // A help request exits 0 but changed nothing: no advisory, and no commit (which
+  // would otherwise sweep an unrelated uncommitted edit under this command's name).
+  if (code !== 0 || isHelpRequest(argv)) return;
+
+  await adviseOnAdd(argv);
 
   // One commit per successful notebook modification (Objective C).
-  if (code === 0 && MUTATING.has((argv[0] ?? '').trim())) {
+  if (MUTATING.has((argv[0] ?? '').trim())) {
     autoCommit(process.env.NB_DIR, argv);
   }
 }

@@ -3,7 +3,7 @@
 // NB_DIR to the kookr location, and (Objective C) commits every notebook
 // mutation when NB_DIR is a git repo so a daily job can push the history.
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, copyFileSync, mkdirSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, copyFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -56,6 +56,19 @@ function nb(args: string[], extraEnv: Record<string, string> = {}): { code: numb
   }
 }
 
+/**
+ * The shim's own stderr: everything except the `note: created new shelf "<name>"`
+ * line that agent-notebook itself prints (since 0.8.0) when an `add` starts a
+ * shelf. The advisory tests assert what the SHIM says, and most of them add to a
+ * shelf that does not exist yet.
+ */
+function shimStderr(stderr: string | null): string {
+  return (stderr ?? '')
+    .split('\n')
+    .filter((line) => !line.startsWith('note: created new shelf '))
+    .join('\n');
+}
+
 function git(args: string[]): string {
   return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf-8', env: cleanGitEnv() }).trim();
 }
@@ -104,6 +117,53 @@ describe('bin/nb.js — per-change git auto-commit (Objective C)', () => {
     const tracked = git(['ls-files']);
     expect(tracked).toContain('patcher.md');
     expect(tracked).not.toContain('.nb-usage.log');
+  });
+
+  test('a help request on a mutating command commits nothing, even with an uncommitted edit in the store', () => {
+    // nb 0.8.0 exits 0 for `nb add <shelf> --help` and writes nothing. Without the help
+    // check the shim then committed whatever else was uncommitted under the subject `nb add patcher`.
+    initRepo();
+    nb(['add', 'patcher', 'a committed lesson']);
+    const before = git(['rev-list', '--count', 'HEAD']);
+    writeFileSync(join(dir, 'stray.md'), '+1\ta hand edit nobody committed\n');
+    const helpCalls = [
+      ['add', 'patcher', '--help'],
+      ['vote', 'patcher', '-h'],
+      ['rm', 'patcher', '--help'],
+      ['merge', 'patcher', '-h'],
+      ['split', 'patcher', '--help'],
+      ['move', 'patcher', 'other', '-h'],
+      ['describe', 'patcher', '--help'],
+    ];
+    for (const args of helpCalls) {
+      expect(nb(args).code, args.join(' ')).toBe(0);
+      expect(git(['rev-list', '--count', 'HEAD']), args.join(' ')).toBe(before);
+    }
+    expect(git(['status', '--porcelain'])).toContain('stray.md'); // still uncommitted
+    // A real mutation still commits, and a help-looking value of --note is not a help request.
+    expect(nb(['add', 'patcher', 'a second lesson', '--note', '-h']).code).toBe(0);
+    expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(Number(before) + 1);
+  });
+
+  test('NB_DIR with a leading ~ is committed in the directory nb writes to', () => {
+    // nb 0.8.0 expands a leading `~` in NB_DIR itself. The shim used the raw value for its
+    // git check, found no repository at `./~/store`, and left the change uncommitted.
+    const home = dir; // a fake home directory; the store is a git repository inside it
+    const store = join(home, 'store');
+    mkdirSync(store);
+    dir = store; // point git() and initRepo() at the store
+    try {
+      initRepo();
+      const before = Number(git(['rev-list', '--count', 'HEAD']));
+      const r = nb(['add', 'patcher', 'tilde lesson'], { HOME: home, NB_DIR: '~/store' });
+      expect(r.code).toBe(0);
+      expect(existsSync(join(store, 'patcher.md'))).toBe(true); // written under the fake home, not under ./~
+      expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before + 1);
+      expect(git(['log', '-1', '--format=%s'])).toBe('nb add patcher');
+      expect(git(['status', '--porcelain'])).toBe('');
+    } finally {
+      dir = home; // afterEach removes the whole fake home
+    }
   });
 
   test('NB_GIT_AUTOCOMMIT=0 disables the auto-commit', () => {
@@ -271,7 +331,7 @@ describe('bin/nb.js — placement advisories on `add` (stderr only, never a refu
       else base[k] = v;
     }
     const r = spawnSync('node', [BIN, ...args], { env: { ...base, NB_DIR: dir }, encoding: 'utf-8' });
-    return { code: r.status ?? -1, err: r.stderr ?? '' };
+    return { code: r.status ?? -1, err: shimStderr(r.stderr) };
   }
 
   test('add to fleet-global without KOOKR_NB_CURATOR warns, but the lesson is still written', () => {
@@ -279,6 +339,25 @@ describe('bin/nb.js — placement advisories on `add` (stderr only, never a refu
     expect(r.code).toBe(0);
     expect(r.err).toMatch(/advisory: fleet-global is written only by promotion/);
     expect(nb(['show', 'fleet-global']).out).toContain('host fact');
+  });
+
+  test('asking for help on add writes nothing, so it gets no advisory', () => {
+    for (const flag of ['--help', '-h']) {
+      const r = nbErr(['add', 'fleet-global', flag], {});
+      expect(r.code, flag).toBe(0);
+      expect(r.err, flag).toBe('');
+    }
+    expect(existsSync(join(dir, 'fleet-global.md'))).toBe(false); // nothing was written, under any name
+    // The value of --note is not a help request: the lesson is written and the advisory applies.
+    const noted = nbErr(['add', 'fleet-global', 'a host fact', '--note', '-h'], {});
+    expect(noted.code).toBe(0);
+    expect(noted.err).toMatch(/advisory: fleet-global is written only by promotion/);
+    expect(nb(['show', 'fleet-global']).out).toContain('a host fact');
+    // After `--` the token is the lesson text: it is written, and the advisory applies.
+    const literal = nbErr(['add', 'fleet-global', '--', '--help'], {});
+    expect(literal.code).toBe(0);
+    expect(literal.err).toMatch(/advisory: fleet-global is written only by promotion/);
+    expect(nb(['show', 'fleet-global']).out).toContain('--help');
   });
 
   test('add to fleet-global is silent when KOOKR_NB_CURATOR is set', () => {
@@ -334,7 +413,7 @@ describe('bin/nb.js — the advisory classifies shelves with the shared layers m
     delete base.KOOKR_NB_CURATOR;
     if (slug !== undefined) base.KOOKR_REPO_SLUG = slug;
     const r = spawnSync('node', [bin, ...args], { env: { ...base, NB_DIR: dir }, encoding: 'utf-8' });
-    return { code: r.status ?? -1, err: r.stderr ?? '' };
+    return { code: r.status ?? -1, err: shimStderr(r.stderr) };
   }
 
   test('case-insensitive: Code-Review@Kookr-AI-Kookr is this repo\'s shelf for slug kookr-ai-kookr', () => {

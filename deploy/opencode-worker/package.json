@@ -1,2 +1,2 @@
 { "name": "opencode-worker-tools", "private": true, "version": "0.0.0",
-  "dependencies": { "opencode-ai": "1.19.5", "agent-notebook": "0.7.0" } }
+  "dependencies": { "opencode-ai": "1.19.5", "agent-notebook": "0.8.0" } }
