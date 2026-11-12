@@ -6,8 +6,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { applySafe, buildReport, buildUsage, classifyIgnoredEntry, isLiveTask, parseArgs, realDeps, resolveApiBase, setExecEnvForTests } from './disk-reclaim.mjs';
 
 // Hermetic git: temp repos only, no ambient config (also injected into the script's own git calls).
+// Inside a git hook (the repo's pre-push runs this suite) git exports GIT_DIR and friends; left in
+// place they would point every fixture command at the real repository, so drop them.
+const AMBIENT = { ...process.env };
+for (const k of Object.keys(AMBIENT)) if (/^GIT_(DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|PREFIX|QUARANTINE_PATH)$/.test(k)) delete AMBIENT[k];
 const GIT_ENV = {
-  ...process.env,
+  ...AMBIENT,
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid',
