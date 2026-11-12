@@ -211,8 +211,6 @@ export const DOCUMENTED_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_HOOKS_DIR',
   // Relay incident escalation target — documented for operators; read by deploy tooling.
   'KOOKR_RELAY_INCIDENT_ESCALATION_URL',
-  // Read by Docker Compose in lucy-ears/docker-compose.yml, not by the server.
-  'KOOKR_LUCY_EARS_PORT',
 ]);
 
 /**

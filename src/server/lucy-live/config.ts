@@ -25,7 +25,7 @@ export function resolveLucyLiveConfig(
 ): LucyLiveConfigResult {
   const missing: string[] = [];
   const earsUrl = env.KOOKR_LUCY_EARS_URL?.trim();
-  if (!earsUrl) missing.push('the speech recogniser (set KOOKR_LUCY_EARS_URL, see lucy-ears/docker-compose.yml)');
+  if (!earsUrl) missing.push('the speech recogniser (set KOOKR_LUCY_EARS=true to let Kookr run it, or KOOKR_LUCY_EARS_URL for one you run; see lucy-ears/docker-compose.yml)');
   const brain = readBasetenStreamConfig(env);
   if (!brain) missing.push('the helper model (set KOOKR_BASETEN_API_KEY or BASETEN_API_KEY)');
   if (!ttsUrl) missing.push('the speech service (enable KOOKR_TTS or set KOOKR_TTS_URL)');

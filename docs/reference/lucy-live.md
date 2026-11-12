@@ -10,18 +10,31 @@ in [features](../features.md#talk-to-lucy-hands-free-optional-off-by-default).
 
 1. Turn on the speech service (`KOOKR_TTS=true`, a GPU makes her voices fast) and a Baseten helper
    model (`KOOKR_BASETEN_API_KEY`). Both are existing Kookr settings.
-2. Start Lucy's ears, a local speech recogniser, on an NVIDIA GPU:
+2. Let Kookr run Lucy's ears, a local speech recogniser that needs an NVIDIA GPU (about 3.2 GB of
+   GPU memory). Add `KOOKR_LUCY_EARS=true` to Kookr's `.env` and restart Kookr:
 
-   ```bash
-   docker compose -f lucy-ears/docker-compose.yml up -d
-   ```
+   - Kookr starts `lucy-ears/docker-compose.yml` in the background (Docker compose project
+     `lucy-ears`, container `kookr-lucy-ears`) and waits for its `/health`. The first start downloads
+     about 2.4 GB of model weights into the `lucy-ears-models` volume, so it can take several minutes
+     (`KOOKR_LUCY_EARS_HEALTH_TIMEOUT_S`, default 900, bounds the wait). Kookr itself does not wait:
+     it comes up at once and Lucy live switches on by itself when the recogniser is healthy.
+   - It listens on `127.0.0.1:8095` only (`KOOKR_LUCY_EARS_PORT` changes the port).
+   - A routine Kookr restart leaves the container running, so the next start reuses it. To free the
+     GPU memory run `pnpm prod:stop --with-sidecars`.
+   - Without an NVIDIA GPU (no `nvidia` runtime in Docker) nothing is started and the status says so.
+   - A recogniser already started by hand with the same compose file is adopted as is: same
+     container and weights, nothing downloaded again.
 
-   The first start downloads about 2.4 GB of model weights; later starts reuse them. It listens on
-   `127.0.0.1:8095` only (`KOOKR_LUCY_EARS_PORT` changes the port).
-3. Add `KOOKR_LUCY_EARS_URL=ws://127.0.0.1:8095` to Kookr's `.env` and restart Kookr.
-4. Open the avatar panel (Settings → Notifications & Alerts → Avatar panel) and press **Talk**.
+   **Running it yourself instead.** Start it with
+   `docker compose -f lucy-ears/docker-compose.yml up -d`, then set
+   `KOOKR_LUCY_EARS_URL=ws://127.0.0.1:8095` (or the address of a recogniser on another machine).
+   When `KOOKR_LUCY_EARS_URL` is set, Kookr uses that recogniser and never starts or stops one,
+   even if `KOOKR_LUCY_EARS=true` is also set.
+3. Open the avatar panel (Settings → Notifications & Alerts → Avatar panel) and press **Talk**.
 
 `GET /api/lucy-live/status` reports whether everything is configured, and if not, what is missing.
+While Kookr is still bringing the recogniser up it answers `available: false, starting: true` with a
+reason that mentions the download, rather than a plain "unavailable".
 
 ## How a turn works
 

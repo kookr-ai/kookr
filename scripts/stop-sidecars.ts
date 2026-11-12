@@ -1,5 +1,5 @@
 /**
- * Shared STT/TTS compose teardown for `pnpm prod:stop --with-sidecars` (R14).
+ * Shared STT/TTS/Lucy's-ears compose teardown for `pnpm prod:stop --with-sidecars` (R14).
  *
  * Uses the same compose project identity / GPU overlay flags as
  * stt-manager.ts and tts-manager.ts so operator reclaim tears down the
@@ -13,10 +13,12 @@
  * Env (same as start.ts / managers):
  *   KOOKR_STT, KOOKR_STT_URL, KOOKR_STT_PORT, KOOKR_STT_DEVICE, WHISPER_MODEL
  *   KOOKR_TTS, KOOKR_TTS_URL, KOOKR_TTS_PORT, KOOKR_TTS_DEVICE, KOOKR_TTS_VOICE
+ *   KOOKR_LUCY_EARS, KOOKR_LUCY_EARS_URL, KOOKR_LUCY_EARS_PORT
  */
 
 import { join } from 'node:path';
 import { stopBundledSTT } from '../src/server/stt-manager.js';
+import { ownsBundledLucyEars, parseLucyEarsPort, stopBundledLucyEars } from '../src/server/lucy-ears-manager.js';
 import { DEFAULT_TTS_VOICE, stopBundledTTS } from '../src/server/tts-manager.js';
 
 function isTruthy(raw: string | undefined): boolean {
@@ -34,7 +36,11 @@ async function main(): Promise<void> {
   const ownsStt = sttEnabled && !sttUrlOverride;
   const ownsTts = ttsEnabled && !ttsUrlOverride;
 
-  if (!ownsStt && !ownsTts) {
+  // Lucy's ears: bundled only when KOOKR_LUCY_EARS=true and no KOOKR_LUCY_EARS_URL (a hand-run
+  // sidecar behind a URL is the operator's, so it is left alone).
+  const ownsEars = ownsBundledLucyEars(process.env);
+
+  if (!ownsStt && !ownsTts && !ownsEars) {
     if (sttUrlOverride || ttsUrlOverride) {
       console.warn(
         '[stop-sidecars] External speech URL(s) configured (KOOKR_STT_URL / KOOKR_TTS_URL); ' +
@@ -42,7 +48,7 @@ async function main(): Promise<void> {
       );
     } else if (!sttEnabled && !ttsEnabled) {
       console.warn(
-        '[stop-sidecars] Bundled STT/TTS not enabled (KOOKR_STT / KOOKR_TTS); nothing to tear down.',
+        '[stop-sidecars] Bundled STT/TTS/Lucy ears not enabled (KOOKR_STT / KOOKR_TTS / KOOKR_LUCY_EARS); nothing to tear down.',
       );
     } else {
       console.warn('[stop-sidecars] No bundled speech stack owned by this instance; skipping.');
@@ -75,6 +81,12 @@ async function main(): Promise<void> {
     });
   } else if (ttsUrlOverride) {
     console.warn('[stop-sidecars] KOOKR_TTS_URL set — skipping TTS compose down.');
+  }
+
+  if (ownsEars) {
+    const earsDir = join(appDir, 'lucy-ears');
+    console.log(`[stop-sidecars] Stopping bundled Lucy's ears (dir=${earsDir})...`);
+    await stopBundledLucyEars({ earsDir, port: parseLucyEarsPort() });
   }
 }
 

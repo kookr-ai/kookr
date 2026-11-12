@@ -444,8 +444,8 @@ know something. She cannot act on tasks yet.
   in English, because her voices are English voices.
 - **What it needs.** The speech service (`KOOKR_TTS`), a helper model on Baseten
   (`KOOKR_BASETEN_API_KEY`), and Lucy's ears: a local speech recogniser (LFM3-Omni-2B in llama.cpp, about
-  3.2 GB of GPU memory, NVIDIA GPU) started from `lucy-ears/docker-compose.yml` and pointed to by
-  `KOOKR_LUCY_EARS_URL`. Setup and measured timings: [Lucy live](reference/lucy-live.md).
+  3.2 GB of GPU memory, NVIDIA GPU) that Kookr starts and stops itself
+  with `KOOKR_LUCY_EARS=true` (or that you run yourself and point to with `KOOKR_LUCY_EARS_URL`). Setup and measured timings: [Lucy live](reference/lucy-live.md).
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
   `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
 

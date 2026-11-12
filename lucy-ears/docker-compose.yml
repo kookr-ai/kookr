@@ -6,8 +6,10 @@
 # reads the transcript about 0.2 s after they stop. Answers come from Kookr's helper
 # model and are spoken by Kookr's own speech service, so this model never answers.
 #
-# Start:   docker compose -f lucy-ears/docker-compose.yml up -d
-# Then set KOOKR_LUCY_EARS_URL=ws://127.0.0.1:8095 in Kookr's .env and restart Kookr.
+# Easiest: set KOOKR_LUCY_EARS=true in Kookr's .env and Kookr starts and stops this file itself
+# (compose project `lucy-ears`; `pnpm prod:stop --with-sidecars` stops it).
+# By hand: docker compose -f lucy-ears/docker-compose.yml up -d, then set
+# KOOKR_LUCY_EARS_URL=ws://127.0.0.1:8095 in Kookr's .env (Kookr then never manages it).
 #
 # The first start downloads about 2.4 GB of weights (model + audio projector) from
 # Hugging Face into the `lucy-ears-models` volume; later starts reuse them. It uses about

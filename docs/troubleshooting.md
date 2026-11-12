@@ -360,7 +360,7 @@ pnpm prod:stop --with-sidecars
 ```
 
 Routine restart no longer frees the GPU. If `nvidia-smi` still shows Whisper /
-TTS after you stopped Kookr, that is expected until you run stop with
+TTS (or Lucy's ears, `KOOKR_LUCY_EARS=true`) after you stopped Kookr, that is expected until you run stop with
 `--with-sidecars`. After speech model/device/image changes, use
 `pnpm prod:stop --with-sidecars` before the next start.
 

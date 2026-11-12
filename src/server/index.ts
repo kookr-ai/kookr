@@ -284,7 +284,8 @@ import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { createLucyLive } from './lucy-live/create-lucy-live.js';
 import { loadSileroVad } from '../adapters/lucy-live/silero-vad.js';
-import { lucyLiveStatusOf, resolveLucyLiveConfig } from './lucy-live/config.js';
+import { createLucyLiveRuntime } from './lucy-live/runtime.js';
+import type { LucyEarsHandle } from './lucy-ears-manager.js';
 import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import type { SystemdNotifier } from './systemd-notify.js';
 import type { BootClassification } from './boot-marker.js';
@@ -370,6 +371,8 @@ export interface KookrConfig {
   terminalInstanceDir?: string;
   /** Optional STT service WebSocket URL (e.g. ws://localhost:8003). Enables speech-to-text when set. */
   sttUrl?: string;
+  /** Managed Lucy's ears (KOOKR_LUCY_EARS=true); Lucy live follows its state. */
+  lucyEars?: LucyEarsHandle;
   /** Selected bundled HTTP model; forwarded only to Telegram using that endpoint. */
   sttTranscription?: { url: string; model: string };
   /** Optional TTS service HTTP URL (e.g. http://localhost:8004). Advertised as a Phase 6 speech capability when set. */
@@ -2876,25 +2879,36 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Lucy live (issue #3659): a spoken conversation. Needs the speech recogniser, a
   // Baseten key and the speech service; otherwise the status route says which is missing.
-  const lucyLiveConfig = resolveLucyLiveConfig(process.env, ttsUrl);
-  // Silero confirms interruptions; without it Lucy live works as before (one warning is logged).
-  const lucyLiveVad = lucyLiveConfig.ok ? await loadSileroVad() : null;
-  const lucyLiveStatus = lucyLiveStatusOf(lucyLiveConfig, lucyLiveVad ? 'silero' : 'off');
-  const lucyLive = lucyLiveConfig.ok
-    ? createLucyLive({
-        config: lucyLiveConfig.config,
-        vad: lucyLiveVad,
-        getTasks: () => taskStore.viewTasks(),
-        getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
-        log: lucyInteractionLog,
-      })
-    : undefined;
-  if (!lucyLiveConfig.ok) console.log(`[lucy-live] disabled: ${lucyLiveConfig.reason}`);
+  // With KOOKR_LUCY_EARS=true Kookr brings the recogniser up in the background, so the
+  // runtime re-evaluates as it goes from starting to ready (no restart needed).
+  const lucyLiveRuntime = createLucyLiveRuntime({
+    env: process.env,
+    ttsUrl,
+    ears: config.lucyEars,
+    build: async (liveConfig) => {
+      // Silero confirms interruptions; without it Lucy live works as before (one warning is logged).
+      const vad = await loadSileroVad();
+      return {
+        bargeIn: vad ? 'silero' : 'off',
+        service: createLucyLive({
+          config: liveConfig,
+          vad,
+          getTasks: () => taskStore.viewTasks(),
+          getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
+          log: lucyInteractionLog,
+        }),
+      };
+    },
+  });
+  await lucyLiveRuntime.ready;
+  const lucyLive = lucyLiveRuntime.service;
+  const initialLucyLiveStatus = lucyLiveRuntime.status();
+  if (!initialLucyLiveStatus.available) console.log(`[lucy-live] ${initialLucyLiveStatus.starting ? 'waiting for the speech recogniser' : 'disabled'}: ${initialLucyLiveStatus.reason}`);
 
   const app = createRoutes({
     lucyInteractionLog,
     lucyInteractionLogPath,
-    lucyLiveStatus,
+    getLucyLiveStatus: () => lucyLiveRuntime.status(),
     supervisionService,
     delegationService: delegationRuntime.service,
     ...(delegationRuntime.disabled ? { delegationDisabled: delegationRuntime.disabled } : {}),

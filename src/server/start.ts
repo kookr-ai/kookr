@@ -24,6 +24,7 @@ import {
 import { runStartupConfigPreflightOrExit } from './config-preflight.js';
 import { resolveListenPort } from './resolve-listen-port.js';
 import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
+import { ownsBundledLucyEars, parseLucyEarsPort, parseLucyEarsTimeoutMs, startLucyEars, type LucyEarsHandle } from './lucy-ears-manager.js';
 import { DEFAULT_TTS_VOICE, parseTTSDeviceFromEnv, startTTS, type TTSManager } from './tts-manager.js';
 import { createShutdownHandler } from './shutdown.js';
 import { BootMarkerStore } from './boot-marker.js';
@@ -216,6 +217,20 @@ async function main(): Promise<void> {
     console.log('[tts] Text-to-speech disabled (set KOOKR_TTS=true or KOOKR_TTS_URL to enable)');
   }
 
+  // Lucy's ears (speech recogniser for Lucy live). Unlike STT/TTS this does not block
+  // startup: the first start downloads ~2.4 GB, and Lucy live switches on when it is healthy.
+  // An explicit KOOKR_LUCY_EARS_URL means an external sidecar that Kookr never manages.
+  let lucyEars: LucyEarsHandle | undefined;
+  if (ownsBundledLucyEars(process.env)) {
+    lucyEars = startLucyEars({
+      earsDir: join(process.cwd(), 'lucy-ears'),
+      port: parseLucyEarsPort(),
+      startupTimeoutMs: parseLucyEarsTimeoutMs(),
+    });
+  } else if ((process.env.KOOKR_LUCY_EARS === 'true' || process.env.KOOKR_LUCY_EARS === '1') && process.env.KOOKR_LUCY_EARS_URL?.trim()) {
+    console.log('[lucy-ears] KOOKR_LUCY_EARS_URL is set: using that external recogniser, not managing one');
+  }
+
   const dtachBinary = resolveDtachBinaryOrExit();
   // Fleet ring budget (issue #1779): caps sum of live ring capacities and
   // shrinks least-recently-active rings under pressure. `0` disables.
@@ -275,6 +290,7 @@ async function main(): Promise<void> {
     terminalInputCoordinator: terminalHost?.inputCoordinator,
     terminalInstanceDir: terminalBackend.getInstanceDir(),
     sttUrl,
+    lucyEars,
     sttTranscription: sttManager?.transcription,
     ttsUrl,
     ttsVoice: TTS_VOICE,

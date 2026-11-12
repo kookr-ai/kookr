@@ -235,7 +235,7 @@ sidecars without `docker compose down` / cold model load.
 |---|---|
 | Restart Node only (leave GPU speech warm) | `pnpm prod:restart` or `pnpm prod:update` |
 | Stop Node and leave sidecars running | `pnpm prod:stop` (prints a GPU hint) |
-| Stop Node **and** free GPU / remove speech containers | `pnpm prod:stop --with-sidecars` |
+| Stop Node **and** free GPU / remove speech containers (STT, TTS, and Lucy's ears when `KOOKR_LUCY_EARS=true`) | `pnpm prod:stop --with-sidecars` |
 
 Bundled STT startup detects changes to the selected backend, model, or vocabulary
 and applies them when Kookr restarts. Device, image, and port changes are not
