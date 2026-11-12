@@ -171,6 +171,26 @@ async function foreignProjectShelf(shelf, slug) {
   return shelfSlug !== slug && !aliasesOf(slug).has(shelfSlug) ? shelfSlug : null;
 }
 
+// The flags of the package's own argument parser that take a value (its
+// `VALUE_FLAGS`): the token after one of them is that value, never an option.
+const NB_VALUE_FLAGS = new Set(['--reason', '--note', '--limit', '--since']);
+
+/**
+ * True when the call is a help request for a subcommand (`nb add <shelf> --help`
+ * or `-h`). Since agent-notebook 0.8.0 such a call prints usage, exits 0 and
+ * writes nothing, so nothing after it should treat it as a notebook change.
+ * This follows the package's own scan (`helpRequest` in its cli.js): tokens after
+ * the command word, up to a `--`, skipping the value of a value flag.
+ */
+function isHelpRequest(argv) {
+  for (let i = 1; i < argv.length; i++) {
+    if (argv[i] === '--') return false;
+    if (NB_VALUE_FLAGS.has(argv[i])) i++;
+    else if (argv[i] === '--help' || argv[i] === '-h') return true;
+  }
+  return false;
+}
+
 /**
  * One-line stderr advisories after a successful `nb add`. Never a refusal: the
  * lesson is already written and the shim stays fail-open. They only make a wrong
@@ -179,15 +199,6 @@ async function foreignProjectShelf(shelf, slug) {
 async function adviseOnAdd(argv) {
   try {
     if ((argv[0] ?? '').trim() !== 'add') return;
-    // `nb add <shelf> --help` (or `-h`) prints usage and writes nothing since
-    // agent-notebook 0.8.0, so there is no lesson to advise about. As in the
-    // package's own parsing, a help token after `--` is literal text and the
-    // value of `--reason`/`--note` is never a help request.
-    for (let i = 1; i < argv.length; i++) {
-      if (argv[i] === '--') break;
-      if (argv[i] === '--reason' || argv[i] === '--note') i++;
-      else if (argv[i] === '--help' || argv[i] === '-h') return;
-    }
     // First positional after `add`; `--reason`/`--note` take a value that is not the shelf.
     let shelf;
     for (let i = 1; i < argv.length; i++) {
@@ -247,10 +258,14 @@ async function main() {
   const code = await mod.runNbCli(argv);
   process.exitCode = code;
 
-  if (code === 0) await adviseOnAdd(argv);
+  // A help request exits 0 but changed nothing: no advisory, and no commit (which
+  // would otherwise sweep an unrelated uncommitted edit under this command's name).
+  if (code !== 0 || isHelpRequest(argv)) return;
+
+  await adviseOnAdd(argv);
 
   // One commit per successful notebook modification (Objective C).
-  if (code === 0 && MUTATING.has((argv[0] ?? '').trim())) {
+  if (MUTATING.has((argv[0] ?? '').trim())) {
     autoCommit(process.env.NB_DIR, argv);
   }
 }

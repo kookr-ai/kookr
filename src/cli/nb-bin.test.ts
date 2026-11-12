@@ -119,6 +119,23 @@ describe('bin/nb.js — per-change git auto-commit (Objective C)', () => {
     expect(tracked).not.toContain('.nb-usage.log');
   });
 
+  test('a help request on a mutating command commits nothing, even with an uncommitted edit in the store', () => {
+    // nb 0.8.0 exits 0 for `nb add <shelf> --help` and writes nothing. Without the help
+    // check the shim then committed whatever else was uncommitted under the subject `nb add patcher`.
+    initRepo();
+    nb(['add', 'patcher', 'a committed lesson']);
+    const before = git(['rev-list', '--count', 'HEAD']);
+    writeFileSync(join(dir, 'stray.md'), '+1\ta hand edit nobody committed\n');
+    for (const args of [['add', 'patcher', '--help'], ['vote', 'patcher', '-h'], ['rm', 'patcher', '--help']]) {
+      expect(nb(args).code, args.join(' ')).toBe(0);
+      expect(git(['rev-list', '--count', 'HEAD']), args.join(' ')).toBe(before);
+    }
+    expect(git(['status', '--porcelain'])).toContain('stray.md'); // still uncommitted
+    // A real mutation still commits, and a help-looking value of --note is not a help request.
+    expect(nb(['add', 'patcher', 'a second lesson', '--note', '-h']).code).toBe(0);
+    expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(Number(before) + 1);
+  });
+
   test('NB_GIT_AUTOCOMMIT=0 disables the auto-commit', () => {
     initRepo();
     const before = Number(git(['rev-list', '--count', 'HEAD']));
