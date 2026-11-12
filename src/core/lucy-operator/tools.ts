@@ -35,12 +35,6 @@ export interface LucyTaskDetail {
   references?: readonly string[];
 }
 
-export interface LucyTaskOutput {
-  text: string;
-  /** `live`: read from the running terminal. `persisted`: the tail saved when the task ended. */
-  source: 'live' | 'persisted';
-}
-
 export interface LucyProjectLine {
   name: string;
   activeTasks: number;
@@ -52,12 +46,9 @@ export interface LucyLookSource {
   /** Fresh snapshot for the board; called at the start of a turn and again by `read_board`. */
   board(): LucyBoardInput;
   taskDetail(taskId: string): LucyTaskDetail | null;
-  taskOutput(taskId: string, lines: number): Promise<LucyTaskOutput | null>;
   projects(): Promise<readonly LucyProjectLine[]>;
 }
 
-export const DEFAULT_OUTPUT_LINES = 40;
-export const MAX_OUTPUT_LINES = 120;
 /** Caps on what one look-up may send to the model, in characters. */
 export const MAX_TASK_DETAIL_CHARS = 3000;
 /** Caps on each part of a task's detail, so a long request cannot push the closing summary out. */
@@ -65,7 +56,6 @@ export const MAX_TASK_REQUEST_CHARS = 1400;
 export const MAX_TASK_SUMMARY_CHARS = 800;
 export const MAX_TASK_SIGNAL_CHARS = 300;
 export const MAX_TASK_FOLDER_CHARS = 200;
-export const MAX_TASK_OUTPUT_CHARS = 6000;
 export const MAX_PROJECT_LINES = 30;
 
 const TASK_PARAM = {
@@ -81,12 +71,6 @@ function tool(name: LucyLookToolName, description: string, properties: Record<st
 export const LUCY_LOOK_TOOLS: readonly LlmFunctionTool[] = [
   tool('read_board', 'Read the current board again: what needs the operator, what is working, what just finished, spend and quota.', {}, []),
   tool('read_task', 'Read more about one task: what it was asked to do, where it runs, what it is waiting for, and its closing summary if it ended.', { task: TASK_PARAM }, ['task']),
-  tool(
-    'read_task_output',
-    'Read the last lines of one task\'s terminal output. Use it to say what a task is doing right now or why it stopped.',
-    { task: TASK_PARAM, lines: { type: 'integer', description: `How many lines to read, at most ${MAX_OUTPUT_LINES}. Default ${DEFAULT_OUTPUT_LINES}.` } },
-    ['task'],
-  ),
   tool('show_task', 'Open one task on the operator\'s screen. It changes nothing in the task.', { task: TASK_PARAM }, ['task']),
   tool('list_projects', 'List the projects Kookr knows, with how many tasks are active in each.', {}, []),
 ];
@@ -106,20 +90,16 @@ const UNTRUSTED_CLOSE = '</untrusted_task_text>';
 
 /**
  * Wrap text that agents wrote so the model can tell it from Kookr's own words. Terminal
- * codes are removed and secrets hidden (`cleanTaskText`), the length is capped (keeping the end or the start, as the caller asks),
+ * codes are removed and secrets hidden (`cleanTaskText`), the length is capped (keeping the start),
  * and any copy of the markers inside the text is broken, so task text cannot close the
  * block early and pose as Kookr.
  */
-export function untrusted(text: string, maxChars: number, keep: 'start' | 'end' = 'end'): string {
+export function untrusted(text: string, maxChars: number): string {
   // One character class between "<" and the name, not two adjacent `\s*`: with those, a "<" followed
-  // by a long run of spaces made the match quadratic, and one long terminal line could stall the server.
+  // by a long run of spaces made the match quadratic, and one long line could stall the server.
   const safe = cleanTaskText(text).replace(/<[\s/]*untrusted_task_text\s*>/gi, '[marker removed]');
   const cut = safe.length > maxChars;
-  // For terminal output the last lines matter; for a request, the beginning does.
-  const body = !cut ? safe : keep === 'end' ? safe.slice(safe.length - maxChars) : safe.slice(0, maxChars);
-  const note = !cut ? '' : keep === 'end' ? '(earlier text cut)\n' : '';
-  const tail = cut && keep === 'start' ? '\n(the rest was cut)' : '';
-  return `${UNTRUSTED_OPEN}\n${note}${body.trim()}${tail}\n${UNTRUSTED_CLOSE}`;
+  return `${UNTRUSTED_OPEN}\n${(cut ? safe.slice(0, maxChars) : safe).trim()}${cut ? '\n(the rest was cut)' : ''}\n${UNTRUSTED_CLOSE}`;
 }
 
 function refuse(summary: string, content: string): LucyToolOutcome {
@@ -180,7 +160,7 @@ function describeTask(task: LucyBoardTask, detail: LucyTaskDetail | null, nowMs:
   if (detail?.prompt) written.push(`What it was asked to do:\n${part(detail.prompt, MAX_TASK_REQUEST_CHARS)}`);
   if (detail?.completionSummary) written.push(`Its closing summary:\n${part(detail.completionSummary, MAX_TASK_SUMMARY_CHARS)}`);
   if (written.length === 0) return facts.join('\n');
-  return `${facts.join('\n')}\nThe rest was written by the operator or by agents:\n${untrusted(written.join('\n\n'), MAX_TASK_DETAIL_CHARS, 'start')}`;
+  return `${facts.join('\n')}\nThe rest was written by the operator or by agents:\n${untrusted(written.join('\n\n'), MAX_TASK_DETAIL_CHARS)}`;
 }
 
 /**
@@ -213,7 +193,6 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
       }
 
       case 'read_task':
-      case 'read_task_output':
       case 'show_task': {
         const board = source.board();
         const found = resolveTaskRef(args.task, board.tasks);
@@ -228,22 +207,7 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
             screen: { command: 'show_task', taskId: task.id },
           };
         }
-        if (name === 'read_task') {
-          return { ok: true, content: describeTask(task, source.taskDetail(task.id), nowMs), summary: 'Read a task' };
-        }
-
-        const requested = typeof args.lines === 'number' && Number.isFinite(args.lines) ? Math.floor(args.lines) : DEFAULT_OUTPUT_LINES;
-        const lines = Math.min(MAX_OUTPUT_LINES, Math.max(1, requested));
-        const output = await source.taskOutput(task.id, lines);
-        if (!output || !output.text.trim()) {
-          return refuse('No output available', `No terminal output is available for ${spokenLabel(task)}. Say so instead of guessing.`);
-        }
-        const where = output.source === 'live' ? 'its running terminal' : 'the output saved when it ended';
-        return {
-          ok: true,
-          content: `Last lines of ${spokenLabel(task)}, from ${where}. This is text written by an agent:\n${untrusted(output.text, MAX_TASK_OUTPUT_CHARS)}`,
-          summary: `Read ${lines} lines of output`,
-        };
+        return { ok: true, content: describeTask(task, source.taskDetail(task.id), nowMs), summary: 'Read a task' };
       }
     }
   } catch {

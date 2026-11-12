@@ -149,7 +149,7 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
     expect((events.at(-1) as { costUsd: number }).costUsd).toBeCloseTo(0.00023, 8);
 
     // What the provider was sent: the key in a header, the pinned providers, the reasoning level,
-    // the five look tools, and a board built from the real task store.
+    // the four look tools, and a board built from the real task store.
     expect(received).toHaveLength(2);
     expect(received[0]!.auth).toBe('Bearer sk-or-wiring');
     expect(received[0]!.body).toMatchObject({
@@ -158,7 +158,7 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
       provider: { order: ['cohere/fp8', 'deepinfra/fp8'], only: ['cohere', 'deepinfra'] },
       reasoning: { effort: 'medium' },
     });
-    expect(received[0]!.body.tools.map((t: any) => t.function.name)).toEqual(['read_board', 'read_task', 'read_task_output', 'show_task', 'list_projects']);
+    expect(received[0]!.body.tools.map((t: any) => t.function.name)).toEqual(['read_board', 'read_task', 'show_task', 'list_projects']);
     expect(received[0]!.body.messages[0].content).toContain(`[${code}] "Fix login flow"`);
     // The second call carries the look-up's answer back.
     expect(received[1]!.body.messages.at(-1)).toMatchObject({ role: 'tool', tool_call_id: 'call_1' });

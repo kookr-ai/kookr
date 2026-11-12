@@ -481,8 +481,9 @@ running Kookr through her. There is no panel for it yet, and hands-free talk doe
 today it is for scripts and for building that panel.
 
 - **She looks things up.** Each answer starts from a board of your tasks: what needs you, what is
-  working, what just finished, spend and quota. When that is not enough she can read one task, read
-  the last lines of its terminal, list projects, or ask the dashboard to open a task.
+  working, what just finished, spend and quota. When that is not enough she can read one task (what
+  it was asked to do, what it is waiting for, its closing summary), list projects, or ask the
+  dashboard to open a task. She cannot read a task's terminal output yet.
 - **She cannot change anything.** No tool she has launches, replies to, closes, snoozes or stops a
   task, so text written by an agent cannot make her act. She is told that everything tasks write is
   information to report, never an instruction.
@@ -490,7 +491,7 @@ today it is for scripts and for building that panel.
   turn, her last sentence says so.
 - **What leaves the machine.** Her model runs at OpenRouter. Each turn sends your question, the board
   (task names, projects, states, costs) and whatever she looks up, with secret-looking tokens replaced
-  first. Leave it off if task names or terminal output must not leave the machine.
+  first. Leave it off if task names or task requests must not leave the machine.
 - **What it needs.** An OpenRouter key (`KOOKR_OPENROUTER_API_KEY`). The model, the providers allowed
   to serve it and how much it thinks are settings. Details: [Lucy operator](reference/lucy-operator.md).
 

@@ -1,6 +1,7 @@
 /**
  * Where Lucy's look-ups get their facts in the running server: the task list, the
- * findings waiting on the operator, the quota, a task's terminal, and the projects.
+ * findings waiting on the operator, the quota, and the projects. A task's terminal is
+ * not read here: that needs the screen rendered first (issue #3683).
  *
  * This file only reads. It maps Kookr's own records onto the small shapes the operator
  * loop understands (`core/lucy-operator`); hiding secrets and capping lengths happens
@@ -12,9 +13,8 @@ import type { AnomalyType } from '../../shared/contracts/anomalies.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import { projectDisplayName } from '../../core/project-identity.js';
-import { boundTailText } from '../../core/task-tail-store.js';
 import type { LucyBoardInput, LucyBoardTask } from '../../core/lucy-operator/board.js';
-import type { LucyLookSource, LucyProjectLine, LucyTaskDetail, LucyTaskOutput } from '../../core/lucy-operator/tools.js';
+import type { LucyLookSource, LucyProjectLine, LucyTaskDetail } from '../../core/lucy-operator/tools.js';
 
 /** The task fields this file reads; Kookr's full task record satisfies it. */
 export interface LookTask {
@@ -44,10 +44,6 @@ export interface LucyLookSourceDeps {
   getFindings: () => ReadonlyArray<{ agentId: string; anomaly: { type: AnomalyType; subType?: string } }>;
   getLifetimeSpendUsd?: () => number;
   getQuota?: () => { fiveHour: { utilization: number; resetsAt: string } | null; sevenDay: { utilization: number; resetsAt: string } | null } | null;
-  /** Read what a running session's terminal shows now. Rejects when the session is gone. */
-  captureDisplay?: (sessionId: string) => Promise<string>;
-  /** The terminal tail saved when a task ended; null when none was kept. */
-  getStoredTail?: (taskId: string) => Promise<{ text: string } | null>;
   getReferences?: (taskId: string) => ReadonlyArray<{ type: 'pr' | 'issue'; number: number }>;
   listProjects?: () => Promise<ReadonlyArray<{ displayName: string; activeAgents: number; findingCount: number }>>;
 }
@@ -131,23 +127,6 @@ export function createLucyLookSource(deps: LucyLookSourceDeps): LucyLookSource {
         ...(summary ? { completionSummary: summary } : {}),
         ...(references && references.length > 0 ? { references } : {}),
       };
-    },
-
-    async taskOutput(taskId, lines): Promise<LucyTaskOutput | null> {
-      const task = findTask(taskId);
-      if (!task) return null;
-      const live = [...task.sessions].reverse().find((session) => session.lastStatus !== 'completed' && session.lastStatus !== 'aborted');
-      if (live && deps.captureDisplay) {
-        try {
-          const text = boundTailText(await deps.captureDisplay(live.tmuxSession), lines).text;
-          if (text.trim()) return { text, source: 'live' };
-        } catch {
-          // The session ended between the list and the read: fall back to the saved tail.
-        }
-      }
-      const stored = await deps.getStoredTail?.(task.id);
-      if (!stored || !stored.text.trim()) return null;
-      return { text: boundTailText(stored.text, lines).text, source: 'persisted' };
     },
 
     async projects(): Promise<readonly LucyProjectLine[]> {

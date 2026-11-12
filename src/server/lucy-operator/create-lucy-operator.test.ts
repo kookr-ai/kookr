@@ -24,10 +24,11 @@ function routeDeps(overrides: Record<string, unknown> = {}) {
       inspectActive: () => [{ agentId: 'kookr-s1', anomaly: { type: 'permission_blocked' } }],
       getAll: () => { throw new Error('getAll restores expired snoozes; her look-ups must only read'); },
     },
-    adapter: { captureDisplay: async (sessionId: string) => { asked.push(`capture:${sessionId}`); return 'live line 1\nlive line 2'; } },
+    // Her look-ups must not read a terminal (issue #3683): any call here fails the test.
+    adapter: { captureDisplay: async () => { throw new Error('her look-ups must not read a terminal'); } },
     githubStateStore: { getReferences: (taskId: string) => { asked.push(`refs:${taskId}`); return [{ type: 'pr', number: 3620 }]; } },
     getQuotaStatus: () => ({ fiveHour: null, sevenDay: { utilization: 42, resetsAt: '2026-11-15T00:00:00Z' }, updatedAt: 1 }),
-    taskTailStore: { getByTaskId: async (taskId: string) => { asked.push(`tail:${taskId}`); return { text: 'saved tail' }; } },
+    taskTailStore: { getByTaskId: async () => { throw new Error('her look-ups must not read a saved terminal tail'); } },
     ...overrides,
   };
   return { deps: deps as unknown as RouteDeps, asked };
@@ -41,22 +42,18 @@ describe('buildLucyLookSource', () => {
     expect(board.quota).toEqual({ fiveHour: null, sevenDay: { utilization: 42, resetsAt: '2026-11-15T00:00:00Z' } });
   });
 
-  test('a task\'s output is read from its running terminal', async () => {
-    const { deps, asked } = routeDeps();
-    expect(await buildLucyLookSource(deps).taskOutput('t1', 40)).toEqual({ text: 'live line 1\nlive line 2', source: 'live' });
-    expect(asked).toEqual(['capture:kookr-s1']);
-  });
-
-  test('when the terminal cannot be read, the saved tail is used', async () => {
-    const { deps, asked } = routeDeps({ adapter: { captureDisplay: async () => { throw new Error('gone'); } } });
-    expect(await buildLucyLookSource(deps).taskOutput('t1', 40)).toEqual({ text: 'saved tail', source: 'persisted' });
-    expect(asked).toEqual(['tail:t1']);
-  });
-
   test('a task\'s detail carries its linked pull requests', () => {
     const { deps, asked } = routeDeps();
     expect(buildLucyLookSource(deps).taskDetail('t1')).toMatchObject({ prompt: 'Write the report', references: ['PR #3620'] });
     expect(asked).toEqual(['refs:t1']);
+  });
+
+  test('nothing she can look up reads a terminal or a saved terminal tail', async () => {
+    const source = buildLucyLookSource(routeDeps().deps);
+    source.board();
+    source.taskDetail('t1');
+    await source.projects();
+    expect(Object.keys(source).sort()).toEqual(['board', 'projects', 'taskDetail']);
   });
 
   test('without a project registry, projects come from the task list', async () => {

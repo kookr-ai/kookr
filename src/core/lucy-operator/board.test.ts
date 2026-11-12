@@ -152,9 +152,27 @@ describe('buildLucyBoard', () => {
       NOW,
     );
     expect(board).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
-    expect(board).toContain('project web ]0;title app');
+    // The codes go whole, not just their first character: nothing of "[31m" or "]0;title" is left.
+    expect(board).toContain('[eeee] "Fix login" · project webapp ·');
     expect(board).toContain('waiting on the operator: it asked you');
-    expect(board).toContain('(killed 5A by hand)');
+    expect(board).toContain('(killed by hand)');
+  });
+
+  test('a token that a colour code stands next to in a task name or a project is hidden', () => {
+    const escape = '\u001b';
+    const board = buildLucyBoard(
+      {
+        tasks: [
+          boardTask({ id: 'eeee5555', name: `Fix ${escape}[31msk-shortkey1234567890`, project: `web${escape}[1mghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8` }),
+        ],
+        lifetimeSpendUsd: null,
+        quota: null,
+      },
+      NOW,
+    );
+    expect(board).not.toContain('sk-shortkey');
+    expect(board).not.toContain('ghp_A1b2');
+    expect(board).toContain('project web[redacted]');
   });
 
   test('a long list is cut, and the cut is stated', () => {

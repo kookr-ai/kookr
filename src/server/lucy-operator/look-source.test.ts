@@ -85,41 +85,6 @@ describe('createLucyLookSource', () => {
     expect(source({ tasks: [] }).taskDetail('nope')).toBeNull();
   });
 
-  test('taskOutput: reads the running terminal and keeps only the lines asked for', async () => {
-    const asked: string[] = [];
-    const output = await source({
-      tasks: [task({ id: 't1', sessions: [{ tmuxSession: 'old', lastStatus: 'completed' }, { tmuxSession: 'live', lastStatus: 'running' }] })],
-      captureDisplay: async (sessionId) => { asked.push(sessionId); return 'one\ntwo\nthree\nfour'; },
-    }).taskOutput('t1', 2);
-    expect(asked).toEqual(['live']);
-    expect(output).toEqual({ text: 'three\nfour', source: 'live' });
-  });
-
-  test('taskOutput: falls back to the saved tail when the terminal is gone', async () => {
-    const output = await source({
-      tasks: [task({ id: 't1' })],
-      captureDisplay: async () => { throw new Error('no such session'); },
-      getStoredTail: async () => ({ text: 'saved line 1\nsaved line 2' }),
-    }).taskOutput('t1', 40);
-    expect(output).toEqual({ text: 'saved line 1\nsaved line 2', source: 'persisted' });
-  });
-
-  test('taskOutput: an ended task reads the saved tail without touching a terminal', async () => {
-    let captured = false;
-    const output = await source({
-      tasks: [task({ id: 't1', status: 'completed', sessions: [{ tmuxSession: 'done', lastStatus: 'completed' }] })],
-      captureDisplay: async () => { captured = true; return 'x'; },
-      getStoredTail: async () => ({ text: 'the end' }),
-    }).taskOutput('t1', 40);
-    expect(captured).toBe(false);
-    expect(output).toEqual({ text: 'the end', source: 'persisted' });
-  });
-
-  test('taskOutput: null when there is nothing to read', async () => {
-    expect(await source({ tasks: [task({ id: 't1' })] }).taskOutput('t1', 40)).toBeNull();
-    expect(await source({ tasks: [] }).taskOutput('nope', 40)).toBeNull();
-  });
-
   test('projects: uses the project registry when it is wired', async () => {
     const projects = await source({ tasks: [], listProjects: async () => [{ displayName: 'kookr-ai/kookr', activeAgents: 3, findingCount: 1 }] }).projects();
     expect(projects).toEqual([{ name: 'kookr-ai/kookr', activeTasks: 3, findings: 1 }]);

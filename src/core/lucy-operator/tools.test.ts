@@ -1,15 +1,15 @@
 import { describe, expect, test } from 'vitest';
 import { LUCY_LOOK_TOOL_NAMES } from '../../shared/contracts/lucy-turn.js';
 import { boardTask, fakeSource, NOW } from './__fixtures__/scripted.js';
-import { dispatchLucyTool, displayToolArgs, LUCY_LOOK_TOOLS, MAX_OUTPUT_LINES, MAX_TASK_DETAIL_CHARS, MAX_TASK_OUTPUT_CHARS, untrusted } from './tools.js';
+import { dispatchLucyTool, displayToolArgs, LUCY_LOOK_TOOLS, MAX_TASK_DETAIL_CHARS, untrusted } from './tools.js';
 
 const SECRET = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
 const tasks = [boardTask({ id: 'aaaa1111', name: 'Bake-off report', project: 'kookr' })];
 
 describe('the tool list', () => {
-  test('is exactly the five look-only tools', () => {
+  test('is exactly the four look-only tools', () => {
     expect(LUCY_LOOK_TOOLS.map((t) => t.function.name)).toEqual([...LUCY_LOOK_TOOL_NAMES]);
-    expect([...LUCY_LOOK_TOOL_NAMES].sort()).toEqual(['list_projects', 'read_board', 'read_task', 'read_task_output', 'show_task']);
+    expect([...LUCY_LOOK_TOOL_NAMES].sort()).toEqual(['list_projects', 'read_board', 'read_task', 'show_task']);
   });
 
   test('registers nothing that launches, replies, closes, snoozes, approves or stops a task', () => {
@@ -23,14 +23,15 @@ describe('the tool list', () => {
 });
 
 describe('dispatchLucyTool', () => {
-  test.each(['launch_task', 'reply_to_task', 'close_task', 'snooze_finding', 'abort_task', 'approve_permission', 'READ_BOARD', ''])(
+  // `read_task_output` is here on purpose: reading a terminal is not offered yet (issue #3683), so asking for it is refused like any other unknown tool.
+  test.each(['launch_task', 'reply_to_task', 'close_task', 'snooze_finding', 'abort_task', 'approve_permission', 'read_task_output', 'READ_BOARD', ''])(
     'refuses %j and asks the source for nothing',
     async (name) => {
       const source = fakeSource({ tasks });
       const outcome = await dispatchLucyTool(name, '{"task":"aaaa"}', source, NOW);
       expect(outcome).toMatchObject({ ok: false, summary: 'Refused: not a tool she has' });
       expect(outcome.screen).toBeUndefined();
-      expect(source.calls).toEqual({ board: 0, taskDetail: [], taskOutput: [], projects: 0 });
+      expect(source.calls).toEqual({ board: 0, taskDetail: [], projects: 0 });
     },
   );
 
@@ -38,7 +39,7 @@ describe('dispatchLucyTool', () => {
     const source = fakeSource({ tasks });
     const outcome = await dispatchLucyTool('read_task', raw, source, NOW);
     expect(outcome).toMatchObject({ ok: false, summary: 'Refused: unreadable arguments' });
-    expect(source.calls).toEqual({ board: 0, taskDetail: [], taskOutput: [], projects: 0 });
+    expect(source.calls).toEqual({ board: 0, taskDetail: [], projects: 0 });
   });
 
   test('read_board returns the board', async () => {
@@ -85,40 +86,20 @@ describe('dispatchLucyTool', () => {
     expect(outcome.content).not.toContain('(earlier text cut)');
   });
 
-  test('a token on a terminal line drawn with cursor jumps is hidden from the provider', async () => {
-    // What a terminal really holds: the gap after "Bearer" is a cursor jump, not a space.
-    const text = 'Authorization: Bearer\u001b[35Gghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8\nexport KEY=\u001b[12Gsk-shortkey1234567890\n';
-    const source = fakeSource({ tasks, outputs: { aaaa1111: { text, source: 'live' } } });
-    const outcome = await dispatchLucyTool('read_task_output', '{"task":"aaaa"}', source, NOW);
+  test('a token in a request that carries terminal codes is hidden from the provider', async () => {
+    // An agent can paste terminal output into a summary: the gap after "Bearer" is a cursor jump, not a space.
+    const completionSummary = 'Authorization: Bearer\u001b[35Gghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8\nexport KEY=\u001b[12Gsk-shortkey1234567890\n';
+    const source = fakeSource({ tasks, details: { aaaa1111: { prompt: 'Rotate the keys', completionSummary } } });
+    const outcome = await dispatchLucyTool('read_task', '{"task":"aaaa"}', source, NOW);
     expect(outcome.ok).toBe(true);
     expect(outcome.content).not.toContain('ghp_A1b2');
     expect(outcome.content).not.toContain('sk-shortkey');
     expect(outcome.content).toContain('Authorization: Bearer [redacted]');
-  });
-
-  test('read_task_output wraps the output as untrusted, hides secrets and keeps the last lines', async () => {
-    const text = `FIRST LINE\n${'noise\n'.repeat(3000)}export KEY=${SECRET}\nLAST LINE`;
-    const source = fakeSource({ tasks, outputs: { aaaa1111: { text, source: 'persisted' } } });
-    const outcome = await dispatchLucyTool('read_task_output', '{"task":"aaaa","lines":9999}', source, NOW);
-
-    // 9999 lines were asked for; the look-up is held to its maximum.
-    expect(outcome).toMatchObject({ ok: true, summary: `Read ${MAX_OUTPUT_LINES} lines of output` });
-    expect(outcome.content).toContain('from the output saved when it ended');
-    expect(outcome.content).toContain('LAST LINE');
-    expect(outcome.content).not.toContain('FIRST LINE');
-    expect(outcome.content).not.toContain(SECRET);
-    expect(outcome.content).toContain('(earlier text cut)');
-    expect(outcome.content.length).toBeLessThan(MAX_TASK_OUTPUT_CHARS + 400);
-  });
-
-  test('read_task_output says so when there is no output, instead of returning nothing', async () => {
-    const outcome = await dispatchLucyTool('read_task_output', '{"task":"aaaa"}', fakeSource({ tasks }), NOW);
-    expect(outcome).toMatchObject({ ok: false, summary: 'No output available' });
-    expect(outcome.content).toMatch(/Say so instead of guessing/);
+    expect(outcome.content).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
   });
 
   test('a look-up that throws is reported without its error text', async () => {
-    const outcome = await dispatchLucyTool('read_task_output', '{"task":"aaaa"}', fakeSource({ tasks, failOutput: true }), NOW);
+    const outcome = await dispatchLucyTool('list_projects', '{}', fakeSource({ tasks, failProjects: true }), NOW);
     expect(outcome).toMatchObject({ ok: false, summary: 'Look-up failed' });
     expect(outcome.content).not.toContain('secret-path');
   });
@@ -127,7 +108,7 @@ describe('dispatchLucyTool', () => {
     const source = fakeSource({ tasks });
     const outcome = await dispatchLucyTool('show_task', '{"task":"[aaaa]"}', source, NOW);
     expect(outcome).toMatchObject({ ok: true, screen: { command: 'show_task', taskId: 'aaaa1111' } });
-    expect(source.calls).toMatchObject({ taskDetail: [], taskOutput: [], projects: 0 });
+    expect(source.calls).toMatchObject({ taskDetail: [], projects: 0 });
   });
 
   test('an unknown task is refused with a hint, and no detail is read', async () => {

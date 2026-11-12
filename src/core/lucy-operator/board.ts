@@ -18,7 +18,8 @@
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import { isGenericTaskName, spokenTaskName } from '../spoken-task-name.js';
-import { redactedTaskName, redactSpeechSecrets } from '../task-speech-summary.js';
+import { redactedTaskName } from '../task-speech-summary.js';
+import { cleanTaskText } from './task-text.js';
 
 type TimeValue = Date | string | number;
 
@@ -89,16 +90,13 @@ function dollars(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-/** Control characters (escape, bell and the like, 7-bit and 8-bit). None belongs in a prompt. */
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]+/g;
-
 /**
- * One line of text with secrets hidden and control characters removed, safe to place in
- * a prompt. Secrets are hidden first, while a control character still stands as a break
- * between a token and the word before it.
+ * One line of text with terminal codes removed and secrets hidden, safe to place in a
+ * prompt. The cleaning is the same as for a task's request (`cleanTaskText`), so a token
+ * that a colour code stands next to in a task name is hidden here too.
  */
 export function boardText(value: string | undefined, max = 80): string {
-  const flat = redactSpeechSecrets(value ?? '').replace(CONTROL_CHARACTERS, ' ').replace(/\s+/g, ' ').trim();
+  const flat = cleanTaskText(value ?? '').replace(/\s+/g, ' ').trim();
   return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
 }
 
@@ -149,9 +147,14 @@ export function taskHandles(tasks: readonly { id: string }[]): Map<string, strin
   return result;
 }
 
+/** The task's title as it may be said aloud, or the generic name when it may not. Cleaned like everything else on the board. */
+function spokenNameOf(name: string | undefined): string {
+  return spokenTaskName(redactedTaskName(name === undefined ? undefined : cleanTaskText(name)));
+}
+
 /** How she may call the task aloud: its short name in quotes, or a description when it has none. */
 export function spokenLabel(task: Pick<LucyBoardTask, 'name' | 'project'>): string {
-  const spoken = spokenTaskName(redactedTaskName(task.name)?.replace(CONTROL_CHARACTERS, ' '));
+  const spoken = spokenNameOf(task.name);
   if (!isGenericTaskName(spoken)) return `"${spoken}"`;
   const project = boardText(task.project, 40);
   return project ? `an unnamed task in ${project}` : 'an unnamed task';
@@ -260,7 +263,7 @@ export function resolveTaskRef<T extends LucyBoardTask>(ref: unknown, tasks: rea
   if (byCode.length === 1) return { ok: true, task: byCode[0]! };
 
   const byName = tasks.filter((t) => {
-    const spoken = spokenTaskName(redactedTaskName(t.name));
+    const spoken = spokenNameOf(t.name);
     return !isGenericTaskName(spoken) && spoken.toLowerCase() === wanted;
   });
   if (byName.length === 1) return { ok: true, task: byName[0]! };

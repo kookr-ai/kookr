@@ -25,8 +25,11 @@ export interface LucyTurnRequest {
   conversationId: string;
 }
 
-/** The look-only tools Lucy may call in this step. Nothing here changes a task. */
-export const LUCY_LOOK_TOOL_NAMES = ['read_board', 'read_task', 'read_task_output', 'show_task', 'list_projects'] as const;
+/**
+ * The look-only tools Lucy may call in this step. Nothing here changes a task. Reading a
+ * task's terminal output is not among them yet: it needs the screen rendered first (issue #3683).
+ */
+export const LUCY_LOOK_TOOL_NAMES = ['read_board', 'read_task', 'show_task', 'list_projects'] as const;
 export type LucyLookToolName = (typeof LUCY_LOOK_TOOL_NAMES)[number];
 
 /**

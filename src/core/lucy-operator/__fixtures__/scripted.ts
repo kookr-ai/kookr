@@ -5,7 +5,7 @@
 
 import type { LucyBoardInput, LucyBoardTask } from '../board.js';
 import { LucyModelError, type LucyModelEvent, type LucyModelPort, type LucyModelRequest } from '../model-port.js';
-import type { LucyLookSource, LucyTaskDetail, LucyTaskOutput } from '../tools.js';
+import type { LucyLookSource, LucyTaskDetail } from '../tools.js';
 
 /** One scripted model call: say some text, ask for look-ups, or fail. */
 export interface ScriptedStep {
@@ -70,18 +70,18 @@ export function boardTask(overrides: Partial<LucyBoardTask> & { id: string }): L
 
 export interface FakeSource extends LucyLookSource {
   /** How many times each look-up reached the source. */
-  calls: { board: number; taskDetail: string[]; taskOutput: string[]; projects: number };
+  calls: { board: number; taskDetail: string[]; projects: number };
 }
 
 export function fakeSource(options: {
   tasks?: LucyBoardTask[];
   details?: Record<string, LucyTaskDetail>;
-  outputs?: Record<string, LucyTaskOutput>;
   board?: Partial<Omit<LucyBoardInput, 'tasks'>>;
   projects?: Array<{ name: string; activeTasks: number; findings: number }>;
-  failOutput?: boolean;
+  /** Make the project list throw, to exercise a look-up that fails inside Kookr. */
+  failProjects?: boolean;
 } = {}): FakeSource {
-  const calls: FakeSource['calls'] = { board: 0, taskDetail: [], taskOutput: [], projects: 0 };
+  const calls: FakeSource['calls'] = { board: 0, taskDetail: [], projects: 0 };
   return {
     calls,
     board() {
@@ -92,13 +92,9 @@ export function fakeSource(options: {
       calls.taskDetail.push(taskId);
       return options.details?.[taskId] ?? null;
     },
-    async taskOutput(taskId) {
-      calls.taskOutput.push(taskId);
-      if (options.failOutput) throw new Error('terminal host exploded at /srv/work/secret-path');
-      return options.outputs?.[taskId] ?? null;
-    },
     async projects() {
       calls.projects += 1;
+      if (options.failProjects) throw new Error('project registry exploded at /srv/work/secret-path');
       return options.projects ?? [];
     },
   };

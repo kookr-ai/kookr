@@ -1,7 +1,11 @@
 /**
- * Cleans text that came from a task (a request, a closing summary, terminal output)
+ * Cleans text that came from a task (its name, its request, its closing summary)
  * before it is sent to the model provider: the codes a terminal uses to draw are
  * removed, and secret-looking tokens are hidden.
+ *
+ * Such text is not terminal output, but an agent can paste terminal output into it, and
+ * the operator can paste anything into a request. A task's terminal itself is not read
+ * through here alone: that look-up waits for the screen to be rendered (issue #3683).
  *
  * ## Why the two jobs are done together
  *
@@ -24,7 +28,7 @@
  *    `CURSOR_MOVE_FINALS`, `CURSOR_MOVE_ESCAPES`, `CURSOR_MOVE_CONTROLS`). Every other
  *    code joins, including any code the list has never heard of. That is the safe
  *    direction: joining can make more text look like one token, never less.
- * 3. Secrets are looked for in five readings of the text, because no single reading is
+ * 3. Secrets are looked for in four ways, because no single reading of the text is
  *    right for every case:
  *    - every code separates words (finds a token standing right after a code);
  *    - joining codes join, cursor moves separate (finds a token that a colour, an
@@ -32,11 +36,9 @@
  *    - every code joins, looking only for tokens with a known prefix (a net under the
  *      list above: such a token is found even if a code was wrongly taken for a
  *      cursor move);
- *    - only the escape or control character itself separates, and the rest of the
- *      code counts as text (known prefixes only); and, separately, the code separates
- *      but its last character counts as text. Between them these find a token whose
- *      first letter the scanner read as the end of a code that was in fact cut off
- *      (`ESC[35;1` + `ghp_…`).
+ *    - a token may start at any of the letters and digits a code ends with. This finds
+ *      a token whose first characters the scanner read as part of a code that was in
+ *      fact cut off (`ESC[35;1` + `ghp_…`, or `ESC[` + a token that starts with digits).
  *
  *    The readings that put ordinary text together where a cursor move stood look only
  *    for known prefixes: with the "any run of 32 or more characters" rule they would
@@ -47,27 +49,36 @@
  *
  * Text with no control characters gets exactly the ordinary redaction.
  *
- * ## The guarantee, and what it does not cover
+ * ## What is promised
  *
- * A token that the ordinary redaction would hide in plain text is hidden when any
- * codes stand before it, after it, or inside it, with two exceptions:
+ * **The floor.** The result is never weaker than the ordinary redaction
+ * (`redactSpeechSecrets`) applied to the same characters: whatever that would hide in
+ * the raw text is hidden here, and text with no control characters gets exactly the
+ * ordinary redaction. This is the rule the rest of the product applies to text it sends
+ * to a model, and it is checked by a fuzz test over text with codes in it.
+ *
+ * **On top of the floor.** A token is also hidden when terminal codes stand before it,
+ * after it or inside it, where the ordinary redaction alone would miss it. The test
+ * walks the terminal-code grammar and the real bytes `tput` emits to check this. It is
+ * defence in depth, not a proof for every sequence of bytes, and two cases are known
+ * to be outside it:
  *
  * - **A token with no known prefix that a cursor move splits.** On screen the two
  *   halves are usually apart. They are read as two pieces, and a piece shorter than 32
  *   characters is not hidden. (Tokens with a known prefix are hidden even then.)
  * - **A token that exists only on screen**, because characters were overwritten in
- *   place (backspace or cursor-left, then retype). This reads the stream; it does not
+ *   place (backspace or cursor-left, then retype). This reads characters; it does not
  *   emulate a screen.
  *
  * Side effect of the net: a word glued straight onto a prefixed token by a code is
  * hidden with it.
  *
- * Rendering the screen with a real emulator removes both exceptions, but an emulator
- * fed untrusted output needs a worker with a deadline (see
- * `server/streaming-attach-snapshot.ts`); that is a follow-up.
+ * Reading a task's terminal needs more than this: there the screen is what matters, so
+ * that look-up waits for a real emulator, run in a worker with a deadline (issue #3683,
+ * and see `server/streaming-attach-snapshot.ts`).
  */
 
-import { redactSpeechSecrets, speechSecretSpans } from '../task-speech-summary.js';
+import { redactSpeechSecrets, speechSecretEndAt, speechSecretSpans } from '../task-speech-summary.js';
 
 interface CodeRange {
   start: number;
@@ -142,9 +153,11 @@ function scanCodes(text: string): CodeRange[] {
       }
       const final = j < length ? text.charCodeAt(j) : -1;
       if (j < limit && final >= 0x40 && final <= 0x7e) {
-        const first = body < length ? text.charCodeAt(body) : -1;
-        const privatePrefix = first >= 0x3c && first <= 0x3f; // "<", "=", ">", "?": a terminal-specific code, not a cursor move
-        ranges.push({ start, end: j + 1, joins: privatePrefix || !CURSOR_MOVE_FINALS.has(text[j]!) });
+        // A cursor move is a plain control sequence: digits and ";" only, then the final byte. A
+        // private prefix ("<", "=", ">", "?"), an intermediate byte (as in `ESC[1$u`) or a ":" makes
+        // it a different function, even when the final byte is the same letter.
+        const plain = /^[0-9;]*$/.test(text.slice(body, j));
+        ranges.push({ start, end: j + 1, joins: !(plain && CURSOR_MOVE_FINALS.has(text[j]!)) });
         i = j + 1;
       } else {
         // Cut off before its final byte: what was read of it is still a code, not text.
@@ -214,15 +227,14 @@ type Span = [start: number, end: number];
 
 /**
  * Look for secrets in one reading of the text. `keep(range)` says what a code becomes in
- * this reading: `'drop'` (it joins its neighbours), `'separate'` (it stands between
- * them), `'first'` (only its first character separates; the rest is read as text), or
- * `'last'` (it separates, but its last character is read as text).
+ * this reading: `'drop'` (it joins its neighbours) or `'separate'` (it stands between
+ * them).
  * Returns the spans found, as offsets into the raw text.
  */
 function secretsInReading(
   text: string,
   ranges: readonly CodeRange[],
-  keep: (range: CodeRange) => 'drop' | 'separate' | 'first' | 'last',
+  keep: (range: CodeRange) => 'drop' | 'separate',
   kind: 'all' | 'prefixed',
 ): Span[] {
   // The reading is built from slices of the raw text, with a table saying where each slice came
@@ -241,12 +253,7 @@ function secretsInReading(
   let cursor = 0;
   for (const range of ranges) {
     copy(cursor, range.start);
-    const mode = keep(range);
-    if (mode !== 'drop') {
-      separator(range.start);
-      if (mode === 'first') copy(range.start + 1, range.end);
-      else if (mode === 'last' && range.end - range.start >= 2) copy(range.end - 1, range.end);
-    }
+    if (keep(range) === 'separate') separator(range.start);
     cursor = range.end;
   }
   copy(cursor, text.length);
@@ -266,6 +273,34 @@ function secretsInReading(
   return speechSecretSpans(view, kind).map(([start, end]): Span => [toRaw(start), toRaw(end - 1) + 1]);
 }
 
+/** How far back from the end of a code a swallowed token may start. Real codes end in a few letters and digits. */
+const MAX_SWALLOWED = 40;
+
+/**
+ * Find tokens whose first characters the scanner read as the end of a code. A control
+ * sequence that was cut off takes whatever follows as its parameters and final byte:
+ * `ESC[` + `1a2b…` reads `1` as a parameter and `a` as the end. So for the letters and
+ * digits a code ends with, each position is tried as the possible start of a token that
+ * runs on into the text after the code.
+ */
+function secretsStartingInsideCodes(text: string, ranges: readonly CodeRange[]): Span[] {
+  const spans: Span[] = [];
+  for (const range of ranges) {
+    let tail = range.end;
+    const earliest = Math.max(range.start + 1, range.end - MAX_SWALLOWED);
+    while (tail > earliest && /[A-Za-z0-9+/_-]/.test(text[tail - 1]!)) tail -= 1;
+    for (let at = tail; at < range.end; at++) {
+      const end = speechSecretEndAt(text, at);
+      // Only a token that runs past the code counts: one that ends inside it is the code itself.
+      if (end !== null && end > range.end) {
+        spans.push([at, end]);
+        break;
+      }
+    }
+  }
+  return spans;
+}
+
 /**
  * Task text made safe to send to the model provider: terminal codes removed, secrets
  * hidden. Line breaks and tabs are kept.
@@ -278,8 +313,7 @@ export function cleanTaskText(text: string): string {
     ...secretsInReading(text, ranges, () => 'separate', 'all'),
     ...secretsInReading(text, ranges, (range) => (range.joins ? 'drop' : 'separate'), 'all'),
     ...secretsInReading(text, ranges, () => 'drop', 'prefixed'),
-    ...secretsInReading(text, ranges, () => 'first', 'prefixed'),
-    ...secretsInReading(text, ranges, () => 'last', 'all'),
+    ...secretsStartingInsideCodes(text, ranges),
   ].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 
   let out = '';

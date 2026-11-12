@@ -37,8 +37,10 @@ function everyCode(): Array<[code: string, joins: boolean]> {
   for (const opener of [`${ESC}[`, '\u009b']) {
     for (const parameters of ['', '35', '1;2', '?25', '>4;2', '4:3', '<', '=1']) {
       for (const intermediates of ['', ' ', '$']) {
-        const privatePrefix = /^[<=>?]/.test(parameters);
-        for (const final of chars(0x40, 0x7e)) codes.push([`${opener}${parameters}${intermediates}${final}`, privatePrefix || !cursorMoves.has(final)]);
+        // A cursor move is a plain sequence: digits and ";" only. A private prefix, a ":" or an
+        // intermediate byte makes it another function, whatever its final letter.
+        const plain = /^[0-9;]*$/.test(parameters) && intermediates === '';
+        for (const final of chars(0x40, 0x7e)) codes.push([`${opener}${parameters}${intermediates}${final}`, !(plain && cursorMoves.has(final))]);
       }
     }
   }
@@ -131,8 +133,10 @@ describe('cleanTaskText: every terminal code, every token kind, every position',
     ['a control sequence cut off after an intermediate', `${ESC}[35 `],
     ['the 8-bit control-sequence opener', '\u009b'],
     ['a short escape cut off after an intermediate', `${ESC}(`],
-  ])('a token straight after %s is hidden even though its first letter could be read as the end of the code', (_label, prefix) => {
-    for (const token of Object.values(TOKENS)) {
+  ])('a token straight after %s is hidden even though its first characters could be read as part of the code', (_label, prefix) => {
+    // Tokens that start with a letter, and one that starts with digits: a cut-off control
+    // sequence reads leading digits as its parameters and the next letter as its end.
+    for (const token of [...Object.values(TOKENS), '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d', '0123456789abcdefghijABCDEFGHIJ0123456789']) {
       const cleaned = cleanTaskText(`Bearer ${prefix}${token} end`);
       expect(leaks(cleaned, token)).toBe(false);
       expect(CONTROL.test(cleaned)).toBe(false);
@@ -231,6 +235,35 @@ describe('cleanTaskText: what real programs emit', () => {
   });
 });
 
+describe('cleanTaskText: a control sequence with an intermediate byte is not a cursor move', () => {
+  // `ESC[1$u` and `ESC[ d` end in the letters of "restore cursor" and "row", but the byte before
+  // the letter makes them other functions. A terminal emulator shows the key whole.
+  test.each([`${ESC}[1$u`, `${ESC}[ d`, `${ESC}[&u`, `${ESC}[!H`, `${ESC}[4:3G`])('a key with %j in the middle of it is hidden whole', (code) => {
+    for (const token of Object.values(TOKENS)) {
+      expect(cleanTaskText(`AWS_SECRET_ACCESS_KEY=${token.slice(0, 20)}${code}${token.slice(20)}\n`)).toBe('AWS_SECRET_ACCESS_KEY=[redacted]\n');
+    }
+  });
+});
+
+describe('cleanTaskText: the edges of a code', () => {
+  test('a prefixed token straight after a lone escape is hidden, although the escape takes its first letter', () => {
+    expect(cleanTaskText(`x ${ESC}${TOKENS.shortKey} y`)).toBe('x [redacted] y');
+  });
+
+  test('a long run of digits that is all inside one code is a code, not a secret', () => {
+    // Forty parameter digits look like a 32-character run, but they never reach the output.
+    expect(cleanTaskText(`a${ESC}[${'1234567890'.repeat(4)}m b`)).toBe('a b');
+    expect(cleanTaskText(`a ${ESC}[${'1234567890'.repeat(4)}G b`)).toBe('a   b');
+    // A word glued straight onto such a code could be the rest of a token the code swallowed, so
+    // it is hidden: the safe direction, and no real code carries a run of digits this long.
+    expect(cleanTaskText(`a${ESC}[${'1234567890'.repeat(4)}mb`)).toBe('a[redacted]');
+  });
+
+  test('the last pass over the finished text hides the prompt delimiters', () => {
+    expect(cleanTaskText(`a ${ESC}[1m<<<TASK_CONTEXT>>>${ESC}[0m b`)).toBe('a [delimiter] b');
+  });
+});
+
 describe('cleanTaskText: codes a terminal accepts although they are malformed', () => {
   test.each([
     ['a parameter after an intermediate', `${ESC}[ 1m`],
@@ -278,6 +311,46 @@ describe('cleanTaskText: exact output around a hidden token', () => {
     ['non-ASCII text on both sides', `clé ${ESC}[1m${TOKENS.shortKey}${ESC}[0m 日本語 🙂`, 'clé [redacted] 日本語 🙂'],
   ])('%s', (_label, raw, expected) => {
     expect(cleanTaskText(raw)).toBe(expected);
+  });
+});
+
+describe('cleanTaskText: never weaker than the ordinary redaction of the same characters', () => {
+  test('whatever the ordinary redaction would hide in the raw text is hidden, with codes of every kind mixed in', () => {
+    let seed = 987654321;
+    const random = (n: number): number => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    const codes = everyCode().map(([code]) => code);
+    const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const letters = (n: number): string => Array.from({ length: n }, () => ALNUM[random(ALNUM.length)]).join('');
+    // Every token is made afresh, so finding a piece of it in the output means that very token got through.
+    const piece = (): string => {
+      switch (random(12)) {
+        case 0: return `ghp_${letters(36)}`;
+        case 1: return `sk-${letters(18)}`;
+        case 2: return letters(40);
+        case 3: return letters(20); // too short to be a secret alone, long enough to make one when joined
+        case 4: return 'sk-';
+        case 5: return 'ghp_';
+        default: return ['alpha', 'Bearer', 'KEY=', 'task-', ' ', ' ', '\n', '.', ':', '/', '7', 'm', '0'][random(13)]!;
+      }
+    };
+    const SECRET = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/g;
+    const failures: string[] = [];
+    let secretsSeen = 0;
+    for (let i = 0; i < 6000; i++) {
+      const raw = Array.from({ length: 2 + random(8) }, () => (random(3) === 0 ? codes[random(codes.length)]! : piece())).join('');
+      const cleaned = cleanTaskText(raw);
+      // The same pattern the ordinary redaction uses, applied to the raw characters.
+      for (const match of raw.matchAll(SECRET)) {
+        secretsSeen += 1;
+        if (leaks(cleaned, match[0])) failures.push(`${JSON.stringify(match[0])} in ${JSON.stringify(raw)} -> ${JSON.stringify(cleaned)}`);
+      }
+      if (CONTROL.test(cleaned)) failures.push(`control character left: ${JSON.stringify(raw)}`);
+    }
+    expect(secretsSeen).toBeGreaterThan(2000);
+    expect(failures.slice(0, 5)).toEqual([]);
   });
 });
 
