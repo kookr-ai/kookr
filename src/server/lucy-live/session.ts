@@ -9,8 +9,14 @@
  *   speech_start -> listening (ears session opens, audio is forwarded, drafts every ~1 s)
  *   speech_end   -> transcribing (final transcript) -> thinking (model streams the answer)
  *                -> speaking (each sentence is spoken and sent in order) -> turn_done
- * A `barge_in` while the turn is past `listening` cancels the model stream and pending
- * speech at once and ends the turn as `interrupted`.
+ * A `barge_in` while Lucy is `speaking` cancels the model stream and pending speech at
+ * once and ends the turn as `interrupted`.
+ *
+ * Speech that arrives before Lucy has said anything (the turn is still `transcribing` or
+ * `thinking`) is not an interruption: it is the rest of the same request, spoken after a
+ * pause. The earlier part is retired as `interrupted` (reason "continued"), its text is
+ * kept, and the new turn joins it to what is said next, so Lucy answers the whole request
+ * once. A request is at most {@link MAX_REQUEST_PARTS} parts long.
  *
  * Interruptions are confirmed. When a `speech_start` arrives while Lucy is thinking or
  * speaking, the audio is only a *candidate*: it is buffered and fed to Silero (a speech
@@ -51,6 +57,13 @@ export const MAX_HISTORY_EXCHANGES = 8;
 export const DRAFT_INTERVAL_BYTES = LUCY_LIVE_SAMPLE_RATE * 2;
 const MAX_TURN_BYTES = LUCY_LIVE_MAX_TURN_SECONDS * LUCY_LIVE_SAMPLE_RATE * 2;
 const INTERRUPTED_MARKER = '(interrupted)';
+/** Parts one spoken request may be joined from; past this, new speech starts a fresh request. */
+export const MAX_REQUEST_PARTS = 8;
+const CONTINUED_REASON = 'continued: the operator kept talking before Lucy answered; this text was joined to the next turn';
+
+function joinParts(...parts: string[]): string {
+  return parts.map((p) => p.trim()).filter((p) => p.length > 0).join(' ');
+}
 
 /** A 32 ms frame counts as speech when Silero's probability reaches this (its usual default). */
 export const SPEECH_PROBABILITY = 0.5;
@@ -144,7 +157,10 @@ interface Turn {
   bytesAtLastDraft: number;
   draftAbort: AbortController | null;
   speechEndAt?: number;
+  /** What Lucy answers: the whole request, earlier parts included. */
   transcript?: string;
+  /** Just this part's recognised text. */
+  ownTranscript?: string;
   sentences: string[];
   asrMs?: number;
   firstSentenceMs?: number;
@@ -158,6 +174,17 @@ interface Turn {
   vadBroken: boolean;
   /** Settles when every audio chunk pushed so far has been scored. */
   vadTail: Promise<void>;
+  /** Text of the earlier parts of this same request (empty for a request's first part). */
+  priorText: Promise<string>;
+  /** How many parts this request has, this one included. */
+  parts: number;
+  /** Retired because the operator kept talking: its recogniser session still runs to completion. */
+  superseded: boolean;
+  /** This part's own audio was cancelled after earlier parts were carried in: answer those alone. */
+  skipOwn: boolean;
+  /** This part's own recognised text ('' when none); settles once, whatever happens to the turn. */
+  ownText: Promise<string>;
+  settleOwnText: (text: string) => void;
 }
 
 /** Audio of a possible interruption, held aside while Lucy's answer carries on. */
@@ -267,12 +294,10 @@ export class LucyLiveSession {
       this.candidate = { id: turnId, vad, chunks: [], bytes: 0, frames: 0, speechFrames: 0, maxSpeechProb: 0 };
       return;
     }
-    if (previous) {
-      if (previous.phase === 'listening') this.discard(previous);
-      else this.endTurn(previous, 'interrupted', undefined, false);
-    }
-    this.turn = this.newTurn(turnId, vad);
+    const carried = this.retire(previous);
+    this.turn = this.newTurn(turnId, vad, carried);
     this.setState('listening');
+    if (carried) this.showEarlierParts(this.turn);
   }
 
   private openVad(): VadTurnPort | null {
@@ -284,7 +309,9 @@ export class LucyLiveSession {
     }
   }
 
-  private newTurn(id: string, vad: VadTurnPort | null): Turn {
+  private newTurn(id: string, vad: VadTurnPort | null, carried?: { priorText: Promise<string>; parts: number }): Turn {
+    let settleOwnText: (text: string) => void = () => {};
+    const ownText = new Promise<string>((resolve) => { settleOwnText = resolve; });
     return {
       id,
       language: this.language,
@@ -301,7 +328,73 @@ export class LucyLiveSession {
       maxSpeechProb: 0,
       vadBroken: false,
       vadTail: Promise.resolve(),
+      priorText: carried?.priorText ?? Promise.resolve(''),
+      parts: carried?.parts ?? 1,
+      superseded: false,
+      skipOwn: false,
+      ownText,
+      settleOwnText,
     };
+  }
+
+  /**
+   * New speech has begun while `previous` is still around. Decide what happens to it and
+   * return what the new turn must carry forward, if anything:
+   * - still listening: its audio is dropped as before, but text from earlier parts is kept;
+   * - waiting for the recogniser or the model, with nothing said yet: it is the same request,
+   *   so it is retired with its text kept, and the new turn continues it;
+   * - already speaking: a real interruption, as before.
+   */
+  private retire(previous: Turn | null): { priorText: Promise<string>; parts: number } | undefined {
+    if (!previous) return undefined;
+    if (previous.phase === 'listening') {
+      this.discard(previous);
+      return previous.parts > 1 ? { priorText: previous.priorText, parts: previous.parts } : undefined;
+    }
+    const sameRequest = previous.phase === 'transcribing' || previous.phase === 'thinking';
+    if (!sameRequest) {
+      this.endTurn(previous, 'interrupted', undefined, false);
+      return undefined;
+    }
+    const carry = previous.parts < MAX_REQUEST_PARTS;
+    this.supersede(previous);
+    if (!carry) return undefined;
+    // Everything said so far in this request: the earlier parts, then this one.
+    const priorText = previous.transcript !== undefined
+      ? Promise.resolve(previous.transcript)
+      : Promise.all([previous.priorText, previous.ownText]).then(([before, own]) => joinParts(before, own));
+    return { priorText, parts: previous.parts + 1 };
+  }
+
+  /**
+   * End a turn that was cut off before Lucy said anything, keeping what the operator said:
+   * the log gets its text (when the recogniser delivers it) and the history gets nothing.
+   */
+  private supersede(turn: Turn): void {
+    if (turn.closed) return;
+    turn.closed = true;
+    turn.superseded = true;
+    turn.abort.abort(); // stops the model stream, if any. The recogniser session is left to finish.
+    turn.draftAbort?.abort();
+    if (this.turn === turn) this.turn = null;
+    if (turn.memory) {
+      const at = this.memory.indexOf(turn.memory);
+      if (at >= 0) this.memory.splice(at, 1);
+    }
+    this.ports.send({ type: 'turn_done', turnId: turn.id, end: 'interrupted', reason: CONTINUED_REASON });
+    const record = (transcript: string | undefined): void => {
+      try {
+        this.ports.recordTurn({
+          turnId: turn.id, language: turn.language, end: 'interrupted', reason: CONTINUED_REASON,
+          transcript: transcript || undefined, answer: undefined,
+          asrMs: turn.asrMs, sentences: 0,
+        });
+      } catch (err) {
+        this.ports.warn(`lucy-live: recording the turn failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    if (turn.transcript !== undefined) record(turn.ownTranscript ?? turn.transcript);
+    else void turn.ownText.then(record);
   }
 
   // -- candidate interruptions -------------------------------------------------
@@ -334,13 +427,9 @@ export class LucyLiveSession {
     if (this.candidate !== candidate || this.closedForGood) return;
     this.candidate = null;
     this.ports.send({ type: 'speech_confirmed', turnId: candidate.id });
-    const previous = this.turn;
-    if (previous) {
-      if (previous.phase === 'listening') this.discard(previous);
-      else this.endTurn(previous, 'interrupted', undefined, false);
-    }
+    const carried = this.retire(this.turn);
     // The candidate becomes a normal listening turn that already holds its audio.
-    const turn = this.newTurn(candidate.id, candidate.vad);
+    const turn = this.newTurn(candidate.id, candidate.vad, carried);
     // A browser-forced promotion (barge_in) is the operator's own word that this is speech.
     turn.maxSpeechProb = trusted ? Math.max(candidate.maxSpeechProb, SPEECH_PROBABILITY) : candidate.maxSpeechProb;
     turn.chunks = candidate.chunks;
@@ -348,7 +437,16 @@ export class LucyLiveSession {
     for (const chunk of candidate.chunks) turn.ears.append(chunk);
     this.turn = turn;
     this.setState('listening');
+    if (carried) this.showEarlierParts(turn);
     this.maybeStartDraft(turn);
+  }
+
+  /** Show the panel what was already heard of this request, before this part's own draft arrives. */
+  private showEarlierParts(turn: Turn): void {
+    void turn.priorText.then((text) => {
+      if (turn.closed || turn.phase !== 'listening' || turn.bytesAtLastDraft > 0) return; // a draft already shows it
+      if (text.trim()) this.ports.send({ type: 'transcript', turnId: turn.id, text, final: false });
+    });
   }
 
   private rejectCandidate(candidate: Candidate): void {
@@ -379,6 +477,12 @@ export class LucyLiveSession {
     }
     const turn = this.turn;
     if (!turn || turn.id !== turnId || turn.phase !== 'listening') return;
+    if (turn.parts > 1) {
+      // This blip was not speech, but the earlier parts of the request were: answer those.
+      turn.skipOwn = true;
+      this.beginTranscribing(turn);
+      return;
+    }
     this.discard(turn);
     this.setState('idle');
   }
@@ -394,7 +498,9 @@ export class LucyLiveSession {
       return;
     }
     const turn = this.turn;
-    if (!turn || turn.phase === 'listening') return; // a speech_start follows and handles it
+    // Before Lucy has said anything this is the rest of the same request, and the speech_start
+    // that follows joins it; only speech over her own voice is an interruption.
+    if (!turn || turn.phase !== 'speaking') return;
     this.endTurn(turn, 'interrupted');
   }
 
@@ -410,6 +516,10 @@ export class LucyLiveSession {
     }
     const turn = this.turn;
     if (!turn || turn.id !== turnId || turn.phase !== 'listening') return;
+    this.beginTranscribing(turn);
+  }
+
+  private beginTranscribing(turn: Turn): void {
     turn.speechEndAt = this.ports.now();
     turn.phase = 'transcribing';
     // Drafts must never delay the final transcript: stop waiting for one and drop its result.
@@ -433,7 +543,10 @@ export class LucyLiveSession {
         if (turn.draftAbort === abort) turn.draftAbort = null;
         if (abort.signal.aborted || turn.closed || turn.phase !== 'listening') return;
         if (isEmptyTranscript(text)) return;
-        this.ports.send({ type: 'transcript', turnId: turn.id, text, final: false });
+        void turn.priorText.then((before) => {
+          if (turn.closed || turn.phase !== 'listening') return;
+          this.ports.send({ type: 'transcript', turnId: turn.id, text: joinParts(before, text), final: false });
+        });
       },
       () => {
         // A failed draft is only a missed preview; the final transcript decides.
@@ -448,15 +561,20 @@ export class LucyLiveSession {
     try {
       if (turn.vad) {
         await turn.vadTail;
-        if (turn.closed) return;
-        if (this.heardNoSpeech(turn)) {
-          this.endTurn(turn, 'empty'); // never ask the recogniser about audio with no speech in it
-          return;
-        }
+        if (turn.closed && !turn.superseded) return;
       }
-      const transcript = await this.transcribe(turn);
+      // A part with no speech of its own (a blip after earlier parts) adds nothing to the request.
+      let own = '';
+      if (!turn.skipOwn && !this.heardNoSpeech(turn)) {
+        const heard = await this.transcribe(turn);
+        own = isEmptyTranscript(heard) ? '' : heard;
+      }
+      turn.ownTranscript = own;
+      turn.settleOwnText(own);
       if (turn.closed) return;
-      if (isEmptyTranscript(transcript)) {
+      const transcript = joinParts(await turn.priorText, own);
+      if (turn.closed) return;
+      if (!transcript) {
         this.endTurn(turn, 'empty');
         return;
       }
@@ -469,6 +587,8 @@ export class LucyLiveSession {
       if (turn.closed) return;
       if (err instanceof StageError) this.endTurn(turn, 'error', describeFailure(err.stage, err.cause));
       else this.endTurn(turn, 'error', `Something went wrong: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      turn.settleOwnText(''); // no-op once settled; frees anyone waiting on a turn that ended another way
     }
   }
 

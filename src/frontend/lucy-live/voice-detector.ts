@@ -196,8 +196,8 @@ export function createVoiceDetector(options: VoiceDetectorOptions = {}): VoiceDe
     const tooLong = turnMs >= MAX_TURN_MS;
     if (silenceEnded || tooLong) {
       const spoken = speechMs;
-      // A turn cut for length means the "noise" is probably the room itself: accept it as the new floor.
-      if (tooLong && !silenceEnded) floorDb = clampFloor(level);
+      // A turn cut for length is a long request, not a noisy room: leave the floor alone, or the
+      // operator's own voice becomes the floor and the words that follow need to be louder.
       resetTurn();
       events.push(spoken >= MIN_SPEECH_MS ? { type: 'end', speechMs: spoken } : { type: 'misfire' });
     }
