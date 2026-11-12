@@ -52,7 +52,8 @@ export interface LucyBoardInput {
   quota: { fiveHour: LucyQuotaWindow | null; sevenDay: LucyQuotaWindow | null } | null;
 }
 
-export const MAX_BOARD_CHARS = 4000;
+/** Longest board, in characters. The task lists are cut to fit; the totals, spend and quota never are. */
+export const MAX_BOARD_CHARS = 6000;
 export const MAX_BOARD_NEEDS_YOU = 12;
 export const MAX_BOARD_WORKING = 15;
 export const MAX_BOARD_FINISHED = 6;
@@ -171,9 +172,12 @@ function quotaLine(label: string, window: LucyQuotaWindow | null): string | null
 }
 
 /**
- * The board as plain text: what needs the operator, what is working, what just
- * finished, then spend and quota. Lists are capped; a cap is always stated, so she
- * never takes a cut list for the whole picture.
+ * The board as plain text: the totals, spend and quota, then what needs the operator,
+ * what is working and what just finished. Lists are capped; a cap is always stated, so
+ * she never takes a cut list for the whole picture.
+ *
+ * Spend and quota come first and are never cut: when the board is too long it is the
+ * task lists, from the end, that give way.
  */
 export function buildLucyBoard(input: LucyBoardInput, nowMs: number): string {
   const handles = taskHandles(input.tasks);
@@ -186,6 +190,19 @@ export function buildLucyBoard(input: LucyBoardInput, nowMs: number): string {
     .filter((t) => isTerminalStatus(t.status))
     .sort((a, b) => (toMs(b.finishedAt) ?? toMs(b.terminatedAt) ?? toMs(b.updatedAt) ?? 0) - (toMs(a.finishedAt) ?? toMs(a.terminatedAt) ?? toMs(a.updatedAt) ?? 0));
 
+  const head: string[] = [input.tasks.length === 0 ? 'There are no tasks at all.' : `Tasks in total: ${input.tasks.length}.`];
+  head.push('', 'Spend and quota:');
+  head.push(
+    input.lifetimeSpendUsd !== null && Number.isFinite(input.lifetimeSpendUsd)
+      ? `- All-time agent spend recorded by Kookr: ${dollars(input.lifetimeSpendUsd)}`
+      : '- All-time agent spend: not available',
+  );
+  head.push('- Spend over the last 24 hours: not available here');
+  const quotaLines = [quotaLine('5-hour', input.quota?.fiveHour ?? null), quotaLine('7-day', input.quota?.sevenDay ?? null)].filter(
+    (line): line is string => line !== null,
+  );
+  head.push(...(quotaLines.length > 0 ? quotaLines.map((line) => `- ${line}`) : ['- Quota: not available']));
+
   const lines: string[] = [];
   const section = (title: string, tasks: readonly LucyBoardTask[], max: number, when: 'updated' | 'ended', total = tasks.length): void => {
     lines.push('', tasks.length === 0 ? `${title}: none.` : `${title} (${total}):`);
@@ -193,24 +210,12 @@ export function buildLucyBoard(input: LucyBoardInput, nowMs: number): string {
     if (total > max) lines.push(`- and ${total - Math.min(max, tasks.length)} more not listed`);
   };
 
-  lines.push(input.tasks.length === 0 ? 'There are no tasks at all.' : `Tasks in total: ${input.tasks.length}.`);
   section('Needs the operator', needsYou, MAX_BOARD_NEEDS_YOU, 'updated');
   section('Working', working, MAX_BOARD_WORKING, 'updated');
   section('Most recently finished', finished, MAX_BOARD_FINISHED, 'ended');
 
-  lines.push('', 'Spend and quota:');
-  lines.push(
-    input.lifetimeSpendUsd !== null && Number.isFinite(input.lifetimeSpendUsd)
-      ? `- All-time agent spend recorded by Kookr: ${dollars(input.lifetimeSpendUsd)}`
-      : '- All-time agent spend: not available',
-  );
-  lines.push('- Spend over the last 24 hours: not available here');
-  const quotaLines = [quotaLine('5-hour', input.quota?.fiveHour ?? null), quotaLine('7-day', input.quota?.sevenDay ?? null)].filter(
-    (line): line is string => line !== null,
-  );
-  lines.push(...(quotaLines.length > 0 ? quotaLines.map((line) => `- ${line}`) : ['- Quota: not available']));
-
-  return capLines(lines, MAX_BOARD_CHARS);
+  const headText = head.join('\n');
+  return `${headText}\n${capLines(lines, Math.max(0, MAX_BOARD_CHARS - headText.length - 1))}`.trim();
 }
 
 /** Join lines, dropping whole trailing lines rather than cutting one in half. */
@@ -219,13 +224,13 @@ function capLines(lines: readonly string[], max: number): string {
   let length = 0;
   for (const line of lines) {
     if (length + line.length + 1 > max) {
-      kept.push('(board cut short)');
+      kept.push('(task lists cut short: the board was too long)');
       break;
     }
     kept.push(line);
     length += line.length + 1;
   }
-  return kept.join('\n').trim();
+  return kept.join('\n');
 }
 
 export type TaskRefResult<T> = { ok: true; task: T } | { ok: false; message: string };

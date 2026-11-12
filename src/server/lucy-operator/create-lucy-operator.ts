@@ -19,7 +19,8 @@ import { createLucyOperator } from './service.js';
 export function buildLucyLookSource(deps: RouteDeps): LucyLookSource {
   return createLucyLookSource({
     getTasks: () => deps.taskStore.viewTasks(),
-    getFindings: () => deps.queue.getAll(),
+    // `inspectActive` only reads; `getAll` would also bring expired snoozes back as a side effect.
+    getFindings: () => deps.queue.inspectActive(),
     getLifetimeSpendUsd: () => deps.taskStore.getLifetimeSpendUsd(),
     getQuota: () => deps.getQuotaStatus?.() ?? null,
     captureDisplay: typeof deps.adapter.captureDisplay === 'function' ? (sessionId) => deps.adapter.captureDisplay(sessionId) : undefined,

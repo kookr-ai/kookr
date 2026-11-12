@@ -51,6 +51,8 @@ export interface OpenRouterChatStreamConfig {
 
 const DEFAULT_STALL_TIMEOUT_MS = 20_000;
 const MAX_LOGGED_ERROR_CHARS = 200;
+/** Most tool calls accepted from one reply. The loop runs at most four of them. */
+const MAX_TOOL_CALLS_PER_REPLY = 16;
 
 /** `cohere/fp8` → `cohere`: the provider part of an endpoint tag. */
 function providerSlug(tag: string): string {
@@ -173,7 +175,10 @@ export class OpenRouterChatStreamParser {
     // `delta.reasoning` (the model thinking aloud) is deliberately not read.
     if (typeof delta.content === 'string' && delta.content) out.push(delta.content);
     for (const fragment of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
-      const index = typeof fragment.index === 'number' && fragment.index >= 0 ? fragment.index : 0;
+      // The index comes from the provider. An absent one means the first call; anything that is not
+      // a small whole number is dropped, so a wild value cannot make the list of calls enormous.
+      const index = fragment.index === undefined ? 0 : fragment.index;
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= MAX_TOOL_CALLS_PER_REPLY) continue;
       const call = (this.calls[index] ??= { id: '', name: '', arguments: '' });
       if (typeof fragment.id === 'string' && fragment.id) call.id = fragment.id;
       if (typeof fragment.function?.name === 'string') call.name += fragment.function.name;

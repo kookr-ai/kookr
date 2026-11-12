@@ -20,7 +20,10 @@ function routeDeps(overrides: Record<string, unknown> = {}) {
   };
   const deps = {
     taskStore: { viewTasks: () => [task], getLifetimeSpendUsd: () => 698.26 },
-    queue: { getAll: () => [{ agentId: 'kookr-s1', anomaly: { type: 'permission_blocked' } }] },
+    queue: {
+      inspectActive: () => [{ agentId: 'kookr-s1', anomaly: { type: 'permission_blocked' } }],
+      getAll: () => { throw new Error('getAll restores expired snoozes; her look-ups must only read'); },
+    },
     adapter: { captureDisplay: async (sessionId: string) => { asked.push(`capture:${sessionId}`); return 'live line 1\nlive line 2'; } },
     githubStateStore: { getReferences: (taskId: string) => { asked.push(`refs:${taskId}`); return [{ type: 'pr', number: 3620 }]; } },
     getQuotaStatus: () => ({ fiveHour: null, sevenDay: { utilization: 42, resetsAt: '2026-11-15T00:00:00Z' }, updatedAt: 1 }),

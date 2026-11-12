@@ -231,8 +231,9 @@ describe('runLucyTurn', () => {
     expect(summary.done).toMatchObject({ end: 'error', reason: 'The model provider refused the request. Check the OpenRouter key and its credit.' });
     expect(JSON.stringify(events)).not.toContain('sk-or-v1');
     expect(JSON.stringify(events)).not.toContain('Insufficient');
-    // The detail goes to the server log only.
+    // The detail goes to the server log only, and even there the key is hidden.
     expect(warnings.join('\n')).toContain('HTTP 402');
+    expect(warnings.join('\n')).not.toContain('sk-or-v1-abcdef');
   });
 
   test.each([

@@ -173,7 +173,7 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
     try {
       board = buildLucyBoard(deps.source.board(), startedAt);
     } catch (err) {
-      deps.warn?.(`could not build the board: ${err instanceof Error ? err.message : String(err)}`);
+      deps.warn?.(redactSpeechSecrets(`could not build the board: ${err instanceof Error ? err.message : String(err)}`));
       const result = end('error', 'Kookr could not read the task list.');
       yield result.done;
       return result;
@@ -234,7 +234,8 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
           yield result.done;
           return result;
         }
-        deps.warn?.(`model call failed at step ${steps}: ${err instanceof Error ? err.message : String(err)}`);
+        // The provider's own words may echo part of the request, so secrets are hidden before they are logged.
+        deps.warn?.(redactSpeechSecrets(`model call failed at step ${steps}: ${err instanceof Error ? err.message : String(err)}`));
         const result = end('error', plainReason(err));
         yield result.done;
         return result;

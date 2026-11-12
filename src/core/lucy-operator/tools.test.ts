@@ -74,6 +74,23 @@ describe('dispatchLucyTool', () => {
     expect(outcome.content).toContain('(the rest was cut)');
   });
 
+  test('a long request does not push the closing summary out', async () => {
+    const prompt = 'please do many things. '.repeat(400);
+    const detail = { prompt, cwd: '/srv/work/kookr', pendingSignal: 'completion_ready: PR merged', completionSummary: 'Wrote the report\nTests: 12 passed' };
+    const outcome = await dispatchLucyTool('read_task', '{"task":"aaaa"}', fakeSource({ tasks, details: { aaaa1111: detail } }), NOW);
+    expect(outcome.content).toContain('What it was asked to do:\nplease do many things.');
+    expect(outcome.content).toContain('(the rest was cut)');
+    expect(outcome.content).toContain('Its closing summary:\nWrote the report\nTests: 12 passed');
+    expect(outcome.content).toContain('Signal waiting for the operator: completion_ready: PR merged');
+    expect(outcome.content).not.toContain('(earlier text cut)');
+  });
+
+  test('a key that a control character separates from the word before it is still hidden', async () => {
+    const prompt = 'use token\rsk-abcdefghijklmnopqrstuvwxyz0123456789 and colour\u001b[0msk-zyxwvutsrqponmlkjihgfedcba9876543210';
+    const outcome = await dispatchLucyTool('read_task', '{"task":"aaaa"}', fakeSource({ tasks, details: { aaaa1111: { prompt } } }), NOW);
+    expect(outcome.content).not.toMatch(/sk-[a-z0-9]{20}/);
+  });
+
   test('read_task_output wraps the output as untrusted, hides secrets and keeps the last lines', async () => {
     const text = `FIRST LINE\n${'noise\n'.repeat(3000)}export KEY=${SECRET}\nLAST LINE`;
     const source = fakeSource({ tasks, outputs: { aaaa1111: { text, source: 'persisted' } } });
@@ -137,7 +154,7 @@ describe('displayToolArgs', () => {
 describe('stripTerminalControl', () => {
   test('removes colour, cursor and title sequences and keeps words, tabs and line breaks', () => {
     const raw = '\u001b]0;window title\u0007\u001b[1;32mPASS\u001b[0m src/a.test.ts\r\n\u001b[2K\u001b[1Gline\ttwo\u0007\n';
-    expect(stripTerminalControl(raw)).toBe('PASS src/a.test.ts\nline\ttwo\n');
+    expect(stripTerminalControl(raw)).toBe('PASS src/a.test.ts\nline\ttwo \n');
   });
 });
 

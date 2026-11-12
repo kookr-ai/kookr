@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { boardTask, NOW } from './__fixtures__/scripted.js';
-import { buildLucyBoard, MAX_BOARD_WORKING, resolveTaskRef, spokenLabel, taskHandles } from './board.js';
+import { buildLucyBoard, MAX_BOARD_CHARS, MAX_BOARD_FINISHED, MAX_BOARD_NEEDS_YOU, MAX_BOARD_WORKING, resolveTaskRef, spokenLabel, taskHandles } from './board.js';
 import { buildLucyOperatorPrompt } from './prompt.js';
 
 describe('taskHandles', () => {
@@ -58,6 +58,50 @@ describe('buildLucyBoard', () => {
     expect(board).toContain('- All-time agent spend recorded by Kookr: $698.26');
     expect(board).toContain('- 7-day quota: 42 percent used');
     expect(board).not.toContain('5-hour quota');
+  });
+
+  test('spend and quota come before the task lists', () => {
+    const board = buildLucyBoard({ tasks, lifetimeSpendUsd: 698.26, quota: null }, NOW);
+    expect(board.indexOf('Spend and quota:')).toBeLessThan(board.indexOf('Needs the operator'));
+    expect(board.startsWith('Tasks in total: 4.')).toBe(true);
+  });
+
+  test('a board with every list full and every line long still carries spend and quota', () => {
+    const long = (i: number, extra: Partial<Parameters<typeof boardTask>[0]> = {}) =>
+      boardTask({
+        id: `id${String(i).padStart(6, '0')}`,
+        name: `Quarterly migration batch ${String(i).padStart(2, '0')} follow-up`,
+        project: 'some-organisation/a-rather-long-repository',
+        costUsd: 12.34 + i,
+        ...extra,
+      });
+    const needs = Array.from({ length: MAX_BOARD_NEEDS_YOU + 3 }, (_, i) => long(i, { attention: 'it says it is finished and wants your review' }));
+    const working = Array.from({ length: MAX_BOARD_WORKING + 3 }, (_, i) => long(100 + i));
+    const finished = Array.from({ length: MAX_BOARD_FINISHED + 3 }, (_, i) =>
+      long(200 + i, { status: 'terminated', terminatedAt: NOW - i * 60_000, terminationReason: 'hung_suspect_ttl_reclaimed_after_a_long_silence' }));
+    const board = buildLucyBoard(
+      { tasks: [...needs, ...working, ...finished], lifetimeSpendUsd: 698.26, quota: { fiveHour: { utilization: 12, resetsAt: 'x' }, sevenDay: { utilization: 42, resetsAt: 'x' } } },
+      NOW,
+    );
+
+    expect(board).toContain('- All-time agent spend recorded by Kookr: $698.26');
+    expect(board).toContain('- 5-hour quota: 12 percent used');
+    expect(board).toContain('- 7-day quota: 42 percent used');
+    expect(board.length).toBeLessThanOrEqual(MAX_BOARD_CHARS + 60);
+    // The operator's own queue is the first list, so it is the last to give way.
+    expect(board).toContain(`Needs the operator (${MAX_BOARD_NEEDS_YOU + 3}):`);
+  });
+
+  test('every list full, with projects, reasons and waiting phrases at their longest, fits without a cut', () => {
+    const many = Array.from({ length: MAX_BOARD_NEEDS_YOU }, (_, i) =>
+      boardTask({ id: `n${String(i).padStart(6, '0')}`, name: `Needs review number ${i}`, project: 'p'.repeat(40), attention: 'a'.repeat(60), costUsd: 1 }));
+    const working = Array.from({ length: MAX_BOARD_WORKING }, (_, i) =>
+      boardTask({ id: `w${String(i).padStart(6, '0')}`, name: `Working item number ${i}`, project: 'p'.repeat(40), costUsd: 1 }));
+    const finished = Array.from({ length: MAX_BOARD_FINISHED }, (_, i) =>
+      boardTask({ id: `f${String(i).padStart(6, '0')}`, name: `Finished item number ${i}`, project: 'p'.repeat(40), status: 'terminated', terminatedAt: NOW, terminationReason: 'r'.repeat(60) }));
+    const fits = buildLucyBoard({ tasks: [...many, ...working, ...finished], lifetimeSpendUsd: 1, quota: null }, NOW);
+    expect(fits).not.toContain('cut short');
+    expect(fits.length).toBeLessThanOrEqual(MAX_BOARD_CHARS);
   });
 
   test('says what it does not know instead of leaving it out', () => {

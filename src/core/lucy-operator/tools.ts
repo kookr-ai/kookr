@@ -59,7 +59,12 @@ export interface LucyLookSource {
 export const DEFAULT_OUTPUT_LINES = 40;
 export const MAX_OUTPUT_LINES = 120;
 /** Caps on what one look-up may send to the model, in characters. */
-export const MAX_TASK_DETAIL_CHARS = 2500;
+export const MAX_TASK_DETAIL_CHARS = 3000;
+/** Caps on each part of a task's detail, so a long request cannot push the closing summary out. */
+export const MAX_TASK_REQUEST_CHARS = 1400;
+export const MAX_TASK_SUMMARY_CHARS = 800;
+export const MAX_TASK_SIGNAL_CHARS = 300;
+export const MAX_TASK_FOLDER_CHARS = 200;
 export const MAX_TASK_OUTPUT_CHARS = 6000;
 export const MAX_PROJECT_LINES = 30;
 
@@ -108,7 +113,9 @@ const UNTRUSTED_CLOSE = '</untrusted_task_text>';
 export function untrusted(text: string, maxChars: number, keep: 'start' | 'end' = 'end'): string {
   // One character class between "<" and the name, not two adjacent `\s*`: with those, a "<" followed
   // by a long run of spaces made the match quadratic, and one long terminal line could stall the server.
-  const safe = redactSpeechSecrets(stripTerminalControl(text)).replace(/<[\s/]*untrusted_task_text\s*>/gi, '[marker removed]');
+  // Secrets are hidden before and after the terminal codes go: before, so that removing a code
+  // cannot glue a key to the word in front of it; after, so that a key a code was splitting is caught.
+  const safe = redactSpeechSecrets(stripTerminalControl(redactSpeechSecrets(text))).replace(/<[\s/]*untrusted_task_text\s*>/gi, '[marker removed]');
   const cut = safe.length > maxChars;
   // For terminal output the last lines matter; for a request, the beginning does.
   const body = !cut ? safe : keep === 'end' ? safe.slice(safe.length - maxChars) : safe.slice(0, maxChars);
@@ -127,7 +134,10 @@ export function stripTerminalControl(text: string): string {
     .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, '') // OSC: window title, hyperlinks
     .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '') // CSI: colours, cursor movement
     .replace(/\u001b[@-Z\\-_]/g, '') // two-character escapes
-    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ''); // remaining control characters, except tab and newline
+    .replace(/\r\n/g, '\n')
+    // Remaining control characters (except tab and newline) become a space, so the words on
+    // either side of one stay apart.
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ');
 }
 
 function refuse(summary: string, content: string): LucyToolOutcome {
@@ -177,11 +187,16 @@ function describeTask(task: LucyBoardTask, detail: LucyTaskDetail | null, nowMs:
   if (typeof task.costUsd === 'number' && task.costUsd > 0) facts.push(`Spent: $${task.costUsd.toFixed(2)}`);
   if (detail?.references?.length) facts.push(`Linked: ${detail.references.slice(0, 6).map((r) => boardText(r, 40)).join(', ')}`);
 
+  // Each part is cleaned and cut on its own, so a long request cannot push the closing summary out.
+  const part = (text: string, max: number): string => {
+    const clean = redactSpeechSecrets(stripTerminalControl(redactSpeechSecrets(text))).trim();
+    return clean.length > max ? `${clean.slice(0, max).trimEnd()} (the rest was cut)` : clean;
+  };
   const written: string[] = [];
-  if (detail?.cwd) written.push(`Folder: ${detail.cwd}`);
-  if (detail?.pendingSignal) written.push(`Signal waiting for the operator: ${detail.pendingSignal}`);
-  if (detail?.prompt) written.push(`What it was asked to do:\n${detail.prompt}`);
-  if (detail?.completionSummary) written.push(`Its closing summary:\n${detail.completionSummary}`);
+  if (detail?.cwd) written.push(`Folder: ${part(detail.cwd, MAX_TASK_FOLDER_CHARS)}`);
+  if (detail?.pendingSignal) written.push(`Signal waiting for the operator: ${part(detail.pendingSignal, MAX_TASK_SIGNAL_CHARS)}`);
+  if (detail?.prompt) written.push(`What it was asked to do:\n${part(detail.prompt, MAX_TASK_REQUEST_CHARS)}`);
+  if (detail?.completionSummary) written.push(`Its closing summary:\n${part(detail.completionSummary, MAX_TASK_SUMMARY_CHARS)}`);
   if (written.length === 0) return facts.join('\n');
   return `${facts.join('\n')}\nThe rest was written by the operator or by agents:\n${untrusted(written.join('\n\n'), MAX_TASK_DETAIL_CHARS, 'start')}`;
 }
