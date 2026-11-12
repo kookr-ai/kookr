@@ -5,7 +5,9 @@
  * - live: the speaker button on a task fetches a summary and plays it
  *   (`hooks/useSpeakAgent.ts`);
  * - replay: the avatar panel's Replay buttons play a clip remembered in
- *   `last-clip.ts` again (`replayClip` / `replayLastClip` below).
+ *   `last-clip.ts` again (`replayClip` / `replayLastClip` below);
+ * - ask: Lucy reads out a question a task just asked (`ask-announcement.ts`),
+ *   through the same remembered-clip path, with no click behind it.
  *
  * Both announce themselves on the speech bus, so the avatar lip-syncs and
  * shows the "speaking" state identically. Both also go through
@@ -19,7 +21,8 @@ import { getSoundPreferenceState } from './sound-preference.js';
 import { emitSpeechIdle, emitSpeechPlaying } from './speech-bus.js';
 import { getClip, getLastClip, markClipHeard } from './last-clip.js';
 
-export type ClipTrigger = 'click' | 'replay';
+/** `ask`: played unprompted, because a task asked the operator a question. */
+export type ClipTrigger = 'click' | 'replay' | 'ask';
 export type ClipEndedBy = 'finished' | 'user_stop' | 'superseded';
 export type ClipUnheardReason = 'muted' | 'dnd' | 'audio_suspended' | 'error';
 
@@ -120,6 +123,7 @@ export type ReplayResult =
   | 'blocked';
 
 interface ActiveReplay {
+  clipId: string;
   ctx: AudioContext;
   source: AudioBufferSourceNode;
   playback: ClipPlayback;
@@ -171,6 +175,11 @@ export function stopReplay(endedBy: 'user_stop' | 'superseded'): void {
   if (active) finishReplay(active, endedBy);
 }
 
+/** The remembered clip that is playing right now through this path, or null. */
+export function replayingClipId(): string | null {
+  return active?.clipId ?? null;
+}
+
 /** Play the newest remembered clip again; see {@link replayClip}. */
 export async function replayLastClip(): Promise<ReplayResult> {
   const clip = getLastClip();
@@ -180,15 +189,17 @@ export async function replayLastClip(): Promise<ReplayResult> {
 
 /**
  * Play a remembered clip again (any of the clips still in the history).
- * Must be called from a user gesture (a click):
+ * Normally called from a user gesture (a click):
  * the audio context is created and resumed right away so the browser lets it
- * play even if the original clip was blocked for lack of one.
+ * play even if the original clip was blocked for lack of one. With `trigger`
+ * `'ask'` there is no click; a browser that refuses to start audio then gives
+ * 'blocked' and the clip stays in the list as unheard, ready for a real Replay.
  *
  * Respects an explicit "sound off" in Settings, like the speaker buttons do. It
  * deliberately does not look at Do Not Disturb: that silences unprompted alerts,
  * and this is the operator asking to hear something right now.
  */
-export async function replayClip(clipId: string): Promise<ReplayResult> {
+export async function replayClip(clipId: string, trigger: Extract<ClipTrigger, 'replay' | 'ask'> = 'replay'): Promise<ReplayResult> {
   const clip = getClip(clipId);
   if (!clip) return 'no-clip';
   if (!getSoundPreferenceState().enabled) return 'muted';
@@ -219,6 +230,7 @@ export async function replayClip(clipId: string): Promise<ReplayResult> {
     source.connect(ctx.destination);
     const durationMs = clip.durationMs > 0 ? clip.durationMs : buffer.duration * 1000;
     const replay: ActiveReplay = {
+      clipId: clip.clipId,
       ctx,
       source,
       playback: { end() {} },
@@ -232,7 +244,7 @@ export async function replayClip(clipId: string): Promise<ReplayResult> {
       return 'blocked';
     }
 
-    replay.playback = beginClipPlayback({ clipId: clip.clipId, totalMs: durationMs, trigger: 'replay' });
+    replay.playback = beginClipPlayback({ clipId: clip.clipId, totalMs: durationMs, trigger });
     active = replay;
     emitSpeechPlaying(replayOwner, ctx, source);
     return 'started';

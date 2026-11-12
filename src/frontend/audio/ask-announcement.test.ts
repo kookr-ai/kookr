@@ -1,0 +1,186 @@
+// @vitest-environment jsdom
+
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
+
+import {
+  HIDDEN_TAB_DELAY_MS,
+  SPOKEN_ASKS_STORAGE_KEY,
+  __resetAskAnnouncementForTests,
+  announceAsk,
+  stopAskAnnouncement,
+} from './ask-announcement.js';
+import { __resetClipPlaybackForTests, replayingClipId } from './clip-playback.js';
+import { __resetLastClipForTests, getClipHistory } from './last-clip.js';
+import { __resetSoundPreferenceForTests, setSoundEnabled } from './sound-preference.js';
+import { __resetSpeechBusForTests, emitSpeechGenerating, emitSpeechIdle } from './speech-bus.js';
+import { __resetDndForTests, enableDnd } from '../hooks/useDnd.js';
+import { __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
+
+type FakeSource = { buffer: unknown; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; onended: (() => void) | null };
+
+class FakeAudioContext {
+  static instances: FakeAudioContext[] = [];
+  static initialState: AudioContextState = 'running';
+  state: AudioContextState;
+  destination = {};
+  sources: FakeSource[] = [];
+  constructor() {
+    this.state = FakeAudioContext.initialState;
+    FakeAudioContext.instances.push(this);
+  }
+  createAnalyser = vi.fn(() => ({ fftSize: 0, smoothingTimeConstant: 0 }) as unknown as AnalyserNode);
+  decodeAudioData = vi.fn(async () => ({ duration: 2 }) as AudioBuffer);
+  // The browser's autoplay policy: without a click, resume() leaves the context suspended.
+  resume = vi.fn(async () => undefined);
+  close = vi.fn(async () => { this.state = 'closed'; });
+  createBufferSource = vi.fn(() => {
+    const source: FakeSource = { buffer: null, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn(), onended: null };
+    this.sources.push(source);
+    return source as unknown as AudioBufferSourceNode;
+  });
+}
+
+const ASK = 'a1b2c3d4e5f6';
+let visibility: DocumentVisibilityState = 'visible';
+
+function speakResponse(over: Record<string, unknown> = {}, status = 200): Response {
+  return new Response(JSON.stringify({
+    text: 'The task Fix login needs your input. Ship it? You can answer: Yes or No.',
+    audioBase64: btoa('RIFFfake'), mimeType: 'audio/wav', durationMs: 2000, clipId: 'clip-ask-1', subject: 'Fix login',
+    usedFallback: false, llmMs: 0, ttsMs: 40, cached: false, ...over,
+  }), { status, headers: { 'content-type': 'application/json' } });
+}
+
+const fetcherOk = () => vi.fn(async () => speakResponse()) as unknown as typeof fetch;
+const noWait = async (): Promise<void> => undefined;
+
+describe('announceAsk', () => {
+  beforeEach(() => {
+    tracked.length = 0;
+    visibility = 'visible';
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
+    FakeAudioContext.instances = [];
+    FakeAudioContext.initialState = 'running';
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    localStorage.clear();
+    __resetSoundPreferenceForTests();
+    __resetDndForTests();
+    __resetAvatarPanelPrefsForTests();
+    __resetSpeechBusForTests();
+    __resetClipPlaybackForTests();
+    __resetLastClipForTests();
+    __resetAskAnnouncementForTests();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    localStorage.clear();
+    __resetDndForTests();
+    __resetSoundPreferenceForTests();
+  });
+
+  test('fetches the spoken question, plays it and lists it as a message', async () => {
+    const fetcher = fetcherOk();
+    expect(await announceAsk(ASK, { fetcher })).toBe('started');
+    expect(fetcher).toHaveBeenCalledWith(`/api/asks/${ASK}/speak`, { method: 'POST' });
+    expect(FakeAudioContext.instances[0].sources[0].start).toHaveBeenCalledOnce();
+    expect(replayingClipId()).toBe('clip-ask-1');
+    expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1', subject: 'Fix login', heard: false });
+    expect(tracked.find((e) => e.type === 'lucy_clip_started')).toMatchObject({ clipId: 'clip-ask-1', trigger: 'ask' });
+  });
+
+  test('only one of several tabs speaks the same question', async () => {
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('started');
+    // A second tab shares localStorage; simulated here by a second call for the same ask.
+    const second = fetcherOk();
+    expect(await announceAsk(ASK, { fetcher: second })).toBe('other-tab');
+    expect(second).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem(SPOKEN_ASKS_STORAGE_KEY) ?? '[]')).toEqual([ASK]);
+  });
+
+  test('a hidden tab waits before claiming, so a visible tab can go first', async () => {
+    visibility = 'hidden';
+    const sleep = vi.fn(async () => {
+      // While this tab waited, a visible tab claimed the question.
+      localStorage.setItem(SPOKEN_ASKS_STORAGE_KEY, JSON.stringify([ASK]));
+    });
+    expect(await announceAsk(ASK, { fetcher: fetcherOk(), sleep })).toBe('other-tab');
+    expect(sleep).toHaveBeenCalledWith(HIDDEN_TAB_DELAY_MS);
+  });
+
+  test('with sound off nothing plays, and the question waits as an unheard message', async () => {
+    setSoundEnabled(false);
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('muted');
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1', heard: false });
+    expect(tracked).toContainEqual({ type: 'lucy_clip_unheard', clipId: 'clip-ask-1', reason: 'muted' });
+  });
+
+  test('Do Not Disturb silences it the same way', async () => {
+    enableDnd(null);
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('dnd');
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(getClipHistory()).toHaveLength(1);
+    expect(tracked).toContainEqual({ type: 'lucy_clip_unheard', clipId: 'clip-ask-1', reason: 'dnd' });
+  });
+
+  test('a browser that refuses to start audio leaves the question as an unheard message', async () => {
+    FakeAudioContext.initialState = 'suspended';
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('blocked');
+    expect(replayingClipId()).toBeNull();
+    expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1', heard: false });
+  });
+
+  test('waits for Lucy to finish what she is saying before asking', async () => {
+    const speaker = {};
+    emitSpeechGenerating(speaker);
+    const pending = announceAsk(ASK, { fetcher: fetcherOk() });
+    await vi.waitFor(() => expect(getClipHistory()).toHaveLength(1));
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    emitSpeechIdle(speaker);
+    expect(await pending).toBe('started');
+    expect(FakeAudioContext.instances).toHaveLength(1);
+  });
+
+  test('gives up, leaving an unheard message, when she is still talking after the wait', async () => {
+    emitSpeechGenerating({});
+    expect(await announceAsk(ASK, { fetcher: fetcherOk(), busyWaitMs: 5 })).toBe('blocked');
+    expect(FakeAudioContext.instances).toHaveLength(0);
+  });
+
+  test('stops reading the question out when it is answered meanwhile', async () => {
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('started');
+    stopAskAnnouncement(ASK);
+    expect(replayingClipId()).toBeNull();
+    expect(FakeAudioContext.instances[0].sources[0].stop).toHaveBeenCalled();
+  });
+
+  test('does not stop another clip when a different question closes', async () => {
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('started');
+    stopAskAnnouncement('ffffffffffff');
+    expect(replayingClipId()).toBe('clip-ask-1');
+  });
+
+  test('never starts when the question closed while the clip was being fetched', async () => {
+    const fetcher = vi.fn(async () => {
+      stopAskAnnouncement(ASK);
+      return speakResponse();
+    }) as unknown as typeof fetch;
+    expect(await announceAsk(ASK, { fetcher, sleep: noWait })).toBe('cancelled');
+    expect(FakeAudioContext.instances).toHaveLength(0);
+  });
+
+  test('reports a closed question (409) and a missing speech service without throwing', async () => {
+    expect(await announceAsk(ASK, { fetcher: vi.fn(async () => speakResponse({}, 409)) as unknown as typeof fetch })).toBe('cancelled');
+    __resetAskAnnouncementForTests();
+    localStorage.clear();
+    expect(await announceAsk(ASK, { fetcher: vi.fn(async () => speakResponse({}, 503)) as unknown as typeof fetch })).toBe('error');
+    localStorage.clear();
+    expect(await announceAsk(ASK, { fetcher: vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch })).toBe('error');
+    expect(getClipHistory()).toHaveLength(0);
+  });
+});

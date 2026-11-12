@@ -17079,6 +17079,71 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .avatar-live-who { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); margin-right: 4px; }
 .avatar-live-draft { color: var(--text-muted); font-style: italic; }
 .avatar-live-notice { color: var(--text-secondary); }
+/* Questions from tasks (`kookr ask`): cards between the 3D view and the message list. A task is waiting on a
+   pending one, so the list of questions may take most of the window; the 3D view keeps a strip and the message
+   list shrinks to make room. */
+.avatar-asks {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 232px;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border-dim);
+}
+.avatar-dock-asking .avatar-dock-view { min-height: 56px; }
+.avatar-dock-asking .avatar-dock-transcript { max-height: 64px; }
+.avatar-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 9px 11px;
+  border-bottom: 1px solid var(--border-dim);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.avatar-ask:last-child { border-bottom: 0; }
+.avatar-ask-pending { background: var(--bg-card); box-shadow: inset 2px 0 0 var(--amber); }
+.avatar-ask-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.avatar-ask-who { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-bright); font-weight: 600; }
+.avatar-ask-time { flex: none; font-family: var(--font-mono); color: var(--text-muted); }
+.avatar-ask-question { margin: 0; color: var(--text-bright); font-size: 13px; line-height: 18px; overflow-wrap: anywhere; }
+.avatar-ask-question-closed { color: var(--text-secondary); font-size: 12px; line-height: 16px; }
+.avatar-ask-context summary { cursor: pointer; color: var(--text-secondary); }
+.avatar-ask-context summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.avatar-ask-context p { margin: 4px 0 0; padding-left: 8px; border-left: 2px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; }
+.avatar-ask-options { display: flex; flex-direction: column; gap: 4px; }
+.avatar-ask-option, .avatar-ask-send {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text-bright);
+  font: inherit;
+  cursor: pointer;
+}
+.avatar-ask-option { width: 100%; padding: 5px 8px; text-align: left; overflow-wrap: anywhere; }
+.avatar-ask-option:hover, .avatar-ask-send:hover { border-color: var(--teal); }
+.avatar-ask-option:focus-visible, .avatar-ask-send:focus-visible, .avatar-ask-text input:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+.avatar-ask-option[aria-disabled="true"], .avatar-ask-send[aria-disabled="true"] { opacity: 0.6; cursor: default; border-color: var(--border); }
+.avatar-ask-text { display: flex; gap: 4px; margin: 0; }
+.avatar-ask-text input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text-bright);
+  font: inherit;
+}
+.avatar-ask-send { flex: none; padding: 4px 9px; }
+.avatar-ask-note { margin: 0; color: var(--text-muted); }
+.avatar-ask-outcome { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--text-bright); }
+.avatar-ask-dismiss { flex: none; }
+/* Shapes again: a tick for "answered", a bar for "closed without an answer". */
+.avatar-ask-check { flex: none; width: 9px; height: 5px; margin-bottom: 3px; border-left: 2px solid var(--teal); border-bottom: 2px solid var(--teal); transform: rotate(-45deg); }
+.avatar-ask-dash { flex: none; width: 9px; height: 2px; background: var(--text-muted); }
 .avatar-bubble-mic {
   position: absolute;
   right: 2px;

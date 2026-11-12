@@ -354,6 +354,12 @@ export function App() {
   // one place — the server gate (#806) already drops viewer inbound frames, so
   // sending is pointless; we no-op and surface the read-only notice instead.
   const send = useViewerGuardedSend(rawSend, isViewer);
+  // A `kookr ask` question answered in Lucy's panel (the same question is on Telegram; the server
+  // closes it there). Returns whether the message left this tab.
+  const answerOperatorAsk = useCallback(
+    (askId: string, choice: { optionIndex: number } | { text: string }): boolean => send({ type: 'answerAsk', askId, ...choice }),
+    [send],
+  );
   useEffect(() => {
     installReadOnlyNoticeListener();
   }, []);
@@ -1897,7 +1903,7 @@ export function App() {
       {avatarPanelEnabled && (
         <AvatarErrorBoundary>
           <Suspense fallback={null}>
-            <AvatarDock attentionCount={findings.length} />
+            <AvatarDock attentionCount={findings.length} onAnswerAsk={answerOperatorAsk} />
           </Suspense>
         </AvatarErrorBoundary>
       )}

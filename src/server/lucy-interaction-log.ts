@@ -252,7 +252,7 @@ function pickSaidFields(input: LucySaidRecordInput): Record<string, unknown> {
   return out;
 }
 
-const TRIGGERS = ['click', 'replay'] as const;
+const TRIGGERS = ['click', 'replay', 'ask'] as const;
 const PANEL_STATES = ['open', 'minimized', 'off'] as const;
 const ENDED_BY = ['finished', 'user_stop', 'superseded'] as const;
 const UNHEARD_REASONS = ['muted', 'dnd', 'audio_suspended', 'error'] as const;

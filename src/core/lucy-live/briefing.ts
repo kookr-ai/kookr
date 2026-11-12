@@ -6,12 +6,18 @@
  * long since they changed, and the latest few that ended. Task names go through the same
  * redaction and "is it short enough to say aloud" rules as the spoken summaries, so a
  * pasted secret or a 200-character request never reaches the model or the speaker.
+ *
+ * Questions that tasks asked the operator (`kookr ask`) come first: the ones still
+ * waiting, then the ones just closed with where the answer came from. They are listed
+ * before the tasks because the briefing is cut from the end when it is too long, and
+ * a task waiting on the operator matters more than the tail of the task list.
  */
 
+import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import { isGenericTaskName, spokenTaskName } from '../spoken-task-name.js';
-import { redactedTaskName } from '../task-speech-summary.js';
+import { redactSpeechSecrets, redactedTaskName } from '../task-speech-summary.js';
 
 /** The few task fields the briefing reads; the full `Task` satisfies this. */
 export interface BriefingTask {
@@ -26,6 +32,9 @@ export interface BriefingTask {
 export const MAX_BRIEFING_CHARS = 2500;
 export const MAX_LISTED_ACTIVE_TASKS = 15;
 export const MAX_LISTED_RECENT_ENDED = 6;
+export const MAX_LISTED_ASKS = 4;
+/** A question longer than this is cut in the briefing; the full text is on the card and on Telegram. */
+export const MAX_BRIEFING_QUESTION_CHARS = 220;
 
 const STATUS_WORDS: Record<TaskStatus, string> = {
   open: 'open',
@@ -62,8 +71,54 @@ function reasonSuffix(task: BriefingTask): string {
   return task.status === 'terminated' && task.terminationReason ? ` (reason: ${task.terminationReason})` : '';
 }
 
-export function buildLucyLiveBriefing(tasks: readonly BriefingTask[], nowMs: number): string {
-  if (tasks.length === 0) return 'There are no tasks at all.';
+function oneLine(text: string, max: number): string {
+  const flat = redactSpeechSecrets(text).replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
+}
+
+function askWho(ask: OperatorAskView): string {
+  return ask.taskName ? `The task "${ask.taskName}"` : 'A task';
+}
+
+function askOutcome(ask: OperatorAskView, nowMs: number): string {
+  const when = minutesAgo(ask.resolvedAt ?? ask.expiresAt, nowMs);
+  if (ask.state === 'answered' && ask.answer) {
+    const chosen = ask.answer.kind === 'option' ? ask.answer.label : ask.answer.text;
+    const where = ask.answeredVia === 'dashboard' ? 'in Kookr' : 'on Telegram';
+    return `the operator answered "${oneLine(chosen, 80)}" ${where} ${when}`;
+  }
+  if (ask.state === 'expired') return `it expired with no answer ${when}`;
+  return `the task withdrew it ${when}`;
+}
+
+/** The lines about questions from tasks; empty when there is nothing to say. */
+export function buildAskBriefingLines(asks: readonly OperatorAskView[], nowMs: number): string[] {
+  const pending = asks.filter((a) => a.state === 'pending');
+  const closed = asks.filter((a) => a.state !== 'pending');
+  if (pending.length === 0 && closed.length === 0) return [];
+  const lines: string[] = [];
+  if (pending.length === 0) {
+    lines.push('Questions from tasks waiting for the operator: none.');
+  } else {
+    lines.push('Questions from tasks waiting for the operator (answered with the buttons in your panel or on Telegram, not by voice):');
+    for (const ask of pending.slice(0, MAX_LISTED_ASKS)) {
+      lines.push(`- ${askWho(ask)} asked ${minutesAgo(ask.createdAt, nowMs)}: ${oneLine(ask.question, MAX_BRIEFING_QUESTION_CHARS)} Choices: ${ask.options.map((o) => oneLine(o, 60)).join('; ')}.`);
+    }
+    if (pending.length > MAX_LISTED_ASKS) lines.push(`- and ${pending.length - MAX_LISTED_ASKS} more questions not listed`);
+  }
+  if (closed.length > 0) {
+    lines.push('Questions closed in the last few minutes:');
+    for (const ask of closed.slice(0, MAX_LISTED_ASKS)) {
+      lines.push(`- ${askWho(ask)} asked: ${oneLine(ask.question, MAX_BRIEFING_QUESTION_CHARS)} Outcome: ${askOutcome(ask, nowMs)}.`);
+    }
+  }
+  lines.push('');
+  return lines;
+}
+
+export function buildLucyLiveBriefing(tasks: readonly BriefingTask[], nowMs: number, asks: readonly OperatorAskView[] = []): string {
+  const askLines = buildAskBriefingLines(asks, nowMs);
+  if (tasks.length === 0) return capLines([...askLines, 'There are no tasks at all.'], MAX_BRIEFING_CHARS);
 
   const counts = new Map<TaskStatus, number>();
   for (const t of tasks) counts.set(t.status, (counts.get(t.status) ?? 0) + 1);
@@ -81,7 +136,7 @@ export function buildLucyLiveBriefing(tasks: readonly BriefingTask[], nowMs: num
     .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
     .slice(0, MAX_LISTED_RECENT_ENDED);
 
-  const lines: string[] = [`Task counts: ${countsLine}.`];
+  const lines: string[] = [...askLines, `Task counts: ${countsLine}.`];
 
   lines.push('', active.length === 0 ? 'Unfinished tasks: none.' : 'Unfinished tasks (most recently changed first):');
   for (const t of active.slice(0, MAX_LISTED_ACTIVE_TASKS)) {

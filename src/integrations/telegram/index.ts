@@ -1074,7 +1074,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       async finalizeAsk(ask, text) {
         if (!ask.delivery) return;
         await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, text);
-        audit({ kind: 'ask_finalized', askId: ask.id, taskId: ask.taskId, state: ask.state, resolution: ask.resolution });
+        audit({ kind: 'ask_finalized', askId: ask.id, taskId: ask.taskId, state: ask.state, resolution: ask.resolution, ...(ask.answeredVia ? { answeredVia: ask.answeredVia } : {}) });
       },
     }
     : undefined;

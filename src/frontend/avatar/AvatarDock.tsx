@@ -14,6 +14,12 @@
  * 3D view, so it keeps running while the panel is minimised, and it is never saved:
  * every page load starts with the microphone closed.
  *
+ * When a task asks the operator a question (`kookr ask`, the same question that
+ * goes to Telegram), Lucy reads it out once and the panel shows it as a card with
+ * one button per choice (`AskCard.tsx`). Answering there closes the question on
+ * Telegram too, and an answer given on Telegram turns the card into "Answered on
+ * Telegram". While minimised, the bubble's badge counts the waiting questions.
+ *
  * Under the 3D view the panel lists the last few spoken messages in full (what, about
  * which task, how long ago, heard or not), each with its own Replay button. The list is
  * a keyboard-focusable scroll region, so a long message is read by scrolling, not cut off.
@@ -32,6 +38,16 @@ import { getLastClip, useClipHistory, useLastClip } from '../audio/last-clip.js'
 import { replayClip, replayLastClip, stopReplay, type ReplayResult } from '../audio/clip-playback.js';
 import { useSoundPreference } from '../audio/sound-preference.js';
 import { track } from '../telemetry.js';
+import { announceAsk, stopAskAnnouncement } from '../audio/ask-announcement.js';
+import {
+  dismissOperatorAsk,
+  markAskSubmitting,
+  onAskAnnounced,
+  onAskClosed,
+  useOperatorAsks,
+  visibleOperatorAsks,
+} from '../store/operator-asks.js';
+import { AskCard, type AskAnswerChoice } from './AskCard.js';
 import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
 import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
 import {
@@ -90,6 +106,12 @@ function viewportSize(): { width: number; height: number } {
 export interface AvatarDockProps {
   /** How many tasks are waiting for the operator; shown as a badge on the bubble. */
   attentionCount: number;
+  /**
+   * Send the operator's answer to a `kookr ask` question over the dashboard socket.
+   * Returns false when it could not be sent (not connected). Without it the cards are
+   * still shown, and an answer reports "not connected".
+   */
+  onAnswerAsk?: (askId: string, choice: AskAnswerChoice) => boolean;
 }
 
 const REPLAY_DESCRIPTION_ID = 'avatar-replay-description';
@@ -108,6 +130,7 @@ function matchesFocusVisible(element: HTMLElement): boolean {
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 const findingsText = (n: number): string => `${plural(n, 'finding needs', 'findings need')} your attention`;
 const unheardText = (n: number): string => plural(n, 'unheard message', 'unheard messages');
+const questionsText = (n: number): string => `${plural(n, 'question is', 'questions are')} waiting for your answer`;
 
 /**
  * What a screen reader hears after the header Replay button's name. That button replays only the newest
@@ -137,7 +160,7 @@ function bubbleCardPlacement(
   };
 }
 
-export function AvatarDock({ attentionCount }: AvatarDockProps) {
+export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
   const [viewport, setViewport] = useState(viewportSize);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
@@ -159,6 +182,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const clips = useClipHistory();
   const sound = useSoundPreference();
   const live = useLucyLive();
+  const operatorAsks = useOperatorAsks();
   // Why a press on the unavailable Talk button did nothing, for people who cannot see its tooltip.
   const [talkNotice, setTalkNotice] = useState<string | null>(null);
   // Bumped on every press of the unavailable Talk button so the announcement is spoken again.
@@ -224,13 +248,32 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   // Keep the "N min ago" labels current while the list is on screen: one timer, gone when the panel
   // is minimised, closed or the list is empty.
   const [now, setNow] = useState(() => Date.now());
-  const listVisible = !prefs.minimized && clips.length > 0;
+  // Questions are kept current while minimised too: the bubble's badge counts the ones still waiting.
+  const listVisible = (!prefs.minimized && clips.length > 0) || operatorAsks.asks.length > 0;
   useEffect(() => {
     if (!listVisible) return undefined;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), RELATIVE_TIME_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [listVisible]);
+
+  // A task just asked a question: Lucy says it, once. Only while this panel exists, so with the avatar
+  // panel switched off nothing is spoken (the question is still on Telegram). If it is answered,
+  // withdrawn or expires while she is reading it out, she stops.
+  useEffect(() => {
+    const offAnnounced = onAskAnnounced((ask) => { void announceAsk(ask.id); });
+    const offClosed = onAskClosed((ask) => stopAskAnnouncement(ask.id));
+    return () => {
+      offAnnounced();
+      offClosed();
+    };
+  }, []);
+
+  const asks = visibleOperatorAsks(operatorAsks.asks, now);
+  const pendingAskCount = asks.reduce((n, ask) => (ask.state === 'pending' ? n + 1 : n), 0);
+  const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
+    markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
+  }, [onAnswerAsk]);
 
   // A replay must not keep talking after the panel is gone.
   useEffect(() => () => stopReplay('user_stop'), []);
@@ -423,7 +466,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
 
   // The bubble's card: what the badge and the dot mean. It only repeats what the bubble's label says, so it is
   // hidden from assistive technology; keyboard users get it through focus, Escape closes it.
-  const cardHasContent = attentionCount > 0 || lastClip.unheardCount > 0;
+  const cardHasContent = attentionCount > 0 || lastClip.unheardCount > 0 || pendingAskCount > 0;
   const cardVisible = prefs.minimized && cardHasContent && (hovered || focused) && !cardDismissed;
   useEffect(() => {
     if (!cardVisible) return undefined;
@@ -452,11 +495,14 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     const activity = state !== 'idle' ? `, ${STATE_LABEL[state]}` : liveReady ? ', listening' : '';
     const label = [
       `Open ${NAME}${activity}`,
+      pendingAskCount > 0 ? questionsText(pendingAskCount) : null,
       attentionCount > 0 ? findingsText(attentionCount) : null,
       lastClip.unheardCount > 0 ? unheardText(lastClip.unheardCount) : null,
     ]
       .filter(Boolean)
-      .join('. ') + (attentionCount > 0 || lastClip.unheardCount > 0 ? '.' : '');
+      .join('. ') + (cardHasContent ? '.' : '');
+    // One number on the bubble: everything that is waiting for the operator.
+    const badgeCount = attentionCount + pendingAskCount;
     const cardPlacement = bubbleCardPlacement(bubblePosition, viewport);
     const cardRight = bubblePosition.x + AVATAR_BUBBLE_SIZE;
     return (
@@ -479,8 +525,8 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
           {!still && <span className="avatar-bubble-initial" aria-hidden="true">{NAME[0]}</span>}
           {live.enabled && <span className="avatar-bubble-mic" data-testid="avatar-bubble-mic" aria-hidden="true" />}
           {lastClip.unheard && <span className="avatar-unheard-dot avatar-bubble-unheard" data-testid="avatar-unheard-dot" aria-hidden="true" />}
-          {attentionCount > 0 && (
-            <span className="avatar-bubble-badge" aria-hidden="true">{attentionCount > 99 ? '99+' : attentionCount}</span>
+          {badgeCount > 0 && (
+            <span className="avatar-bubble-badge" aria-hidden="true">{badgeCount > 99 ? '99+' : badgeCount}</span>
           )}
         </button>
         {cardVisible && (
@@ -498,6 +544,12 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
             aria-hidden="true"
             data-testid="avatar-bubble-card"
           >
+            {pendingAskCount > 0 && (
+              <div className="avatar-bubble-card-row" data-testid="avatar-bubble-card-asks">
+                <span className="avatar-mark-diamond" />
+                {plural(pendingAskCount, 'question', 'questions')} for you
+              </div>
+            )}
             {attentionCount > 0 && (
               <div className="avatar-bubble-card-row">
                 <span className="avatar-mark-diamond" />
@@ -521,7 +573,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const newestId = clips[0]?.clipId;
   return (
     <section
-      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
+      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${asks.length > 0 ? ' avatar-dock-asking' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
       style={{ left: position.x, top: position.y, width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT }}
       aria-label={`${NAME} avatar`}
       ref={dockRef}
@@ -607,6 +659,25 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         {announcement && <span key={`notice-${talkNoticeSeq}-${announcement}`}>{announcement}</span>}
         {heardFinal && <span key={`heard-${heardFinal.seq}`}>You said: {heardFinal.text}</span>}
       </div>
+      {asks.length > 0 && (
+        // Questions from tasks (`kookr ask`), above everything else she shows: a task is waiting on these.
+        <ol
+          className="avatar-asks"
+          aria-label={pendingAskCount > 0 ? `Questions waiting for your answer (${pendingAskCount})` : 'Recent questions'}
+          data-testid="avatar-asks"
+        >
+          {asks.map((ask) => (
+            <AskCard
+              key={ask.id}
+              ask={ask}
+              submit={operatorAsks.submit[ask.id]}
+              nowMs={now}
+              onAnswer={onAnswer}
+              onDismiss={dismissOperatorAsk}
+            />
+          ))}
+        </ol>
+      )}
       {showLive && (
         // A log, but not a live one: Lucy's answer is spoken aloud already, so it is not announced.
         // Focusable because it scrolls.

@@ -2895,6 +2895,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           config: liveConfig,
           vad,
           getTasks: () => taskStore.viewTasks(),
+          // So she knows which questions are waiting and which were answered, and where.
+          getAsks: () => (askService
+            ? listOperatorAsks(askService.all(), Date.now(), (taskId) => taskStore.getTask(taskId)?.name)
+            : []),
           getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
           log: lucyInteractionLog,
         }),
