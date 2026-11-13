@@ -125,7 +125,29 @@ export interface LucyLivePorts {
   /** Transcribe the audio so far in its own session (an improving draft). */
   transcribeDraft(pcm: Buffer, language: LucyLiveLanguage, signal: AbortSignal): Promise<string>;
   /** Stream the answer text. Must stop and throw when `signal` aborts. */
-  streamAnswer(req: { system: string; history: readonly ChatTurn[]; user: string; signal: AbortSignal }): AsyncIterable<string>;
+  streamAnswer(req: {
+    system: string;
+    history: readonly ChatTurn[];
+    user: string;
+    signal: AbortSignal;
+    /** When the operator began speaking this part of the request, by the server's clock. */
+    speechStartedAt: number;
+    /**
+     * Call it when saying nothing is the right answer (the words may have been Lucy's own voice coming
+     * back through the microphone): the turn then ends as `empty` instead of reporting a missing answer.
+     */
+    stayQuiet(): void;
+    /**
+     * True when this part of the request began while Lucy's voice was still audible (or just after it ended):
+     * the words may be her own voice coming back through the microphone.
+     */
+    overlapsAudio: boolean;
+  }): AsyncIterable<string>;
+  /**
+   * Her voice is audible until `until` (this server's clock): called each time a sentence is sent to the browser.
+   * Lets a spoken proposal's echo guard and cancel window start when she has really finished speaking.
+   */
+  noteAudible?(until: number): void;
   synthesize(text: string, signal: AbortSignal): Promise<SpokenSentence>;
   /** Fresh task status text, built for every turn. */
   buildBriefing(): string;
@@ -145,6 +167,10 @@ interface ExchangeMemory {
 
 interface Turn {
   id: string;
+  /** Server clock when this part of the request began. */
+  startedAt: number;
+  /** It began while her voice was audible, or within a moment of it ending. */
+  overlapsAudio: boolean;
   language: LucyLiveLanguage;
   phase: 'listening' | 'transcribing' | 'thinking' | 'speaking';
   closed: boolean;
@@ -203,6 +229,9 @@ interface Candidate {
 
 class TurnAbandoned extends Error {}
 
+/** Speech that begins this soon after her voice ends may still be its echo. */
+const AUDIBLE_TAIL_MS = 400;
+
 function describeFailure(stage: 'ears' | 'brain' | 'mouth', err: unknown): string {
   const detail = err instanceof Error ? err.message : String(err);
   switch (stage) {
@@ -219,6 +248,9 @@ export class LucyLiveSession {
   private readonly memory: ExchangeMemory[] = [];
   private closedForGood = false;
   private candidate: Candidate | null = null;
+
+  /** Server clock until which the sentences sent so far are still being played. */
+  private audibleUntil = 0;
 
   constructor(private readonly ports: LucyLivePorts) {}
 
@@ -319,6 +351,8 @@ export class LucyLiveSession {
     const ownText = new Promise<string>((resolve) => { settleOwnText = resolve; });
     return {
       id,
+      startedAt: this.ports.now(),
+      overlapsAudio: this.ports.now() < this.audibleUntil + AUDIBLE_TAIL_MS,
       language: this.language,
       phase: 'listening',
       closed: false,
@@ -637,6 +671,7 @@ export class LucyLiveSession {
     const stopBrain = (): void => brainAbort.abort();
     signal.addEventListener('abort', stopBrain, { once: true });
     let mouthFailure: unknown;
+    let quiet = false;
 
     const speak = (raw: string): void => {
       const text = makeSpeakable(redactSpeechSecrets(raw)).trim();
@@ -666,13 +701,29 @@ export class LucyLiveSession {
           type: 'sentence', turnId: turn.id, seq: mySeq, text,
           wavBase64: audio.wavBase64, durationMs: audio.durationMs,
         });
+        // The browser plays sentences back to back, so her voice is audible until the last one ends.
+        this.audibleUntil = Math.max(this.ports.now(), this.audibleUntil) + audio.durationMs;
+        try {
+          this.ports.noteAudible?.(this.audibleUntil);
+        } catch (err) {
+          // An observer of her speech must not stop her from speaking.
+          this.ports.warn(`lucy-live: noting her speech failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       });
       sendChain.catch(() => {}); // the final await below reports it
     };
 
     try {
       try {
-        for await (const delta of this.ports.streamAnswer({ system: buildLucyLivePersona(this.ports.buildBriefing()), history, user: transcript, signal: brainAbort.signal })) {
+        for await (const delta of this.ports.streamAnswer({
+          system: buildLucyLivePersona(this.ports.buildBriefing()),
+          history,
+          user: transcript,
+          signal: brainAbort.signal,
+          speechStartedAt: turn.startedAt,
+          overlapsAudio: turn.overlapsAudio,
+          stayQuiet: () => { quiet = true; },
+        })) {
           if (turn.closed) return;
           if (mouthFailure !== undefined) break;
           for (const sentence of splitter.push(delta)) speak(sentence);
@@ -693,6 +744,10 @@ export class LucyLiveSession {
       throw err;
     }
     if (turn.closed) return;
+    if (turn.sentences.length === 0 && quiet) {
+      this.endTurn(turn, 'empty');
+      return;
+    }
     if (turn.sentences.length === 0) {
       this.endTurn(turn, 'error', 'The helper model returned no answer.');
       return;
@@ -720,7 +775,7 @@ export class LucyLiveSession {
     if (this.turn === turn) this.turn = null;
     if (turn.memory) {
       turn.memory.interrupted = end === 'interrupted';
-      if (end === 'error' && turn.sentences.length === 0) {
+      if ((end === 'error' || end === 'empty') && turn.sentences.length === 0) {
         const at = this.memory.indexOf(turn.memory);
         if (at >= 0) this.memory.splice(at, 1);
         if (turn.evicted) this.memory.unshift(turn.evicted);

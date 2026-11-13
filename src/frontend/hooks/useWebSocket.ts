@@ -12,6 +12,7 @@ import { DeltaSequenceTracker } from '../delta-sequence.js';
 import { measureSync } from '../debug-timeline.js';
 import { acknowledgeDictationLaunch, resumeDictationCorpusRetries } from '../store/dictation-corpus.js';
 import { handleOperatorAskResult, handleOperatorAsks } from '../store/operator-asks.js';
+import { handleLucyLaunch } from '../store/lucy-launch.js';
 
 // Stale-socket callbacks are ignored silently in the controller; here we count
 // them and emit at most one compact telemetry event per window so a burst of
@@ -383,6 +384,10 @@ export function useWebSocket() {
             // `kookr ask` questions for Lucy's panel; kept in their own small store so only the panel re-renders.
             case 'operatorAsks':
               handleOperatorAsks(msg.asks, msg.announce);
+              break;
+            // Lucy's launch card, its end and the report of a task she started (issue #3676).
+            case 'lucy_launch':
+              handleLucyLaunch(msg);
               break;
             case 'operatorAskResult':
               handleOperatorAskResult(msg.askId, msg.ok, msg.reason);

@@ -1479,6 +1479,37 @@ describe('promotePendingTasks (integration)', () => {
     }));
   });
 
+  describe('a permission choice made at launch survives the wait in the queue (issue #3676)', () => {
+    test('a task launched with prompts forced on does not promote with bypass on a bypass install', async () => {
+      const task = taskStore.createTask({ prompt: 'Task 1', cwd: '/cwd', metadata: { launchPermissionOverride: 'prompt' } });
+      taskStore.pendTask(task.id);
+
+      expect(await promotePendingTasks({ ...deps, bypassAllPermissions: true })).toBe(1);
+
+      expect((adapter.launch as any).mock.calls[0][4]).toMatchObject({ bypassPermissions: false });
+      expect(taskStore.getTask(task.id)?.metadata?.launchPermissionPosture).toBeUndefined();
+    });
+
+    test('a task launched with every permission bypassed promotes bypassed on a guarded install, and says so', async () => {
+      const task = taskStore.createTask({ prompt: 'Task 1', cwd: '/cwd', metadata: { launchPermissionOverride: 'bypass' } });
+      taskStore.pendTask(task.id);
+
+      expect(await promotePendingTasks({ ...deps, bypassAllPermissions: false })).toBe(1);
+
+      expect((adapter.launch as any).mock.calls[0][4]).toMatchObject({ bypassPermissions: true });
+      expect(taskStore.getTask(task.id)?.metadata?.launchPermissionPosture).toMatchObject({ bypassAllPermissions: true });
+    });
+
+    test('a task launched without a choice is told nothing, so the install default applies', async () => {
+      const task = taskStore.createTask('Task 1', '/cwd');
+      taskStore.pendTask(task.id);
+
+      await promotePendingTasks({ ...deps, bypassAllPermissions: true });
+
+      expect((adapter.launch as any).mock.calls[0][4]).not.toHaveProperty('bypassPermissions');
+    });
+  });
+
   test('clears stale permission posture when a pending task promotes in guarded mode', async () => {
     const task = taskStore.createTask({
       prompt: 'Task 1',

@@ -30,6 +30,7 @@ import {
   validateReplySnippets,
   type ReplySnippet,
 } from '../shared/contracts/reply-snippets.js';
+import { DEFAULT_LUCY_AUTONOMY, isLucyAutonomy, type LucyAutonomy } from '../shared/contracts/lucy-launch.js';
 import { isSpeakVoiceId, type SpeakVoiceId, type VerbosityScale } from '../shared/contracts/speech.js';
 import { QUOTA_NO_HEADROOM_UTILIZATION } from './quota-headroom-admission.js';
 
@@ -108,6 +109,14 @@ export interface KookrSettings {
    * Read live, so a change applies to the next clip. Clear by omitting it.
    */
   speakVoice?: SpeakVoiceId;
+  /**
+   * How much confirmation Lucy needs before she launches a task (issue #3676):
+   * `careful` (tasks she launches always ask permission), `balanced` (a card and a
+   * "go"; tasks run as a Launch-tab launch does) or `hands-off` (no card, every
+   * permission bypassed). Absent means `balanced`. Read on the server at launch time,
+   * and changed only here: Lucy has no way to change it.
+   */
+  lucyAutonomy?: LucyAutonomy;
   /**
    * Keep a local JSONL log of what the avatar ("Lucy") says and how the operator
    * reacts (`<kookrDir>/lucy-interactions.jsonl`, issue #3605). Default true; the
@@ -981,6 +990,18 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     }
   }
 
+  let lucyAutonomy: LucyAutonomy | undefined;
+  if (raw.lucyAutonomy !== undefined && raw.lucyAutonomy !== null) {
+    if (isLucyAutonomy(raw.lucyAutonomy)) {
+      lucyAutonomy = raw.lucyAutonomy;
+    } else {
+      // An unreadable level must never become a looser one: fall back to the default, which asks.
+      verbosityWarnings.push(
+        `Unknown lucyAutonomy value ${JSON.stringify(raw.lucyAutonomy)}; dropped (using "${DEFAULT_LUCY_AUTONOMY}")`,
+      );
+    }
+  }
+
   const lucyInteractionLog = typeof raw.lucyInteractionLog === 'boolean'
     ? raw.lucyInteractionLog
     : DEFAULT_SETTINGS.lucyInteractionLog;
@@ -1022,6 +1043,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       shortcutBindings: shortcutValidation.overrides,
       speakVerbosity,
       ...(speakVoice !== undefined ? { speakVoice } : {}),
+      ...(lucyAutonomy !== undefined ? { lucyAutonomy } : {}),
       lucyInteractionLog,
       agentEffort,
       quietHours: quietHoursValidation.windows,

@@ -134,6 +134,17 @@ export interface TaskMetadata {
    */
   launchSource?: TaskLaunchSource;
   /**
+   * Who asked for this launch, when the caller named itself (for example `lucy-operator`, issue #3676).
+   * Attribution only: it grants nothing.
+   */
+  launchActorId?: string;
+  /**
+   * A per-launch permission choice made by the server for this task (issue #3676): `prompt` forces
+   * permission prompts on, `bypass` bypasses them all, whatever the install default is. It is kept on the
+   * task so a launch that was parked and is promoted later runs with the choice it was made with.
+   */
+  launchPermissionOverride?: 'prompt' | 'bypass';
+  /**
    * Full agent substitution chain for this launch (issue #2001). Empty/absent
    * when the requested agent launched unchanged. Each hop records why it
    * happened (`schedule_sub`, `quota_rotate`, or a `boot_backoff` where a

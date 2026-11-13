@@ -24,6 +24,8 @@ import { boardText, buildLucyBoard } from './board.js';
 import { LucyModelError, type LucyChatMessage, type LucyModelPort, type LucyToolCall } from './model-port.js';
 import { buildLucyOperatorPrompt, LUCY_CAP_SENTENCES } from './prompt.js';
 import { dispatchLucyTool, displayToolArgs, LUCY_LOOK_TOOLS, type LucyLookSource, type LucyToolOutcome } from './tools.js';
+import { LUCY_PROPOSE_LAUNCH, type LucyLaunchPort } from './launch-tool.js';
+import { LUCY_PROPOSE_LAUNCH_TOOL } from '../../shared/contracts/lucy-turn.js';
 
 export interface LucyTurnLimits {
   /** Most model calls in one turn. */
@@ -55,6 +57,8 @@ export interface LucyHistoryMessage {
 export interface LucyTurnDeps {
   model: LucyModelPort;
   source: LucyLookSource;
+  /** Present when launching is switched on: she then has `propose_launch`, and her instructions say so. */
+  launch?: LucyLaunchPort;
   limits?: Partial<LucyTurnLimits>;
   now?: () => number;
   /** Receives the detail of a model failure for the server log. It may quote the provider, so it is never sent to a client. */
@@ -70,6 +74,10 @@ export interface LucyTurnDeps {
 
 export interface LucyTurnInput {
   text: string;
+  /** Needed for `propose_launch`: the proposal is held against this conversation. */
+  conversationId?: string;
+  /** The words were spoken: a spoken proposal's hands-off launch waits until its read-back has been heard. */
+  spoken?: boolean;
   history: readonly LucyHistoryMessage[];
   /** Aborting it (the client went away) ends the turn with `aborted`. */
   signal?: AbortSignal;
@@ -179,7 +187,7 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
       return result;
     }
     const messages: LucyChatMessage[] = [
-      { role: 'system', content: buildLucyOperatorPrompt(board) },
+      { role: 'system', content: buildLucyOperatorPrompt(board, { canLaunch: Boolean(deps.launch) }) },
       // The question and the remembered exchanges leave the machine too, so they get the same
       // secret hiding as the board and the look-ups (a key pasted into a question is not sent on).
       ...input.history.map((message) => ({ role: message.role, content: redactSpeechSecrets(message.content) })),
@@ -210,7 +218,7 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
       try {
         for await (const event of deps.model({
           messages,
-          tools: LUCY_LOOK_TOOLS,
+          tools: deps.launch ? [...LUCY_LOOK_TOOLS, LUCY_PROPOSE_LAUNCH] : LUCY_LOOK_TOOLS,
           maxOutputTokens: limits.maxOutputTokensPerStep,
           signal: controller.signal,
         })) {
@@ -261,6 +269,24 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
         tools.push(name);
         // Announced before it runs, so the operator sees what she is doing while she does it.
         yield { type: 'tool_call', id: call.id, name, args: displayToolArgs(call.arguments) };
+        if (call.name === LUCY_PROPOSE_LAUNCH_TOOL && deps.launch && input.conversationId) {
+          // The arguments of this call are never read: the server writes the task from the operator's words.
+          const operatorWords = [...input.history.filter((m) => m.role === 'user').map((m) => m.content), input.text];
+          const proposed = await Promise.race([
+            deps.launch.propose({ conversationId: input.conversationId, operatorWords, spoken: input.spoken, signal: controller.signal }).catch(
+              () => ({ ok: false as const, say: 'I could not prepare that launch just now.', why: 'propose failed' }),
+            ),
+            cancelled,
+          ]);
+          if (proposed === null) break;
+          if (proposed.ok) yield { type: 'proposal', proposal: proposed.proposal };
+          yield { type: 'tool_result', id: call.id, name, ok: proposed.ok, summary: proposed.ok ? 'Prepared a launch card' : 'No launch proposed' };
+          // What she says is the server's sentence, not the model's: the card and the words cannot differ.
+          yield textEvent(joined(proposed.say));
+          const result = end('answered');
+          yield result.done;
+          return result;
+        }
         // A look-up cannot be interrupted, but the turn does not have to wait for one that hangs.
         const outcome: LucyToolOutcome | null = await Promise.race([dispatchLucyTool(call.name, call.arguments, deps.source, now()), cancelled]);
         if (outcome === null) break; // the check at the top of the loop ends the turn

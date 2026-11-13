@@ -291,6 +291,7 @@ import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import type { SystemdNotifier } from './systemd-notify.js';
 import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
+import { createLucyOperatorHolder } from './lucy-operator/holder.js';
 import { createTelegramTaskBridge } from './telegram-task-bridge.js';
 import { AskStore } from './asks/ask-store.js';
 import { AskService } from './asks/ask-service.js';
@@ -784,6 +785,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const stopDeliveryTraceObserver = queue.addObserver({
     admitted: (event) => deliveryTrace.recordAdmitted(event),
     suppressed: (event) => deliveryTrace.recordSuppressed(event, event.reason),
+  });
+
+  // The operator service is built with the routes, after Lucy live; Talk turns and the reports below find it here (issue #3676).
+  const lucyOperatorHolder = createLucyOperatorHolder();
+  // A task Lucy started that needs the operator (it stopped for input, or is blocked on a permission)
+  // is reported in the conversation that launched it (issue #3676). On a bypass install a permission block
+  // never happens, so the finding itself is the signal, not only the permission-block callback.
+  const stopLucyNeedsInputObserver = queue.addObserver({
+    admitted: (event) => {
+      if (event.anomaly.type !== 'needs_input' && event.anomaly.type !== 'permission_blocked') return;
+      try {
+        const task = taskStore.findTaskBySession(event.agentId);
+        if (task) lucyOperatorHolder.get()?.launch?.onTaskOutcome(task.id, { kind: 'needs_input' }, task.name);
+      } catch (err) {
+        console.warn('[lucy-launch] needs-input report failed:', err);
+      }
+    },
   });
 
   const webhookConfig = readWebhookConfigFromEnv(process.env, {
@@ -2908,6 +2926,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             : []),
           getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
           log: lucyInteractionLog,
+          // Talk turns go to the operator conversation only when launching is switched on.
+          getOperator: () => lucyOperatorHolder.get(),
         }),
       };
     },
@@ -2930,6 +2950,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     lucyInteractionLog,
     lucyInteractionLogPath,
     lucyOperatorConfig,
+    lucyOperatorHolder,
+    // Her launch cards carry the operator's words and the whole task description: owner connections only, like `kookr ask` questions.
+    emitToOwners: (msg) => {
+      for (const { ws, actor } of connectionRegistry.snapshotDashboardConnections()) {
+        if (actor.kind !== 'owner' || ws.readyState !== 1) continue;
+        try {
+          ws.send(JSON.stringify(msg));
+        } catch (err) {
+          console.warn('[lucy-launch] could not push to a dashboard connection:', err);
+        }
+      }
+    },
     getLucyLiveStatus: () => lucyLiveRuntime.status(),
     supervisionService,
     delegationService: delegationRuntime.service,
@@ -4333,6 +4365,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const remoteChatOnTaskOutcome = remoteChatTrigger.onTaskOutcome;
   onTaskOutcomeHolder = (taskId, outcome) => {
     try {
+      lucyOperatorHolder.get()?.launch?.onTaskOutcome(taskId, outcome, taskStore.getTask(taskId)?.name);
+    } catch (err) {
+      console.warn('[lucy-launch] outcome report failed:', err);
+    }
+    try {
       void remoteChatOnTaskOutcome?.(taskId, outcome);
     } catch (err) {
       console.warn('[lifecycle] remoteChat onTaskOutcome threw:', err);
@@ -4389,6 +4426,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
     stopWebhookObserver?.();
     stopDeliveryTraceObserver();
+    stopLucyNeedsInputObserver();
+    // No hands-off launch may fire during shutdown.
+    lucyOperatorHolder.get()?.launch?.dispose();
 
     // Final task-state save (dirty flush under SQLite; full rewrite under JSON)
     try {

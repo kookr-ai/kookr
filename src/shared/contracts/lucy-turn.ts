@@ -6,9 +6,12 @@
  * a stream of newline-delimited JSON (`application/x-ndjson`): one {@link LucyTurnEvent}
  * per line, in the order things happen, always ending with exactly one `done` event.
  *
- * In this step Lucy can only look things up. No event ever reports a change to a task,
- * because no tool that changes one exists.
+ * Lucy's tools only look things up, with one exception when launching is on (issue #3676):
+ * `propose_launch` makes a proposal, which the operator then confirms. A `proposal` event is a card
+ * to show and changes no task; a `launch` event reports what became of a proposal.
  */
+
+import type { LucyLaunchOutcome, LucyLaunchProposalView } from './lucy-launch.js';
 
 export const LUCY_TURN_PATH = '/api/lucy/turn';
 export const LUCY_TURN_CONTENT_TYPE = 'application/x-ndjson';
@@ -23,6 +26,17 @@ export interface LucyTurnRequest {
   text: string;
   /** Groups turns into one conversation, so she remembers what was just said. */
   conversationId: string;
+  /**
+   * Whether the words were spoken or typed. Absent means typed. Speech can be Lucy's own voice
+   * coming back through the microphone, so a spoken "go" is held to a stricter rule (see `overlapsReadBack`).
+   */
+  input?: 'voice' | 'typed';
+  /**
+   * Set by the dashboard for spoken words that started while Lucy was still saying her read-back
+   * of a proposal. Such words are ignored: they could be her own voice, so they neither confirm
+   * the proposal nor drop it.
+   */
+  overlapsReadBack?: boolean;
 }
 
 /**
@@ -32,14 +46,18 @@ export interface LucyTurnRequest {
 export const LUCY_LOOK_TOOL_NAMES = ['read_board', 'read_task', 'show_task', 'list_projects'] as const;
 export type LucyLookToolName = (typeof LUCY_LOOK_TOOL_NAMES)[number];
 
+/** The one tool that leads to a change. It only makes a proposal; the operator's confirmation launches it. */
+export const LUCY_PROPOSE_LAUNCH_TOOL = 'propose_launch';
+
 /**
  * Why a turn ended:
  * - `answered`: she finished her reply.
+ * - `ignored`: spoken words that could have been her own voice were left alone (she said nothing).
  * - `step_cap` / `time_cap` / `token_cap`: a limit was reached; her last sentence says so.
  * - `aborted`: the client went away, or the server is shutting down.
  * - `error`: the model or a look-up failed; `reason` says what, in plain words.
  */
-export type LucyTurnEnd = 'answered' | 'step_cap' | 'time_cap' | 'token_cap' | 'aborted' | 'error';
+export type LucyTurnEnd = 'answered' | 'ignored' | 'step_cap' | 'time_cap' | 'token_cap' | 'aborted' | 'error';
 
 export type LucyTurnEvent =
   /** A piece of her reply, in the order it was generated. Concatenate them to get the whole reply. */
@@ -54,6 +72,10 @@ export type LucyTurnEvent =
   | { type: 'tool_result'; id: string; name: string; ok: boolean; summary: string }
   /** Something for the dashboard itself to do. `show_task` asks it to open that task. */
   | { type: 'screen'; command: 'show_task'; taskId: string }
+  /** She proposes launching a task: the dashboard shows the card. Nothing has been launched. */
+  | { type: 'proposal'; proposal: LucyLaunchProposalView }
+  /** What became of a proposal: launched, refused, declined, cancelled or expired. */
+  | ({ type: 'launch' } & LucyLaunchOutcome)
   /** Always the last line. */
   | {
       type: 'done';

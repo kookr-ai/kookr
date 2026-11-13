@@ -10,6 +10,7 @@ import {
   SPOKEN_ASKS_STORAGE_KEY,
   __resetAskAnnouncementForTests,
   announceAsk,
+  announceLaunchReport,
   stopAskAnnouncement,
 } from './ask-announcement.js';
 import { AUDIO_UNLOCK_TIMEOUT_MS, __resetClipPlaybackForTests, replayClip, replayingClipId } from './clip-playback.js';
@@ -345,5 +346,46 @@ describe('announceAsk', () => {
     localStorage.clear();
     expect(await announceAsk(ASK, { fetcher: vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch })).toBe('error');
     expect(getClipHistory()).toHaveLength(0);
+  });
+
+  describe('the report of a task Lucy launched', () => {
+    const reportFetcher = (clipId = 'clip-report-1') => vi.fn(async () => speakResponse({ clipId, text: 'The investigation finished.' })) as unknown as typeof fetch;
+
+    test('posts only the task id to the report route and plays the clip', async () => {
+      const fetcher = reportFetcher();
+      expect(await announceLaunchReport('t9', 'finished', { fetcher })).toBe('started');
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const [url, init] = vi.mocked(fetcher).mock.calls[0]!;
+      expect(url).toBe('/api/lucy/launch/report/speak');
+      expect(JSON.parse(String((init as RequestInit).body))).toEqual({ taskId: 't9' });
+      expect(FakeAudioContext.instances[0].sources[0].start).toHaveBeenCalledOnce();
+      expect(JSON.parse(localStorage.getItem(SPOKEN_ASKS_STORAGE_KEY) ?? '[]')).toEqual(['report:t9:finished']);
+    });
+
+    test('only one tab speaks the same report', async () => {
+      expect(await announceLaunchReport('t9', 'finished', { fetcher: reportFetcher() })).toBe('started');
+      const second = reportFetcher();
+      expect(await announceLaunchReport('t9', 'finished', { fetcher: second })).toBe('other-tab');
+      expect(second).not.toHaveBeenCalled();
+    });
+
+    test('with sound off the report is kept as an unheard clip, not played', async () => {
+      setSoundEnabled(false);
+      expect(await announceLaunchReport('t9', 'finished', { fetcher: reportFetcher() })).toBe('muted');
+      expect(FakeAudioContext.instances).toHaveLength(0);
+      expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-report-1', heard: false });
+    });
+
+    test('a report for a second task waits for Lucy to finish, then plays', async () => {
+      const first = announceLaunchReport('t1', 'finished', { fetcher: reportFetcher('clip-r1') });
+      const second = announceLaunchReport('t2', 'needs_input', { fetcher: reportFetcher('clip-r2') });
+      await vi.waitFor(() => expect(replayingClipId()).toBe('clip-r1'));
+      expect(FakeAudioContext.instances[0].sources).toHaveLength(1);
+      FakeAudioContext.instances[0].sources[0].onended?.();
+      emitSpeechIdle();
+      expect(await first).toBe('started');
+      expect(await second).toBe('started');
+      expect(getClipHistory().map((c) => c.clipId)).toEqual(expect.arrayContaining(['clip-r1', 'clip-r2']));
+    });
   });
 });

@@ -49,6 +49,8 @@ import {
   visibleOperatorAsks,
 } from '../store/operator-asks.js';
 import { AskCard, askOutcome, type AskAnswerChoice } from './AskCard.js';
+import { LucyLaunchCard } from './LucyLaunchCard.js';
+import { LucyTypedInput } from './LucyTypedInput.js';
 import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
 import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
 import {
@@ -723,6 +725,7 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
           ))}
         </ol>
       )}
+      <LucyLaunchCard />
       {showLive && (
         // A log, but not a live one: Lucy's answer is spoken aloud already, so it is not announced.
         // Focusable because it scrolls.
@@ -812,6 +815,7 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
           </>
         )}
       </div>
+      <LucyTypedInput />
     </section>
   );
 }

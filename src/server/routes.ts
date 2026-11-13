@@ -255,7 +255,7 @@ export function createRoutes(deps: RouteDeps): Hono {
     lucyLogPath: deps.lucyInteractionLogPath,
   });
   registerLucyLiveRoutes(app, { lucyLiveStatus: deps.lucyLiveStatus, getLucyLiveStatus: deps.getLucyLiveStatus });
-  registerLucyOperatorRoutes(app, { lucyOperator: buildLucyOperator(sharedDeps) });
+  registerLucyOperatorRoutes(app, { lucyOperator: buildLucyOperator(sharedDeps), speech: sharedDeps.asks?.speech });
 
   // Dashboard response headers:
   // - security headers apply to HTML and static assets

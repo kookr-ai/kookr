@@ -26,7 +26,7 @@ export type LucyOperatorConfigResult =
   /** The setting is off: the route answers 404. */
   | { enabled: false }
   /** Switched on and usable. `warnings` lists settings that were ignored, for the start-up log. */
-  | { enabled: true; ok: true; model: OpenRouterChatStreamConfig; warnings: string[] }
+  | { enabled: true; ok: true; model: OpenRouterChatStreamConfig; /** `KOOKR_LUCY_LAUNCH=true`: she may propose launching a task. */ launch: boolean; warnings: string[] }
   /** Switched on but something is missing: the route answers 503 with `reason`. */
   | { enabled: true; ok: false; reason: string; warnings: string[] };
 
@@ -69,6 +69,7 @@ export function resolveLucyOperatorConfig(env: Record<string, string | undefined
     enabled: true,
     ok: true,
     warnings,
+    launch: isTrue(env.KOOKR_LUCY_LAUNCH),
     model: {
       apiKey,
       model: env.KOOKR_LUCY_OPERATOR_MODEL?.trim() || DEFAULT_LUCY_OPERATOR_MODEL,

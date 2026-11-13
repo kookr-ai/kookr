@@ -143,6 +143,14 @@ export interface LaunchTaskServerOptions {
    * `getProjectId(cwd)`. Required on autonomous launches.
    */
   automationProjectId?: string;
+  /**
+   * Run THIS task with permission prompts forced on (`false`) or all permissions bypassed
+   * (`true`), whatever the install default (`KOOKR_BYPASS_ALL_PERMISSIONS`) is. Absent means
+   * the install default, exactly as a Launch-tab launch gets. Set only by Lucy's launch
+   * (issue #3676), from the operator's `lucyAutonomy` setting read on the server; never from
+   * client `LaunchOpts`. The posture recorded on the task is the one that actually applied.
+   */
+  bypassPermissions?: boolean;
 }
 
 export interface LaunchServiceDeps {
@@ -942,7 +950,7 @@ export function isQuotaHeadroomAdmissionError(err: unknown): err is QuotaHeadroo
  * health-grade builder; falls back to a task-store-only snapshot (no watchdog
  * ⇒ `hungSuspect` reads 0) so the error body always carries a breakdown.
  */
-function snapshotCapacityLedger(deps: LaunchServiceDeps, maxActive: number): CapacityLedger {
+export function snapshotCapacityLedger(deps: LaunchServiceDeps, maxActive: number): CapacityLedger {
   if (deps.getCapacityLedger) return deps.getCapacityLedger();
   const reservedActiveSlots = deps.getReservedActiveSlots?.();
   return buildCapacityLedger(deps.taskStore.listTasks(), {
@@ -1681,7 +1689,7 @@ async function launchTaskCore(
     ? opts.prompt
     : await applyWorktreeGuardrails(opts.prompt, opts.cwd, deliveryAuthorization);
   const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
-  const bypassAllPermissions = deps.bypassAllPermissions === true;
+  const bypassAllPermissions = (serverOpts.bypassPermissions ?? deps.bypassAllPermissions) === true;
 
   // Dedup once for the initially selected provider and, if quota admission
   // rotates it, once more for the final provider below. The first pass keeps
@@ -2109,12 +2117,14 @@ async function launchTaskCore(
       // pendings as self-releasing. Additive — absent when no source was given.
       // agentSubstitutionChain (issue #2001): full schedule_sub + quota_rotate
       // hops so receipts match the final agentType after multi-hop cascade.
-      metadata: (opts.metadataIntent || opts.launchSource || opts.userInitiatedRelaunch || opts.profile || opts.issue !== undefined || agentSubstitutionChain.length > 0)
+      metadata: (opts.metadataIntent || opts.launchSource || opts.launchActorId || serverOpts.bypassPermissions !== undefined || opts.userInitiatedRelaunch || opts.profile || opts.issue !== undefined || agentSubstitutionChain.length > 0)
         ? {
             ...(opts.profile ? { opencodeProfile: opts.profile } : {}),
             ...(opts.issue !== undefined ? { opencodeIssue: opts.issue } : {}),
             ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
             ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
+            ...(opts.launchActorId ? { launchActorId: opts.launchActorId.slice(0, 128) } : {}),
+            ...(serverOpts.bypassPermissions !== undefined ? { launchPermissionOverride: serverOpts.bypassPermissions ? 'bypass' as const : 'prompt' as const } : {}),
             ...(opts.userInitiatedRelaunch ? { userInitiatedRelaunch: true as const } : {}),
             ...(agentSubstitutionChain.length > 0
               ? { agentSubstitutionChain: [...agentSubstitutionChain] }
@@ -2478,6 +2488,7 @@ async function launchTaskCore(
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions = {
     onPhase: (phase) => phaseTracker.enter(phase),
     signal: launchAbort.signal,
+    ...(serverOpts.bypassPermissions !== undefined ? { bypassPermissions: serverOpts.bypassPermissions } : {}),
     onSessionCreated: (sessionId) => {
       abandon.sessionId = sessionId;
       // Late creation: the launch was already abandoned when the master came up

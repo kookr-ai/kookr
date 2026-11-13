@@ -84,7 +84,7 @@ interface Harness {
   vads: FakeVad[];
 }
 
-function harness(opts: { autoSynth?: boolean; vad?: boolean } = {}): Harness {
+function harness(opts: { autoSynth?: boolean; vad?: boolean; streamAnswer?: LucyLivePorts['streamAnswer'] } = {}): Harness {
   const h = {
     vads: [] as FakeVad[],
     sent: [] as LucyLiveServerMessage[], ears: [] as FakeEars[], brain: new FakeBrain(), records: [] as LiveTurnRecord[],
@@ -95,7 +95,7 @@ function harness(opts: { autoSynth?: boolean; vad?: boolean } = {}): Harness {
     openEars: () => { const e = new FakeEars(); h.ears.push(e); return e; },
     openVad: opts.vad ? () => { const v = new FakeVad(); h.vads.push(v); return v; } : undefined,
     transcribeDraft: (pcm, _lang, signal) => { const d = deferred<string>(); h.drafts.push({ pcm, signal, d }); return d.promise; },
-    streamAnswer: (req) => h.brain.stream(req),
+    streamAnswer: (req) => (opts.streamAnswer ? opts.streamAnswer(req) : h.brain.stream(req)),
     synthesize: (text, signal) => {
       const d = deferred<{ wavBase64: string; durationMs: number }>();
       d.promise.catch(() => {});
@@ -771,5 +771,27 @@ describe('LucyLiveSession', () => {
       await tick(); await tick();
       expect(h.brain.calls.at(-1)?.user).toBe('Check the build. Then fix it.');
     });
+  });
+
+  it('hands the brain the server time the operator began speaking', async () => {
+    const seen: number[] = [];
+    const h = harness({ streamAnswer: async function* (req) { seen.push(req.speechStartedAt); yield 'Okay.'; } });
+    h.clock.t = 5000;
+    await speak(h);
+    expect(seen).toEqual([5000]);
+  });
+
+  it('ends a turn as empty, not as an error, when the brain chose to stay quiet', async () => {
+    const h = harness({ streamAnswer: async function* (req) { req.stayQuiet(); } });
+    await speak(h);
+    expect(types(h)).toContain('done:empty');
+    expect(types(h)).not.toContain('done:error');
+    expect(h.sent.some((m) => m.type === 'sentence')).toBe(false);
+  });
+
+  it('a brain that says nothing without asking to stay quiet is still an error', async () => {
+    const h = harness({ streamAnswer: async function* () { /* nothing */ } });
+    await speak(h);
+    expect(types(h)).toContain('done:error');
   });
 });

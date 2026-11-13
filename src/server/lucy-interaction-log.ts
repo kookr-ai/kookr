@@ -4,7 +4,7 @@
  * (normally `~/.kookr/`), stays on this machine, and exists so the wording,
  * length and proactivity of her summaries can be analysed after the fact.
  *
- * Four kinds of line, all carrying `v: 1` and an ISO `ts`:
+ * Five kinds of line, all carrying `v: 1` and an ISO `ts`:
  *  - `said`: the server produced a clip (task summary or agent speak). Carries
  *    the final text, the pre-"speakable" wording when it differs, and timings.
  *    Audio bytes are never recorded.
@@ -13,6 +13,8 @@
  *  - `operator_turn`: one finished turn of the operator conversation (issue #3660):
  *    what was asked, what she said, which look-ups she attempted, how it ended,
  *    the latencies, the tokens and the cost. What the look-ups returned is not recorded.
+ *  - `launch`: one step in the life of a launch proposal (issue #3676): proposed, then
+ *    launched, refused, declined, cancelled, expired or dropped, with the level in force and the task id.
  *  - `ui`: a `lucy_*` telemetry event the browser sent over the websocket.
  *    The browser is not trusted, so only the documented fields survive
  *    (see {@link sanitizeLucyUiEvent}): enums are validated, strings clamped,
@@ -103,6 +105,28 @@ export interface LucyOperatorTurnRecordInput {
   answerWords: number;
 }
 
+/**
+ * One step in the life of a launch proposal (issue #3676): proposed, then launched, refused,
+ * declined, cancelled, expired, dropped (the operator said something else) or ignored (spoken
+ * words that could have been her own voice). `level` is the `lucyAutonomy` level in force.
+ */
+export interface LucyLaunchRecordInput {
+  conversationId: string;
+  event: 'proposed' | 'launched' | 'refused' | 'declined' | 'cancelled' | 'expired' | 'dropped' | 'ignored' | 'no_proposal';
+  proposalId?: string;
+  level?: string;
+  /** How the operator answered: `spoken`, `typed`, `click`, `enter`, or `timer` for a hands-off launch. */
+  via?: string;
+  project?: string;
+  launchKind?: string;
+  /** The operator's own words (secrets redacted by the caller). */
+  asked?: string;
+  /** The whole task description (secrets redacted by the caller). */
+  description?: string;
+  taskId?: string;
+  reason?: string;
+}
+
 /** `operator_ask`: Lucy read out a `kookr ask` question (see routes/ask-routes.ts). */
 export type LucySaidSource = 'task_summary' | 'agent_speak' | 'operator_ask';
 
@@ -134,6 +158,8 @@ export interface LucyInteractionLog {
   recordLiveTurn(input: LucyLiveTurnRecordInput): void;
   /** Record a finished operator-conversation turn. Never throws. Optional so older fakes keep compiling. */
   recordOperatorTurn?(input: LucyOperatorTurnRecordInput): void;
+  /** Record a step in the life of a launch proposal (issue #3676). Never throws. */
+  recordLaunch?(input: LucyLaunchRecordInput): void;
   /** Record a client `lucy_*` telemetry event as received. Never throws. */
   recordUi(sessionId: string, event: Record<string, unknown>): void;
   /** Await queued writes (tests, orderly shutdown). Never rejects. */
@@ -165,6 +191,7 @@ export const DISABLED_LUCY_INTERACTION_LOG: LucyInteractionLog = {
   recordSaid: () => {},
   recordLiveTurn: () => {},
   recordOperatorTurn: () => {},
+  recordLaunch: () => {},
   recordUi: () => {},
   flush: async () => {},
 };
@@ -250,6 +277,10 @@ export function createLucyInteractionLog(options: LucyInteractionLogOptions = {}
       const tools = input.tools.slice(0, MAX_LOGGED_OPERATOR_TOOLS).map((name) => clampString(name) ?? 'unnamed');
       enqueue({ kind: 'operator_turn', ...picked, tools }, MAX_PENDING_LUCY_LINES);
     },
+    recordLaunch(input) {
+      const picked = pickFields(input, LAUNCH_FIELDS);
+      enqueue({ kind: 'launch', ...picked }, MAX_PENDING_LUCY_LINES);
+    },
     recordUi(sessionId, event) {
       const clean = sanitizeLucyUiEvent(event);
       if (!clean) return;
@@ -275,6 +306,10 @@ const LIVE_TURN_FIELDS = [
 const OPERATOR_TURN_FIELDS = [
   'conversationId', 'end', 'reason', 'asked', 'answer', 'model', 'provider', 'steps',
   'firstTextMs', 'totalMs', 'inputTokens', 'outputTokens', 'costUsd', 'askedWords', 'answerWords',
+] as const;
+
+const LAUNCH_FIELDS = [
+  'conversationId', 'event', 'proposalId', 'level', 'via', 'project', 'launchKind', 'asked', 'description', 'taskId', 'reason',
 ] as const;
 
 /** Most tool names kept per operator turn (four model calls of at most four look-ups each). */

@@ -490,6 +490,13 @@ export interface RouteDeps {
    * the environment at start-up. Absent or `{ enabled: false }`: the route answers 404.
    */
   lucyOperatorConfig?: import('../lucy-operator/config.js').LucyOperatorConfigResult;
+  /** Sends a message to every owner dashboard connection and to no viewer (cards and reports carry the operator's words and task text). */
+  emitToOwners?: (msg: ServerMessage) => void;
+  /**
+   * Filled with the operator service when it is built, so Lucy live (created earlier, before the
+   * routes) can answer Talk turns with it (issue #3676). Absent in tests.
+   */
+  lucyOperatorHolder?: { set(service: import('../lucy-operator/service.js').LucyOperatorService | undefined): void; get(): import('../lucy-operator/service.js').LucyOperatorService | undefined };
   projectConfigStore?: ProjectConfigStore;
   projectSidebarStore?: ProjectSidebarStore;
   ossAttemptStore?: OssAttemptStore;

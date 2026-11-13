@@ -29,6 +29,7 @@
  * `clip-playback.ts`), so the avatar lip-syncs it, it appears in her message
  * list, and "heard" bookkeeping and telemetry work as for any other clip.
  */
+import { LUCY_LAUNCH_REPORT_SPEAK_PATH } from '../../shared/contracts/lucy-launch.js';
 import type { SpeakAudioResponse } from '../../shared/contracts/speech.js';
 import { getDndState } from '../hooks/useDnd.js';
 import { replayClip, replayingClipId, reportClipUnheard, stopReplay, type ReplayResult } from './clip-playback.js';
@@ -168,7 +169,31 @@ let playLine: Promise<unknown> = Promise.resolve();
  * subject to the rules in this file's header. Never throws.
  */
 export function announceAsk(askId: string, options: AnnounceAskOptions = {}): Promise<AskAnnouncementResult> {
-  return prepareClip(askId, options)
+  return announceKeyed(askId, { url: `/api/asks/${encodeURIComponent(askId)}/speak` }, options);
+}
+
+/** Where a clip comes from: the route to POST, and a JSON body when it needs one. */
+interface ClipRequest {
+  url: string;
+  body?: Record<string, unknown>;
+}
+
+/**
+ * Lucy says the report of a task she launched (issue #3676), under the same rules as a question: sound off,
+ * Do Not Disturb or a blocked browser keep it as an unheard clip, one tab speaks, she waits for Lucy to
+ * finish, and reports are spoken one at a time. The server speaks the sentence it kept for the task; only
+ * the task id is sent. The dedupe key is `report:<taskId>:<kind>`.
+ */
+export function announceLaunchReport(
+  taskId: string,
+  kind: string,
+  options: AnnounceAskOptions = {},
+): Promise<AskAnnouncementResult> {
+  return announceKeyed(`report:${taskId}:${kind}`, { url: LUCY_LAUNCH_REPORT_SPEAK_PATH, body: { taskId } }, options);
+}
+
+function announceKeyed(askId: string, request: ClipRequest, options: AnnounceAskOptions): Promise<AskAnnouncementResult> {
+  return prepareClip(askId, options, request)
     .then((prepared) => {
       if (typeof prepared === 'string') return prepared;
       const run = playLine.then(() => playClip(askId, prepared.clipId, options));
@@ -192,7 +217,7 @@ function retireClip(askId: string, knownClipId?: string): void {
 }
 
 /** Claim the question for this tab and fetch its clip. A string is a final result; an object means "ready to play". */
-async function prepareClip(askId: string, options: AnnounceAskOptions): Promise<AskAnnouncementResult | { clipId: string }> {
+async function prepareClip(askId: string, options: AnnounceAskOptions, request: ClipRequest): Promise<AskAnnouncementResult | { clipId: string }> {
   const fetcher = options.fetcher ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
   const wait = options.sleep ?? sleep;
   // A tab that is hidden, or that the browser will not let start audio yet, lets the others go first:
@@ -205,8 +230,9 @@ async function prepareClip(askId: string, options: AnnounceAskOptions): Promise<
   let payload: SpeakAudioResponse | null = null;
   let status = 0;
   try {
-    const response = await fetcher(`/api/asks/${encodeURIComponent(askId)}/speak`, {
+    const response = await fetcher(request.url, {
       method: 'POST',
+      ...(request.body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request.body) } : {}),
       // The server gives the speech service two attempts of 30 s; a request that never answers must not hang forever.
       ...(typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
         ? { signal: AbortSignal.timeout(SPEAK_FETCH_TIMEOUT_MS) }

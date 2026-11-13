@@ -11,6 +11,8 @@ import type { SileroVad } from '../../adapters/lucy-live/silero-vad.js';
 import { openEarsTurn, transcribeOnce } from '../../adapters/lucy-live/ears-client.js';
 import { streamBasetenChat } from '../../adapters/llm/baseten-stream.js';
 import { synthesize } from '../../adapters/tts-client.js';
+import { randomUUID } from 'node:crypto';
+import type { LucyOperatorService } from '../lucy-operator/service.js';
 import { buildLucyLiveBriefing, type BriefingTask } from '../../core/lucy-live/briefing.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
 import { countSpokenWords, DISABLED_LUCY_INTERACTION_LOG, type LucyInteractionLog } from '../lucy-interaction-log.js';
@@ -29,6 +31,12 @@ export interface LucyLiveDeps {
   getAsks?: () => readonly OperatorAskView[];
   /** Voice resolved at call time, like the speech routes (settings first, then the install default). */
   getVoice: () => string;
+  /**
+   * Lucy's operator conversation, when launching is switched on (issue #3676). Talk turns are then
+   * answered by it instead of the helper model, so a spoken request can become a launch proposal.
+   * Read when each turn starts, because the service is built after Lucy live.
+   */
+  getOperator?: () => LucyOperatorService | undefined;
   log?: LucyInteractionLog;
   warn?: (message: string) => void;
   now?: () => number;
@@ -47,17 +55,28 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
   return {
     handleConnection(ws) {
       bindLucyLiveSocket(ws, (send) => {
+        // One conversation per connection: the proposals she makes by voice are held against it.
+        const conversationId = `live-${randomUUID()}`;
+        // A tab closed during a read-back must not leave a hands-off launch counting down.
+        ws.once('close', () => {
+          try { deps.getOperator?.()?.launch?.closeConversation(conversationId); } catch { /* shutting down */ }
+        });
         const ports: LucyLivePorts = {
           send,
           openEars: (language) => openEarsTurn({ url: earsUrl, language }),
           transcribeDraft: (pcm, language, signal) => transcribeOnce({ url: earsUrl, language, pcm, signal }),
-          streamAnswer: ({ system, history, user, signal }) => streamBasetenChat(brain, {
-            messages: [{ role: 'system', content: system }, ...history, { role: 'user', content: user }],
-            signal,
-            maxTokens: 200,
-            temperature: 0.3,
-            reasoningEffort: 'none',
-          }),
+          streamAnswer: ({ system, history, user, signal, speechStartedAt, stayQuiet, overlapsAudio }) => {
+            const operator = deps.getOperator?.();
+            if (operator?.launch) return streamFromOperator(operator, { conversationId, text: user, signal, speechStartedAt, stayQuiet, overlapsAudio });
+            return streamBasetenChat(brain, {
+              messages: [{ role: 'system', content: system }, ...history, { role: 'user', content: user }],
+              signal,
+              maxTokens: 200,
+              temperature: 0.3,
+              reasoningEffort: 'none',
+            });
+          },
+          noteAudible: (until) => deps.getOperator?.()?.launch?.noteSpeaking(conversationId, until),
           openVad: deps.vad ? () => deps.vad!.openTurn() : undefined,
           synthesize: async (text, signal) => {
             const result = await synthesize({ ttsUrl, text, voice: deps.getVoice(), signal });
@@ -89,4 +108,22 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
       }, warn);
     },
   };
+}
+
+/**
+ * A spoken request answered by the operator conversation: her text goes to the speech service as it
+ * arrives. The proposal card itself reaches the dashboard through the launch controller's broadcast.
+ * Words that began while she was reading a proposal aloud come back as `ignored`: she stays quiet.
+ */
+async function* streamFromOperator(
+  operator: LucyOperatorService,
+  req: { conversationId: string; text: string; signal: AbortSignal; speechStartedAt: number; stayQuiet: () => void; overlapsAudio: boolean },
+): AsyncGenerator<string, void, void> {
+  for await (const event of operator.runTurn({ text: req.text, conversationId: req.conversationId, input: 'voice', ...(req.overlapsAudio ? { overlapsReadBack: true } : {}) }, req.signal, { speechStartedAt: req.speechStartedAt })) {
+    if (event.type === 'text') yield event.delta;
+    else if (event.type === 'done') {
+      if (event.end === 'ignored') req.stayQuiet();
+      else if (event.end === 'error') throw new Error(event.reason ?? 'The operator conversation failed.');
+    }
+  }
 }

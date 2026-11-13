@@ -15,6 +15,7 @@ import type { LucyModelPort } from '../../core/lucy-operator/model-port.js';
 import type { LucyLookSource } from '../../core/lucy-operator/tools.js';
 import { runLucyTurn, type LucyHistoryMessage, type LucyTurnLimits, type LucyTurnSummary } from '../../core/lucy-operator/turn.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
+import type { LucyLaunchController } from './launch-controller.js';
 import { countSpokenWords, DISABLED_LUCY_INTERACTION_LOG, type LucyInteractionLog } from '../lucy-interaction-log.js';
 
 /** Earlier messages sent with a turn: ten exchanges. */
@@ -31,13 +32,23 @@ export interface LucyOperatorDeps {
   /** Model id, for the interaction log. */
   modelName: string;
   source: LucyLookSource;
+  /** Present when launching is switched on (issue #3676): she may propose a launch, and "go" confirms it. */
+  launch?: LucyLaunchController;
   log?: LucyInteractionLog;
   limits?: Partial<LucyTurnLimits>;
   now?: () => number;
   warn?: (message: string) => void;
 }
 
+/** What only the server knows about a turn; never taken from the request body. */
+export interface LucyTurnContext {
+  /** Server clock at the moment the spoken words began (Talk). Used to tell her own voice from the operator's. */
+  speechStartedAt?: number;
+}
+
 export interface LucyOperatorService {
+  /** The launch proposals, when launching is on. The confirm, decline and cancel routes call it. */
+  readonly launch?: LucyLaunchController;
   /** True while a turn of this conversation is running; the route answers 409 instead of starting another. */
   isBusy(conversationId: string): boolean;
   /** True while as many turns are running as are allowed at once; the route answers 429 instead of starting another. */
@@ -46,7 +57,7 @@ export interface LucyOperatorService {
    * Run one turn. The stream always ends with one `done` event, unless the caller stops
    * reading first; either way the conversation is released and the turn is recorded.
    */
-  runTurn(request: LucyTurnRequest, signal?: AbortSignal): AsyncGenerator<LucyTurnEvent, void, void>;
+  runTurn(request: LucyTurnRequest, signal?: AbortSignal, context?: LucyTurnContext): AsyncGenerator<LucyTurnEvent, void, void>;
 }
 
 interface Conversation {
@@ -112,10 +123,11 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
   };
 
   return {
+    launch: deps.launch,
     isBusy: (conversationId) => running.has(conversationId),
     atCapacity: () => running.size >= MAX_CONCURRENT_TURNS,
 
-    async *runTurn(request, signal) {
+    async *runTurn(request, signal, context) {
       const startedAt = now();
       if (running.has(request.conversationId) || running.size >= MAX_CONCURRENT_TURNS) {
         // Two requests raced past the route's checks: the later one ends at once and changes nothing.
@@ -125,11 +137,45 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
       }
       running.add(request.conversationId);
 
+      // Confirming, declining and "ignore this, it may be my own voice" are decided here, before any
+      // model is called, so no model output and no task text can confirm a launch.
+      if (deps.launch) {
+        let handling: Awaited<ReturnType<LucyLaunchController['handleReply']>> = { handled: false };
+        try {
+          handling = await deps.launch.handleReply(request.conversationId, request.text, {
+            input: request.input,
+            overlapsReadBack: request.overlapsReadBack,
+            speechStartedAt: context?.speechStartedAt,
+          });
+        } catch (err) {
+          warn(redactSpeechSecrets(`could not handle a reply to a launch: ${err instanceof Error ? err.message : String(err)}`));
+        }
+        if (handling.handled) {
+          try {
+            if (handling.outcome) yield { type: 'launch', ...handling.outcome };
+            if (handling.say) yield { type: 'text', delta: handling.say };
+            const done: LucyTurnDoneEvent = {
+              type: 'done',
+              end: handling.ignored ? 'ignored' : 'answered',
+              firstTextMs: handling.say ? Math.max(0, now() - startedAt) : null,
+              totalMs: Math.max(0, now() - startedAt),
+              steps: 0, inputTokens: 0, outputTokens: 0, costUsd: null,
+            };
+            yield done;
+            if (handling.say) remember(request.conversationId, request.text, handling.say, now());
+            record(request, handling.say, [], done);
+          } finally {
+            running.delete(request.conversationId);
+          }
+          return;
+        }
+      }
+
       // Filled by the loop when the turn is over, including when this generator is abandoned mid-way.
       let settled: LucyTurnSummary | undefined;
       const inner = runLucyTurn(
-        { model: deps.model, source: deps.source, limits: deps.limits, now, warn, onSettled: (summary) => { settled = summary; } },
-        { text: request.text, history: historyOf(request.conversationId, startedAt), signal },
+        { model: deps.model, source: deps.source, launch: deps.launch, limits: deps.limits, now, warn, onSettled: (summary) => { settled = summary; } },
+        { text: request.text, conversationId: request.conversationId, spoken: request.input === 'voice', history: historyOf(request.conversationId, startedAt), signal },
       );
       try {
         yield* inner;

@@ -14,6 +14,7 @@ import type { RouteDeps } from '../routes/shared.js';
 import type { LucyLookSource } from '../../core/lucy-operator/tools.js';
 import { createLucyLookSource } from './look-source.js';
 import { createLucyOperator } from './service.js';
+import { buildLucyLaunchController } from './launch-wiring.js';
 
 /** Connect her look-ups to the server's stores. Exported so the connections can be tested one by one. */
 export function buildLucyLookSource(deps: RouteDeps): LucyLookSource {
@@ -33,12 +34,16 @@ export function buildLucyOperator(deps: RouteDeps): LucyOperatorRouteDeps['lucyO
   if (!config || !config.enabled) return undefined;
   if (!config.ok) return { unavailableReason: config.reason };
 
-  return {
-    service: createLucyOperator({
-      model: createOpenRouterChatStream(config.model),
-      modelName: config.model.model,
-      source: buildLucyLookSource(deps),
-      log: deps.lucyInteractionLog,
-    }),
-  };
+  const model = createOpenRouterChatStream(config.model);
+  const service = createLucyOperator({
+    model,
+    modelName: config.model.model,
+    source: buildLucyLookSource(deps),
+    // Launching is a second switch: she can answer questions without ever being able to propose a task.
+    ...(config.launch ? { launch: buildLucyLaunchController(deps, model, deps.lucyInteractionLog) } : {}),
+    log: deps.lucyInteractionLog,
+  });
+  // Lucy live (Talk) is built before the routes; it finds the service here when a turn starts.
+  deps.lucyOperatorHolder?.set(service);
+  return { service };
 }

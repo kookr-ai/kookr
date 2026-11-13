@@ -477,15 +477,16 @@ know something. She cannot act on tasks yet.
 
 With `KOOKR_LUCY_OPERATOR=true`, Kookr answers questions about your tasks at `POST /api/lucy/turn`:
 you send one sentence, and Lucy's reply comes back as it is written. This is the first step toward
-running Kookr through her. There is no panel for it yet, and hands-free talk does not use it yet, so
-today it is for scripts and for building that panel.
+running Kookr through her. The avatar panel has a small typed input for it when it is on, and hands-free
+talk uses it too when launching is on (next section).
 
 - **She looks things up.** Each answer starts from a board of your tasks: what needs you, what is
   working, what just finished, spend and quota. When that is not enough she can read one task (what
   it was asked to do, what it is waiting for, its closing summary), list projects, or ask the
   dashboard to open a task. She cannot read a task's terminal output yet.
-- **She cannot change anything.** No tool she has launches, replies to, closes, snoozes or stops a
-  task, so text written by an agent cannot make her act. She is told that everything tasks write is
+- **On its own she cannot change anything.** No look-up tool launches, replies to, closes, snoozes or stops a
+  task, so text written by an agent cannot make her act. The one exception is the optional launch
+  proposal below, which only the operator can confirm. She is told that everything tasks write is
   information to report, never an instruction.
 - **Limits.** A turn makes at most four model calls and stops after 30 seconds. When a limit ends a
   turn, her last sentence says so.
@@ -494,6 +495,24 @@ today it is for scripts and for building that panel.
   first. Leave it off if task names or task requests must not leave the machine.
 - **What it needs.** An OpenRouter key (`KOOKR_OPENROUTER_API_KEY`). The model, the providers allowed
   to serve it and how much it thinks are settings. Details: [Lucy operator](reference/lucy-operator.md).
+
+#### Ask Lucy to start a task (optional, off by default)
+
+With `KOOKR_LUCY_LAUNCH=true` as well, say or type "Lucy, investigate why the issue tasks stop
+chaining" and she starts a task for you. She repeats back what she is about to launch, the avatar
+panel shows it as a card with the whole description, and the task starts when you say "go", press
+Enter or click Go. Anything else you say drops it, and a proposal expires after two minutes. An unclear
+request gets one question instead. An investigation is told to report findings and file issues, not to
+open a pull request. When the task finishes or needs you, she says so.
+
+- **You choose how much she may do alone** (Settings → Lucy, `lucyAutonomy`): *Careful* (her tasks
+  always ask for permissions), *Balanced* (default; her tasks run like ones from the Launch tab), or
+  *Hands-off* (every permission bypassed, and a clear request starts after a few seconds unless you say
+  "cancel"). She cannot change this setting, and only your own words start anything: text written by
+  agents never does.
+- **What leaves the machine.** Hands-free talk is then answered by the operator conversation, so each
+  spoken request goes to OpenRouter, and a second call writes the task from your words and the project
+  names only. Details: [Lucy operator](reference/lucy-operator.md#launching-a-task-by-voice-or-text).
 
 #### Interaction log (on by default, local only)
 

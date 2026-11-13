@@ -12,6 +12,7 @@ describe('resolveLucyOperatorConfig', () => {
     expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: 'true' })).toEqual({
       enabled: true,
       ok: true,
+      launch: false,
       warnings: [],
       model: {
         apiKey: 'sk-or-key',
@@ -23,6 +24,14 @@ describe('resolveLucyOperatorConfig', () => {
       },
     });
     expect(DEFAULT_LUCY_OPERATOR_MODEL).toBe('deepseek/deepseek-v4.1-flash-1017');
+  });
+
+  test('launching is a second switch, off unless KOOKR_LUCY_LAUNCH is true', () => {
+    const on = resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: 'true', KOOKR_LUCY_LAUNCH: 'true' });
+    expect(on).toMatchObject({ enabled: true, ok: true, launch: true });
+    expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: 'true', KOOKR_LUCY_LAUNCH: 'no' })).toMatchObject({ launch: false });
+    // Launching without the conversation is off: there is no loop to propose from.
+    expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_LAUNCH: 'true' })).toEqual({ enabled: false });
   });
 
   test('each of the three is a setting', () => {

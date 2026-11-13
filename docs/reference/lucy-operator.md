@@ -2,12 +2,14 @@
 
 Lucy's operator conversation lets the operator ask a question about their tasks and get an answer
 that Lucy looked up herself. It is one HTTP endpoint, `POST /api/lucy/turn`. It is the first step of
-making Lucy the main way to run Kookr (issue #3632): in this step she can look, and she cannot change
-anything. This page covers setup, how a turn works, what she is allowed to do, what leaves the
+making Lucy the main way to run Kookr (issue #3632): she can look, and, when `KOOKR_LUCY_LAUNCH=true`,
+she can start a task for the operator after they confirm it (see
+[Launching a task by voice or text](#launching-a-task-by-voice-or-text)). Nothing else she does changes
+a task. This page covers setup, how a turn works, what she is allowed to do, what leaves the
 machine, the measurements taken when it was built, and its limits.
 
-There is no screen for it yet. The avatar panel's hands-free talk ([Lucy live](lucy-live.md)) still
-answers through the helper model and does not call this endpoint.
+The avatar panel's hands-free talk ([Lucy live](lucy-live.md)) answers through the helper model, and
+switches to this conversation only when `KOOKR_LUCY_LAUNCH=true`.
 
 ## Setup
 
@@ -95,6 +97,93 @@ progress, and it stops waiting for a look-up that is still running.
 When a limit ends a turn, her last sentence says so ("I ran out of steps before I could finish, so
 please ask me something narrower."), and the `done` event carries `step_cap`, `time_cap` or
 `token_cap`.
+
+## Launching a task by voice or text
+
+Issue #3676. Off unless `KOOKR_LUCY_LAUNCH=true` (and `KOOKR_LUCY_OPERATOR=true`). The operator says or
+types "Lucy, investigate why the issue tasks stop chaining". She repeats back what she is about to
+launch, the dashboard shows it as a card, and the task starts when the operator says "go", presses
+Enter or clicks Go. When the task finishes or needs the operator, she says so in the conversation that
+launched it, and the card links to the task.
+
+### How a proposal is made and confirmed
+
+1. The model calls `propose_launch`. The tool takes **no arguments**: it is only a signal.
+2. Kookr itself writes the task. A separate model call is given the operator's own messages from this
+   conversation (oldest first) and the names of the projects, and nothing else: not the board, not a
+   task name, not a look-up result, not one of her own earlier replies. Its answer must be a task, or one
+   clarifying question ("Which project?") which she then asks. The task is checked against the same
+   strict schema the Telegram path uses (`TaskSpecSchema`: length cap, no extra fields, a known agent)
+   and the project must match a listed name exactly.
+3. At most one proposal is held at a time, across all conversations (voice and typed share one card on
+   screen, so "go" can only mean the card that is shown), for two minutes. What she says is the server's
+   read-back sentence ("I will launch an investigation in kookr: ... Say go to start."), so the card and
+   her words cannot differ. The card shows the whole task description and the operator's own words.
+4. The next operator turn decides it, **before any model is called**: a whole-sentence "go" (or "yes",
+   "do it", "launch it") launches it, "no" or "cancel" declines it, and anything else drops it and is
+   handled as a new request. Enter or a click use `POST /api/lucy/launch/confirm`. Confirming is not a
+   tool, so no model output and no task text can confirm anything.
+5. Kookr refuses, with a one-sentence reason, a launch it would refuse anyway: the load and disk checks
+   of `POST /api/tasks`, and no free task slot (it does not queue a task that nobody is waiting for).
+6. The launch goes through the normal launch service with caller name `lucy-operator`. An
+   **investigation** is told to report its findings and file issues, and not to open a pull request
+   unless the request asks for one; that wording is added by the server, by kind, and an investigation
+   is also launched with the "commit, then ask before pushing" delivery wording instead of Kookr's usual
+   "push, open the pull request and merge", which would contradict it.
+
+### The permission level
+
+One setting, `lucyAutonomy`, in Settings next to the other Lucy options. Owner only, and changed only
+there, by a click: asking her to change it is answered with where the setting is. The server reads it
+at the moment of launching; no request carries it.
+
+| Level | Tasks she launches run with | Before she launches |
+|---|---|---|
+| Careful | Permission prompts always on, even on an install that bypasses them | Card, then "go", Enter or a click |
+| Balanced (default) | What a Launch-tab launch gets (on an install with `KOOKR_BYPASS_ALL_PERMISSIONS=true`, no prompts) | Card, then "go", Enter or a click |
+| Hands-off | Every permission bypassed, whatever the install default | No "go" to wait for: a clear request launches 8 seconds after she has finished reading it aloud, and "cancel" (or the Cancel button) stops it. A card with a countdown is still shown. An unclear request still gets one question |
+
+Hands-off holds the launch for the window rather than launching at once and stopping the task, because
+aborting a task is not something she can do yet. The window starts when the browser has been sent her whole
+read-back (the length of the audio), not when the card is made. A spoken proposal is dropped, not launched, if
+nothing reports her voice as audible within a minute of the launch time, or if the voice connection closes.
+If the level is lowered during the window, the held launch is dropped. If it is raised between the card and
+"go", the launch is refused with a reason, because the card would no longer tell the truth.
+Any other sentence the operator says during the window drops the held launch, like a card. Switching to Hands-off shows a one-time warning in Settings.
+
+### The rules that hold at every level
+
+- Only the operator's own words start an action. Text written by agents never starts or changes a
+  proposal, even if the model is fooled by it: the model's arguments are not read, and the writer of
+  the task never sees agent text.
+- Spoken words that began while she was still reading the proposal aloud are ignored: they neither
+  confirm nor drop it (her own voice can reach the microphone). A spoken confirmation must begin after
+  the read-back has finished by the server's estimate. Typed and clicked confirmations are not held to this.
+- The current level is on the card. Every proposal, confirmation, refusal and launch is a `launch` line in
+  `lucy-interactions.jsonl` with the level it ran under and the task id.
+- The permission posture that applied is recorded on the task like any launch. A Careful or Hands-off
+  override is kept on the task and holds at first launch and when a parked launch is promoted; a task that is later
+  resumed after a crash, relaunched or restarted by a Ralph loop uses the install default (#3686).
+
+### Residual risks
+
+- Anything that can act as the owner can set the level and talk to her. On a loopback install without a token,
+  any local process counts as the owner (the same trust boundary as `POST /api/tasks` and the settings route),
+  so a local agent could raise the level to Hands-off and ask her for a task. Use a token on shared machines.
+- Which sentence of the operator's is "the request" is judged by a model (the writer is told to use the newest
+  message). Nothing server-side proves the latest turn asked for work, so at Hands-off a poisoned board could
+  push her to re-propose an older request; "cancel" within the window stops it. Use Careful or Balanced if
+  that matters.
+- The echo guard knows only the sentences the voice connection sent. A `kookr ask` question or a report that
+  the browser reads aloud separately is not covered; browser echo cancellation is the defence, as for the rest
+  of hands-free talk.
+- Enter confirms the card in any visible owner tab.
+
+### Not built here
+
+Replying to a task, closing, relaunching, aborting, approving a permission prompt and merging are later
+slices. When they arrive, abort, approve and merge need a typed or clicked confirmation at Careful and
+Balanced, and a spoken specific "yes" at Hands-off; never "go" alone.
 
 ## What she cannot do, and why that holds
 
