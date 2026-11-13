@@ -117,6 +117,22 @@ describe('AvatarDock: Lucy launch card and typed input', () => {
     expect(calls[0]!.body).toEqual({ conversationId: CONV, proposalId: 'p1', via: 'enter' });
   });
 
+  test('Enter belongs to the card even when another window listener (the dashboard\'s next-task shortcut) was added before it', async () => {
+    const dashboardEnter = vi.fn();
+    // Added before the card exists, in the bubble phase, like App's own handler.
+    window.addEventListener('keydown', dashboardEnter);
+    try {
+      mount();
+      await showCard();
+      await act(async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+      await flush();
+      expect(postBodies().filter((c) => c.url.endsWith('/confirm'))).toHaveLength(1);
+      expect(dashboardEnter).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', dashboardEnter);
+    }
+  });
+
   test('Cancel declines', async () => {
     mount();
     await showCard();

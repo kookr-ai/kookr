@@ -84,10 +84,13 @@ export function LucyLaunchCard({ nowFn = Date.now }: { nowFn?: () => number } = 
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
       if (enterBelongsToTarget(event.target)) return;
       event.preventDefault();
+      // The dashboard also uses a bare Enter to advance to the next task. While a card waits, Enter is the card's:
+      // listening in the capture phase makes that independent of the order other listeners were added in.
+      event.stopPropagation();
       void confirmLucyLaunch('enter');
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [proposalId, handsOff]);
 
   if (!proposal && !result && !report) return null;
