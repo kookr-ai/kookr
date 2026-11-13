@@ -10,7 +10,7 @@ description: >
   robustness result. Use when you would otherwise hand-tune one mechanism in a loop, or debate a design
   with no ground truth. Do NOT use for single-fact lookups, mechanical edits, or a task with one obvious method.
 keywords: parallel subagents, parallel experiments, competing approaches, diverse approaches, unknown mechanism, underdetermined design, hypothesis triage, robustness, convergence, literature grounding, arxiv, knowledge base, controls, ablation, open research problem, hard problem, spread the bet, multi-agent experiment
-related: adversarial-swarm-analysis, rfc-iterative-review, clear-writing-reviewer
+related: adversarial-swarm-analysis, agent-fleet-orchestration, rfc-iterative-review, clear-writing-reviewer
 ---
 
 # Parallel subagent experiments
@@ -85,6 +85,9 @@ Spawn them in one batch so they run concurrently. Set a reasoning effort appropr
 - **Agents that skip the literature.** Ungrounded reinvention is exactly what this method exists to
   avoid; the web + knowledge-base grounding is mandatory, not optional.
 - **Agents sharing a directory or the repo tree.** They collide; give each its own scratch dir.
+- **Wrong model for the job.** Which model each agent runs, and how much the run may spend, is covered by
+  `agent-fleet-orchestration`: cheap workers suit literature sweeps, while a hard experiment needs a
+  strong model per approach.
 - **Over-spawning.** Three to four distinct approaches is plenty; more is diminishing returns and
   multiplied cost.
 - **Trusting the prose.** Judge on the printed numbers and controls; a confident report with weak numbers
