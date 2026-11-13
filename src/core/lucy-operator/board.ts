@@ -15,6 +15,7 @@
  * spoken summaries, because this text is sent to a model provider outside the machine.
  */
 
+import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import { isGenericTaskName, spokenTaskName } from '../spoken-task-name.js';
@@ -51,13 +52,20 @@ export interface LucyBoardInput {
   /** All-time agent spend recorded by this Kookr server, in US dollars; null when unknown. */
   lifetimeSpendUsd: number | null;
   quota: { fiveHour: LucyQuotaWindow | null; sevenDay: LucyQuotaWindow | null } | null;
+  /** Questions tasks asked the operator with `kookr ask`: all pending ones and the recently closed ones. Absent when there are none to show. */
+  asks?: readonly OperatorAskView[];
 }
 
 /** Longest board, in characters. The task lists are cut to fit; the totals, spend and quota never are. */
-export const MAX_BOARD_CHARS = 8000;
+export const MAX_BOARD_CHARS = 10_000;
 export const MAX_BOARD_NEEDS_YOU = 12;
 export const MAX_BOARD_WORKING = 15;
 export const MAX_BOARD_FINISHED = 6;
+export const MAX_BOARD_ASKS_PENDING = 4;
+export const MAX_BOARD_ASKS_CLOSED = 3;
+const MAX_ASK_QUESTION_CHARS = 140;
+const MAX_ASK_OPTION_CHARS = 30;
+const MAX_ASK_ANSWER_CHARS = 60;
 const MIN_HANDLE_CHARS = 4;
 
 const STATUS_WORDS: Record<TaskStatus, string> = {
@@ -178,6 +186,57 @@ function taskLine(task: LucyBoardTask, handle: string, nowMs: number, when: 'upd
   return `- ${parts.join(' · ')}`;
 }
 
+/** The task that asked, as she may name it aloud: its short name, or "a task" when it has none. The code lets her tools find it. */
+function askWho(ask: OperatorAskView, handles: ReadonlyMap<string, string>): string {
+  const handle = handles.get(ask.taskId);
+  const name = ask.taskName ? `"${boardText(ask.taskName, 40)}"` : 'a task';
+  return handle ? `[${handle}] ${name}` : name;
+}
+
+function askOutcome(ask: OperatorAskView, nowMs: number): string {
+  const at = agoWords(toMs(ask.resolvedAt ?? ask.expiresAt), nowMs);
+  if (ask.state === 'answered' && ask.answer) {
+    const chosen = ask.answer.kind === 'option' ? ask.answer.label : ask.answer.text;
+    const where = ask.answeredVia === 'dashboard' ? 'in Kookr' : 'on Telegram';
+    return `the operator answered "${boardText(chosen, MAX_ASK_ANSWER_CHARS)}" ${where} ${at}`;
+  }
+  if (ask.state === 'expired') return `it expired with no answer ${at}`;
+  if (ask.resolution === 'task_gone') return `the task ended before an answer was given ${at}`;
+  return `the task withdrew it ${at}`;
+}
+
+/**
+ * The questions tasks asked the operator. The text is written by a task, so it is cleaned
+ * and cut like the rest of the board; she reads it as information. The answer is always
+ * given with the buttons on the card or on Telegram: she cannot take one by voice.
+ */
+function askLines(asks: readonly OperatorAskView[], handles: ReadonlyMap<string, string>, nowMs: number): string[] {
+  const pending = asks.filter((a) => a.state === 'pending').sort((a, b) => b.createdAt - a.createdAt);
+  const closed = asks
+    .filter((a) => a.state !== 'pending')
+    .sort((a, b) => (b.resolvedAt ?? b.expiresAt) - (a.resolvedAt ?? a.expiresAt));
+  if (pending.length === 0 && closed.length === 0) return [];
+  const lines: string[] = [''];
+  if (pending.length === 0) {
+    lines.push('Questions from tasks waiting for the operator: none.');
+  } else {
+    lines.push(`Questions from tasks waiting for the operator (${pending.length}; they are answered with the buttons on the card in the panel or on Telegram, never by voice, and you cannot answer them):`);
+    for (const ask of pending.slice(0, MAX_BOARD_ASKS_PENDING)) {
+      const choices = ask.options.map((o) => boardText(o, MAX_ASK_OPTION_CHARS)).join('; ');
+      lines.push(`- ${askWho(ask, handles)} asked ${agoWords(toMs(ask.createdAt), nowMs)}: ${boardText(ask.question, MAX_ASK_QUESTION_CHARS)} Choices: ${choices}.`);
+    }
+    if (pending.length > MAX_BOARD_ASKS_PENDING) lines.push(`- and ${pending.length - MAX_BOARD_ASKS_PENDING} more questions not listed`);
+  }
+  if (closed.length > 0) {
+    lines.push(`Questions closed recently (${closed.length}):`);
+    for (const ask of closed.slice(0, MAX_BOARD_ASKS_CLOSED)) {
+      lines.push(`- ${askWho(ask, handles)} asked: ${boardText(ask.question, MAX_ASK_QUESTION_CHARS)} Outcome: ${askOutcome(ask, nowMs)}.`);
+    }
+    if (closed.length > MAX_BOARD_ASKS_CLOSED) lines.push(`- and ${closed.length - MAX_BOARD_ASKS_CLOSED} more closed questions not listed`);
+  }
+  return lines;
+}
+
 function quotaLine(label: string, window: LucyQuotaWindow | null): string | null {
   if (!window || !Number.isFinite(window.utilization)) return null;
   return `${label} quota: ${Math.round(window.utilization)} percent used`;
@@ -215,7 +274,7 @@ export function buildLucyBoard(input: LucyBoardInput, nowMs: number, maxChars: n
   );
   head.push(...(quotaLines.length > 0 ? quotaLines.map((line) => `- ${line}`) : ['- Quota: not available']));
 
-  const lines: string[] = [];
+  const lines: string[] = [...askLines(input.asks ?? [], handles, nowMs)];
   const section = (title: string, tasks: readonly LucyBoardTask[], max: number, when: 'updated' | 'ended', total = tasks.length): void => {
     lines.push('', tasks.length === 0 ? `${title}: none.` : `${title} (${total}):`);
     for (const task of tasks.slice(0, max)) lines.push(taskLine(task, handleOf(task), nowMs, when));

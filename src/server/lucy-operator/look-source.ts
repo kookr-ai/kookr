@@ -10,6 +10,7 @@
 
 import { basename } from 'node:path';
 import type { AnomalyType } from '../../shared/contracts/anomalies.js';
+import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import { projectDisplayName } from '../../core/project-identity.js';
@@ -43,6 +44,8 @@ export interface LucyLookSourceDeps {
   /** Findings waiting on the operator, keyed by the session that raised them. */
   getFindings: () => ReadonlyArray<{ agentId: string; anomaly: { type: AnomalyType; subType?: string } }>;
   getLifetimeSpendUsd?: () => number;
+  /** Questions tasks asked the operator (`kookr ask`): the pending ones and the recently closed. */
+  getAsks?: () => readonly OperatorAskView[];
   getQuota?: () => { fiveHour: { utilization: number; resetsAt: string } | null; sevenDay: { utilization: number; resetsAt: string } | null } | null;
   getReferences?: (taskId: string) => ReadonlyArray<{ type: 'pr' | 'issue'; number: number }>;
   listProjects?: () => Promise<ReadonlyArray<{ displayName: string; activeAgents: number; findingCount: number }>>;
@@ -104,10 +107,12 @@ export function createLucyLookSource(deps: LucyLookSourceDeps): LucyLookSource {
       const findings = deps.getFindings();
       const quota = deps.getQuota?.() ?? null;
       const spend = deps.getLifetimeSpendUsd?.();
+      const asks = deps.getAsks?.() ?? [];
       return {
         tasks: deps.getTasks().map((task) => toBoardTask(task, findings)),
         lifetimeSpendUsd: typeof spend === 'number' && Number.isFinite(spend) ? spend : null,
         quota: quota ? { fiveHour: quota.fiveHour, sevenDay: quota.sevenDay } : null,
+        ...(asks.length > 0 ? { asks } : {}),
       };
     },
 

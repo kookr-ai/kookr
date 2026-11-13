@@ -42,6 +42,18 @@ describe('buildLucyLookSource', () => {
     expect(board.quota).toEqual({ fiveHour: null, sevenDay: { utilization: 42, resetsAt: '2026-11-15T00:00:00Z' } });
   });
 
+  test('the board lists the questions tasks asked the operator, read from the ask service', () => {
+    const record = { id: 'a1', taskId: 't1', question: 'Which database?', options: ['Postgres', 'SQLite'], allowText: false, state: 'pending', createdAt: NOW.getTime() - 60_000, expiresAt: NOW.getTime() + 600_000, nonce: 'n', delivery: { chatId: 1, messageId: 2 } };
+    const { deps } = routeDeps({ asks: { service: { all: () => [record] } }, taskStore: { viewTasks: () => [], getTask: () => ({ name: 'Bake-off report' }), getLifetimeSpendUsd: () => 0 } });
+    const board = buildLucyLookSource(deps).board();
+    expect(board.asks).toEqual([expect.objectContaining({ id: 'a1', taskName: 'Bake-off report', state: 'pending' })]);
+    expect(board.asks?.[0]).not.toHaveProperty('nonce');
+  });
+
+  test('without an ask service the board has no questions', () => {
+    expect(buildLucyLookSource(routeDeps().deps).board().asks).toBeUndefined();
+  });
+
   test('a task\'s detail carries its linked pull requests', () => {
     const { deps, asked } = routeDeps();
     expect(buildLucyLookSource(deps).taskDetail('t1')).toMatchObject({ prompt: 'Write the report', references: ['PR #3620'] });
