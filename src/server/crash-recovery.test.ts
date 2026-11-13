@@ -196,6 +196,50 @@ describe('Crash Recovery', () => {
     });
   });
 
+  describe('a permission choice made at launch survives a crash-recovery resume (issue #3686)', () => {
+    test('a task launched with prompts forced on is resumed with prompts on, even on a bypass install', async () => {
+      const bypassAdapter = new ClaudeCodeAdapter(terminal, taskStore, {
+        hooksDir,
+        settingsDir,
+        bypassAllPermissions: true,
+        writeFile: (path, content) => writeFile(path, content, 'utf-8'),
+      });
+      const registry = new AdapterRegistry();
+      registry.register(bypassAdapter);
+      const task = await setupCrashedTask('Careful task', join(tempDir, 'careful-recovery'));
+      taskStore.getTaskForMutation(task.id)!.metadata = { launchPermissionOverride: 'prompt' };
+      const launchSpy = vi.spyOn(bypassAdapter, 'launch');
+
+      const reconcileResult = await reconcile(taskStore, terminal);
+      const result = await recoverCrashedSessions(taskStore, registry, reconcileResult);
+
+      expect(result.relaunched).toHaveLength(1);
+      expect(launchSpy.mock.calls[0]?.[4]).toMatchObject({ bypassPermissions: false });
+    });
+
+    test('a task launched with every permission bypassed is resumed bypassed on a guarded install', async () => {
+      const task = await setupCrashedTask('Hands-off task', join(tempDir, 'hands-off-recovery'));
+      taskStore.getTaskForMutation(task.id)!.metadata = { launchPermissionOverride: 'bypass' };
+      const launchSpy = vi.spyOn(adapter, 'launch');
+
+      const reconcileResult = await reconcile(taskStore, terminal);
+      await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+      expect(launchSpy.mock.calls[0]?.[4]).toMatchObject({ bypassPermissions: true });
+    });
+
+    test('a task launched without a choice is told nothing, so the install default applies', async () => {
+      await setupCrashedTask('Plain task', join(tempDir, 'plain-recovery'));
+      const launchSpy = vi.spyOn(adapter, 'launch');
+
+      const reconcileResult = await reconcile(taskStore, terminal);
+      await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+      expect(launchSpy).toHaveBeenCalledTimes(1);
+      expect(launchSpy.mock.calls[0]?.[4]).not.toHaveProperty('bypassPermissions');
+    });
+  });
+
   test('reuses persisted replay fields while preserving the durable guarded prompt', async () => {
     const cwd = join(tempDir, 'project-intent');
     const task = await setupCrashedTask('Rendered prompt', cwd);

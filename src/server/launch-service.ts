@@ -2,6 +2,7 @@ import { isOpenCodeProfileError, resolveOpenCodeProfile } from '../adapters/open
 import { stat } from 'node:fs/promises';
 import { expandConfiguredCwd } from './cwd-paths.js';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
+import { launchPermissionOverrideOption } from './launch-permission-override.js';
 import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
 import type { DeliveryAuthorization, TaskDispositionReason, TaskLaunchIntent } from '../shared/contracts/task.js';
 import {
@@ -3197,6 +3198,8 @@ export async function launchFreshTaskSession(
           // slice 2b) so a Ralph relaunch keeps the exact capabilities; never
           // re-resolved.
           ...replayRecordedLoadout(task),
+          // Every Ralph iteration keeps the permission choice the task was launched with (issue #3686).
+          ...launchPermissionOverrideOption(task),
           signal,
           onSessionCreated: (sessionId) => {
             try {
