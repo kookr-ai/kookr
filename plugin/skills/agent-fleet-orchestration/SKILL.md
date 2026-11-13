@@ -53,16 +53,16 @@ Per-token prices drift, so read current rates from the `claude-api` skill. As of
 about 20x cheaper per token than Sonnet 5.5 and 40x cheaper than Opus 5.5, and Haiku bills 5x above
 100K-token prompts. One measured run gives a useful scale:
 
-- 8 Haiku 5.5 research workers, each with one question (~12 turns, 80-114K peak context), together cost
-  **about $0.21**: 6.66M input-side tokens, 91% of them cache reads.
+- 8 Haiku 5.5 research workers, each with one question (about 12 turns and 80-114K peak context each),
+  together cost **about $0.21**: 6.66M input-side tokens, 91% of them cache reads.
 - The same tokens priced as Sonnet or Opus subagents would have cost about $3.55 or $7.09.
 - The **Opus lead** that briefed them and synthesized the results cost about $2.27 before writing the
   deliverable, roughly 11x the whole swarm. Much of that was fixed session context such as tool and skill
   docs, re-read every turn.
 
 So with cheap workers, **budget the lead's tokens, not the worker count**. With expensive workers, the
-reverse holds: local run lessons record fan-outs of Opus or Sonnet deep agents (about 100-150K tokens
-each) pushing a $10 cap to $14-18 before the deliverable existed. Cap the worker count at
+reverse holds: local run lessons record fan-outs of Opus (or unspecified) deep agents (about 100-150K
+tokens each) pushing a $10 cap to $14-18 before the deliverable existed. Cap the worker count at
 `(budget - reserve) / per-worker estimate`, and hold a reserve for the final deliverable.
 
 Choosing the lead: for broad tasks, a Sonnet lead costs about half as much as an Opus lead and is enough
@@ -70,8 +70,9 @@ when the synthesis is straightforward. Use an Opus lead when the synthesis or th
 
 ## Step 3: write every brief in one pass
 
-Generating the whole plan in one step beats building it one step at a time (51 calls vs 1,288 on AIME24,
-at higher accuracy; 2601.14652). Write all the briefs in one message, spawn them in one batch, and give
+Generate the whole plan in one step. MAS-Orchestra, which emits the full orchestration in one decision,
+used 51 calls on AIME24 against 1,288 for the search-based AFlow baseline, at higher accuracy
+(2601.14652). Write all the briefs in one message, spawn them in one batch, and give
 each brief:
 
 1. **One non-overlapping question.** Partition the work. Never give N workers the same question.
@@ -84,8 +85,9 @@ each brief:
 6. **A file to write results to**, so they survive and the lead can read detail rather than a summary.
 7. **A size bound**: about 900 words. Keep worker prompts under the cheap tier's price threshold.
 
-Keep the shared part of every brief byte-identical and put it first, so it stays cached. Stable prefixes
-raised the cache hit rate from 38.7% to 79.2% and cut cost from $7.24 to $2.79 (2606.17016).
+Keep the shared part of every brief byte-identical and put it first, so it stays cached. Stabilizing the
+prefix raised the cache hit rate from 38.7% to 79.2%; the full system, which also evicts stale context,
+cut cost from $7.24 to $2.79 (2606.17016).
 
 ## Step 4: verify; don't vote
 
@@ -94,10 +96,12 @@ raised the cache hit rate from 38.7% to 79.2% and cut cost from $7.24 to $2.79 (
   family behave even more alike (2604.21255), so copies of one cheap model voting is close to worthless.
   Majority voting collapses outright when most agents are wrong (2604.17139).
 - **Check with code first.** Grep every cited quote and number against its source; run the tests. In the
-  measured run, 64 of 64 spot-checked citations from the Haiku workers matched their sources. Note that a
+  measured run (see the seed report in the `agentic-capability-reports` KB), 64 of 64 spot-checked
+  citations from the Haiku workers matched their sources. Note that a
   source can exist in more than one place: check every copy before you call a citation fabricated.
-- **Give verifiers a fresh context.** A corrector that never saw the conversation history roughly
-  doubled a small agent's score (5.4% to 8.9%; 2604.11465). A final QA-and-fix stage reduced damage from a
+- **Give verifiers a fresh context.** A three-role scaffold whose corrector never saw the conversation
+  history roughly doubled a small agent's score (5.4% to 8.9%), and in the ablation the corrector alone
+  captured most of that gain (2604.11465). A final QA-and-fix stage reduced damage from a
   sabotaged pipeline stage from 53.7 points to 0.6 or less (2606.12709).
 - **Then one strong-model pass** over whatever code can't check.
 
