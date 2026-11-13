@@ -135,7 +135,7 @@
     "better-sqlite3": "^13.0.3",
     "cron-parser": "^5.10.2",
     "groq-sdk": "^1.6.0",
-    "hono": "4.13.13",
+    "hono": "4.13.16",
     "node-pty": "^1.1.0",
     "onnxruntime-web": "1.24.2",
     "react": "^19.3.1",
