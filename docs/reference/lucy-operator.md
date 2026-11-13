@@ -141,7 +141,7 @@ sent. Two things are then certain:
 - the ordinary redaction finds nothing more to hide in the cleaned text.
 
 Beyond that, the text is also checked the way a screen would show it: a colour or an erase does not
-break a token, and a cursor move does. So a key that would be hidden on its own is still hidden with
+break a token, and a cursor move of the common kinds it knows does. So a key that would be hidden on its own is still hidden with
 a colour code in the middle of it, and so is a whole key that stands right after a code. This extra
 checking is a safety net, not a guarantee for every arrangement of codes. It reads characters and
 does not rebuild a screen, so it does not cover, among others:

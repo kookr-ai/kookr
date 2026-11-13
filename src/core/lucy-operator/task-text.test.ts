@@ -547,6 +547,16 @@ describe('cleanTaskText: what it does not do', () => {
     expect(cleanTaskText(`Bearer${ESC}[1mghp_A1b2C3d4E5f6G7h8I9j0 end`)).toBe('Bearer[redacted] end');
   });
 
+  test('a rare code that moves the cursor but is not on the list is joined, so a run after it can stay glued to a word', () => {
+    // Setting a scrolling region (ESC[r) moves the cursor home; it is not on the cursor-move list.
+    const run = TOKENS.longRun;
+    const raw = `name_${ESC}[r${run.slice(0, 20)}${ESC}[1m${run.slice(20)} end`;
+    expect(cleanTaskText(raw)).toBe(`name_${run} end`);
+    // The floors still hold: the ordinary redaction hides nothing in the raw text or in the result.
+    expect(redactSpeechSecrets(raw)).toBe(raw);
+    expect(redactSpeechSecrets(cleanTaskText(raw))).toBe(cleanTaskText(raw));
+  });
+
   test('a token that a cut-off code and a second code both touch is not put back together', () => {
     expect(cleanTaskText(`Bearer${ESC}[35;1ghp_A1b2C3${ESC}[30Gd4E5f6G7h8I9j0 end`)).toBe('Bearerhp_A1b2C3 d4E5f6G7h8I9j0 end');
   });

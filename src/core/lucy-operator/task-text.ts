@@ -26,9 +26,11 @@
  * 2. Each code either joins what stands on either side of it or separates it. **Only
  *    the codes that move the cursor separate**, and they are a short, fixed list (see
  *    `CURSOR_MOVE_FINALS`, `CURSOR_MOVE_ESCAPES`, `CURSOR_MOVE_CONTROLS`). Every other
- *    code joins, including any code the list has never heard of, because a colour, an
- *    erase or a mode change leaves the characters before and after it side by side on
- *    screen.
+ *    code joins, including any code the list has never heard of. Colours and erases,
+ *    the codes found inside words in real output, leave the characters before and
+ *    after them side by side on screen; a few rarer codes move the cursor without
+ *    being on the list (setting a scrolling region, inserting lines, some mode
+ *    changes), and are joined all the same.
  * 3. Secrets are looked for in five ways, because no single reading of the text is
  *    right for every case:
  *    - in the raw characters, codes and all, exactly as the ordinary redaction does;
@@ -59,12 +61,14 @@
  *
  * - **The floor on what came in.** Whatever the ordinary redaction (`redactSpeechSecrets`)
  *   would hide in the raw characters is hidden: the spans it finds there are among the
- *   spans hidden (step 3, first way). Text with no control characters gets exactly the
+ *   spans hidden (step 3, first way), except a match that lies wholly inside one code,
+ *   which is removed with the code. Text with no control characters gets exactly the
  *   ordinary redaction.
  * - **The floor on what goes out.** The cleaned text contains nothing the ordinary
  *   redaction would still hide in it (step 5). The ordinary redaction is the rule the
- *   rest of the product applies to text it sends to a model. (Callers only shorten the
- *   cleaned text or collapse its white space afterwards.)
+ *   rest of the product applies to text it sends to a model. (Afterwards callers only
+ *   shorten the cleaned text, collapse its white space, or replace a copy of the
+ *   untrusted-text marker with `[marker removed]`; none of these can make a token.)
  *
  * The other ways of looking (step 3) go further than those two floors. They are
  * defence in depth: each finds the cases named beside it, the tests walk the
@@ -117,10 +121,11 @@ const MAX_UNTERMINATED_STRING = 2048;
 const MAX_SEQUENCE = 256;
 
 /*
- * The codes that move the cursor. This list is the whole of it: every other code, known
- * or not, is taken to join its neighbours. That is the safe direction for a code this
- * list has never heard of: joining can only make more text look like one token, never
- * split a token in two.
+ * The codes taken to move the cursor. Every other code, known or not, is taken to join
+ * its neighbours. Joining never splits a token in two, so a colour or an erase inside a
+ * key cannot hide it from the layout reading. It can glue a token onto the word before
+ * it, so a code that really moves the cursor but is not listed here can hide a token
+ * from that reading; the floors in the header still hold in that case.
  */
 /** Final bytes of cursor-moving control sequences: up, down, forward, back, next line, previous line, column, position, tab stops, row, restore. */
 const CURSOR_MOVE_FINALS = new Set('ABCDEFGHIZ`adefu');

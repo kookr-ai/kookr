@@ -327,14 +327,6 @@ export function redactSpeechSecrets(value: string): string {
 }
 
 /**
- * Where {@link redactSpeechSecrets} would hide a secret-looking token in `value`, as
- * `[start, end)` offsets in order. For callers that must hide a token in text whose
- * characters do not line up one-to-one with what was searched (see
- * `core/lucy-operator/task-text.ts`). `kind: 'prefixed'` looks only for tokens with a
- * known prefix (`sk-`, a GitHub token), leaving out the "any run of 32 or more
- * characters" rule, for searches where ordinary words may have been joined together.
- */
-/**
  * Where a secret-looking token that starts exactly at `index` ends, or null when none
  * starts there. Unlike {@link speechSecretSpans} it does not require a word boundary
  * before the token: the caller knows something other than text stands there (for
@@ -347,6 +339,14 @@ export function speechSecretEndAt(value: string, index: number, kind: 'all' | 'p
   return match ? index + match[0].length : null;
 }
 
+/**
+ * Where {@link redactSpeechSecrets} would hide a secret-looking token in `value`, as
+ * `[start, end)` offsets in order. For callers that must hide a token in text whose
+ * characters do not line up one-to-one with what was searched (see
+ * `core/lucy-operator/task-text.ts`). `kind: 'prefixed'` looks only for tokens with a
+ * known prefix (`sk-`, a GitHub token), leaving out the "any run of 32 or more
+ * characters" rule, for searches where ordinary words may have been joined together.
+ */
 export function speechSecretSpans(value: string, kind: 'all' | 'prefixed' = 'all'): Array<[number, number]> {
   const pattern = kind === 'prefixed' ? PREFIXED_SECRET_PATTERN : SECRET_PATTERN;
   return [...value.matchAll(pattern)].map((match) => [match.index, match.index + match[0].length]);
