@@ -162,8 +162,9 @@ Any other sentence the operator says during the window drops the held launch, li
 - The current level is on the card. Every proposal, confirmation, refusal and launch is a `launch` line in
   `lucy-interactions.jsonl` with the level it ran under and the task id.
 - The permission posture that applied is recorded on the task like any launch. A Careful or Hands-off
-  override is kept on the task and holds at first launch and when a parked launch is promoted; a task that is later
-  resumed after a crash, relaunched or restarted by a Ralph loop uses the install default (#3686).
+  override is kept on the task and holds at first launch, when a parked launch is promoted, when the task is
+  resumed after a crash, and on every Ralph loop iteration (#3686). An operator relaunch creates a new task,
+  which uses the install default.
 
 ### Residual risks
 
