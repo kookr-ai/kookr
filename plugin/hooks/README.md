@@ -112,3 +112,21 @@ exit 124 on timeout). For a job you start, write its exit code to a marker:
 `( cmd >"$LOG" 2>&1; echo $? >"$LOG.exit" ) &` then
 `kookr-wait.sh --file "$LOG.exit"`. Run it via
 `${CLAUDE_PLUGIN_ROOT}/hooks/kookr-wait.sh`.
+
+## Delivery-Step Stop Guard
+
+`delivery-step-stop.sh` (Stop) stops an agent from ending its turn while the
+task still owns an actionable delivery step. Ownership evidence is an open PR
+from the checked-out branch. It blocks once, with a specific instruction, when:
+
+- the last test/gate command in the transcript failed (red test, PR open);
+- (merge-authority tasks only) the PR has no independent review verdict, or the verdict is `block`, or the
+  head moved since the `pass` verdict (the agent launches the review itself);
+- the PR has a fresh `pass` verdict and the task holds merge authority, as
+  `taskHasMergeAuthority` decides (run `pnpm merge`).
+
+It stays silent for tasks without merge authority (they stop at an open PR; only the red-test nudge applies) and on repos documenting review as advisory,
+when the Stop event reports `background_tasks` / `session_crons` (the agent is
+parked on its own work, as in `needs_input:stop`), outside a Kookr task
+(`KOOKR_TASK_ID` unset), and on the re-run after a block (`stop_hook_active`).
+Every error path allows the stop. Opt out with `KOOKR_DELIVERY_STOP_SKIP=1`.
