@@ -410,3 +410,48 @@ describe('live_turn records', () => {
     }
   });
 });
+
+describe('operator_turn records', () => {
+  it('writes the documented fields and nothing else, with a bounded list of short tool names', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lucy-log-operator-'));
+    const file = join(dir, 'l.jsonl');
+    try {
+      const log = createLucyInteractionLog({ filePath: file, now: () => new Date('2026-11-12T10:00:00.000Z') });
+      log.recordOperatorTurn!({
+        conversationId: 'c1', end: 'answered', asked: 'What is running?', answer: 'Two tasks.',
+        tools: ['read_board', 'x'.repeat(500), ...Array.from({ length: 40 }, () => 'read_task')],
+        model: 'deepseek/deepseek-v4.1-flash-1017', provider: 'Cohere', steps: 2,
+        firstTextMs: 900, totalMs: 2100, inputTokens: 2400, outputTokens: 42, costUsd: 0.0003,
+        askedWords: 3, answerWords: 2,
+        ...({ toolResults: ['terminal output that must never be logged'] } as object),
+      } as never);
+      await log.flush();
+      const rec = JSON.parse(readFileSync(file, 'utf8').trim()) as Record<string, unknown> & { tools: string[] };
+      expect(rec).toEqual({
+        v: 1, ts: expect.any(String), kind: 'operator_turn', conversationId: 'c1', end: 'answered',
+        asked: 'What is running?', answer: 'Two tasks.', tools: expect.any(Array),
+        model: 'deepseek/deepseek-v4.1-flash-1017', provider: 'Cohere', steps: 2,
+        firstTextMs: 900, totalMs: 2100, inputTokens: 2400, outputTokens: 42, costUsd: 0.0003,
+        askedWords: 3, answerWords: 2,
+      });
+      expect(rec.tools).toHaveLength(16);
+      expect(rec.tools[0]).toBe('read_board');
+      expect(rec.tools[1]).toHaveLength(64);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes nothing when the setting is off', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lucy-log-operator-off-'));
+    const file = join(dir, 'l.jsonl');
+    try {
+      const log = createLucyInteractionLog({ filePath: file, isEnabled: () => false });
+      log.recordOperatorTurn!({ conversationId: 'c1', end: 'answered', asked: 'hi', tools: [], steps: 1, totalMs: 1, inputTokens: 1, outputTokens: 1, askedWords: 1, answerWords: 0 });
+      await log.flush();
+      expect(existsSync(file)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

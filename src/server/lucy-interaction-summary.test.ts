@@ -196,6 +196,16 @@ describe('summarizeLucyInteractionLines', () => {
     expect(s.topEarlyStopped).toEqual([{ text: 'Edge phrase.', earlyStops: 1 }]);
   });
 
+  it('does not count conversation turns as corrupt lines', () => {
+    const s = summarizeLucyInteractionLines([
+      JSON.stringify({ v: 1, ts: '2026-11-11T10:00:00.000Z', kind: 'operator_turn', conversationId: 'c1', end: 'answered', asked: 'hi', tools: [] }),
+      JSON.stringify({ v: 1, ts: '2026-11-11T10:00:01.000Z', kind: 'live_turn', turnId: 't1', end: 'answered' }),
+      said('ok'),
+    ], { days: 7, now: NOW });
+    expect(s.corruptLines).toBe(0);
+    expect(s.said.count).toBe(1);
+  });
+
   it('tolerates corrupt, partial and unknown lines', () => {
     const s = summarizeLucyInteractionLines([
       '{"v":1,"ts":"2026-11-11T10:00:00.000Z","kind":"sa',

@@ -108,6 +108,7 @@ import {
 import { DrainController } from './drain-state.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { createLucyInteractionLog, defaultLucyInteractionLogPath } from './lucy-interaction-log.js';
+import { resolveLucyOperatorConfig, type LucyOperatorConfigResult } from './lucy-operator/config.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
 import { saveSettings, type KookrSettings } from '../core/settings-store.js';
 import { advertisedAgentTypes } from '../core/agent-types.js';
@@ -375,6 +376,11 @@ export interface KookrConfig {
   sttUrl?: string;
   /** Managed Lucy's ears (KOOKR_LUCY_EARS=true); Lucy live follows its state. */
   lucyEars?: LucyEarsHandle;
+  /**
+   * Lucy's operator conversation (issue #3660). Default: resolved from the environment
+   * (`KOOKR_LUCY_OPERATOR` and friends). Tests pass it to point the model at a fake provider.
+   */
+  lucyOperatorConfig?: LucyOperatorConfigResult;
   /** Selected bundled HTTP model; forwarded only to Telegram using that endpoint. */
   sttTranscription?: { url: string; model: string };
   /** Optional TTS service HTTP URL (e.g. http://localhost:8004). Advertised as a Phase 6 speech capability when set. */
@@ -2911,9 +2917,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const initialLucyLiveStatus = lucyLiveRuntime.status();
   if (!initialLucyLiveStatus.available) console.log(`[lucy-live] ${initialLucyLiveStatus.starting ? 'waiting for the speech recogniser' : 'disabled'}: ${initialLucyLiveStatus.reason}`);
 
+  // Lucy's operator conversation (issue #3660): off unless KOOKR_LUCY_OPERATOR=true.
+  const lucyOperatorConfig = config.lucyOperatorConfig ?? resolveLucyOperatorConfig(process.env);
+  if (lucyOperatorConfig.enabled) {
+    for (const warning of lucyOperatorConfig.warnings) console.warn(`[lucy-operator] ${warning}`);
+    console.log(lucyOperatorConfig.ok
+      ? `[lucy-operator] enabled: ${lucyOperatorConfig.model.model}, providers ${lucyOperatorConfig.model.providers.join(' then ') || 'any'}, reasoning ${lucyOperatorConfig.model.reasoning}`
+      : `[lucy-operator] switched on but unavailable: ${lucyOperatorConfig.reason}`);
+  }
+
   const app = createRoutes({
     lucyInteractionLog,
     lucyInteractionLogPath,
+    lucyOperatorConfig,
     getLucyLiveStatus: () => lucyLiveRuntime.status(),
     supervisionService,
     delegationService: delegationRuntime.service,

@@ -64,6 +64,32 @@ describe('DiagnosticRunner', () => {
     expect(report.helperLlm.schemaVersion).toBe('helper-llm-diagnostics.v1');
   });
 
+  test('reports the operator conversation in its own block of the report', () => {
+    const runner = new DiagnosticRunner(createMockDeps({
+      getLucyOperatorDiagnosticsSnapshot: () => ({
+        schemaVersion: 'lucy-operator-diagnostics.v1',
+        generatedAt: 456,
+        turns: 3,
+        byEnd: { answered: 2, step_cap: 1 },
+        modelCalls: 7,
+        inputTokens: 9000,
+        outputTokens: 300,
+        costUsd: 0.0009,
+        turnsWithCost: 3,
+        averageTurnMs: 2400,
+        maxTurnMs: 4100,
+        averageFirstTextMs: 1700,
+      }),
+    }));
+    const report = runner.runNow();
+    expect(report.lucyOperator).toMatchObject({ schemaVersion: 'lucy-operator-diagnostics.v1', turns: 3, modelCalls: 7 });
+  });
+
+  test('reports an empty operator counter by default', () => {
+    const report = new DiagnosticRunner(createMockDeps()).runNow();
+    expect(report.lucyOperator).toMatchObject({ schemaVersion: 'lucy-operator-diagnostics.v1' });
+  });
+
   test('includes persistence health when provided', () => {
     const runner = new DiagnosticRunner(createMockDeps({
       getPersistenceHealthSnapshot: () => ({

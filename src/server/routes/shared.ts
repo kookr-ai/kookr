@@ -485,6 +485,11 @@ export interface RouteDeps {
   /** Whether Lucy live can be switched on, decided at startup (see lucy-live/config.ts). */
   lucyLiveStatus?: import('../../shared/contracts/lucy-live.js').LucyLiveStatus;
   getLucyLiveStatus?: () => import('../../shared/contracts/lucy-live.js').LucyLiveStatus;
+  /**
+   * Lucy's operator conversation (`POST /api/lucy/turn`, issue #3660), as resolved from
+   * the environment at start-up. Absent or `{ enabled: false }`: the route answers 404.
+   */
+  lucyOperatorConfig?: import('../lucy-operator/config.js').LucyOperatorConfigResult;
   projectConfigStore?: ProjectConfigStore;
   projectSidebarStore?: ProjectSidebarStore;
   ossAttemptStore?: OssAttemptStore;

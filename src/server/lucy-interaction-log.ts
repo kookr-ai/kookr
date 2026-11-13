@@ -4,12 +4,15 @@
  * (normally `~/.kookr/`), stays on this machine, and exists so the wording,
  * length and proactivity of her summaries can be analysed after the fact.
  *
- * Three kinds of line, all carrying `v: 1` and an ISO `ts`:
+ * Four kinds of line, all carrying `v: 1` and an ISO `ts`:
  *  - `said`: the server produced a clip (task summary or agent speak). Carries
  *    the final text, the pre-"speakable" wording when it differs, and timings.
  *    Audio bytes are never recorded.
  *  - `live_turn`: one finished Lucy live conversation turn (issue #3659): the
  *    transcript, the spoken answer, how it ended and the latencies. No audio.
+ *  - `operator_turn`: one finished turn of the operator conversation (issue #3660):
+ *    what was asked, what she said, which look-ups she attempted, how it ended,
+ *    the latencies, the tokens and the cost. What the look-ups returned is not recorded.
  *  - `ui`: a `lucy_*` telemetry event the browser sent over the websocket.
  *    The browser is not trusted, so only the documented fields survive
  *    (see {@link sanitizeLucyUiEvent}): enums are validated, strings clamped,
@@ -72,6 +75,34 @@ export interface LucyLiveTurnRecordInput {
   answerWords: number;
 }
 
+/**
+ * One finished turn of a conversation with Lucy the operator assistant (`POST /api/lucy/turn`).
+ * Timings are measured from the moment the request arrived.
+ */
+export interface LucyOperatorTurnRecordInput {
+  conversationId: string;
+  /** How the turn ended: `answered`, a cap, `aborted` or `error`. */
+  end: string;
+  reason?: string;
+  /** What the operator asked (secrets redacted by the caller). */
+  asked: string;
+  /** What Lucy said (secrets redacted by the caller). */
+  answer?: string;
+  /** Names of the look-ups she attempted, in order. Their results are never recorded. */
+  tools: string[];
+  model?: string;
+  provider?: string;
+  /** How many times the model was called. */
+  steps: number;
+  firstTextMs?: number;
+  totalMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd?: number;
+  askedWords: number;
+  answerWords: number;
+}
+
 /** `operator_ask`: Lucy read out a `kookr ask` question (see routes/ask-routes.ts). */
 export type LucySaidSource = 'task_summary' | 'agent_speak' | 'operator_ask';
 
@@ -101,6 +132,8 @@ export interface LucyInteractionLog {
   recordSaid(input: LucySaidRecordInput): void;
   /** Record a finished Lucy live turn. Never throws. */
   recordLiveTurn(input: LucyLiveTurnRecordInput): void;
+  /** Record a finished operator-conversation turn. Never throws. Optional so older fakes keep compiling. */
+  recordOperatorTurn?(input: LucyOperatorTurnRecordInput): void;
   /** Record a client `lucy_*` telemetry event as received. Never throws. */
   recordUi(sessionId: string, event: Record<string, unknown>): void;
   /** Await queued writes (tests, orderly shutdown). Never rejects. */
@@ -131,6 +164,7 @@ export interface LucyInteractionLogOptions {
 export const DISABLED_LUCY_INTERACTION_LOG: LucyInteractionLog = {
   recordSaid: () => {},
   recordLiveTurn: () => {},
+  recordOperatorTurn: () => {},
   recordUi: () => {},
   flush: async () => {},
 };
@@ -210,6 +244,12 @@ export function createLucyInteractionLog(options: LucyInteractionLogOptions = {}
     recordLiveTurn(input) {
       enqueue({ kind: 'live_turn', ...pickFields(input, LIVE_TURN_FIELDS) }, MAX_PENDING_LUCY_LINES);
     },
+    recordOperatorTurn(input) {
+      const picked = pickFields(input, OPERATOR_TURN_FIELDS);
+      // Tool names come from the model: keep a short, bounded list of short strings.
+      const tools = input.tools.slice(0, MAX_LOGGED_OPERATOR_TOOLS).map((name) => clampString(name) ?? 'unnamed');
+      enqueue({ kind: 'operator_turn', ...picked, tools }, MAX_PENDING_LUCY_LINES);
+    },
     recordUi(sessionId, event) {
       const clean = sanitizeLucyUiEvent(event);
       if (!clean) return;
@@ -231,6 +271,14 @@ const LIVE_TURN_FIELDS = [
   'turnId', 'language', 'end', 'reason', 'transcript', 'answer', 'voice',
   'asrMs', 'firstSentenceMs', 'firstAudioMs', 'sentences', 'transcriptWords', 'answerWords',
 ] as const;
+
+const OPERATOR_TURN_FIELDS = [
+  'conversationId', 'end', 'reason', 'asked', 'answer', 'model', 'provider', 'steps',
+  'firstTextMs', 'totalMs', 'inputTokens', 'outputTokens', 'costUsd', 'askedWords', 'answerWords',
+] as const;
+
+/** Most tool names kept per operator turn (four model calls of at most four look-ups each). */
+const MAX_LOGGED_OPERATOR_TOOLS = 16;
 
 function pickFields<T extends object, K extends keyof T>(input: T, keys: readonly K[]): Partial<T> {
   const out: Partial<T> = {};

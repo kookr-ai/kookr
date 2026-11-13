@@ -13,6 +13,8 @@
 import { runDiagnostic, type DiagnosticInput, type DiagnosticReport, type PreviousSnapshot } from '../core/self-diagnostic.js';
 import type { DetectionStats } from '../core/detection-stats.js';
 import { getHelperLlmDiagnosticsSnapshot } from '../core/llm-factory.js';
+import { getLucyOperatorDiagnosticsSnapshot } from '../core/lucy-operator/diagnostics.js';
+import type { LucyOperatorDiagnosticsSnapshot } from '../shared/contracts/diagnostic.js';
 import type { HelperLlmDiagnosticsSnapshot } from '../core/llm-types.js';
 import type { PersistenceHealthSnapshot } from '../core/persistence-health.js';
 
@@ -31,6 +33,7 @@ export interface DiagnosticRunnerDeps {
   measureSnapshotSizeBytes: () => number;
   /** Diagnostics-only aggregate for Kookr's own helper-LLM calls. */
   getHelperLlmDiagnosticsSnapshot?: () => HelperLlmDiagnosticsSnapshot;
+  getLucyOperatorDiagnosticsSnapshot?: () => LucyOperatorDiagnosticsSnapshot;
   /** In-memory health for runtime persistence attempts. */
   getPersistenceHealthSnapshot?: () => PersistenceHealthSnapshot;
 }
@@ -87,6 +90,7 @@ export class DiagnosticRunner {
       eventCounts: this.deps.getEventCounts(),
       lastSnapshotSizeBytes: this.deps.measureSnapshotSizeBytes(),
       helperLlm: (this.deps.getHelperLlmDiagnosticsSnapshot ?? getHelperLlmDiagnosticsSnapshot)(),
+      lucyOperator: (this.deps.getLucyOperatorDiagnosticsSnapshot ?? getLucyOperatorDiagnosticsSnapshot)(),
       persistenceHealth: this.deps.getPersistenceHealthSnapshot?.(),
     };
   }

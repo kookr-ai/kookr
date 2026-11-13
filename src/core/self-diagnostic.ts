@@ -11,6 +11,7 @@
 import type { DetectionStats } from './detection-stats.js';
 import type { HelperLlmDiagnosticsSnapshot } from './llm-types.js';
 import type { AnomalyType } from './types.js';
+import type { LucyOperatorDiagnosticsSnapshot } from '../shared/contracts/diagnostic.js';
 import type { PersistenceHealthSnapshot } from '../shared/contracts/persistence-health.js';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,8 @@ export interface DiagnosticInput {
   lastSnapshotSizeBytes: number;
   /** Aggregate diagnostics for Kookr's own helper-LLM calls. */
   helperLlm: HelperLlmDiagnosticsSnapshot;
+  /** Counters for Lucy's operator conversation, kept apart from the helper calls. */
+  lucyOperator?: LucyOperatorDiagnosticsSnapshot;
   /** In-memory health for runtime persistence attempts. */
   persistenceHealth?: PersistenceHealthSnapshot;
 }
@@ -65,6 +68,8 @@ export interface DiagnosticReport {
   findings: DiagnosticFinding[];
   /** Diagnostics-only accounting for Kookr's own helper-LLM calls. */
   helperLlm: HelperLlmDiagnosticsSnapshot;
+  /** Counters for Lucy's operator conversation, kept apart from the helper calls. */
+  lucyOperator?: LucyOperatorDiagnosticsSnapshot;
   /** In-memory health for runtime persistence attempts. */
   persistenceHealth?: PersistenceHealthSnapshot;
 }
@@ -148,6 +153,7 @@ export function runDiagnostic(
     timestamp: now,
     findings,
     helperLlm: input.helperLlm,
+    ...(input.lucyOperator ? { lucyOperator: input.lucyOperator } : {}),
     ...(input.persistenceHealth ? { persistenceHealth: input.persistenceHealth } : {}),
   };
 }

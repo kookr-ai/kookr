@@ -1,3 +1,4 @@
+import type { LucyTurnEnd } from './lucy-turn.js';
 import type { PersistenceHealthSnapshot } from './persistence-health.js';
 
 export type DiagnosticSeverity = 'warning' | 'critical';
@@ -114,9 +115,36 @@ export interface HelperLlmDiagnosticsSnapshot {
   providerAttemptBudget: HelperLlmProviderAttemptBudget;
 }
 
+/**
+ * Counters for Lucy's operator conversation (`POST /api/lucy/turn`) since the server
+ * started. Kept apart from {@link HelperLlmDiagnosticsSnapshot}: another model, another
+ * price, and a person waiting on the answer.
+ */
+export interface LucyOperatorDiagnosticsSnapshot {
+  schemaVersion: 'lucy-operator-diagnostics.v1';
+  generatedAt: number;
+  /** Finished turns, however they ended. */
+  turns: number;
+  /** Turns per ending: `answered`, `step_cap`, `time_cap`, `token_cap`, `aborted`, `error`. */
+  byEnd: Partial<Record<LucyTurnEnd, number>>;
+  /** Model calls over all turns (a turn makes one to four). */
+  modelCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** What the provider charged over all turns, in US dollars. Counts only turns where it reported a price. */
+  costUsd: number;
+  turnsWithCost: number;
+  averageTurnMs: number;
+  maxTurnMs: number;
+  /** Average time to the first piece of her reply; null when no turn produced text. */
+  averageFirstTextMs: number | null;
+}
+
 export interface DiagnosticReport {
   timestamp: number;
   findings: DiagnosticFinding[];
   helperLlm?: HelperLlmDiagnosticsSnapshot;
+  /** Counters for Lucy's operator conversation; all zero while it is switched off. Absent on older servers. */
+  lucyOperator?: LucyOperatorDiagnosticsSnapshot;
   persistenceHealth?: PersistenceHealthSnapshot;
 }

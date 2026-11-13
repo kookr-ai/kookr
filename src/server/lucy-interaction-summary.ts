@@ -212,7 +212,13 @@ export function createLucySummaryAccumulator(options: LucySummaryOptions): LucyS
         corruptLines++;
         return;
       }
-      if (!isRecord(parsed) || (parsed.kind !== 'said' && parsed.kind !== 'ui')) {
+      if (!isRecord(parsed)) {
+        corruptLines++;
+        return;
+      }
+      // Conversation turns are valid lines that this summary does not aggregate; they are not corrupt.
+      if (parsed.kind === 'live_turn' || parsed.kind === 'operator_turn') return;
+      if (parsed.kind !== 'said' && parsed.kind !== 'ui') {
         corruptLines++;
         return;
       }

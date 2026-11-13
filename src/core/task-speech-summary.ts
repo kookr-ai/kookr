@@ -230,6 +230,16 @@ function givesInstruction(text: string): boolean {
  * tokens through ("/api/v1/reset/<24-character token>").
  */
 const SECRET_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/g;
+/**
+ * {@link SECRET_PATTERN} for a caller that already knows a token may start at one exact
+ * place: no word boundary is asked for in front, and the search does not move on from
+ * that place (the `y` flag).
+ */
+const SECRET_AT_PATTERN = /(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/y;
+/** {@link SECRET_AT_PATTERN} for tokens with a known prefix only. */
+const PREFIXED_SECRET_AT_PATTERN = /(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,})\b/y;
+/** The part of {@link SECRET_PATTERN} that recognises a token by its prefix, without the "any long run" rule. */
+const PREFIXED_SECRET_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,})\b/g;
 
 const SYSTEM_PROMPT = `You write short spoken-audio summaries for a developer supervising coding-agent tasks.
 
@@ -314,6 +324,32 @@ function redactSecrets(value: string | null | undefined): string {
  */
 export function redactSpeechSecrets(value: string): string {
   return redactSecrets(value);
+}
+
+/**
+ * Where a secret-looking token that starts exactly at `index` ends, or null when none
+ * starts there. Unlike {@link speechSecretSpans} it does not require a word boundary
+ * before the token: the caller knows something other than text stands there (for
+ * example the end of a terminal code that may have swallowed the token's first letters).
+ */
+export function speechSecretEndAt(value: string, index: number, kind: 'all' | 'prefixed' = 'all'): number | null {
+  const pattern = kind === 'prefixed' ? PREFIXED_SECRET_AT_PATTERN : SECRET_AT_PATTERN;
+  pattern.lastIndex = index;
+  const match = pattern.exec(value);
+  return match ? index + match[0].length : null;
+}
+
+/**
+ * Where {@link redactSpeechSecrets} would hide a secret-looking token in `value`, as
+ * `[start, end)` offsets in order. For callers that must hide a token in text whose
+ * characters do not line up one-to-one with what was searched (see
+ * `core/lucy-operator/task-text.ts`). `kind: 'prefixed'` looks only for tokens with a
+ * known prefix (`sk-`, a GitHub token), leaving out the "any run of 32 or more
+ * characters" rule, for searches where ordinary words may have been joined together.
+ */
+export function speechSecretSpans(value: string, kind: 'all' | 'prefixed' = 'all'): Array<[number, number]> {
+  const pattern = kind === 'prefixed' ? PREFIXED_SECRET_PATTERN : SECRET_PATTERN;
+  return [...value.matchAll(pattern)].map((match) => [match.index, match.index + match[0].length]);
 }
 
 function sanitizeText(value: string | null | undefined, max = MAX_FIELD_CHARS): string {
