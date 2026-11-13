@@ -28,8 +28,10 @@
  *    `CURSOR_MOVE_FINALS`, `CURSOR_MOVE_ESCAPES`, `CURSOR_MOVE_CONTROLS`). Every other
  *    code joins, including any code the list has never heard of. That is the safe
  *    direction: joining can make more text look like one token, never less.
- * 3. Secrets are looked for in four ways, because no single reading of the text is
+ * 3. Secrets are looked for in five ways, because no single reading of the text is
  *    right for every case:
+ *    - in the raw characters, codes and all, exactly as the ordinary redaction does
+ *      (this is what makes the floor below hold by construction);
  *    - every code separates words (finds a token standing right after a code);
  *    - joining codes join, cursor moves separate (finds a token that a colour, an
  *      erase or a mode change runs through);
@@ -55,7 +57,9 @@
  * (`redactSpeechSecrets`) applied to the same characters: whatever that would hide in
  * the raw text is hidden here, and text with no control characters gets exactly the
  * ordinary redaction. This is the rule the rest of the product applies to text it sends
- * to a model, and it is checked by a fuzz test over text with codes in it.
+ * to a model. It holds by construction, because the spans the ordinary redaction finds
+ * in the raw text are among the spans hidden, and a fuzz test over text with codes in
+ * it checks that no character of such a span survives.
  *
  * **On top of the floor.** A token is also hidden when terminal codes stand before it,
  * after it or inside it, where the ordinary redaction alone would miss it. The test
@@ -188,13 +192,8 @@ function scanCodes(text: string): CodeRange[] {
         }
         j += 1;
       }
-      if (end === -1) {
-        // Never terminated and too long to follow. Stop here, but not in the middle of a word:
-        // the rest of a token that straddles this point must not be left behind as ordinary text.
-        const wordLimit = Math.min(length, j + MAX_SEQUENCE);
-        while (j < wordLimit && !/\s/.test(text[j]!) && !isControl(text.charCodeAt(j))) j += 1;
-        end = j;
-      }
+      // Never terminated and too long to follow: stop here. What follows is read as text again.
+      if (end === -1) end = j;
       ranges.push({ start, end, joins: true });
       i = end;
       continue;
@@ -273,6 +272,23 @@ function secretsInReading(
   return speechSecretSpans(view, kind).map(([start, end]): Span => [toRaw(start), toRaw(end - 1) + 1]);
 }
 
+/**
+ * What the ordinary redaction finds in the raw characters, codes and all. A match that
+ * lies wholly inside one code (a long run of parameter digits) is left out: the code is
+ * removed anyway, and hiding it would put a marker where nothing was.
+ */
+function secretsInRawText(text: string, ranges: readonly CodeRange[]): Span[] {
+  const spans: Span[] = [];
+  let next = 0;
+  for (const [start, end] of speechSecretSpans(text, 'all')) {
+    while (next < ranges.length && ranges[next]!.end <= start) next += 1;
+    const range = ranges[next];
+    if (range && range.start <= start && end <= range.end) continue;
+    spans.push([start, end]);
+  }
+  return spans;
+}
+
 /** How far back from the end of a code a swallowed token may start. Real codes end in a few letters and digits. */
 const MAX_SWALLOWED = 40;
 
@@ -310,6 +326,9 @@ export function cleanTaskText(text: string): string {
   if (ranges.length === 0) return redactSpeechSecrets(text);
 
   const spans: Span[] = [
+    // The floor: the ordinary redaction of the raw characters, exactly as the rest of the product
+    // applies it. Everything after this line can only add to what is hidden.
+    ...secretsInRawText(text, ranges),
     ...secretsInReading(text, ranges, () => 'separate', 'all'),
     ...secretsInReading(text, ranges, (range) => (range.joins ? 'drop' : 'separate'), 'all'),
     ...secretsInReading(text, ranges, () => 'drop', 'prefixed'),
@@ -352,19 +371,4 @@ export function cleanTaskText(text: string): string {
   // The ordinary redaction once more, over what will actually be sent: it also handles the
   // prompt delimiters, and anything it would hide in the final text is hidden.
   return redactSpeechSecrets(out);
-}
-
-/**
- * The text as a terminal would lay it out, with no secret hiding. For display and tests;
- * text bound for the provider must go through {@link cleanTaskText}.
- */
-export function stripTerminalControl(text: string): string {
-  const ranges = scanCodes(text);
-  let out = '';
-  let cursor = 0;
-  for (const range of ranges) {
-    out += text.slice(cursor, range.start) + (range.joins ? '' : ' ');
-    cursor = range.end;
-  }
-  return out + text.slice(cursor);
 }

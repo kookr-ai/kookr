@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { redactSpeechSecrets } from '../task-speech-summary.js';
-import { cleanTaskText, stripTerminalControl } from './task-text.js';
+import { cleanTaskText } from './task-text.js';
 
 const ESC = '\u001b';
 const BEL = '\u0007';
@@ -282,6 +282,26 @@ describe('cleanTaskText: codes a terminal accepts although they are malformed', 
     }
   });
 
+  test('a prefixed key that straddles the point where an endless string code is given up on leaves no tail behind', () => {
+    // The key starts a few characters before the 2,048-character point, so part of it is inside
+    // the code and part of it after.
+    for (const lead of [2030, 2040, 2046]) {
+      const cleaned = cleanTaskText(`${ESC}]0;${'t'.repeat(lead - 1)} ${TOKENS.shortKey} after`);
+      expect(cleaned).not.toMatch(/key\d|\d{6}/);
+      expect(cleaned.endsWith(' after')).toBe(true);
+    }
+  });
+
+  test('a long key with dashes in it that straddles that point leaves no tail behind either', () => {
+    // 50 characters of the key are inside the code, too far back for the "token may start inside
+    // a code" probe, and the dashes keep the rest from looking like one long run. It is hidden
+    // because the key is whole in the raw characters, where the ordinary redaction finds it.
+    const key = `sk-${'aB3-dE_'.repeat(9)}`; // 66 characters
+    const cleaned = cleanTaskText(`${ESC}]0;${'t'.repeat(2048 - 50 - 1)} ${key} after`);
+    for (let i = 50; i + 6 <= key.length; i++) expect(cleaned).not.toContain(key.slice(i, i + 6));
+    expect(cleaned.endsWith(' after')).toBe(true);
+  });
+
   test('a token that straddles the point where an endless string code is given up on leaves no tail behind', () => {
     // The string code is followed for 2,048 characters. The token starts just before that point.
     const token = TOKENS.longRun;
@@ -315,6 +335,28 @@ describe('cleanTaskText: exact output around a hidden token', () => {
 });
 
 describe('cleanTaskText: never weaker than the ordinary redaction of the same characters', () => {
+  /** The pattern the ordinary redaction uses, written out here so the test does not lean on the code under test. */
+  const SECRET = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/g;
+
+  /** True when any six characters in a row of `secret` can still be read in `output`. */
+  function shows(output: string, secret: string): boolean {
+    for (let i = 0; i + 6 <= secret.length; i++) {
+      if (output.includes(secret.slice(i, i + 6))) return true;
+    }
+    return false;
+  }
+
+  test.each([
+    // A control sequence that ends in "_" supplies the word boundary before a run that starts with "/".
+    ['a run whose word boundary is a code\'s last character', `${ESC}[_/wJalrXUtnFEMIK7MDENGbPxRfiCYEXA`, '/wJalrXUtnFEMIK7MDENGbPxRfiCYEXA'],
+    // The prefix rule stops at "/"; the long-run rule takes what follows it.
+    ['a long run right after a prefixed key, behind a colour code', `${ESC}[32msk-label-name-here-wJalrXUtn/FEMIK7MDENGbPxRfiCYEXAMPLEKEY`, 'wJalrXUtn/FEMIK7MDENGbPxRfiCYEXAMPLEKEY'],
+    ['a base64 run with padding between two codes', `${ESC}[1mQWxhZGRpbjpvcGVuIHNlc2FtZSBhbmQgbW9yZQ==${ESC}[0m`, 'QWxhZGRpbjpvcGVuIHNlc2FtZSBhbmQgbW9yZQ=='],
+  ])('%s is hidden, as the ordinary redaction hides it', (_label, raw, secret) => {
+    expect(redactSpeechSecrets(raw)).not.toContain(secret);
+    expect(shows(cleanTaskText(raw), secret)).toBe(false);
+  });
+
   test('whatever the ordinary redaction would hide in the raw text is hidden, with codes of every kind mixed in', () => {
     let seed = 987654321;
     const random = (n: number): number => {
@@ -323,33 +365,40 @@ describe('cleanTaskText: never weaker than the ordinary redaction of the same ch
     };
     const codes = everyCode().map(([code]) => code);
     const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    const letters = (n: number): string => Array.from({ length: n }, () => ALNUM[random(ALNUM.length)]).join('');
-    // Every token is made afresh, so finding a piece of it in the output means that very token got through.
+    const BASE64 = `${ALNUM}+/`;
+    const from = (alphabet: string, n: number): string => Array.from({ length: n }, () => alphabet[random(alphabet.length)]).join('');
+    // Every token is made afresh, so finding six characters of it in the output means that very token got through.
     const piece = (): string => {
-      switch (random(12)) {
-        case 0: return `ghp_${letters(36)}`;
-        case 1: return `sk-${letters(18)}`;
-        case 2: return letters(40);
-        case 3: return letters(20); // too short to be a secret alone, long enough to make one when joined
-        case 4: return 'sk-';
-        case 5: return 'ghp_';
-        default: return ['alpha', 'Bearer', 'KEY=', 'task-', ' ', ' ', '\n', '.', ':', '/', '7', 'm', '0'][random(13)]!;
+      switch (random(14)) {
+        case 0: return `ghp_${from(ALNUM, 36)}`;
+        case 1: return `sk-${from(ALNUM, 18)}`;
+        case 2: return from(ALNUM, 40);
+        case 3: return from(BASE64, 40); // with "+" and "/" inside
+        case 4: return `${from(BASE64, 38)}==`; // padded
+        case 5: return `/${from(BASE64, 33)}`; // starts with a character that is not a word character
+        case 6: return `sk-${from(ALNUM, 8)}-${from(BASE64, 34)}`; // a prefixed key with a long run after it
+        case 7: return from(ALNUM, 20); // too short to be a secret alone, long enough to make one when joined
+        case 8: return 'sk-';
+        case 9: return 'ghp_';
+        // Ordinary words are random too, and shorter than the six-character window, so a window can
+        // only be found in the output if those very characters of that very match are still there.
+        case 10: return from('abcdefghijklmnopqrstuvwxyz', 3 + random(3));
+        case 11: return `${from('abcdefghijklmnopqrstuvwxyz', 4)}-`;
+        default: return [' ', ' ', '\n', '.', ':', '/', '_', '+', '=', '7', 'm', '0'][random(12)]!;
       }
     };
-    const SECRET = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/g;
     const failures: string[] = [];
     let secretsSeen = 0;
-    for (let i = 0; i < 6000; i++) {
+    for (let i = 0; i < 8000; i++) {
       const raw = Array.from({ length: 2 + random(8) }, () => (random(3) === 0 ? codes[random(codes.length)]! : piece())).join('');
       const cleaned = cleanTaskText(raw);
-      // The same pattern the ordinary redaction uses, applied to the raw characters.
       for (const match of raw.matchAll(SECRET)) {
         secretsSeen += 1;
-        if (leaks(cleaned, match[0])) failures.push(`${JSON.stringify(match[0])} in ${JSON.stringify(raw)} -> ${JSON.stringify(cleaned)}`);
+        if (shows(cleaned, match[0])) failures.push(`${JSON.stringify(match[0])} in ${JSON.stringify(raw)} -> ${JSON.stringify(cleaned)}`);
       }
       if (CONTROL.test(cleaned)) failures.push(`control character left: ${JSON.stringify(raw)}`);
     }
-    expect(secretsSeen).toBeGreaterThan(2000);
+    expect(secretsSeen).toBeGreaterThan(4000);
     expect(failures.slice(0, 5)).toEqual([]);
   });
 });
@@ -428,13 +477,13 @@ describe('cleanTaskText: stays fast on hostile input', () => {
   });
 });
 
-describe('stripTerminalControl', () => {
+describe('cleanTaskText: how what is left is laid out', () => {
   test('colours, erases, titles and bells vanish; cursor moves become a gap; words, tabs and line breaks stay', () => {
     const raw = `${ESC}]0;window title${BEL}${ESC}[1;32mPASS${ESC}[0m src/a.test.ts\r\n${ESC}[2K${ESC}[1Gline\ttwo${BEL}\nname${ESC}[20Gvalue\rnext`;
-    expect(stripTerminalControl(raw)).toBe('PASS src/a.test.ts\n line\ttwo\nname value next');
+    expect(cleanTaskText(raw)).toBe('PASS src/a.test.ts\n line\ttwo\nname value next');
   });
 
-  test('text with no codes is returned as it is', () => {
-    expect(stripTerminalControl('plain text, with <angle brackets> and é')).toBe('plain text, with <angle brackets> and é');
+  test('text with no codes and no secrets is returned as it is', () => {
+    expect(cleanTaskText('plain text, with <angle brackets> and é')).toBe('plain text, with <angle brackets> and é');
   });
 });
