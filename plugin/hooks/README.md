@@ -91,3 +91,24 @@ noted the Codex fork loaded skills but not hooks; that gap is closed.) The
 OSS-extension enforcement hooks nonetheless keep a user-global install (see
 `docs/hooks-setup.md`) so they also fire for non-agent `gh pr create` — a plain
 terminal or CI context, where no plugin is loaded at all.
+
+## Bash Wait Nudge
+
+`bash-wait-nudge.sh` is a `PreToolUse` hook on `Bash` that only nudges, never
+blocks. It adds a short suggestion to the agent's context in two cases:
+
+- a `while`/`until` loop that calls `pgrep -f`. The loop's own shell matches the
+  pattern, so the loop never ends. The nudge points to `kookr-wait.sh`.
+- a test or gate command (`pnpm test`, `vitest`, `scripts/verify.sh`, ...)
+  piped into `tail` or `head` with no `tee`, `pipefail` or `PIPESTATUS`. That
+  throws away the full log and hides the exit code. The nudge suggests
+  `cmd 2>&1 | tee "$LOG" | tail -40; echo "exit=${PIPESTATUS[0]}"`.
+
+Safe forms stay silent. Set `KOOKR_BASH_WAIT_NUDGE_SKIP=1` to turn it off.
+
+`kookr-wait.sh` is the safe wait primitive: `kookr-wait.sh --pid PID` or
+`kookr-wait.sh --file MARKER` with an explicit `--timeout` (default 600 s,
+exit 124 on timeout). For a job you start, write its exit code to a marker:
+`( cmd >"$LOG" 2>&1; echo $? >"$LOG.exit" ) &` then
+`kookr-wait.sh --file "$LOG.exit"`. Run it via
+`${CLAUDE_PLUGIN_ROOT}/hooks/kookr-wait.sh`.

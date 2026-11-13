@@ -445,6 +445,15 @@ For non-OSS PRs (internal to Kookr or any repo where `-R` is not used), skip
 this step entirely — the check only applies when pushing from a fork to an
 upstream that declares a base-branch rule.
 
+## Waiting and test output
+
+Run the full gate with `cmd 2>&1 | tee "$LOG" | tail -40; echo
+"exit=${PIPESTATUS[0]}"` so the full log survives and the exit code is not
+masked by `tail`. To wait on a background job, use
+`${CLAUDE_PLUGIN_ROOT}/hooks/kookr-wait.sh --pid <PID>` or `--file "$LOG.exit"`
+(explicit `--timeout`), never a `while pgrep -f` loop: it matches its own shell
+and never exits. The `bash-wait-nudge.sh` hook flags both mistakes.
+
 ## Create Gate State File
 
 **After ALL mandatory checks above pass**, create the state file that allows `gh pr create` through the hook gate. The key must match the hook's derivation, which prefers `-R owner/repo` / `--head` parsed from the command and only falls back to the cwd when a flag is absent — so deriving `REPO_NAME` from the git remote URL matches both paths:
