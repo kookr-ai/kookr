@@ -78,40 +78,40 @@ gates. If a global `gh pr merge` hook still denies the merge there, this
 env var on that one command is the authorized kill-switch for a repo that
 opted out, not a human-merge exception.
 
-## Ordering: review in parallel with the gate, run the full gate once
+## Ordering: review and gate run concurrently on one head
 
 Reviewer active time is 0.3–4 min per round; what costs time is running review
 *after* a 10–16 min full gate, then re-running the gate on the head review
-changed (#3692, from #3691's session data). So:
+changed (#3692, from the session data in #3691). The rule:
 
-1. **Start the reviewer as soon as the diff is final**, in parallel with the
-   full gate (e.g. `git push` with `run_in_background`, or the gate in the
-   background). Draft the PR body in the same window.
-2. **Iterate with targeted tests** (`pnpm test:changed` or the touched files)
-   while fixing; do not run the full gate per fix.
-3. **Run the full gate once, on the head the reviewer approved.** If review
-   forces a code change, the new head needs a new verdict, and only then the
-   full gate again.
-4. **Wait only on a notification, PID, or exit-marker file** (see §5), never a
+1. Once the diff is final (head H), start the reviewer **and** the full gate
+   on H at the same time (e.g. `git push` with `run_in_background`, or the gate
+   in the background). Draft the PR body in the same window.
+2. Merge needs both a green gate and a `pass` for H.
+3. Any code change makes a new head H'. H' needs a new review and a new full
+   gate, so the gate runs once per head, never once per fix. While fixing,
+   iterate with targeted tests (`pnpm test:changed` or the touched files).
+4. Wait only on a notification, PID, or exit-marker file (see §5), never a
    `pgrep -f` loop.
+
+Before the PR exists there is no `$PR` to post a verdict on; the `pre-pr-review`
+specialist pass covers that stage, and the full gate still runs once at the end.
 
 ## Delta re-review after a PASS
 
 A PASS binds to one head. After a PASS, if the only change since the reviewed
-head is one of the following, post the new head's verdict from a **short delta
-check**, not a fresh full review:
+head is a **comment-only or typo-only edit** (no executable code, test, config,
+skill/playbook/`CLAUDE.md` text, documented contract, or hook/script), the next
+verdict may come from a **delta review**: still a fresh-context reviewer at the
+§2 strength, but its input is only `git diff <reviewed-sha>..HEAD`. It must
+confirm the diff is in that category and post the normal verdict comment
+(including `review-lane` and the new `review-head-sha`); the merge wrapper still
+needs that exact-head `pass`.
 
-- comment-only or docs-only edits (no executable code, no test, no config, no
-  `plugin/` hook/script change);
-- a rebase onto `main` where `git range-diff` shows the PR's own commits are
-  unchanged apart from conflict-free context (a `plugin.json` version bump
-  re-done after a conflict counts).
-
-The delta reviewer reads only `git diff <reviewed-sha>..HEAD`, confirms it
-matches one of the cases above, and posts a normal verdict comment for the new
-`review-head-sha` (the merge wrapper still needs that exact-head `pass`). Any
-change to executable code, tests, or behavior-bearing docs (a documented
-contract, an API reference) needs a full review.
+A rebase gets the same treatment only when the sole change is the PR's own
+`plugin.json` version line re-bumped after a conflict, and none of the commits
+pulled in from `main` touch files the PR touches. Anything else, including docs
+that define agent behavior or a contract, needs a full review.
 
 ## The verdict comment contract
 
@@ -252,9 +252,9 @@ finding, do exactly one:
 **Whole-class fixes.** If a second BLOCK round names the same defect class as
 the first (e.g. "unquoted path", "missing null check on X"), do not fix the one
 instance and re-review. Ask the reviewer to list **every** instance of that
-class in the PR (and adjacent code the PR touches) in one pass, fix them all,
-then request the next review. One PR took 12 BLOCK rounds and another 8, each
-finding one more instance of the same class.
+class in the PR (the lines the PR changes and their direct callers and siblings) in one pass, fix them all,
+then request the next review. In the #3691 sample, one PR took 12 BLOCK rounds and another 8, each
+finding one more instance of the same class (analyst-reported).
 
 Never edit an old BLOCK comment to say pass — post a new verdict comment; the
 gate reads the latest.
