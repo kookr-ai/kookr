@@ -97,4 +97,43 @@ describe('createLucyLookSource', () => {
     }).projects();
     expect(projects).toEqual([{ name: 'alpha', activeTasks: 1, findings: 0 }, { name: 'beta', activeTasks: 1, findings: 1 }]);
   });
+
+  describe('taskOutput (issue #3683)', () => {
+    const rendered = (text: string): LucyLookSourceDeps['renderScreenText'] =>
+      async () => ({ kind: 'text', text, lines: text.split('\n').length, elapsedMs: 1 });
+
+    test('renders the raw stream and returns the rendered text, never the raw stream', async () => {
+      const seen: string[] = [];
+      const src = source({
+        tasks: [task({ id: 't1' })],
+        readTerminalStream: async () => ({ text: '\x1b[2Jscreen\x1b[31m!', live: true }),
+        renderScreenText: async (bytes, options) => {
+          seen.push(new TextDecoder().decode(bytes));
+          expect(options.maxLines).toBeGreaterThan(0);
+          return { kind: 'text', text: 'screen!', lines: 1, elapsedMs: 1 };
+        },
+      });
+      expect(await src.taskOutput('t1')).toEqual({ text: 'screen!', live: true });
+      expect(seen).toEqual(['\x1b[2Jscreen\x1b[31m!']);
+    });
+
+    test('a stream that could not be rendered in time gives nothing', async () => {
+      const src = source({
+        tasks: [task({ id: 't1' })],
+        readTerminalStream: async () => ({ text: 'raw stream with ghp_abcdefghijklmnopqrstuvwxyz0123456789', live: true }),
+        renderScreenText: async () => ({ kind: 'unavailable', reason: 'budget-exceeded', elapsedMs: 9 }),
+      });
+      expect(await src.taskOutput('t1')).toBeNull();
+    });
+
+    test('no task, no stream, or an empty one gives nothing and renders nothing', async () => {
+      let renders = 0;
+      const render: LucyLookSourceDeps['renderScreenText'] = async (...args) => { renders += 1; return rendered('x')!(...args); };
+      expect(await source({ tasks: [], readTerminalStream: async () => ({ text: 'x', live: true }), renderScreenText: render }).taskOutput('nope')).toBeNull();
+      expect(await source({ tasks: [task({ id: 't1' })], readTerminalStream: async () => null, renderScreenText: render }).taskOutput('t1')).toBeNull();
+      expect(await source({ tasks: [task({ id: 't1' })], readTerminalStream: async () => ({ text: '', live: false }), renderScreenText: render }).taskOutput('t1')).toBeNull();
+      expect(await source({ tasks: [task({ id: 't1' })] }).taskOutput('t1')).toBeNull();
+      expect(renders).toBe(0);
+    });
+  });
 });

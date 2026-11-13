@@ -1,7 +1,7 @@
 /**
  * Where Lucy's look-ups get their facts in the running server: the task list, the
- * findings waiting on the operator, the quota, and the projects. A task's terminal is
- * not read here: that needs the screen rendered first (issue #3683).
+ * findings waiting on the operator, the quota, and the projects, and a task's terminal,
+ * read as a rendered screen (issue #3683).
  *
  * This file only reads. It maps Kookr's own records onto the small shapes the operator
  * loop understands (`core/lucy-operator`); hiding secrets and capping lengths happens
@@ -13,9 +13,11 @@ import type { AnomalyType } from '../../shared/contracts/anomalies.js';
 import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
+import type { TerminalScreenTextOptions, TerminalScreenTextResult } from '../terminal-screen-text.js';
 import { projectDisplayName } from '../../core/project-identity.js';
 import type { LucyBoardInput, LucyBoardTask } from '../../core/lucy-operator/board.js';
-import type { LucyLookSource, LucyProjectLine, LucyTaskDetail } from '../../core/lucy-operator/tools.js';
+import { TASK_OUTPUT_LINES } from '../../core/lucy-operator/tools.js';
+import type { LucyLookSource, LucyProjectLine, LucyTaskDetail, LucyTaskOutput } from '../../core/lucy-operator/tools.js';
 
 /** The task fields this file reads; Kookr's full task record satisfies it. */
 export interface LookTask {
@@ -48,6 +50,13 @@ export interface LucyLookSourceDeps {
   getAsks?: () => readonly OperatorAskView[];
   getQuota?: () => { fiveHour: { utilization: number; resetsAt: string } | null; sevenDay: { utilization: number; resetsAt: string } | null } | null;
   getReferences?: (taskId: string) => ReadonlyArray<{ type: 'pr' | 'issue'; number: number }>;
+  /**
+   * The raw terminal stream of a task: the live session's, or the tail saved when it ended.
+   * Null when there is none. Never sent to the model as is: `taskOutput` renders it first.
+   */
+  readTerminalStream?: (task: LookTask) => Promise<{ text: string; live: boolean } | null>;
+  /** Replays a raw stream through a terminal emulator off the main thread; the server wires the worker. */
+  renderScreenText?: (bytes: Uint8Array, options: TerminalScreenTextOptions) => Promise<TerminalScreenTextResult>;
   listProjects?: () => Promise<ReadonlyArray<{ displayName: string; activeAgents: number; findingCount: number }>>;
 }
 
@@ -99,6 +108,14 @@ function toBoardTask(task: LookTask, findings: ReturnType<LucyLookSourceDeps['ge
   };
 }
 
+/**
+ * The size the stream is replayed at. The real size is not recorded with the stream, and the
+ * dashboard pins a pane at about 200 columns, so a line a program wrapped at the edge is
+ * rarely wrapped here; wrapped rows are still joined before redaction.
+ */
+const RENDER_COLS = 200;
+const RENDER_ROWS = 50;
+
 export function createLucyLookSource(deps: LucyLookSourceDeps): LucyLookSource {
   const findTask = (taskId: string): LookTask | undefined => deps.getTasks().find((task) => task.id === taskId);
 
@@ -132,6 +149,22 @@ export function createLucyLookSource(deps: LucyLookSourceDeps): LucyLookSource {
         ...(summary ? { completionSummary: summary } : {}),
         ...(references && references.length > 0 ? { references } : {}),
       };
+    },
+
+    async taskOutput(taskId): Promise<LucyTaskOutput | null> {
+      const task = findTask(taskId);
+      if (!task || !deps.readTerminalStream || !deps.renderScreenText) return null;
+      const stream = await deps.readTerminalStream(task);
+      if (!stream || stream.text.length === 0) return null;
+      const rendered = await deps.renderScreenText(new TextEncoder().encode(stream.text), {
+        cols: RENDER_COLS,
+        rows: RENDER_ROWS,
+        maxLines: TASK_OUTPUT_LINES,
+        sessionKey: `lucy-output:${task.id}`,
+      });
+      // A stream that could not be rendered in time gives nothing, never the raw stream.
+      if (rendered.kind !== 'text') return null;
+      return { text: rendered.text, live: stream.live };
     },
 
     async projects(): Promise<readonly LucyProjectLine[]> {

@@ -77,7 +77,7 @@ const DEFAULT_SNAPSHOT_SCROLLBACK_ROWS = 200;
  * would not help, because each one also costs a timer round trip before the
  * parser starts.
  */
-const EMULATE_CHUNK_BYTES = 64 * 1024;
+export const EMULATE_CHUNK_BYTES = 64 * 1024;
 
 /**
  * Wall-clock budget for one replay, measured from the moment it gets the slot
@@ -86,7 +86,7 @@ const EMULATE_CHUNK_BYTES = 64 * 1024;
  * when the thread is saturated. It must stay well under the browser's 5 s wait
  * for the seed.
  */
-const DEFAULT_MAX_MS = 1000;
+export const DEFAULT_MAX_MS = 1000;
 
 /**
  * A replay that has not finished this long after its budget is treated as
@@ -95,10 +95,10 @@ const DEFAULT_MAX_MS = 1000;
  * deadline that replay would hold the single slot forever and every later
  * attach would wait out the queue and then fall back.
  */
-const watchdogMs = (maxMs: number): number => maxMs * 2 + 250;
+export const watchdogMs = (maxMs: number): number => maxMs * 2 + 250;
 
 /** How long a caller waits for the single replay slot before falling back. */
-const DEFAULT_MAX_QUEUE_WAIT_MS = 750;
+export const DEFAULT_MAX_QUEUE_WAIT_MS = 750;
 
 /** Slack a supervising thread adds on top of queue wait and budget. */
 const DEADLINE_SLACK_MS = 500;
@@ -179,7 +179,7 @@ export interface StreamingAttachSnapshotOptions {
   nowMs?: () => number;
 }
 
-interface EmulatorModules {
+export interface EmulatorModules {
   Terminal: new (options: Record<string, unknown>) => HeadlessTerminal;
   SerializeAddon: new () => SerializeAddon;
 }
@@ -192,7 +192,7 @@ let emulatorModules: Promise<EmulatorModules | null> | null = null;
  * loader, so the default export is checked too. A load failure must degrade
  * attach to the old seed, never stop the server from booting.
  */
-function loadEmulator(): Promise<EmulatorModules | null> {
+export function loadEmulator(): Promise<EmulatorModules | null> {
   emulatorModules ??= (async () => {
     try {
       const headless = await import('@xterm/headless') as unknown as Record<string, unknown>;
@@ -220,7 +220,7 @@ function loadEmulator(): Promise<EmulatorModules | null> {
 let slotBusy = false;
 const slotWaiters: Array<() => void> = [];
 
-function acquireSlot(maxWaitMs: number): Promise<boolean> {
+export function acquireSlot(maxWaitMs: number): Promise<boolean> {
   if (!slotBusy) {
     slotBusy = true;
     return Promise.resolve(true);
@@ -240,7 +240,7 @@ function acquireSlot(maxWaitMs: number): Promise<boolean> {
   });
 }
 
-function releaseSlot(): void {
+export function releaseSlot(): void {
   const next = slotWaiters.shift();
   if (next) next();
   else slotBusy = false;
@@ -304,7 +304,7 @@ async function serializeWithinBudget(
   }
 }
 
-function writeChunk(terminal: HeadlessTerminal, chunk: Uint8Array): Promise<void> {
+export function writeChunk(terminal: HeadlessTerminal, chunk: Uint8Array): Promise<void> {
   return new Promise((resolve) => terminal.write(chunk, resolve));
 }
 

@@ -5,7 +5,7 @@
 
 import type { LucyBoardInput, LucyBoardTask } from '../board.js';
 import { LucyModelError, type LucyModelEvent, type LucyModelPort, type LucyModelRequest } from '../model-port.js';
-import type { LucyLookSource, LucyTaskDetail } from '../tools.js';
+import type { LucyLookSource, LucyTaskDetail, LucyTaskOutput } from '../tools.js';
 
 /** One scripted model call: say some text, ask for look-ups, or fail. */
 export interface ScriptedStep {
@@ -71,6 +71,8 @@ export function boardTask(overrides: Partial<LucyBoardTask> & { id: string }): L
 export interface FakeSource extends LucyLookSource {
   /** How many times each look-up reached the source. */
   calls: { board: number; taskDetail: string[]; projects: number };
+  /** Task ids whose rendered output was asked for. */
+  outputCalls: string[];
 }
 
 export function fakeSource(options: {
@@ -80,10 +82,14 @@ export function fakeSource(options: {
   projects?: Array<{ name: string; activeTasks: number; findings: number }>;
   /** Make the project list throw, to exercise a look-up that fails inside Kookr. */
   failProjects?: boolean;
+  /** Rendered terminal output by task id; a task without an entry has none. */
+  outputs?: Record<string, LucyTaskOutput>;
 } = {}): FakeSource {
   const calls: FakeSource['calls'] = { board: 0, taskDetail: [], projects: 0 };
+  const outputCalls: string[] = [];
   return {
     calls,
+    outputCalls,
     board() {
       calls.board += 1;
       return { tasks: options.tasks ?? [], lifetimeSpendUsd: 12.5, quota: null, ...options.board };
@@ -91,6 +97,10 @@ export function fakeSource(options: {
     taskDetail(taskId) {
       calls.taskDetail.push(taskId);
       return options.details?.[taskId] ?? null;
+    },
+    async taskOutput(taskId) {
+      outputCalls.push(taskId);
+      return options.outputs?.[taskId] ?? null;
     },
     async projects() {
       calls.projects += 1;

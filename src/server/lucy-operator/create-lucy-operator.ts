@@ -13,6 +13,7 @@ import { listProjectSummaries } from '../routes/project-routes.js';
 import type { LucyOperatorRouteDeps } from '../routes/lucy-operator-routes.js';
 import type { RouteDeps } from '../routes/shared.js';
 import type { LucyLookSource } from '../../core/lucy-operator/tools.js';
+import { renderTerminalScreenTextIsolated } from '../terminal-snapshot-worker.js';
 import { createLucyLookSource } from './look-source.js';
 import { createLucyOperator } from './service.js';
 import { buildLucyLaunchController } from './launch-wiring.js';
@@ -28,6 +29,19 @@ export function buildLucyLookSource(deps: RouteDeps): LucyLookSource {
     getAsks: () => (deps.asks?.service ? listOperatorAsks(deps.asks.service.all(), Date.now(), (taskId) => deps.taskStore.getTask(taskId)?.name) : []),
     getQuota: () => deps.getQuotaStatus?.() ?? null,
     getReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
+    readTerminalStream: async (task) => {
+      const session = [...task.sessions].reverse().find((s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted');
+      if (session && typeof deps.adapter.captureDisplay === 'function') {
+        try {
+          return { text: await deps.adapter.captureDisplay(session.tmuxSession), live: true };
+        } catch {
+          // The session may be going away; the saved tail below is the fallback, as for GET /api/tasks/:id/tail.
+        }
+      }
+      const stored = await deps.taskTailStore?.getByTaskId(task.id);
+      return stored ? { text: stored.text, live: false } : null;
+    },
+    renderScreenText: renderTerminalScreenTextIsolated,
     listProjects: deps.ledgerAnalytics && deps.projectConfigStore ? () => listProjectSummaries(deps) : undefined,
   });
 }

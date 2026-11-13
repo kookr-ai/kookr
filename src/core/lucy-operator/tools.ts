@@ -36,6 +36,18 @@ export interface LucyTaskDetail {
   references?: readonly string[];
 }
 
+/**
+ * What a task's terminal shows, already rendered to plain lines by a terminal emulator
+ * (issue #3683). The source never hands back the raw stream: when it cannot render in time
+ * it returns `null`.
+ */
+export interface LucyTaskOutput {
+  /** The last lines of the screen, joined with newlines. No terminal codes. */
+  text: string;
+  /** True for a running task's live terminal; false for the tail saved when it ended. */
+  live: boolean;
+}
+
 export interface LucyProjectLine {
   name: string;
   activeTasks: number;
@@ -47,6 +59,8 @@ export interface LucyLookSource {
   /** Fresh snapshot for the board; called at the start of a turn and again by `read_board`. */
   board(): LucyBoardInput;
   taskDetail(taskId: string): LucyTaskDetail | null;
+  /** The rendered terminal of a task, or null when there is none or it could not be rendered in time. */
+  taskOutput(taskId: string): Promise<LucyTaskOutput | null>;
   projects(): Promise<readonly LucyProjectLine[]>;
 }
 
@@ -58,6 +72,9 @@ export const MAX_TASK_SUMMARY_CHARS = 800;
 export const MAX_TASK_SIGNAL_CHARS = 300;
 export const MAX_TASK_FOLDER_CHARS = 200;
 export const MAX_PROJECT_LINES = 30;
+/** What `read_task_output` sends: the last lines of the screen, capped in lines and then in characters (keeping the end). */
+export const TASK_OUTPUT_LINES = 40;
+export const MAX_TASK_OUTPUT_CHARS = 3000;
 
 const TASK_PARAM = {
   type: 'string',
@@ -72,6 +89,7 @@ function tool(name: LucyLookToolName, description: string, properties: Record<st
 export const LUCY_LOOK_TOOLS: readonly LlmFunctionTool[] = [
   tool('read_board', 'Read the current board again: what needs the operator, what is working, what just finished, spend and quota.', {}, []),
   tool('read_task', 'Read more about one task: what it was asked to do, where it runs, what it is waiting for, and its closing summary if it ended.', { task: TASK_PARAM }, ['task']),
+  tool('read_task_output', 'Read what a task\'s terminal shows right now (or showed when it ended): the last lines of its screen. Use it when asked what a task is doing at this moment.', { task: TASK_PARAM }, ['task']),
   tool('show_task', 'Open one task on the operator\'s screen. It changes nothing in the task.', { task: TASK_PARAM }, ['task']),
   tool('list_projects', 'List the projects Kookr knows, with how many tasks are active in each.', {}, []),
 ];
@@ -103,6 +121,14 @@ export function untrusted(text: string, maxChars: number): string {
   // After a cut the ordinary redaction runs again: the cut can give a long run the word boundary it lacked.
   const body = cut ? redactSpeechSecrets(safe.slice(0, maxChars)).trim() : safe.trim();
   return `${UNTRUSTED_OPEN}\n${body}${cut ? '\n(the rest was cut)' : ''}\n${UNTRUSTED_CLOSE}`;
+}
+
+/** The end of `text`, starting at a line boundary when the cut falls inside a line that is not the only one. */
+function lastChars(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const tail = text.slice(text.length - max);
+  const newline = tail.indexOf('\n');
+  return newline >= 0 && newline < tail.length - 1 ? tail.slice(newline + 1) : tail;
 }
 
 function refuse(summary: string, content: string): LucyToolOutcome {
@@ -196,6 +222,7 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
       }
 
       case 'read_task':
+      case 'read_task_output':
       case 'show_task': {
         const board = source.board();
         const found = resolveTaskRef(args.task, board.tasks);
@@ -209,6 +236,14 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
             summary: 'Opened a task on screen',
             screen: { command: 'show_task', taskId: task.id },
           };
+        }
+        if (name === 'read_task_output') {
+          const output = await source.taskOutput(task.id);
+          if (!output || !output.text.trim()) {
+            return { ok: true, content: `No output is available for ${spokenLabel(task)}. Say that you cannot see its terminal right now.`, summary: 'No task output available' };
+          }
+          const intro = `${spokenLabel(task)}: ${output.live ? 'what its terminal shows now' : 'what its terminal showed when it ended'} (last lines):`;
+          return { ok: true, content: `${intro}\n${untrusted(lastChars(output.text, MAX_TASK_OUTPUT_CHARS), MAX_TASK_OUTPUT_CHARS + 200)}`, summary: 'Read a task\'s terminal' };
         }
         return { ok: true, content: describeTask(task, source.taskDetail(task.id), nowMs), summary: 'Read a task' };
       }
