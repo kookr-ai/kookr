@@ -23,6 +23,10 @@ says() { local out; out=$(run "$1"); [[ "$out" == *"$2"* ]]; }
 check "while pgrep -f nudges" nudges 'while pgrep -f "vitest run"; do sleep 5; done'
 check "until ! pgrep -fa nudges" nudges 'until ! pgrep -fa codex; do sleep 2; done'
 check "multi-line loop nudges" nudges $'while true; do\n  pgrep -f foo || break\n  sleep 1\ndone'
+check "pgrep -a -f nudges" nudges 'while pgrep -a -f x; do sleep 1; done'
+check "pgrep -u USER -f nudges" nudges 'while pgrep -u $USER -f x; do sleep 1; done'
+check "|& tail nudges" nudges 'pnpm test |& tail -5'
+check "'guarantee' is not tee" nudges 'pnpm test -- --grep guarantee | tail -5'
 check "pgrep nudge names the helper" says 'while pgrep -f x; do sleep 1; done' 'kookr-wait.sh'
 check "pgrep -f outside a loop is silent" silent 'pgrep -f sleepy | head -1'
 check "pgrep -x in a loop is silent" silent 'while pgrep -x node; do sleep 1; done'
@@ -54,6 +58,7 @@ check "wait --pid returns 0 for a dead pid" "$WAIT" --pid "$P" --timeout 5
 ( sleep 1; echo 7 >"$TMP/m" ) &
 check "wait --file prints the marker's first line" bash -c "[ \"\$('$WAIT' --file '$TMP/m' --timeout 10 --interval 1)\" = 7 ]"
 check "wait --file times out when absent" bash -c "'$WAIT' --file '$TMP/none' --timeout 1 --interval 1 2>/dev/null; [ \$? -eq 124 ]"
+check "wait accepts a leading-zero interval" bash -c "'$WAIT' --file '$TMP/none' --interval 08 --timeout 1 2>/dev/null; [ \$? -eq 124 ]"
 check "wait rejects missing target" bash -c "'$WAIT' --pid 2>/dev/null; [ \$? -eq 2 ]"
 check "wait rejects non-numeric timeout" bash -c "'$WAIT' --pid 1 --timeout x 2>/dev/null; [ \$? -eq 2 ]"
 

@@ -39,6 +39,7 @@ fi
 if [ "$mode" = pid ]; then
   case "$target" in *[!0-9]*) echo "kookr-wait: --pid needs a number" >&2; exit 2 ;; esac
 fi
+interval=$((10#$interval)); timeout=$((10#$timeout))
 [ "$interval" -gt 0 ] || interval=1
 
 elapsed=0
