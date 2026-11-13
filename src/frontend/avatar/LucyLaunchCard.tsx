@@ -83,6 +83,8 @@ export function LucyLaunchCard({ nowFn = Date.now }: { nowFn?: () => number } = 
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
       if (enterBelongsToTarget(event.target)) return;
+      // An open dialog owns Enter (it confirms itself on Enter): the card must not launch beneath it.
+      if (typeof document !== 'undefined' && document.querySelector('[aria-modal="true"], [role="dialog"], [role="alertdialog"], .dialog-overlay') !== null) return;
       event.preventDefault();
       // The dashboard also uses a bare Enter to advance to the next task. While a card waits, Enter is the card's:
       // listening in the capture phase makes that independent of the order other listeners were added in.

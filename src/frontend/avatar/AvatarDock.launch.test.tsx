@@ -133,6 +133,26 @@ describe('AvatarDock: Lucy launch card and typed input', () => {
     }
   });
 
+  test('an open dialog owns Enter: the card does not launch beneath it, and does not stop the dialog\'s own handler', async () => {
+    mount();
+    await showCard();
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    document.body.appendChild(dialog);
+    // A ConfirmDialog-style window listener added after the card.
+    const dialogEnter = vi.fn();
+    window.addEventListener('keydown', dialogEnter, true);
+    try {
+      await act(async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+      await flush();
+      expect(postBodies().filter((c) => c.url.endsWith('/confirm'))).toHaveLength(0);
+      expect(dialogEnter).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('keydown', dialogEnter, true);
+      dialog.remove();
+    }
+  });
+
   test('Cancel declines', async () => {
     mount();
     await showCard();
