@@ -409,12 +409,22 @@ runtime.
 Before any completion-ready signal, make one decision visible in the hook trail:
 
 ```bash
-cat <<'EOF' | kb remember --kb=agent-task-lessons --title="<generic lesson>" --stdin --yes
-Mistake: <generic mistake>
-Why it happened: <generic root cause>
-Better next time: <generic prevention>
+cat <<'EOF' | kb remember --lesson --title="<generic lesson>" --stdin --yes
+## Mistake
+
+<generic mistake>
+
+## Why it happened
+
+<generic root cause>
+
+## Better next time
+
+<generic prevention>
 EOF
 ```
+
+Keep the `## ` headings and blank lines (`--lesson` rejects a body without them). If `kb` exits 3, a similar lesson exists: print the skip below naming it instead of retrying.
 
 or, when this review produced no reusable generic lesson:
 

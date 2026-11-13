@@ -536,8 +536,8 @@ async function main({
         } else {
           err.error(
             'Post-task lesson decision is required before completion-ready (issue #1538). '
-              + 'Write a lesson with `kb remember` or print '
-              + '`No generic KB lesson: <reason>`, then re-run this command.',
+              + 'Write a lesson with `kb remember --lesson` (template above) or print '
+              + '`No generic KB lesson: <reason>` (accepted equally), then re-run this command.',
           );
         }
       } else {

@@ -21,14 +21,52 @@ import {
 } from './lesson-write-spool.js';
 
 /**
- * One-line hint printed after a suppressed/failed lesson remember so the agent
- * knows how to turn it into a recorded decision (the #1538 gate will keep
- * refusing completion-ready until then).
+ * Hint printed after a suppressed/failed lesson remember so the agent can turn
+ * it into a recorded decision in ONE more call (issue #3695). The #1538 gate
+ * keeps refusing completion-ready until a write lands or the skip is printed.
+ *
+ * Specialised by cause, because the generic "re-run with --force or --append"
+ * advice sent agents into rephrase-and-retry loops after the merge:
+ * - similarity guard (exit 3): name the existing note and offer the skip line;
+ * - body passed as an argument: say the body goes on stdin;
+ * - missing `## ` sections: point at the skeleton kb printed.
  */
-const NOT_RECORDED_HINT =
-  `[kookr] No lesson stored. Either re-run with --force (override the similarity `
-  + `guard) or --append=<file> to extend the similar note, or declare an explicit `
-  + `skip: printf 'No generic KB lesson: %s\\n' '<one-line reason>'.\n`;
+export function buildNotRecordedHint(exitCode: number, output: string): string {
+  const skip = (reason: string) => `printf 'No generic KB lesson: %s\\n' '${reason}'`;
+  if (exitCode === 3) {
+    const path = firstSimilarPath(output);
+    const where = path ? `: ${path}` : ' (see the candidates below)';
+    return `[kookr] No lesson stored: a similar lesson already exists${where}. `
+      + `If it covers this, record the decision in one call: `
+      + `${skip(`covered by ${path ?? '<path>'}`)}. `
+      + `Re-run with --force only if your lesson is genuinely new. `
+      + `The skip counts exactly like a write for completion-ready.\n`;
+  }
+  if (/unexpected argument/i.test(output)) {
+    return `[kookr] No lesson stored: kb remember takes the lesson body on stdin, not as an argument. `
+      + `Pipe it in: cat <<'EOF' | kb remember --lesson --title="<short headline>" --stdin --yes … EOF. `
+      + `Or declare a skip: ${skip('<one-line reason>')}.\n`;
+  }
+  if (/missing required sections/i.test(output)) {
+    return `[kookr] No lesson stored: --lesson needs the level-2 headings "## Mistake", `
+      + `"## Why it happened" and "## Better next time" (the skeleton kb printed below). `
+      + `Re-run with those headings, or declare a skip: ${skip('<one-line reason>')}.\n`;
+  }
+  return `[kookr] No lesson stored. Either re-run with --force (override the similarity `
+    + `guard) or --append=<file> to extend the similar note, or declare an explicit `
+    + `skip: ${skip('<one-line reason>')}.\n`;
+}
+
+/** First candidate path among the similarity-guard candidates in kb's output. */
+function firstSimilarPath(output: string): string | null {
+  // JSON is kb's default output; `--format=md` prints `- Path: <path>` lines.
+  const match = /"relative_path"\s*:\s*"([^"\n]{1,300})"/.exec(output)
+    ?? /^- Path: ([^\n]{1,300})$/m.exec(output);
+  // The path is pasted inside a single-quoted printf argument in the hint;
+  // drop quote/backslash characters so the suggested command stays valid.
+  const path = match ? match[1]!.replace(/['\\]/g, '') : '';
+  return path || null;
+}
 
 /**
  * Detect the real `kb` tool's `write_performed` envelope field in captured
@@ -97,7 +135,7 @@ export async function wrapLessonRemember(opts: WrapRememberOptions): Promise<Wra
     // clean exit: only confirm when the envelope does not say otherwise.
     if (detectWritePerformed(run.stdout + '\n' + run.stderr) === false) {
       stdout.write(`${KB_LESSON_WRITE_NOT_RECORDED_MARKER} (kb reported write_performed: false)\n`);
-      stdout.write(NOT_RECORDED_HINT);
+      stdout.write(buildNotRecordedHint(run.exitCode, `${run.stdout}\n${run.stderr}`));
       echoRun(stdout, stderr, run);
       return { exitCode: 0, spooled: false, reason: 'not-recorded' };
     }
@@ -111,7 +149,7 @@ export async function wrapLessonRemember(opts: WrapRememberOptions): Promise<Wra
     // nothing was stored and nothing is spoolable. Tell the agent (and the
     // gate) explicitly that no lesson was recorded.
     stdout.write(`${KB_LESSON_WRITE_NOT_RECORDED_MARKER} (kb exit ${run.exitCode})\n`);
-    stdout.write(NOT_RECORDED_HINT);
+    stdout.write(buildNotRecordedHint(run.exitCode, `${run.stdout}\n${run.stderr}`));
     echoRun(stdout, stderr, run);
     return { exitCode: run.exitCode, spooled: false, reason: 'not-spoolable' };
   }

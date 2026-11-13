@@ -71,6 +71,49 @@ only the agent → user `completion_ready` path.
 `kookr signal completion-ready` maps the 409 into exit code 4 and prints the
 server hint so the agent can fix and re-signal without re-deriving the policy.
 
+### One-call decision template (issue #3695)
+
+About one first `kb remember` in five used to store nothing. Agents passed
+`--lesson` with plain `Mistake:` lines when it requires level-2 headings, put
+the body in an argument instead of on stdin, or rephrased and retried after a
+similarity-guard refusal. All of this happened after the merge, while the task
+still held its slot.
+
+The stop nudge (`bin/kookr-stop-nudge.js`), the 409 hint
+(`LESSON_DECISION_HINT`), `CLAUDE.md` and the delivery playbooks now print one
+template, `LESSON_DECISION_TEMPLATE` in `src/core/lesson-decision.ts`:
+
+```bash
+cat <<'EOF' | kb remember --lesson --title="<short headline>" --stdin --yes
+## Mistake
+
+<what action led to the unwanted outcome>
+
+## Why it happened
+
+<root cause, not the symptom>
+
+## Better next time
+
+<a generic rule: no PR numbers, branch names, file paths or proper nouns>
+EOF
+```
+
+The blank lines matter. Without them, a `<…>` placeholder line parses as a
+Markdown HTML block that swallows the next heading, and `--lesson` validation
+fails. The template also states that the explicit skip is accepted exactly
+like a write.
+
+When a lesson write stores nothing, the `kb` shim
+(`src/core/kb-remember-spool-wrap.ts`) prints a hint specific to the cause:
+- **Similarity guard (exit 3):** the hint names the closest existing note and
+  gives the one-call skip `printf 'No generic KB lesson: %s\n' 'covered by <path>'`.
+- **Body passed as an argument:** the hint says the body goes on stdin.
+- **Missing sections:** the hint names the three headings.
+
+The stop-nudge copy is pinned to the TypeScript constant by
+`src/server/kookr-stop-nudge.test.ts`.
+
 ## Lesson yield metric
 
 **Definition:** among completed tasks in a window,
@@ -134,7 +177,8 @@ path for managed agents.
   },
   "gateExemptReasons": {},
   "explainedExceptions": 0,
-  "contractRate": 1.0
+  "contractRate": 1.0,
+  "mergeToFinished": { "count": 12, "p50Ms": 210000, "p90Ms": 3600000, "maxMs": 5400000 }
 }
 ```
 
@@ -148,6 +192,21 @@ path for managed agents.
 | `contractRate` | `(decided + explainedExceptions) / completedInWindow` — target ≥ 0.9 |
 
 Completion path is stamped on the task at complete time. Historical tasks without a stamp land under `unknown`.
+
+**Merge to finished (issue #3695, additive):** `mergeToFinished` measures how
+long a task keeps its concurrency slot after its PR merged. It gives `count`,
+`p50Ms`, `p90Ms` and `maxMs` over completed tasks in the window (all `null`
+when `count` is 0).
+- **Merge time** is the hook-write time (`kookr_hook_written_at_ms`) of the
+  latest `gh pr merge`, `pnpm merge` or `kookr-merge.sh` command. It is read
+  during the existing scan, so no second pass runs on the health path.
+- **Finish time** is `task.finishedAt`.
+
+Tasks with no merge command, no `finishedAt`, or a finish before the merge are
+left out. The scan stops at the first confirmed lesson write, so a merge run
+*after* that write is not seen. The delivery playbooks merge before the lesson
+step, so this edge is rare. `kookr lesson yield` prints the line as
+`Merge → finished: p50 … p90 …`.
 
 ## Code map
 

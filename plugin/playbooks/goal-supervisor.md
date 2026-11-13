@@ -343,9 +343,11 @@ getting movement or one is starving the others.
 
 ## §5 Complete
 
-Emit a post-task lesson decision (a `kb remember --kb=agent-task-lessons …` only
-if this run taught something generic, else
-`printf 'No generic KB lesson: %s\n' '<reason>'`). Then raise
+Emit a post-task lesson decision in one call (a `kb remember --lesson …` write
+using the CLAUDE.md template, with `## Mistake` / `## Why it happened` /
+`## Better next time` headings, only if this run taught something generic, else
+`printf 'No generic KB lesson: %s\n' '<reason>'`, which the gate accepts
+equally). Then raise
 `kookr signal completion-ready --note "goal-supervisor {today}: active N, spawned M across goals, unblocked U, ESCALATIONS: <billing/destructive/human items or none>"`.
 The note's ESCALATIONS field is the operator's one-glance surface — put every
 provider/model-billing, spend, and destructive/irreversible item there. Exclude

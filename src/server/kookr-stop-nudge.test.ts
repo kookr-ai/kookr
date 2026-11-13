@@ -12,7 +12,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-expect-error — JS module without bundled types.
-import { resolveBaseUrl, markerPath, isTerminalStatus, parseMinAge } from '../../bin/kookr-stop-nudge.js';
+import { resolveBaseUrl, markerPath, isTerminalStatus, parseMinAge, NUDGE_REASON, LESSON_DECISION_TEMPLATE as NUDGE_LESSON_TEMPLATE } from '../../bin/kookr-stop-nudge.js';
+import { LESSON_DECISION_TEMPLATE } from '../core/lesson-decision.js';
 
 const NUDGE = resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'bin', 'kookr-stop-nudge.js');
 const OLD_CREATED_AT = '2020-01-01T00:00:00.000Z';
@@ -172,5 +173,12 @@ describe('kookr-stop-nudge behavior (subprocess, hard fail-open)', () => {
     const res = await run({ stdin: 'not json', env: baseEnv() });
     expect(res.status).toBe(0);
     expect(blocked(res.stdout)).toBe(false);
+  });
+});
+
+describe('lesson decision template in the nudge (issue #3695)', () => {
+  it('matches the server template exactly, so the first write is the one the gate expects', () => {
+    expect(NUDGE_LESSON_TEMPLATE).toBe(LESSON_DECISION_TEMPLATE);
+    expect(NUDGE_REASON).toContain(LESSON_DECISION_TEMPLATE);
   });
 });

@@ -18,6 +18,10 @@ import {
   scanHookLogForLessonDecision,
   stampTaskCompletionProvenance,
   LESSON_YIELD_SCHEMA_VERSION,
+  LESSON_DECISION_TEMPLATE,
+  LESSON_SKIP_COMMAND,
+  LESSON_WRITE_TEMPLATE,
+  summarizeMergeToFinished,
 } from './lesson-decision.js';
 import { KB_LESSON_SKIP_MARKER } from './kb-lesson-classifier.js';
 
@@ -802,5 +806,153 @@ describe('computeLessonYield', () => {
       explicitSkip: 1,
     });
     expect(snap.gateExemptReasons).toEqual({ api_complete_ungated: 1 });
+  });
+});
+
+/** PreToolUse Bash line stamped by the Kookr hook writer (issue #3695). */
+function preToolBashAt(command: string, writtenAtMs: number): string {
+  return JSON.stringify({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_input: { command },
+    kookr_hook_written_at_ms: writtenAtMs,
+  });
+}
+
+describe('lesson decision template (issue #3695)', () => {
+  test('the write template pipes a body with the three level-2 headings on stdin', () => {
+    const lines = LESSON_WRITE_TEMPLATE.split('\n');
+    expect(lines[0]).toBe(`cat <<'EOF' | kb remember --lesson --title="<short headline>" --stdin --yes`);
+    expect(lines.at(-1)).toBe('EOF');
+    const headings = lines.filter((l) => l.startsWith('## '));
+    expect(headings).toEqual(['## Mistake', '## Why it happened', '## Better next time']);
+    // A `<…>` placeholder right under a heading parses as an HTML block that
+    // swallows the next heading, so every heading is followed by a blank line.
+    for (const h of headings) expect(lines[lines.indexOf(h) + 1]).toBe('');
+  });
+
+  test('the skip command is the classifier marker the gate counts', () => {
+    expect(LESSON_SKIP_COMMAND).toContain(KB_LESSON_SKIP_MARKER);
+  });
+
+  test('the 409 hints carry the full template, the skip, and the similarity-guard advice', () => {
+    for (const hint of [LESSON_DECISION_HINT, LESSON_DECISION_HOOKS_MISSING_HINT]) {
+      expect(hint).toContain(LESSON_DECISION_TEMPLATE);
+    }
+    expect(LESSON_DECISION_TEMPLATE).toContain(LESSON_WRITE_TEMPLATE);
+    expect(LESSON_DECISION_TEMPLATE).toContain(LESSON_SKIP_COMMAND);
+    expect(LESSON_DECISION_TEMPLATE).toMatch(/accepts either form equally/);
+    expect(LESSON_DECISION_TEMPLATE).toMatch(/exits 3 \(similarity guard\)/);
+  });
+});
+
+describe('merge-to-finished metric (issue #3695)', () => {
+  let dir: string;
+  const nowMs = Date.parse('2026-07-25T12:00:00.000Z');
+  const minute = 60_000;
+
+  beforeEach(() => {
+    dir = join(tmpdir(), `kookr-merge-finish-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    mkdirSync(join(dir, 'hooks'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('summarizeMergeToFinished uses nearest-rank percentiles', () => {
+    expect(summarizeMergeToFinished([])).toEqual({ count: 0, p50Ms: null, p90Ms: null, maxMs: null });
+    const samples = [10, 1, 9, 2, 8, 3, 7, 4, 6, 5];
+    expect(summarizeMergeToFinished(samples)).toEqual({ count: 10, p50Ms: 5, p90Ms: 9, maxMs: 10 });
+  });
+
+  test('the scan keeps the latest merge command time across retries and sessions', async () => {
+    const t0 = Date.parse('2026-07-25T10:00:00.000Z');
+    writeFileSync(
+      join(dir, 'hooks', 's1.jsonl'),
+      [
+        preToolBashAt('pnpm merge 12 --repo o/r', t0),
+        preToolBashAt('git status', t0 + minute),
+        preToolBashAt('pnpm merge 12 --repo o/r', t0 + 2 * minute),
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'hooks', 's2.jsonl'),
+      [preToolBashAt('gh pr merge 12 --squash', t0 + 5 * minute), ''].join('\n'),
+    );
+    const one = await scanHookLogForLessonDecision(join(dir, 'hooks', 's1.jsonl'));
+    expect(one.lastMergeAtMs).toBe(t0 + 2 * minute);
+
+    const resolved = await resolveTaskLessonDecision(
+      { id: 't', sessions: [{ tmuxSession: 's1' }, { tmuxSession: 's2' }] },
+      join(dir, 'hooks'),
+    );
+    expect(resolved.lastMergeAtMs).toBe(t0 + 5 * minute);
+  });
+
+  test('a merge line without a hook-write timestamp, or no merge at all, yields no sample', async () => {
+    writeFileSync(join(dir, 'hooks', 'nots.jsonl'), preToolBash('pnpm merge 3') + '\n');
+    writeFileSync(join(dir, 'hooks', 'nomerge.jsonl'), preToolBashAt('git push', nowMs - minute) + '\n');
+    expect((await scanHookLogForLessonDecision(join(dir, 'hooks', 'nots.jsonl'))).lastMergeAtMs).toBeUndefined();
+    expect((await scanHookLogForLessonDecision(join(dir, 'hooks', 'nomerge.jsonl'))).lastMergeAtMs).toBeUndefined();
+  });
+
+  test('computeLessonYield reports merge-to-finished over completed merged tasks only', async () => {
+    const mergeAt = (h: number) => Date.parse(`2026-07-25T${String(h).padStart(2, '0')}:00:00.000Z`);
+    const hook = (name: string, lines: string[]) =>
+      writeFileSync(join(dir, 'hooks', `${name}.jsonl`), lines.join('\n') + '\n');
+    // Merged, then the skip marker: the scan continues past a skip, so the merge is seen.
+    hook('fast', [preToolBashAt('pnpm merge 1', mergeAt(9)), preToolBash(`printf '${KB_LESSON_SKIP_MARKER} x'`)]);
+    hook('slow', [preToolBashAt('gh pr merge 2 --squash', mergeAt(9))]);
+    hook('nomerge', [preToolBash('ls')]);
+    hook('nofinish', [preToolBashAt('pnpm merge 4', mergeAt(9))]);
+    hook('clockskew', [preToolBashAt('pnpm merge 5', mergeAt(11))]);
+    hook('running', [preToolBashAt('pnpm merge 6', mergeAt(9))]);
+
+    const at = (h: number, m = 0) =>
+      `2026-07-25T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00.000Z`;
+    const tasks = [
+      { id: 'fast', status: 'completed', updatedAt: at(9, 4), finishedAt: at(9, 4), sessions: [{ tmuxSession: 'fast' }] },
+      { id: 'slow', status: 'completed', updatedAt: at(10), finishedAt: at(10), sessions: [{ tmuxSession: 'slow' }] },
+      { id: 'nomerge', status: 'completed', updatedAt: at(10), finishedAt: at(10), sessions: [{ tmuxSession: 'nomerge' }] },
+      { id: 'nofinish', status: 'completed', updatedAt: at(10), sessions: [{ tmuxSession: 'nofinish' }] },
+      // finishedAt before the merge command: not a valid sample.
+      { id: 'clockskew', status: 'completed', updatedAt: at(10), finishedAt: at(10), sessions: [{ tmuxSession: 'clockskew' }] },
+      { id: 'running', status: 'inProgress', updatedAt: at(10), sessions: [{ tmuxSession: 'running' }] },
+    ];
+
+    const snap = await computeLessonYield(tasks, join(dir, 'hooks'), { days: 1, nowMs });
+    expect(snap.mergeToFinished).toEqual({
+      count: 2,
+      p50Ms: 4 * minute,
+      p90Ms: 60 * minute,
+      maxMs: 60 * minute,
+    });
+  });
+
+  test('known limit: a merge run after the first confirmed lesson write is not seen', async () => {
+    // The scan stops at the first confirmed write to bound health-path cost;
+    // delivery playbooks merge before the lesson step (documented limit).
+    const t0 = Date.parse('2026-07-25T10:00:00.000Z');
+    const write = 'kb remember --lesson --title=t --stdin --yes';
+    writeFileSync(
+      join(dir, 'hooks', 'late.jsonl'),
+      [
+        preToolBashAt('pnpm merge 7', t0),
+        preToolBashAt(write, t0 + minute),
+        postToolBash(write, KB_OUTPUT_WRITE_OK),
+        preToolBashAt('pnpm merge 8', t0 + 2 * minute),
+        '',
+      ].join('\n'),
+    );
+    const stats = await scanHookLogForLessonDecision(join(dir, 'hooks', 'late.jsonl'));
+    expect(stats.lessonWrites).toBe(1);
+    expect(stats.lastMergeAtMs).toBe(t0);
+  });
+
+  test('an empty window reports a zero-count distribution', async () => {
+    const snap = await computeLessonYield([], join(dir, 'hooks'), { days: 1, nowMs });
+    expect(snap.mergeToFinished).toEqual({ count: 0, p50Ms: null, p90Ms: null, maxMs: null });
   });
 });

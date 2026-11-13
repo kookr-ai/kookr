@@ -190,7 +190,8 @@ describe('issue-proposal-refinement playbook', () => {
   });
 
   test('requires a visible post-task lesson decision before completion', () => {
-    expect(playbook.body).toContain('kb remember --kb=agent-task-lessons');
+    expect(playbook.body).toContain('kb remember --lesson');
+    expect(playbook.body).toContain('## Better next time');
     expect(playbook.body).toContain(KB_LESSON_SKIP_MARKER);
     expect(playbook.body.indexOf(KB_LESSON_SKIP_MARKER)).toBeLessThan(
       playbook.body.indexOf('kookr signal completion-ready'),

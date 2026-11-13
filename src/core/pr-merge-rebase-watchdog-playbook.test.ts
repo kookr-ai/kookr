@@ -114,7 +114,8 @@ describe('pr-merge-rebase-watchdog playbook', () => {
   });
 
   test('emits the post-task lesson decision before completion-ready', () => {
-    expect(pb.body).toContain('kb remember --kb=agent-task-lessons');
+    expect(pb.body).toContain('kb remember --lesson');
+    expect(pb.body).toContain('## Better next time');
     // Assert the skip marker against the classifier's constant (not a hardcoded
     // literal) so a drift in the constant is caught here, matching the sibling
     // implement-github-issue playbook contract test.

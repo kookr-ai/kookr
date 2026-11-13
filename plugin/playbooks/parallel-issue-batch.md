@@ -690,7 +690,7 @@ Implementation target:
 
   Use the repo's allowed merge method, and **always delete the head branch as part of the merge** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` immediately after the merge when the branch is checked out in a linked worktree so `--delete-branch` would fail locally). A surviving squash-merged branch is a non-ancestor of the base and is PR-able a second time, producing net-no-op duplicate PRs (issue #1572).
 - Report the PR URL and final state for the issue in the unit.
-- Release your slot when the issue in this unit has reached its final state (PR open/merged per the merge policy, or a recorded blocker), first emit a post-task lesson decision (`kb remember …` or `printf 'No generic KB lesson: %s\n' '<reason>'`), then run `kookr signal completion-ready` (optionally `--note "<PR url / blocker>"`). Completion-ready is rejected without that decision (issue #1538). You were launched with `--auto-close-on-signal`, so a successful signal schedules your own auto-completion after the grace period. Do NOT signal while work remains; if you stop on a blocker, report it first, then emit the decision and signal.
+- Release your slot when the issue in this unit has reached its final state (PR open/merged per the merge policy, or a recorded blocker), first emit a post-task lesson decision in one call (`cat <<'EOF' | kb remember --lesson --title="<headline>" --stdin --yes` with `## Mistake` / `## Why it happened` / `## Better next time` headings, or `printf 'No generic KB lesson: %s\n' '<reason>'`, which the gate accepts equally; if `kb` exits 3 a similar lesson exists, so print the skip naming it instead of retrying), then run `kookr signal completion-ready` (optionally `--note "<PR url / blocker>"`). Completion-ready is rejected without that decision (issue #1538). You were launched with `--auto-close-on-signal`, so a successful signal schedules your own auto-completion after the grace period. Do NOT signal while work remains; if you stop on a blocker, report it first, then emit the decision and signal.
 
 Concurrent-task note:
 Other child tasks are working in the same repo on different work units. Do not revert their branches, do not edit their expected files, and avoid broad formatting.
@@ -1221,7 +1221,7 @@ swallow a 409 with `|| true` (that silently strands the slot):
 ```bash
 # Pick exactly one — write a generic lesson, or declare skip.
 printf 'No generic KB lesson: %s\n' 'batch supervisor: per-issue lessons live in child tasks'
-# or: cat <<'EOF' | kb remember --kb=agent-task-lessons --title="<headline>" --stdin --yes …
+# or: cat <<'EOF' | kb remember --lesson --title="<headline>" --stdin --yes  (## Mistake / ## Why it happened / ## Better next time) …
 
 kookr signal completion-ready --note "$(tail -n1 "$STATE_FILE")"
 # If this exits non-zero with lesson_decision_required, emit the decision above
