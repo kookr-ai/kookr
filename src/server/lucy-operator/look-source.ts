@@ -109,9 +109,10 @@ function toBoardTask(task: LookTask, findings: ReturnType<LucyLookSourceDeps['ge
 }
 
 /**
- * The size the stream is replayed at. The real size is not recorded with the stream, and the
- * dashboard pins a pane at about 200 columns, so a line a program wrapped at the edge is
- * rarely wrapped here; wrapped rows are still joined before redaction.
+ * The size the stream is replayed at. A fixed size is a simplification: the pane's real size
+ * can change (a browser attach resizes it) and is not read here. The dashboard pins a pane at
+ * about 200 columns, so this is the common case; a program that redraws relative to a much
+ * narrower pane can leave stale fragments. Wrapped rows are joined before redaction.
  */
 const RENDER_COLS = 200;
 const RENDER_ROWS = 50;

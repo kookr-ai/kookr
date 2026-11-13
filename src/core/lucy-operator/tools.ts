@@ -124,6 +124,7 @@ export function untrusted(text: string, maxChars: number): string {
 }
 
 /** The end of `text`, starting at a line boundary when the cut falls inside a line that is not the only one. */
+// Callers clean (hide secrets) BEFORE cutting: a cut from the start can remove a token's prefix and leave a tail no rule recognises.
 function lastChars(text: string, max: number): string {
   if (text.length <= max) return text;
   const tail = text.slice(text.length - max);
@@ -243,7 +244,7 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
             return { ok: true, content: `No output is available for ${spokenLabel(task)}. Say that you cannot see its terminal right now.`, summary: 'No task output available' };
           }
           const intro = `${spokenLabel(task)}: ${output.live ? 'what its terminal shows now' : 'what its terminal showed when it ended'} (last lines):`;
-          return { ok: true, content: `${intro}\n${untrusted(lastChars(output.text, MAX_TASK_OUTPUT_CHARS), MAX_TASK_OUTPUT_CHARS + 200)}`, summary: 'Read a task\'s terminal' };
+          return { ok: true, content: `${intro}\n${untrusted(lastChars(cleanTaskText(output.text), MAX_TASK_OUTPUT_CHARS), MAX_TASK_OUTPUT_CHARS + 200)}`, summary: 'Read a task\'s terminal' };
         }
         return { ok: true, content: describeTask(task, source.taskDetail(task.id), nowMs), summary: 'Read a task' };
       }

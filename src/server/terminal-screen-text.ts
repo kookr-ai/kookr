@@ -42,7 +42,7 @@ export type TerminalScreenTextResult =
 export interface TerminalScreenTextOptions {
   cols: number;
   rows: number;
-  /** How many of the last non-empty lines to return. */
+  /** How many of the last lines to return (blank lines in the middle count; trailing ones do not). */
   maxLines: number;
   maxMs?: number;
   maxQueueWaitMs?: number;

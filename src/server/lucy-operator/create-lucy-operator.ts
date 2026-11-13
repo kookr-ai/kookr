@@ -33,7 +33,8 @@ export function buildLucyLookSource(deps: RouteDeps): LucyLookSource {
       const session = [...task.sessions].reverse().find((s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted');
       if (session && typeof deps.adapter.captureDisplay === 'function') {
         try {
-          return { text: await deps.adapter.captureDisplay(session.tmuxSession), live: true };
+          const text = await deps.adapter.captureDisplay(session.tmuxSession);
+          if (text.length > 0) return { text, live: true };
         } catch {
           // The session may be going away; the saved tail below is the fallback, as for GET /api/tasks/:id/tail.
         }

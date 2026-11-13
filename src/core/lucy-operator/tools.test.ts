@@ -100,6 +100,15 @@ describe('dispatchLucyTool', () => {
     expect(outcome.content.length).toBeLessThan(MAX_TASK_OUTPUT_CHARS + 600);
   });
 
+  test('read_task_output hides a token on one long line even when the cut would fall inside it', async () => {
+    // `cut` characters of the token fall before the 3000-character window, so a cut-then-redact would see only its tail.
+    for (let cut = 1; cut < SECRET.length; cut += 3) {
+      const text = `${'y'.repeat(500)} ${SECRET}${'z'.repeat(MAX_TASK_OUTPUT_CHARS - (SECRET.length - cut))}`;
+      const o = await dispatchLucyTool('read_task_output', '{"task":"aaaa"}', fakeSource({ tasks, outputs: { aaaa1111: { live: true, text } } }), NOW);
+      expect(o.content).not.toMatch(/ghp_|uvwxyz0123456789|abcdefghij/);
+    }
+  });
+
   test('read_task_output refuses an unknown task and reads nothing', async () => {
     const source = fakeSource({ tasks });
     expect(await dispatchLucyTool('read_task_output', '{"task":"zzzz"}', source, NOW)).toMatchObject({ ok: false, summary: 'Task not found' });

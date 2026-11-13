@@ -226,7 +226,7 @@ attach snapshot (`terminal-snapshot-worker.ts`), with a deadline, and sends the 
 shows. A screen that was redrawn many times is sent once, rows the terminal wrapped are joined again
 before the secrets are hidden, and no terminal code is left. A stream that cannot be rendered in time
 gives "no output available"; the raw stream is not a fallback. The stream is replayed at 200 columns
-by 50 rows because its real size is not recorded with it.
+by 50 rows, not the pane's real size, so a program that redraws relative to a much narrower pane can leave stale fragments. A token a program split with its own line break (a boxed panel, say) is not joined; only rows the terminal wrapped are.
 
 Before any of this is sent, secret-looking tokens (API keys and similar) are replaced with
 `[redacted]`, using the same rule as the spoken summaries. That includes the operator's own sentence
