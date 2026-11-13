@@ -1,8 +1,31 @@
 # RFC: Operator Attention Notifications to Telegram — confirmed-need gating + durable delivery + reachable report links
 
-**Status:** Draft (v3 — post consensus-attack revision)
-**Date:** 2026-11-07
+**Status:** Accepted (direction approved by the operator 2026-11-13; v3 design, revised for what has since shipped)
+**Date:** 2026-11-07 (revised 2026-11-13)
 **Author:** Jean Ibarz (with Claude)
+
+---
+
+## Update 2026-11-13: what has shipped since this draft
+
+The direction was approved on 2026-11-13. Two pieces landed through other PRs while
+this RFC was waiting for that approval:
+
+- **R3 (the source fix) is done.** #3512 added `src/core/background-parked.ts`. Its
+  `isBackgroundParked` predicate is now shared by `turn-state.ts` and
+  `anomaly-detector.ts`, and `detectNeedsInput` returns `null` for a parked agent.
+  #3573 extended the same idea to the watchdog and the hung-task reaper with a bounded
+  `background_parked` verdict (45 minutes). Slice 1 step 1 is therefore complete.
+- **Replying from Telegram exists.** #3512 added quick-reply buttons and reply routing
+  for a running task. `kookr ask` (#3539 RFC; #3540, #3543, #3547, #3681) lets an agent
+  ask the operator a multiple-choice question over Telegram. This RFC still owns the
+  *outbound* side: deciding which events notify the operator, for every task, delivered
+  durably, with a reachable report.
+
+Nothing else here has been built yet: R1, R2, and R4 through R10 are open. Line
+references in the Problem and Empirical Checkpoint sections describe `origin/main` on
+2026-11-07, before #3512. They are kept as the record of why the design looks the way it
+does. Where they describe the R3 gap, that gap is now closed.
 
 ---
 
@@ -31,6 +54,8 @@ agent needs me** — never when the agent has merely parked itself on a backgrou
 shell, a long-running tool, or a scheduled wakeup (e.g. a 20-minute sleep). And,
 because a missed real block is worse than a spurious ping, the gate must be
 **fail-closed**: absence of a confirmed signal means *no* notification, not a guess.
+
+*(Shipped 2026-11: the gap below was closed by #3512 and #3573; see the update at the top.)*
 
 Kookr already has the information to tell these apart, but on the wrong code path:
 
@@ -79,7 +104,7 @@ host — so it cannot, as-is, serve a durable `/report/<id>`.
    `delivered-task-completion-sweep.ts:172` (de-gating the handler suffices).
 3. Detection gap confirmed — `anomaly-detector.ts:367-381` vs `turn-state.ts:46-68`;
    the background-count check is currently inlined **only** in `turn-state.ts:61`
-   (no shared helper), so extracting one predicate is clean.
+   (no shared helper), so extracting one predicate is clean. *(Since done: #3512.)*
 4. The spurious anomaly drives desktop/audio (`useNotifications.ts`, keys on
    `agent.anomaly`) and `response-assist` spend (`response-assist-processor.ts:53`).
 5. `completion_ready` → `awaiting_completion_ack` (a genuine "needs ack", not an FYI)
@@ -156,7 +181,8 @@ host — so it cannot, as-is, serve a durable `/report/<id>`.
 - **R2 — Completion keys on lifecycle, never on turn state.** The "Done" class SHALL
   be driven by `TaskStatus` terminal transitions (and `completion_ready` for the
   actionable "needs ack"), **never** by `completed_turn` / a clean Stop. (Closes F2.)
-- **R3 — Source fix for background/scheduled waits.** A single shared predicate
+- **R3 — Source fix for background/scheduled waits.** *(Shipped in #3512, extended to
+  the watchdog in #3573.)* A single shared predicate
   `isBackgroundParked(stopEvent)` SHALL be extracted and used by both `turn-state.ts`
   and `anomaly-detector.ts`; `detectNeedsInput` SHALL return `null` when parked. The
   notification gate itself is **positive/allowlist** (R1), so it is fail-closed by
@@ -269,8 +295,9 @@ classified as **actionable** (it is `awaiting_completion_ack`, a real pending ne
 
 ### Slice 1 — the confirmed-need gate + durable delivery (the whole core value)
 
-1. **Source fix (R3):** extract `isBackgroundParked`; `detectNeedsInput` returns null
-   when parked; add a regression test. This alone fixes dashboard/desktop/audio/spend.
+1. **Source fix (R3):** *done in #3512 (see the update at the top).* Extract
+   `isBackgroundParked`; `detectNeedsInput` returns null when parked; add a regression
+   test. This alone fixes dashboard/desktop/audio/spend.
 2. **Projection (R1/R2):** `operatorAttention(facts)` — a pure function over a small
    struct (anomaly type+subtype, `pendingSignal.kind`, `operatorNeeded`, the
    `TaskStatus` transition) — emits at most one `OperatorAttention` per edge.
@@ -324,7 +351,7 @@ already de-lies them); watchdog silence FP (`rfc-supervisor-stale-agent-false-po
 
 ## Files to change
 
-- `src/core/background-parked.ts` *(new)* — `isBackgroundParked(stopEvent)`; used by
+- `src/core/background-parked.ts` *(exists since #3512; no further change planned)* — `isBackgroundParked(stopEvent)`; used by
   `turn-state.ts` and `anomaly-detector.ts` (`detectNeedsInput` returns null when parked).
 - `src/shared/contracts/operator-attention.ts` *(new)* — `OperatorAttention`,
   `AttentionPolicy`, `AttentionSink` port.
