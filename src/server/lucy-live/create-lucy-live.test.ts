@@ -16,6 +16,8 @@ import { createLucyLive } from './create-lucy-live.js';
 import type { LucyLiveConfig } from './config.js';
 import type { LucyInteractionLog, LucyLiveTurnRecordInput } from '../lucy-interaction-log.js';
 import type { SileroVad } from '../../adapters/lucy-live/silero-vad.js';
+import type { LucyOperatorService } from '../lucy-operator/service.js';
+import type { LucyTurnEvent, LucyTurnRequest } from '../../shared/contracts/lucy-turn.js';
 
 const SECRET = 'sk-1234567890abcdefghijklmnop';
 const CONFIG: LucyLiveConfig = {
@@ -34,7 +36,7 @@ class FakeSocket extends EventEmitter {
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
 
-function setup(opts: { vad?: SileroVad | null } = {}) {
+function setup(opts: { vad?: SileroVad | null; getOperator?: () => LucyOperatorService | undefined } = {}) {
   const records: LucyLiveTurnRecordInput[] = [];
   const log: LucyInteractionLog = {
     recordSaid: () => {}, recordUi: () => {}, flush: async () => {},
@@ -50,6 +52,7 @@ function setup(opts: { vad?: SileroVad | null } = {}) {
     vad: opts.vad,
     getTasks: () => [],
     getVoice: () => 'af_test',
+    getOperator: opts.getOperator,
     log,
     warn: () => {},
     now: () => 1000,
@@ -133,5 +136,99 @@ describe('createLucyLive', () => {
     ws.json({ type: 'hello', language: 'en' });
     ws.json({ type: 'speech_start', turnId: 't1' });
     expect(openTurn).toHaveBeenCalledTimes(1);
+  });
+
+  describe('with launching switched on (issue #3676)', () => {
+    function operator(events: LucyTurnEvent[]): { service: LucyOperatorService; requests: Array<{ request: LucyTurnRequest; context: unknown }>; noted: number[] } {
+      const requests: Array<{ request: LucyTurnRequest; context: unknown }> = [];
+      const noted: number[] = [];
+      const service = {
+        launch: { noteSpeaking: (_conversationId: string, until: number) => { noted.push(until); } },
+        isBusy: () => false,
+        atCapacity: () => false,
+        runTurn: async function* (request: LucyTurnRequest, _signal?: AbortSignal, context?: unknown) {
+          requests.push({ request, context });
+          for (const event of events) yield event;
+        },
+      } as unknown as LucyOperatorService;
+      return { service, requests, noted };
+    }
+    const done = (end: string, reason?: string): LucyTurnEvent => ({ type: 'done', end, ...(reason ? { reason } : {}), firstTextMs: null, totalMs: 1, steps: 0, inputTokens: 0, outputTokens: 0, costUsd: null } as LucyTurnEvent);
+
+    it('answers the spoken request with the operator conversation, not the helper model', async () => {
+      const { service, requests } = operator([{ type: 'text', delta: 'I will launch an investigation in kookr: why it stops. ' }, { type: 'text', delta: 'Say go to start.' }, done('answered')]);
+      const { ws } = setup({ getOperator: () => service });
+      await runTurn(ws);
+      expect(mocks.streamBasetenChat).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.request).toMatchObject({ input: 'voice', text: expect.stringContaining('my key is') });
+      // The conversation id is stable across the connection's turns, so a later "go" finds the proposal.
+      expect(requests[0]!.request.conversationId).toMatch(/^live-/);
+      expect(requests[0]!.context).toEqual({ speechStartedAt: 1000 });
+      expect(ws.sent.filter((m) => m.type === 'sentence').map((m) => m.text)).toEqual(['I will launch an investigation in kookr: why it stops.', 'Say go to start.']);
+    });
+
+    it('tells the launch controller how long her voice is audible, so the cancel window starts after the read-back', async () => {
+      const { service, noted } = operator([{ type: 'text', delta: 'I will launch it. ' }, { type: 'text', delta: 'Say go to start.' }, done('answered')]);
+      const { ws } = setup({ getOperator: () => service });
+      await runTurn(ws);
+      // Two sentences of 321 ms each, played back to back from the server clock (fixed at 1000 here).
+      expect(noted).toEqual([1321, 1642]);
+    });
+
+    it('marks speech that began while her voice was audible, so the controller can ignore her own echo', async () => {
+      const { service, requests } = operator([{ type: 'text', delta: 'Okay. ' }, done('answered')]);
+      const { ws } = setup({ getOperator: () => service });
+      await runTurn(ws);
+      expect(requests[0]!.request.overlapsReadBack).toBeUndefined();
+      // The clock is frozen, so the second request begins "while she is still audible".
+      ws.json({ type: 'speech_start', turnId: 't2' });
+      ws.audio(3200);
+      ws.json({ type: 'speech_end', turnId: 't2' });
+      await tick(); await tick(); await tick();
+      expect(requests[1]!.request.overlapsReadBack).toBe(true);
+    });
+
+    it('closing the socket drops that conversation\'s pending proposal', async () => {
+      const closed: string[] = [];
+      const { service, requests } = operator([{ type: 'text', delta: 'Okay. ' }, done('answered')]);
+      (service as unknown as { launch: Record<string, unknown> }).launch.closeConversation = (id: string) => { closed.push(id); };
+      const { ws } = setup({ getOperator: () => service });
+      await runTurn(ws);
+      ws.emit('close');
+      expect(closed).toEqual([requests[0]!.request.conversationId]);
+    });
+
+    it('uses the same conversation for the next spoken turn', async () => {
+      const { service, requests } = operator([{ type: 'text', delta: 'Okay. ' }, done('answered')]);
+      const { ws } = setup({ getOperator: () => service });
+      await runTurn(ws);
+      ws.json({ type: 'speech_start', turnId: 't2' });
+      ws.audio(3200);
+      ws.json({ type: 'speech_end', turnId: 't2' });
+      await tick(); await tick(); await tick();
+      expect(requests[1]!.request.conversationId).toBe(requests[0]!.request.conversationId);
+    });
+
+    it('speech that could be her own voice makes no answer and no error', async () => {
+      const { service } = operator([done('ignored')]);
+      const { ws } = setup({ getOperator: () => service });
+      await runTurn(ws);
+      expect(ws.sent.some((m) => m.type === 'sentence')).toBe(false);
+      expect(ws.sent.find((m) => m.type === 'turn_done')).toMatchObject({ end: 'empty' });
+    });
+
+    it('a failed operator turn is reported as an error turn', async () => {
+      const { service } = operator([done('error', 'The model provider could not be reached.')]);
+      const { ws } = setup({ getOperator: () => service });
+      await runTurn(ws);
+      expect(ws.sent.find((m) => m.type === 'turn_done')).toMatchObject({ end: 'error' });
+    });
+
+    it('with an operator service that cannot launch, the helper model still answers', async () => {
+      const { ws } = setup({ getOperator: () => ({ launch: undefined } as unknown as LucyOperatorService) });
+      await runTurn(ws);
+      expect(mocks.streamBasetenChat).toHaveBeenCalledTimes(1);
+    });
   });
 });

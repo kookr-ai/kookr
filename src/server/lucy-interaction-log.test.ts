@@ -442,6 +442,27 @@ describe('operator_turn records', () => {
     }
   });
 
+  it('records a launch step with only the documented fields', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lucy-log-'));
+    const file = join(dir, 'l.jsonl');
+    try {
+      const log = createLucyInteractionLog({ filePath: file, now: () => new Date('2026-11-13T10:00:00.000Z') });
+      log.recordLaunch!({
+        conversationId: 'c1', event: 'launched', proposalId: 'p1', level: 'balanced', via: 'spoken', project: 'kookr',
+        launchKind: 'investigation', asked: 'investigate it', description: 'Find out why.', taskId: 't1',
+        ...({ prompt: 'the full prompt must not be logged' } as object),
+      });
+      await log.flush();
+      expect(JSON.parse(readFileSync(file, 'utf8').trim())).toEqual({
+        v: 1, ts: '2026-11-13T10:00:00.000Z', kind: 'launch', conversationId: 'c1', event: 'launched', proposalId: 'p1',
+        level: 'balanced', via: 'spoken', project: 'kookr', launchKind: 'investigation', asked: 'investigate it',
+        description: 'Find out why.', taskId: 't1',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('writes nothing when the setting is off', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'lucy-log-operator-off-'));
     const file = join(dir, 'l.jsonl');

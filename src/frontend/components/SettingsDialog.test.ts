@@ -1232,6 +1232,52 @@ describe('SettingsDialog tabs', () => {
     expect(JSON.parse(String(putCall![1]!.body))).toMatchObject({ lucyInteractionLog: false });
   });
 
+  test('Lucy autonomy: three levels, and Hands-off needs the warning step before anything is saved', async () => {
+    await flush();
+    const radios = () => Array.from(container.querySelectorAll<HTMLInputElement>('input[name="lucyAutonomy"]'));
+    expect(radios().map((r) => r.value)).toEqual(['careful', 'balanced', 'hands-off']);
+    expect(radios().find((r) => r.checked)!.value).toBe('balanced');
+    const text = container.textContent ?? '';
+    expect(text).toContain('Tasks Lucy starts always ask for permission, even if this install bypasses permissions. She shows a card and waits for your go.');
+    expect(text).toContain('Tasks Lucy starts run exactly like a task started from the Launch tab. She shows a card and waits for your go.');
+    expect(text).toContain('Tasks Lucy starts run with every permission bypassed. A clear request starts after a short window in which you can say cancel.');
+
+    vi.mocked(fetch).mockImplementation(async (_input, init) => {
+      if (init && init.method === 'PUT') return { ok: true, status: 200, json: async () => JSON.parse(String(init.body)) };
+      return { ok: true, status: 200, json: async () => DEFAULT_SETTINGS };
+    });
+    const puts = () => vi.mocked(fetch).mock.calls.filter(([url, init]) => url === '/api/settings' && init?.method === 'PUT');
+    const click = async (el: HTMLElement) => { await act(async () => { el.click(); }); await flush(); };
+
+    await click(radios().find((r) => r.value === 'hands-off')!);
+    const warning = container.querySelector('[data-testid="lucy-autonomy-warning"]');
+    expect(warning).not.toBeNull();
+    expect(warning!.textContent).toContain('--dangerously-skip-permissions');
+    expect(warning!.textContent).toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(puts()).toHaveLength(0);
+
+    await click(Array.from(warning!.querySelectorAll('button')).find((b) => b.textContent === 'Turn on hands-off')!);
+    expect(puts()).toHaveLength(1);
+    expect(JSON.parse(String(puts()[0]![1]!.body))).toMatchObject({ lucyAutonomy: 'hands-off' });
+    expect(container.querySelector('[data-testid="lucy-autonomy-warning"]')).toBeNull();
+
+    // Going back to a safer level saves at once, with no warning.
+    await click(radios().find((r) => r.value === 'careful')!);
+    expect(JSON.parse(String(puts()[1]![1]!.body))).toMatchObject({ lucyAutonomy: 'careful' });
+  });
+
+  test('Lucy autonomy: declining the Hands-off warning saves nothing', async () => {
+    await flush();
+    const radio = container.querySelector<HTMLInputElement>('input[name="lucyAutonomy"][value="hands-off"]')!;
+    await act(async () => { radio.click(); });
+    await flush();
+    const keep = Array.from(container.querySelectorAll('[data-testid="lucy-autonomy-warning"] button')).find((b) => b.textContent?.startsWith('Keep'))!;
+    await act(async () => { (keep as HTMLElement).click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="lucy-autonomy-warning"]')).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.filter(([url, init]) => url === '/api/settings' && init?.method === 'PUT')).toHaveLength(0);
+  });
+
   test('search filters General settings to matching rows and hides other sections', async () => {
     await flush();
 

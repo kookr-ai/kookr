@@ -2716,6 +2716,46 @@ describe('launchTask', () => {
     }));
   });
 
+  describe('per-launch permission override (server-only option)', () => {
+    const adapterOptions = (): { bypassPermissions?: boolean } | undefined =>
+      vi.mocked(deps.adapterRegistry.get('claude-code').launch).mock.calls[0]?.[4];
+
+    it('forces prompts on for one launch on an install that bypasses them, and records the posture that applied', async () => {
+      const result = await launchTask({ ...deps, bypassAllPermissions: true }, { prompt: 'careful launch', cwd: '/tmp' }, { bypassPermissions: false });
+
+      expect(adapterOptions()?.bypassPermissions).toBe(false);
+      expect(result.task.metadata?.launchPermissionPosture).toBeUndefined();
+    });
+
+    it('bypasses every permission for one launch on an install that does not', async () => {
+      const result = await launchTask({ ...deps, bypassAllPermissions: false }, { prompt: 'hands-off launch', cwd: '/tmp' }, { bypassPermissions: true });
+
+      expect(adapterOptions()?.bypassPermissions).toBe(true);
+      expect(result.task.metadata?.launchPermissionPosture).toMatchObject({ bypassAllPermissions: true, mode: 'bypass-all' });
+    });
+
+    it('keeps the choice and the caller on the task, so a parked launch promotes with the same permissions', async () => {
+      const result = await launchTask(
+        { ...deps, bypassAllPermissions: true, getMaxActiveTasks: () => 0 },
+        { prompt: 'parked careful launch', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy-operator' },
+        { bypassPermissions: false },
+      );
+
+      expect(result.queued).toBe(true);
+      expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+      expect(store.getTask(result.task.id)?.metadata).toMatchObject({
+        launchSource: 'api', launchActorId: 'lucy-operator', launchPermissionOverride: 'prompt',
+      });
+    });
+
+    it('without the option the adapter is not told anything and the install default applies, as for a Launch-tab launch', async () => {
+      const result = await launchTask({ ...deps, bypassAllPermissions: true }, { prompt: 'balanced launch', cwd: '/tmp' });
+
+      expect(adapterOptions()).not.toHaveProperty('bypassPermissions');
+      expect(result.task.metadata?.launchPermissionPosture).toMatchObject({ bypassAllPermissions: true });
+    });
+  });
+
   it('does not set playbookParameterValues when not provided', async () => {
     const result = await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
     expect(result.task.playbookParameterValues).toBeUndefined();

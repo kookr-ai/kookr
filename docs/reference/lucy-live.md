@@ -198,7 +198,9 @@ said to her. A question is the one thing she says unprompted, under these rules:
 waiting and the ones closed in the last 10 minutes, with where the answer came from. Ask her "does
 anything need me?" and she can tell you. She cannot take an answer by voice: a misheard word would
 send the wrong decision to a task, and that cannot be undone. Press the choice in her panel or answer
-on Telegram.
+on Telegram. (With `KOOKR_LUCY_LAUNCH=true`, spoken turns are answered by the operator conversation, whose
+board does not list `kookr ask` questions yet: she cannot tell you about a waiting question by voice, but the
+panel still shows and reads it aloud as before. Tracked in #3685.)
 
 **What it needs.** Telegram remote chat configured (without it `kookr ask` is unavailable altogether),
 and the speech service (`KOOKR_TTS`) for her voice; without the speech service, or when it fails, the
@@ -213,6 +215,27 @@ against a throwaway server and a fake Telegram, and saves screenshots of the car
 `--autoplay-blocked` it checks the case where the browser will not start audio because nobody has
 clicked in the page yet.
 
+## Starting a task by voice
+
+With `KOOKR_LUCY_LAUNCH=true` (and `KOOKR_LUCY_OPERATOR=true`), a hands-free turn is answered by Lucy's
+operator conversation instead of the helper model, so "Lucy, investigate why the issue tasks stop
+chaining" becomes a launch proposal: she reads back one sentence, the avatar panel shows a card, and a
+spoken "go", Enter or a click starts the task. Setup, the three permission levels and the safety rules
+are in [Lucy operator](lucy-operator.md#launching-a-task-by-voice-or-text).
+
+What matters when talking:
+
+- **Echo.** With loudspeakers her voice can reach the microphone (still untested, see Limits). Words that
+  began while she was reading the proposal aloud are ignored, as the server estimates the read-back time
+  (about three words a second plus a second). They neither confirm nor drop the proposal. Use headphones,
+  or click Go.
+- **What is said.** Only a whole sentence of "go", "yes", "do it" or "launch it" confirms; "no" or "cancel"
+  declines; anything else drops the proposal and is answered as a new request.
+- **A long request with pauses** reaches her whole (issue #3674); only the last part of it is the "newest"
+  message for the task writer, with the earlier parts as context.
+- **When the task ends** she says so in the same conversation, in one or two sentences.
+- Each connection is one conversation. Reconnecting forgets a pending proposal.
+
 ## When something goes wrong
 
 A failure in one turn (the recogniser, the helper model or the speech service) ends that turn with
@@ -226,7 +249,7 @@ conversation carries on with the next thing you say. A session-level `error` mes
 - Owner only. Lucy live answers from the status of every task and spends model credit, so the
   `/ws/lucy-live` upgrade is refused (403) for any viewer or other non-owner actor.
 
-- She answers questions only. She cannot launch, stop or approve anything yet. That includes a
+- She answers questions only, unless `KOOKR_LUCY_LAUNCH=true`, when she can also start a task you confirm ([Starting a task by voice](#starting-a-task-by-voice)). She cannot stop or approve anything yet. That includes a
   [question from a task](#questions-from-tasks): she can tell you about it, but an answer you say out
   loud is not recorded.
 - With Talk on, a question from a task is read through the ordinary clip player, not the conversation's

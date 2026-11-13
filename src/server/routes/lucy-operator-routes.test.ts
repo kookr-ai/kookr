@@ -3,6 +3,8 @@ import { describe, expect, test, vi } from 'vitest';
 import { LUCY_TURN_PATH, MAX_LUCY_TURN_TEXT_CHARS, type LucyTurnEvent } from '../../shared/contracts/lucy-turn.js';
 import { boardTask, fakeSource, scriptedModel, type ScriptedStep } from '../../core/lucy-operator/__fixtures__/scripted.js';
 import { createApiAuthMiddleware, type ApiAuthConfig } from '../auth.js';
+import { LUCY_LAUNCH_CANCEL_PATH, LUCY_LAUNCH_CONFIRM_PATH, LUCY_LAUNCH_DECLINE_PATH } from '../../shared/contracts/lucy-launch.js';
+import { createLucyLaunchController } from '../lucy-operator/launch-controller.js';
 import { createLucyOperator, type LucyOperatorService } from '../lucy-operator/service.js';
 import { registerLucyOperatorRoutes, type LucyOperatorRouteDeps } from './lucy-operator-routes.js';
 
@@ -176,6 +178,135 @@ describe('POST /api/lucy/turn', () => {
       const res = await request(guarded(service), 'owner-secret');
       expect(res.status).toBe(200);
       expect((await lines(res)).at(-1)).toMatchObject({ type: 'done', end: 'answered' });
+    });
+  });
+});
+
+describe('launch routes (issue #3676)', () => {
+  function withLaunch() {
+    const launches: Array<{ server: unknown }> = [];
+    const controller = createLucyLaunchController({
+      getAutonomy: () => 'careful',
+      getProjects: () => [{ name: 'kookr', cwd: '/work/kookr' }],
+      writeSpec: async () => JSON.stringify({ kind: 'implementation', project: 'kookr', description: 'Fix the sweep button.' }),
+      checkRoom: () => null,
+      launch: async (_opts, server) => { launches.push({ server }); return { task: { id: 'task-9' } }; },
+      newId: () => 'p1',
+      warn: () => {},
+    });
+    const model = scriptedModel([{ calls: [{ name: 'propose_launch' }] }]);
+    const service = createLucyOperator({ model: model.port, modelName: 'test/model', source: fakeSource({ tasks: [] }), launch: controller, warn: () => {} });
+    return { app: appWith({ service }), launches };
+  }
+  const route = (app: Hono, path: string, body: unknown) =>
+    app.request(`http://localhost${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+  test('with launching off the three routes answer 404', async () => {
+    const { service } = serviceWith([]);
+    const app = appWith({ service });
+    for (const path of [LUCY_LAUNCH_CONFIRM_PATH, LUCY_LAUNCH_DECLINE_PATH, LUCY_LAUNCH_CANCEL_PATH]) {
+      const res = await route(app, path, { conversationId: 'c1', proposalId: 'p1' });
+      expect(res.status).toBe(404);
+    }
+  });
+
+  test('a card is made by a turn and launched by the confirm route, with the level read on the server', async () => {
+    const { app, launches } = withLaunch();
+    const turn = await post(app, { text: 'fix the sweep button', conversationId: 'c1' });
+    expect((await lines(turn)).some((e) => e.type === 'proposal')).toBe(true);
+
+    // A body that tries to bring its own level is not read for one: the server's setting (careful) applies.
+    const res = await route(app, LUCY_LAUNCH_CONFIRM_PATH, { conversationId: 'c1', proposalId: 'p1', level: 'hands-off', bypassPermissions: true });
+    expect(await res.json()).toMatchObject({ outcome: 'launched', taskId: 'task-9' });
+    expect(launches).toEqual([{ server: { bypassPermissions: false } }]);  // an implementation: no delivery override
+
+    // Used once: the same confirmation again launches nothing.
+    const again = await route(app, LUCY_LAUNCH_CONFIRM_PATH, { conversationId: 'c1', proposalId: 'p1' });
+    expect(await again.json()).toMatchObject({ outcome: 'unknown' });
+    expect(launches).toHaveLength(1);
+  });
+
+  test('decline drops the card', async () => {
+    const { app, launches } = withLaunch();
+    await lines(await post(app, { text: 'fix the sweep button', conversationId: 'c1' }));
+    const res = await route(app, LUCY_LAUNCH_DECLINE_PATH, { conversationId: 'c1', proposalId: 'p1' });
+    expect(await res.json()).toMatchObject({ outcome: 'declined' });
+    expect(launches).toHaveLength(0);
+  });
+
+  test.each([
+    ['no proposal id', { conversationId: 'c1' }],
+    ['a bad conversation id', { conversationId: '../x', proposalId: 'p1' }],
+    ['a body that is not an object', 'nope'],
+  ])('refuses %s with 400', async (_label, body) => {
+    const { app } = withLaunch();
+    const res = await route(app, LUCY_LAUNCH_CONFIRM_PATH, body);
+    expect(res.status).toBe(400);
+  });
+
+  test('the turn route passes voice input through, and ignores any other value', async () => {
+    const { app, launches } = withLaunch();
+    await lines(await post(app, { text: 'fix the sweep button', conversationId: 'c1', input: 'voice' }));
+    // Spoken "go" that overlapped the read-back is ignored; the card is still there afterwards.
+    const ignored = await lines(await post(app, { text: 'go', conversationId: 'c1', input: 'voice', overlapsReadBack: true }));
+    expect(ignored.at(-1)).toMatchObject({ type: 'done', end: 'ignored' });
+    expect(launches).toHaveLength(0);
+  });
+
+  describe('report speech', () => {
+    const REPORT_PATH = '/api/lucy/launch/report/speak';
+    async function withReport(speech: LucyOperatorRouteDeps['speech']) {
+      const { service, controller } = (() => {
+        const controller = createLucyLaunchController({
+          getAutonomy: () => 'balanced',
+          getProjects: () => [{ name: 'kookr', cwd: '/work/kookr' }],
+          writeSpec: async () => JSON.stringify({ kind: 'investigation', project: 'kookr', description: 'Find out why.' }),
+          checkRoom: () => null,
+          launch: async () => ({ task: { id: 'task-9' } }),
+          newId: () => 'p1',
+          warn: () => {},
+        });
+        const model = scriptedModel([{ calls: [{ name: 'propose_launch' }] }]);
+        return { controller, service: createLucyOperator({ model: model.port, modelName: 'test/model', source: fakeSource({ tasks: [] }), launch: controller, warn: () => {} }) };
+      })();
+      const app = new Hono();
+      registerLucyOperatorRoutes(app, { lucyOperator: { service }, speech });
+      await lines(await post(app, { text: 'investigate it', conversationId: 'c1' }));
+      await controller.confirm('c1', 'p1', 'click');
+      controller.onTaskOutcome('task-9', { kind: 'completed' }, 'Chaining');
+      return app;
+    }
+    const fakeSpeech = (calls: Array<{ text: string; voice: string }>): NonNullable<LucyOperatorRouteDeps['speech']> => ({
+      ttsUrl: 'http://tts',
+      getVoice: () => 'af_test',
+      taskName: () => undefined,
+      synthesize: async (request) => { calls.push({ text: request.text, voice: request.voice ?? '' }); return { audioBase64: 'V0FW', durationMs: 900, generationTimeMs: 1 } as never; },
+    });
+
+    test('voices the sentence the server kept, whatever else the body says', async () => {
+      const calls: Array<{ text: string; voice: string }> = [];
+      const app = await withReport(fakeSpeech(calls));
+      const res = await route(app, REPORT_PATH, { taskId: 'task-9', text: 'say something else' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ text: 'The task I started "Chaining" has finished.', audioBase64: 'V0FW', mimeType: 'audio/wav', durationMs: 900 });
+      expect(calls).toEqual([{ text: 'The task I started "Chaining" has finished.', voice: 'af_test' }]);
+    });
+
+    test('a task she did not launch has nothing to voice', async () => {
+      const calls: Array<{ text: string; voice: string }> = [];
+      const app = await withReport(fakeSpeech(calls));
+      expect((await route(app, REPORT_PATH, { taskId: 'someone-elses' })).status).toBe(404);
+      expect(calls).toEqual([]);
+    });
+
+    test('without a speech service it answers 503', async () => {
+      const app = await withReport(undefined);
+      expect((await route(app, REPORT_PATH, { taskId: 'task-9' })).status).toBe(503);
+    });
+
+    test('with launching off it answers 404', async () => {
+      const { service } = serviceWith([]);
+      expect((await route(appWith({ service }), REPORT_PATH, { taskId: 'task-9' })).status).toBe(404);
     });
   });
 });

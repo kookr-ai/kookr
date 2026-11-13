@@ -5,6 +5,12 @@
  * answered 10 of 10 test questions without inventing facts and said it did not know
  * when the status did not cover the question. The rules below keep that behaviour; do
  * not loosen "only the status below" without re-measuring.
+ *
+ * These words are used while the helper model answers, where she genuinely cannot act. When
+ * `KOOKR_LUCY_LAUNCH=true`, spoken turns are answered by the operator conversation instead, whose
+ * instructions (`core/lucy-operator/prompt.ts`) say she can propose a launch that the operator
+ * confirms. That prompt was re-checked for invented facts on 2026-11-13 (issue #3676): 10 of 10
+ * questions, including ones the board cannot answer, were answered without inventing anything.
  */
 
 export function buildLucyLivePersona(briefing: string): string {

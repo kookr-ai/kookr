@@ -21,6 +21,7 @@ import type { ObservedActivitySnapshot } from './observed-activity.js';
 import type { TaskCompletionFeedback, TaskMetadataIntent, TaskPriorityUpdate } from './task.js';
 import type { TaskRelation } from './task-relations.js';
 import type { TelemetryEvent } from './telemetry.js';
+import type { LucyLaunchOutcome, LucyLaunchProposalView, LucyLaunchReport } from './lucy-launch.js';
 import type {
   EmptyEnterIntentRequest,
   EmptyEnterDecision,
@@ -403,6 +404,15 @@ export type DeltaMessage = {
 export type ServerMessage =
   | SnapshotMessage
   | DeltaMessage
+  /**
+   * Lucy's launch proposals (issue #3676), to every open dashboard: a card to show (`proposal`),
+   * what became of it (`outcome`), or the end of a task she launched (`report`). Exactly one of the three is set.
+   */
+  | ({ type: 'lucy_launch'; conversationId: string } & (
+      | { proposal: LucyLaunchProposalView; outcome?: undefined; report?: undefined }
+      | { outcome: LucyLaunchOutcome; proposal?: undefined; report?: undefined }
+      | { report: LucyLaunchReport; proposal?: undefined; outcome?: undefined }
+    ))
   | { type: 'update'; agentId: string; state: AgentState }
   | {
       type: 'alert';
@@ -723,6 +733,7 @@ export type ClientMessage =
 export const SERVER_MESSAGE_TYPES = [
   'snapshot',
   'delta',
+  'lucy_launch',
   'update',
   'alert',
   'githubUpdate',

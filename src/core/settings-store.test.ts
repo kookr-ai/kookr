@@ -531,6 +531,25 @@ describe('validateSettings', () => {
     });
   });
 
+  describe('lucyAutonomy', () => {
+    it('is absent by default, which means balanced', () => {
+      expect('lucyAutonomy' in validateSettings({})).toBe(false);
+      expect('lucyAutonomy' in DEFAULT_SETTINGS).toBe(false);
+    });
+
+    it.each(['careful', 'balanced', 'hands-off'])('accepts %s without a warning', (value) => {
+      const result = validateSettingsWithWarnings({ lucyAutonomy: value });
+      expect(result.settings.lucyAutonomy).toBe(value);
+      expect(result.warnings).toEqual([]);
+    });
+
+    it.each(['bypass', 'HANDS-OFF', 3, true])('drops %j with a warning, never reading it as a looser level', (value) => {
+      const result = validateSettingsWithWarnings({ lucyAutonomy: value });
+      expect('lucyAutonomy' in result.settings).toBe(false);
+      expect(result.warnings.join('\n')).toContain('Unknown lucyAutonomy value');
+    });
+  });
+
   describe('speakVoice', () => {
     it('is absent by default (install default applies)', () => {
       expect('speakVoice' in validateSettings({})).toBe(false);

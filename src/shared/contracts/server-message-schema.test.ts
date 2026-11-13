@@ -260,6 +260,11 @@ const serverMessageCases = [
     taskRelations: [],
     aggregates: { totalSpendUsd: 5 },
   }),
+  serverMessageCase({
+    type: 'lucy_launch',
+    conversationId: 'c1',
+    outcome: { outcome: 'launched', proposalId: 'p1', taskId: 't1', project: 'kookr' },
+  }),
 ] as const;
 
 const coveredServerMessageTypes = serverMessageCases.map((message) => message.type);

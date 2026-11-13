@@ -1175,9 +1175,13 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         { configEpochStore: deps.lifecycleDeps.configEpochStore, taskStore },
         pending,
       );
+      // A permission choice made for this task when it was launched (Lucy, issue #3676) outlives the wait in the queue.
+      const permissionOverride = pending.metadata?.launchPermissionOverride;
+      const bypassAtPromotion = permissionOverride !== undefined ? permissionOverride === 'bypass' : deps.bypassAllPermissions === true;
       const adapterOpts = {
         ...pins,
         ...loadoutFields,
+        ...(permissionOverride !== undefined ? { bypassPermissions: permissionOverride === 'bypass' } : {}),
         signal: launchAbort.signal,
         onSessionCreated: (sessionId: string) => {
           const lateCleanup = noteLaunchSession(
@@ -1343,7 +1347,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           taskStore.setLaunchAdmission(pending.id, undefined);
         }
       }
-      if (deps.bypassAllPermissions === true) {
+      if (bypassAtPromotion) {
         const launchPermissionPosture = {
           bypassAllPermissions: true as const,
           mode: 'bypass-all' as const,

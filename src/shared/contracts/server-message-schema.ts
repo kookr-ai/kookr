@@ -137,6 +137,15 @@ const deltaMessage = z.object({
   aggregates: jsonObject.optional(),
 });
 
+// Lucy's launch proposals (issue #3676): a card, what became of it, or the end of a task she launched.
+const lucyLaunchMessage = z.object({
+  type: z.literal('lucy_launch'),
+  conversationId: z.string(),
+  proposal: jsonObject.optional(),
+  outcome: jsonObject.optional(),
+  report: jsonObject.optional(),
+});
+
 const updateMessage = z.object({
   type: z.literal('update'),
   agentId: z.string(),
@@ -487,6 +496,7 @@ const ServerMessageSchemaImpl = z.union([
   dictationLaunchResultMessage,
   snapshotMessage,
   deltaMessage,
+  lucyLaunchMessage,
   updateMessage,
   alertMessage,
   githubUpdateMessage,

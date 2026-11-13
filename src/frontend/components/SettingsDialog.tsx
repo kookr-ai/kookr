@@ -19,6 +19,7 @@ import {
   type PlatformShortcutBindingOverrides,
   type ShortcutActionId,
 } from '../../shared/contracts/shortcut-bindings.js';
+import { DEFAULT_LUCY_AUTONOMY, type LucyAutonomy } from '../../shared/contracts/lucy-launch.js';
 import { SPEAK_VOICE_OPTIONS, isSpeakVoiceId, type SpeakVoiceId, type VerbosityScale } from '../../shared/contracts/speech.js';
 import type { QuietHoursWindow } from '../../shared/contracts/quiet-hours.js';
 import { MAX_REPLY_SNIPPETS, type ReplySnippet } from '../../shared/contracts/reply-snippets.js';
@@ -70,6 +71,8 @@ interface ServerSettings {
   speakVoice?: SpeakVoiceId;
   /** Keep a local log of Lucy's interactions (server default true; absent = on). */
   lucyInteractionLog?: boolean;
+  /** How much confirmation Lucy needs to start a task (absent = balanced). Owner-only, changed here by a click. */
+  lucyAutonomy?: LucyAutonomy;
   quietHours?: QuietHoursWindow[];
   replySnippets?: ReplySnippet[];
   autoCloseCompletionReadyDelayMin: number;
@@ -107,6 +110,28 @@ const VERBOSITY_CHOICES: readonly VerbosityChoice[] = [
 ];
 
 /** Settings field to scroll-and-focus on open. */
+const LUCY_AUTONOMY_CHOICES: ReadonlyArray<{ value: LucyAutonomy; label: string; description: string }> = [
+  {
+    value: 'careful',
+    label: 'Careful',
+    description: 'Tasks Lucy starts always ask for permission, even if this install bypasses permissions. She shows a card and waits for your go.',
+  },
+  {
+    value: 'balanced',
+    label: 'Balanced (default)',
+    description: 'Tasks Lucy starts run exactly like a task started from the Launch tab. She shows a card and waits for your go.',
+  },
+  {
+    value: 'hands-off',
+    label: 'Hands-off',
+    description: 'Tasks Lucy starts run with every permission bypassed. A clear request starts after a short window in which you can say cancel.',
+  },
+];
+
+/** Same substance as "Operational Risk" for KOOKR_BYPASS_ALL_PERMISSIONS in docs/reference/environment-variables.md. */
+const HANDS_OFF_WARNING =
+  'Hands-off removes agent permission prompts for every task Lucy starts: Claude Code runs with --dangerously-skip-permissions and Codex CLI with --dangerously-bypass-approvals-and-sandbox. It intentionally removes a safeguard, so use it only for controlled local sessions.';
+
 export type SettingsFocusField = 'maxActiveTasks' | 'relayConnection';
 
 interface Props {
@@ -810,6 +835,24 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   // Server default is on, so an absent value (older server) reads as on.
   const lucyLogEnabled = settings?.lucyInteractionLog !== false;
 
+  const lucyAutonomy: LucyAutonomy = settings?.lucyAutonomy ?? DEFAULT_LUCY_AUTONOMY;
+  const [handsOffWarningOpen, setHandsOffWarningOpen] = useState(false);
+
+  function saveLucyAutonomy(level: LucyAutonomy) {
+    if (!settings) return;
+    setHandsOffWarningOpen(false);
+    const updated: ServerSettings = { ...settings, lucyAutonomy: level };
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
+  function handleLucyAutonomyChange(level: LucyAutonomy) {
+    if (level === lucyAutonomy) { setHandsOffWarningOpen(false); return; }
+    // Hands-off removes the safeguards: nothing is saved until the warning is accepted.
+    if (level === 'hands-off') { setHandsOffWarningOpen(true); return; }
+    saveLucyAutonomy(level);
+  }
+
   function handleLucyLogToggle() {
     if (!settings) return;
     const updated = { ...settings, lucyInteractionLog: !lucyLogEnabled };
@@ -1242,6 +1285,40 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                       >
                         <span className="settings-toggle-knob" />
                       </button>
+                    </div>
+                    <div className="settings-row settings-row-fieldset">
+                      <fieldset className="settings-radio-group" data-testid="lucy-autonomy">
+                        <legend className="settings-label">Lucy autonomy</legend>
+                        <span className="settings-desc">
+                          How much confirmation Lucy needs before she starts a task for you. You can change this only here, never by asking her.
+                        </span>
+                        {LUCY_AUTONOMY_CHOICES.map((choice) => (
+                          <label key={choice.value} className="settings-radio-option">
+                            <input
+                              type="radio"
+                              name="lucyAutonomy"
+                              value={choice.value}
+                              checked={lucyAutonomy === choice.value}
+                              onChange={() => handleLucyAutonomyChange(choice.value)}
+                            />
+                            <span className="settings-radio-label">{choice.label}</span>
+                            <span className="settings-radio-desc">{choice.description}</span>
+                          </label>
+                        ))}
+                        {handsOffWarningOpen && (
+                          <div className="settings-warning" role="alertdialog" aria-label="Confirm hands-off" data-testid="lucy-autonomy-warning">
+                            <span className="settings-desc">{HANDS_OFF_WARNING}</span>
+                            <div className="settings-quiet-hours-times">
+                              <button type="button" className="settings-button" onClick={() => saveLucyAutonomy('hands-off')}>
+                                Turn on hands-off
+                              </button>
+                              <button type="button" className="settings-button secondary" onClick={() => setHandsOffWarningOpen(false)}>
+                                Keep {LUCY_AUTONOMY_CHOICES.find((c) => c.value === lucyAutonomy)?.label}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </fieldset>
                     </div>
                     <div className="settings-row settings-row-fieldset">
                       <div className="settings-audio-controls">
