@@ -18,7 +18,7 @@
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import { isGenericTaskName, spokenTaskName } from '../spoken-task-name.js';
-import { redactedTaskName } from '../task-speech-summary.js';
+import { redactedTaskName, redactSpeechSecrets } from '../task-speech-summary.js';
 import { cleanTaskText } from './task-text.js';
 
 type TimeValue = Date | string | number;
@@ -97,7 +97,9 @@ function dollars(value: number): string {
  */
 export function boardText(value: string | undefined, max = 80): string {
   const flat = cleanTaskText(value ?? '').replace(/\s+/g, ' ').trim();
-  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
+  // A cut can put a word boundary right after a long run that had none (`…run_` becomes `…run…`),
+  // so the ordinary redaction runs again on what is actually sent.
+  return flat.length > max ? redactSpeechSecrets(`${flat.slice(0, max - 1).trimEnd()}…`) : flat;
 }
 
 /**

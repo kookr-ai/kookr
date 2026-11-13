@@ -16,6 +16,7 @@
 
 import type { LlmFunctionTool } from '../llm-types.js';
 import { LUCY_LOOK_TOOL_NAMES, type LucyLookToolName } from '../../shared/contracts/lucy-turn.js';
+import { redactSpeechSecrets } from '../task-speech-summary.js';
 import { cleanTaskText } from './task-text.js';
 import { agoWords, boardText, buildLucyBoard, resolveTaskRef, spokenLabel, type LucyBoardInput, type LucyBoardTask } from './board.js';
 
@@ -99,7 +100,9 @@ export function untrusted(text: string, maxChars: number): string {
   // by a long run of spaces made the match quadratic, and one long line could stall the server.
   const safe = cleanTaskText(text).replace(/<[\s/]*untrusted_task_text\s*>/gi, '[marker removed]');
   const cut = safe.length > maxChars;
-  return `${UNTRUSTED_OPEN}\n${(cut ? safe.slice(0, maxChars) : safe).trim()}${cut ? '\n(the rest was cut)' : ''}\n${UNTRUSTED_CLOSE}`;
+  // After a cut the ordinary redaction runs again: the cut can give a long run the word boundary it lacked.
+  const body = cut ? redactSpeechSecrets(safe.slice(0, maxChars)).trim() : safe.trim();
+  return `${UNTRUSTED_OPEN}\n${body}${cut ? '\n(the rest was cut)' : ''}\n${UNTRUSTED_CLOSE}`;
 }
 
 function refuse(summary: string, content: string): LucyToolOutcome {
@@ -152,7 +155,7 @@ function describeTask(task: LucyBoardTask, detail: LucyTaskDetail | null, nowMs:
   // Each part is cleaned and cut on its own, so a long request cannot push the closing summary out.
   const part = (text: string, max: number): string => {
     const clean = cleanTaskText(text).trim();
-    return clean.length > max ? `${clean.slice(0, max).trimEnd()} (the rest was cut)` : clean;
+    return clean.length > max ? `${redactSpeechSecrets(clean.slice(0, max)).trimEnd()} (the rest was cut)` : clean;
   };
   const written: string[] = [];
   if (detail?.cwd) written.push(`Folder: ${part(detail.cwd, MAX_TASK_FOLDER_CHARS)}`);

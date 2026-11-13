@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { LUCY_LOOK_TOOL_NAMES } from '../../shared/contracts/lucy-turn.js';
 import { boardTask, fakeSource, NOW } from './__fixtures__/scripted.js';
+import { boardText } from './board.js';
 import { dispatchLucyTool, displayToolArgs, LUCY_LOOK_TOOLS, MAX_TASK_DETAIL_CHARS, untrusted } from './tools.js';
 
 const SECRET = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
@@ -134,6 +135,32 @@ describe('displayToolArgs', () => {
 
   test.each(['not json', '[1]', '"x"', ''])('gives nothing for arguments %j', (raw) => {
     expect(displayToolArgs(raw)).toEqual({});
+  });
+});
+
+describe('shortening after cleaning', () => {
+  // A 64-character run followed by "_" has no word boundary at its end, so it is not a token.
+  // Cut before the "_", it gets one, and the ordinary redaction must run again.
+  const run = `${'QWxhZGRpbjpvcGVuIHNlc2FtZSBhbmQgbW9yZQ12'}${'QWxhZGRpbjpvcGVuIHNlc2FtZSBh'}`;
+  const signal = `${run}_retry`;
+
+  test('the board hides a run that a cut leaves standing at the end', () => {
+    const cut = boardText(signal, 60);
+    expect(cut.endsWith('…')).toBe(true);
+    expect(cut).not.toContain(run.slice(0, 12));
+    expect(cut).toBe('[redacted]…');
+  });
+
+  test('a cut inside the untrusted block is redacted again', () => {
+    const wrapped = untrusted(signal, 60);
+    expect(wrapped).toContain('(the rest was cut)');
+    expect(wrapped).not.toContain(run.slice(0, 12));
+  });
+
+  test('a cut part of a task\'s detail is redacted again', async () => {
+    const prompt = `${'word '.repeat(270)}${run}_tail`; // the request's cap falls inside the run
+    const outcome = await dispatchLucyTool('read_task', '{"task":"aaaa"}', fakeSource({ tasks, details: { aaaa1111: { prompt } } }), NOW);
+    expect(outcome.content).not.toContain(run.slice(0, 12));
   });
 });
 

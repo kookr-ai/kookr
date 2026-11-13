@@ -66,9 +66,11 @@
  *   ordinary redaction.
  * - **The floor on what goes out.** The cleaned text contains nothing the ordinary
  *   redaction would still hide in it (step 5). The ordinary redaction is the rule the
- *   rest of the product applies to text it sends to a model. (Afterwards callers only
- *   shorten the cleaned text, collapse its white space, or replace a copy of the
- *   untrusted-text marker with `[marker removed]`; none of these can make a token.)
+ *   rest of the product applies to text it sends to a model. (Callers then collapse
+ *   white space, replace a copy of the untrusted-text marker with `[marker removed]`,
+ *   or shorten the text. The first two cannot make a token. A cut can, by giving a long
+ *   run the word boundary it lacked, so every caller that shortens runs the ordinary
+ *   redaction again on the shortened text.)
  *
  * The other ways of looking (step 3) go further than those two floors. They are
  * defence in depth: each finds the cases named beside it, the tests walk the
