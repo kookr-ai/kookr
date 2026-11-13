@@ -17,8 +17,9 @@
 // It blocks once (Claude Code sets `stop_hook_active` on the re-run, which we
 // always allow) with a specific instruction. It stays silent when the agent is
 // parked on its own background work (same predicate as `needs_input:stop`,
-// src/core/background-parked.ts), when the task lacks merge authority (review and merge are the
-// operator's), outside a Kookr task, or on any error (fail open).
+// src/core/background-parked.ts), outside a Kookr task, or on any error (fail open).
+// Tasks without merge authority skip the review/merge nudges (those steps are the
+// operator's) but still get the red-test nudge.
 // Opt out: KOOKR_DELIVERY_STOP_SKIP=1.
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
