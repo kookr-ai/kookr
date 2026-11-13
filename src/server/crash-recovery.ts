@@ -1,6 +1,7 @@
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { TaskStore, SessionInfo, Task } from '../core/tasks.js';
+import { launchPermissionOverrideOption } from './launch-permission-override.js';
 import { isRecoverableTermination, isTerminalStatus } from '../core/task-status.js';
 import {
   AdapterRegistry,
@@ -403,6 +404,8 @@ export async function recoverCrashedSessions(
           : undefined;
         const launchOptions = {
           ...buildRecoveryLaunchOptions(task.id, originalCwd, intent.intent),
+          // A resumed session keeps the permission choice the task was launched with (issue #3686).
+          ...launchPermissionOverrideOption(task),
           // Replay the loadout recorded at the original spawn (RFC Layer 2 /
           // slice 2b): a resumed agent MUST keep the capabilities it was
           // spawned with, so this is never re-resolved.

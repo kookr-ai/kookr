@@ -1,4 +1,5 @@
 import type { Task, TaskStore } from '../core/tasks.js';
+import { launchPermissionOverrideOption } from './launch-permission-override.js';
 import { isTerminalStatus, type TerminationCause, type TerminationReason } from '../core/task-status.js';
 import type { Monitor } from '../core/monitor.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
@@ -1176,12 +1177,12 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         pending,
       );
       // A permission choice made for this task when it was launched (Lucy, issue #3676) outlives the wait in the queue.
-      const permissionOverride = pending.metadata?.launchPermissionOverride;
-      const bypassAtPromotion = permissionOverride !== undefined ? permissionOverride === 'bypass' : deps.bypassAllPermissions === true;
+      const permissionOption = launchPermissionOverrideOption(pending);
+      const bypassAtPromotion = permissionOption.bypassPermissions ?? deps.bypassAllPermissions === true;
       const adapterOpts = {
         ...pins,
         ...loadoutFields,
-        ...(permissionOverride !== undefined ? { bypassPermissions: permissionOverride === 'bypass' } : {}),
+        ...permissionOption,
         signal: launchAbort.signal,
         onSessionCreated: (sessionId: string) => {
           const lateCleanup = noteLaunchSession(

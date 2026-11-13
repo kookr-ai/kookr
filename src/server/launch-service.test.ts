@@ -6238,6 +6238,23 @@ describe('launchFreshTaskSession timeout and cancellation (issue #2766)', () => 
     expect(adapter.stop).not.toHaveBeenCalled();
   });
 
+  it('starts every Ralph iteration with the permission choice the task was launched with (issue #3686)', async () => {
+    const adapter = deps.adapterRegistry.get('claude-code');
+    const careful = store.createTask({ prompt: 'careful loop', cwd: '/tmp', metadata: { launchPermissionOverride: 'prompt' } });
+    store.startTask(careful.id);
+    // A caller option must not undo the task's own choice.
+    await launchFreshTaskSession(deps, store.getTask(careful.id)!, 'continue', { bypassPermissions: true });
+    expect((adapter.launch as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[4]).toMatchObject({ bypassPermissions: false });
+
+    const handsOff = store.createTask({ prompt: 'hands-off loop', cwd: '/tmp', metadata: { launchPermissionOverride: 'bypass' } });
+    store.startTask(handsOff.id);
+    await launchFreshTaskSession(deps, store.getTask(handsOff.id)!, 'continue');
+    expect((adapter.launch as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[4]).toMatchObject({ bypassPermissions: true });
+
+    await launchFreshTaskSession(deps, existingTask(), 'continue');
+    expect((adapter.launch as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[4]).not.toHaveProperty('bypassPermissions');
+  });
+
   it('passes caller tmuxName/extraEnv and a launch abort signal to the adapter', async () => {
     const task = existingTask();
     await launchFreshTaskSession(deps, task, 'continue', {
