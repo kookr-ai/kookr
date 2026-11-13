@@ -163,8 +163,9 @@ Any other sentence the operator says during the window drops the held launch, li
   `lucy-interactions.jsonl` with the level it ran under and the task id.
 - The permission posture that applied is recorded on the task like any launch. A Careful or Hands-off
   override is kept on the task and holds at first launch, when a parked launch is promoted, when the task is
-  resumed after a crash, and on every Ralph loop iteration (#3686). An operator relaunch creates a new task,
-  which uses the install default.
+  resumed after a crash, and on every Ralph loop iteration (#3686). An operator relaunch creates a new task:
+  relaunching a Careful task keeps prompts on (#3697), and any other relaunch uses the install default. A
+  Hands-off choice is never inherited by a relaunch, because the parent id and the prompt come from the client.
 
 ### Residual risks
 
