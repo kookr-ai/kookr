@@ -75,7 +75,7 @@ describe('cleanTaskText: every terminal code, every token kind, every position',
     expect(codes.length).toBeGreaterThan(3000);
   });
 
-  test('a token standing right after a code, or right before one, is hidden and no control character remains', () => {
+  test('a whole token is hidden with a code right before it (after a word) or right after it (the token after "KEY="), and no control character remains', () => {
     const failures: string[] = [];
     for (const [code] of codes) {
       for (const kind of Object.keys(TOKENS) as TokenKind[]) {
@@ -89,11 +89,11 @@ describe('cleanTaskText: every terminal code, every token kind, every position',
     expect(failures.slice(0, 10)).toEqual([]);
   });
 
-  test('a token with a known prefix is hidden whatever code runs through it, wherever it is split, whatever stands before it', () => {
+  test('a token with a known prefix that stands after a space, after a word and a cursor move, or at the start is hidden whatever code runs through it, wherever it is split', () => {
     const failures: string[] = [];
-    // What stands before the token: a space, a word then a cursor move, a word then a colour.
-    // (A word glued straight onto the token, with no code between, is not a token to the ordinary redaction.)
-    const before = ['value ', `Bearer${ESC}[8G`, `Bearer${ESC}[1m`, ''];
+    // (A token glued onto a word on screen, as after a word and a colour, is not a token to the
+    // ordinary redaction; that case is pinned under "what it does not do".)
+    const before = ['value ', `Bearer${ESC}[8G`, ''];
     for (const [code] of codes) {
       for (const kind of ['github', 'shortKey'] as const) {
         const token = TOKENS[kind];
@@ -108,6 +108,13 @@ describe('cleanTaskText: every terminal code, every token kind, every position',
     expect(failures.slice(0, 10)).toEqual([]);
   });
 
+  test('a key that starts on the last two characters of another token, across a cursor move, is hidden to its end', () => {
+    // Joined, the text reads `ghp_AAAA…sk-BBB…`: the GitHub pattern takes it up to the "k", so the
+    // key that begins there, which a second cursor move splits, has to be looked for as well.
+    const raw = `ghp_${'A'.repeat(14)}${ESC}[Csk-BBB${ESC}[C${'B'.repeat(14)} end`;
+    expect(cleanTaskText(raw)).toBe('[redacted] end');
+  });
+
   test('a prefixed token that cursor moves split is hidden even with a word right before the first move', () => {
     expect(cleanTaskText(`Bearer${ESC}[8Gghp_A1b2C3${ESC}[30Gd4E5f6G7h8I9j0 end`)).toBe('Bearer [redacted] end');
     expect(cleanTaskText(`Authorization: Bearer${ESC}[35Gghp_A1b2C3d4E5f6${ESC}[2;1HG7h8I9j0K1l2M3n4O5p6Q7r8`)).toBe('Authorization: Bearer [redacted]');
@@ -115,7 +122,7 @@ describe('cleanTaskText: every terminal code, every token kind, every position',
     expect(cleanTaskText(`Bearer${ESC}[8Ggh${ESC}[9Gp_A1b2C3d4E5f6G7h8 end`)).toBe('Bearer [redacted] end');
   });
 
-  test('a long run with no known prefix is hidden when any code that is not a cursor move runs through it', () => {
+  test('a long run with no known prefix that starts at a word boundary is hidden when any code that is not a cursor move runs through it', () => {
     const failures: string[] = [];
     const token = TOKENS.longRun;
     for (const [code, joins] of codes) {
@@ -218,7 +225,7 @@ const MOVES_THE_CURSOR: Array<[capability: string, bytes: string]> = [
 ];
 
 describe('cleanTaskText: what real programs emit', () => {
-  test.each(DOES_NOT_MOVE_THE_CURSOR)('a key with "tput %s" in the middle of it is hidden whole', (_capability, bytes) => {
+  test.each(DOES_NOT_MOVE_THE_CURSOR)('a key after "=" with "tput %s" in the middle of it is hidden whole', (_capability, bytes) => {
     for (const token of Object.values(TOKENS)) {
       for (const at of [8, 20]) {
         expect(cleanTaskText(`AWS_SECRET_ACCESS_KEY=${token.slice(0, at)}${bytes}${token.slice(at)}\n`)).toBe('AWS_SECRET_ACCESS_KEY=[redacted]\n');
@@ -226,7 +233,7 @@ describe('cleanTaskText: what real programs emit', () => {
     }
   });
 
-  test('a key coloured the way a shell script colours it (setaf … sgr0) is hidden whole', () => {
+  test('a key after "=" coloured the way a shell script colours it (setaf … sgr0) is hidden whole', () => {
     // printf 'AWS_SECRET_ACCESS_KEY=%s\n' "$K" | sed "s/cGVuIHNl/$(tput setaf 1)&$(tput sgr0)/"
     const [before, match, after] = ['QWxhZGRpbjpv', 'cGVuIHNl', 'c2FtZSBhbmQgbW9yZQ12'];
     for (const reset of [`${ESC}(B${ESC}[m`, `${ESC}[m\u000f`]) {
@@ -234,7 +241,7 @@ describe('cleanTaskText: what real programs emit', () => {
     }
   });
 
-  test('a key that grep --color prints, with erase codes inside it, is hidden whole', () => {
+  test('a key after "=" that grep --color prints, with erase codes inside it, is hidden whole', () => {
     // grep --color=always sk- .env
     expect(cleanTaskText(`KEY=${ESC}[01;31m${ESC}[Ksk-${ESC}[m${ESC}[Kshortkey1234567890\n`)).toBe('KEY=[redacted]\n');
   });
@@ -250,7 +257,7 @@ describe('cleanTaskText: what real programs emit', () => {
 describe('cleanTaskText: a control sequence with an intermediate byte is not a cursor move', () => {
   // `ESC[1$u` and `ESC[ d` end in the letters of "restore cursor" and "row", but the byte before
   // the letter makes them other functions. A terminal emulator shows the key whole.
-  test.each([`${ESC}[1$u`, `${ESC}[ d`, `${ESC}[&u`, `${ESC}[!H`, `${ESC}[4:3G`])('a key with %j in the middle of it is hidden whole', (code) => {
+  test.each([`${ESC}[1$u`, `${ESC}[ d`, `${ESC}[&u`, `${ESC}[!H`, `${ESC}[4:3G`])('a key after "=" with %j in the middle of it is hidden whole', (code) => {
     for (const token of Object.values(TOKENS)) {
       expect(cleanTaskText(`AWS_SECRET_ACCESS_KEY=${token.slice(0, 20)}${code}${token.slice(20)}\n`)).toBe('AWS_SECRET_ACCESS_KEY=[redacted]\n');
     }
@@ -415,6 +422,70 @@ describe('cleanTaskText: never weaker than the ordinary redaction of the same ch
   });
 });
 
+describe('cleanTaskText: nothing the ordinary redaction would hide is left in what is sent', () => {
+  test('the ordinary redaction finds nothing more to hide in the result, with codes of every kind mixed in', () => {
+    let seed = 13579;
+    const random = (n: number): number => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    const codes = everyCode().map(([code]) => code);
+    const pieces = [TOKENS.github, TOKENS.shortKey, TOKENS.longRun, TOKENS.longRun.slice(0, 20), 'sk-', 'ghp_', 'Bearer', 'name_', 'KEY=', ' ', '\n', '/', '+', '=', '-', '<<<TASK_CONTEXT>>>', '<<< END >>>'];
+    for (let i = 0; i < 6000; i++) {
+      const raw = Array.from({ length: 2 + random(8) }, () => (random(3) === 0 ? codes[random(codes.length)]! : pieces[random(pieces.length)]!)).join('');
+      const cleaned = cleanTaskText(raw);
+      expect(redactSpeechSecrets(cleaned)).toBe(cleaned);
+    }
+  });
+
+  test('what the ordinary redaction would hide in the laid-out text is hidden, for the real terminal codes in the tables above', () => {
+    // The layout is built here from the documented effect of real terminal capabilities, not from the cleaner:
+    // nothing for a capability that does not move the cursor, a gap for one that does.
+    let seed = 24680;
+    const random = (n: number): number => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const letters = (n: number): string => Array.from({ length: n }, () => ALNUM[random(ALNUM.length)]).join('');
+    const SECRET = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/g;
+    const failures: string[] = [];
+    let secretsSeen = 0;
+    for (let i = 0; i < 9000; i++) {
+      let raw = '';
+      let screen = '';
+      for (let part = 0, parts = 2 + random(7); part < parts; part++) {
+        const kind = random(9);
+        if (kind === 0) {
+          const [, bytes] = DOES_NOT_MOVE_THE_CURSOR[random(DOES_NOT_MOVE_THE_CURSOR.length)]!;
+          raw += bytes;
+        } else if (kind === 1) {
+          const [, bytes] = MOVES_THE_CURSOR[random(MOVES_THE_CURSOR.length)]!;
+          raw += bytes;
+          screen += ' ';
+        } else {
+          const text = [`ghp_${letters(8)}`, letters(14), `sk-${letters(6)}`, letters(20), letters(3), ' ', '=', '_', letters(4), ' '][random(10)]!;
+          raw += text;
+          screen += text;
+        }
+      }
+      const cleaned = cleanTaskText(raw);
+      for (const match of screen.matchAll(SECRET)) {
+        secretsSeen += 1;
+        // Six characters in a row of the token as the screen shows it.
+        for (let k = 0; k + 6 <= match[0].length; k++) {
+          if (cleaned.includes(match[0].slice(k, k + 6))) {
+            failures.push(`${JSON.stringify(match[0])} on screen ${JSON.stringify(screen)} from ${JSON.stringify(raw)} -> ${JSON.stringify(cleaned)}`);
+            break;
+          }
+        }
+      }
+    }
+    expect(secretsSeen).toBeGreaterThan(1500);
+    expect(failures.slice(0, 5)).toEqual([]);
+  });
+});
+
 describe('cleanTaskText: ordinary text is left alone', () => {
   test('text with no control characters gets exactly the ordinary redaction', () => {
     // A small deterministic generator, so a failure can be reproduced.
@@ -446,13 +517,40 @@ describe('cleanTaskText: ordinary text is left alone', () => {
     expect(cleanTaskText(raw)).toBe(' ✓ src/core/lucy-operator/turn.test.ts (17 tests)\n');
   });
 
-  test('a hyphenated name next to a code is not taken for a key', () => {
+  test('a hyphenated name with a colour code in it is not taken for a key', () => {
     expect(cleanTaskText(`${ESC}[1mtask-${ESC}[0mmanagement-systems-overview`)).toBe('task-management-systems-overview');
     expect(cleanTaskText(`risk-${ESC}[5Gassessment-for-the-quarter`)).toBe('risk- assessment-for-the-quarter');
+  });
+
+  test('words that grep --color highlights the "sk-" of are left alone', () => {
+    // grep --color=always 'sk-' wraps the match in colour and erase codes: ta|sk-|management…
+    const highlight = (before: string, after: string): string => `${before}${ESC}[01;31m${ESC}[Ksk-${ESC}[m${ESC}[K${after}`;
+    expect(cleanTaskText(highlight('ta', 'management-system-design'))).toBe('task-management-system-design');
+    expect(cleanTaskText(highlight('ri', 'assessment-document.md'))).toBe('risk-assessment-document.md');
+    // The same highlight on a real key, which starts at a word boundary, is still hidden.
+    expect(cleanTaskText(highlight('KEY=', 'shortkey1234567890'))).toBe('KEY=[redacted]');
   });
 });
 
 describe('cleanTaskText: what it does not do', () => {
+  test('a long run glued onto a word on screen is not a token, with or without colour codes in it', () => {
+    const run = TOKENS.longRun;
+    expect(redactSpeechSecrets(`name_${run} end`)).toBe(`name_${run} end`);
+    expect(cleanTaskText(`name_${ESC}[1m${run.slice(0, 20)}${ESC}[0m${run.slice(20)} end`)).toBe(`name_${run} end`);
+    // With a cursor move in front it is apart from the word on screen, and it is hidden.
+    expect(cleanTaskText(`name_${ESC}[8G${run.slice(0, 20)}${ESC}[0m${run.slice(20)} end`)).toBe('name_ [redacted] end');
+  });
+
+  test('a prefixed token glued onto a word by a colour code, and split further in, is not a token either', () => {
+    expect(cleanTaskText(`Bearer${ESC}[1mghp_A1b2C3${ESC}[0md4E5f6G7h8I9j0 end`)).toBe('Bearerghp_A1b2C3d4E5f6G7h8I9j0 end');
+    // Whole after the code, it is hidden: one reading takes every code for a separator.
+    expect(cleanTaskText(`Bearer${ESC}[1mghp_A1b2C3d4E5f6G7h8I9j0 end`)).toBe('Bearer[redacted] end');
+  });
+
+  test('a token that a cut-off code and a second code both touch is not put back together', () => {
+    expect(cleanTaskText(`Bearer${ESC}[35;1ghp_A1b2C3${ESC}[30Gd4E5f6G7h8I9j0 end`)).toBe('Bearerhp_A1b2C3 d4E5f6G7h8I9j0 end');
+  });
+
   test('a prefixed token glued onto a word with no code between is not a token, as for the ordinary redaction', () => {
     // "Bearerghp_…": no word boundary before the prefix, in the raw text or in any reading.
     const glued = `Bearergh${ESC}[9Gp_A1b2C3d4E5f6G7h8 end`;
@@ -489,6 +587,11 @@ describe('cleanTaskText: stays fast on hostile input', () => {
     ['string codes that never end', `${ESC}]`.repeat(300_000)],
     ['one string code that never ends', `${ESC}]${'x'.repeat(600_000)}`],
     ['carriage returns only', '\r'.repeat(300_000)],
+    // Each of these made the "token may start where a cursor move stood" probe rescan the text from every code.
+    ['a control character and a key prefix, over and over', '\u007fsk-'.repeat(160_000)],
+    ['a backspace and a key prefix, over and over', '\u0008sk-'.repeat(160_000)],
+    ['a cursor move and a GitHub prefix, over and over', `${ESC}[Cghp_`.repeat(100_000)],
+    ['a backspace and a key prefix followed by dashes, over and over', '\u0008sk-------------'.repeat(40_000)],
   ])('%s', (_label, hostile) => {
     within10s(() => {
       expect(CONTROL.test(cleanTaskText(hostile))).toBe(false);

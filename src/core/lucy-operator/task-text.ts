@@ -21,65 +21,73 @@
  *
  * 1. One pass over the text finds every terminal code, as a range of the raw text,
  *    reading them the way a terminal does (the ECMA-48 grammar, malformed codes
- *    included). Every escape, 8-bit control and control character ends up inside a
- *    range, whole.
- * 2. Each code either joins its neighbours or separates them. **Only the codes that
- *    move the cursor separate**, and they are a short, fixed list (see
+ *    included), up to a fixed length per code. Every escape, 8-bit control and
+ *    control character ends up inside a range; tab and line feed are ordinary text.
+ * 2. Each code either joins what stands on either side of it or separates it. **Only
+ *    the codes that move the cursor separate**, and they are a short, fixed list (see
  *    `CURSOR_MOVE_FINALS`, `CURSOR_MOVE_ESCAPES`, `CURSOR_MOVE_CONTROLS`). Every other
- *    code joins, including any code the list has never heard of. That is the safe
- *    direction: joining can make more text look like one token, never less.
+ *    code joins, including any code the list has never heard of, because a colour, an
+ *    erase or a mode change leaves the characters before and after it side by side on
+ *    screen.
  * 3. Secrets are looked for in five ways, because no single reading of the text is
  *    right for every case:
- *    - in the raw characters, codes and all, exactly as the ordinary redaction does
- *      (this is what makes the floor below hold by construction);
- *    - every code separates words (finds a token standing right after a code);
- *    - joining codes join, cursor moves separate (finds a token that a colour, an
- *      erase or a mode change runs through);
- *    - every code joins, looking only for tokens with a known prefix. A token may
- *      start at a word boundary or right where a code stood. This finds a prefixed
- *      token that any codes run through, cursor moves included, and is a net under
- *      the list above in case a code was wrongly taken for a cursor move;
- *    - a token may start at any of the letters and digits a code ends with. This finds
- *      a token whose first characters the scanner read as part of a code that was in
- *      fact cut off (`ESC[35;1` + `ghp_…`, or `ESC[` + a token that starts with digits).
+ *    - in the raw characters, codes and all, exactly as the ordinary redaction does;
+ *    - with every code read as a separator (finds a whole token standing right after
+ *      any code, even one that joins);
+ *    - with joining codes removed and cursor moves read as separators: the text as it
+ *      is laid out on screen (finds a token that a colour, an erase or a mode change
+ *      runs through);
+ *    - with every code removed, looking only for tokens with a known prefix, which may
+ *      start at a word boundary or right where a cursor move stood (finds a prefixed
+ *      token that cursor moves run through);
+ *    - with a token allowed to start at any of the letters and digits a code ends with
+ *      (finds a token whose first characters the scanner read as part of a code that
+ *      was in fact cut off: `ESC[35;1` + `ghp_…`, or `ESC[` + a token that starts with
+ *      digits).
  *
- *    The readings that put ordinary text together where a cursor move stood look only
- *    for known prefixes: with the "any run of 32 or more characters" rule they would
- *    hide ordinary words that a terminal placed side by side.
- * 4. Every span any reading found is hidden, in the raw text, in one go. Then the
- *    codes that remain are rendered: nothing for a joining code, a space for a cursor
- *    move.
- *
- * Text with no control characters gets exactly the ordinary redaction.
+ *    The reading that removes cursor moves looks only for known prefixes: with the
+ *    "any run of 32 or more characters" rule it would hide ordinary words that a
+ *    terminal placed side by side.
+ * 4. Every span found in any of these ways is hidden, in the raw text, in one go. The
+ *    codes that remain are then rendered: nothing for a joining code, a space for a
+ *    cursor move.
+ * 5. The ordinary redaction is applied once more to the result, which is what is sent.
  *
  * ## What is promised
  *
- * **The floor.** The result is never weaker than the ordinary redaction
- * (`redactSpeechSecrets`) applied to the same characters: whatever that would hide in
- * the raw text is hidden here, and text with no control characters gets exactly the
- * ordinary redaction. This is the rule the rest of the product applies to text it sends
- * to a model. It holds by construction, because the spans the ordinary redaction finds
- * in the raw text are among the spans hidden, and a fuzz test over text with codes in
- * it checks that no character of such a span survives.
+ * Two things hold by construction, and tests check both:
  *
- * **On top of the floor.** A token is also hidden when terminal codes stand before it,
- * after it or inside it, where the ordinary redaction alone would miss it. The test
- * walks the terminal-code grammar and the real bytes `tput` emits to check this. It is
- * defence in depth, not a proof for every sequence of bytes, and two cases are known
- * to be outside it:
+ * - **The floor on what came in.** Whatever the ordinary redaction (`redactSpeechSecrets`)
+ *   would hide in the raw characters is hidden: the spans it finds there are among the
+ *   spans hidden (step 3, first way). Text with no control characters gets exactly the
+ *   ordinary redaction.
+ * - **The floor on what goes out.** The cleaned text contains nothing the ordinary
+ *   redaction would still hide in it (step 5). The ordinary redaction is the rule the
+ *   rest of the product applies to text it sends to a model. (Callers only shorten the
+ *   cleaned text or collapse its white space afterwards.)
  *
- * - **A token with no known prefix that a cursor move splits.** On screen the two
- *   halves are usually apart. They are read as two pieces, and a piece shorter than 32
- *   characters is not hidden. A token with a known prefix (`sk-`, a GitHub token) is
- *   hidden even then, as long as it starts at a word boundary or right after a code.
- *   One that is glued onto a word with no code between (`Bearerghp_…`) is not a token
- *   to the ordinary redaction either, with or without codes further in.
+ * The other ways of looking (step 3) go further than those two floors. They are
+ * defence in depth: each finds the cases named beside it, the tests walk the
+ * terminal-code grammar and the real bytes `tput` emits to check them, and none of them
+ * is a proof for every arrangement of codes. Known to be outside them:
+ *
+ * - **A token glued onto a word on screen.** `name_` + colour code + a long run is
+ *   `name_…` with the run attached, and `Bearer` + colour code + half a key + another
+ *   code + the other half is `Bearerghp_…`. The ordinary redaction does not treat
+ *   either as a token in plain text, and neither does this, unless the whole token
+ *   stands right after the code.
+ * - **A token with no known prefix that a cursor move splits.** It is read as two
+ *   pieces, as on screen, and a piece shorter than 32 characters is not recognised on
+ *   its own.
+ * - **A token that a cut-off code and a second code both touch.** A cut-off code takes
+ *   the token's first characters. That is undone when the rest of the token follows
+ *   in one piece, and may not be when another code splits it.
  * - **A token that exists only on screen**, because characters were overwritten in
  *   place (backspace or cursor-left, then retype). This reads characters; it does not
  *   emulate a screen.
  *
- * Side effect of the net: a word glued straight onto a prefixed token by a code is
- * hidden with it.
+ * Side effect of the prefixed reading: a word that a cursor move glues straight onto a
+ * prefixed token is hidden with it.
  *
  * Reading a task's terminal needs more than this: there the screen is what matters, so
  * that look-up waits for a real emulator, run in a worker with a deadline (issue #3683,
@@ -239,11 +247,11 @@ function secretsInReading(
   ranges: readonly CodeRange[],
   keep: (range: CodeRange) => 'drop' | 'separate',
   kind: 'all' | 'prefixed',
-  /** Also accept a token that starts right where a dropped code stood, whatever stands before the code. */
-  startAfterCodes = false,
+  /** Also accept a token that starts right where a dropped cursor move stood, whatever stands before it. */
+  startAfterCursorMoves = false,
 ): Span[] {
   // The reading is built from slices of the raw text, with a table saying where each slice came
-  // from, so a megabyte of output costs a few string joins rather than a step per character.
+  // from, rather than a step per character.
   let view = '';
   const pieces: Array<{ viewStart: number; rawStart: number }> = [];
   const copy = (from: number, to: number): void => {
@@ -255,13 +263,13 @@ function secretsInReading(
     pieces.push({ viewStart: view.length, rawStart: at });
     view += '\n'; // never part of a secret, always a word boundary
   };
-  /** Places in the reading where a dropped code stood. */
-  const whereCodesStood: number[] = [];
+  /** Places in the reading where a dropped cursor move stood, in order. */
+  const whereCursorMovesStood: number[] = [];
   let cursor = 0;
   for (const range of ranges) {
     copy(cursor, range.start);
     if (keep(range) === 'separate') separator(range.start);
-    else if (whereCodesStood[whereCodesStood.length - 1] !== view.length) whereCodesStood.push(view.length);
+    else if (!range.joins && whereCursorMovesStood[whereCursorMovesStood.length - 1] !== view.length) whereCursorMovesStood.push(view.length);
     cursor = range.end;
   }
   copy(cursor, text.length);
@@ -279,13 +287,26 @@ function secretsInReading(
     return piece.rawStart + (index - piece.viewStart);
   };
   const found: Array<[number, number]> = speechSecretSpans(view, kind);
-  if (startAfterCodes) {
-    // Dropping a code glues the word before it onto what follows, and a token there no longer
-    // starts at a word boundary. A code is a boundary all the same, so try each such place.
-    for (const at of whereCodesStood) {
-      if (at >= view.length) continue;
+  if (startAfterCursorMoves) {
+    // Dropping a cursor move glues the word before it onto what follows, and a token there no
+    // longer starts at a word boundary. On screen the cursor move is a gap, so try each such place.
+    // A place inside a token already found is skipped: without that, text made of nothing but
+    // codes and prefixes would be rescanned from every code and the cost would grow with its square.
+    // (Two characters of slack: `sk-` can begin on the last two characters of a GitHub token.)
+    const regular = found.length;
+    let next = 0;
+    let coveredUpTo = 0;
+    for (const at of whereCursorMovesStood) {
+      while (next < regular && found[next]![0] <= at) {
+        coveredUpTo = Math.max(coveredUpTo, found[next]![1]);
+        next += 1;
+      }
+      if (at >= view.length || at + 2 < coveredUpTo) continue;
       const end = speechSecretEndAt(view, at, kind);
-      if (end !== null) found.push([at, end]);
+      if (end !== null) {
+        found.push([at, end]);
+        coveredUpTo = Math.max(coveredUpTo, end);
+      }
     }
   }
   return found.map(([start, end]): Span => [toRaw(start), toRaw(end - 1) + 1]);

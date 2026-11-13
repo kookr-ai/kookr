@@ -134,14 +134,24 @@ Before any of this is sent, secret-looking tokens (API keys and similar) are rep
 and the earlier exchanges. Each look-up is also cut to a fixed length.
 
 A request or a closing summary can contain pasted terminal output, with the codes a terminal uses to
-draw (colours, cursor moves, erases) between the words. Those codes are removed, and a token is
-hidden when codes stand before it, after it or inside it. Two cases are not covered, because this
-reads the characters and does not rebuild a screen:
+draw (colours, cursor moves, erases) between the words. Those codes are removed before the text is
+sent. Two things are then certain:
 
-- a long random-looking run with no known prefix that a cursor move splits in two is read as two
-  pieces, and a piece shorter than 32 characters is not hidden;
+- whatever the ordinary redaction would hide in the text as it came in is hidden;
+- the ordinary redaction finds nothing more to hide in the cleaned text.
+
+Beyond that, the text is also checked the way a screen would show it: a colour or an erase does not
+break a token, and a cursor move does. So a key that would be hidden on its own is still hidden with
+a colour code in the middle of it, and so is a whole key that stands right after a code. This extra
+checking is a safety net, not a guarantee for every arrangement of codes. It reads characters and
+does not rebuild a screen, so it does not cover, among others:
+
+- a token glued onto a word on screen (`name_` followed directly by a long run), which the ordinary
+  redaction does not treat as a token in plain text either;
+- a long random-looking run with no known prefix that a cursor move splits in two: it is read as two
+  pieces, and a piece shorter than 32 characters is not recognised on its own;
 - a token that only appears on screen because characters were overwritten in place (backspace, then
-  retype) is not recognised.
+  retype).
 
 The redaction recognises token shapes. It does not know which words are confidential. If task names
 or task requests must not leave the machine, leave the setting off.
