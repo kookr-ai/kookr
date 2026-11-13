@@ -2,7 +2,7 @@ import { isOpenCodeProfileError, resolveOpenCodeProfile } from '../adapters/open
 import { stat } from 'node:fs/promises';
 import { expandConfiguredCwd } from './cwd-paths.js';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
-import { launchPermissionOverrideOption } from './launch-permission-override.js';
+import { launchPermissionOverrideOption, relaunchPermissionOverride } from './launch-permission-override.js';
 import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
 import type { DeliveryAuthorization, TaskDispositionReason, TaskLaunchIntent } from '../shared/contracts/task.js';
 import {
@@ -150,6 +150,8 @@ export interface LaunchTaskServerOptions {
    * the install default, exactly as a Launch-tab launch gets. Set only by Lucy's launch
    * (issue #3676), from the operator's `lucyAutonomy` setting read on the server; never from
    * client `LaunchOpts`. The posture recorded on the task is the one that actually applied.
+   * When absent on an operator relaunch of a task launched with prompts on, `launchTaskCore`
+   * sets it to `false` (issue #3697); `true` is never inherited.
    */
   bypassPermissions?: boolean;
 }
@@ -1387,6 +1389,12 @@ async function launchTaskCore(
   // any task record or side effect is created. In-flight agents are untouched.
   if (deps.isAccepting && !deps.isAccepting()) {
     throw new DrainModeError();
+  }
+  // An operator relaunch of a task launched with prompts forced on keeps them on (issue #3697).
+  // Never inherits `bypass`; see relaunchPermissionOverride.
+  const relaunchBypass = relaunchPermissionOverride(opts, serverOpts.bypassPermissions, (id) => taskStore.getTask(id));
+  if (relaunchBypass !== serverOpts.bypassPermissions) {
+    serverOpts = { ...serverOpts, bypassPermissions: relaunchBypass };
   }
   // Automation kill-switch (issue #1710) + per-project pause: refuse autonomous
   // launches only. Manual sources stay accepted. The cross-repo orchestrator

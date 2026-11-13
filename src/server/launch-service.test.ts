@@ -2754,6 +2754,66 @@ describe('launchTask', () => {
       expect(adapterOptions()).not.toHaveProperty('bypassPermissions');
       expect(result.task.metadata?.launchPermissionPosture).toMatchObject({ bypassAllPermissions: true });
     });
+
+    describe('operator relaunch (issue #3697)', () => {
+      const parentWith = (launchPermissionOverride?: 'prompt' | 'bypass') => store.createTask({
+        prompt: 'parent', cwd: '/tmp', ...(launchPermissionOverride ? { metadata: { launchPermissionOverride } } : {}),
+      });
+
+      it('keeps prompts on when relaunching a task launched at Careful on an install that bypasses them', async () => {
+        const parent = parentWith('prompt');
+        const result = await launchTask(
+          { ...deps, bypassAllPermissions: true },
+          { prompt: 'relaunch careful', cwd: '/tmp', parentTaskId: parent.id, userInitiatedRelaunch: true },
+        );
+
+        expect(adapterOptions()?.bypassPermissions).toBe(false);
+        // Recorded on the new task, so its own resume, promotion and next relaunch keep it too.
+        expect(store.getTask(result.task.id)?.metadata?.launchPermissionOverride).toBe('prompt');
+      });
+
+      it('never inherits bypass: relaunching a Hands-off task on an install that prompts keeps the install default', async () => {
+        const parent = parentWith('bypass');
+        const result = await launchTask(
+          { ...deps, bypassAllPermissions: false },
+          { prompt: 'relaunch hands-off', cwd: '/tmp', parentTaskId: parent.id, userInitiatedRelaunch: true },
+        );
+
+        expect(adapterOptions()).not.toHaveProperty('bypassPermissions');
+        expect(store.getTask(result.task.id)?.metadata?.launchPermissionOverride).toBeUndefined();
+      });
+
+      it('keeps the install default when the parent recorded no choice', async () => {
+        const parent = parentWith();
+        await launchTask(
+          { ...deps, bypassAllPermissions: true },
+          { prompt: 'relaunch balanced', cwd: '/tmp', parentTaskId: parent.id, userInitiatedRelaunch: true },
+        );
+
+        expect(adapterOptions()).not.toHaveProperty('bypassPermissions');
+      });
+
+      it('a server-set choice on the relaunch itself wins over the parent', async () => {
+        const parent = parentWith('prompt');
+        await launchTask(
+          { ...deps, bypassAllPermissions: false },
+          { prompt: 'relaunch with own choice', cwd: '/tmp', parentTaskId: parent.id, userInitiatedRelaunch: true },
+          { bypassPermissions: true },
+        );
+
+        expect(adapterOptions()?.bypassPermissions).toBe(true);
+      });
+
+      it('applies only to an operator relaunch, not to an autonomous child of the Careful task', async () => {
+        const parent = parentWith('prompt');
+        await launchTask(
+          { ...deps, bypassAllPermissions: true },
+          { prompt: 'autonomous child', cwd: '/tmp', parentTaskId: parent.id },
+        );
+
+        expect(adapterOptions()).not.toHaveProperty('bypassPermissions');
+      });
+    });
   });
 
   it('does not set playbookParameterValues when not provided', async () => {
