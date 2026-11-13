@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parsePlaybook } from './playbook-parser.js';
 import { KB_LESSON_SKIP_MARKER } from './kb-lesson-classifier.js';
+import { LESSON_WRITE_TEMPLATE } from './lesson-decision.js';
 
 /**
  * Contract tests for the implement-github-issue playbook. The author-filter
@@ -198,7 +199,12 @@ describe('implement-github-issue playbook', () => {
     // classifier's constant verbatim — substring detection means any drift
     // breaks the metric silently.
     expect(pb.body).toMatch(/Phase 8\.5: Post-task KB lesson decision/);
-    expect(pb.body).toContain('kb remember --kb=agent-task-lessons');
+    // Issue #3695: the playbook shows the exact template the stop nudge and
+    // the 409 hint show, so the first write passes `--lesson` validation.
+    expect(pb.body).toContain(LESSON_WRITE_TEMPLATE.split('\n')[0]);
+    for (const heading of ['## Mistake', '## Why it happened', '## Better next time']) {
+      expect(pb.body).toContain(heading);
+    }
     expect(pb.body).toContain(KB_LESSON_SKIP_MARKER);
     expect(pb.body).toContain('lesson_decision_required');
     expect(pb.body).toMatch(/before.*completion-ready/i);

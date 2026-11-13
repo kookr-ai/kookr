@@ -27,17 +27,38 @@ const API_TIMEOUT_MS = 2500;
 const DEFAULT_MIN_TASK_AGE_MS = 45_000;
 const KILL_MARKER = '/dev/shm/.kookr-nudge-disabled';
 
+// Keep in sync with LESSON_DECISION_TEMPLATE in src/core/lesson-decision.ts
+// (issue #3695). This script runs as plain node without the TS build, so the
+// text is duplicated here; kookr-stop-nudge.test.ts pins the two together.
+const LESSON_DECISION_TEMPLATE = [
+  'Record the post-task lesson decision in ONE Bash call. The gate accepts either form equally:',
+  '(a) a generic lesson. The body goes on stdin, never as an argument; keep the three "## " headings and the blank lines:',
+  "cat <<'EOF' | kb remember --lesson --title=\"<short headline>\" --stdin --yes",
+  '## Mistake',
+  '',
+  '<what action led to the unwanted outcome>',
+  '',
+  '## Why it happened',
+  '',
+  '<root cause, not the symptom>',
+  '',
+  '## Better next time',
+  '',
+  '<a generic rule: no PR numbers, branch names, file paths or proper nouns>',
+  'EOF',
+  "(b) no generic lesson: printf 'No generic KB lesson: %s\\n' '<one-line reason>'",
+  'If kb exits 3 (similarity guard), a similar lesson already exists: do not rephrase and retry. '
+    + "Record the decision with printf 'No generic KB lesson: %s\\n' 'covered by <path kb printed>', "
+    + 'or re-run the same command with --force only when your lesson is genuinely new.',
+].join('\n');
+
 const NUDGE_REASON =
-  'If you consider this Kookr task fully complete and ready to be closed: first emit a '
-  + 'post-task lesson decision in the Bash hook trail '
-  + '(`kb remember --kb=agent-task-lessons …` OR '
-  + '`printf \'No generic KB lesson: %s\\n\' \'<reason>\'`), then run '
-  + '`kookr signal completion-ready` (optionally with --note "..."). '
-  + 'Completion-ready is rejected without that decision (issue #1538); a '
-  + '`kb remember` the similarity guard suppressed (stored nothing) does not count — '
-  + 're-run with --force/--append or print the explicit skip. The user will then '
-  + 'review and complete it. If there is more to do — or this is just a turn boundary, '
-  + 'not the end of the task — simply continue or stop as you judge. '
+  'If you consider this Kookr task fully complete and ready to be closed: first record the '
+  + 'post-task lesson decision, then run `kookr signal completion-ready` (optionally with '
+  + '--note "..."). Completion-ready is rejected without that decision (issue #1538).\n'
+  + LESSON_DECISION_TEMPLATE
+  + '\nThe user will then review and complete it. If there is more to do — or this is just a '
+  + 'turn boundary, not the end of the task — simply continue or stop as you judge. '
   + 'This reminder fires at most once per task.';
 
 /** Exit 0 always. Optionally emit a block decision first. */
@@ -227,4 +248,4 @@ if (isInvokedDirectly()) {
   main().catch(() => done(false));
 }
 
-export { resolveBaseUrl, markerPath, isTerminalStatus, parseMinAge, NUDGE_REASON, done, main };
+export { resolveBaseUrl, markerPath, isTerminalStatus, parseMinAge, NUDGE_REASON, LESSON_DECISION_TEMPLATE, done, main };

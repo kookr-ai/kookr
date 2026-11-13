@@ -193,6 +193,14 @@ async function runYield(
         `Gate-exempt reasons: ${exemptKeys.map((k) => `${k}=${snapshot.gateExemptReasons[k]}`).join(' ')}`,
       );
     }
+    const m2f = snapshot.mergeToFinished;
+    if (m2f.count > 0) {
+      const min = (ms: number | null) => (ms === null ? 'n/a' : `${(ms / 60_000).toFixed(1)} min`);
+      io.out.log(
+        `Merge → finished:    p50 ${min(m2f.p50Ms)}  p90 ${min(m2f.p90Ms)}`
+          + `  max ${min(m2f.maxMs)}  (${m2f.count} merged task(s))`,
+      );
+    }
     io.out.log(`Generated: ${snapshot.generatedAt}`);
   }
   return 0;

@@ -32,6 +32,7 @@ import {
   type HookLogScanOptions,
   type TaskSessionLike,
 } from './lesson-decision.js';
+import { isPrMergeCommand } from './pr-merge-command.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -148,10 +149,7 @@ const PR_NUMBER_EXPLICIT_RE = /\b(?:PR|pull request)\s*#?(\d+)\b/gi;
  */
 export function classifyMergeTrailCommand(command: string): MergeTrailSignal {
   if (command.includes(PR_BLOCKER_MARKER)) return 'pr-blocker';
-  // Merge wrappers used by autonomous delivery on kookr-ai/kookr and forks.
-  if (/\bgh\s+pr\s+merge\b/i.test(command)) return 'pr-merge';
-  if (/\bpnpm\s+merge\b/i.test(command)) return 'pr-merge';
-  if (/\bkookr-merge\.sh\b/i.test(command)) return 'pr-merge';
+  if (isPrMergeCommand(command)) return 'pr-merge';
   if (/\bgh\s+pr\s+create\b/i.test(command)) return 'pr-create';
   return 'none';
 }

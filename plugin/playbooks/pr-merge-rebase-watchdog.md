@@ -271,9 +271,11 @@ Otherwise (a real run with stuck work whose resolution needs a later tick — e.
 BEHIND PRs updated this run that must re-check before merging) leave
 `.watchdog-stop` absent so the loop re-fires and the next sweep can merge them.
 
-Before finishing, emit the post-task lesson decision — either a
-`kb remember --kb=agent-task-lessons …` write, or the skip marker
-`printf 'No generic KB lesson: %s\n' '<reason>'` — then run `kookr signal
+Before finishing, emit the post-task lesson decision in one call — either a
+`kb remember --lesson …` write using the template in CLAUDE.md (`## Mistake` /
+`## Why it happened` / `## Better next time`), or the skip marker
+`printf 'No generic KB lesson: %s\n' '<reason>'`, which the gate accepts
+equally — then run `kookr signal
 completion-ready` with a one-line disposition note. You were launched with
 `--auto-close-on-signal`; do not signal while a merge or spawned resolution is
 still in flight this tick.

@@ -208,14 +208,32 @@ For required lookups, report the result before relying on it:
 - `KB miss:` state that no relevant prior note was found.
 - `KB stale warning:` if the CLI reports a stale index, mention it and decide whether `kb search --refresh` is warranted before proceeding.
 
-After finishing a task that produced a generic lesson, append it to `agent-task-lessons` with `kb remember --kb=agent-task-lessons --title="<short headline>" --stdin --yes`. Use the **Mistake / Why it happened / Better next time** shape. Keep this generic: no PR numbers, file paths, branch names, or proper nouns.
+After finishing a task that produced a generic lesson, append it to `agent-task-lessons` with this exact command. It is the same template the stop nudge and the completion-ready 409 print, and it passes `kb`'s `--lesson` validation on the first try. Keep it generic: no PR numbers, file paths, branch names, or proper nouns.
+
+```bash
+cat <<'EOF' | kb remember --lesson --title="<short headline>" --stdin --yes
+## Mistake
+
+<what action led to the unwanted outcome>
+
+## Why it happened
+
+<root cause, not the symptom>
+
+## Better next time
+
+<a generic rule: no PR numbers, branch names, file paths or proper nouns>
+EOF
+```
+
+The body goes on stdin, never as an argument, and the three `## ` headings need the blank lines around them.
 
 ### Post-task lesson decision
 
 Before your final answer for any non-trivial task (investigation, debugging, workflow discovery, RFC implementation, ops diagnosis, multi-step feature), make the decision *visible in the Bash hook trail* — silence is indistinguishable from forgetting. Pick exactly one:
 
-- **Wrote a lesson** — run the `kb remember --kb=agent-task-lessons --title="<short headline>" --stdin --yes` command above with the **Mistake / Why it happened / Better next time** body, generic only. The write must actually land: if the similarity guard suppresses it (`write_performed: false`), nothing was stored and it does **not** count as a decision — re-run with `--force`/`--append` to the surfaced note, or fall back to the explicit skip below.
-- **Explicit skip** — run `printf 'No generic KB lesson: %s\n' '<one-line reason>'`. Use this when nothing reusably generic came out of the task (purely repo-local fact, already-documented gotcha, follow-up of a prior decision).
+- **Wrote a lesson** — run the `kb remember --lesson` command above, generic only. The write must actually land: if the similarity guard suppresses it (exit 3, `write_performed: false`), nothing was stored and it does **not** count as a decision. A similar lesson already exists, so do not rephrase and retry: print the explicit skip below naming the note `kb` printed (`'covered by <path>'`), or re-run with `--force` only when the lesson is genuinely new.
+- **Explicit skip** — run `printf 'No generic KB lesson: %s\n' '<one-line reason>'`. The completion gate accepts it exactly like a write. Use this when nothing reusably generic came out of the task (purely repo-local fact, already-documented gotcha, follow-up of a prior decision).
 
 **Lifecycle gate (issue #1538 / #1868):** `kookr signal completion-ready` is rejected with HTTP 409 when the task has launched sessions but neither a lesson write nor an explicit skip appears in its hook trail. A `kb remember` counts only when its outcome confirms a genuine write — the tool's PostToolUse `write_performed: true`, or the Kookr `kb` shim's `KOOKR_LESSON_WRITE: recorded` marker (also emitted when a KB outage captures the lesson to the durable spool) — not the bare invocation; a similarity-suppressed attempt does not satisfy the gate (fixed in #1538 follow-up). Code is `lesson_decision_required` when logs exist without a decision, or `lesson_decision_hooks_missing` when every session hook log is absent (pruned/rotated) — both fail-closed. Emit the decision *before* signaling completion-ready. Purely mechanical tasks still need the explicit skip marker if they signal completion-ready — silent no-decision is no longer allowed at the lifecycle boundary. Yield is auditable via `GET /api/diagnostics/lesson-yield?days=N`, the `lessonYield` block on `GET /api/health`, or `kookr lesson yield --days N`.
 

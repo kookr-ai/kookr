@@ -711,12 +711,22 @@ Before writing the verdict in Phase 9 (or before your final answer in single-sho
 - **Wrote a lesson** — when this iteration produced a *generic* lesson a future agent on an unrelated task could reuse, write it to the KB. Generic only — no PR numbers, branch names, file paths, or proper nouns.
 
   ```bash
-  cat <<'EOF' | kb remember --kb=agent-task-lessons --title="<short headline>" --stdin --yes
-  Mistake: <what you or a prior agent did wrong>
-  Why it happened: <root cause, not symptom>
-  Better next time: <the rule or check that would have avoided it>
+  cat <<'EOF' | kb remember --lesson --title="<short headline>" --stdin --yes
+  ## Mistake
+
+  <what action led to the unwanted outcome>
+
+  ## Why it happened
+
+  <root cause, not the symptom>
+
+  ## Better next time
+
+  <a generic rule: no PR numbers, branch names, file paths or proper nouns>
   EOF
   ```
+
+  The body goes on stdin, never as an argument. Keep the three `## ` headings and the blank lines around them: `--lesson` rejects a body without them. If `kb` exits 3 (similarity guard), a similar lesson already exists. Do not rephrase and retry; record the skip below naming the note it printed (`'covered by <path>'`), or re-run with `--force` only when the lesson is genuinely new.
 
 - **Explicit skip** — when no generic lesson came out of the iteration (purely repo-local fact, already-documented gotcha, follow-up of a prior decision, purely mechanical change), record the skip so the absence is counted, not silent:
 
@@ -724,7 +734,7 @@ Before writing the verdict in Phase 9 (or before your final answer in single-sho
   printf 'No generic KB lesson: %s\n' '<one-line reason>'
   ```
 
-Do **not** signal completion-ready with a silent no-decision — even for mechanical iterations, print the skip marker. The `pnpm kb:usage` report and `kookr lesson yield` classify tasks by the strongest signal in their hook log; running both forms in one iteration is fine and counts as **wrote-lesson**.
+The completion gate accepts the skip exactly like a write, so one call settles the decision. Do **not** signal completion-ready with a silent no-decision — even for mechanical iterations, print the skip marker. The `pnpm kb:usage` report and `kookr lesson yield` classify tasks by the strongest signal in their hook log; running both forms in one iteration is fine and counts as **wrote-lesson**.
 
 ## Phase 9: Report verdict to the engine
 

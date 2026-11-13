@@ -2,7 +2,7 @@ import { mkdtemp, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { wrapLessonRemember } from './kb-remember-spool-wrap.js';
+import { buildNotRecordedHint, wrapLessonRemember } from './kb-remember-spool-wrap.js';
 import { readPendingLessons } from './lesson-write-spool.js';
 
 async function fakeKb(script: string): Promise<string> {
@@ -155,5 +155,71 @@ describe('wrapLessonRemember', () => {
     expect(result.spooled).toBe(false);
     expect(result.exitCode).toBe(1);
     expect(await readPendingLessons(spoolDir)).toHaveLength(0);
+  });
+});
+
+describe('buildNotRecordedHint (issue #3695)', () => {
+  // Trimmed copy of the real `kb remember` similarity-guard JSON envelope.
+  const guardOutput = JSON.stringify({
+    action: 'similarity-check',
+    write_performed: false,
+    candidates: [
+      { knowledge_base: 'agent-task-lessons', relative_path: 'read-the-refusal.md', score: 0.4 },
+      { knowledge_base: 'agent-task-lessons', relative_path: 'other.md', score: 0.7 },
+    ],
+  }, null, 2);
+
+  test('similarity guard: names the closest existing lesson and gives a one-call skip', () => {
+    const hint = buildNotRecordedHint(3, guardOutput);
+    expect(hint).toContain('a similar lesson already exists: read-the-refusal.md');
+    expect(hint).toContain(`printf 'No generic KB lesson: %s\\n' 'covered by read-the-refusal.md'`);
+    expect(hint).toContain('--force only if your lesson is genuinely new');
+    expect(hint).not.toContain('other.md');
+  });
+
+  test('similarity guard without parseable candidates still offers the skip', () => {
+    const hint = buildNotRecordedHint(3, 'similar');
+    expect(hint).toContain('see the candidates below');
+    expect(hint).toContain("'covered by <path>'");
+  });
+
+  test('a quote in the candidate path cannot break the suggested printf', () => {
+    const hint = buildNotRecordedHint(3, '"relative_path": "it\'s.md"');
+    expect(hint).toContain("'covered by its.md'");
+  });
+
+  test('body passed as an argument: says the body goes on stdin', () => {
+    const hint = buildNotRecordedHint(2, 'kb remember: unexpected argument: Mistake: did x');
+    expect(hint).toMatch(/body on stdin, not as an argument/);
+    expect(hint).toContain('--stdin --yes');
+  });
+
+  test('missing sections: names the three level-2 headings', () => {
+    const hint = buildNotRecordedHint(2, 'kb remember --lesson: missing required sections: Mistake.');
+    expect(hint).toContain('"## Mistake"');
+    expect(hint).toContain('"## Better next time"');
+  });
+
+  test('other failures keep the generic advice', () => {
+    expect(buildNotRecordedHint(2, 'kb remember: missing --kb=<name>')).toMatch(/re-run with --force/);
+  });
+
+  test('wrapLessonRemember prints the cause-specific hint for a guard refusal', async () => {
+    const bin = await fakeKb(
+      `#!/bin/sh\necho '{"action":"similarity-check","write_performed":false,"candidates":[{"relative_path":"dup.md"}]}'\nexit 3\n`,
+    );
+    const spoolDir = await mkdtemp(join(tmpdir(), 'kookr-spool-'));
+    const streams = collectStreams();
+    await wrapLessonRemember({
+      argv: ['remember', '--lesson', '--title=sim', '--stdin', '--yes'],
+      stdinBody: '## Mistake\n\na\n',
+      realKbBin: bin,
+      spoolDir,
+      stdout: streams.stdout,
+      stderr: streams.stderr,
+    });
+    const out = streams.stdout.chunks.join('');
+    expect(out.indexOf('KOOKR_LESSON_WRITE: not-recorded')).toBe(0);
+    expect(out).toContain("'covered by dup.md'");
   });
 });

@@ -30,6 +30,7 @@
 import { createReadStream, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
+import { isPrMergeCommand } from './pr-merge-command.js';
 import {
   aggregateLessonDecision,
   classifyKbCommand,
@@ -310,6 +311,12 @@ export interface HookLogLessonStats extends LessonDecisionCounts {
   kbCalls: number;
   bashCalls: number;
   exists: boolean;
+  /**
+   * Hook-write time (ms) of the latest PR merge command seen before the scan
+   * stopped (`gh pr merge`, `pnpm merge`, `kookr-merge.sh`). Feeds the
+   * merge-to-finished metric (issue #3695). Absent when no merge was seen.
+   */
+  lastMergeAtMs?: number;
 }
 
 export interface TaskLessonDecisionResult {
@@ -320,6 +327,8 @@ export interface TaskLessonDecisionResult {
   /** Sessions considered (with a non-empty tmuxSession). */
   sessionsScanned: number;
   satisfied: boolean;
+  /** Latest merge-command time across sessions (issue #3695). */
+  lastMergeAtMs?: number;
 }
 
 export interface LessonDecisionGateInput {
@@ -355,10 +364,61 @@ export interface LessonDecisionGateVerdict {
   sessionsScanned?: number;
 }
 
+/**
+ * The one lesson-write command that succeeds on the first try (issue #3695).
+ *
+ * Session logs showed about one first `kb remember` in five storing nothing:
+ * `--lesson` with plain `Mistake:` lines (it requires level-2 headings), the
+ * body passed as an argument instead of on stdin, and similarity-guard
+ * refusals followed by rephrase-and-retry loops. Every agent-facing surface
+ * (stop nudge, 409 hint, playbooks, CLAUDE.md) shows this exact text so the
+ * first write is valid in both `--lesson` and `--kb=agent-task-lessons` modes.
+ * The blank lines matter: without them a `<…>` line parses as a Markdown HTML
+ * block that swallows the next headings, and `--lesson` validation fails.
+ */
+export const LESSON_WRITE_TEMPLATE = [
+  `cat <<'EOF' | kb remember --lesson --title="<short headline>" --stdin --yes`,
+  '## Mistake',
+  '',
+  '<what action led to the unwanted outcome>',
+  '',
+  '## Why it happened',
+  '',
+  '<root cause, not the symptom>',
+  '',
+  '## Better next time',
+  '',
+  '<a generic rule: no PR numbers, branch names, file paths or proper nouns>',
+  'EOF',
+].join('\n');
+
+/** The explicit no-lesson decision. The gate accepts it exactly like a write. */
+export const LESSON_SKIP_COMMAND = `printf '${KB_LESSON_SKIP_MARKER} %s\\n' '<one-line reason>'`;
+
+/**
+ * What to do when `kb remember` exits 3 (similarity guard): the lesson is
+ * already in the KB, so record the skip naming it instead of rephrasing.
+ */
+export const LESSON_SIMILAR_GUIDANCE =
+  `If kb exits 3 (similarity guard), a similar lesson already exists: do not rephrase and retry. `
+  + `Record the decision with printf '${KB_LESSON_SKIP_MARKER} %s\\n' 'covered by <path kb printed>', `
+  + `or re-run the same command with --force only when your lesson is genuinely new.`;
+
+/**
+ * Ready-to-run lesson decision block shared by the stop nudge and the 409
+ * hint. One call records the decision; the skip counts exactly like a write.
+ */
+export const LESSON_DECISION_TEMPLATE = [
+  'Record the post-task lesson decision in ONE Bash call. The gate accepts either form equally:',
+  '(a) a generic lesson. The body goes on stdin, never as an argument; keep the three "## " headings and the blank lines:',
+  LESSON_WRITE_TEMPLATE,
+  `(b) no generic lesson: ${LESSON_SKIP_COMMAND}`,
+  LESSON_SIMILAR_GUIDANCE,
+].join('\n');
+
 export const LESSON_DECISION_HINT =
-  `Emit a post-task lesson decision in the Bash hook trail, then re-signal. `
-  + `Either: cat <<'EOF' | kb remember --kb=agent-task-lessons --title="<headline>" --stdin --yes … `
-  + `or: printf '${KB_LESSON_SKIP_MARKER} %s\\n' '<one-line reason>'.`;
+  `Emit a post-task lesson decision in the Bash hook trail, then re-signal.\n`
+  + LESSON_DECISION_TEMPLATE;
 
 /**
  * Hint when all session hook logs are absent — points at prune/rotation
@@ -368,9 +428,8 @@ export const LESSON_DECISION_HOOKS_MISSING_HINT =
   `All session hook logs are missing on disk (pruned, rotated, or never written). `
   + `Check hook retention/rotation under ~/.kookr/hooks and whether maintenance `
   + `swept live <session>.jsonl files. Fail-closed: re-emit a lesson decision `
-  + `into a fresh shell so a live log exists, then re-signal completion-ready. `
-  + `Either: cat <<'EOF' | kb remember --kb=agent-task-lessons --title="<headline>" --stdin --yes … `
-  + `or: printf '${KB_LESSON_SKIP_MARKER} %s\\n' '<one-line reason>'.`;
+  + `into a fresh shell so a live log exists, then re-signal completion-ready.\n`
+  + LESSON_DECISION_TEMPLATE;
 
 export function isLessonDecisionSatisfied(decision: LessonDecisionState): boolean {
   return decision === 'wrote-lesson' || decision === 'explicit-skip';
@@ -503,6 +562,7 @@ export async function scanHookLogForLessonDecision(
   let lessonWrites = 0;
   let lessonSkips = 0;
   let kbSearches = 0;
+  let lastMergeAtMs: number | undefined;
 
   // The signal is wired into the stream itself, not only the per-line check:
   // readline buffers a whole line before yielding, so one pathological line
@@ -521,6 +581,7 @@ export async function scanHookLogForLessonDecision(
         toolName?: unknown;
         tool_input?: unknown;
         toolInput?: unknown;
+        kookr_hook_written_at_ms?: unknown;
       };
       try {
         evt = JSON.parse(line) as typeof evt;
@@ -536,6 +597,15 @@ export async function scanHookLogForLessonDecision(
         // being printed; `kookr lesson remember` never suppresses).
         bashCalls++;
         if (shell.command.includes('kb ')) kbCalls++;
+        const writtenAt = evt.kookr_hook_written_at_ms;
+        if (
+          typeof writtenAt === 'number'
+          && Number.isFinite(writtenAt)
+          && isPrMergeCommand(shell.command)
+          && (lastMergeAtMs === undefined || writtenAt > lastMergeAtMs)
+        ) {
+          lastMergeAtMs = writtenAt;
+        }
         switch (kind) {
           case 'lesson-write':
             lessonWrites++;
@@ -573,6 +643,7 @@ export async function scanHookLogForLessonDecision(
     lessonSkips,
     kbSearches,
     exists: true,
+    ...(lastMergeAtMs !== undefined ? { lastMergeAtMs } : {}),
   };
 }
 
@@ -586,6 +657,8 @@ export interface TaskLikeForLessonDecision {
   status?: string;
   updatedAt?: string | Date;
   createdAt?: string | Date;
+  /** First terminal transition time; end point of merge-to-finished (issue #3695). */
+  finishedAt?: string | Date;
   playbookId?: string;
   prompt?: string;
   /** Stamped at complete time (issue #1608). Absent → counted under `unknown`. */
@@ -633,6 +706,7 @@ export async function resolveTaskLessonDecision(
   let kbSearches = 0;
   let missingLogs = 0;
   let sessionsScanned = 0;
+  let lastMergeAtMs: number | undefined;
 
   for (const session of task.sessions ?? []) {
     opts.signal?.throwIfAborted();
@@ -651,6 +725,12 @@ export async function resolveTaskLessonDecision(
     lessonWrites += stats.lessonWrites;
     lessonSkips += stats.lessonSkips;
     kbSearches += stats.kbSearches;
+    if (
+      stats.lastMergeAtMs !== undefined
+      && (lastMergeAtMs === undefined || stats.lastMergeAtMs > lastMergeAtMs)
+    ) {
+      lastMergeAtMs = stats.lastMergeAtMs;
+    }
   }
 
   const counts: LessonDecisionCounts = { lessonWrites, lessonSkips, kbSearches };
@@ -661,6 +741,7 @@ export async function resolveTaskLessonDecision(
     missingLogs,
     sessionsScanned,
     satisfied: isLessonDecisionSatisfied(decision),
+    ...(lastMergeAtMs !== undefined ? { lastMergeAtMs } : {}),
   };
 }
 
@@ -755,6 +836,52 @@ export interface LessonYieldSnapshot {
    * exemption reason rather than silently skipping the gate.
    */
   contractRate: number;
+  /**
+   * Time from the task's last PR merge command to the task finishing, over
+   * completed tasks in the window that merged (issue #3695). This is how long
+   * a task holds its concurrency slot after its PR merged.
+   */
+  mergeToFinished: MergeToFinishedStats;
+}
+
+/**
+ * Merge-to-finished distribution (issue #3695). Merge time is the hook-write
+ * time of the latest `gh pr merge` / `pnpm merge` / `kookr-merge.sh` command
+ * seen before the lesson scan's early exit; finish time is `task.finishedAt`.
+ * Tasks without either, or whose finish precedes the merge, are left out.
+ */
+export interface MergeToFinishedStats {
+  /** Completed tasks in the window with both a merge command and a finish time. */
+  count: number;
+  p50Ms: number | null;
+  p90Ms: number | null;
+  maxMs: number | null;
+}
+
+/** Nearest-rank percentile over an ascending array (non-empty). */
+function nearestRankPercentile(sortedAsc: readonly number[], p: number): number {
+  const index = Math.ceil(sortedAsc.length * p) - 1;
+  return sortedAsc[Math.max(0, Math.min(sortedAsc.length - 1, index))]!;
+}
+
+export function summarizeMergeToFinished(samplesMs: readonly number[]): MergeToFinishedStats {
+  if (samplesMs.length === 0) return { count: 0, p50Ms: null, p90Ms: null, maxMs: null };
+  const sorted = [...samplesMs].sort((a, b) => a - b);
+  return {
+    count: sorted.length,
+    p50Ms: nearestRankPercentile(sorted, 0.5),
+    p90Ms: nearestRankPercentile(sorted, 0.9),
+    maxMs: sorted[sorted.length - 1]!,
+  };
+}
+
+function toMs(raw: string | Date | undefined): number {
+  if (raw instanceof Date) return raw.getTime();
+  if (typeof raw === 'string') {
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : NaN;
+  }
+  return NaN;
 }
 
 export interface ComputeLessonYieldOptions {
@@ -777,13 +904,7 @@ export interface ComputeLessonYieldOptions {
 const DEFAULT_COMPLETED = new Set(['completed', 'completed_with_errors']);
 
 function taskTimestampMs(task: TaskLikeForLessonDecision): number {
-  const raw = task.updatedAt ?? task.createdAt;
-  if (raw instanceof Date) return raw.getTime();
-  if (typeof raw === 'string') {
-    const ms = Date.parse(raw);
-    return Number.isFinite(ms) ? ms : NaN;
-  }
-  return NaN;
+  return toMs(task.updatedAt ?? task.createdAt);
 }
 
 /**
@@ -811,6 +932,7 @@ export async function computeLessonYield(
   let completedWithLogs = 0;
   let decided = 0;
   let explainedExceptions = 0;
+  const mergeToFinishedSamples: number[] = [];
 
   for (const task of tasks) {
     opts.signal?.throwIfAborted();
@@ -828,6 +950,11 @@ export async function computeLessonYield(
     // completedWithLogs.
     if (resolved.sessionsScanned > 0 && resolved.missingLogs < resolved.sessionsScanned) {
       completedWithLogs++;
+    }
+    const finishedMs = toMs(task.finishedAt);
+    if (resolved.lastMergeAtMs !== undefined && Number.isFinite(finishedMs)
+      && finishedMs >= resolved.lastMergeAtMs) {
+      mergeToFinishedSamples.push(finishedMs - resolved.lastMergeAtMs);
     }
 
     const pathKey = isCompletionPath(task.completionPath) ? task.completionPath : 'unknown';
@@ -893,5 +1020,6 @@ export async function computeLessonYield(
     gateExemptReasons,
     explainedExceptions,
     contractRate,
+    mergeToFinished: summarizeMergeToFinished(mergeToFinishedSamples),
   };
 }
