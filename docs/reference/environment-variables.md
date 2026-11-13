@@ -615,3 +615,4 @@ Use them only for controlled local sessions.
 | `KOOKR_AUTO_RELAUNCH=false` | Disables crash recovery, so tasks that died while the server was down will not be resumed automatically. |
 | `KOOKR_CONTEXT_ADVISORY_DISABLED=1` | Suppresses context-window advisories even if the feature is enabled. |
 | `KOOKR_AUTO_REFLECT_DISABLE=1` | Suppresses feedback-reflection tasks that would otherwise analyze completed work. |
+| `KOOKR_DELIVERY_STOP_SKIP=1` | Disables the plugin Stop hook that blocks ending a turn while the task owns an actionable delivery step (red test, pending review, authorized merge). See `plugin/hooks/README.md`. |
