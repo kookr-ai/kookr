@@ -8,7 +8,9 @@
 //   2. no review  — the PR is open and has no `kookr-review-verdict` comment
 //                   (the agent launches the independent review itself).
 //   3. merge      — the PR has a `pass` verdict for the current head and the
-//                   task is `pre-authorized`/`self-advancing`: run the merge gate.
+//                   task holds merge authority (taskHasMergeAuthority): run the gate.
+// Shapes 2 and 3 apply only to tasks with merge authority on non-advisory repos;
+// a task that stops at an open PR is only nudged for a red test.
 // Ownership evidence is an open PR from the checked-out branch, so a task that
 // never opened a PR is never nudged.
 //
@@ -25,10 +27,49 @@ import { pathToFileURL } from 'node:url';
 const TEST_CMD_RE =
   /(\bvitest\b|\bplaywright\s+test\b|\b(pnpm|npm|yarn|bun)\s+(run\s+)?(test|test:changed|verify|check|gate|typecheck|lint)\b|scripts\/verify\.sh|\bpre-push\b)/;
 
-/** Same rule as `isBackgroundParked` in src/core/background-parked.ts. */
+// Commands that only read/search (they may mention a runner by name but are not a test run).
+const READ_ONLY_RE = /^\s*(grep|rg|cat|echo|ls|head|tail|sed|less|git\s+(log|show|diff|grep))\b/;
+
+/**
+ * Mirrors `activeCollectionCount` (src/core/hook-parser.ts) + `isBackgroundParked`
+ * (src/core/background-parked.ts): finished items and the passive "live updates
+ * for artifact" monitor do not count as background work. A drift test pins the
+ * behaviours.
+ */
+export function activeCount(value) {
+  if (Array.isArray(value)) {
+    return value.filter((item) => {
+      if (!item || typeof item !== 'object') return true;
+      if (item.type === 'monitor' && typeof item.description === 'string' && item.description.startsWith('live updates for artifact')) {
+        return false;
+      }
+      return item.status !== 'completed' && item.status !== 'stopped';
+    }).length;
+  }
+  return Number(value) || 0;
+}
+
 export function isParked(event) {
-  const n = (v) => (Array.isArray(v) ? v.length : Number(v) || 0);
-  return n(event.background_tasks) > 0 || n(event.session_crons) > 0;
+  return activeCount(event.background_tasks) > 0 || activeCount(event.session_crons) > 0;
+}
+
+/**
+ * Mirrors `taskHasMergeAuthority` (src/core/merge-required.ts) over the task JSON
+ * from GET /api/tasks/:id. A task without merge authority stops at an open PR,
+ * so only the red-test nudge applies to it. A drift test compares both.
+ */
+export function hasMergeAuthority(task) {
+  if (!task) return false;
+  if (task.mergeRequired === true || task.terminalState === 'merged-pr') return true;
+  if (task.metadata?.mergeRequired === true || task.metadata?.terminalState === 'merged-pr') return true;
+  const param = task.playbookParameterValues?.mergeAfterImplementation;
+  if (param === 'true' || param === '1') return true;
+  const text = `${task.prompt ?? ''}\n${task.userPrompt ?? ''}`;
+  if (/TERMINAL-STATE\s+CONTRACT\s*\(\s*mergeAfterImplementation\s*=\s*true\s*\)/i.test(text)) return true;
+  return (
+    /mergeAfterImplementation\s*[:=]\s*true\b/i.test(text) &&
+    /merge authority|must continue through the merge|mergedAt/i.test(text)
+  );
 }
 
 function textOf(content) {
@@ -57,7 +98,7 @@ export function lastTestOutcome(transcriptText) {
     for (const block of content) {
       if (block?.type === 'tool_use' && block.name === 'Bash') {
         const cmd = String(block.input?.command ?? '');
-        if (TEST_CMD_RE.test(cmd)) testIds.add(block.id);
+        if (TEST_CMD_RE.test(cmd) && !READ_ONLY_RE.test(cmd)) testIds.add(block.id);
       } else if (block?.type === 'tool_result' && testIds.has(block.tool_use_id)) {
         const failed = block.is_error === true || /^Exit code [1-9]/.test(textOf(block.content));
         outcome = failed ? 'red' : 'green';
@@ -84,7 +125,7 @@ export function latestVerdict(commentBodies) {
  * Pure decision. Returns a block reason string, or null to allow the stop.
  * pr: { number, headSha, comments: string[] } | null
  */
-export function decide({ event, testOutcome, pr, authorization }) {
+export function decide({ event, testOutcome, pr, mergeAuthority, advisoryReview }) {
   if (!event || event.stop_hook_active) return null;
   if (isParked(event)) return null;
   if (!pr) return null;
@@ -94,7 +135,12 @@ export function decide({ event, testOutcome, pr, authorization }) {
       `and re-run it; do not end the turn on a red test.`
     );
   }
-  const v = latestVerdict(pr.comments ?? []);
+  // Without merge authority the task stops at an open PR; the review and merge
+  // steps are the operator's. Advisory repos document review as optional.
+  if (!mergeAuthority || advisoryReview) return null;
+  const bodies = pr.comments ?? [];
+  if (bodies.some((b) => /review-skipped-timeout/.test(b))) return null;
+  const v = latestVerdict(bodies);
   if (!v) {
     return (
       `PR #${pr.number} is open with no independent review verdict. Launching the independent review is your step: ` +
@@ -108,17 +154,14 @@ export function decide({ event, testOutcome, pr, authorization }) {
   if (!fresh) {
     return `PR #${pr.number} head moved since the last review verdict. Re-run the independent review for the current head.`;
   }
-  if (authorization === 'pre-authorized' || authorization === 'self-advancing') {
-    return `PR #${pr.number} is open, reviewed (pass) and pre-authorized for merge. Run the merge gate (pnpm merge) now.`;
-  }
-  return null; // ask-first / unknown: the merge is the operator's to give.
+  return `PR #${pr.number} is open, reviewed (pass) and this task holds merge authority. Run the merge gate (pnpm merge) now.`;
 }
 
 function sh(cmd, args, cwd) {
-  return execFileSync(cmd, args, { cwd, encoding: 'utf-8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'] });
+  return execFileSync(cmd, args, { cwd, encoding: 'utf-8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] });
 }
 
-async function fetchAuthorization() {
+async function fetchTask() {
   const id = process.env.KOOKR_TASK_ID;
   if (!id) return null;
   const base = process.env.KOOKR_API_BASE_URL || 'http://127.0.0.1:4800';
@@ -126,7 +169,7 @@ async function fetchAuthorization() {
     const res = await fetch(`${base}/api/tasks/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) return null;
     const task = await res.json();
-    return task?.deliveryAuthorization ?? task?.task?.deliveryAuthorization ?? null;
+    return task?.task && !task.prompt ? task.task : task;
   } catch {
     return null;
   }
@@ -156,8 +199,21 @@ async function main() {
     };
     let testOutcome = null;
     if (event.transcript_path) testOutcome = lastTestOutcome(readFileSync(event.transcript_path, 'utf-8'));
-    const authorization = await fetchAuthorization();
-    const reason = decide({ event, testOutcome, pr, authorization });
+    const mergeAuthority = hasMergeAuthority(await fetchTask());
+    let advisoryReview = false;
+    try {
+      const root = sh('git', ['rev-parse', '--show-toplevel'], cwd).trim();
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        try {
+          if (/independent review is advisory/i.test(readFileSync(`${root}/${f}`, 'utf-8'))) advisoryReview = true;
+        } catch {
+          /* file absent */
+        }
+      }
+    } catch {
+      /* not a git root: treat as non-advisory */
+    }
+    const reason = decide({ event, testOutcome, pr, mergeAuthority, advisoryReview });
     if (!reason) return 0;
     process.stderr.write(`${reason}\n(If this step is genuinely not yours to take, say so in one line and stop; this hook blocks once.)\n`);
     return 2;

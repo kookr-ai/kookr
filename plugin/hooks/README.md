@@ -120,12 +120,12 @@ task still owns an actionable delivery step. Ownership evidence is an open PR
 from the checked-out branch. It blocks once, with a specific instruction, when:
 
 - the last test/gate command in the transcript failed (red test, PR open);
-- the PR has no independent review verdict, or the verdict is `block`, or the
+- (merge-authority tasks only) the PR has no independent review verdict, or the verdict is `block`, or the
   head moved since the `pass` verdict (the agent launches the review itself);
-- the PR has a fresh `pass` verdict and the task's `deliveryAuthorization` is
-  `pre-authorized` or `self-advancing` (run `pnpm merge`).
+- the PR has a fresh `pass` verdict and the task holds merge authority, as
+  `taskHasMergeAuthority` decides (run `pnpm merge`).
 
-It stays silent for `ask-first` tasks (the merge is the operator's to give),
+It stays silent for tasks without merge authority (they stop at an open PR; only the red-test nudge applies) and on repos documenting review as advisory,
 when the Stop event reports `background_tasks` / `session_crons` (the agent is
 parked on its own work, as in `needs_input:stop`), outside a Kookr task
 (`KOOKR_TASK_ID` unset), and on the re-run after a block (`stop_hook_active`).
