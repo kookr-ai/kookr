@@ -35,9 +35,10 @@
  *    - every code separates words (finds a token standing right after a code);
  *    - joining codes join, cursor moves separate (finds a token that a colour, an
  *      erase or a mode change runs through);
- *    - every code joins, looking only for tokens with a known prefix (a net under the
- *      list above: such a token is found even if a code was wrongly taken for a
- *      cursor move);
+ *    - every code joins, looking only for tokens with a known prefix. A token may
+ *      start at a word boundary or right where a code stood. This finds a prefixed
+ *      token that any codes run through, cursor moves included, and is a net under
+ *      the list above in case a code was wrongly taken for a cursor move;
  *    - a token may start at any of the letters and digits a code ends with. This finds
  *      a token whose first characters the scanner read as part of a code that was in
  *      fact cut off (`ESC[35;1` + `ghp_…`, or `ESC[` + a token that starts with digits).
@@ -69,7 +70,10 @@
  *
  * - **A token with no known prefix that a cursor move splits.** On screen the two
  *   halves are usually apart. They are read as two pieces, and a piece shorter than 32
- *   characters is not hidden. (Tokens with a known prefix are hidden even then.)
+ *   characters is not hidden. A token with a known prefix (`sk-`, a GitHub token) is
+ *   hidden even then, as long as it starts at a word boundary or right after a code.
+ *   One that is glued onto a word with no code between (`Bearerghp_…`) is not a token
+ *   to the ordinary redaction either, with or without codes further in.
  * - **A token that exists only on screen**, because characters were overwritten in
  *   place (backspace or cursor-left, then retype). This reads characters; it does not
  *   emulate a screen.
@@ -235,6 +239,8 @@ function secretsInReading(
   ranges: readonly CodeRange[],
   keep: (range: CodeRange) => 'drop' | 'separate',
   kind: 'all' | 'prefixed',
+  /** Also accept a token that starts right where a dropped code stood, whatever stands before the code. */
+  startAfterCodes = false,
 ): Span[] {
   // The reading is built from slices of the raw text, with a table saying where each slice came
   // from, so a megabyte of output costs a few string joins rather than a step per character.
@@ -249,10 +255,13 @@ function secretsInReading(
     pieces.push({ viewStart: view.length, rawStart: at });
     view += '\n'; // never part of a secret, always a word boundary
   };
+  /** Places in the reading where a dropped code stood. */
+  const whereCodesStood: number[] = [];
   let cursor = 0;
   for (const range of ranges) {
     copy(cursor, range.start);
     if (keep(range) === 'separate') separator(range.start);
+    else if (whereCodesStood[whereCodesStood.length - 1] !== view.length) whereCodesStood.push(view.length);
     cursor = range.end;
   }
   copy(cursor, text.length);
@@ -269,7 +278,17 @@ function secretsInReading(
     const piece = pieces[low]!;
     return piece.rawStart + (index - piece.viewStart);
   };
-  return speechSecretSpans(view, kind).map(([start, end]): Span => [toRaw(start), toRaw(end - 1) + 1]);
+  const found: Array<[number, number]> = speechSecretSpans(view, kind);
+  if (startAfterCodes) {
+    // Dropping a code glues the word before it onto what follows, and a token there no longer
+    // starts at a word boundary. A code is a boundary all the same, so try each such place.
+    for (const at of whereCodesStood) {
+      if (at >= view.length) continue;
+      const end = speechSecretEndAt(view, at, kind);
+      if (end !== null) found.push([at, end]);
+    }
+  }
+  return found.map(([start, end]): Span => [toRaw(start), toRaw(end - 1) + 1]);
 }
 
 /**
@@ -331,7 +350,7 @@ export function cleanTaskText(text: string): string {
     ...secretsInRawText(text, ranges),
     ...secretsInReading(text, ranges, () => 'separate', 'all'),
     ...secretsInReading(text, ranges, (range) => (range.joins ? 'drop' : 'separate'), 'all'),
-    ...secretsInReading(text, ranges, () => 'drop', 'prefixed'),
+    ...secretsInReading(text, ranges, () => 'drop', 'prefixed', true),
     ...secretsStartingInsideCodes(text, ranges),
   ].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 

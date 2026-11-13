@@ -236,6 +236,8 @@ const SECRET_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[
  * that place (the `y` flag).
  */
 const SECRET_AT_PATTERN = /(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/y;
+/** {@link SECRET_AT_PATTERN} for tokens with a known prefix only. */
+const PREFIXED_SECRET_AT_PATTERN = /(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,})\b/y;
 /** The part of {@link SECRET_PATTERN} that recognises a token by its prefix, without the "any long run" rule. */
 const PREFIXED_SECRET_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,})\b/g;
 
@@ -338,9 +340,10 @@ export function redactSpeechSecrets(value: string): string {
  * before the token: the caller knows something other than text stands there (for
  * example the end of a terminal code that may have swallowed the token's first letters).
  */
-export function speechSecretEndAt(value: string, index: number): number | null {
-  SECRET_AT_PATTERN.lastIndex = index;
-  const match = SECRET_AT_PATTERN.exec(value);
+export function speechSecretEndAt(value: string, index: number, kind: 'all' | 'prefixed' = 'all'): number | null {
+  const pattern = kind === 'prefixed' ? PREFIXED_SECRET_AT_PATTERN : SECRET_AT_PATTERN;
+  pattern.lastIndex = index;
+  const match = pattern.exec(value);
   return match ? index + match[0].length : null;
 }
 

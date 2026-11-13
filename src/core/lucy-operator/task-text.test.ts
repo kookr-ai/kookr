@@ -89,18 +89,30 @@ describe('cleanTaskText: every terminal code, every token kind, every position',
     expect(failures.slice(0, 10)).toEqual([]);
   });
 
-  test('a token with a known prefix is hidden whatever code runs through it, wherever it is split', () => {
+  test('a token with a known prefix is hidden whatever code runs through it, wherever it is split, whatever stands before it', () => {
     const failures: string[] = [];
+    // What stands before the token: a space, a word then a cursor move, a word then a colour.
+    // (A word glued straight onto the token, with no code between, is not a token to the ordinary redaction.)
+    const before = ['value ', `Bearer${ESC}[8G`, `Bearer${ESC}[1m`, ''];
     for (const [code] of codes) {
       for (const kind of ['github', 'shortKey'] as const) {
         const token = TOKENS[kind];
-        for (const at of [2, 3, 4, 8, 13, 16, token.length - 1]) {
-          const cleaned = cleanTaskText(`value ${token.slice(0, at)}${code}${token.slice(at)} end`);
-          if (leaks(cleaned, token) || CONTROL.test(cleaned)) failures.push(`${kind} split at ${at} by ${JSON.stringify(code)} -> ${JSON.stringify(cleaned)}`);
+        for (const lead of before) {
+          for (const at of [1, 2, 3, 4, 8, 13, 16, token.length - 1]) {
+            const cleaned = cleanTaskText(`${lead}${token.slice(0, at)}${code}${token.slice(at)} end`);
+            if (leaks(cleaned, token) || CONTROL.test(cleaned)) failures.push(`${kind} after ${JSON.stringify(lead)} split at ${at} by ${JSON.stringify(code)} -> ${JSON.stringify(cleaned)}`);
+          }
         }
       }
     }
     expect(failures.slice(0, 10)).toEqual([]);
+  });
+
+  test('a prefixed token that cursor moves split is hidden even with a word right before the first move', () => {
+    expect(cleanTaskText(`Bearer${ESC}[8Gghp_A1b2C3${ESC}[30Gd4E5f6G7h8I9j0 end`)).toBe('Bearer [redacted] end');
+    expect(cleanTaskText(`Authorization: Bearer${ESC}[35Gghp_A1b2C3d4E5f6${ESC}[2;1HG7h8I9j0K1l2M3n4O5p6Q7r8`)).toBe('Authorization: Bearer [redacted]');
+    // The prefix itself split, after a word and a code.
+    expect(cleanTaskText(`Bearer${ESC}[8Ggh${ESC}[9Gp_A1b2C3d4E5f6G7h8 end`)).toBe('Bearer [redacted] end');
   });
 
   test('a long run with no known prefix is hidden when any code that is not a cursor move runs through it', () => {
@@ -441,6 +453,13 @@ describe('cleanTaskText: ordinary text is left alone', () => {
 });
 
 describe('cleanTaskText: what it does not do', () => {
+  test('a prefixed token glued onto a word with no code between is not a token, as for the ordinary redaction', () => {
+    // "Bearerghp_…": no word boundary before the prefix, in the raw text or in any reading.
+    const glued = `Bearergh${ESC}[9Gp_A1b2C3d4E5f6G7h8 end`;
+    expect(redactSpeechSecrets('Bearerghp_A1b2C3d4E5f6G7h8 end')).toBe('Bearerghp_A1b2C3d4E5f6G7h8 end');
+    expect(cleanTaskText(glued)).toBe('Bearergh p_A1b2C3d4E5f6G7h8 end');
+  });
+
   test('a long run with no known prefix that a cursor move splits is read as two pieces, as on screen', () => {
     const token = TOKENS.longRun;
     expect(cleanTaskText(`${token.slice(0, 20)}${ESC}[40G${token.slice(20)}`)).toBe(`${token.slice(0, 20)} ${token.slice(20)}`);
