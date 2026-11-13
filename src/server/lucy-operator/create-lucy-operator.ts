@@ -8,6 +8,7 @@
  */
 
 import { createOpenRouterChatStream } from '../../adapters/llm/openrouter-chat-stream.js';
+import { listOperatorAsks } from '../../core/operator-asks.js';
 import { listProjectSummaries } from '../routes/project-routes.js';
 import type { LucyOperatorRouteDeps } from '../routes/lucy-operator-routes.js';
 import type { RouteDeps } from '../routes/shared.js';
@@ -23,6 +24,8 @@ export function buildLucyLookSource(deps: RouteDeps): LucyLookSource {
     // `inspectActive` only reads; `getAll` would also bring expired snoozes back as a side effect.
     getFindings: () => deps.queue.inspectActive(),
     getLifetimeSpendUsd: () => deps.taskStore.getLifetimeSpendUsd(),
+    // The same list the panel and the spoken briefing use, so she and the card agree on what is waiting.
+    getAsks: () => (deps.asks?.service ? listOperatorAsks(deps.asks.service.all(), Date.now(), (taskId) => deps.taskStore.getTask(taskId)?.name) : []),
     getQuota: () => deps.getQuotaStatus?.() ?? null,
     getReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
     listProjects: deps.ledgerAnalytics && deps.projectConfigStore ? () => listProjectSummaries(deps) : undefined,
