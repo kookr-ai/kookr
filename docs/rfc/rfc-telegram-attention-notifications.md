@@ -17,7 +17,7 @@ this RFC was waiting for that approval:
   #3573 extended the same idea to the watchdog and the hung-task reaper with a bounded
   `background_parked` verdict (45 minutes). Slice 1 step 1 is therefore complete.
 - **Replying from Telegram exists.** #3512 added quick-reply buttons and reply routing
-  for a running task. `kookr ask` (#3539 RFC; #3540, #3543, #3547, #3681) lets an agent
+  for a running task. `kookr ask` (#3539 RFC; #3540, #3542, #3543, #3547, #3681) lets an agent
   ask the operator a multiple-choice question over Telegram. This RFC still owns the
   *outbound* side: deciding which events notify the operator, for every task, delivered
   durably, with a reachable report.
@@ -122,8 +122,8 @@ host — so it cannot, as-is, serve a durable `/report/<id>`.
    but the wrong mechanism for a latency-sensitive per-user block ping.
 9. Quiet-hours (`quiet-hours.ts`) is consumed only in the frontend and uses a
    server-local clock in its helper; zero server/Telegram callers.
-10. The branch at HEAD (#2765) archives terminal task history before pruning
-    (`95cc6af0`) — the report model can read that archive for pruned tasks.
+10. The #2765 work archives terminal task history before pruning (merged to `main`
+    as #2953, `src/server/use-cases/task-archive.ts`) — the report model can read that archive for pruned tasks.
 
 ## Goals
 
@@ -195,6 +195,10 @@ host — so it cannot, as-is, serve a durable `/report/<id>`.
   + recipient resolution + redaction + audit). The two legacy callbacks' divergent send
   logic SHALL be removed and routed through it; the `origin` map becomes a
   reply-routing hint, not a notify gate. (Closes the two-senders boundary smell.)
+  *(Since the draft, `kookr ask` added a third outbound sender, `askNotifier.sendAsk`
+  in `telegram/index.ts`. It is not origin-gated: with no origin chat it sends to the
+  first allowlisted user. It should move behind `notifyOperator` too, and its recipient
+  fallback is a usable precedent.)*
 - **R5 — Small message + one link.** Each message SHALL be one short line
   (`<task title/id> — <blocked | question | needs ack | done:ok/fail>`) + exactly one
   URL. A single novel hard-class event SHALL be sent **promptly** (not held behind the
@@ -465,7 +469,7 @@ Round 1 panel (5 critics, parallel): `failure-mode-analyst`, `design-minimalist`
   benefits desktop/audio/response-assist; report is the ask, not a phase).
 - **Post-round-1 empirical checkpoint (2026-11-07):** load-bearing code claims verified
   directly (static-structure checks, not runtime): detection gap confirmed; no shared
-  background-count helper exists today; `useNotifications`/`response-assist` fire on the
+  background-count helper exists today (since #3512, it does); `useNotifications`/`response-assist` fire on the
   spurious anomaly; `completion_ready` reaches `onTaskOutcome` for non-remote tasks;
   `stuck-reason.ts:88` completion_ready→awaiting_completion_ack. Nothing falsified; the
   checks sharpened R2/R3/R4 and the default. `design-experimenter` not spawned — the

@@ -3,6 +3,13 @@
 Evidence to CHECK, not settled fact. Re-verify any load-bearing claim against source.
 Gathered from the current working tree before the critic panel.
 
+> **Snapshot of 2026-11-07.** The R3 detection gap described below (item 2 and the
+> jump list) has since been closed: #3512 added the shared `isBackgroundParked`
+> predicate, which `detectNeedsInput` now calls (so a grep for
+> `activeBackgroundTaskCount` in `anomaly-detector.ts` still finds nothing, but the
+> detector is no longer blind). #3573 extended it to the watchdog and reaper. See the
+> "Update 2026-11-13" section of the RFC. Line numbers are as of 2026-11-07.
+
 ## Pipeline map — two independent Telegram paths + one attention surface
 
 **Detection → attention queue (the "needs user" decision):**
@@ -21,7 +28,7 @@ Gathered from the current working tree before the critic panel.
 ## Telemetry / ground-truth facts (verified)
 
 1. `turn-state.ts:46-68` reads `activeBackgroundTaskCount`/`activeSessionCronCount` from the Stop event and returns `running` when either > 0, else `completed_turn`. (Read confirmed.)
-2. `src/core/anomaly-detector.ts:367-381` `detectNeedsInput` returns a `needs_input`/`stop` anomaly on ANY `stop` event. `grep activeBackgroundTaskCount src/core/anomaly-detector.ts` → NO MATCH. (Confirmed blind.)
+2. `src/core/anomaly-detector.ts:367-381` `detectNeedsInput` returns a `needs_input`/`stop` anomaly on ANY `stop` event. `grep activeBackgroundTaskCount src/core/anomaly-detector.ts` → NO MATCH. (Confirmed blind on 2026-11-07; fixed since by #3512.)
 3. The Stop hook payload carries `background_tasks`/`session_crons`, parsed in `src/core/hook-parser.ts:191-200` into the counts (`src/core/agent-events.ts:65-68`).
 4. `OutstandingSubagentTracker` (`src/core/outstanding-subagents.ts:24-84`) suppresses `needs_input`/`stale_agent`/`hook_disconnected` only while Task-tool subagents are outstanding; a `stop` with background/cron counts > 0 neither adds nor clears it — background bashes/crons are never tracked there.
 5. `OperatorNeeded` (`src/shared/contracts/operator-needed.ts`): durable, first-write-wins, set when an unattended agent's `AskUserQuestion` is denied (`interactive-deny-processor.ts`). ~zero false-positive surface.
@@ -32,7 +39,7 @@ Gathered from the current working tree before the critic panel.
 10. `config-preflight.ts:79-85` validates only `KOOKR_TELEGRAM_API_URL`, not token/chat/allowlist.
 
 ## Source pointers (jump list)
-- Detection gap: `src/core/anomaly-detector.ts:367-381`, `src/core/turn-state.ts:46-68`.
+- Detection gap (closed by #3512): `src/core/anomaly-detector.ts:367-381`, `src/core/turn-state.ts:46-68`.
 - Reliable signals: `src/shared/contracts/operator-needed.ts`, `src/core/stuck-reason.ts:86-103`, `src/core/turn-state.ts:72-94`.
 - Delivery reuse: `src/observability/signal-delivery/{service,channels,emit-transition,config}.ts`.
 - Origin-map gate: `src/integrations/telegram/index.ts:707-757`.
