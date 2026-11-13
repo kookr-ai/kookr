@@ -24,6 +24,10 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/block-memory-bash-writes.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash-wait-nudge.sh"
           }
         ]
       },

@@ -244,6 +244,15 @@ gh issue edit "$PR" --repo "$REPO" --add-label review-skipped-timeout
 - **Advisory:** apply the label if useful and continue to merge after local
   gates. Timeout, missing, or stale review never become a task blocker.
 
+**Waiting for the reviewer or a background gate.** Never wait with
+`while pgrep -f "<pattern>"; do sleep …; done`: the loop's own shell contains the
+pattern, so it matches itself and never exits. Wait on a PID or an exit-marker
+file with the toolkit helper
+(`${CLAUDE_PLUGIN_ROOT}/hooks/kookr-wait.sh --pid <PID>` or
+`--file "$LOG.exit"`, both with an explicit `--timeout`), or on the background
+task's completion notification. When capturing test output, keep the full log:
+`cmd 2>&1 | tee "$LOG" | tail -40; echo "exit=${PIPESTATUS[0]}"`.
+
 ### 6. Correction budget and periodic reflection
 
 On a **hard-gate** repo, one iteration is one implementation attempt followed by
