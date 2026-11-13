@@ -183,6 +183,11 @@ describe('buildNotRecordedHint (issue #3695)', () => {
     expect(hint).toContain("'covered by <path>'");
   });
 
+  test('similarity guard in --format=md output: reads the "- Path:" line', () => {
+    const hint = buildNotRecordedHint(3, '## Similar notes\n- KB: agent-task-lessons\n- Path: md-note.md\n- Score: 0.4\n');
+    expect(hint).toContain("'covered by md-note.md'");
+  });
+
   test('a quote in the candidate path cannot break the suggested printf', () => {
     const hint = buildNotRecordedHint(3, '"relative_path": "it\'s.md"');
     expect(hint).toContain("'covered by its.md'");

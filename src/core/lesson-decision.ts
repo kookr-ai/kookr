@@ -849,6 +849,8 @@ export interface LessonYieldSnapshot {
  * time of the latest `gh pr merge` / `pnpm merge` / `kookr-merge.sh` command
  * seen before the lesson scan's early exit; finish time is `task.finishedAt`.
  * Tasks without either, or whose finish precedes the merge, are left out.
+ * Known limit: the scan stops at the first confirmed lesson write, so a merge
+ * run after that write is not seen (the delivery playbooks merge first).
  */
 export interface MergeToFinishedStats {
   /** Completed tasks in the window with both a merge command and a finish time. */

@@ -931,6 +931,26 @@ describe('merge-to-finished metric (issue #3695)', () => {
     });
   });
 
+  test('known limit: a merge run after the first confirmed lesson write is not seen', async () => {
+    // The scan stops at the first confirmed write to bound health-path cost;
+    // delivery playbooks merge before the lesson step (documented limit).
+    const t0 = Date.parse('2026-07-25T10:00:00.000Z');
+    const write = 'kb remember --lesson --title=t --stdin --yes';
+    writeFileSync(
+      join(dir, 'hooks', 'late.jsonl'),
+      [
+        preToolBashAt('pnpm merge 7', t0),
+        preToolBashAt(write, t0 + minute),
+        postToolBash(write, KB_OUTPUT_WRITE_OK),
+        preToolBashAt('pnpm merge 8', t0 + 2 * minute),
+        '',
+      ].join('\n'),
+    );
+    const stats = await scanHookLogForLessonDecision(join(dir, 'hooks', 'late.jsonl'));
+    expect(stats.lessonWrites).toBe(1);
+    expect(stats.lastMergeAtMs).toBe(t0);
+  });
+
   test('an empty window reports a zero-count distribution', async () => {
     const snap = await computeLessonYield([], join(dir, 'hooks'), { days: 1, nowMs });
     expect(snap.mergeToFinished).toEqual({ count: 0, p50Ms: null, p90Ms: null, maxMs: null });

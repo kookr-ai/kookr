@@ -57,9 +57,11 @@ export function buildNotRecordedHint(exitCode: number, output: string): string {
     + `skip: ${skip('<one-line reason>')}.\n`;
 }
 
-/** First `relative_path` among the similarity-guard candidates in kb's JSON output. */
+/** First candidate path among the similarity-guard candidates in kb's output. */
 function firstSimilarPath(output: string): string | null {
-  const match = /"relative_path"\s*:\s*"([^"\n]{1,300})"/.exec(output);
+  // JSON is kb's default output; `--format=md` prints `- Path: <path>` lines.
+  const match = /"relative_path"\s*:\s*"([^"\n]{1,300})"/.exec(output)
+    ?? /^- Path: ([^\n]{1,300})$/m.exec(output);
   // The path is pasted inside a single-quoted printf argument in the hint;
   // drop quote/backslash characters so the suggested command stays valid.
   const path = match ? match[1]!.replace(/['\\]/g, '') : '';
