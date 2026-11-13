@@ -78,6 +78,50 @@ gates. If a global `gh pr merge` hook still denies the merge there, this
 env var on that one command is the authorized kill-switch for a repo that
 opted out, not a human-merge exception.
 
+## Ordering: review and gate run concurrently on one head
+
+In the session data behind #3691 (135 delivery sessions), a reviewer was active
+for only 0.3–4 min per round, while the full gate took 10–16 min. The time was
+lost by running review *after* the gate and then re-running the gate on the
+head review changed (#3692). The rule:
+
+1. Once the diff is final (head H) and the PR exists, start the reviewer **and**
+   the full gate on H together. Run the gate in the background (for kookr:
+   `git push` with `run_in_background`, which runs the pre-push gate). Draft
+   the PR body in the same window.
+2. On a hard-gate repo, merge needs both a green gate and a `pass` for H. On an
+   advisory repo the verdict is evidence only (see the policy split above).
+3. A green full gate that already ran on H before the PR was opened counts; do
+   not run it a second time. The gate runs once per head, never once per fix.
+4. Any change that is not a delta-eligible edit (next section) makes a new head
+   H'. H' needs a new review and a new full gate. While fixing, iterate with
+   targeted tests (`pnpm test:changed` or the touched files).
+5. Wait only on a notification, PID, or exit-marker file (see §5), never a
+   `pgrep -f` loop.
+
+Before the PR exists there is no `$PR` to post a verdict on; the `pre-pr-review`
+specialist pass covers that stage.
+
+## Delta re-review after a PASS
+
+A PASS binds to one head. After a PASS, if the only change since the reviewed
+head is a **comment-only or typo-only edit** (no executable code, test, config,
+skill/playbook/`CLAUDE.md` text, hook or script file, or documented contract such
+as an API reference), the next verdict may come from a **delta review**:
+
+- The implementer gives the reviewer the last-PASS sha. The reviewer checks it
+  against the latest `pass` comment, reads only `git diff <that-sha>..HEAD`, and
+  returns BLOCK if the diff is outside this category.
+- The reviewer is still fresh-context at the §2 strength and posts the normal
+  verdict comment, including `review-lane` and the new `review-head-sha`. The
+  merge wrapper still needs that exact-head `pass`.
+- The full gate is **not** re-run for such an edit; the earlier green run stands.
+
+A rebase gets the same treatment only when the sole change is the PR's own
+`plugin.json` version line re-bumped after a conflict, and none of the commits
+pulled in from `main` touch files the PR touches. Anything else, including docs
+that define agent behavior or a contract, needs a full review and gate.
+
 ## The verdict comment contract
 
 The reviewer posts **one** PR comment whose body carries these machine-readable
@@ -213,6 +257,16 @@ finding, do exactly one:
 - **Rebut it** — if the finding is wrong, post a PR comment explaining why, then
   re-run the reviewer so it can confirm and post a fresh `pass`. A rebuttal is
   not a merge authorization on its own; only a `pass` verdict is.
+
+**Whole-class fixes.** If a second BLOCK round names the same defect class as
+the first (for example "unquoted path" or "missing null check"), do not fix one
+instance and re-review. Spawn a new fresh-context reviewer, give it only the
+class name from the BLOCK comment, and ask it to list **every** instance in the
+lines the PR changes, plus other call sites of the same function or the same
+pattern in files the PR touches. It returns a list, not a verdict. Fix them all,
+then request the next review; that review is the counted §6 iteration.
+In the #3691 sample, one PR took 12 BLOCK rounds and another 8, each round
+finding one more instance of the same class (analyst-reported).
 
 Never edit an old BLOCK comment to say pass — post a new verdict comment; the
 gate reads the latest.

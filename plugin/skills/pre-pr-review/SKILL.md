@@ -45,6 +45,8 @@ If the project is "Other / unknown", skip this step and state so in the output c
 
 ### 3. Tests
 
+While iterating, run targeted tests (`pnpm test:changed` or the touched files). Run the full suite once on the final head, not after every fix. After the PR exists, the independent reviewer runs concurrently with the full gate on that head (see [[independent-merge-review]], "Ordering").
+
 Run the test command from the detected row. Must be green. New functionality should have tests. Modified behavior should have updated tests.
 
 If the project has no test script / test suite, skip this step and state so in the output contract.
