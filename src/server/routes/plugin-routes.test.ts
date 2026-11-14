@@ -427,3 +427,102 @@ describe('own-session assist routes (RFC G3/R4)', () => {
     expect(epoch.epoch).toBe(1);
   });
 });
+
+describe('fleet set routes (GET/PUT /api/plugins/fleet, POST /api/plugins/fleet/check)', () => {
+  let env: Env;
+  afterEach(async () => env?.cleanup());
+
+  async function makeFleetApp(): Promise<{ app: Hono; checks: string[] }> {
+    const { PluginFleetRuntime } = await import('../plugin-manager/fleet-runtime.js');
+    const { LoadoutStore } = await import('../plugin-manager/loadout-store.js');
+    const { AutoUpdateStore } = await import('../plugin-manager/auto-update-store.js');
+    const { registryInstalledPlugins } = await import('../plugin-manager/registry.js');
+    const checks: string[] = [];
+    const loadoutStore = new LoadoutStore(env.serverCwd);
+    const lastResult = {
+      checkedAt: 'now', durationMs: 1, trigger: 'manual', ok: true,
+      plugins: [], skipped: [], unexpected: [], otherErrors: [],
+    };
+    const pluginFleet = new PluginFleetRuntime({
+      loadoutStore,
+      check: {
+        runInBackground: (t: string) => checks.push(t),
+        run: async (t: string) => { checks.push(t); return lastResult; },
+        lastResult: null,
+        running: false,
+      } as never,
+      epochStore: { bump: async () => 1 },
+      autoUpdateStore: new AutoUpdateStore(env.serverCwd),
+      mutation: env.mutation,
+      installedPlugins: registryInstalledPlugins(env.home),
+      homeDir: env.home,
+      liveTasks: () => [],
+      env: { KOOKR_PLUGIN_LOADOUTS: '1' },
+    });
+    const app = new Hono();
+    registerPluginRoutes(app, {
+      serverCwd: env.serverCwd,
+      serverPort: 4800,
+      hookHomeDir: env.home,
+      pluginUpdateBin: env.bin,
+      pluginMutationService: env.mutation,
+      pluginFleet,
+    } satisfies DeployRouteDeps);
+    return { app, checks };
+  }
+
+  it('answers 503 when the server has no fleet runtime', async () => {
+    env = await setup([]);
+    const res = await makeApp(env).request('/api/plugins/fleet');
+    expect(res.status).toBe(503);
+  });
+
+  it('PUT replaces the set, starts a check, and GET reports named-but-not-installed', async () => {
+    env = await setup([{ id: 'a@m', version: '1.0.0', scope: 'user', enabled: true }]);
+    const { app, checks } = await makeFleetApp();
+    const put = await app.request('/api/plugins/fleet', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plugins: { 'a@m': true, 'gone@m': true } }),
+    });
+    expect(put.status).toBe(200);
+    expect(checks).toEqual(['fleet-change']);
+    const status = (await (await app.request('/api/plugins/fleet')).json()) as {
+      plugins: Record<string, boolean>; namedNotInstalled: string[]; activation: { state: string };
+    };
+    expect(status.plugins).toEqual({ 'a@m': true, 'gone@m': true });
+    expect(status.namedNotInstalled).toEqual(['gone@m']);
+    expect(status.activation.state).toBe('on');
+  });
+
+  it('PUT rejects a malformed body', async () => {
+    env = await setup([]);
+    const { app } = await makeFleetApp();
+    const res = await app.request('/api/plugins/fleet', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plugins: { 'no-marketplace': true } }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('the fleet level is not writable through the keyed loadout route', async () => {
+    env = await setup([]);
+    const { app } = await makeFleetApp();
+    const res = await app.request('/api/plugins/loadouts/fleet/x', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plugins: { 'a@m': true } }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /check runs a check and returns its result', async () => {
+    env = await setup([]);
+    const { app, checks } = await makeFleetApp();
+    const res = await app.request('/api/plugins/fleet/check', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
+    expect(checks).toEqual(['manual']);
+  });
+});

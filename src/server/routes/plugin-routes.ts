@@ -30,6 +30,8 @@ import type {
   PluginUpdateOutcome,
   PluginActionError,
   ScopedLoadoutLevel,
+  FleetStatus,
+  FleetCheckResult,
   LoadoutDesiredState,
   LoadoutSpawnMode,
   OwnSessionScope,
@@ -205,6 +207,14 @@ export function registerPluginRoutes(app: Hono, deps: DeployRouteDeps): void {
   const pluginMutation = deps.pluginMutationService ?? new PluginMutationService();
 
   app.get('/api/plugins', async (c) => {
+    // Opening the manager runs the observe half (RFC R10): a version changed
+    // outside Kookr is noticed now rather than at the next interval tick.
+    // A registry read under the lock; never fails the read model.
+    if (deps.pluginFleet?.observeActive()) {
+      await deps.pluginFleet.observeNow().catch((err) => {
+        console.warn(`[plugins] observe on manager open failed: ${errorMessage(err)}`);
+      });
+    }
     try {
       const [plugins, toolkit] = await Promise.all([
         buildReadModel(deps, hookHomeDir, true),
@@ -330,6 +340,11 @@ export function registerPluginRoutes(app: Hono, deps: DeployRouteDeps): void {
         try {
           await cli.update(id);
           await backup.discard();
+          // Kookr's own update: record it in the observed baseline while the lock
+          // is still held, so the observe pass never reports it as external.
+          await deps.pluginFleet?.recordKookrChange([id]).catch((err) => {
+            console.warn(`[plugins] baseline record after update failed id=${id}: ${errorMessage(err)}`);
+          });
         } catch (err) {
           const restore = await backup.restore();
           const note = restore.ok
@@ -344,6 +359,8 @@ export function registerPluginRoutes(app: Hono, deps: DeployRouteDeps): void {
         await epochStoreFor(deps).bump().catch((err) => {
           console.warn(`[plugins] epoch bump after update failed id=${id}: ${errorMessage(err)}`);
         });
+
+        await deps.pluginFleet?.afterKookrPluginChange(id).catch(() => undefined);
 
         const plugins = await buildReadModel(deps, hookHomeDir, true);
         const plugin = plugins.find((p) => p.id === id);
@@ -364,6 +381,57 @@ export function registerPluginRoutes(app: Hono, deps: DeployRouteDeps): void {
       }
       console.error(`[plugins] update errored id=${id}: ${errorMessage(err)}`);
       return c.json<PluginActionError>({ error: errorMessage(err), pluginId: id }, 500);
+    }
+  });
+
+  // --- Fleet set (RFC "Plugins for the Kookr fleet", slice 1) ---------------
+  // The fleet set is the least specific loadout level: plugins every
+  // Kookr-spawned Claude agent gets. Stored in its own file; written here only.
+
+  app.get('/api/plugins/fleet', async (c) => {
+    if (!deps.pluginFleet) return c.json({ error: 'Fleet set is not available on this server' }, 503);
+    try {
+      return c.json<FleetStatus>(await deps.pluginFleet.status());
+    } catch (err) {
+      console.error(`[plugins] fleet status failed: ${errorMessage(err)}`);
+      return c.json({ error: errorMessage(err) }, 500);
+    }
+  });
+
+  // Replace the whole fleet set. Bumps the config epoch (sessions started
+  // before show as drifted) and starts a fleet check without waiting for it.
+  app.put('/api/plugins/fleet', async (c) => {
+    if (!deps.pluginFleet) return c.json({ error: 'Fleet set is not available on this server' }, 503);
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400);
+    }
+    const state = parseDesiredState(body);
+    if (!state) {
+      return c.json(
+        { error: 'Body must be { plugins: { "<name>@<marketplace>": boolean, ... } }' },
+        400,
+      );
+    }
+    try {
+      return c.json<FleetStatus>(await deps.pluginFleet.setFleet(state.plugins));
+    } catch (err) {
+      console.error(`[plugins] fleet write failed: ${errorMessage(err)}`);
+      return c.json({ error: errorMessage(err) }, 500);
+    }
+  });
+
+  // Run the fleet check now and return its result (about 5–10 s): what a new
+  // Claude agent launched with the current fleet set actually loads.
+  app.post('/api/plugins/fleet/check', async (c) => {
+    if (!deps.pluginFleet) return c.json({ error: 'Fleet set is not available on this server' }, 503);
+    try {
+      return c.json<FleetCheckResult>(await deps.pluginFleet.check.run('manual'));
+    } catch (err) {
+      console.error(`[plugins] fleet check failed: ${errorMessage(err)}`);
+      return c.json({ error: errorMessage(err) }, 500);
     }
   });
 

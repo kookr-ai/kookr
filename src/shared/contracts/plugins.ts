@@ -290,6 +290,8 @@ export interface FleetExternalChange {
 /** `GET /api/plugins/fleet` and `PUT /api/plugins/fleet` body. */
 export interface FleetStatus {
   plugins: Record<string, boolean>;
+  /** The fleet file: `missing` (empty set), `ok`, or `malformed` (read as empty). */
+  fileStatus: 'missing' | 'ok' | 'malformed';
   activation: LoadoutActivation;
   /** Fleet-set ids enabled but absent from the registry right now. */
   namedNotInstalled: string[];

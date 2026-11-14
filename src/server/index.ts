@@ -91,6 +91,10 @@ import { gitIn } from '../core/git-helpers.js';
 import { resolveDefaultBranch } from '../core/repo-policy-resolver.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { LoadoutStore } from './plugin-manager/loadout-store.js';
+import { PluginFleetRuntime } from './plugin-manager/fleet-runtime.js';
+import { FleetCheckService, type FleetProbeCommand } from './plugin-manager/fleet-check.js';
+import { AutoUpdateStore } from './plugin-manager/auto-update-store.js';
+import { registryInstalledPlugins } from './plugin-manager/registry.js';
 import { ConfigEpochStore } from './plugin-manager/config-epoch.js';
 import { PluginMutationService } from './plugin-manager/mutation-service.js';
 import { buildAutoUpdateService } from './plugin-manager/auto-update-wiring.js';
@@ -202,7 +206,7 @@ import {
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
 import { bindOperationalAlertSink } from './operational-alert-sink.js';
 import { ProviderHealthTracker } from '../core/provider-health.js';
-import { loadavg, cpus } from 'node:os';
+import { loadavg, cpus, homedir } from 'node:os';
 import { readMaxHostLoadPerCpuFromEnv } from './config.js';
 import { LessonSpoolService } from './lesson-spool-service.js';
 import { defaultSpoolDir } from '../core/lesson-write-spool.js';
@@ -1813,6 +1817,28 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // all serialize through THIS instance so no two paths mutate `~/.claude/plugins`
   // (or race an update against a spawn) concurrently.
   const pluginMutationService = new PluginMutationService();
+  // The fleet set's runtime (fleet file, fleet check, external-change reaction).
+  // The check probes with the Claude adapter's own binary and plugin flags.
+  const pluginFleetInstalled = registryInstalledPlugins(homedir());
+  const pluginFleet = new PluginFleetRuntime({
+    loadoutStore,
+    check: new FleetCheckService({
+      loadoutStore,
+      installedPlugins: pluginFleetInstalled,
+      probeCommand: async () => {
+        const claude = adapterRegistry
+          .getAll()
+          .find((a) => a.agentType === 'claude-code') as { fleetProbeCommand?: () => Promise<FleetProbeCommand> } | undefined;
+        return claude?.fleetProbeCommand ? claude.fleetProbeCommand() : null;
+      },
+    }),
+    epochStore: configEpochStore,
+    autoUpdateStore: new AutoUpdateStore(kookrDir),
+    mutation: pluginMutationService,
+    installedPlugins: pluginFleetInstalled,
+    homeDir: homedir(),
+    liveTasks: () => taskStore.viewLiveTasks(),
+  });
   const lifecycleDeps: AgentLifecycleDeps = {
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
@@ -3094,6 +3120,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,
     pluginMutationService,
+    pluginFleet,
     // #2096: Ralph HTTP mutates share the event-pipeline coalesce/shed path
     // instead of rebuilding full snapshots synchronously on every success.
     requestSnapshotBroadcast,
@@ -3380,6 +3407,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           kookrDir,
           pluginUpdateBin: agentBin,
           pluginMutationService,
+          pluginFleet,
           worktreeRegistry,
           taskStore,
         });
@@ -3397,6 +3425,26 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     autoUpdateSweepTimer = setInterval(() => void runAutoUpdateSweep(), autoUpdateSweepMs);
     autoUpdateSweepTimer.unref?.();
     console.log(`[auto-update] apply-when-idle sweep enabled (every ${Math.round(autoUpdateSweepMs / 60000)}m)`);
+  }
+
+  // Observe half of the sweep (RFC "Plugins for the Kookr fleet", R10): detect
+  // plugin versions changed outside Kookr whenever a first spawn would resolve
+  // a loadout, without needing KOOKR_PLUGIN_AUTO_UPDATE. When the apply sweep
+  // runs it already observes on each tick, so this interval is not started.
+  let pluginObserveTimer: ReturnType<typeof setInterval> | undefined;
+  if (pluginFleet.observeActive() && !autoUpdateApplyEnabled()) {
+    const observeMs = autoUpdateSweepIntervalMs();
+    const runObserve = async (): Promise<void> => {
+      try {
+        await pluginFleet.observeNow();
+      } catch (err) {
+        console.warn(`[fleet] observe pass failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    void runObserve(); // first baseline at boot
+    pluginObserveTimer = setInterval(() => void runObserve(), observeMs);
+    pluginObserveTimer.unref?.();
+    console.log(`[fleet] external plugin change detection enabled (every ${Math.round(observeMs / 60000)}m)`);
   }
 
   const {
@@ -4497,6 +4545,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       envBlockerHeartbeatTimer = undefined;
     }
 
+    if (pluginObserveTimer) {
+      clearInterval(pluginObserveTimer);
+      pluginObserveTimer = undefined;
+    }
     if (autoUpdateSweepTimer) {
       clearInterval(autoUpdateSweepTimer);
       autoUpdateSweepTimer = undefined;

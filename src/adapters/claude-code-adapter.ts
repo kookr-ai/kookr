@@ -1010,6 +1010,19 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   /**
+   * The binary and the plugin-related flags a spawned agent gets (bypass flags
+   * when this instance spawns in bypass mode, and the bundled `--plugin-dir`),
+   * so the fleet check probes with exactly what a spawn uses.
+   */
+  async fleetProbeCommand(): Promise<{ bin: string; args: string[]; dirLoadedPluginNames: readonly string[] }> {
+    return {
+      bin: this.agentBin,
+      args: [...(this.bypassAllPermissions ? claudeBypassArgs() : []), ...claudePluginDirArgs(this.pluginDir)],
+      dirLoadedPluginNames: await this.dirLoadedPluginNamesForLaunch(),
+    };
+  }
+
+  /**
    * Resolve (and cache) the names of plugins force-loaded via `--plugin-dir`,
    * read best-effort from each dir's `.claude-plugin/plugin.json`. Returns `[]`
    * when no plugin dir is configured or the manifest can't be read — in which

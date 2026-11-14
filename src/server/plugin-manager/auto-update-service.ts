@@ -24,7 +24,8 @@ import {
   type AutoUpdateSnapshotMeta,
   type AutoUpdateSurface,
 } from '../../shared/contracts/plugins.js';
-import type { PluginMutationService } from './mutation-service.js';
+import { PluginMutationBusyError, type PluginMutationService } from './mutation-service.js';
+import type { AutoUpdateExternalChange } from '../../shared/contracts/plugins.js';
 import type { ClaudeSettingsStore, SettingsScope } from '../../core/claude-settings/settings-store.js';
 import type { AutoUpdateStore } from './auto-update-store.js';
 import type { AutoUpdateAuditStore } from './auto-update-audit-store.js';
@@ -68,8 +69,10 @@ export interface AutoUpdateServiceDeps {
   ops: AutoUpdateOps;
   /** Non-terminal task views for the idle predicate (read INSIDE the lock). */
   getTasks: () => IdlePredicateTaskView[] | Promise<IdlePredicateTaskView[]>;
-  /** All installed versions id→version for external-change detection. */
+  /** All installed versions id→version for external-change detection (read from the registry file, not the CLI). */
   readInstalledVersions: () => Promise<Map<string, string | null>>;
+  /** Called with the external changes each sweep detects (the fleet reaction, RFC R10). */
+  onExternalChanges?: (changes: AutoUpdateExternalChange[]) => void | Promise<void>;
   /** Default-off env gate: when false, `apply-when-idle` degrades to notify-only (never auto-applies). */
   applyEnabled: boolean;
   now?: () => Date;
@@ -385,33 +388,22 @@ export class AutoUpdateService {
       if (decision.state === 'applied' || decision.state === 'rolled-back') kookrChanged.add(id);
     }
 
-    // Run the detect-baseline + snapshot-prune store writes UNDER the shared lock,
-    // like every other store mutation, so they cannot interleave with a lock-held
-    // evaluate/rollback's read-modify-write and lose an update.
-    const externalChanges = await this.deps.mutation.withLock('plugin-auto-update-sweep', async () => {
-      const n = await this.detectAndLogExternalChanges(kookrChanged);
-      await this.pruneExpiredSnapshots();
-      return n;
-    });
-    return { decisions, externalChanges };
+    // Observe (registry read + diff + baseline write, under the lock but with no
+    // CLI call inside it), then prune expired snapshots under the lock.
+    const changes = await observeExternalChanges(this.deps, kookrChanged, this.now);
+    if (changes && changes.length > 0) await this.deps.onExternalChanges?.(changes);
+    await this.deps.mutation
+      .withLock('plugin-auto-update-prune', () => this.pruneExpiredSnapshots())
+      .catch((err) => {
+        if (!(err instanceof PluginMutationBusyError)) throw err; // busy: prune next tick
+      });
+    return { decisions, externalChanges: changes?.length ?? 0 };
   }
 
-  /** Diff fleet installed versions vs last-observed, log external changes, update the baseline. */
-  async detectAndLogExternalChanges(kookrChanged: ReadonlySet<string> = new Set()): Promise<number> {
-    const current = await this.deps.readInstalledVersions();
-    const data = await this.deps.store.read();
-    const changes = detectExternalChanges(data.observed, current, { kookrChanged, now: this.now().toISOString() });
-    for (const change of changes) {
-      console.log(
-        `[auto-update] external_change plugin=${change.pluginId} ` +
-          `from=${change.fromVersion ?? 'none'} to=${change.toVersion ?? 'none'} at=${change.detectedAt}`,
-      );
-    }
-    // Persist the fresh baseline for every observed plugin (incl. first sightings).
-    await this.deps.store.update((d) => {
-      for (const [id, v] of current) d.observed[id] = v;
-    });
-    return changes.length;
+  /** Detect external version changes now (see {@link observeExternalChanges}). Returns null when the lock was busy. */
+  async detectAndLogExternalChanges(kookrChanged: ReadonlySet<string> = new Set()): Promise<number | null> {
+    const changes = await observeExternalChanges(this.deps, kookrChanged, this.now);
+    return changes === null ? null : changes.length;
   }
 
   /** Remove snapshot metadata AND the on-disk snapshot dir past the retention window. */
@@ -503,4 +495,70 @@ function errText(err: unknown): string {
     return parts.join('\n');
   }
   return String(err);
+}
+
+/** Deps of the observe half: the baseline store, the shared lock, and the registry-backed version reader. */
+export interface ObserveDeps {
+  store: Pick<AutoUpdateStore, 'read' | 'update'>;
+  mutation: Pick<PluginMutationService, 'withLock'>;
+  readInstalledVersions: () => Promise<Map<string, string | null>>;
+}
+
+/**
+ * The OBSERVE half of the sweep (RFC section 1, "Detect"; R10): compare every
+ * installed plugin's version with the baseline Kookr last observed, log each
+ * change made without a Kookr action as `external_change`, and write the new
+ * baseline. It runs whenever a first spawn would resolve a loadout, without
+ * needing `KOOKR_PLUGIN_AUTO_UPDATE`.
+ *
+ * The registry read is a sub-millisecond file read, so read, diff and write all
+ * happen inside the lock: a Kookr update cannot land between the read and the
+ * write and then be reported as external. No CLI call runs inside the lock. A
+ * busy lock skips this tick (returns null) instead of waiting.
+ */
+export async function observeExternalChanges(
+  deps: ObserveDeps,
+  kookrChanged: ReadonlySet<string> = new Set(),
+  now: () => Date = () => new Date(),
+): Promise<AutoUpdateExternalChange[] | null> {
+  try {
+    return await deps.mutation.withLock('plugin-observe', async () => {
+      const current = await deps.readInstalledVersions();
+      const data = await deps.store.read();
+      const changes = detectExternalChanges(data.observed, current, { kookrChanged, now: now().toISOString() });
+      for (const change of changes) {
+        console.log(
+          `[auto-update] external_change plugin=${change.pluginId} ` +
+            `from=${change.fromVersion ?? 'none'} to=${change.toVersion ?? 'none'} at=${change.detectedAt}`,
+        );
+      }
+      await deps.store.update((d) => {
+        for (const [id, v] of current) d.observed[id] = v;
+      });
+      return changes;
+    });
+  } catch (err) {
+    if (err instanceof PluginMutationBusyError) return null;
+    throw err;
+  }
+}
+
+/**
+ * Record a change Kookr itself just made (install, update, uninstall) in the
+ * observed baseline, so the next observe pass does not report it as external.
+ * The CALLER holds the mutation lock (every Kookr plugin mutation does), so
+ * this takes no lock. A plugin absent from `current` (uninstalled) is removed
+ * from the baseline.
+ */
+export async function recordKookrPluginChange(
+  store: Pick<AutoUpdateStore, 'update'>,
+  pluginIds: readonly string[],
+  current: ReadonlyMap<string, string | null>,
+): Promise<void> {
+  await store.update((d) => {
+    for (const id of pluginIds) {
+      if (current.has(id)) d.observed[id] = current.get(id) ?? null;
+      else delete d.observed[id];
+    }
+  });
 }

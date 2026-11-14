@@ -309,6 +309,12 @@ export interface DeployRouteDeps {
    */
   pluginMutationService?: import('../plugin-manager/mutation-service.js').PluginMutationService;
   /**
+   * The fleet set's runtime (fleet file, fleet check, external-change
+   * reaction). Constructed once in `index.ts`. Optional: without it the fleet
+   * routes answer 503 and the other plugin routes behave as before.
+   */
+  pluginFleet?: import('../plugin-manager/fleet-runtime.js').PluginFleetRuntime;
+  /**
    * Worktree registry — surfaced to deploy-routes so `resolveProdDir` can
    * locate the production runtime via the `.kookr-protected` marker rather
    * than the legacy `kookr-prod` basename heuristic. Optional so tests and
@@ -381,6 +387,8 @@ export interface RouteDeps {
    * routes so they serialize through one lock.
    */
   pluginMutationService?: import('../plugin-manager/mutation-service.js').PluginMutationService;
+  /** The fleet set's runtime, threaded to the plugin routes. */
+  pluginFleet?: import('../plugin-manager/fleet-runtime.js').PluginFleetRuntime;
   /** Stable Kookr state directory, normally `~/.kookr`. */
   kookrDir: string;
   /**
