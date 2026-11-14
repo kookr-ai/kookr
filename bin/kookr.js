@@ -183,7 +183,11 @@ async function main({
   // POST /api/playbook-chains and POST /api/tasks/:id/chain/stop.
   if (command === 'chain') {
     const { runChainCommand } = await import('./kookr-chain.js');
-    return exit(await runChainCommand(rest, { env, out, err }));
+    await runChainCommand(rest, { env, out, err });
+    // Exit naturally (exitCode, not process.exit) so `--json` output piped to
+    // another process is fully flushed — same reason as `playbook` below.
+    process.exitCode = process.exitCode ?? 0;
+    return;
   }
 
   // Ops digest one-pager (issue #2347). Thin HTTP client against
