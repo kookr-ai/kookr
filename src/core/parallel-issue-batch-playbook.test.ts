@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parsePlaybook } from './playbook-parser.js';
+import { interpolateParameters, parsePlaybook } from './playbook-parser.js';
 
 /**
  * Contract tests for the parallel-issue-batch playbook's headless report-and-exit
@@ -423,6 +423,24 @@ describe('parallel-issue-batch playbook: unified issue delivery front door (RFC 
     expect(approve?.options?.map((o) => o.value)).toEqual(['false', 'true']);
   });
 
+  test('approvePlan actually reaches the supervisor prompt (and defaults to false when unset)', () => {
+    const base = { repoFullName: 'owner/repo' };
+    const asked = interpolateParameters(pb.body, pb.parameters, { ...base, approvePlan: 'true' });
+    const unset = interpolateParameters(pb.body, pb.parameters, base);
+    expect(asked).toContain('- approvePlan: `true`');
+    expect(unset).toContain('- approvePlan: `false`');
+    expect(asked).not.toEqual(unset);
+  });
+
+  test('a proposal-only run is never resumed by Phase 0', () => {
+    expect(pb.body).toContain('only `plan-proposal.json` (an unapproved plan, Phase 3a) is **never** active');
+  });
+
+  test('strong-route effort is only added for agents that accept it', () => {
+    expect(pb.body).toContain('claude-code|codex-cli)');
+    expect(pb.body).not.toContain('[ "$CHILD_AGENT" != "grok-build" ]; then\n     AGENT_FLAG="$AGENT_FLAG --effort high"');
+  });
+
   test('onAmbiguity keeps exactly its existing values', () => {
     expect(param('onAmbiguity')?.options?.map((o) => o.value)).toEqual(['ask', 'auto-safe-subset', 'auto-stop']);
   });
@@ -478,7 +496,10 @@ describe('parallel-issue-batch playbook: unified issue delivery front door (RFC 
     const template = pb.body.slice(pb.body.indexOf('Implement the following GitHub issue in <owner/repo>'));
     expect(template).toContain('Efficiency (follow these');
     expect(template).toContain('**never spawn Kookr tasks**');
-    expect(template).toContain('independent-merge-review');
+    // The efficiency block must not contain check_child_prompt's merge-grep
+    // strings, or it could mask a dropped merge-review bullet.
+    const efficiency = template.slice(template.indexOf('Efficiency (follow these'), template.indexOf('Concurrent-task note:'));
+    expect(efficiency).not.toContain('independent-merge-review');
   });
 
   test('outcome record carries additive run metrics', () => {
