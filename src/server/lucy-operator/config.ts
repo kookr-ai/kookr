@@ -15,8 +15,11 @@ import {
 } from '../../adapters/llm/openrouter-chat-stream.js';
 
 export const DEFAULT_LUCY_OPERATOR_MODEL = 'deepseek/deepseek-v4.1-flash-1017';
-/** Cohere first, DeepInfra as the only fallback, both at 8-bit precision. */
-export const DEFAULT_LUCY_OPERATOR_PROVIDERS: readonly string[] = ['cohere/fp8', 'deepinfra/fp8'];
+/**
+ * Cohere only, at 8-bit precision: the operator's OpenRouter account guardrail allows
+ * this model on Cohere and nothing else, so any other fallback could only fail with 404.
+ */
+export const DEFAULT_LUCY_OPERATOR_PROVIDERS: readonly string[] = ['cohere/fp8'];
 export const DEFAULT_LUCY_OPERATOR_REASONING: LucyOperatorReasoning = 'medium';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 /** A provider tag as OpenRouter writes it: a slug, optionally followed by variants (`deepinfra/fp8/flex`). */

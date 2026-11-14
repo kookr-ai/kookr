@@ -74,12 +74,17 @@ single provider:
 
 ```bash
 KOOKR_LLM_PROVIDER=openrouter        # openrouter | requesty | baseten | groq | gemini | anthropic | auto
-KOOKR_LLM_MODEL=deepseek/deepseek-v4-flash
+KOOKR_LLM_MODEL=deepseek/deepseek-v4.1-flash-1017
 KOOKR_LLM_BASE_URL=https://openrouter.ai/api/v1
 ```
 
 **OpenRouter** is an OpenAI-compatible paid provider; Kookr defaults it to
-`deepseek/deepseek-v4-flash`. `KOOKR_OPENROUTER_API_KEY` is preferred over
+`deepseek/deepseek-v4.1-flash-1017` and sends every request with
+`provider: {only: ["cohere"], allow_fallbacks: false}` and
+`reasoning: {enabled: false}`, matching the operator's OpenRouter account
+guardrail (other models or upstreams are rejected with HTTP 404). Hidden
+reasoning is off because this model otherwise spends short `max_tokens`
+budgets on reasoning and returns no text. `KOOKR_OPENROUTER_API_KEY` is preferred over
 `OPENROUTER_API_KEY` so a separate OpenRouter credit limit can be scoped to
 Kookr. `KOOKR_LLM_MODEL` and `KOOKR_LLM_BASE_URL` apply to the OpenRouter
 provider. See [Environment Variables](reference/environment-variables.md#llm-provider)

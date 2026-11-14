@@ -64,7 +64,7 @@ describe('OpenRouterLlmClient', () => {
   test('exposes provider name and default model', () => {
     const client = new OpenRouterLlmClient({ apiKey: API_KEY });
     expect(client.provider).toBe('openrouter');
-    expect(client.model).toBe('deepseek/deepseek-v4-flash');
+    expect(client.model).toBe('deepseek/deepseek-v4.1-flash-1017');
   });
 
   test('honors a custom model id', () => {
@@ -93,13 +93,24 @@ describe('OpenRouterLlmClient', () => {
     expect(headers['X-Title']).toBe('Kookr');
 
     const body = requestBody(fetchMock);
-    expect(body.model).toBe('deepseek/deepseek-v4-flash');
+    expect(body.model).toBe('deepseek/deepseek-v4.1-flash-1017');
     expect(body.max_tokens).toBe(64);
     expect(body.messages).toEqual([
       { role: 'system', content: 'You are concise.' },
       { role: 'user', content: 'Name this task.' },
     ]);
     expect(body.response_format).toBeUndefined();
+  });
+
+  test('pins Cohere routing and disables hidden reasoning on every request', async () => {
+    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
+    const client = new OpenRouterLlmClient({ apiKey: API_KEY, model: 'openai/gpt-5-mini' });
+
+    await client.complete(baseReq);
+
+    const body = requestBody(fetchMock);
+    expect(body.provider).toEqual({ only: ['cohere'], allow_fallbacks: false });
+    expect(body.reasoning).toEqual({ enabled: false });
   });
 
   test('omits the system message when no system prompt is given', async () => {

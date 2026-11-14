@@ -444,7 +444,7 @@ describe('createLlmClient real adapter builders', () => {
     });
 
     expect(client?.provider).toBe('openrouter');
-    expect(client?.model).toBe('deepseek/deepseek-v4-flash');
+    expect(client?.model).toBe('deepseek/deepseek-v4.1-flash-1017');
   });
 });
 
