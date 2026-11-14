@@ -15,6 +15,12 @@ import { useKookrStore } from '../store/useStore.js';
 
 import { projectLabel, projectColor } from '../presentation.js';
 import { PlaybookUsageTracker, matchesUsageKey, snapshotKey } from '../store/playbook-usage.js';
+import {
+  matchPlaybookSearch,
+  PLAYBOOK_MATCH_CARD,
+  playbookSearchWords,
+  type PlaybookMatchTier,
+} from '../playbook-search.js';
 import { mergeParamDefaults } from '../store/playbook-params.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/playbook-source-resolver.js';
 import { RecentPaths } from '../store/recent-paths.js';
@@ -452,21 +458,35 @@ export function PlaybookBrowser({
     return () => { cancelled = true; };
   }, [selected, projectSummaries]);
 
-  // Sorted + filtered playbooks: pinned first, then recently used, then alphabetical
+  // Sorted + filtered playbooks: while searching, card-text matches before
+  // instructions-only matches; then pinned, then recently used, then alphabetical
   const sortedPlaybooks = useMemo(() => {
     const recent = usageTracker.getRecent();
 
     let filtered = showLoopableOnly
       ? playbooks.filter((pb) => pb.tags.includes('loopable'))
       : playbooks;
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      filtered = filtered.filter(
-        (pb) => pb.name.toLowerCase().includes(q) || pb.description.toLowerCase().includes(q),
-      );
+    // While a search is active, playbooks whose card text matches come before
+    // those that only mention a search word in their instructions — ahead of
+    // pinned and recent, so a pinned playbook with a passing mention cannot
+    // outrank the playbook the operator is looking for.
+    const searchWords = playbookSearchWords(search);
+    const matchTier = new Map<Playbook, PlaybookMatchTier>();
+    if (searchWords.length > 0) {
+      filtered = filtered.filter((pb) => {
+        const tier = matchPlaybookSearch(pb, searchWords);
+        if (tier === null) return false;
+        matchTier.set(pb, tier);
+        return true;
+      });
     }
 
     return [...filtered].sort((a, b) => {
+      // The map is empty when nothing is searched, so every playbook ties here.
+      const tierDiff =
+        (matchTier.get(a) ?? PLAYBOOK_MATCH_CARD) - (matchTier.get(b) ?? PLAYBOOK_MATCH_CARD);
+      if (tierDiff !== 0) return tierDiff;
+
       const aPinned =
         pinnedIds.has(snapshotKey(a.id, a.sourceCwd)) || pinnedIds.has(a.id);
       const bPinned =
