@@ -2924,6 +2924,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           getAsks: () => (askService
             ? listOperatorAsks(askService.all(), Date.now(), (taskId) => taskStore.getTask(taskId)?.name)
             : []),
+          // A spoken answer goes through the same audited entry point as the panel's buttons.
+          answerAsk: (input) => (operatorAsksPort
+            ? operatorAsksPort.answer(input)
+            : Promise.resolve({ ok: false, reason: 'not_found' } as const)),
           getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
           log: lucyInteractionLog,
           // Talk turns go to the operator conversation only when launching is switched on.

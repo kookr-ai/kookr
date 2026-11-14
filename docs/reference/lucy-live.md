@@ -196,11 +196,41 @@ said to her. A question is the one thing she says unprompted, under these rules:
 
 **Hands-free talk.** With Talk on, the status Lucy answers from also lists the questions that are
 waiting and the ones closed in the last 10 minutes, with where the answer came from. Ask her "does
-anything need me?" and she can tell you. She cannot take an answer by voice: a misheard word would
-send the wrong decision to a task, and that cannot be undone. Press the choice in her panel or answer
-on Telegram. (With `KOOKR_LUCY_LAUNCH=true`, spoken turns are answered by the operator conversation, whose
+anything need me?" and she can tell you.
+
+**Answering by voice.** You can say one of the listed choices ("run it tonight"). A misheard word would
+send the wrong decision to a task and that cannot be undone, so it takes two turns:
+
+1. Your words are mapped to one listed choice (or to none) by a separate helper-model call that answers
+   with numbers only. She then reads the choice back in words built from the question's own choice
+   text, never from the model's: "You want: run it tonight. Shall I send that?" With two or more
+   questions waiting the read-back names the task, and if your words fit more than one question she
+   asks which one you mean instead.
+2. She sends it only when your next turn is a clear yes ("yes", "go ahead", "send it", ...) as the whole
+   sentence. "No" cancels. Anything else cancels and is handled as a new request. A yes that began while
+   her voice was still audible, a yes more than 20 seconds after she finished the read-back, and any yes
+   after she was interrupted mid read-back all send nothing.
+
+Just before sending she checks that the same question is still waiting with the same choice. The answer
+goes through the same audited path as the panel's buttons (one winner with Telegram, the Telegram message
+edited), and she says what happened, including when the question was already answered elsewhere. A
+mapping call that fails, times out or finds no match sends nothing and she answers as usual. Only the
+listed choices can be answered by voice: free-text answers stay in the panel and on Telegram.
+
+The "she cannot act" rule of the helper-model prompt was re-measured after this change
+(`scripts/measure-lucy-voice-answer.ts`, against the real helper model): 10 of 10 questions about
+waiting questions (cost, builds, authorship, "pick it for me", "cancel the deploy") were answered with
+nothing invented, and the two spoken answers that reach her anyway ("Run it tonight.", "Yes, send it.")
+produced "nothing was sent" and a pointer to the panel. The mapping call was run on 16 spoken cases,
+seven that name a listed choice and nine that must not send one (a time or region that is not listed,
+a bare "yes" with two questions waiting, a status question, "yes delete them" for a question that is
+not waiting, "thank you", "the second one"): 16 of 16 as expected in each of three runs, and none of the
+nine mapped to a choice. The model only proposes; the read-back and the yes are what stop a wrong mapping from being sent.
+
+(With `KOOKR_LUCY_LAUNCH=true`, spoken turns are answered by the operator conversation, whose
 board does not list `kookr ask` questions yet: she cannot tell you about a waiting question by voice, but the
-panel still shows and reads it aloud as before. Tracked in #3685.)
+panel still shows and reads it aloud as before, and an answer you say is still handled by the flow above.
+Tracked in #3685.)
 
 **What it needs.** Telegram remote chat configured (without it `kookr ask` is unavailable altogether),
 and the speech service (`KOOKR_TTS`) for her voice; without the speech service, or when it fails, the
@@ -250,14 +280,15 @@ conversation carries on with the next thing you say. A session-level `error` mes
   `/ws/lucy-live` upgrade is refused (403) for any viewer or other non-owner actor.
 
 - She answers questions only, unless `KOOKR_LUCY_LAUNCH=true`, when she can also start a task you confirm ([Starting a task by voice](#starting-a-task-by-voice)). She cannot stop or approve anything yet. That includes a
-  [question from a task](#questions-from-tasks): she can tell you about it, but an answer you say out
-  loud is not recorded.
+  [question from a task](#questions-from-tasks): she can tell you about it, and you can answer one of its
+  listed choices by voice after her read-back ([Answering by voice](#questions-from-tasks)); a typed answer
+  or one that is not a listed choice is not taken by voice.
 - With Talk on, a question from a task is read through the ordinary clip player, not the conversation's
   own audio. Talking over it does not stop it, and her volume is not lowered while you speak. The
   conversation also does not know that this voice is hers: on loudspeakers, if the browser's echo
   cancellation lets her reading reach the open microphone, she can take it for something you said and
   answer it. This was not tested. Use headphones, or answer the question before talking to her
-  ([#3680](https://github.com/kookr-ai/kookr/issues/3680)).
+  ([#3711](https://github.com/kookr-ai/kookr/issues/3711)).
 - She always answers in English: her voices are English voices.
 - Headphones work best. Echo cancellation is on and a candidate interruption must be loud for 0.15 s
   and then pass Silero, but speaker-to-microphone echo was not tested: her own voice leaking into the
