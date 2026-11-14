@@ -30,12 +30,12 @@ numbers as direction, not as promises.
    selection over a 4-agent ensemble reached 84.2% vs 79.2% for one agent, and the LLM-judge baseline did not
    beat the single agent (2610.10242).
 2. **No check: stay near 5 samples and do not use a judge panel.** Self-consistency gains flatten early
-   (MMLU 87.9% to 89.0%, "diminishing returns beyond n=5", 2604.19395). Nine LLM judges behaved like 2.18
+   (MMLU 87.9% to 89.0%; the note reports "diminishing returns beyond n=5" for some subsets, 2604.19395). Nine LLM judges behaved like 2.18
    independent votes because their errors correlate (2605.29800). A self-judged search lost 25-30 points on
-   subjective domains while gaining on objective ones (2605.15177).
+   HLE's subjective domains while gaining 5-17 points on its objective ones (2605.15177).
 3. **Cap thinking per attempt; raise the cap only when the check fails.** Accuracy peaked near 1.5K
    reasoning tokens on easy problems and near 8K on hard ones, then fell (two 32B models, 2604.10739; treat
-   as an example, not a constant). 61-92% of reasoning steps were redundant across 8 conditions (2605.23926).
+   as an example, not a constant). 61-93% of reasoning steps were redundant across 8 conditions (2605.23926).
    Most measured savings come from training (length-aware RL: up to 52.6% shorter chains, 2603.08000), so with
    a hosted model the lever you have is the effort or budget setting and a task-level stop.
 4. **Sample sequentially and stop on agreement.** A chain-of-thought plus program pair stopped when both
@@ -61,8 +61,9 @@ numbers as direction, not as promises.
 - Fixed N regardless of difficulty or agreement.
 - Majority vote or judge panel as the only selector for code or agent actions.
 - Raising the thinking setting on every call because it helped on one hard task.
-- Trusting an average token saving without checking the hardest benchmark row (the budget-aware method that
-  cut about 55% of tokens fell from 88.00 to 64.00 on AIME-25, 2605.11625).
+- Trusting an average token saving without checking the hardest benchmark row. A budget-aware method cut
+  about 55% of tokens and raised average accuracy, yet its note records AIME-25 falling from 88.00 to 64.00
+  (the note flags that row as unclear; check the paper table before relying on either, 2605.11625).
 - Training or distilling on vote winners and expecting a higher ceiling: best@64 fell after training on
   voted labels (2604.15618).
 
