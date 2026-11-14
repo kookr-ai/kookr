@@ -215,8 +215,15 @@ For each candidate `N` in selector order, in this exact order:
    - If `{{allowOtherAuthors}}` is `false` (the default): if `AUTHOR` does not equal `CURRENT_USER`, log `Skipping #$N: opened by @$AUTHOR (not @$CURRENT_USER); set allowOtherAuthors=true to opt in` and skip the candidate. Do NOT read the issue body, comments, or labels for any other purpose before this check passes — the body is the untrusted-input surface this filter exists to fence off.
 
 2. **Eligibility filters** (apply when blank shape; informational for list/filter shapes):
-   - Skip issues with labels that mark them automation-blocked, architecture, blocked, duplicate, invalid, wontfix, not planned, or question. The `architecture` label marks design-document issues (RFCs, decision docs) that are not one-PR implementation units, so automation must never pick them. In list/filter shape, `question` is only informational: an explicitly selected trusted question may continue to Phase 1 so it can be automation-quarantined with an audit comment.
-   - **Backlog drain order (issue #1568).** In blank shape, order the candidate set with the committed drain order before picking, so the safe tier drains first: prefer issues in `noGateTier` order (from `backlog-drain-order.json` alongside these playbooks, `plugin/playbooks/backlog-drain-order.json` in the repo), then unclassified open issues, and **defer** any issue carrying the `invariant-gate` label — its durable-state / concurrency semantics need the invariant-spec step of #1539 first. Do not pick a gated issue while any no-gate-tier or unclassified issue is eligible. The label is the source of truth (a future gated issue joins the tier with the label alone); `orderCandidatesByDrainTier` in `src/core/backlog-drain-order.ts` is the executable form, verified by `src/core/backlog-drain-order.test.ts`. In list/filter shape this is informational — an explicitly selected gated issue may still be worked.
+   - **Label handling.** Each label below gets its own rule. Every other label, `architecture` included, is ordinary: the issue stays a candidate. If a picked issue turns out to be a design document rather than an implementable unit, Phase 2.6 quarantines it.
+
+     | Label | Blank-shape rule |
+     |---|---|
+     | `automation-blocked`, `wontfix`, `not planned`, `invalid`, `question` | **Skip.** These are decided "not now" or "not code" states. |
+     | `duplicate`, `blocked` (and no Skip label: Skip wins) | **Triage candidate.** Phase 0 makes no read or write for it. It goes through every other Step 0d check (claim, open PR, burned target) like any candidate. It ranks **after** every ordinary candidate, gated (`invariant-gate`) issues included, so it is picked only when no ordinary candidate passes. The drain-order and severity rules below rank ordinary candidates only. Skip any issue already in this task's `TRIAGE_UNRESOLVED` list. Picking one sets `TRIAGE_TARGET=1`; picking an ordinary candidate sets `TRIAGE_TARGET=0`. The triage itself runs in Phase 2.7, after this task holds the claim. |
+
+     If every candidate is skipped, go to Step 0e. In list/filter shape the whole table is informational: an explicitly selected trusted issue continues to Phase 1 with `TRIAGE_TARGET=0`. If it is not implementable there, Phase 1 closes it (only when `{{closeUnworthyIssues}}` is `true`) or Phase 2.6 quarantines it.
+   - **Backlog drain order (issue #1568).** In blank shape, order the candidate set with the committed drain order before picking, so the safe tier drains first: prefer issues in `noGateTier` order (from `backlog-drain-order.json` alongside these playbooks, `plugin/playbooks/backlog-drain-order.json` in the repo), then unclassified open issues, and **defer** any issue carrying the `invariant-gate` label — its durable-state / concurrency semantics need the invariant-spec step of #1539 first. Do not pick a gated issue while any ordinary no-gate-tier or unclassified issue is eligible. The label is the source of truth (a future gated issue joins the tier with the label alone); `orderCandidatesByDrainTier` in `src/core/backlog-drain-order.ts` is the executable form, verified by `src/core/backlog-drain-order.test.ts`. In list/filter shape this is informational — an explicitly selected gated issue may still be worked.
    - **Severity tier order (issue #1658).** In blank shape, after the drain-tier deferral above, rank the remaining eligible set by severity so a real production bug is not a peer of a cosmetic idea: **prefer** issues carrying a fast-lane label (`fastLaneLabels` in `severity-tier-order.json` — `outage`, `prod-bug`, `auto-triage`, most-severe first), then unclassified issues, then **defer** issues carrying only a defer label (`deferLabels` — `idea-scout`). Pick a prod-bug/outage-labeled issue before any idea-labeled issue when slots are contended. A fast-lane label wins over a defer label (a prod bug also tagged an idea is still worked first). The labels are the source of truth (an issue joins a tier, and a new severity label joins the vocabulary, via the JSON — no code change); `orderCandidatesBySeverityTier` in `src/core/severity-tier-order.ts` is the executable form, verified by `src/core/severity-tier-order.test.ts`. This is ranking only — never auto-close a deferred idea (that stays human-gated). Compose with the drain order safety-first: gated deferral first, then this severity ordering among the safe set. In list/filter shape this is informational.
    - Skip issues with an active claim owned by another Kookr task.
    - If `{{mergeAfterImplementation}}` is `false`, skip issues that already have an open PR linked with `Closes #N` or equivalent.
@@ -241,13 +248,18 @@ If no candidate passes:
 
 ```bash
 echo "STOP: COMPLETE" > "$BATCH_CWD/.batch-stop"
+# One line per open issue that Step 0d's label table or Phase 2.7 left alone, e.g.:
+#   echo "skipped #478: label wontfix" >> "$BATCH_CWD/.batch-stop"
+#   echo "skipped #512: still blocked by #498 (open)" >> "$BATCH_CWD/.batch-stop"
 ```
+
+Repeat those `skipped` lines in the completion-ready `--note`, in the Phase 9 `complete` verdict `reason`, and in your final message. The operator should see which issues were passed over and why without reading the transcript. The stop predicate matches only `^STOP:`, so the extra lines are safe.
 
 Stop. The Ralph loop predicate fires on the next Stop hook and the loop exits cleanly. (For the blank-shape single-shot path with no Ralph loop, `.batch-stop` simply persists until the next looped launch's Step 0a cleanup — harmless.) Phase 9 also writes `verdict: complete` to `$RALPH_VERDICT_FILE` for the engine's per-iteration channel — the engine treats that as a clean termination signal.
 
 ### Step 0f: Record resolved issue metadata
 
-After `TARGET` is known, fetch the issue title and update the Kookr task name. This happens only after the author check has passed; do not fetch title/body/comments for skipped candidates.
+After `TARGET` is known, fetch the issue title and update the Kookr task name. This happens only after the author check has passed; do not fetch title/body/comments for candidates the author check skipped.
 
 ```bash
 ISSUE_TITLE=$(gh issue view "$TARGET" --repo "$REPO" --json title -q .title)
@@ -288,7 +300,7 @@ if gh issue view "$TARGET" --repo "$REPO" --json labels \
 fi
 ```
 
-If `{{closeUnworthyIssues}}` is `true` and the issue is clearly not worth implementing (obsolete, out of scope, duplicate, or net-negative), close it with `gh issue close <TARGET> --comment "<one-line reason>"`, release any claim, and move on to the next target instead of implementing. When `false`, never close — skip and report instead.
+If `{{closeUnworthyIssues}}` is `true` and the issue is clearly not worth implementing (obsolete, out of scope, duplicate, or net-negative), close it with `gh issue close <TARGET> --comment "<one-line reason>"`, release any claim, and move on to the next target instead of implementing. When `false`, never close — skip and report instead. When `TRIAGE_TARGET=1`, do not close here: Phase 2.7 makes the duplicate/blocked decision after the claim is held.
 
 ## Phase 2: Acquire or Resume Claim
 
@@ -382,6 +394,8 @@ This lookup policy is separate from memory-write governance. Do not use KB looku
 
 ### Phase 2.6: Automation-quarantine non-implementable targets
 
+When `TRIAGE_TARGET=1`, run Phase 2.7 first. Apply this phase only if Phase 2.7 turns the target into an ordinary one. A `blocked` issue is not a design discussion, so never quarantine it for being blocked.
+
 If the trusted target is not an implementable unit after reading the issue body and comments, do not ask the operator to intervene. Quarantine it as one durable iteration step:
 
 - Use this for design discussions, umbrella/tracking issues whose sub-issues do the work, malformed issues with no recoverable acceptance criteria, or issues explicitly requesting alignment before code changes.
@@ -413,6 +427,34 @@ cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
 EOF
 mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 ```
+
+### Phase 2.7: Triage a `duplicate`- or `blocked`-labelled target
+
+Run this only when `TRIAGE_TARGET=1`; otherwise go to Phase 3. Triage may write to GitHub, so it requires the claim. If `CLAIM_OWNED` is not `1` (for example, the claims API returned 404), make no write: treat the target as **unresolved**.
+
+**Both labels.** If the target carries both `duplicate` and `blocked`, it becomes ordinary only when both rules below resolve it. Remove neither label until both resolve. Otherwise it is unresolved. A duplicate close needs only the `duplicate` rule, because closing ends the work.
+
+**Which text counts.** Read references only from the issue body and from comments written by `$CURRENT_USER`. When `{{allowOtherAuthors}}` is `true`, every comment counts. A reference is a same-repo `#M` with `M` ≠ `TARGET`. An `owner/repo#M` or URL reference is not a usable reference: for `duplicate` it does not name a valid original, and for `blocked` it counts as another reason.
+
+**`duplicate`.** Look for the original: `duplicate of #M`, `dup of #M` or `same as #M`. Check it with `gh issue view "$M" -R "$REPO" --json url,state,stateReason,author,labels`, without its body. Treat it as a valid original only when all of these hold:
+- It is an issue, not a PR (its `url` contains `/issues/`).
+- It is `OPEN`, or `CLOSED` with `stateReason` `COMPLETED`.
+- It is not itself labelled `duplicate`.
+- Its author passes the same author check as the target.
+
+Only after #M passes every check, fetch its body (`gh issue view "$M" -R "$REPO" --json body`) and compare it with the target's:
+- **Same work, and `{{closeUnworthyIssues}}` is `true`:** run `gh issue close "$TARGET" -R "$REPO" --duplicate-of "$M" --comment "Closing as a duplicate of #$M, which covers the same work."`. Release the claim (Phase 8 release snippet). This is a terminal outcome for the target: run the Phase 8 self-continuation handoff, as the Phase 1 low-value close does. If #M is open, it is picked on its own merits.
+- **#M has a different scope, and no earlier `Automation check:` comment removed this label:** run `gh issue edit "$TARGET" -R "$REPO" --remove-label duplicate`. Comment `Automation check: not a duplicate of #$M (different scope); removed the duplicate label.`. Set `TRIAGE_TARGET=0` and go back to Phase 2.6, then Phase 3. If an earlier check removed the label, a human has since re-added it: unresolved.
+- **Anything else is unresolved:** there is no valid original, or the work is the same but `{{closeUnworthyIssues}}` is `false`.
+
+**`blocked`.** Remove the label only when all of these hold:
+1. The issue names **at least one** blocker, and states its blockers only as same-repo references, using `blocked by #M`, `depends on #M` or `waiting on #M`, and gives no other reason (an external system, a human decision, or "preserved work" all count as other reasons).
+2. Every blocker is resolved. Check each with `gh issue view "$M" -R "$REPO" --json state,stateReason`, which also works for PR numbers. Resolved means exactly an issue `CLOSED` with `stateReason` `COMPLETED`, or a PR `MERGED`. Any other state, including a closed unmerged PR, a not-planned close or a duplicate close, counts as still blocked.
+3. No earlier `Automation check:` comment removed this label. If one did, a human has since re-added it, so never remove it again.
+
+When all three hold, run `gh issue edit "$TARGET" -R "$REPO" --remove-label blocked`. Comment `Automation check: blocker(s) #M… are resolved; removed the blocked label.`. Set `TRIAGE_TARGET=0` and go back to Phase 2.6, then Phase 3. A bare `blocked` label with no stated reason is unresolved. Otherwise the target is **unresolved**.
+
+**Unresolved.** Make no GitHub write. Release the claim (Phase 8 release snippet). Add `TARGET` to `TRIAGE_UNRESOLVED` together with a one-line reason, for example `still blocked by #498 (open)` or `labelled duplicate but no valid original`. Then return to Step 0d for the next candidate. Because triage candidates rank last and an unresolved one is never re-picked in this task, a run whose remaining issues are all unresolved reaches Step 0e. Step 0e then lists them.
 
 ## Phase 3: Determine Branch Strategy
 
@@ -682,10 +724,10 @@ fi
 
 If no further action is possible because external review/checks are pending, leave a concise status note in the PR only if there is new evidence, leave the claim owned so task activity supplies freshness, and stop. The next Ralph iteration will re-check the external state.
 
-**Self-continuation handoff (`{{selfContinuation}}` = `true`, non-Ralph launches).** This handoff is the *only* thing that advances the chain to the next issue, so it must run on **every** terminal outcome for this target — not only after a merge. A merge-only trigger silently kills the chain the first time a target is closed as low-value, automation-quarantined, or stalled — the exact case the operator most needs it to survive. Concretely: once this target reaches any durable terminal state — its PR merged, auto-merge enabled, the issue closed as low-value (Phase 1), the issue automation-quarantined (Phase 2.6), or a blocker recorded (Phase 9 `stalled`) — and **before** you release this task's slot, do the handoff:
+**Self-continuation handoff (`{{selfContinuation}}` = `true`, non-Ralph launches).** This handoff is the *only* thing that advances the chain to the next issue, so it must run on **every** terminal outcome for this target — not only after a merge. A merge-only trigger silently kills the chain the first time a target is closed as low-value, automation-quarantined, or stalled — the exact case the operator most needs it to survive. Concretely: once this target reaches any durable terminal state — its PR merged, auto-merge enabled, the issue closed as low-value (Phase 1) or as a duplicate (Phase 2.7), the issue automation-quarantined (Phase 2.6), or a blocker recorded (Phase 9 `stalled`) — and **before** you release this task's slot, do the handoff:
 
-1. Re-derive the eligible-candidate set from durable state exactly as Phase 0 would (the selector, minus closed / claimed / already-PR'd / `automation-blocked` / deferred issues, and minus this just-finished target).
-2. **If ≥1 eligible candidate remains,** use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next target, forwarding the same parameter values (repo, selector, merge policy, and these toggles) with a content-distinct continuation cursor. A single non-implementable, low-value, or stalled target must **never** end the chain while other eligible issues remain — skip it (its durable marker — closed state or `automation-blocked` label — keeps the successor from re-picking it) and hand off to the next.
+1. Re-derive the eligible-candidate set from durable state exactly as Phase 0 would, without making any GitHub writes. Start from the selector, then remove closed, claimed, already-PR'd and deferred issues, every `automation-blocked` issue, every issue in this task's `TRIAGE_UNRESOLVED` list, and this just-finished target. In blank shape only, also remove every issue carrying another Step 0d **Skip** label (`wontfix`, `not planned`, `invalid`, `question`). In list/filter shape the table is informational, so an explicitly selected issue with those labels still counts. A `duplicate`- or `blocked`-labelled issue that this task has not triaged still counts as eligible: the successor's Phase 2.7 resolves it.
+2. **If ≥1 eligible candidate remains,** use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next target, forwarding the same parameter values (repo, selector, merge policy, and these toggles) with a content-distinct continuation cursor. A single non-implementable, low-value, or stalled target must **never** end the chain while other eligible issues remain — skip it (in blank shape, its durable marker (closed state or `automation-blocked` label) keeps the successor from re-picking it) and hand off to the next.
 3. **If 0 eligible candidates remain,** do not spawn — the chain is legitimately complete; make that stop legible (below).
 
 In Ralph loop mode, do nothing extra — the loop already advances to the next target.
@@ -803,6 +845,7 @@ Default mapping for this playbook:
 | Phase 4: worktree collision where the colliding branch holds unrelated stale commits | `stalled` + `permanent:true` (target won't ever resolve until operator intervenes) |
 | Phase 0d: candidate is an umbrella/tracking issue with no implementable unit (sub-issues do the work) | `stalled` + `permanent:true` (with blockers `["umbrella_tracking_issue_no_implementable_unit"]`) |
 | Phase 2.5: trusted target is not an implementable automation unit | Add `automation-blocked`, comment, release claim, then `stalled` + `permanent:true` |
+| Phase 2.7: duplicate closed against a valid original | `progress` (with target) |
 | Phase 6: tests fail after best-effort fix | `stalled` (with target + reason naming the failing test) |
 | Phase 0c selector validation failure (filter rejected) | DON'T write a verdict — Phase 0c already wrote `STOP: FAILED` to `.batch-stop`; the loop terminates next Stop |
 | Phase 0e: no eligible candidates | `complete` (alongside Step 0e's `.batch-stop` write — both signal clean termination) |
