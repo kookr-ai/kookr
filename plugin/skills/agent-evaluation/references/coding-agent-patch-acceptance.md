@@ -1,7 +1,8 @@
 # Coding-agent patch acceptance
 
 Use when: deciding whether a coding agent's patch is mergeable when its tests already pass, writing a brief
-for a coding worker, or choosing what to check beyond the test suite.
+for a coding worker, choosing what to check beyond the test suite, or deciding whether a bug fix needs a
+reproduction test first.
 
 Green tests are a necessary gate, not a sufficient one. Gate design in general (audited checks, judges,
 fresh-context verifiers, fail-closed inputs) is in [output verification](agent-output-verification.md).
@@ -38,11 +39,36 @@ fresh-context verifiers, fail-closed inputs) is in [output verification](agent-o
    overfit in 17-26% (2506.08311).
 8. **Do not treat compile success as safety**: 60% of 547 confirmed agent incidents were rated high or
    critical (2605.30777).
+9. **For a reported bug, gate on a reproduction seen failing; do not mandate test writing to raise a score.**
+   Try a cheap reproduction (one or two attempts). It counts only if it fails on the unpatched code for the
+   reason named in the issue, and the fix is done only when it passes and the existing suite still passes.
+   Evidence: no study switches a reproduction stage on and off. Paired prompts that flipped test writing on
+   36.8% to 93.2% of SWE-bench Verified tasks moved resolved tasks by 0 to -13 of 500 (none significant)
+   but token use by up to 49.0% (2602.07900). So on a hidden-grader benchmark test writing is mostly a cost,
+   while in a real repo the reproduction is often the only evidence the symptom is gone. A failing test that
+   must turn green is part of a guardrail bundle worth up to +13 points (2605.27238; the gate alone is not
+   measured).
+   - **Expect failure and say so.** Strong pipelines reproduce 70.30% to 81.76% of SWT-Bench Verified issues
+     (2607.09123, 2608.23341). The best setup reaches 82.50% on Python but 52.50% on C++ (2609.34752), and open
+     7B-32B models reach about 14% (2601.13713). When no valid reproduction appears within budget, fall back
+     to stack traces, logs or a runtime check on the real path, and mark the patch as not verified against
+     the symptom instead of looping (lucky passes cost up to 40x the tokens, 2605.12925).
+   - **Write the test from the issue text, not from the buggy code.** LLM oracles mirror the code's actual
+     behaviour, so accuracy drops on buggy code (60.33% vs 46.58%, 2410.21136), and an expected value read
+     from the system under test cannot fail (2608.17214). Print-only tests are not reproductions: agent test
+     files hold more prints than assertions (2602.07900).
+   - **A reproduction does not pick between patches.** Tests that reproduce the issue in 59.29% of tasks
+     also accept the correct and reject the wrong candidates in only 9.21% (2610.18004). To choose among
+     several candidates, generate tests that pass on some and fail on others: that reached 84.2% vs 79.2%
+     single-agent on SWE-bench Verified, where an LLM judge did not beat a single agent, at 670K-1670K tokens
+     per instance (2610.10242).
 
 ## Gaps (do not claim more than the evidence)
 
 No study measures a diff-scope or file-allowlist check, a lint or type-check gate, per-model rates of editing
-or special-casing tests, or an LLM reviewer's false-positive rate on agent patches. Several effects above come
+or special-casing tests, or an LLM reviewer's false-positive rate on agent patches. No study ablates a
+reproduction-first stage against SWE-bench resolved rate; test-based patch selection has been compared with an
+LLM judge once (2610.10242) and never with a trained reward model. Several effects above come
 from one model or one language (the tangling study is Java only).
 
 Related skills: `agent-fleet-orchestration` (batching, blind test writers, one worktree per writer),
