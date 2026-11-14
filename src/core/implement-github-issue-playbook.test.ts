@@ -77,12 +77,101 @@ describe('implement-github-issue playbook', () => {
     expect(pb.body).toContain('This lookup policy is separate from memory-write governance');
   });
 
-  test('Phase 0 skips non-automatable labels before implementation', () => {
-    expect(pb.body).toContain('automation-blocked');
-    expect(pb.body).toContain('question');
-    // `architecture` marks design-document issues (RFCs, decision docs) that are
-    // not one-PR implementation units — the selector must never auto-pick them (#1565).
-    expect(pb.body).toMatch(/skip issues with labels.*automation-blocked.*architecture.*question/i);
+  describe('Phase 0 label handling in blank shape', () => {
+    const SKIP_LABELS = ['automation-blocked', 'wontfix', 'not planned', 'invalid', 'question'];
+    const section = (from: string, to: string): string => {
+      const start = pb.body.indexOf(from);
+      const end = pb.body.indexOf(to, start + 1);
+      expect(start, `missing heading ${from}`).toBeGreaterThan(0);
+      expect(end, `missing heading ${to}`).toBeGreaterThan(start);
+      return pb.body.slice(start, end);
+    };
+    const backticked = (text: string): string[] => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    const step0d = section('### Step 0d:', '### Step 0e:');
+    const triage = section('### Phase 2.7:', '## Phase 3:');
+    const skipRow = step0d.split('\n').find((line) => line.includes('**Skip.**'));
+    const triageRow = step0d.split('\n').find((line) => line.includes('**Triage candidate.**'));
+
+    test('the Skip row names exactly the decided "not now" / "not code" labels', () => {
+      expect(skipRow).toBeDefined();
+      expect(backticked(skipRow!.split('|')[1]).sort()).toEqual([...SKIP_LABELS].sort());
+    });
+
+    test('architecture is an ordinary label (Architecture Health Check files implementable work under it)', () => {
+      expect(backticked(skipRow!.split('|')[1])).not.toContain('architecture');
+      expect(step0d).toMatch(/`architecture` included, is ordinary/);
+    });
+
+    test('duplicate and blocked are triage candidates that Phase 0 neither reads nor writes', () => {
+      expect(triageRow).toBeDefined();
+      expect(backticked(triageRow!.split('|')[1]).sort()).toEqual(['blocked', 'duplicate']);
+      expect(triageRow).toContain('Phase 0 makes no read or write');
+      expect(triageRow).toMatch(/ranks \*\*after\*\* every ordinary candidate/);
+      // Phase 0 must not contain the triage write commands; they belong after the claim.
+      expect(step0d).not.toContain('gh issue close');
+      expect(step0d).not.toContain('--remove-label');
+    });
+
+    test('triage writes run only in Phase 2.7, after the claim, and never without it', () => {
+      const claimPhase = pb.body.indexOf('## Phase 2: Acquire or Resume Claim');
+      expect(claimPhase).toBeGreaterThan(0);
+      expect(pb.body.indexOf('### Phase 2.7:')).toBeGreaterThan(claimPhase);
+      expect(triage).toMatch(/If `CLAIM_OWNED` is not `1`.*make no write/s);
+      expect(triage).toContain('--duplicate-of "$M"');
+      expect(triage).toContain('--remove-label duplicate');
+      expect(triage).toContain('--remove-label blocked');
+    });
+
+    test('both "made ordinary" branches route back through Phase 2.6 quarantine before Phase 3', () => {
+      const removals = triage.split('\n').filter((line) => /--remove-label (duplicate|blocked)/.test(line));
+      expect(removals).toHaveLength(2);
+      for (const line of removals) {
+        expect(line).toContain('Set `TRIAGE_TARGET=0` and go back to Phase 2.6, then Phase 3');
+        expect(line).not.toMatch(/Continue to Phase 3/);
+      }
+    });
+
+    test('duplicate closes only against a valid original and only when closeUnworthyIssues allows it', () => {
+      expect(triage).toContain('It is an issue, not a PR');
+      expect(triage).toContain('It is not itself labelled `duplicate`');
+      expect(triage).toContain('Its author passes the same author check');
+      expect(triage).toMatch(/Same work, and `\{\{closeUnworthyIssues\}\}` is `true`/);
+    });
+
+    test('blocked is removed only for resolved same-repo blockers and never re-removed after a human re-adds it', () => {
+      expect(triage).toContain('gives no other reason');
+      expect(triage).toContain('a PR `MERGED`');
+      expect(triage).toContain('a closed unmerged PR');
+      expect(triage).toContain('never remove it again');
+      // A target with both labels must clear both rules before it is implemented.
+      expect(triage).toContain('it becomes ordinary only when both rules below resolve it');
+      expect(triage).toContain('names **at least one** blocker');
+      expect(triage).toContain('A bare `blocked` label with no stated reason is unresolved');
+      expect(triage).not.toMatch(/`after #M`/);
+    });
+
+    test('references come only from trusted text', () => {
+      expect(triage).toContain('comments written by `$CURRENT_USER`');
+      // The original's body is fetched only after its author check passes.
+      expect(triage).toContain('--json url,state,stateReason,author,labels`, without its body');
+      expect(triage.indexOf('Only after #M passes every check, fetch its body')).toBeGreaterThan(
+        triage.indexOf('Its author passes the same author check'),
+      );
+    });
+
+    test('an unresolved triage target is not re-picked, so an all-skipped run reaches Step 0e and lists what it skipped', () => {
+      expect(triage).toContain('Add `TARGET` to `TRIAGE_UNRESOLVED`');
+      expect(triageRow).toContain('`TRIAGE_UNRESOLVED`');
+      expect(section('### Step 0e:', '### Step 0f:')).toContain('skipped #');
+    });
+
+    test('the self-continuation handoff uses the same Skip labels and makes no writes', () => {
+      const handoff = pb.body.slice(pb.body.indexOf('1. Re-derive the eligible-candidate set'));
+      const line = handoff.slice(0, handoff.indexOf('\n'));
+      expect(line).toContain('without making any GitHub writes');
+      for (const label of SKIP_LABELS) expect(line).toContain(`\`${label}\``);
+      expect(line).toContain('`TRIAGE_UNRESOLVED`');
+    });
   });
 
   test('uses the deployed issue-claim API contract', () => {

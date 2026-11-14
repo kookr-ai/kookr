@@ -2,8 +2,10 @@
 # simulate-batch-selection.sh — dry-run the parallel-issue-batch eligibility
 # filters for a repository, read-only.
 #
-# Reproduces the two filters the `parallel-issue-batch` playbook applies to the
-# blank selector shape (plugin/playbooks/implement-github-issue.md, Phase 0d):
+# Reproduces the two filters the `parallel-issue-batch` playbook applies
+# (plugin/playbooks/parallel-issue-batch.md: its skip-label list and route table).
+# implement-github-issue's blank selector is looser: it picks architecture issues
+# and triages duplicate/blocked ones (its Step 0d and Phase 2.7).
 #   1. Author trust  — allowOtherAuthors=false keeps only issues opened by the
 #                      authenticated gh user (issue bodies are untrusted input).
 #   2. Blocked-label — skip issues labelled automation-blocked, architecture,

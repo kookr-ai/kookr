@@ -143,15 +143,17 @@ The `extraInstruction` parameter restates this invariant to every child task.
 ## Selection simulation
 
 Before enabling, confirm that the batch will only surface eligible issues. This
-reproduces the two eligibility filters the playbook applies to the blank
-selector shape (`plugin/playbooks/implement-github-issue.md`, Phase 0d):
+reproduces the two eligibility filters `parallel-issue-batch.md` applies (its
+skip-label list and route table). The standalone `implement-github-issue.md`
+blank selector is looser: it picks `architecture` issues and triages
+`duplicate`/`blocked` ones (Step 0d and Phase 2.7).
 
 1. **Author trust** — `allowOtherAuthors=false` keeps only issues opened by the
    operator, because issue bodies are untrusted prompt input.
 2. **Blocked-label skip** — skip issues labelled `automation-blocked`,
    `architecture`, `blocked`, `duplicate`, `invalid`, `wontfix`, `not planned`,
-   or `question`. (`architecture` marks design-document issues that are not
-   one-PR implementation units.)
+   or `question`. (On this route, `architecture` means "needs an RFC or
+   umbrella".)
 
 `scripts/simulate-batch-selection.sh` runs the check read-only (it never claims
 or modifies an issue):
