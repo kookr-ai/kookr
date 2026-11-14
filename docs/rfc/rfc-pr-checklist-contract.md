@@ -169,8 +169,8 @@ inspectable via `kookr pr-checklist verify --explain`.
   line that does not parse as a checklist row (e.g. struck from the leading dash,
   `- ~~- [ ] <marker> text~~`) ⇒ fail, reported as a row present in an
   unrecognised form that names the accepted `- [ ] ~~<marker> text~~ — reason`
-  waive form, not as an omission (#3735). No-op when the repo ships no marked template, or when
-  no body was provided and none is required (`--fill` / no body flag instead fail via
+  waive form, not as an omission (#3735). No-op when the repo ships no marked
+  template, or when no body was provided and none is required (`--fill` / no body flag instead fail via
   `evaluateTemplateRequiredButMissing`; see the status note). The `.github/PULL_REQUEST_TEMPLATE/`
   multi-template *directory* layout is skipped (which template applies is not
   statically knowable from the command). This closes the exact bypass that forced

@@ -81,7 +81,7 @@ const ANY_MARKER = /<!--\s*(?:kookr:check:|pr:)([a-z0-9-]+)\s*-->/g;
  * `- ~~- [ ] <!-- kookr:check:x --> text~~`. Lets the presence rule say
  * "present but malformed" instead of "omitted". Pure; regex-only.
  */
-export function findUnparsedMarkerIds(body: string, parsedRows: ChecklistRow[] = parseChecklist(body)): string[] {
+export function findUnparsedMarkerIds(body: string, parsedRows: ChecklistRow[]): string[] {
   const parsed = new Set(parsedRows.map((r) => r.id));
   const ids = new Set<string>();
   for (const m of body.matchAll(ANY_MARKER)) if (!parsed.has(m[1])) ids.add(m[1]);

@@ -3,8 +3,8 @@ import {
   evaluateAttestation,
   evaluateStructural,
   evaluateTemplatePresence,
-  findUnparsedMarkerIds,
   findMissingEnv,
+  findUnparsedMarkerIds,
   findUntested,
   isSourceFile,
   parseChecklist,
@@ -253,13 +253,16 @@ describe('evaluateTemplatePresence', () => {
     expect(results[1].summary).toMatch(/omits 1 of 2 .*\(tests\)/);
   });
 
-  it('still accepts the existing struck forms (box first, with or without x)', () => {
+  it('still accepts the existing struck forms (box first, with or without x, or strike before the dash)', () => {
+    const template3 = `${template}\n- [ ] <!-- kookr:check:docs --> docs`;
     const body = [
       '- [ ] ~~<!-- kookr:check:readme --> README~~ — N/A',
       '- [x] ~~<!-- pr:tests --> tests~~ — N/A',
+      '~~- [ ] <!-- kookr:check:docs --> docs~~ — N/A',
     ].join('\n');
     const rows = parseChecklist(body);
+    expect(rows.map((r) => r.id)).toEqual(['readme', 'tests', 'docs']);
     expect(findUnparsedMarkerIds(body, rows)).toEqual([]);
-    expect(evaluateTemplatePresence(template, rows, findUnparsedMarkerIds(body, rows))).toHaveLength(0);
+    expect(evaluateTemplatePresence(template3, rows, findUnparsedMarkerIds(body, rows))).toHaveLength(0);
   });
 });
