@@ -20,6 +20,7 @@
 
 import { performance } from 'node:perf_hooks';
 import type { Terminal as HeadlessTerminal } from '@xterm/headless';
+import { redactSpeechSecrets } from '../core/task-speech-summary.js';
 import {
   acquireSlot,
   DEFAULT_MAX_MS,
@@ -56,18 +57,31 @@ export interface TerminalScreenTextOptions {
  */
 export function readBufferLines(terminal: HeadlessTerminal): string[] {
   const buffer = terminal.buffer.active;
-  const lines: string[] = [];
+  const logical: string[][] = [];
   for (let y = 0; y < buffer.length; y++) {
     const row = buffer.getLine(y);
     if (!row) continue;
     // A row that the next one continues is full to the edge: keep its trailing spaces.
     const continued = buffer.getLine(y + 1)?.isWrapped === true;
     const text = row.translateToString(!continued);
-    if (row.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
-    else lines.push(text);
+    if (row.isWrapped && logical.length > 0) logical[logical.length - 1]!.push(text);
+    else logical.push([text]);
   }
+  const lines = logical.map(hideSecretsAcrossRows);
   while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
   return lines.map((line) => line.trimEnd());
+}
+
+/**
+ * Join the rows of one logical line, hiding secrets both ways. A row the terminal marked as
+ * wrapped is not always a continuation on screen: a program can write over it after the wrap
+ * (a carriage return, a cursor move), and the joined text then glues a token to the row
+ * above, where the word-boundary rule misses it. So each row is redacted on its own first,
+ * then the joined line is redacted again, which catches a token that wrapped across rows.
+ */
+function hideSecretsAcrossRows(rows: string[]): string {
+  if (rows.length === 1) return rows[0]!;
+  return redactSpeechSecrets(rows.map((row) => redactSpeechSecrets(row)).join(''));
 }
 
 /** Replay `bytes` into an emulator of the given size and return the last `maxLines` lines it shows. */

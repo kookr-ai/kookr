@@ -40,9 +40,18 @@ describe('renderTerminalScreenText (issue #3683)', () => {
   it('joins a token the terminal wrapped at the screen edge', async () => {
     const token = 'ghp_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8';
     const out = await text(`${'x'.repeat(70)} ${token}\r\n`, { cols: 80 });
-    expect(out).toContain(token);
+    // Rows were rejoined, so the token was seen whole and hidden.
     expect(out.split('\n')).toHaveLength(1);
-    expect(redactSpeechSecrets(out)).not.toContain(token);
+    expect(out).toContain('[redacted]');
+    expect(out).not.toContain('a1B2c3D4e5F6');
+  });
+
+  it('hides a token written over a row the terminal had marked as wrapped', async () => {
+    const token = 'ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8';
+    const byReturn = await text(`Downloading ${'x'.repeat(200)}\r${token}\r\n`, { cols: 200 });
+    expect(byReturn).not.toContain('a1B2c3D4e5F6');
+    const byMove = await text(`Downloading ${'x'.repeat(200)}\x1b[2;1H${token}`, { cols: 200 });
+    expect(byMove).not.toContain('a1B2c3D4e5F6');
   });
 
   it('shows a token typed, deleted with backspace and retyped as what is on screen', async () => {
