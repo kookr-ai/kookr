@@ -57,6 +57,23 @@ describe('verifyChecklist (pure)', () => {
     expect(report.ok).toBe(false);
   });
 
+  it('names rows struck from the leading dash as malformed, not omitted (#3735)', () => {
+    const template = ['- [ ] <!-- kookr:check:readme --> README', '- [ ] <!-- kookr:check:tests --> tests'].join('\n');
+    const report = verifyChecklist({
+      body: ['- ~~- [ ] <!-- kookr:check:readme --> README~~ — N/A', '- ~~- [ ] <!-- kookr:check:tests --> tests~~ — N/A'].join('\n'),
+      facts: facts({ changedPaths: ['src/x.ts'] }),
+      envFileText: '',
+      testCorpus: '',
+      templateText: template,
+    });
+    const presence = report.results.filter((r) => r.id === 'pr-template');
+    expect(presence).toHaveLength(1);
+    expect(presence[0].status).toBe('fail');
+    expect(presence[0].summary).toMatch(/\(readme, tests\) present but not in a recognised checklist form/);
+    expect(presence[0].summary).not.toMatch(/omits/);
+    expect(report.ok).toBe(false);
+  });
+
   it('passes template presence when the body reproduces every template marker (struck counts as present)', () => {
     const template = ['- [ ] <!-- kookr:check:readme --> README', '- [ ] <!-- kookr:check:mbse --> arch'].join('\n');
     const body = [
