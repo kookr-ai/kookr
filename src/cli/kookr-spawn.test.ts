@@ -4134,14 +4134,23 @@ describe('main --wait after a reconcile-probe recovery (#3580)', () => {
    * probe and the wait loop both read GET /api/tasks (an active task);
    * the snapshot carries the state the wait loop should act on.
    */
-  async function runRecovered(argv: string[], snapshotAgent: Record<string, unknown>) {
+  async function runRecovered(
+    argv: string[],
+    snapshotAgent: Record<string, unknown>,
+    { dropSocket = false, snapshotStatus = 200 }: { dropSocket?: boolean; snapshotStatus?: number } = {},
+  ) {
     let posts = 0;
     const { server, baseUrl } = await startFakeApi(
-      () => {
+      (req) => {
         posts += 1;
+        // dropSocket: the client-timeout / dropped-connection shape (catch site)
+        // rather than the keyless-5xx shape.
+        if (dropSocket) req.socket.destroy();
         return { status: 500, body: JSON.stringify({ error: 'timeout after create' }) };
       },
-      () => ({ status: 200, body: JSON.stringify([{ taskId: 'cold-1', ...snapshotAgent }]) }),
+      () => (snapshotStatus === 200
+        ? { status: 200, body: JSON.stringify([{ taskId: 'cold-1', ...snapshotAgent }]) }
+        : { status: snapshotStatus, body: JSON.stringify({ error: 'snapshot down' }) }),
       () => ({
         status: 200,
         body: JSON.stringify([
@@ -4172,7 +4181,7 @@ describe('main --wait after a reconcile-probe recovery (#3580)', () => {
   }
 
   it('--json --wait: a still-running recovered task times out with exit 6, not exit 0', async () => {
-    const r = await runRecovered(['--wait=1', '--json'], { taskStatus: 'inProgress' });
+    const r = await runRecovered(['--wait=60', '--json'], { taskStatus: 'inProgress' });
     expect(r.codes).toEqual([EXIT_WAIT_TIMEOUT]);
     expect(r.posts).toBe(1); // still never re-POSTs
     const envelope = parseSingleJsonLog(r.logs);
@@ -4193,7 +4202,35 @@ describe('main --wait after a reconcile-probe recovery (#3580)', () => {
     expect(parseSingleJsonLog(r.logs)).toMatchObject({
       ok: true,
       code: 'OK',
+      message: 'Active task recovered via reconcile probe (ambiguous create outcome); task signaled completion-ready',
       details: { taskId: 'cold-1', reconciled: true, wait: { outcome: 'completion_ready' } },
+    });
+  });
+
+  it('--json --wait: a recovered task that reaches completed exits 0', async () => {
+    const r = await runRecovered(['--wait=60', '--json'], { taskStatus: 'completed' });
+    expect(r.codes).toEqual([EXIT_OK]);
+    expect(parseSingleJsonLog(r.logs)).toMatchObject({
+      ok: true,
+      details: { taskId: 'cold-1', wait: { outcome: 'terminal', status: 'completed' } },
+    });
+  });
+
+  it('--json --wait: a server error while waiting exits 4 with the error in details.wait', async () => {
+    const r = await runRecovered(['--wait=60', '--json'], {}, { snapshotStatus: 500 });
+    expect(r.codes).toEqual([EXIT_SERVER_ERROR]);
+    const envelope = parseSingleJsonLog(r.logs);
+    expect(envelope).toMatchObject({ ok: false, code: 'SERVER_ERROR', details: { wait: { outcome: 'server_error' } } });
+    expect(typeof envelope.details.wait.error).toBe('string');
+  });
+
+  it('--json --wait: also waits when the create dropped the connection (catch-site recovery)', async () => {
+    const r = await runRecovered(['--wait=60', '--json'], { taskStatus: 'inProgress' }, { dropSocket: true });
+    expect(r.codes).toEqual([EXIT_WAIT_TIMEOUT]);
+    expect(r.posts).toBe(1);
+    expect(parseSingleJsonLog(r.logs)).toMatchObject({
+      code: 'WAIT_TIMEOUT',
+      details: { taskId: 'cold-1', reconciled: true, wait: { outcome: 'timeout' } },
     });
   });
 
@@ -4208,10 +4245,11 @@ describe('main --wait after a reconcile-probe recovery (#3580)', () => {
   });
 
   it('text --wait: prints the recovered id, then waits (exit 6 while still running)', async () => {
-    const r = await runRecovered(['--wait=1'], { taskStatus: 'inProgress' });
+    const r = await runRecovered(['--wait=60'], { taskStatus: 'inProgress' });
     expect(r.codes).toEqual([EXIT_WAIT_TIMEOUT]);
-    expect(r.logs.join('\n')).toContain('task_id=cold-1');
-    expect(r.logs.join('\n')).toContain('recovered via reconcile probe');
+    // The recovered id is printed first, before the wait outcome.
+    expect(r.logs[0]).toContain('task_id=cold-1');
+    expect(r.logs[0]).toContain('recovered via reconcile probe');
     expect(r.errors.join('\n')).toContain('timed out');
   });
 
@@ -4243,7 +4281,7 @@ describe('main --json --wait on the created path (#3580)', () => {
       const errBucket = makeConsoleCapture();
       const { codes, exit } = makeExitCapture();
       await main({
-        argv: ['--wait=1', '--json', 'hello'],
+        argv: ['--wait=60', '--json', 'hello'],
         env: { KOOKR_API_BASE_URL: baseUrl },
         stdin: ttyStdin(),
         cwd: tmpCwd,
@@ -4258,6 +4296,43 @@ describe('main --json --wait on the created path (#3580)', () => {
         ok: false,
         code: 'WAIT_TIMEOUT',
         details: { taskId: 'wait-j', wait: { outcome: 'timeout' } },
+      });
+      expect(errBucket.errors).toEqual([]);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--dedupe=skip --json --wait waits on the returned duplicate', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({
+        status: 200,
+        body: JSON.stringify({ duplicate: true, task: { id: 'dup-j', status: 'inProgress', cwd: tmpCwd } }),
+      }),
+      () => ({ status: 200, body: JSON.stringify([{ taskId: 'dup-j', taskStatus: 'inProgress' }]) }),
+      () => ({ status: 200, body: JSON.stringify([{ id: 'dup-j', status: 'inProgress' }]) }),
+    );
+    let clock = 0;
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dedupe=skip', '--wait=60', '--json', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async (ms) => { clock += ms; },
+        now: () => clock,
+      });
+      expect(codes).toEqual([EXIT_WAIT_TIMEOUT]);
+      expect(parseSingleJsonLog(logs)).toMatchObject({
+        ok: false,
+        code: 'WAIT_TIMEOUT',
+        details: { taskId: 'dup-j', wait: { outcome: 'timeout' } },
       });
       expect(errBucket.errors).toEqual([]);
     } finally {
