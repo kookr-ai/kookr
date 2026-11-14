@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * Quiet chrome (issue #3561 slice 2). Acceptance:

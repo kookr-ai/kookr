@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 /**
  * Navigation footer and the status bar's other contents (#3561 slice 5b,
  * variant B "triage inbox"). The status bar is gone:

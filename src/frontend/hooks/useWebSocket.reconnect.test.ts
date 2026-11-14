@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * Regression tests for the disconnect/restart flicker (2026-06): the dashboard

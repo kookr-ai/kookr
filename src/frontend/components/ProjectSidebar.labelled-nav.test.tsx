@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 /**
  * Labelled navigation (#3561 slice 5a, variant B "triage inbox").
  *

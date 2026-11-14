@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * Status-bar pills for prod smoke-tick failing streak + resourceWatchdog

@@ -39,7 +39,8 @@ export default defineConfig({
     setupFiles: ['./test/_poisoner-probe.setup.ts'],
     // Scrub ambient KOOKR_*/CLAUDE_*/ANTHROPIC_* so local (live daemon) == CI.
     // Allowlist lives in test/setup-env.ts and mirrors `env` below. See #1372.
-    setupFiles: ['./test/setup-env.ts'],
+    // happy-dom-offline: happy-dom files get no real network (see the file).
+    setupFiles: ['./test/setup-env.ts', './test/happy-dom-offline.setup.ts'],
     env: {
       // Claude Code launches submit the prompt via bracketed paste so the
       // trailing Enter is parsed as a keystroke (see

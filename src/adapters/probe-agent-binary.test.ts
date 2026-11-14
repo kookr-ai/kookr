@@ -1,6 +1,11 @@
+import { createHash } from 'node:crypto';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test, expect } from 'vitest';
 import {
   probeAgentBinary,
+  resolveInstalledBinaryIdentity,
   UNKNOWN_VERSION,
   DEFAULT_PROBE_TIMEOUT_MS,
   DEFAULT_VERSION_PROBE_TIMEOUT_MS,
@@ -159,5 +164,37 @@ describe('probeAgentBinary', () => {
       { args: '--version', timeout: 750 },
       { args: '--help', timeout: 500 },
     ]);
+  });
+});
+
+describe('resolveInstalledBinaryIdentity real-file hashing', () => {
+  const sha = (b: string) => createHash('sha256').update(b).digest('hex');
+
+  test('re-hashes when the file is rewritten in place or replaced, even at the same size', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-identity-hash-'));
+    try {
+      const bin = join(dir, 'agent');
+      writeFileSync(bin, 'AAAA', { mode: 0o755 });
+      const first = await resolveInstalledBinaryIdentity(bin);
+      expect(first.kind === 'ok' && first.identity.sha256).toBe(sha('AAAA'));
+      // Unchanged file: same answer.
+      const again = await resolveInstalledBinaryIdentity(bin);
+      expect(again.kind === 'ok' && again.identity.sha256).toBe(sha('AAAA'));
+
+      // Same-size in-place rewrite: a freshly changed file is never served
+      // from the identity cache, even inside one coarse timestamp tick.
+      writeFileSync(bin, 'BBBB');
+      const rewritten = await resolveInstalledBinaryIdentity(bin);
+      expect(rewritten.kind === 'ok' && rewritten.identity.sha256).toBe(sha('BBBB'));
+
+      // Rename-over replacement changes the inode.
+      const staged = join(dir, 'agent.new');
+      writeFileSync(staged, 'CCCC', { mode: 0o755 });
+      renameSync(staged, bin);
+      const replaced = await resolveInstalledBinaryIdentity(bin);
+      expect(replaced.kind === 'ok' && replaced.identity.sha256).toBe(sha('CCCC'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

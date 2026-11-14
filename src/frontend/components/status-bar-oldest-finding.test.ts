@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * Oldest live finding wait chip (issue #2588), now OldestFindingWaitChip in the

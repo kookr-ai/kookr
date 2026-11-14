@@ -2299,52 +2299,62 @@ Do not launch this.
   });
 
   it('skips the catch-up fire when the relaunch arbiter denies admission (#1900)', async () => {
-    const schedule = store.create({
-      name: 'LeaseHeldCatchup',
-      cron: '* * * * *',
-      playbook: { path: 'test.md', parameters: {} },
-      cwd: dir,
-    });
-    replaceSchedule(schedule.id, {
-      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
-    });
+    // The cron fires every minute on the wall clock. Pin Date mid-minute so the
+    // final tick cannot cross into a fresh, legitimately due slot when the host
+    // is slow (a load-dependent flake). Only Date is faked; vi.waitFor's timers
+    // stay real.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-06-01T12:00:30.000Z'));
+    try {
+      const schedule = store.create({
+        name: 'LeaseHeldCatchup',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
 
-    let tryAcquireCalled = false;
-    const arbiter = {
-      evaluate: () => ({
-        admit: false as const,
-        reason: 'held' as const,
-        lease: { key: catchUpKey(schedule.id), holderId: 'other-actuator', acquiredAt: '' },
-      }),
-      tryAcquire: () => {
-        tryAcquireCalled = true;
-        return { ok: true as const, lease: { key: catchUpKey(schedule.id), holderId: 'x', acquiredAt: '' }, reentrant: false };
-      },
-    };
+      let tryAcquireCalled = false;
+      const arbiter = {
+        evaluate: () => ({
+          admit: false as const,
+          reason: 'held' as const,
+          lease: { key: catchUpKey(schedule.id), holderId: 'other-actuator', acquiredAt: '' },
+        }),
+        tryAcquire: () => {
+          tryAcquireCalled = true;
+          return { ok: true as const, lease: { key: catchUpKey(schedule.id), holderId: 'x', acquiredAt: '' }, reentrant: false };
+        },
+      };
 
-    const runner = createRunner({ relaunchArbiter: arbiter });
-    runner.start();
-    await vi.waitFor(() => {
-      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_relaunch_locked');
-    });
-    await runner.stop();
+      const runner = createRunner({ relaunchArbiter: arbiter });
+      runner.start();
+      await vi.waitFor(() => {
+        expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_relaunch_locked');
+      });
+      await runner.stop();
 
-    // No task was launched (denied before fire), and no lease was acquired.
-    expect(launched).toHaveLength(0);
-    expect(tryAcquireCalled).toBe(false);
-    expect(store.get(schedule.id)!.executionLedger[0]).toEqual(expect.objectContaining({
-      decision: 'catch_up',
-      outcome: 'skipped_relaunch_locked',
-      reasonCode: 'relaunch_lease_held',
-      scheduledFor: expect.any(String),
-    }));
-    // The held-branch message names the current holder so the ledger explains
-    // which actuator won the lease.
-    expect(store.get(schedule.id)!.latestExecution?.message).toContain('other-actuator');
+      // No task was launched (denied before fire), and no lease was acquired.
+      expect(launched).toHaveLength(0);
+      expect(tryAcquireCalled).toBe(false);
+      expect(store.get(schedule.id)!.executionLedger[0]).toEqual(expect.objectContaining({
+        decision: 'catch_up',
+        outcome: 'skipped_relaunch_locked',
+        reasonCode: 'relaunch_lease_held',
+        scheduledFor: expect.any(String),
+      }));
+      // The held-branch message names the current holder so the ledger explains
+      // which actuator won the lease.
+      expect(store.get(schedule.id)!.latestExecution?.message).toContain('other-actuator');
 
-    // Watermark advanced: the withheld slot is not re-evaluated next tick.
-    await runner.tick();
-    expect(launched).toHaveLength(0);
+      // Watermark advanced: the withheld slot is not re-evaluated next tick.
+      await runner.tick();
+      expect(launched).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not acquire the relaunch lease when the catch-up fire launches no task (#1900)', async () => {

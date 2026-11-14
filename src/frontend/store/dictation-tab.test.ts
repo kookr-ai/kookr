@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 import { beforeEach, afterEach, expect, test, vi } from 'vitest';
 
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); vi.resetModules(); });

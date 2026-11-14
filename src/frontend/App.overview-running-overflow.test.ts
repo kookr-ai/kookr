@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * App wiring for the overview "+N more in Working" overflow (issue #3406).

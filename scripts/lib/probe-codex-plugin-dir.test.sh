@@ -43,11 +43,17 @@ esac
 EOF
 chmod +x "$TMPDIR/codex-fork"
 
-# Hanging codex: --help sleeps past the 5s probe budget.
+# The hang cases wait out the probe budget, so shorten it from the default
+# 5 s; the contract under test is "a hang is bounded", not the exact budget.
+export PROBE_HELP_TIMEOUT_SECS=1
+
+# Hanging codex: --help sleeps past the probe budget. `exec` makes the sleep
+# the process the timeout kills; a forked sleep would outlive its killed
+# parent and hold the probe's output pipe open for the full 10 s.
 cat > "$TMPDIR/codex-slow" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-  --help) sleep 10 ;;
+  --help) exec sleep 10 ;;
   *)      echo "codex slow 0.0.0" ;;
 esac
 EOF

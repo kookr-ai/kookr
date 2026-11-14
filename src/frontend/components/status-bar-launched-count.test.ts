@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * Usage-summary 24-hour launched-task count (issue #2632). Counts live

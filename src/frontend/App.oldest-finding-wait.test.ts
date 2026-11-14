@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * App wiring for the oldest-finding-wait chip (issue #3343). Chip tests

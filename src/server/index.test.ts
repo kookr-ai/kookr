@@ -234,6 +234,19 @@ async function acquireRelayControllerLease(relayUrl: string, nodeId: string, mem
   expect(leaseRes.status).toBe(200);
 }
 
+/**
+ * Answers for the boot-time agent binary preflights, so a test server never
+ * spawns the host's real `claude` / `codex` / `grok` binaries. Those probes
+ * cost ~0.2 s of every boot and depend on what this machine has installed;
+ * preflight behavior itself is covered by the adapter and preflight tests.
+ */
+const fakeVersionProbe = async () => ({ stdout: '1.0.0\n', stderr: '' });
+const HERMETIC_AGENT_PREFLIGHT = {
+  claudeProbeExec: fakeVersionProbe,
+  codexProbeExec: fakeVersionProbe,
+  grokInstalledState: { kind: 'absent' as const, reason: 'grok preflight stubbed in index.test.ts' },
+};
+
 describe('createKookrServer', () => {
   let tempDir: string;
   let server: KookrServerInternal;
@@ -260,6 +273,7 @@ describe('createKookrServer', () => {
       livenessIntervalMs: 600_000,
       terminalBackend,
       claudeDir: join(tempDir, 'claude'),
+      agentPreflight: HERMETIC_AGENT_PREFLIGHT,
     });
     port = getActualPort(server);
     baseUrl = `http://127.0.0.1:${port}`;

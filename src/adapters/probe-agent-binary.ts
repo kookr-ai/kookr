@@ -258,7 +258,38 @@ async function isExecutable(p: string): Promise<boolean> {
   }
 }
 
-function hashFileSha256(p: string): Promise<string> {
+/**
+ * In-process SHA-256 cache keyed by the file's on-disk identity. Agent binaries
+ * are large (the Grok build is ~240 MB, ~0.9 s to hash), and identity is
+ * re-resolved on every server boot and before every Grok launch. Any write,
+ * rename-over or replacement changes the inode or ctime, and ctime cannot be
+ * set from userland, so an unchanged key means the bytes the earlier hash
+ * covered are still the bytes on disk.
+ *
+ * Kernel file timestamps are coarse (a few ms), so a second write landing in
+ * the same tick as the first would keep the same ctime. Like git's "racily
+ * clean" rule, a file changed within the last few seconds is hashed but never
+ * cached; only a settled file is trusted by its stat identity.
+ */
+const sha256ByFileIdentity = new Map<string, Promise<string>>();
+const SHA256_CACHE_MAX_ENTRIES = 32;
+const SHA256_CACHE_SETTLE_MS = 2_000;
+
+async function hashFileSha256(p: string): Promise<string> {
+  const s = await stat(p, { bigint: true });
+  const key = `${p}\0${s.dev}\0${s.ino}\0${s.size}\0${s.mtimeNs}\0${s.ctimeNs}`;
+  const cached = sha256ByFileIdentity.get(key);
+  if (cached) return cached;
+  const pending = hashFileSha256Uncached(p);
+  const settled = Date.now() - Number(s.ctimeMs) >= SHA256_CACHE_SETTLE_MS;
+  if (!settled) return pending;
+  if (sha256ByFileIdentity.size >= SHA256_CACHE_MAX_ENTRIES) sha256ByFileIdentity.clear();
+  sha256ByFileIdentity.set(key, pending);
+  pending.catch(() => sha256ByFileIdentity.delete(key));
+  return pending;
+}
+
+function hashFileSha256Uncached(p: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const hash = createHash('sha256');
     const stream = createReadStream(p);
