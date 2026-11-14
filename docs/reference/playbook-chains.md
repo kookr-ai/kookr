@@ -72,8 +72,10 @@ chain continues even if the agent ignores it.
   are launched.
 - Cancelling the current task ends the chain immediately
   (`iteration cancelled`).
-- SAFE MODE and a per-project automation pause hold a chain (the next iteration
-  waits) without ending it.
+- SAFE MODE holds a chain (the next iteration waits) without ending it. A
+  per-project automation pause does **not**: it targets unsolicited automation
+  such as schedules, while a chain is a run the operator started explicitly in
+  that project.
 
 ## Indicators
 

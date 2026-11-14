@@ -220,9 +220,13 @@ prepends the chain notice (below), and calls `launchTask` with:
   back to the spawn default), plus its model / effort / tier pins;
 - `autoCloseOnSignal: true`, `unattended: true`, `disableDedup: true` (every
   iteration has the same prompt);
-- `launchSource: 'chain'`, a new **autonomous** source, so SAFE MODE and the
-  per-project automation pause hold chains like they hold schedules; the launch
-  carries the trusted `automationProjectId` stamp;
+- `launchSource: 'chain'`, a new **autonomous** source, so SAFE MODE holds
+  chains like it holds schedules; the launch carries the trusted
+  `automationProjectId` stamp. The per-project automation pause does *not*
+  hold a chain (changed after dogfooding: most of the operator's projects carry
+  a standing pause aimed at schedules, which stopped the first production chain
+  after iteration 1, although the operator had started it in that project on
+  purpose);
 - server option `chain: next` (stamped at creation) and the playbook's delivery
   policy, exactly as a manual launch.
 
