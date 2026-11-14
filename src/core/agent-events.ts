@@ -124,6 +124,14 @@ export type AgentEvent = (
   | {
       type: 'input_received';
       sessionId: string;
+      /**
+       * `'keystroke'` when recorded for a raw dashboard-terminal key at a
+       * permission prompt. Such a key (an arrow, say) may leave the prompt on
+       * screen, so `Monitor.isAwaitingChoice` ignores these overlays
+       * (issue #3516). Absent for deliberate answers (approve/deny buttons,
+       * remote and Telegram approval, a submitted reply).
+       */
+      source?: 'keystroke';
     }
 ) & {
   /** Provider turn identity, retained for progress attribution. */

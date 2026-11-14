@@ -552,8 +552,12 @@ export class Monitor {
    * sees that the user has responded and clears needs_input immediately,
    * instead of waiting for the next real hook event from Claude Code.
    * Returns true if state actually changed (finding cleared).
+   *
+   * Pass `source: 'keystroke'` for a raw dashboard-terminal key: the overlay
+   * still clears the finding, but `isAwaitingChoice` ignores it because the
+   * prompt may still be showing (issue #3516).
    */
-  markInputReceived(agentId: string): boolean {
+  markInputReceived(agentId: string, opts?: { source?: 'keystroke' }): boolean {
     if (this.stoppedAgents.has(agentId)) return false;
     const events = this.agentEvents.get(agentId);
     if (!events) return false;
@@ -577,6 +581,7 @@ export class Monitor {
     const syntheticEvent: AgentEvent = {
       type: 'input_received',
       sessionId: last.sessionId,
+      ...(opts?.source ? { source: opts.source } : {}),
     };
     this.processEvents(agentId, [syntheticEvent]);
     return true;
@@ -1215,11 +1220,23 @@ export class Monitor {
    * selects the highlighted option, so input paths refuse instead (issue
    * #3513). Event-derived rather than screen-scraped: the pane capture is ring
    * history, where a dismissed menu lingers.
+   *
+   * The dialog closes on any later hook event other than the trimmed
+   * overlays (for example `tool_result`, `tool_error`, `user_prompt`, `stop`,
+   * or a new tool use), or on an `input_received` overlay recorded for a
+   * deliberate answer (approve/deny button, remote or Telegram approval).
+   * Overlays tagged `source: 'keystroke'` are ignored: a raw dashboard-terminal
+   * key such as an arrow may leave the menu on screen, and treating it as an
+   * answer would let the next reply's Enter pick the highlighted option
+   * (issue #3516). They still clear the dashboard's permission_blocked finding.
    */
   isAwaitingChoice(agentId: string): boolean {
     const events = this.agentEvents.get(agentId);
     if (!events || this.stoppedAgents.has(agentId)) return false;
-    const { effectiveEvent } = deriveTurnStateDetails(events);
+    const answerEvents = events.filter(
+      (event) => !(event.type === 'input_received' && event.source === 'keystroke'),
+    );
+    const { effectiveEvent } = deriveTurnStateDetails(answerEvents);
     if (!effectiveEvent) return false;
     if (effectiveEvent.type === 'permission_request') return true;
     return effectiveEvent.type === 'tool_use' && effectiveEvent.toolName === 'AskUserQuestion';
