@@ -37,11 +37,21 @@ from its parent's changes.
    noise-sized evaluation slice returned the seed far less often than GEPA at 250 calls (figures under
    **At 100-400 calls use one single-stage loop** in
    [prompt optimization](prompt-optimization-under-budget.md)).
+6. **Evolve from failed trajectories and count what got worse.** All 11 validation-selected skills came from
+   feedback that included failures; success-only feedback was never selected, and only 55 of 388 candidates
+   set a validation best (2608.02636). Regressions offset 59% of gross skill gains over 5,832 paired runs
+   (2607.22520), so list the tasks each edit made worse.
+7. **Maintain what accumulates.** When the evolved artifact is a skill or note library, cap the active set
+   and retire on execution-graded outcomes, not an LLM judge alone ([skill library
+   design](../../agent-memory-and-learning/references/skill-library-design.md) rules 6-7). Cap rounds and
+   re-run the gate after a model change (stopping figures under **Keep the best checkpoint** in
+   [experiment loops](autonomous-experiment-loops.md)).
 
 ## Gaps
 
 No paper here runs a coding agent with and without an archive; no single table ranks prompt, tool, skill,
 workflow and whole-source mutation on one backbone and budget; no iterations-to-plateau curve; no
-cheap-vs-strong proposer comparison; no random-search control; the 56.7% SWE-bench Verified figure is
-credited to two different systems in two sources. Treat **Mutate tools and structure before wording** and
-**Inherit from the parent** as the weakest rules.
+cheap-vs-strong proposer comparison; no random-search or random-edit control; no rollback ablation; no
+same-artifact comparison of full rewrites against delta edits; no library size at which drift begins; the
+56.7% SWE-bench Verified figure is credited to two different systems in two sources. Treat **Mutate tools
+and structure before wording** and **Inherit from the parent** as the weakest rules.

@@ -1,7 +1,8 @@
 # Latent vs text agent design
 
-Use when: someone proposes latent reasoning, latent or KV-cache handoffs, or looped / recurrent-depth
-models for an agent fleet, or when shrinking the cost of inter-agent handoffs.
+Use when: someone proposes latent reasoning, latent or KV-cache handoffs, looped / recurrent-depth
+models or a diffusion language model (dLLM) for an agent fleet, or when shrinking the cost of
+inter-agent handoffs.
 
 Default for hosted Claude-class fleets: keep reasoning and handoffs as text, shrink them at the text
 level, gate on checked outputs. For open-weight fleets the latent gains are narrow and unreplicated.
@@ -37,6 +38,34 @@ level, gate on checked outputs. For open-weight fleets the latent gains are narr
    Verified 43.0% to 64.4%, then 27.6% and 22.4% with three and four; 2606.18023). For thinking-length
    peaks see [inference budget allocation](inference-budget-allocation.md) rule 3.
 
+## Diffusion decoders (dLLMs)
+
+For a closed-weight fleet, not worth planning around as an agent backbone; rule 1 extends to them.
+
+8. **Do not change decoder or model family to save money until you have split a real run's cost.** In
+   the author's runs agent sessions were about 96% cache-read tokens and about 1% output tokens, so a
+   faster decoder addresses a small share of the bill. Measure cache-read, cache-write, output and
+   tool-wait first ([agent inference efficiency](agent-inference-efficiency.md)).
+9. **Read "Nx faster" as tokens per forward pass (TPF), not latency.** dLLM speed figures are TPF, mostly
+   against vanilla dLLM decoding: cluster-level parallel commit 1.77x-8.47x (2605.29607), parallel
+   speculative decoding up to 5.5x TPF (2605.15609). The only AR baseline is an AR model with a
+   diffusion head, up to 7.8x, which needs custom kernels (2605.12825). No surveyed paper gives
+   wall-clock tokens per second, batch above 1 or long context, so adopt none without a same-hardware
+   tokens-per-second comparison against a tuned AR baseline.
+10. **The dLLM is not the agent.** In every surveyed agent system using diffusion, the diffusion part is a
+    separate generator (topology design 2510.07799, trajectory planning 2605.16863, offline-evaluation
+    world model 2606.05558). No dLLM has been run as a tool-calling or multi-turn agent, and a
+    non-diffusion topology prior got similar gains (2605.17359).
+11. **Borrow the repair idea, but verify it.** Constraint correction inside denoising edited a median of
+    12 to 35 tokens where AR re-prompting regenerated 98 to 123 (2605.16829). With an API model, ask for
+    a targeted diff on the violated lines; this is untested on AR models.
+12. **Assume attackers use dLLMs.** A dLLM attacker reached 100% attack success on three open models and
+    53% transfer to ChatGPT-5 vs 13% for best-of-N (2511.00203); another reached 87.50% under Llama Guard
+    (2606.15531). Do not rely on perplexity or prefix filters alone (see [untrusted-content
+    defense](../../agent-safety/references/untrusted-content-defense.md)).
+13. **Keep the monitor on a text-reasoning model**: chain-of-thought monitorability under parallel or
+    any-order decoding is unmeasured.
+
 ## Evidence in brief
 
 | Claim | Number | Source | Limit |
@@ -53,3 +82,5 @@ level, gate on checked outputs. For open-weight fleets the latent gains are narr
 - No monitor result on latent messages.
 - No prompt-only thinking-budget measurement on accuracy and tokens together.
 - No measurement of how much detail a worker summary loses.
+- No dLLM serving, KV-cache or long-context measurements; no dLLM agent benchmark; no CoT
+  monitorability result under parallel or any-order decoding.

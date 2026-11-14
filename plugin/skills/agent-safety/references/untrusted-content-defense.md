@@ -29,7 +29,10 @@ reuse, reviewing a CI agent workflow, or choosing between a guard model and a st
    where naive injection scored 0.0% (2602.14211). Backdoored skills reached up to 97.2% ASR and LLM guard
    scanners (Qwen3Guard, Llama-Guard) labelled 98.2% and 99.4% of them safe (2604.06811), so one passing
    LLM scan is not enough. Layer a static filter, LLM review, then a jury or human review (F1 0.920 on 390
-   skills, 2604.06550), and scope each skill's permissions.
+   skills, 2604.06550), and scope each skill's permissions. Treat tool descriptions as untrusted input too:
+   tool poisoning was blocked only 42-60% of the time (2512.06556), and a cascaded filter had 59.9% recall
+   on it at 6.06% false-positive rate (FPR, 2604.17125). More in
+   [tool surface design](../../agent-loop-design/references/agent-tool-surface-design.md) rule 8.
 6. **Treat memory as a second injection path.** Unoptimized poison reached later behavior in up to 45.70%
    of cases (2611.09721; varied widely by memory design); 91.0% of trials embedded a poisoned lesson into a
    skill at 10% attacker support (2608.05563). Keep the source on every stored lesson, require independent
@@ -37,10 +40,29 @@ reuse, reviewing a CI agent workflow, or choosing between a guard model and a st
    Post-hoc audit worked only below a 0.20 (0.15 on one task) contamination ratio (2605.23723).
 7. **Do not take a vote or a judge as isolation.** Majority voting fell to near zero (0.8% on one
    benchmark) once 60% of agents were corrupted (2604.17139); content-free inputs flipped LLM judges up to
-   95.1% (2507.08794). Check a worker's claim with a deterministic test or a provenance check.
+   95.1% (2507.08794). Check a worker's claim with a deterministic test or a provenance check, and gate
+   worker output with a verification stage: QA plus Fixer cut a saboteur's 53.7-point damage to 0.6 or
+   less, though about 26% of surviving attacks were missed and 41% left unrepaired (2606.12709).
 8. **Fix CI defaults.** Drop persisted credentials and unneeded tokens (`persist-credentials: false`
    removed PR-body token exfiltration without a utility loss, 2606.09935); never print an unrestricted
    environment dump into shared output. Every provider tested had a working attack by default.
+
+## Fleets: lead and worker agents
+
+9. **Do not hand raw untrusted text to a privileged agent.** Plan from the user task alone and pass on the
+   worker's reduced result: an isolated planner took InjecAgent ASR from 72.8% to 0.0% at 0.97% FPR
+   (2604.10134); a per-call trusted monitor reached under 1.7% indirect ASR at about 1.4x latency
+   (2604.24118). Expect an adaptive attacker to recover some of it (another defense, AttriGuard, went from
+   0% to 6.6-9.84%, 2603.10749).
+10. **More agents means more attack surface.** In a 7-agent setup, permissive aggregation raised
+    compromise probability from 0.24 (one agent) to 0.86; consensus gating gave 0.48 (2606.15008). One
+    compromised agent infected over 95% of a simulated 128-agent system through shared retrieval
+    (2605.01758; image-based attack, indicative only).
+11. **Give each worker its own short-lived credential.** Heartbeat-bound sub-agent credentials cut the
+    post-revocation window from 3600 s to 40 s at 0.71% overhead (2605.20704). Broker the secrets and
+    constrain risky actions rather than removing them (rules 3-4 of
+    [agent action containment](agent-action-containment.md)). A planted honeytool or honeytoken caught
+    90.7-100% of successful attacks with no false alarm in 485 runs, single agent only (2605.11026).
 
 ## Testing a defense
 
@@ -56,3 +78,5 @@ reuse, reviewing a CI agent workflow, or choosing between a guard model and a st
 
 - No measured ASR for standalone least-privilege scoping, memory-write gating, sub-agent sandboxing,
   approval fatigue, or adaptive attacks on named guard models.
+- Fleets: no measured ASR by topology or by lead vs worker role, for structured-only handoffs, or for the
+  cost of pinning tool descriptors.

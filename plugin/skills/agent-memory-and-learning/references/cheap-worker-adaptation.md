@@ -11,6 +11,8 @@ models Steps 1-5. Which model tier a task needs at all: the `agent-fleet-orchest
 Most rules rest on a single study, and almost all studies use open Qwen and Gemma models as the cheap
 model: applying them to hosted tiers such as Claude Haiku is a transfer, not a measurement.
 
+Contents: Steps 1-5 · Distilling an inference-time structure · Gaps.
+
 ## Step 1: fix a held-out set before changing anything
 
 Pick held-out tasks and a metric that tuning and training never see; judge every later change on them.
@@ -56,7 +58,9 @@ tuning both together raised a 4B model's ToolHop accuracy from 41.03% to 52.82% 
 - **Don't train on teacher runs alone**: the student drifts into situations the teacher never met. On a
   web benchmark, imitating teacher runs plateaued near 25% however long it trained; letting the student
   act and the teacher rewrite its failed steps reached 41.1% with a 4B student, for 403 teacher calls,
-  4.0M tokens and 1.0 GPU-hour of training (2610.19834).
+  4.0M tokens and 1.0 GPU-hour of training (2610.19834); teacher-corrected student data also took
+  26.07% to 31.74% (2610.13238). Treat a stronger teacher as a hypothesis to test (2606.16409).
+- **Keep only items the student fails and a teacher solves:** 62.9 to 75.3 with 1,000 examples (2610.13285).
 - **Score passing runs on process quality and train on the top ones; passing alone is a weak filter.**
   Scored from the event log alone (did actions match stated intent, did focus narrow), at a fixed 1,024
   passing coding-agent runs, the top subset solved 27.6% of SWE-Bench Verified, a random one 24.8%, the
@@ -66,7 +70,8 @@ tuning both together raised a 4B model's ToolHop accuracy from 41.03% to 52.82% 
   Verified against 30.9% for dropping failed runs and 28.5% for training on them as is (2605.10674). The
   gain is small (1.3 points), and the step labeller was right only 60.4% of the time.
 - **Start small.** Gains came from about 1,700 tool-use examples (2605.17774), 1,024 runs (2610.13152),
-  and 106 supervised plus 50 RL conversations (2610.12757); no study shows where more stops helping.
+  and 106 supervised plus 50 RL conversations (2610.12757); no study shows where more stops helping. No
+  real runs to learn from: [training task synthesis](training-task-synthesis.md).
 
 ## Step 5: re-test what fine-tuning breaks
 
@@ -80,11 +85,26 @@ advance. Replay and backward transfer: [continual learning](agent-continual-lear
 - **Safety behavior.** Fine-tuning audio models on harmless data chosen for similarity to harmful
   content raised jailbreak success from single digits to 87.12%; random harmless subsets did not reliably
   do so (2604.16659). An analogy for agents, not a measurement.
+- **Step-level errors.** Accuracy can rise while the process degrades: 74.7 to 84.4 while step errors rose
+  from 30.6% to 50.3% (2605.28301). Track step-level error, not only final accuracy.
 - **The remaining gap.** The 4B web student above reached 41.1% against its teacher's roughly 70.9%
   (2610.19834): keep the strong model for the tasks the student still fails.
+
+## Distilling an inference-time structure (debate, search, long prompt)
+
+- **First measure the structure against a well-briefed single agent, and try editable amortisers:**
+  hierarchical deliberation was up to 3.4x worse at 1.8-2.7x tokens (2605.16205), so distilling it copies
+  the defect; context tuning beat in-context learning 44.2 vs 35.6 on NLP-LR (2507.04221); harness: Step 2.
+- **A long prompt moved into weights** (Step 3 signal 2, Step 5 losses) overfits its query template and
+  cannot be edited: keep the original context as fallback ([continual learning](agent-continual-learning.md) 9).
+- **Debate distillation** gave up to +4.8% average, reasoning only, no cost figure (2602.03955); more
+  data degraded RSFT/DA, so prefer quality over volume. **Search distillation** works for single-shot
+  reasoning (MATH500 0.508 to 0.631 and 0.661, 2605.04542), but the majority-vote gain was only +2.3
+  (2604.24957); how much survives running search on top is unmeasured.
 
 ## Gaps
 
 - No harness-tuning versus distillation comparison on one agent benchmark at matched cost.
 - No numeric threshold for switching, curve of score against training runs, or price for a distillation.
 - Nothing measures a student inheriting teacher errors, or loss on unseen repositories or tool sets.
+- No figure for the share of a search gain kept after distillation; no editability study.

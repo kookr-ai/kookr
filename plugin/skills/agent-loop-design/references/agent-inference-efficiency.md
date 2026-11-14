@@ -27,8 +27,17 @@ timestamps and IDs after the last cache breakpoint. Check cache-read tokens per 
 - **Thinking tokens and turn count decide price.** In 32% of model pairs the cheaper-listed model cost
   more, by up to 28x. Over 95% of single-turn cost gaps came from thinking tokens; multi-turn gaps came
   from turn count and cached tokens (2603.23971).
-- **Adaptive effort beats a fixed low effort** (evidence in [inference budget
-  allocation](inference-budget-allocation.md) rule 5).
+- **Measure the spend split before cutting reasoning.** In the author's runs agentic loops were about
+  96% cache reads and about 1% output, so a reasoning cut barely moves the bill there; it pays in
+  single-turn calls (the 95% above) and in subagents with small context.
+- **Tune effort per route and per step, never one global cap.** Adaptive effort beats a fixed low effort
+  (2603.07915, open models only), and the best thinking length differs by difficulty (evidence in
+  [inference budget allocation](inference-budget-allocation.md) rules 3, 5 and 15).
+- **Test any cap or early exit on the hardest 20% of tasks.** Headlines hide hard-item losses: Step-GRPO
+  reports "no degradation" but loses 6.0 GPQA points, 56.1% vs 62.1% (2604.16890).
+- **Don't strip reasoning between tool calls without an A/B on your own tasks.** No surveyed source
+  tests this on a multi-step agent task, and per-step deliberation can also hurt (1.8-2.7x tokens, up to
+  3.37x worse return, 2605.16205), so the answer is selective, not blanket.
 - **Fewer model calls in the agent's own control logic** (deciding the next step, recovering from
   errors): one study made 93% fewer such calls than ReAct (9 vs 123) across 19 scenarios, mock tools
   only (2603.01548).
@@ -64,7 +73,7 @@ timestamps and IDs after the last cache breakpoint. Check cache-read tokens per 
 
 Tokens per second misleads: one method cut output tokens up to 70% but wall-clock only about 35%
 (2605.01111), and diffusion-decoding "5x" claims are often tokens per forward pass, not latency (see
-2605.15609). Perplexity, MMLU, LongBench and GSM8K are single-turn or non-agent scores and do not show
+[latent vs text](latent-vs-text-agent-design.md) rule 9). Perplexity, MMLU, LongBench and GSM8K are single-turn or non-agent scores and do not show
 an agent keeps its success rate. Compare dollars and seconds per solved task on your own tasks. When
 benchmarking serving throughput, switch warm-cache features off (cache reuse inflates tokens per
 second); keep them on in production.
@@ -74,3 +83,5 @@ second); keep them on in production.
 - Cost per solved task for any lever; a head-to-head comparison of these levers on one workload.
 - Multi-turn tests of KV eviction; 4-bit weight quantization measured on agent success.
 - Speculative decoding on structured tool-call JSON; what invalidates a provider prompt cache.
+- A Claude effort setting measured on a real agent run; a token split of an agent run into reasoning,
+  tool output, context re-read and action; trained-short vs prompted or capped models at matched budget.

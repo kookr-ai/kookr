@@ -5,7 +5,10 @@ benchmark numbers, before publishing or acting on a benchmark claim, or when a r
 
 Run the four checks before acting on a gap; skip one only when being wrong is cheap and easy to undo. No
 study reviewed gives a proven run count: the figures are starting points from specific studies, so say so when you
-report. Keep gate inside a loop: [autonomous experiment loops](autonomous-experiment-loops.md).
+report. Keep gate inside a loop: [autonomous experiment loops](autonomous-experiment-loops.md). Building a
+suite from your own history to gate updates: [in-house regression suite](in-house-regression-suite.md). An
+arm whose memory, notebook or skills grow from its own tasks: [stateful agent
+evaluation](stateful-agent-evaluation.md).
 
 ## Check 1: the instrument works and is the same for both arms
 
@@ -30,7 +33,9 @@ report. Keep gate inside a loop: [autonomous experiment loops](autonomous-experi
   have a human check. About 75 human-graded transcripts rule out a violation rate under 5% (2607.27518).
 - **Check the oracle.** Hardening the official KernelBench check moved scores by 8.5 points (2609.22220).
   7.8% of resolved SWE-bench patches fail developer tests and 32.67% of issue texts leak the solution, as
-  reported by one position paper (2606.17799). Audit method: [output verification](agent-output-verification.md).
+  reported by one position paper (2606.17799). Check issue/diff alignment: 13.6% (68/500) of SWE-bench Verified
+  instances were misaligned, and excluding them changed 64.1% of rankings (2607.28587). Audit method:
+  [output verification](agent-output-verification.md).
 - **Hide the visible score** from the agent (evidence in [output verification](agent-output-verification.md)).
 
 ## Check 3: repeat, pair and report consistency
@@ -85,5 +90,6 @@ report. Keep gate inside a loop: [autonomous experiment loops](autonomous-experi
 - No recommended k for Pass^k; no minimum detectable difference or tasks-versus-repeats rule for agents.
 - No measured effect of timeouts, turn limits or tool-version pinning.
 - No leaderboard re-scored after removing flagged tasks; no agent-benchmark case where only the grader changed.
-- No study reviewed shows a few in-house tasks predict real usefulness better than a public benchmark.
+- No study reviewed shows a few in-house tasks predict real usefulness better than a public benchmark (more
+  in [in-house regression suite](in-house-regression-suite.md)).
 - Several operator figures come from single incidents with n of 15 or fewer.

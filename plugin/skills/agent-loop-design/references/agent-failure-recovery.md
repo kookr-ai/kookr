@@ -22,11 +22,30 @@ studies and is a synthesis, not a measured ranking. The attempt caps are heurist
 - Treat the second identical action with an identical result as a loop.
 - A failed check means classify and act, not abandon: agents also quit too early (one model's 19.14% on
   a tool benchmark came partly from premature termination on errors, 2605.10787).
+- Never let the model's own "done", progress figure or confidence decide whether to continue or stop.
+  Self-reported progress was 5.8% to 11.5% accurate mid-task against 90.6% to 99.4% before acting, and
+  ending on a self-reported marker completed 13.0 fewer tasks than ending when the model makes no tool
+  call (2609.08589); self-reports overstated top-100 success 4.8x to 9.3x (2609.00652).
+- Audit the tool layer, not only the agent: 91 silent failures were confirmed across 15 tools, 7 of
+  which failed on more than 50% of test cases (2609.26836). A green tool result is a claim; re-read the
+  state it should have changed.
+- On failed or suspicious runs, add a step-level judge: outcome-only judging caught 84% of loud injected
+  faults but 45% of silent ones, with 33% false alarms on clean runs (2609.00038). Calibrate the judge on
+  50 to 100 labeled runs of your own agent first; a three-LLM ensemble reached kappa 0.432 against
+  humans (2604.16706).
+- Use failure attribution to pick where to look, not to trigger a rollback. Agent-level blame was right
+  about 80% in-domain (2608.28264), exact-step blame only 24.1% on real long runs (2608.15242) and
+  42.73% for the best structured judge (2604.17658); humans agree on the exact step only 39.5% of the
+  time.
+- Early-stop only on a detector fitted to your own traces. The best result saved 26.3% of tokens at 92%
+  precision, on small open models in a toy web environment, and transferred only partly (2611.04142).
+  HALT and entropy stoppers stop converged loops, not doomed ones (2608.02009, 2606.27009).
 
 Why: most failures are silent. In 20,574 real coding-agent sessions, only 9.33% of misalignment episodes
 were visibly resolved, and 91.49% of those needed a developer to push back (2605.29442). Step-level
-checking caught 0.89 of failures against 0.41 for judging the final output (2604.23581). A loop breaker
-cut wasted steps from 4.9% to 2.8% for a loop-prone model (2604.21375).
+checking caught 0.89 of failures against 0.41 for judging the final output (2604.23581; three workflows,
+450 cases, one GPT-4o judge). A loop breaker cut wasted steps from 4.9% to 2.8% for a loop-prone model
+(2604.21375).
 
 ## Step 2: route by failure class
 
@@ -63,4 +82,6 @@ recovery patterns is stated as untested hypotheses (2603.13417).
 
 - No matched-cost comparison of these moves; no success-versus-attempts curve for agents.
 - No measured cheap-to-strong model cascades on agent tasks; no human-escalation numbers.
-- No loop-detector precision for coding agents; no compensation for external side effects.
+- No compensation for external side effects.
+- No false-success-claim rate or loop-detector false-positive rate for coding agents; no
+  attribution-accuracy-by-length curve; no step-level judge vs unit-test head-to-head.

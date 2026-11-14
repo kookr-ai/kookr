@@ -2,7 +2,7 @@
 
 Use when: deciding where a deployed agent's ongoing learning lives (memory, skills, prompt or weights) and
 how to keep each learned change from regressing earlier tasks, including before fine-tuning a worker on its
-own runs.
+own runs or writing new knowledge into weights instead of context.
 
 Learning outside the weights is the cheap, reversible default, but not free of forgetting: in the one paper
 measuring it on three self-modifying harness methods, more plasticity (learning new tasks) came with less
@@ -41,6 +41,25 @@ self-evolution](../../agent-evaluation/references/agent-self-evolution.md).
 8. **RL retains more of the base circuit than SFT but adapts slower.** Circuit retention was 72.5% against
    59.0% on one 3B model and one task; old-task scores were not reported (2605.28860). An RL-initialised 8B
    model collapsed to about 0% on a second task (2605.12484), so also test plasticity on the next task.
+9. **Keep knowledge (facts, not skills) in context or retrieval by default;** a closed-weight model has
+   nothing to write to. Keep project facts in a versioned file or retrieval store, and re-derive facts that
+   change from the source of truth at task start (in the author's runs a checkout 116 commits behind and a
+   stale wrapper that hid a merge gate were both fixed by reading the fetched default branch, not by changing
+   the model; stale-memory rejection: [memory policy](agent-memory-policy.md) rule 5). Move knowledge into
+   weights only when it is stable, heavily reused and its prompt tokens are the cost. Weight-written facts
+   are brittle: tool descriptions moved into a LoRA cut input 82.6% but kept only 61.3-79.8% of general
+   multiple-choice accuracy (2605.17774); facts stored under one query template scored 91-100% on the same
+   queries and 42-100% on others (2510.08734); against a strong prior, deep-conflict accuracy was 46.4% and
+   53.6% on two models (2604.23750, one benchmark). The simple baseline is often enough: retrieval-style
+   memory used 658 prompt tokens against 23,265 (2510.23730), and a compiled skill file on a frozen Claude
+   model answered 20/20 where BM25 got 15-17 (2609.00453).
+10. **If you update weights at test time or after, mix in self-distilled targets and treat the update as a
+   release:** gate it as in rule 1 and on the side effects in [cheap-worker
+   adaptation](cheap-worker-adaptation.md) Step 5. Plain SFT knowledge injection kept 1% of held-out
+   capability, a self-distillation mix up to 100%, though SimpleQA train accuracy was only 10.5%
+   (2605.16865). Test-time training gained +5.0 points on ALFWorld (50.7 to 55.7) and +4.9 on SWE-bench Lite
+   (57.8 to 62.7) at 1.9x wall-clock, and needed a repetition-aware loss because naive online updates amplify
+   drift (2607.03441). A post-training update dropped IFEval from 0.743 to 0.684 on LLaMA-3.1-8B (2605.30021).
 
 Caveats: "forgets less" LoRA claims use different baselines (HiP-LoRA 12.3 to 4.9 points of
 retained-capability loss on one 8B model, 2604.17751; JumpLoRA BWT -22.9 to -11.9 against incremental LoRA,
@@ -53,3 +72,7 @@ short-term gain raises later forgetting (2605.30537). For the safety risk of ben
 - No paired LoRA-versus-full forgetting numbers; no old-task scores for RL versus SFT on one model.
 - No memory-only versus weights-only versus both comparison at matched cost; no store-size sweep over time.
 - No comparison of retirement and cap policies.
+- No weight versus context versus retrieval comparison on one recall set; no cost figure for gating a weight
+  update; no frozen-model-plus-same-memory baseline for agent test-time training.
+- No collapse count for ROME/MEMIT-style sequential weight edits (the 5,000-edit result, 2604.19089, uses a
+  method that does not change weights).

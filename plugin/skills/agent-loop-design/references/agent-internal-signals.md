@@ -12,7 +12,8 @@ intervention test supports them.
 
 1. **Check access first.** Probes, steering and SAE features need activations; a hosted Claude-class
    model exposes none. For those agents use output-level checks only: tests, a fresh-context verifier,
-   live output text. Reach for internal signals only for open-weight models you host.
+   live output text ([closed-model agent monitoring](closed-model-agent-monitoring.md)). Reach for
+   internal signals only for open-weight models you host.
 2. **Do not gate on probe accuracy alone.** Run an intervention test: ablate, patch or steer along the
    direction and check that behavior changes as predicted, with a random-direction control. If injecting
    the direction moves behavior but removing it does not, the direction is a correlate.
@@ -32,7 +33,8 @@ intervention test supports them.
 7. **Keep an output-level check as the tiebreaker.** Never let a probe alone kill, accept or merge work.
    But no surveyed study compares probes with output checks on one agent task, so don't assume output
    checks suffice. Reasoning-text monitors are weak too: [latent vs
-   text](latent-vs-text-agent-design.md) rule 6.
+   text](latent-vs-text-agent-design.md) rule 6 and [closed-model agent
+   monitoring](closed-model-agent-monitoring.md).
 8. **Validate any detector on real captured runs; synthetic tests passing is not done.** In local runs a
    pane-state detector passed all synthetic fixtures and failed on live raw bytes, and a reaper killed a
    finished session. Silence timers, heartbeats and a lone `completion_ready` signal gave false stalls;

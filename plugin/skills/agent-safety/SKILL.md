@@ -20,7 +20,7 @@ keeping tool-using agents from doing harm. Read only the guide that matches the 
 
 | Decision you face | Read |
 |---|---|
-| An agent reads issues, PRs, web pages, tool/MCP output or memory that may carry injected instructions; you are installing a skill or MCP server, storing lessons, hardening a CI agent workflow, or choosing between a guard model and a structural control | [references/untrusted-content-defense.md](references/untrusted-content-defense.md) |
+| An agent reads issues, PRs, web pages, tool/MCP output or memory that may carry injected instructions; you are installing a skill or MCP server, storing lessons, hardening a CI agent workflow, choosing between a guard model and a structural control, or passing untrusted content and credentials between lead and worker agents | [references/untrusted-content-defense.md](references/untrusted-content-defense.md) |
 | Giving an agent a shell or credentials with no attacker involved: choosing a harness, sandbox or permission policy, brokering secrets, writing a pre-tool gate, adding a monitor, or stopping test or grader tampering | [references/agent-action-containment.md](references/agent-action-containment.md) |
 | About to delete, force-push, kill, send, merge or change shared state; deciding whether a dry run can be trusted; or building lookahead, simulation or tree search into an agent loop | [references/predict-before-acting.md](references/predict-before-acting.md) |
 

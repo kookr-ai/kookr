@@ -28,11 +28,22 @@ Most numbers below come from one benchmark each: treat them as orders of magnitu
    test fails on a known-bad version and passes on a known-good one before it can fail the gate.
 5. **For what cannot be run, use one strong judge with a binary rubric.**
    - Do not buy a panel of clones: nine judges were worth about 2.18 independent votes and the best single
-     judge matched the panel (2605.29800).
-   - Decompose into yes/no criteria. A structured rubric cut self-preference 31.5% on average (2604.22891).
-   - Swap order for pairwise comparisons, but measure it: swapping hurt on one benchmark (2604.23178).
-   - Expect style to matter more than position: style bias was 0.76 to 0.92, position at most 0.04
-     (2604.23178).
+     judge matched the panel (2605.29800). If you add a judge, run one from a different family on a sample.
+     Rule 3 found the opposite for fault-finding verifiers (same-model fresh context beat another vendor),
+     so the two results disagree on whether family diversity pays.
+   - Decompose into 5 to 12 yes/no criteria, each observable in the output, written by an expert, one call
+     per criterion. A rubric judge reached kappa 0.788 against 0.508 for a holistic trajectory judge
+     (2604.24964); expert rubrics beat LLM-written ones, kappa 0.60 against 0.46 (2603.22744); a structured
+     rubric cut self-preference 31.5% on average (2604.22891). Neither kappa result is a controlled ablation
+     and one study found analytic rubrics not consistently better than holistic ones (2605.06283), so the gain
+     likely comes from binary observable criteria.
+   - Have the judge quote evidence before it answers; do not assume chain of thought helps. It amplified bias
+     under reference conflict (2601.07506) and raised false positives under attack (rule 7).
+   - Check the reference before blaming the judge: GPT-4o fell from 96.5% to 59.3% when references were
+     swapped to wrong answers (2601.07506).
+   - For pairwise judging, run both orders and count disagreement as a tie, but test it first: swapping cost
+     2.5 to 7.0 points on LLMBar, where position bias was at most 0.04 and style bias 0.76 to 0.92
+     (2604.23178). Expect style to matter more than position.
 6. **Know the judge's biases.** Mean pairwise kappa between judges on a coding-collaboration benchmark was
    0.1592 (2604.27727). 6 of 20 judges were both accurate and significantly self-preferring (2604.22891).
    Judge choice moved scores more than the system under test (2606.12924).
@@ -58,7 +69,16 @@ Most numbers below come from one benchmark each: treat them as orders of magnitu
 12. **Calibrate on a sample before a judge gates anything.** Judge-human correlation was about 0.27 to 0.32 on
     subjective rubrics (2606.03043); one single-vendor step-level study reached kappa 0.84 (2604.23581).
     Trajectory judges fell below chance on traces over 32K tokens (best judge 69.96%) (2604.08178). Measure
-    on your own outputs.
+    on your own outputs:
+    - Per criterion, not in aggregate: aggregate kappa 0.7168 hid one criterion at 0.2022 (2604.25224);
+      model-level Spearman 0.99 coexisted with sample-level Pearson 0.72 (2603.11027).
+    - Against the human-human ceiling, measured first: kappa 0.87 for humans vs 0.84 for the judge
+      (2603.27476); the ceiling was r 0.40 on subjective rubrics (2606.03043).
+    - With planted known-bad outputs (empty, flattering, injected) that must be rejected after every judge or
+      prompt change: content-free tokens gave 80%+ false positives (2507.08794), and judge wording alone
+      moved a rate by up to 24.2 points (2604.24074).
+    - Freeze the model snapshot and prompt hash, re-run the labeled set on any change, and keep a rotating
+      human spot-check.
 13. **Do not expect step-level (process) verifiers to transform results.** In one study, best-of-8 with a
     reasoning evaluator averaged 52.0% vs 50.6% for direct evaluators at best-of-64, an unmatched compute
     comparison (2503.19877). Other process-verifier gains reviewed were also a few points. No
@@ -68,4 +88,9 @@ Most numbers below come from one benchmark each: treat them as orders of magnitu
 
 No measured false-reject rate for execution checks; no judge-vs-test comparison on the same patches; no
 matched-compute process-vs-outcome test on software agents; no measurement of cheap-first verifier cascades or
-of generator-judge collusion; no measured rate of rubber-stamp reviews. Do not claim numbers for these.
+of generator-judge collusion; no measured rate of rubber-stamp reviews; no label count needed to validate a
+judge, no confidence interval on judge-human kappa, no same-task comparison of pointwise, pairwise and
+reference-guided judging, and no results on scale granularity, judge version drift or re-validation
+cadence. Do not claim numbers for these. Arithmetic, not a study: at 100 labels a measured 90% accuracy
+has a 95% interval of about 83% to 94%, so 100 labels detect a broken criterion but not a 5-point
+difference between two judges.
