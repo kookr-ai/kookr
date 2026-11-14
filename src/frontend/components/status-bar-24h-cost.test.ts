@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * Usage-summary rolling-24h agent-spend chip (issue #3096). Covers the formatter

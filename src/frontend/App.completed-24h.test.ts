@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * App wiring for the 24-hour completed-task chip (issues #2618, #3333).

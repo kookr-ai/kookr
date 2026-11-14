@@ -389,11 +389,52 @@ if [ "$DOCS_ONLY_SKIP" -eq 1 ]; then
   echo "Docs-only prose diff detected; skipping Vitest lanes."
 else
   echo "Running tests..."
-  if ! pnpm test; then
+  # Flake handling: when only a few files fail, re-run just those files once
+  # instead of making the agent push again and pay for the whole suite. A file
+  # that passes on the re-run is a flake: the push proceeds, the hook says so
+  # loudly, and the file is appended to a log shared by every worktree
+  # (<git-common-dir>/kookr-flaky-tests.log) so the flake gets fixed rather
+  # than retried forever. A file that fails again rejects the push as before,
+  # and so does a run with unhandled errors or a crashed worker, which a file
+  # re-run cannot clear (scripts/flaky-rerun-files.mjs lists every case).
+  _FLAKY_HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P) || _FLAKY_HOOK_DIR=""
+  FLAKY_HELPER="$_FLAKY_HOOK_DIR/../scripts/flaky-rerun-files.mjs"
+  [ -f "$FLAKY_HELPER" ] || FLAKY_HELPER="$REPO_ROOT/scripts/flaky-rerun-files.mjs"
+  VITEST_REPORT=$(mktemp "${TMPDIR:-/tmp}/kookr-pre-push-vitest.XXXXXX")
+  if ! VITEST_RERUN_SUMMARY_FILE="$VITEST_REPORT" pnpm test; then
+    RERUN_FILES=""
+    if [ -f "$FLAKY_HELPER" ]; then
+      RERUN_FILES=$(node "$FLAKY_HELPER" "$VITEST_REPORT" --max-files 5) || RERUN_FILES=""
+    fi
+    rm -f "$VITEST_REPORT"
+    if [ -z "$RERUN_FILES" ]; then
+      echo ""
+      echo "Push rejected: tests failed. Fix failing tests before pushing."
+      exit 1
+    fi
+    set --
+    while IFS= read -r rerun_file; do
+      [ -n "$rerun_file" ] && set -- "$@" "$rerun_file"
+    done <<EOF
+$RERUN_FILES
+EOF
     echo ""
-    echo "Push rejected: tests failed. Fix failing tests before pushing."
-    exit 1
+    echo "[pre-push] $# test file(s) failed; re-running only those once to tell a flake from a real failure:"
+    printf '  %s\n' "$@"
+    if ! pnpm exec vitest run "$@"; then
+      echo ""
+      echo "Push rejected: tests failed again on re-run. Fix failing tests before pushing."
+      exit 1
+    fi
+    FLAKY_LOG="$(git rev-parse --git-common-dir 2>/dev/null)/kookr-flaky-tests.log"
+    for rerun_file in "$@"; do
+      printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)" "$HEAD_SHA" "$rerun_file" >> "$FLAKY_LOG" 2>/dev/null || true
+    done
+    echo ""
+    echo "[pre-push] FLAKY: the file(s) above failed in the full run and passed on re-run."
+    echo "[pre-push] Continuing the push. Logged to $FLAKY_LOG — please fix these flakes."
   fi
+  rm -f "$VITEST_REPORT"
 
   echo "Running self-contained integration tests..."
   if ! pnpm test:integration; then

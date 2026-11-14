@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * Usage-summary 24h completed-task chip click-through (issue #3333). The visible

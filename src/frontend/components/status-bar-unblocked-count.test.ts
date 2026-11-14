@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * Status-bar 24-hour unblocked-finding count (issue #2609). Reuses the

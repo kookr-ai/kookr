@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * FindingsPanel Healthy-rail expand + scroll (issue #3406). App bumps

@@ -5,7 +5,9 @@
 #   . "$REPO_ROOT/scripts/lib/probe-codex-plugin-dir.sh"
 #   probe_codex_plugin_dir [--ignore-exported] [--base-environ FILE] [ENV_FILE ...]
 #   # Sets: PROBE_RESULT in {ok, missing-flag, not-installed}
-#   #       PROBE_TIMED_OUT (1 if --help hit the 5s timeout; otherwise unset)
+#   #       PROBE_TIMED_OUT (1 if --help hit the timeout; otherwise unset)
+#   # Reads: PROBE_HELP_TIMEOUT_SECS (optional; the --help budget, default 5.
+#   #        Only the test harness lowers it, so hang cases finish quickly.)
 #   #       PROBE_CODEX_BIN (resolved binary path or PATH-resolvable name)
 #
 # Which binary is probed: the one the Kookr server will actually launch. The
@@ -207,14 +209,21 @@ probe_codex_plugin_dir() {
     return 0
   fi
 
-  # 5-second timeout matches the TS adapter's 2s bound plus headroom for
+  # The default 5-second timeout matches the TS adapter's 2s bound plus headroom for
   # cold-start cargo/node startup. The runner returns 124 on hit. Bracket the
   # call with set +e/set -e so we capture the real exit code under callers
   # that run with errexit (prod-restart.sh) — `|| true` would swallow it.
   local help_output timeout_status prev_e
   case $- in *e*) prev_e=1 ;; *) prev_e=0 ;; esac
   set +e
-  help_output="$(_probe_run_with_timeout 5 "$PROBE_CODEX_BIN" --help 2>/dev/null)"
+  # A non-positive or non-numeric override would disable the bound (`timeout
+  # 0` and `alarm 0` mean "no limit"), so anything but a positive integer
+  # falls back to the default.
+  local help_timeout="${PROBE_HELP_TIMEOUT_SECS:-5}"
+  case "$help_timeout" in
+    ''|*[!0-9]*|0*) help_timeout=5 ;;
+  esac
+  help_output="$(_probe_run_with_timeout "$help_timeout" "$PROBE_CODEX_BIN" --help 2>/dev/null)"
   timeout_status=$?
   [ "$prev_e" -eq 1 ] && set -e
 

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 import { describe, test, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   LAUNCH_TASK_DIALOG_DRAFT_KEY,

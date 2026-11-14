@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * FindingsPanel Completed-rail expand + scroll (issue #3333). App bumps

@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest';
 // contract under test is shell behaviour (errexit safety, PATH lookup, dotenv
 // parsing). This wrapper runs that harness in `pnpm test` so a regression
 // fails the suite instead of waiting for someone to run it by hand.
-// The harness deliberately waits out two 5-second `--help` hangs (with and
-// without GNU `timeout`), so it needs more than vitest's default budget.
+// The harness waits out two `--help` hangs (with and without GNU `timeout`)
+// at a 1-second probe budget, so it keeps a budget above vitest's default.
 const HARNESS_TIMEOUT_MS = 60_000;
 
 describe('probe-codex-plugin-dir.sh', () => {

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 import React, { useState } from 'react';
 import { afterEach, describe, expect, test, vi } from 'vitest';

@@ -258,7 +258,55 @@ async function isExecutable(p: string): Promise<boolean> {
   }
 }
 
-function hashFileSha256(p: string): Promise<string> {
+/**
+ * In-process SHA-256 cache keyed by the file's on-disk identity. Agent binaries
+ * are large (the Grok build is ~240 MB, ~0.9 s to hash), and identity is
+ * re-resolved on every server boot and before every Grok launch. A write(),
+ * truncate, rename-over or replacement changes the inode or ctime, and ctime
+ * cannot be set from userland, so an installer or auto-update always forces a
+ * re-hash. (A process writing through a shared memory mapping can change bytes
+ * without updating ctime; the hash is advisory build qualification, not an
+ * integrity check, so that case is accepted.)
+ *
+ * Kernel file timestamps are coarse (a few ms), so a second write landing in
+ * the same tick as the first would keep the same ctime. Like git's "racily
+ * clean" rule, a file changed within the last few seconds is hashed but never
+ * cached; only a settled file is trusted by its stat identity.
+ */
+export interface CachedFileHasherOptions {
+  /** Hashes the file's bytes (defaults to a streaming SHA-256). */
+  hashUncached?: (p: string) => Promise<string>;
+  /** Wall clock in ms (defaults to Date.now). */
+  now?: () => number;
+  /** A file whose ctime is younger than this is never cached. */
+  settleMs?: number;
+  maxEntries?: number;
+}
+
+/** Build a file hasher that reuses a result while the file's identity is unchanged. */
+export function createCachedFileHasher(opts: CachedFileHasherOptions = {}): (p: string) => Promise<string> {
+  const hashUncached = opts.hashUncached ?? hashFileSha256Uncached;
+  const now = opts.now ?? Date.now;
+  const settleMs = opts.settleMs ?? 2_000;
+  const maxEntries = opts.maxEntries ?? 32;
+  const byIdentity = new Map<string, Promise<string>>();
+  return async (p) => {
+    const s = await stat(p, { bigint: true });
+    const key = `${p}\0${s.dev}\0${s.ino}\0${s.size}\0${s.mtimeNs}\0${s.ctimeNs}`;
+    const cached = byIdentity.get(key);
+    if (cached) return cached;
+    const pending = hashUncached(p);
+    if (now() - Number(s.ctimeMs) < settleMs) return pending;
+    if (byIdentity.size >= maxEntries) byIdentity.clear();
+    byIdentity.set(key, pending);
+    pending.catch(() => byIdentity.delete(key));
+    return pending;
+  };
+}
+
+const hashFileSha256 = createCachedFileHasher();
+
+export function hashFileSha256Uncached(p: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const hash = createHash('sha256');
     const stream = createReadStream(p);

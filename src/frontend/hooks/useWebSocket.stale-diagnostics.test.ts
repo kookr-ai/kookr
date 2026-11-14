@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * AC6 of issue #1078: ignored stale-socket events must surface as *bounded,

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * System-detail live skip / snooze chip (issue #2596). Fetch is stubbed in

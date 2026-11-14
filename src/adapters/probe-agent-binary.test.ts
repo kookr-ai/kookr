@@ -1,6 +1,13 @@
-import { describe, test, expect } from 'vitest';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, test, expect } from 'vitest';
 import {
+  createCachedFileHasher,
+  hashFileSha256Uncached,
   probeAgentBinary,
+  resolveInstalledBinaryIdentity,
   UNKNOWN_VERSION,
   DEFAULT_PROBE_TIMEOUT_MS,
   DEFAULT_VERSION_PROBE_TIMEOUT_MS,
@@ -159,5 +166,121 @@ describe('probeAgentBinary', () => {
       { args: '--version', timeout: 750 },
       { args: '--help', timeout: 500 },
     ]);
+  });
+});
+
+describe('resolveInstalledBinaryIdentity real-file hashing', () => {
+  const sha = (b: string) => createHash('sha256').update(b).digest('hex');
+
+  test('re-hashes when the file is rewritten in place or replaced, even at the same size', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-identity-hash-'));
+    try {
+      const bin = join(dir, 'agent');
+      writeFileSync(bin, 'AAAA', { mode: 0o755 });
+      const first = await resolveInstalledBinaryIdentity(bin);
+      expect(first.kind === 'ok' && first.identity.sha256).toBe(sha('AAAA'));
+      // Unchanged file: same answer.
+      const again = await resolveInstalledBinaryIdentity(bin);
+      expect(again.kind === 'ok' && again.identity.sha256).toBe(sha('AAAA'));
+
+      // Same-size in-place rewrite. (These files are younger than the cache's
+      // settle window, so this checks end-to-end results only; cache hits and
+      // misses are pinned in the createCachedFileHasher tests below.)
+      writeFileSync(bin, 'BBBB');
+      const rewritten = await resolveInstalledBinaryIdentity(bin);
+      expect(rewritten.kind === 'ok' && rewritten.identity.sha256).toBe(sha('BBBB'));
+
+      // Rename-over replacement changes the inode.
+      const staged = join(dir, 'agent.new');
+      writeFileSync(staged, 'CCCC', { mode: 0o755 });
+      renameSync(staged, bin);
+      const replaced = await resolveInstalledBinaryIdentity(bin);
+      expect(replaced.kind === 'ok' && replaced.identity.sha256).toBe(sha('CCCC'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('createCachedFileHasher', () => {
+  const dirs: string[] = [];
+  function tempFile(content: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-hash-cache-'));
+    dirs.push(dir);
+    const p = join(dir, 'agent');
+    writeFileSync(p, content);
+    return p;
+  }
+  /** A hasher whose clock sits `ageMs` after the file's current ctime. */
+  function hasherAt(p: string, ageMs: number) {
+    const calls: string[] = [];
+    let clock = statSync(p).ctimeMs + ageMs;
+    const hash = createCachedFileHasher({
+      now: () => clock,
+      hashUncached: async (file) => {
+        calls.push(file);
+        return hashFileSha256Uncached(file);
+      },
+    });
+    return { hash, calls, setClock: (ms: number) => { clock = ms; } };
+  }
+  const sha = (b: string) => createHash('sha256').update(b).digest('hex');
+
+  afterEach(() => {
+    while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  });
+
+  test('a settled, unchanged file is hashed once', async () => {
+    const p = tempFile('AAAA');
+    const h = hasherAt(p, 10_000);
+    expect(await h.hash(p)).toBe(sha('AAAA'));
+    expect(await h.hash(p)).toBe(sha('AAAA'));
+    expect(h.calls).toHaveLength(1);
+  });
+
+  test('a same-size in-place rewrite misses the cache', async () => {
+    const p = tempFile('AAAA');
+    const h = hasherAt(p, 10_000);
+    await h.hash(p);
+    await new Promise((r) => setTimeout(r, 20)); // step past the coarse ctime tick
+    writeFileSync(p, 'BBBB');
+    h.setClock(statSync(p).ctimeMs + 10_000);
+    expect(await h.hash(p)).toBe(sha('BBBB'));
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test('a rename-over replacement misses the cache', async () => {
+    const p = tempFile('AAAA');
+    const h = hasherAt(p, 10_000);
+    await h.hash(p);
+    const staged = `${p}.new`;
+    writeFileSync(staged, 'CCCC');
+    renameSync(staged, p);
+    h.setClock(statSync(p).ctimeMs + 10_000);
+    expect(await h.hash(p)).toBe(sha('CCCC'));
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test('a file changed within the settle window is re-hashed every time', async () => {
+    const p = tempFile('AAAA');
+    const h = hasherAt(p, 500);
+    await h.hash(p);
+    await h.hash(p);
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test('a failed hash is not cached', async () => {
+    const p = tempFile('AAAA');
+    let fail = true;
+    const hash = createCachedFileHasher({
+      now: () => statSync(p).ctimeMs + 10_000,
+      hashUncached: async (file) => {
+        if (fail) throw new Error('read failed');
+        return hashFileSha256Uncached(file);
+      },
+    });
+    await expect(hash(p)).rejects.toThrow('read failed');
+    fail = false;
+    expect(await hash(p)).toBe(sha('AAAA'));
   });
 });

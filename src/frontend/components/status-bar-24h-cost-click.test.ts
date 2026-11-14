@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * Usage-summary 24h cost chip click-through (issue #3335). The visible chip

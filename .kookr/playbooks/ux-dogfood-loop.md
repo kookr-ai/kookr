@@ -153,7 +153,8 @@ push the RFC branch and/or proceed to implementation.
    `pnpm install --prefer-offline` in each (the pnpm store makes this fast).
 3. **Parallel implementation subagents**, one per cluster, each instructed to:
    read the actual files first (mapped line numbers drift), follow existing
-   test conventions (Vitest; frontend uses `// @vitest-environment jsdom`),
+   test conventions (Vitest; frontend uses `// @vitest-environment happy-dom`,
+   or `jsdom` only when a test needs jsdom-specific behavior),
    add regression tests, run targeted `pnpm exec vitest run <files>` plus the
    repo typecheck, commit conventionally, and **not push**.
 4. Review each agent's diff and test results yourself before reporting.

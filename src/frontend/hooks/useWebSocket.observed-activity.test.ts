@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * hermes-fleet#15 slice 2: the `observed.snapshot` WebSocket frame must route to

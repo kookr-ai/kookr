@@ -43,11 +43,13 @@ esac
 EOF
 chmod +x "$TMPDIR/codex-fork"
 
-# Hanging codex: --help sleeps past the 5s probe budget.
+# Hanging codex: --help sleeps past the probe budget. `exec` makes the sleep
+# the process the timeout kills; a forked sleep would outlive its killed
+# parent and hold the probe's output pipe open for the full 10 s.
 cat > "$TMPDIR/codex-slow" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-  --help) sleep 10 ;;
+  --help) exec sleep 10 ;;
   *)      echo "codex slow 0.0.0" ;;
 esac
 EOF
@@ -109,7 +111,12 @@ run_case "fork — codex with --plugin-dir" "$TMPDIR/codex-fork"
 assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
 assert_eq "PROBE_TIMED_OUT (unset)" "" "${PROBE_TIMED_OUT:-}"
 
+# The hang cases wait out the probe budget, so they alone shorten it from the
+# default 5 s: the contract under test is "a hang is bounded", not the exact
+# budget, and healthy stubs keep the full budget on a loaded host.
+PROBE_HELP_TIMEOUT_SECS=1
 run_case "timeout — codex --help hangs" "$TMPDIR/codex-slow"
+unset PROBE_HELP_TIMEOUT_SECS
 assert_eq "PROBE_RESULT" "not-installed" "${PROBE_RESULT:-<unset>}"
 assert_eq "PROBE_TIMED_OUT" "1" "${PROBE_TIMED_OUT:-<unset>}"
 
@@ -141,7 +148,9 @@ run_case "no timeout/gtimeout on PATH — fork still detected" "$TMPDIR/codex-fo
 PATH="$SAVED_PATH"
 assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
 PATH="$NO_TIMEOUT_BIN"
+PROBE_HELP_TIMEOUT_SECS=1
 run_case "no timeout/gtimeout on PATH — hang still bounded" "$TMPDIR/codex-slow"
+unset PROBE_HELP_TIMEOUT_SECS
 PATH="$SAVED_PATH"
 assert_eq "PROBE_RESULT" "not-installed" "${PROBE_RESULT:-<unset>}"
 assert_eq "PROBE_TIMED_OUT" "1" "${PROBE_TIMED_OUT:-<unset>}"

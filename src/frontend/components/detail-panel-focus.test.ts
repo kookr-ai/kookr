@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 import { describe, expect, test } from 'vitest';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';

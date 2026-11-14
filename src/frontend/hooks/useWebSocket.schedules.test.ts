@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 /**
  * Issue #2818: the two WebSocket schedule-refresh lifecycle points (first

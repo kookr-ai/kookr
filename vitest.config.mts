@@ -1,7 +1,16 @@
 import { defineConfig } from 'vitest/config';
 
+// The pre-push hook sets this to get a run summary (failed files, unhandled
+// errors, unfinished files) so it can re-run only the failed files once to
+// tell a flake from a real failure (test/rerun-gate.reporter.mjs,
+// scripts/flaky-rerun-files.mjs). Unset, the reporters stay Vitest's default.
+const rerunSummaryFile = process.env.VITEST_RERUN_SUMMARY_FILE;
+
 export default defineConfig({
   test: {
+    ...(rerunSummaryFile
+      ? { reporters: ['default', ['./test/rerun-gate.reporter.mjs', { outputFile: rerunSummaryFile }]] }
+      : {}),
     // Agent suites share the host with the supervisor and desktop. Bound each
     // run rather than letting every agent allocate workers for the whole CPU.
     maxWorkers: 4,
@@ -39,7 +48,8 @@ export default defineConfig({
     setupFiles: ['./test/_poisoner-probe.setup.ts'],
     // Scrub ambient KOOKR_*/CLAUDE_*/ANTHROPIC_* so local (live daemon) == CI.
     // Allowlist lives in test/setup-env.ts and mirrors `env` below. See #1372.
-    setupFiles: ['./test/setup-env.ts'],
+    // happy-dom-offline: happy-dom files get no real network (see the file).
+    setupFiles: ['./test/setup-env.ts', './test/happy-dom-offline.setup.ts'],
     env: {
       // Claude Code launches submit the prompt via bracketed paste so the
       // trailing Enter is parsed as a keystroke (see
