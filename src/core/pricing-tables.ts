@@ -36,6 +36,13 @@ export interface ModelPricing {
  *   https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
  * Each row's `lastVerified` field records its own verification date.
  *
+ * Rows hold the CURRENT published rate, with no date-split history. Cost is
+ * recomputed from transcripts, so correcting a row also reprices past
+ * sessions that ran under the old rate. This is accepted on purpose: one
+ * rate per model keeps lookup simple, and a stale row misprices every new
+ * session. The claude-opus-5 row (2026-08-28) and claude-opus-4-6 /
+ * claude-haiku-4-5 (2026-11-09, issue #3560) were all corrected this way.
+ *
  * OpenAI verified 2026-05-08 against
  *   https://developers.openai.com/api/docs/pricing
  *   https://developers.openai.com/codex/pricing
@@ -72,9 +79,9 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   'claude-opus-4-8':   { vendor: 'anthropic', lastVerified: '2026-07-15', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
   'claude-fable-5':    { vendor: 'anthropic', lastVerified: '2026-07-15', inputPerMTok: 10,   outputPerMTok: 50,  cacheWritePerMTok: 12.5,   cacheReadPerMTok: 1     },
   'claude-opus-4-7':   { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
-  'claude-opus-4-6':   { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 15,   outputPerMTok: 75,  cacheWritePerMTok: 18.75,  cacheReadPerMTok: 1.875 },
+  'claude-opus-4-6':   { vendor: 'anthropic', lastVerified: '2026-11-09', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.50  },
   'claude-sonnet-4-6': { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 3,    outputPerMTok: 15,  cacheWritePerMTok: 3.75,   cacheReadPerMTok: 0.30  },
-  'claude-haiku-4-5':  { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 0.80, outputPerMTok: 4,   cacheWritePerMTok: 1,      cacheReadPerMTok: 0.08  },
+  'claude-haiku-4-5':  { vendor: 'anthropic', lastVerified: '2026-11-09', inputPerMTok: 1,    outputPerMTok: 5,   cacheWritePerMTok: 1.25,   cacheReadPerMTok: 0.10  },
 
   // OpenAI — merge-gate rows (cover ≥ 99% of author's rollouts)
   'gpt-5.3-codex':     { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 1.75, outputPerMTok: 14,   cacheWritePerMTok: 0, cacheReadPerMTok: 0.175 },

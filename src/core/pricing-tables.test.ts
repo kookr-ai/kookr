@@ -84,6 +84,17 @@ describe('lookupPricing — strict exact-match', () => {
     });
   });
 
+  test('uses current published rates for legacy Opus 4.6 and Haiku 4.5 (issue #3560)', () => {
+    // These rows were stale for months (Opus 4.6 at the old $15/$75 Opus-4
+    // rate, Haiku 4.5 at the Haiku 3.5 rate). Pin the corrected values.
+    expect(lookupPricing('claude-opus-4-6')).toMatchObject({
+      inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.50,
+    });
+    expect(lookupPricing('claude-haiku-4-5')).toMatchObject({
+      inputPerMTok: 1, outputPerMTok: 5, cacheWritePerMTok: 1.25, cacheReadPerMTok: 0.10,
+    });
+  });
+
   test('returns null for unknown model (no prefix-match fallback)', () => {
     expect(lookupPricing('claude-opus-99')).toBeNull();
     expect(lookupPricing('gpt-7')).toBeNull();
