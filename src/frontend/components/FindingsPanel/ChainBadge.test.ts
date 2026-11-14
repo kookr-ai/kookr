@@ -26,6 +26,13 @@ describe('chainBadgeLabel', () => {
     expect(isActiveChainTip({ ...base, successorTaskId: 'next' })).toBe(false);
   });
 
+  it('phrases the bounds naturally for each kind of chain', () => {
+    expect(chainBadgeTitle({ ...base, maxIterations: 10 })).toContain('Runs for 10 iterations.');
+    expect(chainBadgeTitle({ ...base, deadlineAt: '2026-11-14T22:00:00.000Z' })).toMatch(/Runs until .+\./);
+    expect(chainBadgeTitle({ ...base, deadlineAt: '2026-11-14T22:00:00.000Z' })).not.toContain('Runs for until');
+    expect(chainBadgeTitle({ ...base, maxIterations: 10, deadlineAt: '2026-11-14T22:00:00.000Z' })).toMatch(/Runs for 10 iterations or until .+, whichever comes first\./);
+  });
+
   it('explains the contract and the end detail in the tooltip', () => {
     expect(chainBadgeTitle({ ...base, maxIterations: 10 })).toContain('Kookr launches the next iteration when this task completes.');
     expect(chainBadgeTitle({ ...base, ended: { at: '', reason: 'runaway', detail: '3 unhealthy iterations in a row' } })).toContain('3 unhealthy iterations in a row');

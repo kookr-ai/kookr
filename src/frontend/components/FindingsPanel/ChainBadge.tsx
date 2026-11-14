@@ -52,10 +52,14 @@ export function chainBadgeLabel(chain: TaskChainState, nowMs: number): string {
 
 export function chainBadgeTitle(chain: TaskChainState): string {
   const lines = [`Playbook chain — iteration ${chain.iteration}`];
-  const bounds: string[] = [];
-  if (chain.maxIterations !== undefined) bounds.push(`${chain.maxIterations} iterations`);
-  if (chain.deadlineAt) bounds.push(`until ${new Date(chain.deadlineAt).toLocaleString()}`);
-  if (bounds.length > 0) lines.push(`Runs for ${bounds.join(' or ')}, whichever comes first.`);
+  const until = chain.deadlineAt ? `until ${new Date(chain.deadlineAt).toLocaleString()}` : undefined;
+  if (chain.maxIterations !== undefined && until) {
+    lines.push(`Runs for ${chain.maxIterations} iterations or ${until}, whichever comes first.`);
+  } else if (chain.maxIterations !== undefined) {
+    lines.push(`Runs for ${chain.maxIterations} iterations.`);
+  } else if (until) {
+    lines.push(`Runs ${until}.`);
+  }
   if (chain.ended) {
     lines.push(`Ended: ${END_LABELS[chain.ended.reason]}${chain.ended.detail ? ` — ${chain.ended.detail}` : ''}`);
   } else if (chain.successorTaskId) {
