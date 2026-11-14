@@ -125,12 +125,20 @@ export const spawnInitProbe: InitProbe = (bin, args, { timeoutMs }) =>
   new Promise((resolvePromise) => {
     let settled = false;
     let buffer = '';
-    const child = spawn(bin, args, { cwd: tmpdir(), stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+    // stderr is discarded: an unread pipe could fill and stall the child before init.
+    const child = spawn(bin, args, { cwd: tmpdir(), stdio: ['ignore', 'pipe', 'ignore'], env: process.env });
     const finish = (result: { init: ClaudeInitMessage } | { init: null; error: string }): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (child.exitCode === null) child.kill('SIGTERM');
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM');
+        // Escalate if it ignores SIGTERM, so a probe never outlives its check.
+        const killer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        }, 2000);
+        killer.unref?.();
+      }
       resolvePromise(result);
     };
     const timer = setTimeout(() => finish({ init: null, error: `no init message within ${timeoutMs} ms` }), timeoutMs);

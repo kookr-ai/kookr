@@ -40,6 +40,10 @@ case "$sub" in
     echo partial > "$HOME/.claude/plugins/partial-marker"
     if [ -f "$HOME/.kookr-fake/update-fail" ]; then echo "simulated update failure" >&2; exit 1; fi
     echo updated > "$HOME/.claude/plugins/updated-marker"
+    # Simulate the registry moving to a new version for the updated plugin.
+    if [ -f "$HOME/.kookr-fake/update-version" ]; then
+      printf '{"version":2,"plugins":{"%s":[{"scope":"user","version":"%s"}]}}' "$3" "$(cat "$HOME/.kookr-fake/update-version")" > "$HOME/.claude/plugins/installed_plugins.json"
+    fi
     exit 0;;
 esac
 exit 0
@@ -468,8 +472,23 @@ describe('fleet set routes (GET/PUT /api/plugins/fleet, POST /api/plugins/fleet/
       pluginMutationService: env.mutation,
       pluginFleet,
     } satisfies DeployRouteDeps);
-    return { app, checks };
+    return { app, checks, pluginFleet };
   }
+
+  it('a Kookr update through POST /api/plugins/:id/update is not reported as external', async () => {
+    env = await setup([{ id: 'a@m', version: '1.0.0', scope: 'user', enabled: true }]);
+    const { app, checks, pluginFleet } = await makeFleetApp();
+    await pluginFleet.setFleet({ 'a@m': true });
+    checks.length = 0;
+    expect(await pluginFleet.observeNow()).toBe(0); // baseline 1.0.0
+    await writeFile(join(env.home, '.kookr-fake', 'update-version'), '1.1.0');
+    await writeFile(join(env.home, '.kookr-fake', 'list.json'), JSON.stringify([{ id: 'a@m', version: '1.1.0', scope: 'user', enabled: true }]));
+    const res = await app.request('/api/plugins/a@m/update', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await pluginFleet.observeNow()).toBe(0);
+    expect((await pluginFleet.status()).externalChanges).toEqual([]);
+    expect(checks).toEqual(['plugin-update']); // a fleet plugin update re-runs the check
+  });
 
   it('answers 503 when the server has no fleet runtime', async () => {
     env = await setup([]);

@@ -185,7 +185,8 @@ export function partitionByInstalled(
 /** Shared deps for the first-spawn and replay loadout steps. */
 export interface SpawnLoadoutDeps {
   loadoutStore?: LoadoutStore;
-  taskStore: Pick<TaskStore, 'setLoadout'>;
+  /** `getTask` (optional) lets a replay re-read the record just before writing, so it never overwrites a newer field. */
+  taskStore: Pick<TaskStore, 'setLoadout'> & Partial<Pick<TaskStore, 'getTask'>>;
   /** Installed-plugins port; defaults to the registry under the server's home directory. */
   installedPlugins?: InstalledPlugins;
   /** Names of the plugins the adapter loads with `--plugin-dir` (the bundled toolkit). */
@@ -243,7 +244,8 @@ export async function replayRecordedLoadout(
       for (const s of report.skipped) {
         console.warn(`[loadout] task ${task.id} resumes with ${s.id}, which is no longer installed (${s.reason})`);
       }
-      deps.taskStore.setLoadout(task.id, { ...record, replaySkipped: report.skipped, replayedAt: nowISO() });
+      const latest = deps.taskStore.getTask?.(task.id)?.loadout ?? record;
+      deps.taskStore.setLoadout(task.id, { ...latest, replaySkipped: report.skipped, replayedAt: nowISO() });
     } catch (err) {
       console.warn(
         `[loadout] replay report failed for task ${task.id}: ${err instanceof Error ? err.message : String(err)}`,
@@ -277,10 +279,17 @@ export async function prepareSpawnLoadout(
   deps: SpawnLoadoutDeps,
   task: Task,
 ): Promise<LoadoutLaunchOptionFields> {
-  if (task.loadout) return replayRecordedLoadout(deps, task);
   const env = deps.env ?? process.env;
-  const resolution = await resolveFirstSpawn(deps, task, env);
   const autoUpdateArm = autoUpdateApplyEnabled(env);
+  if (task.loadout) {
+    // A replay depends on the recorded plugins too: with auto-update apply on,
+    // wait for an in-flight plugin update as a first spawn would.
+    return autoUpdateArm
+      ? withSpawnGate(deps.mutation, true, () => replayRecordedLoadout(deps, task),
+          deps.spawnGateTimeoutMs !== undefined ? { timeoutMs: deps.spawnGateTimeoutMs } : {})
+      : replayRecordedLoadout(deps, task);
+  }
+  const resolution = await resolveFirstSpawn(deps, task, env);
   if (!resolution && !autoUpdateArm) return {};
   return withSpawnGate(
     deps.mutation,

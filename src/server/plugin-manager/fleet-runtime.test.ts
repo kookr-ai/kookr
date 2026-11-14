@@ -79,6 +79,42 @@ describe('PluginFleetRuntime — external changes (R10), with KOOKR_PLUGIN_AUTO_
     ]);
   });
 
+  test('the fleet check (the only CLI call in the reaction) starts after the lock is released', async () => {
+    await loadoutStore.writeFleet({ 'a@m': true });
+    setVersion('a@m', '1.0.0');
+    const lockedWhenCheckStarted: boolean[] = [];
+    const rt = new PluginFleetRuntime({
+      loadoutStore,
+      check: {
+        runInBackground: () => lockedWhenCheckStarted.push(mutation.isLocked),
+        lastResult: null,
+        running: false,
+      } as unknown as FleetCheckService,
+      epochStore: { bump: async () => ++bumps },
+      autoUpdateStore,
+      mutation,
+      installedPlugins: { read: async () => registry },
+      homeDir: dir,
+      liveTasks: () => tasks,
+      env: { KOOKR_PLUGIN_LOADOUTS: '1' },
+    });
+    await rt.observeNow();
+    setVersion('a@m', '1.1.0');
+    await rt.observeNow();
+    expect(lockedWhenCheckStarted).toEqual([false]);
+  });
+
+  test('observe runs whenever loadouts are on, independent of KOOKR_PLUGIN_AUTO_UPDATE', () => {
+    const make = (env: NodeJS.ProcessEnv) =>
+      new PluginFleetRuntime({
+        loadoutStore, check: {} as FleetCheckService, epochStore: { bump: async () => 0 },
+        autoUpdateStore, mutation, homeDir: dir, liveTasks: () => [], env,
+      });
+    expect(make({ KOOKR_PLUGIN_LOADOUTS: '1' }).observeActive()).toBe(true);
+    expect(make({}).observeActive()).toBe(false);
+    expect(make({ KOOKR_PLUGIN_AUTO_UPDATE: '1' }).observeActive()).toBe(false);
+  });
+
   test('a change to a plugin outside the fleet set is logged but triggers nothing', async () => {
     setVersion('other@m', '1.0.0');
     const rt = runtime();

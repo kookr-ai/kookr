@@ -11,7 +11,7 @@ import { createSkillListingCheckProcessor } from '../event-processors/skill-list
 import type { Task } from '../../core/tasks.js';
 import type { TaskLoadoutRecord } from '../../shared/contracts/plugins.js';
 
-// Shaped like a real Claude Code transcript: the skill listing is an attachment
+// Shape copied from a Claude Code 2.1.325 transcript (content shortened): the skill listing is an attachment
 // line near the start, with namespaced names.
 const TRANSCRIPT = [
   JSON.stringify({ type: 'user', message: { content: 'hi' }, uuid: 'u1' }),
@@ -24,6 +24,7 @@ const TRANSCRIPT = [
       skillCount: 3,
       content: '- kookr-toolkit:agent-safety: ...',
       names: ['kookr-toolkit:agent-safety', 'kookr-toolkit:tdd-workflow', 'notes:write'],
+      digests: ['792b7b2389a6cf98', '7edcede98a99041e', '4aa72237fee2c54a'],
     },
   }),
   JSON.stringify({ type: 'assistant', message: { content: 'ok' }, uuid: 'x1' }),

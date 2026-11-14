@@ -337,12 +337,13 @@ export function registerPluginRoutes(app: Hono, deps: DeployRouteDeps): void {
     try {
       return await pluginMutation.withLock('plugin-update', async () => {
         const backup = await pluginMutation.backupPluginsDir(pluginsDir);
+        const versionBefore = await readInstalledVersionFromRegistry(hookHomeDir, id);
         try {
           await cli.update(id);
           await backup.discard();
           // Kookr's own update: record it in the observed baseline while the lock
           // is still held, so the observe pass never reports it as external.
-          await deps.pluginFleet?.recordKookrChange([id]).catch((err) => {
+          await deps.pluginFleet?.recordKookrChange([id], { previousVersions: new Map([[id, versionBefore]]) }).catch((err) => {
             console.warn(`[plugins] baseline record after update failed id=${id}: ${errorMessage(err)}`);
           });
         } catch (err) {

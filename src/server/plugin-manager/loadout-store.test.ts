@@ -424,3 +424,48 @@ describe('prepareSpawnLoadout and replayRecordedLoadout', () => {
     expect(setCalls).toHaveLength(0);
   });
 });
+
+describe('prepareSpawnLoadout — replay under the auto-update arm', () => {
+  test('with auto-update apply on, a replay waits for the plugin lock like a first spawn', async () => {
+    const mutation = new PluginMutationService();
+    const lockSpy = vi.spyOn(mutation, 'withLock');
+    const record: TaskLoadoutRecord = {
+      resolved: { enabledOverrides: { 'a@m': true }, deniedSkills: [] },
+      winningLevel: 'fleet', mode: 'bypass', settingsHash: null, settingsPath: null, recordedAt: 'then',
+    };
+    const task = { id: 't', agentType: 'claude-code', sessions: [], loadout: record } as unknown as Task;
+    const fields = await prepareSpawnLoadout(
+      {
+        taskStore: { setLoadout: () => ({}) as never },
+        mutation,
+        installedPlugins: { read: async () => new Map() },
+        env: { KOOKR_PLUGIN_LOADOUTS: '1', KOOKR_PLUGIN_AUTO_UPDATE: '1' },
+      },
+      task,
+    );
+    expect(fields).toEqual({ resolvedLoadout: record.resolved });
+    expect(lockSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('replay re-reads the record before writing, keeping a field written meanwhile', async () => {
+    const record: TaskLoadoutRecord = {
+      resolved: { enabledOverrides: { 'a@m': true }, deniedSkills: [] },
+      winningLevel: 'fleet', mode: 'bypass', settingsHash: null, settingsPath: null, recordedAt: 'then',
+    };
+    const newer = { ...record, skillCheck: { checkedAt: 'x', results: { 'a@m': 'skills_seen' as const } } };
+    const writes: TaskLoadoutRecord[] = [];
+    await replayRecordedLoadout(
+      {
+        taskStore: {
+          getTask: () => ({ loadout: newer }) as unknown as Task,
+          setLoadout: (_id: string, l: TaskLoadoutRecord | undefined) => { writes.push(l!); return {} as never; },
+        },
+        installedPlugins: { read: async () => new Map() },
+        env: { KOOKR_PLUGIN_LOADOUTS: '1' },
+      },
+      { id: 't', loadout: record } as unknown as Task,
+    );
+    expect(writes[0].skillCheck).toEqual(newer.skillCheck);
+    expect(writes[0].replaySkipped).toEqual([{ id: 'a@m', reason: 'not_installed' }]);
+  });
+});

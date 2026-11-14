@@ -127,8 +127,20 @@ export class PluginFleetRuntime {
    * Record a Kookr-initiated plugin change in the observed baseline. Call it
    * while holding the mutation lock (as every Kookr plugin mutation does).
    */
-  async recordKookrChange(pluginIds: readonly string[]): Promise<void> {
-    const current = selectedInstalledVersions(await this.installed.read());
+  async recordKookrChange(
+    pluginIds: readonly string[],
+    opts: { previousVersions?: ReadonlyMap<string, string | null>; retries?: number; retryDelayMs?: number } = {},
+  ): Promise<void> {
+    // The registry can lag the CLI by a moment. When the caller knows the
+    // version before its change, wait briefly until the registry moves off it.
+    let current = selectedInstalledVersions(await this.installed.read());
+    const previous = opts.previousVersions;
+    const stale = (): boolean =>
+      previous !== undefined && pluginIds.some((id) => previous.has(id) && current.get(id) === previous.get(id));
+    for (let attempt = 0; attempt < (opts.retries ?? 3) && stale(); attempt++) {
+      await new Promise<void>((r) => setTimeout(r, opts.retryDelayMs ?? 150));
+      current = selectedInstalledVersions(await this.installed.read());
+    }
     await recordKookrPluginChange(this.deps.autoUpdateStore, pluginIds, current);
   }
 

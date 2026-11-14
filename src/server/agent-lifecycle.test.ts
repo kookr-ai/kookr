@@ -1376,6 +1376,7 @@ describe('promotePendingTasks (integration)', () => {
         resolveForLaunch: vi.fn().mockResolvedValue({
           loadout: { enabledOverrides: { 'stripe@mkt': false }, deniedSkills: [] },
           provenance: { winningLevel: 'project', mode: 'bypass' },
+          pluginLevels: { 'stripe@mkt': 'project' },
         }),
       } as unknown as AgentLifecycleDeps['loadoutStore'];
       const d = createPromotionDeps(taskStore, adapter, fakeStore);
