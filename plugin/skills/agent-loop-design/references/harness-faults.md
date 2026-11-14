@@ -7,10 +7,11 @@ optimizer or self-improvement loop proposes harness edits.
 
 **Rule out the harness before the model.** No study measures a general "X% harness, Y% model" split,
 but harness faults are common enough that skipping the check wastes the fix. With the same 8 model
-backends, one harness scored 76.2% and another 52.4% across 106 tasks (2605.27922). Repairing only the
+backends, one harness scored 76.2% aggregate and another 52.4% across 106 tasks (NanoBot vs OpenClaw,
+2605.27922). Repairing only the
 harness raised gpt-5-mini from 45.0% to 57.0% on SWE-bench Verified and from 43.3% to 61.7% on GAIA
-(2606.06324). Counted as bugs, harness-triggered faults are a minority: 8.4% of issues in four agent
-projects (2607.15684).
+(2606.06324). Bugs where a model response triggers an abnormal harness reaction were 8.4% of all
+issues in four agent projects (2607.15684); that is one bug class, not a harness-vs-model split.
 
 Recovering inside a task once a failure is found: [agent failure recovery](agent-failure-recovery.md).
 Tool schemas, descriptions and error wording: [tool surface design](agent-tool-surface-design.md).
@@ -24,15 +25,16 @@ configuration and integration seams: data schema mismatches were 28.0% and depen
 385 agentic-software faults (2603.06847). Check, in this order:
 
 1. **Did the tool's effect happen?** Re-read the state it should have changed. Do not trust its return
-   value: 91 silent failures turned up in 198 test cases across 15 tools, mostly missing fields
-   (2609.26836).
+   value: 91 silent failures turned up in 198 test cases across 15 tools, most often missing data or
+   fields (38), and mostly in the API (51) and wrapper (25) layers (2609.26836).
 2. **Did the error reach the model?** Look for a swallowed exit code (`|| true`, `cmd | tail`, a trailing
    `echo` in a backgrounded gate), an error returned as narrative text, or a "launched" result for a task
    that was terminated.
 3. **Did the validator see real input?** In one production runtime, 67 governance checks ran on empty
    strings for months and passed (2606.14589).
 4. **What changed since it last worked?** Configuration, schema, dependency version, auth token,
-   provider. In 409 framework bugs, 92% of triggers involved configuration (2604.08906).
+   provider. In 409 framework bugs, 92% of triggers involved element configurations, mostly model settings
+   (2604.08906).
 
 Only when all four come back clean is it worth changing the model or the prompt.
 
@@ -47,38 +49,41 @@ Only when all four come back clean is it worth changing the model or the prompt.
   of the time and warned the user in ~4% of those runs. A VERIFY instruction cut adoption on every tool
   while mostly keeping accuracy on correct returns; fine-tuning gave limited or inconsistent gains
   (2609.05587).
-- Keep a check on what the user actually sees. Prevention layers stopped 0% of incidents ahead of time
-  and caught 87% after the fact as regressions, and about 70% of silent failures were found by a human
-  looking at the output (22 incidents, one runtime, 2606.14589).
+- Keep a check on what the user actually sees. In one runtime, prevention layers stopped 0% of
+  incidents ahead of time and blocked 87% after the fact as regressions (15-incident audit), and about
+  70% of silent failures were found by a human looking at the output (2606.14589).
 
 ## Step 3: fix the harness from traces, behind a gate
 
 - Collect failed trajectories, classify each failure, make a scoped edit per class, and accept it only if
   a held-out set does not regress. Typed diagnosis repaired 114/120 controlled harness failures against
-  4/120 for regenerating (2608.28363). Typed routing with a non-regression gate transferred in 18/20
-  model-language pairs (2608.10178).
-- The gate is not optional: greedy acceptance committed 30-42% false modifications (2606.08106), and
+  4/120 for regenerating (2608.28363). Typed routing with a non-regression gate transferred positively
+  in 18/20 ordered pairs, with mean retention 0.63 (2608.10178).
+- The gate is not optional: greedy acceptance committed 30-42% false modifications in a controlled
+  setting with small models (2606.08106), and
   self-improving harnesses added guards for failures that never happened in 25% of runs (2607.13083).
-- Fix upstream of the blamed module. Injecting correction examples into the module the diagnosis blamed
-  raised failure by 0.243 and 0.683 on two models; patching the module upstream of it cut failure by
-  0.191 and 0.659 (2605.21958).
+- Fix upstream of the blamed module. In a four-module prompt pipeline, injecting correction examples
+  into the module the diagnosis blamed raised failure on two of three models (by 0.243 and 0.683);
+  patching the module upstream of it cut failure on all three (2605.21958).
 
 ## Step 4: handle provider and runtime faults in code
 
 - Classify the error before acting: auth expired, quota, provider outage, timeout, disk full. Each needs
   a different move, and none needs an LLM turn. Deterministic rerouting on tool failure used 9
   control-plane LLM calls against 123 for ReAct, on simulated failures (2603.01548).
-- Back off exponentially; plain retries can sustain an outage (2606.00942). Retry alone is not recovery:
-  automated retry chains succeeded 33.3% of the time on a 504-GPU training cluster (2605.09370).
+- Back off and retry through one limiter ([agent failure recovery](agent-failure-recovery.md),
+  transient row); plain retries can sustain an outage (2606.00942). Retry alone is not recovery:
+  automated retry chains succeeded 33.3% of the time on a 504-GPU training cluster, against 12.5% for
+  manual recovery (2605.09370).
 - Fail over to another provider with hysteresis (a margin and a cooldown) so the switch does not flap
   (2605.26404, analytical model and one case study).
-- A client-side timeout is "unknown", not "failed": check server state before retrying anything that is
-  not idempotent.
+- A client-side timeout is "unknown", not "failed" ([tool surface design](agent-tool-surface-design.md)):
+  check server state before retrying anything that is not idempotent.
 
 ## When harness work does not pay
 
 - **Weak models.** On a 35B model, a 5,200-character procedure was neutral or harmful, while one
-  sentence ("verify your writes") doubled pass@1 from 2/20 to 4/20 (2609.05531). Weak models loaded the
+  sentence ("verify your writes") moved pass@1 from 2/20 to 4/20 (n=20, 2609.05531). Weak models loaded the
   skills they were given as rarely as 25.1% of the time, against ~96% for strong models (2605.30621).
   Give small models one short instruction and measure it.
 - **More orchestration.** Adding retries and orchestration on GAIA level 1 lowered accuracy from 54.72%
