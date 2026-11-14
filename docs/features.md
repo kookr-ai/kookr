@@ -173,6 +173,7 @@ Playbooks are reusable task templates stored as Markdown files in project, user,
 | F6.5 | **Playbook badge** | Tasks launched from playbooks show a "Playbook" badge in the detail header. |
 | F6.6 | **Multi-CWD support** | Playbooks are resolved per-CWD. The browser lets the user select which project's playbooks to browse. |
 | F6.7 | **Crash-restart for looped playbooks** | After a Kookr or system crash, relaunching a looped playbook with the same playbook+cwd+parameters is one click: a startup liveness probe auto-fails dtach-master-killed phantoms, and the launch dialog surfaces an inline "Replace it (start fresh) / Open the running loop" prompt for any residual conflict. See `docs/rfc/rfc-ralph-loop-crash-restart-recovery.md`. |
+| F6.8 | **Playbook chains** | Launch any playbook to repeat for N iterations, H hours, or both (Playbooks tab **Repeat** row, `kookr chain start`, `POST /api/playbook-chains`). Kookr launches each next iteration itself when the current task ends, so the chain never depends on the agent remembering to spawn a successor. Each iteration is a normal task linked to the previous one; an iteration that idles without closing its task is closed after 5 minutes. Tasks show a chain badge with position and remaining time, and a **Stop chain** button ends the chain after the current iteration. See [playbook-chains.md](reference/playbook-chains.md) and `docs/rfc/rfc-playbook-chains.md`. |
 
 **V1 scope:** Manual trigger only. File-based definitions. No auto-proposal or scheduling.
 

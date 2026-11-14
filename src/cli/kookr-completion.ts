@@ -199,7 +199,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     // src/cli/kookr-chain.ts and the root help.
     name: 'chain',
     subcommands: ['start', 'stop'],
-    flags: ['--scope', '--param', '--iterations', '--hours', '--minutes', '-C', '--reason', '--json', '-h', '--help'],
+    flags: ['--scope', '--param', '--iterations', '--hours', '--minutes', '-C', '--agent', '--model', '--effort', '--reason', '--json', '-h', '--help'],
   },
   {
     name: 'drain',

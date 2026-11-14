@@ -17,6 +17,11 @@ describe('parseChainArgs', () => {
       .toEqual({ kind: 'start', json: false, playbook: 'research.md', scope: 'project', params: { subject: 'memory' }, maxIterations: 5, durationMinutes: 360, dir: '../lra' });
   });
 
+  it('passes agent, model and effort pins through', () => {
+    expect(parseChainArgs(['start', 'p.md', '--iterations', '2', '--agent', 'claude-code', '--model', 'claude-haiku-5-5', '--effort', 'low']))
+      .toMatchObject({ agent: 'claude-code', model: 'claude-haiku-5-5', effort: 'low' });
+  });
+
   it('combines --hours and --minutes', () => {
     expect(parseChainArgs(['start', 'p.md', '--hours', '1.5', '--minutes', '10'])).toMatchObject({ durationMinutes: 100 });
   });

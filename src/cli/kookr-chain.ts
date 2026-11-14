@@ -27,7 +27,8 @@ spawn anything.
 
 Usage:
   kookr chain start <playbook> [--scope project|user|plugin] [--param NAME=VALUE]...
-                    [--iterations N] [--hours H] [--minutes M] [-C DIR] [--json]
+                    [--iterations N] [--hours H] [--minutes M] [-C DIR]
+                    [--agent TYPE] [--model ID] [--effort LEVEL] [--json]
   kookr chain stop [<taskId>] [--reason TEXT] [--json]
 
 start  Launch iteration 1. Give --iterations, --hours/--minutes, or both (the
@@ -68,6 +69,9 @@ type Parsed =
       maxIterations?: number;
       durationMinutes?: number;
       dir?: string;
+      agent?: string;
+      model?: string;
+      effort?: string;
     }
   | { kind: 'stop'; json: boolean; taskId?: string; reason?: string };
 
@@ -84,6 +88,9 @@ export function parseChainArgs(argv: string[]): Parsed {
   let minutes: string | undefined;
   let dir: string | undefined;
   let reason: string | undefined;
+  let agent: string | undefined;
+  let model: string | undefined;
+  let effort: string | undefined;
   for (let i = 0; i < rest.length; i++) {
     const tok = rest[i];
     const value = (): string | undefined => {
@@ -104,6 +111,9 @@ export function parseChainArgs(argv: string[]): Parsed {
     else if (tok === '--minutes') minutes = value() ?? '';
     else if (tok === '-C' || tok === '--cwd') dir = value() ?? '';
     else if (tok === '--reason') reason = value() ?? '';
+    else if (tok === '--agent') agent = value() ?? '';
+    else if (tok === '--model') model = value() ?? '';
+    else if (tok === '--effort') effort = value() ?? '';
     else if (tok.startsWith('-')) return fail(`unknown option: ${tok}`);
     else positional.push(tok);
   }
@@ -117,6 +127,7 @@ export function parseChainArgs(argv: string[]): Parsed {
   if (positional.length !== 1) return fail('start needs exactly one playbook, e.g. `kookr chain start my-playbook.md --iterations 5`');
   if (scope !== undefined && !['project', 'user', 'plugin'].includes(scope)) return fail('--scope must be project, user, or plugin');
   if (dir === '') return fail('-C needs a directory');
+  if (agent === '' || model === '' || effort === '') return fail('--agent, --model and --effort need a value');
 
   let maxIterations: number | undefined;
   if (iterations !== undefined) {
@@ -143,6 +154,9 @@ export function parseChainArgs(argv: string[]): Parsed {
     ...(maxIterations !== undefined ? { maxIterations } : {}),
     ...(durationMinutes !== undefined ? { durationMinutes } : {}),
     ...(dir ? { dir } : {}),
+    ...(agent ? { agent } : {}),
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
   };
 }
 
@@ -181,6 +195,9 @@ export async function runChainCli(argv: string[], io: ChainCliIo = {}): Promise<
       parameterValues: parsed.params,
       ...(parsed.maxIterations !== undefined ? { maxIterations: parsed.maxIterations } : {}),
       ...(parsed.durationMinutes !== undefined ? { durationMinutes: parsed.durationMinutes } : {}),
+      ...(parsed.agent ? { agentType: parsed.agent } : {}),
+      ...(parsed.model ? { model: parsed.model } : {}),
+      ...(parsed.effort ? { effort: parsed.effort } : {}),
     };
   } else {
     const ownTaskId = env.KOOKR_TASK_ID?.trim() || undefined;

@@ -1257,7 +1257,8 @@ See [playbook-chains.md](playbook-chains.md).
 
 ```bash
 kookr chain start <playbook> [--scope project|user|plugin] [--param NAME=VALUE]...
-                  [--iterations N] [--hours H] [--minutes M] [-C DIR] [--json]
+                  [--iterations N] [--hours H] [--minutes M] [-C DIR]
+                  [--agent TYPE] [--model ID] [--effort LEVEL] [--json]
 kookr chain stop [<taskId>] [--reason TEXT] [--json]
 ```
 
