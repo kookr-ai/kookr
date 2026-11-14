@@ -394,12 +394,14 @@ else
   # that passes on the re-run is a flake: the push proceeds, the hook says so
   # loudly, and the file is appended to a log shared by every worktree
   # (<git-common-dir>/kookr-flaky-tests.log) so the flake gets fixed rather
-  # than retried forever. A file that fails again rejects the push as before.
+  # than retried forever. A file that fails again rejects the push as before,
+  # and so does a run with unhandled errors or a crashed worker, which a file
+  # re-run cannot clear (scripts/flaky-rerun-files.mjs lists every case).
   _FLAKY_HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P) || _FLAKY_HOOK_DIR=""
   FLAKY_HELPER="$_FLAKY_HOOK_DIR/../scripts/flaky-rerun-files.mjs"
   [ -f "$FLAKY_HELPER" ] || FLAKY_HELPER="$REPO_ROOT/scripts/flaky-rerun-files.mjs"
   VITEST_REPORT=$(mktemp "${TMPDIR:-/tmp}/kookr-pre-push-vitest.XXXXXX")
-  if ! VITEST_JSON_REPORT_FILE="$VITEST_REPORT" pnpm test; then
+  if ! VITEST_RERUN_SUMMARY_FILE="$VITEST_REPORT" pnpm test; then
     RERUN_FILES=""
     if [ -f "$FLAKY_HELPER" ]; then
       RERUN_FILES=$(node "$FLAKY_HELPER" "$VITEST_REPORT" --max-files 5) || RERUN_FILES=""

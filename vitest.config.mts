@@ -1,14 +1,15 @@
 import { defineConfig } from 'vitest/config';
 
-// The pre-push hook sets this to get a machine-readable list of failed files,
-// so it can re-run only those once to tell a flake from a real failure
-// (scripts/flaky-rerun-files.mjs). Unset, the reporters stay Vitest's default.
-const jsonReportFile = process.env.VITEST_JSON_REPORT_FILE;
+// The pre-push hook sets this to get a run summary (failed files, unhandled
+// errors, unfinished files) so it can re-run only the failed files once to
+// tell a flake from a real failure (test/rerun-gate.reporter.mjs,
+// scripts/flaky-rerun-files.mjs). Unset, the reporters stay Vitest's default.
+const rerunSummaryFile = process.env.VITEST_RERUN_SUMMARY_FILE;
 
 export default defineConfig({
   test: {
-    ...(jsonReportFile
-      ? { reporters: ['default', ['json', { outputFile: jsonReportFile }]] }
+    ...(rerunSummaryFile
+      ? { reporters: ['default', ['./test/rerun-gate.reporter.mjs', { outputFile: rerunSummaryFile }]] }
       : {}),
     // Agent suites share the host with the supervisor and desktop. Bound each
     // run rather than letting every agent allocate workers for the whole CPU.

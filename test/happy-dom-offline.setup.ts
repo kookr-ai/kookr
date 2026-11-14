@@ -1,4 +1,5 @@
-// Vitest setupFiles: keep happy-dom test files off the network.
+// Vitest setupFiles: keep happy-dom test files' fetch and XMLHttpRequest off
+// the network.
 //
 // happy-dom implements a real `fetch` resolved against the document URL
 // (http://localhost:3000 by default), so frontend code that calls
@@ -10,17 +11,20 @@
 // that need responses keep stubbing `fetch` themselves (vi.stubGlobal / spyOn),
 // which replaces the happy-dom implementation entirely.
 //
+// WebSocket is not covered: happy-dom's WebSocket opens real sockets, as
+// jsdom's does, so tests must keep stubbing it.
+//
 // Runs for every test file; it is a no-op outside happy-dom.
 
 interface HappyDomWindow {
   happyDOM?: { settings: { fetch: { interceptor: unknown } } };
 }
 
-export function offlineNetworkError(url: string): TypeError {
+function offlineNetworkError(url: string): TypeError {
   return new TypeError(`Failed to fetch ${url}: network access is disabled in happy-dom tests`);
 }
 
-export const offlineFetchInterceptor = {
+const offlineFetchInterceptor = {
   beforeAsyncRequest: async ({ request }: { request: { url: string } }): Promise<never> => {
     throw offlineNetworkError(request.url);
   },

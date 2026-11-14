@@ -235,8 +235,9 @@ async function acquireRelayControllerLease(relayUrl: string, nodeId: string, mem
 }
 
 /**
- * Answers for the boot-time agent binary preflights, so a test server never
- * spawns the host's real `claude` / `codex` / `grok` binaries. Those probes
+ * Answers for the boot-time agent binary preflights, so the server booted in
+ * `beforeEach` never probes the host's real `claude` / `codex` / `grok`
+ * binaries (tests that boot their own server still do). Those probes
  * cost ~0.2 s of every boot and depend on what this machine has installed;
  * preflight behavior itself is covered by the adapter and preflight tests.
  */

@@ -6,29 +6,56 @@ import { describe, expect, it } from 'vitest';
 import { selectRerunFiles } from './flaky-rerun-files.mjs';
 
 const cwd = '/repo';
-const result = (name: string, status: string) => ({ name: `/repo/${name}`, status });
+const mod = (name: string, state: string) => ({ file: `/repo/${name}`, state });
+const summary = (modules: Array<{ file: string; state: string }>, extra: Record<string, unknown> = {}) => ({
+  reason: 'failed',
+  unhandledErrors: 0,
+  modules,
+  ...extra,
+});
 
 describe('selectRerunFiles', () => {
   it('returns the failed files, relative and sorted, when few failed', () => {
-    const report = {
-      testResults: [result('src/b.test.ts', 'failed'), result('src/ok.test.ts', 'passed'), result('src/a.test.ts', 'failed')],
-    };
-    expect(selectRerunFiles(report, { cwd })).toEqual({ ok: true, files: ['src/a.test.ts', 'src/b.test.ts'] });
+    const s = summary([mod('src/b.test.ts', 'failed'), mod('src/ok.test.ts', 'passed'), mod('src/a.test.ts', 'failed')]);
+    expect(selectRerunFiles(s, { cwd })).toEqual({ ok: true, files: ['src/a.test.ts', 'src/b.test.ts'] });
   });
 
-  it('refuses when more files failed than the cap', () => {
-    const report = { testResults: Array.from({ length: 6 }, (_, i) => result(`src/f${i}.test.ts`, 'failed')) };
-    const out = selectRerunFiles(report, { cwd, maxFiles: 5 });
-    expect(out.ok).toBe(false);
+  it('ignores skipped files', () => {
+    const s = summary([mod('src/a.test.ts', 'failed'), mod('src/skip.test.ts', 'skipped')]);
+    expect(selectRerunFiles(s, { cwd })).toEqual({ ok: true, files: ['src/a.test.ts'] });
   });
 
-  it('refuses when no file is marked failed (an error outside the tests)', () => {
-    expect(selectRerunFiles({ testResults: [result('src/ok.test.ts', 'passed')] }, { cwd }).ok).toBe(false);
+  it('re-runs exactly the cap, and refuses one more', () => {
+    const failed = (n: number) => summary(Array.from({ length: n }, (_, i) => mod(`src/f${i}.test.ts`, 'failed')));
+    expect(selectRerunFiles(failed(5), { cwd, maxFiles: 5 })).toMatchObject({ ok: true });
+    expect(selectRerunFiles(failed(6), { cwd, maxFiles: 5 }).ok).toBe(false);
   });
 
-  it('refuses a report without testResults', () => {
+  it('refuses when the run also had an unhandled error, even with a failed file to re-run', () => {
+    // An unhandled rejection leaves its own file "passed", so a re-run of the
+    // failed file alone would hide it.
+    const s = summary([mod('src/a.test.ts', 'passed'), mod('src/b.test.ts', 'failed')], { unhandledErrors: 1 });
+    expect(selectRerunFiles(s, { cwd })).toMatchObject({ ok: false, reason: expect.stringContaining('unhandled') });
+  });
+
+  it('refuses when a file never finished (crashed worker)', () => {
+    const s = summary([mod('src/b.test.ts', 'failed'), mod('src/c.test.ts', 'pending')]);
+    expect(selectRerunFiles(s, { cwd })).toMatchObject({ ok: false, reason: expect.stringContaining('never finished') });
+    expect(selectRerunFiles(summary([mod('src/b.test.ts', 'failed'), mod('src/d.test.ts', 'queued')]), { cwd }).ok).toBe(false);
+  });
+
+  it('refuses an interrupted run', () => {
+    expect(selectRerunFiles(summary([mod('src/b.test.ts', 'failed')], { reason: 'interrupted' }), { cwd }).ok).toBe(false);
+  });
+
+  it('refuses when no file is marked failed', () => {
+    expect(selectRerunFiles(summary([mod('src/ok.test.ts', 'passed')]), { cwd }).ok).toBe(false);
+  });
+
+  it('refuses a malformed summary', () => {
     expect(selectRerunFiles({}, { cwd }).ok).toBe(false);
     expect(selectRerunFiles(null, { cwd }).ok).toBe(false);
+    expect(selectRerunFiles({ reason: 'failed', modules: [mod('src/b.test.ts', 'failed')] }, { cwd }).ok).toBe(false);
   });
 });
 
@@ -40,7 +67,7 @@ describe('flaky-rerun-files CLI', () => {
     const dir = mkdtempSync(join(tmpdir(), 'flaky-rerun-'));
     try {
       const good = join(dir, 'good.json');
-      writeFileSync(good, JSON.stringify({ testResults: [{ name: join(process.cwd(), 'src/x.test.ts'), status: 'failed' }] }));
+      writeFileSync(good, JSON.stringify(summary([{ file: join(process.cwd(), 'src/x.test.ts'), state: 'failed' }])));
       const ok = run(good);
       expect(ok.status).toBe(0);
       expect(ok.stdout).toBe('src/x.test.ts\n');

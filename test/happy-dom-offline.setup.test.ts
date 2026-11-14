@@ -24,14 +24,16 @@ describe('happy-dom offline setup', () => {
     const { port } = server.address() as AddressInfo;
 
     await expect(fetch(`http://127.0.0.1:${port}/api/tasks`)).rejects.toBeInstanceOf(TypeError);
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', `http://127.0.0.1:${port}/api/sync`, false);
-    try {
+    // Async XHR also goes through the fetch interceptor. (Synchronous XHR is
+    // intercepted too, but it blocks this process, so a broken interceptor
+    // would hang the test instead of failing it; it is not exercised here.)
+    const xhrDone = new Promise<number>((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', `http://127.0.0.1:${port}/api/sync`);
+      xhr.onloadend = () => resolve(xhr.status);
       xhr.send();
-    } catch {
-      // happy-dom may surface the refused request as a throw or as status 0.
-    }
-    expect(xhr.status).toBe(0);
+    });
+    expect(await xhrDone).toBe(0);
     expect(hits).toBe(0);
   });
 });

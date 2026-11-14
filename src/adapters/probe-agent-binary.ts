@@ -261,10 +261,12 @@ async function isExecutable(p: string): Promise<boolean> {
 /**
  * In-process SHA-256 cache keyed by the file's on-disk identity. Agent binaries
  * are large (the Grok build is ~240 MB, ~0.9 s to hash), and identity is
- * re-resolved on every server boot and before every Grok launch. Any write,
- * rename-over or replacement changes the inode or ctime, and ctime cannot be
- * set from userland, so an unchanged key means the bytes the earlier hash
- * covered are still the bytes on disk.
+ * re-resolved on every server boot and before every Grok launch. A write(),
+ * truncate, rename-over or replacement changes the inode or ctime, and ctime
+ * cannot be set from userland, so an installer or auto-update always forces a
+ * re-hash. (A process writing through a shared memory mapping can change bytes
+ * without updating ctime; the hash is advisory build qualification, not an
+ * integrity check, so that case is accepted.)
  *
  * Kernel file timestamps are coarse (a few ms), so a second write landing in
  * the same tick as the first would keep the same ctime. Like git's "racily

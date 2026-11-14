@@ -183,8 +183,9 @@ describe('resolveInstalledBinaryIdentity real-file hashing', () => {
       const again = await resolveInstalledBinaryIdentity(bin);
       expect(again.kind === 'ok' && again.identity.sha256).toBe(sha('AAAA'));
 
-      // Same-size in-place rewrite: a freshly changed file is never served
-      // from the identity cache, even inside one coarse timestamp tick.
+      // Same-size in-place rewrite. (These files are younger than the cache's
+      // settle window, so this checks end-to-end results only; cache hits and
+      // misses are pinned in the createCachedFileHasher tests below.)
       writeFileSync(bin, 'BBBB');
       const rewritten = await resolveInstalledBinaryIdentity(bin);
       expect(rewritten.kind === 'ok' && rewritten.identity.sha256).toBe(sha('BBBB'));

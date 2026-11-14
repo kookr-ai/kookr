@@ -216,7 +216,14 @@ probe_codex_plugin_dir() {
   local help_output timeout_status prev_e
   case $- in *e*) prev_e=1 ;; *) prev_e=0 ;; esac
   set +e
-  help_output="$(_probe_run_with_timeout "${PROBE_HELP_TIMEOUT_SECS:-5}" "$PROBE_CODEX_BIN" --help 2>/dev/null)"
+  # A non-positive or non-numeric override would disable the bound (`timeout
+  # 0` and `alarm 0` mean "no limit"), so anything but a positive integer
+  # falls back to the default.
+  local help_timeout="${PROBE_HELP_TIMEOUT_SECS:-5}"
+  case "$help_timeout" in
+    ''|*[!0-9]*|0*) help_timeout=5 ;;
+  esac
+  help_output="$(_probe_run_with_timeout "$help_timeout" "$PROBE_CODEX_BIN" --help 2>/dev/null)"
   timeout_status=$?
   [ "$prev_e" -eq 1 ] && set -e
 

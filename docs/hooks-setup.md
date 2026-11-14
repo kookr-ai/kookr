@@ -195,7 +195,7 @@ cd kookr
 pnpm install         # runs `prepare` → `git config core.hooksPath .hooks`
 ```
 
-That's it. Every `git push` from this point on will run `pnpm build:server`, `pnpm check:e2e`, `pnpm test`, and `pnpm test:integration` before uploading (docs-only prose pushes still skip those TypeScript/Vitest lanes). If any of those fail, the push is rejected.
+That's it. Every `git push` from this point on will run `pnpm build:server`, `pnpm check:e2e`, `pnpm test`, and `pnpm test:integration` before uploading (docs-only prose pushes still skip those TypeScript/Vitest lanes). If any of those fail, the push is rejected, with one exception for flakes: when at most five unit-test files fail in `pnpm test`, the hook re-runs only those files once. If they pass, the push continues with a `FLAKY` notice and each file is logged to `kookr-flaky-tests.log` in the git common dir (`git rev-parse --git-common-dir`). A second failure, more than five failed files, an unhandled error, or a crashed test worker still rejects the push.
 
 You don't need to do anything else if you don't use Claude Code on this repo.
 
