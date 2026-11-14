@@ -83,7 +83,7 @@ describe('buildLucyLiveBriefing: questions from tasks (kookr ask)', () => {
   it('lists a waiting question with its choices, before the task list', () => {
     const text = buildLucyLiveBriefing(tasks, NOW, [ask()]);
     expect(text).toContain('- The task "Fix login" asked 3 minutes ago: Ship the migration now? Choices: Yes, ship it; No, wait.');
-    expect(text).toContain('not by voice');
+    expect(text).toContain('which she reads back before sending');
     expect(text).toContain('Questions from tasks waiting for the operator: 1 (');
     expect(text.indexOf('Questions from tasks waiting')).toBeLessThan(text.indexOf('Task counts'));
   });
@@ -148,7 +148,9 @@ describe('buildLucyLiveBriefing: questions from tasks (kookr ask)', () => {
     expect(text).toContain('Choices: Yes, ship it; No, wait.');
   });
 
-  it('the persona tells her she cannot take an answer by voice', () => {
-    expect(buildLucyLivePersona('x')).toMatch(/cannot record an answer/);
+  it('the persona says she never records an answer herself and what to tell the operator when she is still asked', () => {
+    const persona = buildLucyLivePersona('x');
+    expect(persona).toMatch(/never record an answer yourself/);
+    expect(persona).toMatch(/press it in your panel or answer on Telegram/);
   });
 });

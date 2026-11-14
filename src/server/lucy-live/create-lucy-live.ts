@@ -14,9 +14,11 @@ import { synthesize } from '../../adapters/tts-client.js';
 import { randomUUID } from 'node:crypto';
 import type { LucyOperatorService } from '../lucy-operator/service.js';
 import { buildLucyLiveBriefing, type BriefingTask } from '../../core/lucy-live/briefing.js';
+import { createBasetenLlmClientFromEnv } from '../../adapters/llm/baseten-client.js';
+import { buildAnswerMatchPrompt, parseAnswerMatch, pendingVoiceAsks, type AnswerMatch, type VoiceAskChoice } from '../../core/lucy-live/voice-answer.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
 import { countSpokenWords, DISABLED_LUCY_INTERACTION_LOG, type LucyInteractionLog } from '../lucy-interaction-log.js';
-import type { OperatorAskView } from '../../shared/contracts/asks.js';
+import type { AnswerResult, DashboardAnswerInput, OperatorAskView } from '../../shared/contracts/asks.js';
 import type { LucyLiveConfig } from './config.js';
 import { LucyLiveSession, type LucyLivePorts } from './session.js';
 import { bindLucyLiveSocket } from './ws-handler.js';
@@ -29,6 +31,13 @@ export interface LucyLiveDeps {
   getTasks: () => readonly BriefingTask[];
   /** Questions tasks asked the operator (`kookr ask`): pending and recently closed. Read fresh for every turn. */
   getAsks?: () => readonly OperatorAskView[];
+  /**
+   * Record an answer to a question (the audited dashboard entry point). Without it, and without
+   * `getAsks`, a question can be read and discussed by voice but not answered.
+   */
+  answerAsk?: (input: DashboardAnswerInput) => Promise<AnswerResult>;
+  /** Test seam: the non-streaming call that maps spoken words to a choice. Default: the Baseten helper model. */
+  matchAnswer?: (req: { transcript: string; asks: readonly VoiceAskChoice[]; signal: AbortSignal }) => Promise<AnswerMatch>;
   /** Voice resolved at call time, like the speech routes (settings first, then the install default). */
   getVoice: () => string;
   /**
@@ -82,6 +91,11 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
             const result = await synthesize({ ttsUrl, text, voice: deps.getVoice(), signal });
             return { wavBase64: result.audioBase64, durationMs: result.durationMs };
           },
+          ...(deps.getAsks && deps.answerAsk ? {
+            pendingAsks: () => pendingVoiceAsks(deps.getAsks!()),
+            matchAnswer: deps.matchAnswer ?? matchWithHelperModel,
+            answerAsk: (askId: string, optionIndex: number) => deps.answerAsk!({ askId, optionIndex }),
+          } : {}),
           buildBriefing: () => buildLucyLiveBriefing(deps.getTasks(), now(), deps.getAsks?.() ?? []),
           now,
           warn,
@@ -126,4 +140,20 @@ async function* streamFromOperator(
       else if (event.end === 'error') throw new Error(event.reason ?? 'The operator conversation failed.');
     }
   }
+}
+
+/** The mapping call: one non-streaming completion, no reasoning, JSON out. A failure is reported to the caller, who then sends nothing. */
+async function matchWithHelperModel(req: { transcript: string; asks: readonly VoiceAskChoice[]; signal: AbortSignal }): Promise<AnswerMatch> {
+  const client = createBasetenLlmClientFromEnv({ ...process.env, KOOKR_BASETEN_REASONING_EFFORT: 'none' });
+  if (!client) throw new Error('no Baseten key is configured');
+  const { system, user } = buildAnswerMatchPrompt(req.transcript, req.asks);
+  const raw = await client.complete({
+    system,
+    userMessage: user,
+    maxTokens: 60,
+    timeoutMs: 6000,
+    signal: req.signal,
+    responseFormat: { type: 'json_object' },
+  });
+  return parseAnswerMatch(raw, req.asks);
 }

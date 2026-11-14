@@ -31,6 +31,10 @@
  * ends as `empty` without calling the recogniser or the model, so the recogniser cannot
  * invent words ("Thank you.") out of silence or noise.
  *
+ * Answering a task's question by voice is handled before the model is asked (see {@link planVoiceAnswer}):
+ * words that map to one listed choice become a read-back ("You want: X. Shall I send that?"), and the
+ * answer is sent only by a clear "yes" in the next turn that did not begin over her own voice.
+ *
  * Conversation memory is plain text, the last {@link MAX_HISTORY_EXCHANGES} exchanges.
  * For Lucy's side it keeps only what the operator heard: the sentences the browser
  * reported as `played`, or, if the browser never reported, the sentences sent. An
@@ -49,6 +53,11 @@ import {
 import { buildLucyLivePersona } from '../../core/lucy-live/persona.js';
 import { SentenceSplitter } from '../../core/lucy-live/sentence-splitter.js';
 import { isEmptyTranscript } from '../../core/lucy-live/transcript-filter.js';
+import {
+  ANSWER_HEARD_OVER_HER, ANSWER_NOT_SENT, ANSWER_NO_LONGER_WAITING, ANSWER_TIMED_OUT, VOICE_ANSWER_CONFIRM_WINDOW_MS,
+  buildAnswerReadBack, buildWhichQuestion, classifyReply, sayAnswerOutcome,
+  type AnswerMatch, type VoiceAskChoice,
+} from '../../core/lucy-live/voice-answer.js';
 import { makeSpeakable } from '../../core/speakable-text.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
 
@@ -151,9 +160,26 @@ export interface LucyLivePorts {
   synthesize(text: string, signal: AbortSignal): Promise<SpokenSentence>;
   /** Fresh task status text, built for every turn. */
   buildBriefing(): string;
+  /** Questions from tasks that are still waiting for the operator. Absent: answering by voice is off. */
+  pendingAsks?(): readonly VoiceAskChoice[];
+  /**
+   * Map the operator's words to one listed choice, in a separate non-streaming model call that returns
+   * numbers only. Must reject or return `none` when unsure; the session never trusts it beyond the lists it passed.
+   */
+  matchAnswer?(req: { transcript: string; asks: readonly VoiceAskChoice[]; signal: AbortSignal }): Promise<AnswerMatch>;
+  /** Record the operator's choice through the ask service's dashboard entry point (audited, one winner). */
+  answerAsk?(askId: string, optionIndex: number): Promise<{ ok: true } | { ok: false; reason?: string }>;
   now(): number;
   warn(message: string): void;
   recordTurn(record: LiveTurnRecord): void;
+}
+
+/** A choice she has read back and is waiting for a "yes" on. */
+interface VoiceAnswerProposal {
+  askId: string;
+  optionIndex: number;
+  /** The option text she read out, to check it is still the same question when the "yes" comes. */
+  label: string;
 }
 
 interface ExchangeMemory {
@@ -192,6 +218,8 @@ interface Turn {
   memory?: ExchangeMemory;
   /** The oldest exchange pushed out of the history when this turn's was added. */
   evicted?: ExchangeMemory;
+  /** A choice this turn reads back; it becomes confirmable only if the read-back is spoken to its end. */
+  proposal?: VoiceAnswerProposal;
   /** Silero detector fed with this turn's audio; null when unavailable. */
   vad: VadTurnPort | null;
   /** Highest speech probability Silero reported so far. */
@@ -248,6 +276,8 @@ export class LucyLiveSession {
   private readonly memory: ExchangeMemory[] = [];
   private closedForGood = false;
   private candidate: Candidate | null = null;
+  /** The read-back that the next turn may confirm; `until` is on this server's clock. */
+  private proposal: (VoiceAnswerProposal & { until: number; turnId: string }) | null = null;
 
   /** Server clock until which the sentences sent so far are still being played. */
   private audibleUntil = 0;
@@ -309,6 +339,7 @@ export class LucyLiveSession {
     if (this.closedForGood) return;
     this.closedForGood = true;
     this.candidate = null;
+    this.proposal = null;
     const turn = this.turn;
     if (turn) this.discard(turn);
   }
@@ -467,6 +498,7 @@ export class LucyLiveSession {
   private confirmCandidate(candidate: Candidate, trusted = false): void {
     if (this.candidate !== candidate || this.closedForGood) return;
     this.candidate = null;
+    this.dropProposalIfInterrupted();
     this.ports.send({ type: 'speech_confirmed', turnId: candidate.id });
     const carried = this.retire(this.turn, candidate.startedBeforeSpeech);
     // The candidate becomes a normal listening turn that already holds its audio.
@@ -528,7 +560,16 @@ export class LucyLiveSession {
     this.setState('idle');
   }
 
+  /**
+   * The operator cut in while her voice was still audible. A read-back that was cut off was not heard to its end,
+   * so it can no longer be confirmed, even though the server finished sending it long before it finished playing.
+   */
+  private dropProposalIfInterrupted(): void {
+    if (this.proposal && this.ports.now() < this.audibleUntil + AUDIBLE_TAIL_MS) this.proposal = null;
+  }
+
   private onBargeIn(): void {
+    this.dropProposalIfInterrupted();
     // An explicit stop while a candidate is undecided means the browser gave up waiting for
     // a verdict (or has no patience for one) and keeps streaming the operator's words under
     // the candidate's turn id. Treat it as a confirmation so those words are not lost:
@@ -546,6 +587,8 @@ export class LucyLiveSession {
   }
 
   private onPlayed(turnId: string, seq: number, complete: boolean): void {
+    // The browser says it stopped the read-back before its end: nothing it said can be confirmed.
+    if (!complete && this.proposal?.turnId === turnId) this.proposal = null;
     const entry = this.memory.find((m) => m.turnId === turnId);
     if (entry) entry.played.set(seq, complete);
   }
@@ -625,7 +668,9 @@ export class LucyLiveSession {
       this.ports.send({ type: 'transcript', turnId: turn.id, text: transcript, final: true });
       turn.phase = 'thinking';
       this.setState('thinking');
-      await this.answer(turn, transcript);
+      const scripted = await this.planVoiceAnswer(turn, transcript);
+      if (turn.closed) return;
+      await this.answer(turn, transcript, scripted);
     } catch (err) {
       if (turn.superseded) {
         this.ports.warn(`lucy-live: an earlier part of the request could not be transcribed: ${err instanceof Error ? err.message : String(err)}`);
@@ -650,7 +695,63 @@ export class LucyLiveSession {
     return text;
   }
 
-  private async answer(turn: Turn, transcript: string): Promise<void> {
+  /**
+   * Answering a task's question by voice. Returns what she must say instead of asking the model, or
+   * undefined when this turn is an ordinary one. Nothing is sent here except by a confirmed read-back.
+   *
+   * A held read-back is settled by the very next turn, whatever it says: a clear "yes" that did not begin
+   * over her own voice and arrived in time sends it once; "no" cancels it; anything else cancels it and
+   * is then treated as a fresh request (it may name another choice).
+   */
+  private async planVoiceAnswer(turn: Turn, transcript: string): Promise<string | undefined> {
+    const held = this.proposal;
+    this.proposal = null;
+    if (held) {
+      const reply = classifyReply(transcript);
+      if (reply === 'confirm') {
+        if (this.ports.now() > held.until) return ANSWER_TIMED_OUT;
+        if (turn.overlapsAudio) return ANSWER_HEARD_OVER_HER;
+        return this.sendAnswer(held);
+      }
+      if (reply === 'decline') return ANSWER_NOT_SENT;
+    }
+    const asks = this.ports.pendingAsks?.() ?? [];
+    const match = this.ports.matchAnswer;
+    if (asks.length === 0 || !match || turn.overlapsAudio) return undefined;
+    let verdict: AnswerMatch;
+    try {
+      verdict = await match({ transcript, asks, signal: turn.abort.signal });
+    } catch (err) {
+      if (turn.closed) return undefined;
+      this.ports.warn(`lucy-live: could not map the words to a choice: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+    if (turn.closed) return undefined;
+    if (verdict.kind === 'unclear' && asks.length > 1) return buildWhichQuestion(asks);
+    if (verdict.kind !== 'choice') return undefined;
+    // Trust only what the session itself listed: a pick outside the lists is no pick.
+    const ask = asks.find((a) => a.askId === verdict.askId);
+    const label = ask?.options[verdict.optionIndex];
+    if (!ask || label === undefined) return undefined;
+    turn.proposal = { askId: ask.askId, optionIndex: verdict.optionIndex, label };
+    return buildAnswerReadBack(ask, verdict.optionIndex, asks.length);
+  }
+
+  /** Send a confirmed choice, after checking the same question is still waiting with the same choice. */
+  private async sendAnswer(held: VoiceAnswerProposal): Promise<string> {
+    const ask = this.ports.pendingAsks?.().find((a) => a.askId === held.askId);
+    if (!ask || ask.options[held.optionIndex] !== held.label || !this.ports.answerAsk) return ANSWER_NO_LONGER_WAITING;
+    try {
+      const result = await this.ports.answerAsk(held.askId, held.optionIndex);
+      return sayAnswerOutcome(result, held.label);
+    } catch (err) {
+      this.ports.warn(`lucy-live: sending the spoken answer failed: ${err instanceof Error ? err.message : String(err)}`);
+      return sayAnswerOutcome({ ok: false }, held.label);
+    }
+  }
+
+  /** `scripted` is spoken as it is, with no model call; the exchange still enters the history. */
+  private async answer(turn: Turn, transcript: string, scripted?: string): Promise<void> {
     const signal = turn.abort.signal;
     const history = this.historyMessages();
     const memory: ExchangeMemory = {
@@ -715,15 +816,18 @@ export class LucyLiveSession {
 
     try {
       try {
-        for await (const delta of this.ports.streamAnswer({
-          system: buildLucyLivePersona(this.ports.buildBriefing()),
-          history,
-          user: transcript,
-          signal: brainAbort.signal,
-          speechStartedAt: turn.startedAt,
-          overlapsAudio: turn.overlapsAudio,
-          stayQuiet: () => { quiet = true; },
-        })) {
+        const deltas: AsyncIterable<string> = scripted !== undefined
+          ? (async function* () { yield scripted; })()
+          : this.ports.streamAnswer({
+            system: buildLucyLivePersona(this.ports.buildBriefing()),
+            history,
+            user: transcript,
+            signal: brainAbort.signal,
+            speechStartedAt: turn.startedAt,
+            overlapsAudio: turn.overlapsAudio,
+            stayQuiet: () => { quiet = true; },
+          });
+        for await (const delta of deltas) {
           if (turn.closed) return;
           if (mouthFailure !== undefined) break;
           for (const sentence of splitter.push(delta)) speak(sentence);
@@ -780,6 +884,10 @@ export class LucyLiveSession {
         if (at >= 0) this.memory.splice(at, 1);
         if (turn.evicted) this.memory.unshift(turn.evicted);
       }
+    }
+    // Only a read-back she spoke to its end can be confirmed: the window runs from when her voice stops.
+    if (end === 'answered' && turn.proposal) {
+      this.proposal = { ...turn.proposal, turnId: turn.id, until: Math.max(this.ports.now(), this.audibleUntil) + VOICE_ANSWER_CONFIRM_WINDOW_MS };
     }
     this.ports.send({ type: 'turn_done', turnId: turn.id, end, ...(reason ? { reason } : {}) });
     if (settleToIdle) this.setState('idle');
