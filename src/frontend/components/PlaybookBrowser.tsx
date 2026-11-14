@@ -15,7 +15,12 @@ import { useKookrStore } from '../store/useStore.js';
 
 import { projectLabel, projectColor } from '../presentation.js';
 import { PlaybookUsageTracker, matchesUsageKey, snapshotKey } from '../store/playbook-usage.js';
-import { matchPlaybookSearch, playbookSearchWords, type PlaybookMatchTier } from '../playbook-search.js';
+import {
+  matchPlaybookSearch,
+  PLAYBOOK_MATCH_CARD,
+  playbookSearchWords,
+  type PlaybookMatchTier,
+} from '../playbook-search.js';
 import { mergeParamDefaults } from '../store/playbook-params.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/playbook-source-resolver.js';
 import { RecentPaths } from '../store/recent-paths.js';
@@ -453,7 +458,8 @@ export function PlaybookBrowser({
     return () => { cancelled = true; };
   }, [selected, projectSummaries]);
 
-  // Sorted + filtered playbooks: pinned first, then recently used, then alphabetical
+  // Sorted + filtered playbooks: while searching, card-text matches before
+  // instructions-only matches; then pinned, then recently used, then alphabetical
   const sortedPlaybooks = useMemo(() => {
     const recent = usageTracker.getRecent();
 
@@ -476,7 +482,9 @@ export function PlaybookBrowser({
     }
 
     return [...filtered].sort((a, b) => {
-      const tierDiff = (matchTier.get(a) ?? 0) - (matchTier.get(b) ?? 0);
+      // The map is empty when nothing is searched, so every playbook ties here.
+      const tierDiff =
+        (matchTier.get(a) ?? PLAYBOOK_MATCH_CARD) - (matchTier.get(b) ?? PLAYBOOK_MATCH_CARD);
       if (tierDiff !== 0) return tierDiff;
 
       const aPinned =

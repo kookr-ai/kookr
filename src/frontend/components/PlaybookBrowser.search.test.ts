@@ -78,6 +78,31 @@ describe('PlaybookBrowser search', () => {
     await flush();
   }
 
+  function pinButton(name: string): HTMLButtonElement {
+    return Array.from(container.querySelectorAll('.playbook-card'))
+      .find((card) => card.querySelector('.playbook-card-name')?.textContent === name)!
+      .querySelector<HTMLButtonElement>('.playbook-pin-btn')!;
+  }
+
+  /**
+   * Pin one playbook for the duration of `run`, then unpin it. The browser
+   * keeps pins in module state that every test in this file shares, so a pin
+   * left behind would leak into the tests that follow.
+   */
+  async function withPinned(name: string, run: () => Promise<void>): Promise<void> {
+    await act(async () => { pinButton(name).click(); });
+    try {
+      // Proves the click pinned it; card order alone cannot, when the
+      // playbook was already first.
+      expect(pinButton(name).classList.contains('pinned')).toBe(true);
+      await run();
+    } finally {
+      if (pinButton(name).classList.contains('pinned')) {
+        await act(async () => { pinButton(name).click(); });
+      }
+    }
+  }
+
   beforeEach(() => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -134,25 +159,41 @@ describe('PlaybookBrowser search', () => {
 
   test('a pinned playbook with only an instructions match stays below a name match', async () => {
     await flush();
-    // Clicks the pin button on the Deploy card: pins it, or unpins it if pinned.
-    const toggleDeployPin = () => act(async () => {
-      Array.from(container.querySelectorAll('.playbook-card'))
-        .find((card) => card.textContent?.includes('Deploy Convergence'))!
-        .querySelector<HTMLButtonElement>('.playbook-pin-btn')!
-        .click();
-    });
-    await toggleDeployPin();
-    try {
-      // Pinned puts Deploy first when nothing is searched...
-      expect(cardNames()[0]).toBe('Deploy Convergence');
-      // ...but the name match still leads once a query is typed.
+    await withPinned('Deploy Convergence', async () => {
       await search('notebook');
       expect(cardNames()).toEqual(['Notebook Lesson Retrofit Review', 'Deploy Convergence']);
-    } finally {
-      // The usage tracker is module state shared by every test in this file.
-      await search('');
-      await toggleDeployPin();
-    }
+    });
+  });
+
+  test('pinned playbooks still come first among equally good matches', async () => {
+    // "the" is in the description of Deploy and Retrofit, and nowhere in Janitor.
+    await search('the');
+    expect(cardNames()).toEqual(['Deploy Convergence', 'Notebook Lesson Retrofit Review']);
+    await withPinned('Notebook Lesson Retrofit Review', async () => {
+      expect(cardNames()).toEqual(['Notebook Lesson Retrofit Review', 'Deploy Convergence']);
+    });
+  });
+
+  test('searches only the loopable playbooks while that filter is on', async () => {
+    const loopable = playbook({
+      id: 'notebook-loop.md',
+      name: 'Notebook Loop',
+      tags: ['workflow', 'loopable'],
+      effectiveLoop: {
+        iterationCap: 10,
+        costCapUsd: 25,
+        sources: { iterationCap: 'default', costCapUsd: 'default' },
+      },
+    });
+    await act(async () => {
+      useKookrStore.setState({ playbooks: [retrofit, janitor, deploy, loopable] });
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.playbook-filter')!.click();
+    });
+    // Without the filter, "notebook" also finds Retrofit and Deploy.
+    await search('notebook');
+    expect(cardNames()).toEqual(['Notebook Loop']);
   });
 
   test('says so when nothing matches', async () => {

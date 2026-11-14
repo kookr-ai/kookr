@@ -19,8 +19,8 @@ function match(query: string) {
 }
 
 describe('playbookSearchWords', () => {
-  test('splits on whitespace, lowercases, and drops blanks', () => {
-    expect(playbookSearchWords('  Notebook   SHELF ')).toEqual(['notebook', 'shelf']);
+  test('splits on any whitespace, lowercases, and drops blanks', () => {
+    expect(playbookSearchWords('  Notebook \t SHELF\nreview ')).toEqual(['notebook', 'shelf', 'review']);
   });
 
   test('a blank query has no words', () => {
@@ -29,8 +29,12 @@ describe('playbookSearchWords', () => {
 });
 
 describe('matchPlaybookSearch', () => {
-  test('a word in the name or description is a card match', () => {
-    expect(match('retrofit')).toBe(PLAYBOOK_MATCH_CARD);
+  test('a word in the name is a card match', () => {
+    // "review" is in the name only: not in the description, tags or file name.
+    expect(match('review')).toBe(PLAYBOOK_MATCH_CARD);
+  });
+
+  test('a word in the description is a card match, whatever its case', () => {
     expect(match('HOOK')).toBe(PLAYBOOK_MATCH_CARD);
   });
 
@@ -38,12 +42,27 @@ describe('matchPlaybookSearch', () => {
     expect(match('memory')).toBe(PLAYBOOK_MATCH_CARD);
   });
 
-  test('the file name is a card match', () => {
-    expect(match('lesson-retrofit.md')).toBe(PLAYBOOK_MATCH_CARD);
+  test('the file name is a card match, at every keystroke of typing it with its extension', () => {
+    expect(match('lesson-retrofit')).toBe(PLAYBOOK_MATCH_CARD);
+    expect(match('notebook-lesson-retrofit.')).toBe(PLAYBOOK_MATCH_CARD);
+    expect(match('notebook-lesson-retrofit.m')).toBe(PLAYBOOK_MATCH_CARD);
+    expect(match('notebook-lesson-retrofit.md')).toBe(PLAYBOOK_MATCH_CARD);
   });
 
-  test('a word found only in the instructions is a body match', () => {
+  test('the file extension alone matches nothing, so "md" still filters', () => {
+    expect(match('md')).toBeNull();
+    expect(match('.md')).toBeNull();
+  });
+
+  test('a word naming some other file is not shortened to match', () => {
+    // "shelf" is in the instructions; "shelf.md" is nowhere.
+    expect(match('shelf.md')).toBeNull();
+  });
+
+  test('a word found only in the instructions is a body match, whatever its case', () => {
     expect(match('shelf')).toBe(PLAYBOOK_MATCH_BODY);
+    // The instructions say "Take"; the query is lowercased.
+    expect(match('take')).toBe(PLAYBOOK_MATCH_BODY);
   });
 
   test('words may be in any order and in different card fields', () => {
@@ -57,6 +76,14 @@ describe('matchPlaybookSearch', () => {
 
   test('no match when any word appears nowhere', () => {
     expect(match('notebook kubernetes')).toBeNull();
+    expect(match('shelf kubernetes')).toBeNull();
+  });
+
+  test('a word does not match across two fields', () => {
+    // The name ends "Review" and the description starts "Read".
+    expect(match('reviewread')).toBeNull();
+    // "workflow" and "analysis" are neighbouring tags.
+    expect(match('workflowanalysis')).toBeNull();
   });
 
   test('a trailing space does not hide a match', () => {
