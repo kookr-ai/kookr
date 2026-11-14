@@ -483,6 +483,7 @@ const operatorAsksMessage = z.object({
   type: z.literal('operatorAsks'),
   asks: z.array(jsonObject),
   announce: z.string().optional(),
+  serverNow: z.number().optional(),
 });
 
 const operatorAskResultMessage = z.object({

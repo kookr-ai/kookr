@@ -192,7 +192,11 @@ export function announceLaunchReport(
   return announceKeyed(`report:${taskId}:${kind}`, { url: LUCY_LAUNCH_REPORT_SPEAK_PATH, body: { taskId } }, options);
 }
 
+/** Keys whose announcement has started and not yet finished, so they can be cancelled together. */
+const inFlight = new Set<string>();
+
 function announceKeyed(askId: string, request: ClipRequest, options: AnnounceAskOptions): Promise<AskAnnouncementResult> {
+  inFlight.add(askId);
   return prepareClip(askId, options, request)
     .then((prepared) => {
       if (typeof prepared === 'string') return prepared;
@@ -200,7 +204,8 @@ function announceKeyed(askId: string, request: ClipRequest, options: AnnounceAsk
       playLine = run.catch(() => undefined);
       return run;
     })
-    .catch((): AskAnnouncementResult => 'error');
+    .catch((): AskAnnouncementResult => 'error')
+    .finally(() => { inFlight.delete(askId); });
 }
 
 /**
@@ -319,7 +324,16 @@ export function stopAskAnnouncement(askId: string): void {
   retireClip(askId);
 }
 
+/**
+ * The avatar panel is gone: stop what is being read out and cancel every announcement still being
+ * prepared or waiting its turn, so no clip is played after the operator switched the panel off.
+ */
+export function stopAllAskAnnouncements(): void {
+  for (const key of [...inFlight, ...clipByAsk.keys()]) stopAskAnnouncement(key);
+}
+
 export function __resetAskAnnouncementForTests(): void {
+  inFlight.clear();
   clipByAsk.clear();
   closedAsks.clear();
   playLine = Promise.resolve();

@@ -23,7 +23,7 @@ vi.mock('../lucy-live/useLucyLive.js', () => ({
   }),
 }));
 // What Lucy says and when is covered in ask-announcement.test.ts; here only that the panel asks for it.
-const speech = vi.hoisted(() => ({ announceAsk: vi.fn(async () => 'started'), stopAskAnnouncement: vi.fn() }));
+const speech = vi.hoisted(() => ({ announceAsk: vi.fn(async () => 'started'), stopAskAnnouncement: vi.fn(), stopAllAskAnnouncements: vi.fn() }));
 vi.mock('../audio/ask-announcement.js', () => speech);
 
 import { AvatarDock } from './AvatarDock.js';
@@ -62,13 +62,18 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     act(() => { root!.render(<AvatarDock attentionCount={props.attentionCount ?? 0} onAnswerAsk={onAnswerAsk} />); });
   };
   const push = (asks: OperatorAskView[], announce?: string) => act(() => { handleOperatorAsks(asks, announce); });
-  const click = (element: Element | null | undefined) => act(() => { element!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  // A press right after the cards changed is ignored on purpose (see the mis-click test), so a click waits it out first.
+  const click = (element: Element | null | undefined) => {
+    act(() => { vi.setSystemTime(Date.now() + 500); });
+    act(() => { element!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  };
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     document.body.innerHTML = '';
     localStorage.clear();
     vi.clearAllMocks();
+    vi.useFakeTimers({ toFake: ['Date'] });
     onAnswerAsk.mockReturnValue(true);
     __resetLastClipForTests();
     __resetSoundPreferenceForTests();
@@ -83,6 +88,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
   afterEach(() => {
     act(() => root?.unmount());
     root = null;
+    vi.useRealTimers();
     __resetOperatorAsksForTests();
     document.body.innerHTML = '';
   });
@@ -126,11 +132,48 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     expect(onAnswerAsk).toHaveBeenCalledOnce();
   });
 
+  test('a press right after the list changed is ignored, so it cannot answer a card that just moved', () => {
+    render();
+    push([ask()]);
+    act(() => { vi.setSystemTime(Date.now() + 500); });
+    // A newer question arrives and takes the top place; the operator's press was aimed at the old layout.
+    push([ask({ id: 'b2c3d4e5f6a1', question: 'Newer?' }), ask()]);
+    act(() => { vi.setSystemTime(Date.now() + 100); });
+    act(() => { all('avatar-ask-option')[0].dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(onAnswerAsk).not.toHaveBeenCalled();
+    act(() => { vi.setSystemTime(Date.now() + 400); });
+    act(() => { all('avatar-ask-option')[0].dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(onAnswerAsk).toHaveBeenCalledOnce();
+  });
+
+  test('the panel going away cancels announcements still being prepared', () => {
+    render();
+    act(() => root?.unmount());
+    root = null;
+    expect(speech.stopAllAskAnnouncements).toHaveBeenCalled();
+  });
+
+  test('closed cards are timed on the server clock: a browser clock far ahead does not hide a fresh one', () => {
+    const skew = 2 * OPERATOR_ASK_RESOLVED_VISIBLE_MS;
+    render();
+    // The browser's clock is `skew` ahead of the server's. By the server's clock one card closed a second
+    // ago and one closed 11 minutes ago; only the first is still within its 10 minutes.
+    const serverNow = Date.now() - skew;
+    act(() => {
+      handleOperatorAsks([
+        answered('telegram', { id: 'b2c3d4e5f6a1', resolvedAt: serverNow - 1000 }),
+        answered('telegram', { id: 'c3d4e5f6a1b2', resolvedAt: serverNow - OPERATOR_ASK_RESOLVED_VISIBLE_MS - 60_000 }),
+      ], undefined, serverNow);
+    });
+    expect(all('avatar-ask').map((card) => card.dataset.askId)).toEqual(['b2c3d4e5f6a1']);
+  });
+
   test('a typed answer is sent trimmed, and an empty one is not sent', () => {
     render();
     push([ask()]);
     const input = q<HTMLInputElement>('avatar-ask-input')!;
     const form = input.closest('form')!;
+    act(() => { vi.setSystemTime(Date.now() + 500); });
     act(() => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
     expect(onAnswerAsk).not.toHaveBeenCalled();
     act(() => {

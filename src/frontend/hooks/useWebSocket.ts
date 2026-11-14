@@ -383,7 +383,7 @@ export function useWebSocket() {
               break;
             // `kookr ask` questions for Lucy's panel; kept in their own small store so only the panel re-renders.
             case 'operatorAsks':
-              handleOperatorAsks(msg.asks, msg.announce);
+              handleOperatorAsks(msg.asks, msg.announce, msg.serverNow);
               break;
             // Lucy's launch card, its end and the report of a task she started (issue #3676).
             case 'lucy_launch':

@@ -11,6 +11,7 @@ import {
   handleOperatorAsks,
   markAskSubmitting,
   onAskAnnounced,
+  askClockOffsetMs,
   onAskClosed,
   visibleOperatorAsks,
 } from './operator-asks.js';
@@ -30,6 +31,14 @@ const answeredOnTelegram = (over: Partial<OperatorAskView> = {}): OperatorAskVie
 
 describe('operator asks store', () => {
   beforeEach(() => __resetOperatorAsksForTests());
+
+  test('remembers how far the server clock is from the browser clock, and ignores a list without it', () => {
+    expect(askClockOffsetMs()).toBe(0);
+    handleOperatorAsks([], undefined, Date.now() + 3_600_000);
+    expect(Math.abs(askClockOffsetMs() - 3_600_000)).toBeLessThan(1000);
+    handleOperatorAsks([]);
+    expect(Math.abs(askClockOffsetMs() - 3_600_000)).toBeLessThan(1000);
+  });
 
   test('holds the list the server sent, newest state wins', () => {
     handleOperatorAsks([ask()]);

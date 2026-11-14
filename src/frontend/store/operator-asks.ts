@@ -85,6 +85,14 @@ const REFUSAL_TEXT: Record<AnswerRejection | 'unavailable' | 'offline' | 'no_rep
   failed: 'Kookr could not record your answer. Try again.',
 };
 
+/** Server clock minus this browser's clock, from the last list. Zero until a server that sends its time is heard. */
+let clockOffsetMs = 0;
+
+/** Add this to the browser's `Date.now()` to get the server's time, so a browser clock that is off does not hide or keep closed cards wrongly. */
+export function askClockOffsetMs(): number {
+  return clockOffsetMs;
+}
+
 function publish(): void {
   const asks = serverAsks.filter((ask) => !dismissed.has(ask.id));
   snapshot = asks.length === 0 && Object.keys(submit).length === 0 ? EMPTY : { asks, submit: { ...submit } };
@@ -95,7 +103,8 @@ function publish(): void {
  * Apply an `operatorAsks` message. `announce` names the question that was just
  * created; listeners registered with {@link onAskAnnounced} hear it once.
  */
-export function handleOperatorAsks(asks: readonly OperatorAskView[], announce?: string): void {
+export function handleOperatorAsks(asks: readonly OperatorAskView[], announce?: string, serverNow?: number): void {
+  if (typeof serverNow === 'number' && Number.isFinite(serverNow)) clockOffsetMs = serverNow - Date.now();
   const before = new Map(serverAsks.map((ask) => [ask.id, ask]));
   serverAsks = asks;
   const ids = new Set(asks.map((ask) => ask.id));
@@ -193,6 +202,7 @@ export function useOperatorAsks(): OperatorAsksSnapshot {
 }
 
 export function __resetOperatorAsksForTests(): void {
+  clockOffsetMs = 0;
   serverAsks = [];
   dismissed = new Set();
   submit = {};

@@ -578,6 +578,8 @@ export type ServerMessage =
       type: 'operatorAsks';
       asks: OperatorAskView[];
       announce?: string;
+      /** The server's clock (ms since epoch) when the list was built, so the panel can time closed cards without trusting the browser's clock. */
+      serverNow?: number;
     }
   | {
       /** Reply to the sender of an `answerAsk`: whether the answer was recorded, and if not, why. */
