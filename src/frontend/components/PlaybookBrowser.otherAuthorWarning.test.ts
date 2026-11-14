@@ -40,6 +40,13 @@ const implementIssuePlaybook: Playbook = {
   scope: 'project',
 };
 
+const deliverIssuesPlaybook: Playbook = {
+  ...implementIssuePlaybook,
+  id: 'parallel-issue-batch.md',
+  name: 'Deliver GitHub Issues',
+  description: 'Plan and deliver several issues',
+};
+
 const otherPlaybook: Playbook = {
   id: 'other.md',
   name: 'Other',
@@ -66,7 +73,7 @@ describe('PlaybookBrowser other-author warning', () => {
     localStorage.clear();
     syncGlobalStore();
     useKookrStore.setState({
-      playbooks: [implementIssuePlaybook, otherPlaybook],
+      playbooks: [implementIssuePlaybook, deliverIssuesPlaybook, otherPlaybook],
       playbooksLoading: false,
       availableAgentTypes: [],
       defaultAgentType: 'claude-code',
@@ -166,6 +173,22 @@ describe('PlaybookBrowser other-author warning', () => {
     expect(sent).toHaveLength(0);
     expect(closeCount).toBe(0);
     expect(localStorage.getItem(SUPPRESS_KEY)).toBeNull();
+  });
+
+  test('also gates the Deliver GitHub Issues playbook (parallel-issue-batch.md)', async () => {
+    await flush();
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((c) => c.textContent?.includes('Deliver GitHub Issues'))!
+        .click();
+    });
+    await flush();
+    await act(async () => { setSelect('allowOtherAuthors', 'true'); });
+    await act(async () => { submitForm(); });
+    await flush();
+
+    expect(container.querySelector('.confirm-dialog')).toBeTruthy();
+    expect(sent).toHaveLength(0);
   });
 
   test('confirming without checkbox launches and does not persist suppression', async () => {

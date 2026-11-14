@@ -98,11 +98,15 @@ function formatRelativeTime(ms: number, nowMs = Date.now()): string {
 const FILTERABLE_THRESHOLD = 5;
 
 /**
- * Playbook id (relative path) that gates the other-author warning. The
- * playbook itself enforces the author filter; this UI gate exists to make sure
- * the user has acknowledged the prompt-injection risk before opting in.
+ * Playbook ids (relative paths) that gate the other-author warning. Both
+ * issue-delivery playbooks expose `allowOtherAuthors`; the playbooks enforce
+ * the author filter, and this UI gate makes sure the user has acknowledged
+ * the prompt-injection risk before opting in.
  */
-const IMPLEMENT_GITHUB_ISSUE_ID = 'implement-github-issue.md';
+const OTHER_AUTHOR_WARNING_PLAYBOOK_IDS: ReadonlySet<string> = new Set([
+  'implement-github-issue.md',
+  'parallel-issue-batch.md',
+]);
 const SUPPRESS_OTHER_AUTHOR_WARNING_KEY = 'kookr:suppressOtherAuthorWarning';
 
 function TagIcon({ tag }: { tag: 'workflow' | 'loopable' }): React.ReactElement {
@@ -526,12 +530,12 @@ export function PlaybookBrowser({
 
   /**
    * Whether to gate this launch behind the other-author warning. True when
-   * the implement-github-issue playbook is opting into other-author issues
+   * an issue-delivery playbook is opting into other-author issues
    * AND the user has not previously dismissed the warning permanently.
    */
   function needsOtherAuthorWarning(): boolean {
     if (!selected) return false;
-    if (selected.id !== IMPLEMENT_GITHUB_ISSUE_ID) return false;
+    if (!OTHER_AUTHOR_WARNING_PLAYBOOK_IDS.has(selected.id)) return false;
     if (paramValues.allowOtherAuthors !== 'true') return false;
     return localStorage.getItem(SUPPRESS_OTHER_AUTHOR_WARNING_KEY) !== '1';
   }

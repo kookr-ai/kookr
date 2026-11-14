@@ -473,7 +473,7 @@ Body.
     const playbook = await readFile('plugin/playbooks/parallel-issue-batch.md', 'utf8');
     const parsed = parsePlaybook(playbook, 'parallel-issue-batch.md', '/project');
 
-    expect(parsed.name).toBe('Parallel Issue Batch');
+    expect(parsed.name).toBe('Deliver GitHub Issues');
     expect(parsed.parameters.map((p) => p.name)).toContain('repoFullName');
     expect(parsed.effectiveLoop?.stopPredicate).toContain('.batch-stop');
     expect(parsed.body).toContain('write-scope matrix');

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parsePlaybook } from './playbook-parser.js';
+import { interpolateParameters, parsePlaybook } from './playbook-parser.js';
 
 /**
  * Contract tests for the parallel-issue-batch playbook's headless report-and-exit
@@ -28,7 +28,7 @@ describe('parallel-issue-batch playbook: headless report-and-exit (#1714)', () =
   const pb = parsePlaybook(content, 'parallel-issue-batch.md', '/');
 
   test('parses with a name and description', () => {
-    expect(pb.name).toBe('Parallel Issue Batch');
+    expect(pb.name).toBe('Deliver GitHub Issues');
     expect(pb.description.length).toBeGreaterThan(0);
   });
 
@@ -397,6 +397,114 @@ run_case conflict '[{"unit_id":"u-2757","issues":[2757],"issue":2758}]'
       expect(output).toContain('conflict:0|BLOCKER primary #2757: could not bind every issue');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Contract tests for RFC unified-issue-delivery Slice A1: the playbook is the
+ * "Deliver GitHub Issues" front door with a deterministic selector (including a
+ * frozen natural-language resolution), an opt-in plan approval that never
+ * strands a headless run, observable-feature routing, child efficiency rules,
+ * and run metrics — while bundles stay disabled and existing launches
+ * (blank / numbers / qualifier filters, onAmbiguity values) keep their meaning.
+ */
+describe('parallel-issue-batch playbook: unified issue delivery front door (RFC unified-issue-delivery A1)', () => {
+  const playbookPath = join(import.meta.dirname, '..', '..', 'plugin', 'playbooks', 'parallel-issue-batch.md');
+  const content = readFileSync(playbookPath, 'utf-8');
+  const pb = parsePlaybook(content, 'parallel-issue-batch.md', '/');
+  const param = (name: string) => pb.parameters.find((p) => p.name === name);
+
+  test('approvePlan is optional and defaults to false so stored schedules never start asking', () => {
+    const approve = param('approvePlan');
+    expect(approve).toBeDefined();
+    expect(approve?.required).toBe(false);
+    expect(approve?.default).toBe('false');
+    expect(approve?.options?.map((o) => o.value)).toEqual(['false', 'true']);
+  });
+
+  test('approvePlan actually reaches the supervisor prompt (and defaults to false when unset)', () => {
+    const base = { repoFullName: 'owner/repo' };
+    const asked = interpolateParameters(pb.body, pb.parameters, { ...base, approvePlan: 'true' });
+    const unset = interpolateParameters(pb.body, pb.parameters, base);
+    expect(asked).toContain('- approvePlan: `true`');
+    expect(unset).toContain('- approvePlan: `false`');
+    expect(asked).not.toEqual(unset);
+  });
+
+  test('a proposal-only run is never resumed by Phase 0', () => {
+    expect(pb.body).toContain('only `plan-proposal.json` (an unapproved plan, Phase 3a) is **never** active');
+  });
+
+  test('strong-route effort is only added for agents that accept it', () => {
+    expect(pb.body).toContain('claude-code|codex-cli)');
+    expect(pb.body).not.toContain('[ "$CHILD_AGENT" != "grok-build" ]; then\n     AGENT_FLAG="$AGENT_FLAG --effort high"');
+  });
+
+  test('onAmbiguity keeps exactly its existing values', () => {
+    expect(param('onAmbiguity')?.options?.map((o) => o.value)).toEqual(['ask', 'auto-safe-subset', 'auto-stop']);
+  });
+
+  test('rejects reserved qualifiers before any natural-language fallback', () => {
+    const reserved = pb.body.indexOf('**Reserved qualifiers fail closed.**');
+    const natural = pb.body.indexOf('**Natural language**');
+    expect(reserved).toBeGreaterThan(-1);
+    expect(natural).toBeGreaterThan(reserved);
+    expect(pb.body).toContain('Never fall through to natural language');
+    for (const token of ['repo:', 'state:', 'is:', 'archived:', 'linked:']) {
+      expect(pb.body.slice(reserved, natural)).toContain(token);
+    }
+  });
+
+  test('uses the server per-token numbers rule and defines natural language deterministically', () => {
+    expect(pb.body).toContain('`^#?\\d+$`');
+    expect(pb.body).toContain('parseExplicitIssuePins');
+    expect(pb.body).toContain('no qualifier token at all');
+  });
+
+  test('freezes a natural-language resolution so Ralph iterations never re-resolve', () => {
+    expect(pb.body).toContain('SELECTOR_FILE="$STATE_DIR/selector.json"');
+    expect(pb.body).toContain('"resolvedNumbers"');
+    expect(pb.body).toContain('the selection never drifts between iterations');
+    expect(pb.body).toContain('only after that issue passed the author check');
+  });
+
+  test('an unapproved plan goes to the proposal file, never to the resumable selection file', () => {
+    expect(pb.body).toContain('PROPOSAL_FILE="$STATE_DIR/plan-proposal.json"');
+    expect(pb.body).toContain('## Phase 3a: Plan approval (`approvePlan`)');
+    expect(pb.body).toContain('write the matrix to `$PROPOSAL_FILE` **instead of** `$SELECTION_FILE`');
+  });
+
+  test('a headless approval request exits blocked without waiting and without faking a drained backlog', () => {
+    const phase = pb.body.slice(pb.body.indexOf('## Phase 3a'), pb.body.indexOf('## Phase 4'));
+    expect(phase).toContain('never ask and never wait');
+    expect(phase).toContain('outcome: "blocked"');
+    expect(phase).toContain('Do **not** write `blocked-empty`');
+    expect(phase).toContain('no per-issue blocker lines');
+    expect(phase).toContain('STOP: BLOCKED - approval requested');
+  });
+
+  test('routes units by observable features and keeps the multi-issue spawn guard', () => {
+    expect(pb.body).toContain('**Route the unit by observable features**');
+    expect(pb.body).toContain('`strong`');
+    expect(pb.body).toContain('--effort high');
+    expect(pb.body).toContain('"route": "direct"');
+    expect(pb.body).toContain('if [ "$UNIT_COUNT" -gt 1 ]; then');
+  });
+
+  test('child prompt carries the efficiency rules and forbids nested task spawns', () => {
+    const template = pb.body.slice(pb.body.indexOf('Implement the following GitHub issue in <owner/repo>'));
+    expect(template).toContain('Efficiency (follow these');
+    expect(template).toContain('**never spawn Kookr tasks**');
+    // The efficiency block must not contain check_child_prompt's merge-grep
+    // strings, or it could mask a dropped merge-review bullet.
+    const efficiency = template.slice(template.indexOf('Efficiency (follow these'), template.indexOf('Concurrent-task note:'));
+    expect(efficiency).not.toContain('independent-merge-review');
+  });
+
+  test('outcome record carries additive run metrics', () => {
+    for (const field of ['"issuesDelivered"', '"prsMerged"', '"wallClockMinutes"']) {
+      expect(pb.body).toContain(field);
     }
   });
 });

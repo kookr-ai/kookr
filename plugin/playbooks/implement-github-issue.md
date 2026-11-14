@@ -1,6 +1,6 @@
 ---
 name: Implement GitHub Issue
-description: Pick a GitHub issue (or batch), implement it in a worktree, and open a PR
+description: Single-issue delivery engine — pick a GitHub issue (or batch, one issue per run), implement it in a worktree, and open a PR. Used by Ralph loops, self-continuation chains, and other playbooks. To deliver several issues with a plan, natural-language selection, and parallel children, launch "Deliver GitHub Issues" (parallel-issue-batch.md) instead.
 repo-tags: [github]
 tags: [workflow, loopable]
 dependencies: [kb]
