@@ -18,7 +18,7 @@ describe('resolveLucyOperatorConfig', () => {
         apiKey: 'sk-or-key',
         model: 'deepseek/deepseek-v4.1-flash-1017',
         baseUrl: 'https://openrouter.ai/api/v1',
-        providers: ['cohere/fp8', 'deepinfra/fp8'],
+        providers: ['cohere/fp8'],
         reasoning: 'medium',
         appTitle: 'Kookr',
       },
@@ -61,7 +61,7 @@ describe('resolveLucyOperatorConfig', () => {
 
   test.each([['cohere fp8'], ['https://evil.example'], [','], ['cohere/fp8,{"order":1}']])('a malformed provider list %j falls back to the default with a warning', (value) => {
     const result = resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: 'true', KOOKR_LUCY_OPERATOR_PROVIDERS: value });
-    expect(result).toMatchObject({ ok: true, model: { providers: ['cohere/fp8', 'deepinfra/fp8'] } });
+    expect(result).toMatchObject({ ok: true, model: { providers: ['cohere/fp8'] } });
     expect(result.enabled && result.warnings).toHaveLength(1);
   });
 

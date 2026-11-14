@@ -27,7 +27,7 @@ on issue #3632.
 | Setting | Default | What it does |
 |---|---|---|
 | `KOOKR_LUCY_OPERATOR_MODEL` | `deepseek/deepseek-v4.1-flash-1017` | The OpenRouter model that answers. It must support tool calls. |
-| `KOOKR_LUCY_OPERATOR_PROVIDERS` | `cohere/fp8,deepinfra/fp8` | The providers allowed to serve it, tried in this order. No other provider is used. `any` lets OpenRouter choose. |
+| `KOOKR_LUCY_OPERATOR_PROVIDERS` | `cohere/fp8` | The providers allowed to serve it, tried in this order. No other provider is used. `any` lets OpenRouter choose. |
 | `KOOKR_LUCY_OPERATOR_REASONING` | `medium` | How much the model thinks before answering: `none`, `low`, `medium` or `high`. |
 
 ## Trying it
