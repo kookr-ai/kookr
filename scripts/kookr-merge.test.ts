@@ -45,6 +45,7 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -161,6 +162,9 @@ set -eu
 DIR=${JSON.stringify(dir)}
 args="$*"
 printf '%s\\n' "$args" >> "$DIR/calls.log"
+# The directory each gh call ran from: without --repo, gh resolves the PR from
+# the git remote of its cwd, so \`kookr merge\` must keep the caller's cwd.
+printf '%s\\n' "$PWD" >> "$DIR/cwd.log"
 case "$args" in
   *"--json state,mergedAt"*|*"--json mergedAt,state"*|*"--json mergedAt"*)
     [ ${opts.verificationExit ?? 0} -eq 0 ] || exit ${opts.verificationExit ?? 0}
@@ -1375,6 +1379,21 @@ describe('kookr merge dispatches the wrapper from any cwd (#3641)', () => {
       const result = runKookr(stub, elsewhere, ['123', '--repo', 'owner/repo']);
       expect(result.status).toBe(4);
       expect(result.calls.some((call) => call.startsWith('pr merge 123'))).toBe(false);
+    } finally {
+      rmSync(stub, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('without --repo, runs gh from the caller\'s cwd so the PR resolves from that repository', () => {
+    const stub = makeStubDir({ checksResponses: [CLEAN], reviewJson: REVIEW_VIEW, modernGh: true });
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'kookr-merge-elsewhere-')));
+    try {
+      const result = runKookr(stub, elsewhere, ['123']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.calls).toContain(`pr merge 123 --squash --match-head-commit ${REVIEWED_SHA}`);
+      const cwds = new Set(readFileSync(join(stub, 'cwd.log'), 'utf8').trim().split('\n'));
+      expect([...cwds]).toEqual([elsewhere]);
     } finally {
       rmSync(stub, { recursive: true, force: true });
       rmSync(elsewhere, { recursive: true, force: true });

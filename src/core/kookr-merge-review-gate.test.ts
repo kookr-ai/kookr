@@ -485,7 +485,7 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     // The merge is the atomic part; the branch cleanup is not. Reporting failure
     // here would tell the caller a merged PR did not merge.
     writeFileSync(viewFile, passView());
-    writeFileSync(apiDeleteStatusFile, '422');
+    writeFileSync(apiDeleteStatusFile, '403');
     const res = runCombined();
     expect(res.status).toBe(0);
     expect(res.out).toMatch(/merged PR #123/);
