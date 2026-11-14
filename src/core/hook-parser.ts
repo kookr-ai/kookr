@@ -230,6 +230,7 @@ function normalizeHookPayload(parsed: RawHookPayload): AgentEvent | null {
         sessionId,
         lastMessage: parsed.last_assistant_message ?? '',
         cwd: parsed.cwd,
+        ...(parsed.transcript_path ? { transcriptPath: parsed.transcript_path } : {}),
         ...(activeBackgroundTaskCount !== undefined ? { activeBackgroundTaskCount } : {}),
         ...(activeSessionCronCount !== undefined ? { activeSessionCronCount } : {}),
       };
@@ -242,6 +243,7 @@ function normalizeHookPayload(parsed: RawHookPayload): AgentEvent | null {
         error: parsed.error ?? 'unknown',
         lastMessage: parsed.last_assistant_message ?? '',
         cwd: parsed.cwd,
+        ...(parsed.transcript_path ? { transcriptPath: parsed.transcript_path } : {}),
       };
 
     case 'PermissionRequest':

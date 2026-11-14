@@ -13,8 +13,8 @@ export interface SkillListingCheckProcessorDeps {
 export interface SkillListingCheckProcessor {
   /**
    * Called on a Stop event; runs the check once per task, in the background.
-   * `transcriptPath` is the Stop hook's own transcript path (the reliable
-   * source: Kookr does not store it on the session record).
+   * `transcriptPath` is the Stop hook's own transcript path: the session
+   * record holds one only when it was set at the first SessionStart.
    */
   process(stopTask: Pick<Task, 'id'> | undefined, tmuxName: string, transcriptPath?: string): Promise<void>;
 }

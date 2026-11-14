@@ -112,6 +112,7 @@ describe('Hook Event Parser', () => {
       lastMessage:
         'There are **4 hook types** in this file: PreToolUse, PostToolUse, Stop, and SessionStart.',
       cwd: '/workspace/kookr',
+      transcriptPath: '~/.claude/projects/-home-jean-git-kookr/ecdffeda-e0fc-490d-9efe-3347d80fb85e.jsonl',
     });
   });
 
@@ -134,6 +135,7 @@ describe('Hook Event Parser', () => {
       sessionId: 's1',
       lastMessage: 'Done.',
       cwd: '/workspace/kookr',
+      transcriptPath: '/tmp/t.jsonl',
       activeBackgroundTaskCount: 1,
       activeSessionCronCount: 0,
     });
@@ -246,6 +248,7 @@ describe('Hook Event Parser', () => {
       sessionId: 's1',
       lastMessage: 'Waiting on scheduled work.',
       cwd: '/workspace/kookr',
+      transcriptPath: '/tmp/t.jsonl',
       activeBackgroundTaskCount: 0,
       activeSessionCronCount: 1,
     });
@@ -337,6 +340,7 @@ describe('Hook Event Parser', () => {
       error: 'billing_error',
       lastMessage: 'Credit balance is too low',
       cwd: '/workspace/kookr',
+      transcriptPath: '~/.claude/projects/-home-jean-git-kookr/43871e1c-0f8f-4e21-9fc3-59b18e4a5585.jsonl',
     });
   });
 
@@ -429,5 +433,24 @@ describe('Hook Event Parser', () => {
       toolUseId: 'toolu_01',
       cwd: '/cwd',
     });
+  });
+});
+
+describe('Stop / StopFailure carry the transcript path', () => {
+  test('a raw Stop payload keeps transcript_path as transcriptPath', () => {
+    const ev = parseHookEvent(JSON.stringify({
+      session_id: 's', hook_event_name: 'Stop', transcript_path: '/x/t.jsonl', last_assistant_message: 'hi', cwd: '/x',
+    }));
+    expect(ev).toMatchObject({ type: 'stop', transcriptPath: '/x/t.jsonl' });
+  });
+  test('a raw StopFailure payload keeps transcript_path as transcriptPath', () => {
+    const ev = parseHookEvent(JSON.stringify({
+      session_id: 's', hook_event_name: 'StopFailure', transcript_path: '/x/t.jsonl', error: 'e', cwd: '/x',
+    }));
+    expect(ev).toMatchObject({ type: 'stop_failure', transcriptPath: '/x/t.jsonl' });
+  });
+  test('no transcript_path → no transcriptPath key', () => {
+    const ev = parseHookEvent(JSON.stringify({ session_id: 's', hook_event_name: 'Stop', cwd: '/x' }));
+    expect(ev).not.toHaveProperty('transcriptPath');
   });
 });
