@@ -17,6 +17,8 @@ import {
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { aSession, aTask } from '../core/__fixtures__/task-builders.js';
+import { Monitor } from '../core/monitor.js';
+import { AttentionQueue } from '../core/attention-queue.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 
@@ -393,8 +395,8 @@ describe('handleTerminalKeystroke', () => {
 
     handleTerminalKeystroke(deps, 'kookr-session-1');
 
-    // Should have gone through handleTerminalInput path
-    expect(deps.monitor.markInputReceived).toHaveBeenCalledWith('kookr-session-1');
+    // Should have gone through handleTerminalInput path, tagged as a raw key
+    expect(deps.monitor.markInputReceived).toHaveBeenCalledWith('kookr-session-1', { source: 'keystroke' });
     expect(deps.abortPendingSuggestion).toHaveBeenCalledWith('kookr-session-1');
   });
 
@@ -412,6 +414,23 @@ describe('handleTerminalKeystroke', () => {
     expect(deps.monitor.isPermissionBlocked).toHaveBeenCalledWith('kookr-session-1');
     expect(deps.monitor.markInputReceived).not.toHaveBeenCalled();
     expect(deps.abortPendingSuggestion).not.toHaveBeenCalled();
+  });
+
+  test('keeps a real Monitor awaiting the choice after arrow + Enter at a permission prompt (#3516)', () => {
+    const monitor = new Monitor(new TaskStore(), new AttentionQueue());
+    monitor.processEvents('kookr-session-1', [{
+      type: 'permission_request', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'ls' },
+    }]);
+    const deps = makeTerminalInputDeps({ monitor });
+
+    // SessionBridge.notifyInput order: the keystroke callback fires first,
+    // then the Enter callback for a byte sequence containing \r.
+    handleTerminalKeystroke(deps, 'kookr-session-1');
+    handleTerminalInput(deps, 'kookr-session-1');
+
+    expect(monitor.isPermissionBlocked('kookr-session-1')).toBe(false);
+    expect(monitor.isAwaitingChoice('kookr-session-1')).toBe(true);
+    expect(deps.broadcastToAll).toHaveBeenCalledTimes(1);
   });
 });
 

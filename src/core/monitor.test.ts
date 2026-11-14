@@ -1092,6 +1092,44 @@ describe('Monitor', () => {
     test('is false for an unknown agent', () => {
       expect(monitor.isAwaitingChoice('nobody')).toBe(false);
     });
+
+    describe('keystroke overlays (issue #3516)', () => {
+      test('stays true after a dashboard keystroke at a tool permission prompt, while the finding clears', () => {
+        monitor.processEvents('agent-1', [makePermissionRequest('s1', 'Bash')]);
+        expect(monitor.markInputReceived('agent-1', { source: 'keystroke' })).toBe(true);
+        expect(monitor.isPermissionBlocked('agent-1')).toBe(false);
+        expect(monitor.isAwaitingChoice('agent-1')).toBe(true);
+      });
+
+      test('stays true when notifications and more keystroke overlays interleave after the prompt', () => {
+        monitor.processEvents('agent-1', [makePermissionRequest('s1', 'Bash')]);
+        expect(monitor.markInputReceived('agent-1', { source: 'keystroke' })).toBe(true);
+        monitor.processEvents('agent-1', [
+          { type: 'notification', sessionId: 's1', notificationType: 'idle_prompt', message: 'waiting' },
+          { type: 'input_received', sessionId: 's1', source: 'keystroke' },
+        ]);
+        expect(monitor.isAwaitingChoice('agent-1')).toBe(true);
+      });
+
+      test('is false after a deliberate answer (approve/deny button, remote approval), which records an untagged overlay', () => {
+        monitor.processEvents('agent-1', [makePermissionRequest('s1', 'Bash')]);
+        expect(monitor.markInputReceived('agent-1')).toBe(true);
+        expect(monitor.isAwaitingChoice('agent-1')).toBe(false);
+      });
+
+      test.each([
+        ['tool_result', makeToolResult('s1', 'Bash')],
+        ['user_prompt', { type: 'user_prompt', sessionId: 's1', prompt: 'next' } as AgentEvent],
+        ['stop', makeStop('s1', 'done')],
+        ['a new tool use', makeToolUse('s1', 'Read')],
+        ['stop_failure', makeStopFailure('s1')],
+      ])('is false once hook evidence (%s) follows a keystroke overlay', (_label, resolution) => {
+        monitor.processEvents('agent-1', [makePermissionRequest('s1', 'Bash')]);
+        monitor.markInputReceived('agent-1', { source: 'keystroke' });
+        monitor.processEvents('agent-1', [resolution]);
+        expect(monitor.isAwaitingChoice('agent-1')).toBe(false);
+      });
+    });
   });
 
   describe('isPermissionBlocked', () => {

@@ -243,8 +243,11 @@ export interface TerminalInputDeps {
 export function handleTerminalInput(
   deps: TerminalInputDeps,
   sessionName: string,
+  opts?: { source?: 'keystroke' },
 ): void {
-  const changed = deps.monitor.markInputReceived(sessionName);
+  const changed = opts
+    ? deps.monitor.markInputReceived(sessionName, opts)
+    : deps.monitor.markInputReceived(sessionName);
   if (changed) {
     deps.watchdog?.recordInputReceived(sessionName);
     deps.abortPendingSuggestion(sessionName);
@@ -259,14 +262,16 @@ export function handleTerminalInput(
 /**
  * Handle any keystroke on a terminal session.  Only acts when the agent is
  * permission-blocked (single-char responses like 'y'/'a'/'n' don't require
- * Enter).
+ * Enter). The overlay is tagged `keystroke` because the key may only move the
+ * highlight, leaving the prompt on screen, so the choice-dialog input guard
+ * keeps refusing replies until a hook event shows the prompt resolved (#3516).
  */
 export function handleTerminalKeystroke(
   deps: TerminalInputDeps,
   sessionName: string,
 ): void {
   if (deps.monitor.isPermissionBlocked(sessionName)) {
-    handleTerminalInput(deps, sessionName);
+    handleTerminalInput(deps, sessionName, { source: 'keystroke' });
   }
 }
 
