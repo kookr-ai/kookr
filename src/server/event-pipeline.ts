@@ -718,7 +718,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     if (pipelineEvent.type === 'stop' || pipelineEvent.type === 'stop_failure') {
       const stopTask = ownerTask ?? undefined;
       stopTokenScanProcessor.process(stopTask);
-      void skillListingCheckProcessor.process(stopTask, tmuxName);
+      void skillListingCheckProcessor.process(stopTask, tmuxName, pipelineEvent.transcriptPath);
       ralphStopProcessor.process(stopTask, tmuxName, pipelineEvent);
     }
 
