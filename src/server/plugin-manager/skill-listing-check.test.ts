@@ -89,6 +89,26 @@ describe('skill listing check', () => {
     });
   });
 
+  test('processor: uses the Stop event transcript path when the session record has none', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'kookr-skill-listing-'));
+    const path = join(dir, 't.jsonl');
+    writeFileSync(path, TRANSCRIPT);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const loadout: TaskLoadoutRecord = {
+      resolved: { enabledOverrides: { 'notes@m': true }, deniedSkills: [] },
+      winningLevel: 'fleet', mode: 'bypass', settingsHash: null, settingsPath: null, recordedAt: 'then',
+      plugins: [{ id: 'notes@m', version: '1.0.0', installPath: null }], skipped: [],
+    };
+    // As in production: the session record carries no transcriptPath.
+    let task = { id: 't1', loadout, sessions: [{ tmuxSession: 'kookr-1' }] } as unknown as Task;
+    const taskStore = {
+      getTask: () => task,
+      setLoadout: (_id: string, l: TaskLoadoutRecord | undefined) => { task = { ...task, loadout: l } as Task; return task; },
+    };
+    await createSkillListingCheckProcessor({ taskStore }).process({ id: 't1' }, 'kookr-1', path);
+    expect(task.loadout?.skillCheck?.results).toEqual({ 'notes@m': 'skills_seen' });
+  });
+
   test('processor: a task with no given plugins is never read', async () => {
     const read = vi.fn();
     const processor = createSkillListingCheckProcessor({

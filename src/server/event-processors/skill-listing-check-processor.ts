@@ -11,8 +11,12 @@ export interface SkillListingCheckProcessorDeps {
 }
 
 export interface SkillListingCheckProcessor {
-  /** Called on a Stop event; runs the check once per task, in the background. */
-  process(stopTask: Pick<Task, 'id'> | undefined, tmuxName: string): Promise<void>;
+  /**
+   * Called on a Stop event; runs the check once per task, in the background.
+   * `transcriptPath` is the Stop hook's own transcript path (the reliable
+   * source: Kookr does not store it on the session record).
+   */
+  process(stopTask: Pick<Task, 'id'> | undefined, tmuxName: string, transcriptPath?: string): Promise<void>;
 }
 
 /**
@@ -29,7 +33,7 @@ export function createSkillListingCheckProcessor(
   const now = deps.now ?? (() => new Date());
   const inFlight = new Set<string>();
   return {
-    async process(stopTask, tmuxName) {
+    async process(stopTask, tmuxName, eventTranscriptPath) {
       // Fire-and-forget from the event pipeline: this must never reject.
       if (!stopTask || inFlight.has(stopTask.id)) return;
       inFlight.add(stopTask.id);
@@ -37,7 +41,8 @@ export function createSkillListingCheckProcessor(
         const task = deps.taskStore.getTask(stopTask.id);
         const record = task?.loadout;
         if (!task || !record?.plugins?.length || record.skillCheck) return;
-        const transcriptPath = task.sessions.find((s) => s.tmuxSession === tmuxName)?.transcriptPath;
+        const transcriptPath =
+          eventTranscriptPath ?? task.sessions.find((s) => s.tmuxSession === tmuxName)?.transcriptPath;
         if (!transcriptPath) return;
         const names = await read(transcriptPath);
         if (!names) return;
