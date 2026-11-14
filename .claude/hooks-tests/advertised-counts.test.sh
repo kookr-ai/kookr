@@ -47,13 +47,17 @@ AGENT_COUNT=$(find "$AGENTS_DIR" -mindepth 1 -maxdepth 1 -name '*.md' -type f | 
 printf 'actual: %s skills, %s review subagents\n' "$SKILL_COUNT" "$AGENT_COUNT"
 
 # --- advertised counts extracted from the shipped text ----------------------
-# grep -oE isolates the "<n> skills" / "<n> review subagents" phrases; head -1
-# guards against multiple matches in one file.
+# grep -oE isolates the "<n> skills" / "<n> [review ]subagents" phrases; head -1
+# guards against multiple matches in one file. The shipped descriptions say
+# "<n> subagents" (issue #3538), so "review " is optional — the count, not the
+# adjective, is what this guard pins.
 extract() { grep -oE "$2" "$1" | head -1 | grep -oE '^[0-9]+'; }
 
 MKT_SKILLS=$(extract "$MARKETPLACE" '[0-9]+ skills' || true)
-MKT_AGENTS=$(extract "$MARKETPLACE" '[0-9]+ review subagents' || true)
-PLUGIN_AGENTS=$(extract "$PLUGIN_JSON" '[0-9]+ review subagents' || true)
+AGENTS_RE='[0-9]+ (review )?subagents'
+MKT_AGENTS=$(extract "$MARKETPLACE" "$AGENTS_RE" || true)
+PLUGIN_SKILLS=$(extract "$PLUGIN_JSON" '[0-9]+ skills' || true)
+PLUGIN_AGENTS=$(extract "$PLUGIN_JSON" "$AGENTS_RE" || true)
 
 assert_count() {
   local label="$1" advertised="$2" actual="$3"
@@ -68,6 +72,7 @@ assert_count() {
 
 assert_count "marketplace.json skills"          "$MKT_SKILLS"    "$SKILL_COUNT"
 assert_count "marketplace.json review subagents" "$MKT_AGENTS"   "$AGENT_COUNT"
+assert_count "plugin.json skills"               "$PLUGIN_SKILLS" "$SKILL_COUNT"
 assert_count "plugin.json review subagents"     "$PLUGIN_AGENTS" "$AGENT_COUNT"
 
 echo ""

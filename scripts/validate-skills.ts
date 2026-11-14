@@ -248,7 +248,8 @@ function checkManifestDescriptionCounts(
     });
   }
 
-  const agentsMatch = description.match(/(\d+)\s+review subagents/);
+  // Shipped copy says "<n> subagents"; older copy said "<n> review subagents" (#3538).
+  const agentsMatch = description.match(/(\d+)\s+(?:review\s+)?subagents/);
   if (agentsMatch && Number(agentsMatch[1]) !== agentCount) {
     errors.push({
       file,
