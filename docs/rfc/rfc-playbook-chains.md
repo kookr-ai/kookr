@@ -85,7 +85,7 @@ JSON records, so no migration) and projected into the dashboard snapshot:
 
 ```ts
 interface TaskChainState {
-  chainId: string;          // id of the first task of the chain
+  chainId: string;          // minted when the chain starts (so a failed first launch can be ended)
   iteration: number;        // 1-based position of THIS task
   maxIterations?: number;   // count bound (absent = time-bounded only)
   deadlineAt?: string;      // ISO time bound (absent = count-bounded only)

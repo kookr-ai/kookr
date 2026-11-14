@@ -23,6 +23,7 @@
  * would already have advanced past.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { LaunchOpts } from '../shared/contracts/launch.js';
 import type { TaskLaunchSource } from '../shared/contracts/task.js';
 import type { ChainEndReason, ChainSpec, TaskChainState } from '../shared/contracts/playbook-chain.js';
@@ -164,16 +165,36 @@ export class PlaybookChainService {
   async startChain(input: StartChainInput): Promise<LaunchResult> {
     const { spec, launchSource, ...prepareInput } = input;
     const prepared = await this.prepare(prepareInput);
-    const chain = initialChainState(spec, this.now());
-    const result = await this.deps.launchTask(
-      chainLaunchOpts(prepared, chain, launchSource),
-      { deliveryPolicy: prepared.deliveryPolicy, chain },
-    );
+    // The chain id is minted here (not taken from the first task's id) so a
+    // launch that creates the task and then fails can be found and ended:
+    // otherwise the sweep would see a never-started iteration 1 and keep the
+    // chain going in the background after the caller was told it failed.
+    const chain: TaskChainState = { ...initialChainState(spec, this.now()), chainId: randomUUID() };
+    let result: LaunchResult;
+    try {
+      result = await this.deps.launchTask(
+        chainLaunchOpts(prepared, chain, launchSource),
+        { deliveryPolicy: prepared.deliveryPolicy, chain },
+      );
+    } catch (err) {
+      for (const task of this.deps.taskStore.viewTasks()) {
+        if (task.chain?.chainId !== chain.chainId || task.chain.ended) continue;
+        this.deps.taskStore.updateChain(task.id, (state) => ({
+          ...state,
+          ended: {
+            at: this.now().toISOString(),
+            reason: 'launch_failed',
+            detail: `the first iteration failed to launch: ${err instanceof Error ? err.message : String(err)}`.slice(0, 500),
+          },
+        }));
+      }
+      throw err;
+    }
     if (result.duplicate) {
       throw new PlaybookChainError('launch was deduplicated against an existing task; chain not started', 409);
     }
     this.deps.logger?.info?.(
-      `[playbook-chain] started chain ${result.task.id} (${describeBounds(chain)}) playbook=${prepared.playbook.id}`,
+      `[playbook-chain] started chain ${chain.chainId} with task ${result.task.id} (${describeBounds(chain)}) playbook=${prepared.playbook.id}`,
     );
     return result;
   }

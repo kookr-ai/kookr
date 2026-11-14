@@ -146,7 +146,8 @@ describe('PlaybookChainService.startChain', () => {
   it('stamps iteration 1 with its own id as chain id and launches it unattended, auto-closing, undeduplicated', async () => {
     const h = harness();
     const task = await startResearchChain(h, { maxIterations: 3 });
-    expect(task.chain).toMatchObject({ chainId: task.id, iteration: 1, maxIterations: 3, unhealthyStreak: 0 });
+    expect(task.chain).toMatchObject({ iteration: 1, maxIterations: 3, unhealthyStreak: 0 });
+    expect(task.chain!.chainId).toMatch(/^[0-9a-f-]{36}$/);
     const [{ opts }] = h.launches;
     expect(opts.prompt.startsWith('## Kookr chain — iteration 1 of 3')).toBe(true);
     expect(opts.prompt).toContain('PLAYBOOK BODY');
@@ -162,11 +163,11 @@ describe('PlaybookChainService sweep', () => {
       await h.service.sweep();
       const live = h.taskStore.viewTasks().filter((t) => t.chain && t.status === 'inProgress');
       expect(live.length).toBeLessThanOrEqual(1);
-      const tip = h.service.findTip(first.id)!;
+      const tip = h.service.findTip(first.chain!.chainId)!;
       if (tip.status === 'inProgress') h.finish(tip);
     }
     await h.service.sweep();
-    const members = h.chainTasks(first.id);
+    const members = h.chainTasks(first.chain!.chainId);
     expect(members.map((t) => t.chain!.iteration)).toEqual([1, 2, 3]);
     expect(members[1].parentTaskId).toBe(members[0].id);
     expect(members[2].parentTaskId).toBe(members[1].id);
@@ -216,7 +217,7 @@ describe('PlaybookChainService sweep', () => {
     const first = await startResearchChain(h, { maxIterations: 5 });
     h.finish(first);
     await h.service.sweep();
-    const second = h.service.findTip(first.id)!;
+    const second = h.service.findTip(first.chain!.chainId)!;
     expect(second.chain!.iteration).toBe(2);
     h.taskStore.cancelTask(second.id, { source: 'user', reason: 'manual' });
     h.taskStore.deleteTask(second.id);
@@ -230,11 +231,11 @@ describe('PlaybookChainService sweep', () => {
     const first = await startResearchChain(h, { durationMinutes: 60 });
     h.advance(90 * 60_000);
     await h.service.sweep();
-    expect(h.service.findTip(first.id)!.status).toBe('inProgress');
+    expect(h.service.findTip(first.chain!.chainId)!.status).toBe('inProgress');
     h.finish(first);
     await h.service.sweep();
     expect(h.launches).toHaveLength(1);
-    expect(h.service.findTip(first.id)!.chain!.ended?.reason).toBe('deadline_reached');
+    expect(h.service.findTip(first.chain!.chainId)!.chain!.ended?.reason).toBe('deadline_reached');
   });
 
   it('ends the chain when the operator cancels the running iteration', async () => {
@@ -243,7 +244,7 @@ describe('PlaybookChainService sweep', () => {
     h.taskStore.cancelTask(first.id, { source: 'user', reason: 'manual' });
     await h.service.sweep();
     expect(h.launches).toHaveLength(1);
-    expect(h.service.findTip(first.id)!.chain!.ended?.reason).toBe('iteration_cancelled');
+    expect(h.service.findTip(first.chain!.chainId)!.chain!.ended?.reason).toBe('iteration_cancelled');
   });
 
   it('keeps going after a watchdog kill, counting it as unhealthy', async () => {
@@ -251,7 +252,7 @@ describe('PlaybookChainService sweep', () => {
     const first = await startResearchChain(h, { maxIterations: 5 });
     h.taskStore.terminateTask(first.id, { reason: 'timeout' });
     await h.service.sweep();
-    const tip = h.service.findTip(first.id)!;
+    const tip = h.service.findTip(first.chain!.chainId)!;
     expect(tip.chain).toMatchObject({ iteration: 2, unhealthyStreak: 1 });
   });
 
@@ -259,11 +260,11 @@ describe('PlaybookChainService sweep', () => {
     const h = harness();
     const first = await startResearchChain(h, { durationMinutes: 600 });
     for (let i = 0; i < 5; i++) {
-      const tip = h.service.findTip(first.id)!;
+      const tip = h.service.findTip(first.chain!.chainId)!;
       if (tip.status === 'inProgress') h.finish(tip, 10_000);
       await h.service.sweep();
     }
-    const members = h.chainTasks(first.id);
+    const members = h.chainTasks(first.chain!.chainId);
     expect(members).toHaveLength(3);
     expect(members[2].chain!.ended?.reason).toBe('runaway');
   });
@@ -277,13 +278,13 @@ describe('PlaybookChainService.stopChain', () => {
     await h.service.sweep();
     const result = h.service.stopChain(first.id, 'agent', 'no questions left');
     expect(result).toMatchObject({ ok: true, alreadyRequested: false });
-    const tip = h.service.findTip(first.id)!;
+    const tip = h.service.findTip(first.chain!.chainId)!;
     expect(tip.chain!.stopRequest).toMatchObject({ by: 'agent', reason: 'no questions left' });
     expect(h.service.stopChain(tip.id, 'operator')).toMatchObject({ ok: true, alreadyRequested: true });
     h.finish(tip);
     await h.service.sweep();
     expect(h.launches).toHaveLength(2);
-    expect(h.service.findTip(first.id)!.chain!.ended).toMatchObject({ reason: 'stopped', detail: 'no questions left' });
+    expect(h.service.findTip(first.chain!.chainId)!.chain!.ended).toMatchObject({ reason: 'stopped', detail: 'no questions left' });
     expect(h.service.stopChain(first.id, 'operator')).toMatchObject({ ok: false, status: 409 });
   });
 
@@ -309,7 +310,7 @@ describe('PlaybookChainService.stopChain', () => {
     expect(h.service.stopChain(first.id, 'operator', 'enough')).toMatchObject({ ok: true });
     release();
     await sweeping;
-    const tip = h.service.findTip(first.id)!;
+    const tip = h.service.findTip(first.chain!.chainId)!;
     expect(tip.chain!.iteration).toBe(2);
     expect(tip.chain!.stopRequest).toMatchObject({ reason: 'enough' });
   });
@@ -343,12 +344,12 @@ describe('launch failures', () => {
     const first = await startResearchChain(h, { maxIterations: 5 });
     h.finish(first);
     for (let i = 0; i < 5; i++) await h.service.sweep();
-    expect(h.service.findTip(first.id)!.chain!.ended).toBeUndefined();
+    expect(h.service.findTip(first.chain!.chainId)!.chain!.ended).toBeUndefined();
     mode = 'broken';
     for (let i = 0; i < 2; i++) await h.service.sweep();
-    expect(h.service.findTip(first.id)!.chain!.ended).toBeUndefined();
+    expect(h.service.findTip(first.chain!.chainId)!.chain!.ended).toBeUndefined();
     await h.service.sweep();
-    expect(h.service.findTip(first.id)!.chain!.ended).toMatchObject({ reason: 'launch_failed', detail: 'playbook file vanished' });
+    expect(h.service.findTip(first.chain!.chainId)!.chain!.ended).toMatchObject({ reason: 'launch_failed', detail: 'playbook file vanished' });
   });
 });
 
@@ -368,7 +369,7 @@ describe('idle backstop', () => {
     // launch), so this immediate stall counts against the runaway breaker.
     expect(h.taskStore.getTask(first.id)!.chain!.idleClosedAfterActiveMs).toBe(0);
     await h.service.sweep();
-    expect(h.service.findTip(first.id)!.chain).toMatchObject({ iteration: 2, unhealthyStreak: 1 });
+    expect(h.service.findTip(first.chain!.chainId)!.chain).toMatchObject({ iteration: 2, unhealthyStreak: 1 });
   });
 
   it('counts an idle close after real work as healthy, so forgetful agents never end a chain', async () => {
@@ -381,7 +382,7 @@ describe('idle backstop', () => {
     await h.service.sweep();
     expect(h.taskStore.getTask(first.id)!.chain!.idleClosedAfterActiveMs).toBe(40 * 60_000);
     await h.service.sweep();
-    expect(h.service.findTip(first.id)!.chain).toMatchObject({ iteration: 2, unhealthyStreak: 0 });
+    expect(h.service.findTip(first.chain!.chainId)!.chain).toMatchObject({ iteration: 2, unhealthyStreak: 0 });
   });
 
   it('never closes a lead parked on background work or waiting on subagents, however long it waits', async () => {
@@ -474,7 +475,7 @@ describe('signalled tips', () => {
     expect(h.completeIdleIteration).toHaveBeenCalledWith(expect.objectContaining({ id: first.id }), 'signalled', expect.any(Function));
     await h.service.sweep();
     // A signalled close is a normal, healthy iteration end.
-    expect(h.service.findTip(first.id)!.chain).toMatchObject({ iteration: 2, unhealthyStreak: 0 });
+    expect(h.service.findTip(first.chain!.chainId)!.chain).toMatchObject({ iteration: 2, unhealthyStreak: 0 });
   });
 
   it('waits while the agent is still mid-turn after signalling, up to a ceiling', async () => {
@@ -501,7 +502,7 @@ describe('successor launch recipe', () => {
     h.finish(first);
     await h.service.sweep();
     expect(h.prepareInputs[1]).toMatchObject({ effort: 'high', model: 'claude-opus-5-5', agentType: 'claude-code' });
-    const second = h.service.findTip(first.id)!;
+    const second = h.service.findTip(first.chain!.chainId)!;
     h.taskStore.viewTasks().find((t) => t.id === second.id)!.launchIntent = {
       schemaVersion: 'task-launch-intent.v1', agentType: 'claude-code', modelTier: 'small', effort: 'low', model: 'x',
     };
@@ -554,7 +555,7 @@ describe('launch errors that only hold a chain', () => {
     const first = await startResearchChain(h, { maxIterations: 5 });
     h.finish(first);
     for (let i = 0; i < 6; i++) await h.service.sweep();
-    expect(h.service.findTip(first.id)!.chain!.ended).toBeUndefined();
+    expect(h.service.findTip(first.chain!.chainId)!.chain!.ended).toBeUndefined();
     expect(calls).toBe(7);
   });
 
@@ -576,12 +577,12 @@ describe('launch errors that only hold a chain', () => {
     const first = await startResearchChain(h, { maxIterations: 5 });
     h.finish(first);
     for (let i = 0; i < 3; i++) await h.service.sweep(); // fail, fail, ok
-    const second = h.service.findTip(first.id)!;
+    const second = h.service.findTip(first.chain!.chainId)!;
     expect(second.chain!.iteration).toBe(2);
     h.finish(second);
     for (let i = 0; i < 3; i++) await h.service.sweep(); // fail, fail, ok — would end if the count carried over
-    expect(h.service.findTip(first.id)!.chain).toMatchObject({ iteration: 3 });
-    expect(h.service.findTip(first.id)!.chain!.ended).toBeUndefined();
+    expect(h.service.findTip(first.chain!.chainId)!.chain).toMatchObject({ iteration: 3 });
+    expect(h.service.findTip(first.chain!.chainId)!.chain!.ended).toBeUndefined();
   });
 
   it('does not double-count a launch that created the task and then threw', async () => {
@@ -605,7 +606,7 @@ describe('launch errors that only hold a chain', () => {
     const first = await startResearchChain(h, { maxIterations: 10 });
     h.finish(first);
     for (let i = 0; i < 6; i++) await h.service.sweep();
-    const members = h.chainTasks(first.id);
+    const members = h.chainTasks(first.chain!.chainId);
     // Each stillborn task counts once (as never started); the third in a row ends the chain.
     expect(members.map((t) => t.chain!.iteration)).toEqual([1, 2, 3, 4]);
     expect(members[0].chain!.successorTaskId).toBe(members[1].id);
@@ -689,9 +690,28 @@ describe('review fixes', () => {
     h.finish(first);
     await h.service.sweep();
     await h.service.sweep();
-    const members = h.chainTasks(first.id);
+    const members = h.chainTasks(first.chain!.chainId);
     expect(members).toHaveLength(2);
     expect(members[1].chain!.ended).toMatchObject({ reason: 'stopped', detail: 'enough' });
+  });
+});
+
+describe('first launch failure', () => {
+  it('ends the chain when the first launch creates its task and then fails, so nothing continues in the background', async () => {
+    // eslint-disable-next-line prefer-const
+    let h: ReturnType<typeof harness>;
+    h = harness({
+      launchImpl: async (o, s) => {
+        const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
+        h.taskStore.terminateTask(task.id, { reason: 'unknown' });
+        throw new Error('agent failed to boot');
+      },
+    });
+    await expect(startResearchChain(h, { maxIterations: 5 })).rejects.toThrow('agent failed to boot');
+    for (let i = 0; i < 4; i++) await h.service.sweep();
+    expect(h.launches).toHaveLength(1);
+    const [only] = h.taskStore.viewTasks().filter((t) => t.chain);
+    expect(only.chain!.ended).toMatchObject({ reason: 'launch_failed' });
   });
 });
 

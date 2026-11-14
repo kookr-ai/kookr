@@ -54,7 +54,7 @@ export interface ChainEnded {
 }
 
 export interface TaskChainState {
-  /** Id of the first task of the chain; shared by every iteration. */
+  /** Unique id of the chain, minted when it starts; shared by every iteration. */
   chainId: string;
   /** 1-based position of this task in the chain. */
   iteration: number;

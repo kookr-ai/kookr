@@ -251,12 +251,12 @@ export async function runChainCli(argv: string[], io: ChainCliIo = {}): Promise<
   if (parsed.json) {
     out.log(JSON.stringify({ ok: true, ...payload }));
   } else if (parsed.kind === 'start') {
-    const chain = payload.chain as { maxIterations?: number; deadlineAt?: string } | undefined;
+    const chain = payload.chain as { chainId?: string; maxIterations?: number; deadlineAt?: string } | undefined;
     const bounds = [
       chain?.maxIterations !== undefined ? `${chain.maxIterations} iterations` : undefined,
       chain?.deadlineAt ? `until ${chain.deadlineAt}` : undefined,
     ].filter(Boolean).join(', ');
-    out.log(`Started chain ${String(payload.id)} (${bounds})${payload.queued ? ' — iteration 1 is queued' : ''}`);
+    out.log(`Started chain ${String(chain?.chainId ?? payload.id)}: iteration 1 is task ${String(payload.id)} (${bounds})${payload.queued ? ', queued' : ''}`);
   } else {
     out.log(payload.alreadyRequested
       ? `Stop was already requested; the chain ends after iteration ${String(payload.iteration)}.`

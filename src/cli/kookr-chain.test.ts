@@ -41,7 +41,7 @@ describe('runChainCli', () => {
     const [url, init] = h.fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('http://127.0.0.1:4801/api/playbook-chains');
     expect(JSON.parse(init.body as string)).toMatchObject({ playbookPath: 'research.md', cwd: '/repo', maxIterations: 3, parameterValues: {} });
-    expect(h.logs[0]).toContain('Started chain t1');
+    expect(h.logs[0]).toContain('iteration 1 is task t1');
   });
 
   it('stops the current task\'s chain as the agent when run inside a chain iteration', async () => {
