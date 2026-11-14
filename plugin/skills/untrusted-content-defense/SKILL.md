@@ -28,12 +28,12 @@ the injection help against fixed attacks and weaken once the attacker adapts.
    needs, no ambient secrets, no network unless needed, and an approval step for irreversible or
    outward-facing actions (send, merge, deploy, delete, publish).
    Evidence: system-level limits (Progent, DRIFT) kept attack success rate (ASR) under 10% on most
-   models even under an adaptive attacker, while filters rose from 0-12.6% to 28-33% ASR (2606.15057).
+   models even under an adaptive attacker, while filters rose under adaptation: PIGuard 0.0% to 28.0%, DataFilter 12.6% to 33.4% (GPT-4o-mini), ProtectAI 7.2% to 15.4% (2606.15057).
 2. **Track where values came from.** Mark text from issues, PRs, web pages, tool output, memory notes
    and skills as untrusted. Do not let an untrusted-derived value fill a sensitive argument (recipient,
    command, URL, path, branch to merge) unless a trusted step confirmed it. Check per argument, not per
    call. Evidence: argument-level provenance reached 100% security on the three strongest models in
-   AgentDojo with 38.1-46.4% utility, 8-16 points above whole-call quarantine; 13 of 13 live attacks
+   AgentDojo with 38.1-46.4% utility, 8-16 points above invocation-level quarantine (CaMeL); 13 of 13 live attacks
    blocked with 0 false positives on 267 benign calls (2605.11039).
 3. **Gate the effect, not the command verb.** A deny rule on one verb leaves an equivalent route open
    (for example a REST call that merges). Match the endpoint or effect. A hook is a policy layer, not a
@@ -46,15 +46,15 @@ the injection help against fixed attacks and weaken once the attacker adapts.
    - Deterministic code works within its scope: output filtering leaked 0% over 15,000 attacks, but only
      for secrets it can match (2604.23887).
 5. **Treat skills and MCP servers as code you are installing.** Skill-shaped injection averaged 80.7%
-   ASR where naive injection scored 0.0% (2602.14211). Backdoored skills reached 97.2% ASR and LLM
-   scanners labelled 98.2% and 99.4% of them safe (2604.06811). Use layers: a static filter, LLM review,
+   ASR where naive injection scored 0.0% (2602.14211). Backdoored skills reached up to 97.2% ASR and LLM
+   guard scanners (Qwen3Guard, Llama-Guard) labelled 98.2% and 99.4% of them safe (2604.06811). Use layers: a static filter, LLM review,
    then a jury or human review (F1 0.920 on 390 skills, 2604.06550), and scope each skill's permissions.
-6. **Treat memory as a second injection path.** Poison persisted up to 45.70% in memory systems
-   (2611.09721); 91.0% of trials embedded a poisoned lesson into a skill at 10% attacker support
+6. **Treat memory as a second injection path.** Unoptimized poison reached later agent behavior in up to 45.70% of cases
+   (2611.09721; it varied widely by memory design); 91.0% of trials embedded a poisoned lesson into a skill at 10% attacker support
    (2608.05563). Keep the source on every stored lesson, require independent support (different
    sources) before a lesson becomes a reusable skill, and keep an audit and rollback path. Post-hoc
-   audit worked only below a 0.20 contamination ratio (2605.23723).
-7. **Do not take a vote or a judge as isolation.** Majority voting fell to 0.8% accuracy once 60% of
+   audit worked only below a 0.20 (0.15 on one task) contamination ratio (2605.23723).
+7. **Do not take a vote or a judge as isolation.** Majority voting fell to near zero (0.8% on one benchmark) once 60% of
    agents were corrupted (2604.17139). Content-free inputs flipped LLM judges up to 95.1% (2507.08794).
    Check a worker's claim with a deterministic test or a provenance check.
 8. **Fix CI defaults.** In CI agent workflows, drop persisted credentials and any token the agent
