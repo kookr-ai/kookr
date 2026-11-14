@@ -19,7 +19,7 @@ How a plugin reaches a spawned Claude agent today, and who owns each step.
 | Render a loadout | `src/core/claude-settings/loadout.ts:96-109` `renderEnabledPlugins` | Turns `enabledOverrides` into the `enabledPlugins` map; rewrites ids of directory-loaded plugins to `<name>@inline` |
 | Record on the task | `TaskLoadoutRecord` in `src/shared/contracts/plugins.ts:141-149` | Resolved loadout, winning level, settings-file hash and path. Resume replays it (`replayRecordedLoadout`) |
 | Feature flag | `src/core/claude-settings/loadout.ts:111-119` | `KOOKR_PLUGIN_LOADOUTS`, **off by default** |
-| Fleet read model | `src/server/plugin-manager/read-model.ts:43-116` | One row per **installed** plugin, from `claude plugin list --json` |
+| Fleet read model | `src/server/plugin-manager/read-model.ts:43-112` | One row per **installed** plugin, from `claude plugin list --json` |
 | Available version | `src/server/plugin-manager/version-source.ts:18-42` | Git-sourced for `kookr-toolkit` only. Every other plugin: `staleness: unknown`, reason "Catalog not refreshed" |
 | Mutations | `src/server/plugin-manager/cli.ts:53-85`; routes in `src/server/routes/plugin-routes.ts` | `list`, `details`, `update`, `marketplaceAdd`, `install`. **No uninstall.** `POST /api/plugins/install` installs the toolkit only; `own-session/install` installs any id |
 | Auto-update idle check | `src/core/plugin-auto-update/idle-predicate.ts` | A non-terminal task with **no recorded loadout counts as depending on every plugin** |
@@ -162,4 +162,10 @@ From the consensus attack (read-only checks on the operator's machine):
   gitCommitSha}` records otherwise.
 - Replay call sites: `launch-service.ts` and `crash-recovery.ts`
   (`replayRecordedLoadout`).
+- External-change detection (`auto-update-service.ts`, `evaluateAll`) runs inside
+  `mutation.withLock('plugin-auto-update-sweep')` around a `claude plugin list`
+  call. The manual `POST /api/plugins/:id/update` route neither refreshes the
+  observed baseline nor passes its change as Kookr's own.
+- `readAutoUpdate` resolves the flag across four settings scopes; the write and
+  the restore act on the user file only.
 

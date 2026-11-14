@@ -1,6 +1,6 @@
 # RFC: Plugins for the Kookr fleet — fleet set, catalog versions, gated offers
 
-**Status:** Draft (v4 — one critic round, empirical checkpoint, consensus attack, independent merge review)
+**Status:** Draft (v5 — one critic round, empirical checkpoint, consensus attack, two independent merge reviews)
 **Date:** 2026-11-14
 **Author:** Jean Ibarz (with Claude)
 **Implementation branch:** `rfc/external-plugin-fleet`
@@ -73,7 +73,8 @@ and is not decided here.
 - **R2 (untouched when unused):** With no fleet set and no loadouts, a spawn SHALL
   take exactly today's path: no extra file read beyond the store check, no
   additional lock, and a byte-identical session settings file. The feature SHALL
-  have a kill switch that also stops recorded loadouts from being replayed.
+  have a kill switch, an explicit `KOOKR_PLUGIN_LOADOUTS=0`, that also stops
+  recorded loadouts from being replayed.
 - **R3 (only what is installed, never silent):** Kookr SHALL enable a plugin for
   an agent only if it is installed at resolve time. A named plugin that is not
   installed SHALL be recorded on the task with a reason, logged at warn level,
@@ -81,7 +82,9 @@ and is not decided here.
   skipped.
 - **R4 (recorded and replayed):** The task SHALL record, for each plugin it was
   given, the id, the installed version and the install path **at spawn**. A
-  resumed agent SHALL get the recorded ids, not a fresh resolution. The version
+  resumed agent SHALL get the recorded ids, not a fresh resolution, unless the
+  feature is switched off (the activation table in section 1 defines "off").
+  Editing or emptying the fleet set SHALL never change what a resume gets. The version
   is a record, not a pin: a resume loads whatever version is installed then, and
   the task SHALL show when that differs from the recorded one.
 - **R5 (runtime truth):** An operator SHALL be able to check what a Claude agent
@@ -153,8 +156,8 @@ partitionByInstalled(resolved, installed) → { resolved, plugins, skipped }
   and the CLI call about three seconds.
 - `plugins` is `[{ id, version, installPath }]` for what was kept (R4). The
   registry holds a list of install records per plugin, one per scope. The step
-  takes the user-scope record, and the highest version when there are several,
-  which is the rule `highestInstalledVersion` already applies.
+  takes the user-scope record when there is one, and otherwise the record with
+  the highest version.
 - `skipped` is `[{ id, reason }]`. The only reason today is `not_installed`. The
   existing reader returns an empty registry for a missing or malformed file, so
   an unreadable registry is indistinguishable from "nothing installed": every
@@ -184,21 +187,31 @@ adapter read `KOOKR_PLUGIN_LOADOUTS`, and the adapter's own check is what makes
 the flag a real kill switch: with the flag off, a resumed task renders no
 `enabledPlugins` even though it carries a recorded loadout (documented as
 deliberate in `docs/reference/environment-variables.md`). That behaviour is
-kept, but the decision moves to one predicate in the launcher layer, used by
-both the first-spawn path and the replay path. The adapter stops reading the
-flag and renders whatever it is handed. The rule becomes:
+kept, but the decision moves out of the adapter into the launcher layer, which
+asks two separate questions: should a **first spawn** resolve a loadout, and
+should a **resume** replay the one recorded on the task. The adapter stops
+reading the flag and renders whatever it is handed. The rules:
 
-| `KOOKR_PLUGIN_LOADOUTS` | Slice 1 | From slice 3 |
+| `KOOKR_PLUGIN_LOADOUTS` | First spawn resolves | Resume replays the record |
 |---|---|---|
-| `0` / `false` | off (kill switch) | off (kill switch) |
-| `1` / `true` | on | on |
-| unset | **off** (as today) | on **only if** the fleet file or loadout file names a plugin |
+| `0` / `false` (kill switch) | no | no |
+| `1` / `true` | yes | yes |
+| unset, slices 1 and 2 | no (as today) | no (as today) |
+| unset, from slice 3 | only if the fleet file or loadout file names a plugin | **yes** |
 
-"Off" means no session, new or resumed, is handed a loadout. So slice 1 changes
-nothing for anyone who has not opted in, and the operator soaks it on the
-production instance by setting the flag. The default changes only when the
-screen that lets a user configure a fleet set ships. Even then, an install with
-nothing configured never resolves and writes the same bytes as today (R2).
+The two columns differ in exactly one cell, and that cell is the point. From
+slice 3, what is configured decides only whether a *new* task gets a loadout. A
+task that already recorded one keeps it on resume whatever the fleet file says
+now, including when it has been emptied or cannot be read. Only an explicit
+`0`/`false` stops replay. Without that distinction, removing the last plugin
+from the fleet set would strip plugins from every task at its next crash
+recovery, which would contradict R4.
+
+So slice 1 changes nothing for anyone who has not opted in, and the operator
+soaks it on the production instance by setting the flag to `1`. The default
+changes only when the screen that lets a user configure a fleet set ships. Even
+then, an install with nothing configured never resolves and writes the same
+bytes as today (R2).
 
 The spawn gate keeps both of its existing arms. Today it takes the plugin
 mutation lock when loadouts are on **or** when auto-update apply is on
@@ -234,11 +247,20 @@ keep that honest without inventing a second store:
   `KOOKR_PLUGIN_AUTO_UPDATE` is set, which is off by default. So as shipped,
   nothing is detected on a default install. This RFC splits the sweep in two.
   The **observe** half (external-change detection, and from slice 2 the catalog
-  refresh) runs on the same interval whenever loadouts are active, and also when
-  the manager opens. The **apply** half (idle-gated updates) stays behind
-  `KOOKR_PLUGIN_AUTO_UPDATE`. A detected change to a fleet plugin bumps the
-  config epoch, re-runs the fleet check, and lists the running tasks whose
-  record holds the older version.
+  refresh) runs on the same interval whenever a first spawn would resolve a
+  loadout, and also when the manager opens. The **apply** half (idle-gated
+  updates) stays behind `KOOKR_PLUGIN_AUTO_UPDATE`. A detected change to a fleet
+  plugin bumps the config epoch, re-runs the fleet check, and lists the running
+  tasks whose record holds the older version.
+
+  Two things the existing code does must change for this to be safe. First, the
+  current detection runs inside the plugin mutation lock around a
+  `claude plugin list` call, which takes about three seconds, and spawns wait on
+  that lock. The observe half reads versions from the registry file instead and
+  takes the lock only for the moment it writes the new baseline. Second, the
+  manual update route does not tell the baseline what it changed, so Kookr's own
+  update would be reported as an outside one. Every Kookr-initiated install,
+  update and uninstall records its change in the baseline.
 - **Reduce.** For a marketplace that has a plugin in the fleet set, Kookr turns
   off Claude Code's own auto-update, so versions move only through Kookr. This
   reuses the mechanism the auto-update module has for `apply-when-idle` plugins,
@@ -249,10 +271,17 @@ keep that honest without inventing a second store:
   the recorded value when the last fleet plugin from that marketplace is
   removed. It therefore **does** override an operator's own `true` for as long
   as the marketplace has a fleet plugin, and it changes auto-update for the
-  operator's own sessions too. Because of that it is not silent: switching on
-  the first fleet plugin of a marketplace shows the existing blast-radius
+  operator's own sessions too. Because of that it must not be silent, and it
+  ships in **slice 3**, with the screen that can disclose it: switching on the
+  first fleet plugin of a marketplace shows the existing blast-radius
   disclosure with this effect spelled out, and the manager shows "updates
-  controlled by Kookr" on the marketplace.
+  controlled by Kookr" on the marketplace. Slices 1 and 2 only detect. The pin
+  is released, and the recorded value restored, when the last fleet plugin of
+  the marketplace is removed **or** when the kill switch is set. One known limit
+  of the reused mechanism is carried over and must be covered by slice 3's
+  tests: it reads the flag as resolved across all settings scopes but writes and
+  restores at user scope only, so an operator value set at project scope is
+  neither overridden nor restored correctly.
 - **Say so.** The record is "version at spawn". There is no pin and no
   downgrade. Undoing a bad plugin release means releasing a fixed version in the
   marketplace and updating again.
@@ -350,6 +379,8 @@ a manual update; this RFC does not try to make idle more frequent.
 
 ### 4. Browse, install, uninstall (R7)
 
+- `GET /api/plugins/fleet` and `PUT /api/plugins/fleet` read and write the fleet
+  file (slice 1). The existing loadout routes are unchanged.
 - `GET /api/plugins` gains `marketplaces: [{ name, source, lastRefreshedAt,
   lastRefreshError, available: [{ id, description, version }] }]` and, per
   installed row, `fleet: true|false|null`.
@@ -448,12 +479,15 @@ concrete event that reopens it.
   `version-source.ts` (staleness rule), `read-model.ts`, `cli.ts` (`uninstall`,
   `marketplaceList`, `marketplaceUpdate`, `folderVersion` and `available` in the
   list parser), `mutation-service.ts` (uninstall, busy check),
-  `auto-update-service.ts` and `auto-update-store.ts` (react to an external
-  change of a fleet plugin; `autoUpdate` ownership for fleet marketplaces as
-  well as `apply-when-idle` ones), `auto-update-wiring.ts` and
+  `auto-update-service.ts`, `auto-update-store.ts` and `auto-update-ops.ts`
+  (registry-based observation outside the lock; Kookr's own changes recorded in
+  the baseline; react to an external change of a fleet plugin; from slice 3,
+  `autoUpdate` ownership for fleet marketplaces as well as `apply-when-idle`
+  ones), `auto-update-wiring.ts` and
   `src/server/index.ts` (observe half of the sweep runs when loadouts are
   active), `launch-service.ts`, `agent-lifecycle.ts` and `crash-recovery.ts`
-  (shared activation predicate; `replaySkipped` at the replay sites),
+  (the first-spawn and replay activation decisions; `replaySkipped` at the
+  replay sites),
   `src/server/routes/plugin-routes.ts`.
 - **Adapter:** `claude-code-adapter.ts` (stop reading the flag; no other change).
 - **Frontend:** `PluginManagerDialog.tsx`.
@@ -462,14 +496,18 @@ concrete event that reopens it.
   `docs/reference/api.md`, `docs/reference/environment-variables.md`.
 - **Tests:** resolver with four levels; fleet file absent, empty, malformed;
   `partitionByInstalled` (all kept, some skipped, all skipped still records,
-  registry unreadable); activation table for both slice rules; byte identity and
+  registry unreadable); every cell of the activation table, including "unset
+  from slice 3: an emptied or unreadable fleet file still replays a recorded
+  loadout"; byte identity and
   no lock with nothing configured; replay with an uninstalled plugin; catalog
   parsing from fixtures; staleness rule and reason list; busy check on update
   and uninstall; idle check with non-Claude tasks; external version change
   bumps the epoch and lists affected tasks, with `KOOKR_PLUGIN_AUTO_UPDATE`
-  unset; `autoUpdate` previous value recorded, `false` written, and the recorded
-  value restored on release (absent, `true` and `false` cases); kill switch off
-  renders nothing on resume; `skill_listing` check from a
+  unset; a Kookr-initiated update is not reported as external; the observe pass
+  does not hold the mutation lock across a CLI call; `autoUpdate` previous value
+  recorded, `false` written, and the recorded value restored on release and on
+  kill switch (absent, `true` and `false` cases, and a project-scope value);
+  kill switch renders nothing on resume; `skill_listing` check from a
   transcript fixture; offer hidden on every non-zero probe result, failure TTL,
   diagnostics output.
 
@@ -481,8 +519,9 @@ check; slice 3 needs both.
 1. **Fleet set, delivery, truth.** Fleet file and level, `partitionByInstalled`,
    the richer task record, the activation rule (still opt-in), the fleet check
    endpoint, the per-task `skill_listing` check, detection of version changes
-   made outside Kookr with the `autoUpdate: false` write (R10), doctor lines,
-   idle-check fix. No screen: the fleet file is written through one route.
+   made outside Kookr (R10, observe half only; no `autoUpdate` write yet),
+   doctor lines, idle-check fix. No screen: the fleet file is written through
+   `PUT /api/plugins/fleet`.
    *Acceptance evidence, recorded in the PR:* on the production instance with the
    flag set, a fleet set naming one installed marketplace plugin; the fleet check
    output showing it `loaded`; one real spawned task whose record lists the
@@ -495,7 +534,8 @@ check; slice 3 needs both.
    the catalog version; one plugin shown `behind` then `current` after an
    update; one `unknown` row with its reason.
 3. **Manager screen and offers.** The dialog changes, `plugin-offers.json`
-   (empty), the probe, the Recommended section, offer diagnostics, and the
+   (empty), the probe, the Recommended section, offer diagnostics, the
+   `autoUpdate` takeover for fleet marketplaces with its disclosure, and the
    activation rule's change of default.
    *Acceptance evidence:* install, switch on, check, switch off and uninstall
    performed from the dashboard; an offer for a readable repository shown; the
@@ -508,10 +548,15 @@ nothing, and a resumed or relaunched task renders no `enabledPlugins` even if it
 recorded one, which is the shipped behaviour. Sessions that are already running
 keep the plugins they loaded until they are restarted. A full rollback is
 therefore: set the flag to `0`, restart, and restart the tasks that should not
-keep the plugins. Emptying the fleet set is optional and only matters for when
-the flag is turned back on. Reverting the server build is safe at every slice
-because the fleet file is separate and an older build treats an unset flag as
-off.
+keep the plugins. Emptying the fleet set is not part of a rollback: it stops new
+tasks from getting plugins, and never affects a resume. From slice 3 the kill
+switch also releases every `autoUpdate` pin Kookr holds for a fleet marketplace.
+
+Reverting the server build is safe for the data at every slice, because the
+fleet file is separate and an older build treats an unset flag as off. One
+manual step applies from slice 3: a build older than slice 3 does not know about
+fleet pins, so set the flag to `0` once on the newer build before reverting, or
+remove the `autoUpdate: false` entries by hand afterwards.
 
 ## Edge cases
 
@@ -544,7 +589,8 @@ off.
   minutes after the cause clears. Nothing else depends on it.
 - **Spawn while a plugin mutation runs.** As today, the record step waits up to
   5 seconds for the lock and then proceeds. A spawn that proceeded without the
-  lock is now marked on the task and counted, not only logged. Catalog refresh
+  lock is now marked on the task and counted, not only logged. The observe pass
+  holds the lock only for its baseline write. Catalog refresh
   no longer holds that lock, so the wait is limited to real installs, updates
   and uninstalls.
 
@@ -732,4 +778,22 @@ All are corrected in this version.
   `@inline` rewrite and its row are stated; the file list names the modules that
   actually hold the observed-version baseline and the replay call sites; three
   evidence-pack corrections.
+
+The second review, of the corrected head, returned BLOCK with one confirmed
+defect that the first correction had introduced, and six notes.
+
+- **The activation rule contradicted the resume guarantee.** One predicate
+  decided for both first spawns and resumes, and from slice 3 an unset flag made
+  it depend on whether the fleet file named a plugin. Emptying the fleet set
+  would then have stripped plugins from every task at its next resume, against
+  R4. Section 1 now asks two separate questions with a four-row table: what is
+  configured decides first spawns only, and only an explicit `0`/`false` stops
+  replay. R2, R4, Rollback and the test list say the same.
+- **Notes taken:** the `autoUpdate` takeover moves to slice 3, where a screen can
+  disclose it, is released by the kill switch, and has a stated manual step for
+  a build revert; the observe pass reads the registry file and holds the lock
+  only for its baseline write; Kookr's own installs, updates and uninstalls are
+  recorded in the baseline; the scope mismatch of the reused `autoUpdate`
+  mechanism is stated and tested; the fleet file gets named routes; the
+  install-record selection rule is unambiguous; `auto-update-ops.ts` is listed.
 
