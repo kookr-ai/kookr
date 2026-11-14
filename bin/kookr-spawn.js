@@ -1635,6 +1635,64 @@ async function waitAndExit({ args, task, baseUrl, out, err, exit, sleep, now }) 
   return exit(EXIT_SERVER_ERROR);
 }
 
+/**
+ * #3580: the --json counterpart of waitAndExit. Every --json success exit used
+ * to emit its envelope and exit 0 immediately, silently ignoring --wait — so a
+ * caller scripting `--wait --json` read "exit 0" as "child done" while the
+ * worker was still running (the reconcile-probe recovered path made this bite
+ * on a slow cold launch). With --wait, poll first and emit ONE envelope whose
+ * ok/code/exit code reflect the wait outcome (0 done, 6 timeout, 4 failed),
+ * keeping the base envelope's details plus a `wait` block. Without --wait the
+ * envelope is unchanged.
+ */
+async function exitJsonAfterWait({ args, task, baseUrl, out, exit, sleep, now, message, details }) {
+  if (!args.wait) {
+    return exitJson({ out, exit, exitCode: EXIT_OK, ok: true, code: 'OK', message, details });
+  }
+  const taskId = task?.id;
+  if (typeof taskId !== 'string' || taskId.length === 0) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_SERVER_ERROR,
+      ok: false,
+      code: 'SERVER_ERROR',
+      message: 'server response did not include a task id to wait for',
+      details,
+    });
+  }
+  const timeoutMs = args.waitTimeoutSeconds === null ? null : args.waitTimeoutSeconds * 1000;
+  const waitResult = await waitForTaskReady({ baseUrl, taskId, timeoutMs, sleep, ...(now ? { now } : {}) });
+  const wait = {
+    outcome: waitResult.kind,
+    status: waitResult.status ?? null,
+    ...(waitResult.kind === 'server_error' ? { error: waitResult.message } : {}),
+  };
+  const done = waitResult.kind === 'completion_ready'
+    || (waitResult.kind === 'terminal' && waitResult.status === 'completed');
+  if (done) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_OK,
+      ok: true,
+      code: 'OK',
+      message: `${message}; ${waitResult.kind === 'completion_ready' ? 'task signaled completion-ready' : 'task completed'}`,
+      details: { ...details, wait },
+    });
+  }
+  const timedOut = waitResult.kind === 'timeout';
+  return exitJson({
+    out,
+    exit,
+    exitCode: timedOut ? EXIT_WAIT_TIMEOUT : EXIT_SERVER_ERROR,
+    ok: false,
+    code: timedOut ? 'WAIT_TIMEOUT' : waitResult.kind === 'terminal' ? 'TASK_TERMINAL' : 'SERVER_ERROR',
+    message: formatWaitOutcome(waitResult).replace(/^kookr-spawn: /, ''),
+    details: { ...details, wait },
+  });
+}
+
 // ---------- output rendering ----------
 
 function formatSuccess({ task, baseUrl, queued }) {
@@ -1840,6 +1898,7 @@ async function renderNoKeyReconcile({
   err,
   exit,
   sleep,
+  now,
 }) {
   // #1573: --dedupe=skip intends a NEW task even when a sibling exists, so a
   // prompt+cwd probe match is almost certainly that pre-existing sibling — not
@@ -1899,19 +1958,26 @@ async function renderNoKeyReconcile({
       err.error('kookr-spawn: matching active task recovered via reconcile probe; blocked by --dedupe=block.');
       return exit(EXIT_DUPLICATE_BLOCKED);
     }
+    // #3580: the recovered task is the one to wait on — honor --wait exactly
+    // like the created path (0 done, 6 timeout, 4 failed) instead of exiting 0
+    // while the worker is still running. It may be a concurrent sibling's task
+    // with the same prompt+cwd; waiting on it matches the --dedupe=skip
+    // duplicate path.
     if (args.json) {
-      return exitJson({
+      return exitJsonAfterWait({
+        args,
+        task: probe.task,
+        baseUrl,
         out,
         exit,
-        exitCode: EXIT_OK,
-        ok: true,
-        code: 'OK',
+        sleep,
+        now,
         message: 'Active task recovered via reconcile probe (ambiguous create outcome)',
         details: { ...taskDetails({ task: probe.task, baseUrl }), reconciled: true },
       });
     }
     out.log(formatReconcileRecovered({ task: probe.task, baseUrl }));
-    return exit(EXIT_OK);
+    return waitAndExit({ args, task: probe.task, baseUrl, out, err, exit, sleep, now });
   }
 
   if (probe.kind === 'absent') {
@@ -2346,6 +2412,7 @@ async function main({
         err,
         exit,
         sleep,
+        now,
       });
     }
     if (args.json) {
@@ -2405,6 +2472,7 @@ async function main({
         err,
         exit,
         sleep,
+        now,
       });
     }
     if (args.json) {
@@ -2434,12 +2502,14 @@ async function main({
   if (result.kind === 'duplicate') {
     if (args.dedupe === 'skip') {
       if (args.json) {
-        return exitJson({
+        return exitJsonAfterWait({
+          args,
+          task: result.task,
+          baseUrl,
           out,
           exit,
-          exitCode: EXIT_OK,
-          ok: true,
-          code: 'OK',
+          sleep,
+          now,
           message: 'Active task already exists for this prompt and cwd',
           details: taskDetails({ task: result.task, baseUrl }),
         });
@@ -2530,12 +2600,14 @@ async function main({
   }
 
   if (args.json) {
-    return exitJson({
+    return exitJsonAfterWait({
+      args,
+      task: result.task,
+      baseUrl,
       out,
       exit,
-      exitCode: EXIT_OK,
-      ok: true,
-      code: 'OK',
+      sleep,
+      now,
       message: result.task?.idempotentReplay
         ? 'Task already exists (idempotent replay)'
         : result.queued ? 'Task queued' : 'Task created',
