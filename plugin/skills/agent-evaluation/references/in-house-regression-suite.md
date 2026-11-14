@@ -23,7 +23,7 @@ update gate reads.
    was 88% to 96% (2610.13065).
 4. **Gate on slices and flips, not the aggregate.** Injected regressions moved the aggregate 1.7 to 5.9
    points but the responsible slice 25 to 91 points (2606.11686). A secondary metric can regress while the
-   target rises (citation validity under prompt optimization: rule 6 of [prompt
+   target rises (citation validity under prompt optimization: Rules list, rule 6 of [prompt
    optimization](prompt-optimization-under-budget.md)). Do not read the agent's own progress report:
    mid-task accuracy was as low as 5.8% to 11.5% (2609.08589).
 5. **Add one process check, with a floor baseline beside it.** Outcome-only judge recall on silent faults

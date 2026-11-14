@@ -234,7 +234,7 @@ savings over one strong agent per issue. Treat it as a pilot design.
   (2604.17111). Don't let each agent retry on its own against a shared limit.
 - **No shared worktree for writers; assign file ownership before spawning.** Parallel agents in one git
   worktree destroy each other's uncommitted edits. Give each writer its own worktree and a disjoint file
-  set; serialize shared files (global stylesheet, changelog, version file) or have the lead edit them;
+  set (or forbid commands that change the working tree); serialize shared files (global stylesheet, changelog, version file) or have the lead edit them;
   forbid `git stash`, `checkout` and `restore` in the lead's tree. In the author's runs a subagent's
   `git stash` wiped the lead's edits and two UI units edited one stylesheet (one incident each). LLM merge
   resolution passed manual semantic checks only 78% of the time on human merges (2605.17279), so prevent
