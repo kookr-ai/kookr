@@ -30,14 +30,15 @@ export function createSkillListingCheckProcessor(
   const inFlight = new Set<string>();
   return {
     async process(stopTask, tmuxName) {
+      // Fire-and-forget from the event pipeline: this must never reject.
       if (!stopTask || inFlight.has(stopTask.id)) return;
-      const task = deps.taskStore.getTask(stopTask.id);
-      const record = task?.loadout;
-      if (!task || !record?.plugins?.length || record.skillCheck) return;
-      const transcriptPath = task.sessions.find((s) => s.tmuxSession === tmuxName)?.transcriptPath;
-      if (!transcriptPath) return;
-      inFlight.add(task.id);
+      inFlight.add(stopTask.id);
       try {
+        const task = deps.taskStore.getTask(stopTask.id);
+        const record = task?.loadout;
+        if (!task || !record?.plugins?.length || record.skillCheck) return;
+        const transcriptPath = task.sessions.find((s) => s.tmuxSession === tmuxName)?.transcriptPath;
+        if (!transcriptPath) return;
         const names = await read(transcriptPath);
         if (!names) return;
         const results = checkSkillsForPlugins(record.plugins.map((p) => p.id), names);
@@ -49,9 +50,9 @@ export function createSkillListingCheckProcessor(
           console.log(`[loadout] task ${task.id}: no skills seen for ${unseen.join(', ')} (expected for a plugin without skills)`);
         }
       } catch (err) {
-        console.warn(`[loadout] skill listing check failed for task ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(`[loadout] skill listing check failed for task ${stopTask.id}: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
-        inFlight.delete(task.id);
+        inFlight.delete(stopTask.id);
       }
     },
   };

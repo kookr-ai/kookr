@@ -99,3 +99,15 @@ describe('skill listing check', () => {
     expect(read).not.toHaveBeenCalled();
   });
 });
+
+describe('skill listing processor never rejects', () => {
+  test('a throwing task store is caught and logged, not an unhandled rejection', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const processor = createSkillListingCheckProcessor({
+      taskStore: { getTask: () => { throw new Error('boom'); }, setLoadout: vi.fn() as never },
+    });
+    await expect(processor.process({ id: 't' }, 'x')).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
