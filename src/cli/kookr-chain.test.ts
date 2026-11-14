@@ -44,6 +44,14 @@ describe('runChainCli', () => {
     expect(h.logs[0]).toContain('iteration 1 is task t1');
   });
 
+  it('prints a compact JSON envelope for start, not the whole task record', async () => {
+    const h = io({}, { status: 201, body: { id: 't1', status: 'inProgress', prompt: 'x'.repeat(50_000), chain: { chainId: 'c1', iteration: 1, maxIterations: 3 } } });
+    expect(await runChainCli(['start', 'research.md', '--iterations', '3', '--json'], h.io)).toBe(EXIT_OK);
+    const printed = JSON.parse(h.logs[0]);
+    expect(printed).toEqual({ ok: true, taskId: 't1', chainId: 'c1', status: 'inProgress', chain: { chainId: 'c1', iteration: 1, maxIterations: 3 } });
+    expect(h.logs[0].length).toBeLessThan(500);
+  });
+
   it('stops the current task\'s chain as the agent when run inside a chain iteration', async () => {
     const h = io({ KOOKR_TASK_ID: 'tip-1' }, { status: 200, body: { ok: true, iteration: 4, tipTaskId: 'tip-1' } });
     expect(await runChainCli(['stop', '--reason', 'queue empty'], h.io)).toBe(EXIT_OK);

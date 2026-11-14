@@ -249,7 +249,18 @@ export async function runChainCli(argv: string[], io: ChainCliIo = {}): Promise<
   }
 
   if (parsed.json) {
-    out.log(JSON.stringify({ ok: true, ...payload }));
+    // `start` returns the whole task record (tens of KB of prompt text); print
+    // only what a caller needs to track the chain.
+    out.log(JSON.stringify(parsed.kind === 'start'
+      ? {
+          ok: true,
+          taskId: payload.id,
+          chainId: (payload.chain as { chainId?: string } | undefined)?.chainId,
+          chain: payload.chain,
+          status: payload.status,
+          ...(payload.queued ? { queued: true } : {}),
+        }
+      : { ok: true, ...payload }));
   } else if (parsed.kind === 'start') {
     const chain = payload.chain as { chainId?: string; maxIterations?: number; deadlineAt?: string } | undefined;
     const bounds = [
