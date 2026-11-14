@@ -89,41 +89,31 @@ For large files where you only need a specific section, use `offset` and `limit`
 
 ## Long-session context policy
 
-Every turn re-sends the whole context. In one measured agent loop about 96% of tokens were cache reads
-(cheap per token, but they grow with context size times turns). Items 1 and 3 are harness settings; an
-agent inside a session can apply 2, 4, 5 and 6. Items 1-3 are cheap and low-risk; 2 can lose detail if
-truncation has no way back; 4 (summarizing) is the lossy one.
+Every turn re-sends the whole context, so cost grows with context size times turns. Items 1 and 3 are
+harness settings; an agent in a session applies 2, 4, 5 and 6. Summarizing (4) is the lossy one.
 
 1. **Keep the prompt prefix byte-identical.** Put volatile fields (timestamps, paths, agent IDs) after
-   the stable part or use placeholders; keep tool definitions stable. TokenPilot (2606.17016) combined
-   this with eviction: cache hit rate 38.7% → 79.2%, cost -61% on PinchBench vs append-only history.
-   Compaction alone gave 42% of the 61%, so prefix stability is not the whole gain (one model).
-2. **Bound tool output when it enters the window; keep the full payload.** Write raw output to a file
-   and name the path (capping by bytes rather than lines is our recommendation, not measured). TokenPilot
-   added a re-fetch tool because truncated observations otherwise made the agent retry. Pruning file
-   reads (2605.15315) saved 30.5% of tokens on Sonnet 4.5 but 3.0% on Opus 4.6 (success +1.2 / +0.4
-   points): measure on your model.
-3. **Evict finished steps' content in batches**, not every turn (that rewrites the cached prefix each
-   turn). TokenPilot's every-3-turns is that paper's setting, not an optimum.
-4. **Summarize only with a summarizer tested against full history.** SUMONE (2611.06445), a trained 2B
-   summarizer, scored 0.48 F1 vs 0.52 (full history) on DeepSearchQA at about 78% lower total cost, and
-   resolved 0.59 vs 0.63 on SWE-bench Verified.
-   Write only vetted content into summaries: one built from toxic rollouts passed a toxicity check (mean
-   0.0852) yet carried measurable influence (2605.16746); a stale summary kept reproducing a corrected
-   fact in 69.8-94.3% of answers until repaired (2605.07242).
-5. **Long context weakens prohibitions.** "Do not" rules fell from 73% obeyed at turn 5 to 33% at turn
-   16 while "always do" rules stayed at 100% (Mistral Large 3; Gemma 4 31B did not decay; 2604.20911).
-   Restating prohibitions near the end of the context, or restarting with a clean window, is untested
-   advice that follows from this; clearing history beat a sliding window by 4.0 points (Qwen3-8B,
-   2602.03664).
-6. **Keep the main window small by design** (pattern 1): a viewer subagent cut main-agent non-cached
-   input tokens 34.5% (2604.26102).
-   Before loading a large corpus, codebase or log set at all, decide whether to load, retrieve or
-   delegate the reading: see `agent-memory-and-learning`, reference `load-retrieve-or-delegate.md`.
+   the stable part and keep tool definitions stable. With batch eviction this about doubled cache hit
+   rate and cut cost ~60%; compaction alone gave most of that, so stability is not the whole gain.
+2. **Bound tool output when it enters the window; keep the full payload.** Write raw output to a file and
+   name the path, plus a re-fetch route (otherwise the agent retries). Cap by bytes rather than lines (our
+   recommendation, not measured). Pruning file reads saved ~30% of tokens on one model and ~3% on another:
+   measure on yours.
+3. **Evict finished steps' content in batches**, not every turn (per-turn eviction rewrites the cached
+   prefix each turn).
+4. **Summarize only with a summarizer tested against full history.** Write only vetted content into
+   summaries: toxic rollouts and stale facts leak through (a stale summary kept repeating a corrected
+   fact in most answers until repaired).
+5. **Long context weakens prohibitions.** "Do not" rules can decay with turns while "always do" rules hold
+   (one model; another did not decay). Restating prohibitions near the end of the context or restarting with
+   a clean window is untested advice that follows from this (clearing history did beat a sliding window in
+   one test).
+6. **Keep the main window small by design**: offload bulky reads to a viewer subagent (cut main-agent
+   uncached input ~35%). Before loading a large corpus, codebase or log set at all, decide whether to load,
+   retrieve or delegate the reading: see `agent-memory-and-learning`, reference
+   `load-retrieve-or-delegate.md`.
 
-Not measured anywhere we looked: break-even between cache misses and compression, hosted-API cache
-expiry effects, prompt-only rolling-summary accuracy on agent benchmarks, Claude Code auto-compact side
-effects.
+Evidence: kb://agentic-capability-reports/notes/2026-11-14-in-window-context-policy-for-long-running-coding-agents.md
 
 ## Anti-Patterns
 

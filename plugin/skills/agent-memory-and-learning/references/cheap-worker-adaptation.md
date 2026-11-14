@@ -6,105 +6,82 @@ a cheaper tier or a local model, or before starting any fine-tune or distillatio
 Tune the **harness** (prompts, tool descriptions, hooks, verification steps) around the unchanged model
 first. Fine-tune (distill from a stronger teacher) only when a specific signal says the harness cannot
 fix the problem, and only if you control the weights: hosted models get Steps 1-2 only, local open
-models Steps 1-5. Which model tier a task needs at all: the `agent-fleet-orchestration` skill.
-
-Most rules rest on a single study, and almost all studies use open Qwen and Gemma models as the cheap
-model: applying them to hosted tiers such as Claude Haiku is a transfer, not a measurement.
-
-Contents: Steps 1-5 · Distilling an inference-time structure · Gaps.
+models Steps 1-5. Which model tier a task needs at all: the `agent-fleet-orchestration` skill. Most
+findings come from open Qwen and Gemma models, so applying them to a hosted tier such as Haiku is a
+transfer, not a measurement.
 
 ## Step 1: fix a held-out set before changing anything
 
 Pick held-out tasks and a metric that tuning and training never see; judge every later change on them.
-
-- Tuning overstates its own gains: in one prompt-optimization study the gain on the tuning tasks was
-  about 2.6x the held-out gain (2610.12601). Running an optimizer on a small budget:
-  [prompt optimization under budget](../../agent-evaluation/references/prompt-optimization-under-budget.md).
-- Training does the same: in one unpublished local run, fine-tuning on a larger teacher's preference pairs
-  fit the training data about 12x better than on the student's own pairs, then scored worse held-out.
+Tuning overstates its own gains (about 2.6x the held-out gain in one study), and training on a larger
+teacher's pairs fit the training data better yet scored worse held-out. Running an optimizer on a small
+budget: [prompt optimization under budget](../../agent-evaluation/references/prompt-optimization-under-budget.md).
 
 ## Step 2: tune the harness around the unchanged model
 
-Drive the edits from failed runs: read where the cheap model went wrong, then change the tool
-description, add a verification step, a recovery hook, or a corrector (a second call that reviews the
-output without seeing the conversation; evidence in the `agent-fleet-orchestration` skill, Step 4).
+Drive the edits from failed runs: read where the cheap model went wrong, then change the tool description,
+add a verification step, a recovery hook, or a corrector (a second call that reviews the output without
+seeing the conversation; see the `agent-fleet-orchestration` skill).
 
-- After automated harness editing, the best small model recovered 89.7% of the large model's accuracy at
-  4% of its inference cost. The edits improved 16 of 21 task-model pairs but closed the gap fully in
-  only 7; gains were larger on repetitive tasks and with more capable small models (2607.08938).
-- It needs no GPU: about 15,000 runs on a CPU-only machine cost $3,667 of model spend plus $256 for the
-  model proposing edits (2608.10178); with no matching fine-tune figure, this shows scale, not a saving.
-- **Cost: longer prompts.** One optimized prompt raised per-query input tokens by 32% (2610.12601).
-- **Cost: no transfer between models.** Skills learned for one model lowered another model's score
-  (2603.16112). Re-tune the harness when the worker model changes.
+- Automated harness editing let the best small model recover about 90% of the large model's accuracy at 4% of
+  its inference cost. It closed the gap fully on only 7 of 21 task-model pairs; gains were larger on
+  repetitive tasks and with more capable small models. It needs no GPU.
+- **Cost: longer prompts.** One optimized prompt raised input tokens per query by about a third.
+- **Re-tune when the worker model changes.** Skills learned for one model lowered another model's score.
 
 ## Step 3: fine-tune only on one of three signals
 
-1. **A hard constraint stays unreliable after prompt optimization.** Weight training raised the pass
-   rate on hard format constraints from below 2% to over 90%, where prompt optimization alone reached at
-   most 28% (2610.18309; a slate-generation task, not an agent benchmark).
-2. **Prompt tokens dominate cost.** A fine-tuned 4B model needed no tool descriptions in its prompt,
-   cutting input length by 82.6%, with tool-selection AT-F1 0.65 against 0.47 for a baseline given the
-   full descriptions (2605.17774); that baseline may not have been tuned, so this shows fine-tuning can
-   replace a long prompt, not beat a tuned one.
-3. **Several harness edits in a row give no held-out gain** (a rule of thumb; no study gives a threshold).
+1. **A hard constraint stays unreliable after prompt optimization.** Weight training took hard format
+   constraints from under 2% to over 90%, where prompt optimization reached at most 28%.
+2. **Prompt tokens dominate cost.** A fine-tuned 4B model needed no tool descriptions in its prompt, cutting
+   input length 83%. This shows fine-tuning can replace a long prompt, not beat a tuned one.
+3. **Several harness edits in a row give no held-out gain** (rule of thumb; no threshold is measured).
 
-Keep the tuned harness when you train: starting from the optimized prompt reached the same reward in
-1.6-1.9x fewer training steps (2610.18309). A harness matched to the trained model beat mismatched pairs;
-tuning both together raised a 4B model's ToolHop accuracy from 41.03% to 52.82% (2606.01779).
+Keep the tuned harness when you train: starting from the optimized prompt reached the same reward in about
+1.7x fewer steps, and a harness matched to the trained model beat mismatched pairs.
 
 ## Step 4: build the training set from the student's own corrected runs
 
-- **Don't train on teacher runs alone**: the student drifts into situations the teacher never met. On a
-  web benchmark, imitating teacher runs plateaued near 25% however long it trained; letting the student
-  act and the teacher rewrite its failed steps reached 41.1% with a 4B student, for 403 teacher calls,
-  4.0M tokens and 1.0 GPU-hour of training (2610.19834); teacher-corrected student data also took
-  26.07% to 31.74% (2610.13238). Treat a stronger teacher as a hypothesis to test (2606.16409).
-- **Keep only items the student fails and a teacher solves:** 62.9 to 75.3 with 1,000 examples (2610.13285).
-- **Score passing runs on process quality and train on the top ones; passing alone is a weak filter.**
-  Scored from the event log alone (did actions match stated intent, did focus narrow), at a fixed 1,024
-  passing coding-agent runs, the top subset solved 27.6% of SWE-Bench Verified, a random one 24.8%, the
-  bottom 21.8%, below the untrained 24.4%. The log score cost about $0.1-0.2 of CPU and came within 0.8
-  points of a GPT-4o judge costing about $2,750 (2610.13152).
-- **Consider masking bad steps out of the loss rather than dropping the failed run:** 32.2% on SWE-bench
-  Verified against 30.9% for dropping failed runs and 28.5% for training on them as is (2605.10674). The
-  gain is small (1.3 points), and the step labeller was right only 60.4% of the time.
-- **Start small.** Gains came from about 1,700 tool-use examples (2605.17774), 1,024 runs (2610.13152),
-  and 106 supervised plus 50 RL conversations (2610.12757); no study shows where more stops helping. No
+- **Do not train on teacher runs alone**: the student drifts into situations the teacher never met. Imitating
+  teacher runs plateaued near 25% on a web benchmark; letting the student act and the teacher rewrite its
+  failed steps reached 41% with a 4B student for about 400 teacher calls. Treat a stronger teacher as a
+  hypothesis to test.
+- **Keep only items the student fails and a teacher solves.**
+- **Score passing runs on process quality and train on the top ones; passing alone is a weak filter.** Scored
+  from the event log alone (actions matched stated intent, focus narrowed), the top subset of 1,024 coding
+  runs beat a random one by about 3 points and the bottom subset fell below the untrained model. The log
+  score cost cents against thousands of dollars for an LLM judge at similar quality.
+- **Consider masking bad steps out of the loss rather than dropping the failed run.** The gain was small
+  (about 1 point) and the step labeller was right only about 60% of the time.
+- **Start small.** Gains came from about 100 to 1,700 examples; no study shows where more stops helping. No
   real runs to learn from: [training task synthesis](training-task-synthesis.md).
 
 ## Step 5: re-test what fine-tuning breaks
 
-Run the held-out set and a general benchmark before and after training; fix the acceptable drop in
-advance. Replay and backward transfer: [continual learning](agent-continual-learning.md).
+Run the held-out set and a general benchmark before and after training; fix the acceptable drop in advance.
+Replay and backward transfer: [continual learning](agent-continual-learning.md).
 
-- **General ability.** Fine-tuned 4B models kept only 61.3%-79.8% of the untuned model's general
-  multiple-choice accuracy (2605.17774).
-- **Training stability.** Training on the student's own runs is fragile: an asynchronous setup fell from
-  41.8% to 26.8% on SWE-bench Verified and collapsed in 3 of 5 training runs (2605.17862).
-- **Safety behavior.** Fine-tuning audio models on harmless data chosen for similarity to harmful
-  content raised jailbreak success from single digits to 87.12%; random harmless subsets did not reliably
-  do so (2604.16659). An analogy for agents, not a measurement.
-- **Step-level errors.** Accuracy can rise while the process degrades: 74.7 to 84.4 while step errors rose
-  from 30.6% to 50.3% (2605.28301). Track step-level error, not only final accuracy.
-- **The remaining gap.** The 4B web student above reached 41.1% against its teacher's roughly 70.9%
-  (2610.19834): keep the strong model for the tasks the student still fails.
+- **General ability.** Fine-tuned 4B models kept only about 61-80% of the untuned model's general accuracy.
+- **Training stability.** Training on the student's own runs is fragile: an asynchronous setup collapsed in
+  3 of 5 runs.
+- **Safety behavior.** Fine-tuning on harmless data chosen for similarity to harmful content raised
+  jailbreak success from single digits to 87% (audio models; an analogy for agents).
+- **Step-level errors.** Accuracy rose while step errors rose from 31% to 50%: track step-level error, not
+  only final accuracy.
+- **The remaining gap.** A 4B student reached 41% against its teacher's 71%: keep the strong model for the
+  tasks the student still fails.
 
 ## Distilling an inference-time structure (debate, search, long prompt)
 
-- **First measure the structure against a well-briefed single agent, and try editable amortisers:**
-  hierarchical deliberation was up to 3.4x worse at 1.8-2.7x tokens (2605.16205), so distilling it copies
-  the defect; context tuning beat in-context learning 44.2 vs 35.6 on NLP-LR (2507.04221); harness: Step 2.
-- **A long prompt moved into weights** (Step 3 signal 2, Step 5 losses) overfits its query template and
-  cannot be edited: keep the original context as fallback ([continual learning](agent-continual-learning.md) 9).
-- **Debate distillation** gave up to +4.8% average, reasoning only, no cost figure (2602.03955); more
-  data degraded RSFT/DA, so prefer quality over volume. **Search distillation** works for single-shot
-  reasoning (MATH500 0.508 to 0.631 and 0.661, 2605.04542), but the majority-vote gain was only +2.3
-  (2604.24957); how much survives running search on top is unmeasured.
+- **First measure the structure against a well-briefed single agent, and try editable amortisers.**
+  Hierarchical deliberation was up to 3.4x worse at about 2x tokens, so distilling it copies the defect;
+  context tuning beat in-context learning. Harness first: Step 2.
+- **A long prompt moved into weights** overfits its query template and cannot be edited: keep the original
+  context as fallback (see [continual learning](agent-continual-learning.md), knowledge in context by
+  default).
+- **Debate distillation** gave a few points on reasoning only; more data degraded some methods, so prefer
+  quality over volume. **Search distillation** works for single-shot reasoning, but how much survives
+  running search on top is unmeasured.
 
-## Gaps
-
-- No harness-tuning versus distillation comparison on one agent benchmark at matched cost.
-- No numeric threshold for switching, curve of score against training runs, or price for a distillation.
-- Nothing measures a student inheriting teacher errors, or loss on unseen repositories or tool sets.
-- No figure for the share of a search gain kept after distillation; no editability study.
+Evidence: kb://agentic-capability-reports/notes/2026-11-13-harness-tuning-vs-trajectory-distillation-for-cheap-workers.md,
+kb://agentic-capability-reports/notes/2026-11-14-distilling-inference-time-structure-into-small-agent-weights.md

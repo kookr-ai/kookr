@@ -482,7 +482,7 @@ For each filtered issue:
    - `unsafe`: broad refactor, global formatting, shared release files, changelog/release notes, dependency lockfile overlap, migration touching many modules, or likely same files as an already selected **work unit**.
 4. Reject `unsafe`.
 5. Include `maybe` only if the parent can assign a strict child write scope that avoids already selected work units' files.
-6. **Route the unit by observable features** (copied from `agent-fleet-orchestration` "Coding fleets" — never ask a model to rate difficulty):
+6. **Route the unit by observable features** (copied from `agent-fleet-orchestration` "Step 6: coding fleets" — never ask a model to rate difficulty):
 
    | Observable feature | `route` |
    |---|---|

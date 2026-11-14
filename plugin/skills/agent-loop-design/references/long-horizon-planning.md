@@ -4,81 +4,56 @@ Use when: starting or briefing a long multi-step task (up-front plan or reactive
 triggers, where plan and progress live past the context window), when an agent stalls after early
 progress, or before acting on a saved plan, todo list or checkpoint after a gap.
 
-No surveyed paper compares plan-then-execute with ReAct on one model, task and token budget: every rule
-is conditional. Who writes the plan in a coding fleet: `agent-fleet-orchestration`; durable handoffs and
-checkpoints across runs: `automation-design`, `self-continuation-task`.
+Plan-vs-ReAct comparisons at equal budget are missing, so every rule is conditional. Who writes the plan
+in a coding fleet: `agent-fleet-orchestration`. Durable handoffs across runs: `automation-design`,
+`self-continuation-task`.
 
 ## Rules
 
 1. **Plan up front only when the task is decomposable, mostly deterministic and each step is
-   checkable.** Compiled, validated web plans cut latency from 122 s to 11.7 s and lifted accuracy from
-   61% to 89%, but against a weak step-by-step baseline (Browser-Use) and with a replan fallback, so
-   read it as an upper bound, not proof planning beats ReAct (2605.21470). When each step depends on
-   what the last one revealed, act and plan only the next stage.
-2. **Keep the plan short and coarse.** A few-sentence plan adds only 20-50 output tokens (2510.01833).
-   Split a step further only at run time, when it fails or looks large; fine static decomposition raises
-   retry cost (2605.15425, figures in `agent-fleet-orchestration`, as is the evidence against
-   distributing deliberation across a hierarchy).
-3. **Commit to the next stage, not the whole plan.** Executing a prefix of a validated plan (a task DAG)
-   cut executed tasks from 1,061 to 623 and raised accomplishment from 0.638 to 0.706 (2605.14051).
-4. **Spend planner tokens where the executor is weak**; do not add a planner stage on top of a strong
-   executor by default. A planner added about 0.14 F1 points to a strong executor (74.17 to 74.31) and
-   6.9 to a weak one (56.32 to 63.19) (2604.25120).
+   checkable.** Compiled, validated plans cut latency ~10x and lifted accuracy, but against a weak
+   baseline and with a replan fallback: an upper bound. When each step depends on what the last revealed,
+   act and plan only the next stage.
+2. **Keep the plan short and coarse.** A few sentences cost 20-50 output tokens. Split a step further
+   only at run time, when it fails or looks large; fine static decomposition raises retry cost
+   (`agent-fleet-orchestration`).
+3. **Commit to the next stage, not the whole plan.** Executing a prefix of a validated task DAG cut
+   executed tasks ~40% and raised accomplishment.
+4. **Spend planner tokens where the executor is weak**; don't add a planner stage on top of a strong
+   executor by default (it added ~0.1 F1 there vs ~7 for a weak executor).
 5. **Validate the plan before running it**: tools exist, dependencies hold, each stage has an observable
-   check. Without a protocol check only 77% of generated plans were valid, 91% with one (2605.21470).
-6. **Replan on events, not on a schedule and not by default.** Triggers with measured gains: a failed
-   validator check (success 0.72 to 0.86, 2605.14851), environment uncertainty (46.9% vs 43.1% on
-   WebArena at 351.4 s vs 803.7 s, 2604.17821). Planning only when uncertain, then keeping a verified
-   plan until it completes or fails, scored 1.00 vs 0.79 on FrozenLake 8x8 (2606.16995). Reroute a tool
-   failure deterministically instead of LLM replanning (2603.01548, mock tools only). Don't replan every
-   step: loss was lowest at a replan period of 3 and worse at 1 (2606.03741, latent-reasoning model, not
-   an agent benchmark).
-7. **Escalating to a heavier planner is a cost, not a default.** Expanded orchestration lowered GAIA L1
-   accuracy from 54.72% to 50.94%, raised tracebacks from 62 to 141 and cost from $197 to $231
-   (2605.14102, 53 tasks).
-8. **Put plan and progress in a file, then re-verify it.** File-centric state scored 67.1 against 3.2
-   for ablated baselines (2601.03204). After any gap, re-read the authoritative source before acting on
-   a saved plan or checkpoint: in operator runs an approved plan had already been merged on the base
-   branch, and checkpoints skipped newly opened work. Treat persisted summaries as untrusted input
-   (evidence in `token-efficiency`). Re-critique a carried-forward findings list each round; don't walk
-   it as a to-do agenda.
-9. **Re-inject hard constraints on long contexts.** Omission-constraint compliance (rules to not do
-   something or leave something out) fell from 73% to 33% with context depth while commission
-   constraints stayed near 100% (2604.20911).
-10. **Gate "done" on an external check.** The best CTF agent completed 35% of challenge checkpoints and
-    made its progress in the first 20 steps before stalling (2604.19354); a self-set completion field
-    had zero predictive validity (operator lessons). See also lucky passes in [agent failure
-    recovery](agent-failure-recovery.md).
-
-11. **Diagnose the failure class before adding structure; don't assume compounding step errors.** Decay
-    with horizon is non-linear ("sharp drops beyond small horizon extensions") and no surveyed paper
-    fits a per-step compounding curve; in web, OS and embodied tasks planning and memory failures
-    dominate (2604.11978). Long coding runs do not fail mainly from lost plans: edit quality caused
-    60-69% of capable-model failures and strategy and logic 37% of SWE-bench failures (2603.24631,
-    2605.12270). Early give-up ([agent failure recovery](agent-failure-recovery.md)), a stall after
-    early progress (rule 10) and forgotten prohibitions (rule 9) each need a different fix.
-12. **Gate each chunk on a check that says what to fix.** One round of testbench-log feedback took Claude
-    Code from 38.6% to 83.2% resolved on hardware bug fixing, while a perfect file-level oracle added
-    only +1.4% (2605.15226). Weak verifiers degrade results (2605.10325); a verify gate with 98.58% rule
-    agreement had 0.39% blocked precision (2605.17998). No paper measures checkpoint spacing.
-13. **Bound the working context and clear it periodically.** Clearing beat a sliding window 68.9% to
-    64.9% (2602.03664); context stayed under 15k tokens at 300 steps (2605.05191). A trained summary
-    of old history cost about 0.04 (0.48 vs 0.52 F1 on DeepSearchQA, 0.59 vs 0.63 resolved on SWE-bench
-    Verified) for about 78% lower cost (2611.06445). Keep the fields goal, progress, decisions, open
-    loops, and write-gate before summarizing (2605.16746; both in `token-efficiency`).
+   check. A protocol check raised plan validity from 77% to 91%.
+6. **Replan on events, not on a schedule and not by default.** Triggers that helped: a failed validator
+   check, environment uncertainty. Plan only when uncertain, then keep a verified plan until it
+   completes or fails. Reroute a tool failure deterministically instead of asking the LLM to replan. Don't
+   replan every step: a period of 3 beat 1.
+7. **Escalating to a heavier planner is a cost, not a default.** Expanded orchestration lowered accuracy
+   (55% to 51%), doubled tracebacks and raised cost ~15% on one benchmark.
+8. **Put plan and progress in a file, then re-verify it.** After any gap, re-read the authoritative
+   source before acting on a saved plan or checkpoint: an approved plan had already been merged, and
+   checkpoints skipped newly opened work. Treat persisted summaries as untrusted input
+   (`token-efficiency`). Re-critique a carried-forward findings list each round; don't walk it as a
+   to-do agenda.
+9. **Re-inject hard constraints on long contexts.** Compliance with "don't do X" rules fell from 73% to
+   33% with context depth while "do X" rules stayed near 100%.
+10. **Gate "done" on an external check.** An agent's self-set completion field had no predictive
+    validity, and the best CTF agent made its progress in the first 20 steps before stalling. See lucky
+    passes in [agent failure recovery](agent-failure-recovery.md).
+11. **Diagnose the failure class before adding structure; don't assume compounding step errors.** No
+    study fits a per-step compounding curve. In web, OS and embodied tasks planning and memory
+    failures dominate; long coding runs fail mostly from edit quality (60-69% of
+    capable-model failures), not lost plans. Early give-up ([agent failure
+    recovery](agent-failure-recovery.md)), a stall after early progress (**Gate "done"**) and forgotten
+    prohibitions (**Re-inject hard constraints**) each need a different fix.
+12. **Gate each chunk on a check that says what to fix.** One round of test-log feedback took Claude Code
+    from 39% to 83% resolved on hardware bug fixing; a perfect file-level oracle added 1.4%. Weak
+    verifiers degrade results.
+13. **Bound the working context and clear it periodically.** Clearing beat a sliding window; a trained
+    summary of old history cost ~0.04 accuracy for ~78% lower cost. Keep the fields goal, progress,
+    decisions, open loops, and write-gate before summarizing (`token-efficiency`).
 14. **Delegate wide, independent work; keep serial work in one agent.** Independent parallel workers
-    raised detection from 50.8% to 64.2%, but a single agent was cheapest per validated finding
-    ($0.058, 2604.18718). Delegation is the hardest category for all models, and retries add about
-    3 points there (2603.20380).
+    raised detection from 51% to 64%, but a single agent was cheapest per validated finding. Delegation
+    is the hardest category for all models.
 
-**Evidence against.** ReAct beat a utility-guided policy on QA F1 (0.2662 vs 0.236), the policy winning
-only on cost control (2603.19896). A planner pipeline beat ReAct by 8.6 points but a strong single model
-by only 3.8 (2604.25737). Mixed-tier and multi-agent counter-evidence: `agent-fleet-orchestration`.
-
-## Gaps (not found in the surveyed literature)
-
-- Same-budget plan-vs-ReAct for agents; fixed-interval vs event-triggered replanning.
-- Plan granularity (step count, subgoal size) vs success; success vs step count.
-- A plan file vs a plan kept in context; measured adherence to an agent's own written plan.
-- One long session vs chunking or handoffs at matched budget; checkpoint spacing; restart vs resume;
-  an executor-only model swap; information lost at a delegation boundary.
+Evidence: kb://agentic-capability-reports/notes/2026-11-14-upfront-plan-vs-reactive-and-replan-triggers.md,
+kb://agentic-capability-reports/notes/2026-11-14-horizon-length-decay-and-chunked-long-tasks.md

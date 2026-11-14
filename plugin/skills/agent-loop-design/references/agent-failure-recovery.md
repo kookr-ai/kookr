@@ -8,11 +8,8 @@ choosing an attempt budget.
 money or does harm on the others. This covers an agent recovering inside its own task. Supervisors
 recovering other work across ticks: `automation-design`; code-level retry, backoff and idempotency keys:
 `error-handling-patterns`; fleets (central retry control, fresh-context verifiers):
-`agent-fleet-orchestration`.
-
-**Evidence limit.** No study in the surveyed literature compares these policies on the same tasks at
-matched cost, and none measures success versus attempts for agents. The routing table assembles separate
-studies and is a synthesis, not a measured ranking. The attempt caps are heuristics.
+`agent-fleet-orchestration`. The routing table is a synthesis of separate studies, and the attempt caps
+are heuristics.
 
 ## Step 1: detect, at the step, not at the end
 
@@ -20,68 +17,49 @@ studies and is a synthesis, not a measured ranking. The attempt caps are heurist
   return value, the file you meant to write.
 - Before claiming done, re-run the acceptance check. Don't trust a summary of an earlier run.
 - Treat the second identical action with an identical result as a loop.
-- A failed check means classify and act, not abandon: agents also quit too early (one model's 19.14% on
-  a tool benchmark came partly from premature termination on errors, 2605.10787).
+- A failed check means classify and act, not abandon: agents also quit too early on errors.
 - Never let the model's own "done", progress figure or confidence decide whether to continue or stop.
-  Self-reported progress was 5.8% to 11.5% accurate mid-task against 90.6% to 99.4% before acting, and
-  ending on a self-reported marker completed 13.0 fewer tasks than ending when the model makes no tool
-  call (2609.08589); self-reports overstated top-100 success 4.8x to 9.3x (2609.00652).
-- Audit the tool layer, not only the agent: 91 silent failures were confirmed across 15 tools, 7 of
-  which failed on more than 50% of test cases (2609.26836). A green tool result is a claim; re-read the
-  state it should have changed.
+  Self-reported progress was 6-12% accurate mid-task, and ending on a self-reported marker completed
+  fewer tasks than ending when the model makes no tool call.
+- Audit the tool layer, not only the agent: silent failures were confirmed across 15 tools, 7 of which
+  failed on over half of test cases. A green tool result is a claim; re-read the state it should have
+  changed.
 - On failed or suspicious runs, add a step-level judge: outcome-only judging caught 84% of loud injected
-  faults but 45% of silent ones, with 33% false alarms on clean runs (2609.00038). Calibrate the judge on
-  50 to 100 labeled runs of your own agent first; a three-LLM ensemble reached kappa 0.432 against
-  humans (2604.16706).
+  faults but 45% of silent ones, with 33% false alarms on clean runs. Calibrate the judge on 50 to 100
+  labeled runs of your own agent first.
 - Use failure attribution to pick where to look, not to trigger a rollback. Agent-level blame was right
-  about 80% in-domain (2608.28264), exact-step blame only 24.1% on real long runs (2608.15242) and
-  42.73% for the best structured judge (2604.17658); humans agree on the exact step only 39.5% of the
-  time.
-- Early-stop only on a detector fitted to your own traces. The best result saved 26.3% of tokens at 92%
-  precision, on small open models in a toy web environment, and transferred only partly (2611.04142).
-  HALT and entropy stoppers stop converged loops, not doomed ones (2608.02009, 2606.27009).
+  ~80% of the time; exact-step blame 24-43%, and humans agree on the exact step only ~40%.
+- Early-stop only on a detector fitted to your own traces (best case saved ~26% of tokens at 92%
+  precision on a toy setup). Entropy-style stoppers stop converged loops, not doomed ones.
 
-Why: most failures are silent. In 20,574 real coding-agent sessions, only 9.33% of misalignment episodes
-were visibly resolved, and 91.49% of those needed a developer to push back (2605.29442). Step-level
-checking caught 0.89 of failures against 0.41 for judging the final output (2604.23581; three workflows,
-450 cases, one GPT-4o judge). A loop breaker cut wasted steps from 4.9% to 2.8% for a loop-prone model
-(2604.21375).
+Why: most failures are silent, and step-level checking caught about twice as many failures as judging
+the final output (0.89 vs 0.41).
 
 ## Step 2: route by failure class
 
 | Failure class | Move | Evidence |
 |---|---|---|
-| **Transient**: rate limit, timeout, 5xx | Back off with jitter and retry through one shared limiter. For anything with side effects, check whether it already happened first: a timeout is not proof nothing happened. An idempotency key prevents a duplicate but can replay a failed result, so "an ID came back" is not success; check the live state (observed in the author's runs). | Central retry cut concurrent-agent failures from 72-100% to 0-18% (2604.17111, against a mock API server). In the author's runs, a create call that timed out under load had often completed after the deadline. |
-| **Deterministic with an error message**: compile error, stack trace, failing test, query error | Feed the exact error into the next attempt. One or two rounds. If the same error class comes back, the hypothesis is wrong: change approach. | In graph-query generation with small models, retrying with the error message cut execution errors 41-50%, vs 32-38% for blind resampling at 5 attempts; the biggest gain came at the first feedback step (2605.22937). Over up to 10 feedback rounds on coding problems, fix rates were 88.2% for compile errors and 82.8% for Python runtime errors, but 23.6% for Java runtime errors and under 35% for wrong answers (2606.17514). |
-| **Logic error, no external signal**: tests pass but output is wrong, or no test | Give the artifact and the spec to a fresh-context critic (a stronger model if available) and act on its concrete counterexample. Don't ask the same context to "reflect". | 90% of Reflexion-style self-critiques were boilerplate, at about 32K tokens per problem vs about 2K for a direct answer (2605.05737); stored reflections transferred badly to other tasks (2605.29225). A stronger model critiquing each step beat Reflexion by 8.5-12.1 points on reasoning benchmarks; verbal critique fails on code runtime errors, where executable feedback is needed (2604.21611). |
-| **Corrupted state**: the work was right, then a later step broke it | Restore the last verified checkpoint, environment included, and replan from there with a one-line note of what failed. | Overwriting correct code with a broken edit caused 39.7% of SWE-Agent failures in one study; checkpointing after a passing test recovered all 5 such edits that matched the reference fix (2603.24631, small sample). Restoring only the conversation was correct 8% of the time, vs 100% with the sandbox state too (2604.28138). |
-| **Checkable output, cheap to produce** | Run 3 variants that differ in method (prompt style, code vs prose, model family) and let an automatic check or vote pick. Copies of one model are worse than varied methods; vote only where an automatic check can settle a tie (judge-correlation evidence in `agent-fleet-orchestration`). | Separately built variants share failures far more than chance (429 vs about 115 expected), yet majority-of-3 cut mean failures from 387.44 to 130.99 (2606.20158). On repository-level coding, consensus added only 3.0 points, not significant (p=0.08) (2603.24631). |
-| **Stalled**: no progress over two attempts, or the budget is spent | Stop or escalate. Report what was tried and the state left behind. Don't retry until green: re-running a flaky full suite failed on a different test each time in one observed run; isolate the failing test. | 10.7% of passing SWE-agent runs were "lucky passes" via blind retries and regression cycles, at up to 40x the tokens (2605.12925). Measured progress correlated with final result (rank correlation 0.784), and switching strategy on a stall beat greedy search by a small margin (0.208 vs 0.192, one benchmark of ML research agents) (2605.17373). |
+| **Transient**: rate limit, timeout, 5xx | Back off with jitter and retry through one shared limiter. For anything with side effects, check whether it already happened first: a timeout is not proof nothing happened. An idempotency key prevents a duplicate but can replay a failed result, so "an ID came back" is not success; check the live state. | Central retry cut concurrent-agent failures from 72-100% to 0-18% (mock API). A create call that timed out under load had often completed after the deadline. |
+| **Deterministic with an error message**: compile error, stack trace, failing test, query error | Feed the exact error into the next attempt. One or two rounds. If the same error class comes back, the hypothesis is wrong: change approach. | Error feedback cut execution errors 41-50% vs 32-38% for blind resampling, mostly at the first feedback step. Fix rates were 83-88% for compile and Python runtime errors, but 24% for Java runtime errors and under 35% for wrong answers. |
+| **Logic error, no external signal**: tests pass but output is wrong, or no test | Give the artifact and the spec to a fresh-context critic (a stronger model if available) and act on its concrete counterexample. Don't ask the same context to "reflect". | 90% of Reflexion-style self-critiques were boilerplate, at ~16x the tokens of a direct answer; stored reflections transferred badly. A stronger-model critic beat Reflexion by 8-12 points; verbal critique fails on runtime errors, where executable feedback is needed. |
+| **Corrupted state**: the work was right, then a later step broke it | Restore the last verified checkpoint, environment included, and replan from there with a one-line note of what failed. | Overwriting correct code with a broken edit caused ~40% of SWE-Agent failures in one study; checkpointing after a passing test recovered all 5 matching cases (small sample). Restoring only the conversation was right 8% of the time vs 100% with sandbox state. |
+| **Checkable output, cheap to produce** | Run 3 variants that differ in method (prompt style, code vs prose, model family) and let an automatic check or vote pick. Copies of one model are worse than varied methods; vote only where an automatic check can settle a tie (`agent-fleet-orchestration`). | Variants share failures far more than chance, yet majority-of-3 cut mean failures from 387 to 131. On repository-level coding, consensus added only 3 points, not significant. |
+| **Stalled**: no progress over two attempts, or the budget is spent | Stop or escalate. Report what was tried and the state left behind. Don't retry until green: re-running a flaky full suite failed on a different test each time; isolate the failing test. | ~11% of passing SWE-agent runs were "lucky passes" via blind retries, at up to 40x the tokens. |
 
-Don't stack recovery layers (evidence in `agent-fleet-orchestration`, 2605.16205). Recovery frameworks
-often publish no numbers: one self-healing framework gives none (2605.06737), and one set of MCP
-recovery patterns is stated as untested hypotheses (2603.13417).
+Don't stack recovery layers (`agent-fleet-orchestration`). Published recovery frameworks often report no
+numbers.
 
 ## Step 3: place checkpoints at verified progress
 
 - Checkpoint whenever a check passes: a commit after green tests, a sandbox snapshot after a verified
-  step. They are cheap: DeltaBox spent about 1-2% of run time on snapshots (2605.22781), Crab added
-  0-1.9% end to end (2604.28138).
-- Restore the environment (files, processes, sandbox), not only the conversation (2604.28138).
-- Finer-grain support for the principle, not agent checkpoints directly: rolling C/C++ decoding back to
-  the last prefix that compiled beat repairing at the end, with up to 71% lower latency and 70% fewer
-  tokens at equal correctness (2605.15238, 32B model).
-- External side effects don't roll back: sent messages, API writes, pushes, payments (DeltaBox lists
-  missing network I/O rollback as a limit, 2605.22781). Before such an action, record what you will do;
-  after a failure, reconcile instead of repeating.
-- Don't kill as recovery. In one observed case `kill -9` corrupted a compile cache that outlived the
-  process, and every relaunch ran about 4x slower until it was cleared. Inspect what a process owned
-  before restarting it.
+  step. Snapshots cost ~1-2% of run time.
+- Restore the environment (files, processes, sandbox), not only the conversation.
+- Rolling decoding back to the last prefix that compiled beat repairing at the end (up to 71% lower
+  latency, 70% fewer tokens): support for the principle, not for agent checkpoints.
+- External side effects don't roll back: sent messages, API writes, pushes, payments. Before such an
+  action, record what you will do; after a failure, reconcile instead of repeating.
+- Don't kill as recovery. `kill -9` corrupted a compile cache that outlived the process, and every
+  relaunch ran ~4x slower until it was cleared. Inspect what a process owned before restarting it.
 
-## Gaps (not found in the surveyed literature)
-
-- No matched-cost comparison of these moves; no success-versus-attempts curve for agents.
-- No measured cheap-to-strong model cascades on agent tasks; no human-escalation numbers.
-- No compensation for external side effects.
-- No false-success-claim rate or loop-detector false-positive rate for coding agents; no
-  attribution-accuracy-by-length curve; no step-level judge vs unit-test head-to-head.
+Evidence: kb://agentic-capability-reports/notes/2026-11-14-agent-step-failure-recovery-policy.md,
+kb://agentic-capability-reports/notes/2026-11-14-agent-failure-detection-and-attribution.md
