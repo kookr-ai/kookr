@@ -30,6 +30,8 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **Reflection:** `self-reflect` (root-cause a mistake, then implement a structural fix), `task-feedback-reflect` (act on a thumbs-up/down on a completed task), `task-snapshot-reflect` (analyze a live or finished task from an immutable snapshot).
 
+**Agent design research (hubs):** four router skills that each point to short, evidence-based guides loaded only when needed, so they add four entries to the skill listing instead of twenty-two. `agent-evaluation` (is a score gap real, which gate accepts agent output, mergeability beyond green tests, trustworthy experiment, self-evolution and prompt-optimization loops), `agent-safety` (injected instructions in untrusted content, containing unsafe actions, predicting before hard-to-undo actions), `agent-memory-and-learning` (memory policy, post-task lessons, continual learning, agentic retrieval, skill-library design, adapting cheap workers), `agent-loop-design` (tool surface, inference budget and efficiency, long-horizon planning, failure recovery, latent vs text reasoning, internal-model signals).
+
 **Claude Code configuration:** `claude-code-hooks` (all hook event types, payloads, and matchers), `claude-code-permissions` (permission modes, rule syntax, and settings precedence).
 
 **Kookr operations:** Kookr-specific skills that are useful from any working

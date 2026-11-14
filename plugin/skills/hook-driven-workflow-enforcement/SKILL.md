@@ -15,6 +15,10 @@ triggers:
   - agent won't follow
   - agent skips
   - not following instructions
+  - CLAUDE.md too long
+  - AGENTS.md rules ignored
+  - rules forgotten mid-session
+  - what to put in CLAUDE.md
 ---
 
 # Hook-Driven Workflow Enforcement
@@ -517,6 +521,55 @@ Agents follow natural language instructions to "use command X" very reliably —
 | The step is project-specific | Yes (project settings.json) | Yes (project CLAUDE.md) |
 | You want to enforce ordering (A before B) | Yes (block B until A marks done) | Fragile |
 
+## What Prose Instructions Can and Cannot Carry
+
+Evidence for the "non-deterministic" row above. Most numbers come from one
+study each; treat them as leads.
+
+1. **Prefer a few concrete prohibitions over many positive directives.** On 58
+   SWE-bench Verified tasks (one model), any rule file lifted pass rate from
+   50.0% to about 63.8%, and random rules did as well as curated ones, so part
+   of the gain is priming. Removing "do not" rules cost up to 20 pp; removing
+   positive directives such as "follow code style" *raised* pass rate by up to
+   14 pp (about 8 tasks: a lead, not a law). Pass rate stayed at 59-67% from
+   0 to 50 rules (arXiv 2604.11088).
+2. **Do not expect length or layout tuning to fix compliance.** File size,
+   position, structure and conflicts showed a null result on adherence in 1,650
+   Claude Code sessions on two repos (2605.10039); there is no evidence-based
+   line limit.
+3. **In the studies surveyed, compliance often eroded during the session; hook
+   the hard rules.** Compliance fell about 5.6% per generated function, and
+   edits to existing code trailed brand-new code by 26.2 pp (2605.10039).
+   Prohibitions decayed from 73% at turn 5 to 33% at turn 16
+   while requirements held at 100% (one model; another did not decay)
+   (2604.20911). An audit that only checked a required output prefix (a
+   `STATUS:` line) stayed healthy while prohibitions failed: audit the
+   behavior, not the format.
+4. **A model restating a rule is not following it.** Models that could restate
+   a rule from the brief still broke it in 8% to 99% of runs, depending on the
+   model (2604.28031; floors, since the judge missed most violations).
+5. **Reminders fix only the obvious cases.** In a security monitor (not a
+   coding agent), attack recall fell from 98.6% to 88% under 800K tokens of
+   benign context; reminder prompts helped for obvious attacks, not subtle ones
+   (2605.12366). Mid-session rule
+   re-injection is unmeasured for coding agents.
+6. **Keep standing context lean and current.**
+   - A full skill bundle cost about 60x the tokens for a gain that was not
+     statistically significant (2605.20023).
+   - Stale repository context did worse than none (17 samples, directional
+     only; 2605.14478).
+   - In public prompt policies, only 35.4% of trials satisfied both rules of a
+     pair governing the same action (2605.27784).
+7. **Skills and subagents load only if the model invokes them; always-on text
+   is always in context.** Anecdotal, from one operator's telemetry: a skill had
+   0 invocations in about 1,300 sessions. End skippable workflows with a visible
+   decision (write the result or state the skip) and check for it in code.
+
+**Gaps.** No paper compares hooks with prose on the same coding tasks (nearest:
+a deterministic gate drove injection success to 0.00, 2605.14421, which is
+security, not instruction following). No curve beyond 50 rules; no comparison
+of LLM-written with human-written context files.
+
 ## Composability
 
 Multiple hooks on the same event run in sequence. If **any** hook blocks, the tool call is blocked. This means:
@@ -531,4 +584,5 @@ Multiple hooks on the same event run in sequence. If **any** hook blocks, the to
 - **Don't use hooks for advice.** If the agent can reasonably skip the step in some cases, use CLAUDE.md. Hooks are for invariants.
 - **Don't create commands you never hook.** CLI command surfaces only make sense if you wire them to hooks. Otherwise, just use CLAUDE.md instructions.
 - **Don't over-gate.** Every blocked command costs one agent retry cycle. Gate the critical moments (PR creation, deployment), not every minor step.
+- **Don't fix a skipped rule by adding more prose.** Rule count and file length were not the problem in the measured studies; compliance often eroded with session depth. Convert the hard rules to hooks, and keep only a few concrete prohibitions in the file.
 - **Don't forget state cleanup.** Stale state markers from crashed sessions will block future commands. Always include TTL or cleanup logic.
