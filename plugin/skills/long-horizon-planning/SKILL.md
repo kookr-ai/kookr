@@ -20,13 +20,13 @@ as conditional, not proven.
 
 1. **Plan up front only when the task is decomposable, mostly deterministic and each step is checkable.**
    Compiled, validated web plans cut latency from 122 s to 11.7 s and lifted accuracy from 61% to 89%
-   against a weak step-by-step baseline (2605.21470); compiling ReAct runs into code cut tokens 82-96%
+   against Browser-Use, a weak step-by-step baseline, so read this as an upper bound (2605.21470); compiling ReAct runs into code cut tokens 82-96%
    (2605.21082). When each step depends on what the last one revealed, act and plan only the next stage.
-2. **Keep the plan short and coarse.** A few sentences cost 20-50 tokens (2510.01833). Fine static
-   decomposition raised retry tokens by 80.5% over one monolithic prompt (904 to 1,632); runtime-gated
-   decomposition cut them to 436 (2605.15425). Distributing deliberation across a hierarchy was up to
+2. **Keep the plan short and coarse.** A few-sentence plan adds only 20-50 output tokens (2510.01833). Fine static
+   decomposition raised retry tokens by 80.5% over one monolithic prompt (904 to 1,632); decomposition that is split further only at run time, when a step
+   fails or looks large (runtime-gated), cut them to 436 (2605.15425). Distributing deliberation across a hierarchy was up to
    3.37x worse at 1.8-2.7x the tokens (2605.16205).
-3. **Commit to the next stage, not the whole plan.** Executing a prefix of a validated DAG plan cut
+3. **Commit to the next stage, not the whole plan.** Executing a prefix of a validated plan (a DAG: a graph of tasks with dependencies) cut
    executed tasks from 1,061 to 623 and raised accomplishment from 0.638 to 0.706 (2605.14051).
 4. **Spend planner tokens where the executor is weak.** A stronger model's plan lifted a 30B coder from
    42.8% to 57.8% on SWE-bench Verified (2608.06113). With a strong executor, a planner added about 0.14
@@ -37,19 +37,21 @@ as conditional, not proven.
    an observable check.
 6. **Replan on events, not on a schedule and not by default.** Triggers with measured gains: a failed
    validator check (success 0.72 to 0.86, 2605.14851), environment uncertainty (46.9% vs 43.1% on
-   WebArena at 351.4 s vs 803.7 s, 2604.17821), a failed verified plan (2606.16995). A deterministic
+   WebArena at 351.4 s vs 803.7 s, 2604.17821). Planning only when uncertain, then keeping a verified
+   plan until it completes or fails, scored 1.00 vs 0.79 on FrozenLake 8x8 (2606.16995). A deterministic
    reroute for a tool failure avoided LLM replanning (9 control calls vs 123, mock tools only, 2603.01548).
-7. **Escalating to a heavier planner is a cost, not a default.** One test lowered GAIA L1 accuracy from
+7. **Escalating to a heavier planner is a cost, not a default.** One test of expanded orchestration (extra planner escalation) lowered GAIA L1 accuracy from
    54.72% to 50.94%, raised tracebacks from 62 to 141 and cost from $197 to $231 (2605.14102, 53 tasks).
 8. **Put plan and progress in a file, then re-verify it.** File-centric state scored 67.1 against 3.2 for
    ablated baselines (2601.03204). Before acting on a saved plan or checkpoint after any gap, re-read the
    authoritative source: an approved plan had already been merged on the base branch, and checkpoints
-   skipped newly opened work (agent-task-lessons). Treat persisted summaries as untrusted input:
+   skipped newly opened work (operator lessons in the agent-task-lessons KB). Treat persisted summaries as untrusted input:
    summaries below a toxicity threshold still carried hidden influence (2605.16746).
 9. **Re-inject hard constraints on long contexts.** Omission-constraint compliance fell from 73% to 33%
-   with context depth while commission constraints stayed near 100% (2604.20911).
-10. **Gate "done" on an external check.** The best CTF agent finished 35% of checkpoints and stalled after
-    about 20 steps (2604.19354); 10.7% of passing coding runs were lucky passes (2605.12925); a self-set
+   with context depth while commission constraints (rules to do something) stayed near 100%; an omission
+   constraint is a rule to not do something or to leave something out (2604.20911).
+10. **Gate "done" on an external check.** The best CTF agent completed 35% of challenge checkpoints (partial-credit milestones) and made its progress in the
+    first 20 steps before stalling (2604.19354); 10.7% of passing coding runs were lucky passes (2605.12925); a self-set
     completion field had zero predictive validity (agent-task-lessons).
 
 ## Anti-patterns
