@@ -1,5 +1,5 @@
 import { appendFile, mkdir, rm, readdir } from 'node:fs/promises';
-import { isLiveChainTip, LIVE_CHAIN_TIP_DELETE_ERROR } from '../../core/playbook-chain.js';
+import { isLiveChainTip, LIVE_CHAIN_TIP_DELETE_ERROR } from '../../shared/contracts/playbook-chain.js';
 import { dirname, join } from 'node:path';
 import type { AgentActivityMeta, AgentEvent } from '../../core/types.js';
 import type { Monitor } from '../../core/monitor.js';
@@ -405,7 +405,7 @@ export class TaskLifecycleCommands {
     const task = this.deps.taskStore.getTask(taskId);
     // A playbook chain's live tip holds the chain's only state until its
     // successor exists (RFC rfc-playbook-chains): refuse rather than lose it.
-    if (task && isLiveChainTip(task)) {
+    if (task && isLiveChainTip(task, this.deps.taskStore.viewTasks())) {
       await this.writeTaskDeletionAudit({
         action: 'deleteTask',
         actor: opts.actor,
@@ -469,12 +469,13 @@ export class TaskLifecycleCommands {
     // viewTasks: no structuredClone of the whole store just to filter finished
     // records. With hundreds of completed tasks, listTasks() alone was ~50ms+
     // of event-loop block before the predelete export even started.
-    const toClear = this.deps.taskStore.viewTasks().filter((task) => {
+    const allTasks = this.deps.taskStore.viewTasks();
+    const toClear = allTasks.filter((task) => {
       if (projectId && task.projectId !== projectId) return false;
       if (task.launchAdmission?.status === 'probing') return false;
       // Never sweep a playbook chain's live tip; it is still needed to launch
       // the next iteration (RFC rfc-playbook-chains).
-      if (isLiveChainTip(task)) return false;
+      if (isLiveChainTip(task, allTasks)) return false;
       if (task.status === 'completed' || task.status === 'cancelled') return true;
       return opts.includeTerminated === true && task.status === 'terminated';
     });

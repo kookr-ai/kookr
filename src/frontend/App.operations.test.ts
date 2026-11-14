@@ -683,6 +683,42 @@ describe('App operations modal shortcuts', () => {
     });
   });
 
+  test('clear completed never deletes the live tip of a playbook chain', async () => {
+    const chain = { chainId: 'c1', iteration: 2, maxIterations: 5, startedAt: '2026-11-14T00:00:00.000Z', unhealthyStreak: 0 };
+    useKookrStore.setState({
+      agents: [
+        makeAgent({ agentId: 'tip', taskId: 'task-tip', taskName: 'Chain tip', taskStatus: 'completed', chain }),
+        makeAgent({ agentId: 'earlier', taskId: 'task-earlier', taskName: 'Earlier iteration', taskStatus: 'completed', chain: { ...chain, iteration: 1, successorTaskId: 'task-tip' } }),
+        makeAgent({ agentId: 'plain', taskId: 'task-plain', taskName: 'Plain done', taskStatus: 'completed' }),
+      ],
+      selectedProject: null,
+      selectedAgentId: null,
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const clearButton = await waitForElement<HTMLButtonElement>(container, 'button.btn-clear-completed');
+    await act(async () => {
+      clearButton.click();
+    });
+    expect(container.querySelector('.confirm-dialog-message')?.textContent).toContain('Delete 2 finished tasks?');
+
+    const deleteButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-danger');
+    websocketMock.send.mockClear();
+    vi.useFakeTimers();
+    await act(async () => {
+      deleteButton.click();
+    });
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS);
+    });
+
+    const deleted = websocketMock.send.mock.calls.map(([msg]) => (msg as { taskId: string }).taskId).sort();
+    expect(deleted).toEqual(['task-earlier', 'task-plain']);
+  });
+
   test('complete dialog can request reflection after thumbs-up feedback', async () => {
     useKookrStore.setState({
       agents: [{

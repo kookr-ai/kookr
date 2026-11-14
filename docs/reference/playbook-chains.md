@@ -74,8 +74,9 @@ chain continues even if the agent ignores it.
   (`iteration cancelled`).
 - The chain's current task cannot be deleted, and "clear completed" skips it,
   until the next iteration has launched or the chain has ended: it holds the
-  chain's state, and deleting it would silently lose the chain. Stop the chain
-  (or cancel the task) first if you want it gone.
+  chain's state, and deleting it would silently lose the chain. To remove it,
+  press **Stop chain** on it and delete it once its badge shows the chain as
+  ended (within about 15 seconds).
 - SAFE MODE holds a chain (the next iteration waits) without ending it. A
   per-project automation pause does **not**: it targets unsolicited automation
   such as schedules, while a chain is a run the operator started explicitly in
