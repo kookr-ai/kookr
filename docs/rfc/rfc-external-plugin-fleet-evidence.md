@@ -15,7 +15,7 @@ How a plugin reaches a spawned Claude agent today, and who owns each step.
 | Resolve the bundled plugin directory | `src/core/plugin-paths.ts:35-53` `resolvePluginDir` | Returns **one** path (explicit option, then `KOOKR_PLUGIN_DIR`, then `<repo>/plugin`), or `undefined` |
 | Build the launch command | `src/adapters/claude-code-adapter.ts:399-414` | In bypass mode adds `--dangerously-skip-permissions --setting-sources ''`; always adds one `--plugin-dir <bundled>` |
 | Write the per-session settings file | `src/adapters/claude-code-adapter.ts:1031-1116` `generateSettings` | Emits hooks, permissions and, when a loadout is passed and the flag is on, `enabledPlugins` |
-| Resolve a loadout | `src/server/plugin-manager/loadout-store.ts:137-151,284-300`; pure resolver in `src/core/claude-settings/loadout.ts:43-77` | Three levels, most specific wins per plugin: task-type (`agentType`), playbook (`playbookId`), project (`projectId`). Always resolved in `bypass` mode. Claude adapter only |
+| Resolve a loadout | `src/server/plugin-manager/loadout-store.ts:137-151,270-291`; pure resolver in `src/core/claude-settings/loadout.ts:43-77` | Three levels, most specific wins per plugin: task-type (`agentType`), playbook (`playbookId`), project (`projectId`). Always resolved in `bypass` mode. Claude adapter only |
 | Render a loadout | `src/core/claude-settings/loadout.ts:96-109` `renderEnabledPlugins` | Turns `enabledOverrides` into the `enabledPlugins` map; rewrites ids of directory-loaded plugins to `<name>@inline` |
 | Record on the task | `TaskLoadoutRecord` in `src/shared/contracts/plugins.ts:141-149` | Resolved loadout, winning level, settings-file hash and path. Resume replays it (`replayRecordedLoadout`) |
 | Feature flag | `src/core/claude-settings/loadout.ts:111-119` | `KOOKR_PLUGIN_LOADOUTS`, **off by default** |
@@ -67,7 +67,8 @@ ls-remote <https url> HEAD`:
 
 | Case | Exit code | Time |
 |---|---|---|
-| Readable private repository (empty, no commits) with `--exit-code` | 2 (no matching ref) | 0.9 s |
+| Readable private repository (empty, no commits), without `--exit-code` | 0 | under 1 s |
+| Same repository with `--exit-code` | 2 (no matching ref) | 0.9 s |
 | Repository that does not exist or is not readable | 128 | 0.5 s |
 | Readable repository, credentials withheld | 128, no prompt | 0.3 s |
 
@@ -77,8 +78,9 @@ absent. It never prompts with `GIT_TERMINAL_PROMPT=0`.
 Native catalog: `claude plugin list --json --available` returns
 `{installed:[…], available:[…]}`. `available` entries carry `pluginId`, `name`,
 `marketplaceName`, `source`, and `version` when the marketplace entry declares
-one (3,589 of 4,057 on this machine). Four of five installed plugins are absent
-from `available`, so it cannot supply the latest version of an installed plugin.
+one (3,589 of 4,057 on this machine). Four of the five installed plugins are
+absent from `available` (it leaves out most installed plugins, not all), so it
+cannot supply the latest version of an installed plugin.
 `claude plugin marketplace list --json` returns name, source and `installLocation`
 (a local clone containing `.claude-plugin/marketplace.json`).
 `claude plugin marketplace update <name> --json` refreshes one clone.
@@ -137,3 +139,27 @@ From the consensus attack (read-only checks on the operator's machine):
   3–14 November; nothing older survives although it was first installed in May.
 - A plugin whose marketplace is not registered changed version three times in
   two days without a Kookr action.
+
+## Facts confirmed by the independent merge review
+
+- The native `autoUpdate` flag Kookr manages is written at user scope:
+  `auto-update-service.ts` defaults `settingsScope` to `user`, which
+  `settings-store.ts` maps to `~/.claude/settings.json`. On takeover it records
+  the previous value and writes `false` unless the value is already `false`; it
+  restores the recorded value on release.
+- The auto-update sweep in `src/server/index.ts` starts only when
+  `autoUpdateApplyEnabled()` (`KOOKR_PLUGIN_AUTO_UPDATE`, off by default) and is
+  the only caller of `detectAndLogExternalChanges`. Detection already covers
+  every installed plugin; the observed-version baseline lives in
+  `auto-update-store.ts`, and the comparison in
+  `src/core/plugin-auto-update/defaults.ts`.
+- With `KOOKR_PLUGIN_LOADOUTS` off, the adapter renders no `enabledPlugins` on
+  resume even for a task with a recorded loadout
+  (`docs/reference/environment-variables.md` documents this as deliberate).
+- `spawnGateActive` is true when loadouts **or** auto-update apply is enabled.
+- `readInstalledPlugins` returns an empty map for a missing or malformed
+  registry file, and per-plugin arrays of `{scope, installPath, version,
+  gitCommitSha}` records otherwise.
+- Replay call sites: `launch-service.ts` and `crash-recovery.ts`
+  (`replayRecordedLoadout`).
+

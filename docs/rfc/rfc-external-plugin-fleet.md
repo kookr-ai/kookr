@@ -1,6 +1,6 @@
 # RFC: Plugins for the Kookr fleet — fleet set, catalog versions, gated offers
 
-**Status:** Draft (v3 — one critic round, empirical checkpoint, consensus attack)
+**Status:** Draft (v4 — one critic round, empirical checkpoint, consensus attack, independent merge review)
 **Date:** 2026-11-14
 **Author:** Jean Ibarz (with Claude)
 **Implementation branch:** `rfc/external-plugin-fleet`
@@ -71,9 +71,9 @@ and is not decided here.
   entries. Project, playbook and task-type loadouts SHALL still override it per
   plugin.
 - **R2 (untouched when unused):** With no fleet set and no loadouts, a spawn SHALL
-  take exactly today's path: no extra file read beyond the store check, no lock,
-  and a byte-identical session settings file. The feature SHALL have a kill
-  switch.
+  take exactly today's path: no extra file read beyond the store check, no
+  additional lock, and a byte-identical session settings file. The feature SHALL
+  have a kill switch that also stops recorded loadouts from being replayed.
 - **R3 (only what is installed, never silent):** Kookr SHALL enable a plugin for
   an agent only if it is installed at resolve time. A named plugin that is not
   installed SHALL be recorded on the task with a reason, logged at warn level,
@@ -151,27 +151,42 @@ partitionByInstalled(resolved, installed) → { resolved, plugins, skipped }
   `registry.ts` already has (`readInstalledPlugins`). The spawn path never shells
   out to `claude plugin list`: measured, the file read takes under a millisecond
   and the CLI call about three seconds.
-- `plugins` is `[{ id, version, installPath }]` for what was kept (R4).
-- `skipped` is `[{ id, reason }]`, with `reason` one of `not_installed` or
-  `registry_unreadable`.
+- `plugins` is `[{ id, version, installPath }]` for what was kept (R4). The
+  registry holds a list of install records per plugin, one per scope. The step
+  takes the user-scope record, and the highest version when there are several,
+  which is the rule `highestInstalledVersion` already applies.
+- `skipped` is `[{ id, reason }]`. The only reason today is `not_installed`. The
+  existing reader returns an empty registry for a missing or malformed file, so
+  an unreadable registry is indistinguishable from "nothing installed": every
+  named plugin is then skipped as `not_installed`. That fails closed, which is
+  the safe direction: the agent gets the bundled toolkit and the task says why
+  it got nothing else.
 - The step recomputes the bypass allowlist and the winning level, so provenance
   never names a level whose only entries were skipped.
-- If the registry cannot be read, nothing is enabled and every named plugin is
-  skipped with `registry_unreadable`. Failing closed is the safe direction: the
-  agent gets the bundled toolkit and the task says why it got nothing else.
+- An entry whose plugin name matches a plugin the adapter loads with
+  `--plugin-dir` (the bundled toolkit) is passed through untouched. The renderer
+  already rewrites such an entry to `<name>@inline`, which is how a project
+  disables the toolkit today. The toolkit is always loaded and is not a fleet-set
+  member: its row has no Kookr agents switch.
 - A record is written whenever any level named any plugin, **including when the
   filter removed all of them**. Today an empty result records nothing; that
   would hide exactly the worst case.
 
-Replay (resume, crash recovery, relaunch) does not filter: it reuses the
+Replay (resume, crash recovery, relaunch; the call sites are in
+`launch-service.ts` and `crash-recovery.ts`) does not filter: it reuses the
 recorded ids, as today. It does run the same partition against the current
 registry for reporting, and stores the result as `replaySkipped`, so a resumed
 task whose plugin has since been uninstalled shows that fact from the same
 source as a fresh spawn.
 
 **One place decides whether loadouts apply.** Today both the launcher and the
-adapter read `KOOKR_PLUGIN_LOADOUTS`. The adapter stops reading it and renders
-whatever resolved loadout it is handed. The launcher's rule becomes:
+adapter read `KOOKR_PLUGIN_LOADOUTS`, and the adapter's own check is what makes
+the flag a real kill switch: with the flag off, a resumed task renders no
+`enabledPlugins` even though it carries a recorded loadout (documented as
+deliberate in `docs/reference/environment-variables.md`). That behaviour is
+kept, but the decision moves to one predicate in the launcher layer, used by
+both the first-spawn path and the replay path. The adapter stops reading the
+flag and renders whatever it is handed. The rule becomes:
 
 | `KOOKR_PLUGIN_LOADOUTS` | Slice 1 | From slice 3 |
 |---|---|---|
@@ -179,12 +194,17 @@ whatever resolved loadout it is handed. The launcher's rule becomes:
 | `1` / `true` | on | on |
 | unset | **off** (as today) | on **only if** the fleet file or loadout file names a plugin |
 
-So slice 1 changes nothing for anyone who has not opted in, and the operator
-soaks it on the production instance by setting the flag. The default changes only
-when the screen that lets a user configure a fleet set ships. Even then, an
-install with nothing configured never resolves, never takes the lock and writes
-the same bytes as today (R2). The spawn gate follows the same rule: it takes the
-plugin mutation lock only when a loadout will actually be recorded.
+"Off" means no session, new or resumed, is handed a loadout. So slice 1 changes
+nothing for anyone who has not opted in, and the operator soaks it on the
+production instance by setting the flag. The default changes only when the
+screen that lets a user configure a fleet set ships. Even then, an install with
+nothing configured never resolves and writes the same bytes as today (R2).
+
+The spawn gate keeps both of its existing arms. Today it takes the plugin
+mutation lock when loadouts are on **or** when auto-update apply is on
+(`spawnGateActive`), because the updater's idle check relies on a spawn not
+slipping in underneath it. The loadout arm becomes "a loadout will actually be
+recorded"; the auto-update arm is unchanged. With neither, there is no lock.
 
 **Normal (non-bypass) mode.** User settings are loaded, so user-enabled plugins
 already reach the agent. The fleet set adds its `true` keys on top; a project
@@ -195,9 +215,10 @@ bumps the existing config epoch, so the existing drift surface ("N sessions
 started before your last change", with a restart action) covers it without new
 machinery. Each write is also logged with the before and after sets.
 
-The fleet set is a Kookr decision about Kookr's agents. It does not touch
-`~/.claude/settings.json`, so it does not change which plugins the operator's
-own sessions enable.
+The fleet set is a Kookr decision about Kookr's agents. The fleet file is the
+only thing a fleet-set edit writes, with one disclosed exception described under
+"Reduce" below. It never changes which plugins the operator's own sessions
+enable.
 
 **The store itself is shared (R10).** Installed plugins live in one user-scope
 store, `~/.claude/plugins`, with one installed version per plugin. The
@@ -206,16 +227,32 @@ all write to it, and none of them takes Kookr's lock, bumps the config epoch or
 runs a busy check. Kookr's safeguards cover Kookr's writes only. Three measures
 keep that honest without inventing a second store:
 
-- **Detect.** The auto-update module already snapshots the versions it last saw
-  and logs an `external_change` event. On every evaluation tick and whenever the
-  manager opens, that comparison now also covers fleet plugins. A change bumps
-  the config epoch, re-runs the fleet check, and lists the running tasks whose
+- **Detect.** The auto-update module already keeps the versions it last observed
+  for every installed plugin and logs an `external_change` event when one moves
+  without a Kookr action (`detectExternalChanges`). Today that comparison runs
+  only inside the auto-update sweep, and the sweep starts only when
+  `KOOKR_PLUGIN_AUTO_UPDATE` is set, which is off by default. So as shipped,
+  nothing is detected on a default install. This RFC splits the sweep in two.
+  The **observe** half (external-change detection, and from slice 2 the catalog
+  refresh) runs on the same interval whenever loadouts are active, and also when
+  the manager opens. The **apply** half (idle-gated updates) stays behind
+  `KOOKR_PLUGIN_AUTO_UPDATE`. A detected change to a fleet plugin bumps the
+  config epoch, re-runs the fleet check, and lists the running tasks whose
   record holds the older version.
-- **Reduce.** For a marketplace that has a plugin in the fleet set, Kookr writes
-  the native `autoUpdate: false`, using the ownership tracking the auto-update
-  module already has (it reverts the flag when the last fleet plugin from that
-  marketplace is removed, and never overwrites a value the operator set). Claude
-  Code's own updater then leaves fleet plugins alone; updates go through Kookr.
+- **Reduce.** For a marketplace that has a plugin in the fleet set, Kookr turns
+  off Claude Code's own auto-update, so versions move only through Kookr. This
+  reuses the mechanism the auto-update module has for `apply-when-idle` plugins,
+  and it is a write to the operator's user settings
+  (`extraKnownMarketplaces.<marketplace>.autoUpdate` in
+  `~/.claude/settings.json`). That mechanism records the value it found, writes
+  `false`, keeps it `false` while Kookr owns the decision, and restores exactly
+  the recorded value when the last fleet plugin from that marketplace is
+  removed. It therefore **does** override an operator's own `true` for as long
+  as the marketplace has a fleet plugin, and it changes auto-update for the
+  operator's own sessions too. Because of that it is not silent: switching on
+  the first fleet plugin of a marketplace shows the existing blast-radius
+  disclosure with this effect spelled out, and the manager shows "updates
+  controlled by Kookr" on the marketplace.
 - **Say so.** The record is "version at spawn". There is no pin and no
   downgrade. Undoing a bad plugin release means releasing a fixed version in the
   marketplace and updating again.
@@ -277,13 +314,14 @@ marketplace contents. It is two pure parsers and one command:
   marketplace takes, as part of its acceptance evidence.
 - **Plugins not installed yet:** the `available` array of
   `claude plugin list --json --available`, filtered per marketplace. (It leaves
-  out installed plugins, which is why it cannot serve the previous point.)
+  out most installed plugins, which is why it cannot serve the previous point.)
 - **Refresh:** `claude plugin marketplace update <name> --json`. It changes the
   local clone only and never an install, so it does **not** take the plugin
   mutation lock that spawns wait on. It has its own one-at-a-time guard per
-  marketplace. Triggered by a manual button and by the existing auto-update
-  evaluation tick. Refresh state (`lastRefreshedAt`, last error, duration) is
-  kept in memory and logged per attempt.
+  marketplace. Triggered by a manual button and by the observe half of the
+  sweep (section 1, "Detect"), which does not need `KOOKR_PLUGIN_AUTO_UPDATE`.
+  Refresh state (`lastRefreshedAt`, last error, duration) is kept in memory and
+  logged per attempt.
 
 Staleness for a non-toolkit plugin is one rule:
 
@@ -410,9 +448,13 @@ concrete event that reopens it.
   `version-source.ts` (staleness rule), `read-model.ts`, `cli.ts` (`uninstall`,
   `marketplaceList`, `marketplaceUpdate`, `folderVersion` and `available` in the
   list parser), `mutation-service.ts` (uninstall, busy check),
-  `auto-update-snapshots.ts` and `auto-update-service.ts` (fleet plugins in
-  external-change detection; `autoUpdate: false` ownership for fleet
-  marketplaces), `src/server/routes/plugin-routes.ts`.
+  `auto-update-service.ts` and `auto-update-store.ts` (react to an external
+  change of a fleet plugin; `autoUpdate` ownership for fleet marketplaces as
+  well as `apply-when-idle` ones), `auto-update-wiring.ts` and
+  `src/server/index.ts` (observe half of the sweep runs when loadouts are
+  active), `launch-service.ts`, `agent-lifecycle.ts` and `crash-recovery.ts`
+  (shared activation predicate; `replaySkipped` at the replay sites),
+  `src/server/routes/plugin-routes.ts`.
 - **Adapter:** `claude-code-adapter.ts` (stop reading the flag; no other change).
 - **Frontend:** `PluginManagerDialog.tsx`.
 - **CLI and docs:** `src/cli/kookr-doctor.ts` (loadouts on/off and why, fleet
@@ -424,8 +466,10 @@ concrete event that reopens it.
   no lock with nothing configured; replay with an uninstalled plugin; catalog
   parsing from fixtures; staleness rule and reason list; busy check on update
   and uninstall; idle check with non-Claude tasks; external version change
-  bumps the epoch and lists affected tasks; `autoUpdate: false` written and
-  reverted without touching an operator-set value; `skill_listing` check from a
+  bumps the epoch and lists affected tasks, with `KOOKR_PLUGIN_AUTO_UPDATE`
+  unset; `autoUpdate` previous value recorded, `false` written, and the recorded
+  value restored on release (absent, `true` and `false` cases); kill switch off
+  renders nothing on resume; `skill_listing` check from a
   transcript fixture; offer hidden on every non-zero probe result, failure TTL,
   diagnostics output.
 
@@ -458,13 +502,16 @@ check; slice 3 needs both.
    same offer absent, with nothing logged above debug, when the probe runs with
    credentials withheld; diagnostics output for both.
 
-**Rollback.** Setting `KOOKR_PLUGIN_LOADOUTS=0` stops new resolutions at once.
-It does not change tasks already spawned: a recorded loadout still replays on
-resume, by design, so that resuming never changes an agent's capabilities. A
-full rollback is therefore three steps: set the flag to `0`, empty the fleet
-set, and relaunch the tasks that should not keep the plugins. Reverting the
-server build is safe at every slice because the fleet file is separate and an
-older build treats an unset flag as off.
+**Rollback.** Setting `KOOKR_PLUGIN_LOADOUTS=0` and restarting the server is the
+kill switch. From then on no session is handed a loadout: new spawns resolve
+nothing, and a resumed or relaunched task renders no `enabledPlugins` even if it
+recorded one, which is the shipped behaviour. Sessions that are already running
+keep the plugins they loaded until they are restarted. A full rollback is
+therefore: set the flag to `0`, restart, and restart the tasks that should not
+keep the plugins. Emptying the fleet set is optional and only matters for when
+the flag is turned back on. Reverting the server build is safe at every slice
+because the fleet file is separate and an older build treats an unset flag as
+off.
 
 ## Edge cases
 
@@ -483,7 +530,7 @@ older build treats an unset flag as off.
   operator's machine nothing older than about eleven days survives), on a
   schedule that was not measured. The busy check stays, as a confirmation rather
   than a hard block.
-- **Version changed outside Kookr.** Detected on the next tick or manager open
+- **Version changed outside Kookr.** Detected on the next observe pass or manager open
   (R10); the affected running tasks are listed. They keep working for the reason
   above.
 - **Catalog refresh fails** (offline, or a private marketplace without
@@ -660,3 +707,29 @@ plainly that the version is recorded, not pinned), with R4 reworded. The
 alternative it raised, a Kookr-owned pinned store, is recorded under
 Alternatives with a reopening trigger. This was the single permitted revision
 after convergence; it did not reopen the review.
+
+### Independent merge review (2026-11-14) — fresh-context reviewer on the pull request
+
+The first review of the pull request returned BLOCK with two confirmed defects,
+both introduced by the consensus-attack revision, and six non-blocking notes.
+All are corrected in this version.
+
+- **`autoUpdate: false` was described wrongly.** The text said the fleet set does
+  not touch `~/.claude/settings.json` and that the reused mechanism never
+  overwrites an operator's value. The mechanism writes exactly that file and
+  does pin `false` over an operator's `true` while Kookr owns the decision,
+  restoring the recorded value on release. Section 1 now says so and requires a
+  disclosure.
+- **Detection depended on a sweep that is off by default.** External-change
+  detection and catalog refresh were attached to the auto-update sweep, which
+  runs only with `KOOKR_PLUGIN_AUTO_UPDATE`. The sweep is now split into an
+  observe half that runs whenever loadouts are active and an apply half that
+  keeps the flag.
+- **Notes taken:** the spawn gate keeps its auto-update arm; the kill switch
+  keeps its shipped effect on resume, through one shared predicate, and the
+  Rollback section matches it; `registry_unreadable` removed as unreachable, and
+  a selection rule added for per-scope install records; the bundled toolkit's
+  `@inline` rewrite and its row are stated; the file list names the modules that
+  actually hold the observed-version baseline and the replay call sites; three
+  evidence-pack corrections.
+
