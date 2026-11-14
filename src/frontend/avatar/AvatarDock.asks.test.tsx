@@ -146,6 +146,14 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     expect(onAnswerAsk).toHaveBeenCalledOnce();
   });
 
+  test('a clock that stepped backwards does not keep answers blocked', () => {
+    render();
+    push([ask()]);
+    act(() => { vi.setSystemTime(Date.now() - 60_000); });
+    act(() => { all('avatar-ask-option')[0].dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(onAnswerAsk).toHaveBeenCalledOnce();
+  });
+
   test('the panel going away cancels announcements still being prepared', () => {
     render();
     act(() => root?.unmount());

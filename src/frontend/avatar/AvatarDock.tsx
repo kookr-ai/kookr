@@ -296,7 +296,9 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
     // The list moves when a question arrives or closes: a press that lands just after it did may have been
     // aimed at a card that is no longer under the pointer, so it is ignored (the operator presses again).
-    if (Date.now() - cardsChangedAtRef.current < ASK_PRESS_GUARD_MS) return;
+    // A clock that stepped backwards (negative elapsed time) must not keep answers blocked.
+    const sinceChange = Date.now() - cardsChangedAtRef.current;
+    if (sinceChange >= 0 && sinceChange < ASK_PRESS_GUARD_MS) return;
     markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
   }, [onAnswerAsk]);
   // After the cards change: if the control that had focus was removed with its card, put focus on what
@@ -731,7 +733,7 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
               key={ask.id}
               ask={ask}
               submit={operatorAsks.submit[ask.id]}
-              nowMs={now}
+              nowMs={now + askClockOffsetMs()}
               onAnswer={onAnswer}
               onDismiss={dismissOperatorAsk}
             />

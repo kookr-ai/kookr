@@ -325,11 +325,12 @@ export function stopAskAnnouncement(askId: string): void {
 }
 
 /**
- * The avatar panel is gone: stop what is being read out and cancel every announcement still being
- * prepared or waiting its turn, so no clip is played after the operator switched the panel off.
+ * The avatar panel is gone: cancel every announcement still being prepared or waiting its turn, so no
+ * clip is played after the operator switched the panel off. Clips that already finished stay in the
+ * message list (the panel's own unmount stops anything currently playing).
  */
 export function stopAllAskAnnouncements(): void {
-  for (const key of [...inFlight, ...clipByAsk.keys()]) stopAskAnnouncement(key);
+  for (const key of [...inFlight]) stopAskAnnouncement(key);
 }
 
 export function __resetAskAnnouncementForTests(): void {
