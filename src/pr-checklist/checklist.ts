@@ -74,17 +74,25 @@ export function parseChecklist(body: string): ChecklistRow[] {
 }
 
 const ANY_MARKER = /<!--\s*(?:kookr:check:|pr:)([a-z0-9-]+)\s*-->/g;
+// A line that starts like a list item (optionally struck): `-`, `*`, `+`, or `1.` / `1)`.
+const LIST_ITEM_START = /^[ \t]*(?:~~)?[ \t]*(?:[-*+]|\d+[.)])\s/;
 
 /**
- * Ids whose marker appears in the body but on no line `parseChecklist`
- * recognises as a checklist row — e.g. a row struck from the leading dash,
- * `- ~~- [ ] <!-- kookr:check:x --> text~~`. Lets the presence rule say
- * "present but malformed" instead of "omitted". Pure; regex-only.
+ * Ids whose marker appears in the body on a list-item line that
+ * `parseChecklist` does not recognise as a checklist row — e.g. a row struck
+ * from the leading dash, `- ~~- [ ] <!-- kookr:check:x --> text~~`, or a `*`
+ * bullet. Lets the presence rule say "present but malformed" instead of
+ * "omitted". Markers merely quoted in prose (non-list lines) are ignored, so a
+ * body that never used the template still gets the omission advice. Pure;
+ * regex-only.
  */
 export function findUnparsedMarkerIds(body: string, parsedRows: ChecklistRow[]): string[] {
   const parsed = new Set(parsedRows.map((r) => r.id));
   const ids = new Set<string>();
-  for (const m of body.matchAll(ANY_MARKER)) if (!parsed.has(m[1])) ids.add(m[1]);
+  for (const line of body.split('\n')) {
+    if (!LIST_ITEM_START.test(line)) continue;
+    for (const m of line.matchAll(ANY_MARKER)) if (!parsed.has(m[1])) ids.add(m[1]);
+  }
   return [...ids];
 }
 
