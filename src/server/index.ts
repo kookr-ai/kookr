@@ -4032,6 +4032,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       recordProviderPause: (task) => {
         const claim = task.issueClaim;
         if (!claim) return { holdForResume: true };
+        // A playbook-chain iteration is continued by its chain, which launches
+        // the next iteration once this one ends; a provider-reset replay of the
+        // same work would run beside it (RFC rfc-playbook-chains). Hold like an
+        // unclaimed task and schedule no replay.
+        if (task.chain) return { holdForResume: true };
         const intent = validatePersistedLaunchIntent(task);
         if (!intent.ok) {
           taskStore.setRelaunchDisposition(task.id, {

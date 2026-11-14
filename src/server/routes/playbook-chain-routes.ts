@@ -110,6 +110,9 @@ export function registerPlaybookChainRoutes(app: Hono, deps: PlaybookChainRouteD
     } catch {
       return c.json({ error: 'invalid JSON body' }, 400);
     }
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      return c.json({ error: 'body must be a JSON object' }, 400);
+    }
     if (body.reason !== undefined && typeof body.reason !== 'string') {
       return c.json({ error: 'reason must be a string' }, 400);
     }

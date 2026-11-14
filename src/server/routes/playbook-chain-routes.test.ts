@@ -73,5 +73,6 @@ describe('POST /api/tasks/:id/chain/stop', () => {
     expect((await post(a, '/api/tasks/x/chain/stop', {})).status).toBe(404);
     expect((await post(a, '/api/tasks/x/chain/stop', {})).status).toBe(409);
     expect((await post(a, '/api/tasks/x/chain/stop', { by: 'robot' })).status).toBe(400);
+    expect((await post(a, '/api/tasks/x/chain/stop', null)).status).toBe(400);
   });
 });

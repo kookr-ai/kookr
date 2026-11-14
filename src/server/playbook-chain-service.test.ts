@@ -655,3 +655,43 @@ describe('documented thresholds', () => {
   });
 });
 
+describe('review fixes', () => {
+  it('never re-sends a recorded projectId as an explicit prepare input (cross-repo playbooks)', async () => {
+    const h = harness();
+    const first = await startResearchChain(h, { maxIterations: 3 });
+    h.taskStore.viewTasks().find((t) => t.id === first.id)!.projectId = 'github.com/other/repo';
+    h.finish(first);
+    await h.service.sweep();
+    expect(h.prepareInputs[1]).not.toHaveProperty('projectId');
+  });
+
+  it('carries a stop request even when the successor was created but failed to launch', async () => {
+    let calls = 0;
+    // eslint-disable-next-line prefer-const
+    let h: ReturnType<typeof harness>;
+    h = harness({
+      launchImpl: async (o, s) => {
+        calls++;
+        const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, parentTaskId: o.parentTaskId, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
+        if (calls === 2) {
+          // The operator asks to stop while this launch is in flight...
+          h.service.stopChain(o.parentTaskId!, 'operator', 'enough');
+          // ...and the launch then fails after creating the task.
+          h.taskStore.terminateTask(task.id, { reason: 'unknown' });
+          throw new Error('agent failed to boot');
+        }
+        h.taskStore.startTask(task.id);
+        h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
+        return { task: h.taskStore.getTask(task.id)!, queued: false } as LaunchResult;
+      },
+    });
+    const first = await startResearchChain(h, { maxIterations: 10 });
+    h.finish(first);
+    await h.service.sweep();
+    await h.service.sweep();
+    const members = h.chainTasks(first.id);
+    expect(members).toHaveLength(2);
+    expect(members[1].chain!.ended).toMatchObject({ reason: 'stopped', detail: 'enough' });
+  });
+});
+

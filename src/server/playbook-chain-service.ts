@@ -282,7 +282,7 @@ export class PlaybookChainService {
     const existing = this.deps.taskStore.viewTasks().find((task) =>
       task.chain?.chainId === tip.chain!.chainId && task.chain.iteration === decision.next.iteration);
     if (existing) {
-      this.deps.taskStore.updateChain(tip.id, (chain) => ({ ...chain, successorTaskId: existing.id }));
+      this.linkSuccessor(tip.id, existing.id);
       return;
     }
 
@@ -290,13 +290,7 @@ export class PlaybookChainService {
     try {
       const result = await this.launchSuccessor(tip, decision.next);
       this.launchFailures.delete(chainId);
-      this.deps.taskStore.updateChain(tip.id, (chain) => ({ ...chain, successorTaskId: result.task.id }));
-      // A stop request that arrived while the launch was in flight landed on
-      // the old tip; carry it to the new one so it is not lost.
-      const stopRequest = this.deps.taskStore.getTask(tip.id)?.chain?.stopRequest;
-      if (stopRequest) {
-        this.deps.taskStore.updateChain(result.task.id, (chain) => ({ ...chain, stopRequest }));
-      }
+      this.linkSuccessor(tip.id, result.task.id);
       this.deps.logger?.info?.(
         `[playbook-chain] chain ${chainId}: launched iteration ${decision.next.iteration} as task ${result.task.id}`
         + `${result.queued ? ' (queued)' : ''}`,
@@ -313,7 +307,7 @@ export class PlaybookChainService {
       const created = this.deps.taskStore.viewTasks().find((task) =>
         task.chain?.chainId === chainId && task.chain.iteration === decision.next.iteration);
       if (created) {
-        this.deps.taskStore.updateChain(tip.id, (chain) => ({ ...chain, successorTaskId: created.id }));
+        this.linkSuccessor(tip.id, created.id);
         this.deps.logger?.warn?.(`[playbook-chain] chain ${chainId}: iteration ${decision.next.iteration} failed to start: ${message}`);
         return;
       }
@@ -402,11 +396,13 @@ export class PlaybookChainService {
     const intent = tip.launchIntent;
     const prepared = await this.prepare({
       // Project-scope playbooks are read from the source checkout; other
-      // scopes resolve their own directory and ignore it.
+      // scopes resolve their own directory and ignore it. No explicit
+      // projectId: prepare re-derives it from the same parameters, and an
+      // explicit one is checked strictly against the cwd's own project, which
+      // a playbook targeting another repository legitimately fails.
       playbookSourceCwd: source.scope === 'project' ? source.sourceCwd : tip.cwd,
       taskTargetCwd: tip.cwd,
       taskTargetCwdExplicit: false,
-      ...(tip.projectId ? { projectId: tip.projectId } : {}),
       playbookPath: source.id,
       scope: source.scope,
       parameterValues: { ...(tip.playbookParameterValues ?? {}) },
@@ -425,6 +421,19 @@ export class PlaybookChainService {
       },
       { deliveryPolicy: prepared.deliveryPolicy, automationProjectId, chain: next },
     );
+  }
+
+  /**
+   * Record that `predecessorId` advanced to `successorId`. A stop request that
+   * landed on the predecessor while the successor was being launched is
+   * carried over, so it is never lost whichever way the launch went.
+   */
+  private linkSuccessor(predecessorId: string, successorId: string): void {
+    this.deps.taskStore.updateChain(predecessorId, (chain) => ({ ...chain, successorTaskId: successorId }));
+    const stopRequest = this.deps.taskStore.getTask(predecessorId)?.chain?.stopRequest;
+    if (stopRequest && !this.deps.taskStore.getTask(successorId)?.chain?.stopRequest) {
+      this.deps.taskStore.updateChain(successorId, (chain) => ({ ...chain, stopRequest }));
+    }
   }
 
   private endChain(tip: Task, reason: ChainEndReason, detail?: string): void {
