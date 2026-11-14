@@ -87,6 +87,8 @@ export interface MonitorAgentState {
   completionDigest?: CompletionDigest;
   completionFeedback?: import('./tasks.js').TaskCompletionFeedback;
   ralphLoop?: import('./tasks.js').RalphLoopState;
+  /** Playbook-chain position and bounds (RFC rfc-playbook-chains). */
+  chain?: import('../shared/contracts/playbook-chain.js').TaskChainState;
   /** True when the task was launched unattended/autonomous (issue #1562). */
   unattended?: boolean;
   /**
@@ -1221,6 +1223,16 @@ export class Monitor {
     if (!effectiveEvent) return false;
     if (effectiveEvent.type === 'permission_request') return true;
     return effectiveEvent.type === 'tool_use' && effectiveEvent.toolName === 'AskUserQuestion';
+  }
+
+  /**
+   * Subagents this session started that have not reported back, WITHOUT the
+   * stale-subagent TTL eviction the snapshot applies. For callers that must not
+   * act on an agent while any of its workers might still be running (the
+   * playbook-chain idle backstop).
+   */
+  getOutstandingSubagentCount(agentId: string): number {
+    return this.outstandingSubagents.size(agentId);
   }
 
   getLiveTurnState(agentId: string): TurnState | undefined {

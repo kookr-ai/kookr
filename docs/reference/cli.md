@@ -1249,6 +1249,31 @@ Discovery reads the local filesystem directly, so **no running server is require
 
 Exit codes (specific to `kookr playbook`): `0` success; `1` discovery failed to read the playbook directories (a rare filesystem error — with `--json` this is still emitted as a `DISCOVERY_ERROR` envelope); `2` user error (bad flags, unknown verb).
 
+## `kookr chain`
+
+Repeat a playbook as a chain of tasks: Kookr launches the next iteration itself
+when the current one ends, until an iteration count or a time limit is reached.
+See [playbook-chains.md](playbook-chains.md).
+
+```bash
+kookr chain start <playbook> [--scope project|user|plugin] [--param NAME=VALUE]...
+                  [--iterations N] [--hours H] [--minutes M] [-C DIR] [--json]
+kookr chain stop [<taskId>] [--reason TEXT] [--json]
+```
+
+- `start` launches iteration 1 of `<playbook>` (a playbook file name such as
+  `agentic-capability-research.md`). Give `--iterations`, a time limit, or
+  both; the first limit reached ends the chain. `DIR` (default: the current
+  directory) is both the playbook source checkout and the task's working
+  directory. Unlike `kookr spawn --playbook`, this works for playbooks without a
+  `prompt` parameter.
+- `stop` ends the chain after its current iteration. `<taskId>` may be any task
+  of the chain and defaults to `$KOOKR_TASK_ID`, so an agent inside an iteration
+  can run `kookr chain stop --reason "no work left"`.
+
+Exit codes: `0` success; `2` user error; `3` no server reachable; `4` server or
+HTTP error (for example, the chain already ended).
+
 ## `kookr drain` / `kookr resume`
 
 Control operator drain mode on a running local Kookr instance:

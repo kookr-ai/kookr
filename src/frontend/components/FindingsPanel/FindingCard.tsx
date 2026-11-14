@@ -32,6 +32,7 @@ import { PriorityBadge } from './PriorityBadge.js';
 import { TaskPriorityButton } from './TaskPriorityButton.js';
 import { RalphLoopControls } from './RalphLoopControls.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
+import { ChainBadge, ChainStopButton } from './ChainBadge.js';
 import { FindingTranscriptContext } from './FindingTranscriptContext.js';
 import { recommendedResponseFor } from './recommendedResponses.js';
 import { CopyExplanationButton } from './CopyExplanationButton.js';
@@ -294,6 +295,12 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
               context, too granular for the card. See the detail panel's
               `.detail-branch` row. Do not add gitBranch to this row. */}
         </div>
+        {agent.chain && (
+          <div className="finding-loop-row" onClick={(e) => e.stopPropagation()}>
+            <ChainBadge agent={agent} />
+            <ChainStopButton agent={agent} />
+          </div>
+        )}
         {agent.ralphLoop && (
           <div className="finding-loop-row" onClick={(e) => e.stopPropagation()}>
             <RalphLoopControls agent={agent} />

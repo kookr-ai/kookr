@@ -10,6 +10,7 @@ import type { RalphLoopState } from '../shared/contracts/ralph.js';
 import type { PlaybookSourceIdentity } from '../shared/contracts/playbook.js';
 import type { TaskLoadoutRecord } from '../shared/contracts/plugins.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
+import type { TaskChainState } from '../shared/contracts/playbook-chain.js';
 import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchAdmission, TaskLaunchIntent, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance, TaskRelaunchDisposition, TaskTerminalReceipt } from '../shared/contracts/task.js';
 
 export type {
@@ -122,6 +123,8 @@ export interface CreateTaskOptions {
    * reverse link (`migratedToTaskId`) is written on the source separately.
    */
   migratedFromTaskId?: string;
+  /** Playbook-chain state for this iteration (RFC rfc-playbook-chains). Set only by the chain service. */
+  chain?: TaskChainState;
 }
 
 export interface TaskLaunchHealthSummary {
@@ -357,4 +360,10 @@ export interface Task {
    * launched (or upgraded) into Ralph mode. Absence = no loop. See issue #440.
    */
   ralphLoop?: RalphLoopState;
+  /**
+   * Playbook-chain state (RFC rfc-playbook-chains): this task is iteration
+   * `chain.iteration` of a chain Kookr repeats by launching the next iteration
+   * itself when this one ends.
+   */
+  chain?: TaskChainState;
 }

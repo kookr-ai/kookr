@@ -32,6 +32,7 @@ Usage:
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
   kookr schedule <verb> [OPTIONS]  List/run/enable/disable schedules.
   kookr playbook list [--json]  List available playbooks (name · scope · description).
+  kookr chain start|stop [OPTIONS]  Repeat a playbook as a chain of tasks for N iterations or H hours.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr orchestration pause|resume|status [OPTIONS]  Pause/resume the autonomous fleet (SAFE MODE wrapper).
   kookr migrate --to <agent> [OPTIONS]  Continue interrupted tasks under a different agent.
@@ -55,7 +56,7 @@ Options:
   -h, --help                    Show this help.
 
 Use --json for one machine-readable output envelope with: spawn, stop, open, reply, ask, supervise, supervision status, peek, status, doctor,
-signal, ralph, issue, schedule, playbook, drain, resume, ops digest, ops timers, github, logs, containers,
+signal, ralph, issue, schedule, playbook, chain, drain, resume, ops digest, ops timers, github, logs, containers,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
 
@@ -176,6 +177,13 @@ async function main({
   if (command === 'stop' || command === 'abort') {
     const { runStopCommand } = await import('./kookr-stop.js');
     return exit(await runStopCommand(rest, { env, out, err }));
+  }
+
+  // Playbook chains (RFC rfc-playbook-chains): thin HTTP client over
+  // POST /api/playbook-chains and POST /api/tasks/:id/chain/stop.
+  if (command === 'chain') {
+    const { runChainCommand } = await import('./kookr-chain.js');
+    return exit(await runChainCommand(rest, { env, out, err }));
   }
 
   // Ops digest one-pager (issue #2347). Thin HTTP client against

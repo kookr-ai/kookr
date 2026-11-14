@@ -189,6 +189,9 @@ import { RelaunchArbiter } from './relaunch-arbiter.js';
 import { ProviderResetScheduler, resolveProviderResetMs, buildProviderResumeLaunch } from './provider-reset-scheduler.js';
 import { validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
 import { RalphLoopService } from './ralph-loop-service.js';
+import { PlaybookChainService } from './playbook-chain-service.js';
+import { isProviderPaused } from '../core/provider-pause.js';
+import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import { createMemoryLedger, readMemoryLedgerConfigFromEnv } from './memory-ledger.js';
 import {
@@ -2151,6 +2154,64 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       reflectWorktreesDir,
     }),
   });
+
+  // Playbook chains (RFC rfc-playbook-chains): repeats a playbook launch as a
+  // sequence of tasks, launching each next iteration itself. Constructed here so
+  // routes and the WS handler can start/stop chains; its sweep is started only
+  // after the startup recovery phase below (recovery may reopen a chain tip).
+  const playbookChainService = new PlaybookChainService({
+    taskStore,
+    launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
+    resolveAutomationProjectId: (cwd) => getProjectId(cwd),
+    monitor,
+    // Same provider-pause check the completion sweeps use (issue #1667).
+    isProviderPaused: (task) => {
+      const agentId = task.sessions[task.sessions.length - 1]?.tmuxSession;
+      if (!agentId) return false;
+      const anomaly = queue.peek(agentId);
+      return isProviderPaused({
+        events: monitor.getAgentEvents(agentId),
+        anomalyType: anomaly?.type ?? null,
+        anomalyExplanation: anomaly?.explanation ?? null,
+      });
+    },
+    completeIdleIteration: async (task, stillIdle) => {
+      await surfaceDirtyWorktreeOnHeadlessCompletion(task, {
+        taskStore,
+        auditLogPath: join(kookrDir, 'audit.jsonl'),
+        broadcastToAll,
+      });
+      // The dirty-worktree check awaited git; re-validate before completing.
+      if (!stillIdle()) return false;
+      await completeTask(task.id, {
+        adapter,
+        monitor,
+        taskStore,
+        interactionLog,
+        hookWatcher,
+        watchdog,
+        shadowRegistry,
+        tokenTracker,
+        onTaskOutcome: (taskId, outcome) => {
+          onTaskOutcomeHolder?.(taskId, outcome);
+        },
+        suppressionTracker,
+        terminalInputCoordinator,
+        getCleanupWorktreeOnComplete,
+        reflectWorktreesDir,
+      }, {
+        actorSource: 'system',
+        completionPath: 'recovery',
+        lessonGateExempt: 'chain_idle_complete',
+        interactionLogReason: 'chain_idle_complete',
+      });
+      return true;
+    },
+    // Called only after startup (sweeps, routes), by which time the snapshot
+    // broadcaster wired below exists.
+    onChanged: () => requestSnapshotBroadcast(),
+    logger: console,
+  });
   lifecycleDeps.onPendingTaskPromoted = async (task) => {
     await ralphLoopService.claimLatestLiveOwner(task);
   };
@@ -3195,6 +3256,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     tokenTracker,
     tasksFile,
     ralphLoopService,
+    playbookChainService,
     worktreeRegistry,
     getMaxActiveTasks,
     getAutoCloseCompletionReadyDelayMs,
@@ -3848,6 +3910,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // them so the spawn budget buckets them as `websocket`, not anonymous
     // `api`. An opts-level source (none today on WS paths) would still win.
     launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, { launchSource: 'websocket', ...opts }, serverOpts),
+    playbookChainService,
     githubStateStore, ledgerAnalytics, projectConfigStore, projectSidebarStore,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects,
     achievementWatcher,
@@ -4266,6 +4329,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       err instanceof Error ? err.message : err,
     );
   }
+  // Chain sweeps start only now: startup recovery may have reopened a chain's
+  // newest task, and advancing past it earlier could run two iterations at once.
+  if (deferredRecoveryFailed) {
+    // Recovery may not have reopened a chain iteration it should have resumed;
+    // advancing past it could run two iterations at once. Hold every chain
+    // until the next clean start.
+    console.error('[playbook-chain] startup recovery failed; chains are held until the next clean restart');
+  } else {
+    playbookChainService.start();
+  }
   startupReadiness.markReady(
     deferredRecoveryFailed
       ? 'startup complete with recovery errors — inspect server log'
@@ -4422,6 +4495,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     signalOutboxService.stop();
     signalDeliveryService?.stop();
     memoryLedger.stop();
+    playbookChainService.stop();
     await backgroundServices.stop();
     try {
       await taskStateSaveScheduler.close();

@@ -344,6 +344,12 @@ type LaunchPlaybookBaseMessage = {
   scope?: PlaybookScope;
   /** Explicit user-relaunch lineage; never inferred from playbook content. */
   parentTaskId?: string;
+  /**
+   * Launch as a playbook chain (RFC rfc-playbook-chains): Kookr repeats the
+   * playbook, launching each next iteration itself, for up to
+   * `maxIterations` iterations and/or `durationMinutes` minutes.
+   */
+  chain?: { maxIterations?: number; durationMinutes?: number };
 };
 
 type LaunchPlaybookLegacyMessage = LaunchPlaybookBaseMessage & {

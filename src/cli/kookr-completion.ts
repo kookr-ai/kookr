@@ -195,6 +195,13 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--json', '-h', '--help'],
   },
   {
+    // Playbook chains (RFC rfc-playbook-chains). Keep in sync with
+    // src/cli/kookr-chain.ts and the root help.
+    name: 'chain',
+    subcommands: ['start', 'stop'],
+    flags: ['--scope', '--param', '--iterations', '--hours', '--minutes', '-C', '--reason', '--json', '-h', '--help'],
+  },
+  {
     name: 'drain',
     subcommands: ['status'],
   },
@@ -497,6 +504,8 @@ function renderBashCompletion(): string {
   const scheduleFlags = flagsFor('schedule');
   const playbookSubcommands = subcommandsFor('playbook');
   const playbookFlags = flagsFor('playbook');
+  const chainSubcommands = subcommandsFor('chain');
+  const chainFlags = flagsFor('chain');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
   const orchestrationSubcommands = subcommandsFor('orchestration');
@@ -703,6 +712,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${playbookFlags}" -- "\${cur}") )
       fi
       ;;
+    chain)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${chainSubcommands} ${chainFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${chainFlags}" -- "\${cur}") )
+      fi
+      ;;
     drain)
       COMPREPLY=( $(compgen -W "${drainSubcommands} ${drainFlags}" -- "\${cur}") )
       ;;
@@ -877,6 +893,8 @@ function renderZshCompletion(): string {
   const scheduleFlags = flagsFor('schedule');
   const playbookSubcommands = subcommandsFor('playbook');
   const playbookFlags = flagsFor('playbook');
+  const chainSubcommands = subcommandsFor('chain');
+  const chainFlags = flagsFor('chain');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
   const orchestrationSubcommands = subcommandsFor('orchestration');
@@ -1043,6 +1061,13 @@ _kookr()
         compadd -- ${playbookSubcommands} ${playbookFlags}
       else
         compadd -- ${playbookFlags}
+      fi
+      ;;
+    chain)
+      if (( CURRENT == 3 )); then
+        compadd -- ${chainSubcommands} ${chainFlags}
+      else
+        compadd -- ${chainFlags}
       fi
       ;;
     drain)

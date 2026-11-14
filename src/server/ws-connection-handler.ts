@@ -121,6 +121,7 @@ export interface WsConnectionDeps {
   broadcastToAll: (msg: ServerMessage) => void;
   broadcastProjectSummaries: () => void;
   launchTask: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
+  playbookChainService?: import('./playbook-chain-service.js').PlaybookChainService;
   githubStateStore: GitHubStateStore;
   ledgerAnalytics: LedgerAnalytics;
   projectConfigStore: ProjectConfigStore;
@@ -266,6 +267,7 @@ export function handleWsConnection(
     onRespond: abortPendingSuggestion, telemetryLog,
     lifecycleExtras, sttUrl, ttsUrl,
     agentLifecycleDeps, broadcastToAll, launchTask,
+    playbookChainService: deps.playbookChainService,
     circuitBreakerRegistry: deps.circuitBreakerRegistry,
     getMaxActiveTasks: deps.getMaxActiveTasks,
     getCleanupWorktreeOnComplete: deps.getCleanupWorktreeOnComplete,

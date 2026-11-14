@@ -47,7 +47,8 @@ export function isAutonomousLaunchSource(
     || launchSource === 'idle-refinery'
     || launchSource === 'post-recovery'
     || launchSource === 'resource-watchdog'
-    || launchSource === 'supervision';
+    || launchSource === 'supervision'
+    || launchSource === 'chain';
 }
 
 /**

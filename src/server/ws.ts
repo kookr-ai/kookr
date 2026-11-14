@@ -83,6 +83,8 @@ export interface MessageRouterDeps {
   agentLifecycleDeps?: import('./agent-lifecycle.js').AgentLifecycleDeps;
   broadcastToAll?: (msg: ServerMessage) => void;
   launchTask?: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
+  /** Playbook chains (RFC rfc-playbook-chains); absent ⇒ chain launches are refused. */
+  playbookChainService?: import('./playbook-chain-service.js').PlaybookChainService;
   circuitBreakerRegistry?: CircuitBreakerRegistry;
   /** Live getter for max concurrent tasks. */
   getMaxActiveTasks?: () => number;
@@ -172,6 +174,7 @@ export class MessageRouter {
     this.playbookHandler = new PlaybookHandler({
       send: this.deps.send,
       launchTask: this.deps.launchTask,
+      playbookChainService: this.deps.playbookChainService,
     });
     this.configHandler = new ConfigHandler({
       send: this.deps.send,
