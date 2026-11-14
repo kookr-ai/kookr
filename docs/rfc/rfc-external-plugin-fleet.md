@@ -70,9 +70,11 @@ and is not decided here.
   every Kookr-spawned Claude agent loads, in one place, without per-project
   entries. Project, playbook and task-type loadouts SHALL still override it per
   plugin.
-- **R2 (untouched when unused):** With no fleet set and no loadouts, a spawn SHALL
-  take exactly today's path: no extra file read beyond the store check, no
-  additional lock, and a byte-identical session settings file. The feature SHALL
+- **R2 (untouched when unused):** With no fleet set and no loadouts, a spawn of a
+  task with no recorded loadout SHALL take exactly today's path: no extra file
+  read beyond the store check, no additional lock, and a byte-identical session
+  settings file. (A resume of a task that did record a loadout reads the
+  registry once to report `replaySkipped`.) The feature SHALL
   have a kill switch, an explicit `KOOKR_PLUGIN_LOADOUTS=0`, that also stops
   recorded loadouts from being replayed.
 - **R3 (only what is installed, never silent):** Kookr SHALL enable a plugin for
@@ -83,7 +85,10 @@ and is not decided here.
 - **R4 (recorded and replayed):** The task SHALL record, for each plugin it was
   given, the id, the installed version and the install path **at spawn**. A
   resumed agent SHALL get the recorded ids, not a fresh resolution, unless the
-  feature is switched off (the activation table in section 1 defines "off").
+  kill switch is set (an explicit `0`/`false`/`off`/`no`; see the activation
+  table in section 1). A task that has already run without recording a loadout
+  (for example a reopened task) counts as a resume with nothing recorded: it is
+  not resolved fresh.
   Editing or emptying the fleet set SHALL never change what a resume gets. The version
   is a record, not a pin: a resume loads whatever version is installed then, and
   the task SHALL show when that differs from the recorded one.
@@ -167,7 +172,11 @@ partitionByInstalled(resolved, installed) → { resolved, plugins, skipped }
 - The step recomputes the bypass allowlist and the winning level, so provenance
   never names a level whose only entries were skipped.
 - An entry whose plugin name matches a plugin the adapter loads with
-  `--plugin-dir` (the bundled toolkit) is passed through untouched. The renderer
+  `--plugin-dir` (the bundled toolkit) is passed through untouched. Only the
+  adapter knows which directory it loads, so it exposes those names
+  (`dirLoadedPluginNamesForLaunch`) and the launcher passes them to the step.
+- A `false` entry is passed through whether or not the plugin is installed:
+  disabling needs no install. The renderer
   already rewrites such an entry to `<name>@inline`, which is how a project
   disables the toolkit today. The toolkit is always loaded and is not a fleet-set
   member: its row has no Kookr agents switch.
@@ -194,10 +203,16 @@ reading the flag and renders whatever it is handed. The rules:
 
 | `KOOKR_PLUGIN_LOADOUTS` | First spawn resolves | Resume replays the record |
 |---|---|---|
-| `0` / `false` (kill switch) | no | no |
+| `0` / `false` / `off` / `no` (kill switch) | no | no |
 | `1` / `true` | yes | yes |
 | unset, slices 1 and 2 | no (as today) | no (as today) |
 | unset, from slice 3 | only if the fleet file or loadout file names a plugin | **yes** |
+
+Values are trimmed and compared case-insensitively. Any other value, including
+an empty string or a typo such as `yes`, reads as unset. "On" stays exactly
+`1`/`true`, so no value that is off today turns the feature on; the kill side is
+wider so that a natural spelling of "off" still stops replay once an unset flag
+replays (slice 3).
 
 The two columns differ in exactly one cell, and that cell is the point. From
 slice 3, what is configured decides only whether a *new* task gets a loadout. A
@@ -256,8 +271,11 @@ keep that honest without inventing a second store:
   Two things the existing code does must change for this to be safe. First, the
   current detection runs inside the plugin mutation lock around a
   `claude plugin list` call, which takes about three seconds, and spawns wait on
-  that lock. The observe half reads versions from the registry file instead and
-  takes the lock only for the moment it writes the new baseline. Second, the
+  that lock. The observe half reads versions from the registry file instead (under a
+  millisecond), and holds the lock only for that read, the comparison and the
+  baseline write, never across a CLI call. Reading outside the lock would let a
+  Kookr update land between the read and the write and then be reported as
+  external. A busy lock skips the tick. Second, the
   manual update route does not tell the baseline what it changed, so Kookr's own
   update would be reported as an outside one. Every Kookr-initiated install,
   update and uninstall records its change in the baseline.
@@ -484,8 +502,8 @@ concrete event that reopens it.
   the baseline; react to an external change of a fleet plugin; from slice 3,
   `autoUpdate` ownership for fleet marketplaces as well as `apply-when-idle`
   ones), `auto-update-wiring.ts` and
-  `src/server/index.ts` (observe half of the sweep runs when loadouts are
-  active), `launch-service.ts`, `agent-lifecycle.ts` and `crash-recovery.ts`
+  `src/server/index.ts` (observe half of the sweep runs whenever a first spawn
+  would resolve a loadout), `launch-service.ts`, `agent-lifecycle.ts` and `crash-recovery.ts`
   (the first-spawn and replay activation decisions; `replaySkipped` at the
   replay sites),
   `src/server/routes/plugin-routes.ts`.
@@ -562,6 +580,14 @@ remove the `autoUpdate: false` entries by hand afterwards.
 
 - **Fleet plugin uninstalled outside Kookr.** Next resolve skips it and reports
   it (R3). The manager row shows "named but not installed".
+- **Installed, but renamed in its marketplace.** Measured during slice 1: a
+  plugin present in `installed_plugins.json` whose marketplace entry has since
+  been renamed does not load, and Claude Code reports the `plugin_errors`
+  entry under the new id, not the one requested. The installed filter keeps it
+  (it is installed), so only the fleet check can show it: the requested id is
+  `missing`, and the error is returned in `otherErrors` rather than dropped.
+  Not-installed and unknown ids, by contrast, are ignored with no error at all
+  (E1–E3, re-measured).
 - **Resume after an uninstall.** The recorded ids are replayed and one names a
   plugin that is gone. Claude Code ignores it (E2, print mode), so the agent
   resumes without that plugin, and the task shows `replaySkipped`.
@@ -590,9 +616,10 @@ remove the `autoUpdate: false` entries by hand afterwards.
 - **Spawn while a plugin mutation runs.** As today, the record step waits up to
   5 seconds for the lock and then proceeds. A spawn that proceeded without the
   lock is now marked on the task and counted, not only logged. The observe pass
-  holds the lock only for its baseline write. Catalog refresh
-  no longer holds that lock, so the wait is limited to real installs, updates
-  and uninstalls.
+  holds the lock only for a registry read and its baseline write. Catalog
+  refresh does not take that lock. The wait is therefore limited to plugin
+  mutations: installs, updates and uninstalls, the auto-update apply half,
+  own-session plugin and settings edits, and the observe pass's short hold.
 
 ## Alternatives considered
 

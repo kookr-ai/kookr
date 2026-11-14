@@ -24,6 +24,7 @@ import { createRalphStopProcessor } from './ralph/stop-event-processor.js';
 import { createResponseAssistProcessor } from './event-processors/response-assist-processor.js';
 import { createSessionActivityProcessor } from './event-processors/session-activity-processor.js';
 import { createStopTokenScanProcessor } from './event-processors/stop-token-scan-processor.js';
+import { createSkillListingCheckProcessor } from './event-processors/skill-listing-check-processor.js';
 import { createTokenAccountingProcessor } from './event-processors/token-accounting-processor.js';
 import type { TerminalInputCoordinatorPort } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
@@ -488,6 +489,9 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     broadcastSnapshot,
     publishTaskProjection,
   });
+  // RFC "Plugins for the Kookr fleet", section 2: after the first turn, check
+  // the transcript's skill listing against the plugins the task was given.
+  const skillListingCheckProcessor = createSkillListingCheckProcessor({ taskStore });
   const sessionActivityProcessor = createSessionActivityProcessor({ taskLookup: taskStore });
   const ralphStopProcessor = createRalphStopProcessor({
     taskCostReader: tokenTracker,
@@ -714,6 +718,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     if (pipelineEvent.type === 'stop' || pipelineEvent.type === 'stop_failure') {
       const stopTask = ownerTask ?? undefined;
       stopTokenScanProcessor.process(stopTask);
+      void skillListingCheckProcessor.process(stopTask, tmuxName);
       ralphStopProcessor.process(stopTask, tmuxName, pipelineEvent);
     }
 
