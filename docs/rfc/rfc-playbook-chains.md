@@ -366,6 +366,10 @@ The end reason and detail are durable on the tip and visible in the badge.
   field and the chain is unaffected.
 - **Playbook deleted or parameters invalid** mid-chain. Three failed launches
   end the chain with `launch_failed` and the error text.
+- **Operator deletes the live tip** (found while dogfooding: a completed tip,
+  held between iterations, was deleted from the dashboard and the chain was
+  lost). Single delete is refused (`live_chain_tip`, HTTP 409) and "clear
+  completed" skips the tip until it has a successor or the chain has ended.
 - **Terminal-task pruning** (#2765, 1-day default). An unfinished tip is exempt;
   earlier iterations age out normally.
 - **Permission prompt.** With `KOOKR_BYPASS_ALL_PERMISSIONS` off, an iteration

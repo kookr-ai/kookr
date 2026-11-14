@@ -1124,7 +1124,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
 
     try {
       const result = await lifecycleCommands.deleteTask(id, { actor: actorFromRequest(c) });
-      if (result.outcome === 'invalid' && result.code === 'task_cleanup_in_progress') {
+      if (result.outcome === 'invalid' && (result.code === 'task_cleanup_in_progress' || result.code === 'live_chain_tip')) {
         return c.json({ error: result.error, code: result.code }, 409);
       }
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));

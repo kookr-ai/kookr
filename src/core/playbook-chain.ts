@@ -196,6 +196,20 @@ function nextIterationState(chain: TaskChainState, unhealthyStreak: number): Tas
 }
 
 /**
+ * True for the task that currently carries a chain's live state: the newest
+ * iteration, not yet followed by a successor and not ended. Deleting it would
+ * silently lose the chain, so deletion paths refuse or skip it.
+ */
+export function isLiveChainTip(task: { chain?: TaskChainState }): boolean {
+  return task.chain !== undefined && !task.chain.ended && !task.chain.successorTaskId;
+}
+
+/** Operator-facing reason a live chain tip cannot be deleted. */
+export const LIVE_CHAIN_TIP_DELETE_ERROR =
+  'This task is the current iteration of a running playbook chain; deleting it would lose the chain. '
+  + 'Use "Stop chain" (or cancel this task) first, then delete it.';
+
+/**
  * Short block prepended to every iteration's prompt. Informational: the chain
  * continues even if the agent ignores it. Its job is to stop an agent from
  * also spawning a successor out of habit, and to tell it how to end the chain

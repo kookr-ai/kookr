@@ -1075,3 +1075,48 @@ describe('TaskLifecycleCommands.requestTaskSnapshotReflect', () => {
     }
   });
 });
+
+describe('playbook chain tips (RFC rfc-playbook-chains)', () => {
+  const chain = (overrides: Record<string, unknown> = {}) => ({
+    chainId: 'c1', iteration: 1, maxIterations: 5, startedAt: '2026-11-14T00:00:00.000Z', unhealthyStreak: 0, ...overrides,
+  });
+
+  test('refuses to delete the live tip of a chain, which would lose the chain', async () => {
+    const taskStore = new TaskStore();
+    const tip = taskStore.createTask({ prompt: 'iteration 1', cwd: '/repo', chain: chain() });
+    addSession(taskStore, tip.id);
+    taskStore.completeTask(tip.id);
+    const { deps } = makeDeps(taskStore);
+
+    const result = await new TaskLifecycleCommands(deps).deleteTask(tip.id);
+
+    expect(result).toMatchObject({ outcome: 'invalid', code: 'live_chain_tip' });
+    expect(taskStore.getTask(tip.id)).toBeDefined();
+  });
+
+  test('deletes a chain task once it has a successor or the chain has ended', async () => {
+    const taskStore = new TaskStore();
+    const advanced = taskStore.createTask({ prompt: 'iteration 1', cwd: '/repo', chain: chain({ successorTaskId: 'next' }) });
+    const ended = taskStore.createTask({ prompt: 'iteration 5', cwd: '/repo', chain: chain({ iteration: 5, ended: { at: '2026-11-14T01:00:00.000Z', reason: 'iterations_reached' } }) });
+    for (const t of [advanced, ended]) { addSession(taskStore, t.id, `kookr-${t.id}`); taskStore.completeTask(t.id); }
+    const { deps } = makeDeps(taskStore);
+    const commands = new TaskLifecycleCommands(deps);
+
+    expect((await commands.deleteTask(advanced.id)).outcome).toBe('deleted');
+    expect((await commands.deleteTask(ended.id)).outcome).toBe('deleted');
+  });
+
+  test('clear-completed skips a live chain tip and clears everything else', async () => {
+    const taskStore = new TaskStore();
+    const tip = taskStore.createTask({ prompt: 'iteration 2', cwd: '/repo', chain: chain({ iteration: 2 }) });
+    const plain = taskStore.createTask('Done', '/repo');
+    for (const t of [tip, plain]) { addSession(taskStore, t.id, `kookr-${t.id}`); taskStore.completeTask(t.id); }
+    const { deps, stop } = makeDeps(taskStore);
+
+    const result = await new TaskLifecycleCommands(deps).clearFinishedTasks();
+
+    expect(result).toMatchObject({ outcome: 'cleared', deletedTaskIds: [plain.id] });
+    expect(taskStore.getTask(tip.id)).toBeDefined();
+    stop?.();
+  });
+});
