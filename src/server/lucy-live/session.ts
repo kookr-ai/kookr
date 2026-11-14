@@ -277,7 +277,7 @@ export class LucyLiveSession {
   private closedForGood = false;
   private candidate: Candidate | null = null;
   /** The read-back that the next turn may confirm; `until` is on this server's clock. */
-  private proposal: (VoiceAnswerProposal & { until: number }) | null = null;
+  private proposal: (VoiceAnswerProposal & { until: number; turnId: string }) | null = null;
 
   /** Server clock until which the sentences sent so far are still being played. */
   private audibleUntil = 0;
@@ -498,6 +498,7 @@ export class LucyLiveSession {
   private confirmCandidate(candidate: Candidate, trusted = false): void {
     if (this.candidate !== candidate || this.closedForGood) return;
     this.candidate = null;
+    this.dropProposalIfInterrupted();
     this.ports.send({ type: 'speech_confirmed', turnId: candidate.id });
     const carried = this.retire(this.turn, candidate.startedBeforeSpeech);
     // The candidate becomes a normal listening turn that already holds its audio.
@@ -559,7 +560,16 @@ export class LucyLiveSession {
     this.setState('idle');
   }
 
+  /**
+   * The operator cut in while her voice was still audible. A read-back that was cut off was not heard to its end,
+   * so it can no longer be confirmed, even though the server finished sending it long before it finished playing.
+   */
+  private dropProposalIfInterrupted(): void {
+    if (this.proposal && this.ports.now() < this.audibleUntil + AUDIBLE_TAIL_MS) this.proposal = null;
+  }
+
   private onBargeIn(): void {
+    this.dropProposalIfInterrupted();
     // An explicit stop while a candidate is undecided means the browser gave up waiting for
     // a verdict (or has no patience for one) and keeps streaming the operator's words under
     // the candidate's turn id. Treat it as a confirmation so those words are not lost:
@@ -577,6 +587,8 @@ export class LucyLiveSession {
   }
 
   private onPlayed(turnId: string, seq: number, complete: boolean): void {
+    // The browser says it stopped the read-back before its end: nothing it said can be confirmed.
+    if (!complete && this.proposal?.turnId === turnId) this.proposal = null;
     const entry = this.memory.find((m) => m.turnId === turnId);
     if (entry) entry.played.set(seq, complete);
   }
@@ -875,7 +887,7 @@ export class LucyLiveSession {
     }
     // Only a read-back she spoke to its end can be confirmed: the window runs from when her voice stops.
     if (end === 'answered' && turn.proposal) {
-      this.proposal = { ...turn.proposal, until: Math.max(this.ports.now(), this.audibleUntil) + VOICE_ANSWER_CONFIRM_WINDOW_MS };
+      this.proposal = { ...turn.proposal, turnId: turn.id, until: Math.max(this.ports.now(), this.audibleUntil) + VOICE_ANSWER_CONFIRM_WINDOW_MS };
     }
     this.ports.send({ type: 'turn_done', turnId: turn.id, end, ...(reason ? { reason } : {}) });
     if (settleToIdle) this.setState('idle');

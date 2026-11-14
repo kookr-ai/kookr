@@ -141,6 +141,34 @@ describe('answering a question by voice', () => {
     expect(h.answers).toEqual([]);
   });
 
+  it('a read-back the browser reports as cut off cannot be confirmed, even after the server finished sending it', async () => {
+    const h = harness();
+    await proposeTonight(h); // both sentences were sent and the turn ended 'answered'
+    h.session.handleMessage({ type: 'played', turnId: 't1', seq: 0, complete: false });
+    await operatorSays(h, 'yes', 't2');
+    expect(h.answers).toEqual([]);
+  });
+
+  it('a barge_in while her read-back is still audible drops it, even if the turn already ended', async () => {
+    const h = harness();
+    h.match.next = { kind: 'choice', askId: 'a1', optionIndex: 1 };
+    await operatorSays(h, 'run it tonight', 't1');
+    h.session.handleMessage({ type: 'barge_in' }); // her voice is still playing in the browser
+    h.session.handleMessage({ type: 'speech_start', turnId: 't2' }); // a cough: no words follow
+    h.session.handleMessage({ type: 'speech_cancel', turnId: 't2' });
+    h.clock.t += 5000;
+    await operatorSays(h, 'yes', 't3');
+    expect(h.answers).toEqual([]);
+  });
+
+  it('a played report that completed does not cancel the confirmation', async () => {
+    const h = harness();
+    await proposeTonight(h);
+    h.session.handleMessage({ type: 'played', turnId: 't1', seq: 0, complete: true });
+    await operatorSays(h, 'yes', 't2');
+    expect(h.answers).toEqual([['a1', 1]]);
+  });
+
   it('refuses when the question was answered elsewhere between read-back and yes', async () => {
     const h = harness();
     await proposeTonight(h);
