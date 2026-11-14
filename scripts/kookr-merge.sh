@@ -32,6 +32,19 @@
 # never-executed vs executed-red distinction is made by the same reusable
 # classifier the delivery playbooks call (scripts/check-verification.mjs).
 #
+# The source branch is deleted through the REST API after GitHub confirms the
+# merge, never with `gh pr merge --delete-branch` (issue #3641). That flag also
+# switches the local checkout to the base branch and deletes the local branch;
+# from a linked worktree whose base branch is checked out elsewhere that local
+# step fails AFTER the remote merge, so the wrapper used to exit 1 on a merged
+# PR. Nothing after the confirmed merge can change the exit code: a failed
+# branch delete or closing-issue lookup is a warning, not a failure.
+#
+# After the merge, any issue the PR declares as closing (closingIssuesReferences)
+# that is still open is reported, so a missed auto-close is seen, not assumed.
+#
+# Also reachable from any repository as `kookr merge <PR> [--repo OWNER/NAME]`.
+#
 # Usage: kookr-merge <pr-number> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]
 set -euo pipefail
 
@@ -63,9 +76,11 @@ print_usage() {
 Usage: kookr-merge <pr-number> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]
 
 Watches the PR's checks via `gh pr checks --watch` and squash-merges once they
-pass. By default the source branch is deleted after a successful merge. Aborts
-before merging if the PR is closed, a draft, has changes requested, or any
-check fails.
+pass. By default the source branch is deleted through the GitHub API after the
+merge is confirmed (never with `gh pr merge --delete-branch`, whose local
+cleanup fails in a linked worktree). Afterwards, any issue the PR declares as
+closing that is still open is reported. Aborts before merging if the PR is
+closed, a draft, has changes requested, or any check fails.
 
 Use --preserve-branch for paired delivery: a change reviewed in two
 repositories, where both source branches are still needed for audit, replay,
@@ -83,7 +98,8 @@ Options:
   -h, --help          Show this help.
 
 Exit codes:
-  0  merged successfully
+  0  merged successfully (a failed branch delete or a still-open closing issue
+     is reported on stderr but does not change the exit code)
   1  pre-flight failed (state/draft/review) or merge command failed
   2  bad usage
   3  one or more checks RAN and failed, or never-executed checks lacked the
@@ -231,11 +247,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-DELETE_BRANCH_ARG=(--delete-branch)
-if [[ "$BRANCH_MODE" == "--preserve-branch" ]]; then
-  DELETE_BRANCH_ARG=()
-fi
 
 if [[ -z "$PR" ]]; then
   print_usage >&2
@@ -471,17 +482,12 @@ watch_checks() {
 # API, for a gh too old to have `gh pr merge --match-head-commit` (issue #1853).
 # `sha` is the same head pin that flag sends: GitHub refuses the merge with 409
 # if the PR head has moved on, so an unreviewed commit can never slip in.
-# Unless preservation was requested, head deletion is a separate best-effort
-# call (the flag-based path gets it from --delete-branch). The merge itself
-# is what must be atomic.
+# Branch deletion is not done here: every merge path shares delete_head_branch
+# after the merge is confirmed.
 # Returns 0 on a merged PR, 1 otherwise.
 merge_pinned_via_api() {
   local head_sha="$1"
-  local slug="" head_json="" head_ref="" head_slug="" resp=""
-  local preserve=0
-  if [[ "$BRANCH_MODE" == "--preserve-branch" ]]; then
-    preserve=1
-  fi
+  local slug="" resp=""
 
   slug="$REPO_SLUG"
   if [[ -z "$slug" ]]; then
@@ -509,16 +515,6 @@ merge_pinned_via_api() {
     return 1
   fi
 
-  # Read the head branch before merging; afterwards it may already be gone. A
-  # failed read leaves head_json empty (set -e would otherwise abort the script),
-  # and the branch delete below is skipped rather than aimed at a guessed ref.
-  # Preservation skips this lookup: no delete request will be issued.
-  if [[ "$preserve" -eq 0 ]]; then
-    head_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json headRefName,headRepository,headRepositoryOwner)" || head_json=""
-    head_ref="$(printf '%s' "$head_json" | jq -r '.headRefName // ""')"
-    head_slug="$(printf '%s' "$head_json" | jq -r 'if .headRepositoryOwner.login and .headRepository.name then .headRepositoryOwner.login + "/" + .headRepository.name else "" end')"
-  fi
-
   # --raw-field, not --field: a SHA must stay a JSON string. --field infers types,
   # and an all-digit SHA would go out as a number the API rejects.
   if ! resp="$(gh api --method PUT "repos/$slug/pulls/$PR/merge" \
@@ -535,23 +531,106 @@ merge_pinned_via_api() {
     return 1
   fi
   echo "kookr-merge: merged PR #$PR (squash), pinned to $head_sha"
+  return 0
+}
 
-  if [[ "$preserve" -eq 1 ]]; then
+# read_head_branch — record the PR's head branch and head repository in
+# HEAD_REF / HEAD_SLUG, before merging (afterwards the branch may already be
+# gone). A failed read leaves both empty, and delete_head_branch then skips the
+# delete rather than aiming it at a guessed ref. On a cross-repo PR the head
+# repository is the fork, which is where the branch lives.
+HEAD_REF=""
+HEAD_SLUG=""
+read_head_branch() {
+  local head_json=""
+  head_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json headRefName,headRepository,headRepositoryOwner)" || head_json=""
+  HEAD_REF="$(printf '%s' "$head_json" | jq -r '.headRefName // ""' 2>/dev/null)" || HEAD_REF=""
+  HEAD_SLUG="$(printf '%s' "$head_json" | jq -r 'if .headRepositoryOwner.login and .headRepository.name then .headRepositoryOwner.login + "/" + .headRepository.name else "" end' 2>/dev/null)" || HEAD_SLUG=""
+}
+
+# delete_head_branch — delete the PR's source branch through the REST API, after
+# the merge is confirmed. This replaces `gh pr merge --delete-branch`, whose local
+# half (check out the base branch, delete the local branch) fails in a linked
+# worktree when the base branch is checked out in another worktree, turning a
+# successful merge into exit 1 (issue #3641). The API call touches only the
+# remote ref, so it behaves the same from any checkout or from no checkout.
+# Never fails the caller: the merge has already happened.
+delete_head_branch() {
+  if [[ "$BRANCH_MODE" == "--preserve-branch" ]]; then
     echo "kookr-merge: source-branch deletion skipped (--preserve-branch); caller is responsible for later cleanup"
     return 0
   fi
-
-  # The head repo is the fork on a cross-repo PR, so delete the ref there — not
-  # in the base repo the merge just landed in.
-  if [[ -z "$head_ref" || -z "$head_slug" ]]; then
+  if [[ -z "$HEAD_REF" || -z "$HEAD_SLUG" ]]; then
     # The pre-merge head read failed. Say so: silence here is indistinguishable
     # from a branch that was deleted.
     echo "kookr-merge: could not resolve the head branch; it was left in place (delete it manually if wanted)" >&2
-  elif gh api --method DELETE "repos/$head_slug/git/refs/heads/$head_ref" >/dev/null 2>&1; then
-    echo "kookr-merge: deleted head branch $head_ref"
-  else
-    echo "kookr-merge: head branch $head_ref was not deleted (delete it manually if wanted)" >&2
+    return 0
   fi
+  local out=""
+  if out="$(gh api --method DELETE "repos/$HEAD_SLUG/git/refs/heads/$HEAD_REF" 2>&1)"; then
+    echo "kookr-merge: deleted head branch $HEAD_REF"
+  elif [[ "$(printf '%s' "$out" | tr '[:upper:]' '[:lower:]')" == *"reference does not exist"* ]]; then
+    # The repository's "automatically delete head branches" setting got there first.
+    echo "kookr-merge: head branch $HEAD_REF was already deleted"
+  else
+    echo "kookr-merge: head branch $HEAD_REF was not deleted (delete it manually: gh api --method DELETE repos/$HEAD_SLUG/git/refs/heads/$HEAD_REF): ${out%%$'\n'*}" >&2
+  fi
+  return 0
+}
+
+# unclosed_issues — read "OWNER/NAME NUMBER" lines on stdin and print
+# "OWNER/NAME NUMBER STATE" for each issue that is not closed: STATE is `open`,
+# or `unknown` when the state could not be read. An unreadable issue is kept, so
+# a lookup failure is never mistaken for a closed issue.
+unclosed_issues() {
+  local slug number state
+  while read -r slug number; do
+    [[ -n "$slug" && -n "$number" ]] || continue
+    state="$(gh api "repos/$slug/issues/$number" --jq .state </dev/null 2>/dev/null)" || state="unknown"
+    state="$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$state" != "closed" ]]; then
+      printf '%s %s %s\n' "$slug" "$number" "${state:-unknown}"
+    fi
+  done
+}
+
+# report_open_closing_issues — after the merge, report every issue the PR
+# declares as closing (closingIssuesReferences: a `Closes #N` keyword or a
+# manual link) that is still open. GitHub closes them asynchronously, and only
+# when the PR merged into the default branch, so a still-open issue is checked
+# once more after KOOKR_MERGE_CHECK_INTERVAL_SECONDS before it is reported.
+# Report only: never changes the exit code.
+report_open_closing_issues() {
+  local refs="" list="" unclosed="" slug number state
+  if ! refs="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json closingIssuesReferences 2>/dev/null)"; then
+    echo "kookr-merge: could not read the issues PR #$PR declares as closing (gh too old?); check them by hand" >&2
+    return 0
+  fi
+  list="$(printf '%s' "$refs" | jq -r '
+    (.closingIssuesReferences // [])[]
+    | select(.number != null and (.repository.owner.login // "") != "" and (.repository.name // "") != "")
+    | "\(.repository.owner.login)/\(.repository.name) \(.number)"' 2>/dev/null)" || list=""
+  if [[ -z "$list" ]]; then
+    return 0
+  fi
+
+  unclosed="$(printf '%s\n' "$list" | unclosed_issues)"
+  if [[ -n "$unclosed" ]]; then
+    sleep "${KOOKR_MERGE_CHECK_INTERVAL_SECONDS:-15}"
+    unclosed="$(printf '%s\n' "$unclosed" | cut -d' ' -f1,2 | unclosed_issues)"
+  fi
+  if [[ -z "$unclosed" ]]; then
+    echo "kookr-merge: every issue PR #$PR declares as closing is closed"
+    return 0
+  fi
+  while read -r slug number state; do
+    [[ -n "$slug" ]] || continue
+    if [[ "$state" == "open" ]]; then
+      echo "kookr-merge: issue $slug#$number is declared as closed by PR #$PR but is still open — close it (gh issue close $number --repo $slug) or confirm it should stay open" >&2
+    else
+      echo "kookr-merge: could not read the state of closing issue $slug#$number; check it by hand" >&2
+    fi
+  done <<<"$unclosed"
   return 0
 }
 
@@ -589,6 +668,11 @@ if ! watch_checks; then
 fi
 
 echo "kookr-merge: checks passed, squash-merging PR #$PR"
+# Read the head branch now; after the merge it may already be gone.
+if [[ "$BRANCH_MODE" != "--preserve-branch" ]]; then
+  read_head_branch
+fi
+
 # Pin the merge to the reviewed head when the review gate ran (REVIEW_HEAD_SHA is
 # set inside require_review_verdict). If the head advanced during the wait, the
 # merge is refused rather than merging an unreviewed commit.
@@ -599,35 +683,41 @@ echo "kookr-merge: checks passed, squash-merging PR #$PR"
 #      is what that flag sends on the wire. GitHub answers 409 when the head has
 #      advanced past `sha`, so the TOCTOU window is closed either way.
 # Both leave the squash commit message to GitHub's server-side default, so the
-# resulting history is identical whichever path runs.
+# resulting history is identical whichever path runs. Neither passes
+# --delete-branch: the branch is deleted through the API below (issue #3641).
+cli_merge=1
 if [[ -z "${REVIEW_HEAD_SHA:-}" ]]; then
-  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash ${DELETE_BRANCH_ARG[@]+"${DELETE_BRANCH_ARG[@]}"}
+  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash
 elif gh pr merge --help 2>&1 | grep -q -- '--match-head-commit'; then
-  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash ${DELETE_BRANCH_ARG[@]+"${DELETE_BRANCH_ARG[@]}"} \
+  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash \
     --match-head-commit "$REVIEW_HEAD_SHA"
 else
   echo "kookr-merge: installed gh lacks --match-head-commit; pinning the head via the REST API instead"
   merge_pinned_via_api "$REVIEW_HEAD_SHA" || exit 1
-  exit 0
+  cli_merge=0
 fi
 
-# `gh pr merge` can exit 0 after queueing rather than completing. Confirm the
-# PR actually merged before treating it as landed. The REST merge body uses
-# `.merged`, but that is not a `gh pr view --json` field — older (and current)
-# gh list `state`, `mergedAt`, `mergedBy`, `mergeCommit` and reject `merged`
-# (issue #3403). Asking for `merged` made a successful squash-merge look like
-# a failure. `state=MERGED` or a non-null `mergedAt` is the same postcondition
-# on fields gh already supports.
-if ! merged_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json state,mergedAt)"; then
-  echo "kookr-merge: could not verify whether PR #$PR merged" >&2
-  exit 1
+if [[ "$cli_merge" -eq 1 ]]; then
+  # `gh pr merge` can exit 0 after queueing rather than completing. Confirm the
+  # PR actually merged before treating it as landed. The REST merge body uses
+  # `.merged`, but that is not a `gh pr view --json` field — older (and current)
+  # gh list `state`, `mergedAt`, `mergedBy`, `mergeCommit` and reject `merged`
+  # (issue #3403). Asking for `merged` made a successful squash-merge look like
+  # a failure. `state=MERGED` or a non-null `mergedAt` is the same postcondition
+  # on fields gh already supports.
+  if ! merged_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json state,mergedAt)"; then
+    echo "kookr-merge: could not verify whether PR #$PR merged" >&2
+    exit 1
+  fi
+  if ! printf '%s' "$merged_json" | jq -e \
+      '((.state // "") | ascii_upcase) == "MERGED" or ((.mergedAt // null) != null)' \
+      >/dev/null 2>&1; then
+    echo "kookr-merge: PR #$PR did not merge according to GitHub" >&2
+    exit 1
+  fi
 fi
-if ! printf '%s' "$merged_json" | jq -e \
-    '((.state // "") | ascii_upcase) == "MERGED" or ((.mergedAt // null) != null)' \
-    >/dev/null 2>&1; then
-  echo "kookr-merge: PR #$PR did not merge according to GitHub" >&2
-  exit 1
-fi
-if [[ "$BRANCH_MODE" == "--preserve-branch" ]]; then
-  echo "kookr-merge: source-branch deletion skipped (--preserve-branch); caller is responsible for later cleanup"
-fi
+
+# The merge is confirmed. Nothing below may change the exit code.
+delete_head_branch || true
+report_open_closing_issues || true
+exit 0

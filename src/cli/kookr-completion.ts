@@ -378,6 +378,10 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     },
   },
   {
+    name: 'merge',
+    flags: ['--repo', '--preserve-branch', '--delete-branch', '-h', '--help'],
+  },
+  {
     name: 'context-pack',
     flags: [
       '--spec',
@@ -532,6 +536,7 @@ function renderBashCompletion(): string {
   const reflectFlags = flagsFor('reflect');
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
+  const mergeFlags = flagsFor('merge');
   const contextPackFlags = flagsFor('context-pack');
   const signalEmitSubcommands = subcommandsFor('signal-emit');
   const signalEmitFlags = flagsFor('signal-emit');
@@ -820,6 +825,9 @@ _kookr()
         COMPREPLY=( $(compgen -W "${prChecklistFlags}" -- "\${cur}") )
       fi
       ;;
+    merge)
+      COMPREPLY=( $(compgen -W "${mergeFlags}" -- "\${cur}") )
+      ;;
     context-pack)
       COMPREPLY=( $(compgen -W "${contextPackFlags}" -- "\${cur}") )
       ;;
@@ -921,6 +929,7 @@ function renderZshCompletion(): string {
   const reflectFlags = flagsFor('reflect');
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
+  const mergeFlags = flagsFor('merge');
   const contextPackFlags = flagsFor('context-pack');
   const signalEmitSubcommands = subcommandsFor('signal-emit');
   const signalEmitFlags = flagsFor('signal-emit');
@@ -1151,6 +1160,9 @@ _kookr()
       else
         compadd -- ${prChecklistFlags}
       fi
+      ;;
+    merge)
+      compadd -- ${mergeFlags}
       ;;
     context-pack)
       compadd -- ${contextPackFlags}

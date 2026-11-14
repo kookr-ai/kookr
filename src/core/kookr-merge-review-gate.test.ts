@@ -184,7 +184,9 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     expect(res.stdout).toContain('FAKE-GH-MERGED');
     const mergeArgs = readFileSync(mergeArgsFile, 'utf-8');
     expect(mergeArgs).toMatch(/--match-head-commit\s+abc123/);
-    expect(mergeArgs).toMatch(/--delete-branch/);
+    // The branch is deleted through the API after the merge, never by gh's
+    // --delete-branch, whose local cleanup fails in a linked worktree (#3641).
+    expect(mergeArgs).not.toMatch(/--delete-branch/);
   });
 
   test('head SHA is the last commit oid (not the first) on multi-commit PRs', () => {
@@ -373,7 +375,8 @@ if [[ "$1" == "api" ]]; then
   if [[ "$args" == *"--method DELETE"* ]]; then
     status="$(cat "${paths.apiDeleteStatus}" 2>/dev/null || echo 0)"
     if [[ "$status" != "0" ]]; then
-      echo "gh: Reference does not exist (HTTP 422)" >&2
+      # Not "Reference does not exist": that one now reads as already deleted (#3641).
+      echo "gh: Resource not accessible by integration (HTTP 403)" >&2
       exit 1
     fi
   fi
