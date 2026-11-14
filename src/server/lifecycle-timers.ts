@@ -224,6 +224,13 @@ export interface TimerDeps {
    * `GitHubStateStore`. Absent → the delivered-completion sweep is skipped.
    */
   resolveMergedPr?: (task: Task) => MergedPrAttribution | null;
+  /**
+   * Branch-keyed delivery probe for the TTL reapers' disposition label only
+   * (issue #3578): asks GitHub for a merged PR whose head is the task's
+   * session branch when {@link resolveMergedPr} finds nothing. Never used to
+   * complete a task. Absent → reapers label from `resolveMergedPr` alone.
+   */
+  resolveMergedPrByBranch?: (task: Task) => Promise<MergedPrAttribution | null>;
   /** Durable signal-outbox spool dir (#1541), threaded so delivered completions raise through it. */
   signalOutboxSpoolDir?: string;
   /** Path to the shared audit.jsonl log — threaded to the completion-ready sweep and hung-task reaper for system-actor audit rows. */
@@ -2087,6 +2094,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             isProviderPaused: isTaskProviderPaused,
             isHoldingOpenPr: deps.isTaskHoldingOpenPr,
             resolveMergedPr: deps.resolveMergedPr,
+            resolveMergedPrByBranch: deps.resolveMergedPrByBranch,
             metrics: deps.hungSuspectTtlReclaimMetrics,
           },
           { ttlMs: deps.getHungSuspectTtlMs?.() },
@@ -2201,6 +2209,10 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
               getLiveness: (task) => hungSuspectSignals(task).liveness,
               recordProviderPause: deps.recordProviderPause,
               isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+              // Disposition label only (issue #3578): a task whose PR already
+              // merged is recorded delivered_then_hung, still terminated.
+              resolveMergedPr: deps.resolveMergedPr,
+              resolveMergedPrByBranch: deps.resolveMergedPrByBranch,
               metrics: deps.providerPausedOccupancyMetrics,
             },
             {

@@ -1,6 +1,7 @@
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { TaskDisposition, TaskReapOutcome } from '../shared/contracts/task.js';
+import type { MergedPrAttribution } from '../core/completion/index.js';
 import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
@@ -20,6 +21,7 @@ import { appendAuditRow } from '../core/audit-log.js';
 import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';
 import { nowISO } from '../core/interaction-log.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
+import { readStoreDeliveredPr, resolveReapDeliveredPr } from './hung-suspect-ttl-sweep.js';
 
 /** Cap last-pass outcome samples on health (issue #2079 audit). */
 const MAX_LAST_OUTCOMES = 16;
@@ -302,6 +304,18 @@ export interface ReclaimProviderPausedTasksDeps {
   ) => { holdForResume: boolean } | void;
   isHoldingOpenPr?: (task: Task) => boolean | undefined;
   /**
+   * Delivery attribution for the disposition label only (issue #3578) — the
+   * same in-memory probe the hungSuspect TTL reclaim uses. A merged PR turns
+   * the label into `delivered_then_hung` / ledger `obsolete`; the task is
+   * still terminated and never auto-completed on a billing/quota hold.
+   */
+  resolveMergedPr?: (task: Task) => MergedPrAttribution | null;
+  /**
+   * Branch-keyed fallback for {@link resolveMergedPr} (issue #3578). Same
+   * label-only contract; consulted after the terminate, bounded.
+   */
+  resolveMergedPrByBranch?: (task: Task) => Promise<MergedPrAttribution | null>;
+  /**
    * Soft TTL for capacity-aware early reclaim (issue #2225). Defaults to
    * {@link DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS} when capacity allows early reclaim.
    */
@@ -335,19 +349,38 @@ export interface ReclaimProviderPausedTasksResult {
 
 /**
  * Build the task.disposition for a provider_paused hard-TTL reclaim (issue #2079).
- * Always needs-human / terminated — never force-complete as delivered.
+ *
+ * The reclaim never force-completes a task. The label still has to be true,
+ * though (issue #3578): when the task's PR had already merged before the
+ * billing/quota hold, record `delivered_then_hung` with `deliveredPr` so the
+ * operator does not go looking for work to recover. Otherwise `terminated` /
+ * needs-human, as before.
  */
-export function buildProviderPausedTtlDisposition(at: string): TaskDisposition {
-  const outcome: TaskReapOutcome = 'terminated';
-  return {
+export function buildProviderPausedTtlDisposition(
+  at: string,
+  merged?: MergedPrAttribution | null,
+): TaskDisposition {
+  const outcome: TaskReapOutcome = merged ? 'delivered_then_hung' : 'terminated';
+  const disposition: TaskDisposition = {
     reason: 'provider_paused_ttl',
     at,
     source: 'provider-paused-ttl',
     outcome,
-    detail:
-      'Reclaimed after provider_paused hard TTL with no auto-complete — needs human review '
-      + '(billing/quota hold, not delivered).',
   };
+  if (merged) {
+    disposition.deliveredPr = {
+      number: merged.prNumber,
+      ...(merged.prUrl ? { url: merged.prUrl } : {}),
+    };
+    disposition.detail =
+      `Delivered PR #${merged.prNumber} before the billing/quota hold; reclaimed after `
+      + 'provider_paused TTL (terminated, not auto-completed).';
+  } else {
+    disposition.detail =
+      'Reclaimed after provider_paused hard TTL with no auto-complete — needs human review '
+      + '(billing/quota hold, not delivered).';
+  }
+  return disposition;
 }
 
 /**
@@ -358,7 +391,8 @@ export function buildProviderPausedTtlDisposition(at: string): TaskDisposition {
  *
  * - `task.disposition` reason `provider_paused_ttl` (first-write-wins);
  * - an audit.jsonl row, actor `system:provider-paused-ttl`;
- * - a disposition-ledger entry (`needs-human` always).
+ * - a disposition-ledger entry: `obsolete` when the task's PR had already
+ *   merged (issue #3578), else `needs-human`.
  *
  * Open-PR fail-safe protects in-flight delivery; this function only executes
  * what the pure selector already cleared. One summary alert per reclaim batch.
@@ -458,8 +492,16 @@ export async function reclaimAgedProviderPausedTasks(
   deps.metrics?.recordAttempted(selection.expired.length);
 
   const reclaimedTaskIds: string[] = [];
+  let deliveredCount = 0;
+  const terminated: Array<{
+    task: Task;
+    pausedForMs: number;
+    storeMerged: MergedPrAttribution | null;
+  }> = [];
   for (const { task, pausedForMs } of selection.expired) {
-    const disposition = buildProviderPausedTtlDisposition(now.toISOString());
+    // Read the in-memory attribution before terminating, as the hungSuspect
+    // reclaim does. Label only — a billing hold never auto-completes.
+    const storeMerged = readStoreDeliveredPr(task, deps.resolveMergedPr, '[provider-paused-ttl]');
 
     try {
       await terminateTask(task.id, lifecycleDeps, {
@@ -477,11 +519,26 @@ export async function reclaimAgedProviderPausedTasks(
       );
       continue;
     }
+    terminated.push({ task, pausedForMs, storeMerged });
+  }
 
+  // Branch-keyed fallback for the label (issue #3578): after every terminate,
+  // concurrently, bounded — never delays another task's reclaim.
+  const deliveredPrs = await Promise.all(
+    terminated.map(({ task, storeMerged }) =>
+      resolveReapDeliveredPr(task, storeMerged, deps.resolveMergedPrByBranch, {
+        logPrefix: '[provider-paused-ttl]',
+      })),
+  );
+
+  for (const [index, { task, pausedForMs }] of terminated.entries()) {
+    const merged = deliveredPrs[index] ?? null;
+    const disposition = buildProviderPausedTtlDisposition(now.toISOString(), merged);
+    if (merged) deliveredCount += 1;
     deps.taskStore.setDisposition(task.id, disposition);
     deps.pauseStartTracker.clear(task.id);
 
-    await writeProviderPausedDispositionEntry(task.id, pausedForMs, deps, now).catch(
+    await writeProviderPausedDispositionEntry(task.id, pausedForMs, disposition, deps, now).catch(
       (err) => {
         console.error(
           `[provider-paused-ttl] failed to record disposition-ledger entry for task ${task.id}:`,
@@ -502,7 +559,8 @@ export async function reclaimAgedProviderPausedTasks(
       taskId: task.id,
       reason: 'provider_paused_ttl',
       pausedForMs,
-      outcome: 'terminated',
+      outcome: disposition.outcome ?? 'terminated',
+      ...(disposition.deliveredPr ? { deliveredPr: disposition.deliveredPr } : {}),
       ttlMs,
     });
   }
@@ -533,8 +591,12 @@ export async function reclaimAgedProviderPausedTasks(
         + (capacityAllowsEarlyReclaim && ttlMs < hardTtlMs
           ? `; soft capacity-aware bound, hard ${Math.round(hardTtlMs / 60_000)}m`
           : '')
-        + ') and were terminated to free active concurrency slots. Disposition is '
-        + 'needs-human (never auto-completed as delivered). Review the disposition ledger.',
+        + ') and were terminated to free active concurrency slots. None were auto-completed. '
+        + (deliveredCount > 0
+          ? `${deliveredCount} had already merged their PR (recorded delivered_then_hung); `
+            + `${reclaimedTaskIds.length - deliveredCount} need human review. `
+          : 'All need human review. ')
+        + 'Review the disposition ledger.',
       severity: 'warning',
     });
 
@@ -565,22 +627,35 @@ export async function reclaimAgedProviderPausedTasks(
 async function writeProviderPausedDispositionEntry(
   taskId: string,
   pausedForMs: number,
+  taskDisposition: TaskDisposition,
   deps: ReclaimProviderPausedTasksDeps,
   now: Date,
 ): Promise<void> {
   if (!deps.dispositionLedgerPath) return;
   const pausedMinutes = Math.round(pausedForMs / 60_000);
-  const entry: DispositionEntry = {
-    schemaVersion: 'disposition-ledger.v1',
-    taskId,
-    disposition: 'needs-human',
-    detail:
-      `needs-human: provider_paused hard TTL reclaimed after ${pausedMinutes}m of billing/quota hold `
-      + '(never auto-completed as delivered)',
-    incidentId: providerPausedIncidentId(now),
-    source: 'provider-paused-ttl',
-    at: now.toISOString(),
-  };
+  const entry: DispositionEntry = taskDisposition.deliveredPr
+    ? {
+        schemaVersion: 'disposition-ledger.v1',
+        taskId,
+        disposition: 'obsolete',
+        detail:
+          `obsolete-because: delivered PR #${taskDisposition.deliveredPr.number} before the `
+          + `billing/quota hold; provider_paused TTL reclaim after ${pausedMinutes}m (not auto-completed)`,
+        incidentId: providerPausedIncidentId(now),
+        source: 'provider-paused-ttl',
+        at: now.toISOString(),
+      }
+    : {
+        schemaVersion: 'disposition-ledger.v1',
+        taskId,
+        disposition: 'needs-human',
+        detail:
+          `needs-human: provider_paused hard TTL reclaimed after ${pausedMinutes}m of billing/quota hold `
+          + '(never auto-completed as delivered)',
+        incidentId: providerPausedIncidentId(now),
+        source: 'provider-paused-ttl',
+        at: now.toISOString(),
+      };
   await appendDispositionEntry(deps.dispositionLedgerPath, entry);
 }
 

@@ -273,6 +273,14 @@ export interface ReclaimHungSuspectTasksDeps {
    * needs-human.
    */
   resolveMergedPr?: (task: Task) => MergedPrAttribution | null;
+  /**
+   * Fallback delivery probe keyed on the task's own session branch (issue
+   * #3578). Consulted only when {@link resolveMergedPr} finds nothing, only
+   * after the terminate has freed the slot, and bounded by
+   * {@link DEFAULT_REAP_DELIVERY_FALLBACK_TIMEOUT_MS}. It changes the
+   * disposition label only; it never completes a task.
+   */
+  resolveMergedPrByBranch?: (task: Task) => Promise<MergedPrAttribution | null>;
   metrics?: Pick<
     HungSuspectTtlReclaimMetrics,
     'recordReclaimed' | 'recordAttempted' | 'recordSelection' | 'recordReclaimFailure'
@@ -289,6 +297,66 @@ export interface ReclaimHungSuspectTasksResult {
     /** Per-candidate outcomes with task ids (issue #2072). */
     outcomes: HungSuspectReclaimCandidateOutcome[];
   };
+}
+
+/** Upper bound on the branch-keyed delivery fallback per reaped task (issue #3578). */
+export const DEFAULT_REAP_DELIVERY_FALLBACK_TIMEOUT_MS = 15_000;
+
+/**
+ * Resolve a reaped task's delivered PR for its disposition label (issue
+ * #3578). Shared by the hungSuspect and provider_paused TTL reapers.
+ *
+ * Tries the in-memory attribution first (`primary`, already evaluated by the
+ * caller). When it found nothing, asks the branch-keyed `fallback`, bounded
+ * by `timeoutMs`; a throw, timeout, or null all mean "no confirmed delivery",
+ * which is exactly the label the reaper recorded before this fallback
+ * existed. The result only chooses a label — callers must never use it to
+ * complete a task.
+ */
+export async function resolveReapDeliveredPr(
+  task: Task,
+  primary: MergedPrAttribution | null,
+  fallback: ((task: Task) => Promise<MergedPrAttribution | null>) | undefined,
+  opts: { timeoutMs?: number; logPrefix: string },
+): Promise<MergedPrAttribution | null> {
+  if (primary || !fallback) return primary;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_REAP_DELIVERY_FALLBACK_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+      timer.unref?.();
+    });
+    return (await Promise.race([fallback(task), timeout])) ?? null;
+  } catch (err) {
+    console.warn(
+      `${opts.logPrefix} branch delivery probe failed for task ${task.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Read the in-memory delivery attribution without letting a throw abort the
+ * reclaim pass (issue #3578). A throw means "no confirmed delivery".
+ */
+export function readStoreDeliveredPr(
+  task: Task,
+  resolveMergedPr: ((task: Task) => MergedPrAttribution | null) | undefined,
+  logPrefix: string,
+): MergedPrAttribution | null {
+  try {
+    return resolveMergedPr?.(task) ?? null;
+  } catch (err) {
+    console.warn(
+      `${logPrefix} delivery attribution failed for task ${task.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
 }
 
 /**
@@ -371,12 +439,15 @@ export async function reclaimAgedHungSuspectTasks(
   let incompleteEvidenceTasks = 0;
   let timedOutWrites = 0;
   let unattemptedWrites = 0;
+  const terminated: Array<{
+    task: Task;
+    silentForMs: number;
+    storeMerged: MergedPrAttribution | null;
+  }> = [];
   for (const { task, silentForMs } of selection.expired) {
     // Attribute delivery BEFORE terminating so a task that already merged its
     // PR is recorded as delivered_then_hung rather than masking delivery.
-    const merged = deps.resolveMergedPr?.(task) ?? null;
-    const disposition = buildHungSuspectTtlDisposition(merged, now.toISOString());
-    const outcome = disposition.outcome ?? 'terminated';
+    const storeMerged = readStoreDeliveredPr(task, deps.resolveMergedPr, '[hung-suspect-ttl]');
 
     try {
       await terminateTask(task.id, lifecycleDeps, {
@@ -397,7 +468,24 @@ export async function reclaimAgedHungSuspectTasks(
       );
       continue;
     }
+    terminated.push({ task, silentForMs, storeMerged });
+  }
 
+  // The in-memory attribution can miss a PR the task really merged (issue
+  // #3578, task 02107c4f), so ask GitHub by branch. Every terminate above has
+  // already freed its slot, and the probes run concurrently under one bound,
+  // so a slow GitHub call never delays another task's reclaim.
+  const deliveredPrs = await Promise.all(
+    terminated.map(({ task, storeMerged }) =>
+      resolveReapDeliveredPr(task, storeMerged, deps.resolveMergedPrByBranch, {
+        logPrefix: '[hung-suspect-ttl]',
+      })),
+  );
+
+  for (const [index, { task, silentForMs }] of terminated.entries()) {
+    const merged = deliveredPrs[index] ?? null;
+    const disposition = buildHungSuspectTtlDisposition(merged, now.toISOString());
+    const outcome = disposition.outcome ?? 'terminated';
     deps.taskStore.setDisposition(task.id, disposition);
 
     const logPrefix = `[hung-suspect-ttl] task ${task.id}:`;

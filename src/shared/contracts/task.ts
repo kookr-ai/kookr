@@ -290,7 +290,8 @@ export type TaskReapOutcome = 'terminated' | 'delivered_then_hung';
  * - the first-hook miss reaper (issue #2036: `first_hook_miss`), for
  *   post-spawn sessions that never acked with a hook, and
  * - the provider_paused hard-TTL reclaim (issue #2079: `provider_paused_ttl`),
- *   which always records needs-human (never delivered auto-complete).
+ *   which never auto-completes; it records needs-human unless the task's PR
+ *   had already merged, then `delivered_then_hung` (issue #3578).
  *
  * The recovery work-conservation ledger (#1540) is expected to build ITS
  * disposition records on this same shape rather than a parallel one.
@@ -305,9 +306,9 @@ export interface TaskDisposition {
   /** Optional human-readable detail (e.g. the underlying launch error message). */
   detail?: string;
   /**
-   * Reap outcome (issue #1559 / #1935). Present on `hung_reap` and
-   * `hung_suspect_ttl` dispositions; `delivered_then_hung` when the reaped
-   * task had an attributable merged PR.
+   * Reap outcome (issue #1559 / #1935 / #3578). Present on `hung_reap`,
+   * `hung_suspect_ttl` and `provider_paused_ttl` dispositions;
+   * `delivered_then_hung` when the reaped task had an attributable merged PR.
    */
   outcome?: TaskReapOutcome;
   /**

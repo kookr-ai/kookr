@@ -318,9 +318,10 @@ fields a list needs — `id`/`taskId`, `name`, `status`, `cwd`, `agentType`,
 `unattended`, `operatorNeeded`, `tokenUsage` (plus `aggregateTokenUsage` on parents),
 `pendingSignal`, `issueClaim`, `ralphLoop`, the `createdAt`/`updatedAt`/
 `finishedAt`/`terminatedAt` timeline, a `disposition` record on a task pruned
-before its first session (issue #1588) or reaped while hung (issue #1559 — a
-`hung_reap` disposition whose `outcome` is `delivered_then_hung` when the reaped
-task had already merged its PR), a `terminalReceipt` structured
+before its first session (issue #1588) or reaped by a reaper (issues #1559 /
+#1935 / #3578 — a `hung_reap`, `hung_suspect_ttl` or `provider_paused_ttl`
+disposition whose `outcome` is `delivered_then_hung` when the reaped task had
+already merged its PR), a `terminalReceipt` structured
 terminal-transition record on terminal tasks (issue #2847; typed reason +
 initiator + prior state + work disposition — legacy rows without one project to
 `unknown_legacy`), a `suppressed` flag when applicable, and a
