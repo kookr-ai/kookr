@@ -164,7 +164,7 @@ describe('OpenAiCompatibleLlmClient', () => {
     const client = new OpenAiCompatibleLlmClient({
       provider: 'openrouter',
       apiKey: API_KEY,
-      model: 'deepseek/deepseek-v4-flash',
+      model: 'deepseek/deepseek-v4.1-flash-1017',
       baseUrl: 'https://openrouter.ai/api/v1',
       extraHeaders: { 'X-Title': 'Kookr' },
     });
@@ -347,7 +347,7 @@ describe('OpenAiCompatibleLlmClient', () => {
     const client = new OpenAiCompatibleLlmClient({
       provider: 'openrouter',
       apiKey: API_KEY,
-      model: 'deepseek/deepseek-v4-flash',
+      model: 'deepseek/deepseek-v4.1-flash-1017',
       baseUrl: 'https://openrouter.ai/api/v1',
     });
 
@@ -417,7 +417,7 @@ describe('OpenAiCompatibleLlmClient', () => {
     const client = new OpenAiCompatibleLlmClient({
       provider: 'openrouter',
       apiKey: API_KEY,
-      model: 'deepseek/deepseek-v4-flash',
+      model: 'deepseek/deepseek-v4.1-flash-1017',
       baseUrl: 'https://openrouter.ai/api/v1',
     });
 

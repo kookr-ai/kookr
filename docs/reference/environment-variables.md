@@ -312,7 +312,7 @@ features stay disabled and Kookr falls back to truncated prompt names.
 | `OPENROUTER_API_KEY` | unset | OpenRouter API key | Fallback OpenRouter key for simple single-key setups. Used only when `KOOKR_OPENROUTER_API_KEY` is unset. |
 | `KOOKR_REQUESTY_API_KEY` | unset | Requesty API key | Enables the Requesty provider when `KOOKR_LLM_PROVIDER=requesty`. Preferred over `REQUESTY_API_KEY` so a separate Requesty credit limit can be scoped to Kookr. |
 | `REQUESTY_API_KEY` | unset | Requesty API key | Fallback Requesty key for simple single-key setups. Used only when `KOOKR_LLM_PROVIDER=requesty` and `KOOKR_REQUESTY_API_KEY` is unset. |
-| `KOOKR_LLM_MODEL` | `deepseek/deepseek-v4-flash` | OpenRouter model id | Overrides the OpenRouter model. Applies to the OpenRouter provider only; Groq/Gemini/Anthropic keep their built-in defaults. |
+| `KOOKR_LLM_MODEL` | `deepseek/deepseek-v4.1-flash-1017` | OpenRouter model id | Overrides the OpenRouter model. Applies to the OpenRouter provider only; Groq/Gemini/Anthropic keep their built-in defaults. |
 | `KOOKR_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL | Overrides the OpenRouter chat-completions base URL (e.g. for a proxy). OpenRouter provider only. |
 | `KOOKR_LLM_HTTP_REFERER` | unset | URL | Optional `HTTP-Referer` app-attribution header sent on OpenRouter requests. |
 | `KOOKR_LLM_APP_TITLE` | `Kookr` | String | Optional `X-Title` app-attribution header sent on OpenRouter requests. |
