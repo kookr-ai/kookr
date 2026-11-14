@@ -155,6 +155,31 @@ describe('kookr schedule resolveId / formatScheduleLine', () => {
       );
     });
 
+    it('names an operator hold placed over an existing auto-pause', () => {
+      expect(
+        formatScheduleLine({
+          ...SCHEDULE_B,
+          stopReason: 'consecutive_failures',
+          consecutiveFailures: 5,
+          operatorHold: true,
+          holdSource: 'operator',
+          heldAt: '2026-11-13T09:00:00.000Z',
+        }),
+      ).toBe(`${base}  reason=operator-hold(since 2026-11-13; was auto-paused consecutive_failures×5)`);
+    });
+
+    it('drops a malformed failure count and hold date', () => {
+      expect(
+        formatScheduleLine({ ...SCHEDULE_B, stopReason: 'consecutive_failures', consecutiveFailures: '4', heldAt: '2026' }),
+      ).toBe(`${base}  reason=auto-paused(consecutive_failures)`);
+    });
+
+    it('labels a spent trigger budget even when a hold is also set', () => {
+      expect(formatScheduleLine({ ...SCHEDULE_B, stopReason: 'trigger_limit_reached', operatorHold: true })).toBe(
+        `${base}  reason=trigger_limit_reached`,
+      );
+    });
+
     it('labels a spent trigger budget', () => {
       expect(formatScheduleLine({ ...SCHEDULE_B, stopReason: 'trigger_limit_reached' })).toBe(
         `${base}  reason=trigger_limit_reached`,
@@ -188,6 +213,18 @@ describe('kookr schedule resolveId / formatScheduleLine', () => {
       ).toBe(
         'sched-b  archived  Hourly smoke  cron="0 * * * *"  next=-  reason=archived(superseded by nightly sweep; at 2026-10-30)',
       );
+    });
+
+    it('collapses a multi-line archive note onto the one list line', () => {
+      expect(formatScheduleLine({ ...SCHEDULE_B, archived: true, archivedReason: 'first\n  second' })).toBe(
+        'sched-b  archived  Hourly smoke  cron="0 * * * *"  next=-  reason=archived(first second)',
+      );
+    });
+
+    it('labels an archived row that has only a date, and ignores a blank note', () => {
+      expect(
+        formatScheduleLine({ ...SCHEDULE_B, archived: true, archivedReason: '   ', archivedAt: '2026-10-30T12:00:00.000Z' }),
+      ).toBe('sched-b  archived  Hourly smoke  cron="0 * * * *"  next=-  reason=archived(at 2026-10-30)');
     });
 
     it('adds no suffix to an archived row with no reason metadata', () => {
@@ -260,6 +297,26 @@ describe('kookr schedule list', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://127.0.0.1:4800/api/schedules');
     expect(init.method).toBe('GET');
+  });
+
+  it('prints the inactive reason on the list line (issue #3482)', async () => {
+    const paused = {
+      ...SCHEDULE_B,
+      stopReason: 'consecutive_failures',
+      consecutiveFailures: 4,
+      operatorHold: true,
+      holdSource: 'daemon',
+      heldAt: '2026-11-12T08:25:00.000Z',
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ revision: 1, schedules: [SCHEDULE_A, paused], status: {} }, 200)));
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['list'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    expect(io.logs).toEqual([
+      'sched-a  enabled   Nightly drain  cron="0 3 * * *"  next=2026-07-29T03:00:00.000Z  triggers=4/10',
+      'sched-b  disabled  Hourly smoke  cron="0 * * * *"  next=-  reason=auto-paused(consecutive_failures×4, since 2026-11-12)',
+    ]);
   });
 
   it('prints "No schedules." when empty', async () => {

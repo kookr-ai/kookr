@@ -242,9 +242,10 @@ function formatInactiveReason(schedule) {
   const day = (v) => (typeof v === 'string' && v.length >= 10 ? v.slice(0, 10) : '');
   if (schedule.archived) {
     const parts = [];
-    if (typeof schedule.archivedReason === 'string' && schedule.archivedReason.trim()) {
-      parts.push(schedule.archivedReason.trim());
-    }
+    // The archive note is free text; collapse whitespace so a multi-line note
+    // cannot break the one-line-per-schedule format.
+    const note = typeof schedule.archivedReason === 'string' ? schedule.archivedReason.replace(/\s+/g, ' ').trim() : '';
+    if (note) parts.push(note);
     const at = day(schedule.archivedAt);
     if (at) parts.push(`at ${at}`);
     return parts.length ? `  reason=archived(${parts.join('; ')})` : '';
@@ -253,6 +254,12 @@ function formatInactiveReason(schedule) {
   const held = day(schedule.heldAt);
   if (schedule.stopReason === 'consecutive_failures') {
     const n = Number.isFinite(schedule.consecutiveFailures) ? `×${schedule.consecutiveFailures}` : '';
+    // An operator can hold a schedule that is already auto-paused: the hold
+    // flips to holdSource=operator (never auto-re-armed) and heldAt moves to
+    // the operator's time, while stopReason stays. Name the operator hold first.
+    if (schedule.operatorHold && schedule.holdSource === 'operator') {
+      return `  reason=operator-hold(${held ? `since ${held}; ` : ''}was auto-paused consecutive_failures${n})`;
+    }
     return `  reason=auto-paused(consecutive_failures${n}${held ? `, since ${held}` : ''})`;
   }
   if (schedule.stopReason === 'trigger_limit_reached') return '  reason=trigger_limit_reached';
