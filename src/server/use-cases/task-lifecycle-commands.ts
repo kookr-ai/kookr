@@ -1,4 +1,5 @@
 import { appendFile, mkdir, rm, readdir } from 'node:fs/promises';
+import { isLiveChainTip, LIVE_CHAIN_TIP_DELETE_ERROR } from '../../shared/contracts/playbook-chain.js';
 import { dirname, join } from 'node:path';
 import type { AgentActivityMeta, AgentEvent } from '../../core/types.js';
 import type { Monitor } from '../../core/monitor.js';
@@ -85,7 +86,8 @@ interface TaskDeletionAuditRecord {
     | 'cleanup_in_progress'
     | 'cleared'
     | 'invalid_scope'
-    | 'snapshot_failed';
+    | 'snapshot_failed'
+    | 'live_chain_tip';
 }
 
 type TaskDeletionAuditRow = {
@@ -401,6 +403,20 @@ export class TaskLifecycleCommands {
     opts: { gcFeedbackBundle?: boolean } & TaskDeletionAuditOpts = {},
   ): Promise<TaskLifecycleCommandResult> {
     const task = this.deps.taskStore.getTask(taskId);
+    // A playbook chain's live tip holds the chain's only state until its
+    // successor exists (RFC rfc-playbook-chains): refuse rather than lose it.
+    if (task && isLiveChainTip(task, this.deps.taskStore.viewTasks())) {
+      await this.writeTaskDeletionAudit({
+        action: 'deleteTask',
+        actor: opts.actor,
+        projectId: task.projectId,
+        count: 0,
+        deletedTaskIds: [],
+        targetTaskId: taskId,
+        outcome: 'live_chain_tip',
+      });
+      return { outcome: 'invalid', code: 'live_chain_tip', error: LIVE_CHAIN_TIP_DELETE_ERROR };
+    }
     let deleted: boolean;
     try {
       deleted = await deleteTask(this.deps.getLifecycleDeps(), taskId);
@@ -453,9 +469,13 @@ export class TaskLifecycleCommands {
     // viewTasks: no structuredClone of the whole store just to filter finished
     // records. With hundreds of completed tasks, listTasks() alone was ~50ms+
     // of event-loop block before the predelete export even started.
-    const toClear = this.deps.taskStore.viewTasks().filter((task) => {
+    const allTasks = this.deps.taskStore.viewTasks();
+    const toClear = allTasks.filter((task) => {
       if (projectId && task.projectId !== projectId) return false;
       if (task.launchAdmission?.status === 'probing') return false;
+      // Never sweep a playbook chain's live tip; it is still needed to launch
+      // the next iteration (RFC rfc-playbook-chains).
+      if (isLiveChainTip(task, allTasks)) return false;
       if (task.status === 'completed' || task.status === 'cancelled') return true;
       return opts.includeTerminated === true && task.status === 'terminated';
     });

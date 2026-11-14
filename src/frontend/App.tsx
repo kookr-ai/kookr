@@ -1,4 +1,5 @@
 import React, { Suspense, useState, useEffect, useMemo, useCallback, useReducer, useRef } from 'react';
+import { isLiveChainTip } from '../shared/contracts/playbook-chain.js';
 import { lazyWithReload } from './lazy-with-reload.js';
 import { useShallow } from 'zustand/react/shallow';
 import type { AgentState, ClientMessage, ProjectSummary } from '../shared/protocol.js';
@@ -1446,15 +1447,19 @@ export function App() {
   const clearCompletedScopeAgents = selectedProject
     ? agents.filter((a) => a.projectId === selectedProject)
     : agents;
+  // A playbook chain's live tip holds the chain's state until its next
+  // iteration exists; the server refuses to delete it, so never offer it here.
   const clearCompletedFinishedAgents = clearCompletedScopeAgents.filter((a) =>
     a.taskId
     && !pendingDestructiveTaskIdSet.has(a.taskId)
     && (a.taskStatus === 'completed' || a.taskStatus === 'cancelled')
+    && !isLiveChainTip(a, agents)
   );
   const clearCompletedTerminatedAgents = clearCompletedScopeAgents.filter((a) =>
     a.taskId
     && !pendingDestructiveTaskIdSet.has(a.taskId)
     && a.taskStatus === 'terminated'
+    && !isLiveChainTip(a, agents)
   );
   const clearCompletedFinishedCount = clearCompletedFinishedAgents.length;
   const clearCompletedTerminatedCount = clearCompletedTerminatedAgents.length;

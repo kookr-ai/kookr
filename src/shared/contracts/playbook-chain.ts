@@ -96,3 +96,31 @@ export const CHAIN_MAX_ITERATIONS_LIMIT = 200;
 export const CHAIN_MAX_DURATION_MINUTES = 7 * 24 * 60;
 /** Iteration ceiling for a chain bounded only by time, so it cannot run forever. */
 export const CHAIN_TIME_ONLY_SAFETY_CAP = 50;
+
+/**
+ * True for the task that currently carries a chain's live state: not ended,
+ * not yet followed by a successor, and (when the other tasks are given) the
+ * newest iteration of its chain. Deleting it would silently lose the chain,
+ * so every deletion path refuses or skips it. Shared by server and dashboard.
+ */
+export function isLiveChainTip(
+  task: { chain?: TaskChainState },
+  allTasks?: Iterable<{ chain?: TaskChainState }>,
+): boolean {
+  const chain = task.chain;
+  if (!chain || chain.ended || chain.successorTaskId) return false;
+  if (allTasks) {
+    for (const other of allTasks) {
+      if (other.chain?.chainId === chain.chainId && other.chain.iteration > chain.iteration) return false;
+    }
+  }
+  return true;
+}
+
+/** Operator-facing reason a live chain tip cannot be deleted. */
+export const LIVE_CHAIN_TIP_DELETE_ERROR =
+  'This task is the current iteration of a running playbook chain, and deleting it would lose the chain. '
+  + 'If it has finished, press "Stop chain" on its row (or run `kookr chain stop <taskId>`) and delete it once '
+  + 'its badge shows the chain as ended, within about 15 seconds. If it is still running, cancel it first: '
+  + 'that ends the chain at once.';
+
