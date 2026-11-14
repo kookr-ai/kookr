@@ -165,7 +165,11 @@ inspectable via `kookr pr-checklist verify --explain`.
   with **no** `--body`); an inline `--body` silently drops the whole checklist and
   the `attest` rules below then pass *vacuously* — there is nothing to verify. A
   template id absent from the body ⇒ fail, naming the missing ids and pointing at
-  `gh pr create --body-file`. No-op when the repo ships no marked template, or when
+  `gh pr create --body-file`. A template id whose marker *is* in the body but on a
+  line that does not parse as a checklist row (e.g. struck from the leading dash,
+  `- ~~- [ ] <marker> text~~`) ⇒ fail, reported as a row present in an
+  unrecognised form that names the accepted `- [ ] ~~<marker> text~~ — reason`
+  waive form, not as an omission (#3735). No-op when the repo ships no marked template, or when
   no body was provided and none is required (`--fill` / no body flag instead fail via
   `evaluateTemplateRequiredButMissing`; see the status note). The `.github/PULL_REQUEST_TEMPLATE/`
   multi-template *directory* layout is skipped (which template applies is not
