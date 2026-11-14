@@ -144,6 +144,12 @@ export function mayAutonomousActuate(input: {
   if (!isAutonomousLaunchSource(input.source)) return 'not_autonomous';
   if (input.operatorInitiated) return 'allow';
   if (!input.globalEnabled && !input.safeModeExempt) return 'safe_mode';
+  // A playbook-chain successor continues a run the operator started explicitly
+  // in that project (RFC rfc-playbook-chains). The per-project pause targets
+  // unsolicited automation (schedules, refinery, watchdogs) and is a standing
+  // setting on most projects, so honouring it would stop every chain after its
+  // first iteration. Global SAFE MODE above still halts chains.
+  if (input.source === 'chain') return 'allow';
   if (input.projectId && input.pausedProjectIds.has(input.projectId)) {
     return 'project_paused';
   }

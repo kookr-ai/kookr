@@ -167,6 +167,13 @@ describe('mayAutonomousActuate', () => {
   const lucy = 'github.com/jeanibarz/lucy';
   const paused = new Set([lucy]);
 
+  it('lets a playbook-chain successor through a per-project pause, but not through SAFE MODE', () => {
+    expect(mayAutonomousActuate({ source: 'chain', projectId: lucy, globalEnabled: true, pausedProjectIds: paused })).toBe('allow');
+    expect(mayAutonomousActuate({ source: 'chain', projectId: lucy, globalEnabled: false, pausedProjectIds: paused })).toBe('safe_mode');
+    // Other autonomous sources still honour the project pause.
+    expect(mayAutonomousActuate({ source: 'schedule', projectId: lucy, globalEnabled: true, pausedProjectIds: paused })).toBe('project_paused');
+  });
+
   it('returns not_autonomous for operator sources', () => {
     expect(mayAutonomousActuate({
       source: 'api',
