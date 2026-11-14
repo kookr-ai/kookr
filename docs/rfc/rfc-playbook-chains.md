@@ -92,7 +92,7 @@ interface TaskChainState {
   startedAt: string;
   unhealthyStreak: number;  // consecutive unhealthy iterations before this one
   successorTaskId?: string; // set once the next iteration exists
-  closedByIdleBackstop?: true; // the idle backstop had to close this iteration
+  idleClosedAfterActiveMs?: number; // idle backstop closed it; how long the agent was active
   stopRequest?: { at: string; by: 'operator' | 'agent'; reason?: string };
   ended?: { at: string; reason: ChainEndReason; detail?: string };
 }
@@ -157,10 +157,13 @@ matter which of the many completion paths ran. An iteration gets there by:
    holds continuously for **5 minutes** (tracked in memory; the anomaly itself
    has no delay), the service surfaces any dirty worktree, re-checks idleness
    after that await, and completes the task (log reason `chain_idle_complete`,
-   completion path `recovery`). It marks the iteration `closedByIdleBackstop`,
-   which counts as **unhealthy**: an agent that stalls immediately every
-   iteration (for example on a question asked in prose) ends the chain with
-   `runaway` after three tries instead of burning the whole budget. A live
+   completion path `recovery`). It records how long the agent was active
+   before going idle (`idleClosedAfterActiveMs`). A normal-length run closed
+   this way counts as **healthy** — the consensus attack showed this is the
+   common way iterations will end, not a rare fallback (see below). Only an
+   agent that stalled within 2 minutes (for example on a question asked in
+   prose) counts as unhealthy, so a chain that stalls every time still ends
+   with `runaway` after three tries instead of burning its budget. A live
    `AskUserQuestion` is never auto-completed.
    Chain tasks are launched `unattended: true`, so interactive tools fail fast
    instead of parking the night on a question nobody will answer.
@@ -181,7 +184,7 @@ Policy is split in two pure functions in `src/core/playbook-chain.ts`:
 | cancelled or terminated, receipt `source: 'user'` | `operator_stopped` |
 | terminal, never had a session (launch failed after the task was created) | `finished`, unhealthy, never started |
 | cancelled or terminated, any other source (watchdog, recovery, supervisor, pending-TTL…) | `finished`, unhealthy |
-| completed by the idle backstop | `finished`, unhealthy |
+| completed by the idle backstop | `finished`; unhealthy only if the agent was active < 2 min |
 | completed, ran < 2 min (measured from its first session, not from queueing) | `finished`, unhealthy |
 | completed otherwise | `finished`, healthy |
 
@@ -500,7 +503,7 @@ Incorporated:
 - *failure-mode #1* — `needs_input` suppression expires (45-min park grace,
   30-min subagent TTL); the backstop now checks the raw Stop counts, the untimed
   subagent count, provider pause, and re-checks after its await.
-- *failure-mode #2 / state-machine #3* — idle-closed iterations are unhealthy.
+- *failure-mode #2 / state-machine #3* — idle-closed iterations were made unhealthy; the consensus attack later narrowed this to immediate stalls (under 2 minutes active).
 - *failure-mode #3* — chain tasks are flushed to disk before the agent starts.
 - *failure-mode #4* — chains are held when startup recovery failed.
 - *failure-mode #6* — stillborn tips end as `launch_failed` and are not
@@ -525,6 +528,28 @@ Rejected:
 - *failure-mode #5* — documented as an edge case rather than adding a
   permission-block timeout.
 - *state-machine #4* (reopened terminated tips) — operator action; documented.
+
+**Consensus attack** — `general-purpose 2026-11-14: consensus-attack — finding`.
+The evidence pack read `completionPath: api_complete` as "the agent closed its
+own task (45/56)". The attack checked the receipts: those tasks carry
+`source: user`, closed in sub-second batches every 30–60 minutes with the next
+batch launched seconds later. Something outside the agents (the operator or an
+orchestrating session) was closing them, and in surviving transcripts 2 of 8
+leads never signalled at all. So the idle backstop is the *expected* end of
+many iterations, and counting every backstop close as unhealthy (round 2)
+would have ended healthy overnight chains with `runaway` after three
+forgetful-but-successful runs. Incorporated: a backstop close counts as
+unhealthy only when the agent was active for under 2 minutes. The evidence
+pack's telemetry note is corrected accordingly.
+
+**Acceptance test (live, hermetic instance on port 4917):** a 3-iteration chain
+of a trivial playbook whose even iterations deliberately stop without closing.
+Iteration 1 closed itself; the server was killed and restarted while iteration
+2 was parked; recovery reattached the session, the service started after
+recovery, and the idle backstop closed iteration 2 five minutes later;
+iteration 3 closed itself and the chain ended `iterations_reached`. Exactly 3
+tasks, linked by `parentTaskId`, never two running at once; each successor
+launched within about 15 seconds of its predecessor closing.
 
 Intent preservation check: the load-bearing motivation is "do not rely on the
 agent remembering". v1 still relied on it (completion); v2 removes that with

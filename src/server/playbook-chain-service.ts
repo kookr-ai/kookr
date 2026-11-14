@@ -354,7 +354,9 @@ export class PlaybookChainService {
     );
     const completed = await this.deps.completeIdleIteration(tip, () => this.isIdle(tip.id));
     if (!completed) return;
-    this.deps.taskStore.updateChain(tip.id, (chain) => ({ ...chain, closedByIdleBackstop: true }));
+    const startedMs = firstSessionAt(tip)?.getTime() ?? since;
+    const activeMs = Math.max(0, since - startedMs);
+    this.deps.taskStore.updateChain(tip.id, (chain) => ({ ...chain, idleClosedAfterActiveMs: activeMs }));
     this.deps.onChanged?.(tip.id);
   }
 

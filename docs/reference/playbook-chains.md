@@ -45,8 +45,9 @@ with `autoCloseOnSignal`, so a completion-ready signal closes the task at once.
 finished but forgot, or it is waiting for an answer nobody will give — the
 service closes it after it has been idle at its prompt for 5 minutes with
 nothing of its own still running (no background shells or crons, no
-outstanding subagents, provider not paused, no `AskUserQuestion` open). Such an
-iteration counts as unhealthy.
+outstanding subagents, provider not paused, no `AskUserQuestion` open). This is
+a normal way for an iteration to end; it only counts as unhealthy when the agent
+stalled within 2 minutes of starting.
 
 Chain tasks are also launched `unattended`, so interactive tools fail fast
 instead of waiting all night.
@@ -88,7 +89,7 @@ Each task in a chain shows a badge:
 | `safety_cap` | A time-only chain reached 50 iterations. |
 | `stopped` | The operator or the agent asked it to stop. |
 | `iteration_cancelled` | The operator cancelled or manually stopped the current iteration. |
-| `runaway` | Three unhealthy iterations in a row: each failed, was killed by a watchdog, ran under 2 minutes, or had to be closed by the idle backstop. |
+| `runaway` | Three unhealthy iterations in a row: each failed, was killed by a watchdog, ran under 2 minutes, or stalled within 2 minutes and had to be closed by the idle backstop. |
 | `launch_failed` | The next iteration could not be launched three times in a row (for example the playbook was deleted). |
 
 The reason and its detail are kept on the chain's last task. Server-log lines

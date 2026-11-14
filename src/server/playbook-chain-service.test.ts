@@ -339,10 +339,24 @@ describe('idle backstop', () => {
     h.advance(2_000);
     await h.service.sweep();
     expect(h.completeIdleIteration).toHaveBeenCalledTimes(1);
-    expect(h.taskStore.getTask(first.id)!.chain!.closedByIdleBackstop).toBe(true);
+    // The agent went idle right after starting (the harness session began at
+    // launch), so this immediate stall counts against the runaway breaker.
+    expect(h.taskStore.getTask(first.id)!.chain!.idleClosedAfterActiveMs).toBe(0);
     await h.service.sweep();
-    // Advances, but the idle-closed iteration counts against the runaway breaker.
     expect(h.service.findTip(first.id)!.chain).toMatchObject({ iteration: 2, unhealthyStreak: 1 });
+  });
+
+  it('counts an idle close after real work as healthy, so forgetful agents never end a chain', async () => {
+    const h = harness();
+    const first = await startResearchChain(h, { maxIterations: 3 });
+    h.advance(40 * 60_000); // 40 minutes of work, then the agent stops without closing.
+    h.setIdle(first, true);
+    await h.service.sweep();
+    h.advance(CHAIN_IDLE_COMPLETE_MS + 1_000);
+    await h.service.sweep();
+    expect(h.taskStore.getTask(first.id)!.chain!.idleClosedAfterActiveMs).toBe(40 * 60_000);
+    await h.service.sweep();
+    expect(h.service.findTip(first.id)!.chain).toMatchObject({ iteration: 2, unhealthyStreak: 0 });
   });
 
   it('never closes a lead parked on background work or waiting on subagents, however long it waits', async () => {
@@ -371,7 +385,7 @@ describe('idle backstop', () => {
     });
     await h.service.sweep();
     expect(h.taskStore.getTask(first.id)!.status).toBe('inProgress');
-    expect(h.taskStore.getTask(first.id)!.chain!.closedByIdleBackstop).toBeUndefined();
+    expect(h.taskStore.getTask(first.id)!.chain!.idleClosedAfterActiveMs).toBeUndefined();
   });
 
   it('restarts the hold when the agent becomes active again', async () => {

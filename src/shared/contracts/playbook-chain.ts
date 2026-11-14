@@ -74,9 +74,12 @@ export interface TaskChainState {
   successorTaskId?: string;
   /**
    * Set when the chain's idle backstop closed this iteration because its agent
-   * stopped without closing the task. Counts as an unhealthy iteration.
+   * stopped without closing the task: how long the agent was active (first
+   * session start → went idle). A normal-length run closed this way is
+   * healthy — agents often finish without signalling; only one that stalled
+   * almost at once counts against the runaway breaker.
    */
-  closedByIdleBackstop?: true;
+  idleClosedAfterActiveMs?: number;
   /** Set on the tip when someone asked the chain to stop after this iteration. */
   stopRequest?: ChainStopRequest;
   /** Set on the tip when the chain stopped launching. */

@@ -72,9 +72,14 @@ From `~/.kookr/tasks.json` (2026-11-13 20:54 → 2026-11-14 08:33), 56 tasks:
 
 All `deliveryAuthorization=pre-authorized`, `autoCloseOnSignal` unset, no
 `parentTaskId` (launched from the UI via websocket, in bursts of 4).
-Takeaways: (a) agents reliably end the task themselves; (b) a server restart is
-the main source of non-`completed` terminal states; (c) the merge gate never
-blocked these runs.
+Takeaways: (a) **corrected after the consensus attack:** `api_complete` means
+"`POST /complete` without a prior signal" from *any* caller, not "the agent
+closed itself". Those tasks carry receipt `source: user` and closed in
+sub-second batches every 30–60 minutes, so an external closer (operator or an
+orchestrating session) ended them; in surviving transcripts 2 of 8 leads never
+signalled. Do not assume agents reliably close their own tasks. (b) A server
+restart is the main source of non-`completed` terminal states. (c) The merge
+gate never blocked these runs.
 
 ## KB lessons (agent-task-lessons)
 

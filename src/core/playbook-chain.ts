@@ -126,8 +126,10 @@ export function classifyIteration(tip: ChainTipView): IterationOutcome {
     const reason = tip.terminalReceipt?.reason;
     return { kind: 'finished', healthy: false, why: `iteration ${tip.status}${reason ? ` (${reason})` : ''}` };
   }
-  if (tip.chain.closedByIdleBackstop) {
-    return { kind: 'finished', healthy: false, why: 'the agent stopped without closing its task' };
+  if (tip.chain.idleClosedAfterActiveMs !== undefined) {
+    return tip.chain.idleClosedAfterActiveMs < CHAIN_MIN_HEALTHY_ITERATION_MS
+      ? { kind: 'finished', healthy: false, why: 'the agent stalled within 2 minutes and never closed its task' }
+      : { kind: 'finished', healthy: true };
   }
   const startMs = toMs(tip.firstSessionAt) ?? toMs(tip.createdAt);
   const endMs = toMs(tip.finishedAt);

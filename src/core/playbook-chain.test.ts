@@ -100,8 +100,10 @@ describe('classifyIteration', () => {
 });
 
 describe('classifyIteration — idle-closed and never-started iterations', () => {
-  it('counts an iteration the idle backstop had to close as unhealthy', () => {
-    expect(classifyIteration(tip({ chain: chain({ closedByIdleBackstop: true }) })))
+  it('counts an idle-closed iteration as healthy after a normal-length run, unhealthy after an immediate stall', () => {
+    expect(classifyIteration(tip({ chain: chain({ idleClosedAfterActiveMs: 40 * 60_000 }) })))
+      .toEqual({ kind: 'finished', healthy: true });
+    expect(classifyIteration(tip({ chain: chain({ idleClosedAfterActiveMs: 30_000 }) })))
       .toMatchObject({ kind: 'finished', healthy: false });
   });
 
