@@ -271,25 +271,40 @@ async function isExecutable(p: string): Promise<boolean> {
  * clean" rule, a file changed within the last few seconds is hashed but never
  * cached; only a settled file is trusted by its stat identity.
  */
-const sha256ByFileIdentity = new Map<string, Promise<string>>();
-const SHA256_CACHE_MAX_ENTRIES = 32;
-const SHA256_CACHE_SETTLE_MS = 2_000;
-
-async function hashFileSha256(p: string): Promise<string> {
-  const s = await stat(p, { bigint: true });
-  const key = `${p}\0${s.dev}\0${s.ino}\0${s.size}\0${s.mtimeNs}\0${s.ctimeNs}`;
-  const cached = sha256ByFileIdentity.get(key);
-  if (cached) return cached;
-  const pending = hashFileSha256Uncached(p);
-  const settled = Date.now() - Number(s.ctimeMs) >= SHA256_CACHE_SETTLE_MS;
-  if (!settled) return pending;
-  if (sha256ByFileIdentity.size >= SHA256_CACHE_MAX_ENTRIES) sha256ByFileIdentity.clear();
-  sha256ByFileIdentity.set(key, pending);
-  pending.catch(() => sha256ByFileIdentity.delete(key));
-  return pending;
+export interface CachedFileHasherOptions {
+  /** Hashes the file's bytes (defaults to a streaming SHA-256). */
+  hashUncached?: (p: string) => Promise<string>;
+  /** Wall clock in ms (defaults to Date.now). */
+  now?: () => number;
+  /** A file whose ctime is younger than this is never cached. */
+  settleMs?: number;
+  maxEntries?: number;
 }
 
-function hashFileSha256Uncached(p: string): Promise<string> {
+/** Build a file hasher that reuses a result while the file's identity is unchanged. */
+export function createCachedFileHasher(opts: CachedFileHasherOptions = {}): (p: string) => Promise<string> {
+  const hashUncached = opts.hashUncached ?? hashFileSha256Uncached;
+  const now = opts.now ?? Date.now;
+  const settleMs = opts.settleMs ?? 2_000;
+  const maxEntries = opts.maxEntries ?? 32;
+  const byIdentity = new Map<string, Promise<string>>();
+  return async (p) => {
+    const s = await stat(p, { bigint: true });
+    const key = `${p}\0${s.dev}\0${s.ino}\0${s.size}\0${s.mtimeNs}\0${s.ctimeNs}`;
+    const cached = byIdentity.get(key);
+    if (cached) return cached;
+    const pending = hashUncached(p);
+    if (now() - Number(s.ctimeMs) < settleMs) return pending;
+    if (byIdentity.size >= maxEntries) byIdentity.clear();
+    byIdentity.set(key, pending);
+    pending.catch(() => byIdentity.delete(key));
+    return pending;
+  };
+}
+
+const hashFileSha256 = createCachedFileHasher();
+
+export function hashFileSha256Uncached(p: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const hash = createHash('sha256');
     const stream = createReadStream(p);
