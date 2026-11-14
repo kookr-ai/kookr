@@ -12,7 +12,7 @@ description: >
   choosing models for a multi-agent run, when splitting several issues across parallel implementers and
   test writers, or when a spend cap is in play.
 keywords: subagent fleet, swarm, fan-out, orchestrator, orchestrator-worker, lead agent, haiku workers, model tier, cost per task, spend cap, budget, cheap model, small model, multi-agent vs single agent, task shape, breadth vs depth, majority vote, correlated errors, verification, brief template, context isolation, prompt caching, coding fleet, batch PR, multi-issue PR, parallel implementers, test writer, test-first, spec-first, plan handoff, difficulty routing, diff-only review
-related: parallel-subagent-experiments, adversarial-swarm-analysis, token-efficiency, automation-design, tdd-workflow, independent-merge-review, cheap-worker-adaptation
+related: parallel-subagent-experiments, adversarial-swarm-analysis, token-efficiency, automation-design, tdd-workflow, independent-merge-review, agent-memory-and-learning
 ---
 
 # Agent fleet orchestration
@@ -71,6 +71,9 @@ tokens each) pushing a $10 cap to $14-18 before the deliverable existed. Cap the
 
 Choosing the lead: for broad tasks, a Sonnet lead costs about half as much as an Opus lead and is enough
 when the synthesis is straightforward. Use an Opus lead when the synthesis or the build step is hard.
+
+To make a cheaper model do work a stronger one does today (harness tuning first, then fine-tuning), see
+[cheap-worker adaptation](../agent-memory-and-learning/references/cheap-worker-adaptation.md).
 
 ## Step 3: write every brief in one pass
 
