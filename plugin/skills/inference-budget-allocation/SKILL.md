@@ -24,8 +24,8 @@ numbers as direction, not as promises.
 ## Rules
 
 1. **Ask first: is there a cheap check?** Tests, a parser, an executed program, a schema. If yes, sample
-   4-8 candidates and select with the check. On SWE-bench Verified, 8 candidates with an execution-grounded
-   selector took a small model from 67.0% to 76.4% (oracle best-of-8: 79.0%); the paper's rule: reliable
+   4-8 candidates, run every one through the check, and keep one that passes. On SWE-bench Verified, 8 candidates with an execution-grounded
+   selector took a small model from 67.0% to 76.4% (oracle best-of-8, a selector that always picks a correct candidate when one exists: 79.0%); the paper's rule: reliable
    amplification "requires a local soundness signal such as execution or tests" (2605.14163). Test-based
    selection over a 4-agent ensemble reached 84.2% vs 79.2% for one agent, and the LLM-judge baseline did not
    beat the single agent (2610.10242).
@@ -47,13 +47,13 @@ numbers as direction, not as promises.
 6. **Do not retry blindly.** Retry gain ran from about 20 points (web search) to about 3 points
    (delegation) on local models with retries capped at 5 (2603.20380). Extra orchestration cut GAIA Level 1
    accuracy from 54.72% to 50.94% while raising cost (2605.14102). 10.7% of passing SWE-agent runs were
-   "lucky passes" costing up to 40x more tokens (2605.12925). Retry on categories where you have seen gain,
+   "lucky passes" (passes reached by wasteful trial and error) costing up to 40x more tokens (2605.12925). Retry on categories where you have seen gain,
    and cap attempts.
 7. **Price wall-clock, not only tokens.** An ensemble matched one Opus call's 84.5% on AIME at about 6x the
-   wall-clock (133 s vs 22 s) (2605.04236). Selection across 4+ agents cost 670K-1670K tokens per instance
+   wall-clock (133 s vs 22 s, 120B-parameter ensemble) (2605.04236). Selection across 4+ agents cost 670K-1670K tokens per instance
    and accuracy slipped beyond 4 agents (2610.10242).
 8. **Reserve headroom for the deliverable.** Operator observation (one or two runs, not measured): four
-   deep subagents took a $10 cap to about $18 and the final publish step was withheld. Cap fan-out at
+   deep subagents took a $10 cap to about $18 and the final publish step was withheld. Keep a reserve (cost of the final step plus a margin) and cap fan-out at
    (budget - reserve) / per-agent estimate.
 
 ## Anti-patterns
