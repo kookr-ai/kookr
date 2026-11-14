@@ -12,12 +12,12 @@ pruning, summaries): the `token-efficiency` skill.
 
 ## Rules
 
-1. **Do not fill the window by default.** In every head-to-head the KB holds, a small, selected context
-   matched or beat the full one at a fraction of the tokens. RAG with under 8K tokens beat 120K of long
-   context by 0.17 to 9.83 F1 points on clinical records, and long-context gains stopped between 64K and
+1. **Do not fill the window by default.** In the head-to-heads we found, a small, selected context matched
+   or beat the full one at a fraction of the tokens. RAG with under 8K tokens beat 120K of long context by
+   0.17 to 9.83 F1 points on clinical imaging extraction (it only matched on timelines), and long-context gains stopped between 64K and
    120K (2508.14817). Full context cost $10.22 against $0.65 for RAG at 77.16% vs 78.31% accuracy on
    LoCoMo (2601.07978). RL-trained context curation beat full context on WebArena, 41.2% vs 36.4%
-   (2604.11462).
+   (2604.11462; curation, not retrieval).
 2. **Choose by the question's shape:**
    - **Point lookup or extraction** (the answer sits in a few places): retrieve or navigate.
    - **Breadth or aggregation** (count, compare, collect everything): fan the reading out to cheap
@@ -29,17 +29,19 @@ pruning, summaries): the `token-efficiency` skill.
      prefix is reused across turns so it caches. Long context can be enough for small repositories
      (2510.04905, survey, no numbers). No paper gives the size at which loading stops paying.
 3. **Split the reading, not the thinking.** Readers return claim, quote and location, never conclusions.
-   Spreading deliberation across a hierarchy was up to 3.37x worse and used 1.8 to 2.7x more tokens
-   (2605.16205). Expanded orchestration cut GAIA Level-1 accuracy from 54.72% to 50.94% (2605.14102). A
+   Spreading deliberation across a hierarchy gave up to 3.37x worse mean return (one model) and used 1.8
+   to 2.7x more tokens (2605.16205). Expanded orchestration cut GAIA Level-1 accuracy from 54.72% to 50.94%
+   (2605.14102; 53 tasks, a 2-task gap). A
    persistent search sub-agent did pay off: navigation output fell from 13.92K to 6.02K tokens, and pass
    rate rose from 69.8% to 71.6% (2605.27787). Readers pay off when they are cheap-tier and return
    compact, quoted evidence. Size the fan-out with `agent-fleet-orchestration`.
 4. **Measure retrieval recall before you trust it.** Retrieval missed 32% of gold medications at 20 chunks
    (2508.14817), and top-5 table retrieval cut QA F1 from 0.755 (oracle) to 0.330 (2607.17742). Check a
    few questions with known answers against an oracle context. If recall is low, rewrite the query or
-   load the source. Do not raise k: ten passages cost about 8.5% accuracy against five (2606.29959).
+   load the source. Raising k can hurt: ten passages cost about 8.5% accuracy against five with a small
+   model (2606.29959; see [agentic retrieval](agentic-retrieval.md) rule 4).
 5. **When a long-context answer is wrong, check whether the evidence was already in the window.** It
-   usually was. Relevant evidence was retrievable about 10 times more often than missing when systems
+   usually was in MemTrace: relevant evidence was retrievable about 10 times more often than missing when systems
    failed, and gold-evidence-only context lifted hard probes from 0-33.8% to 80-85% (2606.17328). Models
    "reason well on short proxy contexts" of essential evidence but poorly on the full context
    (2605.20201). The fix is to shrink the context to that evidence and ask again. More retrieval will not
@@ -47,8 +49,9 @@ pruning, summaries): the `token-efficiency` skill.
 6. **Expect length to erode attention and obedience, and put what matters first.** A frontier monitor's
    recall fell from 98.6% to 88% with 800K benign tokens prepended (Opus 4.6, 2605.12366). With the gold
    passage first rather than last, accuracy was 16-26 points higher, and reranking or reordering did not
-   close the gap (2606.16494, 7-8B readers). Multi-target aggregation over long histories scored 26.5%
-   against 47.5% for single-target recall (2605.18565).
+   close the gap (2606.16494, multimodal KB-VQA, 7-8B readers). Over long, updated histories, multi-target
+   aggregation scored 26.5% against 47.5% for simple single-target recall (2605.18565). That gap is
+   question type, not length alone.
 
 ## Anti-patterns
 
@@ -64,8 +67,8 @@ pruning, summaries): the `token-efficiency` skill.
 
 - The cleanest long-context-vs-RAG comparison is one hospital, 200 stays and a non-agentic RAG, and every
   method was flat on diagnosis generation (2508.14817).
-- LongCoT attributes its frontier collapse (9.83% for GPT 5.2) to reasoning, not context length
-  (2604.14140).
+- LongCoT reads its frontier collapse (9.83% for GPT 5.2) as a failure of long-horizon planning and
+  error correction more than of context length (2604.14140).
 - The evidence-card result beats dense RAG. The note reports no full-context accuracy, so it is not shown
   to beat a full read (2606.28349).
 
