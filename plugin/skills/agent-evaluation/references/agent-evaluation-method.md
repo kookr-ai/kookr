@@ -4,7 +4,7 @@ Use when: choosing between two agent configurations (model, harness, prompt, ski
 benchmark numbers, before publishing or acting on a benchmark claim, or when a result looks too good.
 
 Run the four checks before acting on a gap; skip one only when being wrong is cheap and easy to undo. No
-study gives a proven run count: the figures are starting points from specific studies, so say so when you
+study reviewed gives a proven run count: the figures are starting points from specific studies, so say so when you
 report. Keep gate inside a loop: [autonomous experiment loops](autonomous-experiment-loops.md).
 
 ## Check 1: the instrument works and is the same for both arms
@@ -85,5 +85,5 @@ report. Keep gate inside a loop: [autonomous experiment loops](autonomous-experi
 - No recommended k for Pass^k; no minimum detectable difference or tasks-versus-repeats rule for agents.
 - No measured effect of timeouts, turn limits or tool-version pinning.
 - No leaderboard re-scored after removing flagged tasks; no agent-benchmark case where only the grader changed.
-- No study shows a few in-house tasks predict real usefulness better than a public benchmark.
+- No study reviewed shows a few in-house tasks predict real usefulness better than a public benchmark.
 - Several operator figures come from single incidents with n of 15 or fewer.

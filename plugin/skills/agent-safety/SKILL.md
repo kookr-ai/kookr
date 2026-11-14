@@ -1,6 +1,8 @@
 ---
 name: agent-safety
 group: agent-automation
+keywords: prompt injection, untrusted content, sandbox, permissions, secrets, pre-tool hook, monitor, test tampering, dry run, destructive action
+related: claude-code-permissions, hook-driven-workflow-enforcement, shell-subprocess-safety, git-commit-discipline, asking-the-operator
 description: >
   Agent safety for tool-using and coding agents: prompt injection through issues, web pages, tool/MCP
   output, memory and third-party skills; containing unsafe actions with no attacker (sandboxes, secret

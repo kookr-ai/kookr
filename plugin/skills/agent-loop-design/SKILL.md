@@ -1,6 +1,8 @@
 ---
 name: agent-loop-design
 group: design-analysis
+keywords: agent loop, tool design, MCP, best-of-N, reasoning effort, prompt cache, inference cost, planning, replan, failure recovery, latent reasoning, probes, steering
+related: token-efficiency, agent-fleet-orchestration, automation-design, autonomous-watch-loop, error-handling-patterns, agent-safety
 description: >
   Evidence-based rules for designing an agent's loop: tool surface (tool count, descriptions, output
   bounds, error wording), spending extra inference (best-of-N, voting, thinking effort, retries),

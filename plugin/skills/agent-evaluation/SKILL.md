@@ -1,6 +1,8 @@
 ---
 name: agent-evaluation
 group: design-analysis
+keywords: agent evaluation, benchmark, LLM judge, verifier, merge gate, patch acceptance, keep gate, noise floor, self-evolution, prompt optimization
+related: independent-merge-review, autonomous-review-loop, pre-pr-review, agent-fleet-orchestration, agent-memory-and-learning
 description: Agent evaluation and acceptance gates. Decides whether a benchmark score gap between agent setups is real, which verifier or LLM judge should gate an agent's output, whether a coding agent's passing patch is mergeable, and how to keep mutate-and-score loops honest (keep gate, noise floor, held-out split), including harness self-evolution and prompt or skill optimization on a small eval budget. Use when comparing agent configs, designing a merge or acceptance gate, accepting agent patches, or running or trusting a self-improvement loop.
 ---
 # Agent evaluation

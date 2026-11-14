@@ -106,7 +106,8 @@ truncation has no way back; 4 (summarizing) is the lossy one.
 3. **Evict finished steps' content in batches**, not every turn (that rewrites the cached prefix each
    turn). TokenPilot's every-3-turns is that paper's setting, not an optimum.
 4. **Summarize only with a summarizer tested against full history.** SUMONE (2611.06445), a trained 2B
-   summarizer, resolved 0.59 vs 0.63 (full history) on SWE-bench Verified at about 78% lower total cost.
+   summarizer, scored 0.48 F1 vs 0.52 (full history) on DeepSearchQA at about 78% lower total cost, and
+   resolved 0.59 vs 0.63 on SWE-bench Verified.
    Write only vetted content into summaries: one built from toxic rollouts passed a toxicity check (mean
    0.0852) yet carried measurable influence (2605.16746); a stale summary kept reproducing a corrected
    fact in 69.8-94.3% of answers until repaired (2605.07242).

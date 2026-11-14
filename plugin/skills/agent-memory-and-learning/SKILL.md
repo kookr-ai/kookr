@@ -1,6 +1,8 @@
 ---
 name: agent-memory-and-learning
 group: design-analysis
+keywords: agent memory, lessons, notebook, continual learning, regression gate, RAG, retrieval, skill library, fine-tuning, distillation, cheap model
+related: notebook-role-reuse, placement-picker, self-reflect, task-feedback-reflect, agent-fleet-orchestration, agent-evaluation
 description: >
   Agent memory and learning: what to write to memory, consolidate or forget; post-task lessons and lesson-store
   curation; gating learned memory, skill or weight changes against regressions on earlier tasks; agentic

@@ -537,7 +537,9 @@ study each; treat them as leads.
    Claude Code sessions on two repos (2605.10039); there is no evidence-based
    line limit.
 3. **In the studies surveyed, compliance often eroded during the session; hook
-   the hard rules.** Prohibitions decayed from 73% at turn 5 to 33% at turn 16
+   the hard rules.** Compliance fell about 5.6% per generated function, and
+   edits to existing code trailed brand-new code by 26.2 pp (2605.10039).
+   Prohibitions decayed from 73% at turn 5 to 33% at turn 16
    while requirements held at 100% (one model; another did not decay)
    (2604.20911). An audit that only checked a required output prefix (a
    `STATUS:` line) stayed healthy while prohibitions failed: audit the
