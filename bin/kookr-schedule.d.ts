@@ -51,6 +51,14 @@ export interface ScheduleLike {
   remainingTriggers?: number;
   /** Auto-pause provenance (issue #2353) — cascade holds carry this value. */
   stopReason?: string;
+  /** Consecutive failed fires behind a `consecutive_failures` auto-pause (issue #2353). */
+  consecutiveFailures?: number;
+  /** Schedule is held off (issue #2520); see {@link holdSource}. */
+  operatorHold?: boolean;
+  /** Who set the hold (issue #2520): absent on legacy holds, read as `operator`. */
+  holdSource?: 'operator' | 'daemon';
+  /** ISO timestamp when the current hold was set (issue #2520). */
+  heldAt?: string;
   /** Retired-but-retained tombstone (issue #2981). */
   archived?: boolean;
   /** ISO timestamp when archived (issue #2981). */

@@ -131,6 +131,77 @@ describe('kookr schedule resolveId / formatScheduleLine', () => {
   it('renders a disabled schedule with no next run', () => {
     expect(formatScheduleLine(SCHEDULE_B)).toBe('sched-b  disabled  Hourly smoke  cron="0 * * * *"  next=-');
   });
+
+  // Issue #3482: a disabled/archived line says WHY it is not running.
+  describe('inactive reason suffix (issue #3482)', () => {
+    const base = 'sched-b  disabled  Hourly smoke  cron="0 * * * *"  next=-';
+
+    it('labels a fail-closed auto-pause with its failure streak and hold date', () => {
+      expect(
+        formatScheduleLine({
+          ...SCHEDULE_B,
+          stopReason: 'consecutive_failures',
+          consecutiveFailures: 4,
+          operatorHold: true,
+          holdSource: 'daemon',
+          heldAt: '2026-11-12T08:25:00.000Z',
+        }),
+      ).toBe(`${base}  reason=auto-paused(consecutive_failures×4, since 2026-11-12)`);
+    });
+
+    it('labels an auto-pause without count or date metadata', () => {
+      expect(formatScheduleLine({ ...SCHEDULE_B, stopReason: 'consecutive_failures' })).toBe(
+        `${base}  reason=auto-paused(consecutive_failures)`,
+      );
+    });
+
+    it('labels a spent trigger budget', () => {
+      expect(formatScheduleLine({ ...SCHEDULE_B, stopReason: 'trigger_limit_reached' })).toBe(
+        `${base}  reason=trigger_limit_reached`,
+      );
+    });
+
+    it('labels a deliberate operator hold', () => {
+      expect(
+        formatScheduleLine({ ...SCHEDULE_B, operatorHold: true, holdSource: 'operator', heldAt: '2026-11-01T00:00:00.000Z' }),
+      ).toBe(`${base}  reason=operator-hold(since 2026-11-01)`);
+    });
+
+    it('treats a legacy hold with no holdSource as operator-set', () => {
+      expect(formatScheduleLine({ ...SCHEDULE_B, operatorHold: true })).toBe(`${base}  reason=operator-hold`);
+    });
+
+    it('labels a daemon hold that carries no stopReason', () => {
+      expect(
+        formatScheduleLine({ ...SCHEDULE_B, operatorHold: true, holdSource: 'daemon', heldAt: '2026-11-02T10:00:00.000Z' }),
+      ).toBe(`${base}  reason=daemon-hold(since 2026-11-02)`);
+    });
+
+    it('labels an archived row with its reason and date', () => {
+      expect(
+        formatScheduleLine({
+          ...SCHEDULE_B,
+          archived: true,
+          archivedReason: '  superseded by nightly sweep ',
+          archivedAt: '2026-10-30T12:00:00.000Z',
+        }),
+      ).toBe(
+        'sched-b  archived  Hourly smoke  cron="0 * * * *"  next=-  reason=archived(superseded by nightly sweep; at 2026-10-30)',
+      );
+    });
+
+    it('adds no suffix to an archived row with no reason metadata', () => {
+      expect(formatScheduleLine({ ...SCHEDULE_B, archived: true })).toBe(
+        'sched-b  archived  Hourly smoke  cron="0 * * * *"  next=-',
+      );
+    });
+
+    it('never adds a suffix to an enabled row, even with stale stop metadata', () => {
+      expect(
+        formatScheduleLine({ ...SCHEDULE_A, stopReason: 'consecutive_failures', operatorHold: true, heldAt: '2026-11-01T00:00:00.000Z' }),
+      ).toBe('sched-a  enabled   Nightly drain  cron="0 3 * * *"  next=2026-07-29T03:00:00.000Z  triggers=4/10');
+    });
+  });
 });
 
 describe('kookr schedule main — argument validation', () => {
