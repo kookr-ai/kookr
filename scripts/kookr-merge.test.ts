@@ -50,7 +50,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 const SCRIPT = join(process.cwd(), 'scripts/kookr-merge.sh');
@@ -68,6 +68,8 @@ function makeStubDir(opts: {
   reviewJson?: object;
   modernGh?: boolean;
   headOwner?: string;
+  // headRefName served by the stub (default `paired/change`).
+  headRef?: string;
   mergeResponse?: string;
   // CLI post-merge `gh pr view --json state,mergedAt` body (issue #3403).
   // Separate from mergeResponse: the REST merge endpoint uses `.merged`, the
@@ -172,7 +174,7 @@ case "$args" in
   *"--json comments,labels,commits"*)
     cat "$DIR/review.json"; exit 0 ;;
   *"--json headRefName,headRepository,headRepositoryOwner"*)
-    echo '{"headRefName":"paired/change","headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"${opts.headOwner ?? 'owner'}"}}'; exit 0 ;;
+    echo '{"headRefName":"${opts.headRef ?? 'paired/change'}","headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"${opts.headOwner ?? 'owner'}"}}'; exit 0 ;;
   "repo view "*)
     echo 'owner/repo'; exit 0 ;;
   "api --method PUT "*)
@@ -1208,8 +1210,28 @@ describe.each([true, false])('API head-branch deletion (#3641, modern gh: %s)', 
       expect(result.status).toBe(0);
       expect(result.merged).toBe(true);
       expect(result.stderr).toContain('head branch paired/change was not deleted');
-      expect(result.stderr).toContain('gh api --method DELETE repos/owner/repo/git/refs/heads/paired/change');
+      expect(result.stderr).toContain("gh api --method DELETE 'repos/owner/repo/git/refs/heads/paired/change'");
       expect(result.stderr).toContain('HTTP 403');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('percent-encodes the branch name so a `#` or `?` cannot cut the path and delete another branch', () => {
+    // Unencoded, `gh api` would treat `#42` as a URL fragment and DELETE
+    // refs/heads/release/hot — a different branch.
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      reviewJson: REVIEW_VIEW,
+      modernGh,
+      headRef: 'release/hot#42?x%y',
+    });
+    try {
+      const result = runMerge(dir, { KOOKR_MERGE_REQUIRE_REVIEW: '1' }, ['123', '--repo', 'owner/repo']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.calls.filter((call) => call.startsWith('api --method DELETE'))).toEqual([
+        'api --method DELETE repos/owner/repo/git/refs/heads/release/hot%2342%3Fx%25y',
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1358,6 +1380,47 @@ describe('kookr merge dispatches the wrapper from any cwd (#3641)', () => {
       rmSync(elsewhere, { recursive: true, force: true });
     }
   });
+
+  it('stops the wrapper when only the kookr process is sent SIGTERM, so it cannot merge later', async () => {
+    // BLOCKED with zero checks keeps the wrapper polling until its timeout.
+    // SIGTERM goes to the node process alone (not its process group): the
+    // wrapper must die with it rather than live on and merge.
+    const stub = makeStubDir({ checksResponses: [BLOCKED], reviewJson: REVIEW_VIEW, modernGh: true });
+    const elsewhere = mkdtempSync(join(tmpdir(), 'kookr-merge-elsewhere-'));
+    const callsFile = join(stub, 'calls.log');
+    const countPolls = () =>
+      existsSync(callsFile)
+        ? readFileSync(callsFile, 'utf8').split('\n').filter((call) => call.includes('pr view 123')).length
+        : 0;
+    const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+    try {
+      const child = spawn(process.execPath, [KOOKR_BIN, 'merge', '123', '--repo', 'owner/repo'], {
+        cwd: elsewhere,
+        stdio: 'ignore',
+        env: {
+          ...process.env,
+          PATH: `${stub}:${process.env.PATH ?? ''}`,
+          KOOKR_MERGE_REQUIRE_REVIEW: '1',
+          KOOKR_MERGE_CHECK_INTERVAL_SECONDS: '1',
+          KOOKR_MERGE_CHECK_TIMEOUT_SECONDS: '60',
+        },
+      });
+      const exited = new Promise<number | null>((done) => child.on('exit', (code) => done(code)));
+      const deadline = Date.now() + 20_000;
+      while (countPolls() < 3 && Date.now() < deadline) await sleep(100);
+      expect(countPolls()).toBeGreaterThanOrEqual(3);
+      child.kill('SIGTERM');
+      // The wrapper died of the forwarded SIGTERM: 128 + 15.
+      expect(await exited).toBe(143);
+      const pollsAtExit = countPolls();
+      await sleep(2500);
+      expect(countPolls()).toBe(pollsAtExit);
+      expect(existsSync(join(stub, 'merged.marker'))).toBe(false);
+    } finally {
+      rmSync(stub, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  }, 40_000);
 
   it('passes usage errors and --help through', () => {
     const stub = makeStubDir({ checksResponses: [CLEAN] });

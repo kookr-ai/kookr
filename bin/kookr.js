@@ -4,7 +4,8 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { constants as osConstants } from 'node:os';
 import { importMaybeTs } from './import-maybe-ts.js';
 
 const HELP_TEXT = `kookr - local AI agent supervisor.
@@ -173,7 +174,7 @@ async function main({
   // classification, and API branch deletion; the caller's cwd is kept, so
   // without --repo the PR is resolved from the current git remote.
   if (command === 'merge') {
-    return exit(runMergeCommand(rest, { env, err }));
+    return exit(await runMergeCommand(rest, { env, err }));
   }
 
   if (command === 'status') {
@@ -381,12 +382,32 @@ function runMergeCommand(argv, { env = process.env, err = console } = {}) {
     err.error('[kookr] `kookr merge` needs a Kookr source checkout; run it from that checkout\'s bin/kookr.');
     return 1;
   }
-  const result = spawnSync('bash', [script, ...argv], { stdio: 'inherit', env });
-  if (result.error) {
-    err.error(`[kookr] could not run the merge wrapper: ${result.error.message}`);
-    return 1;
-  }
-  return result.status ?? 1;
+  // Async spawn with signal forwarding, not spawnSync: a SIGTERM aimed at this
+  // node process alone must also stop the wrapper, or an orphaned wrapper could
+  // still merge after the caller believed it was cancelled.
+  return new Promise((resolve) => {
+    const child = spawn('bash', [script, ...argv], { stdio: 'inherit', env });
+    const forwarded = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+    const forward = (signal) => {
+      try { child.kill(signal); } catch { /* child already gone */ }
+    };
+    let settled = false;
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      for (const signal of forwarded) process.off(signal, forward);
+      resolve(code);
+    };
+    for (const signal of forwarded) process.on(signal, forward);
+    child.on('error', (error) => {
+      err.error(`[kookr] could not run the merge wrapper: ${error.message}`);
+      finish(1);
+    });
+    // A wrapper killed by a signal exits 128+n, as a shell would report it.
+    child.on('exit', (code, signal) => {
+      finish(code ?? (signal ? 128 + (osConstants.signals[signal] ?? 0) : 1));
+    });
+  });
 }
 
 async function startServer({ err = console, exit = process.exit } = {}) {

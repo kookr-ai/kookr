@@ -566,14 +566,24 @@ delete_head_branch() {
     echo "kookr-merge: could not resolve the head branch; it was left in place (delete it manually if wanted)" >&2
     return 0
   fi
-  local out=""
-  if out="$(gh api --method DELETE "repos/$HEAD_SLUG/git/refs/heads/$HEAD_REF" 2>&1)"; then
+  # Percent-encode each path segment of the ref (keeping its `/` separators):
+  # git allows `#`, `?` and `%` in branch names, and unencoded they would cut or
+  # reinterpret the URL, so `release#42` would DELETE the `release` branch.
+  # (`gh pr merge --delete-branch` escaped the ref the same way.) If encoding
+  # fails, leave the branch rather than send a raw, possibly wrong, path.
+  local ref_path="" out=""
+  if ! ref_path="$(jq -rn --arg r "$HEAD_REF" '$r | split("/") | map(@uri) | join("/")' 2>/dev/null)" \
+      || [[ -z "$ref_path" ]]; then
+    echo "kookr-merge: could not encode head branch $HEAD_REF for the API; it was left in place (delete it manually if wanted)" >&2
+    return 0
+  fi
+  if out="$(gh api --method DELETE "repos/$HEAD_SLUG/git/refs/heads/$ref_path" 2>&1)"; then
     echo "kookr-merge: deleted head branch $HEAD_REF"
   elif [[ "$(printf '%s' "$out" | tr '[:upper:]' '[:lower:]')" == *"reference does not exist"* ]]; then
     # The repository's "automatically delete head branches" setting got there first.
     echo "kookr-merge: head branch $HEAD_REF was already deleted"
   else
-    echo "kookr-merge: head branch $HEAD_REF was not deleted (delete it manually: gh api --method DELETE repos/$HEAD_SLUG/git/refs/heads/$HEAD_REF): ${out%%$'\n'*}" >&2
+    echo "kookr-merge: head branch $HEAD_REF was not deleted (delete it manually: gh api --method DELETE 'repos/$HEAD_SLUG/git/refs/heads/$ref_path'): ${out%%$'\n'*}" >&2
   fi
   return 0
 }
