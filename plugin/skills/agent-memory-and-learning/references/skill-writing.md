@@ -27,7 +27,10 @@ know and needs in order to act.
 5. **No dated facts.** Point to the skill that owns them (prices: `claude-api`) or state them relatively.
 6. **Progressive disclosure.** SKILL.md under 500 lines and under ~5,000 tokens (Anthropic's own exemplar
    skills run 500-1,500 words); detail goes in reference files one level deep, each linked with a
-   when-to-read trigger ("read X if ..."), not "see references/".
+   when-to-read trigger ("read X if ..."), not "see references/". To keep rarely needed material out
+   of the skill listing, make it a reference file of a listed skill, not a separate skill. Do not hide a
+   skill that other skills or playbooks call with `disable-model-invocation: true`: the Skill tool then
+   refuses the call, so reserve that field for workflows a human starts with `/name`.
 7. **Cite other rules by title, not number**, so renumbering cannot break the link.
 8. **Prefer a template or a worked example to a prose description of a format.**
 9. **Shape of a reference file:** `# Title`, a `Use when:` line, numbered rules, an optional short "Do not"
