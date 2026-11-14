@@ -4,6 +4,7 @@ import {
   evaluateStructural,
   evaluateTemplatePresence,
   findMissingEnv,
+  findUnparsedMarkerIds,
   findUntested,
   isSourceFile,
   parseChecklist,
@@ -224,5 +225,59 @@ describe('evaluateTemplatePresence', () => {
     expect(results[0].status).toBe('fail');
     expect(results[0].summary).toMatch(/tests/);
     expect(results[0].summary).not.toMatch(/readme/); // readme is present, only the missing one is listed
+  });
+
+  // #3735: a row struck from the leading dash keeps its marker but is not a
+  // parseable row; it must read as malformed, not as an omitted template item.
+  it('reports a marker on an unparseable line as a malformed row, not an omission', () => {
+    const body = [
+      '- ~~- [ ] <!-- kookr:check:readme --> README~~ — N/A',
+      '- ~~- [ ] <!-- pr:tests --> tests~~ — N/A',
+    ].join('\n');
+    const rows = parseChecklist(body);
+    expect(rows).toHaveLength(0);
+    const results = evaluateTemplatePresence(template, rows, findUnparsedMarkerIds(body, rows));
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ id: 'pr-template', status: 'fail' });
+    expect(results[0].summary).toMatch(/2 template checklist row\(s\) \(readme, tests\) present but not in a recognised/);
+    expect(results[0].summary).toContain('"- [ ] ~~<marker> text~~ — reason"');
+    expect(results[0].summary).not.toMatch(/omits/);
+  });
+
+  it('splits malformed rows from genuinely omitted ones', () => {
+    const body = '- ~~- [ ] <!-- kookr:check:readme --> README~~ — N/A';
+    const rows = parseChecklist(body);
+    const results = evaluateTemplatePresence(template, rows, findUnparsedMarkerIds(body, rows));
+    expect(results).toHaveLength(2);
+    expect(results[0].summary).toMatch(/\(readme\) present but/);
+    expect(results[1].summary).toMatch(/omits 1 of 2 .*\(tests\)/);
+  });
+
+  it('ignores markers quoted in prose, so a template-less body still reads as omitted', () => {
+    const body = 'Fixes how `- [ ] <!-- kookr:check:readme -->` rows parse.\n\nSee <!-- pr:tests --> too.';
+    const rows = parseChecklist(body);
+    expect(findUnparsedMarkerIds(body, rows)).toEqual([]);
+    const results = evaluateTemplatePresence(template, rows, findUnparsedMarkerIds(body, rows));
+    expect(results).toHaveLength(1);
+    expect(results[0].summary).toMatch(/omits 2 of 2/);
+  });
+
+  it('treats a marker on another bullet style as a malformed row', () => {
+    const body = ['* [ ] <!-- kookr:check:readme --> README', '1. [x] <!-- pr:tests --> tests'].join('\n');
+    const rows = parseChecklist(body);
+    expect(findUnparsedMarkerIds(body, rows)).toEqual(['readme', 'tests']);
+  });
+
+  it('still accepts the existing struck forms (box first, with or without x, or strike before the dash)', () => {
+    const template3 = `${template}\n- [ ] <!-- kookr:check:docs --> docs`;
+    const body = [
+      '- [ ] ~~<!-- kookr:check:readme --> README~~ — N/A',
+      '- [x] ~~<!-- pr:tests --> tests~~ — N/A',
+      '~~- [ ] <!-- kookr:check:docs --> docs~~ — N/A',
+    ].join('\n');
+    const rows = parseChecklist(body);
+    expect(rows.map((r) => r.id)).toEqual(['readme', 'tests', 'docs']);
+    expect(findUnparsedMarkerIds(body, rows)).toEqual([]);
+    expect(evaluateTemplatePresence(template3, rows, findUnparsedMarkerIds(body, rows))).toHaveLength(0);
   });
 });

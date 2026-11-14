@@ -73,6 +73,29 @@ export function parseChecklist(body: string): ChecklistRow[] {
   return rows;
 }
 
+const ANY_MARKER = /<!--\s*(?:kookr:check:|pr:)([a-z0-9-]+)\s*-->/g;
+// A line that starts like a list item (optionally struck): `-`, `*`, `+`, or `1.` / `1)`.
+const LIST_ITEM_START = /^[ \t]*(?:~~)?[ \t]*(?:[-*+]|\d+[.)])\s/;
+
+/**
+ * Ids whose marker appears in the body on a list-item line that
+ * `parseChecklist` does not recognise as a checklist row — e.g. a row struck
+ * from the leading dash, `- ~~- [ ] <!-- kookr:check:x --> text~~`, or a `*`
+ * bullet. Lets the presence rule say "present but malformed" instead of
+ * "omitted". Markers merely quoted in prose (non-list lines) are ignored, so a
+ * body that never used the template still gets the omission advice. Pure;
+ * regex-only.
+ */
+export function findUnparsedMarkerIds(body: string, parsedRows: ChecklistRow[]): string[] {
+  const parsed = new Set(parsedRows.map((r) => r.id));
+  const ids = new Set<string>();
+  for (const line of body.split('\n')) {
+    if (!LIST_ITEM_START.test(line)) continue;
+    for (const m of line.matchAll(ANY_MARKER)) if (!parsed.has(m[1])) ids.add(m[1]);
+  }
+  return [...ids];
+}
+
 /** Does any changed path match one of the evidence patterns? */
 function changed(paths: string[], patterns: RegExp[]): boolean {
   return patterns.some((re) => paths.some((p) => re.test(p)));
@@ -157,7 +180,9 @@ export function evaluateAttestation(
  * is the rule that actually keeps the anti-drift checklist from being bypassed
  * (the exact hole that forced the per-repo reminder in lucy PR #835).
  *
- * A template marker id absent from the body is a fail. Ids the body carries in
+ * A template marker id absent from the body is a fail. A marker that is in the
+ * body but on a line that does not parse as a checklist row (`unparsedIds`, from
+ * `findUnparsedMarkerIds`) is reported as a malformed row, not an omission. Ids the body carries in
  * any state — checked, blank, or struck — count as present here; whether a
  * present box is *honest* is `evaluateAttestation`'s job, not this rule's.
  *
@@ -166,13 +191,32 @@ export function evaluateAttestation(
  * `--fill` / no-body-flag case). Pure;
  * returns only ids/counts, never body/template *content* (S6).
  */
-export function evaluateTemplatePresence(templateText: string, bodyRows: ChecklistRow[]): CheckResult[] {
+export function evaluateTemplatePresence(
+  templateText: string,
+  bodyRows: ChecklistRow[],
+  unparsedIds: readonly string[] = [],
+): CheckResult[] {
   const templateIds = new Set(parseChecklist(templateText).map((r) => r.id));
   if (templateIds.size === 0) return [];
   const present = new Set(bodyRows.map((r) => r.id));
-  const missing = [...templateIds].filter((id) => !present.has(id));
-  if (missing.length === 0) return [];
+  const unparsed = new Set(unparsedIds);
+  const absent = [...templateIds].filter((id) => !present.has(id));
+  const malformed = absent.filter((id) => unparsed.has(id));
+  const missing = absent.filter((id) => !unparsed.has(id));
+  const results: CheckResult[] = [];
+  if (malformed.length > 0) {
+    results.push({
+      id: 'pr-template',
+      status: 'fail',
+      summary:
+        `PR body has ${malformed.length} template checklist row(s) (${malformed.join(', ')}) present but ` +
+        `not in a recognised checklist form (e.g. struck from the leading dash). Keep the box first: ` +
+        `"- [ ] <marker> text" to attest, or "- [ ] ~~<marker> text~~ — reason" to waive.`,
+    });
+  }
+  if (missing.length === 0) return results;
   return [
+    ...results,
     {
       id: 'pr-template',
       status: 'fail',

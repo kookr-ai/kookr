@@ -13,6 +13,7 @@ import {
   evaluateStructural,
   evaluateTemplatePresence,
   evaluateTemplateRequiredButMissing,
+  findUnparsedMarkerIds,
   isSourceFile,
   parseChecklist,
 } from './checklist.js';
@@ -59,7 +60,7 @@ export function verifyChecklist(input: VerifyInput): VerifyReport {
   // when the caller says gh would build a template-less body (`--fill`, no body
   // flag); other unseen bodies (stdin, other expansions) stay degraded, not failed.
   const presence = bodyChecked
-    ? evaluateTemplatePresence(input.templateText, rows)
+    ? evaluateTemplatePresence(input.templateText, rows, findUnparsedMarkerIds(input.body ?? '', rows))
     : input.templateRequiredReason !== undefined
       ? evaluateTemplateRequiredButMissing(input.templateText, input.templateRequiredReason)
       : [];

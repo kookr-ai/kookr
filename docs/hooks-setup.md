@@ -96,8 +96,9 @@ kookr pr-checklist verify --from-command "<the raw gh pr create …>" --run-comm
 
 The engine is deterministic (no AI): for each `<!-- kookr:check:id -->` (or
 legacy `<!-- pr:id -->`) box it proves a fact about the diff — a checked box
-whose mapped file is not in the diff fails; a struck box (`~~…~~ reason`) is
-waived; a blank box fails. It never executes repo commands (`--run-commands
+whose mapped file is not in the diff fails; a struck box (`- [ ] ~~…~~ reason`,
+box first) is waived, while a row struck from the leading dash fails as
+malformed; a blank box fails. It never executes repo commands (`--run-commands
 none`; `ci` is reserved for P4).
 
 The CI workflow `.github/workflows/pr-checklist.yml` exists in this repository
