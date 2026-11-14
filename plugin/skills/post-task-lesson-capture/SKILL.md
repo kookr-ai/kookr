@@ -35,7 +35,7 @@ studies, so each carries its own evidence and caveat. Source report: `agentic-ca
    a held-out case, and do not let the author model judge alone (6 of 20 judge models were self-preferring,
    2604.22891). Greedy "keep it if the score rose" committed 30-42% false and 10-33% harmful edits; a paired
    sequential gate committed none (2606.08106). Record where each lesson came from: a poisoning pilot embedded
-   its target behaviour in 91.0% of trials (2608.05563).
+   its target behaviour in up to 91.0% of trials (SkillClaw; 61.5% on Trace2Skill, 2608.05563).
 5. **Count helped and hurt per lesson, and deprecate instead of deleting.** Unguarded accumulation fell 4.9
    points below zero-shot while governed curation gained 5.3 points (2606.17591). Counters tracked true utility
    at rho = 0.89 in a synthetic setting but only about -0.33 when task difficulty confounded the signal, so
@@ -48,7 +48,8 @@ studies, so each carries its own evidence and caveat. Source report: `agentic-ca
    order changed (2608.18066), and a +0.02 gain sat inside run-to-run noise (2608.04003). Treat gains smaller
    than the variance as unproven.
 8. **Make the decision mandatory in tooling, not prose.** A voluntary "write a lesson or a skip marker" rule
-   was indistinguishable from forgetting until completion was gated on it.
+   was indistinguishable from forgetting until completion was gated on it. This is an operational observation
+   from the operator's own lesson KB (`agent-task-lessons`), not a measured effect.
 
 ## Evidence against
 
