@@ -1,7 +1,15 @@
 import { defineConfig } from 'vitest/config';
 
+// The pre-push hook sets this to get a machine-readable list of failed files,
+// so it can re-run only those once to tell a flake from a real failure
+// (scripts/flaky-rerun-files.mjs). Unset, the reporters stay Vitest's default.
+const jsonReportFile = process.env.VITEST_JSON_REPORT_FILE;
+
 export default defineConfig({
   test: {
+    ...(jsonReportFile
+      ? { reporters: ['default', ['json', { outputFile: jsonReportFile }]] }
+      : {}),
     // Agent suites share the host with the supervisor and desktop. Bound each
     // run rather than letting every agent allocate workers for the whole CPU.
     maxWorkers: 4,
