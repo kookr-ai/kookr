@@ -23,7 +23,7 @@ Usage:
   kookr doctor [--json]         Run launch preflight checks (human table or JSON).
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
-  kookr merge <PR> [--repo OWNER/NAME] [--preserve-branch]  Review-gated squash-merge from any repo; deletes the head branch via the API.
+  kookr merge <PR> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]  Review-gated squash-merge from any repo; deletes the head branch via the API.
   kookr status [--json] [--require-ready] [--fail-on <critical|warning|info|none>]
                                                         Print a read-only server snapshot.
   kookr ops digest [--json] [--offline]  One-pager of top unattended failure signals (ready + health); --offline reads the last-good snapshot when HTTP is dark.
@@ -382,14 +382,17 @@ function runMergeCommand(argv, { env = process.env, err = console } = {}) {
     err.error('[kookr] `kookr merge` needs a Kookr source checkout; run it from that checkout\'s bin/kookr.');
     return 1;
   }
-  // Async spawn with signal forwarding, not spawnSync: a SIGTERM aimed at this
+  // Async spawn with signal forwarding, not spawnSync: a signal aimed at this
   // node process alone must also stop the wrapper, or an orphaned wrapper could
-  // still merge after the caller believed it was cancelled.
+  // still merge after the caller believed it was cancelled. Every caught signal
+  // is sent on as SIGTERM: bash defers a SIGINT it receives while waiting on a
+  // foreground command (`sleep`, `gh pr checks --watch`) and carries on unless
+  // that command also died of SIGINT, whereas an untrapped SIGTERM ends it.
   return new Promise((resolve) => {
     const child = spawn('bash', [script, ...argv], { stdio: 'inherit', env });
     const forwarded = ['SIGINT', 'SIGTERM', 'SIGHUP'];
-    const forward = (signal) => {
-      try { child.kill(signal); } catch { /* child already gone */ }
+    const forward = () => {
+      try { child.kill('SIGTERM'); } catch { /* child already gone */ }
     };
     let settled = false;
     const finish = (code) => {

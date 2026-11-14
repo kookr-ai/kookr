@@ -465,8 +465,8 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     expect(apiCalls()).toMatch(/--method PUT repos\/owner\/repo\/pulls\/123\/merge/);
     expect(apiCalls()).toMatch(/sha=abc123/);
     expect(apiCalls()).toMatch(/merge_method=squash/);
-    // --delete-branch has no REST equivalent, so the head ref is deleted
-    // directly — on the HEAD repo, which is the fork, not the PR's base repo.
+    // Every merge path deletes the head ref through the API (#3641) — on the
+    // HEAD repo, which is the fork, not the PR's base repo.
     // Reaching the delete at all is also how the stub proves the merge succeeded:
     // the script only gets here after the PUT returns non-error.
     expect(apiCalls()).toMatch(/--method DELETE repos\/forker\/repo\/git\/refs\/heads\/feature-branch/);

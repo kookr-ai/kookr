@@ -1400,10 +1400,12 @@ describe('kookr merge dispatches the wrapper from any cwd (#3641)', () => {
     }
   });
 
-  it('stops the wrapper when only the kookr process is sent SIGTERM, so it cannot merge later', async () => {
+  it.each(['SIGTERM', 'SIGINT', 'SIGHUP'] as const)('stops the wrapper when only the kookr process is sent %s, so it cannot merge later', async (signal) => {
     // BLOCKED with zero checks keeps the wrapper polling until its timeout.
-    // SIGTERM goes to the node process alone (not its process group): the
-    // wrapper must die with it rather than live on and merge.
+    // The signal goes to the node process alone (not its process group): the
+    // wrapper must die with it rather than live on and merge. Each signal is
+    // forwarded as SIGTERM, because bash defers a lone SIGINT while it waits
+    // on a foreground command and would then carry on.
     const stub = makeStubDir({ checksResponses: [BLOCKED], reviewJson: REVIEW_VIEW, modernGh: true });
     const elsewhere = mkdtempSync(join(tmpdir(), 'kookr-merge-elsewhere-'));
     const callsFile = join(stub, 'calls.log');
@@ -1428,7 +1430,7 @@ describe('kookr merge dispatches the wrapper from any cwd (#3641)', () => {
       const deadline = Date.now() + 20_000;
       while (countPolls() < 3 && Date.now() < deadline) await sleep(100);
       expect(countPolls()).toBeGreaterThanOrEqual(3);
-      child.kill('SIGTERM');
+      child.kill(signal);
       // The wrapper died of the forwarded SIGTERM: 128 + 15.
       expect(await exited).toBe(143);
       const pollsAtExit = countPolls();
