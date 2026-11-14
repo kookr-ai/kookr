@@ -20,7 +20,7 @@
 
 import { performance } from 'node:perf_hooks';
 import type { Terminal as HeadlessTerminal } from '@xterm/headless';
-import { redactSpeechSecrets } from '../core/task-speech-summary.js';
+import { redactSpeechSecrets, speechSecretSpans } from '../core/task-speech-summary.js';
 import {
   acquireSlot,
   DEFAULT_MAX_MS,
@@ -73,15 +73,37 @@ export function readBufferLines(terminal: HeadlessTerminal): string[] {
 }
 
 /**
- * Join the rows of one logical line, hiding secrets both ways. A row the terminal marked as
- * wrapped is not always a continuation on screen: a program can write over it after the wrap
- * (a carriage return, a cursor move), and the joined text then glues a token to the row
- * above, where the word-boundary rule misses it. So each row is redacted on its own first,
- * then the joined line is redacted again, which catches a token that wrapped across rows.
+ * Join the rows of one logical line and hide secrets, looking two ways and hiding the union.
+ *
+ * - On the joined line: finds a token that wrapped across the screen edge.
+ * - On each row alone: a row the terminal marked as wrapped is not always a continuation on
+ *   screen, because a program can write over it after the wrap (a carriage return, a cursor
+ *   move). The joined text then glues a token to the row above, where the word-boundary rule
+ *   misses it, but the row alone shows it.
+ *
+ * The two searches must not be run one after the other: hiding the part of a wrapped token
+ * that one row holds leaves a remainder too short for any rule to recognise. Instead the
+ * spans each search finds are merged, and every merged span is hidden in the joined text.
  */
 function hideSecretsAcrossRows(rows: string[]): string {
-  if (rows.length === 1) return rows[0]!;
-  return redactSpeechSecrets(rows.map((row) => redactSpeechSecrets(row)).join(''));
+  if (rows.length === 1) return redactSpeechSecrets(rows[0]!);
+  const joined = rows.join('');
+  const spans: Array<[number, number]> = [...speechSecretSpans(joined)];
+  let offset = 0;
+  for (const row of rows) {
+    for (const [start, end] of speechSecretSpans(row)) spans.push([offset + start, offset + end]);
+    offset += row.length;
+  }
+  spans.sort((x, y) => x[0] - y[0] || y[1] - x[1]);
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of spans) {
+    if (end <= cursor) continue;
+    out += joined.slice(cursor, Math.max(cursor, start)) + '[redacted]';
+    cursor = end;
+  }
+  // The ordinary redaction runs once more over what is left, as everywhere else.
+  return redactSpeechSecrets(out + joined.slice(cursor));
 }
 
 /** Replay `bytes` into an emulator of the given size and return the last `maxLines` lines it shows. */
