@@ -184,7 +184,9 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     expect(res.stdout).toContain('FAKE-GH-MERGED');
     const mergeArgs = readFileSync(mergeArgsFile, 'utf-8');
     expect(mergeArgs).toMatch(/--match-head-commit\s+abc123/);
-    expect(mergeArgs).toMatch(/--delete-branch/);
+    // The branch is deleted through the API after the merge, never by gh's
+    // --delete-branch, whose local cleanup fails in a linked worktree (#3641).
+    expect(mergeArgs).not.toMatch(/--delete-branch/);
   });
 
   test('head SHA is the last commit oid (not the first) on multi-commit PRs', () => {
@@ -373,7 +375,8 @@ if [[ "$1" == "api" ]]; then
   if [[ "$args" == *"--method DELETE"* ]]; then
     status="$(cat "${paths.apiDeleteStatus}" 2>/dev/null || echo 0)"
     if [[ "$status" != "0" ]]; then
-      echo "gh: Reference does not exist (HTTP 422)" >&2
+      # Not "Reference does not exist": that one now reads as already deleted (#3641).
+      echo "gh: Resource not accessible by integration (HTTP 403)" >&2
       exit 1
     fi
   fi
@@ -462,8 +465,8 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     expect(apiCalls()).toMatch(/--method PUT repos\/owner\/repo\/pulls\/123\/merge/);
     expect(apiCalls()).toMatch(/sha=abc123/);
     expect(apiCalls()).toMatch(/merge_method=squash/);
-    // --delete-branch has no REST equivalent, so the head ref is deleted
-    // directly — on the HEAD repo, which is the fork, not the PR's base repo.
+    // Every merge path deletes the head ref through the API (#3641) — on the
+    // HEAD repo, which is the fork, not the PR's base repo.
     // Reaching the delete at all is also how the stub proves the merge succeeded:
     // the script only gets here after the PUT returns non-error.
     expect(apiCalls()).toMatch(/--method DELETE repos\/forker\/repo\/git\/refs\/heads\/feature-branch/);
@@ -482,7 +485,7 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     // The merge is the atomic part; the branch cleanup is not. Reporting failure
     // here would tell the caller a merged PR did not merge.
     writeFileSync(viewFile, passView());
-    writeFileSync(apiDeleteStatusFile, '422');
+    writeFileSync(apiDeleteStatusFile, '403');
     const res = runCombined();
     expect(res.status).toBe(0);
     expect(res.out).toMatch(/merged PR #123/);

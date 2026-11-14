@@ -45,12 +45,13 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 const SCRIPT = join(process.cwd(), 'scripts/kookr-merge.sh');
@@ -68,6 +69,8 @@ function makeStubDir(opts: {
   reviewJson?: object;
   modernGh?: boolean;
   headOwner?: string;
+  // headRefName served by the stub (default `paired/change`).
+  headRef?: string;
   mergeResponse?: string;
   // CLI post-merge `gh pr view --json state,mergedAt` body (issue #3403).
   // Separate from mergeResponse: the REST merge endpoint uses `.merged`, the
@@ -97,6 +100,22 @@ function makeStubDir(opts: {
   // When advertising `--watch` (GH_HAS_WATCH=1), the exit code the stubbed
   // `gh pr checks --watch` returns (non-zero models a failing/never-run check).
   watchExit?: number;
+  // Models `gh pr merge --delete-branch` run from a linked worktree while the
+  // base branch is checked out in another worktree (#3641): the remote merge
+  // lands, then the local branch cleanup fails and gh exits 1.
+  linkedWorktree?: boolean;
+  // `gh api --method DELETE .../git/refs/heads/<ref>` outcome (#3641).
+  deleteExit?: number;
+  deleteStderr?: string;
+  // `gh pr view --json closingIssuesReferences` body, and its exit code (a
+  // non-zero exit models a gh too old to know the field).
+  closingIssuesJson?: string;
+  closingIssuesExit?: number;
+  // Issue states served by `gh api repos/<owner>/<name>/issues/<n> --jq .state`,
+  // keyed "owner/name#n". Read k serves states[min(k, len)-1], so ['open',
+  // 'closed'] models GitHub closing the issue a moment after the merge. A key
+  // with an empty list makes the lookup fail.
+  issueStates?: Record<string, string[]>;
 }): string {
   const dir = mkdtempSync(join(tmpdir(), 'kookr-merge-stub-'));
   writeFileSync(
@@ -127,6 +146,12 @@ function makeStubDir(opts: {
   }
   writeFileSync(join(dir, 'annotations.json'), opts.annotationsJson ?? '[]');
   writeFileSync(join(dir, 'status.json'), opts.statusJson ?? '{"state":"pending","total_count":0,"statuses":[]}');
+  writeFileSync(join(dir, 'closing.json'), opts.closingIssuesJson ?? '{"closingIssuesReferences":[]}');
+  writeFileSync(join(dir, 'delete.stderr'), opts.deleteStderr ?? '');
+  for (const [key, states] of Object.entries(opts.issueStates ?? {})) {
+    // "owner/name#7" -> issue.owner_name_7.states, one state per line.
+    writeFileSync(join(dir, `issue.${key.replace(/[/#]/g, '_')}.states`), states.join('\n'));
+  }
 
   const gh = join(dir, 'gh');
   // The stub is intentionally POSIX-plain so it runs under /usr/bin/env bash.
@@ -137,6 +162,9 @@ set -eu
 DIR=${JSON.stringify(dir)}
 args="$*"
 printf '%s\\n' "$args" >> "$DIR/calls.log"
+# The directory each gh call ran from: without --repo, gh resolves the PR from
+# the git remote of its cwd, so \`kookr merge\` must keep the caller's cwd.
+printf '%s\\n' "$PWD" >> "$DIR/cwd.log"
 case "$args" in
   *"--json state,mergedAt"*|*"--json mergedAt,state"*|*"--json mergedAt"*)
     [ ${opts.verificationExit ?? 0} -eq 0 ] || exit ${opts.verificationExit ?? 0}
@@ -150,7 +178,7 @@ case "$args" in
   *"--json comments,labels,commits"*)
     cat "$DIR/review.json"; exit 0 ;;
   *"--json headRefName,headRepository,headRepositoryOwner"*)
-    echo '{"headRefName":"paired/change","headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"${opts.headOwner ?? 'owner'}"}}'; exit 0 ;;
+    echo '{"headRefName":"${opts.headRef ?? 'paired/change'}","headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"${opts.headOwner ?? 'owner'}"}}'; exit 0 ;;
   "repo view "*)
     echo 'owner/repo'; exit 0 ;;
   "api --method PUT "*)
@@ -158,7 +186,21 @@ case "$args" in
     printf 'merged\\n' > "$DIR/merged.marker"
     cat "$DIR/merge.json"; exit 0 ;;
   "api --method DELETE "*)
+    if [ ${opts.deleteExit ?? 0} -ne 0 ]; then cat "$DIR/delete.stderr" >&2; exit ${opts.deleteExit ?? 0}; fi
     exit 0 ;;
+  *"--json closingIssuesReferences"*)
+    [ ${opts.closingIssuesExit ?? 0} -eq 0 ] || { echo 'Unknown JSON field: "closingIssuesReferences"' >&2; exit ${opts.closingIssuesExit ?? 0}; }
+    cat "$DIR/closing.json"; exit 0 ;;
+  "api repos/"*"/issues/"*)
+    # "api repos/<owner>/<name>/issues/<n> --jq .state" -> issue.<owner>_<name>_<n>.states
+    path="\${2#repos/}"
+    key=$(printf '%s' "$path" | sed 's#/issues/#_#; s#/#_#g')
+    f="$DIR/issue.$key.states"
+    [ -s "$f" ] || { echo "HTTP 404: Not Found" >&2; exit 1; }
+    c=0; [ -f "$f.count" ] && c=$(cat "$f.count"); c=$((c + 1)); printf '%s' "$c" > "$f.count"
+    total=$(wc -l < "$f"); total=$((total + 1))
+    [ "$c" -le "$total" ] || c="$total"
+    sed -n "\${c}p" "$f"; exit 0 ;;
   "api repos/"*"/pulls/"*"head.sha"*)
     cat "$DIR/head.sha"; exit 0 ;;
   "api repos/"*"/check-runs/"*"/annotations"*)
@@ -202,7 +244,15 @@ case "$args" in
     echo '${opts.modernGh ? '  --match-head-commit SHA' : '  --squash  Squash and merge'}'; exit 0 ;;
   *"pr merge"*)
     [ ${opts.mergeExit ?? 0} -eq 0 ] || exit ${opts.mergeExit ?? 0}
-    printf 'merged\\n' > "$DIR/merged.marker"; exit 0 ;;
+    printf 'merged\\n' > "$DIR/merged.marker"
+    case "$args" in
+      *"--delete-branch"*)
+        if [ "${opts.linkedWorktree ? 1 : 0}" = "1" ]; then
+          echo "failed to run git: fatal: 'main' is already used by worktree at '/elsewhere'" >&2
+          exit 1
+        fi ;;
+    esac
+    exit 0 ;;
   *)
     echo "gh-stub: unhandled: $args" >&2; exit 99 ;;
 esac
@@ -432,11 +482,11 @@ describe.each([true, false])('guarded branch policy (modern gh: %s)', (modernGh)
         const putCalls = result.calls.filter((call) => call.startsWith('api --method PUT'));
         const deleteCalls = result.calls.filter((call) => call.startsWith('api --method DELETE'));
         if (modernGh) {
+          // No --delete-branch on the CLI merge: the branch goes through the API (#3641).
           expect(mergeCalls).toEqual([
-            `pr merge 123 --repo owner/repo --squash${preserve ? '' : ' --delete-branch'} --match-head-commit ${REVIEWED_SHA}`,
+            `pr merge 123 --repo owner/repo --squash --match-head-commit ${REVIEWED_SHA}`,
           ]);
           expect(putCalls).toEqual([]);
-          expect(deleteCalls).toEqual([]);
           expect(result.calls.some((call) => call.includes('--json state,mergedAt'))).toBe(true);
           expect(result.calls.some((call) => /--json merged(?:\s|$)/.test(call))).toBe(false);
         } else {
@@ -444,12 +494,21 @@ describe.each([true, false])('guarded branch policy (modern gh: %s)', (modernGh)
           expect(putCalls).toEqual([
             `api --method PUT repos/owner/repo/pulls/123/merge --raw-field sha=${REVIEWED_SHA} --raw-field merge_method=squash`,
           ]);
-          expect(deleteCalls).toEqual(preserve ? [] : [
-            `api --method DELETE repos/${headOwner}/repo/git/refs/heads/paired/change`,
-          ]);
         }
+        // Both paths delete the source ref in the HEAD repo (the fork on a
+        // cross-repo PR), and only after the merge call.
+        expect(deleteCalls).toEqual(preserve ? [] : [
+          `api --method DELETE repos/${headOwner}/repo/git/refs/heads/paired/change`,
+        ]);
+        if (!preserve) {
+          const mergeIndex = result.calls.findIndex(
+            (call) => call.startsWith('pr merge 123') || call.startsWith('api --method PUT'),
+          );
+          const deleteIndex = result.calls.findIndex((call) => call.startsWith('api --method DELETE'));
+          expect(deleteIndex).toBeGreaterThan(mergeIndex);
+        }
+        expect(result.calls.join('\n')).not.toContain('--delete-branch');
         if (preserve) {
-          expect(result.calls.join('\n')).not.toContain('--delete-branch');
           expect(result.stdout).toMatch(/source-branch deletion skipped/i);
         }
       } finally {
@@ -1084,10 +1143,318 @@ describe('CLI merge confirmation', () => {
       const result = runMerge(dir, {}, ['123', ...args]);
       expect(result.status).toBe(0);
       expect(result.calls.filter((call) => call.startsWith('pr merge 123'))).toEqual([
-        `pr merge 123 --squash${preserve ? '' : ' --delete-branch'}`,
+        'pr merge 123 --squash',
+      ]);
+      expect(result.calls.filter((call) => call.startsWith('api --method DELETE'))).toEqual(
+        preserve ? [] : ['api --method DELETE repos/owner/repo/git/refs/heads/paired/change'],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// --- API head-branch deletion, closing-issue report, `kookr merge` (#3641) ---
+
+const KOOKR_BIN = join(process.cwd(), 'bin/kookr.js');
+
+describe.each([true, false])('API head-branch deletion (#3641, modern gh: %s)', (modernGh) => {
+  it('exits 0 after a merge from a linked worktree, and deletes the remote branch through the API', () => {
+    // linkedWorktree: the stub fails any `gh pr merge --delete-branch` after the
+    // remote merge, as gh does when the base branch is checked out in another
+    // worktree. The wrapper must never pass that flag.
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      reviewJson: REVIEW_VIEW,
+      modernGh,
+      linkedWorktree: true,
+    });
+    try {
+      const result = runMerge(dir, { KOOKR_MERGE_REQUIRE_REVIEW: '1' }, ['123', '--repo', 'owner/repo']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.merged).toBe(true);
+      expect(result.calls.join('\n')).not.toContain('--delete-branch');
+      expect(result.calls.filter((call) => call.startsWith('api --method DELETE'))).toEqual([
+        'api --method DELETE repos/owner/repo/git/refs/heads/paired/change',
+      ]);
+      expect(result.stdout).toContain('deleted head branch paired/change');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports an already-deleted branch as gone and still exits 0', () => {
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      reviewJson: REVIEW_VIEW,
+      modernGh,
+      deleteExit: 1,
+      deleteStderr: 'gh: Reference does not exist (HTTP 422)',
+    });
+    try {
+      const result = runMerge(dir, { KOOKR_MERGE_REQUIRE_REVIEW: '1' }, ['123']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('head branch paired/change was already deleted');
+      expect(result.stderr).not.toContain('was not deleted');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('warns, with the command to finish the job, when the delete fails, but keeps exit 0 for the landed merge', () => {
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      reviewJson: REVIEW_VIEW,
+      modernGh,
+      deleteExit: 1,
+      deleteStderr: 'gh: Resource not accessible by integration (HTTP 403)',
+    });
+    try {
+      const result = runMerge(dir, { KOOKR_MERGE_REQUIRE_REVIEW: '1' }, ['123']);
+      expect(result.status).toBe(0);
+      expect(result.merged).toBe(true);
+      expect(result.stderr).toContain('head branch paired/change was not deleted');
+      expect(result.stderr).toContain("gh api --method DELETE 'repos/owner/repo/git/refs/heads/paired/change'");
+      expect(result.stderr).toContain('HTTP 403');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('percent-encodes the branch name so a `#` or `?` cannot cut the path and delete another branch', () => {
+    // Unencoded, `gh api` would treat `#42` as a URL fragment and DELETE
+    // refs/heads/release/hot — a different branch.
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      reviewJson: REVIEW_VIEW,
+      modernGh,
+      headRef: 'release/hot#42?x%y',
+    });
+    try {
+      const result = runMerge(dir, { KOOKR_MERGE_REQUIRE_REVIEW: '1' }, ['123', '--repo', 'owner/repo']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.calls.filter((call) => call.startsWith('api --method DELETE'))).toEqual([
+        'api --method DELETE repos/owner/repo/git/refs/heads/release/hot%2342%3Fx%25y',
       ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+function closingRefs(...refs: Array<[string, string, number]>): string {
+  return JSON.stringify({
+    closingIssuesReferences: refs.map(([owner, name, number]) => ({
+      number,
+      url: `https://github.com/${owner}/${name}/issues/${number}`,
+      repository: { name, owner: { login: owner } },
+    })),
+  });
+}
+
+describe.each([true, false])('closing-issue report after the merge (#3641, modern gh: %s)', (modernGh) => {
+  function run(opts: Partial<Parameters<typeof makeStubDir>[0]>) {
+    const dir = makeStubDir({ checksResponses: [CLEAN], reviewJson: REVIEW_VIEW, modernGh, ...opts });
+    try {
+      return runMerge(dir, { KOOKR_MERGE_REQUIRE_REVIEW: '1' }, ['123', '--repo', 'owner/repo']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('reports a declared closing issue that is still open after the re-check, and keeps exit 0', () => {
+    const result = run({
+      closingIssuesJson: closingRefs(['owner', 'repo', 7], ['owner', 'repo', 8]),
+      issueStates: { 'owner/repo#7': ['open', 'open'], 'owner/repo#8': ['closed'] },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.merged).toBe(true);
+    expect(result.stderr).toContain(
+      'issue owner/repo#7 is declared as closed by PR #123 but is still open — close it (gh issue close 7 --repo owner/repo)',
+    );
+    expect(result.stderr).not.toContain('owner/repo#8');
+    // Read once, then re-checked once after the grace interval; #8 was closed
+    // on the first read and is not re-read.
+    const issueReads = result.calls.filter((call) => call.startsWith('api repos/owner/repo/issues/'));
+    expect(issueReads).toEqual([
+      'api repos/owner/repo/issues/7 --jq .state',
+      'api repos/owner/repo/issues/8 --jq .state',
+      'api repos/owner/repo/issues/7 --jq .state',
+    ]);
+  });
+
+  it('does not report an issue GitHub closes during the grace interval', () => {
+    const result = run({
+      closingIssuesJson: closingRefs(['owner', 'repo', 7]),
+      issueStates: { 'owner/repo#7': ['open', 'closed'] },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain('still open');
+    expect(result.stdout).toContain('every issue PR #123 declares as closing is closed');
+  });
+
+  it('looks a cross-repository closing issue up in its own repository', () => {
+    const result = run({
+      closingIssuesJson: closingRefs(['other-org', 'lib', 9]),
+      issueStates: { 'other-org/lib#9': ['OPEN'] },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls).toContain('api repos/other-org/lib/issues/9 --jq .state');
+    expect(result.stderr).toContain('issue other-org/lib#9 is declared as closed by PR #123 but is still open');
+  });
+
+  it('says nothing about issues when the PR declares none', () => {
+    const result = run({});
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls.some((call) => call.includes('--json closingIssuesReferences'))).toBe(true);
+    expect(result.calls.some((call) => call.includes('/issues/'))).toBe(false);
+    expect(result.stdout + result.stderr).not.toMatch(/closing is closed|still open/);
+  });
+
+  it('warns but keeps exit 0 when gh cannot read the closing references', () => {
+    const result = run({ closingIssuesExit: 1 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('could not read the issues PR #123 declares as closing');
+  });
+
+  it('warns about an unreadable issue instead of calling it closed', () => {
+    const result = run({
+      closingIssuesJson: closingRefs(['owner', 'repo', 7]),
+      issueStates: { 'owner/repo#7': [] },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('could not read the state of closing issue owner/repo#7');
+    expect(result.stdout).not.toContain('closing is closed');
+  });
+
+  it('skips the report when the merge did not land', () => {
+    const result = run({ closingIssuesJson: closingRefs(['owner', 'repo', 7]), mergeExit: 1 });
+    expect(result.status).toBe(1);
+    expect(result.calls.some((call) => call.includes('closingIssuesReferences'))).toBe(false);
+  });
+});
+
+describe('kookr merge dispatches the wrapper from any cwd (#3641)', () => {
+  function runKookr(stubDir: string, cwd: string, args: string[]) {
+    const result = spawnSync(process.execPath, [KOOKR_BIN, 'merge', ...args], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: {
+        ...process.env,
+        PATH: `${stubDir}:${process.env.PATH ?? ''}`,
+        KOOKR_MERGE_REQUIRE_REVIEW: '1',
+        KOOKR_MERGE_CHECK_INTERVAL_SECONDS: '1',
+        KOOKR_MERGE_CHECK_TIMEOUT_SECONDS: '30',
+      },
+    });
+    const callsFile = join(stubDir, 'calls.log');
+    return {
+      status: result.status,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+      calls: existsSync(callsFile) ? readFileSync(callsFile, 'utf8').trim().split('\n') : [],
+    };
+  }
+
+  it('merges through the gated wrapper with a cwd outside the kookr repo', () => {
+    const stub = makeStubDir({ checksResponses: [CLEAN], reviewJson: REVIEW_VIEW, modernGh: true });
+    const elsewhere = mkdtempSync(join(tmpdir(), 'kookr-merge-elsewhere-'));
+    try {
+      const result = runKookr(stub, elsewhere, ['123', '--repo', 'owner/repo']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('independent-review gate: pass');
+      expect(result.calls).toContain(`pr merge 123 --repo owner/repo --squash --match-head-commit ${REVIEWED_SHA}`);
+      expect(result.calls).toContain('api --method DELETE repos/owner/repo/git/refs/heads/paired/change');
+    } finally {
+      rmSync(stub, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('passes the wrapper exit code through (review gate block -> 4)', () => {
+    const stub = makeStubDir({ checksResponses: [CLEAN], reviewJson: { ...REVIEW_VIEW, comments: [] } });
+    const elsewhere = mkdtempSync(join(tmpdir(), 'kookr-merge-elsewhere-'));
+    try {
+      const result = runKookr(stub, elsewhere, ['123', '--repo', 'owner/repo']);
+      expect(result.status).toBe(4);
+      expect(result.calls.some((call) => call.startsWith('pr merge 123'))).toBe(false);
+    } finally {
+      rmSync(stub, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('without --repo, runs gh from the caller\'s cwd so the PR resolves from that repository', () => {
+    const stub = makeStubDir({ checksResponses: [CLEAN], reviewJson: REVIEW_VIEW, modernGh: true });
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'kookr-merge-elsewhere-')));
+    try {
+      const result = runKookr(stub, elsewhere, ['123']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.calls).toContain(`pr merge 123 --squash --match-head-commit ${REVIEWED_SHA}`);
+      const cwds = new Set(readFileSync(join(stub, 'cwd.log'), 'utf8').trim().split('\n'));
+      expect([...cwds]).toEqual([elsewhere]);
+    } finally {
+      rmSync(stub, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['SIGTERM', 'SIGINT', 'SIGHUP'] as const)('stops the wrapper when only the kookr process is sent %s, so it cannot merge later', async (signal) => {
+    // BLOCKED with zero checks keeps the wrapper polling until its timeout.
+    // The signal goes to the node process alone (not its process group): the
+    // wrapper must die with it rather than live on and merge. Each signal is
+    // forwarded as SIGTERM, because bash defers a lone SIGINT while it waits
+    // on a foreground command and would then carry on.
+    const stub = makeStubDir({ checksResponses: [BLOCKED], reviewJson: REVIEW_VIEW, modernGh: true });
+    const elsewhere = mkdtempSync(join(tmpdir(), 'kookr-merge-elsewhere-'));
+    const callsFile = join(stub, 'calls.log');
+    const countPolls = () =>
+      existsSync(callsFile)
+        ? readFileSync(callsFile, 'utf8').split('\n').filter((call) => call.includes('pr view 123')).length
+        : 0;
+    const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+    try {
+      const child = spawn(process.execPath, [KOOKR_BIN, 'merge', '123', '--repo', 'owner/repo'], {
+        cwd: elsewhere,
+        stdio: 'ignore',
+        env: {
+          ...process.env,
+          PATH: `${stub}:${process.env.PATH ?? ''}`,
+          KOOKR_MERGE_REQUIRE_REVIEW: '1',
+          KOOKR_MERGE_CHECK_INTERVAL_SECONDS: '1',
+          KOOKR_MERGE_CHECK_TIMEOUT_SECONDS: '60',
+        },
+      });
+      const exited = new Promise<number | null>((done) => child.on('exit', (code) => done(code)));
+      const deadline = Date.now() + 20_000;
+      while (countPolls() < 3 && Date.now() < deadline) await sleep(100);
+      expect(countPolls()).toBeGreaterThanOrEqual(3);
+      child.kill(signal);
+      // The wrapper died of the forwarded SIGTERM: 128 + 15.
+      expect(await exited).toBe(143);
+      const pollsAtExit = countPolls();
+      await sleep(2500);
+      expect(countPolls()).toBe(pollsAtExit);
+      expect(existsSync(join(stub, 'merged.marker'))).toBe(false);
+    } finally {
+      rmSync(stub, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it('passes usage errors and --help through', () => {
+    const stub = makeStubDir({ checksResponses: [CLEAN] });
+    const elsewhere = mkdtempSync(join(tmpdir(), 'kookr-merge-elsewhere-'));
+    try {
+      expect(runKookr(stub, elsewhere, ['not-a-number']).status).toBe(2);
+      const help = runKookr(stub, elsewhere, ['--help']);
+      expect(help.status).toBe(0);
+      expect(help.stdout).toContain('Usage: kookr-merge <pr-number>');
+      expect(help.calls).toEqual([]);
+    } finally {
+      rmSync(stub, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
     }
   });
 });

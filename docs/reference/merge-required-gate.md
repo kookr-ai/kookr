@@ -81,8 +81,10 @@ merge, request preservation on each affected PR:
 bash scripts/kookr-merge.sh <PR_NUMBER> --repo OWNER/REPO --preserve-branch
 ```
 
-The wrapper omits `--delete-branch` from `gh pr merge` and skips the source-ref
-DELETE request in its REST fallback, including when the source is in a fork.
+The wrapper never passes `--delete-branch` to `gh pr merge` on any path; with
+preservation it also skips its post-merge API ref deletion
+(`DELETE repos/<head-repo>/git/refs/heads/<ref>`), including when the source is
+in a fork.
 This controls deletion by the wrapper; it does not override GitHub repository
 settings or other automation that may delete branches after merge.
 

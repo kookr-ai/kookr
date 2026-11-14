@@ -207,6 +207,9 @@ export const DOCUMENTED_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_RESTART_INTENT_REASON',
   'KOOKR_STARTUP_CHECK_INTERVAL_SECONDS',
   'KOOKR_STARTUP_TIMEOUT_SECONDS',
+  // Consumed by the merge wrapper scripts/kookr-merge.sh (`pnpm merge` / `kookr merge`).
+  'KOOKR_MERGE_CHECK_INTERVAL_SECONDS',
+  'KOOKR_MERGE_CHECK_TIMEOUT_SECONDS',
   // Consumed by hook shell scripts.
   'KOOKR_HOOKS_DIR',
   // Relay incident escalation target — documented for operators; read by deploy tooling.

@@ -717,6 +717,45 @@ kookr issue list [--json]
 
 Exit codes (specific to `kookr issue`): `0` you own it — also returned when the server does not support issue claims yet (HTTP 404: proceed as pre-lock); `2` user error; `3` no server reachable (fail closed — do not start work on the issue); `4` server rejected the request (unknown/terminal task, release by a non-owner); `6` claim held by another live task — pick a different issue, or `--force` as an operator.
 
+## `kookr merge`
+
+Squash-merge a pull request through Kookr's merge wrapper (`scripts/kookr-merge.sh`,
+the same script `pnpm merge` runs) from any repository, not only from a Kookr
+checkout (issue #3641).
+
+```bash
+kookr merge <PR> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]
+```
+
+The wrapper does what `pnpm merge` does: it refuses to merge without an
+independent-review `pass` verdict bound to the exact current head (unless
+`KOOKR_MERGE_REQUIRE_REVIEW=0`), waits for the checks, classifies a
+never-executed CI run against the recorded local gate, and pins the merge to the
+reviewed head. Then:
+
+- **The source branch is deleted through the GitHub API**, after GitHub confirms
+  the merge. The wrapper never passes `--delete-branch` to `gh pr merge`, because
+  that flag also checks out the base branch locally and deletes the local branch;
+  from a linked worktree whose base branch is checked out in another worktree,
+  that local step fails after the remote merge and `gh` exits 1. On a cross-repo
+  PR the branch is deleted in the fork. A branch the repository already deleted
+  is reported as gone. `--preserve-branch` skips deletion.
+- **Closing issues are checked.** Each issue the PR declares as closing (a
+  `Closes #N` keyword or a manual link) that is still open is reported on stderr,
+  after one re-check `KOOKR_MERGE_CHECK_INTERVAL_SECONDS` later, because GitHub
+  closes them asynchronously. GitHub only auto-closes issues when the PR merges
+  into the default branch.
+
+Without `--repo`, the PR is resolved from the git remote of the current
+directory, as with `gh`. The verb runs the wrapper from the checkout that the
+`kookr` on `PATH` belongs to, so it needs a source checkout: the npm package
+does not ship `scripts/`.
+
+Exit codes are the wrapper's: `0` merged (a failed branch delete or a
+still-open closing issue is a warning and does not change it); `1` pre-flight or
+merge failed; `2` usage error; `3` checks failed, or never-executed checks
+without the recorded local gate; `4` blocked by the independent-review gate.
+
 ## Server Discovery
 
 `kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr ask`, `kookr peek`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:

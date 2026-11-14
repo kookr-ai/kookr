@@ -4,6 +4,8 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { constants as osConstants } from 'node:os';
 import { importMaybeTs } from './import-maybe-ts.js';
 
 const HELP_TEXT = `kookr - local AI agent supervisor.
@@ -21,6 +23,7 @@ Usage:
   kookr doctor [--json]         Run launch preflight checks (human table or JSON).
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
+  kookr merge <PR> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]  Review-gated squash-merge from any repo; deletes the head branch via the API.
   kookr status [--json] [--require-ready] [--fail-on <critical|warning|info|none>]
                                                         Print a read-only server snapshot.
   kookr ops digest [--json] [--offline]  One-pager of top unattended failure signals (ready + health); --offline reads the last-good snapshot when HTTP is dark.
@@ -164,6 +167,14 @@ async function main({
   if (command === 'issue') {
     const { main: runIssueCli } = await import('./kookr-issue.js');
     return runIssueCli({ argv: rest, env, out, err, exit });
+  }
+
+  // Review-gated squash-merge wrapper (issue #3641). Runs scripts/kookr-merge.sh
+  // from this checkout so any repository gets the same review gate, check
+  // classification, and API branch deletion; the caller's cwd is kept, so
+  // without --repo the PR is resolved from the current git remote.
+  if (command === 'merge') {
+    return exit(await runMergeCommand(rest, { env, err }));
   }
 
   if (command === 'status') {
@@ -359,6 +370,47 @@ async function main({
   }
 
   return startServer({ err, exit });
+}
+
+function runMergeCommand(argv, { env = process.env, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const script = join(here, '..', 'scripts', 'kookr-merge.sh');
+  if (!existsSync(script)) {
+    // The npm package ships bin/ and dist/ but not scripts/, so this verb needs
+    // a source checkout (the one `kookr` on PATH points at).
+    err.error(`[kookr] merge wrapper not found at ${script}`);
+    err.error('[kookr] `kookr merge` needs a Kookr source checkout; run it from that checkout\'s bin/kookr.');
+    return 1;
+  }
+  // Async spawn with signal forwarding, not spawnSync: a signal aimed at this
+  // node process alone must also stop the wrapper, or an orphaned wrapper could
+  // still merge after the caller believed it was cancelled. Every caught signal
+  // is sent on as SIGTERM: bash defers a SIGINT it receives while waiting on a
+  // foreground command (`sleep`, `gh pr checks --watch`) and carries on unless
+  // that command also died of SIGINT, whereas an untrapped SIGTERM ends it.
+  return new Promise((resolve) => {
+    const child = spawn('bash', [script, ...argv], { stdio: 'inherit', env });
+    const forwarded = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+    const forward = () => {
+      try { child.kill('SIGTERM'); } catch { /* child already gone */ }
+    };
+    let settled = false;
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      for (const signal of forwarded) process.off(signal, forward);
+      resolve(code);
+    };
+    for (const signal of forwarded) process.on(signal, forward);
+    child.on('error', (error) => {
+      err.error(`[kookr] could not run the merge wrapper: ${error.message}`);
+      finish(1);
+    });
+    // A wrapper killed by a signal exits 128+n, as a shell would report it.
+    child.on('exit', (code, signal) => {
+      finish(code ?? (signal ? 128 + (osConstants.signals[signal] ?? 0) : 1));
+    });
+  });
 }
 
 async function startServer({ err = console, exit = process.exit } = {}) {
