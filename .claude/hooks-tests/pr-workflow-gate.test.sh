@@ -728,6 +728,105 @@ run_case_G2() {
 }
 run_case_G2
 
+# ---------------------------------------------------------------------
+# H. Closing-keyword gate (issue #3642). Every case writes a valid
+#    pre-done marker first, so the closing-keyword check is the only thing
+#    that can deny or add a warning.
+# ---------------------------------------------------------------------
+# run_closes_case <name> <expect: deny|allow|warn> <body-flag-and-value> [needle]
+#   deny  → deny JSON whose reason contains <needle> (the bare form)
+#   allow → no stdout at all (no deny, no warning)
+#   warn  → one JSON object with additionalContext containing <needle>, no
+#           permissionDecision
+run_closes_case() {
+  local name="$1" expect="$2" body_args="$3" needle="${4:-}"
+  local tmpdir; tmpdir=$(mktemp -d)
+  local repo="repoH-$SUFFIX"
+  local branch="feat/issue-12-thing"
+  local state="/dev/shm/.pr-gate-${repo}-feat-issue-12-thing-pre-done"
+  track_state_file "$state"; rm -f "$state"
+  write_valid_pre_done "$tmpdir" "$repo" "feat-issue-12-thing"
+
+  local cmd="gh pr create -R testowner/${repo} --head ${branch} --title t ${body_args}"
+  local payload; payload=$(mk_payload "$cmd")
+  local out; out=$(run_hook "$payload" "$tmpdir")
+  local verdict; verdict=$(classify "$out")
+
+  case "$expect" in
+    deny)
+      local reason; reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)
+      if [ "$verdict" != "deny" ]; then
+        record_fail "$name" "expected deny, got allow: $(printf '%s' "$out" | head -c 200)"
+      elif [[ "$reason" != *"closing keyword inside inline code"* ]]; then
+        record_fail "$name" "denied for another reason: $(printf '%s' "$reason" | head -c 200)"
+      elif ! printf '%s\n' "$reason" | grep -qxF -- "$needle"; then
+        record_fail "$name" "reason does not show the bare form '$needle' on its own line: $reason"
+      else
+        record_pass "$name"
+      fi
+      ;;
+    allow)
+      if [ -n "$out" ]; then
+        record_fail "$name" "expected silent allow, got: $(printf '%s' "$out" | head -c 200)"
+      else
+        record_pass "$name"
+      fi
+      ;;
+    warn)
+      if [ -z "$out" ]; then
+        record_fail "$name" "expected an additionalContext warning, got no output"
+      elif [ "$verdict" != "allow" ]; then
+        record_fail "$name" "expected allow with warning, got deny: $(printf '%s' "$out" | head -c 200)"
+      elif ! printf '%s' "$out" | jq -e --arg n "$needle" '
+          .hookSpecificOutput.hookEventName == "PreToolUse"
+          and (.hookSpecificOutput.permissionDecision == null)
+          and (.hookSpecificOutput.additionalContext | contains($n))' >/dev/null 2>&1; then
+        record_fail "$name" "expected additionalContext warning containing '$needle', got: $(printf '%s' "$out" | head -c 300)"
+      else
+        record_pass "$name"
+      fi
+      ;;
+  esac
+  rm -f "$state"
+  rm -rf "$tmpdir"
+}
+
+run_closes_case "H1: \`Closes #12\` in inline code → deny, shows bare form" \
+  deny "--body 'Summary. \`Closes #12\`'" 'Closes #12'
+run_closes_case "H2: escaped backticks in a double-quoted --body → deny" \
+  deny '--body "Summary. \`Fixes #12\`"' 'Fixes #12'
+run_closes_case "H3: closing keyword inside a fenced block (heredoc) → deny" \
+  deny "--body \"\$(cat <<'EOF'
+Summary
+\`\`\`
+Resolves #12
+\`\`\`
+EOF
+)\"" 'Resolves #12'
+run_closes_case "H4: bare Closes #12 line → allow unchanged, no warning" \
+  allow "--body \"\$(cat <<'EOF'
+Summary
+
+Closes #12
+EOF
+)\""
+run_closes_case "H5: branch issue only as (#12) → allow with warning" \
+  warn "--body 'Fix the thing (#12)'" 'Closes #12'
+run_closes_case "H6: deliberate code mention plus a bare closer → allow" \
+  allow "--body 'Closes #12. The old form \`Closes #12\` did not work.'"
+run_closes_case "H7: unclosed backtick does not hide a bare closer → allow" \
+  allow "--body 'it\`s fixed. Closes #12'"
+
+# H8: the body comes from --body-file (read from disk).
+run_case_H8() {
+  local name="H8: --body-file with \`Closes #12\` → deny"
+  local bodydir; bodydir=$(mktemp -d)
+  printf 'Summary\n\n`Closes #12`\n' > "$bodydir/body.md"
+  run_closes_case "$name" deny "--body-file $bodydir/body.md" 'Closes #12'
+  rm -rf "$bodydir"
+}
+run_case_H8
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then
   printf 'Failed cases:\n'
