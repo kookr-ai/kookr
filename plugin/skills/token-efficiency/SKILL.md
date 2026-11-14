@@ -118,6 +118,8 @@ truncation has no way back; 4 (summarizing) is the lossy one.
    2602.03664).
 6. **Keep the main window small by design** (pattern 1): a viewer subagent cut main-agent non-cached
    input tokens 34.5% (2604.26102).
+   Before loading a large corpus, codebase or log set at all, decide whether to load, retrieve or
+   delegate the reading: see `agent-memory-and-learning`, reference `load-retrieve-or-delegate.md`.
 
 Not measured anywhere we looked: break-even between cache misses and compression, hosted-API cache
 expiry effects, prompt-only rolling-summary accuracy on agent benchmarks, Claude Code auto-compact side
