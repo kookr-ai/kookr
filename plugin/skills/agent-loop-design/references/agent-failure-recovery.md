@@ -28,7 +28,7 @@ studies and is a synthesis, not a measured ranking. The attempt caps are heurist
   call (2609.08589); self-reports overstated top-100 success 4.8x to 9.3x (2609.00652).
 - Audit the tool layer, not only the agent: 91 silent failures were confirmed across 15 tools, 7 of
   which failed on more than 50% of test cases (2609.26836). A green tool result is a claim; re-read the
-  state it should have changed.
+  state it should have changed. Harness-or-model triage: [harness faults](harness-faults.md).
 - On failed or suspicious runs, add a step-level judge: outcome-only judging caught 84% of loud injected
   faults but 45% of silent ones, with 33% false alarms on clean runs (2609.00038). Calibrate the judge on
   50 to 100 labeled runs of your own agent first; a three-LLM ensemble reached kappa 0.432 against
