@@ -62,7 +62,7 @@ import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
 import { autoSyncCheckoutForManualLaunch } from './checkout-auto-sync.js';
 import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
-import { LoadoutStore, replayRecordedLoadout, resolveOrReplayLoadout, withSpawnGate, spawnGateActive } from './plugin-manager/loadout-store.js';
+import { LoadoutStore, replayRecordedLoadout, prepareSpawnLoadout } from './plugin-manager/loadout-store.js';
 import type { PluginMutationService } from './plugin-manager/mutation-service.js';
 import { ConfigEpochStore, stampSessionConfigEpoch } from './plugin-manager/config-epoch.js';
 import { isTerminalStatus } from '../core/task-status.js';
@@ -2498,14 +2498,14 @@ async function launchTaskCore(
     : undefined;
   // Resolve (or replay) the plugin loadout for this spawn (RFC Layer 2 / 2b).
   // No-op and byte-identical to today when the feature is off / nothing attached.
-  const loadoutFields = await withSpawnGate(
-    deps.pluginMutationService,
-    spawnGateActive(),
-    () =>
-      resolveOrReplayLoadout(
-        { loadoutStore: deps.loadoutStore, taskStore: deps.taskStore },
-        task,
-      ),
+  const loadoutFields = await prepareSpawnLoadout(
+    {
+      loadoutStore: deps.loadoutStore,
+      taskStore: deps.taskStore,
+      mutation: deps.pluginMutationService,
+      dirLoadedPluginNames: adapter.dirLoadedPluginNamesForLaunch?.bind(adapter),
+    },
+    task,
   );
   // Stamp this Kookr-managed Claude session with the config epoch it starts under
   // (RFC "Surfacing reload drift"). No-op off the claude adapter / when unwired /
@@ -3225,7 +3225,10 @@ export async function launchFreshTaskSession(
           // Replay the loadout recorded at the original spawn (RFC Layer 2 /
           // slice 2b) so a Ralph relaunch keeps the exact capabilities; never
           // re-resolved.
-          ...replayRecordedLoadout(task),
+          ...(await replayRecordedLoadout(
+            { taskStore: deps.taskStore, dirLoadedPluginNames: adapter.dirLoadedPluginNamesForLaunch?.bind(adapter) },
+            task,
+          )),
           // Every Ralph iteration keeps the permission choice the task was launched with (issue #3686).
           ...launchPermissionOverrideOption(task),
           signal,

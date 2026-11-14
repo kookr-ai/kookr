@@ -29,7 +29,7 @@ import type {
   PluginsReadModel,
   PluginUpdateOutcome,
   PluginActionError,
-  LoadoutLevel,
+  ScopedLoadoutLevel,
   LoadoutDesiredState,
   LoadoutSpawnMode,
   OwnSessionScope,
@@ -42,7 +42,7 @@ import type {
   PluginEnablement,
 } from '../../shared/contracts/plugins.js';
 import {
-  LOADOUT_LEVELS_MOST_SPECIFIC_FIRST,
+  SCOPED_LOADOUT_LEVELS,
   OWN_SESSION_BLAST_RADIUS,
 } from '../../shared/contracts/plugins.js';
 
@@ -134,8 +134,9 @@ function loadoutStoreFor(deps: DeployRouteDeps): LoadoutStore {
   return new LoadoutStore(deps.kookrDir ?? deps.serverCwd);
 }
 
-function isLoadoutLevel(value: string): value is LoadoutLevel {
-  return (LOADOUT_LEVELS_MOST_SPECIFIC_FIRST as readonly string[]).includes(value);
+function isLoadoutLevel(value: string): value is ScopedLoadoutLevel {
+  // The fleet level is not keyed: it is written through PUT /api/plugins/fleet.
+  return (SCOPED_LOADOUT_LEVELS as readonly string[]).includes(value);
 }
 
 /** Coerce an untrusted request body into a plugin-level desired state (plugin id → boolean). */

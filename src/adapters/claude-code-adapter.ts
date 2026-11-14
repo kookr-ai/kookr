@@ -55,7 +55,7 @@ import { buildHookCommand, buildStopNudgeCommand, resolveHookWriterPath, resolve
 import { withTimeout } from '../core/with-timeout.js';
 import { normalizeUserPromptNewlines } from '../shared/contracts/user-prompt-text.js';
 import { LaunchAbortedError, raceAgainstLaunchAbort, throwIfLaunchAborted } from './launch-abort.js';
-import { renderEnabledPlugins, pluginLoadoutsEnabled } from '../core/claude-settings/loadout.js';
+import { renderEnabledPlugins } from '../core/claude-settings/loadout.js';
 import type { ResolvedLoadout } from '../shared/contracts/plugins.js';
 
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -222,6 +222,19 @@ export class InitialPromptTruncatedError extends Error {
   }
 }
 
+/**
+ * The bypass-mode flags every Kookr-spawned Claude agent gets. Exported so the
+ * fleet check probes with exactly the adapter's flags.
+ */
+export function claudeBypassArgs(): string[] {
+  return ['--dangerously-skip-permissions', '--setting-sources', ''];
+}
+
+/** The `--plugin-dir` flag for the bundled plugin, or nothing when none is configured. */
+export function claudePluginDirArgs(pluginDir: string | undefined): string[] {
+  return pluginDir ? ['--plugin-dir', pluginDir] : [];
+}
+
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly agentType = 'claude-code';
   private eventHandlers: Array<AdapterEventHandler> = [];
@@ -335,13 +348,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // Resolve the loadout to render into this session's settings (RFC Layer 2 /
     // slice 2b). The launcher passes an already-resolved `ResolvedLoadout`
     // (fresh for a first spawn, REPLAYED from the task record on resume) via
-    // `opts.resolvedLoadout`; the adapter only renders it. Gated to the claude
-    // adapter and behind the default-off flag — when either is absent the
-    // written file is byte-identical to today.
-    const loadoutForRender =
-      opts?.resolvedLoadout && pluginLoadoutsEnabled()
-        ? { resolved: opts.resolvedLoadout, dirLoadedPluginNames: await this.resolveDirLoadedPluginNames() }
-        : undefined;
+    // `opts.resolvedLoadout`; the adapter only renders it. Whether loadouts
+    // apply at all (including the KOOKR_PLUGIN_LOADOUTS=0 kill switch on
+    // resume) is decided once, in the launcher; the adapter does not read the
+    // flag. No loadout passed → the written file is byte-identical to today.
+    const loadoutForRender = opts?.resolvedLoadout
+      ? { resolved: opts.resolvedLoadout, dirLoadedPluginNames: await this.dirLoadedPluginNamesForLaunch() }
+      : undefined;
 
     // Generate hook settings. Unattended spawns also carry interactive-tool
     // deny rules (issue #1562) from the launch context.
@@ -400,8 +413,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       // --dangerously-skip-permissions + --setting-sources '' are both required:
       // ask-rules in user settings would otherwise match before bypass mode is
       // consulted. See docs/poc/006-bypass-permissions-ask-rule-override.md.
-      args.push('--dangerously-skip-permissions');
-      args.push('--setting-sources', '');
+      args.push(...claudeBypassArgs());
       // --setting-sources '' also strips file-based agent discovery from
       // ~/.claude/agents and <cwd>/.claude/agents. Re-inject those agents
       // inline so they survive bypass mode without losing their original
@@ -411,7 +423,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         args.push('--agents', JSON.stringify(agents));
       }
     }
-    if (this.pluginDir) args.push('--plugin-dir', this.pluginDir);
+    args.push(...claudePluginDirArgs(this.pluginDir));
     // Reasoning-effort flag (#681). Resolution order: per-task override
     // (opts.effort) → configured per-agent-type default (resolveDefaultEffort)
     // → unset. When both are absent, no `--effort` is pushed and the argv is
@@ -1003,9 +1015,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
    * when no plugin dir is configured or the manifest can't be read — in which
    * case a loadout override keeps its authored id (no `@inline` rewrite). The
    * cache is populated once; a parse failure caches `[]` so we don't re-read on
-   * every spawn.
+   * every spawn. Public so the launcher's installed filter can pass these
+   * plugins through untouched (it cannot know which directory the adapter
+   * loads).
    */
-  private async resolveDirLoadedPluginNames(): Promise<readonly string[]> {
+  async dirLoadedPluginNamesForLaunch(): Promise<readonly string[]> {
     if (this.dirLoadedPluginNames !== undefined) return this.dirLoadedPluginNames;
     const names: string[] = [];
     if (this.pluginDir) {
@@ -1062,14 +1076,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       ? [cmd, { type: 'command', command: buildStopNudgeCommand({ nudgePath }) }]
       : [cmd];
 
-    // Loadout injection (RFC Layer 2 / slice 2b). Rendered ONLY when the
-    // feature flag is on AND a non-empty loadout was passed; any render error
-    // (or an empty result) leaves `enabledPlugins` unset so the file is
-    // byte-identical to today (the kill-switch / byte-identity contract). The
-    // flag is re-checked here so the adapter is the authoritative guard even if
-    // a caller passes a loadout with the flag off.
+    // Loadout injection (RFC Layer 2 / slice 2b). Rendered ONLY when a
+    // non-empty loadout was passed; any render error (or an empty result)
+    // leaves `enabledPlugins` unset so the file is byte-identical to today
+    // (the byte-identity contract). The activation decision, kill switch
+    // included, belongs to the launcher, which passes no loadout when off.
     let enabledPlugins: Record<string, boolean> | undefined;
-    if (loadout && pluginLoadoutsEnabled()) {
+    if (loadout) {
       try {
         enabledPlugins = renderEnabledPlugins(loadout.resolved, {
           dirLoadedPluginNames: loadout.dirLoadedPluginNames,

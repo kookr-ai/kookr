@@ -188,6 +188,14 @@ export interface AgentAdapter extends AgentInteractionPort {
   readonly agentType: AgentType;
 
   /**
+   * Names of the plugins this adapter force-loads with `--plugin-dir` (the
+   * bundled toolkit). The launcher's installed filter passes loadout entries
+   * for these through untouched. Optional: adapters without plugin loadouts
+   * omit it.
+   */
+  dirLoadedPluginNamesForLaunch?(): Promise<readonly string[]>;
+
+  /**
    * Launch an agent in a managed terminal session. Returns the terminal
    * session id (also used as the dtach socket filename and the WebSocket
    * attach route).

@@ -3,6 +3,7 @@ import {
   resolveLoadout,
   renderEnabledPlugins,
   pluginLoadoutsEnabled,
+  loadoutActivation,
   INLINE_MARKETPLACE,
 } from './loadout.js';
 import { emptyResolvedLoadout, isEmptyResolvedLoadout } from '../../shared/contracts/plugins.js';
@@ -117,5 +118,50 @@ describe('pluginLoadoutsEnabled', () => {
     expect(pluginLoadoutsEnabled({ KOOKR_PLUGIN_LOADOUTS: 'false' })).toBe(false);
     expect(pluginLoadoutsEnabled({ KOOKR_PLUGIN_LOADOUTS: '1' })).toBe(true);
     expect(pluginLoadoutsEnabled({ KOOKR_PLUGIN_LOADOUTS: 'true' })).toBe(true);
+  });
+});
+
+describe('resolveLoadout — four levels (task-type → playbook → project → fleet)', () => {
+  test('fleet is least specific: each more specific level overrides it per plugin', () => {
+    const { loadout, provenance, pluginLevels } = resolveLoadout(
+      {
+        fleet: { plugins: { 'a@m': true, 'b@m': true, 'c@m': true, 'd@m': true } },
+        project: { plugins: { 'b@m': false } },
+        playbook: { plugins: { 'c@m': false } },
+        'task-type': { plugins: { 'd@m': false } },
+      },
+      { mode: 'bypass' },
+    );
+    expect(loadout.enabledOverrides).toEqual({ 'a@m': true, 'b@m': false, 'c@m': false, 'd@m': false });
+    expect(loadout.enabledSet).toEqual(['a@m']);
+    expect(pluginLevels).toEqual({ 'a@m': 'fleet', 'b@m': 'project', 'c@m': 'playbook', 'd@m': 'task-type' });
+    expect(provenance.winningLevel).toBe('task-type');
+  });
+
+  test('fleet alone → winningLevel fleet', () => {
+    const { provenance } = resolveLoadout({ fleet: { plugins: { 'a@m': true } } }, { mode: 'bypass' });
+    expect(provenance.winningLevel).toBe('fleet');
+  });
+});
+
+describe('loadoutActivation — the activation table (slices 1 and 2)', () => {
+  test.each([
+    [undefined, 'unset', false, false],
+    ['', 'unset', false, false],
+    ['1', 'on', true, true],
+    ['true', 'on', true, true],
+    [' TRUE ', 'on', true, true],
+    ['0', 'killed', false, false],
+    ['false', 'killed', false, false],
+    ['off', 'killed', false, false],
+    ['no', 'killed', false, false],
+    ['yes', 'unset', false, false],
+    ['on', 'unset', false, false],
+  ])('%j → %s (first spawn %s, replay %s)', (raw, state, firstSpawnResolves, resumeReplays) => {
+    const env = raw === undefined ? {} : { KOOKR_PLUGIN_LOADOUTS: raw };
+    const a = loadoutActivation(env);
+    expect(a).toMatchObject({ state, firstSpawnResolves, resumeReplays });
+    expect(a.reason.length).toBeGreaterThan(0);
+    expect(pluginLoadoutsEnabled(env)).toBe(firstSpawnResolves);
   });
 });

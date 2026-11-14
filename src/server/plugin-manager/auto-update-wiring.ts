@@ -55,7 +55,7 @@ export async function buildAutoUpdateService(
   });
 
   const getTasks = (): IdlePredicateTaskView[] =>
-    deps.taskStore.viewLiveTasks().map((t) => ({ id: t.id, isTerminal: false, loadout: t.loadout }));
+    deps.taskStore.viewLiveTasks().map((t) => ({ id: t.id, isTerminal: false, loadout: t.loadout, agentType: t.agentType }));
 
   const readInstalledVersions = async (): Promise<Map<string, string | null>> => {
     const rows = await assembleManagedPlugins({

@@ -11,6 +11,7 @@
  * Plugin-level only (R3a): `deniedSkills` is never populated here.
  */
 import {
+  type LoadoutActivation,
   type LoadoutDesiredState,
   type LoadoutLevel,
   type LoadoutSpawnMode,
@@ -31,8 +32,8 @@ import {
 export const INLINE_MARKETPLACE = 'inline';
 
 /**
- * Resolve the three-level desired state into a typed loadout, most specific
- * level winning PER PLUGIN (task-type → playbook → project). The spawn mode
+ * Resolve the four-level desired state into a typed loadout, most specific
+ * level winning PER PLUGIN (task-type → playbook → project → fleet). The spawn mode
  * only changes what the fields MEAN (RFC round-2 F3), so the resolution records
  * it and, in bypass mode, emits `enabledSet` as the full allowlist of enabled
  * plugins (not a diff) since bypass drops the base layer.
@@ -42,8 +43,14 @@ export const INLINE_MARKETPLACE = 'inline';
 export function resolveLoadout(
   states: Partial<Record<LoadoutLevel, LoadoutDesiredState | undefined>>,
   opts: { mode: LoadoutSpawnMode },
-): { loadout: ResolvedLoadout; provenance: ResolvedLoadoutProvenance } {
+): {
+  loadout: ResolvedLoadout;
+  provenance: ResolvedLoadoutProvenance;
+  /** The level that decided each plugin (lets a later filter recompute `winningLevel`). */
+  pluginLevels: Record<string, LoadoutLevel>;
+} {
   const enabledOverrides: Record<string, boolean> = {};
+  const pluginLevels: Record<string, LoadoutLevel> = {};
   let winningLevel: LoadoutLevel | 'none' = 'none';
 
   // Walk LEAST specific → MOST specific so the most specific write wins, while
@@ -56,6 +63,7 @@ export function resolveLoadout(
     for (const [id, value] of Object.entries(plugins)) {
       if (typeof value !== 'boolean') continue; // malformed-tolerant
       enabledOverrides[id] = value;
+      pluginLevels[id] = level;
       contributed = true;
     }
     if (contributed) winningLevel = level; // later (more specific) iterations overwrite
@@ -72,7 +80,14 @@ export function resolveLoadout(
       .sort();
   }
 
-  return { loadout, provenance: { winningLevel, mode: opts.mode } };
+  return { loadout, provenance: { winningLevel, mode: opts.mode }, pluginLevels };
+}
+
+/** The most specific level among `levels`, or `none` when empty. Pure. */
+export function mostSpecificLevel(levels: Iterable<LoadoutLevel>): LoadoutLevel | 'none' {
+  const present = new Set(levels);
+  for (const level of LOADOUT_LEVELS_MOST_SPECIFIC_FIRST) if (present.has(level)) return level;
+  return 'none';
 }
 
 /**
@@ -109,11 +124,51 @@ export function renderEnabledPlugins(
   return Object.keys(out).length === 0 ? undefined : out;
 }
 
-/** Env flag gating Phase 2 loadout injection. Default OFF (RFC kill switch). */
+/** Env flag gating loadout injection. Off unless set to exactly `1`/`true`. */
 export const PLUGIN_LOADOUTS_FLAG = 'KOOKR_PLUGIN_LOADOUTS';
 
-/** True when plugin-loadout injection is enabled for this process. */
+const FLAG_ON = new Set(['1', 'true']);
+/** Values read as the explicit kill switch. Wider than "on" so a natural spelling of "off" still kills. */
+const FLAG_KILLED = new Set(['0', 'false', 'off', 'no']);
+
+/**
+ * Decide, in one place, whether loadouts apply (RFC section 1, activation
+ * table). Two separate questions, because from slice 3 they differ for an
+ * unset flag: whether a FIRST spawn resolves a loadout, and whether a RESUME
+ * replays the one recorded on the task. Up to slice 2 an unset flag means off
+ * for both, exactly as before the fleet level.
+ *
+ * - `1` / `true` (case-insensitive, trimmed) → both yes.
+ * - `0` / `false` / `off` / `no` → kill switch: both no, including replay.
+ * - anything else (unset, empty, a typo) → `unset`: both no for now.
+ *
+ * The adapter does not read the flag; it renders whatever the launcher hands
+ * it. Pure given `env`.
+ */
+export function loadoutActivation(env: NodeJS.ProcessEnv = process.env): LoadoutActivation {
+  const raw = env[PLUGIN_LOADOUTS_FLAG];
+  const v = raw?.trim().toLowerCase();
+  if (v !== undefined && FLAG_ON.has(v)) {
+    return {
+      state: 'on', raw, firstSpawnResolves: true, resumeReplays: true,
+      reason: `${PLUGIN_LOADOUTS_FLAG}=${raw}: new spawns resolve the fleet set and loadouts; resumes replay their record`,
+    };
+  }
+  if (v !== undefined && FLAG_KILLED.has(v)) {
+    return {
+      state: 'killed', raw, firstSpawnResolves: false, resumeReplays: false,
+      reason: `${PLUGIN_LOADOUTS_FLAG}=${raw} (kill switch): no spawn or resume is handed a loadout`,
+    };
+  }
+  return {
+    state: 'unset', raw, firstSpawnResolves: false, resumeReplays: false,
+    reason: raw === undefined
+      ? `${PLUGIN_LOADOUTS_FLAG} is unset: loadouts are off (opt-in)`
+      : `${PLUGIN_LOADOUTS_FLAG}=${JSON.stringify(raw)} is not a recognised value: treated as unset, loadouts are off`,
+  };
+}
+
+/** True when a first spawn resolves a loadout (the flag reads `on`). */
 export function pluginLoadoutsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = env[PLUGIN_LOADOUTS_FLAG];
-  return v === '1' || v === 'true';
+  return loadoutActivation(env).firstSpawnResolves;
 }

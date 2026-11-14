@@ -128,3 +128,50 @@ export async function readInstalledVersionFromRegistry(
   if (!records) return null;
   return highestInstalledVersion(records);
 }
+
+/**
+ * The narrow read port the launcher uses to ask "which plugins are installed
+ * right now?" (RFC section 1, "Who filters"). Backed by a direct read of
+ * `installed_plugins.json`: under a millisecond, where `claude plugin list`
+ * takes about three seconds, so the spawn path never shells out. A missing or
+ * malformed registry reads as empty, so every named plugin is then skipped as
+ * `not_installed` (fails closed).
+ */
+export interface InstalledPlugins {
+  read(): Promise<Map<string, InstalledPluginRecord[]>>;
+}
+
+/** The registry-file implementation of {@link InstalledPlugins} for one home directory. */
+export function registryInstalledPlugins(homeDir: string): InstalledPlugins {
+  return { read: () => readInstalledPlugins(homeDir) };
+}
+
+/**
+ * Pick the one install record that stands for a plugin when the registry
+ * holds several (one per scope): the user-scope record when there is one,
+ * otherwise the record with the highest version. Null for an empty list.
+ * Shared by the spawn-time filter and the external-change observer so both
+ * read the same version.
+ */
+export function selectInstallRecord(records: readonly InstalledPluginRecord[]): InstalledPluginRecord | null {
+  if (records.length === 0) return null;
+  const user = records.find((r) => r.scope === 'user');
+  if (user) return user;
+  return records.reduce((best, r) => {
+    if (r.version === null) return best;
+    if (best.version === null) return r;
+    return compareVersions(r.version, best.version) > 0 ? r : best;
+  });
+}
+
+/** id → selected installed version for every plugin in the registry (see {@link selectInstallRecord}). */
+export function selectedInstalledVersions(
+  all: ReadonlyMap<string, readonly InstalledPluginRecord[]>,
+): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  for (const [id, records] of all) {
+    const rec = selectInstallRecord(records);
+    if (rec) out.set(id, rec.version);
+  }
+  return out;
+}

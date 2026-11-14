@@ -94,16 +94,79 @@ export interface LoadoutDesiredState {
 }
 
 /**
- * The three scope levels a loadout attaches to, ordered MOST SPECIFIC FIRST.
+ * The four levels a loadout resolves from, ordered MOST SPECIFIC FIRST.
  * Resolution is per-plugin: the most specific level that expresses an opinion
- * for a given plugin wins.
+ * for a given plugin wins. `fleet` is the least specific: the fleet set, a
+ * single list every Kookr-spawned Claude agent gets (stored in its own file,
+ * `plugin-fleet.json`, not as a keyed level of `plugin-loadouts.json`).
  */
-export type LoadoutLevel = 'task-type' | 'playbook' | 'project';
+export type LoadoutLevel = 'task-type' | 'playbook' | 'project' | 'fleet';
 export const LOADOUT_LEVELS_MOST_SPECIFIC_FIRST: readonly LoadoutLevel[] = [
   'task-type',
   'playbook',
   'project',
+  'fleet',
 ] as const;
+
+/**
+ * The levels that are keyed by a scope id (a project, a playbook, an agent
+ * type) and stored in `plugin-loadouts.json`. The fleet level has no key and
+ * lives in its own file, so it is not one of these.
+ */
+export type ScopedLoadoutLevel = Exclude<LoadoutLevel, 'fleet'>;
+export const SCOPED_LOADOUT_LEVELS: readonly ScopedLoadoutLevel[] = [
+  'task-type',
+  'playbook',
+  'project',
+] as const;
+
+/**
+ * The fleet set on disk (`<kookrDir>/plugin-fleet.json`): plugin id → enabled
+ * for every Kookr-spawned Claude agent. A separate file so a server rolled
+ * back to a build without the fleet level never sees, and so never erases, it.
+ */
+export interface PluginFleetFile {
+  version: 1;
+  plugins: Record<string, boolean>;
+}
+
+/** Why a named plugin was left out of an agent's loadout. Only one reason exists today. */
+export type LoadoutSkipReason = 'not_installed';
+
+/** A plugin a loadout named but that the agent was not given. */
+export interface LoadoutSkippedPlugin {
+  id: string;
+  reason: LoadoutSkipReason;
+}
+
+/** A plugin an agent was given, as installed at spawn (a record, not a pin). */
+export interface LoadoutGivenPlugin {
+  id: string;
+  /** Installed version at spawn; null when the registry carries none. */
+  version: string | null;
+  /** Install path at spawn; null when the registry carries none. */
+  installPath: string | null;
+}
+
+/**
+ * How the `KOOKR_PLUGIN_LOADOUTS` flag reads. `on` is exactly `1`/`true`;
+ * `killed` is an explicit `0`/`false`/`off`/`no` (the kill switch); anything
+ * else, including unset and empty, is `unset`.
+ */
+export type LoadoutActivationState = 'on' | 'killed' | 'unset';
+
+/** The two separate activation questions the launcher asks (RFC section 1 table). */
+export interface LoadoutActivation {
+  state: LoadoutActivationState;
+  /** Raw flag value, for diagnostics (undefined when unset). */
+  raw: string | undefined;
+  /** Should a first spawn resolve a loadout? */
+  firstSpawnResolves: boolean;
+  /** Should a resume replay the loadout recorded on the task? */
+  resumeReplays: boolean;
+  /** One plain sentence saying why. */
+  reason: string;
+}
 
 /**
  * The resolved, typed loadout the launcher hands the adapter. Spawn-mode aware
@@ -146,7 +209,103 @@ export interface TaskLoadoutRecord extends ResolvedLoadoutProvenance {
   settingsPath: string | null;
   /** ISO-8601 time the loadout was recorded. */
   recordedAt: string;
+  /**
+   * The plugins the agent was given, with version and install path at spawn.
+   * Optional so records written before the fleet level still read.
+   */
+  plugins?: LoadoutGivenPlugin[];
+  /** Named plugins left out at spawn, with a reason. Optional for older records. */
+  skipped?: LoadoutSkippedPlugin[];
+  /**
+   * Set on a replay (resume, crash recovery, relaunch): the recorded plugins
+   * that the registry no longer holds at that moment. The replay still hands
+   * the recorded ids over; this only reports what the agent will not find.
+   */
+  replaySkipped?: LoadoutSkippedPlugin[];
+  /** ISO-8601 time of the last replay that computed `replaySkipped`. */
+  replayedAt?: string;
+  /**
+   * True when the record step waited past its deadline for the plugin
+   * mutation lock and proceeded without it (a plugin change may have run
+   * underneath this spawn).
+   */
+  spawnGateDegraded?: true;
+  /**
+   * Per-plugin result of the after-first-turn check against the transcript's
+   * skill listing. `no_skills_seen` does not prove the plugin failed: a plugin
+   * that ships only subagents or hooks has no skills to see.
+   */
+  skillCheck?: {
+    checkedAt: string;
+    results: Record<string, 'skills_seen' | 'no_skills_seen'>;
+  };
 }
+
+// ---------------------------------------------------------------------------
+// Fleet set (RFC "Plugins for the Kookr fleet", slice 1)
+// ---------------------------------------------------------------------------
+
+/** Per-plugin outcome of the fleet check (what a new agent actually loads). */
+export type FleetCheckPluginState = 'loaded' | 'missing' | 'errored';
+
+export interface FleetCheckPluginResult {
+  id: string;
+  state: FleetCheckPluginState;
+  /** Loaded version (state `loaded`). */
+  version?: string | null;
+  /** `plugin_errors` text (state `errored`). */
+  error?: string;
+}
+
+/** Result of `POST /api/plugins/fleet/check`. */
+export interface FleetCheckResult {
+  checkedAt: string;
+  durationMs: number;
+  /** Why the check ran: `manual`, `fleet-change`, `plugin-update`, `external-change`. */
+  trigger: string;
+  /** False when the probe itself failed (no init message, timeout, spawn error). */
+  ok: boolean;
+  /** Probe failure text when `ok` is false. */
+  error?: string;
+  /** One row per plugin the fleet set enables (after the installed filter). */
+  plugins: FleetCheckPluginResult[];
+  /** Named in the fleet set but not installed, so not handed to the probe. */
+  skipped: LoadoutSkippedPlugin[];
+  /** Marketplace plugins that loaded without being asked for. */
+  unexpected: string[];
+  /** `plugin_errors` entries that name no requested plugin (e.g. a renamed id). */
+  otherErrors: Array<{ plugin: string; type?: string; message: string }>;
+}
+
+/** A version change made outside Kookr to a plugin in the fleet set (R10). */
+export interface FleetExternalChange {
+  pluginId: string;
+  fromVersion: string | null;
+  toVersion: string | null;
+  detectedAt: string;
+  /** Running tasks whose record holds a different (older) version of this plugin. */
+  affectedTaskIds: string[];
+}
+
+/** `GET /api/plugins/fleet` and `PUT /api/plugins/fleet` body. */
+export interface FleetStatus {
+  plugins: Record<string, boolean>;
+  activation: LoadoutActivation;
+  /** Fleet-set ids enabled but absent from the registry right now. */
+  namedNotInstalled: string[];
+  lastCheck: FleetCheckResult | null;
+  checkRunning: boolean;
+  /** Recent external version changes to fleet plugins, newest first (in memory). */
+  externalChanges: FleetExternalChange[];
+  /** Live tasks whose loadout record step proceeded without the plugin mutation lock. */
+  spawnGateDegradedTaskIds: string[];
+  /** Applies to Claude agents only, and to new spawns only (R9). */
+  coverageNote: string;
+}
+
+/** R9: the fleet set's honest coverage line, single source for API and UI. */
+export const FLEET_COVERAGE_NOTE =
+  'Applies to Claude agents only, from their next spawn. Running agents keep what they started with.';
 
 /** An empty resolved loadout — the default-off / nothing-attached shape. Byte-identity baseline. */
 export function emptyResolvedLoadout(): ResolvedLoadout {

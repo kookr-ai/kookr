@@ -20,7 +20,7 @@ import { isMissingWorktreeHealth } from '../core/worktree-health.js';
 import { displayPromptForTask } from '../core/prompt-display.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
-import { resolveOrReplayLoadout, withSpawnGate, spawnGateActive, type LoadoutStore } from './plugin-manager/loadout-store.js';
+import { prepareSpawnLoadout, type LoadoutStore } from './plugin-manager/loadout-store.js';
 import type { PluginMutationService } from './plugin-manager/mutation-service.js';
 import { stampSessionConfigEpoch, type ConfigEpochStore } from './plugin-manager/config-epoch.js';
 import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
@@ -1168,14 +1168,14 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // resolve-or-replay the loadout (RFC Layer 2 / slice 2b): replay a
       // recorded loadout verbatim, else resolve fresh and record — otherwise a
       // task parked under load would silently never get its loadout applied.
-      const loadoutFields = await withSpawnGate(
-        deps.lifecycleDeps.pluginMutationService,
-        spawnGateActive(),
-        () =>
-          resolveOrReplayLoadout(
-            { loadoutStore: deps.lifecycleDeps.loadoutStore, taskStore },
-            pending,
-          ),
+      const loadoutFields = await prepareSpawnLoadout(
+        {
+          loadoutStore: deps.lifecycleDeps.loadoutStore,
+          taskStore,
+          mutation: deps.lifecycleDeps.pluginMutationService,
+          dirLoadedPluginNames: adapter.dirLoadedPluginNamesForLaunch?.bind(adapter),
+        },
+        pending,
       );
       // Stamp the config epoch this promoted session starts under (RFC
       // "Surfacing reload drift"). No-op off claude / when unwired / on replay.
