@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import type { AgentState } from '../../../shared/protocol.js';
 import type { ChainEndReason, TaskChainState } from '../../../shared/contracts/playbook-chain.js';
 import { useKookrStore } from '../../store/useStore.js';
+import { stopPlaybookChain } from '../../api/tasks.js';
 
 /**
  * Playbook-chain indicator (RFC rfc-playbook-chains): shows that a task is one
@@ -93,13 +94,7 @@ export function ChainStopButton({ agent }: { agent: AgentState }): React.ReactEl
   async function stop(): Promise<void> {
     setPending(true);
     try {
-      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId!)}/chain/stop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ by: 'operator' }),
-      });
-      const body = await res.json().catch(() => ({})) as { error?: string };
-      if (!res.ok) throw new Error(body.error ?? `Request failed with ${res.status}`);
+      await stopPlaybookChain(taskId!);
       useKookrStore.getState().handleAlert('', 'The chain will stop after this iteration.', 'info');
     } catch (err) {
       useKookrStore.getState().handleAlert('', `Could not stop chain: ${err instanceof Error ? err.message : String(err)}`, 'error');

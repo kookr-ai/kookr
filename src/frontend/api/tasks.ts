@@ -257,3 +257,20 @@ export async function getArchivedTasks(
   if (parsed instanceof Error) throw parsed;
   return parsed;
 }
+
+/**
+ * POST a stop request for the playbook chain containing `taskId` (RFC
+ * rfc-playbook-chains): the chain ends after its current iteration. Throws with
+ * the server's error message on a non-2xx.
+ */
+export async function stopPlaybookChain(taskId: string): Promise<void> {
+  const { ok, status, body } = await fetchResult<{ error?: string }>(
+    `/api/tasks/${encodeURIComponent(taskId)}/chain/stop`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ by: 'operator' }),
+    },
+  );
+  if (!ok) throw new Error(body?.error ?? `Request failed with ${status}`);
+}
