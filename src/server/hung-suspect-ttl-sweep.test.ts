@@ -10,6 +10,7 @@ import {
   HungSuspectTtlReclaimMetrics,
   buildHungSuspectTtlDisposition,
   classifyHungSuspectSweepFailure,
+  resolveReapDeliveredPr,
 } from './hung-suspect-ttl-sweep.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
 import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
@@ -295,6 +296,184 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
       .split('\n')
       .map((l) => JSON.parse(l));
     expect(ledgerRows[0].disposition).toBe('obsolete');
+  });
+
+  // Issue #3578 (task 02107c4f): the in-memory attribution came back empty
+  // for a task whose PR had merged from the branch it pushed.
+  it('falls back to the branch probe when the in-memory attribution is empty', async () => {
+    const task = makeHungTask({ id: 'branch-delivered' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    let terminatedBeforeProbe: boolean | undefined;
+    const resolveMergedPrByBranch = vi.fn(async () => {
+      terminatedBeforeProbe = taskStore.terminateTask.mock.calls.length > 0;
+      return { prNumber: 3575, prUrl: 'https://github.com/o/r/pull/3575' };
+    });
+
+    const result = await reclaimAgedHungSuspectTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        dispositionLedgerPath,
+        isHungSuspect: () => true,
+        getLiveness: () => silentFor(TTL_MS + 60_000),
+        isHoldingOpenPr: () => false,
+        resolveMergedPr: () => null,
+        resolveMergedPrByBranch,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual(['branch-delivered']);
+    expect(resolveMergedPrByBranch).toHaveBeenCalledWith(task);
+    // The slot is already freed when the branch probe runs.
+    expect(terminatedBeforeProbe).toBe(true);
+    expect(taskStore.setDisposition).toHaveBeenCalledWith(
+      'branch-delivered',
+      expect.objectContaining({
+        outcome: 'delivered_then_hung',
+        deliveredPr: { number: 3575, url: 'https://github.com/o/r/pull/3575' },
+      }),
+    );
+    const ledgerRows = (await readFile(dispositionLedgerPath, 'utf-8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    expect(ledgerRows[0].disposition).toBe('obsolete');
+    const auditRows = (await readFile(auditLogPath, 'utf-8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    expect(auditRows[0]).toMatchObject({
+      outcome: 'delivered_then_hung',
+      deliveredPr: { number: 3575 },
+    });
+  });
+
+  it('does not consult the branch probe when the in-memory attribution already found a PR', async () => {
+    const task = makeHungTask({ id: 'store-delivered' });
+    const taskStore = makeMockTaskStore([task]);
+    const resolveMergedPrByBranch = vi.fn(async () => ({ prNumber: 9 }));
+
+    await reclaimAgedHungSuspectTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        isHungSuspect: () => true,
+        getLiveness: () => silentFor(TTL_MS + 60_000),
+        isHoldingOpenPr: () => false,
+        resolveMergedPr: () => ({ prNumber: 42 }),
+        resolveMergedPrByBranch,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(resolveMergedPrByBranch).not.toHaveBeenCalled();
+    expect(taskStore.setDisposition).toHaveBeenCalledWith(
+      'store-delivered',
+      expect.objectContaining({ deliveredPr: { number: 42 } }),
+    );
+  });
+
+  it('terminates every selected task before waiting on any branch probe', async () => {
+    const first = makeHungTask({ id: 'first' });
+    const second = makeHungTask({
+      id: 'second',
+      sessions: [aSession({ tmuxSession: 'kookr-hung-2', lastStatus: 'inProgress' })],
+    });
+    const taskStore = makeMockTaskStore([first, second]);
+    // Record the real sequence; an expect() inside the probe mock would be
+    // swallowed by resolveReapDeliveredPr's catch.
+    const events: string[] = [];
+    taskStore.terminateTask.mockImplementation((id: string) => { events.push(`terminate:${id}`); });
+    let releaseFirstProbe: (value: null) => void = () => {};
+    const resolveMergedPrByBranch = vi.fn((task: Task) => {
+      events.push(`probe:${task.id}`);
+      if (task.id === 'first') {
+        return new Promise<null>((resolve) => { releaseFirstProbe = resolve; });
+      }
+      return Promise.resolve(null);
+    });
+
+    const pass = reclaimAgedHungSuspectTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        isHungSuspect: () => true,
+        getLiveness: () => silentFor(TTL_MS + 60_000),
+        isHoldingOpenPr: () => false,
+        resolveMergedPr: () => null,
+        resolveMergedPrByBranch,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+    await vi.waitFor(() => expect(resolveMergedPrByBranch).toHaveBeenCalledTimes(2));
+    releaseFirstProbe(null);
+    const result = await pass;
+
+    expect(result.reclaimedTaskIds).toEqual(['first', 'second']);
+    expect(events).toEqual(['terminate:first', 'terminate:second', 'probe:first', 'probe:second']);
+  });
+
+  it('a throwing in-memory attribution does not abort the pass (label falls back to the branch probe)', async () => {
+    const first = makeHungTask({ id: 'first' });
+    const second = makeHungTask({
+      id: 'second',
+      sessions: [aSession({ tmuxSession: 'kookr-hung-2', lastStatus: 'inProgress' })],
+    });
+    const taskStore = makeMockTaskStore([first, second]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await reclaimAgedHungSuspectTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        isHungSuspect: () => true,
+        getLiveness: () => silentFor(TTL_MS + 60_000),
+        isHoldingOpenPr: () => false,
+        resolveMergedPr: () => { throw new Error('store broke'); },
+        resolveMergedPrByBranch: async (task) => (task.id === 'second' ? { prNumber: 5 } : null),
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+    warn.mockRestore();
+
+    expect(result.reclaimedTaskIds).toEqual(['first', 'second']);
+    const byId = new Map(taskStore.setDisposition.mock.calls.map(([id, d]: [string, any]) => [id, d]));
+    expect(byId.get('first')).toMatchObject({ outcome: 'terminated' });
+    expect(byId.get('second')).toMatchObject({ outcome: 'delivered_then_hung', deliveredPr: { number: 5 } });
+  });
+
+  it('keeps terminated / needs-human when the branch probe rejects', async () => {
+    const task = makeHungTask({ id: 'probe-error' });
+    const taskStore = makeMockTaskStore([task]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await reclaimAgedHungSuspectTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        dispositionLedgerPath,
+        isHungSuspect: () => true,
+        getLiveness: () => silentFor(TTL_MS + 60_000),
+        isHoldingOpenPr: () => false,
+        resolveMergedPr: () => null,
+        resolveMergedPrByBranch: async () => { throw new Error('gh exploded'); },
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+    warn.mockRestore();
+
+    expect(result.reclaimedTaskIds).toEqual(['probe-error']);
+    const disposition = taskStore.setDisposition.mock.calls[0][1];
+    expect(disposition.outcome).toBe('terminated');
+    expect(disposition.deliveredPr).toBeUndefined();
+    const ledgerRows = (await readFile(dispositionLedgerPath, 'utf-8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    expect(ledgerRows[0].disposition).toBe('needs-human');
   });
 
   it('exempts a stranded-PR task (isHoldingOpenPr === true)', async () => {
@@ -954,5 +1133,37 @@ describe('buildHungSuspectTtlDisposition', () => {
     );
     expect(d.outcome).toBe('delivered_then_hung');
     expect(d.deliveredPr).toEqual({ number: 99, url: 'https://example/99' });
+  });
+});
+
+describe('resolveReapDeliveredPr (issue #3578)', () => {
+  const task = makeHungTask({ id: 'probe' });
+
+  it('returns the in-memory attribution without calling the fallback', async () => {
+    const fallback = vi.fn(async () => ({ prNumber: 2 }));
+    await expect(
+      resolveReapDeliveredPr(task, { prNumber: 1 }, fallback, { logPrefix: '[t]' }),
+    ).resolves.toEqual({ prNumber: 1 });
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it('returns null with no attribution and no fallback', async () => {
+    await expect(resolveReapDeliveredPr(task, null, undefined, { logPrefix: '[t]' })).resolves.toBeNull();
+  });
+
+  it('gives up after the timeout and reports no delivery', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = resolveReapDeliveredPr(
+        task,
+        null,
+        () => new Promise(() => {}),
+        { logPrefix: '[t]', timeoutMs: 50 },
+      );
+      await vi.advanceTimersByTimeAsync(50);
+      await expect(pending).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

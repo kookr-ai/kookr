@@ -378,11 +378,198 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
     expect(snap.openPrFailsafeOverHardTtlCount).toBe(1);
   });
 
-  it('never force-completes as delivered — disposition is always terminated/needs-human', () => {
+  it('without delivery attribution the disposition is terminated/needs-human', () => {
     const d = buildProviderPausedTtlDisposition(NOW.toISOString());
     expect(d.reason).toBe('provider_paused_ttl');
     expect(d.outcome).toBe('terminated');
     expect(d.deliveredPr).toBeUndefined();
+    expect(d.detail).toContain('not delivered');
+  });
+
+  it('issue #3578: a merged PR labels the disposition delivered_then_hung, not "not delivered"', () => {
+    const d = buildProviderPausedTtlDisposition(NOW.toISOString(), {
+      prNumber: 3577,
+      prUrl: 'https://github.com/o/r/pull/3577',
+    });
+    expect(d.reason).toBe('provider_paused_ttl');
+    expect(d.outcome).toBe('delivered_then_hung');
+    expect(d.deliveredPr).toEqual({ number: 3577, url: 'https://github.com/o/r/pull/3577' });
+    expect(d.detail).toContain('#3577');
+    expect(d.detail).not.toContain('not delivered');
+  });
+
+  // Issue #3578 (tasks e5427450 / 16dec794): the reap labelled already-merged
+  // work "billing/quota hold, not delivered".
+  it('issue #3578: already-merged task is still terminated but recorded delivered (ledger obsolete)', async () => {
+    const task = makePausedTask();
+    const taskStore = makeMockTaskStore([task]);
+    const broadcastToAll = vi.fn();
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, NOW.getTime() - (TTL_MS + 60_000));
+
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        auditLogPath,
+        dispositionLedgerPath,
+        broadcastToAll,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        isHoldingOpenPr: () => false,
+        resolveMergedPr: () => ({ prNumber: 3577, prUrl: 'https://github.com/o/r/pull/3577' }),
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    // Still reclaimed: a billing hold never auto-completes, even when delivered.
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+    expect(taskStore.terminateTask).toHaveBeenCalledWith('task-1', expect.anything());
+    expect(task.status).toBe('terminated');
+    expect(taskStore.setDisposition).toHaveBeenCalledWith(
+      'task-1',
+      expect.objectContaining({
+        reason: 'provider_paused_ttl',
+        outcome: 'delivered_then_hung',
+        deliveredPr: { number: 3577, url: 'https://github.com/o/r/pull/3577' },
+      }),
+    );
+
+    const ledgerRows = (await readFile(dispositionLedgerPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    expect(ledgerRows).toHaveLength(1);
+    expect(ledgerRows[0]).toMatchObject({ disposition: 'obsolete', source: 'provider-paused-ttl' });
+    expect(ledgerRows[0].detail).toContain('#3577');
+
+    const auditRows = (await readFile(auditLogPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    expect(auditRows[0]).toMatchObject({
+      type: 'task.providerPausedTtlReclaimed',
+      outcome: 'delivered_then_hung',
+      deliveredPr: { number: 3577 },
+    });
+
+    const alert = broadcastToAll.mock.calls[0][0];
+    expect(alert.details).toContain('1 had already merged their PR');
+    expect(alert.details).toContain('0 need human review');
+  });
+
+  it('issue #3578: branch probe supplies the label when the in-memory attribution is empty', async () => {
+    const task = makePausedTask();
+    const taskStore = makeMockTaskStore([task]);
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, NOW.getTime() - (TTL_MS + 60_000));
+    let terminatedBeforeProbe: boolean | undefined;
+    const resolveMergedPrByBranch = vi.fn(async () => {
+      terminatedBeforeProbe = taskStore.terminateTask.mock.calls.length > 0;
+      return { prNumber: 996 };
+    });
+
+    await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        dispositionLedgerPath,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        isHoldingOpenPr: () => false,
+        resolveMergedPr: () => null,
+        resolveMergedPrByBranch,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(resolveMergedPrByBranch).toHaveBeenCalledWith(task);
+    expect(terminatedBeforeProbe).toBe(true);
+    expect(taskStore.setDisposition).toHaveBeenCalledWith(
+      'task-1',
+      expect.objectContaining({ outcome: 'delivered_then_hung', deliveredPr: { number: 996 } }),
+    );
+    const ledger = JSON.parse((await readFile(dispositionLedgerPath, 'utf8')).trim());
+    expect(ledger.disposition).toBe('obsolete');
+  });
+
+  it('issue #3578: terminates every selected task before any branch probe; probe errors keep needs-human', async () => {
+    const first = makePausedTask({ id: 'first' });
+    const second = makePausedTask({
+      id: 'second',
+      sessions: [aSession({ tmuxSession: 'kookr-paused-2', lastStatus: 'inProgress' })],
+    });
+    const taskStore = makeMockTaskStore([first, second]);
+    const events: string[] = [];
+    const baseTerminate = taskStore.terminateTask.getMockImplementation();
+    taskStore.terminateTask.mockImplementation((id: string, ...rest: unknown[]) => {
+      events.push(`terminate:${id}`);
+      return baseTerminate?.(id, ...rest);
+    });
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(first, true, NOW.getTime() - (TTL_MS + 60_000));
+    tracker.observe(second, true, NOW.getTime() - (TTL_MS + 60_000));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        dispositionLedgerPath,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        isHoldingOpenPr: () => false,
+        resolveMergedPr: () => null,
+        resolveMergedPrByBranch: async (task) => {
+          events.push(`probe:${task.id}`);
+          if (task.id === 'first') throw new Error('gh exploded');
+          return { prNumber: 7 };
+        },
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+    warn.mockRestore();
+
+    expect(result.reclaimedTaskIds).toEqual(['first', 'second']);
+    expect(events).toEqual(['terminate:first', 'terminate:second', 'probe:first', 'probe:second']);
+    const byId = new Map(taskStore.setDisposition.mock.calls.map(([id, d]: [string, any]) => [id, d]));
+    expect(byId.get('first')).toMatchObject({ outcome: 'terminated' });
+    expect(byId.get('first').deliveredPr).toBeUndefined();
+    expect(byId.get('second')).toMatchObject({ outcome: 'delivered_then_hung', deliveredPr: { number: 7 } });
+  });
+
+  it('issue #3578: with no merged PR found the label stays needs-human and the alert says all need review', async () => {
+    const task = makePausedTask();
+    const taskStore = makeMockTaskStore([task]);
+    const broadcastToAll = vi.fn();
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, NOW.getTime() - (TTL_MS + 60_000));
+
+    await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        auditLogPath,
+        dispositionLedgerPath,
+        broadcastToAll,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        isHoldingOpenPr: () => false,
+        resolveMergedPr: () => null,
+        resolveMergedPrByBranch: async () => null,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    const disposition = taskStore.setDisposition.mock.calls[0][1];
+    expect(disposition.outcome).toBe('terminated');
+    expect(disposition.deliveredPr).toBeUndefined();
+    const ledger = JSON.parse((await readFile(dispositionLedgerPath, 'utf8')).trim());
+    expect(ledger.disposition).toBe('needs-human');
+    const audit = JSON.parse((await readFile(auditLogPath, 'utf8')).trim());
+    expect(audit.outcome).toBe('terminated');
+    expect(audit.deliveredPr).toBeUndefined();
+    expect(broadcastToAll.mock.calls[0][0].details).toContain('All need human review');
   });
 
   it('skips under hard TTL when claim-backed recordProviderPause says holdForResume (#1896 / #2423)', async () => {

@@ -80,6 +80,7 @@ import {
 } from '../core/open-pr-hold.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
+import { createMergedPrByBranchProbe } from './merged-pr-by-branch-probe.js';
 import {
   countDeliveredPullRequests,
   createLoopDeliveryWatchdogRegistry,
@@ -1169,6 +1170,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         detectedFrom: pr.ref.detectedFrom,
       })),
     );
+
+  // Label-only fallback for the TTL reapers (issue #3578): the in-memory store
+  // above can be empty for a task that did merge its PR, so the reapers ask
+  // GitHub by the task's session branch before recording "not delivered".
+  // Never wired into the delivered-completion sweep — it must not complete.
+  const resolveMergedPrByBranch = createMergedPrByBranchProbe();
 
   // Delivery-aware loop watchdog (issue #1902, WS2.4 of #1699). Judges a Ralph
   // loop on POSITIVE delivery progress with hysteresis: sampled once per
@@ -4108,6 +4115,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       providerPausedOccupancyAlerter,
       getPostMergeCleanupBudgetMs,
       resolveMergedPr,
+      resolveMergedPrByBranch,
       loopDeliveryWatchdog,
       signalOutboxSpoolDir: defaultSignalOutboxDir(process.env),
       auditLogPath: join(kookrDir, 'audit.jsonl'),
