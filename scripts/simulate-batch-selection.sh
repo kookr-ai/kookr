@@ -3,14 +3,15 @@
 # filters for a repository, read-only.
 #
 # Reproduces the two filters the `parallel-issue-batch` playbook applies
-# (plugin/playbooks/parallel-issue-batch.md: its skip-label list and route table).
-# implement-github-issue's blank selector is looser: it picks architecture issues
-# and triages duplicate/blocked ones (its Step 0d and Phase 2.7).
+# (plugin/playbooks/parallel-issue-batch.md: author trust and its skip-label list).
+# Both playbooks pick architecture issues: parallel-issue-batch routes them `rfc`
+# (RFC-first, solo wave); implement-github-issue's blank selector also triages
+# duplicate/blocked ones (its Step 0d and Phase 2.7).
 #   1. Author trust  — allowOtherAuthors=false keeps only issues opened by the
 #                      authenticated gh user (issue bodies are untrusted input).
-#   2. Blocked-label — skip issues labelled automation-blocked, architecture,
-#                      blocked, duplicate, invalid, wontfix, not planned, or
-#                      question.
+#   2. Blocked-label — skip issues labelled automation-blocked, blocked,
+#                      duplicate, invalid, wontfix, not planned, or question.
+#                      (architecture is eligible: it routes `rfc`.)
 #
 # It never claims, edits, or closes an issue — the only GitHub calls are
 # `gh api user` and a single `gh issue list`.
@@ -28,7 +29,7 @@ fi
 ME="$(gh api user --jq .login)"
 
 # One anchored regex per playbook-named skip label (matched case-insensitively).
-SKIP='^automation-blocked$|^architecture$|^blocked$|^duplicate$|^invalid$|^wontfix$|^not planned$|^question$'
+SKIP='^automation-blocked$|^blocked$|^duplicate$|^invalid$|^wontfix$|^not planned$|^question$'
 
 gh issue list -R "$REPO" --state open --limit 200 \
   --json number,title,author,labels \

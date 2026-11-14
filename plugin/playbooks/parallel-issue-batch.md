@@ -480,7 +480,7 @@ For each filtered issue:
    - `safe`: narrow, likely disjoint files, clear verification.
    - `maybe`: unclear files or shared docs/config.
    - `unsafe`: broad refactor, global formatting, shared release files, changelog/release notes, dependency lockfile overlap, migration touching many modules, or likely same files as an already selected **work unit**.
-4. Reject `unsafe`.
+4. Reject `unsafe` — **except** an issue that step 6 routes `rfc`: a broad refactor or migration the issue itself asks for is not unsafe on breadth alone, it is RFC-gated. Keep rejecting anything unsafe for other reasons (global formatting, lockfile overlap, same files as another selected unit).
 5. Include `maybe` only if the parent can assign a strict child write scope that avoids already selected work units' files.
 6. **Route the unit by observable features** (copied from `agent-fleet-orchestration` "Coding fleets" — never ask a model to rate difficulty):
 
@@ -488,9 +488,16 @@ For each filtered issue:
    |---|---|
    | one module, acceptance criterion present in the issue | `direct` — the child implements |
    | touches more than one module, OR failed before (prior-run blocker / burned target), OR no clear spec | `strong` — one child delivers it alone on a strong setting (Phase 4 adds `--effort high` when `childAgent` is `claude-code` or `codex-cli`; not for `default` or `grok-build`, which may reject it) |
-   | expected write scope above 8 files, OR labelled `architecture` | do not select — record `excluded_reason: "needs RFC/umbrella (route rule)"` |
+   | expected write scope above 8 files, OR labelled `architecture` or `needs rfc`, OR a refactor/migration across many modules that the issue explicitly asks for | `rfc` — one child delivers it **RFC-first**: it drafts an RFC in the repo, runs a bounded critic review, then implements in the same PR, on the strong setting (Phase 4 adds `--effort high` exactly as for `strong`) |
 
-   Record `route` and a one-line `reason` on the matrix row.
+   Rows are checked bottom-up: the first matching row wins, so an issue matching both `strong` and `rfc` routes `rfc`. Record `route` and a one-line `reason` on the matrix row.
+
+   **`rfc` route rules.** Architecture issues are delivered, not skipped:
+   - **Solo within this batch.** Phase 4 spawns an `rfc` unit only when none of this batch's children is in flight, and spawns nothing else until it merges or records a blocker. Its broad write scope would overlap any concurrent unit, so Phase 3 selects it alone, or as the last unit after every other selected unit is terminal. "Solo" is scoped to this batch: sibling coordinators on other repos or units are normal, and the issue-claim lease still guards the issue.
+   - **RFC location.** The child writes the RFC where the repo keeps RFCs (e.g. `docs/rfcs/NNNN-<slug>.md`, `docs/rfc/`); if the repo has none, the RFC goes in the PR description. The RFC states problem, design, alternatives rejected, migration/rollback, and the acceptance criteria it will be verified against.
+   - **Bounded review, no human gate.** The child follows the `rfc-iterative-review` skill with these overrides: at most 2 critic rounds total (parallel critics, e.g. `design-minimalist`, `boundary-critic`, `failure-mode-analyst`), with the skill's consensus-attack step counted inside those 2 rounds; the empirical `design-experimenter` probe is optional and capped at 30 minutes; and the skill's present-to-user step is **skipped** — the child incorporates or rebuts each finding in the RFC and proceeds without waiting for a human. The issue author filing it is the mandate; `approvePlan=true` remains the operator's way to review the plan before spawn.
+   - **One PR when it fits.** The RFC and its implementation ship in the same PR, which `Closes #N`. If the review concludes the change cannot land as one reviewable PR, the child ships stage 1 plus the RFC in this PR (`Refs #N`), files one follow-up issue per remaining stage (each referencing the RFC and #N; the **last** stage's issue states that its PR must also `Closes #N`), comments the stage plan on #N, and adds the `blocked` label to #N with a comment naming the follow-up issues as its blockers. That keeps #N out of later runs' pools (Phase 2 skips `blocked`) while the follow-ups, which are ordinary candidates, drain; the last stage's merge closes #N. That unit is complete when the stage-1 PR merges and the follow-ups exist.
+   - Only a genuinely unsplittable, unreviewable change, or one requiring a human decision the issue does not settle, becomes a recorded blocker — never "it is labelled architecture".
 
 ### 3.2 Bundle related issues into multi-issue work units (when efficient)
 
@@ -659,6 +666,7 @@ Hard constraints:
   current branches contain one issue marker.
 - Do not edit, commit, or push from the main checkout.
 - Keep write scope narrow. Expected files: <expected_files from selection matrix>.
+  (Route `rfc`: the expected files are the scope the RFC declares; stay inside it.)
 - Avoid these files unless absolutely required and explicitly justified: <forbidden_files>.
 - Do not add a changelog/release-note entry unless this unit cannot be accepted without it. If the repo has no changelog or the parent forbids it, do not create one.
 
@@ -746,7 +754,7 @@ Implementation target:
   If the guard aborts, do **not** create the PR: record the abort reason as the
   unit's blocker and report it instead.
 - Push the branch and open **one** PR that closes the issue in the unit
-  (`Closes #<N1>` in the body). The PR title/body must list that issue.
+  (`Closes #<N1>` in the body, or `Refs #<N1>` on the `rfc` staged path). The PR title/body must list that issue.
 - Monitor CI and fix failures. **CI-rerun bound — max 2 CI rerun attempts, then report and stop.** Re-run a failing check at most twice per PR; after the second failed rerun, **report the CI state** (failing check names and run links) and stop — **never loop** on reruns. Before spending a rerun, classify the failure: infra-red CI (budget/quota/runner outage — the run never executed the code) is non-blocking and should be classified non-blocking rather than rerun (see #1198), and does not consume one of the 2 attempts. (An unbounded rerun/merge loop once stranded a delivery task for ~3h — PR #1542 / task faf7902b.)
 - If you face a design choice the issues do not settle, pick the smallest implementation that satisfies them, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 - Before an autonomous self-merge, run the `independent-merge-review` skill: spawn a **fresh-context** reviewer (blind to your implementation reasoning) that reviews the diff and posts a machine-readable verdict PR comment with an exact `review-head-sha`. Codex is the primary reviewer lane; if Codex is unavailable or rate-limited, the Claude fallback lane runs. **Repo-policy split (issue #3027) — pick one lane, do not mix them.** On `kookr-ai/kookr` (hard gate): never degrade to zero review; fix or explicitly rebut each confirmed correctness/safety finding before merging; `pnpm merge` enforces this deterministically (it refuses to merge without a `pass` verdict bound to the current head; the `review-skipped-timeout` label is telemetry only); retry up to the durable default of 10 correction/review iterations, then record a concrete blocker; do not set `KOOKR_MERGE_REQUIRE_REVIEW=0` for an autonomous merge. On a repo whose `CLAUDE.md` / `AGENTS.md` documents that independent review is advisory (e.g. Lucy #3606): still post the verdict when the reviewer returns; timeout, missing, or BLOCK never become a task blocker or merge refusal; merge after local gates (`gh pr merge`; `KOOKR_MERGE_REQUIRE_REVIEW=0 gh pr merge` is authorized on that advisory autonomous merge if a global hook still denies the bare command). Classify: `kookr-ai/kookr` → hard; else `grep -qiE 'independent review is advisory' CLAUDE.md AGENTS.md` → advisory; else hard.
@@ -761,6 +769,7 @@ Implementation target:
 
 Efficiency (follow these; they are how this batch stays fast and cheap):
 - Unit route: <route from selection matrix> — <reason>.
+- If the unit route is `rfc`: before any implementation, write the RFC in the repo's RFC location (or the PR body if none) and follow `rfc-iterative-review` with these overrides: at most 2 critic rounds including the consensus attack, the `design-experimenter` probe optional and capped at 30 minutes, and **skip its present-to-user step** — never wait for a human. Commit the RFC with the implementation in the same PR. If review shows it cannot land as one reviewable PR, ship stage 1 + RFC (`Refs #<N1>`), file one follow-up issue per remaining stage (the last one's PR must `Closes #<N1>`), comment the stage plan on #<N1>, and add the `blocked` label to #<N1> naming those follow-ups.
 - Search the knowledge base before exploring the codebase (`token-efficiency`); do not re-read files you already read.
 - Run the full local gate once per head, and start the independent review on that same head concurrently (see the review skill's "Ordering" section); while fixing, run only the targeted tests for the files you touched.
 - On a CI failure, retry only the failing check (max 2 attempts, as above); never re-run the whole suite blindly.
@@ -768,7 +777,7 @@ Efficiency (follow these; they are how this batch stays fast and cheap):
 - No drive-by edits outside the expected files.
 
 Concurrent-task note:
-Other child tasks are working in the same repo on different work units. Do not revert their branches, do not edit their expected files, and avoid broad formatting.
+Other child tasks may be working in the same repo on different work units (none from this batch when the unit route is `rfc`). Do not revert their branches, do not edit their expected files, and avoid broad formatting.
 
 Supervisor note:
 If you are blocked by conflicts, unclear requirements, missing credentials, or a required shared-file edit, stop and report the blocker rather than widening scope. Historical/future multi-issue records are not newly spawned until atomic claim transfer exists.
@@ -813,13 +822,13 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
    ```bash
    AGENT_FLAG=""
    if [ "$CHILD_AGENT" != "default" ]; then AGENT_FLAG="--agent $CHILD_AGENT"; fi
-   # Route `strong` (Phase 3.1 step 6): raise reasoning effort for this unit's
+   # Route `strong` or `rfc` (Phase 3.1 step 6): raise reasoning effort for this unit's
    # child — only for an explicitly chosen agent that accepts --effort. With
    # childAgent=default the server may resolve to grok-build/opencode, which
    # reject --effort, so do not add it there (the unit still runs, unboosted).
    case "$CHILD_AGENT" in
      claude-code|codex-cli)
-       [ "<unit route>" = "strong" ] && AGENT_FLAG="$AGENT_FLAG --effort high" ;;
+       case "<unit route>" in strong|rfc) AGENT_FLAG="$AGENT_FLAG --effort high" ;; esac ;;
    esac
    # ISSUES_LABEL e.g. "#123" or "#200+#201"
    # UNIT_ISSUES is the whitespace-separated issue-number list for this unit;

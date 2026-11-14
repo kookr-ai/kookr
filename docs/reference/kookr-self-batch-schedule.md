@@ -143,17 +143,17 @@ The `extraInstruction` parameter restates this invariant to every child task.
 ## Selection simulation
 
 Before enabling, confirm that the batch will only surface eligible issues. This
-reproduces the two eligibility filters `parallel-issue-batch.md` applies (its
-skip-label list and route table). The standalone `implement-github-issue.md`
-blank selector is looser: it picks `architecture` issues and triages
+reproduces the two eligibility filters `parallel-issue-batch.md` applies (author
+trust and its skip-label list). Both playbooks pick `architecture` issues:
+`parallel-issue-batch.md` routes them `rfc` (RFC-first, solo wave, one PR). The
+standalone `implement-github-issue.md` blank selector also triages
 `duplicate`/`blocked` ones (Step 0d and Phase 2.7).
 
 1. **Author trust** — `allowOtherAuthors=false` keeps only issues opened by the
    operator, because issue bodies are untrusted prompt input.
 2. **Blocked-label skip** — skip issues labelled `automation-blocked`,
-   `architecture`, `blocked`, `duplicate`, `invalid`, `wontfix`, `not planned`,
-   or `question`. (On this route, `architecture` means "needs an RFC or
-   umbrella".)
+   `blocked`, `duplicate`, `invalid`, `wontfix`, `not planned`, or `question`.
+   `architecture` issues stay eligible; the batch routes them `rfc`.
 
 `scripts/simulate-batch-selection.sh` runs the check read-only (it never claims
 or modifies an issue):
@@ -164,7 +164,9 @@ scripts/simulate-batch-selection.sh kookr-ai/kookr
 
 Snapshot from `2026-07-28` against `kookr-ai/kookr` (60 author-trusted open
 issues → 34 eligible, 26 skipped by label — every skipped issue carries a
-skip-label, and no eligible issue does):
+skip-label, and no eligible issue does). It predates `architecture` becoming
+eligible: the four `[architecture]` rows below would now be ELIGIBLE, so the
+counts are stale:
 
 ```
 ELIGIBLE (34) — surface to batch:

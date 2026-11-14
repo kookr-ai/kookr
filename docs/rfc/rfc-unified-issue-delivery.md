@@ -110,7 +110,7 @@ This RFC therefore ships everything except bundles now. It defines bundles as a 
   |---|---|
   | 1 module, an acceptance criterion in the issue | `direct`: the child implements |
   | More than 1 module, OR failed before, OR no clear spec | `strong`: a child on a strong model, delivering alone, never batched with others |
-  | Write-scope matrix shows more than 8 files, OR the issue is labelled `architecture` | `skip`, with reason "needs RFC/umbrella" |
+  | Write-scope matrix shows more than 8 files, OR the issue is labelled `architecture` / `needs rfc` | `rfc`: one child, strong setting, solo wave; drafts an RFC in the repo, bounded critic review (≤2 rounds), then implements in the same PR (staged follow-up issues if it cannot fit one PR) |
 
   - Children run in parallel up to `maxConcurrentTasks`.
   - Children never spawn tasks.
