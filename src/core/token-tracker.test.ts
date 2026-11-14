@@ -93,8 +93,8 @@ describe('TokenTracker', () => {
       await tracker.scanAll();
 
       const usage = tracker.getUsage('task-1');
-      // Opus: $15/M input + $75/M output = $15 + $7.5 = $22.5
-      expect(usage!.costUsd).toBeCloseTo(22.5, 1);
+      // Opus 4.6: $5/M input + $25/M output = $5 + $2.5 = $7.5
+      expect(usage!.costUsd).toBeCloseTo(7.5, 1);
     });
 
     test('prices mixed-model transcripts with a separate bucket for each model', async () => {
@@ -1070,9 +1070,9 @@ describe('TokenTracker', () => {
 describe('estimateCost', () => {
   test('calculates Opus pricing correctly', () => {
     const pricing = getPricing('claude-opus-4-6');
-    // 1M input @ $15 + 1M output @ $75 = $90
+    // 1M input @ $5 + 1M output @ $25 = $30
     const cost = estimateCost(1_000_000, 1_000_000, 0, 0, pricing);
-    expect(cost).toBeCloseTo(90, 1);
+    expect(cost).toBeCloseTo(30, 1);
   });
 
   test('resolves Opus 4.7 pricing from the explicit model id', () => {
@@ -1087,14 +1087,14 @@ describe('estimateCost', () => {
 
   test('includes cache costs', () => {
     const pricing = getPricing('claude-opus-4-6');
-    // 1M cache write @ $18.75 + 1M cache read @ $1.875 = $20.625
+    // 1M cache write @ $6.25 + 1M cache read @ $0.50 = $6.75
     const cost = estimateCost(0, 0, 1_000_000, 1_000_000, pricing);
-    expect(cost).toBeCloseTo(20.625, 2);
+    expect(cost).toBeCloseTo(6.75, 2);
   });
 
   test('handles dated model IDs via prefix match', () => {
     const pricing = getPricing('claude-opus-4-6-20250514');
-    expect(pricing.inputPerMTok).toBe(15);
+    expect(pricing.inputPerMTok).toBe(5);
   });
 
   test('falls back to Sonnet pricing for unknown models', () => {
