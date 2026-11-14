@@ -39,8 +39,13 @@ Every 15 seconds the chain service looks at each chain's newest task:
 An iteration finishes when its task reaches a terminal status, however that
 happens: the agent completes the task, the operator completes it, or restart
 recovery closes it. When the agent raises `completion-ready`, the chain service
-closes the task itself about 30 seconds after the agent's turn ends (10 minutes
-at most), without waiting for Kookr's usual review window or an open PR.
+closes the task itself at the first sweep where the signal is at least 30
+seconds old and the agent's turn has ended (and in any case once the signal is
+10 minutes old), without waiting for Kookr's usual review window or an open PR.
+
+If the server's startup recovery fails, chains stay on hold (nothing new is
+launched) until the next clean restart, so a task recovery should have resumed
+is never skipped.
 
 **Idle backstop.** If the agent simply stops without closing its task — it
 finished but forgot, or it is waiting for an answer nobody will give — the
@@ -91,7 +96,7 @@ Each task in a chain shows a badge:
 | `stopped` | The operator or the agent asked it to stop. |
 | `iteration_cancelled` | The operator cancelled or manually stopped the current iteration. |
 | `runaway` | Three unhealthy iterations in a row: each failed, was killed by a watchdog, ran under 2 minutes, or stalled within 2 minutes and had to be closed by the idle backstop. |
-| `launch_failed` | The next iteration could not be launched three times in a row (for example the playbook was deleted). |
+| `launch_failed` | The next iteration could not be launched three times in a row (for example the playbook was deleted), or the third unhealthy iteration in a row never started. The attempt counter is kept in memory, so a restart allows a few more tries. |
 
 The reason and its detail are kept on the chain's last task. Server-log lines
 are prefixed `[playbook-chain]`.

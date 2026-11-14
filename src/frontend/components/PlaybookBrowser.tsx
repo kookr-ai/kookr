@@ -857,7 +857,9 @@ export function PlaybookBrowser({
                 type="number"
                 min={0.1}
                 max={168}
-                step={0.5}
+                // "any": a numeric step would count from `min` and make the
+                // browser reject whole hours like 6 or 8.
+                step="any"
                 inputMode="decimal"
                 value={repeatHours}
                 onChange={(e) => setRepeatHours(e.target.value)}

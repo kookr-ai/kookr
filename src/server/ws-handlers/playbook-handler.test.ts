@@ -146,3 +146,39 @@ Ship it.
     }
   });
 });
+
+describe('PlaybookHandler.launchPlaybook with a chain (RFC rfc-playbook-chains)', () => {
+  const base = { type: 'launchPlaybook' as const, cwd: '/repo', playbookPath: 'research.md', parameterValues: { subject: 'x' } };
+
+  test('starts a chain through the chain service with the validated bounds', async () => {
+    const sent: ServerMessage[] = [];
+    const startChain = vi.fn(async () => ({ task: { id: 't1', name: 'Research' }, queued: false }) as never);
+    const launchTask = vi.fn();
+    const handler = new PlaybookHandler({ send: (msg) => sent.push(msg), launchTask, playbookChainService: { startChain } });
+    await handler.handle({ ...base, chain: { maxIterations: 4, durationMinutes: 360 } });
+    expect(launchTask).not.toHaveBeenCalled();
+    expect(startChain).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: '/repo',
+      playbookPath: 'research.md',
+      parameterValues: { subject: 'x' },
+      spec: { maxIterations: 4, durationMinutes: 360 },
+      launchSource: 'websocket',
+    }));
+  });
+
+  test('refuses an invalid spec, a relaunch, or a server without chains, without launching', async () => {
+    const startChain = vi.fn();
+    const cases = [
+      { deps: { playbookChainService: { startChain } }, msg: { ...base, chain: {} } },
+      { deps: { playbookChainService: { startChain } }, msg: { ...base, chain: { maxIterations: 2 }, parentTaskId: 'p' } },
+      { deps: {}, msg: { ...base, chain: { maxIterations: 2 } } },
+    ];
+    for (const { deps, msg } of cases) {
+      const sent: ServerMessage[] = [];
+      const handler = new PlaybookHandler({ send: (m) => sent.push(m), ...deps });
+      await handler.handle(msg as never);
+      expect(sent.some((m) => JSON.stringify(m).toLowerCase().includes('error') || m.type === 'alert')).toBe(true);
+    }
+    expect(startChain).not.toHaveBeenCalled();
+  });
+});

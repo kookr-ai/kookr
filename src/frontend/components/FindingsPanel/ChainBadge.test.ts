@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { chainBadgeLabel, chainBadgeTitle, formatRemaining, isActiveChainTip } from './ChainBadge.js';
 import { parseRepeatInputs } from '../PlaybookBrowser.js';
 import type { TaskChainState } from '../../../shared/contracts/playbook-chain.js';
@@ -50,5 +50,46 @@ describe('parseRepeatInputs', () => {
     expect(parseRepeatInputs('', '0.5')).toEqual({ ok: true, value: { durationMinutes: 30 } });
     expect(parseRepeatInputs('2.5', '')).toMatchObject({ ok: false });
     expect(parseRepeatInputs('', '200')).toMatchObject({ ok: false });
+  });
+});
+
+describe('ChainStopButton', () => {
+  async function render(chain: TaskChainState) {
+    const React = await import('react');
+    const { act } = await import('react');
+    const { createRoot } = await import('react-dom/client');
+    const { ChainStopButton } = await import('./ChainBadge.js');
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(React.createElement(ChainStopButton, { agent: { agentId: 'a', taskId: 'tip-1', chain } as never }));
+    });
+    return { container, act, root };
+  }
+
+  it('posts an operator stop for the chain tip', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { container, act, root } = await render({ ...base, maxIterations: 10 });
+    const button = container.querySelector('button')!;
+    expect(button.textContent).toBe('Stop chain');
+    await act(async () => { button.click(); });
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/tip-1/chain/stop', expect.objectContaining({ method: 'POST', body: JSON.stringify({ by: 'operator' }) }));
+    act(() => root.unmount());
+    vi.unstubAllGlobals();
+  });
+
+  it('is hidden once a stop is pending, on ended chains, and on earlier iterations', async () => {
+    for (const chain of [
+      { ...base, stopRequest: { at: '', by: 'operator' as const } },
+      { ...base, ended: { at: '', reason: 'stopped' as const } },
+      { ...base, successorTaskId: 'next' },
+    ]) {
+      const { container, act, root } = await render(chain);
+      expect(container.querySelector('button')).toBeNull();
+      act(() => root.unmount());
+    }
   });
 });

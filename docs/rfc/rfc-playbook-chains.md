@@ -557,9 +557,9 @@ completion-ready` showed why agents' signals often "don't count": each agent
 raised the signal mid-turn, kept going (a Stop-hook retrospective prompt resumed
 its turn), and the event pipeline cleared the signal as stale ("turn resumed").
 That is pre-existing behaviour for every task. The chain still advanced: the
-idle backstop closed each iteration 5 minutes after it went idle, as a healthy
-iteration. The service also closes a tip whose signal *does* survive (30 s
-after its turn ends, 10 minutes at most), because Kookr's generic auto-close
+idle backstop closed each iteration 5 minutes after it went idle. The service
+also closes a tip whose signal *does* survive (at the first sweep where the
+signal is 30 s old and the turn has ended; 10 minutes at most), because Kookr's generic auto-close
 waits out the review window and holds for an open PR — which the research
 playbook deliberately leaves open.
 

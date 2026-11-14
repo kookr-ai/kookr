@@ -44,6 +44,7 @@ describe('PlaybookBrowser Repeat (playbook chain) inputs', () => {
   let container: HTMLDivElement;
   let root: Root;
   let sent: ClientMessage[];
+  let validity: { iterations: boolean; hours: boolean };
 
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -84,18 +85,38 @@ describe('PlaybookBrowser Repeat (playbook chain) inputs', () => {
         .find((card) => card.textContent?.includes('Plain'))!
         .click();
     });
+    const iterationsInput = container.querySelector<HTMLInputElement>('input[aria-label="Number of iterations"]')!;
+    const hoursInput = container.querySelector<HTMLInputElement>('input[aria-label="Repeat for this many hours"]')!;
     await act(async () => {
-      setInputValue(container.querySelector<HTMLInputElement>('input[aria-label="Number of iterations"]')!, iterations);
-      setInputValue(container.querySelector<HTMLInputElement>('input[aria-label="Repeat for this many hours"]')!, hours);
+      setInputValue(iterationsInput, iterations);
+      setInputValue(hoursInput, hours);
     });
+    // A raw submit event skips the browser's own constraint validation, so
+    // check it explicitly: a real browser would refuse to submit otherwise.
+    validity = { iterations: iterationsInput.checkValidity(), hours: hoursInput.checkValidity() };
     await act(async () => {
       container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     });
     await flush();
   }
 
+  test('accepts whole and half hours in the browser itself', async () => {
+    await flush();
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((card) => card.textContent?.includes('Plain'))!
+        .click();
+    });
+    const hoursInput = container.querySelector<HTMLInputElement>('input[aria-label="Repeat for this many hours"]')!;
+    for (const hours of ['6', '8', '0.5', '1.5', '168']) {
+      await act(async () => { setInputValue(hoursInput, hours); });
+      expect(hoursInput.checkValidity(), hours).toBe(true);
+    }
+  });
+
   test('sends the chain bounds with the launch when Repeat is filled in', async () => {
     await selectAndSubmit('4', '6');
+    expect(validity).toEqual({ iterations: true, hours: true });
     expect(sent).toEqual([expect.objectContaining({
       type: 'launchPlaybook',
       playbookPath: 'plain.md',

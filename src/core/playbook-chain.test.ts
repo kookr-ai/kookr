@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CHAIN_MAX_LAUNCH_FAILURES,
+  CHAIN_MIN_HEALTHY_ITERATION_MS,
   CHAIN_RUNAWAY_STREAK,
   classifyIteration,
   decideChainStep,
@@ -8,7 +10,7 @@ import {
   validateChainSpec,
   type ChainTipView,
 } from './playbook-chain.js';
-import type { TaskChainState } from '../shared/contracts/playbook-chain.js';
+import { CHAIN_TIME_ONLY_SAFETY_CAP, type TaskChainState } from '../shared/contracts/playbook-chain.js';
 
 const T0 = new Date('2026-11-14T20:00:00.000Z');
 const minutes = (n: number) => new Date(T0.getTime() + n * 60_000);
@@ -39,6 +41,24 @@ function tip(overrides: Partial<ChainTipView> & { ranMinutes?: number } = {}): C
   };
 }
 
+describe('documented limits', () => {
+  it('match the values the docs quote', () => {
+    expect(CHAIN_TIME_ONLY_SAFETY_CAP).toBe(50);
+    expect(CHAIN_MIN_HEALTHY_ITERATION_MS).toBe(2 * 60_000);
+    expect(CHAIN_RUNAWAY_STREAK).toBe(3);
+    expect(CHAIN_MAX_LAUNCH_FAILURES).toBe(3);
+  });
+
+  it('accepts the upper bounds and the healthy-run boundary exactly', () => {
+    expect(validateChainSpec({ maxIterations: 200, durationMinutes: 10_080 }).ok).toBe(true);
+    const at = (ms: number) => classifyIteration(tip({ finishedAt: new Date(T0.getTime() + ms) }));
+    expect(at(119_999)).toMatchObject({ healthy: false });
+    expect(at(120_000)).toMatchObject({ healthy: true });
+    expect(classifyIteration(tip({ chain: chain({ idleClosedAfterActiveMs: 119_999 }) }))).toMatchObject({ healthy: false });
+    expect(classifyIteration(tip({ chain: chain({ idleClosedAfterActiveMs: 120_000 }) }))).toMatchObject({ healthy: true });
+  });
+});
+
 describe('validateChainSpec', () => {
   it('accepts a count, a duration, or both', () => {
     expect(validateChainSpec({ maxIterations: 3 })).toEqual({ ok: true, value: { maxIterations: 3 } });
@@ -60,7 +80,7 @@ describe('validateChainSpec', () => {
 });
 
 describe('initialChainState', () => {
-  it('turns a duration into an absolute deadline and caps a time-only chain', () => {
+  it('turns a duration into an absolute deadline', () => {
     const state = initialChainState({ durationMinutes: 90 }, T0);
     expect(state.deadlineAt).toBe(minutes(90).toISOString());
     expect(state.maxIterations).toBeUndefined();
@@ -160,9 +180,10 @@ describe('decideChainStep', () => {
     expect(decideChainStep(tip({ chain: { ...both, iteration: 10 } }), minutes(30))).toMatchObject({ reason: 'iterations_reached' });
   });
 
-  it('stops a time-only chain at the safety cap', () => {
-    const timed = chain({ maxIterations: undefined, iteration: 50, deadlineAt: minutes(10_000).toISOString() });
-    expect(decideChainStep(tip({ chain: timed }), minutes(40))).toMatchObject({ kind: 'end', reason: 'safety_cap' });
+  it('stops a time-only chain at exactly 50 iterations', () => {
+    const timed = (iteration: number) => chain({ maxIterations: undefined, iteration, deadlineAt: minutes(10_000).toISOString() });
+    expect(decideChainStep(tip({ chain: timed(49) }), minutes(40))).toMatchObject({ kind: 'launch' });
+    expect(decideChainStep(tip({ chain: timed(50) }), minutes(40))).toMatchObject({ kind: 'end', reason: 'safety_cap' });
   });
 
   it('honours a stop request once the iteration finishes, with the requester reason', () => {

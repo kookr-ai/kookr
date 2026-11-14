@@ -217,19 +217,6 @@ export function renderChainPreamble(chain: TaskChainState): string {
   ].join('\n');
 }
 
-/** Human label for an end reason, used by the CLI and the dashboard badge. */
-export function chainEndReasonLabel(reason: ChainEndReason): string {
-  switch (reason) {
-    case 'iterations_reached': return 'all iterations ran';
-    case 'deadline_reached': return 'deadline reached';
-    case 'safety_cap': return 'safety cap reached';
-    case 'stopped': return 'stopped';
-    case 'iteration_cancelled': return 'iteration cancelled';
-    case 'runaway': return 'stopped: iterations kept failing';
-    case 'launch_failed': return 'next iteration failed to launch';
-  }
-}
-
 function toMs(value: Date | string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const ms = value instanceof Date ? value.getTime() : Date.parse(value);

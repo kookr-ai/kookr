@@ -1,12 +1,25 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskStore, type Task } from '../core/tasks.js';
 import type { LaunchOpts } from '../shared/contracts/launch.js';
 import type { AgentEvent, Anomaly } from '../core/types.js';
-import { AutomationKillSwitchError, type LaunchResult, type LaunchTaskServerOptions } from './launch-service.js';
+import {
+  AutomationKillSwitchError,
+  DrainModeError,
+  HostLoadAdmissionError,
+  PendingQueueFullError,
+  QuotaHeadroomAdmissionError,
+  SpawnBurstLimitError,
+  type LaunchResult,
+  type LaunchTaskServerOptions,
+} from './launch-service.js';
 import { CHAIN_IDLE_COMPLETE_MS, CHAIN_SIGNAL_CLOSE_CEILING_MS, CHAIN_SIGNAL_SETTLE_MS, PlaybookChainService } from './playbook-chain-service.js';
 import type { PreparePlaybookLaunchInput, PreparedPlaybookLaunch } from './use-cases/playbook-launch.js';
 
 const HOUR = 60 * 60_000;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /**
  * Harness around a real TaskStore. `launchTask` mimics the real launcher's
@@ -14,8 +27,12 @@ const HOUR = 60 * 60_000;
  * `chain` stamp, then starts it with one session.
  */
 function harness(opts: { launchImpl?: (o: LaunchOpts, s?: LaunchTaskServerOptions) => Promise<LaunchResult> } = {}) {
-  const taskStore = new TaskStore();
+  // One clock for everything: TaskStore stamps createdAt/finishedAt with
+  // `new Date()`, the service reads `now()`; both must agree.
+  vi.useFakeTimers({ toFake: ['Date'] });
   let nowMs = Date.parse('2026-11-14T20:00:00.000Z');
+  vi.setSystemTime(nowMs);
+  const taskStore = new TaskStore();
   const anomalies = new Map<string, Anomaly | null>();
   const events = new Map<string, AgentEvent[]>();
   const subagents = new Map<string, number>();
@@ -91,7 +108,7 @@ function harness(opts: { launchImpl?: (o: LaunchOpts, s?: LaunchTaskServerOption
     prepareInputs,
     launchTask,
     completeIdleIteration,
-    advance: (ms: number) => { nowMs += ms; },
+    advance: (ms: number) => { nowMs += ms; vi.setSystemTime(nowMs); },
     nowMs: () => nowMs,
     /** Agent parked at its prompt after a clean Stop (optionally with background work still running). */
     setIdle: (task: Task, idle: boolean, extra: { backgroundTasks?: number; subagents?: number } = {}) => {
@@ -104,11 +121,10 @@ function harness(opts: { launchImpl?: (o: LaunchOpts, s?: LaunchTaskServerOption
         : [{ type: 'tool_use', sessionId: 's', toolName: 'Bash' } as AgentEvent]);
       subagents.set(id, extra.subagents ?? 0);
     },
-    /** Finish a running iteration as if its agent completed it after `ranMs`. */
+    /** Let a running iteration work for `ranMs`, then have its agent complete it. */
     finish: (task: Task, ranMs = HOUR / 2) => {
-      // Backdate the session so the iteration "ran" for ranMs before now.
-      const live = taskStore.viewTasks().find((t) => t.id === task.id)!;
-      live.sessions[0].createdAt = new Date(Date.now() - ranMs);
+      nowMs += ranMs;
+      vi.setSystemTime(nowMs);
       taskStore.completeTask(task.id, { source: 'task_self', reason: 'completed_normal' });
     },
     chainTasks: (chainId: string) => service.listChain(chainId),
@@ -119,7 +135,7 @@ async function startResearchChain(h: ReturnType<typeof harness>, spec: { maxIter
   const result = await h.service.startChain({
     cwd: '/repo',
     playbookPath: 'agentic-capability-research.md',
-    parameterValues: { subject: '' },
+    parameterValues: { subject: 'memory-architecture' },
     spec,
     launchSource: 'websocket',
   });
@@ -162,6 +178,15 @@ describe('PlaybookChainService sweep', () => {
     expect(successorLaunch.opts.userInitiatedRelaunch).toBeUndefined();
     expect(successorLaunch.server).toMatchObject({ automationProjectId: 'local/repo' });
     expect(h.prepareInputs[1]).not.toHaveProperty('parentTaskId');
+    // Same playbook, parameters, source checkout and target directory as iteration 1.
+    expect(h.prepareInputs[1]).toMatchObject({
+      playbookPath: 'agentic-capability-research.md',
+      scope: 'project',
+      parameterValues: { subject: 'memory-architecture' },
+      playbookSourceCwd: '/repo',
+      taskTargetCwd: '/repo',
+      taskTargetCwdExplicit: false,
+    });
   });
 
   it('waits while an iteration runs and never launches twice for one boundary', async () => {
@@ -194,7 +219,7 @@ describe('PlaybookChainService sweep', () => {
     const second = h.service.findTip(first.id)!;
     expect(second.chain!.iteration).toBe(2);
     h.taskStore.cancelTask(second.id, { source: 'user', reason: 'manual' });
-    h.taskStore.deleteTask?.(second.id);
+    h.taskStore.deleteTask(second.id);
     await h.service.sweep();
     await h.service.sweep();
     expect(h.launches).toHaveLength(2);
@@ -273,7 +298,7 @@ describe('PlaybookChainService.stopChain', () => {
       if (calls === 2) await gate;
       const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, parentTaskId: o.parentTaskId, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
       h.taskStore.startTask(task.id);
-      h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date() });
+      h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
       return { task: h.taskStore.getTask(task.id)!, queued: false } as LaunchResult;
     };
     h = harness({ launchImpl: slowLaunch });
@@ -311,7 +336,7 @@ describe('launch failures', () => {
       }
       const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
       h.taskStore.startTask(task.id);
-      h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date() });
+      h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
       return { task: h.taskStore.getTask(task.id)!, queued: false } as LaunchResult;
     };
     h = harness({ launchImpl: flaky });
@@ -404,7 +429,7 @@ describe('idle backstop', () => {
     expect(h.completeIdleIteration).not.toHaveBeenCalled();
   });
 
-  it('never completes a live AskUserQuestion or a task that already signalled', async () => {
+  it('never completes a live AskUserQuestion', async () => {
     const h = harness();
     const first = await startResearchChain(h, { maxIterations: 3 });
     h.setIdle(first, false);
@@ -439,8 +464,7 @@ describe('signalled tips', () => {
   it('closes a tip that raised completion-ready once its turn has ended, without the generic review delay', async () => {
     const h = harness();
     const first = await startResearchChain(h, { maxIterations: 3 });
-    // The run itself took 30 minutes (real-clock timestamps, as finish() does).
-    h.taskStore.viewTasks().find((t) => t.id === first.id)!.sessions[0].createdAt = new Date(Date.now() - 30 * 60_000);
+    h.advance(30 * 60_000); // the run itself took 30 minutes
     h.setIdle(first, true);
     signal(h, first);
     await h.service.sweep();
@@ -462,6 +486,170 @@ describe('signalled tips', () => {
     await h.service.sweep();
     expect(h.completeIdleIteration).not.toHaveBeenCalled();
     h.advance(CHAIN_SIGNAL_CLOSE_CEILING_MS);
+    await h.service.sweep();
+    expect(h.completeIdleIteration).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('successor launch recipe', () => {
+  it('carries the effort and model pins, or the model tier, of the previous iteration', async () => {
+    const h = harness();
+    const first = await startResearchChain(h, { maxIterations: 3 });
+    h.taskStore.viewTasks().find((t) => t.id === first.id)!.launchIntent = {
+      schemaVersion: 'task-launch-intent.v1', agentType: 'claude-code', effort: 'high', model: 'claude-opus-5-5',
+    };
+    h.finish(first);
+    await h.service.sweep();
+    expect(h.prepareInputs[1]).toMatchObject({ effort: 'high', model: 'claude-opus-5-5', agentType: 'claude-code' });
+    const second = h.service.findTip(first.id)!;
+    h.taskStore.viewTasks().find((t) => t.id === second.id)!.launchIntent = {
+      schemaVersion: 'task-launch-intent.v1', agentType: 'claude-code', modelTier: 'small', effort: 'low', model: 'x',
+    };
+    h.finish(second);
+    await h.service.sweep();
+    // A tier replaces raw pins (they cannot be combined).
+    expect(h.prepareInputs[2]).not.toHaveProperty('effort');
+    expect(h.prepareInputs[2]).not.toHaveProperty('model');
+    expect(h.launches[2].opts).toMatchObject({ modelTier: 'small' });
+  });
+
+  it('reads a non-project playbook from its own scope, not the source checkout', async () => {
+    const h = harness();
+    const result = await h.service.startChain({
+      cwd: '/repo', playbookPath: 'plugin-book.md', scope: 'plugin', parameterValues: {}, spec: { maxIterations: 2 }, launchSource: 'cli',
+    });
+    h.taskStore.viewTasks().find((t) => t.id === result.task.id)!.playbookSource = {
+      id: 'plugin-book.md', scope: 'plugin', sourceCwd: '/plugin/playbooks', sourceDigest: 'd',
+    };
+    h.finish(result.task);
+    await h.service.sweep();
+    expect(h.prepareInputs[1]).toMatchObject({ scope: 'plugin', playbookSourceCwd: '/repo', playbookPath: 'plugin-book.md' });
+  });
+});
+
+describe('launch errors that only hold a chain', () => {
+  const holds: Array<[string, () => Error]> = [
+    ['SAFE MODE', () => new AutomationKillSwitchError('safe_mode')],
+    ['project automation pause', () => new AutomationKillSwitchError('project_automation')],
+    ['drain mode', () => Object.create(DrainModeError.prototype) as Error],
+    ['host load', () => Object.create(HostLoadAdmissionError.prototype) as Error],
+    ['quota headroom', () => Object.create(QuotaHeadroomAdmissionError.prototype) as Error],
+    ['spawn burst', () => Object.create(SpawnBurstLimitError.prototype) as Error],
+    ['pending queue full', () => Object.create(PendingQueueFullError.prototype) as Error],
+  ];
+  it.each(holds)('%s is retried without counting toward launch_failed', async (_label, makeError) => {
+    let calls = 0;
+    // eslint-disable-next-line prefer-const
+    let h: ReturnType<typeof harness>;
+    h = harness({
+      launchImpl: async (o, s) => {
+        calls++;
+        if (calls > 1) throw makeError();
+        const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
+        h.taskStore.startTask(task.id);
+        h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
+        return { task: h.taskStore.getTask(task.id)!, queued: false } as LaunchResult;
+      },
+    });
+    const first = await startResearchChain(h, { maxIterations: 5 });
+    h.finish(first);
+    for (let i = 0; i < 6; i++) await h.service.sweep();
+    expect(h.service.findTip(first.id)!.chain!.ended).toBeUndefined();
+    expect(calls).toBe(7);
+  });
+
+  it('resets the failure count after a successful launch', async () => {
+    const plan = ['ok', 'fail', 'fail', 'ok', 'fail', 'fail', 'ok'];
+    let call = 0;
+    // eslint-disable-next-line prefer-const
+    let h: ReturnType<typeof harness>;
+    h = harness({
+      launchImpl: async (o, s) => {
+        const step = plan[call++] ?? 'ok';
+        if (step === 'fail') throw new Error('transient');
+        const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, parentTaskId: o.parentTaskId, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
+        h.taskStore.startTask(task.id);
+        h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
+        return { task: h.taskStore.getTask(task.id)!, queued: false } as LaunchResult;
+      },
+    });
+    const first = await startResearchChain(h, { maxIterations: 5 });
+    h.finish(first);
+    for (let i = 0; i < 3; i++) await h.service.sweep(); // fail, fail, ok
+    const second = h.service.findTip(first.id)!;
+    expect(second.chain!.iteration).toBe(2);
+    h.finish(second);
+    for (let i = 0; i < 3; i++) await h.service.sweep(); // fail, fail, ok — would end if the count carried over
+    expect(h.service.findTip(first.id)!.chain).toMatchObject({ iteration: 3 });
+    expect(h.service.findTip(first.id)!.chain!.ended).toBeUndefined();
+  });
+
+  it('does not double-count a launch that created the task and then threw', async () => {
+    let calls = 0;
+    // eslint-disable-next-line prefer-const
+    let h: ReturnType<typeof harness>;
+    h = harness({
+      launchImpl: async (o, s) => {
+        calls++;
+        const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, parentTaskId: o.parentTaskId, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
+        if (calls > 1) {
+          // The real launcher marks a task whose session never started terminal.
+          h.taskStore.terminateTask(task.id, { reason: 'unknown' });
+          throw new Error('agent failed to boot');
+        }
+        h.taskStore.startTask(task.id);
+        h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
+        return { task: h.taskStore.getTask(task.id)!, queued: false } as LaunchResult;
+      },
+    });
+    const first = await startResearchChain(h, { maxIterations: 10 });
+    h.finish(first);
+    for (let i = 0; i < 6; i++) await h.service.sweep();
+    const members = h.chainTasks(first.id);
+    // Each stillborn task counts once (as never started); the third in a row ends the chain.
+    expect(members.map((t) => t.chain!.iteration)).toEqual([1, 2, 3, 4]);
+    expect(members[0].chain!.successorTaskId).toBe(members[1].id);
+    expect(members[3].chain!.ended?.reason).toBe('launch_failed');
+  });
+});
+
+describe('idle backstop races', () => {
+  it('skips the close when the agent signals during the dirty-worktree check', async () => {
+    const h = harness();
+    const first = await startResearchChain(h, { maxIterations: 3 });
+    h.setIdle(first, true);
+    await h.service.sweep();
+    h.advance(CHAIN_IDLE_COMPLETE_MS + 1_000);
+    h.completeIdleIteration.mockImplementationOnce(async (_task: Task, _how: 'signalled' | 'idle', stillValid: () => boolean) => {
+      h.taskStore.viewTasks().find((t) => t.id === first.id)!.pendingSignal = {
+        kind: 'completion_ready', raisedAt: new Date(Date.now()).toISOString(),
+      } as Task['pendingSignal'];
+      return stillValid();
+    });
+    await h.service.sweep();
+    expect(h.taskStore.getTask(first.id)!.status).toBe('inProgress');
+  });
+});
+
+describe('documented thresholds', () => {
+  it('match the values the docs quote', () => {
+    expect(CHAIN_IDLE_COMPLETE_MS).toBe(5 * 60_000);
+    expect(CHAIN_SIGNAL_SETTLE_MS).toBe(30_000);
+    expect(CHAIN_SIGNAL_CLOSE_CEILING_MS).toBe(10 * 60_000);
+  });
+
+  it('does not close a signalled tip 29 s after the signal, does at 31 s', async () => {
+    const h = harness();
+    const first = await startResearchChain(h, { maxIterations: 3 });
+    h.advance(30 * 60_000);
+    h.setIdle(first, true);
+    h.taskStore.viewTasks().find((t) => t.id === first.id)!.pendingSignal = {
+      kind: 'completion_ready', raisedAt: new Date(Date.now()).toISOString(),
+    } as Task['pendingSignal'];
+    h.advance(29_000);
+    await h.service.sweep();
+    expect(h.completeIdleIteration).not.toHaveBeenCalled();
+    h.advance(2_000);
     await h.service.sweep();
     expect(h.completeIdleIteration).toHaveBeenCalledTimes(1);
   });
