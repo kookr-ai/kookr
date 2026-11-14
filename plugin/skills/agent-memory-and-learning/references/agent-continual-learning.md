@@ -44,7 +44,7 @@ self-evolution](../../agent-evaluation/references/agent-self-evolution.md).
 
 Caveats: "forgets less" LoRA claims use different baselines (HiP-LoRA 12.3 to 4.9 points of
 retained-capability loss on one 8B model, 2604.17751; JumpLoRA BWT -22.9 to -11.9 against incremental LoRA,
-2604.16171), and no paper compares LoRA and full fine-tuning forgetting directly. Choosing training data by
+2604.16171), and no paper reviewed compares LoRA and full fine-tuning forgetting directly. Choosing training data by
 short-term gain raises later forgetting (2605.30537). For the safety risk of benign fine-tuning see
 [cheap-worker adaptation](cheap-worker-adaptation.md) Step 5.
 

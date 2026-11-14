@@ -3,7 +3,7 @@
 Use when: deciding what a long-running agent writes to memory, when to consolidate, what to forget, and
 whether a managed store beats plain retrieval over the raw log, or when memory cost or staleness hurts.
 
-No paper compares write, consolidate and forget policies head to head on a coding agent; each rule rests on
+No paper reviewed compares write, consolidate and forget policies head to head on a coding agent; each rule rests on
 separate results. For what to record when a task ends see [lesson capture](post-task-lesson-capture.md).
 
 ## Rules

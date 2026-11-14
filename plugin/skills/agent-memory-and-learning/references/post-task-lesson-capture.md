@@ -3,7 +3,7 @@
 Use when: deciding what to write down when a task ends, or designing, reviewing or curating a notebook,
 lessons file or post-task retrospective that is growing noisy.
 
-No paper compares lesson sources, forms or admission gates on a persistent lesson store; each rule rests on
+No paper reviewed compares lesson sources, forms or admission gates on a persistent lesson store; each rule rests on
 a separate study. For `nb` commands see the `notebook-role-reuse` skill; for storage and forgetting see
 [memory policy](agent-memory-policy.md).
 

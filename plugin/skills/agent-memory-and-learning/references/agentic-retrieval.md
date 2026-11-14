@@ -44,7 +44,7 @@ Most numbers come from one or two benchmark papers with small models: defaults t
   but +25 on 2WikiMultihopQA (2603.08877).
 - Several cheap searches can beat one big one: GPT-4.1-mini on 2Wiki scored 55.84% at 500 tokens against
   30.62% with one search at 16K tokens (2603.08877).
-- Gating added about 27% latency on a small model (2606.29959); stopping studies are small (about 60 items).
+- Gating added about 27% latency on a small model (2606.29959); stopping studies are small (about 60 items for 2606.27009).
 
 ## Gaps
 

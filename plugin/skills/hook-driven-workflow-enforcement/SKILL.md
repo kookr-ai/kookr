@@ -531,7 +531,8 @@ study each; treat them as leads.
    50.0% to about 63.8%, and random rules did as well as curated ones, so part
    of the gain is priming. Removing "do not" rules cost up to 20 pp; removing
    positive directives such as "follow code style" *raised* pass rate by up to
-   14 pp (about 8 tasks: a lead, not a law) (arXiv 2604.11088).
+   14 pp (about 8 tasks: a lead, not a law). Pass rate stayed at 59-67% from
+   0 to 50 rules (arXiv 2604.11088).
 2. **Do not expect length or layout tuning to fix compliance.** File size,
    position, structure and conflicts showed a null result on adherence in 1,650
    Claude Code sessions on two repos (2605.10039); there is no evidence-based
@@ -583,4 +584,5 @@ Multiple hooks on the same event run in sequence. If **any** hook blocks, the to
 - **Don't use hooks for advice.** If the agent can reasonably skip the step in some cases, use CLAUDE.md. Hooks are for invariants.
 - **Don't create commands you never hook.** CLI command surfaces only make sense if you wire them to hooks. Otherwise, just use CLAUDE.md instructions.
 - **Don't over-gate.** Every blocked command costs one agent retry cycle. Gate the critical moments (PR creation, deployment), not every minor step.
+- **Don't fix a skipped rule by adding more prose.** Rule count and file length were not the problem in the measured studies; compliance often eroded with session depth. Convert the hard rules to hooks, and keep only a few concrete prohibitions in the file.
 - **Don't forget state cleanup.** Stale state markers from crashed sessions will block future commands. Always include TTL or cleanup logic.
