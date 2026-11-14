@@ -527,7 +527,22 @@ describe('handleWsConnection — kookr ask in Lucy\'s panel (operatorAsks / answ
     const { deps } = depsWithAsks();
     handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
     const asks = sentOf(ws).filter((m) => m.type === 'operatorAsks');
-    expect(asks).toEqual([{ type: 'operatorAsks', asks: [pendingAsk] }]);
+    expect(asks).toEqual([{ type: 'operatorAsks', asks: [pendingAsk], serverNow: expect.any(Number) }]);
+  });
+
+  it('keeps wiring the message handlers when building the question list on connect throws', async () => {
+    const ws = makeFakeWs();
+    const { deps, operatorAsks } = depsWithAsks();
+    operatorAsks.list.mockImplementationOnce(() => { throw new Error('damaged asks.json'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(() => handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER)).not.toThrow();
+    expect(sentOf(ws).some((m) => m.type === 'operatorAsks')).toBe(false);
+    // The handlers are attached: an answer still gets its reply.
+    ws.send.mockClear();
+    await dispatch(ws, { type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 0 });
+    expect(sentOf(ws).some((m) => m.type === 'operatorAskResult' && m.ok === true)).toBe(true);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('never sends the questions to a viewer, even an all-scope one', () => {
@@ -567,7 +582,7 @@ describe('handleWsConnection — kookr ask in Lucy\'s panel (operatorAsks / answ
     expect(answer).toHaveBeenCalledWith({ askId: 'a1b2c3d4e5f6', text: 'do both' });
     expect(sentOf(ws)).toEqual([
       { type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: false, reason: 'already_answered' },
-      { type: 'operatorAsks', asks: [pendingAsk] },
+      { type: 'operatorAsks', asks: [pendingAsk], serverNow: expect.any(Number) },
     ]);
   });
 
@@ -595,7 +610,7 @@ describe('handleWsConnection — kookr ask in Lucy\'s panel (operatorAsks / answ
 
     expect(sentOf(ws)).toEqual([
       { type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: false, reason: 'failed' },
-      { type: 'operatorAsks', asks: [pendingAsk] },
+      { type: 'operatorAsks', asks: [pendingAsk], serverNow: expect.any(Number) },
     ]);
     warn.mockRestore();
   });

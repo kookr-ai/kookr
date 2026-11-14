@@ -11,6 +11,7 @@ import {
   __resetAskAnnouncementForTests,
   announceAsk,
   announceLaunchReport,
+  stopAllAskAnnouncements,
   stopAskAnnouncement,
 } from './ask-announcement.js';
 import { AUDIO_UNLOCK_TIMEOUT_MS, __resetClipPlaybackForTests, replayClip, replayingClipId } from './clip-playback.js';
@@ -206,6 +207,18 @@ describe('announceAsk', () => {
     await vi.waitFor(() => expect(getClipHistory()).toHaveLength(1));
     stopAskAnnouncement(ASK);
     emitSpeechIdle(speaker);
+    expect(await pending).toBe('cancelled');
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(getClipHistory()).toHaveLength(0);
+  });
+
+  test('switching the panel off while the clip is being fetched means it is never played', async () => {
+    let release: (response: Response) => void = () => undefined;
+    const fetcher = vi.fn(() => new Promise<Response>((resolve) => { release = resolve; })) as unknown as typeof fetch;
+    const pending = announceAsk(ASK, { fetcher });
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalled());
+    stopAllAskAnnouncements();
+    release(speakResponse());
     expect(await pending).toBe('cancelled');
     expect(FakeAudioContext.instances).toHaveLength(0);
     expect(getClipHistory()).toHaveLength(0);

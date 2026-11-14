@@ -96,6 +96,7 @@ export function pushOperatorAsks(
   const data = JSON.stringify({
     type: 'operatorAsks',
     asks,
+    serverNow: Date.now(),
     ...(change.kind === 'created' ? { announce: change.ask.id } : {}),
   } satisfies ServerMessage);
   let sent = 0;

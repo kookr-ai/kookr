@@ -32,9 +32,9 @@ describe('pushOperatorAsks: who is told about a question', () => {
     pushOperatorAsks([owner], [view], change('resolved'));
     pushOperatorAsks([owner], [view], change('updated'));
     expect(owner.sent).toEqual([
-      { type: 'operatorAsks', asks: [view], announce: 'a1b2c3d4e5f6' },
-      { type: 'operatorAsks', asks: [view] },
-      { type: 'operatorAsks', asks: [view] },
+      { type: 'operatorAsks', asks: [view], serverNow: expect.any(Number), announce: 'a1b2c3d4e5f6' },
+      { type: 'operatorAsks', asks: [view], serverNow: expect.any(Number) },
+      { type: 'operatorAsks', asks: [view], serverNow: expect.any(Number) },
     ]);
   });
 

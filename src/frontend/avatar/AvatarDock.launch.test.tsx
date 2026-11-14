@@ -25,6 +25,7 @@ vi.mock('../lucy-live/useLucyLive.js', () => ({
 const speech = vi.hoisted(() => ({
   announceAsk: vi.fn(async () => 'started'),
   stopAskAnnouncement: vi.fn(),
+  stopAllAskAnnouncements: vi.fn(),
   announceLaunchReport: vi.fn(async () => 'started'),
 }));
 vi.mock('../audio/ask-announcement.js', () => speech);

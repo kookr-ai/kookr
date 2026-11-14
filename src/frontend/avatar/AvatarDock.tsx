@@ -39,8 +39,9 @@ import { getLastClip, useClipHistory, useLastClip } from '../audio/last-clip.js'
 import { replayClip, replayLastClip, stopReplay, type ReplayResult } from '../audio/clip-playback.js';
 import { useSoundPreference } from '../audio/sound-preference.js';
 import { track } from '../telemetry.js';
-import { announceAsk, stopAskAnnouncement } from '../audio/ask-announcement.js';
+import { announceAsk, stopAllAskAnnouncements, stopAskAnnouncement } from '../audio/ask-announcement.js';
 import {
+  askClockOffsetMs,
   dismissOperatorAsk,
   markAskSubmitting,
   onAskAnnounced,
@@ -87,6 +88,8 @@ const TALK_REASON_ID = 'avatar-talk-reason';
 const REPLAY_LABEL = 'Replay last message';
 /** Re-render the "N min ago" labels this often while the message list is on screen. */
 const RELATIVE_TIME_REFRESH_MS = 30_000;
+/** Answer presses are ignored for this long after the cards change, so a press aimed at a card that just moved cannot answer another question. */
+const ASK_PRESS_GUARD_MS = 400;
 
 /** Shown in the status region when a replay could not start; the three other results need no message. */
 const REPLAY_MUTED_TITLE = 'Sound is off in Settings';
@@ -283,12 +286,19 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
     return () => {
       offAnnounced();
       offClosed();
+      // The panel is going away (switched off): a clip still being fetched must not be played afterwards.
+      stopAllAskAnnouncements();
     };
   }, []);
 
-  const asks = visibleOperatorAsks(operatorAsks.asks, now);
+  const asks = visibleOperatorAsks(operatorAsks.asks, now + askClockOffsetMs());
   const pendingAskCount = asks.reduce((n, ask) => (ask.state === 'pending' ? n + 1 : n), 0);
   const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
+    // The list moves when a question arrives or closes: a press that lands just after it did may have been
+    // aimed at a card that is no longer under the pointer, so it is ignored (the operator presses again).
+    // A clock that stepped backwards (negative elapsed time) must not keep answers blocked.
+    const sinceChange = Date.now() - cardsChangedAtRef.current;
+    if (sinceChange >= 0 && sinceChange < ASK_PRESS_GUARD_MS) return;
     markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
   }, [onAnswerAsk]);
   // After the cards change: if the control that had focus was removed with its card, put focus on what
@@ -297,6 +307,11 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   // moved elsewhere is never taken back), and it lands on the card itself, never on an answer button, so a
   // stray Enter or Space cannot send an answer.
   const askSignature = asks.map((ask) => `${ask.id}:${ask.state}`).join(',');
+  // When the set of cards last changed (layout effect below), for the mis-click guard in `onAnswer`.
+  const cardsChangedAtRef = useRef(0);
+  useLayoutEffect(() => {
+    cardsChangedAtRef.current = Date.now();
+  }, [askSignature]);
   useLayoutEffect(() => {
     const focused = focusedAskControlRef.current;
     if (!focused || focused.element.isConnected) return;
@@ -718,7 +733,7 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
               key={ask.id}
               ask={ask}
               submit={operatorAsks.submit[ask.id]}
-              nowMs={now}
+              nowMs={now + askClockOffsetMs()}
               onAnswer={onAnswer}
               onDismiss={dismissOperatorAsk}
             />

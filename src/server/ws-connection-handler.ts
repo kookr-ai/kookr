@@ -392,8 +392,13 @@ export function handleWsConnection(
 
   // Questions waiting for the operator (`kookr ask`), so Lucy's panel shows them
   // after a reload too. Owner path only: this code is never reached by a viewer.
+  // A damaged ask record must not leave this connection without its message handlers: log and carry on.
   if (deps.operatorAsks && ws.readyState === 1) {
-    ws.send(JSON.stringify({ type: 'operatorAsks', asks: deps.operatorAsks.list() } satisfies ServerMessage));
+    try {
+      ws.send(JSON.stringify({ type: 'operatorAsks', asks: deps.operatorAsks.list(), serverNow: Date.now() } satisfies ServerMessage));
+    } catch (err) {
+      console.warn('[asks] could not send the question list on connect:', err);
+    }
   }
 
   wireWsMessageHandlers(ws, registrar, router, actor, deps, connectionId);
@@ -575,7 +580,7 @@ function wireWsMessageHandlers(
           // A refused answer usually means this tab's list is out of date (answered
           // on Telegram a moment ago, expired): send the current one.
           if (asks && result?.ok !== true) {
-            ws.send(JSON.stringify({ type: 'operatorAsks', asks: asks.list() } satisfies ServerMessage));
+            ws.send(JSON.stringify({ type: 'operatorAsks', asks: asks.list(), serverNow: Date.now() } satisfies ServerMessage));
           }
         }
         return;
