@@ -50,8 +50,26 @@ checkpoints across runs: `automation-design`, `self-continuation-task`.
     had zero predictive validity (operator lessons). See also lucky passes in [agent failure
     recovery](agent-failure-recovery.md).
 
-Long runs do not fail mainly from lost plans: edit quality caused 60-69% of capable-model coding
-failures and strategy and logic 37% of SWE-bench failures (2603.24631, 2605.12270).
+11. **Diagnose the failure class before adding structure; don't assume compounding step errors.** Decay
+    with horizon is non-linear ("sharp drops beyond small horizon extensions") and no surveyed paper
+    fits a per-step compounding curve; in web, OS and embodied tasks planning and memory failures
+    dominate (2604.11978). Long coding runs do not fail mainly from lost plans: edit quality caused
+    60-69% of capable-model failures and strategy and logic 37% of SWE-bench failures (2603.24631,
+    2605.12270). Early give-up ([agent failure recovery](agent-failure-recovery.md)), a stall after
+    early progress (rule 10) and forgotten prohibitions (rule 9) each need a different fix.
+12. **Gate each chunk on a check that says what to fix.** One round of testbench-log feedback took Claude
+    Code from 38.6% to 83.2% resolved on hardware bug fixing, while a perfect file-level oracle added
+    only +1.4% (2605.15226). Weak verifiers degrade results (2605.10325); a verify gate with 98.58% rule
+    agreement had 0.39% blocked precision (2605.17998). No paper measures checkpoint spacing.
+13. **Bound the working context and clear it periodically.** Clearing beat a sliding window 68.9% to
+    64.9% (2602.03664); context stayed under 15k tokens at 300 steps (2605.05191). A trained summary
+    of old history cost about 0.04 (0.48 vs 0.52 F1 on DeepSearchQA, 0.59 vs 0.63 resolved on SWE-bench
+    Verified) for about 78% lower cost (2611.06445). Keep the fields goal, progress, decisions, open
+    loops, and write-gate before summarizing (2605.16746; both in `token-efficiency`).
+14. **Delegate wide, independent work; keep serial work in one agent.** Independent parallel workers
+    raised detection from 50.8% to 64.2%, but a single agent was cheapest per validated finding
+    ($0.058, 2604.18718). Delegation is the hardest category for all models, and retries add about
+    3 points there (2603.20380).
 
 **Evidence against.** ReAct beat a utility-guided policy on QA F1 (0.2662 vs 0.236), the policy winning
 only on cost control (2603.19896). A planner pipeline beat ReAct by 8.6 points but a strong single model
@@ -62,3 +80,5 @@ by only 3.8 (2604.25737). Mixed-tier and multi-agent counter-evidence: `agent-fl
 - Same-budget plan-vs-ReAct for agents; fixed-interval vs event-triggered replanning.
 - Plan granularity (step count, subgoal size) vs success; success vs step count.
 - A plan file vs a plan kept in context; measured adherence to an agent's own written plan.
+- One long session vs chunking or handoffs at matched budget; checkpoint spacing; restart vs resume;
+  an executor-only model swap; information lost at a delegation boundary.

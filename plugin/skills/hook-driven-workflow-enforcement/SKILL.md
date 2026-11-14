@@ -556,6 +556,8 @@ study each; treat them as leads.
 6. **Keep standing context lean and current.**
    - A full skill bundle cost about 60x the tokens for a gain that was not
      statistically significant (2605.20023).
+   - Tasks that loaded skills regressed often enough to cancel 59% of the gross
+     gains over 5,832 runs (2607.22520).
    - Stale repository context did worse than none (17 samples, directional
      only; 2605.14478).
    - In public prompt policies, only 35.4% of trials satisfied both rules of a

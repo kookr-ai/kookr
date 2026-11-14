@@ -4,9 +4,13 @@ Use when: launching, supervising or trusting an unattended loop that proposes a 
 and keeps or reverts (autoresearch, prompt or harness self-evolution, ML experiment chains), or when a loop
 reports steady gains or a keep or promote gate looks too easy to pass.
 
+Contents: Keep gate; Running the loop; Search policy and stopping; Gaps.
+
 This guide holds the keep gate shared by every mutate-and-score loop;
 [agent self-evolution](agent-self-evolution.md) and
 [prompt optimization under budget](prompt-optimization-under-budget.md) add only their loop-specific rules.
+Which ideas get compute and which write-up claims to trust: [research ideas and
+write-ups](research-ideas-and-writeups.md).
 
 ## Keep gate
 
@@ -40,7 +44,9 @@ This guide holds the keep gate shared by every mutate-and-score loop;
 5. **Held-out split, sealed test read once.** Validation gains overstated held-out gains about 2.6x in one
    study (+0.202 vs +0.079 on a 0.702 baseline, even with a clean topic-disjoint split), and the gap varied by
    seed (0.034 to 0.160) (2610.12601). Expect a large, noisy drop from validation to sealed test, not an
-   exact ratio. Reading the test set every generation turns it into validation.
+   exact ratio. Reading the test set every generation turns it into validation. Size the selection set
+   before deepening the search: the winner's score exceeded held-out accuracy by 13-20 points at 16 items
+   and 1-5 at 256 (2610.09239).
 6. **Gate on regressions too.** A gain on failed tasks says nothing about tasks that used to pass; 2 of 96
    candidate modifications cleared a two-gate rule (2609.08175). Expect most candidates to fail, and list
    the tasks that got worse next to any aggregate gain. Strict zero-regression gates can stall the search
@@ -57,19 +63,44 @@ This guide holds the keep gate shared by every mutate-and-score loop;
 
 - **Retire by measured contribution after a minimum number of trials, with a size cap.** Ratchet-style
   retirement carried most of a +0.328 held-out lift; removing the minimum-trial floor fell below the control
-  (2605.22148, 2605.19576). Do not set the threshold so tight it empties the library.
+  (2605.22148, 2605.19576). Do not set the threshold so tight it empties the library. Cap size, routing
+  cost and judge audit for retirement: [skill library
+  design](../../agent-memory-and-learning/references/skill-library-design.md) rules 4 and 6-7.
 - **Humans at a few decision points** (hypothesis choice, promote, loosening a gate): 87.5% accepted papers
   with targeted checkpoints versus 25% full-auto and 50% step-by-step (2605.20025, n = 10). Correctness and
   novelty stay a human judgement (2604.20622).
-- **Keep the best checkpoint and stop at the plateau.** 58% of settings improved on the first valid attempt
-  but 78% of continued searches ended below their peak (2607.25886); the mean agent stayed near the shipped
-  baseline in 124 of 290 cells (2608.20318).
 - Before counting a negative result against an idea, rule out "underpowered" and "fixable flaw".
 
 For unattended implement-and-review delivery loops, see the `autonomous-review-loop` skill.
 
+## Search policy and stopping
+
+- **Start with one greedy lineage; broaden only on stagnation.** Greedy hill-climbing scored 0.192 mean
+  normalized improvement, the best tree search 0.193, and an agent that switched from greedy to
+  multi-branch search when it detected a stall 0.208 (2605.17373). Greedy ranked 1st on dense-opportunity
+  tasks and 6th on sparse ones, so keep the switch; do not start with a tree or a population.
+- **Spend extra branches on a different lever, with shared notes.** After about three real non-promoting
+  results on one lever family, change the axis, not the knob (operator heuristic, not measured). Where
+  structure beat a flat loop, shared memory carried the gain: removing shared notes and skills made a kernel
+  task 18.6% worse (2604.01658) and cut a gold-medal rate from 80% to 20% (2605.10906); neither study
+  ablates tree search against greedy.
+- **Watch the trajectory, not the meter.** Area under the score-vs-step curve predicted the final result
+  (rho = +0.784); token cost and wall-clock did not (2605.17373).
+- **Keep the best checkpoint and stop at the plateau.** 58% of settings improved on the first valid attempt
+  but 78% of continued searches ended below their peak (2607.25886); the mean agent stayed near the shipped
+  baseline in 124 of 290 cells (2608.20318). Cap rounds and no-improvement streaks: one protocol stops after
+  10 rounds, five consecutive regressions or no-ops, or an empty feedback pool (2608.02636); memory notes
+  peaked at 4 refinement steps, then degraded (2605.19952). After a set number of unchanged iterations,
+  force an adversarial critique: one operator champion sat 21 iterations with no self-pivot.
+- **Budget the fan-out.** Batched parallel proposals gave 3-4x faster wall-clock and +3 to +11 points at a
+  fixed metric-call budget (2610.36774), but five parallel Opus subagents took one operator run from about
+  $0.6 to about $11.75 against a $10 cap. Keep GPU jobs sequential. Keep idea teams to about 5-7 agents:
+  teams of up to 8 did not add diversity and 78.3% of later-iteration entities were inherited
+  (2604.20548); selector quality mattered more than generator diversity (2603.20324).
+
 ## Gaps
 
-No matched-compute comparison against random search or a human recipe; no held-out versus training-set
-gating ablation; PACE is only shown on 0.5B-3B models; no measured fabrication rate for an optimizer
-reporting its own benchmark.
+No matched-compute comparison against random search or a human recipe, or of one long run against many
+short ones; no score-vs-iteration curve with a stated plateau; no dollar cost for tree or multi-agent
+search designs; no held-out versus training-set gating ablation; PACE is only shown on 0.5B-3B models; no
+measured fabrication rate for an optimizer reporting its own benchmark.

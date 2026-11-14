@@ -2,7 +2,8 @@
 
 Use when: building or auditing an agent's tools or MCP servers (tool count, task-level vs primitive
 tools, descriptions and schemas, on-demand loading, output bounds, error wording), when tool calls pick
-the wrong tool or burn tokens, or before changing tool wording or count.
+the wrong tool or burn tokens, before changing tool wording or count, or when deciding which calls to
+run in parallel, ahead or speculatively.
 
 The cost side is well measured; the success side rests mostly on one paper per claim, so test each
 change on held-out tasks before keeping it.
@@ -59,6 +60,31 @@ change on held-out tasks before keeping it.
     76.7% on Claude Code (2605.15184); a 20-task smoke run did not predict the full-set result
     (2605.14102; its orchestration result is in [long-horizon planning](long-horizon-planning.md)).
 
+## Executing tool calls
+
+11. **Parallelize only read-only calls, and declare dependencies.** Label each tool read-only, idempotent
+    write or non-idempotent write; batch only read-only calls in one message, and let a failed call
+    cancel its dependents instead of running them on bad inputs. Overlapping calls with decoding gave
+    1.26x (BFCL v3), 1.44x (SWE-bench Lite) and 1.24x (HotpotQA) (2605.15077). Against: SWE-bench Lite
+    accuracy was 44.3% vs 47.6%, latency was injected (5 s on BFCL), and safety relied on
+    developer-written read/write annotations.
+12. **Plan calls ahead only for repeated, checkable tasks, with a reactive fallback, and count tokens,
+    not only calls.** A validated plan DAG cut tool calls from 11.81 to 6.82 per run while tokens sent
+    rose from 111,530 to 117,593 (2605.14051). The compiled-plan 10x latency figure (2605.21470) is
+    against a weak baseline and 9% of its plans were still invalid; see [long-horizon
+    planning](long-horizon-planning.md) rules 1 and 5.
+13. **No speculative tool launch without a measured hit rate and a rollback path.** Streamed launch could
+    hide latency for 73.9% of queries on paper, but no per-query signal predicts it (Spearman rho +0.12)
+    and about 1.7% of queries net-lose (2606.20113). No surveyed paper reports a hit rate for predicted
+    tool calls. A speculative or parallel write needs a way back: sandbox checkpoint/rollback cut state
+    overhead from 23-48% to 1-2% (2605.22781), but it does not undo network side effects.
+14. **Treat a client timeout as unknown, not failed.** Verify server state before retrying, and retry only
+    idempotent calls or calls with an idempotency key (details in [agent failure
+    recovery](agent-failure-recovery.md), transient row). In the author's runs: background anything past
+    a few minutes, arm one monitor, and end the turn instead of polling.
+15. **Do not cut call counts blindly.** Call volume correlated with success at r about 0.7 in one 22-model
+    study (observational, 2603.20380).
+
 ## Gaps (not found in the surveyed literature)
 
 - No controlled sweep of tool count (5, 20, 100, 500 tools) with success at each point.
@@ -67,3 +93,6 @@ change on held-out tasks before keeping it.
   renaming; no cross-model transfer of optimized descriptions.
 - No code-as-action vs JSON tool call, or shell-only vs rich toolset, comparison at a fixed model.
 - No Claude Code measurements of per-turn schema tokens or output caps.
+- No hit rate for predicted tool calls, no measure of wasted work from wrong early calls, no tool-time
+  vs decode-time split in a real loop, no same-model parallel vs sequential comparison on tokens and
+  call count, no way to undo external side effects.

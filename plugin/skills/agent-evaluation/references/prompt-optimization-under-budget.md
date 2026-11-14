@@ -63,9 +63,37 @@ prompt; *churn* is the count of rows whose outcome changed, up or down.
 11. **Process rule, no effect size:** a prompt change is not a behavior change until a detection metric
     exists. Add a metric that shows whether the agent did the new thing in the same change.
 
+## When the system has several prompted roles (lead, workers, judge)
+
+1. **Update the role that failed, not every role.** Rerun a failed task with a hint or corrected output
+   injected into one role at a time, latest role first, and edit only the role whose fix resolves it.
+   AgentGrad beat MIPROv2, TextGrad and GEPA on 5 benchmarks this way (+11.76 points over no optimization,
+   2.5x faster; 2609.08572). Treat the blame as a guess: best step-level attribution accuracy was 42.73%
+   (2604.17658), and a trained attributor fell to about 50% held out (2608.28264). Log which role each
+   edit touched.
+2. **Freeze the protocol; optimize content.** Keep schemas, output formats and tool-call shapes outside the
+   optimizer's reach. Naive TextGrad reached 0% stability on a multi-agent pipeline; separating control
+   from data reached 100% eventual protocol validity (2609.00621).
+3. **Optimize modules sequentially, about 3 rounds each.** Six-module sequential search beat full-prompt
+   search on 4 of 5 backbones (Gemma -0.85; 2610.13386). CEPO's best was 3 rounds; 4 lowered accuracy
+   (2610.34722).
+4. **Gate on previously solved tasks as well as held-out ones.** GEPA reached 72.7% on the final set but
+   54.5% on transfer tasks, below the 56.8% baseline; a no-regression optimizer reached 72.7% transfer
+   (2607.14004). This pulls against rule 9's warning that strict zero-regression gates can stall the
+   search (2610.13287). Use 3 or more runs or shuffled task order (figures in Check 3 of the
+   [evaluation method](agent-evaluation-method.md)).
+5. **Freeze any judge you optimize against.** Validate it on human or deterministic labels first and keep
+   canary cases where a perfect score means cheating: optimizer runs scored 100% on the judge and 68.1% on a
+   deterministic check (2609.02246).
+6. **Check first that optimization can pay.** Gains shrink with strong sub-agents (2601.14652), and only 5
+   of 39 automatically built agent configurations beat human baselines (2606.04455). Compare against the
+   single-agent and hand-written baselines before spending budget.
+
 ## Gaps
 
 No paper tests parallel proposals or Pareto selection at 100-400 calls; batching results (3-4x faster
 wall clock, 2610.36774) used 3,000-5,000 calls. No matched-cost comparison of agent-level against
-single-prompt optimization. No measured safety regression after optimization. Almost all numbers come from
-single papers on the authors' own benchmarks.
+single-prompt optimization. No head-to-head of attribution-guided, all-role and random-role updates at
+matched compute; no sweep against module count; no measured before-and-after for edits to real fleet
+briefs. No measured safety regression after optimization. Almost all numbers come from single papers on
+the authors' own benchmarks.

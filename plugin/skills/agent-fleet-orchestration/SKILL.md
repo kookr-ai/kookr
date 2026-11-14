@@ -6,12 +6,13 @@ description: >
   and worker. Covers routing by task shape (broad and parallel vs deep and sequential), model-tier
   economics (a strong lead with cheap Haiku-class workers vs one strong agent vs a more capable agent
   alone), the brief template that keeps cheap workers honest, verifying results instead of voting on them,
+  when a cheap worker's task should escalate to a strong model, structured handoffs and shared state,
   and budget control (the lead's own tokens usually cost more than the whole swarm). For coding fleets it
   also covers who writes the plan, why tests written blind to the code should gate a change, how to route
   issues by observable features, and how to review a batch. Use before spawning more than two subagents, when
   choosing models for a multi-agent run, when splitting several issues across parallel implementers and
   test writers, or when a spend cap is in play.
-keywords: subagent fleet, swarm, fan-out, orchestrator, orchestrator-worker, lead agent, haiku workers, model tier, cost per task, spend cap, budget, cheap model, small model, multi-agent vs single agent, task shape, breadth vs depth, majority vote, correlated errors, verification, brief template, context isolation, prompt caching, coding fleet, batch PR, multi-issue PR, parallel implementers, test writer, test-first, spec-first, plan handoff, difficulty routing, diff-only review
+keywords: subagent fleet, swarm, fan-out, orchestrator, orchestrator-worker, lead agent, haiku workers, model tier, cost per task, spend cap, budget, cheap model, small model, multi-agent vs single agent, task shape, breadth vs depth, majority vote, correlated errors, verification, brief template, context isolation, prompt caching, coding fleet, batch PR, multi-issue PR, parallel implementers, test writer, test-first, spec-first, plan handoff, difficulty routing, diff-only review, escalation, cascade, handoff, file ownership
 related: parallel-subagent-experiments, adversarial-swarm-analysis, token-efficiency, automation-design, tdd-workflow, independent-merge-review, agent-memory-and-learning
 ---
 
@@ -116,12 +117,42 @@ cut cost from $7.24 to $2.79 (2606.17016).
   mattered more than vendor (2610.28667).
 - **Then one strong-model pass** over whatever code can't check.
 
+## Step 4b: decide when a cheap worker's task escalates
+
+Escalate on checked evidence, never on the worker's own confidence.
+
+- **Don't trigger on self-confidence.** On code, no uncertainty metric exceeded 0.70 AUC and the 10%
+  most-certain generations had zero passing solutions (2610.11300). Agent self-reports overstated top-100
+  success 4.8-9.3x (ECE 0.363-0.652) (2609.00652). Calibrated or sampled scores do better (AUROC up to
+  0.87) but cost extra calls ($0.002-$0.010 per prompt) (2605.28500).
+- **Split failures by kind.** The same cheap model given the error fixed 88.2% of compile errors and 82.8%
+  of Python runtime errors, but 23.6% of Java runtime errors and under 35% of logic errors (2606.17514).
+  Retry the cheap worker with the error, at most twice (a heuristic; see "Retry only the failing issue"),
+  and escalate when a spec-derived test still fails. A green check is not proof: 28.5% of a 49-task
+  SWE-bench Verified sample has tests weak enough to accept a wrong patch (2606.16062; see
+  [patch acceptance](../agent-evaluation/references/coding-agent-patch-acceptance.md)).
+- **Don't route by an LLM's difficulty rating**; use a trained router or observable features (see
+  "Don't ask a model how hard an issue is" under "Coding fleets").
+- **Check the worker was alive.** In the author's runs, a worker that died at launch in 1-5 s was an
+  infrastructure fault; escalating it fixes nothing.
+- **Escalate with a fresh context** (spec, failing test or counterexample, short failure summary), not
+  the failed transcript. This is an inference from 2604.11465, 2604.21611 and 2603.24631 (agents
+  overwrote already-correct code in 39.7% of SWE-Agent failures); no paper tests it head to head.
+- **Track the escalation rate.** Cheap-first beats strong-only while cheap cost + escalated share x
+  strong cost < strong cost; at a 20x price ratio and equal tokens that holds until about 95% escalate
+  (our arithmetic). But cheaper-priced reasoning models cost more in 32% of pairs (2603.23971), and
+  one-way handoff trailed the pure strong model on ALFWorld (48.5% and 45.5% vs 50.7%) (2608.27911).
+  Cap the cascade at one level: an adversary pushed reroutes from about 10% to about 100% (2606.15308).
+
 ## Step 5: synthesize in the lead
 
 Synthesis, trade-offs, and any deep sequential sub-problem stay with the lead, or go to one strong
 subagent. Don't add critique or deliberation layers to a hierarchy. In one study that made results worse
 for all six models tested (up to 3.37x worse, using 1.8-2.7x more tokens), while engineering what went into
-the context improved them by up to 76% (2605.16205).
+the context improved them by up to 76% (2605.16205). Use parallel proposers and one aggregator; skip
+debate rounds and voting. At matched compute, mixture-of-agents scored 71.4% on MMLU-Pro (70B) against 70.0%
+for debate and 68.7% for self-consistency, and self-refinement was less efficient than plain
+chain-of-thought (2605.01566).
 
 ## Coding fleets: plan strong, gate on blind tests
 
@@ -160,10 +191,11 @@ savings over one strong agent per issue. Treat it as a pilot design.
   regression tests can also lock bugs in: 8.4%-16.9% were *fault-enforcing* (they pass on the buggy
   code and fail on the fix) vs 2.4%-4.8% *fault-revealing* (they fail on the buggy code) (2610.11835).
 - **Don't ask a model how hard an issue is.** Opus 4.6, used as a router, rated only 7 of 147
-  verified-hard SWE-bench steps as "high" and failed all 40 trajectories it routed (2605.18859). A
+  verified-hard SWE-bench steps as "high" and failed all 40 trajectories it routed, while a trained
+  router cut API cost 53.1% at the resolve rate of always-Opus 4.6 (75/100 cases) (2605.18859). A
   learned router choosing the cheapest capable model per request matched always-Sonnet-4.6 quality at
-  54.1% lower cost (2605.17106). Both papers route per step or per request, not per issue. Without a
-  trained router, our suggestion is to use observable features: send an issue to one strong agent
+  54.1% lower cost (2605.17106). Both are benchmark results that route per step or per request, not
+  per issue. Without a trained router, our suggestion is to use observable features: send an issue to one strong agent
   outside the batch if it touches more than one module, has failed before, or has no clear spec.
 - **Keep review context small.** No model detected more than 31% of human-flagged review issues even
   when given only the diff, and all 8 models tested got worse as context grew from diff-only to full context
@@ -182,16 +214,34 @@ savings over one strong agent per issue. Treat it as a pilot design.
 - **Don't show builders other agents' answers.** When given simulated peer agents' positions,
   GPT-5.4's SWE-bench accuracy fell from 1.00 to 0.23 at swarm size 2: it conformed to the peers.
   Claude Sonnet 4.6 held 100% (2605.10698). The measured risk is for non-Claude builders, but a builder
-  needs only its spec and plan anyway.
+  needs only its spec and plan anyway. Test your model for this collapse before adding peer reviewers.
 - **Don't prompt for multiple approaches.** It raised reasoning tokens 2.4-7.4x with no success gain
   (96.5% vs 95.2%) (2608.01347).
+
+## Handoffs and shared state
+
+- **Pass structured handoffs, validate them with code, and re-check prohibitions.** "Do not" compliance
+  fell from 73% at turn 5 to 33% at turn 16 on one model while status checks stayed green (2604.20911).
+  Of 385 agentic faults, schema mismatches were 28.0% and dependency drift 21.9% (2603.06847).
+- **Gate shared state at write time.** Toxic input survived in summaries scoring under the filter
+  threshold; cleaning the finished summary left it, while filtering before summarizing cut it to near
+  zero (2605.16746). For state several agents write, a read-set version check blocked 590 of 639 stale
+  commits, but hurt single-shard collaborative writing (2605.17076).
 
 ## Infrastructure that matters
 
 - **Central retry and rate-limit control** for concurrent agents cut failures from 72-100% to 0-18%
   (2604.17111). Don't let each agent retry on its own against a shared limit.
-- **No shared worktree for writers.** Parallel agents in one git worktree destroy each other's
-  uncommitted edits. Give each its own worktree, or forbid commands that change the working tree.
+- **No shared worktree for writers; assign file ownership before spawning.** Parallel agents in one git
+  worktree destroy each other's uncommitted edits. Give each writer its own worktree and a disjoint file
+  set (or forbid commands that change the working tree); serialize shared files (global stylesheet, changelog, version file) or have the lead edit them;
+  forbid `git stash`, `checkout` and `restore` in the lead's tree. In the author's runs a subagent's
+  `git stash` wiped the lead's edits and two UI units edited one stylesheet (one incident each). LLM merge
+  resolution passed manual semantic checks only 78% of the time on human merges (2605.17279), so prevent
+  conflicts and re-verify any resolution as a new diff.
+- **Launch synchronously and size to the cap.** In the author's runs, a fan-out in default background
+  mode lost all results when the host exited, and an up-front batch of five Opus subagents took a $10 cap
+  to about $11.75 with nothing shipped.
 - **Measure, don't guess.** Subagent transcripts record per-message `usage`. Sum `cache_creation`,
   `cache_read` and `output` per assistant message, deduplicated by message id, and price the result.
   Check the cache TTL: 1-hour writes bill at 2x, 5-minute writes at 1.25x.
@@ -217,11 +267,16 @@ savings over one strong agent per issue. Treat it as a pilot design.
 
 The papers above test GPT-5, Claude 4.5, Gemini 3, Qwen and Llama models, and none states a small-to-large
 price ratio. No paper in the KB compares one strong model against a fleet at the same total token
-budget. Treat the Claude 5 cost figures as one measured run, and the quality claims as transfers from
-other model families.
+budget, and none measures an error-amplification multiplier for a team or tests structured against
+free-text handoffs. None reports the share of tasks escalated in a real fleet or compares restart, failed
+transcript and failing test as the escalation handoff. Early failure prediction from a run prefix has
+one data point on 3B-7B open models doing web tasks (F1 0.717 at 3 steps, 26.3% of tokens saved at 92%
+precision, 2611.04142), none on Claude-class coding workers with a dollar saving. Treat the Claude 5
+cost figures as one measured run, and the quality claims as transfers from other model families.
 
 For coding fleets, no KB note measures defect escape against PR size or issue count, CI and rebase cost
 amortized across a batch, merge-conflict rates for parallel agents, or a controlled planner and executor
-size split on coding tasks. The next step is a pilot of about 5 small issues run both ways (batched
-pipeline vs one strong agent per issue), comparing cost, wall-clock time, reviewer blocks and post-merge
+size split on coding tasks, or isolation strategies for parallel coding agents compared head to head.
+The next step is a pilot of about 5 small issues run both ways (batched pipeline vs one strong agent per
+issue), comparing cost, wall-clock time, reviewer blocks and post-merge
 defects. Source report: `spec-first-batch-pipeline-for-coding-agents` in the `agentic-capability-reports` KB.
