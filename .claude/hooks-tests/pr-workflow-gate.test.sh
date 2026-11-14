@@ -827,6 +827,68 @@ run_case_H8() {
 }
 run_case_H8
 
+run_closes_case "H9: a ~~~ line inside a \`\`\` fence does not close it → allow" \
+  allow "--body \"\$(cat <<'EOF'
+\`\`\`
+~~~
+\`\`\`
+Closes #12
+EOF
+)\""
+run_closes_case "H10: backticked keyword in the title or a chained command is not the body → allow" \
+  allow "--title '\`fixes #12\` regression' --body 'Closes #12' && echo '\`closes #12\`'"
+run_closes_case "H11: another issue quoted in a fence (git log) → allow" \
+  allow "--body \"\$(cat <<'EOF'
+Closes #12
+\`\`\`
+fix: resolve #77 crash
+\`\`\`
+EOF
+)\""
+run_closes_case "H12: nested fence (\`\`\`\` around \`\`\`) still counts as code → deny" \
+  deny "--body \"\$(cat <<'EOF'
+\`\`\`\`
+\`\`\`
+Closes #12
+\`\`\`
+\`\`\`\`
+EOF
+)\"" 'Closes #12'
+
+# H13: relative --body-file resolved against the payload cwd (/tmp).
+run_case_H13() {
+  local f; f=$(mktemp /tmp/pr-gate-body-XXXXXX)
+  printf 'Summary\n\n`Closes #12`\n' > "$f"
+  run_closes_case "H13: relative --body-file found via cwd → deny" \
+    deny "--body-file $(basename "$f")" 'Closes #12'
+  rm -f "$f"
+}
+run_case_H13
+
+# H14: a pending (#N) warning must not corrupt a later gate's deny: exactly
+#      one JSON object on stdout, and it is the pre-PR deny.
+run_case_H14() {
+  local name="H14: warning + later pre-PR deny → single deny JSON, no warning"
+  local tmpdir; tmpdir=$(mktemp -d)
+  local repo="repoH14-$SUFFIX"
+  local state="/dev/shm/.pr-gate-${repo}-feat-issue-12-thing-pre-done"
+  track_state_file "$state"; rm -f "$state"   # no marker → pre-PR deny
+  local cmd="gh pr create -R testowner/${repo} --head feat/issue-12-thing --title t --body 'Fix (#12)'"
+  local out; out=$(run_hook "$(mk_payload "$cmd")" "$tmpdir")
+  local count; count=$(printf '%s' "$out" | jq -s 'length' 2>/dev/null || echo bad)
+  if [ "$count" != "1" ]; then
+    record_fail "$name" "expected exactly one JSON object, got '$count': $(printf '%s' "$out" | head -c 300)"
+  elif ! printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"
+      and (.hookSpecificOutput.permissionDecisionReason | test("Pre-PR review"))
+      and (.hookSpecificOutput.additionalContext == null)' >/dev/null 2>&1; then
+    record_fail "$name" "expected the pre-PR deny without a warning: $(printf '%s' "$out" | head -c 300)"
+  else
+    record_pass "$name"
+  fi
+  rm -rf "$tmpdir"
+}
+run_case_H14
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then
   printf 'Failed cases:\n'
