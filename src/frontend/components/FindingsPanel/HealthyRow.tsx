@@ -27,6 +27,7 @@ import { SpeakTaskSummaryControl } from './SpeakTaskSummaryControl.js';
 import { TaskPriorityButton } from './TaskPriorityButton.js';
 import { RalphLoopControls } from './RalphLoopControls.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
+import { ChainBadge, ChainStopButton } from './ChainBadge.js';
 import { SchedulePlaybookButton } from './SchedulePlaybookButton.js';
 import { ReplyIcon, SnoozeIcon, MissedIcon } from './icons.js';
 
@@ -112,6 +113,7 @@ export function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
             <PriorityBadge agent={agent} />
             <StuckReasonBadge agent={agent} />
             <ChildRollupPill agent={agent} />
+            <ChainBadge agent={agent} />
             {durText && (
               <>
                 <span className="healthy-row-sep" aria-hidden="true">·</span>
@@ -161,6 +163,7 @@ export function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
               <MissedIcon />
             </button>
             <RalphLoopControls agent={agent} />
+            <ChainStopButton agent={agent} />
             {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
               <RalphLoopBadge agent={agent} />
             )}

@@ -24,6 +24,7 @@ import type { TerminalInputSnapshot } from './terminal-input.js';
 import type { UserInputDeliverySnapshot } from './user-input-delivery.js';
 import type { SessionHealthSnapshot } from './session-health.js';
 import type { PlaybookSourceIdentity } from './playbook.js';
+import type { TaskChainState } from './playbook-chain.js';
 
 /**
  * Client/wire agent state — the dashboard and protocol SSOT (issue #1460).
@@ -95,6 +96,8 @@ export interface AgentState {
   latestCompletionSignal?: LatestCompletionSignal;
   completionFeedback?: TaskCompletionFeedback;
   ralphLoop?: RalphLoopState;
+  /** Playbook-chain position and bounds (RFC rfc-playbook-chains). */
+  chain?: TaskChainState;
   activityMeta?: AgentActivityMeta;
   userInputDeliveries?: UserInputDeliverySnapshot[];
   findingEvidenceAudit?: FindingEvidenceAuditRecord;

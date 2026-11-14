@@ -43,6 +43,53 @@ function monitorSpy() {
 }
 
 describe('selectPrunableTasks', () => {
+  describe('playbook chains (prune whole or not at all)', () => {
+    const cutoff = NOW.getTime() - DEFAULT_TASK_RECORD_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+    function seedChain(store: TaskStore, opts: { ended: boolean; lastFinishedAt?: Date; lastTerminal?: boolean }): Task[] {
+      const first = seedTask(store, { session: 'c1', finishedAt: AGED });
+      first.chain = { chainId: first.id, iteration: 1, maxIterations: 2, startedAt: AGED.toISOString(), unhealthyStreak: 0 };
+      const second = seedTask(store, {
+        session: 'c2',
+        finishedAt: opts.lastFinishedAt ?? AGED,
+        terminal: opts.lastTerminal ?? true,
+        parentTaskId: first.id,
+      });
+      first.chain.successorTaskId = second.id;
+      // Linking the child bumps the parent's updatedAt; age it back like a real old chain.
+      first.updatedAt = AGED;
+      second.chain = {
+        chainId: first.id,
+        iteration: 2,
+        maxIterations: 2,
+        startedAt: AGED.toISOString(),
+        unhealthyStreak: 0,
+        ...(opts.ended ? { ended: { at: AGED.toISOString(), reason: 'iterations_reached' as const } } : {}),
+      };
+      return [first, second];
+    }
+
+    it('prunes an ended chain whose members are all aged', () => {
+      const store = new TaskStore();
+      const [first, second] = seedChain(store, { ended: true });
+      expect(selectPrunableTasks(store.listTasks(), cutoff).map((t) => t.id).sort()).toEqual([first.id, second.id].sort());
+    });
+
+    it('keeps every member of a chain whose tip has not ended, even when all are aged and terminal', () => {
+      const store = new TaskStore();
+      seedChain(store, { ended: false });
+      expect(selectPrunableTasks(store.listTasks(), cutoff)).toEqual([]);
+    });
+
+    it('keeps an aged ended tip while an earlier iteration is still recent, so the chain never loses its end marker', () => {
+      const store = new TaskStore();
+      const first = seedTask(store, { session: 'c1', finishedAt: RECENT });
+      first.chain = { chainId: first.id, iteration: 1, startedAt: AGED.toISOString(), unhealthyStreak: 0, deadlineAt: AGED.toISOString() };
+      const second = seedTask(store, { session: 'c2', finishedAt: AGED, parentTaskId: first.id });
+      second.chain = { chainId: first.id, iteration: 2, startedAt: AGED.toISOString(), unhealthyStreak: 0, ended: { at: AGED.toISOString(), reason: 'deadline_reached' } };
+      expect(selectPrunableTasks(store.listTasks(), cutoff)).toEqual([]);
+    });
+  });
+
   it('selects aged terminal tasks and keeps recent / active ones', () => {
     const store = new TaskStore();
     const aged = seedTask(store, { session: 'aged', finishedAt: AGED });

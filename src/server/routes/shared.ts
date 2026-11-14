@@ -895,6 +895,8 @@ export interface RouteDeps {
   tasksFile?: string;
   /** Singleton Ralph loop orchestration service. */
   ralphLoopService: RalphLoopService;
+  /** Playbook chain service (RFC rfc-playbook-chains); absent ⇒ chain routes answer 503. */
+  playbookChainService?: import('../playbook-chain-service.js').PlaybookChainService;
   /**
    * Worktree registry — surfaced to deploy-routes so `resolveProdDir` can
    * locate the production runtime via the `.kookr-protected` marker rather

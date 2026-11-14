@@ -5,6 +5,7 @@ import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js'
 import { launchPermissionOverrideOption, relaunchPermissionOverride } from './launch-permission-override.js';
 import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
 import type { DeliveryAuthorization, TaskDispositionReason, TaskLaunchIntent } from '../shared/contracts/task.js';
+import type { TaskChainState } from '../shared/contracts/playbook-chain.js';
 import {
   type AgentType,
   type AgentSelection,
@@ -154,6 +155,12 @@ export interface LaunchTaskServerOptions {
    * sets it to `false` (issue #3697); `true` is never inherited.
    */
   bypassPermissions?: boolean;
+  /**
+   * Playbook-chain state to stamp on the created task (RFC rfc-playbook-chains).
+   * Set only by the chain service — first iteration and successors — never from
+   * client `LaunchOpts`, so a hand-spawned task can never pose as an iteration.
+   */
+  chain?: TaskChainState;
 }
 
 export interface LaunchServiceDeps {
@@ -2112,6 +2119,7 @@ async function launchTaskCore(
       playbookSource: opts.playbookSource,
       projectId: opts.projectId,
       playbookParameterValues: opts.playbookParameterValues,
+      ...(serverOpts.chain ? { chain: serverOpts.chain } : {}),
       launchIntent: buildLaunchIntent(opts, {
         agentType,
         ...(portableModelTier !== undefined ? { modelTier: portableModelTier } : {}),
@@ -2153,6 +2161,18 @@ async function launchTaskCore(
     // half_open_probe_busy when no task was persisted.
     deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
     throw err;
+  }
+
+  // A playbook-chain iteration must be on disk before its agent starts: the
+  // chain service finds an existing successor by its persisted chain stamp, so
+  // a crash between session start and the periodic save would otherwise lose
+  // the record and launch the same iteration twice (RFC rfc-playbook-chains).
+  if (serverOpts.chain) {
+    try {
+      await deps.flushTasks();
+    } catch (err) {
+      console.warn(`[launch] could not persist chain iteration ${task.id} before launch:`, err);
+    }
   }
 
   if (resolvedClaimKey && deps.relaunchArbiter) {

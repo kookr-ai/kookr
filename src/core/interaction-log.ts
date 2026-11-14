@@ -49,7 +49,9 @@ export type InteractionEvent =
         | 'finished_awaiting_ack_capacity_pressure'
         | 'finished_awaiting_ack_auto_complete'
         | 'finished_awaiting_ack_ack_reap'
-        | 'terminal_success_auto_complete';
+        | 'terminal_success_auto_complete'
+        | 'chain_idle_complete'
+        | 'chain_signal_complete';
       durationMs: number;
       timestamp: string;
     }

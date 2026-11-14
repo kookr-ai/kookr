@@ -35,6 +35,27 @@ This is intentionally close to the Ralph loop discipline: one runtime owns one
 unit of work, then stops. The continuation comes from external state and a
 fresh task prompt, not from the agent remembering prior conversation.
 
+## First: is this just "the same playbook N times"?
+
+If every unit is the **same playbook with the same parameters** — run a research
+playbook 6 times, or keep running it for 8 hours — do not build a
+self-continuation chain. Start a **Kookr playbook chain** instead: Kookr itself
+launches each next iteration when the current task ends, so nothing depends on
+the agent remembering to spawn a successor at the end of a long run.
+
+```bash
+kookr chain start <playbook>.md -C <repo> --iterations 6   # or --hours 8, or both
+kookr chain stop --reason "no work left"                    # from inside an iteration
+```
+
+The dashboard's Playbooks tab offers the same as a **Repeat** row. Each iteration
+is told not to spawn a successor. See `docs/reference/playbook-chains.md` in the
+Kookr repository.
+
+Use this skill when each unit needs a *different* prompt built from durable
+state (a different issue, phase or file per task), or when the successor must
+carry a cursor the next task cannot re-derive itself.
+
 ## Use When
 
 - A list of issues, PR comments, repos, files, or migration steps can be worked

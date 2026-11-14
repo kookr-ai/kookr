@@ -8,6 +8,7 @@ import { deriveTaskProvenance } from './task-provenance.js';
 import { displayPromptForTask } from './prompt-display.js';
 import type { AgentEvent } from './types.js';
 import type { IssueClaim } from './issue-claim-types.js';
+import type { TaskChainState } from '../shared/contracts/playbook-chain.js';
 import type { CriteriaCompletionVerdict } from '../shared/contracts/completion-digest.js';
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
 import type { OperatorNeeded } from '../shared/contracts/operator-needed.js';
@@ -372,6 +373,7 @@ export class TaskStore {
       autoCloseOnSignal,
       unattended,
       migratedFromTaskId,
+      chain,
     } = opts;
 
     // Validate parent exists if specified
@@ -462,6 +464,11 @@ export class TaskStore {
     if (deliveryAuthorization) task.deliveryAuthorization = deliveryAuthorization;
     if (effectiveAutoCloseOnSignal) task.autoCloseOnSignal = true;
     if (effectiveUnattended) task.unattended = true;
+    // Playbook chain state (RFC rfc-playbook-chains). Stamped at creation so a
+    // successor is findable by chainId + iteration the moment it exists — the
+    // chain advancer's exactly-once check relies on that. Iteration 1 carries an
+    // empty chainId, which becomes this task's own id.
+    if (chain) task.chain = { ...structuredClone(chain), chainId: chain.chainId || task.id };
     this.tasks.set(task.id, task);
     this.markTaskDirty(task.id);
 
@@ -991,6 +998,21 @@ export class TaskStore {
 
   completeTask(id: string, receiptContext?: TerminalTransitionContext): Task {
     return cloneTask(this.transition(id, 'completed', receiptContext));
+  }
+
+  /**
+   * Replace a task's playbook-chain state (RFC rfc-playbook-chains). Only the
+   * chain service writes this, and only on a chain's newest task: to record a
+   * stop request or the reason the chain ended. Returns undefined when the task
+   * does not exist or is not part of a chain.
+   */
+  updateChain(id: string, mutate: (chain: TaskChainState) => TaskChainState): Task | undefined {
+    const task = this.tasks.get(id);
+    if (!task?.chain) return undefined;
+    task.chain = mutate(structuredClone(task.chain));
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
   }
 
   /**

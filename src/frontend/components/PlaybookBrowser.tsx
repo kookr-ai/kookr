@@ -300,6 +300,10 @@ export function PlaybookBrowser({
   const [showLoopableOnly, setShowLoopableOnly] = useState(false);
   const [focusIdx, setFocusIdx] = useState(-1);
   const [launchMode, setLaunchMode] = useState<'standard' | 'looped'>('standard');
+  // Playbook chain bounds (RFC rfc-playbook-chains). Either one filled in makes
+  // a standard launch repeat itself as a chain of tasks.
+  const [repeatIterations, setRepeatIterations] = useState('');
+  const [repeatHours, setRepeatHours] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [conflict, setConflict] = useState<RalphLoopConflict | null>(null);
   // Clear the conflict whenever a key-affecting input changes — otherwise
@@ -604,13 +608,20 @@ export function PlaybookBrowser({
         return;
       }
     } else {
+      const chain = relaunchParentTaskId ? { ok: true as const, value: undefined } : parseRepeatInputs(repeatIterations, repeatHours);
+      if (!chain.ok) {
+        useKookrStore.getState().handleAlert('', chain.error, 'error');
+        setSubmitting(false);
+        return;
+      }
       const sent = send({
         type: 'launchPlaybook',
         ...launchPayload,
+        ...(chain.value ? { chain: chain.value } : {}),
       });
       if (sent) {
         saveLastLaunchPins(effort, model);
-        useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
+        useKookrStore.getState().handleAlert('', `${chain.value ? 'Starting chain' : 'Starting task'}: ${excerpt}`, 'info');
       } else {
         useKookrStore.getState().handleAlert(
           '',
@@ -819,6 +830,44 @@ export function PlaybookBrowser({
 
         {loopDisabledReason && (
           <div className="playbook-loop-disabled">{loopDisabledReason}</div>
+        )}
+
+        {launchMode === 'standard' && !relaunchParentTaskId && (
+          <div className="playbook-repeat" role="group" aria-label="Repeat as a chain">
+            <span className="playbook-repeat-title" title="Kookr launches the next iteration itself each time one completes, until either limit is reached. Leave both empty to run once.">
+              Repeat
+            </span>
+            <label>
+              <span>Iterations</span>
+              <input
+                type="number"
+                min={1}
+                max={200}
+                step={1}
+                inputMode="numeric"
+                value={repeatIterations}
+                onChange={(e) => setRepeatIterations(e.target.value)}
+                placeholder="once"
+                aria-label="Number of iterations"
+              />
+            </label>
+            <label>
+              <span>For hours</span>
+              <input
+                type="number"
+                min={0.1}
+                max={168}
+                // "any": a numeric step would count from `min` and make the
+                // browser reject whole hours like 6 or 8.
+                step="any"
+                inputMode="decimal"
+                value={repeatHours}
+                onChange={(e) => setRepeatHours(e.target.value)}
+                placeholder="no limit"
+                aria-label="Repeat for this many hours"
+              />
+            </label>
+          </div>
         )}
 
         {launchMode === 'looped' && selected.effectiveLoop && (
@@ -1240,3 +1289,30 @@ export function PlaybookBrowser({
     </div>
   );
 }
+
+/**
+ * Turn the Repeat inputs into a chain spec. Both empty means a single run.
+ * Exported for tests.
+ */
+export function parseRepeatInputs(
+  iterationsText: string,
+  hoursText: string,
+): { ok: true; value: { maxIterations?: number; durationMinutes?: number } | undefined } | { ok: false; error: string } {
+  const iterationsRaw = iterationsText.trim();
+  const hoursRaw = hoursText.trim();
+  if (iterationsRaw === '' && hoursRaw === '') return { ok: true, value: undefined };
+  const value: { maxIterations?: number; durationMinutes?: number } = {};
+  if (iterationsRaw !== '') {
+    const n = Number(iterationsRaw);
+    if (!Number.isInteger(n) || n < 1 || n > 200) return { ok: false, error: 'Iterations must be a whole number from 1 to 200.' };
+    value.maxIterations = n;
+  }
+  if (hoursRaw !== '') {
+    const h = Number(hoursRaw);
+    const minutes = Math.round(h * 60);
+    if (!Number.isFinite(h) || minutes < 1 || minutes > 7 * 24 * 60) return { ok: false, error: 'Hours must be between 0.1 and 168.' };
+    value.durationMinutes = minutes;
+  }
+  return { ok: true, value };
+}
+

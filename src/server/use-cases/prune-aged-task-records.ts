@@ -151,9 +151,30 @@ export function selectPrunableTasks(
     for (const childId of task.childTaskIds ?? []) addChild(task.id, childId);
   }
 
+  // Playbook chains (RFC rfc-playbook-chains) are pruned whole or not at all.
+  // The chain service treats the member with the highest iteration as the
+  // chain's live tip: pruning an unfinished tip would lose the chain, and
+  // pruning only an ended tip would make its predecessor the tip again and
+  // relaunch a finished chain.
+  const chainMembers = new Map<string, Task[]>();
+  for (const task of tasks) {
+    if (!task.chain) continue;
+    const members = chainMembers.get(task.chain.chainId) ?? [];
+    members.push(task);
+    chainMembers.set(task.chain.chainId, members);
+  }
+
   let changed = true;
   while (changed) {
     changed = false;
+    for (const members of chainMembers.values()) {
+      const tip = members.reduce((a, b) => (b.chain!.iteration > a.chain!.iteration ? b : a));
+      const keepWhole = !tip.chain!.ended || members.some((member) => !prunable.has(member.id));
+      if (!keepWhole) continue;
+      for (const member of members) {
+        if (prunable.delete(member.id)) changed = true;
+      }
+    }
     for (const id of prunable) {
       const blockingChild = [...(childrenByParent.get(id) ?? [])].some(
         (childId) => byId.has(childId) && !prunable.has(childId),

@@ -92,6 +92,11 @@ const launchPlaybookMessage = z.object({
   model: z.string().min(1).optional(),
   scope: playbookScope.optional(),
   parentTaskId: z.string().min(1).optional(),
+  // Bounds are range-checked by validateChainSpec in the handler, which owns the limits.
+  chain: z.object({
+    maxIterations: z.number().optional(),
+    durationMinutes: z.number().optional(),
+  }).optional(),
 }).superRefine((value, ctx) => {
   const hasLegacy = value.cwd !== undefined;
   const hasSource = value.playbookSourceCwd !== undefined;

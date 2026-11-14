@@ -34,6 +34,7 @@ import { registerOutcomeLedgerRoutes } from './routes/outcome-ledger-routes.js';
 import { registerTaskRelationsRoutes } from './routes/task-relations-routes.js';
 import { registerSupervisionRoutes } from './routes/supervision-routes.js';
 import { registerRalphRoutes } from './ralph/routes.js';
+import { registerPlaybookChainRoutes } from './routes/playbook-chain-routes.js';
 import { registerOssAttemptRoutes } from './routes/oss-attempts-routes.js';
 import { registerShareRoutes } from './routes/share-routes.js';
 import { registerContactShareRoutes } from './routes/contact-share-routes.js';
@@ -160,6 +161,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerSettingsRoutes(app, sharedDeps);
   registerOrchestrationRoutes(app, sharedDeps);
   registerRalphRoutes(app, sharedDeps);
+  registerPlaybookChainRoutes(app, sharedDeps);
   // Inject the typed default-agent update op so task migration's "set as
   // default" toggle declares its settings dependency (issue #1463) instead of
   // casting TaskRouteDeps to the full RouteDeps at the call site. `sharedDeps`

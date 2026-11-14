@@ -21,6 +21,7 @@ The stable surfaces other software — and your own scripts — depend on.
 - [Data directory](data-directory.md) — what Kookr stores under `~/.kookr/`, and which files are operator-owned state rather than repository content.
 - [opencode agent](opencode-agent.md) — enabling the opencode agent type, worker profiles (`scoped-fix`, `reviewer`, `test-auditor`), deliverable gates, usage accounting and limits.
 - [Playbooks](playbooks.md) — the frontmatter and body format for the Markdown task templates Kookr can launch.
+- [Playbook chains](playbook-chains.md) — repeating one playbook for N iterations or H hours, with Kookr launching each next run.
 
 ## How the supervisor decides
 

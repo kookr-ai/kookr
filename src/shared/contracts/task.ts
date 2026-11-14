@@ -50,6 +50,8 @@ export type TaskLaunchSource =
   | 'post-recovery'
   | 'resource-watchdog'
   | 'supervision'
+  /** Next iteration of a playbook chain, launched by the chain service (RFC rfc-playbook-chains). */
+  | 'chain'
   | 'remote-chat-telegram'
   | 'remote-relay';
 export type TaskPriority = 'high';

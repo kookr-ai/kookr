@@ -21,6 +21,7 @@ import { PriorityBadge } from './PriorityBadge.js';
 import { SpeakTaskSummaryControl } from './SpeakTaskSummaryControl.js';
 import { SchedulePlaybookButton } from './SchedulePlaybookButton.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
+import { ChainBadge } from './ChainBadge.js';
 
 function ratingCopy(feedback: TaskCompletionFeedback): { emoji: string; title: string } {
   const emoji = feedback.rating === 'up' ? '👍' : '👎';
@@ -386,6 +387,7 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
         {agent.ralphLoop && (
           <RalphLoopBadge agent={agent} />
         )}
+        <ChainBadge agent={agent} />
         <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
         {agent.completionDigest && agent.completionDigest.bullets.length > 0 && (
           <ul className="completed-digest">
