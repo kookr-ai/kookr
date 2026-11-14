@@ -170,6 +170,8 @@ describe('implement-github-issue playbook', () => {
       const line = handoff.slice(0, handoff.indexOf('\n'));
       expect(line).toContain('without making any GitHub writes');
       for (const label of SKIP_LABELS) expect(line).toContain(`\`${label}\``);
+      // Explicit lists keep their informational semantics in the handoff too.
+      expect(line).toContain('In blank shape only, also remove every issue carrying another Step 0d **Skip** label');
       expect(line).toContain('`TRIAGE_UNRESOLVED`');
     });
   });
