@@ -229,6 +229,48 @@ async function attemptOnce({ env, invoke }) {
 
 // ---------- rendering ----------
 
+// Why an inactive schedule is not running (issue #3482). Every field read here
+// is already on the Schedule contract (src/shared/contracts/schedule.ts) and
+// already returned by GET /api/schedules — this only surfaces it on the
+// human-readable list line, so an operator can tell a fail-closed auto-pause
+// (daemon hold, auto-re-armable) from a deliberate operator hold or a spent
+// trigger budget without reaching for --json. First match wins; a bare manual
+// toggle with no hold/stop metadata (and every enabled row) gets no suffix.
+// Dates are sliced to YYYY-MM-DD (no Date parsing, so no timezone shifts).
+function formatInactiveReason(schedule) {
+  if (!schedule || typeof schedule !== 'object') return '';
+  const day = (v) => (typeof v === 'string' && v.length >= 10 ? v.slice(0, 10) : '');
+  if (schedule.archived) {
+    const parts = [];
+    // The archive note is free text; collapse whitespace so a multi-line note
+    // cannot break the one-line-per-schedule format.
+    const note = typeof schedule.archivedReason === 'string' ? schedule.archivedReason.replace(/\s+/g, ' ').trim() : '';
+    if (note) parts.push(note);
+    const at = day(schedule.archivedAt);
+    if (at) parts.push(`at ${at}`);
+    return parts.length ? `  reason=archived(${parts.join('; ')})` : '';
+  }
+  if (schedule.enabled) return '';
+  const held = day(schedule.heldAt);
+  if (schedule.stopReason === 'consecutive_failures') {
+    const n = Number.isFinite(schedule.consecutiveFailures) ? `×${schedule.consecutiveFailures}` : '';
+    // An operator can hold a schedule that is already auto-paused: the hold
+    // flips to holdSource=operator (never auto-re-armed) and heldAt moves to
+    // the operator's time, while stopReason stays. Name the operator hold first.
+    if (schedule.operatorHold && schedule.holdSource === 'operator') {
+      return `  reason=operator-hold(${held ? `since ${held}; ` : ''}was auto-paused consecutive_failures${n})`;
+    }
+    return `  reason=auto-paused(consecutive_failures${n}${held ? `, since ${held}` : ''})`;
+  }
+  if (schedule.stopReason === 'trigger_limit_reached') return '  reason=trigger_limit_reached';
+  if (schedule.operatorHold) {
+    // holdSource is absent on legacy holds, which the contract treats as operator-set.
+    const src = schedule.holdSource === 'daemon' ? 'daemon' : 'operator';
+    return `  reason=${src}-hold${held ? `(since ${held})` : ''}`;
+  }
+  return '';
+}
+
 function formatScheduleLine(schedule) {
   const id = schedule?.id ?? '?';
   // Archived (issue #2981) is a retired-but-retained state distinct from a live
@@ -242,7 +284,7 @@ function formatScheduleLine(schedule) {
     const remaining = typeof schedule.remainingTriggers === 'number' ? schedule.remainingTriggers : schedule.maxTriggers;
     triggers = `  triggers=${remaining}/${schedule.maxTriggers}`;
   }
-  return `${id}  ${state}  ${name}  cron="${cron}"  next=${next}${triggers}`;
+  return `${id}  ${state}  ${name}  cron="${cron}"  next=${next}${triggers}${formatInactiveReason(schedule)}`;
 }
 
 // Cascade-origin held schedules (issue #2531): disabled AND parked by the
