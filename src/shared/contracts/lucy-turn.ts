@@ -40,10 +40,10 @@ export interface LucyTurnRequest {
 }
 
 /**
- * The look-only tools Lucy may call in this step. Nothing here changes a task. Reading a
- * task's terminal output is not among them yet: it needs the screen rendered first (issue #3683).
+ * The look-only tools Lucy may call in this step. Nothing here changes a task.
+ * `read_task_output` reads the task's terminal as a rendered screen (issue #3683).
  */
-export const LUCY_LOOK_TOOL_NAMES = ['read_board', 'read_task', 'show_task', 'list_projects'] as const;
+export const LUCY_LOOK_TOOL_NAMES = ['read_board', 'read_task', 'read_task_output', 'show_task', 'list_projects'] as const;
 export type LucyLookToolName = (typeof LUCY_LOOK_TOOL_NAMES)[number];
 
 /** The one tool that leads to a change. It only makes a proposal; the operator's confirmation launches it. */

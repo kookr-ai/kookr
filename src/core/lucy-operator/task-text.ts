@@ -5,7 +5,8 @@
  *
  * Such text is not terminal output, but an agent can paste terminal output into it, and
  * the operator can paste anything into a request. A task's terminal itself is not read
- * through here alone: that look-up waits for the screen to be rendered (issue #3683).
+ * through here alone: `read_task_output` renders the screen first (issue #3683), and this
+ * cleaner is only the safety net over the rendered text.
  *
  * ## Why the two jobs are done together
  *

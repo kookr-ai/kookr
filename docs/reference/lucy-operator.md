@@ -70,6 +70,7 @@ reasoning is never sent on.
 |---|---|
 | `read_board` | The board again, freshly built |
 | `read_task` | One task: what it was asked to do, where it runs, what it waits for, its closing summary |
+| `read_task_output` | What a task's terminal shows: the last 40 lines of the rendered screen (a running task), or of the tail saved when it ended |
 | `show_task` | A short confirmation; it asks the dashboard to open the task (a `screen` event in the stream) |
 | `list_projects` | The projects Kookr knows, with how many tasks are active in each |
 
@@ -217,8 +218,15 @@ that sends what you said and the task names, and never a task's request.
 | The operator's sentence and the earlier exchanges of the conversation | Every turn |
 | The board: task names, project names, states, costs, spend, quota | Every turn |
 | A task's request, folder, waiting signal, closing summary and linked pull requests | When she reads that task |
+| The last 40 lines of a task's terminal screen, up to 3000 characters | When she reads that task's output |
 
-A task's terminal output is not sent: she has no look-up that reads it yet.
+A task's terminal is never sent as the raw stream of characters it received. `read_task_output`
+replays the stream through a terminal emulator in the same worker thread that builds the browser's
+attach snapshot (`terminal-snapshot-worker.ts`), with a deadline, and sends the text the screen
+shows. A screen that was redrawn many times is sent once, rows the terminal wrapped are joined again
+before the secrets are hidden, and no terminal code is left. A stream that cannot be rendered in time
+gives "no output available"; the raw stream is not a fallback. The stream is replayed at 200 columns
+by 50 rows, not the pane's real size, so a program that redraws relative to a much narrower pane can leave stale fragments. A token a program split with its own line break (a boxed panel, say) is not joined; only rows the terminal wrapped are.
 
 Before any of this is sent, secret-looking tokens (API keys and similar) are replaced with
 `[redacted]`, using the same rule as the spoken summaries. That includes the operator's own sentence
@@ -301,10 +309,9 @@ with whole turns between 0.6 and 3.1 s.
 - She does not speak first. A turn starts only when the operator asks.
 - She answers in English.
 - Conversations are kept in memory: the last ten exchanges, for two hours, and not across a restart.
-- She cannot read what a task is printing in its terminal. She can say what the task was asked to
-  do, what it is waiting for and how it ended, and she can open it on your screen. Reading the
-  terminal needs the screen rendered first, so that redraws are not read as text and so that secrets
-  on screen can be hidden reliably; that is issue #3683.
+- She reads a task's terminal only as a rendered screen: the last 40 lines, not its full history.
+  A task that has ended and kept no saved tail (never captured, expired, or retention off) has no
+  output to read.
 - The spend figure on the board is the all-time total. The last-24-hours figure the dashboard shows
   is not on the board yet, and she is told so.
 - The reasoning level is sent as OpenRouter's `reasoning.effort`. A model that does not accept it will

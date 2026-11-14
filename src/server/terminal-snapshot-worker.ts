@@ -7,15 +7,22 @@ import {
   type StreamingAttachSnapshotResult,
   type StreamingAttachSnapshotUnavailableReason,
 } from './streaming-attach-snapshot.js';
+import type { TerminalScreenTextOptions, TerminalScreenTextResult } from './terminal-screen-text.js';
 
 /** Options that survive a trip to the worker thread: the injected test clock, a function, does not. */
 export type TerminalSnapshotJobOptions = Omit<StreamingAttachSnapshotOptions, 'nowMs'>;
+
+/** What a worker job answers: an attach seed (#3564) or the screen's text (#3683). */
+type WorkerResult = StreamingAttachSnapshotResult | TerminalScreenTextResult;
+type WorkerJob =
+  | { job: 'seed'; options: TerminalSnapshotJobOptions }
+  | { job: 'text'; options: TerminalScreenTextOptions };
 
 interface Pending {
   bytes: number;
   sessionKey: string | undefined;
   startedAt: number;
-  resolve(result: StreamingAttachSnapshotResult): void;
+  resolve(result: WorkerResult): void;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -87,7 +94,7 @@ export class TerminalSnapshotWorker {
     });
     this.worker = worker;
     this.served = false;
-    worker.on('message', (message: { id: number; result: StreamingAttachSnapshotResult }) => {
+    worker.on('message', (message: { id: number; result: WorkerResult }) => {
       if (this.worker !== worker) return;
       this.served = true;
       // A replay that ran past its own budget is expensive however it ended, and the
@@ -114,8 +121,18 @@ export class TerminalSnapshotWorker {
   }
 
   snapshot(bytes: Uint8Array, options: TerminalSnapshotJobOptions): Promise<StreamingAttachSnapshotResult> {
+    return this.submit(bytes, { job: 'seed', options }) as Promise<StreamingAttachSnapshotResult>;
+  }
+
+  /** The text the screen shows after replaying `bytes` (issue #3683). Same deadline and backoff as `snapshot`. */
+  renderText(bytes: Uint8Array, options: TerminalScreenTextOptions): Promise<TerminalScreenTextResult> {
+    return this.submit(bytes, { job: 'text', options }) as Promise<TerminalScreenTextResult>;
+  }
+
+  private submit(bytes: Uint8Array, request: WorkerJob): Promise<WorkerResult> {
+    const { options } = request;
     const startedAt = performance.now();
-    const unavailable = (reason: StreamingAttachSnapshotUnavailableReason): StreamingAttachSnapshotResult =>
+    const unavailable = (reason: StreamingAttachSnapshotUnavailableReason): WorkerResult =>
       ({ kind: 'unavailable', reason, elapsedMs: performance.now() - startedAt });
     if (bytes.length === 0) return Promise.resolve(unavailable('empty'));
     if (this.isBackingOff(options.sessionKey)) return Promise.resolve(unavailable('backoff'));
@@ -150,7 +167,7 @@ export class TerminalSnapshotWorker {
       timer.unref?.();
       this.pending.set(id, { bytes: bytes.length, sessionKey: options.sessionKey, startedAt, resolve, timer });
       this.retainedBytes += bytes.length;
-      try { worker.postMessage({ id, bytes: owned, options }, [owned.buffer]); }
+      try { worker.postMessage({ id, bytes: owned, ...request }, [owned.buffer]); }
       catch { this.finish(id, unavailable('failed')); }
     });
   }
@@ -177,7 +194,7 @@ export class TerminalSnapshotWorker {
     this.stalledSessions.set(sessionKey, Date.now() + this.backoffMs);
   }
 
-  private finish(id: number, result: StreamingAttachSnapshotResult): void {
+  private finish(id: number, result: WorkerResult): void {
     const pending = this.pending.get(id);
     if (!pending) return;
     clearTimeout(pending.timer);
@@ -219,6 +236,15 @@ export function snapshotStreamingAttachSeedIsolated(
 ): Promise<StreamingAttachSnapshotResult> {
   shared ??= new TerminalSnapshotWorker();
   return shared.snapshot(bytes, options);
+}
+
+/** The screen text for a stream, rendered in the shared worker (issue #3683). */
+export function renderTerminalScreenTextIsolated(
+  bytes: Uint8Array,
+  options: TerminalScreenTextOptions,
+): Promise<TerminalScreenTextResult> {
+  shared ??= new TerminalSnapshotWorker();
+  return shared.renderText(bytes, options);
 }
 
 /** Stop the shared worker (process shutdown, tests). A later call starts a new one. */
