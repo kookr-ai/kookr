@@ -4116,3 +4116,253 @@ function closeServer(server: Server): Promise<void> {
     server.close((err) => (err ? reject(err) : resolve()));
   });
 }
+
+// ---------- #3580: --wait is honored on the reconcile-probe recovered path ----------
+
+describe('main --wait after a reconcile-probe recovery (#3580)', () => {
+  let tmpCwd: string;
+  beforeEach(async () => {
+    tmpCwd = await mkdtemp(join(tmpdir(), 'kookr-spawn-3580-'));
+  });
+  afterEach(async () => {
+    await rm(tmpCwd, { recursive: true, force: true });
+  });
+
+  /**
+   * The incident shape: a keyless create that fails from the client's view
+   * (5xx) although the task landed, so the read-only probe recovers it. The
+   * probe and the wait loop both read GET /api/tasks (an active task);
+   * the snapshot carries the state the wait loop should act on.
+   */
+  async function runRecovered(
+    argv: string[],
+    snapshotAgent: Record<string, unknown>,
+    { dropSocket = false, snapshotStatus = 200 }: { dropSocket?: boolean; snapshotStatus?: number } = {},
+  ) {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(
+      (req) => {
+        posts += 1;
+        // dropSocket: the client-timeout / dropped-connection shape (catch site)
+        // rather than the keyless-5xx shape.
+        if (dropSocket) req.socket.destroy();
+        return { status: 500, body: JSON.stringify({ error: 'timeout after create' }) };
+      },
+      () => (snapshotStatus === 200
+        ? { status: 200, body: JSON.stringify([{ taskId: 'cold-1', ...snapshotAgent }]) }
+        : { status: snapshotStatus, body: JSON.stringify({ error: 'snapshot down' }) }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([
+          { id: 'cold-1', status: 'inProgress', cwd: tmpCwd, userPrompt: 'hello', agentType: 'opencode' },
+        ]),
+      }),
+    );
+    let clock = 0;
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: [...argv, 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async (ms) => { clock += ms; },
+        now: () => clock,
+      });
+      return { codes, logs, errors: errBucket.errors, posts };
+    } finally {
+      await closeServer(server);
+    }
+  }
+
+  it('--json --wait: a still-running recovered task times out with exit 6, not exit 0', async () => {
+    const r = await runRecovered(['--wait=60', '--json'], { taskStatus: 'inProgress' });
+    expect(r.codes).toEqual([EXIT_WAIT_TIMEOUT]);
+    expect(r.posts).toBe(1); // still never re-POSTs
+    const envelope = parseSingleJsonLog(r.logs);
+    expect(envelope).toMatchObject({
+      ok: false,
+      code: 'WAIT_TIMEOUT',
+      details: { taskId: 'cold-1', reconciled: true, wait: { outcome: 'timeout' } },
+    });
+    expect(r.errors).toEqual([]); // --json stays quiet on stderr
+  });
+
+  it('--json --wait: exits 0 only once the recovered task signals completion-ready', async () => {
+    const r = await runRecovered(['--wait=60', '--json'], {
+      taskStatus: 'inProgress',
+      pendingSignal: { kind: 'completion_ready', raisedAt: '2026-11-14T00:00:00.000Z' },
+    });
+    expect(r.codes).toEqual([EXIT_OK]);
+    expect(parseSingleJsonLog(r.logs)).toMatchObject({
+      ok: true,
+      code: 'OK',
+      message: 'Active task recovered via reconcile probe (ambiguous create outcome); task signaled completion-ready',
+      details: { taskId: 'cold-1', reconciled: true, wait: { outcome: 'completion_ready' } },
+    });
+  });
+
+  it('--json --wait: a recovered task that reaches completed exits 0', async () => {
+    const r = await runRecovered(['--wait=60', '--json'], { taskStatus: 'completed' });
+    expect(r.codes).toEqual([EXIT_OK]);
+    expect(parseSingleJsonLog(r.logs)).toMatchObject({
+      ok: true,
+      details: { taskId: 'cold-1', wait: { outcome: 'terminal', status: 'completed' } },
+    });
+  });
+
+  it('--json --wait: a server error while waiting exits 4 with the error in details.wait', async () => {
+    const r = await runRecovered(['--wait=60', '--json'], {}, { snapshotStatus: 500 });
+    expect(r.codes).toEqual([EXIT_SERVER_ERROR]);
+    const envelope = parseSingleJsonLog(r.logs);
+    expect(envelope).toMatchObject({ ok: false, code: 'SERVER_ERROR', details: { wait: { outcome: 'server_error' } } });
+    expect(typeof envelope.details.wait.error).toBe('string');
+  });
+
+  it('--json --wait: also waits when the create dropped the connection (catch-site recovery)', async () => {
+    const r = await runRecovered(['--wait=60', '--json'], { taskStatus: 'inProgress' }, { dropSocket: true });
+    expect(r.codes).toEqual([EXIT_WAIT_TIMEOUT]);
+    expect(r.posts).toBe(1);
+    expect(parseSingleJsonLog(r.logs)).toMatchObject({
+      code: 'WAIT_TIMEOUT',
+      details: { taskId: 'cold-1', reconciled: true, wait: { outcome: 'timeout' } },
+    });
+  });
+
+  it('--json --wait: a recovered task that ends cancelled exits 4', async () => {
+    const r = await runRecovered(['--wait=60', '--json'], { taskStatus: 'cancelled' });
+    expect(r.codes).toEqual([EXIT_SERVER_ERROR]);
+    expect(parseSingleJsonLog(r.logs)).toMatchObject({
+      ok: false,
+      code: 'TASK_TERMINAL',
+      details: { taskId: 'cold-1', reconciled: true, wait: { outcome: 'terminal', status: 'cancelled' } },
+    });
+  });
+
+  it('text --wait: prints the recovered id, then waits (exit 6 while still running)', async () => {
+    const r = await runRecovered(['--wait=60'], { taskStatus: 'inProgress' });
+    expect(r.codes).toEqual([EXIT_WAIT_TIMEOUT]);
+    // The recovered id is printed first, before the wait outcome.
+    expect(r.logs[0]).toContain('task_id=cold-1');
+    expect(r.logs[0]).toContain('recovered via reconcile probe');
+    expect(r.errors.join('\n')).toContain('timed out');
+  });
+
+  it('text --wait: exits 0 once the recovered task completes', async () => {
+    const r = await runRecovered(['--wait=60'], { taskStatus: 'completed' });
+    expect(r.codes).toEqual([EXIT_OK]);
+    expect(r.logs.join('\n')).toContain('Task completed');
+  });
+});
+
+describe('main --json --wait on the created path (#3580)', () => {
+  let tmpCwd: string;
+  beforeEach(async () => {
+    tmpCwd = await mkdtemp(join(tmpdir(), 'kookr-spawn-3580-'));
+  });
+  afterEach(async () => {
+    await rm(tmpCwd, { recursive: true, force: true });
+  });
+
+  it('waits before emitting the envelope instead of exiting 0 immediately', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 201, body: JSON.stringify({ id: 'wait-j', agentType: 'claude-code', cwd: tmpCwd }) }),
+      () => ({ status: 200, body: JSON.stringify([{ taskId: 'wait-j', taskStatus: 'inProgress' }]) }),
+      () => ({ status: 200, body: JSON.stringify([{ id: 'wait-j', status: 'inProgress' }]) }),
+    );
+    let clock = 0;
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--wait=60', '--json', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async (ms) => { clock += ms; },
+        now: () => clock,
+      });
+      expect(codes).toEqual([EXIT_WAIT_TIMEOUT]);
+      expect(parseSingleJsonLog(logs)).toMatchObject({
+        ok: false,
+        code: 'WAIT_TIMEOUT',
+        details: { taskId: 'wait-j', wait: { outcome: 'timeout' } },
+      });
+      expect(errBucket.errors).toEqual([]);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--dedupe=skip --json --wait waits on the returned duplicate', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({
+        status: 200,
+        body: JSON.stringify({ duplicate: true, task: { id: 'dup-j', status: 'inProgress', cwd: tmpCwd } }),
+      }),
+      () => ({ status: 200, body: JSON.stringify([{ taskId: 'dup-j', taskStatus: 'inProgress' }]) }),
+      () => ({ status: 200, body: JSON.stringify([{ id: 'dup-j', status: 'inProgress' }]) }),
+    );
+    let clock = 0;
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dedupe=skip', '--wait=60', '--json', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async (ms) => { clock += ms; },
+        now: () => clock,
+      });
+      expect(codes).toEqual([EXIT_WAIT_TIMEOUT]);
+      expect(parseSingleJsonLog(logs)).toMatchObject({
+        ok: false,
+        code: 'WAIT_TIMEOUT',
+        details: { taskId: 'dup-j', wait: { outcome: 'timeout' } },
+      });
+      expect(errBucket.errors).toEqual([]);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('without --wait the --json envelope and exit 0 are unchanged', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 201, body: JSON.stringify({ id: 'nowait-j', agentType: 'claude-code', cwd: tmpCwd }) }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--json', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: makeConsoleCapture().io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      const envelope = parseSingleJsonLog(logs);
+      expect(envelope).toMatchObject({ ok: true, code: 'OK', message: 'Task created' });
+      expect(envelope.details.wait).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+});

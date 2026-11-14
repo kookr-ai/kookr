@@ -106,6 +106,8 @@ kookr spawn --wait=600 "implement the issue and signal completion-ready"
 
 `--wait` keeps the initial `task_id=<uuid>` output, then polls the existing read APIs (`/api/snapshot` for task state, `/api/tasks` for the pending completion signal) until the task raises `completion-ready` or reaches a terminal state. `--wait=<seconds>` bounds the wait. A `completion-ready` signal or `completed` task exits 0. `cancelled` and `terminated` unblock the wait and exit 4. A timeout exits 6.
 
+With `--json`, `--wait` waits first and then prints a single envelope whose `ok`, `code`, and exit code reflect the wait outcome: `OK` (exit 0), `WAIT_TIMEOUT` (exit 6), or `TASK_TERMINAL` / `SERVER_ERROR` (exit 4), with a `details.wait` block (`outcome`, `status`). Because the task id is printed only when the wait ends, bound a scripted `--json --wait` with `--wait=<seconds>`. The same wait applies when an ambiguous create (client timeout or 5xx) is resolved by the read-only reconcile probe: a recovered task is waited on, never reported as done while it still runs.
+
 Duplicate prompt handling:
 
 ```bash
