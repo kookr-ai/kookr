@@ -5,9 +5,15 @@ import { join } from 'node:path';
 import {
   LoadoutStore,
   LOADOUT_STORE_FILENAME,
+  PLUGIN_FLEET_FILENAME,
+  partitionByInstalled,
+  prepareSpawnLoadout,
   replayRecordedLoadout,
-  resolveOrReplayLoadout,
+  type SpawnLoadoutDeps,
 } from './loadout-store.js';
+import { resolveLoadout } from '../../core/claude-settings/loadout.js';
+import { PluginMutationService } from './mutation-service.js';
+import type { InstalledPluginRecord } from './registry.js';
 import type { Task } from '../../core/task-read-model.js';
 import type { TaskLoadoutRecord } from '../../shared/contracts/plugins.js';
 
@@ -80,121 +86,386 @@ describe('LoadoutStore', () => {
   });
 });
 
-describe('replayRecordedLoadout', () => {
-  test('returns the recorded resolved loadout verbatim', () => {
-    const record: TaskLoadoutRecord = {
-      resolved: { enabledOverrides: { 'kookr-toolkit@kookr': false }, deniedSkills: [] },
-      winningLevel: 'project',
-      mode: 'bypass',
-      settingsHash: 'abc',
-      settingsPath: '/tmp/s.json',
-      recordedAt: new Date().toISOString(),
-    };
-    const task = { loadout: record } as unknown as Task;
-    expect(replayRecordedLoadout(task)).toEqual({ resolvedLoadout: record.resolved });
+describe('LoadoutStore — fleet file (plugin-fleet.json)', () => {
+  let dir: string;
+  let store: LoadoutStore;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'kookr-fleet-file-'));
+    store = new LoadoutStore(dir);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(dir, { recursive: true, force: true });
   });
 
-  test('returns no field when the task carries no loadout (byte-identical path)', () => {
-    const task = {} as unknown as Task;
-    expect(replayRecordedLoadout(task)).toEqual({});
+  test('absent file reads as an empty set with status missing', async () => {
+    expect(await store.readFleet()).toEqual({ plugins: {}, status: 'missing' });
+  });
+
+  test('empty set file reads as empty with status ok', async () => {
+    writeFileSync(join(dir, PLUGIN_FLEET_FILENAME), JSON.stringify({ version: 1, plugins: {} }));
+    expect(await store.readFleet()).toEqual({ plugins: {}, status: 'ok' });
+  });
+
+  test.each([
+    ['not JSON', '{ nope'],
+    ['no plugins key', JSON.stringify({ version: 1 })],
+    ['plugins is an array', JSON.stringify({ version: 1, plugins: ['a@m'] })],
+  ])('malformed file (%s) reads as empty with status malformed, never throws', async (_label, body) => {
+    writeFileSync(join(dir, PLUGIN_FLEET_FILENAME), body);
+    expect(await store.readFleet()).toEqual({ plugins: {}, status: 'malformed' });
+  });
+
+  test('writeFleet round-trips, drops non-booleans, and returns before/after', async () => {
+    await store.writeFleet({ 'a@m': true });
+    const res = await store.writeFleet({ 'b@m': true, 'c@m': 'x' as unknown as boolean });
+    expect(res).toEqual({ before: { 'a@m': true }, after: { 'b@m': true } });
+    const parsed = JSON.parse(readFileSync(join(dir, PLUGIN_FLEET_FILENAME), 'utf8'));
+    expect(parsed).toEqual({ version: 1, plugins: { 'b@m': true } });
+  });
+
+  test('the fleet set is a separate file: writing it never touches plugin-loadouts.json', async () => {
+    await store.setLevelState('project', 'p', { plugins: { 'x@m': true } });
+    const before = readFileSync(join(dir, LOADOUT_STORE_FILENAME), 'utf8');
+    await store.writeFleet({ 'a@m': true });
+    expect(readFileSync(join(dir, LOADOUT_STORE_FILENAME), 'utf8')).toBe(before);
+  });
+
+  test('resolveForLaunch: fleet is the least specific level; project overrides it per plugin', async () => {
+    await store.writeFleet({ 'a@m': true, 'b@m': true });
+    await store.setLevelState('project', 'proj', { plugins: { 'b@m': false } });
+    const r = await store.resolveForLaunch({ projectId: 'proj' }, { mode: 'bypass' });
+    expect(r.loadout.enabledOverrides).toEqual({ 'a@m': true, 'b@m': false });
+    expect(r.pluginLevels).toEqual({ 'a@m': 'fleet', 'b@m': 'project' });
+    expect(r.provenance.winningLevel).toBe('project');
+    const other = await store.resolveForLaunch({ projectId: 'other' }, { mode: 'bypass' });
+    expect(other.provenance.winningLevel).toBe('fleet');
+    expect(other.loadout.enabledSet).toEqual(['a@m', 'b@m']);
   });
 });
 
-describe('resolveOrReplayLoadout', () => {
+const rec = (over: Partial<InstalledPluginRecord> = {}): InstalledPluginRecord => ({
+  scope: 'user', installPath: '/cache/x/1.0.0', version: '1.0.0', gitCommitSha: null, ...over,
+});
+
+describe('partitionByInstalled', () => {
+  const resolveFleet = (plugins: Record<string, boolean>, project?: Record<string, boolean>) =>
+    resolveLoadout({ fleet: { plugins }, ...(project ? { project: { plugins: project } } : {}) }, { mode: 'bypass' });
+
+  test('all installed → all kept, listed with version and install path', () => {
+    const installed = new Map([['a@m', [rec({ installPath: '/c/a/1.2.0', version: '1.2.0' })]]]);
+    const p = partitionByInstalled(resolveFleet({ 'a@m': true }), installed);
+    expect(p.loadout.enabledOverrides).toEqual({ 'a@m': true });
+    expect(p.loadout.enabledSet).toEqual(['a@m']);
+    expect(p.plugins).toEqual([{ id: 'a@m', version: '1.2.0', installPath: '/c/a/1.2.0' }]);
+    expect(p.skipped).toEqual([]);
+    expect(p.provenance.winningLevel).toBe('fleet');
+  });
+
+  test('some skipped → missing ones are skipped as not_installed and left out of the allowlist', () => {
+    const installed = new Map([['a@m', [rec()]]]);
+    const p = partitionByInstalled(resolveFleet({ 'a@m': true, 'gone@m': true }), installed);
+    expect(p.loadout.enabledOverrides).toEqual({ 'a@m': true });
+    expect(p.loadout.enabledSet).toEqual(['a@m']);
+    expect(p.skipped).toEqual([{ id: 'gone@m', reason: 'not_installed' }]);
+  });
+
+  test('all skipped → empty loadout, winning level recomputed to none', () => {
+    const p = partitionByInstalled(resolveFleet({ 'gone@m': true }), new Map());
+    expect(p.loadout.enabledOverrides).toEqual({});
+    expect(p.provenance.winningLevel).toBe('none');
+    expect(p.skipped).toEqual([{ id: 'gone@m', reason: 'not_installed' }]);
+  });
+
+  test('provenance never names a level whose only entries were skipped', () => {
+    const installed = new Map([['a@m', [rec()]]]);
+    const p = partitionByInstalled(resolveFleet({ 'a@m': true }, { 'gone@m': true }), installed);
+    expect(p.provenance.winningLevel).toBe('fleet');
+  });
+
+  test('a dir-loaded plugin (bundled toolkit) passes through untouched, not listed as given', () => {
+    const p = partitionByInstalled(resolveFleet({}, { 'kookr-toolkit@kookr': false }), new Map(), ['kookr-toolkit']);
+    expect(p.loadout.enabledOverrides).toEqual({ 'kookr-toolkit@kookr': false });
+    expect(p.plugins).toEqual([]);
+    expect(p.skipped).toEqual([]);
+    expect(p.provenance.winningLevel).toBe('project');
+  });
+
+  test('a false entry passes through even when not installed (disabling needs no install)', () => {
+    const p = partitionByInstalled(resolveFleet({ 'x@m': false }), new Map());
+    expect(p.loadout.enabledOverrides).toEqual({ 'x@m': false });
+    expect(p.skipped).toEqual([]);
+  });
+
+  test('install record selection: user scope wins, else the highest version', () => {
+    const multi = new Map([
+      ['a@m', [rec({ scope: 'project', version: '9.0.0', installPath: '/p' }), rec({ scope: 'user', version: '1.0.0', installPath: '/u' })]],
+      ['b@m', [rec({ scope: 'project', version: '1.0.0', installPath: '/p1' }), rec({ scope: 'local', version: '2.0.0', installPath: '/p2' })]],
+    ]);
+    const p = partitionByInstalled(resolveFleet({ 'a@m': true, 'b@m': true }), multi);
+    expect(p.plugins).toEqual([
+      { id: 'a@m', version: '1.0.0', installPath: '/u' },
+      { id: 'b@m', version: '2.0.0', installPath: '/p2' },
+    ]);
+  });
+});
+
+describe('prepareSpawnLoadout and replayRecordedLoadout', () => {
   let dir: string;
   let store: LoadoutStore;
-  let setCalls: Array<{ id: string; loadout: unknown }>;
+  let mutation: PluginMutationService;
+  let lockSpy: ReturnType<typeof vi.spyOn>;
+  let setCalls: Array<{ id: string; loadout: TaskLoadoutRecord }>;
+  let installed: Map<string, InstalledPluginRecord[]>;
+  let registryReads: number;
+  let warn: ReturnType<typeof vi.spyOn>;
+
   const fakeTaskStore = {
     setLoadout: (id: string, loadout: unknown) => {
-      setCalls.push({ id, loadout });
+      setCalls.push({ id, loadout: loadout as TaskLoadoutRecord });
       return {} as never;
     },
   };
   const claudeTask = (over: Partial<Task> = {}): Task =>
-    ({ id: 't1', agentType: 'claude-code', projectId: 'proj', playbookId: 'pb', ...over }) as unknown as Task;
+    ({ id: 't1', agentType: 'claude-code', projectId: 'proj', playbookId: 'pb', sessions: [], ...over }) as unknown as Task;
+  const deps = (env: NodeJS.ProcessEnv, over: Partial<SpawnLoadoutDeps> = {}): SpawnLoadoutDeps => ({
+    loadoutStore: store,
+    taskStore: fakeTaskStore,
+    mutation,
+    installedPlugins: { read: async () => { registryReads++; return installed; } },
+    dirLoadedPluginNames: async () => ['kookr-toolkit'],
+    env,
+    ...over,
+  });
+  const ON = { KOOKR_PLUGIN_LOADOUTS: '1' };
+  const recorded = (over: Partial<TaskLoadoutRecord> = {}): TaskLoadoutRecord => ({
+    resolved: { enabledOverrides: { 'a@m': true }, enabledSet: ['a@m'], deniedSkills: [] },
+    winningLevel: 'fleet', mode: 'bypass', settingsHash: 'h', settingsPath: '/p', recordedAt: 'then',
+    plugins: [{ id: 'a@m', version: '1.0.0', installPath: '/c' }], skipped: [],
+    ...over,
+  });
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'kookr-ror-'));
+    dir = mkdtempSync(join(tmpdir(), 'kookr-spawn-loadout-'));
     store = new LoadoutStore(dir);
+    mutation = new PluginMutationService();
+    lockSpy = vi.spyOn(mutation, 'withLock');
     setCalls = [];
-    vi.stubEnv('KOOKR_PLUGIN_LOADOUTS', '1');
+    installed = new Map([['a@m', [rec()]]]);
+    registryReads = 0;
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
   });
   afterEach(() => {
-    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test('FRESH: resolves from store, records intent, and stamps hash/path via onLoadoutApplied', async () => {
-    await store.setLevelState('project', 'proj', { plugins: { 'kookr-toolkit@kookr': false } });
-    const fields = await resolveOrReplayLoadout({ loadoutStore: store, taskStore: fakeTaskStore }, claudeTask());
-    expect(fields.resolvedLoadout?.enabledOverrides).toEqual({ 'kookr-toolkit@kookr': false });
-    // intent recorded on first resolve
+  test('nothing configured, flag on → no field, nothing recorded, no lock, no registry read (R2)', async () => {
+    const fields = await prepareSpawnLoadout(deps(ON), claudeTask());
+    expect(fields).toEqual({});
+    expect(setCalls).toHaveLength(0);
+    expect(lockSpy).not.toHaveBeenCalled();
+    expect(registryReads).toBe(0);
+  });
+
+  test('fleet set configured, flag on → takes the lock, records plugins with version, stamps hash', async () => {
+    await store.writeFleet({ 'a@m': true });
+    const fields = await prepareSpawnLoadout(deps(ON), claudeTask());
+    expect(lockSpy).toHaveBeenCalledTimes(1);
+    expect(fields.resolvedLoadout?.enabledSet).toEqual(['a@m']);
     expect(setCalls).toHaveLength(1);
-    const rec0 = setCalls[0].loadout as TaskLoadoutRecord;
-    expect(rec0.winningLevel).toBe('project');
-    expect(rec0.mode).toBe('bypass');
-    expect(rec0.settingsHash).toBeNull();
-    expect(rec0.recordedAt).toBeTruthy();
-    // callback stamps hash + path
+    expect(setCalls[0].loadout).toMatchObject({
+      winningLevel: 'fleet',
+      plugins: [{ id: 'a@m', version: '1.0.0', installPath: '/cache/x/1.0.0' }],
+      skipped: [],
+      settingsHash: null,
+    });
     fields.onLoadoutApplied!({ settingsHash: 'deadbeef', settingsPath: '/s.json' });
-    expect(setCalls).toHaveLength(2);
-    const rec1 = setCalls[1].loadout as TaskLoadoutRecord;
-    expect(rec1.settingsHash).toBe('deadbeef');
-    expect(rec1.settingsPath).toBe('/s.json');
+    expect(setCalls[1].loadout).toMatchObject({ settingsHash: 'deadbeef', settingsPath: '/s.json', plugins: [{ id: 'a@m' }] });
   });
 
-  test('REPLAY: a task that already carries a loadout is replayed verbatim; store NOT consulted', async () => {
-    const resolveSpy = vi.spyOn(store, 'resolveForLaunch');
-    const recorded: TaskLoadoutRecord = {
-      resolved: { enabledOverrides: { 'a@m': false }, deniedSkills: [] },
-      winningLevel: 'playbook', mode: 'bypass', settingsHash: 'h', settingsPath: '/p', recordedAt: 'now',
-    };
-    const fields = await resolveOrReplayLoadout(
-      { loadoutStore: store, taskStore: fakeTaskStore },
-      claudeTask({ loadout: recorded }),
+  test('every named plugin skipped → still records (skipped + winningLevel none) and warns', async () => {
+    await store.writeFleet({ 'gone@m': true });
+    const fields = await prepareSpawnLoadout(deps(ON), claudeTask());
+    expect(fields.resolvedLoadout?.enabledOverrides).toEqual({});
+    expect(setCalls).toHaveLength(1);
+    expect(setCalls[0].loadout).toMatchObject({
+      winningLevel: 'none', plugins: [], skipped: [{ id: 'gone@m', reason: 'not_installed' }],
+    });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('gone@m'))).toBe(true);
+  });
+
+  test('registry unreadable → fails closed: every named plugin skipped as not_installed', async () => {
+    await store.writeFleet({ 'a@m': true });
+    const fields = await prepareSpawnLoadout(
+      deps(ON, { installedPlugins: { read: async () => { throw new Error('EACCES'); } } }),
+      claudeTask(),
     );
-    expect(fields).toEqual({ resolvedLoadout: recorded.resolved });
-    expect(resolveSpy).not.toHaveBeenCalled();
-    expect(setCalls).toHaveLength(0); // nothing re-recorded
+    expect(fields.resolvedLoadout?.enabledOverrides).toEqual({});
+    expect(setCalls[0].loadout.skipped).toEqual([{ id: 'a@m', reason: 'not_installed' }]);
   });
 
-  test('NON-CLAUDE agent → no resolution, nothing recorded (RFC acceptance negative)', async () => {
-    await store.setLevelState('task-type', 'codex-cli', { plugins: { 'a@m': false } });
-    const fields = await resolveOrReplayLoadout(
-      { loadoutStore: store, taskStore: fakeTaskStore },
-      claudeTask({ agentType: 'codex-cli' as Task['agentType'] }),
-    );
-    expect(fields).toEqual({});
-    expect(setCalls).toHaveLength(0);
+  test('a lock busy past the deadline → proceeds and marks spawnGateDegraded on the record', async () => {
+    await store.writeFleet({ 'a@m': true });
+    let release!: () => void;
+    const held = mutation.withLock('test-holder', () => new Promise<void>((r) => { release = r; }));
+    try {
+      await prepareSpawnLoadout(deps(ON, { spawnGateTimeoutMs: 0 }), claudeTask());
+    } finally {
+      release();
+      await held;
+    }
+    expect(setCalls[0].loadout.spawnGateDegraded).toBe(true);
   });
 
-  test('FLAG OFF → no resolution, nothing recorded', async () => {
-    vi.stubEnv('KOOKR_PLUGIN_LOADOUTS', '0');
+  test('project override to false beats the fleet set; record says which level won', async () => {
+    await store.writeFleet({ 'a@m': true });
     await store.setLevelState('project', 'proj', { plugins: { 'a@m': false } });
-    const fields = await resolveOrReplayLoadout({ loadoutStore: store, taskStore: fakeTaskStore }, claudeTask());
+    const fields = await prepareSpawnLoadout(deps(ON), claudeTask());
+    expect(fields.resolvedLoadout?.enabledOverrides).toEqual({ 'a@m': false });
+    expect(setCalls[0].loadout.winningLevel).toBe('project');
+    expect(setCalls[0].loadout.plugins).toEqual([]);
+  });
+
+  test('non-Claude agent → nothing resolved or recorded', async () => {
+    await store.writeFleet({ 'a@m': true });
+    const fields = await prepareSpawnLoadout(deps(ON), claudeTask({ agentType: 'codex-cli' as Task['agentType'] }));
     expect(fields).toEqual({});
     expect(setCalls).toHaveLength(0);
   });
 
-  test('no store configured → {}', async () => {
-    const fields = await resolveOrReplayLoadout({ loadoutStore: undefined, taskStore: fakeTaskStore }, claudeTask());
-    expect(fields).toEqual({});
-  });
-
-  test('store resolves EMPTY → {} and nothing recorded', async () => {
-    // no matching entry for this context
-    const fields = await resolveOrReplayLoadout({ loadoutStore: store, taskStore: fakeTaskStore }, claudeTask());
+  test('a task that has run before but has no record is not resolved fresh (R4, reopen/promotion)', async () => {
+    await store.writeFleet({ 'a@m': true });
+    const fields = await prepareSpawnLoadout(
+      deps(ON),
+      claudeTask({ sessions: [{ tmuxSession: 'old' }] as unknown as Task['sessions'] }),
+    );
     expect(fields).toEqual({});
     expect(setCalls).toHaveLength(0);
   });
 
-  test('resolveForLaunch throws → proceeds with no loadout (warns), nothing recorded', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  test('resolution throws → proceeds with no loadout, warns, records nothing', async () => {
     vi.spyOn(store, 'resolveForLaunch').mockRejectedValueOnce(new Error('boom'));
-    const fields = await resolveOrReplayLoadout({ loadoutStore: store, taskStore: fakeTaskStore }, claudeTask());
-    expect(fields).toEqual({});
+    expect(await prepareSpawnLoadout(deps(ON), claudeTask())).toEqual({});
     expect(setCalls).toHaveLength(0);
     expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+  });
+
+  test('no store wired → {}', async () => {
+    expect(await prepareSpawnLoadout(deps(ON, { loadoutStore: undefined }), claudeTask())).toEqual({});
+  });
+
+  test('auto-update apply arm unchanged: with nothing configured it still takes the lock', async () => {
+    const fields = await prepareSpawnLoadout(deps({ KOOKR_PLUGIN_AUTO_UPDATE: '1' }), claudeTask());
+    expect(fields).toEqual({});
+    expect(lockSpy).toHaveBeenCalledTimes(1);
+    expect(setCalls).toHaveLength(0);
+  });
+
+  // The activation table (RFC section 1), slices 1 and 2. Each row: flag value
+  // → does a first spawn resolve, does a resume replay.
+  describe.each([
+    ['0', false, false],
+    ['false', false, false],
+    ['off', false, false],
+    ['NO', false, false],
+    ['1', true, true],
+    ['true', true, true],
+    [undefined, false, false],
+    ['', false, false],
+    ['yes', false, false], // not a recognised "on": stays off, never widens on
+  ])('KOOKR_PLUGIN_LOADOUTS=%s', (flag, resolves, replays) => {
+    const env = (): NodeJS.ProcessEnv => (flag === undefined ? {} : { KOOKR_PLUGIN_LOADOUTS: flag });
+
+    test(`first spawn ${resolves ? 'resolves' : 'does not resolve'}`, async () => {
+      await store.writeFleet({ 'a@m': true });
+      const fields = await prepareSpawnLoadout(deps(env()), claudeTask());
+      expect(Boolean(fields.resolvedLoadout)).toBe(resolves);
+      expect(setCalls.length > 0).toBe(resolves);
+      if (!resolves) expect(lockSpy).not.toHaveBeenCalled();
+    });
+
+    test(`resume ${replays ? 'replays' : 'does not replay'} the record (also via the first-spawn path)`, async () => {
+      const task = claudeTask({ loadout: recorded() });
+      const viaReplay = await replayRecordedLoadout(deps(env()), task);
+      const viaFirstSpawn = await prepareSpawnLoadout(deps(env()), task);
+      for (const fields of [viaReplay, viaFirstSpawn]) {
+        expect(fields).toEqual(replays ? { resolvedLoadout: recorded().resolved } : {});
+      }
+    });
+  });
+
+  test('replay hands over the recorded ids even after the fleet set is emptied (R4)', async () => {
+    await store.writeFleet({});
+    const fields = await replayRecordedLoadout(deps(ON), claudeTask({ loadout: recorded() }));
+    expect(fields).toEqual({ resolvedLoadout: recorded().resolved });
+  });
+
+  test('replay with an uninstalled plugin: ids still replayed, replaySkipped recorded, no re-resolution', async () => {
+    installed = new Map();
+    const resolveSpy = vi.spyOn(store, 'resolveForLaunch');
+    const fields = await prepareSpawnLoadout(deps(ON), claudeTask({ loadout: recorded() }));
+    expect(fields).toEqual({ resolvedLoadout: recorded().resolved });
+    expect(resolveSpy).not.toHaveBeenCalled();
+    expect(setCalls).toHaveLength(1);
+    expect(setCalls[0].loadout.replaySkipped).toEqual([{ id: 'a@m', reason: 'not_installed' }]);
+    expect(setCalls[0].loadout.plugins).toEqual(recorded().plugins); // original record kept
+  });
+
+  test('replay with every plugin still installed records an empty replaySkipped', async () => {
+    await replayRecordedLoadout(deps(ON), claudeTask({ loadout: recorded() }));
+    expect(setCalls[0].loadout.replaySkipped).toEqual([]);
+  });
+
+  test('replay of a task with no record returns no field (byte-identical path)', async () => {
+    expect(await replayRecordedLoadout(deps(ON), claudeTask())).toEqual({});
+    expect(setCalls).toHaveLength(0);
+  });
+});
+
+describe('prepareSpawnLoadout — replay under the auto-update arm', () => {
+  test('with auto-update apply on, a replay waits for the plugin lock like a first spawn', async () => {
+    const mutation = new PluginMutationService();
+    const lockSpy = vi.spyOn(mutation, 'withLock');
+    const record: TaskLoadoutRecord = {
+      resolved: { enabledOverrides: { 'a@m': true }, deniedSkills: [] },
+      winningLevel: 'fleet', mode: 'bypass', settingsHash: null, settingsPath: null, recordedAt: 'then',
+    };
+    const task = { id: 't', agentType: 'claude-code', sessions: [], loadout: record } as unknown as Task;
+    const fields = await prepareSpawnLoadout(
+      {
+        taskStore: { setLoadout: () => ({}) as never },
+        mutation,
+        installedPlugins: { read: async () => new Map() },
+        env: { KOOKR_PLUGIN_LOADOUTS: '1', KOOKR_PLUGIN_AUTO_UPDATE: '1' },
+      },
+      task,
+    );
+    expect(fields).toEqual({ resolvedLoadout: record.resolved });
+    expect(lockSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('replay re-reads the record before writing, keeping a field written meanwhile', async () => {
+    const record: TaskLoadoutRecord = {
+      resolved: { enabledOverrides: { 'a@m': true }, deniedSkills: [] },
+      winningLevel: 'fleet', mode: 'bypass', settingsHash: null, settingsPath: null, recordedAt: 'then',
+    };
+    const newer = { ...record, skillCheck: { checkedAt: 'x', results: { 'a@m': 'skills_seen' as const } } };
+    const writes: TaskLoadoutRecord[] = [];
+    await replayRecordedLoadout(
+      {
+        taskStore: {
+          getTask: () => ({ loadout: newer }) as unknown as Task,
+          setLoadout: (_id: string, l: TaskLoadoutRecord | undefined) => { writes.push(l!); return {} as never; },
+        },
+        installedPlugins: { read: async () => new Map() },
+        env: { KOOKR_PLUGIN_LOADOUTS: '1' },
+      },
+      { id: 't', loadout: record } as unknown as Task,
+    );
+    expect(writes[0].skillCheck).toEqual(newer.skillCheck);
+    expect(writes[0].replaySkipped).toEqual([{ id: 'a@m', reason: 'not_installed' }]);
   });
 });

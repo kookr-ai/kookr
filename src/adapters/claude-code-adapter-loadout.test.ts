@@ -85,16 +85,30 @@ describe('ClaudeCodeAdapter — plugin loadout injection (RFC Layer 2 / slice 2b
     deniedSkills: [],
   };
 
-  test('flag OFF + loadout passed → settings byte-identical to no-loadout (no enabledPlugins)', async () => {
+  test('no loadout passed → no enabledPlugins, byte-identical across launches (nothing configured)', async () => {
     const { adapter, written } = makeAdapter();
-    const base = await launchAndRead(adapter, written); // no loadout at all
-    const withLoadoutFlagOff = await launchAndRead(adapter, written, { resolvedLoadout: disableToolkit });
-    expect(base.parsed.enabledPlugins).toBeUndefined();
-    expect(withLoadoutFlagOff.parsed.enabledPlugins).toBeUndefined();
-    // Byte-for-byte identical (the two differ only by the tmuxName in hook paths,
-    // so compare after normalizing that out).
+    const a = await launchAndRead(adapter, written);
+    const b = await launchAndRead(adapter, written);
+    expect(a.parsed.enabledPlugins).toBeUndefined();
     const strip = (s: string) => s.replace(/kookr-fixed-[a-z0-9]+/g, 'SID');
-    expect(strip(withLoadoutFlagOff.raw)).toBe(strip(base.raw));
+    expect(strip(b.raw)).toBe(strip(a.raw));
+  });
+
+  test('the adapter does not read KOOKR_PLUGIN_LOADOUTS: a passed loadout renders even with the flag at 0', async () => {
+    // The activation decision (kill switch included) belongs to the launcher,
+    // which passes no loadout when off — see loadout-store.test.ts, activation table.
+    vi.stubEnv('KOOKR_PLUGIN_LOADOUTS', '0');
+    const { adapter, written } = makeAdapter();
+    const res = await launchAndRead(adapter, written, { resolvedLoadout: disableToolkit });
+    expect(res.parsed.enabledPlugins).toEqual({ 'kookr-toolkit@kookr': false });
+  });
+
+  test('dirLoadedPluginNamesForLaunch reads the bundled plugin name; empty with no plugin dir', async () => {
+    const pluginDir = join(tmp, 'plugin-names');
+    mkdirSync(join(pluginDir, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(pluginDir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'kookr-toolkit' }));
+    expect(await makeAdapter({ pluginDir }).adapter.dirLoadedPluginNamesForLaunch()).toEqual(['kookr-toolkit']);
+    expect(await makeAdapter().adapter.dirLoadedPluginNamesForLaunch()).toEqual([]);
   });
 
   test('flag ON + empty loadout → settings byte-identical to no-loadout (kill-switch)', async () => {

@@ -14,6 +14,7 @@ import { ClaudePluginCli, execFilePluginCliRunner } from './cli.js';
 import { ClaudeSettingsStore, defaultScopeFiles } from '../../core/claude-settings/settings-store.js';
 import { ConfigEpochStore } from './config-epoch.js';
 import { assembleManagedPlugins } from './read-model.js';
+import { readInstalledPlugins, selectedInstalledVersions } from './registry.js';
 import { AutoUpdateStore } from './auto-update-store.js';
 import { AutoUpdateAuditStore } from './auto-update-audit-store.js';
 import { createAutoUpdateOps } from './auto-update-ops.js';
@@ -55,18 +56,12 @@ export async function buildAutoUpdateService(
   });
 
   const getTasks = (): IdlePredicateTaskView[] =>
-    deps.taskStore.viewLiveTasks().map((t) => ({ id: t.id, isTerminal: false, loadout: t.loadout }));
+    deps.taskStore.viewLiveTasks().map((t) => ({ id: t.id, isTerminal: false, loadout: t.loadout, agentType: t.agentType }));
 
-  const readInstalledVersions = async (): Promise<Map<string, string | null>> => {
-    const rows = await assembleManagedPlugins({
-      cli,
-      settings,
-      homeDir: hookHomeDir,
-      toolkitAvailable,
-      fetchTokens: false,
-    });
-    return new Map(rows.map((r) => [r.id, r.installedVersion]));
-  };
+  // Registry file read (sub-millisecond), not `claude plugin list` (~3 s), so
+  // the observe pass can run inside the lock without stalling spawns.
+  const readInstalledVersions = async (): Promise<Map<string, string | null>> =>
+    selectedInstalledVersions(await readInstalledPlugins(hookHomeDir));
 
   const service = new AutoUpdateService({
     store,
@@ -77,6 +72,7 @@ export async function buildAutoUpdateService(
     getTasks,
     readInstalledVersions,
     applyEnabled: autoUpdateApplyEnabled(),
+    ...(deps.pluginFleet ? { onExternalChanges: (changes) => deps.pluginFleet!.onExternalChanges(changes) } : {}),
   });
 
   const fleetPluginIds = async (): Promise<string[]> => {

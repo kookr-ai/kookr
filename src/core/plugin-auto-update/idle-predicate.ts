@@ -10,7 +10,9 @@
  *
  * A recorded loadout that explicitly disables P, or simply does not mention P,
  * does NOT depend on P (the agent is not running with P), so it never blocks P's
- * update.
+ * update. A task whose agent is not Claude Code never depends on a marketplace
+ * plugin: only Claude agents can load one, and non-Claude tasks never record a
+ * loadout, so without this rule one running Codex task would block every update.
  *
  * Pure and dependency-free so it is unit-testable without a TaskStore. The
  * caller supplies a minimal per-task view; terminality is part of the view so
@@ -29,6 +31,8 @@ export interface IdlePredicateTaskView {
    * ⇒ depends on everything (conservative).
    */
   loadout: TaskLoadoutRecord | undefined;
+  /** The task's agent type. Anything other than `claude-code` uses no marketplace plugin. Unknown ⇒ treated as Claude (conservative). */
+  agentType?: string;
 }
 
 /**
@@ -54,6 +58,7 @@ export function busyTasksForPlugin(
   const busy: string[] = [];
   for (const task of tasks) {
     if (task.isTerminal) continue;
+    if (task.agentType !== undefined && task.agentType !== 'claude-code') continue;
     // Unknown loadout ⇒ depends on everything (conservative).
     if (task.loadout === undefined) {
       busy.push(task.id);

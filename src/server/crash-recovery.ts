@@ -409,7 +409,10 @@ export async function recoverCrashedSessions(
           // Replay the loadout recorded at the original spawn (RFC Layer 2 /
           // slice 2b): a resumed agent MUST keep the capabilities it was
           // spawned with, so this is never re-resolved.
-          ...replayRecordedLoadout(task),
+          ...(await replayRecordedLoadout(
+            { taskStore, dirLoadedPluginNames: adapter.dirLoadedPluginNamesForLaunch?.bind(adapter) },
+            task,
+          )),
           signal: launchAbort.signal,
           onSessionCreated: (sessionId: string) => {
             const lateCleanup = noteLaunchSession(

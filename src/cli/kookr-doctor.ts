@@ -350,6 +350,12 @@ interface RunDoctorDeps {
    */
   probeGithubScannerStatus?: GithubScannerStatusProbe;
   /**
+   * Optional override for the live GET /api/plugins/fleet probe (fleet set,
+   * loadout activation, last fleet check). Defaults to a short-timeout fetch
+   * when KOOKR_API_BASE_URL or KOOKR_PORT points at a server.
+   */
+  probePluginFleet?: PluginFleetProbe;
+  /**
    * Optional override for reading `{dataDir}/prod-smoke-tick-alert.json`.
    * Defaults to {@link readAlertArtifact}. Tests inject a fixture reader so
    * the host `~/.kookr` never leaks into hermetic unit runs.
@@ -414,6 +420,7 @@ Options:
 Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
+plugins.fleet (loadouts on/off and why, fleet set size, named-but-not-installed count, last fleet check; advisory warn on a skipped or not-loaded fleet plugin),
 runtime.settings-mode (advisory warn when settings.json is not owner-only 0600),
 runtime.data-dir-mode (advisory warn when the port-derived data dir is not owner-only 0700),
 ops.http-latency (advisory warn when GET /api/ready exceeds 500ms or GET /api/health exceeds 2s, or either times out / 5xx),
@@ -571,6 +578,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   if (systemdUnitCheck) checks.push(systemdUnitCheck);
   checks.push(await checkGhAuth(run));
   checks.push(await checkGithubScannerBackoff(env, deps.probeGithubScannerStatus));
+  checks.push(await checkPluginFleet(env, deps.probePluginFleet));
   checks.push(...await checkKbLaunchDependency(run));
   const serverDotenv = parseServerDotenv((deps.readServerDotenv ?? defaultReadServerDotenv)(cwd));
   checks.push(...await checkAgentBinaries(env, run, deps.now ?? (() => new Date()), serverDotenv));
@@ -2568,6 +2576,97 @@ async function defaultProbeMaintenancePruneTimer(
  * network when `KOOKR_API_BASE_URL` or numeric `KOOKR_PORT` is set — hermetic
  * offline doctor stays green without scanning default ports.
  */
+/** The fields of GET /api/plugins/fleet the doctor reads. */
+export interface PluginFleetProbeSnapshot {
+  plugins: Record<string, boolean>;
+  fileStatus?: string;
+  activation: { state: string; reason: string };
+  namedNotInstalled: string[];
+  lastCheck: {
+    checkedAt: string;
+    ok: boolean;
+    error?: string;
+    plugins: Array<{ id: string; state: string }>;
+    otherErrors?: unknown[];
+  } | null;
+  spawnGateDegradedTaskIds?: string[];
+}
+
+type PluginFleetProbe = (env: NodeJS.ProcessEnv) => Promise<PluginFleetProbeSnapshot | null>;
+
+async function defaultProbePluginFleet(env: NodeJS.ProcessEnv): Promise<PluginFleetProbeSnapshot | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    const res = await fetch(`${base}/api/plugins/fleet`, { headers, signal: AbortSignal.timeout(1000) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as Partial<PluginFleetProbeSnapshot> | null;
+    if (!body || typeof body.plugins !== 'object' || !body.activation || !Array.isArray(body.namedNotInstalled)) return null;
+    return body as PluginFleetProbeSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fleet set lines (RFC "Plugins for the Kookr fleet"): whether loadouts are on
+ * and why, how many plugins the fleet set enables, how many of those are not
+ * installed (each one is skipped at spawn), and the last fleet check. WARN
+ * (advisory) when a fleet plugin is skipped or did not load, the fleet file is
+ * malformed, or a spawn recorded its loadout without the plugin lock.
+ */
+export async function checkPluginFleet(
+  env: NodeJS.ProcessEnv,
+  probe: PluginFleetProbe | undefined,
+): Promise<DoctorCheck> {
+  let snap: PluginFleetProbeSnapshot | null = null;
+  try {
+    snap = await (probe ?? defaultProbePluginFleet)(env);
+  } catch {
+    snap = null;
+  }
+  const id = 'plugins.fleet';
+  const label = 'Plugin fleet set';
+  if (!snap) {
+    return okCheck(id, label, 'ops', 'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, or fleet status unreachable)', false);
+  }
+  const enabled = Object.values(snap.plugins).filter((v) => v === true).length;
+  const notInstalled = snap.namedNotInstalled.length;
+  const degraded = snap.spawnGateDegradedTaskIds?.length ?? 0;
+  const check = snap.lastCheck;
+  const notLoaded = check ? check.plugins.filter((p) => p.state !== 'loaded').length : 0;
+  const checkText = !check
+    ? 'last fleet check: never'
+    : check.ok
+      ? `last fleet check ${check.checkedAt}: ${check.plugins.length - notLoaded}/${check.plugins.length} loaded`
+      : `last fleet check ${check.checkedAt} failed: ${check.error ?? 'unknown error'}`;
+  const summary =
+    `loadouts ${snap.activation.state} (${snap.activation.reason}); fleet set: ${enabled} plugin(s); ` +
+    `named but not installed: ${notInstalled}; ${checkText}`;
+  const problems: string[] = [];
+  if (notInstalled > 0) problems.push(`not installed: ${snap.namedNotInstalled.join(', ')}`);
+  if (notLoaded > 0) problems.push(`${notLoaded} fleet plugin(s) did not load in the last check`);
+  if (check && !check.ok) problems.push('the last fleet check failed');
+  if (snap.fileStatus === 'malformed') problems.push('plugin-fleet.json is malformed (read as empty)');
+  if (degraded > 0) problems.push(`${degraded} live task(s) recorded their loadout without the plugin lock`);
+  if (problems.length === 0) return okCheck(id, label, 'ops', summary, false);
+  return {
+    id,
+    label,
+    category: 'ops',
+    status: 'warn',
+    required: false,
+    summary,
+    detail: problems.join('; '),
+    recommendedAction:
+      'Install the missing plugin or remove it from the fleet set (PUT /api/plugins/fleet), then run ' +
+      'POST /api/plugins/fleet/check to see what agents load.',
+  };
+}
+
 async function defaultProbeGithubScannerStatus(
   env: NodeJS.ProcessEnv,
 ): Promise<GithubStatusSnapshot | null> {

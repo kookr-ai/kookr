@@ -34,6 +34,7 @@ import {
   type HttpLatencyProbeSnapshot,
   type HungSuspectReclaimProbeSnapshot,
   type SchedulesPausedByFailureProbeSnapshot,
+  checkPluginFleet,
 } from './kookr-doctor.js';
 import type { AlertArtifact } from '../server/prod-smoke.js';
 import type { GithubStatusSnapshot } from './kookr-github.js';
@@ -93,6 +94,7 @@ const hermeticOps = {
   probeHttpLatency: async () => null as HttpLatencyProbeSnapshot | null,
   probeMaintenancePruneTimer: async () => null as { lastFiredAt: string | null } | null,
   probeGithubScannerStatus: async () => null as GithubStatusSnapshot | null,
+  probePluginFleet: async () => null,
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
   // Stub node-pty so hermetic runs never load the real compiled binding (issue #3068).
   loadNodePty: async () => ({ spawn: () => {} }) as unknown,
@@ -3697,5 +3699,52 @@ describe('kookr doctor (human)', () => {
     expect(errors.join('\n')).not.toContain('requires --json');
     expect(errors.join('\n')).not.toContain('pnpm doctor');
     expect(logs.join('\n')).not.toContain('requires --json');
+  });
+});
+
+describe('checkPluginFleet', () => {
+  const base = {
+    plugins: { 'a@m': true, 'gone@m': true, 'off@m': false },
+    fileStatus: 'ok',
+    activation: { state: 'on', reason: 'KOOKR_PLUGIN_LOADOUTS=1' },
+    namedNotInstalled: [] as string[],
+    lastCheck: null,
+    spawnGateDegradedTaskIds: [] as string[],
+  };
+
+  it('skips (ok) when no server is reachable', async () => {
+    const c = await checkPluginFleet({}, async () => null);
+    expect(c.status).toBe('ok');
+    expect(c.summary).toContain('probe skipped');
+  });
+
+  it('reports activation, fleet size and the last check', async () => {
+    const c = await checkPluginFleet({}, async () => ({
+      ...base,
+      namedNotInstalled: [],
+      lastCheck: { checkedAt: '2026-11-14T00:00:00Z', ok: true, plugins: [{ id: 'a@m', state: 'loaded' }] },
+    }));
+    expect(c.status).toBe('ok');
+    expect(c.summary).toContain('loadouts on');
+    expect(c.summary).toContain('fleet set: 2 plugin(s)');
+    expect(c.summary).toContain('named but not installed: 0');
+    expect(c.summary).toContain('1/1 loaded');
+  });
+
+  it('warns with the count and ids of named-but-not-installed plugins', async () => {
+    const c = await checkPluginFleet({}, async () => ({ ...base, namedNotInstalled: ['gone@m'] }));
+    expect(c.status).toBe('warn');
+    expect(c.required).toBe(false);
+    expect(c.summary).toContain('named but not installed: 1');
+    expect(c.detail).toContain('gone@m');
+  });
+
+  it('warns when a fleet plugin did not load in the last check', async () => {
+    const c = await checkPluginFleet({}, async () => ({
+      ...base,
+      lastCheck: { checkedAt: 't', ok: true, plugins: [{ id: 'a@m', state: 'missing' }] },
+    }));
+    expect(c.status).toBe('warn');
+    expect(c.detail).toContain('did not load');
   });
 });

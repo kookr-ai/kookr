@@ -76,3 +76,15 @@ describe('busyTasksForPlugin / isPluginIdle', () => {
     expect(busyTasksForPlugin(P, tasks)).toEqual(['a', 'b']);
   });
 });
+
+describe('busyTasksForPlugin — non-Claude tasks', () => {
+  test('a running non-Claude task with no record does not block an update', () => {
+    expect(busyTasksForPlugin('p@m', [{ id: 'codex', isTerminal: false, loadout: undefined, agentType: 'codex-cli' }])).toEqual([]);
+  });
+  test('a running Claude task with no record still blocks (conservative)', () => {
+    expect(busyTasksForPlugin('p@m', [{ id: 'cc', isTerminal: false, loadout: undefined, agentType: 'claude-code' }])).toEqual(['cc']);
+  });
+  test('unknown agent type stays conservative', () => {
+    expect(busyTasksForPlugin('p@m', [{ id: 'x', isTerminal: false, loadout: undefined }])).toEqual(['x']);
+  });
+});

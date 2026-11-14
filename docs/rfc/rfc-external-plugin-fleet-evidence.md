@@ -104,7 +104,7 @@ Cost figure used in the RFC: `claude plugin details kookr-toolkit` reports
   (P3 at 93-100), `docs/rfc/rfc-plugin-skill-manager-p2-probe.md`.
 - Production runs bypass mode: `KOOKR_BYPASS_ALL_PERMISSIONS=true` in the
   operator's `.env`; documented in `CLAUDE.md` "Bypassing agent permission prompts".
-- Toolkit-only literals: `src/server/plugin-version-status.ts:14-21`
+- Toolkit-only literals: `src/server/routes/deploy-routes.ts`
   (`DEFAULT_PLUGIN_ID`), `src/server/plugin-manager/read-model.ts:17`
   (`UNINSTALL_GUARDED_PREFIXES`), `src/shared/contracts/plugin-version.ts:69`.
 - Playbook launch error when the plugin tier is missing:
@@ -148,8 +148,8 @@ From the consensus attack (read-only checks on the operator's machine):
   the previous value and writes `false` unless the value is already `false`; it
   restores the recorded value on release.
 - The auto-update sweep in `src/server/index.ts` starts only when
-  `autoUpdateApplyEnabled()` (`KOOKR_PLUGIN_AUTO_UPDATE`, off by default) and is
-  the only caller of `detectAndLogExternalChanges`. Detection already covers
+  `autoUpdateApplyEnabled()` (`KOOKR_PLUGIN_AUTO_UPDATE`, off by default), and
+  its method `runSweep` is the only caller of `detectAndLogExternalChanges`. Detection already covers
   every installed plugin; the observed-version baseline lives in
   `auto-update-store.ts`, and the comparison in
   `src/core/plugin-auto-update/defaults.ts`.
@@ -169,3 +169,13 @@ From the consensus attack (read-only checks on the operator's machine):
 - `readAutoUpdate` resolves the flag across four settings scopes; the write and
   the restore act on the user file only.
 
+
+## Measured during slice 1 (Claude Code 2.1.325, print mode)
+
+| Probe | Result |
+|---|---|
+| `--settings` enabling an installed plugin whose marketplace entry was renamed | Not loaded. One `plugin_errors` entry, `type: plugin-not-installed`, naming the **new** id |
+| `--settings` enabling an available, not installed plugin, an unknown id in a known marketplace, and an id in an unknown marketplace | All ignored; `plugin_errors` empty (E1–E3 confirmed) |
+| `--settings` enabling an installed LSP-only plugin | Loaded under its real id with its version; it adds no skill, so the transcript skill check reports `no_skills_seen` for it |
+| First stream-json line | `system/hook_started`, not `init`; the check scans for `subtype: init` |
+| `init.plugins[]` entries | `{ name, path, source, version }`; `source` is the id; Claude Code's own `@builtin` plugins are always present |
