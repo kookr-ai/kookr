@@ -205,6 +205,26 @@ description: Plan skill.
     }
   });
 
+  it('reports a drifted subagent count phrased without "review" (#3538)', () => {
+    const root = makeRepo({
+      'plugin/skills/sample-skill/SKILL.md': GOOD_SKILL,
+      'plugin/agents/boundary-critic.md': '# Boundary critic\n',
+      'plugin/.claude-plugin/plugin.json': JSON.stringify({
+        name: 'kookr-toolkit',
+        version: '0.0.1',
+        description: '1 skills and 19 subagents for tests.',
+      }),
+    });
+    try {
+      const { errors } = validateSkills(root);
+      const countError = errors.find((issue) => issue.message.includes('says 19'));
+      expect(countError).toBeDefined();
+      expect(countError?.message).toContain('1 agent files');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports a marketplace.json skill count that drifted from disk', () => {
     const root = makeRepo({
       'plugin/skills/sample-skill/SKILL.md': GOOD_SKILL,
