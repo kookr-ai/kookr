@@ -1,14 +1,13 @@
 /**
  * Measures the two model-facing parts of answering a question by voice against the real helper model
- * (needs KOOKR_BASETEN_API_KEY or BASETEN_API_KEY). Run: `pnpm exec tsx scripts/measure-lucy-voice-answer.ts`.
+ * (needs KOOKR_BASETEN_API_KEY or BASETEN_API_KEY). Run: `node --import tsx scripts/measure-lucy-voice-answer.ts`.
  *
  *  1. The mapping call: spoken words -> one listed choice or none. The near-misses must NOT map to a choice.
  *  2. The persona: questions answered without inventing facts, with a waiting question in the status.
  *     The answers are printed for a person to read; invented facts are judged by eye.
  */
 import { createBasetenLlmClientFromEnv } from '../src/adapters/llm/baseten-client.js';
-import { streamBasetenChat } from '../src/adapters/llm/baseten-stream.js';
-import { readBasetenStreamConfig } from '../src/adapters/llm/baseten-stream.js';
+import { readBasetenStreamConfig, streamBasetenChat } from '../src/adapters/llm/baseten-stream.js';
 import { buildLucyLivePersona } from '../src/core/lucy-live/persona.js';
 import { buildLucyLiveBriefing } from '../src/core/lucy-live/briefing.js';
 import { buildAnswerMatchPrompt, parseAnswerMatch, type AnswerMatch, type VoiceAskChoice } from '../src/core/lucy-live/voice-answer.js';

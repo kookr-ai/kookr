@@ -13,6 +13,7 @@
 
 import { classifyReply } from '../lucy-operator/launch-proposal.js';
 import { redactSpeechSecrets } from '../task-speech-summary.js';
+import type { OperatorAskView } from '../../shared/contracts/asks.js';
 
 export { classifyReply };
 
@@ -115,4 +116,11 @@ export function sayAnswerOutcome(result: { ok: true } | { ok: false; reason?: st
     case 'task_gone': return 'The task is no longer running, so I did not send anything.';
     default: return 'I could not send that answer. You can press the choice in my panel or answer on Telegram.';
   }
+}
+
+/** The waiting questions that have listed choices: closed ones and free-text-only ones are never offered for a spoken answer. */
+export function pendingVoiceAsks(asks: readonly OperatorAskView[]): VoiceAskChoice[] {
+  return asks
+    .filter((a) => a.state === 'pending' && a.options.length > 0)
+    .map((a) => ({ askId: a.id, ...(a.taskName ? { taskName: a.taskName } : {}), question: a.question, options: a.options }));
 }

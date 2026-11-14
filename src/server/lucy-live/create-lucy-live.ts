@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 import type { LucyOperatorService } from '../lucy-operator/service.js';
 import { buildLucyLiveBriefing, type BriefingTask } from '../../core/lucy-live/briefing.js';
 import { createBasetenLlmClientFromEnv } from '../../adapters/llm/baseten-client.js';
-import { buildAnswerMatchPrompt, parseAnswerMatch, type AnswerMatch, type VoiceAskChoice } from '../../core/lucy-live/voice-answer.js';
+import { buildAnswerMatchPrompt, parseAnswerMatch, pendingVoiceAsks, type AnswerMatch, type VoiceAskChoice } from '../../core/lucy-live/voice-answer.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
 import { countSpokenWords, DISABLED_LUCY_INTERACTION_LOG, type LucyInteractionLog } from '../lucy-interaction-log.js';
 import type { AnswerResult, DashboardAnswerInput, OperatorAskView } from '../../shared/contracts/asks.js';
@@ -140,13 +140,6 @@ async function* streamFromOperator(
       else if (event.end === 'error') throw new Error(event.reason ?? 'The operator conversation failed.');
     }
   }
-}
-
-/** The waiting questions that have listed choices: free-text answers stay in the panel and on Telegram. */
-function pendingVoiceAsks(asks: readonly OperatorAskView[]): VoiceAskChoice[] {
-  return asks
-    .filter((a) => a.state === 'pending' && a.options.length > 0)
-    .map((a) => ({ askId: a.id, ...(a.taskName ? { taskName: a.taskName } : {}), question: a.question, options: a.options }));
 }
 
 /** The mapping call: one non-streaming completion, no reasoning, JSON out. A failure is reported to the caller, who then sends nothing. */

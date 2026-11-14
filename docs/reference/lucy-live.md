@@ -281,7 +281,7 @@ conversation carries on with the next thing you say. A session-level `error` mes
 
 - She answers questions only, unless `KOOKR_LUCY_LAUNCH=true`, when she can also start a task you confirm ([Starting a task by voice](#starting-a-task-by-voice)). She cannot stop or approve anything yet. That includes a
   [question from a task](#questions-from-tasks): she can tell you about it, and you can answer one of its
-  listed choices by voice after her read-back ([Answering by voice](#questions-from-tasks)); a typed answer
+  listed choices by voice after her read-back (see "Answering by voice" under [Questions from tasks](#questions-from-tasks)); a typed answer
   or one that is not a listed choice is not taken by voice.
 - With Talk on, a question from a task is read through the ordinary clip player, not the conversation's
   own audio. Talking over it does not stop it, and her volume is not lowered while you speak. The

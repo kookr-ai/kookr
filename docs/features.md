@@ -441,8 +441,11 @@ background the task gave, and a box for a typed answer when the task accepts one
 - **Minimised**, the bubble's badge counts the questions still waiting, with the findings.
 - **Needs** Telegram remote chat (that is what makes `kookr ask` available) and, for her voice, the
   speech service. With the avatar panel off nothing changes: the question is on Telegram only.
-- **Not by voice yet.** With hands-free talk on she knows which questions are waiting and which were
-  answered, and can tell you, but she cannot record an answer you say out loud.
+- **By voice, with a read-back.** With hands-free talk on, say one of the listed choices ("run it
+  tonight"). She reads it back ("You want: run it tonight. Shall I send that?") and sends it only when
+  your next sentence is a clear "yes". "No", or anything else, cancels. Free-text answers stay in the
+  panel and on Telegram. She also knows which questions are waiting and which were answered, and can
+  tell you.
 
 Details: [Lucy live](reference/lucy-live.md#questions-from-tasks).
 
