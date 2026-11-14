@@ -58,6 +58,14 @@ export const PLAYBOOK_CHAIN_SWEEP_INTERVAL_MS = 15_000;
  * the service completes it on the agent's behalf (the idle backstop).
  */
 export const CHAIN_IDLE_COMPLETE_MS = 5 * 60_000;
+/**
+ * A chain tip that raised `completion-ready` is closed by the service once its
+ * turn has ended and the signal is at least this old, so the agent's final
+ * message is not cut off.
+ */
+export const CHAIN_SIGNAL_SETTLE_MS = 30_000;
+/** ...or after this long regardless (agent signalled, then parked on background work). */
+export const CHAIN_SIGNAL_CLOSE_CEILING_MS = 10 * 60_000;
 
 export interface PlaybookChainLogger {
   info?(message: string): void;
@@ -79,12 +87,13 @@ export interface PlaybookChainServiceDeps {
   /** True while the task's provider is paused (billing/quota); never idle-close those. */
   isProviderPaused?: (task: Task) => boolean;
   /**
-   * Complete an iteration whose agent went idle without closing its task (the
-   * idle backstop). Wired to the normal lifecycle completion after surfacing
-   * any dirty worktree; it must call `stillIdle()` after that await and skip
-   * the completion (returning false) if the agent woke up meanwhile.
+   * Complete an iteration on the chain's behalf: either its agent raised
+   * `completion-ready` (`'signalled'`) or it went idle without closing its task
+   * (`'idle'`, the idle backstop). Wired to the normal lifecycle completion
+   * after surfacing any dirty worktree; it must call `stillValid()` after that
+   * await and skip the completion (returning false) if the situation changed.
    */
-  completeIdleIteration: (task: Task, stillIdle: () => boolean) => Promise<boolean>;
+  completeIteration: (task: Task, how: 'signalled' | 'idle', stillValid: () => boolean) => Promise<boolean>;
   /** Injectable for tests; defaults to the real playbook resolver. */
   preparePlaybookLaunch?: (input: PreparePlaybookLaunchInput) => Promise<PreparedPlaybookLaunch>;
   /** Called after any chain state change or successor launch so the dashboard refreshes. */
@@ -257,7 +266,9 @@ export class PlaybookChainService {
     }, this.now());
 
     if (decision.kind === 'wait') {
-      if (tip.status === 'inProgress') await this.checkIdleBackstop(tip);
+      if (tip.status !== 'inProgress') return;
+      if (tip.pendingSignal?.kind === 'completion_ready') await this.closeSignalledTip(tip);
+      else await this.checkIdleBackstop(tip);
       return;
     }
     this.idleSince.delete(tip.id);
@@ -352,12 +363,37 @@ export class PlaybookChainService {
       `[playbook-chain] chain ${tip.chain?.chainId}: iteration ${tip.chain?.iteration} (task ${tip.id}) `
       + `idle for ${Math.round((nowMs - since) / 60_000)} min without closing; completing it`,
     );
-    const completed = await this.deps.completeIdleIteration(tip, () => this.isIdle(tip.id));
+    const completed = await this.deps.completeIteration(tip, 'idle', () => this.isIdle(tip.id));
     if (!completed) return;
     const startedMs = firstSessionAt(tip)?.getTime() ?? since;
     const activeMs = Math.max(0, since - startedMs);
     this.deps.taskStore.updateChain(tip.id, (chain) => ({ ...chain, idleClosedAfterActiveMs: activeMs }));
     this.deps.onChanged?.(tip.id);
+  }
+
+  /**
+   * The agent raised `completion-ready`: for a chain that is the iteration
+   * boundary. Kookr's generic auto-close would wait out the review window
+   * (`autoCloseCompletionReadyDelayMin`) and hold for an open PR, which the
+   * research playbook deliberately leaves open — so the chain closes the tip
+   * itself once the agent's turn has ended (or after a ceiling).
+   */
+  private async closeSignalledTip(tip: Task): Promise<void> {
+    this.idleSince.delete(tip.id);
+    const raisedAtMs = Date.parse(tip.pendingSignal?.raisedAt ?? '');
+    if (!Number.isFinite(raisedAtMs)) return;
+    const ageMs = this.now().getTime() - raisedAtMs;
+    if (ageMs < CHAIN_SIGNAL_SETTLE_MS) return;
+    if (ageMs < CHAIN_SIGNAL_CLOSE_CEILING_MS && turnIsRunning(this.deps.monitor, tip)) return;
+    const stillSignalled = (): boolean => {
+      const current = this.deps.taskStore.getTask(tip.id);
+      return current?.status === 'inProgress' && current.pendingSignal?.kind === 'completion_ready';
+    };
+    this.deps.logger?.info?.(
+      `[playbook-chain] chain ${tip.chain?.chainId}: iteration ${tip.chain?.iteration} (task ${tip.id}) signalled completion; closing it`,
+    );
+    const completed = await this.deps.completeIteration(tip, 'signalled', stillSignalled);
+    if (completed) this.deps.onChanged?.(tip.id);
   }
 
   private async launchSuccessor(tip: Task, next: TaskChainState): Promise<LaunchResult> {
@@ -441,6 +477,16 @@ function isIdleWithoutQuestion(monitor: PlaybookChainServiceDeps['monitor'], tas
   const { turnState, effectiveEvent } = deriveTurnStateDetails(monitor.getAgentEvents(sessionId));
   if (turnState !== 'completed_turn' || effectiveEvent?.type !== 'stop') return false;
   return !isBackgroundParked(effectiveEvent);
+}
+
+/** True while the tip's live session is mid-turn (tool calls / reasoning). */
+function turnIsRunning(monitor: PlaybookChainServiceDeps['monitor'], task: Task): boolean {
+  const live = task.sessions.filter(
+    (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && !s.crashRecovered,
+  );
+  const session = live[live.length - 1];
+  if (!session) return false;
+  return deriveTurnStateDetails(monitor.getAgentEvents(session.tmuxSession)).turnState === 'running';
 }
 
 function firstSessionAt(task: Task): Date | undefined {

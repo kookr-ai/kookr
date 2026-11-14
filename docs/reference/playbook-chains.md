@@ -37,9 +37,10 @@ Every 15 seconds the chain service looks at each chain's newest task:
   re-read, so edits apply from the next iteration.
 
 An iteration finishes when its task reaches a terminal status, however that
-happens: the agent signals `completion-ready` or completes the task, the
-operator completes it, or restart recovery closes it. Chain tasks are launched
-with `autoCloseOnSignal`, so a completion-ready signal closes the task at once.
+happens: the agent completes the task, the operator completes it, or restart
+recovery closes it. When the agent raises `completion-ready`, the chain service
+closes the task itself about 30 seconds after the agent's turn ends (10 minutes
+at most), without waiting for Kookr's usual review window or an open PR.
 
 **Idle backstop.** If the agent simply stops without closing its task — it
 finished but forgot, or it is waiting for an answer nobody will give — the

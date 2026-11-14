@@ -2175,14 +2175,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         anomalyExplanation: anomaly?.explanation ?? null,
       });
     },
-    completeIdleIteration: async (task, stillIdle) => {
+    completeIteration: async (task, how, stillValid) => {
       await surfaceDirtyWorktreeOnHeadlessCompletion(task, {
         taskStore,
         auditLogPath: join(kookrDir, 'audit.jsonl'),
         broadcastToAll,
       });
       // The dirty-worktree check awaited git; re-validate before completing.
-      if (!stillIdle()) return false;
+      if (!stillValid()) return false;
       await completeTask(task.id, {
         adapter,
         monitor,
@@ -2201,9 +2201,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         reflectWorktreesDir,
       }, {
         actorSource: 'system',
-        completionPath: 'recovery',
-        lessonGateExempt: 'chain_idle_complete',
-        interactionLogReason: 'chain_idle_complete',
+        completionPath: how === 'signalled' ? 'normal' : 'recovery',
+        lessonGateExempt: how === 'signalled' ? 'chain_signal_complete' : 'chain_idle_complete',
+        interactionLogReason: how === 'signalled' ? 'chain_signal_complete' : 'chain_idle_complete',
       });
       return true;
     },

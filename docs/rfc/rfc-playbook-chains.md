@@ -551,6 +551,18 @@ iteration 3 closed itself and the chain ended `iterations_reached`. Exactly 3
 tasks, linked by `parentTaskId`, never two running at once; each successor
 launched within about 15 seconds of its predecessor closing.
 
+**Signal-path acceptance run (advisor follow-up).** A second hermetic chain
+whose iterations record a lesson decision and run `kookr signal
+completion-ready` showed why agents' signals often "don't count": each agent
+raised the signal mid-turn, kept going (a Stop-hook retrospective prompt resumed
+its turn), and the event pipeline cleared the signal as stale ("turn resumed").
+That is pre-existing behaviour for every task. The chain still advanced: the
+idle backstop closed each iteration 5 minutes after it went idle, as a healthy
+iteration. The service also closes a tip whose signal *does* survive (30 s
+after its turn ends, 10 minutes at most), because Kookr's generic auto-close
+waits out the review window and holds for an open PR — which the research
+playbook deliberately leaves open.
+
 Intent preservation check: the load-bearing motivation is "do not rely on the
 agent remembering". v1 still relied on it (completion); v2 removes that with
 the backstop. The explicit asks — N iterations or Y hours, any playbook,

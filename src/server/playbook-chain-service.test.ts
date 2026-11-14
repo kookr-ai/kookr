@@ -3,7 +3,7 @@ import { TaskStore, type Task } from '../core/tasks.js';
 import type { LaunchOpts } from '../shared/contracts/launch.js';
 import type { AgentEvent, Anomaly } from '../core/types.js';
 import { AutomationKillSwitchError, type LaunchResult, type LaunchTaskServerOptions } from './launch-service.js';
-import { CHAIN_IDLE_COMPLETE_MS, PlaybookChainService } from './playbook-chain-service.js';
+import { CHAIN_IDLE_COMPLETE_MS, CHAIN_SIGNAL_CLOSE_CEILING_MS, CHAIN_SIGNAL_SETTLE_MS, PlaybookChainService } from './playbook-chain-service.js';
 import type { PreparePlaybookLaunchInput, PreparedPlaybookLaunch } from './use-cases/playbook-launch.js';
 
 const HOUR = 60 * 60_000;
@@ -49,7 +49,7 @@ function harness(opts: { launchImpl?: (o: LaunchOpts, s?: LaunchTaskServerOption
     launches.push({ opts: o, server: s });
     return (opts.launchImpl ?? realLaunch)(o, s);
   });
-  const completeIdleIteration = vi.fn(async (task: Task, stillIdle: () => boolean) => {
+  const completeIdleIteration = vi.fn(async (task: Task, _how: 'signalled' | 'idle', stillIdle: () => boolean) => {
     if (!stillIdle()) return false;
     taskStore.completeTask(task.id, { source: 'unknown', reason: 'completed_normal' });
     return true;
@@ -79,7 +79,7 @@ function harness(opts: { launchImpl?: (o: LaunchOpts, s?: LaunchTaskServerOption
       getAgentEvents: (id) => events.get(id) ?? [],
       getOutstandingSubagentCount: (id) => subagents.get(id) ?? 0,
     },
-    completeIdleIteration,
+    completeIteration: completeIdleIteration,
     preparePlaybookLaunch: prepare,
     now: () => new Date(nowMs),
   });
@@ -379,7 +379,7 @@ describe('idle backstop', () => {
     h.setIdle(first, true);
     await h.service.sweep();
     h.advance(CHAIN_IDLE_COMPLETE_MS + 1_000);
-    h.completeIdleIteration.mockImplementationOnce(async (_task: Task, stillIdle: () => boolean) => {
+    h.completeIdleIteration.mockImplementationOnce(async (_task: Task, _how: 'signalled' | 'idle', stillIdle: () => boolean) => {
       h.setIdle(first, false);
       return stillIdle();
     });
@@ -418,7 +418,7 @@ describe('idle backstop', () => {
         getAgentEvents: () => [{ type: 'stop', sessionId: 's', lastMessage: '?' } as AgentEvent],
         getOutstandingSubagentCount: () => 0,
       },
-      completeIdleIteration: h.completeIdleIteration,
+      completeIteration: h.completeIdleIteration,
       now: () => new Date(h.nowMs()),
     });
     await svc.sweep();
@@ -427,3 +427,43 @@ describe('idle backstop', () => {
     expect(h.completeIdleIteration).not.toHaveBeenCalled();
   });
 });
+
+describe('signalled tips', () => {
+  function signal(h: ReturnType<typeof harness>, task: Task) {
+    h.taskStore.viewTasks().find((t) => t.id === task.id)!.pendingSignal = {
+      kind: 'completion_ready',
+      raisedAt: new Date(h.nowMs()).toISOString(),
+    } as Task['pendingSignal'];
+  }
+
+  it('closes a tip that raised completion-ready once its turn has ended, without the generic review delay', async () => {
+    const h = harness();
+    const first = await startResearchChain(h, { maxIterations: 3 });
+    // The run itself took 30 minutes (real-clock timestamps, as finish() does).
+    h.taskStore.viewTasks().find((t) => t.id === first.id)!.sessions[0].createdAt = new Date(Date.now() - 30 * 60_000);
+    h.setIdle(first, true);
+    signal(h, first);
+    await h.service.sweep();
+    expect(h.completeIdleIteration).not.toHaveBeenCalled();
+    h.advance(CHAIN_SIGNAL_SETTLE_MS + 1_000);
+    await h.service.sweep();
+    expect(h.completeIdleIteration).toHaveBeenCalledWith(expect.objectContaining({ id: first.id }), 'signalled', expect.any(Function));
+    await h.service.sweep();
+    // A signalled close is a normal, healthy iteration end.
+    expect(h.service.findTip(first.id)!.chain).toMatchObject({ iteration: 2, unhealthyStreak: 0 });
+  });
+
+  it('waits while the agent is still mid-turn after signalling, up to a ceiling', async () => {
+    const h = harness();
+    const first = await startResearchChain(h, { maxIterations: 3 });
+    h.setIdle(first, false); // last event is a tool call: turn still running
+    signal(h, first);
+    h.advance(CHAIN_SIGNAL_SETTLE_MS + 1_000);
+    await h.service.sweep();
+    expect(h.completeIdleIteration).not.toHaveBeenCalled();
+    h.advance(CHAIN_SIGNAL_CLOSE_CEILING_MS);
+    await h.service.sweep();
+    expect(h.completeIdleIteration).toHaveBeenCalledTimes(1);
+  });
+});
+
