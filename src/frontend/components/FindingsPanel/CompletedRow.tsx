@@ -21,7 +21,7 @@ import { PriorityBadge } from './PriorityBadge.js';
 import { SpeakTaskSummaryControl } from './SpeakTaskSummaryControl.js';
 import { SchedulePlaybookButton } from './SchedulePlaybookButton.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
-import { ChainBadge } from './ChainBadge.js';
+import { ChainBadge, ChainStopButton } from './ChainBadge.js';
 
 function ratingCopy(feedback: TaskCompletionFeedback): { emoji: string; title: string } {
   const emoji = feedback.rating === 'up' ? '👍' : '👎';
@@ -388,6 +388,9 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
           <RalphLoopBadge agent={agent} />
         )}
         <ChainBadge agent={agent} />
+        {/* A completed iteration held between iterations is still the chain's
+            live tip; this is where the operator stops it (RFC rfc-playbook-chains). */}
+        <ChainStopButton agent={agent} />
         <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
         {agent.completionDigest && agent.completionDigest.bullets.length > 0 && (
           <ul className="completed-digest">

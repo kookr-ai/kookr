@@ -120,5 +120,7 @@ export function isLiveChainTip(
 /** Operator-facing reason a live chain tip cannot be deleted. */
 export const LIVE_CHAIN_TIP_DELETE_ERROR =
   'This task is the current iteration of a running playbook chain, and deleting it would lose the chain. '
-  + 'Press "Stop chain" on it, then delete it once its badge shows the chain as ended (within about 15 seconds).';
+  + 'If it has finished, press "Stop chain" on its row (or run `kookr chain stop <taskId>`) and delete it once '
+  + 'its badge shows the chain as ended, within about 15 seconds. If it is still running, cancel it first: '
+  + 'that ends the chain at once.';
 

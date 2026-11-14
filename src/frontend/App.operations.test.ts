@@ -699,6 +699,14 @@ describe('App operations modal shortcuts', () => {
       root.render(React.createElement(App));
     });
 
+    const completedToggle = await waitForElement<HTMLButtonElement>(container, '.completed-section .section-header');
+    await act(async () => {
+      completedToggle.click();
+    });
+    // The completed tip offers Stop chain (the only way to end it from the
+    // dashboard); earlier iterations and plain tasks do not.
+    expect(container.querySelectorAll('button[aria-label="Stop chain after this iteration"]')).toHaveLength(1);
+
     const clearButton = await waitForElement<HTMLButtonElement>(container, 'button.btn-clear-completed');
     await act(async () => {
       clearButton.click();
