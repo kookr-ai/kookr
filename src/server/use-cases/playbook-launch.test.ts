@@ -61,6 +61,39 @@ Deploy to {{target}} after reading docs/deploy-checklist.md
     }
   });
 
+  // #3644: CLI/API launches send only the parameters the caller named.
+  it('renders an omitted optional parameter with no default as empty, without recording it', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'issue.md'), `---
+name: Issue
+parameters:
+  - name: issue
+    required: true
+  - name: assignee
+    required: false
+  - name: merge
+    required: false
+    default: "true"
+---
+
+Issue {{issue}}. ASSIGNEE="{{assignee}}". MERGE={{merge}}.
+`);
+
+      const launch = await preparePlaybookLaunch({
+        cwd,
+        playbookPath: 'issue.md',
+        parameterValues: { issue: '7' },
+      });
+
+      expect(launch.prompt).toContain('Issue 7. ASSIGNEE="". MERGE=true.');
+      expect(launch.playbookParameterValues).toEqual({ issue: '7' });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('passes parameterValues through to LaunchOpts for relaunch', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
     try {

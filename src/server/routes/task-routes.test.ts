@@ -1501,7 +1501,17 @@ Phase {{phase}}: {{prompt}}
           playbookParameterValues: expect.objectContaining({ issueSelector: '123' }),
         });
         expect(opts.prompt).toContain('full batch implied by `123`');
-        expect(opts.prompt).not.toContain('{{issueSelector}}');
+        // No declared parameter may reach the agent as a literal placeholder:
+        // omitted optional ones (repo, assignee) render empty, like the UI.
+        const declared = [...readFileSync(
+          fileURLToPath(new URL('../../../plugin/playbooks/implement-github-issue.md', import.meta.url)),
+          'utf-8',
+        ).matchAll(/^  - name: (\w+)$/gm)].map((match) => match[1]);
+        expect(declared).toEqual(expect.arrayContaining(['issueSelector', 'repo', 'assignee']));
+        for (const name of declared) {
+          expect(opts.prompt, name).not.toContain(`{{${name}}}`);
+        }
+        expect(opts.prompt).toContain('ASSIGNEE=""');
       } finally {
         if (previousPluginDir === undefined) delete process.env.KOOKR_PLUGIN_DIR;
         else process.env.KOOKR_PLUGIN_DIR = previousPluginDir;

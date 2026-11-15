@@ -121,7 +121,11 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
   await validatePlaybookLaunchCapabilities(playbook, parameterValues, effectiveCwd);
 
   const body = normalizePromptFileReferences(
-    interpolateParameters(playbook.body, playbook.parameters, parameterValues),
+    interpolateParameters(
+      playbook.body,
+      playbook.parameters,
+      withBlankOptionalParameters(playbook.parameters, parameterValues),
+    ),
     effectiveCwd,
   );
   const prompt = `${playbookContextHeader(playbook, filePath)}\n\n${body}`;
@@ -256,6 +260,26 @@ export function normalizePlaybookLaunchInput(input: PreparePlaybookLaunchInput):
     taskTargetCwd: resolve(expandConfiguredCwd(rawTargetCwd)),
     taskTargetCwdExplicit,
   };
+}
+
+/**
+ * #3644: render an omitted optional parameter that has no default as '' rather
+ * than leaving a literal `{{name}}` in the prompt. The dashboard already sends
+ * '' for every such parameter; CLI/API launches (`kookr spawn --param`) send
+ * only the ones the caller named. Used for interpolation only: the recorded
+ * playbookParameterValues stay exactly what the caller sent.
+ */
+function withBlankOptionalParameters(
+  parameters: PlaybookParameter[],
+  values: Record<string, string>,
+): Record<string, string> {
+  const filled = { ...values };
+  for (const param of parameters) {
+    if (!param.required && param.default === undefined && filled[param.name] === undefined) {
+      filled[param.name] = '';
+    }
+  }
+  return filled;
 }
 
 async function resolveParameterValuesFromLaunchContext(

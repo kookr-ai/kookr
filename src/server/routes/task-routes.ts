@@ -942,7 +942,8 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       } else if (typeof body.prompt === 'string') {
         baseLaunchOpts = { prompt: body.prompt, cwd: body.cwd };
       } else {
-        // Unreachable: the guard above requires a prompt when no playbook is named.
+        // Backstop for the prompt guard at the top of this handler (and the
+        // type narrowing): a launch without a playbook must carry a prompt.
         return c.json({ error: 'prompt is required and must be a string' }, 400);
       }
       const embeddedName = preparedPlaybook ? undefined : extractEmbeddedTaskName(baseLaunchOpts.prompt);
