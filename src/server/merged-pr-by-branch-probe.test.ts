@@ -54,6 +54,20 @@ describe('pickMergedPrBranchProbeTarget (issue #3578)', () => {
     }))).toBeNull();
   });
 
+  // #3797: with `.kookr/delivery-gate.json` naming `staging`, pull requests
+  // merge into staging; a session on staging is not a task's own branch.
+  it('refuses the configured integration branch, and only when one is configured', () => {
+    const onStaging = makeTask({
+      sessions: [aSession({ tmuxSession: 'a', gitBranch: 'staging', gitIsWorktree: true })],
+    });
+    expect(pickMergedPrBranchProbeTarget(onStaging, 'staging')).toBeNull();
+    // No config: `staging` is an ordinary branch name, as before.
+    expect(pickMergedPrBranchProbeTarget(onStaging)?.branch).toBe('staging');
+    expect(pickMergedPrBranchProbeTarget(onStaging, null)?.branch).toBe('staging');
+    // A configured branch never hides a different task branch.
+    expect(pickMergedPrBranchProbeTarget(makeTask(), 'staging')?.branch).toBe('fix/terminal-snapshot-seed-3564');
+  });
+
   // A session parked in the shared main checkout reports whatever branch that
   // checkout is on — possibly another task's feature branch.
   it.each([false, undefined])('refuses a session outside a linked worktree (gitIsWorktree=%s)', (gitIsWorktree) => {
@@ -164,6 +178,25 @@ describe('selectMergedPrForBranch (issue #3578)', () => {
 });
 
 describe('createMergedPrByBranchProbe (issue #3578)', () => {
+  it('does not ask gh about the integration branch the task repository configures (#3797)', async () => {
+    const runGh = vi.fn(async () => ({ stdout: '[]' }));
+    const readIntegrationBranch = vi.fn(async () => 'staging');
+    const probe = createMergedPrByBranchProbe({ runGh, readIntegrationBranch });
+    const onStaging = makeTask({
+      sessions: [aSession({ tmuxSession: 'a', gitBranch: 'staging', gitIsWorktree: true })],
+    });
+    await expect(probe(onStaging)).resolves.toBeNull();
+    expect(runGh).not.toHaveBeenCalled();
+    expect(readIntegrationBranch).toHaveBeenCalledWith(onStaging);
+  });
+
+  it('a failing config read falls back to the legacy behaviour (#3797)', async () => {
+    const runGh = vi.fn(async () => ({ stdout: '[]' }));
+    const probe = createMergedPrByBranchProbe({ runGh, readIntegrationBranch: async () => { throw new Error('boom'); } });
+    await expect(probe(makeTask())).resolves.toBeNull();
+    expect(runGh).toHaveBeenCalledTimes(1);
+  });
+
   it('asks gh for merged PRs on the task branch in the project repo', async () => {
     const runGh = vi.fn(async () => ({
       stdout: JSON.stringify([

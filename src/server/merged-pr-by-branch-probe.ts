@@ -19,8 +19,9 @@
  *   must sit in a linked git worktree. A session left in a shared checkout
  *   (the main repo, which may be on another task's feature branch) does not
  *   count, and neither does an older session's branch;
- * - never a default branch (`main`, `master`, …): a PR "from main" says
- *   nothing about which task delivered it;
+ * - never a default branch (`main`, `master`, …) nor the repository's
+ *   configured integration branch (`.kookr/delivery-gate.json`, #3797): a PR
+ *   "from main" or "from staging" says nothing about which task delivered it;
  * - the head ref must match the branch exactly, from the same repository
  *   (a fork PR that happens to reuse the branch name does not count);
  * - the PR must have been *opened* at or after the task was created, so a
@@ -32,6 +33,7 @@ import type { Task } from '../core/tasks.js';
 import type { MergedPrAttribution } from '../core/completion/index.js';
 import { sanitizeGithubOwnerRepo } from '../core/project-identity.js';
 import { execGh } from '../adapters/gh-cli-transport.js';
+import { readIntegrationBranch } from '../core/delivery-gate-config.js';
 
 /** Branch names that never identify a single task's delivery. */
 const DEFAULT_BRANCH_NAMES = new Set(['main', 'master', 'develop', 'trunk', 'head']);
@@ -50,9 +52,12 @@ export interface MergedPrBranchProbeTarget {
 /**
  * Pick what to ask GitHub for a task, or null when the task carries no usable
  * evidence: no `github.com/<owner>/<repo>` project id, no session branch, a
- * default branch, or an unparseable creation time.
+ * default branch, the integration branch, or an unparseable creation time.
  */
-export function pickMergedPrBranchProbeTarget(task: Task): MergedPrBranchProbeTarget | null {
+export function pickMergedPrBranchProbeTarget(
+  task: Task,
+  integrationBranch: string | null = null,
+): MergedPrBranchProbeTarget | null {
   const projectMatch = /^github\.com\/([^/]+)\/([^/]+)$/i.exec(task.projectId?.trim() ?? '');
   if (!projectMatch) return null;
   const safe = sanitizeGithubOwnerRepo(projectMatch[1], projectMatch[2]);
@@ -62,6 +67,7 @@ export function pickMergedPrBranchProbeTarget(task: Task): MergedPrBranchProbeTa
   const session = task.sessions[task.sessions.length - 1];
   const branch = session?.gitBranch?.trim();
   if (!branch || DEFAULT_BRANCH_NAMES.has(branch.toLowerCase())) return null;
+  if (integrationBranch !== null && branch === integrationBranch) return null;
   // A shared checkout's branch may belong to someone else's work.
   if (session?.gitIsWorktree !== true) return null;
 
@@ -122,6 +128,16 @@ export interface MergedPrByBranchProbeDeps {
   /** Runs `gh` with args; defaults to the shared gh CLI transport. */
   runGh?: (args: string[], options: { timeout: number }) => Promise<{ stdout: string }>;
   timeoutMs?: number;
+  /**
+   * The integration branch of the repository the task ran in, or null. The
+   * default reads `.kookr/delivery-gate.json` from the latest session's cwd.
+   */
+  readIntegrationBranch?: (task: Task) => Promise<string | null>;
+}
+
+async function integrationBranchOfTask(task: Task): Promise<string | null> {
+  const cwd = task.sessions[task.sessions.length - 1]?.cwd ?? task.cwd;
+  return cwd ? readIntegrationBranch(cwd) : null;
 }
 
 /**
@@ -134,8 +150,11 @@ export function createMergedPrByBranchProbe(
 ): (task: Task) => Promise<MergedPrAttribution | null> {
   const runGh = deps.runGh ?? execGh;
   const timeout = deps.timeoutMs ?? DEFAULT_MERGED_PR_BY_BRANCH_TIMEOUT_MS;
+  const resolveIntegration = deps.readIntegrationBranch ?? integrationBranchOfTask;
   return async (task) => {
-    const target = pickMergedPrBranchProbeTarget(task);
+    // Cheap checks first: only a candidate task pays for the config read.
+    if (!pickMergedPrBranchProbeTarget(task)) return null;
+    const target = pickMergedPrBranchProbeTarget(task, await resolveIntegration(task).catch(() => null));
     if (!target) return null;
     try {
       const { stdout } = await runGh(

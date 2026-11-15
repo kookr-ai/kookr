@@ -695,6 +695,17 @@ delete_head_branch() {
     echo "kookr-merge: could not resolve the head branch; it was left in place (delete it manually if wanted)" >&2
     return 0
   fi
+  # Never delete the configured integration branch (#3797): merging its own
+  # promotion PR (integration -> main) through this wrapper would otherwise
+  # remove it, and the train and every later retarget would stop working.
+  local integration=""
+  if declare -F delivery_gate_integration_branch >/dev/null; then
+    integration="$(delivery_gate_integration_branch 2>/dev/null || true)"
+  fi
+  if [[ -n "$integration" && "$HEAD_REF" == "$integration" ]]; then
+    echo "kookr-merge: head branch $HEAD_REF is the integration branch (.kookr/delivery-gate.json); it was left in place"
+    return 0
+  fi
   # Percent-encode each path segment of the ref (keeping its `/` separators):
   # git allows `#`, `?` and `%` in branch names, and unencoded they would cut or
   # reinterpret the URL, so `release#42` would DELETE the `release` branch.

@@ -221,6 +221,9 @@ export class GhUmbrellaChainClient implements UmbrellaChainRemote {
       const pr = json<GhPullRequestView>(stdout);
       const mergeCommit = pr.mergeCommit?.oid;
       if (pr.state !== 'MERGED' || typeof mergeCommit !== 'string' || mergeCommit.length === 0) return false;
+      // Deliberately the default branch, not the integration branch (#3797):
+      // the next phase's worktree is cut from origin/main, so it must wait
+      // until the integration train has promoted this merge there.
       await this.run('git', [
         '-C', repoPath, 'merge-base', '--is-ancestor', mergeCommit, `origin/${baseBranch}`,
       ], { timeout: 10_000 });

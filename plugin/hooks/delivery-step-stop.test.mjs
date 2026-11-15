@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { decide, lastTestOutcome, latestVerdict, isParked, hasMergeAuthority } from './delivery-step-stop.mjs';
+import { decide, lastTestOutcome, latestVerdict, isParked, hasMergeAuthority, parseIntegrationBranch, isSharedBranch } from './delivery-step-stop.mjs';
 import { taskHasMergeAuthority } from '../../src/core/merge-required.ts';
+import { parseIntegrationBranch as parseIntegrationBranchTs } from '../../src/core/integration-branch.ts';
 
 const tu = (id, command) =>
   JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } });
@@ -85,5 +86,34 @@ describe('does not fire', () => {
 describe('latestVerdict', () => {
   it('takes the most recent verdict', () => {
     expect(latestVerdict([verdict('block'), 'chatter', verdict('pass')])?.verdict).toBe('pass');
+  });
+});
+
+describe('integration branch (#3797)', () => {
+  it('exempts the configured integration branch like main', () => {
+    expect(isSharedBranch('staging', 'staging')).toBe(true);
+    expect(isSharedBranch('main', 'staging')).toBe(true);
+    expect(isSharedBranch('feat-x', 'staging')).toBe(false);
+  });
+  it('without a config, staging is an ordinary branch (legacy behaviour)', () => {
+    expect(isSharedBranch('staging', null)).toBe(false);
+    expect(isSharedBranch('main', null)).toBe(true);
+    expect(isSharedBranch('HEAD', null)).toBe(true);
+    expect(isSharedBranch('', null)).toBe(true);
+  });
+  it.each([
+    '{"integrationBranch":"staging"}',
+    '{"integrationBranch":"release/next"}',
+    '{"integrationBranch":"main"}',
+    '{"integrationBranch":"--evil"}',
+    '{"integrationBranch":"a..b"}',
+    '{"integrationBranch":"a b"}',
+    '{"integrationBranch":""}',
+    '{"integrationBranch":3}',
+    '{}',
+    'null',
+    'not json',
+  ])('parser matches src/core/integration-branch.ts for %s', (json) => {
+    expect(parseIntegrationBranch(json)).toBe(parseIntegrationBranchTs(json));
   });
 });

@@ -294,3 +294,49 @@ describe('renderSweepAuditLog', () => {
     expect(log).toContain('no open PRs to evaluate');
   });
 });
+
+describe('integration branch configured (#3797)', () => {
+  const opts = { integrationBranch: 'staging' };
+
+  test('never merges a PR aimed at main: the train is the only way onto main', () => {
+    const d = decidePrAction(pr({ mergeStateStatus: 'CLEAN', baseRefName: 'main' }), opts);
+    expect(d.action).toBe('skip');
+    expect(d.reason).toMatch(/not the integration branch staging; deliver it with pnpm merge/);
+  });
+
+  test('an unreported base is not merged either', () => {
+    expect(decidePrAction(pr({ mergeStateStatus: 'CLEAN' }), opts).action).toBe('skip');
+  });
+
+  test('merges a green PR aimed at the integration branch', () => {
+    expect(decidePrAction(pr({ mergeStateStatus: 'CLEAN', baseRefName: 'staging' }), opts).action).toBe('merge');
+  });
+
+  test('still updates a BEHIND PR aimed at main (no merge happens)', () => {
+    expect(decidePrAction(pr({ mergeStateStatus: 'BEHIND', baseRefName: 'main' }), opts).action).toBe('update-branch');
+  });
+
+  test('the runner does not merge a main-based PR that turned CLEAN after its update', async () => {
+    const ex = new FakeExecutor();
+    ex.refetchState = (n) => pr({ number: n, mergeStateStatus: 'CLEAN', baseRefName: 'main' });
+    const result = await runBehindPrSweep(
+      [pr({ number: 7, mergeStateStatus: 'BEHIND', baseRefName: 'main' }), pr({ number: 8, baseRefName: 'main' })],
+      ex,
+      opts,
+    );
+    expect(ex.updateCalls).toEqual([7]);
+    expect(ex.mergeCalls).toEqual([]);
+    expect(result.updated).toEqual([7]);
+    expect(result.skipped).toEqual([8]);
+  });
+
+  test('no config: a CLEAN PR on main merges as before', () => {
+    expect(decidePrAction(pr({ mergeStateStatus: 'CLEAN', baseRefName: 'main' })).action).toBe('merge');
+    expect(decidePrAction(pr({ mergeStateStatus: 'CLEAN', baseRefName: 'main' }), { integrationBranch: null }).action).toBe('merge');
+  });
+
+  test('parsePrList keeps the base branch gh reports', () => {
+    const [parsed] = parsePrList([{ number: 3, mergeStateStatus: 'CLEAN', baseRefName: 'staging' }]);
+    expect(parsed.baseRefName).toBe('staging');
+  });
+});

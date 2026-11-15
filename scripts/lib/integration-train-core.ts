@@ -12,6 +12,11 @@
 // tested against real git in temp directories with a fake verify. This file
 // must not import child_process, fs or the network.
 
+import { parseIntegrationBranch } from '../../src/core/integration-branch.js';
+
+/** Mirrors `delivery_gate_integration_branch` in scripts/lib/delivery-gate.sh. */
+export { parseIntegrationBranch };
+
 export interface GitResult {
   ok: boolean;
   stdout: string;
@@ -150,21 +155,6 @@ export function normalizeTrainState(raw: Partial<TrainState> | null | undefined)
       ? raw.pushRejections as number
       : 0,
   };
-}
-
-/** Mirrors `delivery_gate_integration_branch` in scripts/lib/delivery-gate.sh. */
-export function parseIntegrationBranch(configJson: string): string | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(configJson);
-  } catch {
-    return null;
-  }
-  const branch = (parsed as { integrationBranch?: unknown } | null)?.integrationBranch;
-  if (typeof branch !== 'string' || branch === '') return null;
-  if (branch.startsWith('-') || branch.includes('..') || !/^[A-Za-z0-9._/-]+$/.test(branch)) return null;
-  if (branch === 'main') return null;
-  return branch;
 }
 
 /** Trailing `(#123)` of a squash-merge subject. */
