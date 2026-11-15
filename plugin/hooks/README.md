@@ -155,7 +155,7 @@ by its literal path, or to empty a directory with
 Allowed: literal targets (`rm -rf /tmp/x/scratchpad/mutdir`), non-recursive
 `rm "$f"`, `git rm -r dir`, a variable in a redirect (`2>>"$LOG"`), and text
 that only mentions such a command (inside quotes, a commit message, a grep
-pattern or a heredoc body). It reuses the word splitter of
+pattern, a heredoc body or a `#` comment). It reuses the word splitter of
 `merge-retarget-guard.mjs`.
 
 Known limits: it does not look inside `bash -c`, `eval`, `xargs rm` or

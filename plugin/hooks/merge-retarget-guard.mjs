@@ -107,8 +107,10 @@ export function splitCommands(src) {
       i = j;
       continue;
     }
-    if (c === '#' && !inWord) {
+    if (c === '#' && !inWord && (i === 0 || /[\s;&|]/.test(src[i - 1]))) {
       // Comment: skip to the end of the line (an apostrophe in it opens no quote).
+      // Only at the start of a word that follows a blank or an operator, as in
+      // bash: in `$(date)#x` or `^(#|$)` the `#` is part of a word.
       const eol = src.indexOf('\n', i);
       i = (eol === -1 ? src.length : eol) - 1;
       continue;

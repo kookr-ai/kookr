@@ -64,6 +64,7 @@ describe('rm-dynamic-path-guard', () => {
     expect(hook("# don't leave junk\nrm -rf \"$TMP\"\necho 'done'")).not.toBeNull();
     expect(hook('jq . <<< "$json"\nrm -rf "$D"')).not.toBeNull();
     expect(hook('# rm -rf "$D" is denied\nls')).toBeNull();
+    expect(hook('echo $(date)#x; rm -rf "$D"')).not.toBeNull();
   });
 
   it('allows literal paths, non-recursive rm and git rm', () => {
@@ -75,7 +76,8 @@ describe('rm-dynamic-path-guard', () => {
     expect(hook('rm -rf /tmp/a/b 2>>"$LOG"')).toBeNull();
     expect(hook('rm -rf /tmp/a/b > "$LOG" 2>&1')).toBeNull();
     expect(hook('echo "$HOME" && rm -rf /tmp/a')).toBeNull();
-    expect(hook('"$RM" -rf "$D"')).toBeNull();
+    // A computed command word is not known to be rm: allowed (fail open).
+    expect(hook('"$BIN/rm" -rf "$D"')).toBeNull();
   });
 
   it('allows text that only mentions such a command', () => {

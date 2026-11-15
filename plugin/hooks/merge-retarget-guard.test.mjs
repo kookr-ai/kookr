@@ -155,6 +155,10 @@ describe('splitCommands', () => {
     expect(splitCommands("# don't merge yet\npnpm merge 1")).toEqual([['pnpm', 'merge', '1']]);
     expect(splitCommands('echo a # b; c\nls')).toEqual([['echo', 'a'], ['ls']]);
     expect(splitCommands('jq . <<< "$x"\npnpm merge 1')).toEqual([['jq', '.', '$x'], ['pnpm', 'merge', '1']]);
+    // A `#` inside a word, or right after `(` or `)`, does not start a comment.
+    for (const src of ['echo $#', 'echo ${#x}', 'echo a#b', 'echo "x"#y', 'f=out-$(date +%s)#1', '[[ $l =~ ^(#|$) ]]', 'echo $((16#ff))#y']) {
+      expect(splitCommands(`${src}; pnpm merge 1`).at(-1), src).toEqual(['pnpm', 'merge', '1']);
+    }
     expect(splitCommands('(cd /y && bash scripts/kookr-merge.sh 2)')).toEqual([
       ['cd', '/y'], ['bash', 'scripts/kookr-merge.sh', '2'],
     ]);
