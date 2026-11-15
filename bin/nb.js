@@ -112,6 +112,16 @@ function gitIn(dir, extraEnv = {}) {
     });
 }
 
+/** True when `ref` (e.g. MERGE_HEAD) resolves in the repo that `run` targets. */
+function hasRef(run, ref) {
+  try {
+    run(['rev-parse', '-q', '--verify', ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** True when the auto-commit applies to `dir`: it is a git repo and NB_GIT_AUTOCOMMIT is not 0. */
 function autoCommitEnabled(dir) {
   return process.env.NB_GIT_AUTOCOMMIT !== '0' && existsSync(join(dir, '.git'));
@@ -150,6 +160,13 @@ function workingTreeId(dir) {
  * unrelated nb call. When either tree id is unavailable, everything uncommitted is
  * committed, as before this check existed.
  *
+ * While a merge is in progress (MERGE_HEAD exists), git refuses a commit that names
+ * paths, so the commit is made without a pathspec and concludes the merge: it
+ * records the merge result already staged plus nb's own change. Only nb's changed
+ * paths are staged, so an untracked file is still never swept in. While the merge
+ * still has unresolved conflicts, nothing is staged or committed: staging the shelf
+ * nb wrote could mark a conflicted file as resolved.
+ *
  * Best-effort and fail-open: any failure (no identity, index lock, a rejecting
  * hook) is swallowed. The lesson is already written to disk, and the daily backup
  * job (scripts/nb-backup.sh) commits any straggler.
@@ -158,32 +175,43 @@ function autoCommit(dir, argv, before) {
   if (!autoCommitEnabled(dir)) return;
   const run = gitIn(dir);
   try {
+    const merging = hasRef(run, 'MERGE_HEAD');
+    if (merging && run(['ls-files', '-u']).trim() !== '') return; // the merge has unresolved conflicts
     let pathspec = [];
     const after = before ? workingTreeId(dir) : null;
     if (before && after) {
       if (after === before) return; // the call changed no file
       const differ = run(['diff', '--name-only', '-z', '--no-renames', before, after]).split('\0').filter(Boolean);
-      // A path git never tracked that the call deleted (an uncommitted shelf emptied by
-      // `nb move`) has nothing to commit, and naming it would make `git add` fail and
-      // lose the whole commit. Keep the paths that are on disk or in the index.
-      const tracked = new Set(differ.length ? run(['ls-files', '-z', '--', ...differ]).split('\0') : []);
-      const changed = differ.filter((p) => tracked.has(p) || existsSync(join(dir, p)));
-      if (changed.length === 0) return;
+      // `git add` fails on a path that is neither on disk nor in the index (a shelf git
+      // never saw, emptied and deleted by `nb move`), and that would lose the whole commit.
+      const inIndex = new Set(differ.length ? run(['ls-files', '-z', '--', ...differ]).split('\0') : []);
+      const addable = differ.filter((p) => inIndex.has(p) || existsSync(join(dir, p)));
+      if (addable.length === 0) return;
+      run(['add', '-A', '--', ...addable]);
+      // Keep only the paths whose staged state now differs from HEAD. This drops a shelf
+      // that was staged but never committed and is now deleted: `git add` took it out of
+      // the index, so naming it would make `git commit` fail with "pathspec did not match".
+      const changed = run(['diff', '--cached', '--name-only', '-z', '--no-renames', '--', ...addable])
+        .split('\0')
+        .filter(Boolean);
+      if (changed.length === 0) return; // nothing this call changed is left to commit
       pathspec = ['--', ...changed];
-    }
-    run(['add', '-A', ...pathspec]);
-    // `diff --cached --quiet` exits 1 when there IS something staged.
-    try {
-      run(['diff', '--cached', '--quiet', ...pathspec]);
-      return; // exit 0 → nothing staged → nothing to commit
-    } catch {
-      /* staged changes present — fall through to commit */
+    } else {
+      run(['add', '-A']);
+      // `diff --cached --quiet` exits 1 when there IS something staged.
+      try {
+        run(['diff', '--cached', '--quiet']);
+        return; // exit 0 → nothing staged → nothing to commit
+      } catch {
+        /* staged changes present — fall through to commit */
+      }
     }
     const cmd = (argv[0] ?? '').trim();
     const role = (argv[1] ?? '').trim();
     const msg = `nb ${cmd}${role ? ` ${role}` : ''}`.slice(0, 72);
     // With a pathspec, `git commit` records only those paths, whatever else is staged.
-    run(['commit', '--quiet', '-m', msg, ...pathspec]);
+    // During a merge git refuses a pathspec, so the commit concludes the merge instead.
+    run(['commit', '--quiet', '-m', msg, ...(merging ? [] : pathspec)]);
   } catch {
     /* fail-open: never fail an nb call because the backup commit failed */
   }
