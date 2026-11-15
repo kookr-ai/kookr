@@ -23,7 +23,7 @@ are heuristics.
   fewer tasks than ending when the model makes no tool call.
 - Audit the tool layer, not only the agent: silent failures were confirmed across 15 tools, 7 of which
   failed on over half of test cases. A green tool result is a claim; re-read the state it should have
-  changed.
+  changed. Harness-or-model triage: [harness faults](harness-faults.md).
 - On failed or suspicious runs, add a step-level judge: outcome-only judging caught 84% of loud injected
   faults but 45% of silent ones, with 33% false alarms on clean runs. Calibrate the judge on 50 to 100
   labeled runs of your own agent first.

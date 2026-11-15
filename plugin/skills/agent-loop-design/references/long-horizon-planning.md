@@ -1,7 +1,7 @@
 # Long-horizon planning
 
-Use when: starting or briefing a long multi-step task (up-front plan or reactive, granularity, replan
-triggers, where plan and progress live past the context window), when an agent stalls after early
+Use when: starting or briefing a long multi-step task (up-front plan or reactive, granularity, plan
+form, replan triggers, where plan and progress live past the context window), when an agent stalls after early
 progress, or before acting on a saved plan, todo list or checkpoint after a gap.
 
 Plan-vs-ReAct comparisons at equal budget are missing, so every rule is conditional. Who writes the plan
@@ -24,7 +24,7 @@ in a coding fleet: `agent-fleet-orchestration`. Durable handoffs across runs: `a
 5. **Validate the plan before running it**: tools exist, dependencies hold, each stage has an observable
    check. A protocol check raised plan validity from 77% to 91%.
 6. **Replan on events, not on a schedule and not by default.** Triggers that helped: a failed validator
-   check, environment uncertainty. Plan only when uncertain, then keep a verified plan until it
+   check, and environment uncertainty (its own gain is not isolated). Plan only when uncertain, then keep a verified plan until it
    completes or fails. Reroute a tool failure deterministically instead of asking the LLM to replan. Don't
    replan every step: a period of 3 beat 1.
 7. **Escalating to a heavier planner is a cost, not a default.** Expanded orchestration lowered accuracy
@@ -54,6 +54,21 @@ in a coding fleet: `agent-fleet-orchestration`. Durable handoffs across runs: `a
 14. **Delegate wide, independent work; keep serial work in one agent.** Independent parallel workers
     raised detection from 51% to 64%, but a single agent was cheapest per validated finding. Delegation
     is the hardest category for all models.
+15. **Choose the plan's form by what will check it.** Structure pays only when a cheap mechanical check
+    comes with it; no study swaps only the representation, so treat this as conditional.
+    - *Text steps* by default, for one-off or exploratory work. Keep free-form reasoning beside any
+      structured plan: removing it cost about 20 accuracy points in one system.
+    - *A small JSON dependency graph* (id, tool, inputs, depends-on, check) when several tools have real
+      dependencies. Validate it before running it, run independent nodes in parallel but check accuracy
+      (it fell on coding tasks), and repair a failed node locally before regenerating the graph (84% vs
+      62% recovery).
+    - *Code* only for task shapes that repeat on a stable interface, learned from successful runs, with a
+      reactive fallback: tokens fell 82-96% but success on live, varied tasks barely moved.
+    - *A formal language plus a solver* only when the domain model already exists and the LLM just
+      translates facts. Check the translation on known cases first: most generated models ran, but fewer
+      than half were correct.
+    - Do not use a static, fine-grained graph: it raised retry cost about 80%.
 
 Evidence: kb://agentic-capability-reports/notes/2026-11-14-upfront-plan-vs-reactive-and-replan-triggers.md,
-kb://agentic-capability-reports/notes/2026-11-14-horizon-length-decay-and-chunked-long-tasks.md
+kb://agentic-capability-reports/notes/2026-11-14-horizon-length-decay-and-chunked-long-tasks.md,
+kb://agentic-capability-reports/notes/2026-11-14-plan-representation-text-graph-code-or-pddl.md
