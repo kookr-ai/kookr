@@ -39,14 +39,22 @@ export interface StreamChatRequest {
   signal?: AbortSignal;
   maxTokens?: number;
   temperature?: number;
-  /** Default `none`: a spoken answer cannot wait for the model to think first. */
-  reasoningEffort?: BasetenReasoningEffort;
+  /**
+   * Default `none`: a spoken answer cannot wait for the model to think first. `null` leaves the
+   * field out of the request, for a model that refuses it.
+   */
+  reasoningEffort?: BasetenReasoningEffort | null;
   /** Cuts the request when no byte arrives for this long, in ms. Default 15 s. */
   timeoutMs?: number;
 }
 
 export class BasetenStreamError extends Error {
-  constructor(public readonly kind: 'http' | 'network' | 'timeout' | 'aborted' | 'bad-response', message: string) {
+  constructor(
+    public readonly kind: 'http' | 'network' | 'timeout' | 'aborted' | 'bad-response',
+    message: string,
+    /** The HTTP status, for `kind: 'http'` only. */
+    public readonly status?: number,
+  ) {
     super(message);
     this.name = 'BasetenStreamError';
   }
@@ -155,7 +163,7 @@ export async function* streamBasetenChat(
           stream: true,
           max_tokens: req.maxTokens ?? 200,
           temperature: req.temperature ?? 0.3,
-          reasoning_effort: req.reasoningEffort ?? 'none',
+          ...(req.reasoningEffort === null ? {} : { reasoning_effort: req.reasoningEffort ?? 'none' }),
         }),
         signal: controller.signal,
       });
@@ -165,7 +173,7 @@ export async function* streamBasetenChat(
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       // The key is in a header, never the body, so echoing a short body is safe.
-      throw new BasetenStreamError('http', `Baseten returned HTTP ${res.status}: ${body.slice(0, 200)}`);
+      throw new BasetenStreamError('http', `Baseten returned HTTP ${res.status}: ${body.slice(0, 200)}`, res.status);
     }
     if (!res.body) throw new BasetenStreamError('bad-response', 'Baseten response has no body');
 

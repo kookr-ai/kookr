@@ -9,10 +9,15 @@ const mocks = vi.hoisted(() => ({
   synthesize: vi.fn(),
 }));
 vi.mock('../../adapters/lucy-live/ears-client.js', () => ({ openEarsTurn: mocks.openEarsTurn, transcribeOnce: mocks.transcribeOnce }));
-vi.mock('../../adapters/llm/baseten-stream.js', () => ({ streamBasetenChat: mocks.streamBasetenChat }));
+// Keep the real BasetenStreamError: the service tells a refused request (HTTP 400) by its class.
+vi.mock('../../adapters/llm/baseten-stream.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../adapters/llm/baseten-stream.js')>(),
+  streamBasetenChat: mocks.streamBasetenChat,
+}));
 vi.mock('../../adapters/tts-client.js', () => ({ synthesize: mocks.synthesize }));
 
 import { createLucyLive } from './create-lucy-live.js';
+import { BasetenStreamError } from '../../adapters/llm/baseten-stream.js';
 import type { LucyLiveConfig } from './config.js';
 import type { LucyInteractionLog, LucyLiveTurnRecordInput } from '../lucy-interaction-log.js';
 import type { SileroVad } from '../../adapters/lucy-live/silero-vad.js';
@@ -47,6 +52,7 @@ function setup(opts: { vad?: SileroVad | null; getOperator?: () => LucyOperatorS
   mocks.transcribeOnce.mockResolvedValue('');
   mocks.synthesize.mockResolvedValue({ audioBase64: 'V0FW', durationMs: 321, generationTimeMs: 1 });
   mocks.streamBasetenChat.mockImplementation(async function* () { yield 'Two tasks are running. '; });
+  const warnings: string[] = [];
   const service = createLucyLive({
     config: CONFIG,
     vad: opts.vad,
@@ -54,20 +60,29 @@ function setup(opts: { vad?: SileroVad | null; getOperator?: () => LucyOperatorS
     getVoice: () => 'af_test',
     getOperator: opts.getOperator,
     log,
-    warn: () => {},
+    warn: (m) => { warnings.push(m); },
     now: () => 1000,
   });
-  const ws = new FakeSocket();
-  service.handleConnection(ws as unknown as WebSocket, {} as never);
-  return { ws, records, ears };
+  const connect = (): FakeSocket => {
+    const socket = new FakeSocket();
+    service.handleConnection(socket as unknown as WebSocket, {} as never);
+    return socket;
+  };
+  const ws = connect();
+  return { ws, records, ears, warnings, connect };
 }
 
-async function runTurn(ws: FakeSocket): Promise<void> {
+async function runTurn(ws: FakeSocket, turnId = 't1'): Promise<void> {
   ws.json({ type: 'hello', language: 'en' });
-  ws.json({ type: 'speech_start', turnId: 't1' });
+  ws.json({ type: 'speech_start', turnId });
   ws.audio(3200);
-  ws.json({ type: 'speech_end', turnId: 't1' });
+  ws.json({ type: 'speech_end', turnId });
   await tick(); await tick(); await tick();
+}
+
+/** The reasoning setting each call to the helper model asked for, in order. */
+function reasoningEfforts(): unknown[] {
+  return mocks.streamBasetenChat.mock.calls.map((c) => (c[1] as { reasoningEffort?: unknown }).reasoningEffort);
 }
 
 describe('createLucyLive', () => {
@@ -81,6 +96,55 @@ describe('createLucyLive', () => {
     expect(records[0]).toMatchObject({ turnId: 't1', language: 'en', end: 'answered', voice: 'af_test', sentences: 1 });
     expect(records[0].answer).toBe('Two tasks are running.');
     expect(records[0].transcriptWords).toBeGreaterThan(0);
+  });
+
+  describe('a model that refuses the reasoning setting (#3666)', () => {
+    const refused = (): BasetenStreamError => new BasetenStreamError('http', 'Baseten returned HTTP 400: reasoning_effort is not supported', 400);
+
+    it('asks again without the setting, answers, and leaves it out of later turns on any connection', async () => {
+      const { ws, warnings, connect } = setup();
+      mocks.streamBasetenChat.mockImplementation(async function* (_c: unknown, req: { reasoningEffort?: unknown }) {
+        if (req.reasoningEffort !== null) throw refused();
+        yield 'Two tasks are running. ';
+      });
+      await runTurn(ws);
+      expect(reasoningEfforts()).toEqual(['none', null]);
+      expect(ws.sent.some((m) => m.type === 'sentence')).toBe(true);
+      expect(ws.sent.find((m) => m.type === 'turn_done')).toMatchObject({ end: 'answered' });
+      await runTurn(connect());
+      expect(reasoningEfforts()).toEqual(['none', null, null]);
+      expect(warnings.filter((w) => w.includes('reasoning'))).toHaveLength(1);
+    });
+
+    it('a 400 that the retry does not cure keeps the setting for the next turn', async () => {
+      const { ws } = setup();
+      mocks.streamBasetenChat.mockImplementation(async function* () { throw refused(); });
+      await runTurn(ws);
+      expect(ws.sent.find((m) => m.type === 'turn_done')).toMatchObject({ end: 'error' });
+      await runTurn(ws, 't2');
+      expect(reasoningEfforts()).toEqual(['none', null, 'none', null]);
+    });
+
+    it('any other failure is not retried', async () => {
+      const { ws } = setup();
+      mocks.streamBasetenChat.mockImplementation(async function* () { throw new BasetenStreamError('http', 'Baseten returned HTTP 500: down', 500); });
+      await runTurn(ws);
+      expect(reasoningEfforts()).toEqual(['none']);
+    });
+  });
+
+  it('redacts secrets in a failed turn\'s reason, in the panel and in the log (#3666)', async () => {
+    const { ws, records } = setup();
+    mocks.streamBasetenChat.mockImplementation(async function* () {
+      throw new BasetenStreamError('http', `Baseten returned HTTP 500: {"echo":"${SECRET}"}`, 500);
+    });
+    await runTurn(ws);
+    const done = ws.sent.find((m) => m.type === 'turn_done') as { end: string; reason?: string };
+    expect(done.end).toBe('error');
+    expect(done.reason).toContain('HTTP 500');
+    expect(done.reason).not.toContain(SECRET);
+    expect(records[0].reason).toContain('HTTP 500');
+    expect(records[0].reason).not.toContain(SECRET);
   });
 
   it('sends system, then history, then the user message to the model', async () => {

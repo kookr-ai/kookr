@@ -29,7 +29,9 @@ in [features](../features.md#talk-to-lucy-hands-free-optional-off-by-default).
    `docker compose -f lucy-ears/docker-compose.yml up -d`, then set
    `KOOKR_LUCY_EARS_URL=ws://127.0.0.1:8095` (or the address of a recogniser on another machine).
    When `KOOKR_LUCY_EARS_URL` is set, Kookr uses that recogniser and never starts or stops one,
-   even if `KOOKR_LUCY_EARS=true` is also set.
+   even if `KOOKR_LUCY_EARS=true` is also set. If its host is not a loopback address (`localhost`,
+   `127.x.x.x` or `[::1]`), Kookr logs one warning at start-up: the recogniser receives your
+   microphone audio, so your voice then leaves this machine. Lucy live still switches on.
 3. Open the avatar panel (Settings → Notifications & Alerts → Avatar panel) and press **Talk**.
 
 `GET /api/lucy-live/status` reports whether everything is configured, and if not, what is missing.
@@ -273,6 +275,15 @@ A failure in one turn (the recogniser, the helper model or the speech service) e
 conversation carries on with the next thing you say. A session-level `error` message with code
 `bad_message` or `internal` is shown the same way while the connection is still open; only
 `unavailable` or a lost connection (one automatic reconnect) turns hands-free off.
+
+A `reason` can quote the error text the helper model's server sent back. Before it is shown or
+written to the interaction log, secret-looking tokens in it are hidden, the same way as in transcripts.
+
+Lucy live asks the helper model not to reason before answering (`reasoning_effort: "none"`), so she
+can start speaking at once. If the model refuses that setting with HTTP 400, which a custom
+`KOOKR_BASETEN_MODEL` may do, the turn asks again without it. Once a request without it succeeds,
+later turns leave it out and Kookr logs one warning. The model then thinks
+as long as it does by default, so her answers may start later.
 
 ## Limits
 

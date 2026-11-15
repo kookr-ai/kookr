@@ -870,8 +870,10 @@ export class LucyLiveSession {
     if (this.turn === turn) this.turn = null;
   }
 
-  private endTurn(turn: Turn, end: LucyLiveTurnEnd, reason?: string, settleToIdle = true): void {
+  private endTurn(turn: Turn, end: LucyLiveTurnEnd, rawReason?: string, settleToIdle = true): void {
     if (turn.closed) return;
+    // A reason can quote an upstream error body; it is shown in the panel and logged, so hide secrets like a transcript.
+    const reason = rawReason === undefined ? undefined : redactSpeechSecrets(rawReason);
     turn.closed = true;
     turn.abort.abort();
     turn.draftAbort?.abort();

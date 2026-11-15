@@ -11,7 +11,7 @@ import type { IncomingMessage } from 'node:http';
 import type { WebSocket } from 'ws';
 import type { LucyLiveStatus } from '../../shared/contracts/lucy-live.js';
 import type { LucyEarsHandle } from '../lucy-ears-manager.js';
-import { lucyLiveStatusOf, resolveLucyLiveConfig, type LucyLiveConfig } from './config.js';
+import { earsUrlWarning, lucyLiveStatusOf, resolveLucyLiveConfig, type LucyLiveConfig } from './config.js';
 import type { LucyLiveService } from './create-lucy-live.js';
 
 export interface LucyLiveRuntimeDeps {
@@ -34,6 +34,10 @@ export interface LucyLiveRuntime {
 
 export function createLucyLiveRuntime(deps: LucyLiveRuntimeDeps): LucyLiveRuntime {
   const warn = deps.warn ?? ((m: string) => console.warn(`[lucy-live] ${m}`));
+  // Only a URL set by hand can point elsewhere: the managed recogniser is always on loopback.
+  const explicitEarsUrl = deps.env.KOOKR_LUCY_EARS_URL?.trim();
+  const earsWarning = explicitEarsUrl ? earsUrlWarning(explicitEarsUrl) : undefined;
+  if (earsWarning) warn(earsWarning);
   let status: LucyLiveStatus = { available: false, reason: 'Lucy live is starting.' };
   let current: LucyLiveService | undefined;
   // Serialises evaluations: the recogniser can change state while Silero is still loading.
