@@ -76,7 +76,7 @@ function parseArgs(argv: string[]): Options {
     else if (flag === '--worktree') opts.worktree = resolve(next());
     else if (flag === '--verify-cmd') opts.verifyCmd = next();
     else if (flag === '--workers') opts.workers = Math.max(1, Number(next()) || opts.workers);
-    else if (flag === '--now') opts.now = true;
+    else if (flag === '--now' && opts.command === 'restart') opts.now = true;
     else throw new Error(`unknown option ${flag}`);
   }
   return opts;
@@ -582,16 +582,24 @@ function readRestartRequest(file: string): RestartRequest | null {
  * and return the pid. The loader flags of this process (`--import tsx`, or an
  * absolute loader URL) are passed on, so the child resolves TypeScript the same way.
  */
-function spawnTrain(args: string[], cwd: string, script: string): number | undefined {
+function spawnTrain(args: string[], cwd: string, script: string): number {
   const p = paths(stateDir());
   const out = openSync(p.log, 'a');
-  const child = spawn(
-    process.execPath,
-    [...process.execArgv, script, 'run', ...args],
-    { cwd, detached: true, stdio: ['ignore', out, out], env: process.env },
-  );
+  let child;
+  try {
+    child = spawn(
+      process.execPath,
+      [...process.execArgv, script, 'run', ...args],
+      { cwd, detached: true, stdio: ['ignore', out, out], env: process.env },
+    );
+  } finally {
+    closeSync(out);
+  }
+  // An asynchronous spawn failure must not crash the caller (a running train
+  // handing over); the missing pid below, or the hand-over check, reports it.
+  child.on('error', () => { /* reported by the caller */ });
   child.unref();
-  closeSync(out);
+  if (child.pid === undefined) throw new Error(`could not start ${script}`);
   writeFileSync(p.pid, String(child.pid));
   writeFileSync(p.startArgs, JSON.stringify(args));
   return child.pid;
@@ -619,33 +627,44 @@ async function waitBetweenCycles(intervalSec: number, requestFile: string, start
   return null;
 }
 
+/** How long a successor gets to show it is up (its run loop writes `run-info.json`). */
+const HANDOVER_TIMEOUT_MS = 60_000;
+
 /**
  * Hand over to a new process running the deployed code (issue #3841). Called
  * only between cycles, so no verify is in flight and the lock is released.
- * Returns false when the new process could not be started: the caller keeps
- * running the old code rather than leaving no train at all.
+ * This process exits only once the successor's run loop has recorded itself.
+ * A successor that fails to start (bad options, or a deploy still installing
+ * its dependencies) is killed and false is returned: the caller keeps running
+ * the old code rather than leaving no train at all, and a moved `HEAD` makes
+ * it try again after the next cycle.
  */
-function reexec(reason: string, runArgs: string[], log: (m: string) => void): boolean {
+async function reexec(reason: string, runArgs: string[], log: (m: string) => void): Promise<boolean> {
   const p = paths(stateDir());
   const request = readRestartRequest(p.restartRequest);
   // Consumed first: a request left behind would restart the successor again.
   rmSync(p.restartRequest, { force: true });
-  let args = request && request.args.length > 0 ? request.args : runArgs;
-  try {
-    parseArgs(['run', ...args]);
-  } catch (err) {
-    log(`restart options ${JSON.stringify(args)} rejected (${err instanceof Error ? err.message : String(err)}); keeping the current ones`);
-    args = runArgs;
-  }
+  // The options are checked by the successor's own (new) code, not by this one.
+  const args = request && request.args.length > 0 ? request.args : runArgs;
   const cwd = request && existsSync(request.cwd) ? request.cwd : process.cwd();
   const script = request && existsSync(request.script) ? request.script : fileURLToPath(import.meta.url);
   log(`re-executing after the cycle (${reason}): ${script} from ${cwd}`);
+  let pid: number | null = null;
   try {
-    const pid = spawnTrain(args, cwd, script);
-    if (pid === undefined) throw new Error('no pid');
+    pid = spawnTrain(args, cwd, script);
+    const deadline = Date.now() + HANDOVER_TIMEOUT_MS;
+    while (Date.now() < deadline && isAlive(pid) && runInfoPid(p.runInfo) !== pid) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (runInfoPid(p.runInfo) !== pid) throw new Error(`pid ${pid} did not start its run loop`);
     log(`handed over to pid ${pid}; pid ${process.pid} exits`);
     return true;
   } catch (err) {
+    if (pid !== null) {
+      try { process.kill(-pid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+    writeFileSync(p.pid, String(process.pid));
+    writeFileSync(p.startArgs, JSON.stringify(runArgs));
     log(`re-execution failed, this process keeps running: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
@@ -674,7 +693,7 @@ async function runForever(opts: Options, runArgs: string[]): Promise<void> {
       return;
     }
     const why = await waitBetweenCycles(opts.intervalSec, p.restartRequest, startHead);
-    if (why !== null && reexec(why, runArgs, log)) return;
+    if (why !== null && await reexec(why, runArgs, log)) return;
   }
 }
 

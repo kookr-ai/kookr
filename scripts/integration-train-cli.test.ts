@@ -431,7 +431,7 @@ describe('integration train CLI', () => {
       const s = makeSandbox();
       const head = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
       const marks = join(s.root, 'verify-marks');
-      const slowVerify = `echo start >> '${marks}'; sleep 8; echo done >> '${marks}'`;
+      const slowVerify = `echo start >> '${marks}'; sleep 15; echo done >> '${marks}'`;
       const args = ['--worktree', s.worktree, '--workers', '3', '--interval', '1', '--verify-cmd', slowVerify];
       const old = await startTrain(s, args);
       expect(await until(() => existsSync(marks), 60_000)).toBe(true);
@@ -492,6 +492,63 @@ describe('integration train CLI', () => {
       expect(existsSync(join(s.stateDir, 'restart-request.json'))).toBe(false);
       expect(await until(() => argsAfterRun(pid as number).length > 0, 10_000)).toBe(true);
       expect(argsAfterRun(pid as number)).toEqual(args);
+      expect(s.cli(['stop']).status).toBe(0);
+    }, 120_000);
+
+    it('a halted train applies a restart at once, with the options the restart gave', async () => {
+      const s = makeSandbox();
+      mkdirSync(s.stateDir, { recursive: true });
+      // a standing halt on the current refs: each cycle returns at once
+      writeFileSync(join(s.stateDir, 'state.json'), JSON.stringify({
+        halted: { reason: 'base-red', main: s.ref('main'), integration: s.ref('staging'), at: '2026-11-15T00:00:00Z' },
+      }));
+      const old = await startTrain(s, ['--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '600']);
+      expect(await until(() => trainLog(s).includes('cycle: halted'), 30_000)).toBe(true);
+
+      const given = ['--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '1', '--workers', '2'];
+      const r = s.cli(['restart', ...given]);
+      expect(r.stdout).toContain('restart requested');
+      // well within the 600 s interval: the request is checked every second
+      const next = await successorOf(s, old);
+      expect(argsAfterRun(next)).toEqual(given);
+      expect(JSON.parse(readFileSync(join(s.stateDir, 'start-args.json'), 'utf8'))).toEqual(given);
+      expect(s.cli(['stop']).status).toBe(0);
+    }, 180_000);
+
+    it('keeps running the old train when its successor fails to start', async () => {
+      const s = makeSandbox();
+      const args = ['--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '1'];
+      const old = await startTrain(s, args);
+      // options the successor rejects: it exits before its run loop starts
+      writeFileSync(join(s.stateDir, 'restart-request.json'), JSON.stringify({
+        requestedAt: new Date().toISOString(), args: ['--bogus'], cwd: s.launch, script: CLI,
+      }));
+
+      expect(await until(() => trainLog(s).includes('re-execution failed, this process keeps running'), 60_000)).toBe(true);
+      expect(alive(old)).toBe(true);
+      expect(trainPid(s)).toBe(old);
+      expect(JSON.parse(readFileSync(join(s.stateDir, 'start-args.json'), 'utf8'))).toEqual(args);
+      expect(existsSync(join(s.stateDir, 'restart-request.json'))).toBe(false);
+      expect(JSON.parse(s.cli(['status']).stdout)).toMatchObject({ running: true, pid: old, restartPending: null });
+      expect(s.cli(['stop']).status).toBe(0);
+      expect(await until(() => !alive(old), 10_000)).toBe(true);
+    }, 180_000);
+
+    it('stops and starts a train started by code that ignores restart requests', async () => {
+      const s = makeSandbox();
+      // a run loop of pre-#3841 code in the keyed directory: no run-info.json
+      const old = fakeProcess([CLI, 'run', '--worktree', s.worktree]);
+      mkdirSync(s.stateDir, { recursive: true });
+      writeFileSync(join(s.stateDir, 'train.pid'), String(old.pid));
+
+      const r = s.cli(['restart', '--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '1']);
+      const next = trainPid(s);
+      if (next !== null) pidsToKill.push(next);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain(`stopped integration train (pid ${old.pid})`);
+      expect(r.stdout).not.toContain('restart requested');
+      expect(next).not.toBe(old.pid);
+      expect(existsSync(join(s.stateDir, 'restart-request.json'))).toBe(false);
       expect(s.cli(['stop']).status).toBe(0);
     }, 120_000);
 

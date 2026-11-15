@@ -233,8 +233,11 @@ verify would restart almost every run from zero. Instead:
 - The train also re-executes between cycles, without a request, when the
   `HEAD` of the checkout it was launched from is no longer the one it started
   on. A lost request therefore leaves old code running for at most one cycle.
-  This check can fire while a deploy is still installing dependencies; if the
-  new process fails to start, the deploy's own `restart` starts a train.
+- The old process exits only once the new one's run loop has started (it
+  writes `run-info.json`, within 60 seconds). A new process that fails to start
+  (bad options, or a deploy that is still installing dependencies) is killed,
+  and the old one keeps running. When the checkout's `HEAD` moved, it tries
+  again after its next cycle.
 - While a request waits, `pnpm train:status` and `/api/health` show
   `restartPending` (with `requestedAt`), and `kookr status` adds
   `restart pending` to its `Integration train:` line.
@@ -257,7 +260,7 @@ alerts; it never starts or resumes the train. Its state is in
 `${KOOKR_DIR}/integration-train-monitor.json`.
 
 `/api/health` shows the train under `integrationTrain` (running, pid, halt,
-last cycle, `pendingSince`, `alerting`), and `kookr status` prints it as one
+last cycle, `restartPending`, `pendingSince`, `alerting`), and `kookr status` prints it as one
 `Integration train:` line.
 
 ## Commands
