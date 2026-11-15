@@ -56,7 +56,8 @@ async function injectAnswerablePermission(request: APIRequestContext, tmuxName: 
 
 /** Click Allow on the selected permission finding and check the key reached its terminal. */
 async function allowSelectedPermission(page: Page, request: APIRequestContext, tmuxName: string) {
-  const allow = page.locator('.btn-quick-action.permission-action').first();
+  // The finding card carries the same buttons; use the detail panel's, which also moves to the next finding.
+  const allow = page.getByTestId('detail-panel').locator('.btn-quick-action.permission-action').first();
   await expect(allow).toContainText('Allow');
   await allow.click();
   await expect.poll(async () => {
@@ -284,8 +285,8 @@ test.describe('Full integration scenarios', () => {
   });
 
   test('complete multi-agent triage workflow', async ({ page, request }, testInfo) => {
-    // Three UI launches and two answers take about 13 s on an idle
-    // host, too close to the 15 s default when other suites share the CPU.
+    // Three UI launches and two answers took about 13 s on a loaded host,
+    // too close to the 15 s default.
     testInfo.setTimeout(30_000);
     // Launch 3 agents
     await launchViaUI(page, 'Auth fix', '/test/auth');

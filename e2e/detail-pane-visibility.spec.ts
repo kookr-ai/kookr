@@ -72,8 +72,8 @@ test.describe('Detail pane visibility controls', () => {
   });
 
   test('#3561 4a: tabs by default, Split view toggle, terminal focus, and reload persistence', async ({ page, request }, testInfo) => {
-    // Two task selections around a reload take about 12 s on an idle host,
-    // too close to the 15 s default when other suites share the CPU.
+    // Two task selections around a reload took about 12 s on a loaded host,
+    // too close to the 15 s default.
     testInfo.setTimeout(30_000);
     await seedDetailTask(page, request);
     await selectDetailTask(page);
