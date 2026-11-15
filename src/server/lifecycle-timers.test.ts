@@ -1991,6 +1991,65 @@ describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', 
     }
   });
 
+  test('liveness tick passes permission-blocked live tasks to the permission-prompt alerter (issue #3872)', async () => {
+    vi.useFakeTimers();
+    const evaluate = vi.fn();
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'blocked worker', cwd: '/repo' });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-perm-blocked',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    const detectedAt = new Date('2026-11-15T21:12:35.000Z');
+    const handles = startLifecycleTimers(wiringDeps({
+      taskStore,
+      terminalBackend: {
+        listSessions: vi.fn(async () => ['kookr-perm-blocked']),
+        isAlive: vi.fn(async () => true),
+      } as TimerDeps['terminalBackend'],
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [{
+          type: 'permission_request',
+          sessionId: 's',
+          toolName: 'Bash',
+          toolInput: { command: 'rm -rf /tmp/x' },
+        }],
+        applyWatchdogVerdict: vi.fn(() => false),
+        sampleFindingEvidence: vi.fn(() => false),
+        getCurrentAnomaly: vi.fn((agentId: string) => (agentId === 'kookr-perm-blocked'
+          ? {
+            agentId,
+            type: 'permission_blocked',
+            severity: 'warning',
+            explanation: 'Agent is blocked on permission for tool: Bash',
+            detectedAt,
+          }
+          : null)),
+        unregisterAgent: vi.fn(),
+      } as unknown as TimerDeps['monitor'],
+      permissionPromptWaitAlerter: { evaluate },
+    }));
+    try {
+      // The live-session reconcile path awaits more than one timer turn.
+      await vi.advanceTimersByTimeAsync(500);
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+      expect(evaluate).toHaveBeenCalled();
+      const last = evaluate.mock.calls[evaluate.mock.calls.length - 1]?.[0];
+      expect(last).toEqual([{
+        taskId: task.id,
+        ...(task.name ? { taskName: task.name } : {}),
+        toolName: 'Bash',
+        command: 'rm -rf /tmp/x',
+        sinceMs: detectedAt.getTime(),
+      }]);
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
   test('omits evaluate when getStatusSnapshot is unwired', async () => {
     vi.useFakeTimers();
     const evaluate = vi.fn();

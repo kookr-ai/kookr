@@ -211,6 +211,16 @@ print([c for c in d.get("checks", []) if c.get("id")=="ops.schedules-paused-by-f
 - Recovered page (`op:schedules:paused:residual:clear`) fires only when the paused count returns to 0 — running the batch command is what clears it (recovery = ack).
 - Episode state is process memory — a restart can re-page immediately if ≥3 are still parked, and resets the escalation age clock.
 
+## 3b. Task waiting on a permission prompt (issue #3872)
+
+When a task's agent stops on a Claude Code permission prompt ("Claude needs your permission") and nobody answers it, the task makes no progress. After the prompt has waited **3 minutes**, the operator gets one page naming the task, the tool and the command.
+
+- Discord/operator key: `permission_prompt:<taskId>` (signal `op:permission_prompt:<taskId>:alert`). Covers every live, in-progress task, whether or not it was launched with `unattended`.
+- Answer the prompt from the dashboard, from Telegram, or in the task terminal. The recovered page (`op:permission_prompt:<taskId>:clear`) fires when the prompt is answered or the task ends.
+- One page per prompt: a prompt that stays open is not re-paged. A new prompt on the same task waits its own 3 minutes.
+- The clear follows the monitor's `permission_blocked` finding. Any later hook event from the session, such as another subagent's tool call or a `SessionStart`, ends that finding, so the clear can arrive while the prompt is still on screen.
+- Episode state is process memory: after a restart, a prompt that is still open pages again 3 minutes later.
+
 ## 4. Resource watchdog env
 
 When the resource watchdog is disabled, host pressure (CPU/mem) may not gate launches.
