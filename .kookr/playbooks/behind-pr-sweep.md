@@ -39,17 +39,24 @@ runs it, it does not re-decide. For every open PR:
   `gh pr update-branch`; the merge defers to a later run once CI re-settles,
   unless the branch returns to CLEAN with checks still green on this pass.
 - **merge** — `MERGEABLE` + `CLEAN` + checks green. Squash-merge.
+- **integration branch** — when `.kookr/delivery-gate.json` on `origin/main`
+  names an integration branch (see `docs/reference/integration-train.md`),
+  a PR reaches `main` only through the integration train. The sweep then
+  merges only PRs whose base is the integration branch; a green PR aimed at
+  `main` is skipped with "deliver it with pnpm merge" (#3797).
 
 ## Steps
 
 1. Confirm `gh auth status` is authenticated for `kookr-ai/kookr`.
 2. Drive the deterministic core. Preferred: call
-   `listOpenPrsForSweep('kookr-ai/kookr')` → `runBehindPrSweep(prs, createGhSweepExecutor('kookr-ai/kookr'))`
+   `listOpenPrsForSweep('kookr-ai/kookr')` → `runBehindPrSweep(prs, createGhSweepExecutor('kookr-ai/kookr'), { integrationBranch: await readIntegrationBranch('<repo checkout>') })`
+   (`readIntegrationBranch` is in `src/core/delivery-gate-config.ts`)
    → `renderSweepAuditLog(result, <ISO now>)` from a small tsx runner.
    Equivalent manual flow if running by hand:
-   - `gh pr list -R kookr-ai/kookr --state open --limit 100 --json number,title,isDraft,mergeable,mergeStateStatus,statusCheckRollup`
+   - `gh pr list -R kookr-ai/kookr --state open --limit 100 --json number,title,isDraft,mergeable,mergeStateStatus,statusCheckRollup,baseRefName`
    - For each `update-branch` PR: `gh api -X PUT repos/kookr-ai/kookr/pulls/<n>/update-branch` (or `gh pr update-branch <n>`).
-   - Re-check state; for each PR now CLEAN + green: `gh pr merge <n> -R kookr-ai/kookr --squash`.
+   - Re-check state; for each PR now CLEAN + green: `gh pr merge <n> -R kookr-ai/kookr --squash`,
+     except, with an integration branch configured, a PR whose base is not that branch.
 3. Emit the audit log listing every PR touched and the action taken or skip
    reason. This is the run's required output.
 

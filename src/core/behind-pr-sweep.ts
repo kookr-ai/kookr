@@ -60,6 +60,18 @@ export interface SweepPrState {
   mergeable: SweepMergeable;
   mergeStateStatus: SweepMergeStateStatus;
   checks: SweepCheckState;
+  /** The branch the PR merges into; absent when `gh` did not report it. */
+  baseRefName?: string;
+}
+
+/** Repository context the planner needs beyond the PR itself. */
+export interface SweepPolicyOptions {
+  /**
+   * The integration branch from `.kookr/delivery-gate.json` (#3788), or null.
+   * When set, pull requests reach `main` only through the integration train,
+   * so the sweep merges only into the integration branch (#3797).
+   */
+  integrationBranch?: string | null;
 }
 
 /** One planned decision. `outcome` is filled in by the runner, not the planner. */
@@ -86,11 +98,12 @@ export interface RawPrListEntry {
   mergeable?: string | null;
   mergeStateStatus?: string | null;
   statusCheckRollup?: RawCheckRollupEntry[] | null;
+  baseRefName?: string | null;
 }
 
 /** The `--json` field list to request from `gh pr list` for a sweep. */
 export const GH_PR_LIST_JSON_FIELDS =
-  'number,title,isDraft,mergeable,mergeStateStatus,statusCheckRollup';
+  'number,title,isDraft,mergeable,mergeStateStatus,statusCheckRollup,baseRefName';
 
 /**
  * Collapse a `statusCheckRollup` array into a single {@link SweepCheckState}.
@@ -181,6 +194,7 @@ export function parsePrList(raw: readonly RawPrListEntry[]): SweepPrState[] {
     mergeable: normalizeMergeable(entry.mergeable),
     mergeStateStatus: normalizeMergeStateStatus(entry.mergeStateStatus),
     checks: summarizeCheckState(entry.statusCheckRollup),
+    ...(typeof entry.baseRefName === 'string' && entry.baseRefName !== '' ? { baseRefName: entry.baseRefName } : {}),
   }));
 }
 
@@ -191,7 +205,7 @@ export function parsePrList(raw: readonly RawPrListEntry[]): SweepPrState[] {
  * unknown mergeability, non-green checks) are evaluated before any actionable
  * branch, so an unsafe PR can never reach `update-branch` or `merge`.
  */
-export function decidePrAction(pr: SweepPrState): SweepPlanEntry {
+export function decidePrAction(pr: SweepPrState, options: SweepPolicyOptions = {}): SweepPlanEntry {
   const base = { number: pr.number, title: pr.title };
 
   if (pr.isDraft || pr.mergeStateStatus === 'DRAFT') {
@@ -217,6 +231,17 @@ export function decidePrAction(pr: SweepPrState): SweepPlanEntry {
     return { ...base, action: 'update-branch', reason: 'behind base branch; checks green' };
   }
   if (pr.mergeStateStatus === 'CLEAN') {
+    const integration = options.integrationBranch ?? null;
+    if (integration !== null && pr.baseRefName !== integration) {
+      // A direct merge here would land on `main` (or elsewhere) without the
+      // train's verify. `pnpm merge` retargets and merges into the integration
+      // branch; an unreported base is treated the same way (fail safe).
+      return {
+        ...base,
+        action: 'skip',
+        reason: `base ${pr.baseRefName ?? 'unknown'} is not the integration branch ${integration}; deliver it with pnpm merge`,
+      };
+    }
     return { ...base, action: 'merge', reason: 'up to date; checks green' };
   }
   return {
@@ -227,8 +252,11 @@ export function decidePrAction(pr: SweepPrState): SweepPlanEntry {
 }
 
 /** Plan the full sweep: one {@link SweepPlanEntry} per PR, input order preserved. */
-export function planBehindPrSweep(prs: readonly SweepPrState[]): SweepPlanEntry[] {
-  return prs.map(decidePrAction);
+export function planBehindPrSweep(
+  prs: readonly SweepPrState[],
+  options: SweepPolicyOptions = {},
+): SweepPlanEntry[] {
+  return prs.map((pr) => decidePrAction(pr, options));
 }
 
 /** Result of executing one side effect. */
@@ -270,7 +298,7 @@ export interface SweepRunResult {
   failed: number[];
 }
 
-export interface RunSweepOptions {
+export interface RunSweepOptions extends SweepPolicyOptions {
   /** When true, plan and log but perform no update/merge (no executor calls). */
   dryRun?: boolean;
 }
@@ -289,7 +317,7 @@ export async function runBehindPrSweep(
   executor: SweepExecutor,
   options: RunSweepOptions = {},
 ): Promise<SweepRunResult> {
-  const plan = planBehindPrSweep(prs);
+  const plan = planBehindPrSweep(prs, options);
   const result: SweepRunResult = { audit: [], merged: [], updated: [], skipped: [], failed: [] };
 
   for (const entry of plan) {
@@ -324,7 +352,7 @@ export async function runBehindPrSweep(
     }
 
     const refetched = await executor.refetch(entry.number);
-    const nextAction = refetched ? decidePrAction(refetched) : null;
+    const nextAction = refetched ? decidePrAction(refetched, options) : null;
     if (nextAction && nextAction.action === 'merge') {
       await doMerge(executor, { number: entry.number, title: entry.title, action: 'merge', reason: nextAction.reason }, result);
       continue;

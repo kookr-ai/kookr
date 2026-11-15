@@ -53,7 +53,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { gitExecEnv } from '../src/core/git-helpers.js';
 import { CLOSING_KEYWORD_CASES } from './closing-keyword-cases.js';
 
@@ -305,12 +305,16 @@ function runMerge(
   pollCount: number;
   calls: string[];
 } {
+  // A call that names no checkout runs in a scratch checkout with no
+  // delivery-gate config, never in this repository: the real checkout's
+  // origin/main may configure an integration branch (#3797).
+  const runCwd = cwd ?? defaultCheckout();
   const result = spawnSync('bash', [SCRIPT, ...args], {
     encoding: 'utf8',
     timeout: 30_000,
-    ...(cwd ? { cwd } : {}),
+    cwd: runCwd,
     env: {
-      ...(cwd ? gitExecEnv() : process.env),
+      ...gitExecEnv(),
       PATH: `${stubDir}:${process.env.PATH ?? ''}`,
       // Isolate watch_checks from the independent-review gate.
       KOOKR_MERGE_REQUIRE_REVIEW: '0',
@@ -1498,6 +1502,22 @@ afterEach(() => {
   for (const d of scratchDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
+/** One config-less checkout shared by every runMerge call that names none. */
+let sharedCheckoutRoot: string | undefined;
+let sharedCheckout: string | undefined;
+function defaultCheckout(): string {
+  if (!sharedCheckout) {
+    const before = scratchDirs.length;
+    sharedCheckout = makeCheckout();
+    // Keep it out of the per-test cleanup; afterAll removes it.
+    sharedCheckoutRoot = scratchDirs.splice(before)[0];
+  }
+  return sharedCheckout;
+}
+afterAll(() => {
+  if (sharedCheckoutRoot) rmSync(sharedCheckoutRoot, { recursive: true, force: true });
+});
+
 function git(cwd: string, ...args: string[]): string {
   const r = spawnSync('git', args, {
     cwd,
@@ -1623,6 +1643,36 @@ describe('integration branch retarget (#3788)', () => {
     expect(result.status).toBe(1);
     expect(result.merged).toBe(false);
     expect(result.stderr).toContain('could not retarget PR #123 from main to staging');
+  });
+
+  // #3797: merging the promotion PR (staging -> main) through the wrapper must
+  // not delete staging, or the train reports not-configured from then on.
+  it('never deletes the configured integration branch after a merge', () => {
+    const result = run({ headRef: 'staging' }, INTEGRATION);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.merged).toBe(true);
+    expect(result.calls.join('\n')).not.toContain('--method DELETE');
+    expect(result.stdout).toContain(
+      'kookr-merge: head branch staging is the integration branch (.kookr/delivery-gate.json); it was left in place',
+    );
+  });
+
+  it('still deletes an ordinary head branch when an integration branch is configured', () => {
+    const result = run({}, INTEGRATION);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls.some((c) => c.startsWith('api --method DELETE') && c.endsWith('/git/refs/heads/feat/x'))).toBe(true);
+  });
+
+  it('deletes a staging head branch of a different repository named by --repo', () => {
+    const result = run({ headRef: 'staging' }, INTEGRATION, ['123', '--repo', 'other/thing']);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls.some((c) => c.startsWith('api --method DELETE') && c.endsWith('/git/refs/heads/staging'))).toBe(true);
+  });
+
+  it('without a config, a head branch named staging is deleted as before', () => {
+    const result = run({ headRef: 'staging' }, undefined);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls.some((c) => c.startsWith('api --method DELETE') && c.endsWith('/git/refs/heads/staging'))).toBe(true);
   });
 });
 

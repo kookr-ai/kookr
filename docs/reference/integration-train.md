@@ -22,6 +22,20 @@ To force the full pre-push gate in every worktree at once, create a file named
 integration branch nor the running train; delete the file to go back to the
 configured gate.
 
+### Other automation that reads the integration branch
+
+These read the same file through `src/core/delivery-gate-config.ts` (or a
+copy pinned to it by a test) and behave as before when it is absent:
+
+- The behind-PR sweep (`.kookr/playbooks/behind-pr-sweep.md`) merges only pull
+  requests aimed at the integration branch. One aimed at `main` is skipped,
+  because merging it there would bypass the train.
+- The merged-PR-by-branch probe and the `delivery-step-stop` hook treat the
+  integration branch like `main`: a session on it does not own a delivery.
+- `kookr merge` never deletes the integration branch.
+- The umbrella-chain advancer still waits until a phase's merge is on
+  `origin/main`, because the next phase is cut from there.
+
 ## What one cycle does
 
 1. Fetch `main` and the integration branch.

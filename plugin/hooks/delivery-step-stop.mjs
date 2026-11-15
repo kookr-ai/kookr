@@ -158,6 +158,50 @@ export function decide({ event, testOutcome, pr, mergeAuthority, advisoryReview 
   return `PR #${pr.number} is open, reviewed (pass) and this task holds merge authority. Run the merge gate (pnpm merge) now.`;
 }
 
+/**
+ * Mirrors `parseIntegrationBranch` (src/core/integration-branch.ts); a drift
+ * test pins the two. The integration branch (`.kookr/delivery-gate.json`,
+ * #3788) is where pull requests merge, so like `main` it is never a task's
+ * own delivery branch (#3797).
+ */
+export function parseIntegrationBranch(configJson) {
+  let parsed;
+  try {
+    parsed = JSON.parse(configJson);
+  } catch {
+    return null;
+  }
+  const branch = parsed?.integrationBranch;
+  if (typeof branch !== 'string' || branch === '') return null;
+  if (branch.startsWith('-') || branch.includes('..') || !/^[A-Za-z0-9._/-]+$/.test(branch)) return null;
+  if (branch === 'main') return null;
+  return branch;
+}
+
+/** True for a branch whose open PRs are not this task's to deliver. */
+export function isSharedBranch(branch, integrationBranch) {
+  return !branch || branch === 'HEAD' || branch === 'main' || (integrationBranch != null && branch === integrationBranch);
+}
+
+/** Same lookup as `delivery_gate_config_json` (scripts/lib/delivery-gate.sh): origin/main wins. */
+export function readIntegrationBranch(cwd) {
+  try {
+    sh('git', ['rev-parse', '--verify', '--quiet', 'origin/main'], cwd);
+  } catch {
+    try {
+      const root = sh('git', ['rev-parse', '--show-toplevel'], cwd).trim();
+      return parseIntegrationBranch(readFileSync(`${root}/.kookr/delivery-gate.json`, 'utf-8'));
+    } catch {
+      return null;
+    }
+  }
+  try {
+    return parseIntegrationBranch(sh('git', ['show', 'origin/main:.kookr/delivery-gate.json'], cwd));
+  } catch {
+    return null;
+  }
+}
+
 function sh(cmd, args, cwd) {
   return execFileSync(cmd, args, { cwd, encoding: 'utf-8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] });
 }
@@ -189,7 +233,8 @@ async function main() {
   try {
     const cwd = event.cwd || process.cwd();
     const branch = sh('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd).trim();
-    if (!branch || branch === 'HEAD' || branch === 'main') return 0;
+    if (isSharedBranch(branch, null)) return 0; // skip the config read for main/HEAD
+    if (isSharedBranch(branch, readIntegrationBranch(cwd))) return 0;
     const list = JSON.parse(sh('gh', ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,headRefOid'], cwd));
     if (!Array.isArray(list) || list.length === 0) return 0;
     const view = JSON.parse(sh('gh', ['pr', 'view', String(list[0].number), '--json', 'comments'], cwd));
