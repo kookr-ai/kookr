@@ -8,7 +8,7 @@ const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
 
 import { useLucyLive, type UseLucyLiveResult } from './useLucyLive.js';
-import { CONFIRMATION_TIMEOUT_MS } from './lucy-live-session.js';
+import { CONFIRMATION_TIMEOUT_MS, DUCK_GAIN } from './lucy-live-session.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests, subscribeSpeechBus, type SpeechBusEvent } from '../audio/speech-bus.js';
 import { STT_LANGUAGE_KEY } from '../store/stt-language.js';
@@ -576,6 +576,96 @@ describe('useLucyLive', () => {
       await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: 'someone-else' }); ws.receive({ type: 'speech_rejected', turnId: 'someone-else' }); });
       expect(sources[0].stop).not.toHaveBeenCalled();
       expect(gains[0].gain.linearRampToValueAtTime).toHaveBeenCalledTimes(1);
+    });
+
+    describe('a verdict that arrives after a newer turn has started', () => {
+      /**
+       * A candidate is still waiting for its verdict when Lucy finishes her answer, and the
+       * operator then starts a normal turn. Returns the candidate's id and the new turn's id.
+       */
+      async function candidateOutlivesTheAnswer({ fakeTimers = false } = {}) {
+        const { ws, id } = await lucyIsSpeaking();
+        // After setup, which needs real timers; from here on everything runs synchronously.
+        if (fakeTimers) vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        talkOver();
+        const candidate = lastTurnId();
+        gains[0].gain.value = DUCK_GAIN; // the fake does not run the ramp; this is where it lands
+        mic(SPEECH, 300);
+        mic(QUIET, 800); // the candidate's speech_end goes out; its verdict is delayed
+        act(() => {
+          sources[0].onended!();
+          sources[1].onended!();
+          ws.receive({ type: 'turn_done', turnId: id, end: 'answered' });
+          ws.receive({ type: 'state', state: 'idle' });
+        });
+        sent.length = 0;
+        mic(SPEECH, 300);
+        const start = sent.find((m) => m.type === 'speech_start');
+        expect(start).toBeDefined();
+        expect(start).not.toHaveProperty('lucyAudible'); // Lucy is quiet: a normal turn
+        const fresh = lastTurnId();
+        expect(fresh).not.toBe(candidate);
+        return { ws, candidate, fresh };
+      }
+
+      test('a late speech_rejected does not stop the new turn', async () => {
+        const { ws, candidate, fresh } = await candidateOutlivesTheAnswer();
+        await act(async () => { ws.receive({ type: 'speech_rejected', turnId: candidate }); });
+        wire.length = 0;
+        mic(SPEECH, 300);
+        expect(wire).toContain('pcm');
+        mic(QUIET, 800);
+        expect(sent.filter((m) => m.type === 'speech_end')).toEqual([{ type: 'speech_end', turnId: fresh }]);
+      });
+
+      test('a late speech_confirmed does not drop the new turn\'s answer', async () => {
+        const { ws, candidate, fresh } = await candidateOutlivesTheAnswer();
+        await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: candidate }); });
+        mic(QUIET, 800);
+        expect(sent.filter((m) => m.type === 'speech_end')).toEqual([{ type: 'speech_end', turnId: fresh }]);
+        const sourcesBefore = sources.length;
+        await act(async () => { ws.receive(sentence(fresh, 0, 'Here you go.')); });
+        await settle();
+        expect(sources).toHaveLength(sourcesBefore + 1);
+        expect(latest.lucyText).toBe('Here you go.');
+        expect(latest.lastTurnEnd).toBe('answered');
+      });
+
+      test('the new turn plays at full volume', async () => {
+        await candidateOutlivesTheAnswer();
+        expect(gains[0].gain.value).toBe(1);
+      });
+
+      test('the old candidate\'s confirmation timeout does not stop the new turn', async () => {
+        try {
+          const { fresh } = await candidateOutlivesTheAnswer({ fakeTimers: true });
+          act(() => { vi.advanceTimersByTime(CONFIRMATION_TIMEOUT_MS * 2); });
+          expect(wire).not.toContain('barge_in');
+          mic(QUIET, 800);
+          expect(sent.filter((m) => m.type === 'speech_end')).toEqual([{ type: 'speech_end', turnId: fresh }]);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
+    test('a confirmation that crosses the speech_end leaves the promoted turn waiting for its answer', async () => {
+      const { ws } = await lucyIsSpeaking();
+      talkOver();
+      const candidate = lastTurnId();
+      mic(SPEECH, 300);
+      mic(QUIET, 800); // speech_end goes out before the verdict comes back
+      expect(sent.filter((m) => m.type === 'speech_end')).toEqual([{ type: 'speech_end', turnId: candidate }]);
+      // The server confirmed before it read that speech_end: it promotes the candidate to a listening turn.
+      await act(async () => {
+        ws.receive({ type: 'speech_confirmed', turnId: candidate });
+        ws.receive({ type: 'state', state: 'listening' });
+      });
+      // Until the server says it is transcribing, a new sound must not replace the question:
+      // it is checked as a possible interruption, as after any other speech_end.
+      sent.length = 0;
+      talkOver();
+      expect(sent.find((m) => m.type === 'speech_start')).toMatchObject({ lucyAudible: true });
     });
 
     describe('with no verdict', () => {
