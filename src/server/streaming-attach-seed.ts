@@ -29,7 +29,7 @@ const ESC_LOOKBACK_BYTES = 96;
 
 /**
  * Cut a logical ring snapshot to the last `maxBytes`, advancing the start past
- * incomplete UTF-8 and incomplete CSI / 2-byte ESC sequences.
+ * incomplete UTF-8, incomplete CSI / 2-byte ESC sequences and escape strings.
  *
  * Rules (tested):
  * - empty / maxBytes ≤ 0 → empty

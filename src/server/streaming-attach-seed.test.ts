@@ -212,9 +212,17 @@ describe('cut inside a long escape string (issue #3565)', () => {
     expect(out).toBe(`${ESC}[0mNEXT`);
   });
 
-  it('resumes after CAN that cancels a string', () => {
-    const buf = enc(`${ESC}]8;;${'u'.repeat(400)}\x18NEXT`);
-    expect(dec(cutStreamingAttachSeed(buf, 'NEXT'.length + 100))).toBe('NEXT');
+  it('resumes after CAN or SUB that cancels a string', () => {
+    for (const cancel of ['\x18', '\x1a']) {
+      const buf = enc(`${ESC}]8;;${'u'.repeat(400)}${cancel}NEXT`);
+      expect(dec(cutStreamingAttachSeed(buf, 'NEXT'.length + 100)), `cancel ${cancel.charCodeAt(0)}`).toBe('NEXT');
+    }
+  });
+
+  it('drops the seed when the open string reaches a lone ESC at the end of the buffer', () => {
+    // The final ESC may be the start of ST; until its next byte arrives the string is still open.
+    const buf = enc(`${ESC}]8;;${'u'.repeat(400)}${ESC}`);
+    expect(cutStreamingAttachSeed(buf, 100).length).toBe(0);
   });
 
   it('drops the seed when the string is still open at the end of the buffer', () => {
