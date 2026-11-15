@@ -1390,3 +1390,102 @@ describe('prod-restart waits for single-writer lock release (issue #2501)', () =
     }
   });
 });
+
+describe('prod-restart integration train supervision (issue #3796)', () => {
+  // A temp app checkout whose origin/main does or does not carry the delivery
+  // gate config, and a stub train command that records how it was called. The
+  // real train is never started.
+  function runSupervise(opts: {
+    config: string | null;
+    stubExit?: number;
+    extraEnv?: Record<string, string>;
+    useStub?: boolean;
+  }): { status: number | null; stdout: string; stderr: string; calls: string[]; appDir: string; home: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-train-'));
+    try {
+      const gitEnv = {
+        ...process.env,
+        GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t.invalid',
+        GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+      };
+      for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete gitEnv[name];
+      const git = (cwd: string, ...args: string[]) => spawnSync('git', args, { cwd, env: gitEnv, encoding: 'utf8' });
+      const origin = join(dir, 'origin.git');
+      const appDir = join(dir, 'app');
+      mkdirSync(origin);
+      git(origin, 'init', '--bare', '-q', '--initial-branch=main');
+      git(dir, 'clone', '-q', origin, appDir);
+      git(appDir, 'checkout', '-q', '-b', 'main');
+      writeFileSync(join(appDir, 'README.md'), 'x\n');
+      if (opts.config !== null) {
+        mkdirSync(join(appDir, '.kookr'));
+        writeFileSync(join(appDir, '.kookr/delivery-gate.json'), opts.config);
+      }
+      git(appDir, 'add', '-A');
+      git(appDir, 'commit', '-q', '-m', 'base');
+      git(appDir, 'push', '-q', 'origin', 'main');
+      git(appDir, 'fetch', '-q', 'origin');
+
+      const record = join(dir, 'train-calls.txt');
+      const stub = join(dir, 'train-stub');
+      writeFileSync(stub, `#!/usr/bin/env bash
+printf '%s|%s|%s\\n' "$*" "$(pwd -P)" "\${KOOKR_DIR-}" >> ${JSON.stringify(record)}
+exit ${opts.stubExit ?? 0}
+`);
+      chmodSync(stub, 0o755);
+      const result = spawnSync(
+        'bash',
+        ['-c', `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}; supervise_integration_train`],
+        {
+          cwd: appDir,
+          env: {
+            ...gitEnv,
+            HOME: dir,
+            KOOKR_PORT: '4800',
+            ...(opts.useStub === false ? {} : { KOOKR_INTEGRATION_TRAIN_CMD: stub }),
+            ...(opts.extraEnv ?? {}),
+          },
+          encoding: 'utf8',
+        },
+      );
+      let calls: string[] = [];
+      try { calls = readFileSync(record, 'utf8').split('\n').filter(Boolean); } catch { /* never called */ }
+      return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls, appDir: realpathSync(appDir), home: dir };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('restarts the train from the deployed checkout when origin/main names an integration branch', () => {
+    const r = runSupervise({ config: '{"integrationBranch":"staging"}\n' });
+    expect(r.status).toBe(0);
+    expect(r.calls).toEqual([`restart|${r.appDir}|${r.home}/.kookr`]);
+    expect(r.stdout).toContain("Integration branch 'staging' is configured");
+  });
+
+  it('leaves the train alone when no integration branch is configured', () => {
+    expect(runSupervise({ config: null }).calls).toEqual([]);
+    expect(runSupervise({ config: '{"prePushGate":"fast"}\n' }).calls).toEqual([]);
+    // `main` can never be the integration branch
+    expect(runSupervise({ config: '{"integrationBranch":"main"}\n' }).calls).toEqual([]);
+  });
+
+  it('warns without failing the deploy when the train cannot be restarted', () => {
+    const r = runSupervise({ config: '{"integrationBranch":"staging"}\n', stubExit: 3 });
+    expect(r.status).toBe(0);
+    expect(r.calls).toHaveLength(1);
+    expect(r.stderr).toContain('WARN: the integration train could not be restarted (exit 3)');
+  });
+
+  it('is skipped with KOOKR_INTEGRATION_TRAIN_SUPERVISE=0', () => {
+    const r = runSupervise({ config: '{"integrationBranch":"staging"}\n', extraEnv: { KOOKR_INTEGRATION_TRAIN_SUPERVISE: '0' } });
+    expect(r.calls).toEqual([]);
+    expect(r.stdout).toContain('Skipping integration train supervision');
+  });
+
+  it('never reaches the real train from the sourced test mode without a stub', () => {
+    const r = runSupervise({ config: '{"integrationBranch":"staging"}\n', useStub: false });
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain('restarting the integration train');
+  });
+});

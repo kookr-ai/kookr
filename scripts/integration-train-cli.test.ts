@@ -12,6 +12,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { gitExecEnv } from '../src/core/git-helpers.js';
+import { resolveRepoKey } from '../src/server/integration-train-runtime.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(REPO_ROOT, 'scripts/integration-train.ts');
@@ -38,6 +39,8 @@ interface Sandbox {
   origin: string;
   launch: string;
   kookrDir: string;
+  /** This repository's state directory, `<kookrDir>/integration-train/<key>`. */
+  stateDir: string;
   worktree: string;
   callLog: string;
   /** Answers of the stub `gh`: `pr.json` (pr view) and `issue-<n>.json` (REST issue endpoint). */
@@ -46,6 +49,9 @@ interface Sandbox {
   commit(branch: string, files: Record<string, string>, subject: string): string;
   ref(branch: string): string;
   cycle(extra?: string[]): { status: number | null; stderr: string };
+  /** Runs any CLI command from the launching checkout. */
+  cli(args: string[]): { status: number | null; stdout: string; stderr: string };
+  env: NodeJS.ProcessEnv;
   calls(): string[];
   /** Operator signals in the outbox, oldest first. */
   signals(): Array<{ key: string; kind: string; title: string; detail?: string }>;
@@ -109,8 +115,20 @@ function makeSandbox(): Sandbox {
   chmodSync(join(bin, 'gh'), 0o755);
   chmodSync(join(bin, 'kookr'), 0o755);
 
+  // The outbox must be a temp dir: the default is the operator's real one.
+  const env: NodeJS.ProcessEnv = {
+    ...gitExecEnv(), ...IDENTITY, KOOKR_DIR: kookrDir, KOOKR_OPERATOR_SIGNAL_DIR: signalDir,
+    PATH: `${bin}:${process.env.PATH ?? ''}`,
+  };
+  const cli = (args: string[]) => {
+    const r = spawnSync(process.execPath, ['--import', TSX_LOADER, CLI, ...args], {
+      cwd: launch, encoding: 'utf8', env, timeout: 60_000,
+    });
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+  };
   return {
-    root, origin, launch, kookrDir, worktree, callLog, ghData, signalDir,
+    root, origin, launch, kookrDir, worktree, callLog, ghData, signalDir, env, cli,
+    stateDir: join(kookrDir, 'integration-train', resolveRepoKey(launch)),
     commit(branch, files, subject) {
       git(seed, 'fetch', '-q', 'origin');
       git(seed, 'checkout', '-q', '-B', branch, `origin/${branch}`);
@@ -122,20 +140,7 @@ function makeSandbox(): Sandbox {
     },
     ref: (branch) => git(origin, 'rev-parse', `refs/heads/${branch}`),
     cycle(extra = []) {
-      const r = spawnSync(
-        process.execPath,
-        ['--import', TSX_LOADER, CLI, 'cycle', '--verify-cmd', VERIFY, '--worktree', worktree, ...extra],
-        {
-          cwd: launch,
-          encoding: 'utf8',
-          // The outbox must be a temp dir: the default is the operator's real one.
-          env: {
-            ...gitExecEnv(), ...IDENTITY, KOOKR_DIR: kookrDir, KOOKR_OPERATOR_SIGNAL_DIR: signalDir,
-            PATH: `${bin}:${process.env.PATH ?? ''}`,
-          },
-          timeout: 60_000,
-        },
-      );
+      const r = cli(['cycle', '--verify-cmd', VERIFY, '--worktree', worktree, ...extra]);
       return { status: r.status, stderr: r.stderr };
     },
     calls: () => (existsSync(callLog) ? readFileSync(callLog, 'utf8').split('\n').filter(Boolean) : []),
@@ -148,9 +153,42 @@ function makeSandbox(): Sandbox {
   };
 }
 
+const pidsToKill: number[] = [];
+
 afterEach(() => {
+  for (const pid of pidsToKill.splice(0)) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+  }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+/**
+ * A long-lived process whose command line reads `node -e ... <argv...>`. It is
+ * started through a shell that exits at once, so it is not this test's child:
+ * like a real detached train, it is reaped by the system when it dies instead
+ * of lingering as a zombie while this process is blocked in spawnSync.
+ */
+function fakeProcess(argv: string[]): { pid: number } {
+  const quoted = [process.execPath, '-e', 'setInterval(() => {}, 1000)', ...argv]
+    .map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
+  const r = spawnSync('sh', ['-c', `${quoted} >/dev/null 2>&1 & echo $!`], { encoding: 'utf8' });
+  const pid = Number(r.stdout.trim());
+  pidsToKill.push(pid);
+  return { pid };
+}
+
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+async function until(check: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return check();
+}
 
 describe('integration train CLI', () => {
   it('runs the verify command on the staging head and fast-forwards main to it when green', () => {
@@ -192,6 +230,10 @@ describe('integration train CLI', () => {
     expect(s.cycle().status).toBe(0);
     expect(s.signals().map((x) => x.kind)).toEqual(['alert', 'clear']);
     expect(s.signals()[1].title).toBe('integration train recovered');
+    // the delivery service sends a batch in file-name order: that is event order
+    const byFileName = readdirSync(s.signalDir).filter((f) => f.endsWith('.json') && !f.startsWith('.')).sort()
+      .map((f) => (JSON.parse(readFileSync(join(s.signalDir, f), 'utf8')) as { kind: string }).kind);
+    expect(byFileName).toEqual(['alert', 'clear']);
   }, 120_000);
 
   it('writes every event of one cycle to the outbox with its own detail', () => {
@@ -255,9 +297,9 @@ describe('integration train CLI', () => {
     const s = makeSandbox();
     const base = s.ref('main');
     s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
-    mkdirSync(join(s.kookrDir, 'integration-train'), { recursive: true });
+    mkdirSync(s.stateDir, { recursive: true });
     // this test process is alive, so the lock is live
-    writeFileSync(join(s.kookrDir, 'integration-train/train.lock'), String(process.pid));
+    writeFileSync(join(s.stateDir, 'train.lock'), String(process.pid));
 
     expect(s.cycle().status).toBe(0);
     expect(s.ref('main')).toBe(base);
@@ -267,13 +309,89 @@ describe('integration train CLI', () => {
   it('takes over a lock left by a dead process', () => {
     const s = makeSandbox();
     const head = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
-    mkdirSync(join(s.kookrDir, 'integration-train'), { recursive: true });
+    mkdirSync(s.stateDir, { recursive: true });
     const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' });
-    writeFileSync(join(s.kookrDir, 'integration-train/train.lock'), dead.stdout.trim());
+    writeFileSync(join(s.stateDir, 'train.lock'), dead.stdout.trim());
 
     expect(s.cycle().status).toBe(0);
     expect(s.ref('main')).toBe(head);
-    expect(existsSync(join(s.kookrDir, 'integration-train/train.lock'))).toBe(false);
+    expect(existsSync(join(s.stateDir, 'train.lock'))).toBe(false);
+  }, 120_000);
+
+  it('keeps its lock and state per repository', () => {
+    const s = makeSandbox();
+    const head = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    // another repository's train holds its own lock and is halted
+    const other = join(s.kookrDir, 'integration-train', 'someone-else');
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(other, 'train.lock'), String(process.pid));
+    writeFileSync(join(other, 'state.json'), JSON.stringify({ halted: { reason: 'base-red', main: 'a', integration: 'b', at: 'x' } }));
+
+    expect(s.cycle().status).toBe(0);
+    expect(s.ref('main')).toBe(head);
+    expect(JSON.parse(readFileSync(join(s.stateDir, 'last-cycle.json'), 'utf8')).outcome).toBe('promoted');
+    expect(existsSync(join(other, 'last-cycle.json'))).toBe(false);
+  }, 120_000);
+
+  it('stop does not signal a live process that is not the train', async () => {
+    const s = makeSandbox();
+    const stranger = fakeProcess(['some-other-program']);
+    mkdirSync(s.stateDir, { recursive: true });
+    writeFileSync(join(s.stateDir, 'train.pid'), String(stranger.pid));
+
+    const r = s.cli(['stop']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('is not the integration train');
+    await new Promise((res) => setTimeout(res, 300));
+    expect(alive(stranger.pid)).toBe(true);
+    expect(existsSync(join(s.stateDir, 'train.pid'))).toBe(false);
+  }, 120_000);
+
+  it('stop signals the process when it is the train', async () => {
+    const s = makeSandbox();
+    const train = fakeProcess([CLI, 'run', '--worktree', s.worktree]);
+    mkdirSync(s.stateDir, { recursive: true });
+    writeFileSync(join(s.stateDir, 'train.pid'), String(train.pid));
+
+    const r = s.cli(['stop']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(`stopped integration train (pid ${train.pid})`);
+    expect(await until(() => !alive(train.pid), 5_000)).toBe(true);
+  }, 120_000);
+
+  it('restart replaces a train of the old shared layout, keeps its options and carries its state over', async () => {
+    const s = makeSandbox();
+    const head = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    // A train started before #3796: state and pid directly in integration-train/.
+    const legacy = join(s.kookrDir, 'integration-train');
+    mkdirSync(legacy, { recursive: true });
+    const old = fakeProcess([CLI, 'run', '--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '1']);
+    writeFileSync(join(legacy, 'train.pid'), String(old.pid));
+    writeFileSync(join(legacy, 'state.json'), JSON.stringify({ fixTasks: { 'issue-9': 1 }, alerting: false }));
+
+    // while the old train runs, a cycle of the new code waits for it
+    expect(s.cycle().status).toBe(0);
+    expect(s.ref('main')).not.toBe(head);
+
+    const r = s.cli(['restart']);
+    // registered for cleanup before any assertion can fail
+    const pid = Number(readFileSync(join(s.stateDir, 'train.pid'), 'utf8'));
+    pidsToKill.push(pid);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(`stopped integration train (pid ${old.pid})`);
+    // the new train runs with the old one's options (worktree, verify, interval)
+    expect(await until(() => { try { return s.ref('main') === head; } catch { return false; } }, 60_000)).toBe(true);
+    expect(existsSync(join(s.worktree, 'a.txt'))).toBe(true);
+    expect(JSON.parse(readFileSync(join(s.stateDir, 'state.json'), 'utf8')).fixTasks).toEqual({ 'issue-9': 1 });
+    expect(existsSync(join(legacy, 'state.json'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(s.stateDir, 'start-args.json'), 'utf8'))).toEqual([
+      '--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '1',
+    ]);
+
+    const status = JSON.parse(s.cli(['status']).stdout) as { running: boolean; pid: number };
+    expect(status).toMatchObject({ running: true, pid });
+    expect(s.cli(['stop']).status).toBe(0);
+    expect(await until(() => !alive(pid), 10_000)).toBe(true);
   }, 120_000);
 
   it('refuses to use a directory it did not create as its worktree', () => {
