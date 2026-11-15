@@ -62,13 +62,27 @@ const PRUNE_FLAGS = [
  * `git worktree remove` deletes ALL git-ignored files, so a worktree is SAFE
  * only if every ignored entry is one of:
  *  - a `node_modules/` directory with a `package.json` AND a lockfile in its
- *    parent directory and no nested `.git` inside it (checked by the caller);
+ *    parent directory, no nested `.git` inside it and no uncommitted
+ *    `pnpm patch` edits (checked by the caller);
  *  - a tool-owned cache whose name never holds user data (listed below).
  * Everything else, notably `out/`, `build/`, `dist/`, `target/`, `.cache/`,
  * `.venv/`, `coverage/` (they routinely hold checkpoints, results or
  * hand-installed packages), is content and sends the worktree to REVIEW.
  */
 const TOOL_CACHE_DIRS = new Set(['__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.turbo']);
+/**
+ * pnpm 10 keeps in-progress `pnpm patch` edits here until `pnpm patch-commit`; they are
+ * hand-made edits, not rebuildable, so a `node_modules` holding them is never SAFE.
+ */
+const PNPM_PATCHES = '.pnpm_patches';
+function hasPnpmPatches(nodeModules) {
+  try {
+    lstatSync(join(nodeModules, PNPM_PATCHES));
+    return true;
+  } catch {
+    return false;
+  }
+}
 const LOCKFILES = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lockb', 'bun.lock'];
 
 /** @returns {'cache' | 'node_modules' | 'content'} */
@@ -89,10 +103,14 @@ const ATTR_CHUNK = 1000;
 /** Above this many distinct reflog tips the reflog check is skipped and the worktree treated as not SAFE. */
 const REFLOG_TIP_LIMIT = 2000;
 
-/** Test-only: extra environment for every spawned command (e.g. hermetic git config). */
-let extraEnv = {};
+/**
+ * Test-only: the environment for every spawned command (e.g. hermetic git config). When set it
+ * REPLACES process.env rather than adding to it, so variables the test removed (such as the
+ * GIT_CONFIG_PARAMETERS a pre-push hook inherits) cannot leak back in.
+ */
+let testEnv = null;
 export function setExecEnvForTests(env) {
-  extraEnv = env ?? {};
+  testEnv = env ?? null;
 }
 
 export function parseArgs(argv, env = process.env, home = homedir()) {
@@ -140,12 +158,28 @@ export function parseArgs(argv, env = process.env, home = homedir()) {
   }
   o.roots = o.roots.map((r) => resolve(r));
   o.dataDir = resolve(o.dataDir);
+  const protectedDirs = [o.dataDir, join(home, '.ssh'), join(home, '.config')];
   for (const r of o.roots) {
-    if (r === '/' || r === resolve(home) || r === o.dataDir || under(o.dataDir, r) || under(join(home, '.ssh'), r) || under(join(home, '.config'), r)) {
+    if (r === '/' || r === resolve(home) || protectedDirs.some((d) => under(d, r))) {
       throw new Error(`refusing --roots entry ${r}: it is, or contains, the home directory, the data directory, ~/.ssh or ~/.config`);
+    }
+    // Inside one of them is refused too, checked on the path as given and as resolved through symlinks.
+    for (const p of new Set([r, safeRealpath(r)])) {
+      const inside = protectedDirs.find((d) => under(p, d) || under(p, safeRealpath(d)));
+      if (inside) throw new Error(`refusing --roots entry ${r}: it is inside ${inside}`);
+      if (inKookrDir(p, home)) throw new Error(`refusing --roots entry ${r}: it is inside a Kookr data directory (~/.kookr*)`);
     }
   }
   return o;
+}
+
+/** Is `p` a `~/.kookr*` directory (any Kookr data dir, whatever its port) or inside one? */
+function inKookrDir(p, home) {
+  for (const h of new Set([resolve(home), safeRealpath(home)])) {
+    if (!p.startsWith(h + sep)) continue;
+    if (p.slice(h.length + 1).split(sep)[0].startsWith('.kookr')) return true;
+  }
+  return false;
 }
 
 function defaultDataDir(env, home) {
@@ -177,7 +211,7 @@ function exec(cmd, args, { cwd, timeoutMs = 60_000, env } = {}) {
         cwd,
         timeout: timeoutMs,
         maxBuffer: 256 * MIB,
-        env: childEnv({ ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...extraEnv, ...env }),
+        env: childEnv({ ...(testEnv ?? process.env), LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...env }),
       },
       (err, stdout, stderr) => {
         const timedOut = Boolean(err && err.killed);
@@ -468,11 +502,12 @@ export async function homeReviewProbe(opts, home = homedir()) {
  * re-check, which only needs git/activity state).
  */
 /**
- * Is it safe to treat this `node_modules` as rebuildable? Needs a nested-`.git`
- * search (no symlink following) that finds nothing and does not time out.
- * Returns null when fine, else a short reason.
+ * Is it safe to treat this `node_modules` as rebuildable? Needs no uncommitted
+ * `pnpm patch` edits and a nested-`.git` search (no symlink following) that
+ * finds nothing and does not time out. Returns null when fine, else a short reason.
  */
 async function nodeModulesProblem(abs, timeoutMs) {
+  if (hasPnpmPatches(abs)) return `uncommitted pnpm patch edits in ${PNPM_PATCHES}/ (finish with pnpm patch-commit)`;
   const f = await exec('find', [abs, '-name', '.git', '-print', '-quit'], { timeoutMs });
   if (f.timedOut) return 'nested .git search timed out';
   if (f.code !== 0) return 'nested .git search failed';
@@ -608,7 +643,8 @@ async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
     git(['rev-parse', '--git-path', 'index']),
     git(['log', '-1', '--format=%ct']),
     git(['symbolic-ref', '--short', '-q', 'HEAD']),
-    git(['status', '--porcelain', '--untracked-files=normal']),
+    // A broken core.fsmonitor hook that reports "no changes" would make a dirty tree look clean.
+    git(['-c', 'core.fsmonitor=false', 'status', '--porcelain', '--untracked-files=normal']),
     git(['stash', 'list', '--format=%gs']),
     git(['branch', '-r', '--contains', 'HEAD']),
     git(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD']),
@@ -1094,7 +1130,7 @@ async function recheck(item, opts, deps) {
 /** The command an item will run, for the write-ahead audit line. */
 function describeCommand(item) {
   if (item.kind === 'worktree') {
-    return `git -c status.showUntrackedFiles=normal -C ${item.mainRepo} worktree remove ${item.path}${item.branch ? ` && git -C ${item.mainRepo} branch -d ${item.branch}` : ''}`;
+    return `git -c status.showUntrackedFiles=normal -c core.fsmonitor=false -C ${item.mainRepo} worktree remove ${item.path}${item.branch ? ` && git -C ${item.mainRepo} branch -d ${item.branch}` : ''}`;
   }
   if (item.kind === 'dependencies') return `rm -rf ${item.path}`;
   return Array.isArray(item.command) ? item.command.join(' ') : String(item.kind);
@@ -1104,8 +1140,9 @@ async function execute(item, log, opts, deps) {
   if (item.kind === 'worktree') {
     if (!item.mainRepo) throw new Error("refusing: main repository unknown");
     // No --force: git refuses dirty or locked trees. Force untracked files to be shown so a
-    // repo with status.showUntrackedFiles=no cannot switch that refusal off.
-    const wtArgs = ['-c', 'status.showUntrackedFiles=normal', '-C', item.mainRepo, 'worktree', 'remove', item.path];
+    // repo with status.showUntrackedFiles=no cannot switch that refusal off, and bypass
+    // core.fsmonitor so a hook that wrongly reports "no changes" cannot either.
+    const wtArgs = ['-c', 'status.showUntrackedFiles=normal', '-c', 'core.fsmonitor=false', '-C', item.mainRepo, 'worktree', 'remove', item.path];
     log.command = ['git', ...wtArgs].join(' ');
     const r = await deps.run('git', wtArgs);
     if (r.code !== 0) throw new Error(`git worktree remove failed: ${r.stderr.trim() || r.stdout.trim()}`);

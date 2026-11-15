@@ -5,13 +5,25 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'vitest';
 import { applySafe, buildReport, buildUsage, classifyIgnoredEntry, isLiveTask, parseArgs, realDeps, resolveApiBase, setExecEnvForTests } from './disk-reclaim.mjs';
 
-// Hermetic git: temp repos only, no ambient config (also injected into the script's own git calls).
-// Inside a git hook (the repo's pre-push runs this suite) git exports GIT_DIR and friends; left in
-// place they would point every fixture command at the real repository, so drop them.
-const AMBIENT = { ...process.env };
-for (const k of Object.keys(AMBIENT)) if (/^GIT_(DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|PREFIX|QUARANTINE_PATH)$/.test(k)) delete AMBIENT[k];
+// Hermetic git: temp repos only, no ambient config (also used as the script's own environment).
+// Inside a git hook (the repo's pre-push runs this suite) git exports GIT_DIR and friends, and
+// `git -c … push` exports GIT_CONFIG_PARAMETERS; left in place they would point every fixture
+// command at the real repository or inject config, so drop every variable git itself lists as
+// repository-local (asked with no GIT_* variables set, so a malformed one cannot break the query).
+const LOCAL_GIT_VARS = execFileSync('git', ['rev-parse', '--local-env-vars'], {
+  cwd: tmpdir(),
+  env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))),
+  encoding: 'utf8',
+}).split('\n').filter(Boolean);
+// Not repository-local in git's list, but also set by git for hooks.
+const HOOK_GIT_VARS = ['GIT_NAMESPACE', 'GIT_QUARANTINE_PATH'];
+function withoutLocalGitVars(env) {
+  const out = { ...env };
+  for (const k of [...LOCAL_GIT_VARS, ...HOOK_GIT_VARS]) delete out[k];
+  return out;
+}
 const GIT_ENV = {
-  ...AMBIENT,
+  ...withoutLocalGitVars(process.env),
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid',
@@ -25,7 +37,7 @@ const FAKE_NOW = () => Date.now() + 10 * DAY;
 let tmp, root, dataDir, origin, main;
 
 beforeAll(() => setExecEnvForTests(GIT_ENV));
-afterAll(() => setExecEnvForTests({}));
+afterAll(() => setExecEnvForTests(null));
 
 function commitFile(repo, name, content = name) {
   writeFileSync(join(repo, name), content);
@@ -526,6 +538,106 @@ describe('ignored files and hidden edits', () => {
   });
 });
 
+describe('pnpm patch edits and fsmonitor hooks', () => {
+  /** Uncommitted `pnpm patch` edits, as pnpm 10 keeps them until `pnpm patch-commit`. */
+  function addPnpmPatch(nodeModules) {
+    mkdirSync(join(nodeModules, '.pnpm_patches', 'left-pad@1.3.0'), { recursive: true });
+    writeFileSync(join(nodeModules, '.pnpm_patches', 'left-pad@1.3.0', 'index.js'), 'hand edit');
+    writeFileSync(join(nodeModules, '.pnpm_patches', 'state.json'), '{}');
+  }
+
+  /**
+   * A broken core.fsmonitor hook that always answers "nothing changed", then an edit it hides
+   * from plain `git status` (the index is primed first so git trusts the hook for every entry).
+   */
+  function hideEditBehindFsmonitor(wt, file) {
+    const hook = join(tmp, 'fsmonitor-hook.sh');
+    writeFileSync(hook, '#!/bin/sh\nprintf "token\\0"\n', { mode: 0o755 });
+    git(main, 'config', 'core.fsmonitor', hook);
+    git(wt, 'status', '--porcelain');
+    git(wt, 'status', '--porcelain');
+    writeFileSync(join(wt, file), 'edit the hook hides, longer than before');
+    // The fixture is real only if git, trusting the hook, now calls the tree clean.
+    expect(execFileSync('git', ['status', '--porcelain'], { cwd: wt, env: { ...GIT_ENV, GIT_OPTIONAL_LOCKS: '0' }, encoding: 'utf8' })).toBe('');
+  }
+
+  test('a node_modules holding uncommitted pnpm patch edits is REVIEW, alone or inside a worktree', async () => {
+    const depsOnly = addWorktree('patch-deps');
+    addNodeModules(depsOnly);
+    addPnpmPatch(join(depsOnly, 'node_modules'));
+    const whole = addWorktree('patch-whole');
+    commitManifest(whole);
+    mergeBranch('patch-whole');
+    mkdirSync(join(whole, 'node_modules'));
+    addPnpmPatch(join(whole, 'node_modules'));
+    const r = await buildReport(opts(), deps());
+    expect(find(r, join(depsOnly, 'node_modules'))).toBeUndefined();
+    expect(find(r, depsOnly).reason).toMatch(/node_modules kept: .*uncommitted pnpm patch edits/);
+    expect(find(r, whole)).toMatchObject({ tier: 'REVIEW' });
+    expect(find(r, whole).reason).toMatch(/node_modules\/ \(uncommitted pnpm patch edits/);
+  });
+
+  test('pnpm patch edits started after the scan are caught at apply time', async () => {
+    const depsOnly = addWorktree('late-patch-deps');
+    addNodeModules(depsOnly);
+    const whole = addWorktree('late-patch-whole');
+    commitManifest(whole);
+    mergeBranch('late-patch-whole');
+    mkdirSync(join(whole, 'node_modules'));
+    const d = deps();
+    const o = opts();
+    const report = await buildReport(o, d);
+    expect(report.safe.map((i) => i.path).sort()).toEqual([join(depsOnly, 'node_modules'), whole].sort());
+    addPnpmPatch(join(depsOnly, 'node_modules'));
+    addPnpmPatch(join(whole, 'node_modules'));
+    const res = await applySafe(report, o, d);
+    expect(existsSync(join(depsOnly, 'node_modules', '.pnpm_patches', 'state.json'))).toBe(true);
+    expect(existsSync(join(whole, 'node_modules', '.pnpm_patches', 'state.json'))).toBe(true);
+    expect(res.actions).toHaveLength(2);
+    for (const a of res.actions) expect(a.error).toMatch(/skipped: no longer SAFE.*uncommitted pnpm patch edits/);
+  });
+
+  test('an fsmonitor hook that hides an edit does not make the worktree SAFE', async () => {
+    const wt = addWorktree('fsmonitor-scan', { merge: true });
+    hideEditBehindFsmonitor(wt, 'fsmonitor-scan.txt');
+    const r = await buildReport(opts(), deps());
+    expect(find(r, wt)).toMatchObject({ tier: 'REVIEW' });
+    expect(find(r, wt).reason).toMatch(/uncommitted changes/);
+  });
+
+  test('an edit hidden by an fsmonitor hook after the scan is caught at apply time', async () => {
+    const wt = addWorktree('fsmonitor-apply', { merge: true });
+    const d = deps();
+    const o = opts();
+    const report = await buildReport(o, d);
+    expect(find(report, wt)).toMatchObject({ tier: 'SAFE' });
+    hideEditBehindFsmonitor(wt, 'fsmonitor-apply.txt');
+    const res = await applySafe(report, o, d);
+    expect(readFileSync(join(wt, 'fsmonitor-apply.txt'), 'utf8')).toBe('edit the hook hides, longer than before');
+    expect(res.actions).toHaveLength(1);
+    expect(res.actions[0].error).toMatch(/skipped: no longer SAFE.*uncommitted/);
+  });
+
+  test('git worktree remove itself bypasses the hook: an edit hidden after the re-check survives', async () => {
+    const wt = addWorktree('fsmonitor-remove', { merge: true });
+    const real = realDeps({});
+    const d = deps({
+      // The edit lands between the re-check and the removal, so only git's own check stands in the way.
+      run: async (cmd, args, o) => {
+        if (cmd === 'git' && args.includes('worktree') && args.includes('remove')) hideEditBehindFsmonitor(wt, 'fsmonitor-remove.txt');
+        return real.run(cmd, args, o);
+      },
+    });
+    const o = opts();
+    const report = await buildReport(o, d);
+    expect(find(report, wt)).toMatchObject({ tier: 'SAFE' });
+    const res = await applySafe(report, o, d);
+    expect(readFileSync(join(wt, 'fsmonitor-remove.txt'), 'utf8')).toBe('edit the hook hides, longer than before');
+    expect(res.actions[0]).toMatchObject({ ok: false });
+    expect(res.actions[0].error).toMatch(/git worktree remove failed/);
+  });
+});
+
 describe('--apply safe', () => {
   test('removes only SAFE items, keeps REVIEW, deletes the merged branch, writes the audit log', async () => {
     const safe = addWorktree('apply-done', { merge: true });
@@ -552,6 +664,9 @@ describe('--apply safe', () => {
     expect(lines.map((l) => l.kind).sort()).toEqual(['dependencies', 'worktree']);
     expect(lines.find((l) => l.kind === 'worktree').command).toMatch(/worktree remove/);
     expect(lines.find((l) => l.kind === 'worktree').command).not.toMatch(/--force/);
+    // git worktree remove runs its own status check; a hook must not be able to answer it.
+    expect(lines.find((l) => l.kind === 'worktree').command).toContain('-c core.fsmonitor=false');
+    expect(readAudit().find((l) => l.phase === 'intent' && l.kind === 'worktree').command).toContain('-c core.fsmonitor=false');
     expect(res.freedByKind.worktree).toBeGreaterThan(0);
   });
 
@@ -757,6 +872,60 @@ describe('options and probes', () => {
       expect(() => parseArgs(['--roots', bad], {}, home)).toThrow(/refusing --roots/);
     }
     expect(() => parseArgs(['--roots', '~/git'], {}, home)).not.toThrow();
+  });
+
+  test('--roots refuses directories inside the data dir, ~/.ssh, ~/.config or any ~/.kookr*', () => {
+    const home = join(tmp, 'home');
+    const custom = join(tmp, 'custom-data');
+    for (const d of ['.ssh/keys', '.config/app', '.kookr/worktrees', '.kookr-4801/worktrees', 'git']) mkdirSync(join(home, d), { recursive: true });
+    mkdirSync(join(custom, 'sub'), { recursive: true });
+    for (const bad of ['~/.ssh/keys', '~/.config/app', '~/.kookr/worktrees', '~/.kookr-4801/worktrees', '~/.kookr-4801']) {
+      expect(() => parseArgs(['--roots', bad], {}, home), bad).toThrow(/refusing --roots/);
+    }
+    expect(() => parseArgs(['--roots', join(custom, 'sub'), '--data-dir', custom], {}, home)).toThrow(/inside .*custom-data/);
+    // A symlink that resolves into a protected directory is refused too.
+    symlinkSync(join(home, '.config', 'app'), join(home, 'git', 'config-link'));
+    expect(() => parseArgs(['--roots', '~/git/config-link'], {}, home)).toThrow(/refusing --roots/);
+    expect(() => parseArgs(['--roots', '~/git'], {}, home)).not.toThrow();
+  });
+
+  test('--roots refuses a root inside the real target of a symlinked protected directory or home', () => {
+    // ~/.config managed as a symlink (dotfiles): a root inside its real target is still inside ~/.config.
+    const home = join(tmp, 'home2');
+    const dotfiles = join(tmp, 'dotfiles-config');
+    mkdirSync(join(dotfiles, 'app'), { recursive: true });
+    mkdirSync(home);
+    symlinkSync(dotfiles, join(home, '.config'));
+    expect(() => parseArgs(['--roots', join(dotfiles, 'app')], {}, home)).toThrow(/inside .*\.config/);
+    // A symlinked home: a root under the real home's ~/.kookr-* directory is refused.
+    const realHome = join(tmp, 'real-home');
+    mkdirSync(join(realHome, '.kookr-4801', 'worktrees'), { recursive: true });
+    const linkHome = join(tmp, 'link-home');
+    symlinkSync(realHome, linkHome);
+    expect(() => parseArgs(['--roots', join(realHome, '.kookr-4801', 'worktrees'), '--data-dir', join(tmp, 'elsewhere')], {}, linkHome)).toThrow(/Kookr data directory/);
+  });
+
+  test('the hook-variable strip list comes from git and covers GIT_CONFIG_PARAMETERS', () => {
+    expect(LOCAL_GIT_VARS).toEqual(expect.arrayContaining(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT']));
+    // What a pre-push hook run by `git -c test.marker=from-hook push` sees.
+    const hookEnv = { ...GIT_ENV, GIT_DIR: join(tmp, 'not-a-repo'), GIT_CONFIG_PARAMETERS: "'test.marker'='from-hook'" };
+    expect(execFileSync('git', ['config', '--get', 'test.marker'], { cwd: main, env: { ...GIT_ENV, GIT_CONFIG_PARAMETERS: hookEnv.GIT_CONFIG_PARAMETERS }, encoding: 'utf8' }).trim()).toBe('from-hook');
+    const clean = withoutLocalGitVars(hookEnv);
+    expect(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: main, env: clean, encoding: 'utf8' }).trim()).toBe(main);
+    expect(() => execFileSync('git', ['config', '--get', 'test.marker'], { cwd: main, env: clean, stdio: 'pipe' })).toThrow();
+  });
+
+  test("the script's git calls use the test environment, not hook variables left in process.env", async () => {
+    const wt = addWorktree('hook-env', { merge: true });
+    const saved = process.env.GIT_CONFIG_PARAMETERS;
+    process.env.GIT_CONFIG_PARAMETERS = 'malformed'; // git refuses to run with this
+    try {
+      const r = await buildReport(opts(), deps());
+      expect(find(r, wt)).toMatchObject({ tier: 'SAFE', kind: 'worktree' });
+    } finally {
+      if (saved === undefined) delete process.env.GIT_CONFIG_PARAMETERS;
+      else process.env.GIT_CONFIG_PARAMETERS = saved;
+    }
   });
 
   test('the API port must match the data dir, otherwise fail closed', () => {
