@@ -89,6 +89,10 @@ head review changed (#3692). The rule:
    the full gate on H together. Run the gate in the background (for kookr:
    `git push` with `run_in_background`, which runs the pre-push gate). Draft
    the PR body in the same window.
+   **The CI watcher and the reviewer also run in parallel:** start watching the
+   PR's checks (`gh pr checks --watch`, or `pnpm check-verification` polling)
+   in the background at the same time as the reviewer. Never wait for CI to
+   finish before starting the review, or for the review before watching CI.
 2. On a hard-gate repo, merge needs both a green gate and a `pass` for H. On an
    advisory repo the verdict is evidence only (see the policy split above).
 3. A green full gate that already ran on H before the PR was opened counts; do
@@ -103,6 +107,13 @@ Before the PR exists there is no `$PR` to post a verdict on; the `pre-pr-review`
 specialist pass covers that stage.
 
 ## Delta re-review after a PASS
+
+**Amending after a PASS invalidates it.** A PASS binds to the exact
+`review-head-sha`. `git commit --amend`, a rebase, a squash, or any new commit
+produces a different sha, so the old PASS no longer applies — even when the
+content looks unchanged — and `pnpm merge` refuses it. After any such change,
+run a new review for the new head (a full review, or the delta review below
+when it qualifies). Never re-post or edit an old PASS with the new sha.
 
 A PASS binds to one head. After a PASS, if the only change since the reviewed
 head is a **comment-only or typo-only edit** (no executable code, test, config,
@@ -183,16 +194,53 @@ real catch was fully same-vendor. Codex is primary only for **availability**
 same-vendor review is weaker. A same-vendor fallback is therefore acceptable —
 **provided it runs at the strength floor in §2**, which is the real protection.
 
-- **Codex lane (primary):** spawn a Codex reviewer (`spawn_agent`, or a
-  `codex-cli` child task). If Codex is **unavailable or rate-limited** — the
-  spawn errors, the agent reports a usage/quota limit, or it returns no verdict
-  within the budget below — **fall back to the Claude lane**. On a hard-gate
-  repo, do not degrade to no review. On an advisory repo, if both lanes fail,
-  continue to merge after local gates.
+- **Codex lane (primary):** run the lane script (below); from inside Codex,
+  `spawn_agent` or a `codex-cli` child task also work. If Codex is **unavailable or
+  rate-limited** — the script exits 3, the spawn errors, the agent reports a
+  usage/quota limit, or it returns no verdict within the budget below — **fall
+  back to the Claude lane** at once; do not retry Codex. On a hard-gate repo, do
+  not degrade to no review. On an advisory repo, if both lanes fail, continue to
+  merge after local gates.
 - **Claude lane (fallback):** spawn a Claude reviewer subagent via the `Agent`
   tool.
 
-Record which lane produced the verdict in `review-lane:`.
+Record which lane produced the verdict in `review-lane:`. On fallback, record
+the reason the script printed.
+
+**Codex lane script.** Do not call `codex exec` by hand. Write the reviewer
+prompt (§2) to a file and run it as below. The prompt must name the diff file by
+path rather than inline it: the script refuses a prompt over 100 KB (exit 2).
+
+```bash
+LANE_SCRIPT="${CLAUDE_PLUGIN_ROOT:-plugin}/skills/independent-merge-review/scripts/codex-review-lane.mjs"
+node "$LANE_SCRIPT" --prompt-file /tmp/kookr-review-$PR.prompt.md --repo-dir "$PWD" \
+  > /tmp/kookr-review-$PR.codex.md
+case $? in
+  0) LANE=codex ;;   # reviewer's final message is in the .codex.md file
+  3) LANE=claude ;;  # Codex unusable here (reason on stderr): use the Claude lane now
+  *) echo "lane script usage error"; LANE=claude ;;
+esac
+```
+
+The script closes stdin (`codex exec` otherwise waits on "Reading additional
+input from stdin..." until killed), passes the model from
+`KOOKR_CODEX_REVIEW_MODEL` (unset = Codex's configured default), and makes a
+short preflight call first (`KOOKR_CODEX_REVIEW_PREFLIGHT_TIMEOUT`, default 25 s).
+The review call always runs at high reasoning effort, whatever the host's Codex
+config says, to hold the §2 strength floor.
+A model the API rejects (`model_not_found`), a quota error, a hung preflight, a
+failed or timed-out review (`KOOKR_CODEX_REVIEW_TIMEOUT`, default 600 s), or a
+missing `codex` binary all exit **3**. Choosing the host's default Codex model is
+an operator setting, not part of this skill.
+
+**Sandbox needs bubblewrap on Linux.** The script runs Codex with
+`--sandbox read-only` (`KOOKR_CODEX_REVIEW_SANDBOX` overrides). On Linux, Codex
+runs its tools through bubblewrap (`bwrap`), and without it the run aborts with
+no verdict (agents have reported this even with `danger-full-access`). So when `bwrap` is not on `PATH`
+the script exits 3 before calling Codex: take the Claude lane, record
+"Codex lane unavailable: bubblewrap not installed", and tell the operator that
+installing the `bubblewrap` package enables the Codex lane. Do not work around it
+by dropping the sandbox.
 
 ### 2. Spawn the reviewer FRESH-CONTEXT (blind to the implementer)
 
@@ -221,6 +269,13 @@ minimum `correctness-specialist.md`, prefixed with the fan-out marker header
 - the staged diff (`/tmp/kookr-review-$PR.diff`) and changed-file list
 - the issue number/body (acceptance criteria) — the *requirements*, not the
   implementer's narrative
+
+**Never give the reviewer the pre-PR review pack** (the `--review-out` file
+from `kookr context-pack`, e.g. `/tmp/issue-<N>.review.md`) or any other
+context pack. That pack is written for the implementer's own specialists and
+carries the implementer's summaries and framing; a reviewer that reads it is no
+longer blind to the implementer. Build the reviewer prompt only from the three
+inputs above.
 
 Instruct the reviewer to return a verdict:
 
