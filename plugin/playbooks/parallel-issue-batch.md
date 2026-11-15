@@ -747,6 +747,22 @@ Implementation target:
   unit's blocker and report it instead.
 - Push the branch and open **one** PR that closes the issue in the unit
   (`Closes #<N1>` in the body). The PR title/body must list that issue.
+- **Propagate Idea Scout provenance labels (conversion tracking, issue #3638).**
+  Right after the PR exists, copy the issue's `idea-scout` and `idea:<issue-number>`
+  labels onto it. The Repository Idea Scout counts an idea as converted only when
+  a merged PR carries the matching `idea:<n>` label, so a PR without them is
+  counted as unimplemented. This is a no-op for issues that were not scouted.
+  The selector is the same as in `implement-github-issue.md`; keep them in sync:
+
+  ```bash
+  IDEA_LABELS=$(gh issue view <N1> -R "$REPO" --json labels \
+    --jq '[.labels[].name | select(. == "idea-scout" or startswith("idea:"))] | join(",")')
+  if [ -n "$IDEA_LABELS" ]; then
+    # The scout created these labels in the repo. A PR is an issue for the
+    # labels API, and re-adding a label it already has is a no-op.
+    gh issue edit <PR> -R "$REPO" --add-label "$IDEA_LABELS" >/dev/null || true
+  fi
+  ```
 - Monitor CI and fix failures. **CI-rerun bound — max 2 CI rerun attempts, then report and stop.** Re-run a failing check at most twice per PR; after the second failed rerun, **report the CI state** (failing check names and run links) and stop — **never loop** on reruns. Before spending a rerun, classify the failure: infra-red CI (budget/quota/runner outage — the run never executed the code) is non-blocking and should be classified non-blocking rather than rerun (see #1198), and does not consume one of the 2 attempts. (An unbounded rerun/merge loop once stranded a delivery task for ~3h — PR #1542 / task faf7902b.)
 - If you face a design choice the issues do not settle, pick the smallest implementation that satisfies them, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 - Before an autonomous self-merge, run the `independent-merge-review` skill: spawn a **fresh-context** reviewer (blind to your implementation reasoning) that reviews the diff and posts a machine-readable verdict PR comment with an exact `review-head-sha`. Codex is the primary reviewer lane; if Codex is unavailable or rate-limited, the Claude fallback lane runs. **Repo-policy split (issue #3027) — pick one lane, do not mix them.** On `kookr-ai/kookr` (hard gate): never degrade to zero review; fix or explicitly rebut each confirmed correctness/safety finding before merging; `kookr merge` enforces this deterministically (it refuses to merge without a `pass` verdict bound to the current head; the `review-skipped-timeout` label is telemetry only); retry up to the durable default of 10 correction/review iterations, then record a concrete blocker; do not set `KOOKR_MERGE_REQUIRE_REVIEW=0` for an autonomous merge. On a repo whose `CLAUDE.md` / `AGENTS.md` documents that independent review is advisory (e.g. Lucy #3606): still post the verdict when the reviewer returns; timeout, missing, or BLOCK never become a task blocker or merge refusal; merge after local gates (`gh pr merge`; `KOOKR_MERGE_REQUIRE_REVIEW=0 gh pr merge` is authorized on that advisory autonomous merge if a global hook still denies the bare command). Classify: `kookr-ai/kookr` → hard; else `grep -qiE 'independent review is advisory' CLAUDE.md AGENTS.md` → advisory; else hard.
@@ -1079,7 +1095,8 @@ Every fallback-delivered unit records both:
    exactly as in **Durable State → Delivery Ownership** (#1570/#1904). The
    fallback reuses that single-writer lease gate; it does not invent a second
    delivery path. The pre-`gh pr create` duplicate-guard (#1569) still runs
-   unchanged before the PR is opened.
+   unchanged before the PR is opened, and the child contract's Idea Scout
+   provenance-label step (#3638) still runs right after it is opened.
 
 **Forbidden.** Do **not** deliver a unit outside this bookkeeping. Every
 fallback-delivered unit must have a recorded delivery owner **and** a status
