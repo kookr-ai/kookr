@@ -3545,6 +3545,57 @@ describe('main', () => {
     }
   });
 
+  it('keeps --param values on the re-POST after duplicate confirmation (#3644)', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      if (bodies.length === 1) {
+        return {
+          status: 200,
+          body: JSON.stringify({
+            duplicate: true,
+            task: { id: 'existing-issue-run', status: 'inProgress', cwd: tmpCwd, prompt: 'issue 9 run' },
+          }),
+        };
+      }
+      return { status: 201, body: JSON.stringify({ id: 'intentional-issue-run', cwd: tmpCwd }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: [
+          '--playbook', 'implement-github-issue.md',
+          '--playbook-scope', 'plugin',
+          '--param', 'issueSelector=9',
+          '--idempotency-key', 'issue:9',
+        ],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: interactiveStdin('y\n'),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodies).toHaveLength(2);
+      for (const body of bodies) {
+        expect(body).not.toHaveProperty('prompt');
+        expect(body.playbook).toEqual({
+          path: 'implement-github-issue.md',
+          scope: 'plugin',
+          parameterValues: { issueSelector: '9' },
+        });
+      }
+      expect(bodies[1]).toMatchObject({ disableDedup: true, metadata: { intent: 'keep_as_duplicate' } });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it('preserves a wrapped launch with a new retry-safe key after duplicate confirmation', async () => {
     const bodies: any[] = [];
     const { server, baseUrl } = await startFakeApi((_req, bodyText) => {

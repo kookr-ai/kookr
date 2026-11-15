@@ -104,8 +104,11 @@ and no prompt. This runs the shipped issue-delivery playbook on issue 123:
 ```bash
 kookr spawn --playbook implement-github-issue.md --playbook-scope plugin \
   --param issueSelector=123 --param repo=owner/repo \
-  --idempotency-key "issue:owner/repo:123" --unattended
+  --idempotency-key "issue:owner/repo:123" --unattended </dev/null
 ```
+
+`</dev/null` matters here: without a prompt argument, `kookr spawn` reads stdin
+when it is not a terminal, so an open pipe would make it wait.
 
 Wait for readiness:
 

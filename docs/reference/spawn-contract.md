@@ -146,7 +146,8 @@ Guidance:
 - **Idempotency key.** `--idempotency-key <key>` sets it explicitly;
   `--auto-idempotency` (or `KOOKR_SPAWN_AUTO_IDEMPOTENCY`) derives a stable key
   from the spawn's identity (prompt, cwd, criteria, agent, model policy,
-  playbook path, and playbook scope) so a retry replays. Calls without a model
+  playbook path, playbook scope, and `--param` values in any order) so a retry
+  replays. Calls without a model
   policy keep the pre-tier key for deploy-crossing retries. The CLI POST aborts at 10s while the
   server may take longer, so a key turns that timeout from a duplicate risk
   into a safe replay.

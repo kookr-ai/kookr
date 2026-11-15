@@ -1569,15 +1569,19 @@ Phase {{phase}}: {{prompt}}
       expect(await res.json()).toMatchObject({ error: 'prompt is required and must be a string' });
     });
 
-    test('rejects an empty prompt on a playbook launch instead of treating it as absent', async () => {
-      const res = await post({
-        prompt: '',
-        cwd,
-        playbook: { path: 'issue.md', parameterValues: { issue: '7' } },
-        idempotencyKey: 'issue:empty-prompt',
-      });
-      expect(res.status).toBe(400);
-      expect(launchTask).not.toHaveBeenCalled();
+    test('rejects an empty or non-string prompt on a playbook launch instead of treating it as absent', async () => {
+      for (const prompt of ['', 42, null]) {
+        vi.mocked(launchTask).mockClear();
+        const res = await post({
+          prompt,
+          cwd,
+          playbook: { path: 'wrapper.md', parameterValues: { phase: 'P1' } },
+          idempotencyKey: 'wrapper:bad-prompt',
+        });
+        expect(res.status, JSON.stringify(prompt)).toBe(400);
+        expect(await res.json()).toMatchObject({ error: 'prompt is required and must be a string' });
+        expect(launchTask).not.toHaveBeenCalled();
+      }
     });
 
     test('rejects malformed parameterValues before reading the playbook', async () => {
