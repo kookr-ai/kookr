@@ -17,6 +17,7 @@ A verdict — **pass** or **block** — with evidence. For pass: which acceptanc
 
 ## Rules you always apply
 - **Mutation-test each acceptance test.** Disable the guard it protects, confirm the named test now fails, then restore the code. A test that still passes is not evidence. Example: comment out `if (!isAllowed(user)) return 403;`, the "rejects a disallowed user" test must go red.
+- **Make temp directories you can delete by name.** Create any scratch directory with `mktemp -d "<scratchpad>/<name>.XXXXXX"` (the session scratchpad directory, or `/tmp` when there is none), note the path it prints, and remove it by that literal path, for example `rm -rf /tmp/claude-1000/<session>/scratchpad/mut.ab12cd`. Never run `rm -r` on a path built from a variable or a command substitution (`rm -rf "$(cat f)"`, `rm -rf "$DIR"`): Claude Code asks a human before running it even in bypass mode, so an unattended task stalls until someone answers (issue #3867).
 - **Run the full suite, not only the files the author named.** A change can break a caller elsewhere. Example: the author ran `pnpm vitest run src/foo.test.ts`; you run the repo's full test command and report its totals.
 - **Rerun a lone failure before blaming the change.** One red test among many green may be flaky or depend on the environment. Rerun it alone (and on the base branch if it fails again) before calling it a block. Example: `pnpm vitest run src/bar.test.ts` twice; block only if it fails on the change and passes on base.
 

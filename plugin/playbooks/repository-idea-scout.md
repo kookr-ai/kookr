@@ -466,7 +466,8 @@ cleanup_analysis_git() {
   esac
   ACTUAL_PARENT=$(cd "$(dirname "$ANALYSIS_GIT_TMP_DIR")" 2>/dev/null && pwd -P) || return 1
   [ "$ACTUAL_PARENT" = "$ANALYSIS_GIT_TMP_PARENT" ] || return 1
-  rm -rf "$ANALYSIS_GIT_TMP_DIR"
+  # find, not rm -rf on a variable: the plugin hook denies that form (#3867).
+  [ ! -e "$ANALYSIS_GIT_TMP_DIR" ] || find "$ANALYSIS_GIT_TMP_DIR" -depth -delete
 }
 
 cleanup_analysis_snapshot() {
@@ -475,7 +476,7 @@ cleanup_analysis_snapshot() {
   case "$SNAPSHOT_PARENT" in "$STATE_DIR"/analysis-snapshots) ;; *) return 1 ;; esac
   if [ -e "$SNAPSHOT_PARENT" ]; then
     chmod -R u+w "$SNAPSHOT_PARENT" 2>/dev/null || true
-    rm -rf "$SNAPSHOT_PARENT"
+    find "$SNAPSHOT_PARENT" -depth -delete
   fi
 }
 
@@ -817,7 +818,7 @@ fi
 
 invalidate_source_artifacts() {
   [ "$RECS_DIR" = "$STATE_DIR/recommendations" ] || return 1
-  rm -rf "$RECS_DIR" || return 1
+  [ ! -e "$RECS_DIR" ] || find "$RECS_DIR" -depth -delete || return 1
   rm -f \
     "$STATE_DIR/features.md" \
     "$STATE_DIR/capability-inventory.md" \
@@ -2299,7 +2300,7 @@ EXPECTED_ANALYSIS_ROOT="$STATE_DIR/analysis-snapshots/$ANALYSIS_SHA"
   || { block "analysis root is outside run-scoped snapshot storage"; exit 0; }
 chmod -R u+w "$ANALYSIS_ROOT" 2>/dev/null \
   || { block "analysis snapshot permission restoration failed"; exit 0; }
-rm -rf "$ANALYSIS_ROOT" \
+find "$ANALYSIS_ROOT" -depth -delete \
   || { block "analysis snapshot cleanup failed"; exit 0; }
 [ ! -e "$ANALYSIS_ROOT" ] \
   || { block "analysis snapshot remains after cleanup"; exit 0; }

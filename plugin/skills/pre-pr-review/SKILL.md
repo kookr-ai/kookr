@@ -463,6 +463,8 @@ Use when the change touches module boundaries, imports, or public APIs:
    ```
    For Layer-2 architecture agents use `Agent({ subagent_type: "kookr-toolkit:<name>" })`.
 
+   **Temp directories (put this rule in every specialist prompt).** Create any scratch directory with `mktemp -d "<scratchpad>/<name>.XXXXXX"` (the session scratchpad directory, or `/tmp` when there is none), note the path it prints, and remove it by that literal path, for example `rm -rf /tmp/claude-1000/<session>/scratchpad/mut.ab12cd`. Never run `rm -r` on a path built from a variable or a command substitution (`rm -rf "$(cat f)"`, `rm -rf "$DIR"`): Claude Code asks a human before running it even in bypass mode, so an unattended task stalls until someone answers (issue #3867).
+
    **Codex CLI:** spawn each Layer-1 specialist via the `spawn_agent` tool with the specialist's `.md` content as the task instructions. This is an *authorized skill-workflow spawn* under clause (b) of the `spawn_agent` tool description — you do NOT need the user to re-confirm. Pattern:
    ```
    spawn_agent({

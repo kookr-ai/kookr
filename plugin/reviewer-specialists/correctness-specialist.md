@@ -89,6 +89,10 @@ Common traps to avoid:
 - Test struct fields may be populated in a different block than where you're looking
 - `require.Equal(t, expected, actual)` — make sure you read `expected`, not `actual`
 
+## Temp directories
+
+Create any scratch directory with `mktemp -d "<scratchpad>/<name>.XXXXXX"` (the session scratchpad directory, or `/tmp` when there is none), note the path it prints, and remove it by that literal path, for example `rm -rf /tmp/claude-1000/<session>/scratchpad/mut.ab12cd`. Never run `rm -r` on a path built from a variable or a command substitution (`rm -rf "$(cat f)"`, `rm -rf "$DIR"`): Claude Code asks a human before running it even in bypass mode, so an unattended task stalls until someone answers (issue #3867).
+
 ## Output format
 
 ### Finding N
