@@ -302,6 +302,30 @@ describe('expiry, cancel and boot reconciliation', () => {
     expect(h.notifier.finalizeAsk).toHaveBeenCalledWith(expect.objectContaining({ state: 'cancelled' }), expect.stringContaining('Cancelled'));
   });
 
+  it('closes the Telegram message as expired when the ask expires while the send is in flight', async () => {
+    let release!: () => void;
+    h.notifier.sendAsk.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve({ chatId: 42, messageId: 556 });
+    }));
+    const kinds: string[] = [];
+    h.service.onChange((c) => kinds.push(c.kind));
+    const pending = h.service.create({ ...base, timeoutSec: 30 });
+    await vi.waitFor(() => expect(h.store.all()).toHaveLength(1));
+    h.clock.now += 31_000;
+    await h.service.sweepExpired();
+    // The sweep cannot close a message that has not been sent yet.
+    expect(h.notifier.finalizeAsk).not.toHaveBeenCalled();
+    release();
+    const r = await pending;
+    expect(r).toMatchObject({ ok: true, ask: { state: 'expired', delivery: { chatId: 42, messageId: 556 } } });
+    expect(h.notifier.finalizeAsk).toHaveBeenCalledOnce();
+    expect(h.notifier.finalizeAsk).toHaveBeenCalledWith(
+      expect.objectContaining({ state: 'expired', delivery: { chatId: 42, messageId: 556 } }),
+      expect.stringContaining('Expired'),
+    );
+    expect(kinds).not.toContain('created');
+  });
+
   it('start() enforces retention and the sweep tick expires overdue asks', async () => {
     const old = await createOk({ question: 'old' });
     await tap(old, 0);
