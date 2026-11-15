@@ -4328,6 +4328,7 @@ describe('diagnostics routes', () => {
         skippedOpenPrUnknown: 0,
         skippedNoPauseStart: 0,
         skippedAwaitingProviderReset: 0,
+        skippedProviderResetUnresolved: 0,
         oldestOpenPrFailsafeHoldMs: null,
         openPrFailsafeOverHardTtlCount: 0,
         lastCandidatesConsidered: 0,

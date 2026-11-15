@@ -96,6 +96,20 @@ export function resolveProviderResetMs(
   now: number,
   fallbackCooldownMs: number = DEFAULT_UNKNOWN_RESET_COOLDOWN_MS,
 ): number {
+  return resolveKnownProviderResetMs(quota, now) ?? now + fallbackCooldownMs;
+}
+
+/**
+ * The binding-window reset from {@link resolveProviderResetMs}, without the
+ * fallback cooldown: the latest future reset of an exhausted window, or
+ * `undefined` when the snapshot names none (issue #3562). Callers that must
+ * tell "reset known" apart from "reset unknown" — the provider_paused TTL
+ * reclaim — use this; the fallback would make every reset look known.
+ */
+export function resolveKnownProviderResetMs(
+  quota: { fiveHour: ResetWindow | null; sevenDay: ResetWindow | null } | null | undefined,
+  now: number,
+): number | undefined {
   let latestExhaustedReset: number | undefined;
   for (const window of [quota?.fiveHour, quota?.sevenDay]) {
     if (!window) continue;
@@ -106,7 +120,7 @@ export function resolveProviderResetMs(
       latestExhaustedReset = at;
     }
   }
-  return latestExhaustedReset ?? now + fallbackCooldownMs;
+  return latestExhaustedReset;
 }
 
 /** Minimal task shape needed to replay a provider-paused issue's launch. */

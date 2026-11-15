@@ -47,6 +47,55 @@ export const MAX_PROVIDER_PAUSED_HARD_TTL_MS = 6 * 60 * 60_000;
  */
 export const MIN_PROVIDER_PAUSED_SOFT_TTL_MS = 15 * 60_000;
 
+/**
+ * Grace after a known provider reset during which a paused task is still held
+ * (issue #3562). The CLI resumes itself at the reset; the grace covers clock
+ * skew and the few minutes the resumed session needs before liveness activity
+ * clears the pause. Past `reset + grace` the hold ends and the normal soft /
+ * hard TTL applies again.
+ */
+export const PROVIDER_RESET_HOLD_GRACE_MS = 15 * 60_000;
+
+/**
+ * What the reclaim knows about when the provider will lift a task's pause
+ * (issue #3562):
+ *
+ * - `known` — the provider has committed to a reset time (an exhausted quota
+ *   window with a future `resetsAt`). The paused CLI resumes by itself then.
+ * - `unresolved` — the reset cannot be determined right now: no quota
+ *   snapshot, or a snapshot that cannot prove absence (poller in backoff /
+ *   auth-failed, or last refreshed before the pause began). The same rate
+ *   limiting that pauses agents also throttles the poller, so this is the
+ *   normal state during a quota pause, not an edge case.
+ * - `none` — a fresh, healthy snapshot shows no exhausted window: nothing is
+ *   pending (account-level billing hold, or the reset already passed).
+ */
+export type ProviderResetState =
+  | { kind: 'known'; resetsAtMs: number }
+  | { kind: 'unresolved' }
+  | { kind: 'none' };
+
+/**
+ * Whether a known provider reset still holds a paused task (issue #3562).
+ *
+ * Holds while `now < resetsAt + grace`, but only when that hold ends within
+ * {@link MAX_PROVIDER_PAUSED_HARD_TTL_MS} of the effective pause start
+ * (inclusive). A reset further out than the 6h ceiling — e.g. a 7-day window —
+ * gets no hold at all: holding would only burn slot time and still reclaim
+ * before the reset.
+ */
+export function knownProviderResetHoldApplies(input: {
+  resetsAtMs: number;
+  nowMs: number;
+  effectivePauseStartMs: number;
+  graceMs?: number;
+}): boolean {
+  if (!Number.isFinite(input.resetsAtMs)) return false;
+  const holdUntil = input.resetsAtMs + (input.graceMs ?? PROVIDER_RESET_HOLD_GRACE_MS);
+  if (input.nowMs >= holdUntil) return false;
+  return holdUntil - input.effectivePauseStartMs <= MAX_PROVIDER_PAUSED_HARD_TTL_MS;
+}
+
 /** Cap task ids on the health occupancy snapshot. */
 export const MAX_PROVIDER_PAUSED_OCCUPANCY_TASK_IDS = 16;
 
@@ -138,8 +187,17 @@ export type ProviderPausedTtlSkipReason =
   | 'skipped_open_pr_confirmed'
   | 'skipped_open_pr_unknown'
   | 'skipped_no_pause_start'
-  /** Provider reset not yet elapsed — hold for #1896 auto-resume (issue #2079). */
-  | 'skipped_awaiting_provider_reset';
+  /**
+   * Provider reset not yet elapsed: the #1896 auto-resume hold (issue #2079),
+   * or a known provider reset still in the future, with or without an
+   * issueClaim (issue #3562).
+   */
+  | 'skipped_awaiting_provider_reset'
+  /**
+   * Reset time cannot be resolved (no / untrustworthy quota snapshot): the soft
+   * capacity bound does not reclaim; the hard TTL still does (issue #3562).
+   */
+  | 'skipped_provider_reset_unresolved';
 
 export const PROVIDER_PAUSED_TTL_SKIP_REASONS: readonly ProviderPausedTtlSkipReason[] = [
   'skipped_under_ttl',
@@ -147,6 +205,7 @@ export const PROVIDER_PAUSED_TTL_SKIP_REASONS: readonly ProviderPausedTtlSkipRea
   'skipped_open_pr_unknown',
   'skipped_no_pause_start',
   'skipped_awaiting_provider_reset',
+  'skipped_provider_reset_unresolved',
 ] as const;
 
 export type ProviderPausedTtlSkipCounts = Record<ProviderPausedTtlSkipReason, number>;
@@ -158,6 +217,7 @@ export function emptyProviderPausedTtlSkipCounts(): ProviderPausedTtlSkipCounts 
     skipped_open_pr_unknown: 0,
     skipped_no_pause_start: 0,
     skipped_awaiting_provider_reset: 0,
+    skipped_provider_reset_unresolved: 0,
   };
 }
 
@@ -294,6 +354,18 @@ export interface SelectExpiredProviderPausedTasksOpts {
    */
   isAwaitingProviderReset?: (task: Task) => boolean;
   /**
+   * Provider reset knowledge for the task (issue #3562). Consulted after the
+   * #1896 hold, for tasks with or without an issueClaim:
+   * - `known` and {@link knownProviderResetHoldApplies} → skip
+   *   `skipped_awaiting_provider_reset`, on the soft AND hard path (bounded by
+   *   the 6h max from pause start, not the configured hard TTL);
+   * - `unresolved` and still under the hard TTL → skip
+   *   `skipped_provider_reset_unresolved` (the soft bound never reclaims an
+   *   unknown; the hard bound still does, #2423);
+   * - `none` / omitted → today's soft/hard behavior.
+   */
+  getProviderResetState?: (task: Task) => ProviderResetState | undefined;
+  /**
    * Stranded-PR / open-PR fail-safe (same contract as hungSuspect TTL):
    * - `true`  — holds a confirmed-open PR. Exempt, always.
    * - `false` — confirmed no open PR. Safe to reclaim.
@@ -400,6 +472,10 @@ export function effectiveProviderPausedStartMs(
  *   `skipped_awaiting_provider_reset` (issue #2423: do not apply this skip
  *   once `pausedForMs >= hardTtlMs`, or a missing reset occupies the slot
  *   forever);
+ * - known provider reset still ahead (issue #3562, any task) →
+ *   `skipped_awaiting_provider_reset`, past the hard TTL too, up to the 6h max;
+ * - reset unresolved and still under hard TTL →
+ *   `skipped_provider_reset_unresolved` (issue #3562);
  * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
  *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
  * - otherwise selected (oldest-paused first).
@@ -458,6 +534,41 @@ export function selectExpiredProviderPausedTasks(
       outcomes.push({
         taskId: task.id,
         outcome: 'skipped_awaiting_provider_reset',
+        pausedForMs,
+      });
+      continue;
+    }
+
+    // #3562: a known provider reset is a promise to resume, not a hang. Hold
+    // any paused task (issueClaim or not) until reset + grace — past the hard
+    // TTL too, because a 5h quota window outlives the 2h default — as long as
+    // the hold ends within the 6h max from pause start.
+    const resetState = opts.getProviderResetState?.(task);
+    if (
+      resetState?.kind === 'known'
+      && knownProviderResetHoldApplies({
+        resetsAtMs: resetState.resetsAtMs,
+        nowMs,
+        effectivePauseStartMs: effectiveStart,
+      })
+    ) {
+      skips.skipped_awaiting_provider_reset += 1;
+      outcomes.push({
+        taskId: task.id,
+        outcome: 'skipped_awaiting_provider_reset',
+        pausedForMs,
+      });
+      continue;
+    }
+
+    // #3562: an unresolvable reset is "unknown", not "nothing pending" — do
+    // not let the soft capacity bound cut it off. The hard TTL still frees the
+    // slot (#2423: a missing reset must not hold it forever).
+    if (resetState?.kind === 'unresolved' && pausedForMs < hardTtlMs) {
+      skips.skipped_provider_reset_unresolved += 1;
+      outcomes.push({
+        taskId: task.id,
+        outcome: 'skipped_provider_reset_unresolved',
         pausedForMs,
       });
       continue;
