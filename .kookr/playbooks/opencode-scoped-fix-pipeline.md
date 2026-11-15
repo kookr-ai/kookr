@@ -79,12 +79,12 @@ Give every finding exactly one severity:
 - LOW: a test whose title, name or comment promises something other than what it checks, while the behaviour itself is tested; a misleading comment or doc line; a minor clarity problem in the changed code.
 A test that does not test what it claims is MEDIUM when that leaves changed behaviour untested, otherwise LOW. Do not report style or naming preferences or speculative future concerns.
 
-Start each finding title with its severity, for example "HIGH: ...". End REVIEW.md, after your list of things checked and found fine, with exactly one last line in this form, where n is the total number of findings and n = h + m + l:
+Start each finding title with its severity, as a heading line in exactly this shape: "### HIGH: <title>" (or MEDIUM, or LOW). End REVIEW.md, after your list of things checked and found fine, with exactly one last line in this form, where n is the total number of findings and n = h + m + l:
 FINDINGS: <n> HIGH:<h> MEDIUM:<m> LOW:<l>
 With no findings the last line is: FINDINGS: 0 HIGH:0 MEDIUM:0 LOW:0
 ```
 
-Parse the last non-empty line of REVIEW.md, fail-closed: blocking findings = HIGH + MEDIUM, and a missing, malformed or inconsistent line means findings are present and all of them are blocking (treat every one as HIGH), never LOW-only. Inconsistent = the counts do not add up to `<n>`, or they differ from the severity prefixes of the finding titles (count the titles starting `HIGH:`, `MEDIUM:`, `LOW:`; a finding title without one of these prefixes also makes the line inconsistent). Copy REVIEW.md to `ocpipe-{{issueNumber}}/REVIEW-r<round>.md` (the Accounting comment may need its LOW findings), then remove the review checkout.
+Parse the last non-empty line of REVIEW.md, fail-closed: blocking findings = HIGH + MEDIUM, and a missing, malformed or inconsistent line means findings are present and all of them are blocking (treat every one as HIGH), never LOW-only. Inconsistent = the counts do not add up to `<n>`, or they differ from the severity prefixes of the finding titles. To count the prefixes, take each finding's title, ignore any leading `#` heading marks, list numbering such as `1.` and `**` bold markers, and read its first word (`HIGH`, `MEDIUM` or `LOW`, followed by `:`, `-` or `—`); a finding title without one of these prefixes also makes the line inconsistent. Copy REVIEW.md to `ocpipe-{{issueNumber}}/REVIEW-r<round>.md` (the Accounting comment may need its LOW findings), then remove the review checkout.
 
 ## Stage 3 — Fix rounds (max 2)
 
