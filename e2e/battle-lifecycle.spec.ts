@@ -18,6 +18,53 @@ import {
   waitForAgentCount,
   waitForFindingCount,
 } from './battle-helpers.js';
+import type { APIRequestContext, Page } from '@playwright/test';
+
+/**
+ * Since #3513 the server refuses a typed reply while the agent sits on a
+ * permission prompt (the reply's Enter would pick the highlighted option), so
+ * a permission finding is answered with its Allow/Deny buttons. The buttons
+ * are built from the prompt on the agent's screen, which the fake terminal
+ * shows only once this pane text is set before the PermissionRequest event.
+ */
+function permissionPane(command: string): string {
+  return [
+    `● Bash(${command})`,
+    '  ⎿  Running…',
+    '',
+    '─────────────────────────────────────────────────────',
+    ' Bash command',
+    '',
+    `   ${command}`,
+    '',
+    ' Do you want to proceed?',
+    ' ❯ 1. Yes',
+    '   2. No',
+    '',
+    ' Esc to cancel · Tab to amend · ctrl+e to explain',
+    '',
+  ].join('\n');
+}
+
+async function injectAnswerablePermission(request: APIRequestContext, tmuxName: string, command: string) {
+  const pane = await request.post('/api/test/set-pane-content', {
+    data: { tmuxName, content: permissionPane(command) },
+  });
+  expect(pane.ok()).toBe(true);
+  await injectPermissionEvent(request, tmuxName, undefined, command);
+}
+
+/** Click Allow on the selected permission finding and check the key reached its terminal. */
+async function allowSelectedPermission(page: Page, request: APIRequestContext, tmuxName: string) {
+  // The finding card carries the same buttons; use the detail panel's, which also moves to the next finding.
+  const allow = page.getByTestId('detail-panel').locator('.btn-quick-action.permission-action').first();
+  await expect(allow).toContainText('Allow');
+  await allow.click();
+  await expect.poll(async () => {
+    const response = await request.get('/api/test/last-keystroke');
+    return (await response.json()).lastKeystroke;
+  }).toEqual({ name: tmuxName, key: '1' });
+}
 
 // ---------------------------------------------------------------------------
 // Suite 11: Stop agent
@@ -237,7 +284,10 @@ test.describe('Full integration scenarios', () => {
     await expect(page.locator('.logo')).toHaveText('KOOKR');
   });
 
-  test('complete multi-agent triage workflow', async ({ page, request }) => {
+  test('complete multi-agent triage workflow', async ({ page, request }, testInfo) => {
+    // Three UI launches and two answers took about 13 s on a loaded host,
+    // too close to the 15 s default.
+    testInfo.setTimeout(30_000);
     // Launch 3 agents
     await launchViaUI(page, 'Auth fix', '/test/auth');
     const tmux1 = await getTmuxNameForPrompt(request, 'Auth fix');
@@ -256,7 +306,7 @@ test.describe('Full integration scenarios', () => {
     await injectSessionStart(request, tmux3);
 
     // Agent 1: permission (warning), Agent 2: needs_input (info), Agent 3: healthy
-    await injectPermissionEvent(request, tmux1);
+    await injectAnswerablePermission(request, tmux1, 'npm install');
     await injectStopEvent(request, tmux2);
     await injectToolUse(request, tmux3);
     // Publish the seeded projects before navigation selects their drawers.
@@ -275,10 +325,8 @@ test.describe('Full integration scenarios', () => {
     await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
     await expect(page.locator('.detail-split-left .activity-panel')).toBeVisible();
 
-    // Respond to permission agent
-    await page.locator('.response-row textarea').fill('Approve the permission');
-    await page.locator('[data-testid="send-next-button"]').click();
-    await expect(page.locator('.sent-overlay')).toBeVisible();
+    // Answer the permission prompt; like Send & Next, this moves to the next finding.
+    await allowSelectedPermission(page, request, tmux1);
 
     // After advance, should be on needs_input agent
     await expect(page.locator('.sent-overlay')).not.toBeVisible({ timeout: 3000 });
@@ -342,7 +390,7 @@ test.describe('Full integration scenarios', () => {
       if (i % 2 === 0) {
         await injectStopEvent(request, tmux, `I need your help for rapid task ${i}.`);
       } else {
-        await injectPermissionEvent(request, tmux, undefined, `npm install rapid-${i}`);
+        await injectAnswerablePermission(request, tmux, `npm install rapid-${i}`);
       }
       await expect(page.locator('.finding-card')).toHaveCount(i + 1, { timeout: 10000 });
     }
@@ -365,14 +413,19 @@ test.describe('Full integration scenarios', () => {
       const prompt = (await selected.textContent())!;
       expect(answered.has(prompt)).toBe(false);
       const tmux = agents.get(prompt)!;
-      const reply = `Fix ${i}`;
-      await page.locator('.response-row textarea').fill(reply);
-      await page.getByTestId('send-next-button').click();
-      await expect.poll(async () => {
-        const response = await request.get(`/api/test/keys-received/${encodeURIComponent(tmux)}`);
-        const data = await response.json();
-        return data.keysReceived as string[];
-      }).toContain(reply);
+      // Odd-numbered tasks wait on a permission prompt, the others on a reply.
+      if (Number(prompt.slice('Rapid '.length)) % 2 === 1) {
+        await allowSelectedPermission(page, request, tmux);
+      } else {
+        const reply = `Fix ${i}`;
+        await page.locator('.response-row textarea').fill(reply);
+        await page.getByTestId('send-next-button').click();
+        await expect.poll(async () => {
+          const response = await request.get(`/api/test/keys-received/${encodeURIComponent(tmux)}`);
+          const data = await response.json();
+          return data.keysReceived as string[];
+        }).toContain(reply);
+      }
       answered.add(prompt);
     }
     expect(answered.size).toBe(4);

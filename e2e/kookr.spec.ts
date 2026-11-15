@@ -332,8 +332,7 @@ test.describe('Kookr E2E — nominal paths', () => {
   });
 
   test('rename task via double-click in detail panel heading', async ({ page, request }) => {
-    // Leave room for the heading beside its actions when selecting a task
-    // opens the project drawer as well as the findings and detail panels.
+    // Leave room for the heading beside its actions next to the findings panel.
     await page.setViewportSize({ width: 1600, height: 900 });
     await launchViaUI(page, 'Migrate database schema', '/test/project');
     const tmuxName = await getLatestTmuxName(request);
@@ -341,11 +340,10 @@ test.describe('Kookr E2E — nominal paths', () => {
     await injectSessionStart(request, tmuxName);
     await injectStopEvent(request, tmuxName);
 
-    // Wait for project identity before selection so its drawer opens now.
-    await expect(page.getByTestId('project-icon-local/project')).toBeVisible();
-    // Select the finding to show detail panel
+    // Select the finding to show detail panel. From All Projects this leaves
+    // the project drawer closed (#3446); the rename does not need it.
     await page.locator('.finding-card').click();
-    await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
+    await expect(page.getByTestId('detail-panel')).toBeVisible();
 
     // Double-click heading to rename
     await expect(page.locator('.detail-header h2')).toBeVisible();

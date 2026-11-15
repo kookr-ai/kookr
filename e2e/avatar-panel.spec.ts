@@ -9,9 +9,10 @@ import { AVATAR_PANEL_KEY } from '../src/frontend/store/avatar-panel-prefs.js';
  * (no 3D renderer, no avatar file is requested), and once switched on it can
  * be minimised and reopened and remembers its state across reloads.
  *
- * The 3D view itself is not asserted here: headless browsers may have no
- * WebGL, in which case the panel shows a short message instead of the
- * character. The window, its controls and the downloads are what matter.
+ * The 3D view itself is not asserted here: the tests that open the panel
+ * switch WebGL off (`withoutWebGL`), so it shows the short message a browser
+ * without WebGL gets instead of the character. The window, its controls and
+ * the downloads are what matter.
  */
 
 const AVATAR_ASSET = /vendor-three|AvatarDock|\.glb(\?|$)/;
@@ -22,6 +23,22 @@ function trackAvatarRequests(page: Page): string[] {
     if (AVATAR_ASSET.test(request.url())) seen.push(request.url());
   });
   return seen;
+}
+
+/**
+ * Make WebGL unavailable to the page, so the panel shows its no-WebGL message
+ * instead of the 3D view. Headless Chromium renders WebGL in software, and
+ * building the scene blocks the page for several seconds on every load, which
+ * pushed tests about the window, not the 3D view, past their timeout (#3662).
+ */
+async function withoutWebGL(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, type: string, ...rest: unknown[]) {
+      if (/webgl/i.test(type)) return null;
+      return (getContext as (...args: unknown[]) => RenderingContext | null).call(this, type, ...rest);
+    } as typeof getContext;
+  });
 }
 
 async function openSettings(page: Page): Promise<void> {
@@ -46,6 +63,8 @@ test.describe('avatar panel (optional)', () => {
   });
 
   test('switching it on in Settings shows the window and only then downloads it', async ({ page }) => {
+    // The 3D renderer chunk is still fetched without WebGL; only drawing is skipped.
+    await withoutWebGL(page);
     const requests = trackAvatarRequests(page);
     await page.goto('/');
     await expect(page.locator('.app')).toBeVisible();
@@ -77,6 +96,7 @@ test.describe('avatar panel (optional)', () => {
   });
 
   test('minimises to a bubble, reopens, and remembers both across a reload', async ({ page }) => {
+    await withoutWebGL(page);
     await page.addInitScript((key) => {
       if (window.localStorage.getItem(key) === null) {
         window.localStorage.setItem(key, JSON.stringify({ enabled: true, minimized: false, position: null }));
@@ -114,6 +134,7 @@ test.describe('avatar panel (optional)', () => {
   });
 
   test('can be moved to another corner without dragging, and stays there after a reload', async ({ page }) => {
+    await withoutWebGL(page);
     await page.addInitScript((key) => {
       if (window.localStorage.getItem(key) === null) {
         window.localStorage.setItem(key, JSON.stringify({ enabled: true, minimized: false, position: null }));
@@ -207,6 +228,7 @@ test.describe('avatar panel: hearing a message again', () => {
     speakRequests: () => number;
     setTabHidden: (hidden: boolean) => Promise<void>;
   }> {
+    await withoutWebGL(page);
     await page.addInitScript((key) => {
       window.localStorage.setItem(key, JSON.stringify({ enabled: true, minimized: false, position: null }));
       // Lets a test put the tab "in the background" (simulated: only what the page reads is changed, the real tab

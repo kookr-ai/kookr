@@ -1,6 +1,22 @@
 import { test, expect } from './fixtures.js';
+import type { Page } from '@playwright/test';
 
 const DRAFT_KEY = 'kookr:launchDialogDraft';
+const DICTATION_TAB_KEY = 'kookr:dictationTab:v1';
+
+/**
+ * Read the stored draft the way the dialog does: since #3375 a draft that
+ * carries a dictation id is kept per browser tab, under
+ * `kookr:launchDialogDraft:<tab id>`, and the bare key is only the fallback.
+ */
+function readStoredDraft(page: Page): Promise<Record<string, unknown> | null> {
+  return page.evaluate(({ draftKey, tabKey }) => {
+    const tabId = window.sessionStorage.getItem(tabKey);
+    const raw = (tabId ? window.localStorage.getItem(`${draftKey}:${tabId}`) : null)
+      ?? window.localStorage.getItem(draftKey);
+    return raw ? JSON.parse(raw) : null;
+  }, { draftKey: DRAFT_KEY, tabKey: DICTATION_TAB_KEY });
+}
 
 test.describe('Launch dialog dismiss safety', () => {
   test('clicking the backdrop overlay does not close the dialog', async ({ page }) => {
@@ -62,19 +78,16 @@ test.describe('Launch dialog dismiss safety', () => {
     await expect(page.locator('.draft-restored-banner')).toBeVisible();
     await expect(page.locator('.draft-restored-banner')).toContainText('Restored your last draft');
     await expect(page.locator('.dialog textarea')).toHaveValue(TEXT);
-    const restoredDictationId = await page.evaluate((key) => (
-      JSON.parse(window.localStorage.getItem(key)!).dictationId
-    ), DRAFT_KEY);
+    const restoredDictationId = (await readStoredDraft(page))?.dictationId;
+    expect(restoredDictationId).toEqual(expect.any(String));
 
     // Discard clears typed content and creates a new dictation recovery identifier.
     await page.locator('.draft-restored-banner .link-button').click();
     await expect(page.locator('.draft-restored-banner')).not.toBeVisible();
     await expect(page.locator('.dialog textarea')).toHaveValue('');
-    const emptyDraft = await page.evaluate((key) => (
-      JSON.parse(window.localStorage.getItem(key)!)
-    ), DRAFT_KEY);
+    const emptyDraft = await readStoredDraft(page);
     expect(emptyDraft).toMatchObject({ prompt: '', criteria: '', dictationId: expect.any(String) });
-    expect(emptyDraft.dictationId).not.toBe(restoredDictationId);
+    expect(emptyDraft?.dictationId).not.toBe(restoredDictationId);
 
     await page.keyboard.press('Escape');
     await expect(page.locator('.dialog')).not.toBeVisible();
