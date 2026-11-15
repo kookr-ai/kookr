@@ -666,6 +666,7 @@ describe('--apply safe', () => {
     expect(lines.find((l) => l.kind === 'worktree').command).not.toMatch(/--force/);
     // git worktree remove runs its own status check; a hook must not be able to answer it.
     expect(lines.find((l) => l.kind === 'worktree').command).toContain('-c core.fsmonitor=false');
+    expect(readAudit().find((l) => l.phase === 'intent' && l.kind === 'worktree').command).toContain('-c core.fsmonitor=false');
     expect(res.freedByKind.worktree).toBeGreaterThan(0);
   });
 

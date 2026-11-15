@@ -62,7 +62,8 @@ const PRUNE_FLAGS = [
  * `git worktree remove` deletes ALL git-ignored files, so a worktree is SAFE
  * only if every ignored entry is one of:
  *  - a `node_modules/` directory with a `package.json` AND a lockfile in its
- *    parent directory and no nested `.git` inside it (checked by the caller);
+ *    parent directory, no nested `.git` inside it and no uncommitted
+ *    `pnpm patch` edits (checked by the caller);
  *  - a tool-owned cache whose name never holds user data (listed below).
  * Everything else, notably `out/`, `build/`, `dist/`, `target/`, `.cache/`,
  * `.venv/`, `coverage/` (they routinely hold checkpoints, results or
@@ -1153,7 +1154,6 @@ async function execute(item, log, opts, deps) {
     }
   } else if (item.kind === 'dependencies') {
     if (basename(item.path) !== 'node_modules' || lstatSync(item.path).isSymbolicLink()) throw new Error('refusing: not a plain node_modules directory');
-    if (hasPnpmPatches(item.path)) throw new Error(`refusing: ${PNPM_PATCHES}/ holds uncommitted pnpm patch edits`);
     log.command = `rm -rf ${item.path}`;
     deps.removeDir(item.path);
   } else if (item.kind === 'tool-cache' || item.kind === 'kookr-data') {
