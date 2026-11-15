@@ -66,8 +66,9 @@ accounting rows after dogfood (n is small: signal only, not a decision).
 * Rounds: max 2 fix rounds. Exhausted with HIGH or MEDIUM findings -> post
   summary, `kookr issue release`, label `opencode-pipeline-failed`, never
   merge. Exhausted with only LOW findings -> stage 4 still runs on the final
-  head and decides: `block` = the same failure exit, `pass` = ready-for-merge
-  with the LOW findings posted on the PR (#3581). Preflight
+  head and decides: `block` = the same failure exit, `pass` = stage 5 as
+  usual (merge when `mergeEnabled`, else ready-for-merge), with the LOW
+  findings posted on the PR (#3581). Preflight
   refuses relabelled-failed issues until an operator removes the label.
 * Time: each spawn uses `--wait=<seconds>`; total wall cap 2 h; total cap
   `usdCap` (default $3) enforced from the state file before each spawn.
@@ -89,7 +90,8 @@ accounting rows after dogfood (n is small: signal only, not a decision).
 
 Task `tokenUsage` (incl. `costUsd`, from the opencode usage scanner) read
 via the task API, stored in the state file, posted once as a PR comment table
-(stage, task, wall, tokens, usd, verdict). Derived: cost per merged PR.
+(stage, task, wall, tokens, usd, verdict), plus any unfixed LOW findings
+when the gate passed with them (#3581). Derived: cost per merged PR.
 
 ## 6. Safety
 
@@ -105,7 +107,7 @@ via the task API, stored in the state file, posted once as a PR comment table
 
 1. **Slice A**: playbook, stages 0-2, no merge (stops after cheap review),
    plus a wording **contract test** (state-file after every transition,
-   never-merge on exhausted rounds, head re-check, mandatory stage 4,
+   never-merge on exhausted rounds with HIGH/MEDIUM findings, head re-check, mandatory stage 4,
    untrusted-text framing).
 2. **Slice B**: stages 3-4 (fix round, gate review).
 3. **Slice C**: stage 5 behind an explicit playbook parameter `mergeEnabled=true`.
