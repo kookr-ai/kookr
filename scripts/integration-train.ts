@@ -57,7 +57,9 @@ function parseArgs(argv: string[]): Options {
     intervalSec: 60,
     worktree: null,
     verifyCmd: 'pnpm verify',
-    workers: Math.max(4, cpus().length - 4),
+    // Measured under load on a 16-CPU host (issue #3794): beyond 8 workers the
+    // unit suite got no faster and used more CPU, which slows every other task.
+    workers: Math.min(8, Math.max(4, cpus().length - 4)),
   };
   for (let i = 1; i < argv.length; i++) {
     const flag = argv[i];
