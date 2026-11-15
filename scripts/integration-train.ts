@@ -444,7 +444,12 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     },
   };
 
-  return { git, verify, github, spawner, notifier, state, log, now: () => new Date() };
+  // The plugin version bump (issue #3793) is the only file the train writes itself.
+  const writeFile = async (path: string, content: string): Promise<void> => {
+    writeFileSync(join(wt, path), content);
+  };
+
+  return { git, writeFile, verify, github, spawner, notifier, state, log, now: () => new Date() };
 }
 
 async function cycleOnce(opts: Options): Promise<number> {

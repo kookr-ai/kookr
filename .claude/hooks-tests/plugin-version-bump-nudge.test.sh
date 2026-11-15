@@ -25,6 +25,7 @@ FAILURES=0
 # origin/main = no bump; "0.2.0" = bumped). Echoes the repo dir.
 make_repo() {
   local working_version="$1"
+  local integration="${2:-}"
   local TMPDIR
   TMPDIR=$(mktemp -d -t plugin-version-bump-nudge.XXXXXX)
   git init -q -b main "$TMPDIR"
@@ -35,6 +36,10 @@ make_repo() {
   printf '{\n  "name": "kookr-toolkit",\n  "version": "0.1.0"\n}\n' \
     > "$TMPDIR/plugin/.claude-plugin/plugin.json"
   printf '# Demo\n\nbody\n' > "$TMPDIR/plugin/playbooks/demo.md"
+  if [ -n "$integration" ]; then
+    mkdir -p "$TMPDIR/.kookr"
+    printf '{"integrationBranch":"%s"}\n' "$integration" > "$TMPDIR/.kookr/delivery-gate.json"
+  fi
   git -C "$TMPDIR" add -A
   git -C "$TMPDIR" commit -q -m base
   git -C "$TMPDIR" update-ref refs/remotes/origin/main HEAD
@@ -91,6 +96,13 @@ rm -rf "$REPO"
 REPO=$(make_repo "0.1.0")
 expect_silent "editing a non-plugin file does not nudge" \
   "$(run_hook "$REPO/README.md")"
+rm -rf "$REPO"
+
+# 5. integration branch configured on origin/main -> silent: the integration
+#    train bumps the version (issue #3793).
+REPO=$(make_repo "0.1.0" "staging")
+expect_silent "no nudge when the integration train bumps the version" \
+  "$(run_hook "$REPO/plugin/playbooks/demo.md")"
 rm -rf "$REPO"
 
 if [ "$FAILURES" -ne 0 ]; then

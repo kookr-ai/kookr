@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Regression test: ANY change to bundled plugin content (skills, agents, hooks,
-# playbooks, commands, README, ...) must be accompanied by a bump to the
-# plugin.json#version LINE. This guards the recurring failure where plugin
-# content ships without a version bump, so installed-plugin users never see it.
+# Regression test: without an integration branch, ANY change to bundled plugin
+# content (skills, agents, hooks, playbooks, commands, README, ...) must be
+# accompanied by a bump to the plugin.json#version LINE. This guards the
+# recurring failure where plugin content ships without a version bump, so
+# installed-plugin users never see it. With an integration branch configured in
+# .kookr/delivery-gate.json the integration train bumps the version instead
+# (issue #3793), and the push must not demand it.
 #
 # Run: bash .claude/hooks-tests/pre-push-plugin-version-bump.test.sh
 # Or:  pnpm test:hooks
@@ -26,6 +29,7 @@ FAILURES=0
 # is the comma-separated list of pnpm lanes the hook ran (install excluded).
 run_case() {
   local mutate_plugin_json="$1"
+  local integration="${2:-}"
   local TMPDIR
   TMPDIR=$(mktemp -d -t pre-push-plugin-version-bump.XXXXXX)
 
@@ -38,6 +42,10 @@ run_case() {
   printf '{\n  "name": "kookr-toolkit",\n  "version": "0.1.0"\n}\n' \
     > "$TMPDIR/plugin/.claude-plugin/plugin.json"
   printf '# Demo playbook\n\noriginal body\n' > "$TMPDIR/plugin/playbooks/demo.md"
+  if [ -n "$integration" ]; then
+    mkdir -p "$TMPDIR/.kookr"
+    printf '{"integrationBranch":"%s"}\n' "$integration" > "$TMPDIR/.kookr/delivery-gate.json"
+  fi
   git -C "$TMPDIR" add -A
   git -C "$TMPDIR" commit -q -m "base"
   git -C "$TMPDIR" update-ref refs/remotes/origin/main HEAD
@@ -126,6 +134,33 @@ elif ! printf '%s\n' "$LANES" | tr ',' '\n' | grep -qx 'test'; then
   FAILURES=$((FAILURES + 1))
 else
   printf 'PASS: plugin change with version bump is allowed\n'
+fi
+
+# Case 4: integration branch configured on origin/main -> the train bumps the
+# version, so an unbumped plugin change is allowed (issue #3793).
+RESULT=$(run_case "none" "staging")
+STATUS="${RESULT%%	*}"
+REST="${RESULT#*	}"
+LANES="${REST%%	*}"
+OUT="${REST#*	}"
+if [ "$STATUS" -ne 0 ]; then
+  printf 'FAIL: unbumped plugin change was rejected although the train bumps the version\n%s\n' "$OUT" >&2
+  FAILURES=$((FAILURES + 1))
+elif printf '%s' "$OUT" | grep -q 'without bumping plugin.json#version'; then
+  printf 'FAIL: the version-bump rule fired with an integration branch configured\n%s\n' "$OUT" >&2
+  FAILURES=$((FAILURES + 1))
+else
+  printf 'PASS: with an integration branch, an unbumped plugin change is allowed\n'
+fi
+
+# Case 5: a delivery-gate file without an integration branch keeps the rule.
+RESULT=$(run_case "none" "")
+STATUS="${RESULT%%	*}"
+if [ "$STATUS" -eq 0 ]; then
+  printf 'FAIL: plugin change without version bump was accepted with no integration branch\n' >&2
+  FAILURES=$((FAILURES + 1))
+else
+  printf 'PASS: without an integration branch the bump is still required\n'
 fi
 
 if [ "$FAILURES" -ne 0 ]; then

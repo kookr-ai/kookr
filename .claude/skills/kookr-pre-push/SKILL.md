@@ -33,7 +33,7 @@ Check these before you push: each one is cheaper to satisfy up front than to lea
    - no hardcoded absolute home path (`/home/<user>/git/kookr`) under `plugin/`;
    - `hooks/skill-placement-gate.sh`: `.claude/skills/` and `.claude/agents/` names start with `kookr-`, `plugin/` skill and agent names do not, no name collides between `.claude/` and `plugin/`, and every `subagent_type` is qualified as `kookr-toolkit:<name>`;
    - no `commands/` name in both `.claude/commands/` and `plugin/commands/`;
-   - **any change under `plugin/` (other than `plugin.json` itself) needs a `"version"` value in `plugin/.claude-plugin/plugin.json` that differs from `origin/main`'s.** The hook only compares the two values. Two open PRs that bump to the same value merge without a conflict, so after a rebase make sure your version is still above the one on `origin/main`.
+   - **version bump in `plugin/.claude-plugin/plugin.json`: not in your pull request while an integration branch is configured.** With `.kookr/delivery-gate.json` on `origin/main` naming one (as now), the integration train commits the bump when it promotes plugin changes (issue #3793), and the hook does not ask for it. Without an integration branch, any change under `plugin/` (other than `plugin.json` itself) needs a `"version"` value that differs from `origin/main`'s; the hook only compares the two values.
 6. **Shell portability** (`scripts/check-shell-portability.sh`) on changed shell scripts, hooks, and files that spawn subprocesses. Skipped for docs-only diffs or with `SKIP_PORTABILITY_CHECK=1`.
 7. `pnpm build:server` (server type-check). Skipped for docs-only diffs.
 8. `pnpm check:e2e` (E2E type-check). Skipped for docs-only diffs.
