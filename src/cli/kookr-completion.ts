@@ -72,6 +72,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--idempotency-key',
       '--playbook',
       '--playbook-scope',
+      '--param',
       '--dry-run',
       '--json',
       '-h',

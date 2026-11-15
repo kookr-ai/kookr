@@ -138,8 +138,8 @@ function isTruthyEnv(value) {
  * only sound window.
  *
  * SCOPE — read before relying on this: the key hashes the prompt, cwd, criteria,
- * agent, model policy, playbook path, and playbook scope. It does not hash playbook file
- * contents. It only replays retries that re-issue the *identical* spawn. A
+ * agent, model policy, playbook path, playbook scope, and playbook parameter
+ * values (--param). It does not hash playbook file contents. It only replays retries that re-issue the *identical* spawn. A
  * caller whose retry regenerates the prompt
  * (an embedded random branch suffix, a timestamp, etc.) computes a *different*
  * key and will NOT replay — for those, pass an explicit `--idempotency-key`
@@ -149,10 +149,10 @@ function isTruthyEnv(value) {
  * opt-in convenience for stable-prompt spawns, not a general orphan cure for
  * entropy-prompt orchestrators.
  *
- * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null, effort?: string|null, model?: string|null, modelTier?: string|null, profile?: string|null, playbook?: string|null, playbookScope?: string|null }} input
+ * @param {{ prompt: string|null, cwd: string, criteria?: string|null, agent?: string|null, effort?: string|null, model?: string|null, modelTier?: string|null, profile?: string|null, playbook?: string|null, playbookScope?: string|null, playbookParams?: Record<string, string>|null }} input
  * @returns {string} an `auto-<16-hex>` key, always ≤ MAX_IDEMPOTENCY_KEY_LENGTH.
  */
-function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, effort = null, model = null, modelTier = null, profile = null, playbook = null, playbookScope = null }) {
+function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, effort = null, model = null, modelTier = null, profile = null, playbook = null, playbookScope = null, playbookParams = null }) {
   // JSON.stringify gives unambiguous, printable field separation (no control
   // chars in the source) so distinct field splits can't collide.
   const hasModelPolicy = effort !== null || model !== null || modelTier !== null;
@@ -166,6 +166,12 @@ function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, 
     ...(hasModelPolicy ? ['model-policy', effort ?? '', model ?? '', modelTier ?? ''] : []),
     ...(profile ? ['profile', profile] : []),
     ...(playbook ? [playbook, playbookScope ?? 'project'] : []),
+    // #3644: two spawns that differ only in --param are different launches.
+    // Appended only when present so keys without --param stay unchanged.
+    // Sorted so --param order does not change the key.
+    ...(playbookParams && Object.keys(playbookParams).length > 0
+      ? ['params', Object.entries(playbookParams).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))]
+      : []),
   ]);
   // 64-bit digest — collision-negligible at any realistic spawn rate.
   const digest = createHash('sha256').update(identity, 'utf8').digest('hex').slice(0, 16);
@@ -237,7 +243,8 @@ Options:
                            between attempts (e.g. an embedded random suffix).
       --auto-idempotency   When no --idempotency-key is given, derive one
                            (auto-<hash>) from prompt, cwd, criteria, agent,
-                           model policy, and any playbook path/scope. A
+                           model policy, and any playbook path/scope/--param
+                           values. A
                            client-timeout retry replays only when those inputs
                            are unchanged (bounded by the
                            server's 24h idempotency TTL). If any input can change
@@ -259,16 +266,22 @@ Options:
                            (AskUserQuestion and equivalents) so a blocking call
                            fails fast and flags the task operator-needed instead
                            of hanging with nobody to answer.
-      --playbook <path>    Wrap the resolved prompt with a playbook before
-                           launch. The server reads delivery policy from the
-                           metadata block at the top of that playbook; the
-                           prompt is supplied as its required \`prompt\`
-                           parameter. Requires --idempotency-key or
-                           --auto-idempotency.
+      --playbook <path>    Launch a playbook. The server reads delivery policy
+                           from the metadata block at the top of that
+                           playbook. A prompt, when given, is supplied as the
+                           playbook's required \`prompt\` parameter; a playbook
+                           without one (e.g. implement-github-issue.md) is
+                           launched with no prompt and its --param values.
+                           Requires --idempotency-key or --auto-idempotency.
       --playbook-scope <scope>
                            Select the playbook collection to search: project,
                            user, or installed plugin (default: project).
                            Requires --playbook.
+      --param <key=value>  Set a playbook parameter; repeat for several
+                           (e.g. --param issueSelector=123). Splits on the
+                           first '='. The server rejects keys the playbook
+                           does not declare and names any missing required
+                           parameter. Requires --playbook.
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
       --claim-issue <n>    Atomically claim GitHub issue <n> as part of task
                            creation (RFC issue-ownership-lock PR 1b). When the
@@ -352,6 +365,8 @@ function parseArgs(argv) {
     unattended: false,
     playbook: null,
     playbookScope: null,
+    // #3644: ordered `--param key=value` pairs, folded into an object below.
+    playbookParams: [],
     claimIssue: null,
     claimRepo: null,
     dryRun: false,
@@ -440,6 +455,10 @@ function parseArgs(argv) {
       out.playbookScope = eat();
     } else if (tok.startsWith('--playbook-scope=')) {
       out.playbookScope = tok.slice('--playbook-scope='.length);
+    } else if (tok === '--param') {
+      out.playbookParams.push(eat());
+    } else if (tok.startsWith('--param=')) {
+      out.playbookParams.push(tok.slice('--param='.length));
     } else if (tok === '-f' || tok === '--prompt-file') {
       out.promptFile = eat();
     } else if (tok === '--claim-issue') {
@@ -559,7 +578,35 @@ function parseArgs(argv) {
       throw new UsageError(`--playbook-scope must be project, user, or plugin (got: ${out.playbookScope})`);
     }
   }
+  out.playbookParams = parsePlaybookParams(out.playbookParams, out.playbook);
   return out;
+}
+
+/**
+ * #3644: fold repeated `--param key=value` tokens into the playbook's
+ * parameterValues. Splits on the FIRST `=`, so a value may itself contain `=`.
+ * `prompt` is reserved: a prompt-wrapper playbook takes the prompt from the
+ * positional argument, --prompt-file, or stdin.
+ * @param {string[]} raw
+ * @param {string|null} playbook
+ * @returns {Record<string, string>|null} null when no --param was given.
+ */
+function parsePlaybookParams(raw, playbook) {
+  if (raw.length === 0) return null;
+  if (playbook === null) throw new UsageError('--param requires --playbook');
+  const params = {};
+  for (const pair of raw) {
+    const eq = pair.indexOf('=');
+    if (eq === -1) throw new UsageError(`--param must be key=value (got: ${pair})`);
+    const key = pair.slice(0, eq).trim();
+    if (key === '') throw new UsageError(`--param requires a non-empty key (got: ${pair})`);
+    if (key === 'prompt') {
+      throw new UsageError('--param prompt=... is not accepted; pass the prompt as an argument, with --prompt-file, or on stdin');
+    }
+    if (Object.hasOwn(params, key)) throw new UsageError(`--param ${key} given more than once`);
+    params[key] = pair.slice(eq + 1);
+  }
+  return params;
 }
 
 function parseWaitTimeoutSeconds(raw) {
@@ -646,16 +693,27 @@ function resolvePromptSource(args, stdin) {
 /**
  * Resolve the prompt from one of: --prompt-file, positional argv, piped stdin.
  * Exactly one source wins. Rejects empty prompts and prompts containing NULs.
+ *
+ * #3644: with --playbook the prompt is optional — a playbook without a
+ * `prompt` parameter is launched from its --param values alone. Then no source,
+ * or an empty stdin (agents often run with stdin closed), resolves to null and
+ * the server decides whether the playbook needs a prompt.
+ * @returns {Promise<string|null>}
  */
 async function resolvePrompt({ args, stdin, env }) {
   const maxBytes = parseMaxBytes(env.KOOKR_SPAWN_MAX_PROMPT_BYTES);
+  const promptOptional = args.playbook !== null;
   let raw;
+  let fromStdin = false;
   if (args.promptFile !== null) {
     raw = readPromptFile(args.promptFile, maxBytes);
   } else if (args.positional.length > 0) {
     raw = args.positional.join(' ');
   } else if (stdin && stdin.isTTY === false) {
     raw = await readStdin(stdin, maxBytes);
+    fromStdin = true;
+  } else if (promptOptional) {
+    return null;
   } else {
     throw new UsageError(
       'no prompt provided. Pass a positional argument, pipe stdin, or use --prompt-file.',
@@ -663,6 +721,7 @@ async function resolvePrompt({ args, stdin, env }) {
   }
   const trimmed = raw.replace(/\s+$/, '');
   if (trimmed.trim().length === 0) {
+    if (promptOptional && fromStdin) return null;
     throw new UsageError('prompt is empty, aborting');
   }
   if (trimmed.indexOf('\0') !== -1) {
@@ -1044,12 +1103,15 @@ function buildTaskPostBody({
   claimRepo = null,
   playbook = null,
   playbookScope = null,
+  playbookParams = null,
 }) {
-  const body = { prompt, cwd };
+  // #3644: a playbook launch may carry no prompt (see resolvePrompt).
+  const body = prompt === null ? { cwd } : { prompt, cwd };
   if (playbook) {
     body.playbook = {
       path: playbook,
       ...(playbookScope ? { scope: playbookScope } : {}),
+      ...(playbookParams ? { parameterValues: playbookParams } : {}),
     };
   }
   if (criteria) body.criteria = criteria;
@@ -1129,13 +1191,17 @@ async function renderDryRun({
   stdin,
   fetchTasksImpl = fetchTasks,
 }) {
-  const dedupeProbe = await findActiveDuplicate({
-    baseUrl,
-    prompt,
-    cwd: cwdAbs,
-    agentType: args.agent,
-    fetchTasksImpl,
-  });
+  // #3644: a promptless playbook launch has nothing to match on the client;
+  // the server still dedupes on the interpolated playbook prompt.
+  const dedupeProbe = prompt === null
+    ? { kind: 'none' }
+    : await findActiveDuplicate({
+        baseUrl,
+        prompt,
+        cwd: cwdAbs,
+        agentType: args.agent,
+        fetchTasksImpl,
+      });
 
   if (dedupeProbe.kind === 'error') {
     const message = `dry-run dedupe check failed: ${dedupeProbe.message}`;
@@ -1254,7 +1320,7 @@ function formatDryRunPreview({ baseUrl, cwdAbs, promptSource, body, matchingTask
   return lines.join('\n');
 }
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, modelTier = null, profile = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null, playbook = null, playbookScope = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, modelTier = null, profile = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null, playbook = null, playbookScope = null, playbookParams = null }) {
   const body = buildTaskPostBody({
     prompt,
     cwd,
@@ -1274,6 +1340,7 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
     claimRepo,
     playbook,
     playbookScope,
+    playbookParams,
   });
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
@@ -2296,6 +2363,7 @@ async function main({
       profile: args.profile,
       playbook: args.playbook,
       playbookScope: args.playbookScope ?? (args.playbook ? 'project' : null),
+      playbookParams: args.playbookParams,
     });
   }
 
@@ -2338,6 +2406,7 @@ async function main({
       idempotencyKey: effectiveIdempotencyKey,
       playbook: args.playbook,
       playbookScope: args.playbookScope,
+      playbookParams: args.playbookParams,
     });
     return renderDryRun({
       args,
@@ -2377,6 +2446,7 @@ async function main({
         idempotencyKey: effectiveIdempotencyKey,
         playbook: args.playbook,
         playbookScope: args.playbookScope,
+        playbookParams: args.playbookParams,
       },
       idempotencyKey: effectiveIdempotencyKey,
       sleep,
@@ -2580,6 +2650,7 @@ async function main({
           idempotencyKey: duplicateIdempotencyKey,
           playbook: args.playbook,
           playbookScope: args.playbookScope,
+          playbookParams: args.playbookParams,
         },
         idempotencyKey: duplicateIdempotencyKey,
         sleep,

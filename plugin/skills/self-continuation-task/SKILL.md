@@ -224,6 +224,25 @@ kookr spawn -C "$REPO_DIR" --prompt-file "$NEXT_PHASE_PROMPT_FILE" \
 prevents two chains with the same umbrella issue number from colliding in
 Kookr's shared idempotency ledger.
 
+When the successor re-runs a playbook that takes named parameters instead of a
+`prompt` (for example `implement-github-issue.md`), pass each parameter with
+`--param key=value` and give no prompt:
+
+```bash
+kookr spawn -C "$REPO_DIR" \
+  --playbook implement-github-issue.md --playbook-scope plugin \
+  --param issueSelector="$NEXT_ISSUE" --param repo="$REPO_KEY" \
+  --param selfContinuation=true \
+  --idempotency-key "chain:${REPO_KEY}:issue:${NEXT_ISSUE}" \
+  --parent-task-id "$KOOKR_TASK_ID" --unattended --json </dev/null
+```
+
+Kookr rejects a parameter name the playbook does not declare, and names any
+required parameter that is missing, so a typo fails the launch instead of
+silently running with the default. Put every parameter that tells two
+successors apart in the `--idempotency-key`; with `--auto-idempotency` the
+derived key already includes the `--param` values.
+
 For parent/child linkage, use whatever parent-task field the installed launcher
 or API documents. If the launcher cannot express parentage, keep the durable
 state sufficient for tracing the chain without transcript access.

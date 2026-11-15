@@ -140,6 +140,34 @@ describe('parseArgs', () => {
       .toThrow(UsageError);
   });
 
+  // #3644
+  it('folds repeated --param key=value pairs into playbook parameters', () => {
+    const p = parseArgs([
+      '--playbook', 'implement-github-issue.md',
+      '--param', 'issueSelector=123',
+      '--param=repo=octocat/hello-world',
+      '--param', 'note=a=b',
+      '--param', 'assignee=',
+    ]);
+    expect(p.playbookParams).toEqual({
+      issueSelector: '123',
+      repo: 'octocat/hello-world',
+      note: 'a=b',
+      assignee: '',
+    });
+    expect(parseArgs(['--playbook', 'phase.md', 'P1']).playbookParams).toBeNull();
+  });
+
+  it('rejects malformed, duplicate, reserved, or playbook-less --param', () => {
+    expect(() => parseArgs(['--param', 'issueSelector=1'])).toThrow(/--param requires --playbook/);
+    expect(() => parseArgs(['--playbook', 'x.md', '--param', 'issueSelector'])).toThrow(/key=value/);
+    expect(() => parseArgs(['--playbook', 'x.md', '--param', '=1'])).toThrow(/non-empty key/);
+    expect(() => parseArgs(['--playbook', 'x.md', '--param', 'prompt=hi'])).toThrow(/prompt/);
+    expect(() => parseArgs(['--playbook', 'x.md', '--param', 'a=1', '--param', 'a=2']))
+      .toThrow(/more than once/);
+    expect(() => parseArgs(['--playbook', 'x.md', '--param'])).toThrow(/requires a value/);
+  });
+
   it('parses --dedupe=<mode> and defaults to warn', () => {
     expect(parseArgs([]).dedupe).toBe('warn');
     expect(parseArgs(['--dedupe=skip']).dedupe).toBe('skip');
@@ -421,6 +449,21 @@ describe('deriveAutoIdempotencyKey', () => {
     })).not.toBe(ref);
   });
 
+  // #3644: two spawns that differ only in --param must not dedupe.
+  it('distinguishes playbook parameter values, ignoring --param order', () => {
+    const launch = { ...base, prompt: null, playbook: 'implement-github-issue.md', playbookScope: 'plugin' };
+    const ref = deriveAutoIdempotencyKey(launch);
+    const one = deriveAutoIdempotencyKey({ ...launch, playbookParams: { issueSelector: '1', repo: 'o/r' } });
+    const two = deriveAutoIdempotencyKey({ ...launch, playbookParams: { issueSelector: '2', repo: 'o/r' } });
+    expect(one).not.toBe(ref);
+    expect(two).not.toBe(one);
+    expect(deriveAutoIdempotencyKey({ ...launch, playbookParams: { repo: 'o/r', issueSelector: '1' } }))
+      .toBe(one);
+    // No --param keeps the key byte-identical to the pre-#3644 identity.
+    expect(deriveAutoIdempotencyKey({ ...launch, playbookParams: null })).toBe(ref);
+    expect(deriveAutoIdempotencyKey({ ...launch, playbookParams: {} })).toBe(ref);
+  });
+
   it('is insensitive to field-boundary reshuffling (JSON-delimited identity)', () => {
     // Without unambiguous delimiting, ["ab","c"] and ["a","bc"] would collide.
     const a = deriveAutoIdempotencyKey({ prompt: 'ab', cwd: 'c', criteria: null, agent: null });
@@ -592,6 +635,21 @@ describe('resolvePrompt', () => {
     await expect(
       resolvePrompt({ args, stdin: ttyStdin(), env: {} }),
     ).rejects.toThrow(/no prompt/);
+  });
+
+  // #3644: a playbook without a prompt parameter launches from --param alone.
+  it('resolves no prompt to null for a playbook launch (TTY or empty stdin)', async () => {
+    const args = parseArgs(['--playbook', 'implement-github-issue.md', '--param', 'issueSelector=1']);
+    await expect(resolvePrompt({ args, stdin: ttyStdin(), env: {} })).resolves.toBeNull();
+    await expect(resolvePrompt({ args, stdin: pipedStdin(''), env: {} })).resolves.toBeNull();
+    await expect(resolvePrompt({ args, stdin: pipedStdin('wrapped'), env: {} })).resolves.toBe('wrapped');
+  });
+
+  it('still rejects an empty --prompt-file for a playbook launch', async () => {
+    const path = join(tmpRoot, 'empty.md');
+    await writeFile(path, '  \n');
+    const args = parseArgs(['--playbook', 'phase.md', '--prompt-file', path]);
+    await expect(resolvePrompt({ args, stdin: ttyStdin(), env: {} })).rejects.toThrow(/empty/);
   });
 
   it('rejects empty prompt', async () => {
@@ -1081,6 +1139,35 @@ describe('postTask', () => {
       });
       expect(bodySeen).not.toHaveProperty('deliveryMode');
       expect(bodySeen).not.toHaveProperty('deliveryPolicy');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('sends --param values as playbook.parameterValues and omits a null prompt (#3644)', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 'issue-task' }) };
+    });
+    try {
+      await postTask({
+        baseUrl,
+        prompt: null,
+        cwd: '/tmp/x',
+        agent: null,
+        criteria: null,
+        playbook: 'implement-github-issue.md',
+        playbookScope: 'plugin',
+        playbookParams: { issueSelector: '123' },
+      });
+
+      expect(bodySeen).not.toHaveProperty('prompt');
+      expect(bodySeen.playbook).toEqual({
+        path: 'implement-github-issue.md',
+        scope: 'plugin',
+        parameterValues: { issueSelector: '123' },
+      });
     } finally {
       await closeServer(server);
     }
@@ -2141,6 +2228,118 @@ describe('main', () => {
         playbook: 'phase.md',
         playbookScope: 'plugin',
       }));
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  // #3644 acceptance: launch implement-github-issue.md with --param and no prompt.
+  it('launches a promptless playbook with --param values end to end', async () => {
+    let bodySeen: any = null;
+    let taskListReads = 0;
+    const { server, baseUrl } = await startFakeApi(
+      (_req, bodyText) => {
+        bodySeen = JSON.parse(bodyText);
+        return { status: 201, body: JSON.stringify({ id: 'issue-123', cwd: tmpCwd }) };
+      },
+      undefined,
+      () => {
+        taskListReads += 1;
+        return { status: 200, body: JSON.stringify([]) };
+      },
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: [
+          '--json',
+          '--auto-idempotency',
+          '--playbook', 'implement-github-issue.md',
+          '--playbook-scope', 'plugin',
+          '--param', 'issueSelector=123',
+          '--param', 'repo=octocat/hello-world',
+        ],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        // Agents run with stdin closed: an empty pipe must not abort the launch.
+        stdin: pipedStdin(''),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+
+      expect(codes).toEqual([EXIT_OK]);
+      expect(parseSingleJsonLog(logs)).toMatchObject({ ok: true, details: { taskId: 'issue-123' } });
+      expect(bodySeen).not.toHaveProperty('prompt');
+      expect(bodySeen).toMatchObject({
+        cwd: tmpCwd,
+        playbook: {
+          path: 'implement-github-issue.md',
+          scope: 'plugin',
+          parameterValues: { issueSelector: '123', repo: 'octocat/hello-world' },
+        },
+        idempotencyKey: deriveAutoIdempotencyKey({
+          prompt: null,
+          cwd: tmpCwd,
+          criteria: null,
+          agent: null,
+          playbook: 'implement-github-issue.md',
+          playbookScope: 'plugin',
+          playbookParams: { issueSelector: '123', repo: 'octocat/hello-world' },
+        }),
+      });
+      expect(taskListReads).toBe(0);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--dry-run previews promptless --param launches without a client dedupe probe (#3644)', async () => {
+    let posts = 0;
+    let taskListReads = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => {
+        posts += 1;
+        return { status: 201, body: JSON.stringify({ id: 'nope' }) };
+      },
+      undefined,
+      () => {
+        taskListReads += 1;
+        return { status: 200, body: JSON.stringify([]) };
+      },
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: [
+          '--dry-run', '--json',
+          '--playbook', 'implement-github-issue.md',
+          '--param', 'issueSelector=7',
+          '--idempotency-key', 'issue:7',
+        ],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+
+      expect(codes).toEqual([EXIT_OK]);
+      expect(posts).toBe(0);
+      expect(taskListReads).toBe(0);
+      const envelope = parseSingleJsonLog(logs);
+      expect(envelope.details.body).not.toHaveProperty('prompt');
+      expect(envelope.details.body.playbook).toEqual({
+        path: 'implement-github-issue.md',
+        parameterValues: { issueSelector: '7' },
+      });
     } finally {
       await closeServer(server);
     }

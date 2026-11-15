@@ -321,6 +321,7 @@ describe('bash completion behavior', () => {
         '--idempotency-key',
         '--playbook',
         '--playbook-scope',
+        '--param',
         '--dry-run',
       ]),
     );
@@ -741,6 +742,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
         '--idempotency-key',
         '--playbook',
         '--playbook-scope',
+        '--param',
         '--dry-run',
       ]),
     );
