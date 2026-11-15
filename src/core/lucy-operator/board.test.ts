@@ -233,7 +233,7 @@ describe('buildLucyBoard questions from tasks', () => {
     expect(board).toContain('Questions from tasks waiting for the operator: none.');
     expect(board).toContain('the operator answered "Postgres" in Kookr 1 minute ago');
     expect(board).toContain('it expired with no answer 3 minutes ago');
-    expect(board).toContain('the task ended before an answer was given 4 minutes ago');
+    expect(board).toContain('the session that asked ended before an answer was given 4 minutes ago');
   });
 
   test('has no question section when there are no questions', () => {

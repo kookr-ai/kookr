@@ -348,6 +348,8 @@ describe('OpenCodeAdapter', () => {
       expect(backend.sessions.get(id2)!.paneContent).not.toContain('do it');
       const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === id2)!;
       expect(session.promptDelivery).toBeUndefined();
+      // Links the resumed session to the conversation it continues (a pending `kookr ask` follows it).
+      expect(session.resumedConversationId).toBe('kookr-oc1');
       // The session config is re-composed (plugin + hooks env) for the new session.
       expect(readFileSync(join(spec.env!.OPENCODE_CONFIG_DIR!, 'plugins', 'kookr.js'), 'utf8')).toContain('kookr-oc2');
       expect(readFileSync(join(spec.env!.OPENCODE_CONFIG_DIR!, 'plugins', 'kookr.js'), 'utf8')).toContain(task.id);
@@ -380,6 +382,7 @@ describe('OpenCodeAdapter', () => {
       const id = await adapter.launch(task.id, 'do it', '/workspace', { sessionId: 'kookr-gone' }, { tmuxName: 'kookr-oc1' });
       expect(backend.sessions.get(id)!.spec.args).toEqual(['/workspace']);
       expect(backend.sessions.get(id)!.paneContent).toContain('do it');
+      expect(taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === id)!.resumedConversationId).toBeUndefined();
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('launching fresh'));
       warn.mockRestore();
     });

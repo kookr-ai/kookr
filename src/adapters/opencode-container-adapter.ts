@@ -263,7 +263,13 @@ export class OpenCodeContainerAdapter {
       sessionCreated = true;
       // Register the session BEFORE the prompt is sent: the first hook events (SessionStart) arrive within milliseconds
       // and are parsed against the task's session.
-      this.d.taskStore.addSession(taskId, { tmuxSession: containerName, agentType: 'opencode', cwd, createdAt: new Date() });
+      this.d.taskStore.addSession(taskId, {
+        tmuxSession: containerName,
+        agentType: 'opencode',
+        cwd,
+        createdAt: new Date(),
+        ...(resuming && resume ? { resumedConversationId: resume.sessionId } : {}),
+      });
       taskRegistered = true;
       this.d.ledger.attach(taskId, token, { adopt: true });
 

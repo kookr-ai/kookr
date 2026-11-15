@@ -64,7 +64,7 @@ export function askOutcome(ask: OperatorAskView): { text: string; answered: bool
     };
   }
   if (ask.state === 'expired') return { text: 'Expired with no answer', answered: false };
-  if (ask.resolution === 'task_gone') return { text: 'The task ended before an answer was given', answered: false };
+  if (ask.resolution === 'task_gone') return { text: 'The session that asked ended before an answer was given', answered: false };
   return { text: 'The task withdrew this question', answered: false };
 }
 

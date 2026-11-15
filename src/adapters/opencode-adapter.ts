@@ -428,6 +428,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       cwd,
       createdAt: new Date(),
       ...(deliveryResult ? { promptDelivery: toPromptDeliveryHealth(deliveryResult) } : {}),
+      ...(opencodeSessionId && resume ? { resumedConversationId: resume.sessionId } : {}),
     });
     const early = this.earlyParentStarts.get(tmuxName);
     this.earlyParentStarts.delete(tmuxName);

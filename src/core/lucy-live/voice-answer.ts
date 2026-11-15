@@ -113,7 +113,7 @@ export function sayAnswerOutcome(result: { ok: true } | { ok: false; reason?: st
     case 'expired': return 'That question expired, so I did not send anything.';
     case 'cancelled':
     case 'not_found': return ANSWER_NO_LONGER_WAITING;
-    case 'task_gone': return 'The task is no longer running, so I did not send anything.';
+    case 'task_gone': return 'The session that asked has ended, so I did not send anything.';
     default: return 'I could not send that answer. You can press the choice in my panel or answer on Telegram.';
   }
 }

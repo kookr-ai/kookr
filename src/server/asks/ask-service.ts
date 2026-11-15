@@ -53,8 +53,19 @@ export interface AskServiceDeps {
   getNotifier: () => AskNotifier | undefined;
   /** Status of a task, or undefined when the task is unknown. */
   taskStatus: (taskId: string) => TaskStatus | undefined;
-  /** Type text into the task's live session (the same path as `kookr reply`). */
-  deliverToTask: (taskId: string, text: string) => Promise<{ ok: boolean; reason?: string }>;
+  /**
+   * Type text into the task's live session (the same path as `kookr reply`). When `sessionId` is
+   * given, deliver only if the live session is still that one or continues it (`sessionContinues`),
+   * so a fresh session that replaced it between the check and the delivery is not typed into.
+   */
+  deliverToTask: (taskId: string, text: string, sessionId?: string) => Promise<{ ok: boolean; reason?: string }>;
+  /** The task's current live session id, or undefined when it has none. Asks are pinned to it at creation. */
+  liveSession?: (taskId: string) => string | undefined;
+  /**
+   * Whether the task's live session is `sessionId` or a session that resumed its conversation
+   * (crash recovery, operator Reopen). Without it (or `liveSession`), pinned asks are delivered as if unpinned.
+   */
+  sessionContinues?: (taskId: string, sessionId: string) => boolean;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -154,7 +165,15 @@ export class AskService {
         return invalid('idempotencyKey must be 1..128 characters');
       }
       const existing = this.deps.store.all().find((a) => a.taskId === input.taskId && a.idempotencyKey === key && a.state === 'pending');
-      if (existing) return { ok: true, ask: existing, deduped: true, redacted: [] };
+      if (existing) {
+        // The same question asked again from a session that replaced the pinned one (the task was
+        // relaunched and asked again): the new session is now the one waiting, so the answer goes there.
+        const session = this.deps.liveSession?.(input.taskId);
+        if (session !== undefined && existing.sessionId !== session) {
+          this.deps.store.update(existing.id, (a) => { a.sessionId = session; });
+        }
+        return { ok: true, ask: this.deps.store.get(existing.id) ?? existing, deduped: true, redacted: [] };
+      }
     }
 
     const question = input.question.trim();
@@ -199,6 +218,7 @@ export class AskService {
     if (safeContext !== context) redacted.push('context');
 
     const createdAt = this.now();
+    const sessionId = this.deps.liveSession?.(input.taskId);
     const ask: AskRecord = {
       id: randomBytes(6).toString('hex'),
       taskId: input.taskId,
@@ -211,6 +231,7 @@ export class AskService {
       expiresAt: createdAt + timeoutSec * 1000,
       nonce: randomBytes(16).toString('hex'),
       ...(key !== undefined ? { idempotencyKey: key } : {}),
+      ...(sessionId !== undefined ? { sessionId } : {}),
     };
     this.deps.store.insert(ask);
 
@@ -392,6 +413,14 @@ export class AskService {
       await this.finalize(gone, '⚠️ The task is no longer running — your answer was not delivered.');
       return { ok: false, reason: 'task_gone', ask: gone };
     }
+    // Nor into a fresh session that replaced the one that asked (the task was relaunched without
+    // resuming): it never saw the question. A session that resumed the asker's conversation did.
+    if (this.replacedByFreshSession(ask)) {
+      this.transition(ask.id, 'cancelled', 'task_gone');
+      const gone = this.deps.store.get(ask.id) as AskRecord;
+      await this.finalize(gone, '⚠️ The task was relaunched in a new session since it asked — your answer was not delivered.');
+      return { ok: false, reason: 'task_gone', ask: gone };
+    }
 
     // One-time answer. There is no `await` between the state checks above and this write, so a
     // concurrent answer (a second tap, or the other channel) is normally refused by those checks; this
@@ -412,7 +441,7 @@ export class AskService {
 
     // The text typed into the task is the same on both channels, so agents need not care which one answered.
     const label = answer.kind === 'option' ? answer.label : `(free text) ${oneLine(answer.text)}`;
-    const delivered = await this.deps.deliverToTask(ask.taskId, `Operator answered ask ${ask.id}: ${label}`)
+    const delivered = await this.deliver(ask, `Operator answered ask ${ask.id}: ${label}`)
       .catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
     this.deps.store.update(ask.id, (a) => { a.taskDelivery = delivered.ok ? 'delivered' : 'failed'; });
     // The dashboard closed its card on `resolved`; tell it now whether the answer reached the task.
@@ -447,12 +476,30 @@ export class AskService {
     // notices into sessions that have long moved on: only notify when fresh.
     const status = this.deps.taskStatus(ask.taskId);
     const fresh = this.now() - ask.expiresAt <= STALE_EXPIRY_NOTICE_MS;
-    if (fresh && status !== undefined && !isTerminalStatus(status)) {
-      await this.deps.deliverToTask(ask.taskId, `Ask ${ask.id} expired with no answer.`).catch(() => undefined);
+    if (fresh && status !== undefined && !isTerminalStatus(status) && !this.replacedByFreshSession(ask)) {
+      await this.deliver(ask, `Ask ${ask.id} expired with no answer.`).catch(() => undefined);
     }
   }
 
   // ------------------------------------------------------------------ helpers
+
+  /** Type `text` into the asking task, restricted to the pinned session when the ask has one. */
+  private deliver(ask: AskRecord, text: string): Promise<{ ok: boolean; reason?: string }> {
+    return ask.sessionId === undefined
+      ? this.deps.deliverToTask(ask.taskId, text)
+      : this.deps.deliverToTask(ask.taskId, text, ask.sessionId);
+  }
+
+  /**
+   * Whether a session that does not continue the pinned one is now live. False for unpinned asks, and
+   * while no session is live at all (for example a Reopen still waiting for a worker slot): the answer
+   * is then recorded as usual, and delivery, which is still bound to the pin, fails without typing.
+   */
+  private replacedByFreshSession(ask: AskRecord): boolean {
+    if (ask.sessionId === undefined || !this.deps.sessionContinues || !this.deps.liveSession) return false;
+    if (this.deps.liveSession(ask.taskId) === undefined) return false;
+    return !this.deps.sessionContinues(ask.taskId, ask.sessionId);
+  }
 
   /** CAS pending → `state`. Returns false when the ask was not pending. */
   private transition(id: string, state: AskState, resolution: NonNullable<AskRecord['resolution']>): boolean {

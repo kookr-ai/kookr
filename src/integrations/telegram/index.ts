@@ -690,7 +690,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     wrong_chat: 'This button does not belong to this chat.',
     bad_option: 'Invalid answer (empty, or longer than 1000 characters).',
     text_not_allowed: 'This question only accepts the buttons.',
-    task_gone: 'The task is no longer running, so the answer was not delivered.',
+    task_gone: 'The session that asked has ended, so the answer was not delivered.',
   };
 
   /** Said on Telegram when the operator answers here a question they already answered in the dashboard (to Lucy). */

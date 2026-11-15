@@ -326,7 +326,7 @@ describe('kookr ask over Telegram', () => {
     await waitFor(() => expect(store.get(a.id)?.resolution).toBe('task_gone'));
     expect(deliver).not.toHaveBeenCalled();
     await waitFor(() => expect(fake.outbound.editMessageText.some((e) => e.text.includes('no longer running'))).toBe(true));
-    await waitFor(() => expect(toasts()).toContain('The task is no longer running, so the answer was not delivered.'));
+    await waitFor(() => expect(toasts()).toContain('The session that asked has ended, so the answer was not delivered.'));
   });
 
   it('expiry edits the message to "expired" and notifies the live task once', async () => {

@@ -302,7 +302,7 @@ import type { SystemdNotifier } from './systemd-notify.js';
 import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import { createLucyOperatorHolder } from './lucy-operator/holder.js';
-import { createTelegramTaskBridge } from './telegram-task-bridge.js';
+import { createAskTaskPorts, createTelegramTaskBridge, type TelegramTaskBridge } from './telegram-task-bridge.js';
 import { AskStore } from './asks/ask-store.js';
 import { AskService } from './asks/ask-service.js';
 import type { AskNotifier } from '../shared/contracts/asks.js';
@@ -1320,7 +1320,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // The notifier and the task-delivery function are filled in below once the
   // Telegram handle and reply bridge exist (the routes are built before them).
   let askNotifierHolder: AskNotifier | undefined;
-  let askDeliverHolder: ((taskId: string, text: string) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+  let askBridgeHolder: TelegramTaskBridge | undefined;
   let askService: AskService | undefined;
   if (process.env.KOOKR_TELEGRAM_BOT_TOKEN && process.env.KOOKR_REMOTE_CHAT_DISABLED !== '1') {
     try {
@@ -1328,9 +1328,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         store: await AskStore.open(kookrDir, (err) => console.warn('[asks] persist failed:', err)),
         getNotifier: () => askNotifierHolder,
         taskStatus: (taskId) => taskStore.getTask(taskId)?.status,
-        deliverToTask: async (taskId, text) => askDeliverHolder
-          ? askDeliverHolder(taskId, text)
-          : { ok: false, reason: 'reply bridge not ready' },
+        ...createAskTaskPorts({ taskStore, bridge: () => askBridgeHolder }),
         log: (message) => console.log(message),
       });
     } catch (err) {
@@ -4497,7 +4495,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // POST /api/asks keeps returning 503.
   if (askService && telegramHandle?.ask) {
     askNotifierHolder = telegramHandle.ask;
-    askDeliverHolder = (taskId, text) => telegramTaskBridge.sendText(taskId, text);
+    askBridgeHolder = telegramTaskBridge;
     await askService.start();
   }
   onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;

@@ -3,7 +3,12 @@ import { describe, expect, test, vi } from 'vitest';
 import type { AgentEvent } from '../core/agent-events.js';
 import type { Anomaly } from '../shared/contracts/anomalies.js';
 import type { Task } from '../core/tasks.js';
-import { createTelegramTaskBridge, type TelegramTaskBridgeDeps } from './telegram-task-bridge.js';
+import {
+  createAskTaskPorts,
+  createTelegramTaskBridge,
+  liveSessionContinues,
+  type TelegramTaskBridgeDeps,
+} from './telegram-task-bridge.js';
 
 const SESSION = 'tmux-abc';
 // Stable across the broker's re-read (a fresh detectedAt each call would trip
@@ -91,6 +96,145 @@ describe('sendText', () => {
     const res = await createTelegramTaskBridge(deps).sendText('t', 'hi');
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/no live session/);
+  });
+
+  test('delivers to the expected session while it is still the live one', async () => {
+    const { deps, submitMessage } = makeDeps();
+    const res = await createTelegramTaskBridge(deps).sendText('task-1', 'hi', SESSION);
+    expect(res.ok).toBe(true);
+    expect(submitMessage).toHaveBeenCalledWith(SESSION, 'hi', 'directReply');
+  });
+
+  test('refuses when a different session replaced the expected one (task relaunched)', async () => {
+    const relaunched = {
+      sessions: [
+        { tmuxSession: SESSION, lastStatus: 'aborted', crashRecovered: false },
+        { tmuxSession: 'tmux-new', lastStatus: 'running', crashRecovered: false },
+      ],
+    } as unknown as Task;
+    const { deps, submitMessage } = makeDeps({
+      over: { taskStore: { getTask: vi.fn(() => relaunched) } as unknown as TelegramTaskBridgeDeps['taskStore'] },
+    });
+    const res = await createTelegramTaskBridge(deps).sendText('task-1', 'hi', SESSION);
+    expect(res).toEqual({ ok: false, reason: 'the session that asked is no longer live' });
+    expect(submitMessage).not.toHaveBeenCalled();
+  });
+
+  test('delivers to a session that resumed the expected one (crash recovery, Reopen)', async () => {
+    const resumed = {
+      sessions: [
+        { tmuxSession: SESSION, claudeSessionId: 'conv-1', lastStatus: 'aborted', crashRecovered: true },
+        { tmuxSession: 'tmux-new', resumedConversationId: 'conv-1', lastStatus: 'running', crashRecovered: false },
+      ],
+    } as unknown as Task;
+    const { deps, submitMessage } = makeDeps({
+      over: { taskStore: { getTask: vi.fn(() => resumed) } as unknown as TelegramTaskBridgeDeps['taskStore'] },
+    });
+    const res = await createTelegramTaskBridge(deps).sendText('task-1', 'hi', SESSION);
+    expect(res.ok).toBe(true);
+    expect(submitMessage).toHaveBeenCalledWith('tmux-new', 'hi', 'directReply');
+  });
+});
+
+describe('liveSessionContinues', () => {
+  const asker = { tmuxSession: 'tmux-a', claudeSessionId: 'conv-a', lastStatus: 'aborted', crashRecovered: true };
+
+  test('is true for the live session itself', () => {
+    const task = { sessions: [{ ...asker, lastStatus: 'running', crashRecovered: false }] } as unknown as Task;
+    expect(liveSessionContinues(task, 'tmux-a')).toBe(true);
+  });
+
+  test('follows resumed conversations back to the asking session, through several resumes', () => {
+    const task = {
+      sessions: [
+        asker,
+        { tmuxSession: 'tmux-b', claudeSessionId: 'conv-b', resumedConversationId: 'conv-a', lastStatus: 'aborted', crashRecovered: true },
+        { tmuxSession: 'tmux-c', claudeSessionId: 'conv-c', resumedConversationId: 'conv-b', lastStatus: 'running' },
+      ],
+    } as unknown as Task;
+    expect(liveSessionContinues(task, 'tmux-a')).toBe(true);
+    expect(liveSessionContinues(task, 'tmux-b')).toBe(true);
+  });
+
+  test('is false for a fresh relaunch, for a resume of another conversation, and with no live session', () => {
+    const fresh = { sessions: [asker, { tmuxSession: 'tmux-b', lastStatus: 'running' }] } as unknown as Task;
+    expect(liveSessionContinues(fresh, 'tmux-a')).toBe(false);
+    const other = {
+      sessions: [asker, { tmuxSession: 'tmux-b', resumedConversationId: 'conv-unrelated', lastStatus: 'running' }],
+    } as unknown as Task;
+    expect(liveSessionContinues(other, 'tmux-a')).toBe(false);
+    expect(liveSessionContinues({ sessions: [asker] } as unknown as Task, 'tmux-a')).toBe(false);
+  });
+
+  test('opencode keeps one conversation id across resumes: a pin on a middle session is still found', () => {
+    const task = {
+      sessions: [
+        { tmuxSession: 'tmux-a', claudeSessionId: 'ses_1', lastStatus: 'aborted' },
+        { tmuxSession: 'tmux-b', claudeSessionId: 'ses_1', resumedConversationId: 'ses_1', lastStatus: 'aborted' },
+        { tmuxSession: 'tmux-c', claudeSessionId: 'ses_1', resumedConversationId: 'ses_1', lastStatus: 'running' },
+      ],
+    } as unknown as Task;
+    expect(liveSessionContinues(task, 'tmux-b')).toBe(true);
+    expect(liveSessionContinues(task, 'tmux-a')).toBe(true);
+    expect(liveSessionContinues(task, 'tmux-other')).toBe(false);
+  });
+
+  test('terminates on a resume cycle', () => {
+    const cyclic = {
+      sessions: [
+        { tmuxSession: 'tmux-x', claudeSessionId: 'conv-x', resumedConversationId: 'conv-y', lastStatus: 'aborted' },
+        { tmuxSession: 'tmux-y', claudeSessionId: 'conv-y', resumedConversationId: 'conv-x', lastStatus: 'running' },
+      ],
+    } as unknown as Task;
+    expect(liveSessionContinues(cyclic, 'tmux-a')).toBe(false);
+  });
+});
+
+describe('createAskTaskPorts (the production wiring of kookr ask to tasks)', () => {
+  const relaunched = {
+    sessions: [
+      { tmuxSession: 'tmux-a', claudeSessionId: 'conv-a', lastStatus: 'aborted' },
+      { tmuxSession: 'tmux-b', lastStatus: 'running' },
+    ],
+  } as unknown as Task;
+
+  function ports(task: Task | undefined, bridge?: { sendText: ReturnType<typeof vi.fn> }) {
+    return createAskTaskPorts({
+      taskStore: { getTask: vi.fn(() => task) } as unknown as TelegramTaskBridgeDeps['taskStore'],
+      bridge: () => bridge as never,
+    });
+  }
+
+  test('reports the latest live session and whether it continues a pinned one', () => {
+    const p = ports(relaunched);
+    expect(p.liveSession('t')).toBe('tmux-b');
+    expect(p.sessionContinues('t', 'tmux-b')).toBe(true);
+    expect(p.sessionContinues('t', 'tmux-a')).toBe(false);
+    expect(ports(undefined).liveSession('t')).toBeUndefined();
+    expect(ports(undefined).sessionContinues('t', 'tmux-a')).toBe(false);
+  });
+
+  test('passes the pinned session to the bridge, and only when there is one', async () => {
+    const sendText = vi.fn(async () => ({ ok: true }));
+    const p = ports(relaunched, { sendText });
+    await p.deliverToTask('t', 'pinned', 'tmux-a');
+    await p.deliverToTask('t', 'unpinned');
+    expect(sendText.mock.calls).toEqual([['t', 'pinned', 'tmux-a'], ['t', 'unpinned']]);
+  });
+
+  test('fails cleanly before the reply bridge exists', async () => {
+    expect(await ports(relaunched).deliverToTask('t', 'hi')).toEqual({ ok: false, reason: 'reply bridge not ready' });
+  });
+
+  test('end to end with the real bridge: a fresh relaunch is not typed into', async () => {
+    const { deps, submitMessage } = makeDeps({
+      over: { taskStore: { getTask: vi.fn(() => relaunched) } as unknown as TelegramTaskBridgeDeps['taskStore'] },
+    });
+    const bridge = createTelegramTaskBridge(deps);
+    const p = createAskTaskPorts({ taskStore: deps.taskStore, bridge: () => bridge });
+    expect(await p.deliverToTask('t', 'hi', 'tmux-a')).toEqual({ ok: false, reason: 'the session that asked is no longer live' });
+    expect(submitMessage).not.toHaveBeenCalled();
+    expect(await p.deliverToTask('t', 'hi', 'tmux-b')).toEqual({ ok: true });
   });
 });
 

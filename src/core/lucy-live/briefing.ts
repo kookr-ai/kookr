@@ -90,7 +90,7 @@ function askOutcome(ask: OperatorAskView, nowMs: number): string {
     return `the operator answered "${oneLine(chosen, 80)}" ${where} ${when}`;
   }
   if (ask.state === 'expired') return `it expired with no answer ${when}`;
-  if (ask.resolution === 'task_gone') return `the task ended before an answer was given ${when}`;
+  if (ask.resolution === 'task_gone') return `the session that asked ended before an answer was given ${when}`;
   return `the task withdrew it ${when}`;
 }
 

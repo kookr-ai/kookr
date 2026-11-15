@@ -108,7 +108,7 @@ describe('buildLucyLiveBriefing: questions from tasks (kookr ask)', () => {
     expect(buildLucyLiveBriefing([], NOW, [ask()])).toMatch(/Ship the migration now\?[\s\S]*There are no tasks at all\./);
   });
 
-  it('says when the task ended before an answer, and keeps the task counts when questions are long', () => {
+  it('says when the asking session ended before an answer, and keeps the task counts when questions are long', () => {
     const long = `${'Should the nightly migration be allowed to proceed on the production cluster '.repeat(4)}?`;
     const pending = Array.from({ length: 4 }, (_, i) => ask({ id: `p${i}`, question: long, options: ['Option number one here', 'Option number two here', 'Option number three', 'Option number four'] }));
     const closed = Array.from({ length: 4 }, (_, i) => ask({ id: `c${i}`, question: long, state: 'cancelled', resolution: 'task_gone', resolvedAt: NOW - 60_000 }));
@@ -117,7 +117,7 @@ describe('buildLucyLiveBriefing: questions from tasks (kookr ask)', () => {
     expect(text).toContain('Questions from tasks waiting for the operator: 4 (');
     expect(text).toContain('Task counts: 1 in progress.');
     expect(text).toContain('"Fix login": in progress');
-    expect(buildLucyLiveBriefing(tasks, NOW, [closed[0]])).toContain('Outcome: the task ended before an answer was given 1 minute ago.');
+    expect(buildLucyLiveBriefing(tasks, NOW, [closed[0]])).toContain('Outcome: the session that asked ended before an answer was given 1 minute ago.');
   });
 
   it('lists four waiting questions and says how many more there are', () => {

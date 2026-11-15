@@ -148,4 +148,11 @@ export interface SessionInfo {
    * retains the existing `crashRecovered: true` flag. See docs/rfc/rfc-crash-recovery-resume.md.
    */
   resumedFromCrash?: boolean;
+  /**
+   * The provider conversation id (`claudeSessionId` of an earlier session) this session resumed
+   * with `--resume <id> --fork-session`, on crash recovery or an operator Reopen. Absent on a fresh
+   * launch. It links a resumed session back to the session whose conversation it continues, so
+   * state pinned to that session (a pending `kookr ask`) can follow it.
+   */
+  resumedConversationId?: string;
 }

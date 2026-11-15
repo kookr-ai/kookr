@@ -44,6 +44,13 @@ export interface AskRecord {
   /** When the ask left `pending`, whatever the reason. Absent on older records. */
   resolvedAt?: number;
   resolution?: AskResolution;
+  /**
+   * The task's live session when the ask was created (its `tmuxSession` id). The answer and the
+   * expiry notice are typed only while this is still the task's live session: a relaunched task's
+   * fresh session never saw the question. Absent on older records and when the task had no live
+   * session at ask time; those are delivered to whatever session is live.
+   */
+  sessionId?: string;
   /** Outcome of typing the answer into the asking task's session. */
   taskDelivery?: 'delivered' | 'failed' | 'skipped';
 }

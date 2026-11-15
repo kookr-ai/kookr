@@ -29,8 +29,12 @@ import {
 const PROMPT_ID_LEN = 12;
 
 export interface TelegramTaskBridge {
-  /** Deliver a free-text instruction to the task's live agent session. */
-  sendText(taskId: string, text: string): Promise<TelegramReplyResult>;
+  /**
+   * Deliver a free-text instruction to the task's live agent session. With `expectedSessionId`,
+   * refuse unless the live session is that one or resumed its conversation (see
+   * {@link liveSessionContinues}): a fresh relaunch never saw what the expected session saw.
+   */
+  sendText(taskId: string, text: string, expectedSessionId?: string): Promise<TelegramReplyResult>;
   /**
    * Approve the task's current permission prompt (keystroke '1'), anti-stale.
    * When `expectedPromptId` is given (from the button that was shown), refuses
@@ -66,6 +70,63 @@ function latestLiveSession(task: Task): Task['sessions'][number] | undefined {
   );
 }
 
+/**
+ * Whether the task's live session is `sessionId` or continues its conversation. Crash recovery and
+ * an operator Reopen launch a new session that resumes the provider conversation (Claude Code
+ * `--resume --fork-session`, opencode `--session`). The adapter records the conversation it resumed
+ * (`resumedConversationId`), so the chain is followed back through any number of resumes. A fresh
+ * relaunch has no such link and does not continue `sessionId`.
+ *
+ * Each step looks only at sessions launched before the current one, newest first: opencode keeps
+ * one conversation id across resumes, so several sessions can carry the same `claudeSessionId`.
+ */
+export function liveSessionContinues(task: Task, sessionId: string): boolean {
+  const live = latestLiveSession(task);
+  let index = live ? task.sessions.indexOf(live) : -1;
+  while (index >= 0) {
+    const current = task.sessions[index] as Task['sessions'][number];
+    if (current.tmuxSession === sessionId) return true;
+    const resumed = current.resumedConversationId;
+    if (!resumed) return false;
+    let previous = index - 1;
+    while (previous >= 0 && task.sessions[previous]?.claudeSessionId !== resumed) previous--;
+    index = previous;
+  }
+  return false;
+}
+
+/** The task-side functions `AskService` needs (see `AskServiceDeps`), built from the task store and the reply bridge. */
+export interface AskTaskPorts {
+  deliverToTask: (taskId: string, text: string, sessionId?: string) => Promise<TelegramReplyResult>;
+  liveSession: (taskId: string) => string | undefined;
+  sessionContinues: (taskId: string, sessionId: string) => boolean;
+}
+
+/**
+ * Wire `kookr ask` to the tasks. The bridge is resolved lazily because the ask service is built
+ * before the Telegram integration and its reply bridge exist.
+ */
+export function createAskTaskPorts(deps: {
+  taskStore: Pick<TaskStore, 'getTask'>;
+  bridge: () => Pick<TelegramTaskBridge, 'sendText'> | undefined;
+}): AskTaskPorts {
+  return {
+    deliverToTask: async (taskId, text, sessionId) => {
+      const bridge = deps.bridge();
+      if (!bridge) return { ok: false, reason: 'reply bridge not ready' };
+      return sessionId === undefined ? bridge.sendText(taskId, text) : bridge.sendText(taskId, text, sessionId);
+    },
+    liveSession: (taskId) => {
+      const task = deps.taskStore.getTask(taskId);
+      return task ? latestLiveSession(task)?.tmuxSession : undefined;
+    },
+    sessionContinues: (taskId, sessionId) => {
+      const task = deps.taskStore.getTask(taskId);
+      return task ? liveSessionContinues(task, sessionId) : false;
+    },
+  };
+}
+
 export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): TelegramTaskBridge {
   // Once-only guard so a double-tapped Approve cannot keystroke twice for the
   // same prompt (mirrors RemotePermissionBroker, kept server-local because the
@@ -89,11 +150,15 @@ export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): Telegram
   }
 
   return {
-    async sendText(taskId, text): Promise<TelegramReplyResult> {
+    async sendText(taskId, text, expectedSessionId): Promise<TelegramReplyResult> {
       const trimmed = text.trim();
       if (!trimmed) return { ok: false, reason: 'empty message' };
       const sessionId = resolveSession(taskId);
       if (!sessionId) return { ok: false, reason: 'no live session for this task' };
+      const task = deps.taskStore.getTask(taskId);
+      if (expectedSessionId !== undefined && !(task && liveSessionContinues(task, expectedSessionId))) {
+        return { ok: false, reason: 'the session that asked is no longer live' };
+      }
       try {
         await deps.submitMessage(sessionId, trimmed, 'directReply');
         return { ok: true };

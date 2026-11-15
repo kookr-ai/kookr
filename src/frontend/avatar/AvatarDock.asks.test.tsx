@@ -314,7 +314,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     push([ask()]);
     click(all('avatar-ask-option')[0]);
     act(() => { handleOperatorAskResult(ASK, false, 'task_gone'); });
-    expect(q('avatar-ask-note')!.textContent).toBe('The task is no longer running, so the answer was not delivered.');
+    expect(q('avatar-ask-note')!.textContent).toBe('The session that asked has ended, so the answer was not delivered.');
     expect(all('avatar-ask-option')[0].getAttribute('aria-disabled')).toBeNull();
   });
 
@@ -395,7 +395,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     expect(timeLeftText(5 * 60_000 + 1, 0)).toBe('5 min left');
     expect(timeLeftText(5 * 3_600_000, 0)).toBe('5 h left');
     expect(askOutcome(ask({ state: 'expired', resolution: 'expired' }))).toEqual({ text: 'Expired with no answer', answered: false });
-    expect(askOutcome(ask({ state: 'cancelled', resolution: 'task_gone' })).text).toBe('The task ended before an answer was given');
+    expect(askOutcome(ask({ state: 'cancelled', resolution: 'task_gone' })).text).toBe('The session that asked ended before an answer was given');
     expect(askOutcome(ask({ state: 'cancelled', resolution: 'cancelled' })).text).toBe('The task withdrew this question');
     expect(askOutcome(ask({ state: 'answered', answer: { kind: 'text', text: 'do both' } })).text).toBe('Answered on Telegram: do both');
   });

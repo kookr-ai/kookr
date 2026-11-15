@@ -68,7 +68,7 @@ describe('classifyReply as a spoken confirmation', () => {
 
 describe('sentences she says', () => {
   it.each([
-    ['expired', /expired/], ['task_gone', /no longer running/], ['cancelled', /not waiting/], ['not_found', /not waiting/], ['bad_option', /could not send/],
+    ['expired', /expired/], ['task_gone', /session that asked has ended/], ['cancelled', /not waiting/], ['not_found', /not waiting/], ['bad_option', /could not send/],
   ])('refusal %s is said in words', (reason, re) => {
     expect(sayAnswerOutcome({ ok: false, reason }, 'x')).toMatch(re);
   });
