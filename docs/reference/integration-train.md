@@ -117,6 +117,16 @@ own bump would conflict with it on `staging`. The train's commit changes only
 `plugin.json`, which no pull request touches any more, so a pull request rebased
 over it keeps its `review-patch-id`.
 
+During a red cycle the bisect can promote a last good commit that sits below
+the bump. `main` then carries plugin changes at the old version until the
+revert (or a later head) is promoted; it already holds the bump, so nothing is
+bumped twice. If the cycle halts instead, the gap lasts until the halt is
+resolved.
+
+A pull request may still bump the version by hand (the hook does not reject
+it), but it then edits the line the train edits and can conflict with a bump
+already on the integration branch, so leave it to the train.
+
 Without an integration branch the train does nothing, and the pre-push hook
 asks each pull request to bump the version as before.
 

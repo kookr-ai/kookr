@@ -81,6 +81,8 @@ describe('review-patch-id.sh (local refs)', () => {
     // in its own commit. A plugin PR rebased over that commit keeps its id, so a
     // passed review stays bound. (When every plugin PR bumped the version, each
     // such rebase changed the shared plugin.json blob and voided the review.)
+    // The id is base-independent for files the PR does not touch, so this is a
+    // regression guard for the property the design relies on, not a train test.
     const repo = makeRepo();
     mkdirSync(join(repo, 'plugin/.claude-plugin'), { recursive: true });
     mkdirSync(join(repo, 'plugin/skills'), { recursive: true });
