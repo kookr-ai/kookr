@@ -209,10 +209,29 @@ On this repo (no auto-merge — issue #29) use the wrapper. It retargets a PR
 aimed at `main` to `staging`, squash-merges it into `staging`, **and deletes the
 head branch**. Never merge into `main` or push to `main` or `staging` yourself.
 
+**Run `pnpm merge` from the PR's own worktree**, which was cut from
+`origin/main`, never from the primary checkout or another older worktree.
+`pnpm merge` runs the `scripts/kookr-merge.sh` of the checkout you are in. A
+checkout whose branch predates the integration-branch support has no
+`scripts/lib/delivery-gate.sh`, so it skips the retarget and merges straight
+into `main`, bypassing the train. Check for that file before merging, and
+afterwards confirm the PR's base is `staging` (the output only prints
+`retargeted PR #<n> from main to staging` when it retargeted, so check the base
+itself). If the PR landed on `main` anyway, report it on the PR and its issue.
+
 ```bash
-pnpm merge <PR_NUMBER>            # = bash scripts/kookr-merge.sh <PR_NUMBER>
+cd <the PR's worktree>
+if test -f "$(git rev-parse --show-toplevel)/scripts/lib/delivery-gate.sh"; then
+  pnpm merge <PR_NUMBER>          # = bash scripts/kookr-merge.sh <PR_NUMBER>
                                  # retarget to staging, squash-merge, delete branch
+  gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName   # expect: staging
+else
+  echo "stale checkout: do not merge from here" >&2
+fi
 ```
+
+The wrapper deletes the remote head branch through the REST API after GitHub
+confirms the merge, so merging from the worktree that holds the branch is fine.
 
 For any other repo, delete the branch as part of the merge:
 
@@ -220,19 +239,14 @@ For any other repo, delete the branch as part of the merge:
 gh pr merge <PR_NUMBER> --squash --delete-branch
 ```
 
-### Linked-worktree edge case (deletion must never silently fail)
+### Linked-worktree edge case (other repositories)
 
-`--delete-branch` also deletes the **local** branch, which fails if that branch is
-checked out in a linked worktree (e.g. the worktree you merged from). Pick one so
-the deletion never silently no-ops:
-
-- **Merge from the primary checkout**, not the merging worktree, so no linked
-  worktree holds the branch — then `--delete-branch` removes remote and local cleanly.
-- **Or delete explicitly** when `--delete-branch` reports a local-delete failure
-  (the remote may already be gone, so make each step idempotent):
+With a bare `gh pr merge --delete-branch` (repositories without the wrapper),
+the local-branch delete fails when that branch is checked out in a linked
+worktree. The remote merge has already happened, so finish the cleanup
+explicitly; each step is idempotent:
 
 ```bash
-gh pr merge <PR_NUMBER> --squash                              # merge; local --delete-branch may fail
 git push origin --delete <head-branch> 2>/dev/null || true    # ensure the REMOTE branch is gone
 git worktree remove <worktree-path> 2>/dev/null || true       # drop the linked worktree holding it
 git branch -D <head-branch> 2>/dev/null || true               # then the local branch
