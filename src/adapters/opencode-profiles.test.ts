@@ -116,4 +116,22 @@ describe('real plugin/opencode-profiles', () => {
       expect(p.shelves!.length).toBeGreaterThan(0);
     }
   });
+
+  // #3536: guidance learned from the dogfood run, where every worker patch met its
+  // acceptance criteria yet a fresh reviewer still blocked it, and an audit claimed
+  // gaps the existing suite already covered.
+  it('scoped-fix asks for repeated runs, the full input class and every other consumer', () => {
+    const text = real.get('scoped-fix')!.instructions!;
+    expect(text).toMatch(/## Before delivering/);
+    expect(text).toMatch(/earlier runs/);
+    expect(text).toMatch(/whole input class/);
+    expect(text).toMatch(/every other consumer/);
+  });
+
+  it('test-auditor must run the existing tests against each mutation before claiming a gap', () => {
+    const text = real.get('test-auditor')!.instructions!;
+    expect(text).toMatch(/## Before claiming a gap/);
+    expect(text).toMatch(/Grep the existing tests/);
+    expect(text).toMatch(/run the existing tests that cover the module against it/);
+  });
 });
