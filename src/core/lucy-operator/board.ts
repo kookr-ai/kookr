@@ -201,7 +201,7 @@ function askOutcome(ask: OperatorAskView, nowMs: number): string {
     return `the operator answered "${boardText(chosen, MAX_ASK_ANSWER_CHARS)}" ${where} ${at}`;
   }
   if (ask.state === 'expired') return `it expired with no answer ${at}`;
-  if (ask.resolution === 'task_gone') return `the task ended before an answer was given ${at}`;
+  if (ask.resolution === 'task_gone') return `the session that asked ended before an answer was given ${at}`;
   return `the task withdrew it ${at}`;
 }
 

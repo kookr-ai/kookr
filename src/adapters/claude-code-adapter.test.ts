@@ -894,6 +894,16 @@ describe('ClaudeCodeAdapter', () => {
     expect(settingsIdx).toBeGreaterThan(sourcesIdx);
   });
 
+  test('a resumed launch records the conversation it resumed on the new session; a fresh one does not', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore, {});
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const resumed = await adapter.launch(task.id, 'Fix bug', '/cwd', { sessionId: '00000000-0000-0000-0000-000000000002' });
+    const fresh = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const sessions = taskStore.getTask(task.id)!.sessions;
+    expect(sessions.find((s) => s.tmuxSession === resumed)?.resumedConversationId).toBe('00000000-0000-0000-0000-000000000002');
+    expect(sessions.find((s) => s.tmuxSession === fresh)?.resumedConversationId).toBeUndefined();
+  });
+
   test('resumed launches with bypassAllPermissions still include both bypass flags before --resume', async () => {
     const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       bypassAllPermissions: true,

@@ -78,7 +78,7 @@ const REFUSAL_TEXT: Record<AnswerRejection | 'unavailable' | 'offline' | 'no_rep
   wrong_chat: 'The answer was refused.',
   bad_option: 'That answer is empty or too long (1000 characters at most).',
   text_not_allowed: 'This question only accepts the buttons.',
-  task_gone: 'The task is no longer running, so the answer was not delivered.',
+  task_gone: 'The session that asked has ended, so the answer was not delivered.',
   unavailable: 'Questions are not available on this server.',
   offline: 'Not connected to Kookr. Try again in a moment.',
   no_reply: 'Kookr did not confirm your answer. Try again.',

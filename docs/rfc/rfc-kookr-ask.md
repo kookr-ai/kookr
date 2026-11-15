@@ -52,6 +52,7 @@ interface AskRecord {
   answer?: { kind: 'option'; index: number; label: string } | { kind: 'text'; text: string };
   answeredAt?: number; answeredBy?: number;
   resolution?: 'answered' | 'expired' | 'cancelled' | 'task_gone' | 'delivery_failed';
+  sessionId?: string;    // the task's live session (tmux name) at ask time; see "Session pinning"
   taskDelivery?: 'delivered' | 'failed' | 'skipped';
 }
 ```
@@ -63,8 +64,8 @@ interface AskRecord {
   pruned after 7 days. A per-install HMAC secret lives in `<kookrDir>/asks/secret`
   (32 random bytes, mode 0600, created on first use).
 * `ask-service.ts`: owns the state machine and all policy. Injected ports:
-  `notifier` (Telegram), `taskLiveness(taskId)`, `deliverToTask(taskId, text)`,
-  `now()`. Methods: `create`, `get`, `list`, `cancel`, `answer`, `findByMessage`,
+  `notifier` (Telegram), `taskLiveness(taskId)`, `deliverToTask(taskId, text, sessionId?)`,
+  `liveSession(taskId)`, `sessionContinues(taskId, sessionId)`, `now()`. Methods: `create`, `get`, `list`, `cancel`, `answer`, `findByMessage`,
   `sweepExpired`, `callbackData(ask, idx)`.
 * State machine: `pending → answered | expired | cancelled`. Every transition is
   a compare-and-set on `state === 'pending'` inside the store's serialised
@@ -88,11 +89,15 @@ interface AskRecord {
   terminal the ask becomes `cancelled/task_gone`, **nothing is typed into any
   session**, and the Telegram message is edited to say so.
 * Session pinning (issue #3548): the ask records `sessionId`, the task's live
-  session when the question was asked. If another session is live when the
-  answer arrives (the task was relaunched), the ask also becomes
-  `cancelled/task_gone` and nothing is typed. The expiry notice follows the same
-  rule. An idempotent re-ask from the new session re-pins the pending ask to
-  it. Asks without `sessionId` (older records) keep the unpinned behaviour.
+  session when the question was asked. The answer is typed only while the live
+  session is that one or continues its conversation: crash recovery and an
+  operator Reopen launch `claude --resume <id> --fork-session` in a new session
+  that records the conversation it resumed (`resumedConversationId`), and the
+  chain is followed back. A fresh relaunch, which never saw the question, gets
+  nothing: the ask becomes `cancelled/task_gone` and the operator is told. The
+  expiry notice follows the same rule. An idempotent re-ask from the new session
+  re-pins the pending ask to it. Asks without `sessionId` (older records) keep
+  the unpinned behaviour.
 * Delivery text: `Operator answered ask <id>: <label>` (or `… (free text): <text>`),
   via the existing `TelegramTaskBridge.sendText` → `submitMessage` path.
 * Expiry: a 30 s unref'd sweeper plus lazy check on read. On expiry the message

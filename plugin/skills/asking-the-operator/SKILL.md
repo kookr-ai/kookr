@@ -97,9 +97,10 @@ Use `--wait` (or `--wait=<seconds>`) **only when you have nothing else to do**:
 it blocks and prints the chosen label on stdout. If you used `--wait` you may
 also receive the typed message above; they are the same answer, act once.
 
-The answer is typed only into the session that asked. If the task is relaunched
-before the operator answers, the fresh session gets nothing and the operator is
-told the answer was not delivered. A relaunched session that asks the same
+The answer is typed only into the session that asked, or into a session that
+resumed its conversation (crash recovery, Reopen). If the task is relaunched
+fresh before the operator answers, the new session gets nothing and the operator
+is told the answer was not delivered. A relaunched session that asks the same
 question again (same question, options and context) takes over the pending ask
 instead of sending a second message.
 

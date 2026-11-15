@@ -31,7 +31,8 @@ const PROMPT_ID_LEN = 12;
 export interface TelegramTaskBridge {
   /**
    * Deliver a free-text instruction to the task's live agent session. With `expectedSessionId`,
-   * refuse when the live session is a different one (the task was relaunched since).
+   * refuse unless the live session is that one or resumed its conversation (see
+   * {@link liveSessionContinues}): a fresh relaunch never saw what the expected session saw.
    */
   sendText(taskId: string, text: string, expectedSessionId?: string): Promise<TelegramReplyResult>;
   /**
@@ -69,6 +70,57 @@ export function latestLiveSession(task: Task): Task['sessions'][number] | undefi
   );
 }
 
+/**
+ * Whether the task's live session is `sessionId` or continues its conversation. Crash recovery and
+ * an operator Reopen launch a new session with `--resume --fork-session`; that session records the
+ * conversation it resumed (`resumedConversationId`), so the chain is followed back through any
+ * number of resumes. A fresh relaunch has no such link and does not continue `sessionId`.
+ */
+export function liveSessionContinues(task: Task, sessionId: string): boolean {
+  let current = latestLiveSession(task);
+  const seen = new Set<string>();
+  while (current && !seen.has(current.tmuxSession)) {
+    if (current.tmuxSession === sessionId) return true;
+    seen.add(current.tmuxSession);
+    const resumed = current.resumedConversationId;
+    if (!resumed) return false;
+    current = task.sessions.find((s) => s.claudeSessionId === resumed);
+  }
+  return false;
+}
+
+/** The task-side functions `AskService` needs (see `AskServiceDeps`), built from the task store and the reply bridge. */
+export interface AskTaskPorts {
+  deliverToTask: (taskId: string, text: string, sessionId?: string) => Promise<TelegramReplyResult>;
+  liveSession: (taskId: string) => string | undefined;
+  sessionContinues: (taskId: string, sessionId: string) => boolean;
+}
+
+/**
+ * Wire `kookr ask` to the tasks. The bridge is resolved lazily because the ask service is built
+ * before the Telegram integration and its reply bridge exist.
+ */
+export function createAskTaskPorts(deps: {
+  taskStore: Pick<TaskStore, 'getTask'>;
+  bridge: () => Pick<TelegramTaskBridge, 'sendText'> | undefined;
+}): AskTaskPorts {
+  return {
+    deliverToTask: async (taskId, text, sessionId) => {
+      const bridge = deps.bridge();
+      if (!bridge) return { ok: false, reason: 'reply bridge not ready' };
+      return sessionId === undefined ? bridge.sendText(taskId, text) : bridge.sendText(taskId, text, sessionId);
+    },
+    liveSession: (taskId) => {
+      const task = deps.taskStore.getTask(taskId);
+      return task ? latestLiveSession(task)?.tmuxSession : undefined;
+    },
+    sessionContinues: (taskId, sessionId) => {
+      const task = deps.taskStore.getTask(taskId);
+      return task ? liveSessionContinues(task, sessionId) : false;
+    },
+  };
+}
+
 export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): TelegramTaskBridge {
   // Once-only guard so a double-tapped Approve cannot keystroke twice for the
   // same prompt (mirrors RemotePermissionBroker, kept server-local because the
@@ -97,7 +149,8 @@ export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): Telegram
       if (!trimmed) return { ok: false, reason: 'empty message' };
       const sessionId = resolveSession(taskId);
       if (!sessionId) return { ok: false, reason: 'no live session for this task' };
-      if (expectedSessionId !== undefined && sessionId !== expectedSessionId) {
+      const task = deps.taskStore.getTask(taskId);
+      if (expectedSessionId !== undefined && !(task && liveSessionContinues(task, expectedSessionId))) {
         return { ok: false, reason: 'the session that asked is no longer live' };
       }
       try {

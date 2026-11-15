@@ -341,16 +341,23 @@ describe('expiry, cancel and boot reconciliation', () => {
 describe('session pinning (#3548)', () => {
   /** The live session of each task; a relaunch replaces it. */
   let live: Map<string, string>;
+  /** Sessions that resumed another one's conversation: resumed -> resumed from. */
+  let resumedFrom: Map<string, string>;
   let pinned: AskService;
 
   beforeEach(() => {
     live = new Map([['t1', 'sess-a'], ['t2', 'sess-b']]);
+    resumedFrom = new Map();
     pinned = new AskService({
       store: h.store,
       getNotifier: () => h.notifier as unknown as AskNotifier,
       taskStatus: (id) => h.statuses.get(id),
       deliverToTask: h.deliver,
       liveSession: (id) => live.get(id),
+      sessionContinues: (id, sessionId) => {
+        for (let s = live.get(id); s !== undefined; s = resumedFrom.get(s)) if (s === sessionId) return true;
+        return false;
+      },
       now: () => h.clock.now,
     });
   });
@@ -390,6 +397,15 @@ describe('session pinning (#3548)', () => {
     expect(h.notifier.finalizeAsk).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('relaunched'));
   });
 
+  it('types the answer into a session that resumed the asking conversation (crash recovery, Reopen)', async () => {
+    const ask = await createPinned();
+    live.set('t1', 'sess-resumed');
+    resumedFrom.set('sess-resumed', 'sess-a');
+    const r = await tapPinned(ask, 1);
+    expect(r).toMatchObject({ ok: true, ask: { state: 'answered', taskDelivery: 'delivered' } });
+    expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${ask.id}: No`, 'sess-a');
+  });
+
   it('refuses a dashboard answer after a relaunch the same way', async () => {
     const ask = await createPinned();
     live.delete('t1'); // between sessions: none is live
@@ -407,6 +423,13 @@ describe('session pinning (#3548)', () => {
     const r = await tapPinned(first, 1);
     expect(r).toMatchObject({ ok: true, ask: { taskDelivery: 'delivered' } });
     expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${first.id}: No`, 'sess-relaunched');
+  });
+
+  it('keeps the pin when the same question is asked again while no session is live', async () => {
+    const first = await createPinned({ idempotencyKey: 'k' });
+    live.delete('t1');
+    const again = await pinned.create({ ...base, idempotencyKey: 'k' });
+    expect(again).toMatchObject({ ok: true, deduped: true, ask: { id: first.id, sessionId: 'sess-a' } });
   });
 
   it('does not type the expiry notice into a session that replaced the pinned one', async () => {

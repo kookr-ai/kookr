@@ -55,12 +55,17 @@ export interface AskServiceDeps {
   taskStatus: (taskId: string) => TaskStatus | undefined;
   /**
    * Type text into the task's live session (the same path as `kookr reply`). When `sessionId` is
-   * given, deliver only if it is still the task's live session, so a session that replaced it
-   * between the check and the delivery is not typed into.
+   * given, deliver only if the live session is still that one or continues it (`sessionContinues`),
+   * so a fresh session that replaced it between the check and the delivery is not typed into.
    */
   deliverToTask: (taskId: string, text: string, sessionId?: string) => Promise<{ ok: boolean; reason?: string }>;
   /** The task's current live session id, or undefined when it has none. Asks are pinned to it at creation. */
   liveSession?: (taskId: string) => string | undefined;
+  /**
+   * Whether the task's live session is `sessionId` or a session that resumed its conversation
+   * (crash recovery, operator Reopen). Without it, pinned asks are delivered as if unpinned.
+   */
+  sessionContinues?: (taskId: string, sessionId: string) => boolean;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -162,7 +167,7 @@ export class AskService {
       const existing = this.deps.store.all().find((a) => a.taskId === input.taskId && a.idempotencyKey === key && a.state === 'pending');
       if (existing) {
         // The same question asked again from a session that replaced the pinned one (the task was
-        // relaunched and re-asked): the new session is now the one waiting, so the answer goes there.
+        // relaunched and asked again): the new session is now the one waiting, so the answer goes there.
         const session = this.deps.liveSession?.(input.taskId);
         if (session !== undefined && existing.sessionId !== session) {
           this.deps.store.update(existing.id, (a) => { a.sessionId = session; });
@@ -408,11 +413,12 @@ export class AskService {
       await this.finalize(gone, '⚠️ The task is no longer running — your answer was not delivered.');
       return { ok: false, reason: 'task_gone', ask: gone };
     }
-    // Nor into a session that replaced the one that asked (the task was relaunched): it never saw the question.
+    // Nor into a fresh session that replaced the one that asked (the task was relaunched without
+    // resuming): it never saw the question. A session that resumed the asker's conversation did.
     if (!this.pinnedSessionLive(ask)) {
       this.transition(ask.id, 'cancelled', 'task_gone');
       const gone = this.deps.store.get(ask.id) as AskRecord;
-      await this.finalize(gone, '⚠️ The task was relaunched since it asked — your answer was not delivered.');
+      await this.finalize(gone, '⚠️ The task was relaunched in a new session since it asked — your answer was not delivered.');
       return { ok: false, reason: 'task_gone', ask: gone };
     }
 
@@ -484,10 +490,10 @@ export class AskService {
       : this.deps.deliverToTask(ask.taskId, text, ask.sessionId);
   }
 
-  /** Whether the session the ask was pinned to is still the task's live session. Unpinned asks always pass. */
+  /** Whether the task's live session is the pinned one or continues its conversation. Unpinned asks always pass. */
   private pinnedSessionLive(ask: AskRecord): boolean {
-    if (ask.sessionId === undefined || !this.deps.liveSession) return true;
-    return this.deps.liveSession(ask.taskId) === ask.sessionId;
+    if (ask.sessionId === undefined || !this.deps.sessionContinues) return true;
+    return this.deps.sessionContinues(ask.taskId, ask.sessionId);
   }
 
   /** CAS pending → `state`. Returns false when the ask was not pending. */

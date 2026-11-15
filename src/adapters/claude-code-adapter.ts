@@ -633,6 +633,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       cwd,
       createdAt: new Date(),
       ...(promptDelivery ? { promptDelivery } : {}),
+      ...(useResume ? { resumedConversationId: resume!.sessionId } : {}),
     });
 
     // Fire-and-forget: capture git context from CWD
