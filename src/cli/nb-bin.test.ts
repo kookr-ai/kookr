@@ -238,14 +238,18 @@ describe('bin/nb.js — per-change git auto-commit (Objective C)', () => {
   });
 
   test('a call whose only change is deleting a shelf that was staged but never committed commits nothing', () => {
+    // An unrelated staged edit is the trap: committing with an empty path list would
+    // commit everything staged, so it must stay staged and out of HEAD.
     initRepo();
     nb(['add', 'loose', 'the only lesson'], { NB_GIT_AUTOCOMMIT: '0' });
     git(['add', 'loose.md']);
+    writeFileSync(join(dir, '.gitignore'), `${NOTEBOOK_GITIGNORE}# a hand edit nobody committed\n`);
+    git(['add', '.gitignore']);
     const before = git(['rev-list', '--count', 'HEAD']);
     expect(nb(['rm', 'loose', 'only']).code).toBe(0);
     expect(existsSync(join(dir, 'loose.md'))).toBe(false);
     expect(git(['rev-list', '--count', 'HEAD'])).toBe(before);
-    expect(git(['status', '--porcelain'])).toBe(''); // the staged add was undone, nothing left
+    expect(git(['status', '--porcelain'])).toBe('M  .gitignore'); // the staged add of loose.md was undone
   });
 
   describe('while the store has a merge in progress (#3835)', () => {
