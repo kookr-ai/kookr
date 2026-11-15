@@ -19,6 +19,13 @@ PASS=0
 FAIL=0
 FAILED_CASES=()
 
+# A private state directory for this run. The hook's default is /dev/shm, which
+# every concurrent run of this test would share: one run's bypass file, or its
+# cleanup, changes another run's results.
+STALE_SCOUT_STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/stale-scout-state.XXXXXX")
+export STALE_SCOUT_STATE_DIR
+trap 'rm -rf "$STALE_SCOUT_STATE_DIR"' EXIT
+
 run_case() {
   local name="$1"
   local fixture="$2"
@@ -76,7 +83,7 @@ run_case() {
 
   rm -rf "$tmpdir"
   # Clean up any bypass files the case may have set up
-  rm -f /dev/shm/.stale-scout-testowner-testrepo-*-bypass 2>/dev/null || true
+  rm -f "$STALE_SCOUT_STATE_DIR"/.stale-scout-testowner-testrepo-*-bypass 2>/dev/null || true
 }
 
 # Convenience: build a tool_input.command with a heredoc body.
@@ -280,7 +287,7 @@ run_case "17: bypass file consumed" closed-by-other \
   "$(mk_payload testowner/testrepo 'Fixes #1')" \
   allow \
   '' \
-  'touch /dev/shm/.stale-scout-testowner-testrepo-1-bypass'
+  'touch "$STALE_SCOUT_STATE_DIR/.stale-scout-testowner-testrepo-1-bypass"'
 
 # 18. gh auth status fails → fail open (allow), logged
 run_case "18: gh auth fail → fail open" auth-fail \
