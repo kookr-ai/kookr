@@ -17,6 +17,8 @@ export const CLOSING_KEYWORD_CASES: Array<{ name: string; body: string; closes: 
   { name: 'inline code', body: 'the commit `fix: resolve #77 crash` landed; closes #9', closes: [9] },
   { name: 'an HTML comment', body: '<!-- closes #77 -->\ncloses #10', closes: [10] },
   { name: 'an unclosed HTML comment runs to the end', body: 'closes #14\n<!-- fixes #77', closes: [14] },
+  { name: 'a comment marker written as inline code', body: 'The marker is `<!--`.\n\nCloses #8', closes: [8] },
+  { name: 'a comment marker inside a fence', body: '```\n<!-- kookr-review\n```\nfixes #15', closes: [15] },
   { name: 'a quoted line', body: '> fixes #77\ncloses #11', closes: [11] },
   { name: 'CRLF line endings', body: 'Closes #13\r\n```\r\nfixes #77\r\n```\r\n', closes: [13] },
   { name: 'a number longer than 9 digits', body: 'closes #1234567890 and closes #123456789', closes: [123456789] },

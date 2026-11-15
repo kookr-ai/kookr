@@ -186,18 +186,18 @@ export function firstReferenceFromSubject(subject: string): number | null {
 
 /**
  * The prose of a pull request body: what is left after removing everything a
- * reader does not see as a sentence of the author's. HTML comments (an
- * unclosed one runs to the end), fenced code blocks (an unclosed one runs to
- * the end), quoted lines (`>`) and inline code spans are removed. A body that
+ * reader does not see as a sentence of the author's. Fenced code blocks (an
+ * unclosed one runs to the end), quoted lines (`>`) and inline code spans are
+ * removed first, then HTML comments (an unclosed one runs to the end). Code
+ * goes first so that a `<!--` written as code does not hide the rest. A body that
  * quotes a commit list such as `fix: resolve #77 crash` inside a code block
  * then closes nothing. `body_closing_numbers` in scripts/kookr-merge.sh applies
  * the same rules; the two are tested against one table of bodies.
  */
 export function prBodyProse(text: string): string {
-  const withoutComments = text.replace(/<!--[\s\S]*?(?:-->|$)/g, ' ');
   const kept: string[] = [];
   let fence: string | null = null;
-  for (const raw of withoutComments.split('\n')) {
+  for (const raw of text.split('\n')) {
     const line = raw.replace(/\r$/, '');
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
     if (fence !== null) {
@@ -214,7 +214,7 @@ export function prBodyProse(text: string): string {
     if (/^\s*>/.test(line)) continue;
     kept.push(line.replace(/(`+)[\s\S]*?\1/g, ' '));
   }
-  return kept.join('\n');
+  return kept.join('\n').replace(/<!--[\s\S]*?(?:-->|$)/g, ' ');
 }
 
 /**

@@ -739,14 +739,13 @@ unclosed_issues() {
 # `owner/repo#N` and URLs never match: the keyword must be followed by `#`.
 # Only the prose counts, as in `prBodyProse` in
 # scripts/lib/integration-train-core.ts (both are tested on one table of
-# bodies): HTML comments, fenced code blocks (an unclosed comment or fence runs
-# to the end), quoted lines (`>`) and inline code are removed first, so a quoted
-# commit list such as `fix: resolve #77 crash` closes nothing. Numbers longer
-# than 9 digits are ignored.
+# bodies): fenced code blocks, quoted lines (`>`) and inline code are removed,
+# then HTML comments (an unclosed fence or comment runs to the end), so a quoted
+# commit list such as `fix: resolve #77 crash` closes nothing and a `<!--`
+# written as code hides nothing. Numbers longer than 9 digits are ignored.
 body_closing_numbers() {
   jq -r '
     (.body // "")
-    | gsub("<!--[\\s\\S]*?(?:-->|\\z)"; " ")
     | reduce (split("\n")[] | sub("\r\\z"; "")) as $line ({fence: null, out: []};
         ([$line | capture("^ {0,3}(?<m>`{3,}|~{3,})")] | first | .m?) as $marker
         | if .fence != null then
@@ -757,6 +756,7 @@ body_closing_numbers() {
           else .out += [$line | gsub("(`+)[\\s\\S]*?\\1"; " ")]
           end)
     | .out | join("\n")
+    | gsub("<!--[\\s\\S]*?(?:-->|\\z)"; " ")
     | [scan("(?i)(?<![A-Za-z0-9_])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s*:?\\s+#([0-9]{1,9})(?![0-9A-Za-z_])") | .[0]]
     | map(tonumber | select(. > 0)) | reduce .[] as $n ([]; if index([$n]) then . else . + [$n] end) | .[]' 2>/dev/null
 }
