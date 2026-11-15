@@ -55,6 +55,7 @@ import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { gitExecEnv } from '../src/core/git-helpers.js';
+import { CLOSING_KEYWORD_CASES } from './closing-keyword-cases.js';
 
 const SCRIPT = join(process.cwd(), 'scripts/kookr-merge.sh');
 
@@ -1701,6 +1702,15 @@ describe('closing issues after a merge into the integration branch (#3788)', () 
       expect(result.stdout).not.toContain('#5');
       expect(result.stdout).not.toContain('#6');
       expect(result.stdout).not.toContain('#8');
+    });
+
+    // The same table as closingIssueNumbersFromText (integration-train.test.ts),
+    // so the two parsers cannot drift apart.
+    it.each(CLOSING_KEYWORD_CASES)('body closing keywords: $name', ({ body, closes }) => {
+      const result = runBody({ prBody: body });
+      expect(result.status, result.stderr).toBe(0);
+      if (closes.length === 0) expect(result.stdout).not.toContain('stay open until the integration train');
+      else expect(result.stdout).toContain(LINE(closes.map((n) => `#${n}`).join(', ')));
     });
 
     it('prints no line without a keyword and without references', () => {

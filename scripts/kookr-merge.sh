@@ -737,8 +737,28 @@ unclosed_issues() {
 # issue numbers it closes by keyword (close/closes/closed, fix/fixes/fixed,
 # resolve/resolves/resolved, optional colon, whitespace, `#N`), one per line.
 # `owner/repo#N` and URLs never match: the keyword must be followed by `#`.
+# Only the prose counts, as in `prBodyProse` in
+# scripts/lib/integration-train-core.ts (both are tested on one table of
+# bodies): fenced code blocks, quoted lines (`>`) and inline code are removed,
+# then HTML comments (an unclosed fence or comment runs to the end), so a quoted
+# commit list such as `fix: resolve #77 crash` closes nothing and a `<!--`
+# written as code hides nothing. Numbers longer than 9 digits are ignored.
 body_closing_numbers() {
-  jq -r '[(.body // "") | scan("(?i)(?<![A-Za-z0-9_])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\\s+#([0-9]+)(?![0-9A-Za-z_])") | .[0]] | .[]' 2>/dev/null
+  jq -r '
+    (.body // "")
+    | reduce (split("\n")[] | sub("\r\\z"; "")) as $line ({fence: null, out: []};
+        ([$line | capture("^ {0,3}(?<m>`{3,}|~{3,})")] | first | .m?) as $marker
+        | if .fence != null then
+            if $marker != null and ($marker[0:1] == .fence[0:1]) and (($marker | length) >= (.fence | length))
+               and ($line | test("^ {0,3}[`~]+\\s*\\z")) then .fence = null else . end
+          elif $marker != null then .fence = $marker
+          elif ($line | test("^\\s*>")) then .
+          else .out += [$line | gsub("(`+)[\\s\\S]*?\\1"; " ")]
+          end)
+    | .out | join("\n")
+    | gsub("<!--[\\s\\S]*?(?:-->|\\z)"; " ")
+    | [scan("(?i)(?<![A-Za-z0-9_])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s*:?\\s+#([0-9]{1,9})(?![0-9A-Za-z_])") | .[0]]
+    | map(tonumber | select(. > 0)) | reduce .[] as $n ([]; if index([$n]) then . else . + [$n] end) | .[]' 2>/dev/null
 }
 
 # report_open_closing_issues — after the merge, report every issue the PR

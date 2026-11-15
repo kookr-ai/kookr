@@ -21,6 +21,45 @@ run_lane() {
   "$@"
 }
 
+# The unit lane. A developer's `pnpm verify` runs it plainly. With
+# KOOKR_VERIFY_FLAKY_RERUN=1 (the integration train sets it) it applies the
+# pre-push hook's flaky policy: when at most five test files fail, re-run only
+# those once. A pass continues and is appended to the flaky log shared by every
+# worktree (<git common dir>/kookr-flaky-tests.log); a second failure, more
+# files, unhandled errors or a crashed worker fail the lane
+# (scripts/flaky-rerun-files.mjs lists every case).
+unit_tests() {
+  if [ "${KOOKR_VERIFY_FLAKY_RERUN:-}" != "1" ]; then
+    pnpm test
+    return
+  fi
+  local script_dir report rerun_files log head branch f
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+  report=$(mktemp "${TMPDIR:-/tmp}/kookr-verify-vitest.XXXXXX")
+  if VITEST_RERUN_SUMMARY_FILE="$report" pnpm test; then
+    rm -f "$report"
+    return 0
+  fi
+  rerun_files=$(node "$script_dir/flaky-rerun-files.mjs" "$report" --max-files 5) || rerun_files=""
+  rm -f "$report"
+  [ -n "$rerun_files" ] || return 1
+  set --
+  while IFS= read -r f; do
+    [ -n "$f" ] && set -- "$@" "$f"
+  done <<< "$rerun_files"
+  echo ""
+  echo "[verify] $# test file(s) failed; re-running only those once to tell a flake from a real failure:"
+  printf '  %s\n' "$@"
+  pnpm exec vitest run "$@" || return 1
+  log="$(git rev-parse --git-common-dir 2>/dev/null)/kookr-flaky-tests.log"
+  head=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+  branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)
+  for f in "$@"; do
+    printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch" "$head" "$f" >> "$log" 2>/dev/null || true
+  done
+  echo "[verify] FLAKY: the file(s) above failed in the full run and passed on re-run. Logged to $log."
+}
+
 # --- Lanes shared with the pre-push gate (same relative order) --------------
 run_lane "Type-checking server" pnpm build:server
 run_lane "Type-checking E2E tests" pnpm check:e2e
@@ -34,7 +73,7 @@ run_lane "Rehearsing parent-implementer fallback" pnpm validate:parent-fallback
 run_lane "Validating documented environment variables" pnpm validate:docs-env-vars
 run_lane "Validating documented API routes" pnpm validate:docs-api-routes
 run_lane "Validating requirements status matrix" pnpm validate:requirements
-run_lane "Running tests" pnpm test
+run_lane "Running tests" unit_tests
 run_lane "Running self-contained integration tests" pnpm test:integration
 run_lane "Checking FAA mitigation evidence" pnpm check:faa-gate
 

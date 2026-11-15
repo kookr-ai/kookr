@@ -212,6 +212,8 @@ export const DOCUMENTED_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_MERGE_CHECK_TIMEOUT_SECONDS',
   // Read by vitest.config.mts (outside the scanned roots); the integration train sets it.
   'KOOKR_VITEST_MAX_WORKERS',
+  // Read by scripts/verify.sh (unscanned); the integration train sets it.
+  'KOOKR_VERIFY_FLAKY_RERUN',
   // Consumed by hook shell scripts.
   'KOOKR_HOOKS_DIR',
   // Relay incident escalation target — documented for operators; read by deploy tooling.

@@ -103,15 +103,30 @@ if [[ -n "$PR" ]]; then
   [[ -n "$REPO" ]] && repo_args=(--repo "$REPO")
   base_name="$(gh pr view "$PR" ${repo_args[@]+"${repo_args[@]}"} --json baseRefName --jq .baseRefName)" || base_name=""
   [[ -n "$base_name" ]] || { echo "review-patch-id: could not read the base branch of PR #$PR" >&2; exit 1; }
-  # Each fetch reads FETCH_HEAD straight away; no ref, branch or worktree changes.
-  git fetch --quiet --no-tags origin "refs/pull/$PR/head" || { echo "review-patch-id: could not fetch refs/pull/$PR/head from origin" >&2; exit 1; }
-  head_sha="$(git rev-parse --verify FETCH_HEAD^{commit})"
+  # Name both commits by SHA from one ls-remote, then fetch them. FETCH_HEAD is
+  # never read: another fetch in the same worktree (a hook, an editor, a second
+  # merge) can replace it between our fetch and our read. No ref, branch or
+  # worktree changes.
+  pull_ref="refs/pull/$PR/head"
+  base_ref="refs/heads/$base_name"
+  remote_refs="$(git ls-remote origin "$pull_ref" "$base_ref")" \
+    || { echo "review-patch-id: could not list $pull_ref and $base_ref on origin" >&2; exit 1; }
+  head_sha="$(printf '%s\n' "$remote_refs" | awk -v r="$pull_ref" '$2 == r { print tolower($1); exit }')"
+  base_sha="$(printf '%s\n' "$remote_refs" | awk -v r="$base_ref" '$2 == r { print tolower($1); exit }')"
+  [[ -n "$head_sha" ]] || { echo "review-patch-id: could not fetch $pull_ref from origin (no such ref)" >&2; exit 1; }
   if [[ -n "$EXPECT_HEAD" && "$head_sha" != "$EXPECT_HEAD" ]]; then
-    echo "review-patch-id: refs/pull/$PR/head is $head_sha, not the expected head $EXPECT_HEAD" >&2
+    echo "review-patch-id: $pull_ref is $head_sha, not the expected head $EXPECT_HEAD" >&2
     exit 1
   fi
-  git fetch --quiet --no-tags origin "refs/heads/$base_name" || { echo "review-patch-id: could not fetch $base_name from origin" >&2; exit 1; }
-  base_sha="$(git rev-parse --verify FETCH_HEAD^{commit})"
+  [[ -n "$base_sha" ]] || { echo "review-patch-id: could not fetch $base_name from origin (no such branch)" >&2; exit 1; }
+  git fetch --quiet --no-tags origin "$pull_ref" "$base_ref" \
+    || { echo "review-patch-id: could not fetch $pull_ref and $base_name from origin" >&2; exit 1; }
+  # If a ref moved between ls-remote and the fetch, the listed commit may be
+  # missing locally: fail rather than guess.
+  for sha in "$head_sha" "$base_sha"; do
+    git cat-file -e "$sha^{commit}" 2>/dev/null \
+      || { echo "review-patch-id: commit $sha is not available after the fetch (did origin move?); retry" >&2; exit 1; }
+  done
   patch_id "$base_sha" "$head_sha"
   exit $?
 fi

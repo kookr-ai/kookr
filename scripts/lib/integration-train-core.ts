@@ -78,6 +78,14 @@ export interface TrainState {
    * is a new PR with a new number but closes the same issue; `pr-<n>` otherwise.
    */
   fixTasks: Record<string, number>;
+  /**
+   * True from the first alert until a healthy cycle has reported recovery, so
+   * "recovered" is sent once per problem, never while still halted, and never
+   * on an ordinary idle cycle.
+   */
+  alerting: boolean;
+  /** Consecutive cycles that ended on a rejected push; reset by a successful push. */
+  pushRejections: number;
 }
 
 export interface TrainStateStore {
@@ -122,9 +130,11 @@ const VERIFIED_GREEN_CAP = 200;
 const FLAKY_CAP = 50;
 const COMMENT_TAIL_LINES = 60;
 const COMMENT_TAIL_CHARS = 4000;
+/** Cycles in a row that may end on a rejected push before the train halts. */
+export const PUSH_REJECT_LIMIT = 3;
 
 export function emptyTrainState(): TrainState {
-  return { halted: null, verifiedGreen: [], flakyHeads: [], fixTasks: {} };
+  return { halted: null, verifiedGreen: [], flakyHeads: [], fixTasks: {}, alerting: false, pushRejections: 0 };
 }
 
 export function normalizeTrainState(raw: Partial<TrainState> | null | undefined): TrainState {
@@ -135,6 +145,10 @@ export function normalizeTrainState(raw: Partial<TrainState> | null | undefined)
     verifiedGreen: Array.isArray(raw.verifiedGreen) ? raw.verifiedGreen : base.verifiedGreen,
     flakyHeads: Array.isArray(raw.flakyHeads) ? raw.flakyHeads : base.flakyHeads,
     fixTasks: raw.fixTasks && typeof raw.fixTasks === 'object' ? raw.fixTasks : base.fixTasks,
+    alerting: raw.alerting === true,
+    pushRejections: Number.isInteger(raw.pushRejections) && (raw.pushRejections as number) > 0
+      ? raw.pushRejections as number
+      : 0,
   };
 }
 
@@ -171,18 +185,54 @@ export function firstReferenceFromSubject(subject: string): number | null {
 }
 
 /**
+ * The prose of a pull request body: what is left after removing everything a
+ * reader does not see as a sentence of the author's. Fenced code blocks (an
+ * unclosed one runs to the end), quoted lines (`>`) and inline code spans are
+ * removed first, then HTML comments (an unclosed one runs to the end). Code
+ * goes first so that a `<!--` written as code does not hide the rest. A body that
+ * quotes a commit list such as `fix: resolve #77 crash` inside a code block
+ * then closes nothing. `body_closing_numbers` in scripts/kookr-merge.sh applies
+ * the same rules; the two are tested against one table of bodies.
+ */
+export function prBodyProse(text: string): string {
+  const kept: string[] = [];
+  let fence: string | null = null;
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
+    if (fence !== null) {
+      // A closing fence: the same character, at least as long, nothing after it.
+      if (marker !== null && marker[0] === fence[0] && marker.length >= fence.length && /^ {0,3}[`~]+\s*$/.test(line)) {
+        fence = null;
+      }
+      continue;
+    }
+    if (marker !== null) {
+      fence = marker;
+      continue;
+    }
+    if (/^\s*>/.test(line)) continue;
+    kept.push(line.replace(/(`+)[\s\S]*?\1/g, ' '));
+  }
+  return kept.join('\n').replace(/<!--[\s\S]*?(?:-->|$)/g, ' ');
+}
+
+/**
  * Issue numbers a pull request body closes by the standard keywords
  * (`close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved`, any case,
  * an optional colon, then `#<number>`). GitHub reports no closing references for
  * a pull request whose base is not the default branch, which is every pull
  * request once they target the integration branch, so the train reads the body
- * itself. `owner/repo#n` and URLs are ignored, and so is a keyword that is only
- * the end of a longer word (`prefixes #3`).
+ * itself. Only the prose counts (see `prBodyProse`): code, comments and quotes
+ * are ignored. `owner/repo#n`, URLs, numbers longer than 9 digits and a keyword
+ * that is only the end of a longer word (`prefixes #3`) are ignored too. A
+ * number may still be a pull request; the caller checks that with GitHub.
  */
 export function closingIssueNumbersFromText(text: string): number[] {
   const re = /(?<![A-Za-z0-9_])(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s*:?\s+#(\d+)(?![A-Za-z0-9_])/gi;
   const found: number[] = [];
-  for (const m of text.matchAll(re)) {
+  for (const m of prBodyProse(text).matchAll(re)) {
+    if (m[1].length > 9) continue;
     const n = Number(m[1]);
     if (n > 0 && !found.includes(n)) found.push(n);
   }
@@ -217,9 +267,13 @@ export async function runTrainCycle(deps: TrainDeps): Promise<CycleResult> {
   const state = normalizeTrainState(deps.state.load());
   try {
     const result = await cycle(deps, state);
-    // A standing halt stays quiet: it was announced when it started.
-    if (result.outcome === 'idle' || result.outcome === 'promoted' || result.outcome === 'reconciled') {
-      await safe(deps, () => deps.notifier.healthy());
+    // A standing halt stays quiet: it was announced when it started. Recovery
+    // is reported once, by the first healthy cycle after an alert; a failed
+    // report is tried again by the next healthy cycle.
+    const healthy = result.outcome === 'idle' || result.outcome === 'promoted' || result.outcome === 'reconciled';
+    if (healthy && state.alerting && !state.halted) {
+      const sent = await safe(deps, async () => { await deps.notifier.healthy(); return true; });
+      if (sent === true) state.alerting = false;
     }
     return result;
   } finally {
@@ -267,8 +321,27 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   }
 
   const intRef = `origin/${integration}`;
-  let mainSha = await out(['rev-parse', 'origin/main']);
-  const headSha = await out(['rev-parse', intRef]);
+  let mainSha = '';
+  let headSha = '';
+
+  const halt = async (reason: string, main: string, int: string, detail: string): Promise<CycleResult> => {
+    state.halted = { reason, main, integration: int, at: deps.now().toISOString() };
+    state.pushRejections = 0;
+    log(`HALT ${reason}: ${detail}`);
+    await raise(deps, state, 'halted', `${reason}: ${detail}`);
+    return { outcome: 'halted', reason, detail };
+  };
+
+  try {
+    mainSha = await out(['rev-parse', 'origin/main']);
+    headSha = await out(['rev-parse', intRef]);
+  } catch (err) {
+    // The refs cannot even be named, so a standing halt cannot be checked
+    // against them. Keep a standing halt quiet; otherwise halt once and tell
+    // the operator instead of failing the same way every interval.
+    if (state.halted) return { outcome: 'halted', reason: state.halted.reason };
+    return halt('train-error', mainSha, headSha, err instanceof Error ? err.message : String(err));
+  }
 
   // 2. Standing halt: only a moved ref clears it.
   if (state.halted) {
@@ -279,30 +352,54 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     state.halted = null;
   }
 
-  const halt = async (reason: string, main: string, int: string, detail: string): Promise<CycleResult> => {
-    state.halted = { reason, main, integration: int, at: deps.now().toISOString() };
-    log(`HALT ${reason}: ${detail}`);
-    await safe(deps, () => deps.notifier.notify('halted', `${reason}: ${detail}`));
-    return { outcome: 'halted', reason, detail };
+  // 3.
+  if (mainSha === headSha) {
+    state.pushRejections = 0;
+    return { outcome: 'idle' };
+  }
+
+  /**
+   * A push was rejected. The next cycle retries, but a push that is rejected
+   * PUSH_REJECT_LIMIT cycles in a row (branch protection, lost credentials)
+   * will not go through by retrying: halt and tell the operator.
+   */
+  const rejected = async (what: string, push: GitResult): Promise<CycleResult> => {
+    log(`${what} rejected: ${push.stderr.trim()}`);
+    state.pushRejections += 1;
+    if (state.pushRejections >= PUSH_REJECT_LIMIT) {
+      return halt(
+        'push-rejected', mainSha, headSha,
+        `${what} rejected ${state.pushRejections} cycles in a row: ${push.stderr.trim().slice(-300)}`,
+      );
+    }
+    return { outcome: 'retry', detail: `${what} rejected` };
+  };
+  const push = async (refspec: string): Promise<GitResult> => {
+    const r = await pushRef(deps, refspec);
+    if (r.ok) state.pushRejections = 0;
+    return r;
   };
 
-  // 3.
-  if (mainSha === headSha) return { outcome: 'idle' };
-
+  // Steps 4 and 5 run inside the same error handler as the decision steps
+  // below, so an unexpected git failure halts as train-error.
+  const reconcileAndList = async (): Promise<CycleResult | string[]> => {
   // 4. Someone merged straight into main: fold it into the integration branch.
   const ancestor = await git(['merge-base', '--is-ancestor', 'origin/main', intRef]);
   if (!ancestor.ok) {
     await out(['checkout', '--detach', '-q', headSha]);
     const merge = await git(['merge', '--no-edit', 'origin/main']);
     if (!merge.ok) {
+      // Only unmerged paths make it a conflict. Anything else (no committer
+      // identity, a broken worktree) is an unexpected failure.
+      const unmerged = await git(['diff', '--name-only', '--diff-filter=U']);
       await git(['merge', '--abort']);
-      return halt('reconcile-conflict', mainSha, headSha, 'merging origin/main into the integration branch conflicts');
+      if (unmerged.ok && unmerged.stdout.trim() !== '') {
+        return halt('reconcile-conflict', mainSha, headSha, 'merging origin/main into the integration branch conflicts');
+      }
+      return halt('train-error', mainSha, headSha, `merging origin/main into the integration branch failed: ${merge.stderr.trim()}`);
     }
-    const push = await pushRef(deps, `HEAD:refs/heads/${integration}`);
-    if (!push.ok) {
-      log(`reconcile push rejected: ${push.stderr.trim()}`);
-      return { outcome: 'retry', detail: 'reconcile push rejected' };
-    }
+    const pushed = await push(`HEAD:refs/heads/${integration}`);
+    if (!pushed.ok) return rejected('reconcile push', pushed);
     log(`reconciled ${integration} with main`);
     return { outcome: 'reconciled' };
   }
@@ -313,9 +410,10 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   // already fixed, and an innocent commit would be blamed. `--ancestry-path`
   // leaves the merge commit and everything after it; if the merge itself is the
   // first bad commit the train halts (culprit-is-merge) for a human.
-  const candidates = (await out([
+  return (await out([
     'rev-list', '--first-parent', '--ancestry-path', '--reverse', `origin/main..${intRef}`,
   ])).split('\n').filter(Boolean);
+  };
 
   // Verify bookkeeping for this cycle.
   const results = new Map<string, boolean>();
@@ -331,30 +429,33 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   };
   const isGreen = (sha: string): boolean => results.get(sha) === true || state.verifiedGreen.includes(sha);
 
-  const promote = async (sha: string): Promise<boolean> => {
+  /** Fast-forward main to a verified SHA. Returns the push result. */
+  const promote = async (sha: string): Promise<GitResult> => {
     if (!isGreen(sha)) throw new Error(`refusing to promote ${sha}: not verified green by the train`);
     const fresh = (await out(['rev-list', '--first-parent', '--reverse', `origin/main..${sha}`]))
       .split('\n').filter(Boolean);
     // --no-verify: the repo's pre-push hook demands a reviewer marker and runs
     // the test suite; the train's push is itself the verified promotion, so it
     // must bypass the hook. Plain fast-forward, never forced.
-    const push = await pushRef(deps, `${sha}:refs/heads/main`);
-    if (!push.ok) {
-      log(`promotion push of ${sha.slice(0, 10)} rejected: ${push.stderr.trim()}`);
-      return false;
-    }
+    const pushed = await push(`${sha}:refs/heads/main`);
+    if (!pushed.ok) return pushed;
     mainSha = sha;
     pushCapped(state.verifiedGreen, sha, VERIFIED_GREEN_CAP);
     log(`promoted ${sha.slice(0, 10)} to main`);
     await closeIssuesFor(deps, fresh, sha);
-    return true;
+    return pushed;
   };
 
-  // Steps 6-9. An arrow function, so the narrowed types above stay narrowed.
+  // Steps 4-9. An arrow function, so the narrowed types above stay narrowed.
   const decide = async (): Promise<CycleResult> => {
+  const listed = await reconcileAndList();
+  if (!Array.isArray(listed)) return listed;
+  const candidates = listed;
+
   // 6. Verify the head.
   if (await verify(headSha)) {
-    if (!(await promote(headSha))) return { outcome: 'retry', detail: 'promotion push rejected' };
+    const promoted = await promote(headSha);
+    if (!promoted.ok) return rejected('promotion push', promoted);
     return { outcome: 'promoted' };
   }
 
@@ -363,7 +464,8 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   const firstRedTail = redTails.get(headSha) ?? '';
   if (await verify(headSha)) {
     pushCapped(state.flakyHeads, headSha, FLAKY_CAP);
-    if (!(await promote(headSha))) return { outcome: 'retry', detail: 'promotion push rejected' };
+    const promoted = await promote(headSha);
+    if (!promoted.ok) return rejected('promotion push', promoted);
     return { outcome: 'promoted', detail: 'flaky' };
   }
   if (!redTails.get(headSha)) redTails.set(headSha, firstRedTail);
@@ -404,7 +506,8 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
         `still red at ${revertCommit.slice(0, 10)}, which already reverts an earlier culprit; a second change in the batch is failing`,
       );
     }
-    if (!(await promote(revertCommit))) return { outcome: 'retry', detail: 'promotion of the reverted head rejected' };
+    const promoted = await promote(revertCommit);
+    if (!promoted.ok) return rejected('promotion of the reverted head', promoted);
     lo = revertIdx;
   }
 
@@ -432,8 +535,9 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   // Promote the last good commit so main keeps moving while the culprit is
   // dealt with. Candidates are limited to commits that contain main, so this is
   // always a fast-forward.
-  if (lastGood !== mainSha && !(await promote(lastGood))) {
-    return { outcome: 'retry', detail: 'promotion of last good rejected' };
+  if (lastGood !== mainSha) {
+    const promoted = await promote(lastGood);
+    if (!promoted.ok) return rejected('promotion of last good', promoted);
   }
 
   const parents = (await out(['rev-list', '--parents', '-n', '1', culprit])).split(/\s+/).filter(Boolean);
@@ -484,14 +588,17 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
       `reverting suspected culprit ${culprit.slice(0, 10)} (${subject}) does not make the head pass; nothing pushed`,
     );
   }
-  const push = await pushRef(deps, `${revertSha}:refs/heads/${integration}`);
-  if (!push.ok) {
-    log(`revert push rejected (branch moved?): ${push.stderr.trim()}`);
-    return { outcome: 'retry', detail: 'revert push rejected' };
-  }
+  const revertPush = await push(`${revertSha}:refs/heads/${integration}`);
+  if (!revertPush.ok) return rejected('revert push', revertPush);
   // The revert is verified green and contains main: promote it right away. A
-  // rejected push is not an error; the next cycle promotes it.
-  const revertPromoted = await promote(revertSha);
+  // rejected push is not an error; the next cycle promotes it (and counts it
+  // towards PUSH_REJECT_LIMIT).
+  const revertPromotion = await promote(revertSha);
+  const revertPromoted = revertPromotion.ok;
+  if (!revertPromoted) {
+    log(`promotion of the revert rejected: ${revertPromotion.stderr.trim()}`);
+    state.pushRejections += 1;
+  }
 
   const pr = prNumberFromSubject(subject);
   const failTail = tailForComment(redTails.get(culprit) ?? redTails.get(headSha) ?? '');
@@ -533,23 +640,21 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
         fixNote = `fix task ${key} spawned`;
       } else {
         fixNote = `fix task ${key} could not be spawned`;
-        await safe(deps, () => deps.notifier.notify(
-          'fix-spawn-failed',
+        await raise(
+          deps, state, 'fix-spawn-failed',
           `PR #${pr} reverted as ${revertSha}; fix task ${key} could not be spawned. Needs a human.`,
-        ));
+        );
       }
     } else {
       fixNote = `fix budget exhausted for ${budgetKey} (PR #${pr})`;
-      await safe(deps, () => deps.notifier.notify(
-        'fix-budget-exhausted',
+      await raise(
+        deps, state, 'fix-budget-exhausted',
         `PR #${pr} failed again after an automatic fix task; reverted ${culprit} (${revertSha}). Needs a human.`,
-      ));
+      );
     }
   }
   if (!revertPromoted) fixNote += '; promotion of the revert rejected, the next cycle retries';
-  await safe(deps, () => deps.notifier.notify(
-    'reverted', `reverted ${culprit} as ${revertSha} on ${integration}; ${fixNote}`,
-  ));
+  await raise(deps, state, 'reverted', `reverted ${culprit} as ${revertSha} on ${integration}; ${fixNote}`);
   return { outcome: 'reverted', detail: fixNote };
   };
 
@@ -635,6 +740,15 @@ async function closeIssuesFor(deps: TrainDeps, shas: string[], promoted: string)
       await safe(deps, () => deps.github.closeIssue(issue.number, `Verified on main in ${short}.`));
     }
   }
+}
+
+/**
+ * Notify the operator (best effort) and remember that an alert is outstanding,
+ * so the next healthy cycle reports recovery once.
+ */
+async function raise(deps: TrainDeps, state: TrainState, kind: TrainEventKind, detail: string): Promise<void> {
+  state.alerting = true;
+  await safe(deps, () => deps.notifier.notify(kind, detail));
 }
 
 /** Best-effort wrapper: a failing side channel never fails the cycle. */
