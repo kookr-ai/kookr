@@ -21,11 +21,17 @@ import { killProcessTree } from '../adapters/process-tree.js';
 
 /**
  * mkdtemp prefixes used by dtach-spawning tests. Matched as path segments so
- * `/tmp/tsc-abc` and `/var/folders/.../T/ldb-test-xyz` both hit. Keep this list
- * in sync with the prefixes in:
+ * `/tmp/tsc-abc` and `/var/folders/.../T/ldb-test-xyz` both hit. Prefixes in use:
  * - `src/server/terminal-input-coordinator.test.ts` (`tsc-`)
- * - `src/adapters/local-dtach-backend.test.ts` (`ldb-test-`, `ldb-mac-sim-`)
+ * - `src/adapters/local-dtach-backend.test.ts` (`ldb-mac-sim-`; `ldb-test-` is
+ *   only for checkouts older than kookr-ai/kookr#3825)
  * - `src/server/session-reaper-dtach-integration.test.ts` (`kookr-session-reaper-it-`)
+ *
+ * Do NOT add `local-dtach-backend.test.ts`'s session prefix (`ldb-case-`) here.
+ * The global teardown reaper runs at the end of EVERY vitest process on the host
+ * and kills every match, including live sessions of other vitest runs still in
+ * progress; that is what made that file flake under load (#3825). A guard test
+ * in that file fails if a marker here starts matching its prefix.
  */
 export const TEST_DTACH_DIR_MARKERS = [
   '/tsc-',
