@@ -112,7 +112,8 @@ head review changed (#3692). The rule:
 3. A green full gate that already ran on H before the PR was opened counts; do
    not run it a second time. The gate runs once per head, never once per fix.
 4. Any change that is not a delta-eligible edit (next section) makes a new head
-   H'. H' needs a new review and a new full gate. While fixing, iterate with
+   H'. H' needs a new review and a new full gate; after a BLOCK, that review is
+   the short fix check of §4a, not a second full review. While fixing, iterate with
    targeted tests (`pnpm test:changed` or the touched files).
 5. Wait only on a notification, PID, or exit-marker file (see §5), never a
    `pgrep -f` loop.
@@ -334,8 +335,47 @@ or dead code the diff introduced. Each finding in a BLOCK is tagged
 
 Also tell the reviewer how many `kookr-review-verdict: block` comments the PR
 already carries, and pass it those comments. They are reviewer output, not your
-reasoning, so the reviewer stays blind. From the third review on, the round
-cap in §4a applies.
+reasoning, so the reviewer stays blind. The round number decides which brief
+the reviewer gets (§4a):
+
+- **Round 1 (no BLOCK on the PR yet): the full review.** Put this in the
+  brief: "Time budget: about 8 minutes. Review the whole PR diff. Run mutation
+  checks (change a line, see whether a test fails) only on runtime lines this PR
+  changes."
+- **Round 2 and later (the PR carries a BLOCK): the fix check.** It is short,
+  not a second full review. Give the reviewer, on top of the inputs above, the
+  latest BLOCK comment and the **fix diff**: the change from the head that
+  BLOCK reviewed (its `review-head-sha`, `PREV` below) to the new head.
+
+  ```bash
+  PREV=<review-head-sha of the latest block comment>
+  git cat-file -e "$PREV^{commit}" 2>/dev/null || git fetch --quiet origin "$PREV"
+  if git merge-base --is-ancestor "$PREV" HEAD; then
+    git diff "$PREV" HEAD > /tmp/kookr-review-$PR.fix.diff
+  else  # the branch was rebased since: compare the two versions of the PR
+    git range-diff "$(git merge-base "$BASE" "$PREV")..$PREV" \
+      "$(git merge-base "$BASE" HEAD)..HEAD" > /tmp/kookr-review-$PR.fix.diff
+  fi
+  ```
+
+  If the fix diff comes out empty or a command fails, the round has no fix to
+  check: run the round-1 full review instead. In `range-diff` output, the
+  changed lines are the ones the inner diff adds or removes.
+
+  Put this in the brief: "Time budget: about 4 minutes. For each blocking
+  finding of the latest BLOCK, confirm it is fixed or say why it is not.
+  Then review only the lines the fix diff changes. Run no mutation checks
+  outside those lines. A new non-critical finding on a line the fix diff does
+  not change goes under `Follow-ups` and does not block. A new critical finding
+  blocks wherever it is."
+
+  The full PR diff stays available as context, so the reviewer can follow a
+  changed line into code it calls. This fix check is not the "delta review
+  after a PASS" above: that one accepts only comment or typo edits, while this
+  one accepts any fix.
+
+The strength floor applies to both briefs. The budgets are targets inside the
+10-minute limit of §5, not new timeouts.
 
 ### 3. Post the verdict comment
 
@@ -369,7 +409,8 @@ On a **hard-gate** repo, BLOCK refuses the merge. For **each** confirmed
 finding, do exactly one:
 
 - **Fix it** — implement the fix, commit, push. The head SHA changes, so you MUST
-  re-run this skill (step 1) and post a fresh verdict for the new head.
+  re-run this skill and post a fresh verdict for the new head. That review uses
+  the round-2 brief of §2 (the fix diff), not a second full review.
 - **Rebut it** — if the finding is wrong, post a PR comment explaining why, then
   re-run the reviewer so it can confirm and post a fresh `pass`. A rebuttal is
   not a merge authorization on its own; only a `pass` verdict is.
@@ -382,7 +423,8 @@ lines the PR changes, plus other call sites of the same function or the same
 pattern in files the PR touches. It returns a list, not a verdict. Fix them all,
 then request the next review; that review is the counted §6 iteration. From
 review 3 on this applies only to a critical class, because the §4a round cap
-turns the other classes into follow-up issues.
+turns the other classes into follow-ups. In review 2, instances of a
+non-critical class on lines the fix did not change are follow-ups too.
 In the #3691 sample, one PR took 12 BLOCK rounds and another 8, each round
 finding one more instance of the same class (analyst-reported).
 
@@ -393,32 +435,57 @@ On an **advisory** repo, post the BLOCK as evidence. Do not stall or refuse
 merge because of it. Fix confirmed findings when they are cheap and clearly
 right; otherwise merge after local gates and leave the BLOCK on the PR.
 
-### 4a. Round cap: two blocked rounds, then only critical findings block (hard-gate)
+### 4a. Round rules: full review once, then fix checks; after two BLOCKs only critical findings block (hard-gate)
 
 Of 56 reviewed pull requests in the 10–15 Nov 2026 sample, 13 were blocked at
 least once, and those then took a median of 3 rounds (mean 4.1). Most of the
-extra rounds were spent on findings that could have waited. The rule:
+extra rounds were spent on findings that could have waited. In the first batch
+after the fast gate went live (#3844), the review loop took 30–38 minutes per
+blocked pull request, against 8–16 minutes of implementation: round 2 was a
+second full review that raised a new non-critical finding on code round 1 had
+already read, which forced a round 3. Every one of those blocking findings was
+non-critical. The rules:
 
 1. **Count the rounds from the PR, not from memory.** The round count is the
    number of verdict comments (those carrying `<!-- kookr-independent-review -->`)
    whose verdict is `block`, counting at most one per `review-head-sha`, so a
    re-poll on the same head is not a new round. Give the
-   reviewer that count with the comments (§2).
-2. **Reviews 1 and 2** block on any blocking finding, critical or not (§2).
-3. **From review 3 on** (the PR already carries two or more BLOCKs), only
-   **critical** findings block. The reviewer lists every non-critical finding
-   under `Follow-ups`, each with a short issue title and a body that names the
-   file, the line and what is wrong. With no critical finding, the verdict is
-   `pass`.
-4. **The relaying session files the follow-ups before posting the verdict.**
-   The Codex lane runs read-only, so the session that posts the verdict files
-   each follow-up as written, then puts the issue links in the `pass` body:
+   reviewer that count with the comments (§2). The review in progress is round
+   count + 1.
+2. **Round 1 is the full review** (§2 round-1 brief, about 8 minutes). Any
+   blocking finding blocks, critical or not.
+3. **Round 2 and later are fix checks** (§2 round-2 brief, about 4 minutes):
+   confirm each blocking finding of the latest BLOCK is fixed, then review
+   only the lines the fix diff changes. What blocks:
+
+   | Finding | Round 2 | Round 3 and later |
+   |---|---|---|
+   | A blocking finding of the latest BLOCK, not fixed | blocks | blocks only if critical |
+   | New, critical, anywhere in the PR | blocks | blocks |
+   | New, non-critical, on a line the fix diff changes | blocks | follow-up |
+   | New, non-critical, on a line the fix diff does not change | follow-up | follow-up |
+
+   **Critical** means a correctness defect, possible data loss or a security
+   weakness (§2); it blocks in every round. From round 3 on (the PR already
+   carries two or more BLOCKs) this is the round cap: only critical findings
+   block.
+4. **Follow-ups go into the verdict, one issue per PR.** The reviewer lists
+   every non-blocking finding under `Follow-ups`, each naming the file, the
+   line and what is wrong. With nothing blocking, the verdict is `pass`. The
+   Codex lane runs read-only, so the session that posts the verdict files
+   **one** issue for the whole PR, with one checklist item per follow-up, and
+   links it from the verdict body. Do this at **every** verdict that lists
+   follow-ups, a BLOCK included, so none is lost when a later round adds
+   nothing or the PR ends in a recorded blocker. If an earlier round of this PR
+   already filed the issue, add the new items to it (`gh issue edit
+   --body-file`) instead of opening a second:
 
    ```bash
-   gh issue create --repo "$REPO" --title "<follow-up title>" \
-     --body "<follow-up body>
+   gh issue create --repo "$REPO" --title "Follow-ups from the review of #$PR" \
+     --body "Non-critical findings from the independent review of #$PR, left out of it under the round rules.
 
-   Found by the independent review of #$PR (round $ROUND, non-critical under the round cap)."
+   - [ ] <file>:<line> <what is wrong> (round <n>)
+   - [ ] <file>:<line> <what is wrong> (round <n>)"
    ```
 
 5. **The capped pass needs a new head.** The merge wrapper keeps a BLOCK sticky
@@ -438,13 +505,19 @@ extra rounds were spent on findings that could have waited. The rule:
 - **Review 1 on H1** (`a1b2…`): BLOCK. (1) critical: a pruned task is deleted
   before its archive write is flushed, so a crash loses it. (2) non-critical:
   no test covers the empty-history path. The implementer fixes both: H2.
-- **Review 2 on H2** (`c3d4…`): BLOCK. (1) non-critical: `docs/reference/tasks.md`
-  still says pruning deletes history. (2) non-critical: the helper
-  `archiveName()` is exported but unused. The implementer fixes the doc,
-  leaves the helper for now, and commits: H3.
-- **Review 3 on H3** (`e5f6…`): the PR carries two BLOCKs, so the cap applies.
-  The reviewer finds no critical defect and returns one follow-up, the unused
-  export. The session files it as #4101 and posts:
+- **Review 2 on H2** (`c3d4…`), a fix check on `git diff a1b2… c3d4…`: both
+  round-1 findings are fixed. Two new findings. (1) non-critical, on a changed
+  line: the new empty-history test asserts nothing after the call. (2)
+  non-critical, on an unchanged line: the helper `archiveName()` is exported
+  but unused. (1) blocks; (2) is a follow-up. Verdict: BLOCK. The session
+  files (2) as #4101, a follow-up issue with one checklist item, and links it
+  from the BLOCK. The implementer adds the assertion and commits: H3.
+- **Review 3 on H3** (`e5f6…`), a fix check on `git diff c3d4… e5f6…`: the
+  assertion is there. The PR carries two BLOCKs, so only critical findings
+  block. The reviewer finds none and returns one more follow-up:
+  `docs/reference/tasks.md` still says pruning deletes history. The session
+  adds it to #4101, which now holds both follow-ups as two checklist items,
+  and posts:
 
   ```
   <!-- kookr-independent-review -->
@@ -454,24 +527,28 @@ extra rounds were spent on findings that could have waited. The rule:
   review-patch-id: 9f8e...
 
   ## Independent reviewer verdict: PASS
-  Round 3 of the review; the PR already had two BLOCKs, so only correctness,
-  data-loss and security findings block. No such finding on this head: the
-  crash window from round 1 is closed, and the archive is written and flushed
-  before the prune.
+  Round 3 of the review, a fix check: the empty-history test now asserts the
+  result. The PR already had two BLOCKs, so only correctness, data-loss and
+  security findings block, and there is none: the crash window from round 1
+  stays closed.
 
-  Follow-ups (non-critical, filed under the round cap):
-  - #4101 `archiveName()` in src/core/task-archive.ts is exported but never used
+  Follow-ups (non-critical, one issue for this PR): #4101
+  - `archiveName()` in src/core/task-archive.ts is exported but never used (round 2)
+  - docs/reference/tasks.md still says pruning deletes history (round 3)
   ```
 
   `kookr merge 4100` accepts this `pass`: it is the latest verdict and is bound
   to the current head H3.
 
-If review 3 had found a critical defect, it would BLOCK as before, and every
-later review keeps applying the cap.
+Before these rules, review 2 was a second full review and the unused export
+blocked it on its own. If review 2 had found only follow-ups, it would have
+been the `pass`. If review 3 had found a critical defect anywhere in the PR,
+it would BLOCK as before, and every later review keeps applying the cap.
 
 ### 5. Latency budget — never turn timeout into quality
 
-The reviewer verdict should land within **10 minutes**. If the reviewer
+The reviewer verdict should land within **10 minutes**; the round-1 review aims
+at about 8 and a fix check at about 4 (§2). If the reviewer
 (including the Claude fallback) has not returned a verdict by then, record
 telemetry:
 
@@ -508,9 +585,11 @@ one fresh independent review of the resulting head. A BLOCK must be fixed or
 rebutted and followed by another review; a PASS is usable only for the exact
 current head. The durable attempt counter belongs to the unit/continuation
 lineage, survives restart and branch-head changes, and defaults to 10. It must
-not reset when a successor task or reviewer task is launched. The §4a round cap
-works inside this budget: past review 2, only critical findings start another
-iteration, so the budget is reached only by a PR that keeps producing them.
+not reset when a successor task or reviewer task is launched. The §4a round
+rules work inside this budget: in review 2 a non-critical finding blocks only on
+a line the fix changed, and from review 3 on only critical findings start
+another iteration, so the budget is reached only by a PR that keeps producing
+them.
 
 On an **advisory** repo this budget does not stall the implementation task.
 
@@ -546,7 +625,8 @@ Before declaring the merge review done, report:
 - verdict: `pass` / `block` / `skipped` (+ confirmed-finding count for block)
 - verdict comment posted: yes (URL) / no
 - for a hard-gate block that was resolved: fixed (new head SHA) / rebutted + re-reviewed
-- review round (count of BLOCK comments before this verdict) and, under the §4a cap, the follow-up issues filed
+- review round (count of BLOCK comments before this verdict), whether it was the full review or a fix check, and its minutes
+- the single follow-up issue for the PR under the §4a round rules, if any
 - timeout label applied: no / yes (with reason)
 - on advisory: whether merge proceeded after local gates despite missing/BLOCK/timeout
 

@@ -87,3 +87,116 @@ describe('independent-merge-review skill (issue #3027)', () => {
     expect(elseIdx).toBeGreaterThan(advisoryIdx);
   });
 });
+
+/**
+ * Issue #3844: round 1 is the one full review; every later round is a short
+ * fix check on the diff since the blocked head, a new non-critical finding on
+ * an unchanged line never blocks, and the follow-ups go into one issue per PR.
+ * The skill files that restate the round rules must say the same.
+ */
+describe('independent-merge-review round rules (issue #3844)', () => {
+  const root = join(import.meta.dirname, '..', '..');
+  const read = (...parts: string[]) => readFileSync(join(root, ...parts), 'utf-8');
+  const skill = read('plugin', 'skills', 'independent-merge-review', 'SKILL.md');
+  const section = (start: string, end: string) => {
+    const from = skill.indexOf(start);
+    const to = skill.indexOf(end, from + start.length);
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(from);
+    return skill.slice(from, to);
+  };
+  const spawn = () => section('### 2. Spawn the reviewer', '### 3. Post the verdict comment');
+  const rules = () => section('### 4a. Round rules', '### 5. Latency budget');
+
+  test('the reviewer brief gives round 1 an 8-minute budget and caps mutation checks to changed runtime lines', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
+    expect(spawnStep).toMatch(/Round 1 \(no BLOCK on the PR yet\): the full review/);
+    expect(spawnStep).toMatch(/Time budget: about 8 minutes/);
+    expect(spawnStep).toMatch(/mutation\s+checks[^.]*only on runtime lines this PR\s+changes/);
+  });
+
+  test('round 2 and later are fix checks fed the previous BLOCK and the diff since its head', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
+    expect(spawnStep).toMatch(/Round 2 and later \(the PR carries a BLOCK\): the fix check/);
+    expect(spawnStep).toMatch(/Time budget: about 4 minutes/);
+    expect(spawnStep).toMatch(/latest BLOCK comment and the \*\*fix diff\*\*/);
+    expect(spawnStep).toContain('git merge-base --is-ancestor "$PREV" HEAD');
+    expect(spawnStep).toContain('git diff "$PREV" HEAD');
+    expect(spawnStep).toContain('git range-diff');
+    expect(spawnStep).toContain('git cat-file -e "$PREV^{commit}" 2>/dev/null || git fetch --quiet origin "$PREV"');
+    expect(spawnStep).toMatch(/fix diff comes out empty or a command fails, the round has no fix to\s+check: run the round-1 full review instead/);
+    expect(spawnStep).toMatch(/confirm it is fixed/);
+    expect(spawnStep).toMatch(/review only the lines the fix diff changes/);
+    expect(spawnStep).toMatch(/Run no mutation checks\s+outside those lines/);
+    // The after-PASS delta review only accepts comment/typo edits; the fix
+    // check must say it is a different thing, or a reviewer would BLOCK a fix.
+    expect(spawnStep).toMatch(/not the "delta review\s+after a PASS"/);
+  });
+
+  test('a later round cannot block on a new non-critical finding on an unchanged line; critical blocks in any round', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
+    expect(roundRules).toContain(
+      '| New, non-critical, on a line the fix diff does not change | follow-up | follow-up |',
+    );
+    expect(roundRules).toContain('| New, critical, anywhere in the PR | blocks | blocks |');
+    expect(roundRules).toContain('| New, non-critical, on a line the fix diff changes | blocks | follow-up |');
+    expect(roundRules).toMatch(/it blocks in every round/);
+    expect(spawnStep).toMatch(/A new critical finding\s+blocks wherever it is/);
+  });
+
+  test('keeps the two-BLOCK round cap as the backstop', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
+    expect(roundRules).toMatch(/From round 3 on \(the PR already\s+carries two or more BLOCKs\) this is the round cap: only critical findings\s+block/);
+  });
+
+  test('files one follow-up issue per PR with a checklist, not one per finding', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
+    expect(roundRules).toMatch(/\*\*one\*\* issue for the whole PR, with one checklist item per follow-up/);
+    expect(roundRules).toContain('--title "Follow-ups from the review of #$PR"');
+    expect(roundRules).toContain('- [ ] <file>:<line> <what is wrong> (round <n>)');
+    expect(roundRules).not.toMatch(/--title "<follow-up title>"/);
+    // Follow-ups listed by a BLOCK must be filed then, not only at the pass,
+    // or a round-2 follow-up is lost when round 3 adds nothing.
+    expect(roundRules).toMatch(/at \*\*every\*\* verdict that lists\s+follow-ups, a BLOCK included/);
+  });
+
+  test('the worked example shows a round-2 fix check and the single follow-up issue', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
+    expect(roundRules).toMatch(/\*\*Review 2 on H2\*\* \(`c3d4…`\), a fix check on `git diff a1b2… c3d4…`/);
+    expect(roundRules).toMatch(/\(2\) is a follow-up\. Verdict: BLOCK/);
+    expect(roundRules).toMatch(/files \(2\) as #4101, a follow-up issue with one checklist item, and links it\s+from the BLOCK/);
+    expect(roundRules).toMatch(/adds it to #4101, which now holds both follow-ups as two checklist items/);
+    expect(roundRules).toContain('Follow-ups (non-critical, one issue for this PR): #4101');
+  });
+
+  test.each([
+    ['plugin/skills/pre-pr-review/SKILL.md'],
+    ['.claude/skills/kookr-pre-push/SKILL.md'],
+    ['.claude/skills/kookr-post-push/SKILL.md'],
+    ['plugin/playbooks/implement-github-issue.md'],
+    ['plugin/playbooks/parallel-issue-batch.md'],
+    ['plugin/skills/autonomous-review-loop/SKILL.md'],
+  ])('%s restates the fix-check rule and points at §4a', (path) => {
+    const text = read(...path.split('/')).replace(/\s+/g, ' ');
+    expect(text).toMatch(/diff since the blocked head/);
+    expect(text).toMatch(/fix check/);
+    expect(text).toContain('§4a');
+  });
+
+  test.each([
+    ['plugin/skills/pre-pr-review/SKILL.md'],
+    ['.claude/skills/kookr-pre-push/SKILL.md'],
+    ['plugin/playbooks/implement-github-issue.md'],
+    ['plugin/playbooks/parallel-issue-batch.md'],
+  ])('%s restates the unchanged-line and one-issue rules', (path) => {
+    const text = read(...path.split('/')).replace(/\s+/g, ' ');
+    expect(text).toMatch(/non-critical finding on (?:an unchanged line|a line that did not change) is a follow-up/);
+    expect(text).toMatch(/one issue per PR/);
+  });
+});

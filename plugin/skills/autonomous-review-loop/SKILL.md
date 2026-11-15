@@ -36,7 +36,10 @@ The loop may merge only when all of these facts are true:
 - every required local/check gate is green;
 - the PR is mergeable and the merge operation pins the reviewed head.
 
-After a BLOCK, fix or rebut each confirmed finding and run a new reviewer. Do
+After a BLOCK, fix or rebut each confirmed finding and run a new reviewer. Where
+the repo uses `independent-merge-review`, that re-review is a fix check on the
+diff since the blocked head, not a second full review, and its §4a round rules
+decide which new findings block. Do
 not edit an old verdict. If the cap is exhausted, write a concrete discoverable
 blocker containing the unit, count/cap, current head, last verdict, and next
 human action. A genuinely human-only identity or policy condition may stop

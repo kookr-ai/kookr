@@ -116,7 +116,9 @@ it spawns a reviewer blind to your implementation reasoning (Codex lane, Claude
 fallback when Codex is rate-limited), posts the verdict comment, and applies the
 timeout label if no verdict lands within the 10-minute budget; retry up to the
 durable default of 10 correction/review attempts, then record a concrete
-blocker. Only a
+blocker. After a BLOCK, the next review is a fix check on the diff since the
+blocked head, not a second full review, and the round rules decide which new
+findings block (`[[independent-merge-review]]` §4a). Only a
 human-driven manual merge may bypass it with `KOOKR_MERGE_REQUIRE_REVIEW=0`.
 
 ### 7. Report PR health explicitly
