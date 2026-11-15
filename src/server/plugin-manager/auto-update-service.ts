@@ -25,8 +25,13 @@ import {
   type AutoUpdateSurface,
 } from '../../shared/contracts/plugins.js';
 import { PluginMutationBusyError, type PluginMutationService } from './mutation-service.js';
-import type { AutoUpdateExternalChange } from '../../shared/contracts/plugins.js';
-import type { ClaudeSettingsStore, SettingsScope } from '../../core/claude-settings/settings-store.js';
+import type { AutoUpdateExternalChange, AutoUpdateFlagOwnership } from '../../shared/contracts/plugins.js';
+import {
+  scopeOutranks,
+  type AutoUpdateResolution,
+  type ClaudeSettingsStore,
+  type SettingsScope,
+} from '../../core/claude-settings/settings-store.js';
 import type { AutoUpdateStore } from './auto-update-store.js';
 import type { AutoUpdateAuditStore } from './auto-update-audit-store.js';
 import {
@@ -116,6 +121,13 @@ export class AutoUpdateService {
    * → rewrites the operator's own value). It never touches a flag it did not take
    * over. Called while holding the mutation lock; the settings store gets an
    * identity `withLock`.
+   *
+   * Scope: Claude Code reads the flag from the highest-precedence settings
+   * scope that sets it, so the pin goes into the scope that DECIDES the flag
+   * (the default `user` scope when none sets it), and that scope is recorded so
+   * release restores into the same file. If a higher-precedence scope later
+   * overrides the pin, the pin moves there: the old scope gets its recorded
+   * value back, then the deciding scope is taken over like a fresh takeover.
    */
   private async reconcileMarketplaceAutoUpdate(marketplace: string | null): Promise<void> {
     if (marketplace === null) return;
@@ -124,27 +136,39 @@ export class AutoUpdateService {
       ([id, p]) => p === 'apply-when-idle' && pluginMarketplaceFromId(id) === marketplace,
     );
     const owned = data.autoUpdateOwnership[marketplace]; // undefined ⇒ Kookr does not own the flag
-    const writeFlag = (value: boolean | undefined): Promise<unknown> =>
-      this.deps.settings.writeAutoUpdate(marketplace, value, { scope: this.scope, withLock: (fn) => fn() });
+    const writeFlag = (value: boolean | undefined, scope: SettingsScope): Promise<unknown> =>
+      this.deps.settings.writeAutoUpdate(marketplace, value, { scope, withLock: (fn) => fn() });
+    const restore = (o: AutoUpdateFlagOwnership): Promise<unknown> =>
+      writeFlag(o.previousValue === null ? undefined : o.previousValue, o.scope ?? this.scope);
+    // Take over at the deciding scope: record what was there first, then pin
+    // `false` (only if it is not already false, so we never make a redundant edit).
+    const takeOver = async (found: AutoUpdateResolution): Promise<void> => {
+      const scope = found.decidedBy ?? this.scope;
+      await this.deps.store.update((d) => {
+        d.autoUpdateOwnership[marketplace] = { previousValue: found.value ?? null, scope };
+      });
+      if (found.value !== false) await writeFlag(false, scope);
+    };
 
     try {
       if (anyApplyWhenIdle) {
+        const current = await this.deps.settings.resolveAutoUpdate(marketplace);
         if (!owned) {
-          // Take over: record what was there first, then pin `false` (only write
-          // if it is not already false, so we never make a redundant edit).
-          const before = await this.deps.settings.readAutoUpdate(marketplace); // boolean | undefined
-          await this.deps.store.update((d) => {
-            d.autoUpdateOwnership[marketplace] = { previousValue: before ?? null };
-          });
-          if (before !== false) await writeFlag(false);
-        } else {
-          // Already owned: self-heal if an external writer flipped it off `false`.
-          const current = await this.deps.settings.readAutoUpdate(marketplace);
-          if (current !== false) await writeFlag(false);
+          await takeOver(current);
+        } else if (current.value !== false) {
+          const pinScope = owned.scope ?? this.scope;
+          if (current.decidedBy !== undefined && scopeOutranks(current.decidedBy, pinScope)) {
+            // A higher-precedence scope overrides the pin: move it there.
+            await restore(owned);
+            await takeOver(current);
+          } else {
+            // Self-heal: an external writer flipped or removed the pin.
+            await writeFlag(false, pinScope);
+          }
         }
       } else if (owned) {
-        // Release: restore EXACTLY the value Kookr found before taking over.
-        await writeFlag(owned.previousValue === null ? undefined : owned.previousValue);
+        // Release: restore EXACTLY the value Kookr found before taking over, in the scope it pinned.
+        await restore(owned);
         await this.deps.store.update((d) => {
           delete d.autoUpdateOwnership[marketplace];
         });
@@ -477,11 +501,18 @@ export class AutoUpdateService {
     return { plugins, recentDecisions: recent, applyEnabled: this.deps.applyEnabled };
   }
 
-  /** Dismiss a persistent banner (operator acknowledged it). */
+  /**
+   * Dismiss a persistent banner (operator acknowledged it). Runs under the
+   * shared lock like every other store write, so a concurrent sweep's
+   * read-modify-write cannot bring the banner back. Throws
+   * `PluginMutationBusyError` while another mutation holds the lock.
+   */
   async dismissBanner(pluginId: string): Promise<void> {
-    await this.deps.store.update((d) => {
-      delete d.banners[pluginId];
-    });
+    await this.deps.mutation.withLock('plugin-auto-update-dismiss-banner', () =>
+      this.deps.store.update((d) => {
+        delete d.banners[pluginId];
+      }),
+    );
   }
 }
 

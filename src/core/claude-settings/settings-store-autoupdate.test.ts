@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ClaudeSettingsStore, applyAutoUpdateEdit, defaultScopeFiles } from './settings-store.js';
+import { ClaudeSettingsStore, applyAutoUpdateEdit, defaultScopeFiles, scopeOutranks } from './settings-store.js';
 
 const identityLock = <T>(fn: () => Promise<T>): Promise<T> => fn();
 
@@ -41,6 +41,15 @@ describe('applyAutoUpdateEdit (pure)', () => {
   });
 });
 
+describe('scopeOutranks', () => {
+  test('follows Claude Code precedence: projectLocal > project > userLocal > user', () => {
+    expect(scopeOutranks('projectLocal', 'user')).toBe(true);
+    expect(scopeOutranks('project', 'userLocal')).toBe(true);
+    expect(scopeOutranks('user', 'userLocal')).toBe(false);
+    expect(scopeOutranks('user', 'user')).toBe(false);
+  });
+});
+
 describe('ClaudeSettingsStore.writeAutoUpdate (write + revert)', () => {
   let home: string;
   let cwd: string;
@@ -72,6 +81,18 @@ describe('ClaudeSettingsStore.writeAutoUpdate (write + revert)', () => {
     expect(r.previousValue).toBe(false);
     expect(await store.readAutoUpdate('mkt')).toBeUndefined();
     expect(JSON.parse(readFileSync(userSettings, 'utf8')).enabledPlugins).toEqual({ 'a@mkt': true });
+  });
+
+  test('resolveAutoUpdate reports the highest-precedence scope that sets the flag', async () => {
+    expect(await store.resolveAutoUpdate('mkt')).toEqual({ value: undefined });
+
+    await store.writeAutoUpdate('mkt', false, { scope: 'user', withLock: identityLock });
+    expect(await store.resolveAutoUpdate('mkt')).toEqual({ value: false, decidedBy: 'user' });
+
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    await store.writeAutoUpdate('mkt', true, { scope: 'projectLocal', withLock: identityLock });
+    expect(await store.resolveAutoUpdate('mkt')).toEqual({ value: true, decidedBy: 'projectLocal' });
+    expect(await store.readAutoUpdate('mkt')).toBe(true);
   });
 
   test('backs the file up before writing', async () => {

@@ -551,7 +551,22 @@ export interface AutoUpdateSnapshotMeta {
 export interface AutoUpdateFlagOwnership {
   /** The `autoUpdate` value present before Kookr took over: `null` = the key was absent. */
   previousValue: boolean | null;
+  /**
+   * The Claude Code settings scope Kookr pinned the flag in (and restores
+   * `previousValue` into on release). It is the scope that decided the flag at
+   * takeover, so the pin is not overridden by a higher-precedence scope.
+   * Absent on records written before the scope was tracked ⇒ `user`.
+   */
+  scope?: AutoUpdateFlagScope;
 }
+
+/**
+ * A Claude Code settings scope, highest precedence first. Mirrors
+ * `SettingsScope` in `src/core/claude-settings/settings-store.ts` (contracts
+ * must not import from core); a compile-time check in
+ * `src/server/plugin-manager/auto-update-store.ts` keeps them equal.
+ */
+export type AutoUpdateFlagScope = 'projectLocal' | 'project' | 'userLocal' | 'user';
 
 /** On-disk shape of the per-plugin auto-update store (versioned JSON, `<kookrDir>/plugin-auto-update.json`). */
 export interface AutoUpdateStoreData {

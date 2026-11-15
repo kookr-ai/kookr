@@ -1,11 +1,11 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoUpdateService, type AutoUpdateOps, type AutoUpdateInspection } from './auto-update-service.js';
 import { AutoUpdateStore } from './auto-update-store.js';
 import { AutoUpdateAuditStore } from './auto-update-audit-store.js';
-import { PluginMutationService } from './mutation-service.js';
+import { PluginMutationBusyError, PluginMutationService } from './mutation-service.js';
 import { ClaudeSettingsStore, defaultScopeFiles } from '../../core/claude-settings/settings-store.js';
 import type { IdlePredicateTaskView } from '../../core/plugin-auto-update/idle-predicate.js';
 import type { AutoUpdateSnapshotMeta } from '../../shared/contracts/plugins.js';
@@ -271,6 +271,109 @@ describe('AutoUpdateService', () => {
     const recent = await audit.recent(10);
     expect(recent.length).toBe(2);
     expect(recent.every((d) => d.reason === 'no-update')).toBe(true);
+  });
+
+  describe('autoUpdate pin scope (the scope that decides the flag)', () => {
+    const lock = <T>(fn: () => Promise<T>): Promise<T> => fn();
+    // defaultScopeFiles(dir, home): projectLocal = <dir>/.claude/settings.local.json, user = <home>/.claude/settings.json.
+    const projectLocalFile = () => join(dir, '.claude', 'settings.local.json');
+    const userFile = () => join(home, '.claude', 'settings.json');
+    /** The raw `autoUpdate` value stored in ONE file (not the cross-scope resolution). */
+    const flagIn = (file: string): unknown =>
+      existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).extraKnownMarketplaces?.mkt?.autoUpdate : undefined;
+
+    beforeEach(() => {
+      mkdirSync(join(dir, '.claude'), { recursive: true });
+    });
+
+    test('operator true in a higher scope: the pin lands there, not at user, and release restores it there', async () => {
+      await settings.writeAutoUpdate('mkt', true, { scope: 'projectLocal', withLock: lock });
+      const svc = makeService();
+
+      await svc.setPolicy(ID, 'apply-when-idle');
+      expect(await settings.readAutoUpdate('mkt')).toBe(false); // the native updater really is off
+      expect(flagIn(projectLocalFile())).toBe(false);
+      expect(flagIn(userFile())).toBeUndefined();
+      expect((await store.read()).autoUpdateOwnership.mkt).toEqual({ previousValue: true, scope: 'projectLocal' });
+
+      await svc.setPolicy(ID, 'off');
+      expect(flagIn(projectLocalFile())).toBe(true);
+      expect(flagIn(userFile())).toBeUndefined();
+      expect((await store.read()).autoUpdateOwnership.mkt).toBeUndefined();
+    });
+
+    test('operator false in a higher scope: no write on takeover, and release adds no user-scope key', async () => {
+      await settings.writeAutoUpdate('mkt', false, { scope: 'projectLocal', withLock: lock });
+      const svc = makeService();
+
+      await svc.setPolicy(ID, 'apply-when-idle');
+      expect((await store.read()).autoUpdateOwnership.mkt).toEqual({ previousValue: false, scope: 'projectLocal' });
+      await svc.setPolicy(ID, 'off');
+      expect(flagIn(projectLocalFile())).toBe(false);
+      expect(flagIn(userFile())).toBeUndefined();
+    });
+
+    test('a higher-scope flag added after takeover moves the pin there; the old scope gets its value back', async () => {
+      const svc = makeService();
+      await svc.setPolicy('a@mkt', 'apply-when-idle'); // nothing set anywhere ⇒ pinned at user
+      expect(flagIn(userFile())).toBe(false);
+
+      await settings.writeAutoUpdate('mkt', true, { scope: 'projectLocal', withLock: lock }); // operator override
+      await svc.setPolicy('b@mkt', 'apply-when-idle'); // any reconcile of the marketplace
+
+      expect(await settings.readAutoUpdate('mkt')).toBe(false);
+      expect(flagIn(projectLocalFile())).toBe(false);
+      expect(flagIn(userFile())).toBeUndefined(); // user restored to its recorded (absent) value
+      expect((await store.read()).autoUpdateOwnership.mkt).toEqual({ previousValue: true, scope: 'projectLocal' });
+
+      await svc.setPolicy('a@mkt', 'off');
+      await svc.setPolicy('b@mkt', 'off');
+      expect(flagIn(projectLocalFile())).toBe(true);
+      expect(flagIn(userFile())).toBeUndefined();
+    });
+
+    test('a legacy ownership record without a scope is treated as user and migrates to the deciding scope', async () => {
+      // State left by the fixed-user-scope writer: Kookr pinned false at user, the operator's true wins from projectLocal.
+      await settings.writeAutoUpdate('mkt', false, { scope: 'user', withLock: lock });
+      await settings.writeAutoUpdate('mkt', true, { scope: 'projectLocal', withLock: lock });
+      await store.update((d) => {
+        d.policies[ID] = 'apply-when-idle';
+        d.autoUpdateOwnership.mkt = { previousValue: null };
+      });
+
+      await makeService().setPolicy(ID, 'apply-when-idle');
+      expect(await settings.readAutoUpdate('mkt')).toBe(false);
+      expect(flagIn(userFile())).toBeUndefined();
+      expect(flagIn(projectLocalFile())).toBe(false);
+      expect((await store.read()).autoUpdateOwnership.mkt).toEqual({ previousValue: true, scope: 'projectLocal' });
+    });
+
+    test('self-heal re-pins in the owned scope, not at user', async () => {
+      await settings.writeAutoUpdate('mkt', true, { scope: 'projectLocal', withLock: lock });
+      const svc = makeService();
+      await svc.setPolicy('a@mkt', 'apply-when-idle'); // owned at projectLocal
+      await settings.writeAutoUpdate('mkt', undefined, { scope: 'projectLocal', withLock: lock }); // external removal
+
+      await svc.setPolicy('b@mkt', 'apply-when-idle');
+      expect(flagIn(projectLocalFile())).toBe(false);
+      expect(flagIn(userFile())).toBeUndefined();
+    });
+  });
+
+  test('dismissBanner takes the shared lock: refused while a mutation holds it, banner kept', async () => {
+    await store.update((d) => {
+      d.banners[ID] = { pluginId: ID, kind: 'verify-failed', message: 'm', raisedAt: PAST };
+    });
+    let release!: () => void;
+    const held = mutation.withLock('test-holder', () => new Promise<void>((r) => (release = r)));
+
+    await expect(makeService().dismissBanner(ID)).rejects.toBeInstanceOf(PluginMutationBusyError);
+    expect((await store.read()).banners[ID]).toBeDefined();
+
+    release();
+    await held;
+    await makeService().dismissBanner(ID);
+    expect((await store.read()).banners[ID]).toBeUndefined();
   });
 
   test('getSurface includes stored + fleet plugins with their decisions', async () => {

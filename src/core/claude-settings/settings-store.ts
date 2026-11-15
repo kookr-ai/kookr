@@ -21,12 +21,28 @@ import { join } from 'node:path';
 /** The settings scopes Claude Code reads, highest precedence first. */
 export type SettingsScope = 'projectLocal' | 'project' | 'userLocal' | 'user';
 
+/** Every {@link SettingsScope} in Claude Code's precedence order, highest first. */
+export const SETTINGS_SCOPES_HIGHEST_FIRST: readonly SettingsScope[] = ['projectLocal', 'project', 'userLocal', 'user'];
+
+/** True when scope `a` takes precedence over scope `b` (a setting in `a` overrides one in `b`). */
+export function scopeOutranks(a: SettingsScope, b: SettingsScope): boolean {
+  return SETTINGS_SCOPES_HIGHEST_FIRST.indexOf(a) < SETTINGS_SCOPES_HIGHEST_FIRST.indexOf(b);
+}
+
 /** Resolved tri-state enablement for a plugin. */
 export type Enablement = 'enabled' | 'disabled' | 'default';
 
 export interface EnablementResolution {
   state: Enablement;
   /** The scope whose explicit boolean decided it, when not `default`. */
+  decidedBy?: SettingsScope;
+}
+
+/** The resolved per-marketplace `autoUpdate` flag and the scope that set it. */
+export interface AutoUpdateResolution {
+  /** The effective explicit flag, or `undefined` when no scope sets it. */
+  value: boolean | undefined;
+  /** The highest-precedence scope holding an explicit boolean; absent when `value` is `undefined`. */
   decidedBy?: SettingsScope;
 }
 
@@ -229,13 +245,22 @@ export class ClaudeSettingsStore {
    * exists (R6 / Edge cases).
    */
   async readAutoUpdate(marketplace: string): Promise<boolean | undefined> {
+    return (await this.resolveAutoUpdate(marketplace)).value;
+  }
+
+  /**
+   * Like {@link readAutoUpdate}, but also reports WHICH scope decided the
+   * value (as {@link resolveEnablement} does). A writer that wants its value to
+   * take effect must write at that scope: a write at a lower-precedence scope is
+   * silently overridden.
+   */
+  async resolveAutoUpdate(marketplace: string): Promise<AutoUpdateResolution> {
     const scopes = await this.loadScopes();
-    for (const { data } of scopes) {
-      const entry = data.extraKnownMarketplaces?.[marketplace];
-      const value = entry?.autoUpdate;
-      if (typeof value === 'boolean') return value;
+    for (const { scope, data } of scopes) {
+      const value = data.extraKnownMarketplaces?.[marketplace]?.autoUpdate;
+      if (typeof value === 'boolean') return { value, decidedBy: scope };
     }
-    return undefined;
+    return { value: undefined };
   }
 
   /**

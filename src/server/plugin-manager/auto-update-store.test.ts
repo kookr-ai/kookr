@@ -50,6 +50,24 @@ describe('AutoUpdateStore', () => {
     expect(Object.keys(data.snapshots)).toEqual(['a@m']);
   });
 
+  test('autoUpdateOwnership keeps a valid pin scope across a round trip; drops an unknown one', async () => {
+    await store.update((d) => {
+      d.autoUpdateOwnership.mkt = { previousValue: true, scope: 'projectLocal' };
+      d.autoUpdateOwnership.legacy = { previousValue: null };
+    });
+    expect((await store.read()).autoUpdateOwnership).toEqual({
+      mkt: { previousValue: true, scope: 'projectLocal' },
+      legacy: { previousValue: null },
+    });
+
+    writeFileSync(
+      join(dir, AUTO_UPDATE_STORE_FILENAME),
+      JSON.stringify({ version: 1, autoUpdateOwnership: { mkt: { previousValue: false, scope: 'bogus' } } }),
+    );
+    // An unknown scope is dropped (falls back to user) but the provenance value is kept.
+    expect((await store.read()).autoUpdateOwnership).toEqual({ mkt: { previousValue: false } });
+  });
+
   test('update() mutates and persists atomically', async () => {
     await store.update((d) => {
       d.observed['a@m'] = '2.0.0';

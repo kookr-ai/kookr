@@ -1261,7 +1261,7 @@ working. It is the first step of the ordered disable. Errors are always
 | `PUT /api/plugins/:id/auto-update` | Set a plugin's auto-update policy. Body `{ policy: "off" \| "notify" \| "apply-when-idle" }`. `apply-when-idle` writes the native per-marketplace `autoUpdate:false` (dual-writer guard) while any plugin in the marketplace holds it, and reverts on return to `off`. 400 on an invalid id/policy; 409 (lock holder) when a mutation is in flight. |
 | `POST /api/plugins/:id/auto-update/evaluate` | Operator-triggered "evaluate now": run one idle-gated auto-update evaluation for the plugin through the shared lock + backup, writing an audit decision. 400 on an invalid id; 409 (lock holder) when a mutation is in flight. |
 | `POST /api/plugins/:id/auto-update/rollback` | Roll a plugin back to its retained, scoped pre-update snapshot (RFC Layer 4). Bumps the config epoch and raises a `post-session` banner so sessions already on the new version surface a restart prompt via the drift surface. 400 on an invalid id; 409 (lock holder) when a mutation is in flight. |
-| `POST /api/plugins/:id/auto-update/dismiss-banner` | Dismiss a plugin's persistent auto-update banner (verify-failure / rollback-failure / post-session restart). 400 on an invalid id. |
+| `POST /api/plugins/:id/auto-update/dismiss-banner` | Dismiss a plugin's persistent auto-update banner (verify-failure / rollback-failure / post-session restart). 400 on an invalid id; 409 (lock holder) when a mutation is in flight. |
 
 #### Agent blacklist
 
