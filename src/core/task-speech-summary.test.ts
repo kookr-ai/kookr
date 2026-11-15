@@ -53,6 +53,12 @@ describe('summarizeTaskForSpeech', () => {
       ['no model is configured', null, 'no-llm-client'],
       ['the call fails', failing(new Error('provider down')), 'timeout'],
       ['the call times out', failing(Object.assign(new Error('timed out'), { name: 'TimeoutError' })), 'timeout'],
+      ['the client throws past its own failure audit', {
+        provider: 'test',
+        model: 'test-model',
+        complete: vi.fn(),
+        completeWithFailureAudit: vi.fn().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+      }, 'timeout'],
       ['the reply is null', mockClient(null), 'empty'],
       ['the reply is an empty string', mockClient(''), 'empty'],
       ['the summary is blank', mockClient('{"summary":"  \'\'  "}'), 'empty'],
