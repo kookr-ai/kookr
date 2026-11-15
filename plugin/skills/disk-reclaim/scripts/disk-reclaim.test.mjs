@@ -617,6 +617,25 @@ describe('pnpm patch edits and fsmonitor hooks', () => {
     expect(res.actions).toHaveLength(1);
     expect(res.actions[0].error).toMatch(/skipped: no longer SAFE.*uncommitted/);
   });
+
+  test('git worktree remove itself bypasses the hook: an edit hidden after the re-check survives', async () => {
+    const wt = addWorktree('fsmonitor-remove', { merge: true });
+    const real = realDeps({});
+    const d = deps({
+      // The edit lands between the re-check and the removal, so only git's own check stands in the way.
+      run: async (cmd, args, o) => {
+        if (cmd === 'git' && args.includes('worktree') && args.includes('remove')) hideEditBehindFsmonitor(wt, 'fsmonitor-remove.txt');
+        return real.run(cmd, args, o);
+      },
+    });
+    const o = opts();
+    const report = await buildReport(o, d);
+    expect(find(report, wt)).toMatchObject({ tier: 'SAFE' });
+    const res = await applySafe(report, o, d);
+    expect(readFileSync(join(wt, 'fsmonitor-remove.txt'), 'utf8')).toBe('edit the hook hides, longer than before');
+    expect(res.actions[0]).toMatchObject({ ok: false });
+    expect(res.actions[0].error).toMatch(/git worktree remove failed/);
+  });
 });
 
 describe('--apply safe', () => {
@@ -867,6 +886,22 @@ describe('options and probes', () => {
     symlinkSync(join(home, '.config', 'app'), join(home, 'git', 'config-link'));
     expect(() => parseArgs(['--roots', '~/git/config-link'], {}, home)).toThrow(/refusing --roots/);
     expect(() => parseArgs(['--roots', '~/git'], {}, home)).not.toThrow();
+  });
+
+  test('--roots refuses a root inside the real target of a symlinked protected directory or home', () => {
+    // ~/.config managed as a symlink (dotfiles): a root inside its real target is still inside ~/.config.
+    const home = join(tmp, 'home2');
+    const dotfiles = join(tmp, 'dotfiles-config');
+    mkdirSync(join(dotfiles, 'app'), { recursive: true });
+    mkdirSync(home);
+    symlinkSync(dotfiles, join(home, '.config'));
+    expect(() => parseArgs(['--roots', join(dotfiles, 'app')], {}, home)).toThrow(/inside .*\.config/);
+    // A symlinked home: a root under the real home's ~/.kookr-* directory is refused.
+    const realHome = join(tmp, 'real-home');
+    mkdirSync(join(realHome, '.kookr-4801', 'worktrees'), { recursive: true });
+    const linkHome = join(tmp, 'link-home');
+    symlinkSync(realHome, linkHome);
+    expect(() => parseArgs(['--roots', join(realHome, '.kookr-4801', 'worktrees'), '--data-dir', join(tmp, 'elsewhere')], {}, linkHome)).toThrow(/Kookr data directory/);
   });
 
   test('the hook-variable strip list comes from git and covers GIT_CONFIG_PARAMETERS', () => {
