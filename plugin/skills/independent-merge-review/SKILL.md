@@ -229,7 +229,7 @@ short preflight call first (`KOOKR_CODEX_REVIEW_PREFLIGHT_TIMEOUT`, default 25 s
 The review call always runs at high reasoning effort, whatever the host's Codex
 config says, to hold the §2 strength floor.
 A model the API rejects (`model_not_found`), a quota error, a hung preflight, a
-failed or timed-out review (`KOOKR_CODEX_REVIEW_TIMEOUT`, default 600 s), or a
+failed or timed-out review (`KOOKR_CODEX_REVIEW_TIMEOUT`, default 570 s so the preflight plus the review fit the 10-minute budget in §5), or a
 missing `codex` binary all exit **3**. Choosing the host's default Codex model is
 an operator setting, not part of this skill.
 

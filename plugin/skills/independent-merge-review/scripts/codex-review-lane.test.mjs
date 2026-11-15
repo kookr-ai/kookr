@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,10 +58,10 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 /** Run the lane CLI with stdin left OPEN (a pipe never written or closed). */
-function runCli({ mode, env = {}, args = ['--prompt-file', promptFile] }) {
+function runCli({ mode, env = {}, args = ['--prompt-file', promptFile], script = SCRIPT }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(process.execPath, [SCRIPT, ...args], {
+    const child = spawn(process.execPath, [script, ...args], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { PATH: bin, FAKE_CODEX_MODE: mode, FAKE_CODEX_LOG: log, ...env },
     });
@@ -191,6 +191,16 @@ describe('codex-review-lane CLI', () => {
     expect(calls()).toHaveLength(2);
   });
 
+  test('runs when reached through a symlinked directory', async () => {
+    const real = join(dir, 'real');
+    mkdirSync(real);
+    copyFileSync(SCRIPT, join(real, 'codex-review-lane.mjs'));
+    symlinkSync(real, join(dir, 'link'));
+    const r = await runCli({ mode: 'answer', script: join(dir, 'link', 'codex-review-lane.mjs') });
+    expect(r.code).toBe(EXIT_OK);
+    expect(r.stdout).toContain('VERDICT: PASS');
+  });
+
   test('a missing prompt file is a usage error, not a fallback signal', async () => {
     const r = await runCli({ mode: 'answer', args: ['--prompt-file', join(dir, 'nope.md')] });
     expect(r.code).toBe(EXIT_USAGE);
@@ -206,7 +216,7 @@ describe('codex-review-lane helpers', () => {
 
   test('readSettings defaults and an unset model leaves --model off', () => {
     const s = readSettings({ KOOKR_CODEX_REVIEW_PREFLIGHT_TIMEOUT: 'junk' });
-    expect(s).toEqual({ model: null, sandbox: 'read-only', preflightTimeoutS: 25, reviewTimeoutS: 600 });
+    expect(s).toEqual({ model: null, sandbox: 'read-only', preflightTimeoutS: 25, reviewTimeoutS: 570 });
     expect(codexArgs(s, 'p', null)).toEqual(['exec', '--skip-git-repo-check', '--sandbox', 'read-only', '-c', 'model_reasoning_effort="high"', '--', 'p']);
   });
 });

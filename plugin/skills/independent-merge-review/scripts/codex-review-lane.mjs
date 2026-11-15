@@ -24,9 +24,10 @@
 //   KOOKR_CODEX_REVIEW_MODEL             model passed as `-m`; unset = Codex's own default
 //   KOOKR_CODEX_REVIEW_SANDBOX           sandbox mode, default `read-only`
 //   KOOKR_CODEX_REVIEW_PREFLIGHT_TIMEOUT seconds for the preflight call, default 25
-//   KOOKR_CODEX_REVIEW_TIMEOUT           seconds for the review call, default 600
+//   KOOKR_CODEX_REVIEW_TIMEOUT           seconds for the review call, default 570
+//                                        (with the preflight, inside the skill's 10-minute budget)
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, readFileSync } from 'node:fs';
+import { accessSync, constants, readFileSync, realpathSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -53,7 +54,7 @@ export function parseArgs(argv) {
 }
 
 /** First executable named `name` on PATH, or null. */
-export function which(name, pathEnv = process.env.PATH ?? '') {
+export function which(name, pathEnv = '') {
   for (const dir of pathEnv.split(delimiter)) {
     if (!dir) continue;
     const p = join(dir, name);
@@ -72,7 +73,7 @@ export function readSettings(env = process.env) {
     model: env.KOOKR_CODEX_REVIEW_MODEL?.trim() || null,
     sandbox: env.KOOKR_CODEX_REVIEW_SANDBOX?.trim() || 'read-only',
     preflightTimeoutS: seconds(env.KOOKR_CODEX_REVIEW_PREFLIGHT_TIMEOUT, 25),
-    reviewTimeoutS: seconds(env.KOOKR_CODEX_REVIEW_TIMEOUT, 600),
+    reviewTimeoutS: seconds(env.KOOKR_CODEX_REVIEW_TIMEOUT, 570),
   };
 }
 
@@ -114,9 +115,9 @@ export function runLane({ prompt, repoDir = null, env = process.env, platform = 
   const settings = readSettings(env);
   const unusable = (reason) => ({ code: EXIT_CODEX_UNUSABLE, stdout: '', reason });
 
-  const codex = which('codex', env.PATH);
+  const codex = which('codex', env.PATH ?? '');
   if (!codex) return unusable('codex binary not found on PATH');
-  if (platform === 'linux' && !which('bwrap', env.PATH)) {
+  if (platform === 'linux' && !which('bwrap', env.PATH ?? '')) {
     return unusable('bubblewrap (bwrap) not installed; Codex cannot run its sandbox on Linux');
   }
 
@@ -158,4 +159,9 @@ function main() {
   process.exit(r.code);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) main();
+// Compare real paths: import.meta.url resolves symlinks but argv[1] does not, so a
+// symlinked plugin dir would otherwise skip main() and exit 0 with no output.
+function invokedDirectly() {
+  try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; }
+}
+if (invokedDirectly()) main();
