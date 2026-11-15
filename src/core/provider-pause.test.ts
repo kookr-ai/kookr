@@ -81,6 +81,66 @@ describe('classifyProviderPause (issue #1667)', () => {
     expect(d.detail).toBe('tool_result');
   });
 
+  describe('provenance: text the agent merely read (issue #3574)', () => {
+    /** Real `GET /api/health` excerpt while the quota poller is backing off. */
+    const HEALTH_RESPONSE = JSON.stringify({
+      quotaPoller: { state: 'backoff', lastError: 'Rate limited (429). Next retry in 260s' },
+      providerPausedOccupancy: { count: 1, taskIds: ['7003a669'] },
+    });
+
+    function bashResult(stdout: string): AgentEvent {
+      return {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'curl -s localhost:4800/api/health' },
+        toolResponse: { stdout, stderr: '', interrupted: false, isImage: false },
+      };
+    }
+
+    it('does not classify a task paused for polling /api/health while quotaPoller is rate limited', () => {
+      expect(classifyProviderPause({ events: [bashResult(HEALTH_RESPONSE)] })).toEqual({ paused: false });
+    });
+
+    it('does not classify generic rate-limit / quota / credit text in tool output', () => {
+      for (const text of [
+        'HTTP 429: API rate limit exceeded for user',
+        'quota exceeded for project',
+        'Credit balance is too low',
+        'error_type: billing_error',
+      ]) {
+        expect(isProviderPaused({ events: [bashResult(text)] })).toBe(false);
+      }
+    });
+
+    it('does not classify matching text inside a notification', () => {
+      expect(
+        isProviderPaused({
+          events: [
+            {
+              type: 'notification',
+              sessionId: 's1',
+              notificationType: 'permission_prompt',
+              message: 'Rate limited (429). Credit balance is too low. Quota exceeded.',
+            },
+          ],
+        }),
+      ).toBe(false);
+    });
+
+    it('still classifies first-party evidence alongside read text', () => {
+      const d = classifyProviderPause({
+        events: [stopFailure('rate_limit', 'slow down'), bashResult(HEALTH_RESPONSE)],
+      });
+      expect(d).toEqual({ paused: true, reason: PROVIDER_PAUSED_REASON, detail: 'stop_failure:rate_limit' });
+    });
+
+    it('keeps GH Actions billing text in a Bash tool_response object covered (#1694)', () => {
+      const d = classifyProviderPause({ events: [bashResult(GH_ACTIONS_BILLING_TEXT)] });
+      expect(d).toEqual({ paused: true, reason: PROVIDER_PAUSED_REASON, detail: 'tool_result' });
+    });
+  });
+
   it('detects api_error anomaly with billing explanation', () => {
     expect(
       isProviderPaused({
