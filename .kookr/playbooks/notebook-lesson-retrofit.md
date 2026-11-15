@@ -64,8 +64,10 @@ This task may run unattended. Do not ask questions; decide and report.
 
 1. **The store is read-only.** Never run `nb rm`, `nb move`, `nb merge`,
    `nb split` or `nb describe`, and never edit a shelf file. The only writes
-   allowed are the end-of-task retrospective votes and at most one `nb add`.
-   Retiring entries is the operator's step; you list the commands.
+   allowed are the end-of-task retrospective votes and at most one `nb add`,
+   and that add only to a shelf below its cap: adding to a full shelf evicts
+   one of its existing entries (Phase 9 says how to check). Retiring entries is
+   the operator's step; you list the commands.
 2. **Never read code from the current directory to decide what exists.** The
    checkout you start in may be hundreds of commits behind. For every repository
    you check, find its default branch
@@ -85,7 +87,12 @@ This task may run unattended. Do not ask questions; decide and report.
    repository's shelf, and findings about that repository, go in the local
    report only. `<owner>-<repo>` does not always split one way, and some old
    shelves carry no owner: if no split resolves, or the lookup fails for any
-   reason, treat the shelf as private.
+   reason, treat the shelf as private. Check the repository a change would land
+   in the same way, separately from the shelves: before filing a leaf, or
+   adding a finding to the umbrella, run
+   `gh repo view <target owner/repo> --json visibility -q .visibility`. If it
+   does not print `PUBLIC`, or the lookup fails, the finding goes in the local
+   report only, even when every entry it retires comes from a public shelf.
 5. **No lesson text in a public issue.** The store is local to the operator's
    machine. Public issues carry shelf name, entry id, score and action only.
 6. **Change no configuration.** Host config, schedules, hooks and settings are
@@ -93,8 +100,9 @@ This task may run unattended. Do not ask questions; decide and report.
 
 ## Context
 
-- `nb list` prints every shelf; `nb show <shelf>` prints its entries as
-  `<id>  [<score>]  <text>`. The id is the first six-character token.
+- `nb list --limit 1000` prints every shelf (plain `nb list` stops at 50);
+  `nb show <shelf>` prints its entries as `<id>  [<score>]  <text>`. The id is
+  the first six-character token.
 - Reports live in `{{reportsDir}}` (blank means `~/.kookr/reports`). Each run
   writes three files named `notebook-retrofit-<stamp>`: `.md` (the full report,
   with lesson text), `.map.tsv` (one row per mapped entry: finding, shelf, id,
@@ -106,6 +114,11 @@ This task may run unattended. Do not ask questions; decide and report.
   `<!-- kookr:notebook-retrofit-umbrella -->` in its body. Find it with
   `gh issue list --repo {{umbrellaRepo}} --state all --search "kookr:notebook-retrofit-umbrella in:body"`.
   It lists the findings, the leaf issues, and the entries each one retires.
+  Each line of its task list is one leaf: the finding keys the leaf
+  implements, then the issue (`- [ ] A1, A2: #3640`; a bare number is in
+  `{{umbrellaRepo}}`, a leaf elsewhere is written `owner/repo#12`). Those keys
+  are the values of the map's `finding` column, so a leaf's entries are the map
+  rows whose finding is one of the keys on its line.
 - Entry statuses: `full` (remove once the change is live), `partial` (the change
   covers part of the lesson; shorten it), `now` (already covered; remove),
   `recheck` (looks fixed, not reproduced), `move` (belongs on another shelf),
@@ -128,16 +141,29 @@ while ls "$REPORTS/notebook-retrofit-$STAMP".* >/dev/null 2>&1; do
   n=$((n+1)); STAMP="$(date +%F)-run$n"
 done
 SNAP="$REPORTS/notebook-retrofit-$STAMP.shelves.txt"
-nb list --limit 1000 | awk 'NR>1 {print $1}' | while read -r shelf; do
-  out=$(nb show "$shelf" 2>/dev/null) || continue
+COPY=$(mktemp -d)
+cp "$(nb path)"/*.md "$COPY"/ || { echo "could not copy the notebook store"; rm -rf "$COPY"; exit 1; }
+NB_DIR="$COPY" nb list --limit 1000 > "$COPY/.list"
+awk 'NR>1 && !/^#/ {n++; s+=$2} END {print "nb list: " n+0 " shelves, " s+0 " lessons"}' "$COPY/.list"
+awk 'NR>1 && !/^#/ {print $1}' "$COPY/.list" | while read -r shelf; do
+  out=$(NB_DIR="$COPY" nb show "$shelf" 2>/dev/null) || continue
   printf '=== SHELF: %s\n%s\n\n' "$shelf" "$(printf '%s\n' "$out" | grep -v '^# vote by id')"
 done > "$SNAP"
-grep -c '^=== SHELF: ' "$SNAP"; grep -cE '^[0-9a-f]{6}  \[' "$SNAP"
+rm -rf "$COPY"
+echo "snapshot: $(grep -c '^=== SHELF: ' "$SNAP") shelves, $(grep -cE '^[0-9a-f]{6}  \[' "$SNAP") lessons"
 printf 'REPORTS=%s\nSNAP=%s\nMAP=%s\nREPORT=%s\n' "$REPORTS" "$SNAP" "$REPORTS/notebook-retrofit-$STAMP.map.tsv" "$REPORTS/notebook-retrofit-$STAMP.md"
 ```
 
-Check the two counts against `nb list` (shelf count, and the sum of its lesson
-counts). If they differ, fix the snapshot before going on.
+The snippet prints two count lines: shelves and lessons according to
+`nb list --limit 1000`, then shelves and lessons in the snapshot. If they
+differ, fix the snapshot before going on.
+
+The snippet reads a temporary copy of the store (`NB_DIR` points `nb` at it),
+not the store itself. Every `nb show` writes a row to the store's usage log,
+and the weekly `nb-janitor.md` reports a shelf as silent when it has no usage
+rows in its window (30 days by default); reading every shelf in place would
+make every shelf look in use for most of each month. Do not run `nb show` or
+`nb search` on the live store in later phases either: read the snapshot.
 
 ### Phase 2 — Load the previous run
 
@@ -153,7 +179,10 @@ for good. Also find the umbrella issue.
   new since the earlier snapshot, entries whose score rose by five or more, and
   mapped entries that have disappeared (already retired, evicted, or edited).
   Phase 4 reads only the first two sets, plus any unmapped entry at or above
-  `{{minVotes}}`.
+  `{{minVotes}}`. A new entry can repeat an older entry on another shelf that
+  is in none of these sets, so for each new entry also search the whole
+  snapshot, every shelf, for the same lesson in other words (grep its key
+  terms case-insensitively), and read the matches with it in Phase 4.
 
 ### Phase 3 — Close the loop on earlier leaves
 
@@ -173,7 +202,8 @@ For each leaf in the umbrella's task list:
    and a published tool must be at a version that contains it. If it is merged
    but not live, list its entries under "merged, not yet live" and print no
    commands for them.
-5. For a leaf that is verified and live, list its entries from the map:
+5. For a leaf that is verified and live, list its entries from the map (the
+   rows whose `finding` is one of the keys on the leaf's task-list line):
    - `full` and `now` entries that still exist in today's snapshot: print the
      exact command, `nb rm <shelf> <id> --reason obsolete`.
    - `partial` entries: print the current text and a proposed shorter text that
@@ -265,7 +295,12 @@ file), in this order:
 
 1. Counts: entries read, entries mapped, new since the last run.
 2. **Ready to retire** (from Phase 3), with the commands; then **Merged, not
-   yet live**, without commands; then **Operator clean-up**.
+   yet live**, without commands; then **Operator clean-up**. Operator clean-up
+   holds the `recheck`, `move`, `decide`, `junk` and `investigate` entries,
+   and the `now` entries of findings that have no leaf (an "Exists and works"
+   or "Already fixed" verdict, from this run or an earlier one). Give each
+   `now` entry that is still in today's snapshot its
+   `nb rm <shelf> <id> --reason obsolete` command.
 3. New findings, ranked by the votes on the entries each one retires. For each:
    where, evidence, change, how it was checked, and the entry table.
 4. Corrections to earlier findings (anything Phase 5 showed was wrong or stale).
@@ -295,7 +330,9 @@ when that value is exactly `umbrella` or `leaves`. Any other value, including
   pull request and was checked on the default branch or reproduced, search the
   target repository for a duplicate, then file a leaf: a first line
   "Part of <umbrella>", then Problem, Scope, Acceptance criteria, Evidence, and
-  the entry ids it retires. Add the leaf to the umbrella's task list.
+  the entry ids it retires. Add the leaf to the umbrella's task list as
+  `- [ ] <finding keys>: <issue>`, so Phase 3 of the next run can find its
+  map rows.
 - A leaf that changes what every agent session does (a new blocking or
   session-start hook) gets the `automation-blocked` label and a line saying the
   operator must remove it to release the work. If the target repository has no
@@ -303,13 +340,18 @@ when that value is exactly `umbrella` or `leaves`. Any other value, including
 - Check each label by exact name before using it:
   `gh label list --repo <owner/repo> --search <name> --json name -q '.[].name' | grep -Fx <name>`
   (the search is fuzzy, and a bare `gh label list` shows only the first 30).
-  Apply rules 4 and 5.
+  Apply rules 4 and 5. Rule 4's check of the target repository comes before
+  each leaf you file and each finding you add to the umbrella.
 
 ### Phase 9 — Retrospective and summary
 
 Run the notebook retrospective. You opened every shelf as data, so vote only
 for lessons that guided how you did this task (vote by id), and add at most one
-new lesson of 200 characters or fewer. Then end with a summary the operator can act on without opening
+new lesson of 200 characters or fewer. Add it only when the target shelf's
+lesson count in `nb list --limit 1000` is below `maxLines` in `nb config` (50
+by default): on a full shelf, `nb add` makes room by evicting an existing
+entry. If the shelf is full, do not add; put the lesson in the summary for the
+operator instead. Then end with a summary the operator can act on without opening
 the report: the entries ready to retire with their commands, the top new
 findings, the corrections, and the report path.
 

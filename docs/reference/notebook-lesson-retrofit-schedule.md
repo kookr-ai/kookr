@@ -137,16 +137,27 @@ on this.
 
 - **Reads** every shelf with `nb show`, earlier reports in `~/.kookr/reports`,
   and the default branch of each repository it checks, through a freshly fetched
-  remote ref.
+  remote ref. The shelves are read from a temporary copy of the store, because
+  every `nb show` on the live store writes a usage row. The weekly
+  [nb-janitor](nb-janitor-schedule.md) reports a shelf as *silent* when it has
+  no usage rows in its 30-day window, so a monthly read of every shelf in place
+  would make every shelf look in use for most of each month.
 - **Writes** three dated files to the reports directory (report, entry map,
-  shelf snapshot), its own retrospective votes, and at most one new lesson.
+  shelf snapshot), its own retrospective votes, and at most one new lesson. The
+  votes go to the live store and count as use of those shelves, which is
+  correct: the run did use them. The new lesson is added only to a shelf below
+  its cap (`maxLines` in `nb config`, 50 by default), because adding to a full
+  shelf evicts an existing entry.
 - **Never** removes, moves, merges or edits an existing notebook entry, and never changes
   host configuration, hooks, settings or schedules. Retiring entries is the
   operator's step; the report prints the exact commands.
 - **Issues** are touched only when `fileIssues` is exactly `umbrella` or `leaves`; any other value means report only. Public issues carry
   shelf names, entry ids, scores and actions only: no lesson text, and nothing
-  from or about a private repository. A leaf that changes what every agent
-  session does is filed with the `automation-blocked` label, so the issue batch
+  from or about a private repository. Visibility is checked twice: for the
+  repository a shelf name refers to, and for the repository a proposed change
+  would land in. A finding whose target repository is not public stays in the
+  local report even when its entries come from public shelves. A leaf that
+  changes what every agent session does is filed with the `automation-blocked` label, so the issue batch
   ([Kookr self-batch schedule](kookr-self-batch-schedule.md)) leaves it alone
   until the operator removes the label. In a repository without that label the
   leaf is not filed; it stays on the umbrella, marked held.
