@@ -508,3 +508,50 @@ describe('parallel-issue-batch playbook: unified issue delivery front door (RFC 
     }
   });
 });
+
+/**
+ * Drift guard for issue #3638. The Repository Idea Scout counts an idea as
+ * converted only when a merged PR carries the issue's `idea:<n>` label, so every
+ * playbook path that opens a PR for an issue must copy `idea-scout` / `idea:<n>`
+ * from the issue onto the PR. implement-github-issue.md had the step; the batch
+ * child contract did not, which undercounted conversion. These assertions fail
+ * if the batch step is dropped, moved before the PR exists, or drifts from the
+ * selector in implement-github-issue.md.
+ */
+describe('parallel-issue-batch playbook: Idea Scout provenance labels (#3638)', () => {
+  const playbooksDir = join(import.meta.dirname, '..', '..', 'plugin', 'playbooks');
+  const batch = parsePlaybook(
+    readFileSync(join(playbooksDir, 'parallel-issue-batch.md'), 'utf-8'),
+    'parallel-issue-batch.md',
+    '/',
+  );
+  const implement = readFileSync(join(playbooksDir, 'implement-github-issue.md'), 'utf-8');
+  const template = batch.body.slice(batch.body.indexOf('Implement the following GitHub issue in <owner/repo>'));
+  const selector = '--jq \'[.labels[].name | select(. == "idea-scout" or startswith("idea:"))] | join(",")\'';
+
+  test('the child contract copies the labels onto the PR it opened', () => {
+    expect(template).toContain('gh issue view <N1> -R "$REPO" --json labels');
+    expect(template).toContain(selector);
+    expect(template).toContain('if [ -n "$IDEA_LABELS" ]; then');
+    expect(template).toContain('gh issue edit <PR> -R "$REPO" --add-label "$IDEA_LABELS" >/dev/null || true');
+    expect(template).toMatch(/no-op for issues that were not scouted/i);
+  });
+
+  test('the step runs after the PR is opened and before CI monitoring', () => {
+    const openPr = template.indexOf('open **one** PR that closes the issue in the unit');
+    const labels = template.indexOf('--add-label "$IDEA_LABELS"');
+    const monitor = template.indexOf('Monitor CI and fix failures');
+    expect(openPr).toBeGreaterThan(0);
+    expect(labels).toBeGreaterThan(openPr);
+    expect(monitor).toBeGreaterThan(labels);
+  });
+
+  test('the label selector matches the one in implement-github-issue.md', () => {
+    expect(implement).toContain(selector);
+  });
+
+  test('the parent fallback delivery path also runs the label step', () => {
+    const fallback = batch.body.slice(batch.body.indexOf('A single-writer delivery owner via the lease.'));
+    expect(fallback.slice(0, 1500)).toMatch(/Idea Scout\s+provenance-label step \(#3638\)/);
+  });
+});
