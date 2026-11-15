@@ -125,6 +125,26 @@ describe('createLucyLiveRuntime', () => {
     });
     await rt.ready;
     expect(rt.status().reason).toContain('vad exploded');
-    expect(warn).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('vad exploded'));
+  });
+
+  it('warns once at start-up when the configured recogniser is not on this machine (#3666)', async () => {
+    const warn = vi.fn();
+    const rt = createLucyLiveRuntime({ env: { ...KEYED, KOOKR_LUCY_EARS_URL: 'ws://gpu-box:8095' }, ttsUrl: 'http://tts', warn, build: build() });
+    await rt.ready;
+    expect(rt.status().available).toBe(true);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('gpu-box'));
+  });
+
+  it('says nothing about a recogniser on this machine, set by hand or managed', async () => {
+    const warn = vi.fn();
+    const own = createLucyLiveRuntime({ env: { ...KEYED, KOOKR_LUCY_EARS_URL: 'ws://127.0.0.1:8095' }, ttsUrl: 'http://tts', warn, build: build() });
+    await own.ready;
+    const ears = fakeEars({ phase: 'starting' });
+    const managed = createLucyLiveRuntime({ env: { ...KEYED }, ttsUrl: 'http://tts', ears: ears.handle, warn, build: build() });
+    ears.set({ phase: 'ready', url: 'ws://127.0.0.1:8095' });
+    await vi.waitFor(() => expect(managed.status().available).toBe(true));
+    expect(warn).not.toHaveBeenCalled();
   });
 });

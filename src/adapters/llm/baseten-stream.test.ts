@@ -86,6 +86,18 @@ describe('streamBasetenChat', () => {
     expect(err).toBeInstanceOf(BasetenStreamError);
     expect((err as BasetenStreamError).kind).toBe('http');
     expect((err as Error).message).not.toContain('Bearer');
+    expect((err as BasetenStreamError).status).toBe(401);
+  });
+
+  it('leaves reasoning_effort out of the request when asked to (null)', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return streamOf([sse(delta('ok')), sse('[DONE]')]);
+    }) as unknown as typeof fetch;
+    await collect(streamBasetenChat(CONFIG, { messages: [], reasoningEffort: null }, fetchImpl));
+    expect(body).toBeDefined();
+    expect(body).not.toHaveProperty('reasoning_effort');
   });
 
   it('aborts mid-stream when the caller aborts', async () => {

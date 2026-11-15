@@ -9,7 +9,7 @@ import type { IncomingMessage } from 'node:http';
 import type { WebSocket } from 'ws';
 import type { SileroVad } from '../../adapters/lucy-live/silero-vad.js';
 import { openEarsTurn, transcribeOnce } from '../../adapters/lucy-live/ears-client.js';
-import { streamBasetenChat } from '../../adapters/llm/baseten-stream.js';
+import { BasetenStreamError, streamBasetenChat, type BasetenStreamConfig, type StreamChatRequest } from '../../adapters/llm/baseten-stream.js';
 import { synthesize } from '../../adapters/tts-client.js';
 import { randomUUID } from 'node:crypto';
 import type { LucyOperatorService } from '../lucy-operator/service.js';
@@ -60,6 +60,8 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
   const warn = deps.warn ?? ((m: string) => console.warn(`[lucy-live] ${m}`));
   const now = deps.now ?? Date.now;
   const { earsUrl, brain, ttsUrl } = deps.config;
+  // One per service, so every connection learns from the first refusal.
+  const streamHelperAnswer = helperAnswerStream(brain, warn);
 
   return {
     handleConnection(ws) {
@@ -77,12 +79,11 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
           streamAnswer: ({ system, history, user, signal, speechStartedAt, stayQuiet, overlapsAudio }) => {
             const operator = deps.getOperator?.();
             if (operator?.launch) return streamFromOperator(operator, { conversationId, text: user, signal, speechStartedAt, stayQuiet, overlapsAudio });
-            return streamBasetenChat(brain, {
+            return streamHelperAnswer({
               messages: [{ role: 'system', content: system }, ...history, { role: 'user', content: user }],
               signal,
               maxTokens: 200,
               temperature: 0.3,
-              reasoningEffort: 'none',
             });
           },
           noteAudible: (until) => deps.getOperator?.()?.launch?.noteSpeaking(conversationId, until),
@@ -121,6 +122,45 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
         return new LucyLiveSession(ports);
       }, warn);
     },
+  };
+}
+
+/**
+ * The helper model's answer, streamed. It is asked not to reason first, so she can start speaking at
+ * once. A model that refuses that setting (HTTP 400, for example a custom `KOOKR_BASETEN_MODEL`) is
+ * asked again without it. Once a request without it is accepted, the setting is left out for the
+ * rest of this run; a 400 that the retry does not cure had another cause, so nothing is remembered.
+ */
+function helperAnswerStream(
+  brain: BasetenStreamConfig,
+  warn: (message: string) => void,
+): (req: Omit<StreamChatRequest, 'reasoningEffort'>) => AsyncGenerator<string, void, void> {
+  let omitReasoningEffort = false;
+  return async function* stream(req) {
+    if (omitReasoningEffort) {
+      yield* streamBasetenChat(brain, { ...req, reasoningEffort: null });
+      return;
+    }
+    let spoke = false;
+    try {
+      for await (const delta of streamBasetenChat(brain, { ...req, reasoningEffort: 'none' })) {
+        spoke = true;
+        yield delta;
+      }
+      return;
+    } catch (err) {
+      if (spoke || !(err instanceof BasetenStreamError && err.status === 400)) throw err;
+    }
+    const remember = (): void => {
+      if (omitReasoningEffort) return;
+      omitReasoningEffort = true;
+      warn(`the helper model (${brain.model}) refused reasoning_effort "none" with HTTP 400; it is now asked without that setting, so her answers may start later.`);
+    };
+    for await (const delta of streamBasetenChat(brain, { ...req, reasoningEffort: null })) {
+      remember();
+      yield delta;
+    }
+    remember();
   };
 }
 
