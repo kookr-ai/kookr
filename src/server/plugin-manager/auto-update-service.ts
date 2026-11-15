@@ -27,8 +27,8 @@ import {
 import { PluginMutationBusyError, type PluginMutationService } from './mutation-service.js';
 import type { AutoUpdateExternalChange, AutoUpdateFlagOwnership } from '../../shared/contracts/plugins.js';
 import {
+  SETTINGS_SCOPES_HIGHEST_FIRST,
   scopeOutranks,
-  type AutoUpdateResolution,
   type ClaudeSettingsStore,
   type SettingsScope,
 } from '../../core/claude-settings/settings-store.js';
@@ -123,11 +123,13 @@ export class AutoUpdateService {
    * identity `withLock`.
    *
    * Scope: Claude Code reads the flag from the highest-precedence settings
-   * scope that sets it, so the pin goes into the scope that DECIDES the flag
-   * (the default `user` scope when none sets it), and that scope is recorded so
-   * release restores into the same file. If a higher-precedence scope later
-   * overrides the pin, the pin moves there: the old scope gets its recorded
-   * value back, then the deciding scope is taken over like a fresh takeover.
+   * scope that sets it, for the folder each session runs in. The base pin
+   * (user settings, `settingsScope`) always stays, because every session on
+   * the machine reads it. A higher-precedence scope that sets `true` would
+   * override it, so Kookr pins `false` there too, recording that file's own
+   * previous value, and restores every pinned file on release. Each file's
+   * value is read on its own (not the resolved value), so release puts back
+   * exactly what each file held.
    */
   private async reconcileMarketplaceAutoUpdate(marketplace: string | null): Promise<void> {
     if (marketplace === null) return;
@@ -136,39 +138,40 @@ export class AutoUpdateService {
       ([id, p]) => p === 'apply-when-idle' && pluginMarketplaceFromId(id) === marketplace,
     );
     const owned = data.autoUpdateOwnership[marketplace]; // undefined ⇒ Kookr does not own the flag
+    const base = this.scope;
     const writeFlag = (value: boolean | undefined, scope: SettingsScope): Promise<unknown> =>
       this.deps.settings.writeAutoUpdate(marketplace, value, { scope, withLock: (fn) => fn() });
-    const restore = (o: AutoUpdateFlagOwnership): Promise<unknown> =>
-      writeFlag(o.previousValue === null ? undefined : o.previousValue, o.scope ?? this.scope);
-    // Take over at the deciding scope: record what was there first, then pin
-    // `false` (only if it is not already false, so we never make a redundant edit).
-    const takeOver = async (found: AutoUpdateResolution): Promise<void> => {
-      const scope = found.decidedBy ?? this.scope;
-      await this.deps.store.update((d) => {
-        d.autoUpdateOwnership[marketplace] = { previousValue: found.value ?? null, scope };
-      });
-      if (found.value !== false) await writeFlag(false, scope);
-    };
 
     try {
       if (anyApplyWhenIdle) {
-        const current = await this.deps.settings.resolveAutoUpdate(marketplace);
-        if (!owned) {
-          await takeOver(current);
-        } else if (current.value !== false) {
-          const pinScope = owned.scope ?? this.scope;
-          if (current.decidedBy !== undefined && scopeOutranks(current.decidedBy, pinScope)) {
-            // A higher-precedence scope overrides the pin: move it there.
-            await restore(owned);
-            await takeOver(current);
-          } else {
-            // Self-heal: an external writer flipped or removed the pin.
-            await writeFlag(false, pinScope);
-          }
+        const values = await this.deps.settings.readAutoUpdateByScope(marketplace);
+        // scope → the value its file held before Kookr pinned it (null = absent).
+        const pins = owned ? pinsOf(owned, base) : new Map<SettingsScope, boolean | null>();
+        let recordChanged = !owned;
+        const pin = (scope: SettingsScope): void => {
+          if (pins.has(scope)) return;
+          pins.set(scope, values[scope] ?? null);
+          recordChanged = true;
+        };
+        pin(base);
+        for (const scope of SETTINGS_SCOPES_HIGHEST_FIRST) {
+          if (scopeOutranks(scope, base) && values[scope] === true) pin(scope);
+        }
+        // Record what was there first, then pin `false` in every owned scope
+        // that is not already false (self-heals a flipped or removed pin).
+        if (recordChanged) {
+          await this.deps.store.update((d) => {
+            d.autoUpdateOwnership[marketplace] = ownershipOf(pins, base);
+          });
+        }
+        for (const scope of pins.keys()) {
+          if (values[scope] !== false) await writeFlag(false, scope);
         }
       } else if (owned) {
-        // Release: restore EXACTLY the value Kookr found before taking over, in the scope it pinned.
-        await restore(owned);
+        // Release: restore EXACTLY the value each pinned file held before takeover.
+        for (const [scope, previous] of pinsOf(owned, base)) {
+          await writeFlag(previous === null ? undefined : previous, scope);
+        }
         await this.deps.store.update((d) => {
           delete d.autoUpdateOwnership[marketplace];
         });
@@ -514,6 +517,24 @@ export class AutoUpdateService {
       }),
     );
   }
+}
+
+/** An ownership record as scope → previous value; the base scope's entry is `previousValue`. */
+function pinsOf(owned: AutoUpdateFlagOwnership, base: SettingsScope): Map<SettingsScope, boolean | null> {
+  const pins = new Map<SettingsScope, boolean | null>([[base, owned.previousValue]]);
+  for (const [scope, previous] of Object.entries(owned.alsoPinned ?? {}) as Array<[SettingsScope, boolean | null]>) {
+    if (scope !== base) pins.set(scope, previous);
+  }
+  return pins;
+}
+
+/** Inverse of {@link pinsOf}. */
+function ownershipOf(pins: ReadonlyMap<SettingsScope, boolean | null>, base: SettingsScope): AutoUpdateFlagOwnership {
+  const alsoPinned: Partial<Record<SettingsScope, boolean | null>> = {};
+  for (const [scope, previous] of pins) if (scope !== base) alsoPinned[scope] = previous;
+  return Object.keys(alsoPinned).length > 0
+    ? { previousValue: pins.get(base) ?? null, alsoPinned }
+    : { previousValue: pins.get(base) ?? null };
 }
 
 function errText(err: unknown): string {

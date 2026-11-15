@@ -83,15 +83,13 @@ describe('ClaudeSettingsStore.writeAutoUpdate (write + revert)', () => {
     expect(JSON.parse(readFileSync(userSettings, 'utf8')).enabledPlugins).toEqual({ 'a@mkt': true });
   });
 
-  test('resolveAutoUpdate reports the highest-precedence scope that sets the flag', async () => {
-    expect(await store.resolveAutoUpdate('mkt')).toEqual({ value: undefined });
+  test('readAutoUpdateByScope reports each file\'s own value; readAutoUpdate the highest-precedence one', async () => {
+    expect(await store.readAutoUpdateByScope('mkt')).toEqual({});
 
     await store.writeAutoUpdate('mkt', false, { scope: 'user', withLock: identityLock });
-    expect(await store.resolveAutoUpdate('mkt')).toEqual({ value: false, decidedBy: 'user' });
-
     mkdirSync(join(cwd, '.claude'), { recursive: true });
     await store.writeAutoUpdate('mkt', true, { scope: 'projectLocal', withLock: identityLock });
-    expect(await store.resolveAutoUpdate('mkt')).toEqual({ value: true, decidedBy: 'projectLocal' });
+    expect(await store.readAutoUpdateByScope('mkt')).toEqual({ user: false, projectLocal: true });
     expect(await store.readAutoUpdate('mkt')).toBe(true);
   });
 

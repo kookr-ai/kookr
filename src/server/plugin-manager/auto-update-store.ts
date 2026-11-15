@@ -109,9 +109,16 @@ function coerceData(parsed: unknown): AutoUpdateStoreData {
   }
   for (const [marketplace, o] of Object.entries(obj.autoUpdateOwnership ?? {})) {
     if (typeof o !== 'object' || o === null) continue;
-    const { previousValue: prev, scope } = o as { previousValue?: unknown; scope?: unknown };
+    const { previousValue: prev, alsoPinned } = o as { previousValue?: unknown; alsoPinned?: unknown };
     if (prev === true || prev === false || prev === null) {
-      out.autoUpdateOwnership[marketplace] = isFlagScope(scope) ? { previousValue: prev, scope } : { previousValue: prev };
+      const pins: Partial<Record<AutoUpdateFlagScope, boolean | null>> = {};
+      if (typeof alsoPinned === 'object' && alsoPinned !== null) {
+        for (const [scope, v] of Object.entries(alsoPinned)) {
+          if (isFlagScope(scope) && (v === true || v === false || v === null)) pins[scope] = v;
+        }
+      }
+      out.autoUpdateOwnership[marketplace] =
+        Object.keys(pins).length > 0 ? { previousValue: prev, alsoPinned: pins } : { previousValue: prev };
     }
   }
   return out;

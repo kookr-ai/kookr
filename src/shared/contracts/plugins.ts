@@ -552,12 +552,14 @@ export interface AutoUpdateFlagOwnership {
   /** The `autoUpdate` value present before Kookr took over: `null` = the key was absent. */
   previousValue: boolean | null;
   /**
-   * The Claude Code settings scope Kookr pinned the flag in (and restores
-   * `previousValue` into on release). It is the scope that decided the flag at
-   * takeover, so the pin is not overridden by a higher-precedence scope.
-   * Absent on records written before the scope was tracked ⇒ `user`.
+   * Higher-precedence settings scopes where Kookr ALSO pinned `false`, each with
+   * the value that scope's file held before (`null` = the key was absent).
+   * The base pin (`previousValue`, the user settings file) always stays: it is
+   * the one every session on the machine reads, whatever its folder. A scope
+   * that outranks it and sets `true` would override it, so Kookr pins that
+   * scope too and restores it on release. Absent ⇒ only the base pin.
    */
-  scope?: AutoUpdateFlagScope;
+  alsoPinned?: Partial<Record<AutoUpdateFlagScope, boolean | null>>;
 }
 
 /**
