@@ -1,6 +1,6 @@
 import type { AgentEvent, Anomaly, EventMeta } from './types.js';
 import { analyzeVisiblePaneLines, normalizeVisiblePaneLines, visibleLinesFromTerminalText } from '../shared/pane-semantics.js';
-import { isBackgroundParked as isBackgroundParkedStop } from './background-parked.js';
+import { isBackgroundParked as isBackgroundParkedStop, isSilentBackgroundPark, messageTail } from './background-parked.js';
 import { ToolLatencyMetrics } from './tool-latency-metrics.js';
 
 /** Open PreToolUse entry awaiting a matching PostToolUse / PostToolUseFailure. */
@@ -124,6 +124,16 @@ export interface AgentWatchdogState {
    * notification, so its hook silence and static pane prompt are expected.
    */
   backgroundParkedAt: number;
+  /**
+   * The parking Stop's `lastMessage` when it ended in a question to the
+   * operator (`!isSilentBackgroundPark`), else `null`. Set and cleared in
+   * lockstep with {@link backgroundParkedAt}. A question-park stays parked
+   * (so `isBackgroundParked()` still keeps it out of hungSuspect/reaping —
+   * its background work is running) but `tick()` reports `needs_input`
+   * instead of the silent `background_parked`: the agent is waiting on a
+   * human (issue #3569).
+   */
+  backgroundParkQuestion: string | null;
   /** SessionEnd is final even if a delayed progress handler arrives afterward. */
   sessionEnded?: boolean;
   /**
@@ -259,6 +269,7 @@ export class Watchdog {
       lastTokenActivityAt: 0,
       mcpStartupAt: 0,
       backgroundParkedAt: 0,
+      backgroundParkQuestion: null,
     });
   }
 
@@ -379,8 +390,11 @@ export class Watchdog {
       if (event.type === 'stop') {
         state.backgroundParkedAt =
           options.updateLastEventAt !== false && isBackgroundParkedStop(event) ? now : 0;
+        state.backgroundParkQuestion =
+          state.backgroundParkedAt > 0 && !isSilentBackgroundPark(event) ? event.lastMessage : null;
       } else if (event.type !== 'notification' && event.type !== 'subagent_stop') {
         state.backgroundParkedAt = 0;
+        state.backgroundParkQuestion = null;
       }
     }
   }
@@ -578,7 +592,26 @@ export class Watchdog {
     // that never came (dead background process, lost notification) still
     // surfaces — the same reason a hung tool call doesn't hide behind
     // indefinite `tool_running` suppression.
+    //
+    // Question-park exception (issue #3569): a park whose Stop ended in a
+    // question to the operator is waiting on a human, not on its background
+    // work — report `needs_input` from the same branch, so the tool-override
+    // and pane fallbacks below still cannot re-mint `stale_agent` for it.
     if (this.isBackgroundParked(agentId, now)) {
+      const question = state.backgroundParkQuestion;
+      if (question !== null) {
+        return {
+          status: 'needs_input',
+          anomaly: {
+            agentId,
+            type: 'needs_input',
+            severity: 'info',
+            explanation: `Agent asked a question while parked on background work: "${messageTail(question)}"`,
+            detectedAt: new Date(now),
+            subType: 'stop',
+          },
+        };
+      }
       return { status: 'background_parked' };
     }
 

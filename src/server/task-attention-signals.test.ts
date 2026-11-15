@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { Watchdog } from '../core/watchdog.js';
 import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -79,6 +80,24 @@ describe('resolveTaskAttentionSignals', () => {
     // dropping `now` (letting the watchdog default to Date.now()) silently
     // breaks park age-out under replayed/simulated clocks.
     expect(parkedCalls).toContainEqual(['kookr-test1234', now]);
+  });
+
+  it('issue #3569: a question-park flags needs_input yet stays out of hungSuspect (real watchdog)', () => {
+    // A parked agent that asked the operator a question is waiting on a human
+    // — the watchdog must say needs_input, but it is still parked on running
+    // background work, so it must not become hung-suspect / reap-eligible.
+    const agentId = 'kookr-test1234';
+    const watchdog = new Watchdog({ unconditionalStaleThresholdMs: 60_000, backgroundParkGracePeriodMs: 10 * HOUR_MS });
+    const t0 = 1_000;
+    watchdog.registerAgent(agentId, t0, t0);
+    watchdog.recordEvents(
+      agentId,
+      [{ type: 'stop', sessionId: 's1', lastMessage: 'Shall I start the runs?', activeBackgroundTaskCount: 3 }],
+      t0,
+    );
+    const now = t0 + 2 * HOUR_MS;
+    expect(watchdog.tick(agentId, 'frozen pane', [], now).status).toBe('needs_input');
+    expect(resolveTaskAttentionSignals(subject(), { watchdog }, now).hungSuspect).toBe(false);
   });
 
   it('#1653: exposes the agent liveness timestamps mapped from watchdog state', () => {

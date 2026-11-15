@@ -875,6 +875,60 @@ describe('Monitor', () => {
       expect(agent!.turnState).toBe('running');
       expect(agent!.anomaly).toBeNull();
     });
+
+    test('issue #3569: a parked Stop ending in a question queues needs_input and survives watchdog ticks', () => {
+      monitor.processEvents('agent-1', [
+        {
+          type: 'stop',
+          sessionId: 's1',
+          lastMessage: 'Shall I start the runs?',
+          activeBackgroundTaskCount: 3,
+          activeSessionCronCount: 0,
+        },
+      ]);
+
+      const agent = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+      // Turn state is unchanged — the background work is still running.
+      expect(agent!.turnState).toBe('running');
+      expect(agent!.anomaly?.type).toBe('needs_input');
+      expect(queue.peek('agent-1')?.type).toBe('needs_input');
+
+      // Neither a non-actionable tick nor the watchdog's own question-park
+      // verdict may purge or replace the event-path finding.
+      monitor.applyWatchdogVerdict('agent-1', { status: 'background_parked' }, { paneCaptureSucceeded: true });
+      expect(queue.peek('agent-1')?.type).toBe('needs_input');
+      monitor.applyWatchdogVerdict(
+        'agent-1',
+        {
+          status: 'needs_input',
+          anomaly: {
+            agentId: 'agent-1',
+            type: 'needs_input',
+            severity: 'info',
+            subType: 'stop',
+            explanation: 'Agent asked a question while parked on background work',
+            detectedAt: new Date(),
+          },
+        },
+        { paneCaptureSucceeded: true },
+      );
+      expect(queue.peek('agent-1')?.type).toBe('needs_input');
+      expect(queue.peek('agent-1')?.explanation).toContain('Shall I start the runs?');
+    });
+
+    test('issue #3569: a silent parked Stop (no question) still queues nothing', () => {
+      monitor.processEvents('agent-1', [
+        {
+          type: 'stop',
+          sessionId: 's1',
+          lastMessage: 'Waiting on the verify run.',
+          activeBackgroundTaskCount: 1,
+          activeSessionCronCount: 0,
+        },
+      ]);
+      expect(monitor.getSnapshot().find((s) => s.agentId === 'agent-1')!.anomaly).toBeNull();
+      expect(queue.peek('agent-1')).toBeNull();
+    });
   });
 
   test('processEvents after unregisterAgent does NOT resurrect agent', () => {

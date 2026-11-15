@@ -1668,6 +1668,108 @@ describe('Watchdog', () => {
       // Past the park bound the debris surfaces again via the override.
       expect(local.tick(agentId, 'frozen pane', [], t0 + 62_000).status).toBe('stale_agent');
     });
+
+    describe('question-park exception (issue #3569)', () => {
+      // A parked Stop whose last message asks the operator something is
+      // waiting on a human, not on its background work: it must surface as
+      // needs_input immediately, not after the 45-min park bound.
+      function makeQuestionParkStop(sessionId: string, question = 'Shall I start the runs?'): AgentEvent {
+        return { ...makeParkedStop(sessionId), lastMessage: question } as AgentEvent;
+      }
+
+      test('question-park + frozen pane past stale threshold → needs_input, not background_parked', () => {
+        const t0 = 1000;
+        watchdog.registerAgent(agentId, t0, t0);
+        watchdog.recordEvents(agentId, [makeQuestionParkStop('s1')], t0);
+
+        watchdog.tick(agentId, 'frozen pane', [], t0 + 5_000);
+        const verdict = watchdog.tick(agentId, 'frozen pane', [], t0 + 11_000);
+        expect(verdict.status).toBe('needs_input');
+        if (verdict.status !== 'needs_input') return;
+        expect(verdict.anomaly.subType).toBe('stop');
+        expect(verdict.anomaly.explanation).toContain('Shall I start the runs?');
+      });
+
+      test('question-park + idle prompt pane past stale threshold → needs_input', () => {
+        const t0 = 1000;
+        watchdog.registerAgent(agentId, t0, t0);
+        watchdog.recordEvents(agentId, [makeQuestionParkStop('s1', 'Shall I go ahead?\n')], t0);
+
+        watchdog.tick(agentId, '› ', [], t0 + 5_000);
+        const verdict = watchdog.tick(agentId, '› \n\n  gpt-5.4 fast · 100% left · /tmp/project', [], t0 + 11_000);
+        expect(verdict.status).toBe('needs_input');
+      });
+
+      test('question-park stays healthy inside the stale threshold (no transient flash)', () => {
+        const t0 = 1000;
+        watchdog.registerAgent(agentId, t0, t0);
+        watchdog.recordEvents(agentId, [makeQuestionParkStop('s1')], t0);
+        expect(watchdog.tick(agentId, 'frozen pane', [], t0 + 5_000).status).not.toBe('needs_input');
+      });
+
+      test('question-park is still parked: isBackgroundParked stays true (kept out of hungSuspect/reap)', () => {
+        const t0 = 1000;
+        watchdog.registerAgent(agentId, t0, t0);
+        watchdog.recordEvents(agentId, [makeQuestionParkStop('s1')], t0);
+        expect(watchdog.isBackgroundParked(agentId, t0 + 30_000)).toBe(true);
+      });
+
+      test('a question-park never degrades to stale_agent from leftover tool debris', () => {
+        const local = new Watchdog({ ...PARK_CONFIG, maxToolExecutionTimeMs: 20_000 });
+        const t0 = 1000;
+        local.registerAgent(agentId, t0, t0);
+        local.recordEvents(agentId, [makeToolUse('s1', 'Bash', 'lost-post')], t0);
+        local.recordEvents(agentId, [makeQuestionParkStop('s1')], t0 + 1_000);
+
+        local.tick(agentId, 'frozen pane', [], t0 + 2_000);
+        expect(local.tick(agentId, 'frozen pane', [], t0 + 32_000).status).toBe('needs_input');
+      });
+
+      test('heartbeat re-park: a later non-question parked stop returns to background_parked', () => {
+        const t0 = 1000;
+        watchdog.registerAgent(agentId, t0, t0);
+        watchdog.recordEvents(agentId, [makeQuestionParkStop('s1')], t0);
+        watchdog.tick(agentId, 'frozen pane', [], t0 + 5_000);
+        expect(watchdog.tick(agentId, 'frozen pane', [], t0 + 11_000).status).toBe('needs_input');
+
+        const t1 = t0 + 12_000;
+        watchdog.recordEvents(agentId, [makeParkedStop('s1')], t1);
+        watchdog.tick(agentId, 'frozen pane 2', [], t1 + 1_000);
+        expect(watchdog.tick(agentId, 'frozen pane 2', [], t1 + 11_000).status).toBe('background_parked');
+      });
+
+      test('question-park is bounded like any park: past backgroundParkGracePeriodMs a frozen pane is stale_agent', () => {
+        const t0 = 1000;
+        watchdog.registerAgent(agentId, t0, t0);
+        watchdog.recordEvents(agentId, [makeQuestionParkStop('s1')], t0);
+        watchdog.tick(agentId, 'frozen pane', [], t0 + 5_000);
+        expect(watchdog.tick(agentId, 'frozen pane', [], t0 + 59_000).status).toBe('needs_input');
+        // Past the 60s test bound the park lapses and the normal verdicts
+        // resume — the same shape as an unparked stop with a frozen pane.
+        expect(watchdog.tick(agentId, 'frozen pane', [], t0 + 61_000).status).toBe('stale_agent');
+      });
+
+      test('a wake event clears the question along with the park', () => {
+        const t0 = 1000;
+        watchdog.registerAgent(agentId, t0, t0);
+        watchdog.recordEvents(agentId, [makeQuestionParkStop('s1')], t0);
+        watchdog.recordEvents(agentId, [makeToolUse('s1', 'Bash', 'after-wake')], t0 + 1_000);
+        expect(watchdog.getState(agentId)?.backgroundParkQuestion).toBeNull();
+        expect(watchdog.isBackgroundParked(agentId, t0 + 2_000)).toBe(false);
+      });
+
+      test('a plain (unparked) stop ending in "?" is not a park and records no park question', () => {
+        const t0 = 1000;
+        watchdog.registerAgent(agentId, t0, t0);
+        watchdog.recordEvents(agentId, [makeQuestionParkStop('s1')], t0);
+        watchdog.recordEvents(
+          agentId,
+          [{ type: 'stop', sessionId: 's1', lastMessage: 'Shall I go ahead?' } as AgentEvent],
+          t0 + 1_000,
+        );
+        expect(watchdog.isBackgroundParked(agentId, t0 + 2_000)).toBe(false);
+        expect(watchdog.getState(agentId)?.backgroundParkQuestion).toBeNull();
+      });
+    });
   });
 });
-
