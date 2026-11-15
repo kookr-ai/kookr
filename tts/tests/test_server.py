@@ -161,7 +161,8 @@ def test_soften_for_kokoro_lengthens_only_the_pause_between_sentences(server, te
 
 @pytest.mark.parametrize(
     "raw,expected",
-    [("1.0", 1.0), (" 0.95 ", 0.95), ("", 0.88), ("fast", 0.88), ("0", 0.88), ("-1", 0.88)],
+    [("1.0", 1.0), (" 0.95 ", 0.95), ("", 0.88), ("fast", 0.88), ("0", 0.88), ("-1", 0.88),
+     ("nan", 0.88), ("inf", 0.88), ("-inf", 0.88), ("Infinity", 0.88)],
 )
 def test_kokoro_speed_comes_from_the_environment_and_a_bad_value_falls_back(monkeypatch, raw, expected):
     monkeypatch.setenv("TTS_KOKORO_SPEED", raw)
@@ -288,3 +289,29 @@ def test_a_failing_default_engine_stops_startup(server, monkeypatch):
 
     with pytest.raises(RuntimeError, match="no weights"):
         server.load_default_engine()
+
+
+def test_load_model_publishes_the_pocket_model_only_once_it_is_on_the_gpu(server, monkeypatch):
+    seen_during_move = []
+
+    class LoadedModel:
+        device = torch.device("cpu")
+
+        def cuda(self):
+            # A concurrent request reads the global without the lock; mid-move it must
+            # still see no model, not this half-moved one.
+            seen_during_move.append(server.model)
+            return on_gpu
+
+    class OnGpu:
+        device = "cuda:0"
+
+    on_gpu = OnGpu()
+    server.model = None
+    monkeypatch.setattr(server, "TTSModel", types.SimpleNamespace(load_model=lambda **_: LoadedModel()))
+    monkeypatch.setattr(server.torch.cuda, "is_available", lambda: True)
+
+    server.load_model()
+
+    assert seen_during_move == [None]
+    assert server.model is on_gpu
