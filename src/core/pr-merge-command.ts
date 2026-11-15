@@ -10,5 +10,7 @@ export function isPrMergeCommand(command: string): boolean {
   // Merge wrappers used by autonomous delivery on kookr-ai/kookr and forks.
   return /\bgh\s+pr\s+merge\b/i.test(command)
     || /\bpnpm\s+merge\b/i.test(command)
+    // `kookr merge <PR>` runs the deployed kookr-merge.sh (issue #3803).
+    || /\bkookr\s+merge\b/i.test(command)
     || /\bkookr-merge\.sh\b/i.test(command);
 }

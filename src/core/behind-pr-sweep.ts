@@ -234,12 +234,12 @@ export function decidePrAction(pr: SweepPrState, options: SweepPolicyOptions = {
     const integration = options.integrationBranch ?? null;
     if (integration !== null && pr.baseRefName !== integration) {
       // A direct merge here would land on `main` (or elsewhere) without the
-      // train's verify. `pnpm merge` retargets and merges into the integration
+      // train's verify. `kookr merge` retargets and merges into the integration
       // branch; an unreported base is treated the same way (fail safe).
       return {
         ...base,
         action: 'skip',
-        reason: `base ${pr.baseRefName ?? 'unknown'} is not the integration branch ${integration}; deliver it with pnpm merge`,
+        reason: `base ${pr.baseRefName ?? 'unknown'} is not the integration branch ${integration}; deliver it with kookr merge`,
       };
     }
     return { ...base, action: 'merge', reason: 'up to date; checks green' };

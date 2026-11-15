@@ -55,7 +55,9 @@ export type TrainEventKind =
   | 'halted'
   | 'reverted'
   | 'fix-budget-exhausted'
-  | 'fix-spawn-failed';
+  | 'fix-spawn-failed'
+  /** Commits reached main without the train (informational; nothing halts). */
+  | 'main-bypassed';
 
 export interface TrainNotifier {
   /** Something needs a human: raise an alert. */
@@ -135,6 +137,10 @@ const VERIFIED_GREEN_CAP = 200;
 const FLAKY_CAP = 50;
 const COMMENT_TAIL_LINES = 60;
 const COMMENT_TAIL_CHARS = 4000;
+/** How far back main's history is searched for a commit the train verified. */
+const UNVERIFIED_SCAN = 50;
+/** Commit subjects listed in a notification about commits that skipped the train. */
+const LISTED_SUBJECTS = 20;
 /** Cycles in a row that may end on a rejected push before the train halts. */
 export const PUSH_REJECT_LIMIT = 3;
 
@@ -342,10 +348,51 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     state.halted = null;
   }
 
-  // 3.
+  // Commits on main since the newest commit the train verified, newest first.
+  // The train only moves main to a commit it verified, so these reached main
+  // without it (a merge straight into main, or a direct push).
+  const mainUnverified = !state.verifiedGreen.includes(mainSha);
+  const unverifiedOnMain = async (): Promise<string> => {
+    const listed = (await out(['log', '--first-parent', `-n${UNVERIFIED_SCAN}`, '--format=%H %s', mainSha]))
+      .split('\n').filter(Boolean);
+    const lines: string[] = [];
+    let found = false;
+    for (const line of listed) {
+      const sha = line.slice(0, 40);
+      if (state.verifiedGreen.includes(sha)) { found = true; break; }
+      lines.push(`${sha.slice(0, 10)} ${line.slice(41)}`);
+    }
+    const shown = lines.slice(0, LISTED_SUBJECTS);
+    const more = lines.length - shown.length;
+    const tail = found
+      ? (more > 0 ? `; and ${more} more` : '')
+      : `; no train-verified commit in the last ${listed.length} on main, list may be incomplete`;
+    return `${shown.join('; ')}${tail}`;
+  };
+
+  // 3. Both branches agree. If the train never verified that commit, main
+  // moved without it (#3803): verify main now. Green: record it. Red: halt, so
+  // nothing is promoted on top of an unverified red main.
   if (mainSha === headSha) {
     state.pushRejections = 0;
-    return { outcome: 'idle' };
+    if (!mainUnverified) return { outcome: 'idle' };
+    try {
+      const r = await deps.verify(mainSha);
+      if (r.infra) {
+        return halt('verify-infra', mainSha, headSha, `verify could not run for ${mainSha.slice(0, 10)}: ${r.tail.slice(-400)}`);
+      }
+      log(`verify of unverified main ${mainSha.slice(0, 10)}: ${r.ok ? 'green' : 'red'}`);
+      if (r.ok) {
+        pushCapped(state.verifiedGreen, mainSha, VERIFIED_GREEN_CAP);
+        return { outcome: 'idle', detail: `verified main ${mainSha.slice(0, 10)}, which reached main without the train` };
+      }
+      return halt(
+        'main-unverified-red', mainSha, headSha,
+        `main ${mainSha.slice(0, 10)} reached main without the train and fails verify. Commits that reached main without the train: ${await unverifiedOnMain()}`,
+      );
+    } catch (err) {
+      return halt('train-error', mainSha, headSha, err instanceof Error ? err.message : String(err));
+    }
   }
 
   /**
@@ -376,6 +423,11 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   // 4. Someone merged straight into main: fold it into the integration branch.
   const ancestor = await git(['merge-base', '--is-ancestor', 'origin/main', intRef]);
   if (!ancestor.ok) {
+    // Commits on main the integration branch lacks: the train did not promote them.
+    const bypassed = (await out(['log', '--first-parent', '--format=%h %s', `${intRef}..origin/main`]))
+      .split('\n').filter(Boolean);
+    const bypassList = bypassed.slice(0, LISTED_SUBJECTS).join('; ') +
+      (bypassed.length > LISTED_SUBJECTS ? `; and ${bypassed.length - LISTED_SUBJECTS} more` : '');
     await out(['checkout', '--detach', '-q', headSha]);
     const merge = await git(['merge', '--no-edit', 'origin/main']);
     if (!merge.ok) {
@@ -384,13 +436,23 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
       const unmerged = await git(['diff', '--name-only', '--diff-filter=U']);
       await git(['merge', '--abort']);
       if (unmerged.ok && unmerged.stdout.trim() !== '') {
-        return halt('reconcile-conflict', mainSha, headSha, 'merging origin/main into the integration branch conflicts');
+        return halt(
+          'reconcile-conflict', mainSha, headSha,
+          `merging origin/main into the integration branch conflicts. Commits that reached main without the train: ${bypassList}`,
+        );
       }
       return halt('train-error', mainSha, headSha, `merging origin/main into the integration branch failed: ${merge.stderr.trim()}`);
     }
     const pushed = await push(`HEAD:refs/heads/${integration}`);
     if (!pushed.ok) return rejected('reconcile push', pushed);
     log(`reconciled ${integration} with main`);
+    // A notice, not an alert: nothing is wrong with the train, but a merge
+    // skipped it and the operator should know. Sent once, after the push, so a
+    // rejected push that is retried does not repeat it.
+    await safe(deps, () => deps.notifier.notify(
+      'main-bypassed',
+      `${bypassed.length} commit(s) reached main without the integration train: ${bypassList}`,
+    ));
     return { outcome: 'reconciled' };
   }
 
@@ -465,6 +527,14 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   // host fails every commit alike, and bisecting through that would blame and
   // revert an innocent change. A red base means "environment", so halt.
   if (!(await verify(mainSha))) {
+    // A red main the train never verified is not the environment: it reached
+    // main without the train, so name what did.
+    if (mainUnverified) {
+      return halt(
+        'main-unverified-red', mainSha, headSha,
+        `main ${mainSha.slice(0, 10)} reached main without the train and fails verify; nothing reverted. Commits that reached main without the train: ${await unverifiedOnMain()}`,
+      );
+    }
     return halt('base-red', mainSha, headSha, `main ${mainSha.slice(0, 10)} fails verify; nothing reverted`);
   }
 

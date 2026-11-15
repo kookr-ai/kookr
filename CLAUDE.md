@@ -76,8 +76,12 @@ outright rather than left to run:
     (`scripts/fast-gate-tests.sh`), not the whole suite. Do not run
     `pnpm verify` or the full `pnpm test` for a pull request; while iterating,
     run the tests for the files you touched.
-  - **Before `main`: the integration train.** `pnpm merge <PR>` retargets the
-    pull request to `staging` and squash-merges it there. The integration train
+  - **Before `main`: the integration train.** `kookr merge <PR> --repo kookr-ai/kookr`
+    retargets the pull request to `staging` and squash-merges it there.
+    `kookr merge` always runs the merge wrapper of the deployed production
+    checkout, which follows `main`; `pnpm merge` runs the wrapper of the checkout
+    you are in, which may be old and merge straight into `main` (#3803). Run it
+    from your own worktree; never change directory to the main checkout to merge. The integration train
     (`docs/reference/integration-train.md`) runs the full `pnpm verify` on
     `staging` and fast-forwards `main` to the exact commit it verified. That run
     is the only authoritative full green. Nobody pushes to `main` or `staging`
@@ -86,7 +90,7 @@ outright rather than left to run:
   (passed, and how many related test files it ran) and the targeted tests you
   ran yourself (commands and counts). Do not claim a full-suite run you did not
   make.
-- **Then merge it yourself** with `pnpm merge <PR>` once the push passed and the
+- **Then merge it yourself** with `kookr merge <PR> --repo kookr-ai/kookr` once the push passed and the
   independent review returned `pass`. There are no GitHub checks to wait for —
   do not stall on pending checks, bot reviewers, or a human unless the task
   explicitly says otherwise. The task is done when the pull request is merged

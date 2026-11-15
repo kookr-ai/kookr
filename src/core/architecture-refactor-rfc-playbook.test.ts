@@ -115,7 +115,7 @@ describe('architecture-refactor-rfc playbook', () => {
     expect(mergePhase).toContain('review-head-sha');
     expect(mergePhase).toMatch(/missing|stale/i);
     expect(mergePhase).toMatch(/fail closed|stop/i);
-    expect(mergePhase).toContain('pnpm merge');
+    expect(mergePhase).toContain('kookr merge');
     expect(mergePhase).toContain('sha: <rfcHeadSha>');
     expect(mergePhase).toMatch(/allowed merge method/i);
     expect(mergePhase).toContain('gh api --method PUT');

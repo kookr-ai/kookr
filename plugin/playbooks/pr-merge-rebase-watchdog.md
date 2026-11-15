@@ -204,7 +204,7 @@ Only when `{{mergeAfterUpdate}}` is `true`, the PR is `CLEAN`, checks are green 
 failing required check, or a requested change. Use the repo merge wrapper:
 
 ```bash
-pnpm merge "$N" --repo "$REPO"   # kookr-ai/kookr wrapper; elsewhere: gh pr merge "$N" -R "$REPO" --squash --delete-branch
+kookr merge "$N" --repo "$REPO"   # kookr-ai/kookr wrapper; elsewhere: gh pr merge "$N" -R "$REPO" --squash --delete-branch
 ```
 
 Classify checks before merging: a check that failed solely because CI

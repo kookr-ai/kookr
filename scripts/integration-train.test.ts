@@ -74,7 +74,7 @@ interface Harness {
 
 const roots: string[] = [];
 
-function makeHarness(opts: { config?: boolean; integrationBranch?: boolean } = {}): Harness {
+function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seedVerified?: boolean } = {}): Harness {
   const root = mkdtempSync(join(tmpdir(), 'integration-train-'));
   roots.push(root);
   const origin = join(root, 'origin.git');
@@ -182,6 +182,9 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean } = {
   };
   h.cycle = () => runTrainCycle(h.deps);
   h.originRef = (branch) => git(origin, 'rev-parse', `refs/heads/${branch}`);
+  // The base commit stands for a main the train already verified, as it is in
+  // steady state. `seedVerified: false` is a train with no history yet.
+  if (opts.seedVerified !== false) h.state.verifiedGreen.push(h.originRef('main'));
   return h;
 }
 
@@ -265,7 +268,8 @@ describe('integration train cycle', () => {
 
   it('halts when main itself is red, reverts nothing, and stays halted until a ref moves', async () => {
     h = makeHarness();
-    h.commit('main', { 'bad.txt': 'x' }, 'broken main');
+    // Verified green earlier and red now: the environment changed, not the commit.
+    h.state.verifiedGreen.push(h.commit('main', { 'bad.txt': 'x' }, 'broken main'));
     git(h.seed, 'fetch', '-q', 'origin');
     git(h.seed, 'checkout', '-q', '-B', 'staging', 'origin/staging');
     git(h.seed, 'merge', '-q', '--no-edit', 'origin/main');
@@ -427,7 +431,8 @@ describe('integration train cycle', () => {
 
   it('reports no recovery while halted, nor when a moved ref only leads to another halt', async () => {
     h = makeHarness();
-    h.commit('main', { 'bad.txt': 'x' }, 'broken main');
+    // Verified green earlier and red now: the environment changed, not the commit.
+    h.state.verifiedGreen.push(h.commit('main', { 'bad.txt': 'x' }, 'broken main'));
     git(h.seed, 'fetch', '-q', 'origin');
     git(h.seed, 'checkout', '-q', '-B', 'staging', 'origin/staging');
     git(h.seed, 'merge', '-q', '--no-edit', 'origin/main');
@@ -634,7 +639,7 @@ describe('integration train cycle', () => {
     expect(h.spawns).toHaveLength(0);
     expect(h.ghLog).toEqual([]);
     expect(h.verifyCalls).not.toContain(innocent); // never tested, so never blamed
-    expect(h.notes.map((n) => n.kind)).toEqual(['halted']);
+    expect(h.notes.map((n) => n.kind)).toEqual(['main-bypassed', 'halted']);
   });
 
   it('halts revert-not-sufficient, pushing nothing, when a second failing change is in the batch', async () => {
@@ -820,5 +825,84 @@ describe('integration train cycle', () => {
     expect(h.ghLog).toContain(`close 520: Verified on main in ${short}.`);
     expect(h.ghLog.some((l) => l.startsWith('close 511'))).toBe(false);
     expect(h.state.verifiedGreen).toContain(head);
+  });
+  describe('commits that reach main without the train (#3803)', () => {
+    it('notices a direct merge, then verifies main once even though the integration branch equals it', async () => {
+      h = makeHarness();
+      // The #3802 shape: a squash-merge straight into main while staging is behind.
+      const direct = h.commit('main', { 'flip.txt': '1' }, 'feat: the flip (#3802)');
+      expect((await h.cycle()).outcome).toBe('reconciled');
+      expect(h.originRef('staging')).toBe(direct);
+      expect(h.notes).toHaveLength(1);
+      expect(h.notes[0].kind).toBe('main-bypassed');
+      expect(h.notes[0].detail).toContain('feat: the flip (#3802)');
+      expect(h.state.alerting).toBe(false); // a notice, so no "recovered" follows
+
+      const r = await h.cycle();
+      expect(r.outcome).toBe('idle');
+      expect(h.verifyCalls).toEqual([direct]);
+      expect(h.state.verifiedGreen).toContain(direct);
+      expect(h.mainPushes).toEqual([]);
+
+      expect((await h.cycle()).outcome).toBe('idle');
+      expect(h.verifyCalls).toEqual([direct]); // verified once, not every cycle
+      expect(h.healthyCalls).toBe(0);
+    });
+
+    it('halts main-unverified-red on a red direct merge, names it, and recovers through a fix on the integration branch', async () => {
+      h = makeHarness();
+      const ok = h.commit('main', { 'ok.txt': '1' }, 'fine direct merge (#70)');
+      const bad = h.commit('main', { 'bad.txt': 'x' }, 'broken direct merge (#71)');
+      expect((await h.cycle()).outcome).toBe('reconciled');
+      expect(h.notes[0].detail).toContain('broken direct merge (#71)');
+      expect(h.notes[0].detail).toContain('fine direct merge (#70)');
+
+      const r = await h.cycle();
+      expect(r).toMatchObject({ outcome: 'halted', reason: 'main-unverified-red' });
+      expect(r.detail).toContain('broken direct merge (#71)');
+      expect(r.detail).toContain('fine direct merge (#70)');
+      expect(r.detail).not.toContain('base');
+      expect(h.notes.map((n) => n.kind)).toEqual(['main-bypassed', 'halted']);
+      expect(h.originRef('main')).toBe(bad);
+      expect(h.state.verifiedGreen).not.toContain(bad);
+      expect(h.state.verifiedGreen).not.toContain(ok);
+
+      const calls = h.verifyCalls.length;
+      expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'main-unverified-red' });
+      expect(h.verifyCalls.length).toBe(calls); // a standing halt stays quiet
+      expect(h.notes).toHaveLength(2);
+
+      const fix = h.commit('staging', { 'bad.txt': '' }, 'fix: repair main (#72)');
+      expect((await h.cycle()).outcome).toBe('promoted');
+      expect(h.originRef('main')).toBe(fix);
+      expect(h.healthyCalls).toBe(1);
+    });
+
+    it('halts main-unverified-red, not base-red, when a red head sits on a red main that skipped the train', async () => {
+      h = makeHarness();
+      h.commit('staging', { 's.txt': 's' }, 'staging work (#80)');
+      h.commit('main', { 'bad.txt': 'x' }, 'broken direct merge (#81)');
+      expect((await h.cycle()).outcome).toBe('reconciled');
+      const r = await h.cycle();
+      expect(r).toMatchObject({ outcome: 'halted', reason: 'main-unverified-red' });
+      expect(r.detail).toContain('broken direct merge (#81)');
+      expect(h.mainPushes).toEqual([]);
+      expect(h.spawns).toEqual([]);
+    });
+
+    it('verifies main on the first cycle of a train with no history', async () => {
+      h = makeHarness({ seedVerified: false });
+      const main = h.originRef('main');
+      expect((await h.cycle()).outcome).toBe('idle');
+      expect(h.verifyCalls).toEqual([main]);
+      expect(h.state.verifiedGreen).toEqual([main]);
+      expect(h.notes).toEqual([]);
+    });
+
+    it('halts verify-infra, not main-unverified-red, when the suite cannot run on an unverified main', async () => {
+      h = makeHarness({ seedVerified: false });
+      h.infra.add(h.originRef('main'));
+      expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'verify-infra' });
+    });
   });
 });

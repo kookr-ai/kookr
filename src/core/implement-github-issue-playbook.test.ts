@@ -231,10 +231,10 @@ describe('implement-github-issue playbook', () => {
     expect(pb.body).toContain('"targetTitle":${TARGET_TITLE_JSON}');
   });
 
-  test('Phase 8 requires the independent merge-review gate before pnpm merge (issue #1717)', () => {
+  test('Phase 8 requires the independent merge-review gate before kookr merge (issue #1717)', () => {
     const phase8Start = pb.body.indexOf('Phase 8: Merge Policy and Claim Release');
     const gateIdx = pb.body.indexOf('Independent merge-review gate', phase8Start);
-    const mergeIdx = pb.body.indexOf('pnpm merge <PR_NUMBER>', phase8Start);
+    const mergeIdx = pb.body.indexOf('kookr merge <PR_NUMBER>', phase8Start);
     expect(gateIdx).toBeGreaterThan(phase8Start);
     // The gate instruction must precede the merge command.
     expect(mergeIdx).toBeGreaterThan(gateIdx);
@@ -252,7 +252,7 @@ describe('implement-github-issue playbook', () => {
     // stalled at an open PR. kookr-ai/kookr must keep the hard wrapper.
     const phase8Start = pb.body.indexOf('Phase 8: Merge Policy and Claim Release');
     const gateIdx = pb.body.indexOf('Independent merge-review gate', phase8Start);
-    const mergeIdx = pb.body.indexOf('pnpm merge <PR_NUMBER>', phase8Start);
+    const mergeIdx = pb.body.indexOf('kookr merge <PR_NUMBER>', phase8Start);
     const gateText = pb.body.slice(gateIdx, mergeIdx);
     expect(gateText).toContain('kookr-ai/kookr');
     expect(gateText).toMatch(/independent review is advisory/i);

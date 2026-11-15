@@ -196,7 +196,7 @@ is fail-closed; do not apply the skill's advisory "merge despite BLOCK/timeout"
 lane here.
 
 Use an exact-head reviewed merge command. In `kookr-ai/kookr`, use the enforced
-repository wrapper (`pnpm merge <RFC_PR_NUMBER> --repo <repo>`). In another
+repository wrapper (`kookr merge <RFC_PR_NUMBER> --repo <repo>`). In another
 repository, first confirm its allowed merge method and required checks, then
 call GitHub's pull-request merge REST endpoint with `sha: <rfcHeadSha>` and that
 allowed method; never use a merge command that omits the expected head SHA.

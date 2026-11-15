@@ -40,9 +40,12 @@ copy pinned to it by a test) and behave as before when it is absent:
 
 1. Fetch `main` and the integration branch.
 2. If the train is halted and neither branch moved, stop (`halted`).
-3. If both point at the same commit, stop (`idle`).
+3. If both point at the same commit, stop (`idle`), unless the train never
+   verified that commit: then verify it first (see "Commits that skip the
+   train" below).
 4. If `main` has commits the integration branch lacks, merge `main` into the
-   integration branch and push it (`reconciled`). The next cycle verifies it.
+   integration branch and push it (`reconciled`), and send a `main-bypassed`
+   notice listing those commits. The next cycle verifies it.
 5. Verify the integration head. Green: fast-forward `main` to it (`promoted`).
    If that push is rejected because `main` moved, nothing else happens and the
    next cycle starts over (`retry`). A push (to `main` or to the integration
@@ -53,7 +56,8 @@ copy pinned to it by a test) and behave as before when it is absent:
    record it in `flakyHeads`.
 7. Still red: verify `main` itself, every time, even if the train verified that
    commit earlier. A red `main` means the environment is broken (disk, network,
-   host load), so the train halts (`base-red`) and reverts nothing.
+   host load), so the train halts (`base-red`) and reverts nothing. If the train
+   never verified that `main`, it halts `main-unverified-red` instead.
 8. Otherwise find the first bad commit by bisecting the commits between `main`
    and the head, then run that commit once more. If it passes, a flaky test
    steered the bisect: nothing is reverted and the next cycle starts over
@@ -81,6 +85,22 @@ copy pinned to it by a test) and behave as before when it is absent:
    again the next time that PR fails. A second failure after a spawned task
    spawns nothing; it notifies `fix-budget-exhausted`.
 
+### Commits that skip the train
+
+`main` should only move when the train promotes it, but a merge can still land
+there directly: `pnpm merge` run in an old checkout whose merge script predates
+the retarget step did exactly that with PR #3802 (issue #3803). The train
+notices such commits in two ways. When a reconcile finds commits on `main` that
+the integration branch lacks, it sends a `main-bypassed` notice listing their
+subjects; the train does not stop. And whenever `main` points at a commit that
+is not in `verifiedGreen`, the train verifies it, even when the integration
+branch equals `main`. Green: the commit is recorded and the cycle is `idle`.
+Red: the train halts with `main-unverified-red`, naming the commits on `main`
+since the newest one it verified. A train with no history (empty
+`verifiedGreen`) therefore verifies `main` once on its first cycle. The
+plugin's `merge-retarget-guard` hook blocks the old-checkout merge before it
+happens; the train's check is the backstop for any merge the hook cannot see.
+
 ### When the train halts instead of reverting
 
 A halt stops promotion until `main` or the integration branch moves, or until
@@ -90,6 +110,7 @@ guess in these cases:
 | Reason | What happened |
 |---|---|
 | `base-red` | `main` itself fails verify. The environment is suspect. |
+| `main-unverified-red` | `main` fails verify and the train never verified it: it reached `main` without the train. The detail names those commits. |
 | `verify-infra` | The suite could not run: the checkout or `pnpm install` failed. No commit is blamed. A lockfile that does not match `package.json` (`ERR_PNPM_OUTDATED_LOCKFILE`) is not this case: it is a defect of the commit and is treated as a red test, so the commit can be reverted. |
 | `culprit-is-merge` | The first bad commit is the merge that folded `main` into the integration branch. Only commits that contain `main` are bisected, because an older commit can fail for a reason `main` already fixed. |
 | `history-shape` | The head is red and the integration branch is not a first-parent line from `main`, which happens after a non-squash merge. The commits cannot be bisected. |
@@ -103,10 +124,12 @@ guess in these cases:
 ## Notifications
 
 Each event the train raises (`halted`, `reverted`, `fix-budget-exhausted`,
-`fix-spawn-failed`) is appended to `events.jsonl` and written to the operator
-signal outbox (`KOOKR_OPERATOR_SIGNAL_DIR`, default
-`~/.kookr/playbook-state/operator-signals`) as an `alert` signal with source
-`integration-train`, title `integration train: <event>` and the event's detail.
+`fix-spawn-failed`, `main-bypassed`) is appended to `events.jsonl` and written
+to the operator signal outbox (`KOOKR_OPERATOR_SIGNAL_DIR`, default
+`~/.kookr/playbook-state/operator-signals`) with source `integration-train`,
+title `integration train: <event>` and the event's detail. `main-bypassed` is an
+`info` signal, because nothing needs recovering; every other event is an
+`alert`.
 Every event gets its own file (key `integration-train:<event>:<time>-<pid>-<n>`),
 so two events of the same cycle, for example `fix-spawn-failed` and `reverted`,
 are both delivered.
@@ -178,6 +201,9 @@ on purpose, because pruning and disk-reclaim jobs operate there.
 
 - `base-red`: `main` fails verify. Fix `main`; the halt clears by itself once
   either branch moves.
+- `main-unverified-red`: a commit that skipped the train broke `main`. Merge a
+  fix through the integration branch as usual; the train verifies the new head
+  and promotes it. `pnpm train:resume` alone only re-runs the same red verify.
 - `reconcile-conflict`: `main` and the integration branch conflict. Merge
   `main` into the integration branch by hand and push.
 - `revert-conflict`, `culprit-is-merge`: revert the culprit by hand on the

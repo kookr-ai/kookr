@@ -301,7 +301,7 @@ describe('integration branch configured (#3797)', () => {
   test('never merges a PR aimed at main: the train is the only way onto main', () => {
     const d = decidePrAction(pr({ mergeStateStatus: 'CLEAN', baseRefName: 'main' }), opts);
     expect(d.action).toBe('skip');
-    expect(d.reason).toMatch(/not the integration branch staging; deliver it with pnpm merge/);
+    expect(d.reason).toMatch(/not the integration branch staging; deliver it with kookr merge/);
   });
 
   test('an unreported base is not merged either', () => {

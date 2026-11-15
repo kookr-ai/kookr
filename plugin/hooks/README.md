@@ -113,6 +113,27 @@ exit 124 on timeout). For a job you start, write its exit code to a marker:
 `kookr-wait.sh --file "$LOG.exit"`. Run it via
 `${CLAUDE_PLUGIN_ROOT}/hooks/kookr-wait.sh`.
 
+## Merge Retarget Guard
+
+`merge-retarget-guard.sh` is a `PreToolUse` hook on `Bash` that blocks a
+pull-request merge which would skip the integration branch (issue #3803). It
+acts only when the repository of the command's working directory names an
+integration branch in `.kookr/delivery-gate.json` on `origin/main`; anywhere
+else it allows everything. There it denies:
+
+- `pnpm merge` (also `pnpm -s merge`, `pnpm -C <dir> merge`, `npm run merge`) in
+  a checkout whose `scripts/kookr-merge.sh` has no retarget step;
+- `bash <path>/kookr-merge.sh` when that script has no retarget step;
+- bare `gh pr merge` and `gh api --method PUT .../pulls/<n>/merge` when the pull
+  request's base is `main`, or when its base cannot be read.
+
+The working directory starts at the event's `cwd` and follows `cd`, `pushd` and
+`pnpm -C`, so `cd /old/checkout && pnpm -s merge 42` is caught. Words inside
+quotes and heredocs are not commands, so a commit message that mentions
+`pnpm merge` passes. The denial names the one correct command,
+`kookr merge <PR> --repo <owner/name>`, which always runs the merge wrapper of
+the deployed production checkout. `kookr merge` itself is always allowed.
+
 ## Delivery-Step Stop Guard
 
 `delivery-step-stop.sh` (Stop) stops an agent from ending its turn while the
@@ -123,7 +144,7 @@ from the checked-out branch. It blocks once, with a specific instruction, when:
 - (merge-authority tasks only) the PR has no independent review verdict, or the verdict is `block`, or the
   head moved since the `pass` verdict (the agent launches the review itself);
 - the PR has a fresh `pass` verdict and the task holds merge authority, as
-  `taskHasMergeAuthority` decides (run `pnpm merge`).
+  `taskHasMergeAuthority` decides (run `kookr merge`).
 
 It stays silent for tasks without merge authority (they stop at an open PR; only the red-test nudge applies) and on repos documenting review as advisory,
 when the Stop event reports `background_tasks` / `session_crons` (the agent is

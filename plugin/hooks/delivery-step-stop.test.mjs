@@ -31,7 +31,7 @@ describe('transcript replay', () => {
     expect(decide({ event: ev(), testOutcome: 'green', pr: pr(), mergeAuthority: true })).toMatch(/independent review/);
   });
   it('shape 3: pass verdict + pre-authorized blocks with the merge instruction', () => {
-    expect(decide({ event: ev(), testOutcome: 'green', pr: pr([verdict('pass')]), mergeAuthority: true })).toMatch(/pnpm merge/);
+    expect(decide({ event: ev(), testOutcome: 'green', pr: pr([verdict('pass')]), mergeAuthority: true })).toMatch(/kookr merge/);
   });
   it('no merge authority: only the red-test nudge applies', () => {
     expect(decide({ event: ev(), testOutcome: 'green', pr: pr(), mergeAuthority: false })).toBeNull();

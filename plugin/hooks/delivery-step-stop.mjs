@@ -155,7 +155,7 @@ export function decide({ event, testOutcome, pr, mergeAuthority, advisoryReview 
   if (!fresh) {
     return `PR #${pr.number} head moved since the last review verdict. Re-run the independent review for the current head.`;
   }
-  return `PR #${pr.number} is open, reviewed (pass) and this task holds merge authority. Run the merge gate (pnpm merge) now.`;
+  return `PR #${pr.number} is open, reviewed (pass) and this task holds merge authority. Run the merge gate (kookr merge) now.`;
 }
 
 /**

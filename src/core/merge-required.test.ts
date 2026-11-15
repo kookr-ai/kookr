@@ -120,6 +120,7 @@ describe('classifyMergeTrailCommand / extractPrNumbersFromCommand', () => {
     ).toEqual([1836]);
     expect(extractPrNumbersFromCommand('gh pr merge 99 --squash')).toEqual([99]);
     expect(extractPrNumbersFromCommand('pnpm merge 12')).toEqual([12]);
+    expect(extractPrNumbersFromCommand('kookr merge 13 --repo o/r')).toEqual([13]);
     expect(extractPrNumbersFromCommand('see PR #7 for context')).toEqual([7]);
   });
 });

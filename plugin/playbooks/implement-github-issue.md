@@ -510,7 +510,7 @@ If the worktree path already exists or the branch is checked out elsewhere, the 
 git show origin/main:.kookr/delivery-gate.json 2>/dev/null | jq -r '.prePushGate // empty' 2>/dev/null
 ```
 
-- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. When the same file also names an `integrationBranch`, the merge wrapper (`pnpm merge`) retargets the PR to it; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
+- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. When the same file also names an `integrationBranch`, the merge wrapper (`kookr merge`) retargets the PR to it; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
 - **It prints anything else, or nothing (no such file):** keep the full-suite steps below unchanged.
 
 Run the project's standard verification commands:
@@ -679,7 +679,7 @@ If `{{mergeAfterImplementation}}` is `true`:
      HEAD_SHA=$(gh pr view <PR_NUMBER> --repo "$REPO" --json commits --jq '.commits[-1].oid')
      # The comment MUST carry the `<!-- kookr-local-gate -->` marker AND a
      # `local-gate-head-sha:` line equal to the current head — that head binding is
-     # what `pnpm merge` checks (see below). A plain-prose comment is NOT accepted.
+     # what `kookr merge` checks (see below). A plain-prose comment is NOT accepted.
      gh pr comment <PR_NUMBER> --repo "$REPO" --body "$(printf '%s\n' \
        '<!-- kookr-local-gate -->' \
        'Local gate (CI never executed — billing/quota): <the gate you ran, e.g. fast gate + targeted tests, or `pnpm verify`> passed — <N> tests. Recorded per CLAUDE.md CI policy.' \
@@ -688,7 +688,7 @@ If `{{mergeAfterImplementation}}` is `true`:
      gh pr edit <PR_NUMBER> --repo "$REPO" --add-label local-verified
      ```
 
-     Only merge after that comment and the `local-verified` label are posted. On `kookr-ai/kookr`, `pnpm merge` enforces this deterministically: for a `never-executed` block it proceeds only when the PR carries the `local-verified` label AND a local-gate comment whose `local-gate-head-sha:` equals the current head (a comment from an earlier push does not carry forward); otherwise it exits 3. A check that RAN and failed is never waived. If `{{ignoreBudgetCiFailures}}` is `false`, `never-executed` blocks like any failing check.
+     Only merge after that comment and the `local-verified` label are posted. On `kookr-ai/kookr`, `kookr merge` enforces this deterministically: for a `never-executed` block it proceeds only when the PR carries the `local-verified` label AND a local-gate comment whose `local-gate-head-sha:` equals the current head (a comment from an earlier push does not carry forward); otherwise it exits 3. A check that RAN and failed is never waived. If `{{ignoreBudgetCiFailures}}` is `false`, `never-executed` blocks like any failing check.
    - **`executed-green` / `none-required`** — no check-run objection; proceed to merge.
    - **`pending`** — checks are still running; wait (subject to the CI-rerun bound below) rather than merging.
 
@@ -699,17 +699,19 @@ If `{{mergeAfterImplementation}}` is `true`:
 2.5. **Independent merge-review gate (hard on kookr-ai/kookr; advisory where the repo documents it — issues #1717 / #3027).** Before merging, run the `independent-merge-review` skill: spawn a **fresh-context** reviewer (blind to your implementation reasoning) that reviews the diff and posts a machine-readable verdict PR comment bound to the exact current head. Codex is the primary reviewer lane; if Codex is unavailable or rate-limited, the Claude fallback lane runs instead.
 
    **Repo-policy split — pick one lane, do not mix them:**
-   - **Hard gate (`kookr-ai/kookr`):** never degrade to zero review. The reviewer BLOCKs on any confirmed correctness/safety finding; fix each (then re-review for a fresh `pass`) or explicitly rebut it before the merge is allowed. Enforcement is deterministic: `pnpm merge` (below) refuses to merge (exit code 4) unless the latest verdict is `pass` with a matching `review-head-sha`. The `review-skipped-timeout` label is telemetry only and never bypasses review; retry until the default 10 correction/review attempts are exhausted, then record a concrete blocker. Set `KOOKR_MERGE_REQUIRE_REVIEW=0` only for a human-driven manual merge, never for an autonomous one. Do not weaken this repo's merge wrapper.
+   - **Hard gate (`kookr-ai/kookr`):** never degrade to zero review. The reviewer BLOCKs on any confirmed correctness/safety finding; fix each (then re-review for a fresh `pass`) or explicitly rebut it before the merge is allowed. Enforcement is deterministic: `kookr merge` (below) refuses to merge (exit code 4) unless the latest verdict is `pass` with a matching `review-head-sha`. The `review-skipped-timeout` label is telemetry only and never bypasses review; retry until the default 10 correction/review attempts are exhausted, then record a concrete blocker. Set `KOOKR_MERGE_REQUIRE_REVIEW=0` only for a human-driven manual merge, never for an autonomous one. Do not weaken this repo's merge wrapper.
    - **Advisory (repo `CLAUDE.md` / `AGENTS.md` documents that independent review is advisory, e.g. Lucy #3606):** still post the verdict when the reviewer returns. Timeout, missing, or BLOCK never become a task blocker or merge refusal. Merge after local gates (`gh pr merge`). Do not stall the task waiting for review capacity. If a Kookr-managed session's global merge hook still denies bare `gh pr merge`, `KOOKR_MERGE_REQUIRE_REVIEW=0 gh pr merge` is authorized on that advisory autonomous merge — it is the repo opt-out, not a human-merge exception.
 
    Classify: if `"$REPO"` is `kookr-ai/kookr` → hard; else if `grep -qiE 'independent review is advisory' CLAUDE.md AGENTS.md` → advisory; else hard.
 3. If the PR is mergeable now, merge using the repository's expected method. In `kookr-ai/kookr`, prefer the repository merge wrapper:
 
    ```bash
-   pnpm merge <PR_NUMBER> --repo "$REPO"
+   kookr merge <PR_NUMBER> --repo "$REPO"   # from your own worktree
    ```
 
-   With a fast pre-push gate and an integration branch (Phase 6), `pnpm merge` retargets the PR to the integration branch and merges it there. That merge is the terminal state for this task: the linked issue stays open until the integration train promotes the change to `main`, so do not wait for it to close or treat it as a missed auto-close.
+   `kookr merge` always runs the merge wrapper of the deployed production checkout, which follows `main`; `pnpm merge` runs the wrapper of the checkout you are in, which may be old and skip the retarget (that is how #3802 landed on `main` unverified). Run it from your own worktree; never change directory to the main checkout to merge.
+
+   With a fast pre-push gate and an integration branch (Phase 6), `kookr merge` retargets the PR to the integration branch and merges it there. That merge is the terminal state for this task: the linked issue stays open until the integration train promotes the change to `main`, so do not wait for it to close or treat it as a missed auto-close.
 
    For other repositories, use the repository's expected merge command, for example:
 
