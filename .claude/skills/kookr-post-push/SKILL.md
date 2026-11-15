@@ -97,6 +97,9 @@ kookr merge <PR_NUMBER> --repo kookr-ai/kookr   # from your own worktree
 `scripts/kookr-merge.sh`, and a bare `gh pr merge` into `main` while an
 integration branch is configured.
 
+If it exits 3 with `PR #<n> conflicts with <base>`, rebase on `origin/<base>`,
+push, get a new review verdict if the diff changed, and run `kookr merge` again.
+
 The wrapper first retargets a PR aimed at `main` to `staging` (the integration
 branch named in `.kookr/delivery-gate.json`), then waits for checks and
 squash-merges into `staging` and deletes the head branch. It refuses to merge a

@@ -711,6 +711,8 @@ If `{{mergeAfterImplementation}}` is `true`:
 
    `kookr merge` always runs the merge wrapper of the deployed production checkout, which follows `main`; `pnpm merge` runs the wrapper of the checkout you are in, which may be old and skip the retarget (that is how #3802 landed on `main` unverified). Run it from your own worktree; never change directory to the main checkout to merge.
 
+   If `kookr merge` exits 3 with `PR #<n> conflicts with <base>`, the PR conflicts with its base and waiting will not help: rebase on `origin/<base>`, push, get a new review verdict if the diff changed, then run `kookr merge` again.
+
    With a fast pre-push gate and an integration branch (Phase 6), `kookr merge` retargets the PR to the integration branch and merges it there. That merge is the terminal state for this task: the linked issue stays open until the integration train promotes the change to `main`, so do not wait for it to close or treat it as a missed auto-close.
 
    For other repositories, use the repository's expected merge command, for example:
