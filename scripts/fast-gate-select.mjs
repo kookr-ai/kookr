@@ -29,12 +29,13 @@ const REF_SOURCE_PATHSPECS = ['*.ts', '*.tsx', '*.mts', '*.mjs'];
 // stops all other handling of that path (so a TS suite-setup file under test/
 // is never handed to `vitest related`, where vitest would treat it as a force
 // re-run trigger and run the whole suite). Every other matching rule adds its
-// effects. A path that matches any rule counts as "mapped".
+// effects. A path that matches any rule counts as "mapped" (not reported as
+// unmapped), whichever fields the rule has.
 //
-//   re       matches the repo-relative path
+//   re       matches the repo-relative path; a rule with only `re` marks the path
+//            as mapped (nothing to run, e.g. prose the hook's validators cover)
 //   deferred true: nothing to run now, the integration train verifies it
 //   command  lane command to run
-//   mapped   true: matching is the whole effect (checked by the hook's validators)
 //   tests    (path, tracked) => test files to run
 // ---------------------------------------------------------------------------
 const unitTests = (unitRe) => (path, tracked) => {
@@ -64,8 +65,8 @@ export const RULES = [
   { re: /^(\.claude\/(skills|agents|playbooks)|\.kookr\/playbooks)\//, tests: validatorTests },
   { re: /^\.claude\/skills\//, tests: unitTests(/^(\.claude\/skills\/[^/]+)\//) },
   // Prose: the hook's validators already ran.
-  { re: /^docs\//, mapped: true },
-  { re: /\.md$/, mapped: true },
+  { re: /^docs\// },
+  { re: /\.md$/ },
 ];
 
 const GENERIC_BASENAMES = new Set(['README.md', 'SKILL.md', 'CHANGELOG.md', 'package.json', 'tsconfig.json']);

@@ -22,6 +22,12 @@ export interface VerifyResult {
   ok: boolean;
   /** Last lines of the verify output; used in issue comments when red. */
   tail: string;
+  /**
+   * True when the suite never ran: the checkout or the dependency install
+   * failed. That says nothing about the commit, so the train halts instead of
+   * treating it as a red test and bisecting.
+   */
+  infra?: boolean;
 }
 
 export interface ClosingIssue {
@@ -62,7 +68,11 @@ export interface TrainState {
   verifiedGreen: string[];
   /** Heads that were red once and green on the immediate re-run. */
   flakyHeads: string[];
-  /** PR number -> number of automatic re-lands already spawned. */
+  /**
+   * Fix-task budget: key -> automatic re-lands already spawned. The key is the
+   * linked issue (`issue-<n>`) when the reverted PR has one, because a re-land
+   * is a new PR with a new number but closes the same issue; `pr-<n>` otherwise.
+   */
   fixTasks: Record<string, number>;
 }
 
@@ -100,6 +110,9 @@ export interface CycleResult {
   reason?: string;
   detail?: string;
 }
+
+/** Thrown by the cycle's verify wrapper when the suite could not run at all. */
+class VerifyInfraError extends Error {}
 
 const VERIFIED_GREEN_CAP = 200;
 const FLAKY_CAP = 50;
@@ -243,15 +256,22 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     return { outcome: 'reconciled' };
   }
 
-  // 5.
-  const candidates = (await out(['rev-list', '--first-parent', '--reverse', `origin/main..${intRef}`]))
-    .split('\n').filter(Boolean);
+  // 5. Only commits that contain main. After a reconcile merge (step 4) the
+  // commits older than that merge do not include main's changes, so "main is
+  // green" proves nothing about them: testing them could fail for a reason main
+  // already fixed, and an innocent commit would be blamed. `--ancestry-path`
+  // leaves the merge commit and everything after it; if the merge itself is the
+  // first bad commit the train halts (culprit-is-merge) for a human.
+  const candidates = (await out([
+    'rev-list', '--first-parent', '--ancestry-path', '--reverse', `origin/main..${intRef}`,
+  ])).split('\n').filter(Boolean);
 
   // Verify bookkeeping for this cycle.
   const results = new Map<string, boolean>();
   const redTails = new Map<string, string>();
   const verify = async (sha: string): Promise<boolean> => {
     const r = await deps.verify(sha);
+    if (r.infra) throw new VerifyInfraError(`verify could not run for ${sha.slice(0, 10)}: ${r.tail.slice(-400)}`);
     results.set(sha, r.ok);
     if (r.ok) pushCapped(state.verifiedGreen, sha, VERIFIED_GREEN_CAP);
     else redTails.set(sha, r.tail);
@@ -279,9 +299,11 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     return true;
   };
 
+  // Steps 6-9. An arrow function, so the narrowed types above stay narrowed.
+  const decide = async (): Promise<CycleResult> => {
   // 6. Verify the head.
   if (await verify(headSha)) {
-    await promote(headSha);
+    if (!(await promote(headSha))) return { outcome: 'retry', detail: 'promotion push rejected' };
     return { outcome: 'promoted' };
   }
 
@@ -290,7 +312,7 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   const firstRedTail = redTails.get(headSha) ?? '';
   if (await verify(headSha)) {
     pushCapped(state.flakyHeads, headSha, FLAKY_CAP);
-    await promote(headSha);
+    if (!(await promote(headSha))) return { outcome: 'retry', detail: 'promotion push rejected' };
     return { outcome: 'promoted', detail: 'flaky' };
   }
   if (!redTails.get(headSha)) redTails.set(headSha, firstRedTail);
@@ -303,8 +325,28 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     return halt('base-red', mainSha, headSha, `main ${mainSha.slice(0, 10)} fails verify; nothing reverted`);
   }
 
-  // 9. Bisect. main is good, the head is bad, assume a single transition.
+  // 9a. A revert the train made earlier may still be in the range (main has not
+  // caught up with it yet). Every commit between the reverted change and that
+  // revert is red because of the reverted change, so a bisect across them
+  // would blame it again. Start after the newest such revert instead. If the
+  // revert itself is red, a second change in the same batch is failing and the
+  // train cannot tell which by bisecting commits, so it halts.
   let lo = -1;
+  const revertIdx = await newestRevertIndex(deps, candidates);
+  if (revertIdx >= 0) {
+    const revertCommit = candidates[revertIdx];
+    if (revertCommit === headSha || !(await verify(revertCommit))) {
+      return halt(
+        'multiple-failures', mainSha, headSha,
+        `still red at ${revertCommit.slice(0, 10)}, which already reverts an earlier culprit; a second change in the batch is failing`,
+      );
+    }
+    if (!(await promote(revertCommit))) return { outcome: 'retry', detail: 'promotion of the reverted head rejected' };
+    lo = revertIdx;
+  }
+
+  // 9b. Bisect. The commit at `lo` (or main) is good, the head is bad; assume a
+  // single transition between them.
   let hi = candidates.length - 1;
   while (hi - lo > 1) {
     const mid = (lo + hi) >> 1;
@@ -324,8 +366,18 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     return { outcome: 'retry', detail: 'culprit passed on re-run' };
   }
 
+  // Promote the last good commit so main keeps moving while the culprit is
+  // dealt with. Skip it when main is not an ancestor of that commit: after a
+  // reconcile merge, commits older than the merge do not contain main, the push
+  // could never fast-forward, and retrying it would loop forever. The reverted
+  // head contains main and is promoted by a later cycle.
   if (lastGood !== mainSha) {
-    if (!(await promote(lastGood))) return { outcome: 'retry', detail: 'promotion of last good rejected' };
+    const containsMain = await git(['merge-base', '--is-ancestor', mainSha, lastGood]);
+    if (!containsMain.ok) {
+      log(`last good ${lastGood.slice(0, 10)} predates the merge of main; not promoting it`);
+    } else if (!(await promote(lastGood))) {
+      return { outcome: 'retry', detail: 'promotion of last good rejected' };
+    }
   }
 
   const parents = (await out(['rev-list', '--parents', '-n', '1', culprit])).split(/\s+/).filter(Boolean);
@@ -363,20 +415,24 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
       await safe(deps, () => deps.github.commentIssue(issue.number, body));
     }
 
-    const spawned = state.fixTasks[String(pr)] ?? 0;
+    // Budget by issue when there is one: the re-land is a new PR, so a count
+    // kept per PR number would never reach its limit.
+    const issueNumbers = issues.map((i) => i.number).sort((a, b) => a - b);
+    const budgetKey = issueNumbers.length > 0 ? `issue-${issueNumbers[0]}` : `pr-${pr}`;
+    const spawned = state.fixTasks[budgetKey] ?? 0;
     if (spawned === 0) {
-      const key = `train-fix-${pr}-1`;
+      const key = `train-fix-${budgetKey}-1`;
       const ok = await safe(deps, async () => {
         await deps.spawner.spawn({
           idempotencyKey: key,
-          prompt: fixPrompt({ pr, culprit, revertSha, integration, failTail }),
+          prompt: fixPrompt({ pr, culprit, revertSha, integration, failTail, issues: issueNumbers }),
         });
         return true;
       });
-      state.fixTasks[String(pr)] = 1;
+      state.fixTasks[budgetKey] = 1;
       fixNote = ok !== true ? `fix task ${key} could not be spawned` : `fix task ${key} spawned`;
     } else {
-      fixNote = `fix budget exhausted for PR #${pr}`;
+      fixNote = `fix budget exhausted for ${budgetKey} (PR #${pr})`;
       await safe(deps, () => deps.notifier.notify(
         'fix-budget-exhausted',
         `PR #${pr} failed again after an automatic fix task; reverted ${culprit} (${revertSha}). Needs a human.`,
@@ -387,11 +443,34 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     'reverted', `reverted ${culprit} as ${revertSha} on ${integration}; ${fixNote}`,
   ));
   return { outcome: 'reverted', detail: fixNote };
+  };
+
+  try {
+    return await decide();
+  } catch (err) {
+    // The suite could not run (checkout or install failed): halt, blame nothing.
+    if (err instanceof VerifyInfraError) return halt('verify-infra', mainSha, headSha, err.message);
+    throw err;
+  }
+}
+
+/** Index in `candidates` of the newest commit that reverts another candidate, or -1. */
+async function newestRevertIndex(deps: TrainDeps, candidates: string[]): Promise<number> {
+  const inRange = new Set(candidates);
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const body = await deps.git(['log', '-1', '--format=%B', candidates[i]]);
+    const m = body.ok ? /^This reverts commit ([0-9a-f]{40})\b/m.exec(body.stdout) : null;
+    if (m && inRange.has(m[1])) return i;
+  }
+  return -1;
 }
 
 function fixPrompt(p: {
-  pr: number; culprit: string; revertSha: string; integration: string; failTail: string;
+  pr: number; culprit: string; revertSha: string; integration: string; failTail: string; issues: number[];
 }): string {
+  const closes = p.issues.length > 0
+    ? `5. Deliver through the normal flow (pull request, review, merge). Put ${p.issues.map((n) => `\`Closes #${n}\``).join(' and ')} in the pull request body: the train counts automatic re-lands per issue.`
+    : '5. Deliver through the normal flow (pull request, review, merge).';
   return [
     `The integration train reverted PR #${p.pr} because it broke verification on the \`${p.integration}\` branch.`,
     '',
@@ -403,7 +482,7 @@ function fixPrompt(p: {
     `2. Re-apply the reverted change: \`git cherry-pick ${p.culprit}\`.`,
     '3. Fix the failure shown in the output below.',
     '4. Run the failing tests until they pass.',
-    '5. Deliver through the normal flow (pull request, review, merge).',
+    closes,
     '',
     'Failing verify output (tail):',
     '',

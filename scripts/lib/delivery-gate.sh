@@ -44,8 +44,10 @@ delivery_gate_integration_branch() {
   command -v jq >/dev/null 2>&1 || return 0
   branch=$(printf '%s' "$json" | jq -r '.integrationBranch // empty' 2>/dev/null || true)
   # A branch name, not a ref expression: reject anything git would parse oddly.
+  # `main` is where the train promotes to, so it can never be the integration
+  # branch (the train's TypeScript reader rejects it the same way).
   case "$branch" in
-    ''|-*|*..*|*[!A-Za-z0-9._/-]*) return 0 ;;
+    ''|main|-*|*..*|*[!A-Za-z0-9._/-]*) return 0 ;;
   esac
   printf '%s\n' "$branch"
 }

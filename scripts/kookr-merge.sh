@@ -61,6 +61,8 @@ set -euo pipefail
 # Absolute directory of this script, so the reusable check classifier resolves
 # whether kookr-merge is invoked by path, via `pnpm merge`, or from another CWD.
 KOOKR_MERGE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/repo-slug.sh
+source "$KOOKR_MERGE_DIR/lib/repo-slug.sh"
 
 # --- independent-review gate literals (keep in sync with src/core/independent-review.ts) ---
 KOOKR_REVIEW_MARKER='<!-- kookr-independent-review -->'
@@ -99,8 +101,8 @@ merge is confirmed (never with `gh pr merge --delete-branch`, whose local
 cleanup fails in a linked worktree). Afterwards, any issue the PR declares as
 closing that is still open is reported. When the repository configures an
 integration branch, a PR aimed at the default branch is retargeted to it first.
-Aborts before merging if the PR is
-closed, a draft, has changes requested, or any check fails.
+Aborts before merging if the PR is closed, a draft, has changes requested, or
+any check fails.
 
 Use --preserve-branch for paired delivery: a change reviewed in two
 repositories, where both source branches are still needed for audit, replay,
@@ -127,19 +129,6 @@ Exit codes:
      bound to the current head)
   4  blocked by the independent-review gate (no pass verdict / confirmed finding)
 EOF
-}
-
-# repo_slug_of_url — OWNER/NAME (lowercase) of a remote URL or `--repo` value
-# (https, ssh, scp-like, HOST/OWNER/NAME); empty when it cannot be derived.
-repo_slug_of_url() {
-  local u="$1"
-  u="${u%/}"; u="${u%.git}"; u="${u#*://}"; u="${u#*@}"; u="${u//://}"
-  case "$u" in
-    */*/*) u="${u#"${u%/*/*}/"}" ;;
-    */*) ;;
-    *) return 0 ;;
-  esac
-  printf '%s' "$u" | tr '[:upper:]' '[:lower:]'
 }
 
 # checkout_matches_repo — true when the PR belongs to the repository of the
@@ -247,8 +236,15 @@ require_review_verdict() {
     # head or patch id is blocked, a later PASS on it is a re-poll flip on
     # identical content and cannot clear it. A fix pushes a new commit with a new
     # diff, so its PASS is not caught here. Mirrors evaluateMergeReviewGate.
+    # A BLOCK on the head the latest PASS reviewed is sticky too. That matters
+    # when the PASS is accepted through its patch id after a clean rebase: a
+    # BLOCK posted without a patch-id line (every verdict written before
+    # reviewers emitted one) names only the old head, and the rebase must not
+    # launder the re-poll flip that followed it.
     | ( [ $vs[] | select(.verdict == "block"
-          and ((.sha != "" and .sha == $head) or (.pid != "" and $cpid != "" and .pid == $cpid))) ]
+          and ((.sha != "" and .sha == $head)
+               or (.pid != "" and $cpid != "" and .pid == $cpid)
+               or (.sha != "" and $v != null and $v.sha != "" and .sha == $v.sha))) ]
         | length > 0 ) as $blockedThis
     | ( $v != null and $v.sha != "" and $head != "" and $v.sha == $head ) as $shaMatch
     | ( $v != null and $v.pid != "" and $cpid != "" and $v.pid == $cpid ) as $pidMatch
@@ -292,7 +288,7 @@ require_review_verdict() {
     if [[ -n "$REPO_SLUG" ]] && ! checkout_matches_repo; then
       echo "kookr-merge: this checkout is not $REPO_SLUG; cannot compute the PR patch id, using the head-SHA rule alone" >&2
     elif [[ -x "$KOOKR_MERGE_DIR/review-patch-id.sh" ]] \
-        && current_pid="$("$KOOKR_MERGE_DIR/review-patch-id.sh" --pr "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} | tr '[:upper:]' '[:lower:]')" \
+        && current_pid="$("$KOOKR_MERGE_DIR/review-patch-id.sh" --pr "$PR" --expect-head "$head_sha" ${REPO_ARG[@]+"${REPO_ARG[@]}"} | tr '[:upper:]' '[:lower:]')" \
         && [[ -n "$current_pid" ]]; then
       :
     else

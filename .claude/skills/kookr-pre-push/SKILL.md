@@ -43,7 +43,7 @@ Check these before you push: each one is cheaper to satisfy up front than to lea
 12. `pnpm validate:rerun-bound` (the max-2 CI-rerun rule stays in the pr-lifecycle skill and implement playbooks).
 13. `pnpm validate:requirements` (requirements status matrix).
 14. `pnpm test`. Skipped for docs-only diffs. When at most five unit-test files fail, the hook re-runs only those once; a pass continues the push with a `FLAKY` notice (logged to `<git-common-dir>/kookr-flaky-tests.log`), while a second failure, an unhandled error, or a crashed worker rejects it.
-15. `pnpm test:integration` (self-contained integration tests). Skipped for docs-only diffs.
+15. `pnpm test:integration` (self-contained integration tests). Skipped for docs-only diffs. Items 14 and 15 are the full gate: when `.kookr/delivery-gate.json` on `origin/main` sets `"prePushGate": "fast"`, the hook runs `bash scripts/fast-gate-tests.sh` instead, which runs only the tests related to the diff, and the integration train runs the full suite (see [integration-train](../../../docs/reference/integration-train.md)).
 16. `pnpm check:faa-gate`: a change to a finishedAwaitingAck mitigation surface must cite a classified root cause (read from `KOOKR_PR_BODY`) or a reasoned bypass.
 
 A "docs-only" diff means `origin/main` exists, the diff against it is non-empty, and every changed file is an addition or modification of prose Markdown under `docs/` or a top-level `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CLA.md`, or `SECURITY.md`. A delete or rename runs the full gate.

@@ -1498,6 +1498,8 @@ function git(cwd: string, ...args: string[]): string {
       GIT_AUTHOR_EMAIL: 't@t',
       GIT_COMMITTER_NAME: 't',
       GIT_COMMITTER_EMAIL: 't@t',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
     },
   });
   if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
@@ -1660,7 +1662,11 @@ describe('closing issues after a merge into the integration branch (#3788)', () 
 describe('diff-bound review verdicts (#3788)', () => {
   const helper = join(process.cwd(), 'scripts/review-patch-id.sh');
   function patchId(repo: string, base: string, head: string): string {
-    const r = spawnSync('bash', [helper, base, head], { cwd: repo, encoding: 'utf8', env: gitExecEnv() });
+    const r = spawnSync('bash', [helper, base, head], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...gitExecEnv(), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+    });
     if (r.status !== 0) throw new Error(r.stderr);
     return r.stdout.trim();
   }
@@ -1770,6 +1776,39 @@ describe('diff-bound review verdicts (#3788)', () => {
     ]);
     expect(result.status).toBe(4);
     expect(result.stderr).toContain('sticky-block');
+    expect(result.merged).toBe(false);
+  });
+
+  it('keeps a no-patch-id block on the reviewed head sticky after a clean rebase', () => {
+    const pr = rebasedPr('clean');
+    const result = gate(pr, [
+      comment('block', pr.oldSha, undefined, '2026-11-01T10:00:00Z'),
+      comment('pass', pr.oldSha, pr.oldPid, '2026-11-01T11:00:00Z'),
+    ]);
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain('sticky-block');
+    expect(result.merged).toBe(false);
+  });
+
+  it('allows a pass via patch id when the earlier no-patch-id block was on a different head and diff', () => {
+    const pr = rebasedPr('clean');
+    const result = gate(pr, [
+      comment('block', 'c'.repeat(40), undefined, '2026-11-01T10:00:00Z'),
+      comment('pass', pr.oldSha, pr.oldPid, '2026-11-01T11:00:00Z'),
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('head moved without changing the diff');
+    expect(result.merged).toBe(true);
+  });
+
+  it('refuses a patch id computed from a pull ref that is no longer the pinned head', () => {
+    const pr = rebasedPr('clean');
+    // The PR head moves on origin after the gate read it from gh.
+    commitFile(pr.repo, 'late.txt', 'late\n');
+    git(pr.repo, 'push', '-q', 'origin', 'feature:refs/pull/123/head');
+    const result = gate(pr, [comment('pass', pr.oldSha, pr.oldPid)]);
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain('could not compute the PR patch id');
     expect(result.merged).toBe(false);
   });
 

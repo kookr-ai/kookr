@@ -51,6 +51,10 @@ interface Harness {
   verifyCalls: string[];
   mainPushes: string[];
   scripted: Map<string, boolean[]>;
+  /** SHAs whose verify cannot run at all (checkout or install failure). */
+  infra: Set<string>;
+  /** When set, the next push to main is rejected (someone else moved main). */
+  rejectMainPush: boolean;
   issues: Map<number, ClosingIssue[]>;
   ghLog: string[];
   spawns: Array<{ idempotencyKey: string; prompt: string }>;
@@ -93,6 +97,8 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean } = {
     verifyCalls: [] as string[],
     mainPushes: [] as string[],
     scripted: new Map<string, boolean[]>(),
+    infra: new Set<string>(),
+    rejectMainPush: false,
     issues: new Map<number, ClosingIssue[]>(),
     ghLog: [] as string[],
     spawns: [] as Array<{ idempotencyKey: string; prompt: string }>,
@@ -102,6 +108,10 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean } = {
   h.deps = {
     async git(args) {
       const push = args.find((a) => /:refs\/heads\/main$/.test(a));
+      if (args[0] === 'push' && push && h.rejectMainPush) {
+        h.rejectMainPush = false;
+        return { ok: false, stdout: '', stderr: '! [rejected] (fetch first)' };
+      }
       const r = gitSoft(train, args);
       if (args[0] === 'push' && push && r.ok) h.mainPushes.push(push.split(':')[0]);
       return r;
@@ -111,7 +121,11 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean } = {
       const script = h.scripted.get(sha);
       let ok: boolean;
       if (script && script.length > 0) ok = script.shift() as boolean;
-      else ok = !gitSoft(train, ['cat-file', '-e', `${sha}:bad.txt`]).ok;
+      else {
+        ok = !gitSoft(train, ['cat-file', '-e', `${sha}:bad.txt`]).ok &&
+          !gitSoft(train, ['cat-file', '-e', `${sha}:bad2.txt`]).ok;
+      }
+      if (h.infra.has(sha)) return { ok: false, infra: true, tail: 'pnpm install failed: registry unreachable' };
       if (ok) h.greens.push(sha);
       return { ok, tail: ok ? '' : `FAIL at ${sha.slice(0, 7)}\nAssertionError: bad.txt exists` };
     },
@@ -268,10 +282,11 @@ describe('integration train cycle', () => {
     expect(comment).toContain(stagingHead);
     expect(comment).toContain('AssertionError');
     expect(h.spawns).toHaveLength(1);
-    expect(h.spawns[0].idempotencyKey).toBe('train-fix-13-1');
+    expect(h.spawns[0].idempotencyKey).toBe('train-fix-issue-130-1');
+    expect(h.spawns[0].prompt).toContain('Closes #130');
     expect(h.spawns[0].prompt).toContain('origin/main');
     expect(h.spawns[0].prompt).toContain(`git cherry-pick ${c3}`);
-    expect(h.state.fixTasks['13']).toBe(1);
+    expect(h.state.fixTasks['issue-130']).toBe(1);
     expect(h.notes.map((n) => n.kind)).toContain('reverted');
 
     // next cycle: the reverted head is green and gets promoted
@@ -314,6 +329,93 @@ describe('integration train cycle', () => {
     expect(h.originRef('staging')).toBe(head);
     expect(h.originRef('main')).toBe(first);
     expect(h.spawns).toHaveLength(0);
+  });
+
+  it('halts instead of blaming a commit that predates a merge of main', async () => {
+    h = makeHarness();
+    // An innocent change and a bad one land on staging, then a hotfix goes
+    // straight to main. Commits older than the reconcile merge do not contain
+    // main, so "main is green" proves nothing about them.
+    const innocent = h.commit('staging', { 'i.txt': '1' }, 'innocent (#91)');
+    h.commit('staging', { 'bad.txt': 'x' }, 'bad (#92)');
+    h.commit('main', { 'hotfix.txt': 'h' }, 'hotfix on main');
+    expect((await h.cycle()).outcome).toBe('reconciled');
+    const merged = h.originRef('staging');
+
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'culprit-is-merge' });
+    expect(h.originRef('staging')).toBe(merged);
+    expect(h.spawns).toHaveLength(0);
+    expect(h.ghLog).toEqual([]);
+    expect(h.verifyCalls).not.toContain(innocent); // never tested, so never blamed
+    expect(h.notes.map((n) => n.kind)).toEqual(['halted']);
+  });
+
+  it('halts when the head is still red after its own revert (a second failing change in the batch)', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'bad.txt': 'x' }, 'first bad (#81)');
+    h.commit('staging', { 'bad2.txt': 'x' }, 'second bad (#82)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    const afterFirstRevert = h.originRef('staging');
+
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'multiple-failures' });
+    expect(h.originRef('staging')).toBe(afterFirstRevert); // #81 is not reverted a second time
+    expect(h.spawns).toHaveLength(1);
+  });
+
+  it('bisects only after an unpromoted revert, so the reverted commit is not blamed again', async () => {
+    h = makeHarness();
+    const first = h.commit('staging', { 'bad.txt': 'x' }, 'first bad (#81)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    const revertOfFirst = h.originRef('staging');
+    // a new failing change merges before the revert was promoted
+    const second = h.commit('staging', { 'bad2.txt': 'x' }, 'later bad (#83)');
+
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.originRef('main')).toBe(revertOfFirst); // the green revert was promoted on the way
+    const head = h.originRef('staging');
+    expect(git(h.origin, 'log', '-1', '--format=%B', head)).toContain(`This reverts commit ${second}`);
+    expect(git(h.origin, 'log', '--format=%B', `${revertOfFirst}..${head}`)).not.toContain(first);
+    expect((await h.cycle()).outcome).toBe('promoted');
+  });
+
+  it('halts without reverting when verify cannot run (install or checkout failure)', async () => {
+    h = makeHarness();
+    const first = h.commit('staging', { 'a.txt': '1' }, 'one (#101)');
+    expect((await h.cycle()).outcome).toBe('promoted');
+    const head = h.commit('staging', { 'pnpm-lock.yaml': 'new deps' }, 'bump (#102)');
+    h.infra.add(head);
+
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'verify-infra' });
+    expect(h.originRef('staging')).toBe(head);
+    expect(h.originRef('main')).toBe(first);
+    expect(h.spawns).toHaveLength(0);
+  });
+
+  it('reports retry, not promoted, when the promotion push is rejected', async () => {
+    h = makeHarness();
+    const base = h.originRef('main');
+    h.commit('staging', { 'a.txt': '1' }, 'one (#111)');
+    h.rejectMainPush = true;
+    expect((await h.cycle()).outcome).toBe('retry');
+    expect(h.originRef('main')).toBe(base);
+    expect(h.ghLog).toEqual([]); // no issue is closed for a promotion that did not happen
+    expect((await h.cycle()).outcome).toBe('promoted');
+  });
+
+  it('counts the fix budget per issue, so a re-land under a new PR number does not get a second task', async () => {
+    h = makeHarness();
+    h.issues.set(13, [{ number: 130, state: 'open' }]);
+    h.issues.set(14, [{ number: 130, state: 'open' }]);
+    h.commit('staging', { 'bad.txt': 'x' }, 'broken (#13)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect((await h.cycle()).outcome).toBe('promoted');
+    h.commit('staging', { 'bad.txt': 'y' }, 're-land, still broken (#14)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual(['train-fix-issue-130-1']);
+    expect(h.notes.map((n) => n.kind)).toContain('fix-budget-exhausted');
   });
 
   it('does not spawn a second fix task for the same PR and notifies fix-budget-exhausted', async () => {

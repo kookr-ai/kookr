@@ -333,4 +333,31 @@ describe('evaluateMergeReviewGate: diff-bound verdicts (patch id, #3788)', () =>
     });
     expect(result).toMatchObject({ allowed: true, code: 'pass' });
   });
+  test('a no-patch-id block on the head the latest pass reviewed stays sticky after a clean rebase', () => {
+    const result = evaluateMergeReviewGate({
+      comments: [
+        { ...comment('block', head), createdAt: '2026-11-01T10:00:00Z' },
+        { ...comment('pass', head, pid), createdAt: '2026-11-01T11:00:00Z' },
+      ],
+      labels: [],
+      headSha: moved,
+      patchId: pid,
+    });
+    expect(result).toMatchObject({ allowed: false, code: 'sticky-block' });
+  });
+
+  test('control: a no-patch-id block on an older head and diff does not stop a later pass via patch id', () => {
+    const fixed = 'c'.repeat(40);
+    const rebased = 'd'.repeat(40);
+    const result = evaluateMergeReviewGate({
+      comments: [
+        { ...comment('block', head), createdAt: '2026-11-01T10:00:00Z' },
+        { ...comment('pass', fixed, otherPid), createdAt: '2026-11-01T11:00:00Z' },
+      ],
+      labels: [],
+      headSha: rebased,
+      patchId: otherPid,
+    });
+    expect(result).toMatchObject({ allowed: true, code: 'pass', boundBy: 'patch-id' });
+  });
 });

@@ -8,7 +8,7 @@ import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync,
-  renameSync, rmSync, statSync, unlinkSync, writeFileSync,
+  linkSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { cpus, homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -94,29 +94,47 @@ function readPid(file: string): number | null {
   }
 }
 
-/** Single-instance lock. Returns a release function, or null when another live process holds it. */
+/**
+ * Single-instance lock. Returns a release function, or null when another live
+ * process holds it.
+ *
+ * The lock file is created by hard-linking a temp file that already contains
+ * our pid, so it never exists empty: a second process can not mistake a lock
+ * that is still being written for a stale one. A lock whose pid is dead is
+ * removed only if it still names that same dead pid when re-read just before
+ * the unlink, which keeps a slow cleaner from deleting a lock a faster one has
+ * just taken.
+ */
 function acquireLock(lockPath: string): (() => void) | null {
+  const tmp = `${lockPath}.${process.pid}.tmp`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const fd = openSync(lockPath, 'wx');
-      writeFileSync(fd, String(process.pid));
-      closeSync(fd);
+      writeFileSync(tmp, String(process.pid));
+      try {
+        linkSync(tmp, lockPath); // atomic; throws EEXIST when the lock is held
+      } finally {
+        try { unlinkSync(tmp); } catch { /* already gone */ }
+      }
       return () => {
-        try { unlinkSync(lockPath); } catch { /* already gone */ }
+        try {
+          if (readPid(lockPath) === process.pid) unlinkSync(lockPath);
+        } catch { /* already gone */ }
       };
     } catch {
       const holder = readPid(lockPath);
       if (holder !== null && isAlive(holder)) return null;
-      try { unlinkSync(lockPath); } catch { /* raced with another cleaner */ }
+      try {
+        if (readPid(lockPath) === holder) unlinkSync(lockPath);
+      } catch { /* raced with another cleaner */ }
     }
   }
   return null;
 }
 
-async function run(cmd: string, args: string[], cwd: string, extraEnv: NodeJS.ProcessEnv = {}): Promise<GitResult> {
+async function run(cmd: string, args: string[], cwd: string): Promise<GitResult> {
   try {
     const { stdout, stderr } = await execFileAsync(cmd, args, {
-      cwd, env: { ...gitExecEnv(), GIT_TERMINAL_PROMPT: '0', ...extraEnv }, maxBuffer: 64 * 1024 * 1024,
+      cwd, env: { ...gitExecEnv(), GIT_TERMINAL_PROMPT: '0' }, maxBuffer: 64 * 1024 * 1024,
     });
     return { ok: true, stdout, stderr };
   } catch (err) {
@@ -131,13 +149,40 @@ async function repoRoot(): Promise<string> {
   return r.stdout.trim();
 }
 
-/** Create the train's dedicated linked worktree on first use. */
+const TRAIN_MARKER = 'kookr-integration-train';
+
+/**
+ * Create the train's dedicated linked worktree on first use, and refuse to use
+ * a directory the train did not create. Every cycle runs `reset --hard` and
+ * `checkout --force` there, so pointing it at someone's working checkout would
+ * destroy their changes. The proof of ownership is a marker file in the
+ * worktree's private git directory, plus the same git common directory as the
+ * launching checkout.
+ */
 async function ensureWorktree(root: string, wt: string): Promise<void> {
-  if (existsSync(join(wt, '.git'))) return;
+  const gitPath = async (cwd: string, flag: string): Promise<string | null> => {
+    const r = await run('git', ['rev-parse', '--path-format=absolute', flag], cwd);
+    return r.ok ? r.stdout.trim() : null;
+  };
+  if (existsSync(wt)) {
+    const [wtCommon, rootCommon, wtGitDir] = await Promise.all([
+      gitPath(wt, '--git-common-dir'), gitPath(root, '--git-common-dir'), gitPath(wt, '--git-dir'),
+    ]);
+    if (!wtCommon || wtCommon !== rootCommon || !wtGitDir || !existsSync(join(wtGitDir, TRAIN_MARKER))) {
+      throw new Error(
+        `${wt} exists but is not a worktree created by the integration train; ` +
+        'refusing to reset it. Remove it or pass --worktree <another path>.',
+      );
+    }
+    return;
+  }
   mkdirSync(resolve(wt, '..'), { recursive: true });
   const base = (await run('git', ['rev-parse', '--verify', '--quiet', 'origin/main'], root)).ok ? 'origin/main' : 'HEAD';
   const r = await run('git', ['worktree', 'add', '--detach', wt, base], root);
   if (!r.ok) throw new Error(`could not create the train worktree: ${r.stderr.trim()}`);
+  const gitDir = await gitPath(wt, '--git-dir');
+  if (!gitDir) throw new Error('could not locate the git directory of the new train worktree');
+  writeFileSync(join(gitDir, TRAIN_MARKER), `created ${new Date().toISOString()}\n`);
 }
 
 function makeLogger(logPath: string): (m: string) => void {
@@ -174,6 +219,24 @@ function pruneVerifyLogs(dir: string, keep: number): void {
 
 const VERIFY_TIMEOUT_MS = 90 * 60 * 1000;
 
+// What a stop signal has to clean up: the verify process group (it runs detached,
+// so it would otherwise keep using the train worktree after the loop exits) and
+// the single-instance lock.
+let activeChildPid: number | null = null;
+let activeRelease: (() => void) | null = null;
+
+function installSignalHandlers(): void {
+  const onSignal = (signal: NodeJS.Signals): void => {
+    if (activeChildPid !== null) {
+      try { process.kill(-activeChildPid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+    if (activeRelease) activeRelease();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
+}
+
 function runLogged(cmd: string, cwd: string, env: NodeJS.ProcessEnv, logFile: string): Promise<boolean> {
   return new Promise((done) => {
     const fd = openSync(logFile, 'a');
@@ -181,6 +244,7 @@ function runLogged(cmd: string, cwd: string, env: NodeJS.ProcessEnv, logFile: st
     // Own process group, so a timeout kills the whole tree (shell, pnpm, vitest
     // workers) and not just the shell.
     const child = spawn(cmd, { cwd, env, shell: true, detached: true, stdio: ['ignore', fd, fd] });
+    activeChildPid = child.pid ?? null;
     const timer = setTimeout(() => {
       try {
         if (child.pid) process.kill(-child.pid, 'SIGKILL');
@@ -190,6 +254,7 @@ function runLogged(cmd: string, cwd: string, env: NodeJS.ProcessEnv, logFile: st
     }, VERIFY_TIMEOUT_MS);
     child.on('close', (code) => {
       clearTimeout(timer);
+      activeChildPid = null;
       closeSync(fd);
       done(code === 0);
     });
@@ -211,7 +276,9 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     const logFile = join(dir, `verify-${sha.slice(0, 10)}.log`);
     writeFileSync(logFile, '');
     const checkout = await git(['checkout', '--detach', '--force', '-q', sha]);
-    if (!checkout.ok) return { ok: false, tail: `checkout failed: ${checkout.stderr}` };
+    // A failed checkout or install means the suite never ran. Report it as an
+    // infrastructure failure so the train halts instead of blaming the commit.
+    if (!checkout.ok) return { ok: false, infra: true, tail: `checkout failed: ${checkout.stderr}` };
     // Same environment a developer's `pnpm verify` gets, plus the worker count:
     // no CI flag, so the train checks exactly what the local gate used to.
     const env: NodeJS.ProcessEnv = { ...gitExecEnv(), KOOKR_VITEST_MAX_WORKERS: String(opts.workers) };
@@ -226,7 +293,7 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     try { lastHash = readFileSync(hashFile, 'utf8').trim(); } catch { /* first run */ }
     if (lockHash !== lastHash) {
       const installed = await runLogged('pnpm install --frozen-lockfile --prefer-offline', wt, env, logFile);
-      if (!installed) return finish(logFile, sha, false);
+      if (!installed) return { ...finish(logFile, sha, false), infra: true };
       writeFileSync(hashFile, lockHash);
     }
     const ok = await runLogged(opts.verifyCmd, wt, env, logFile);
@@ -297,6 +364,7 @@ async function cycleOnce(opts: Options): Promise<number> {
   const p = paths(dir);
   const release = acquireLock(p.lock);
   if (!release) return 0; // another instance is working; exit quietly
+  activeRelease = release;
   try {
     const root = await repoRoot();
     // Default: a sibling of the launching checkout (`<repo>-train`), not inside
@@ -307,12 +375,14 @@ async function cycleOnce(opts: Options): Promise<number> {
     const result = await runTrainCycle(deps);
     deps.log(`cycle: ${result.outcome}${result.reason ? ` (${result.reason})` : ''}${result.detail ? ` - ${result.detail}` : ''}`);
   } finally {
+    activeRelease = null;
     release();
   }
   return 0;
 }
 
 async function runForever(opts: Options): Promise<void> {
+  installSignalHandlers();
   const dir = stateDir();
   mkdirSync(dir, { recursive: true });
   const log = makeLogger(paths(dir).log);
@@ -337,7 +407,7 @@ function startDetached(argv: string[]): void {
     return;
   }
   const out = openSync(p.log, 'a');
-  const forwarded = argv.slice(1).filter((a) => a !== 'run');
+  const forwarded = argv.slice(1);
   const child = spawn(
     process.execPath,
     ['--import', 'tsx', fileURLToPath(import.meta.url), 'run', ...forwarded],

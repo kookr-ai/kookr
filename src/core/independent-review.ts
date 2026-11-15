@@ -232,8 +232,14 @@ export function evaluateMergeReviewGate(input: MergeReviewGateInput): MergeRevie
       const headWasBlocked = input.comments.some((comment) => {
         const parsed = parseVerdictComment(comment.body);
         if (parsed?.verdict !== 'block') return false;
+        // The third case covers a PASS accepted through its patch id after a
+        // clean rebase: a BLOCK without a patch-id line names only the old head
+        // (the one that PASS reviewed), and the rebase must not launder the
+        // re-poll flip that followed it.
         return (
-          parsed.headSha === headSha || (Boolean(patchId) && parsed.patchId === patchId)
+          parsed.headSha === headSha ||
+          (Boolean(patchId) && parsed.patchId === patchId) ||
+          (Boolean(verdict.headSha) && parsed.headSha === verdict.headSha)
         );
       });
       if (headWasBlocked) {

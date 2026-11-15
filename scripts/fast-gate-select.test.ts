@@ -11,6 +11,9 @@ const TRACKED = [
   'plugin/skills/disk-reclaim/scripts/disk-reclaim.test.mjs',
   'plugin/skills/token-efficiency/SKILL.md',
   'plugin/hooks/delivery-step-stop.test.mjs',
+  'plugin/agents/reviewer.test.mjs',
+  'plugin/playbooks/nightly.test.mjs',
+  '.claude/skills/demo-skill/helper.test.mjs',
 ];
 
 function run(changed: string[], opts: { gone?: string[]; refs?: Record<string, string[]> } = {}) {
@@ -101,6 +104,40 @@ describe('selectFastGate', () => {
   it('maps a skill with no tests of its own to the validators only', () => {
     const { result } = run(['plugin/skills/token-efficiency/SKILL.md']);
     expect(result.tests).toEqual(['scripts/validate-playbooks.test.ts', 'scripts/validate-skills.test.ts']);
+  });
+
+  const VALIDATORS = ['scripts/validate-playbooks.test.ts', 'scripts/validate-skills.test.ts'];
+
+  it('maps plugin/agents/** to its own tests plus the validators', () => {
+    const { result } = run(['plugin/agents/reviewer.md']);
+    expect(result.tests).toEqual(['plugin/agents/reviewer.test.mjs', ...VALIDATORS]);
+    expect(result.commands).toEqual([]);
+    expect(result.unmapped).toEqual([]);
+  });
+
+  it('maps plugin/hooks/** to its own tests, the validators and the hook-test lane', () => {
+    const { result } = run(['plugin/hooks/delivery-step-stop.mjs']);
+    expect(result.related).toEqual(['plugin/hooks/delivery-step-stop.mjs']);
+    expect(result.tests).toEqual(['plugin/hooks/delivery-step-stop.test.mjs', ...VALIDATORS]);
+    expect(result.commands).toEqual(['pnpm test:hooks']);
+  });
+
+  it('maps plugin/playbooks/** to its own tests plus the validators', () => {
+    const { result } = run(['plugin/playbooks/nightly.md']);
+    expect(result.tests).toEqual(['plugin/playbooks/nightly.test.mjs', ...VALIDATORS]);
+    expect(result.commands).toEqual([]);
+  });
+
+  it('maps .claude/skills/<name>/** to its own tests plus the validators', () => {
+    const { result } = run(['.claude/skills/demo-skill/SKILL.md']);
+    expect(result.tests).toEqual(['.claude/skills/demo-skill/helper.test.mjs', ...VALIDATORS]);
+    expect(result.unmapped).toEqual([]);
+  });
+
+  it('maps .kookr/playbooks/** to the validators only', () => {
+    const { result } = run(['.kookr/playbooks/nightly.md']);
+    expect(result.tests).toEqual(VALIDATORS);
+    expect(result.unmapped).toEqual([]);
   });
 
   it('defers build configuration and suite setup, even TypeScript ones', () => {

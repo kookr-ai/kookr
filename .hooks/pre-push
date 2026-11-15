@@ -484,6 +484,8 @@ fi
 # "prePushGate": "fast", a push runs only the tests related to its diff and the
 # integration train runs the full suite. Absent config, the kill-switch file, or
 # a missing library all mean "full" - the lanes below run exactly as before.
+# So does a missing merge base (no origin/main ref, e.g. a fresh clone): the
+# runner cannot select tests without one, so the full lanes run instead.
 # Resolve the library and runner from this hook's source tree first (hook tests
 # run the real hook against scratch repos), then $REPO_ROOT.
 _GATE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P) || _GATE_DIR=""
@@ -500,11 +502,13 @@ if [ -n "$_GATE_LIB" ] && [ -n "$_FAST_GATE_RUNNER" ]; then
   _GATE_MODE=$(delivery_gate_prepush_mode 2>/dev/null || echo full)
 fi
 
+_FAST_GATE_BASE=$(git merge-base origin/main HEAD 2>/dev/null || true)
+
 if [ "$DOCS_ONLY_SKIP" -eq 1 ]; then
   echo "Docs-only prose diff detected; skipping Vitest lanes."
-elif [ "$_GATE_MODE" = "fast" ]; then
+elif [ "$_GATE_MODE" = "fast" ] && [ -n "$_FAST_GATE_BASE" ]; then
   echo "Running fast gate (related tests only; the integration train runs the full suite)..."
-  if ! bash "$_FAST_GATE_RUNNER" "$(git merge-base origin/main HEAD)"; then
+  if ! bash "$_FAST_GATE_RUNNER" "$_FAST_GATE_BASE"; then
     echo ""
     echo "Push rejected: fast-gate tests failed. Fix failing tests before pushing."
     exit 1

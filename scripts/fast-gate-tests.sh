@@ -44,7 +44,7 @@ json_list deferred "$WORK/deferred"
 json_list unmapped "$WORK/unmapped"
 
 count() { grep -c . "$1" || true; }
-echo "[fast-gate] $(count "$WORK/related") source files → related tests, $(count "$WORK/tests") extra test files, $(count "$WORK/commands") lane command(s); full suite runs on the integration train"
+echo "[fast-gate] $(count "$WORK/related") source files -> related tests, $(count "$WORK/tests") extra test files, $(count "$WORK/commands") lane command(s); full suite runs on the integration train"
 
 status=0
 
@@ -85,7 +85,7 @@ EOF
         done
         echo ""
         echo "[fast-gate] FLAKY: the file(s) above failed in the first run and passed on re-run."
-        echo "[fast-gate] Continuing. Logged to $FLAKY_LOG — please fix these flakes."
+        echo "[fast-gate] Continuing. Logged to $FLAKY_LOG - please fix these flakes."
       else
         status=1
       fi
