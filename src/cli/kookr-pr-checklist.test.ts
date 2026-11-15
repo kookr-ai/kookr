@@ -10,6 +10,7 @@ import {
   EXIT_VERIFICATION_FAILURE,
   runPrChecklistCli,
 } from './kookr-pr-checklist.js';
+import { ChecklistInputError } from '../pr-checklist/errors.js';
 import type { GitRunner } from '../pr-checklist/git.js';
 
 const GIT_REDIRECT_VARS = [
@@ -507,5 +508,279 @@ describe('runPrChecklistCli doctor', () => {
       await rm(repo, { recursive: true, force: true });
       await rm(elsewhere, { recursive: true, force: true });
     }
+  });
+});
+
+// #3651: `scaffold` prints a body in the syntax verify accepts; `--title` checks
+// the PR title against the repo's commit-lint rule.
+describe('runPrChecklistCli scaffold + title', () => {
+  const TEMPLATE = [
+    '## Summary',
+    '- [ ] <!-- kookr:check:tests --> Tests added',
+    '- [ ] <!-- kookr:check:mbse --> System design docs up to date',
+  ].join('\n');
+  const COMMITLINT = 'module.exports = { extends: ["@commitlint/config-conventional"] };';
+
+  function repo(
+    opts: {
+      base?: boolean;
+      template?: boolean | string;
+      commitlint?: boolean | 'package.json' | 'angular' | 'custom';
+      config?: string;
+    } = {},
+  ) {
+    const map: Record<string, { stdout?: string; exitCode?: number }> = {
+      'diff --name-status B...HEAD': { stdout: 'M\tsrc/core/x.test.ts' },
+      'diff --unified=0 B...HEAD': { stdout: '+++ b/src/core/x.test.ts\n+t' },
+    };
+    if (opts.base !== false) map['merge-base origin/main HEAD'] = { stdout: 'B' };
+    if (opts.template !== false) map['ls-files -- .github/pull_request_template.md'] = { stdout: '.github/pull_request_template.md' };
+    if (opts.commitlint === true || opts.commitlint === 'angular' || opts.commitlint === 'custom') {
+      map['ls-files -- commitlint.config.cjs'] = { stdout: 'commitlint.config.cjs' };
+    }
+    if (opts.commitlint === 'package.json') map['ls-files -- package.json'] = { stdout: 'package.json' };
+    if (opts.config) map['ls-files -- .kookr/pr-checklist.json'] = { stdout: '.kookr/pr-checklist.json' };
+    const template = typeof opts.template === 'string' ? opts.template : TEMPLATE;
+    return {
+      gitRunner: fakeGit(map),
+      readFileText: async (p: string) => {
+        if (p.endsWith('commitlint.config.cjs')) {
+          if (opts.commitlint === 'angular') return 'module.exports = { extends: ["@commitlint/config-angular"] };';
+          if (opts.commitlint === 'custom') {
+            return 'module.exports = { extends: ["@commitlint/config-conventional"], rules: { "subject-case": [0] } };';
+          }
+          return COMMITLINT;
+        }
+        if (p.endsWith('package.json')) return JSON.stringify({ name: 'x', commitlint: { extends: ['@commitlint/config-conventional'] } });
+        if (p.endsWith('pr-checklist.json')) return opts.config ?? '';
+        return template;
+      },
+    };
+  }
+  const stdout = (o: ReturnType<typeof out>) => o.log.mock.calls.flat().join('\n');
+  const stderr = (o: ReturnType<typeof out>) => o.error.mock.calls.flat().join('\n');
+
+  it('prints the scaffolded body on stdout only, with the summary on stderr', async () => {
+    const o = out();
+    expect(await runPrChecklistCli(['scaffold'], { out: o, cwd: '/repo', ...repo() })).toBe(EXIT_PASS);
+    expect(stdout(o)).toBe([
+      '## Summary',
+      '- [x] <!-- kookr:check:tests --> Tests added',
+      '- [ ] ~~<!-- kookr:check:mbse --> System design docs up to date~~ — TODO: say why this row does not apply',
+    ].join('\n'));
+    expect(stderr(o)).toMatch(/ticked .*: tests/);
+    expect(stderr(o)).toMatch(/struck .*: mbse/);
+  });
+
+  it('the scaffold fails verify as printed and passes once the reason is filled (end to end)', async () => {
+    const o = out();
+    await runPrChecklistCli(['scaffold'], { out: o, cwd: '/repo', ...repo() });
+    const body = stdout(o);
+    const verify = (text: string, v = out()) =>
+      runPrChecklistCli(['verify', '--pr-body', '-'], { out: v, cwd: '/repo', ...repo(), readStdin: async () => text });
+    const raw = out();
+    expect(await verify(body, raw)).toBe(EXIT_VERIFICATION_FAILURE);
+    expect(stdout(raw)).toContain(
+      '        - [ ] ~~<!-- kookr:check:mbse --> System design docs up to date~~ — TODO: one-line reason',
+    );
+    expect(await verify(body.replace('TODO: say why this row does not apply', 'CLI-only change'))).toBe(EXIT_PASS);
+  });
+
+  it('prints the accepted line when verify rejects a box-inside-strike row', async () => {
+    const o = out();
+    const body = '- [x] <!-- kookr:check:tests --> Tests added\n- ~~[ ] <!-- kookr:check:mbse --> System design docs up to date~~ — n/a';
+    const code = await runPrChecklistCli(['verify', '--pr-body', '-'], { out: o, cwd: '/repo', ...repo(), readStdin: async () => body });
+    expect(code).toBe(EXIT_VERIFICATION_FAILURE);
+    expect(stdout(o)).toContain('        - [ ] ~~<!-- kookr:check:mbse --> System design docs up to date~~ — TODO: one-line reason');
+  });
+
+  it('refuses (2) when the diff base cannot be resolved, rather than striking every row', async () => {
+    const o = out();
+    expect(await runPrChecklistCli(['scaffold', '--base', 'nope'], { out: o, cwd: '/repo', ...repo({ base: false }) }))
+      .toBe(EXIT_VERIFICATION_FAILURE);
+    expect(stderr(o)).toMatch(/Could not resolve the diff base "nope"/);
+    expect(stdout(o)).toBe('');
+  });
+
+  it('refuses (2) when the repo has no PR template', async () => {
+    const o = out();
+    expect(await runPrChecklistCli(['scaffold'], { out: o, cwd: '/repo', ...repo({ template: false }) })).toBe(EXIT_VERIFICATION_FAILURE);
+    expect(stderr(o)).toMatch(/No tracked PR template/);
+  });
+
+  it('--json returns the body and row lists', async () => {
+    const o = out();
+    expect(await runPrChecklistCli(['scaffold', '--json'], { out: o, cwd: '/repo', ...repo() })).toBe(EXIT_PASS);
+    const parsed = JSON.parse(stdout(o));
+    expect(parsed).toMatchObject({ ok: true, checked: ['tests'], struck: ['mbse'], undecided: [] });
+    expect(parsed.body).toContain('- [x] <!-- kookr:check:tests -->');
+  });
+
+  it('rejects verify-only flags on scaffold (64)', async () => {
+    expect(await runPrChecklistCli(['scaffold', '--pr-body', 'x'], { out: out() })).toBe(EXIT_USAGE);
+    expect(await runPrChecklistCli(['scaffold', '--explain'], { out: out() })).toBe(EXIT_USAGE);
+    const o = out();
+    expect(await runPrChecklistCli(['scaffold', '--from-command', 'gh pr create'], { out: o })).toBe(EXIT_USAGE);
+    expect(o.error.mock.calls.flat().join('\n')).toMatch(/scaffold takes only --base, --title and --json/);
+    expect(await runPrChecklistCli(['scaffold', '--title'], { out: out() })).toBe(EXIT_USAGE);
+  });
+
+  it('scaffold --title reports a title the repo commit-lint rule would reject (2), still printing the body', async () => {
+    const o = out();
+    const code = await runPrChecklistCli(['scaffold', '--title', 'Add scaffold'], { out: o, cwd: '/repo', ...repo({ commitlint: true }) });
+    expect(code).toBe(EXIT_VERIFICATION_FAILURE);
+    expect(stdout(o)).toContain('## Summary');
+    expect(stderr(o)).toMatch(/pr-title: PR title would fail the repo's commit-lint rule \(commitlint\.config\.cjs/);
+  });
+
+  it('scaffold --title passes a conventional title, and is not checked when the repo has no commit-lint config', async () => {
+    expect(await runPrChecklistCli(['scaffold', '--title', 'feat(cli): add scaffold'], { out: out(), cwd: '/repo', ...repo({ commitlint: true }) }))
+      .toBe(EXIT_PASS);
+    expect(await runPrChecklistCli(['scaffold', '--title', 'Add scaffold'], { out: out(), cwd: '/repo', ...repo() })).toBe(EXIT_PASS);
+  });
+
+  // verify is the local gh-pr-create gate: it REPORTS a bad title but never
+  // blocks on it, since its commitlint re-implementation cannot be proven exact.
+  it('verify --from-command reports (warns, exit 0) a --title that would fail commit-lint', async () => {
+    const body = '- [x] <!-- kookr:check:tests --> Tests added\n- [ ] ~~<!-- kookr:check:mbse --> docs~~ — CLI-only';
+    const cmd = (title: string) => `gh pr create --title "${title}" --body "${body}"`;
+    const bad = out();
+    expect(await runPrChecklistCli(['verify', '--from-command', cmd('Add scaffold')], { out: bad, cwd: '/repo', ...repo({ commitlint: true }) }))
+      .toBe(EXIT_PASS);
+    expect(stdout(bad)).toMatch(/⚠ PR title would fail the repo's commit-lint rule .*reported only — the gate does not block on the title/);
+    expect(stdout(bad)).not.toMatch(/\[fail\] pr-title/);
+    expect(await runPrChecklistCli(['verify', '--from-command', cmd('feat(cli): add scaffold')], { out: out(), cwd: '/repo', ...repo({ commitlint: true }) }))
+      .toBe(EXIT_PASS);
+  });
+
+  it('verify --title checks a title given directly, and an explicit --title wins over the gh command', async () => {
+    const body = '- [x] <!-- kookr:check:tests --> Tests added\n- [ ] ~~<!-- kookr:check:mbse --> docs~~ — CLI-only';
+    const o = out();
+    const direct = await runPrChecklistCli(['verify', '--title', 'Add x', '--pr-body', '-'], {
+      out: o, cwd: '/repo', ...repo({ commitlint: true }), readStdin: async () => body,
+    });
+    expect(direct).toBe(EXIT_PASS);
+    expect(stdout(o)).toMatch(/⚠ PR title would fail/);
+    const cmd = `gh pr create --title "Add x" --body "${body}"`;
+    const o2 = out();
+    expect(await runPrChecklistCli(['verify', '--title', 'feat: ok', '--from-command', cmd], {
+      out: o2, cwd: '/repo', ...repo({ commitlint: true }),
+    })).toBe(EXIT_PASS);
+    expect(stdout(o2)).toMatch(/\[pass\] pr-title/);
+    expect(stdout(o2)).not.toMatch(/⚠ PR title/);
+  });
+
+  it('a gh --title built from a shell variable is not checked (the hook must not block it)', async () => {
+    const body = '- [x] <!-- kookr:check:tests --> Tests added\n- [ ] ~~<!-- kookr:check:mbse --> docs~~ — CLI-only';
+    const o = out();
+    expect(await runPrChecklistCli(['verify', '--from-command', `gh pr create --title "$TITLE" --body "${body}"`], {
+      out: o, cwd: '/repo', ...repo({ commitlint: true }),
+    })).toBe(EXIT_PASS);
+    expect(stdout(o)).not.toMatch(/pr-title/);
+  });
+
+  it('scaffold and verify agree when the repo disables pr-title', async () => {
+    const config = '{ "disable": ["pr-title"] }';
+    expect(await runPrChecklistCli(['scaffold', '--title', 'Add x'], { out: out(), cwd: '/repo', ...repo({ commitlint: true, config }) }))
+      .toBe(EXIT_PASS);
+    const body = '- [x] <!-- kookr:check:tests --> Tests added\n- [ ] ~~<!-- kookr:check:mbse --> docs~~ — CLI-only';
+    const v = out();
+    expect(await runPrChecklistCli(['verify', '--title', 'Add x', '--pr-body', '-'], {
+      out: v, cwd: '/repo', ...repo({ commitlint: true, config }), readStdin: async () => body,
+    })).toBe(EXIT_PASS);
+    expect(stdout(v)).not.toMatch(/PR title/); // disabled means no check, not even the warning
+  });
+
+  it('scaffold leaves a disabled row as the template wrote it and says so', async () => {
+    const o = out();
+    expect(await runPrChecklistCli(['scaffold'], { out: o, cwd: '/repo', ...repo({ config: '{ "disable": ["mbse"] }' }) })).toBe(EXIT_PASS);
+    expect(stdout(o)).toContain('- [ ] <!-- kookr:check:mbse --> System design docs up to date');
+    expect(stderr(o)).toMatch(/rule disabled by \.kookr\/pr-checklist\.json\): mbse/);
+  });
+
+  it('scaffold --json reports a failing title with ok:false and exit 2', async () => {
+    const o = out();
+    expect(await runPrChecklistCli(['scaffold', '--json', '--title', 'Add scaffold'], { out: o, cwd: '/repo', ...repo({ commitlint: true }) }))
+      .toBe(EXIT_VERIFICATION_FAILURE);
+    const parsed = JSON.parse(stdout(o));
+    expect(parsed.ok).toBe(false);
+    expect(parsed.results[0]).toMatchObject({ id: 'pr-title', status: 'fail' });
+  });
+
+  it('prints a marker-less template as-is without needing the diff', async () => {
+    const o = out();
+    const template = '## Summary\n- [ ] plain box';
+    expect(await runPrChecklistCli(['scaffold'], { out: o, cwd: '/repo', ...repo({ base: false, template }) })).toBe(EXIT_PASS);
+    expect(stdout(o)).toBe(template);
+    expect(stderr(o)).toMatch(/declares no kookr:check rows/);
+  });
+
+  it('marks a row with no evidence rule as undecided on stderr', async () => {
+    const o = out();
+    const template = '- [ ] <!-- kookr:check:prose --> Summary is clear';
+    await runPrChecklistCli(['scaffold'], { out: o, cwd: '/repo', ...repo({ template }) });
+    expect(stderr(o)).toMatch(/\? no diff rule .*: prose/);
+  });
+
+  it('finds a commitlint config in package.json, and notes (not fails) a non-conventional one', async () => {
+    expect(await runPrChecklistCli(['scaffold', '--title', 'Add x'], { out: out(), cwd: '/repo', ...repo({ commitlint: 'package.json' }) }))
+      .toBe(EXIT_VERIFICATION_FAILURE);
+    const o = out();
+    expect(await runPrChecklistCli(['scaffold', '--title', 'Add x'], { out: o, cwd: '/repo', ...repo({ commitlint: 'angular' }) }))
+      .toBe(EXIT_PASS);
+    expect(stderr(o)).toMatch(/does not extend config-conventional — PR title not checked/);
+  });
+
+  // Independent review of #3782: the hook must not deny titles real commitlint accepts.
+  it('never denies a title commitlint ignores by default, or one a customised config may accept', async () => {
+    const body = '- [x] <!-- kookr:check:tests --> Tests added\n- [ ] ~~<!-- kookr:check:mbse --> docs~~ — CLI-only';
+    const cmd = (title: string) => `gh pr create --title '${title}' --body "${body}"`;
+    expect(await runPrChecklistCli(['verify', '--from-command', cmd('Revert "feat: add x"')], {
+      out: out(), cwd: '/repo', ...repo({ commitlint: true }),
+    })).toBe(EXIT_PASS);
+    const o = out();
+    expect(await runPrChecklistCli(['verify', '--from-command', cmd('feat: Add OAuth login')], {
+      out: o, cwd: '/repo', ...repo({ commitlint: 'custom' }),
+    })).toBe(EXIT_PASS);
+    expect(stdout(o)).toMatch(/may fail commit-lint .*not enforced/);
+    // The same title with the plain preset is reported, and scaffold (not a gate) exits 2 on it.
+    const plain = out();
+    expect(await runPrChecklistCli(['verify', '--from-command', cmd('feat: Add OAuth login')], {
+      out: plain, cwd: '/repo', ...repo({ commitlint: true }),
+    })).toBe(EXIT_PASS);
+    expect(stdout(plain)).toMatch(/⚠ PR title would fail/);
+    expect(await runPrChecklistCli(['scaffold', '--title', 'feat: Add OAuth login'], {
+      out: out(), cwd: '/repo', ...repo({ commitlint: true }),
+    })).toBe(EXIT_VERIFICATION_FAILURE);
+  });
+
+  it('reads package.json first, as @commitlint/load does, so it shadows a plain config file', async () => {
+    const { gitRunner } = repo({ commitlint: true });
+    const runner: GitRunner = async (args) =>
+      args.join(' ') === 'ls-files -- package.json' ? { stdout: 'package.json', stderr: '', exitCode: 0 } : gitRunner(args);
+    const o = out();
+    const code = await runPrChecklistCli(['scaffold', '--title', 'feat: Add OAuth login'], {
+      out: o, cwd: '/repo', gitRunner: runner,
+      readFileText: async (p: string) => {
+        if (p.endsWith('package.json')) {
+          return JSON.stringify({ commitlint: { extends: ['@commitlint/config-conventional'], rules: { 'subject-case': [0] } } });
+        }
+        if (p.endsWith('commitlint.config.cjs')) return COMMITLINT;
+        return TEMPLATE;
+      },
+    });
+    expect(code).toBe(EXIT_PASS); // the customised package.json config wins → note only
+    expect(stderr(o)).toMatch(/package\.json customises config-conventional/);
+  });
+
+  it('fails closed (2), not internal (70), when a repo file trips the input guard', async () => {
+    const o = out();
+    const { gitRunner } = repo();
+    const code = await runPrChecklistCli(['scaffold'], {
+      out: o, cwd: '/repo', gitRunner,
+      readFileText: async () => { throw new ChecklistInputError('file exceeds size cap'); },
+    });
+    expect(code).toBe(EXIT_VERIFICATION_FAILURE);
+    expect(stderr(o)).toMatch(/input guard/);
   });
 });

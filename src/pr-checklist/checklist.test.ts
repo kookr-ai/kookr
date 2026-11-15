@@ -9,7 +9,10 @@ import {
   isSourceFile,
   parseChecklist,
   parseEnvKeys,
+  parseTemplateRows,
+  renderRow,
   scanSecrets,
+  WAIVER_REASON_PLACEHOLDER,
 } from './checklist.js';
 import type { DiffFacts } from './types.js';
 
@@ -240,7 +243,12 @@ describe('evaluateTemplatePresence', () => {
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ id: 'pr-template', status: 'fail' });
     expect(results[0].summary).toMatch(/2 template checklist row\(s\) \(readme, tests\) present but not in a recognised/);
-    expect(results[0].summary).toContain('"- [ ] ~~<marker> text~~ — reason"');
+    expect(results[0].expected).toEqual([
+      '- [x] <!-- kookr:check:readme --> README',
+      '- [ ] ~~<!-- kookr:check:readme --> README~~ — TODO: one-line reason',
+      '- [x] <!-- pr:tests --> tests',
+      '- [ ] ~~<!-- pr:tests --> tests~~ — TODO: one-line reason',
+    ]);
     expect(results[0].summary).not.toMatch(/omits/);
   });
 
@@ -279,5 +287,90 @@ describe('evaluateTemplatePresence', () => {
     expect(rows.map((r) => r.id)).toEqual(['readme', 'tests', 'docs']);
     expect(findUnparsedMarkerIds(body, rows)).toEqual([]);
     expect(evaluateTemplatePresence(template3, rows, findUnparsedMarkerIds(body, rows))).toHaveLength(0);
+  });
+});
+
+// #3651: when verify rejects a row it prints the exact line it would accept,
+// rendered from the template row, so nobody has to remember the syntax.
+describe('expected lines on a rejected row (#3651)', () => {
+  const template = [
+    '- [ ] <!-- kookr:check:mbse --> System design documents are up to date',
+    '- [ ] <!-- kookr:check:tests --> Tests added',
+  ].join('\n');
+  const mbseWaive = '- [ ] ~~<!-- kookr:check:mbse --> System design documents are up to date~~ — TODO: one-line reason';
+  const mbseTick = '- [x] <!-- kookr:check:mbse --> System design documents are up to date';
+
+  it('a struck row with the checkbox inside the strikethrough shows the accepted form', () => {
+    const body = [
+      '- ~~[ ] <!-- kookr:check:mbse --> System design documents are up to date~~ — CLI-only change',
+      '- [x] <!-- kookr:check:tests --> Tests added',
+    ].join('\n');
+    const rows = parseChecklist(body);
+    expect(rows.map((r) => r.id)).toEqual(['tests']); // the box-inside-strike row does not parse
+    const results = evaluateTemplatePresence(template, rows, findUnparsedMarkerIds(body, rows));
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ id: 'pr-template', status: 'fail' });
+    expect(results[0].summary).toMatch(/checkbox inside the strikethrough/);
+    expect(results[0].expected).toEqual([mbseTick, mbseWaive]);
+    // The accepted form really is accepted once its reason slot is filled.
+    expect(parseChecklist(mbseWaive.replace('TODO: one-line reason', 'CLI-only change'))).toEqual([
+      { id: 'mbse', checked: false, struck: true, reason: 'CLI-only change' },
+    ]);
+  });
+
+  it('a reason written inside the strikethrough fails with the line that puts it after the closing ~~', () => {
+    const rows = parseChecklist('- [ ] ~~<!-- kookr:check:mbse --> System design — N/A, CLI only~~');
+    const { results } = evaluateAttestation(rows, [], template);
+    expect(results[0].status).toBe('fail');
+    expect(results[0].summary).toMatch(/after the closing ~~/);
+    expect(results[0].expected).toEqual([mbseWaive]);
+  });
+
+  it('a blank row shows both accepted forms; a ticked row with no evidence shows the waiver form', () => {
+    const blank = evaluateAttestation(parseChecklist('- [ ] <!-- kookr:check:mbse --> x'), [], template);
+    expect(blank.results[0].expected).toEqual([mbseTick, mbseWaive]);
+    const unbacked = evaluateAttestation(parseChecklist('- [x] <!-- kookr:check:mbse --> x'), ['src/a.ts'], template);
+    expect(unbacked.results[0].expected).toEqual([mbseWaive]);
+  });
+
+  it('rejects an unreplaced scaffold placeholder reason', () => {
+    const rows = parseChecklist(`- [ ] ~~<!-- kookr:check:mbse --> x~~ — ${WAIVER_REASON_PLACEHOLDER}`);
+    const { results, waived } = evaluateAttestation(rows, [], template);
+    expect(results[0]).toMatchObject({ id: 'mbse', status: 'fail' });
+    expect(results[0].summary).toMatch(/scaffold placeholder/);
+    expect(waived.has('mbse')).toBe(false);
+  });
+
+  it('a verify-suggested line pasted unchanged still fails (its reason slot is a placeholder)', () => {
+    const blank = evaluateAttestation(parseChecklist('- [ ] <!-- kookr:check:mbse --> x'), [], template);
+    const pasted = blank.results[0].expected![1];
+    const { results } = evaluateAttestation(parseChecklist(pasted), [], template);
+    expect(results[0]).toMatchObject({ id: 'mbse', status: 'fail' });
+  });
+
+  it('quotes an indented template row without its indent, and the first of duplicate ids', () => {
+    const tpl = '  - [ ] <!-- kookr:check:mbse --> first\n- [ ] <!-- kookr:check:mbse --> second';
+    const { results } = evaluateAttestation(parseChecklist('- [ ] <!-- kookr:check:mbse --> x'), [], tpl);
+    expect(results[0].expected).toEqual([
+      '- [x] <!-- kookr:check:mbse --> first',
+      '- [ ] ~~<!-- kookr:check:mbse --> first~~ — TODO: one-line reason',
+    ]);
+  });
+
+  it('falls back to a bare marker line when the template lacks the row', () => {
+    const { results } = evaluateAttestation(parseChecklist('- [ ] <!-- kookr:check:docs --> x'), []);
+    expect(results[0].expected).toEqual([
+      '- [x] <!-- kookr:check:docs --> <row text>',
+      '- [ ] ~~<!-- kookr:check:docs --> <row text>~~ — TODO: one-line reason',
+    ]);
+  });
+
+  it('parseTemplateRows + renderRow round-trip through parseChecklist for both states', () => {
+    const [row] = parseTemplateRows('  - [ ] <!-- kookr:check:readme --> README `x`  ');
+    expect(row).toEqual({ line: 0, indent: '  ', id: 'readme', marker: '<!-- kookr:check:readme -->', label: 'README `x`' });
+    expect(parseChecklist(renderRow(row, 'checked'))).toEqual([{ id: 'readme', checked: true, struck: false, reason: '' }]);
+    expect(parseChecklist(renderRow(row, 'waived', 'no README change'))).toEqual([
+      { id: 'readme', checked: false, struck: true, reason: 'no README change' },
+    ]);
   });
 });

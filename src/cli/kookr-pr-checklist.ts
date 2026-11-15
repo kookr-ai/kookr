@@ -12,10 +12,10 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import { extractFromGhCommand } from '../pr-checklist/adapters/gh.js';
 import { BOX_EVIDENCE } from '../pr-checklist/checklist.js';
 import { degradeLogPath, parseDegradeLog, summarizeDegrades } from '../pr-checklist/degrade-log.js';
-import { collectAndVerify, MAX_BODY_BYTES } from '../pr-checklist/engine.js';
+import { collectAndVerify, collectScaffold, MAX_BODY_BYTES, type ScaffoldOutcome } from '../pr-checklist/engine.js';
 import { ChecklistInputError } from '../pr-checklist/errors.js';
 import { execGit, resolveRepoRoot, type GitRunner } from '../pr-checklist/git.js';
-import type { VerifyReport } from '../pr-checklist/types.js';
+import type { CheckResult, VerifyReport } from '../pr-checklist/types.js';
 
 export const EXIT_PASS = 0;
 export const EXIT_VERIFICATION_FAILURE = 2;
@@ -25,10 +25,20 @@ export const EXIT_INTERNAL = 70;
 const HELP_TEXT = `kookr pr-checklist — verify a repo's anti-drift PR checklist against the diff.
 
 Usage:
-  kookr pr-checklist verify [--pr-body <file|->] [--base <ref>] [--json]
+  kookr pr-checklist scaffold [--base <ref>] [--title <t>] [--json]
+                                       Print a PR body built from the repo PR template,
+                                       in the row syntax verify accepts.
+  kookr pr-checklist verify [--pr-body <file|->] [--base <ref>] [--title <t>] [--json]
   kookr pr-checklist verify --from-command <raw gh pr create …> [--run-commands none]
   kookr pr-checklist verify --explain
   kookr pr-checklist doctor [--json]   Report the local hook's recent fail-open rate.
+
+scaffold:
+  Copies the repo PR template to stdout and rewrites every kookr:check row: a row
+  whose evidence rule matches a changed file is ticked ("- [x] <marker> text"); any
+  other row is struck as "- [ ] ~~<marker> text~~ — TODO: …". Replace each TODO with
+  the real one-line reason (or tick a row you did) — verify rejects a TODO reason.
+  Summary lines go to stderr, so \`scaffold > body.md\` writes only the body.
 
 Options:
   --pr-body <file|->     PR body to check attestation boxes against (- reads stdin).
@@ -43,6 +53,10 @@ Options:
                          (the CI workflow is disabled, so nothing else checks it).
   --run-commands <mode>  none (default) runs no repo commands; ci is reserved (P4).
   --base <ref>           Diff base branch (default: main; --from-command's base wins).
+  --title <t>            PR title to check against the repo's commit-lint rule, when the
+                         repo has one (config-conventional only; --from-command's
+                         --title is used automatically). verify only WARNS on a bad
+                         title, never fails on it; scaffold exits 2.
   --json                 Emit one machine-readable JSON report to stdout.
   --explain              Print the resolved built-in checklist rules and exit.
   -h, --help             Show this help.
@@ -54,6 +68,7 @@ interface Args {
   verb?: string;
   prBody?: string;
   fromCommand?: string;
+  title?: string;
   /** Reserved for P4 (repo command execution). Validated only — `none` is the sole behavior today. */
   runCommands: 'none' | 'ci';
   base: string;
@@ -92,8 +107,13 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
   if (args.verb === 'doctor') {
     return runDoctor(args, deps, out);
   }
+  if (args.verb === 'scaffold') {
+    return runScaffold(args, deps, out);
+  }
   if (args.verb !== 'verify') {
-    out.error(`Unknown or missing subcommand${args.verb ? `: ${args.verb}` : ''}. Expected \`verify\` or \`doctor\`.`);
+    out.error(
+      `Unknown or missing subcommand${args.verb ? `: ${args.verb}` : ''}. Expected \`scaffold\`, \`verify\` or \`doctor\`.`,
+    );
     out.error(HELP_TEXT);
     return EXIT_USAGE;
   }
@@ -111,6 +131,7 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
   let body: string | null = null;
   let templateRequiredReason: string | undefined;
   let base = args.base;
+  let title: string | null = args.title ?? null;
 
   if (args.fromCommand !== undefined) {
     const extracted = extractFromGhCommand(args.fromCommand);
@@ -130,6 +151,7 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
         return EXIT_PASS;
       }
       if (extracted.base) base = extracted.base;
+      if (title === null) title = extracted.title;
       const src = extracted.bodySource;
       if (src.kind === 'unverifiable') {
         // Degraded but printed (never a silent pass). The body could not be read
@@ -169,6 +191,7 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
       base,
       body,
       templateRequiredReason,
+      title,
       gitRunner: deps.gitRunner,
       readFileText: deps.readFileText,
     });
@@ -228,6 +251,10 @@ function parseArgs(argv: string[]): Args {
       if (value === 'ci') return { ...args, error: '--run-commands ci is reserved for P4 (repo command execution); use none' };
       if (value !== 'none') return { ...args, error: `--run-commands must be none or ci, got: ${value}` };
       args.runCommands = value;
+    } else if (arg === '--title') {
+      const value = argv[++i];
+      if (value === undefined) return { ...args, error: '--title requires a value' };
+      args.title = value;
     } else if (arg === '--base') {
       const value = argv[++i];
       if (value === undefined) return { ...args, error: '--base requires a value' };
@@ -242,6 +269,9 @@ function parseArgs(argv: string[]): Args {
   }
   if (args.prBody !== undefined && args.fromCommand !== undefined) {
     return { ...args, error: '--pr-body and --from-command are mutually exclusive' };
+  }
+  if (args.verb === 'scaffold' && (args.prBody !== undefined || args.fromCommand !== undefined || args.explain)) {
+    return { ...args, error: 'scaffold takes only --base, --title and --json' };
   }
   return args;
 }
@@ -261,6 +291,7 @@ function printHuman(report: VerifyReport, out: Pick<typeof console, 'log' | 'err
   for (const r of report.results) {
     const glyph = r.status === 'pass' ? '✓' : r.status === 'fail' ? '✗' : r.status === 'waived' ? '~' : '–';
     out.log(`  ${glyph} [${r.status}] ${r.id}: ${r.summary}${r.reason ? ` — ${r.reason}` : ''}`);
+    printExpected(r, out);
   }
   if (report.noOpinion) {
     out.log('✓ No opinion — this repo has not opted in to the PR checklist (no kookr:check markers in its PR template).');
@@ -271,6 +302,83 @@ function printHuman(report: VerifyReport, out: Pick<typeof console, 'log' | 'err
   } else {
     out.error('✗ PR checklist verification FAILED — fix the items above, or strike genuinely-N/A boxes with a reason.');
   }
+}
+
+/** The accepted row line(s) for a rejected row, one per line so they can be copied as-is. */
+function printExpected(r: CheckResult, out: Pick<typeof console, 'log' | 'error'>): void {
+  if (!r.expected?.length) return;
+  out.log(`      expected ${r.expected.length > 1 ? 'one of' : 'this line'}:`);
+  for (const line of r.expected) out.log(`        ${line}`);
+}
+
+// --- scaffold: print a PR body in the syntax verify accepts (#3651) ---------
+async function runScaffold(
+  args: Args,
+  deps: RunDeps,
+  out: Pick<typeof console, 'log' | 'error'>,
+): Promise<number> {
+  const cwd = deps.cwd ?? process.cwd();
+  const root = deps.gitRunner ? cwd : await resolveRepoRoot(cwd);
+  let outcome: ScaffoldOutcome;
+  try {
+    outcome = await collectScaffold({
+      cwd: root,
+      base: args.base,
+      title: args.title ?? null,
+      gitRunner: deps.gitRunner,
+      readFileText: deps.readFileText,
+    });
+  } catch (error) {
+    if (error instanceof ChecklistInputError) {
+      out.error(`Could not build the PR body (input guard): ${error.message}`);
+      return EXIT_VERIFICATION_FAILURE;
+    }
+    out.error(`kookr pr-checklist internal error: ${errMessage(error)}`);
+    return EXIT_INTERNAL;
+  }
+  if (outcome.kind === 'no-template') {
+    out.error('No tracked PR template found (.github/pull_request_template.md or another GitHub location) — nothing to scaffold.');
+    return EXIT_VERIFICATION_FAILURE;
+  }
+  if (outcome.kind === 'base-unresolved') {
+    out.error(
+      `Could not resolve the diff base "${args.base}" (tried origin/${args.base} and ${args.base}). ` +
+        'scaffold needs the diff to decide which rows to tick — fetch the base or pass --base <ref>.',
+    );
+    return EXIT_VERIFICATION_FAILURE;
+  }
+  const { scaffold, noMarkers, title } = outcome;
+  const titleFailed = title.results.some((r) => r.status === 'fail');
+  if (args.json) {
+    out.log(JSON.stringify({
+      ok: !titleFailed,
+      body: scaffold.body,
+      checked: scaffold.checked,
+      struck: scaffold.struck,
+      undecided: scaffold.undecided,
+      disabled: scaffold.disabled,
+      results: title.results,
+      notes: title.notes,
+    }, null, 2));
+    return titleFailed ? EXIT_VERIFICATION_FAILURE : EXIT_PASS;
+  }
+  out.log(scaffold.body);
+  if (noMarkers) out.error('  • the PR template declares no kookr:check rows — printed as-is');
+  if (scaffold.checked.length) out.error(`  ✓ ticked (matching change in the diff): ${scaffold.checked.join(', ')}`);
+  if (scaffold.struck.length) {
+    out.error(`  ~ struck (no matching change) — replace each TODO with the real reason: ${scaffold.struck.join(', ')}`);
+  }
+  if (scaffold.undecided.length) {
+    out.error(
+      `  ? no diff rule — tick the row and remove the strikethrough if you did it, else give the reason: ${scaffold.undecided.join(', ')}`,
+    );
+  }
+  if (scaffold.disabled.length) {
+    out.error(`  • left as in the template (rule disabled by .kookr/pr-checklist.json): ${scaffold.disabled.join(', ')}`);
+  }
+  for (const note of title.notes) out.error(`  • ${note}`);
+  for (const r of title.results) out.error(`  ${r.status === 'fail' ? '✗' : '✓'} [${r.status}] ${r.id}: ${r.summary}`);
+  return titleFailed ? EXIT_VERIFICATION_FAILURE : EXIT_PASS;
 }
 
 async function readStdin(): Promise<string> {

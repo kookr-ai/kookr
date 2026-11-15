@@ -51,6 +51,81 @@ export const SECRET_PATTERNS: RegExp[] = [
 
 const MARKER_LINE = /^[ \t]*(~~)?-\s*\[( |x|X)\]\s*(~~)?\s*<!--\s*(?:kookr:check:|pr:)([a-z0-9-]+)\s*-->(.*)$/gm;
 
+// --- Row shapes `verify` accepts, rendered from the template (#3651) --------
+// `scaffold` writes these lines and `verify` quotes them back when it rejects a
+// row, so both come from `renderRow` and cannot drift apart. The rendered text
+// is the repo's own PR-template row (marker + label), never PR-body content (S6).
+
+/**
+ * Reason text `scaffold` puts on a struck row. `verify` rejects a waiver whose
+ * reason still contains one, so an unedited scaffold cannot pass the gate.
+ */
+export const WAIVER_REASON_PLACEHOLDER = 'TODO: say why this row does not apply';
+/** Placeholder for a row with no diff evidence rule: only the author knows if it was done. */
+export const DECIDE_REASON_PLACEHOLDER = 'TODO: if done, tick the box and remove the strikethrough; else say why it does not apply';
+/**
+ * Reason slot shown in an "expected" line. Also a rejected placeholder, so a
+ * line pasted from verify's output unchanged still fails. Plain text, not
+ * `<…>`: GitHub would strip an angle-bracket slot as an HTML tag.
+ */
+const REASON_SLOT = 'TODO: one-line reason';
+// No placeholder may contain `~~`: the parser takes the reason from after the LAST `~~`.
+const PLACEHOLDERS = [WAIVER_REASON_PLACEHOLDER, DECIDE_REASON_PLACEHOLDER, REASON_SLOT];
+
+/** A marked checklist row of the repo's PR template, kept with its exact marker and label text. */
+export interface TemplateRow {
+  /** 0-based line index in the template text. */
+  line: number;
+  indent: string;
+  id: string;
+  /** The marker exactly as the template spells it, e.g. `<!-- kookr:check:tests -->`. */
+  marker: string;
+  /** Row text after the marker, without strike delimiters. */
+  label: string;
+}
+
+// Same row grammar as MARKER_LINE above (keep the two in step), but per line and
+// capturing indent + the exact marker spelling, which scaffold must reproduce.
+const TEMPLATE_ROW = /^([ \t]*)(?:~~)?-\s*\[(?: |x|X)\]\s*(?:~~)?\s*(<!--\s*(?:kookr:check:|pr:)([a-z0-9-]+)\s*-->)(.*)$/;
+
+/** Parse the marked rows of a PR template, keeping line index, indent, marker and label. Pure. */
+export function parseTemplateRows(templateText: string): TemplateRow[] {
+  const rows: TemplateRow[] = [];
+  templateText.split('\n').forEach((text, line) => {
+    const m = TEMPLATE_ROW.exec(text.replace(/\r$/, ''));
+    if (!m) return;
+    const rest = m[4];
+    const close = rest.indexOf('~~');
+    const label = (close >= 0 ? rest.slice(0, close) : rest).trim();
+    rows.push({ line, indent: m[1], id: m[3], marker: m[2], label });
+  });
+  return rows;
+}
+
+/** The one accepted line for a row: ticked (attest) or struck with the reason after the closing `~~` (waive). */
+export function renderRow(row: Pick<TemplateRow, 'indent' | 'marker' | 'label'>, state: 'checked' | 'waived', reason = REASON_SLOT): string {
+  const text = row.label ? `${row.marker} ${row.label}` : row.marker;
+  return state === 'checked' ? `${row.indent}- [x] ${text}` : `${row.indent}- [ ] ~~${text}~~ — ${reason}`;
+}
+
+/** True when a waiver reason is still a `scaffold` placeholder. */
+export function isPlaceholderReason(reason: string): boolean {
+  return PLACEHOLDERS.some((p) => reason.includes(p));
+}
+
+/** Template rows by id (first wins), for quoting the expected line back on a rejection. */
+export function templateRowsById(templateText: string): Map<string, TemplateRow> {
+  const byId = new Map<string, TemplateRow>();
+  for (const row of parseTemplateRows(templateText)) if (!byId.has(row.id)) byId.set(row.id, row);
+  return byId;
+}
+
+/** The accepted line(s) for `id`, built from the template row (or a bare marker when the template lacks it). */
+function expectedFor(id: string, templateRows: ReadonlyMap<string, TemplateRow>, states: ('checked' | 'waived')[]): string[] {
+  const row = templateRows.get(id) ?? { indent: '', marker: `<!-- kookr:check:${id} -->`, label: '<row text>' };
+  return states.map((state) => renderRow({ ...row, indent: '' }, state));
+}
+
 /** Parse marked checklist lines out of a PR body. Pure; regex-only. */
 export function parseChecklist(body: string): ChecklistRow[] {
   const rows: ChecklistRow[] = [];
@@ -102,6 +177,17 @@ function changed(paths: string[], patterns: RegExp[]): boolean {
 }
 
 /**
+ * Does the diff carry the evidence a ticked `id` box needs? `null` when the id
+ * has no built-in evidence rule (only the author can say whether it was done).
+ * Shared by `evaluateAttestation` and `scaffold`, so a row scaffold ticks is one
+ * verify accepts.
+ */
+export function hasEvidence(id: string, changedPaths: string[]): boolean | null {
+  const spec = BOX_EVIDENCE[id];
+  return spec ? changed(changedPaths, spec.paths) : null;
+}
+
+/**
  * Evaluate attestation coupling for every marked box.
  *   checked + evidence in diff  -> pass
  *   checked + no evidence       -> fail ("ticked but not touched")
@@ -112,7 +198,10 @@ function changed(paths: string[], patterns: RegExp[]): boolean {
 export function evaluateAttestation(
   rows: ChecklistRow[],
   changedPaths: string[],
+  templateText = '',
 ): { results: CheckResult[]; waived: Set<string>; notes: string[] } {
+  const templateRows = templateRowsById(templateText);
+  const expectedLines = (id: string, ...states: ('checked' | 'waived')[]) => expectedFor(id, templateRows, states);
   const results: CheckResult[] = [];
   const waived = new Set<string>();
   const notes: string[] = [];
@@ -126,7 +215,19 @@ export function evaluateAttestation(
         results.push({
           id: row.id,
           status: 'fail',
-          summary: `checklist waiver for ${row.id} requires a one-line waiver reason`,
+          summary:
+            `checklist waiver for ${row.id} requires a one-line waiver reason, written after the closing ~~ ` +
+            `(a reason inside the strikethrough does not count)`,
+          expected: expectedLines(row.id, 'waived'),
+        });
+        continue;
+      }
+      if (isPlaceholderReason(row.reason)) {
+        results.push({
+          id: row.id,
+          status: 'fail',
+          summary: `checklist waiver for ${row.id} still has the scaffold placeholder reason — replace it with the real one`,
+          expected: expectedLines(row.id, 'checked', 'waived'),
         });
         continue;
       }
@@ -146,7 +247,12 @@ export function evaluateAttestation(
       results.push(
         row.checked
           ? { id: row.id, status: 'pass', summary: `attested: ${row.id}` }
-          : { id: row.id, status: 'fail', summary: `checklist item ${row.id} is neither checked nor struck through` },
+          : {
+              id: row.id,
+              status: 'fail',
+              summary: `checklist item ${row.id} is neither checked nor struck through`,
+              expected: expectedLines(row.id, 'checked', 'waived'),
+            },
       );
       continue;
     }
@@ -155,6 +261,7 @@ export function evaluateAttestation(
         id: row.id,
         status: 'fail',
         summary: `"${spec.label}" is neither checked nor struck through — do it, or strike the box with a reason`,
+        expected: expectedLines(row.id, 'checked', 'waived'),
       });
       continue;
     }
@@ -163,6 +270,7 @@ export function evaluateAttestation(
         id: row.id,
         status: 'fail',
         summary: `"${spec.label}" is checked but no matching change is in the diff — update it, or strike the box`,
+        expected: expectedLines(row.id, 'waived'),
       });
       continue;
     }
@@ -205,13 +313,16 @@ export function evaluateTemplatePresence(
   const missing = absent.filter((id) => !unparsed.has(id));
   const results: CheckResult[] = [];
   if (malformed.length > 0) {
+    const templateRows = templateRowsById(templateText);
     results.push({
       id: 'pr-template',
       status: 'fail',
       summary:
         `PR body has ${malformed.length} template checklist row(s) (${malformed.join(', ')}) present but ` +
-        `not in a recognised checklist form (e.g. struck from the leading dash). Keep the box first: ` +
-        `"- [ ] <marker> text" to attest, or "- [ ] ~~<marker> text~~ — reason" to waive.`,
+        `not in a recognised checklist form (e.g. the checkbox inside the strikethrough, or struck from the ` +
+        `leading dash). Keep the "- [ ]" box first and outside the ~~: tick it to attest, or strike only the ` +
+        `marker and text and put the reason after the closing ~~ to waive.`,
+      expected: malformed.flatMap((id) => expectedFor(id, templateRows, ['checked', 'waived'])),
     });
   }
   if (missing.length === 0) return results;

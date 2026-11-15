@@ -848,8 +848,8 @@ The deprecated `kookr-spawn` and `kookr-ralph` aliases return the same codes as 
 
 | Exit code | Meaning |
 | --- | --- |
-| exit 0 | Pass (verify succeeded, or doctor completed). |
-| exit **2** | **Verification failure** (checklist findings or fail-closed repo-input error) — **not** a usage error. |
+| exit 0 | Pass (verify succeeded, scaffold printed a body, or doctor completed). |
+| exit **2** | **Verification failure** (checklist findings, a `scaffold --title` that the repo's commit-lint rule rejects, a scaffold with no template or an unresolvable base, or a fail-closed repo-input error) — **not** a usage error. |
 | exit 64 | Usage error (bad arguments, unknown subcommand). |
 | exit 70 | Kookr-internal fault (the only class a local hook may treat as fail-open). |
 
@@ -1952,11 +1952,54 @@ CI-friendly verifier for the same contract. See
 [PR Checklist Contract](../rfc/rfc-pr-checklist-contract.md).
 
 ```bash
-kookr pr-checklist verify [--pr-body <file|->] [--base <ref>] [--json]
+kookr pr-checklist scaffold [--base <ref>] [--title <t>] [--json]
+kookr pr-checklist verify [--pr-body <file|->] [--base <ref>] [--title <t>] [--json]
 kookr pr-checklist verify --from-command <raw gh pr create …> [--run-commands none]
 kookr pr-checklist verify --explain
 kookr pr-checklist doctor [--json]
 ```
+
+### `scaffold`
+
+Print a PR body that `verify` accepts, so you do not have to remember the
+checklist-row syntax. It copies the repository's PR template
+(`.github/pull_request_template.md` or another GitHub template location) to
+stdout and rewrites every row that carries a `kookr:check` marker:
+
+- A row whose evidence rule matches a file changed against `--base` is ticked:
+  `- [x] <!-- kookr:check:tests --> …`.
+- Any other row is struck, with the checkbox outside the strikethrough and a
+  placeholder reason after the closing `~~`:
+  `- [ ] ~~<!-- kookr:check:mbse --> …~~ — TODO: say why this row does not apply`.
+  A row with no built-in evidence rule (for example `prose`) gets a placeholder
+  asking you to tick it if you did the work, or give the reason.
+
+Every other template line is printed unchanged, and so is a row whose rule the
+repository turned off in `.kookr/pr-checklist.json` (`verify` ignores that rule,
+so a `TODO` there would never be caught). Replace each `TODO:` reason
+with the real one-line reason, or tick a row you did. `verify` rejects a
+reason that still contains a scaffold placeholder, so an unedited scaffold
+cannot pass. The summary of what was ticked or struck goes to stderr, so
+`kookr pr-checklist scaffold > .tmp/PR_BODY.md` writes only the body (keep the file inside the
+repository or worktree, in a git-ignored path: `verify` and the hook only read body files there).
+
+```bash
+kookr pr-checklist scaffold --base main --title "feat(cli): add scaffold" > .tmp/PR_BODY.md
+# edit the TODO reasons, then:
+kookr pr-checklist verify --pr-body .tmp/PR_BODY.md --base main
+gh pr create --title "feat(cli): add scaffold" --body-file .tmp/PR_BODY.md
+```
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--base` | git ref | `main` | Diff base branch used to decide which rows to tick. |
+| `--title` | PR title | unset | Also check the title against the repository's commit-lint rule (see `--title` under `verify`). |
+| `--json` | none | false | Print `{ ok, body, checked, struck, undecided, disabled, results, notes }` instead of the body. |
+
+Exit `2` when the repository has no PR template, when the diff base cannot be
+resolved (every row would otherwise be struck), or when `--title` fails the
+commit-lint rule (the body is still printed). `--pr-body`, `--from-command`
+and `--explain` are usage errors here (exit `64`).
 
 ### `verify`
 
@@ -1969,9 +2012,26 @@ rules plus optional PR-body attestation boxes.
 | `--from-command` | raw shell string | unset | Derive body + base from a raw `gh pr create …` command (used by the local hook). A literal `--body`, an in-repo `--body-file`, and a `cat` heredoc body (`--body "$(cat <<'EOF' … EOF)"`) are verified. `--fill` or no body flag fails when the repo PR template declares `kookr:check` markers; stdin and other `$(…)` bodies are unverifiable — attestation is skipped with a printed note (the CI workflow is disabled, so nothing else checks them). A repo with no marker template and no `.kookr/pr-checklist.json` gets no opinion (exit `0`). |
 | `--run-commands` | `none` or `ci` | `none` | `none` runs no repo commands. `ci` is reserved and currently rejected. |
 | `--base` | git ref | `main` | Diff base branch (`--from-command`'s base wins when present). |
+| `--title` | PR title | unset | Check the PR title against the repository's commit-lint rule. In `verify` a title that would fail is **reported as a `⚠` note and never fails the gate** (exit stays `0` for the title), because this check re-implements commitlint from the config's text and cannot be proven identical to the repo's real commitlint; a passing title shows as the `pr-title` result. `scaffold --title` exits `2` on a failure, since it is an authoring aid, not a gate. Applies only when the repository tracks a commitlint config (a `commitlint` key in `package.json` or `package.yaml`, `.commitlintrc*`, or `commitlint.config.*`, searched in commitlint's own order) that extends `@commitlint/config-conventional`; the config is read as text, never executed. The check covers that preset's header rules: the `type(scope): subject` shape, an allowed lower-case type, a non-empty subject that does not start with a capital letter, is not all upper-case and has no trailing full stop (a trailing `...` is allowed), no leading or trailing whitespace, and at most 100 characters. As in commitlint, quoted or backticked words are ignored for the capital-letter rule, a subject that does not start with a letter is not judged by it, and titles commitlint skips by default (`Revert …`, `Merge …`, `fixup!`/`squash!`/`amend!`, version numbers) always pass. `scaffold --title` exits `2` only when the config is exactly `extends: ['@commitlint/config-conventional']`. When the config adds anything else (its own `rules` or `ignores`, a parser preset, another preset), the result could differ, so the problem is printed as a note instead. Configs that do not extend config-conventional also produce a note. With `--from-command`, a literal `--title`/`-t` on the gh command is used when `--title` is not given; a title containing `$` or a backtick (such as `--title "$TITLE"`), or a repeated `--title`, is not checked, since the shell would expand it or gh would keep the last one. A repository can turn the check off with `{ "disable": ["pr-title"] }` in `.kookr/pr-checklist.json`. |
 | `--json` | none | false | Emit one machine-readable JSON report to stdout. |
 | `--explain` | none | false | Print the resolved built-in checklist rules as JSON and exit `0`. |
 | `-h`, `--help` | none | false | Print command help and exit `0`. |
+
+When `verify` rejects a checklist row, it prints the line(s) it would accept
+under the finding, built from the template's own row. For example, a row with
+the checkbox inside the strikethrough (`- ~~[ ] <!-- kookr:check:mbse --> …~~`)
+fails with:
+
+```text
+  ✗ [fail] pr-template: PR body has 1 template checklist row(s) (mbse) present but not in a recognised checklist form …
+      expected one of:
+        - [x] <!-- kookr:check:mbse --> System design documents are up to date …
+        - [ ] ~~<!-- kookr:check:mbse --> System design documents are up to date …~~ — TODO: one-line reason
+```
+
+With `--json`, the same lines are in the result's `expected` array. The
+`TODO: one-line reason` slot is itself rejected, so replace it with the real
+reason when you paste the line.
 
 ### `doctor`
 
