@@ -11,11 +11,14 @@
 # there is nothing new to commit and nothing unpushed.
 #
 # Env:
-#   NB_DIR   notebook repo (default ~/.kookr/notebooks)
+#   NB_DIR          notebook repo (default ~/.kookr/notebooks)
+#   NB_BACKUP_LOCK  lock file (default /tmp/kookr-nb-backup.lock). Tests set it
+#                   to a private path so a test run never makes the real daily
+#                   backup skip.
 # Logs:
 #   $NB_DIR/.nb-backup.log  (rotated by size)
 # Lock:
-#   /tmp/kookr-nb-backup.lock  (prevents cron + manual concurrent runs)
+#   $NB_BACKUP_LOCK  (prevents cron + manual concurrent runs)
 
 set -uo pipefail
 
@@ -29,7 +32,7 @@ case "$NB_DIR" in
     '~/'*) NB_DIR="${HOME}/${NB_DIR:2}" ;;
 esac
 LOG_FILE="${NB_DIR}/.nb-backup.log"
-LOCK_FILE="/tmp/kookr-nb-backup.lock"
+LOCK_FILE="${NB_BACKUP_LOCK:-/tmp/kookr-nb-backup.lock}"
 TIMESTAMP="$(date -Iseconds)"
 DATESTAMP="$(date -I)"
 
