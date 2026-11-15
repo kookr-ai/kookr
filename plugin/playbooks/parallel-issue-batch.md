@@ -671,7 +671,7 @@ Implementation target:
 - Implement the issue as one coherent change set.
 - Add or update focused tests covering each issue's acceptance criteria.
 - Run the repo-appropriate build/test checks.
-- Before opening the PR, when running the pre-PR review specialists, feed each one a **review pack** — the staged diff plus the same shared context — instead of letting it re-explore the repo cold. Stage your changes, then regenerate the pack with a review output (prefer the `kookr context-pack` verb; fall back to `node "$KOOKR_REPO/bin/kookr-context-pack.js"` for source checkouts):
+- Before opening the PR, when running the pre-PR review specialists (repositories without a fast pre-push gate; with one, the single independent reviewer replaces the panel and never receives a pack, see `pre-pr-review` §8), feed each one a **review pack** — the staged diff plus the same shared context — instead of letting it re-explore the repo cold. Stage your changes, then regenerate the pack with a review output (prefer the `kookr context-pack` verb; fall back to `node "$KOOKR_REPO/bin/kookr-context-pack.js"` for source checkouts):
   `git diff --cached > /tmp/<unit-slug>.diff`
   add `"stagedDiffFile": "/tmp/<unit-slug>.diff"` to the spec, then
   `kookr context-pack --spec <spec.json> --out /tmp/<unit-slug>.pack.md --review-out /tmp/<unit-slug>.review.md`

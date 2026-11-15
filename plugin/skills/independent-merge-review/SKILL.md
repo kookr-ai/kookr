@@ -99,7 +99,8 @@ lost by running review *after* the gate and then re-running the gate on the
 head review changed (#3692). The rule:
 
 1. Once the diff is final (head H) and the PR exists, start the reviewer **and**
-   the full gate on H together. Run the gate in the background (for kookr:
+   the full gate on H together. With a fast pre-push gate, start the reviewer
+   earlier, at the first commit (see the paragraph after this list). Run the gate in the background (for kookr:
    `git push` with `run_in_background`, which runs the pre-push gate). Draft
    the PR body in the same window.
    **The CI watcher and the reviewer also run in parallel:** start watching the
@@ -399,7 +400,9 @@ least once, and those then took a median of 3 rounds (mean 4.1). Most of the
 extra rounds were spent on findings that could have waited. The rule:
 
 1. **Count the rounds from the PR, not from memory.** The round count is the
-   number of `kookr-review-verdict: block` comments on the PR. Give the
+   number of verdict comments (those carrying `<!-- kookr-independent-review -->`)
+   whose verdict is `block`, counting at most one per `review-head-sha`, so a
+   re-poll on the same head is not a new round. Give the
    reviewer that count with the comments (§2).
 2. **Reviews 1 and 2** block on any blocking finding, critical or not (§2).
 3. **From review 3 on** (the PR already carries two or more BLOCKs), only
@@ -421,8 +424,12 @@ extra rounds were spent on findings that could have waited. The rule:
 5. **The capped pass needs a new head.** The merge wrapper keeps a BLOCK sticky
    for the head it reviewed (`sticky-block`), so a `pass` on the head that got
    the second BLOCK is refused. Commit the round-2 fixes first; the third
-   review runs on that new head. If you disagree with every round-2 finding,
-   rebut them on the PR and still push the fixes you do accept.
+   review runs on that new head. If you rebut some round-2 findings, rebut
+   them on the PR and push the fixes you do accept. If you rebut all of them,
+   no fix means no new head, and the wrapper refuses any `pass` on that head:
+   either make a change the findings call for, or record a blocker for the
+   operator. An empty commit does not help, because the BLOCK's
+   `review-patch-id` still matches.
 6. The merge rule does not change: the latest verdict must be a `pass` bound to
    the current head (or to its `review-patch-id`).
 

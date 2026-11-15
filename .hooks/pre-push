@@ -91,8 +91,9 @@ fi
 # Cheap (file-read + jq) check FIRST, so a missing marker fails-fast in
 # milliseconds rather than after a multi-minute build+test cycle.
 #
-# Forces a SHA-bound marker that the `pre-push` skill writes after running
-# reviewer specialists in parallel. Without the marker, non-trivial pushes
+# Forces a SHA-bound marker that the `pre-push` skill writes after starting
+# the review (with a fast pre-push gate: the one independent review, issue
+# #3792; otherwise: the reviewer specialists in parallel). Without the marker, non-trivial pushes
 # are blocked. Fail-CLOSED.
 #
 # Marker layout (.review-state/<key>.json — gitignored):
@@ -102,8 +103,8 @@ fi
 #   bypass (human escape hatch; reason required; no token):
 #     { "sha", "status":"bypass", "reason":"..." }
 #
-# Write APPROVED markers via scripts/write-review-state-marker.sh after real
-# specialist fan-out. Raw `cat > .review-state/...` with only sha+status fails.
+# Write APPROVED markers via scripts/write-review-state-marker.sh after the
+# review is started (see above). Raw `cat > .review-state/...` with only sha+status fails.
 #
 # Why: across recent PRs in this and adjacent repos (kb-mcp-server, LRA),
 # 10/10 substantive Codex findings (incl. 2 P1) would have been caught by

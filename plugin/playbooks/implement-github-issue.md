@@ -522,7 +522,7 @@ Run the project's standard verification commands:
 
 Fix any failures before proceeding.
 
-Before pushing or creating a PR, run the repo delivery pre-push workflow (`kookr-pre-push` when available). In a repository with that workflow (Kookr itself, for example), this includes the targeted tests for changed files (plus the full suite only when the repository has no fast pre-push gate, see above), reviewer specialists for non-trivial changes, and the SHA-bound `.review-state/<branch-key>.json` marker. Do not stop after verification to ask whether to push when this playbook already pre-authorized delivery.
+Before pushing or creating a PR, run the repo delivery pre-push workflow (`kookr-pre-push` when available). In a repository with that workflow (Kookr itself, for example), this includes the targeted tests for changed files (plus the full suite only when the repository has no fast pre-push gate, see above), the review for non-trivial changes (with a fast pre-push gate, the one independent review started at the first commit; otherwise the reviewer specialists), and the SHA-bound `.review-state/<branch-key>.json` marker. Do not stop after verification to ask whether to push when this playbook already pre-authorized delivery.
 
 ### Resolving conflicts when you sync the base branch into the PR
 

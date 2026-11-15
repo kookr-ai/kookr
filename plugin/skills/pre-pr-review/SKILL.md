@@ -258,7 +258,7 @@ reviewers' own working time.
    diff where every changed file is either prose Markdown that the pre-push
    hook counts as docs-only (under `docs/`, or a top-level `README.md`,
    `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CLA.md` or `SECURITY.md`) or a test
-   file (`*.test.*`, `*.spec.*`). Skill, playbook, agent, `CLAUDE.md` and other
+   file (`*.test.*`, `*.spec.*`, including shell tests such as `*.test.sh`). Skill, playbook, agent, `CLAUDE.md` and other
    Markdown that defines behaviour is **not** docs. For such a diff, drop the
    `correctness` and `test` bodies and send only the `lint-like` bodies. This
    pass may run on the cheap `lint-like` model and still posts the normal
@@ -271,8 +271,11 @@ reviewers' own working time.
    It attests that the one review was started for that exact head. The
    merge-time verdict (`kookr merge` refuses without an exact-head `pass`) is
    the gate. The marker stays HMAC-signed and bound to H, so a new commit
-   still needs a new marker. Docs-only and test-only diffs need no marker: the
-   hook skips it for those paths.
+   still needs a new marker. The hook skips the marker only when every changed
+   path matches its `TRIVIAL_PATTERN` (`docs/`, `.github/`, top-level `*.md`,
+   tests ending in `.test.` or `.spec.` plus `ts`, `tsx`, `js` or `jsx`, `tsconfig*.json`,
+   `.gitignore`). A `.test.sh` or `.test.mjs` file is not in it, so write the
+   marker for those.
 5. **Blocks and the round cap** follow `independent-merge-review` §4 and §4a:
    after two blocked rounds, only correctness, data-loss and security findings
    keep blocking.
