@@ -79,6 +79,7 @@ export default defineConfig({
       // port 4800 never starts the interval, shells out to git, or fetches a
       // status surface (#1594).
       KOOKR_DEPLOY_LAG_DETECTOR: '0',
+      KOOKR_INTEGRATION_TRAIN_MONITOR: '0',
       // Keep the in-process deploy-convergence controller off during unit tests
       // so a server booted on port 4800 never auto-triggers /api/deploy/trigger
       // or residual pages mid-suite (#2226).
