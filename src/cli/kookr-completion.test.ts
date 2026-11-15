@@ -171,7 +171,7 @@ describe('renderCompletion', () => {
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
     expect(script).toContain('compadd -- list claim release owner');
-    expect(script).toContain('compadd -- verify doctor');
+    expect(script).toContain('compadd -- scaffold verify doctor');
     expect(script).toContain('status drain remember yield');
     expect(script).toContain('compadd -- --json --days --kookr-dir -h --help');
     expect(script).toContain('--from-command');
@@ -261,6 +261,7 @@ describe('bash completion behavior', () => {
   it('completes pr-checklist subcommands and flags', async () => {
     await expect(completeBash(['kookr', 'pr-checklist', ''])).resolves.toEqual(
       expect.arrayContaining([
+        'scaffold',
         'verify',
         'doctor',
         '--pr-body',
@@ -275,6 +276,7 @@ describe('bash completion behavior', () => {
       '--from-command',
       '--run-commands',
       '--base',
+      '--title',
       '--json',
       '--explain',
       '-h',
@@ -285,6 +287,7 @@ describe('bash completion behavior', () => {
       '--from-command',
       '--run-commands',
       '--base',
+      '--title',
       '--json',
       '--explain',
       '-h',
@@ -633,6 +636,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
   it('completes pr-checklist subcommands and flags', async () => {
     await expect(completeZsh(['kookr', 'pr-checklist', ''], 3)).resolves.toEqual(
       expect.arrayContaining([
+        'scaffold',
         'verify',
         'doctor',
         '--pr-body',
@@ -647,6 +651,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
       '--from-command',
       '--run-commands',
       '--base',
+      '--title',
       '--json',
       '--explain',
       '-h',
@@ -657,6 +662,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
       '--from-command',
       '--run-commands',
       '--base',
+      '--title',
       '--json',
       '--explain',
       '-h',

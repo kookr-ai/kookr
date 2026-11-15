@@ -17,9 +17,17 @@ import {
   isSourceFile,
   parseChecklist,
 } from './checklist.js';
+import {
+  classifyCommitlintConfig,
+  COMMITLINT_CONFIG_PATHS,
+  evaluateTitle,
+  packageJsonCommitlintText,
+  type CommitlintConfig,
+} from './commitlint.js';
 import { parseChecklistConfig } from './config.js';
 import { ChecklistInputError } from './errors.js';
 import { collectDiffFacts, execGit, type GitRunner } from './git.js';
+import { scaffoldBody, type ScaffoldResult } from './scaffold.js';
 import type { DiffFacts, VerifyReport } from './types.js';
 
 export const MAX_BODY_BYTES = 1024 * 1024;
@@ -46,6 +54,10 @@ export interface VerifyInput {
    * template declares markers this fails; the value is the human reason.
    */
   templateRequiredReason?: string;
+  /** PR title to check against the repo's commit-lint rule, or null/absent to skip. */
+  title?: string | null;
+  /** The repo's commit-lint config, or null when it has none (title check then no-ops). */
+  commitlint?: CommitlintConfig | null;
 }
 
 /** Pure: evaluate attestation + structural rules and aggregate. */
@@ -65,12 +77,15 @@ export function verifyChecklist(input: VerifyInput): VerifyReport {
       ? evaluateTemplateRequiredButMissing(input.templateText, input.templateRequiredReason)
       : [];
 
-  const attest = evaluateAttestation(rows, input.facts.changedPaths);
+  const attest = evaluateAttestation(rows, input.facts.changedPaths, input.templateText);
   notes.push(...attest.notes);
 
   const structural = evaluateStructural(input.facts, input.envFileText, input.testCorpus, attest.waived);
 
-  const allResults = [...presence, ...attest.results, ...structural];
+  const title = evaluateTitle(input.title, input.commitlint ?? null);
+  notes.push(...title.notes);
+
+  const allResults = [...presence, ...attest.results, ...structural, ...title.results];
 
   // P4a: drop results for rules the repo disabled in .kookr/pr-checklist.json.
   // This can only REMOVE checks, never add a fail — a repo relaxing its own gate.
@@ -94,6 +109,8 @@ export interface CollectDeps {
   body: string | null;
   /** See `VerifyInput.templateRequiredReason`; only meaningful with `body: null`. */
   templateRequiredReason?: string;
+  /** PR title to check against the repo's commit-lint rule (null/absent: not checked). */
+  title?: string | null;
   gitRunner?: GitRunner;
   readFileText?: (absPath: string, cap: number) => Promise<string>;
 }
@@ -135,6 +152,8 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
   const envFileText = needsEnv ? await readTracked(runner, read, deps.cwd, '.env.example', MAX_ENV_FILE_BYTES) : '';
   const testCorpus = needsTests ? await readTestCorpus(runner, read, deps.cwd) : '';
 
+  const commitlint = typeof deps.title === 'string' ? await readCommitlintConfig(runner, read, deps.cwd) : null;
+
   return verifyChecklist({
     body: deps.body,
     facts,
@@ -144,7 +163,55 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
     disabled: config.disable,
     configNotes: config.notes,
     templateRequiredReason: deps.body === null ? deps.templateRequiredReason : undefined,
+    title: deps.title,
+    commitlint,
   });
+}
+
+export type ScaffoldOutcome =
+  | { kind: 'no-template' }
+  | { kind: 'base-unresolved' }
+  | { kind: 'ok'; scaffold: ScaffoldResult; noMarkers: boolean; title: { results: VerifyReport['results']; notes: string[] } };
+
+/**
+ * Impure: read the repo PR template and the diff against `base`, then build the
+ * body `verify` accepts (see scaffold.ts). Also checks `title` against the
+ * repo's commit-lint rule when one is given.
+ */
+export async function collectScaffold(deps: Omit<CollectDeps, 'body' | 'templateRequiredReason'>): Promise<ScaffoldOutcome> {
+  const runner = deps.gitRunner ?? execGit(deps.cwd);
+  const read = deps.readFileText ?? ((p, cap) => readConfined(deps.cwd, p, cap));
+  const templateText = await readTemplate(runner, read, deps.cwd);
+  if (!templateText.trim()) return { kind: 'no-template' };
+  const noMarkers = parseChecklist(templateText).length === 0;
+  // Without a diff every row would be struck — refuse rather than mislead.
+  const facts = noMarkers ? null : await collectDiffFacts(runner, deps.base);
+  if (facts?.baseUnresolved) return { kind: 'base-unresolved' };
+  const commitlint = typeof deps.title === 'string' ? await readCommitlintConfig(runner, read, deps.cwd) : null;
+  return {
+    kind: 'ok',
+    scaffold: scaffoldBody(templateText, facts?.changedPaths ?? []),
+    noMarkers,
+    title: evaluateTitle(deps.title, commitlint),
+  };
+}
+
+/**
+ * The repo's commit-lint config, found by tracked file name (then the
+ * package.json `commitlint` key), or null. Read as text only — never executed (S1).
+ */
+async function readCommitlintConfig(
+  runner: GitRunner,
+  read: (absPath: string, cap: number) => Promise<string>,
+  cwd: string,
+): Promise<CommitlintConfig | null> {
+  for (const path of COMMITLINT_CONFIG_PATHS) {
+    const text = await readTracked(runner, read, cwd, path, MAX_CONFIG_BYTES);
+    if (text.trim()) return classifyCommitlintConfig(path, text);
+  }
+  const pkg = await readTracked(runner, read, cwd, 'package.json', MAX_BODY_BYTES);
+  const key = pkg ? packageJsonCommitlintText(pkg) : null;
+  return key === null ? null : classifyCommitlintConfig('package.json', key);
 }
 
 /** Pure: does the repo opt in to the checklist gate (marker template or rule config)? */

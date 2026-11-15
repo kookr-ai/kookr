@@ -25,9 +25,16 @@ describe('extractFromGhCommand', () => {
     expect(extractFromGhCommand('gh pr view 5')).toBeNull();
   });
 
+  it('extracts a literal --title / -t, and drops one that is a shell expansion (#3651)', () => {
+    expect(extractFromGhCommand(`gh pr create -t "feat: x" --body b`)?.title).toBe('feat: x');
+    expect(extractFromGhCommand(`gh pr create --title=fix:y --body b`)?.title).toBe('fix:y');
+    expect(extractFromGhCommand(`gh pr create --title "$(git log -1 --format=%s)" --body b`)?.title).toBeNull();
+    expect(extractFromGhCommand(`gh pr create --fill`)?.title).toBeNull();
+  });
+
   it('extracts an inline --body and default (null) base', () => {
     const r = extractFromGhCommand(`gh pr create --title T --body "hello world"`);
-    expect(r).toEqual({ base: null, repo: null, bodySource: { kind: 'inline', text: 'hello world' } });
+    expect(r).toEqual({ base: null, repo: null, title: 'T', bodySource: { kind: 'inline', text: 'hello world' } });
   });
 
   it('extracts -b short form and -B base', () => {

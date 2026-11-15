@@ -28,6 +28,7 @@ export const KNOWN_RULE_IDS: ReadonlySet<string> = new Set([
   'integration-tests',
   'e2e-tests',
   'pr-template',
+  'pr-title',
   'readme',
   'help',
   'docs',

@@ -48,7 +48,7 @@ Usage:
   kookr queue-feeder plan|leaves [OPTIONS]  Auto-decompose product umbrellas into spawnable leaves when capacity idles (#1845).
   kookr reflect outcomes|ideas [OPTIONS]  Reflection Phase-1 telemetry: 24h outcome tally + ideasFiled resolver.
   kookr retro-verify status|drain|enqueue  CI-blind-merge debt + retro-verify drain.
-  kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
+  kookr pr-checklist scaffold|verify|doctor [OPTIONS]  Write or verify the PR checklist, or report gate fail-open rate.
   kookr context-pack --spec <f> --out <f>  Build a spawn-time context pack from a JSON spec.
   kookr signal-emit transition|liveness [OPTIONS]  Spool an operator signal for delivery.
   kookr push test <deviceId>    Send a relay push test.
