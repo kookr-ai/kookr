@@ -31,7 +31,7 @@ per-stage start/end/usd) after **every** transition and resumes from it.
 |---|-------|-------|---------------|
 | 0 | Preflight | orchestrator | issue open and labelled `opencode-eligible`, not labelled `opencode-pipeline-failed`; claim registry active (`kookr issue owner` answers) and claim taken by the **orchestrator** (single owner; worker spawned with no `--claim-issue`); `kookr status --require-ready` ok (not `kookr doctor`: it exits non-zero for unrelated checks, see the proof evidence); on resume, `kookr stop` any child ids still live in the state file |
 | 1 | Work | fresh opencode `scoped-fix` task (`--agent opencode --profile scoped-fix --wait=1800`), own worktree, env `KOOKR_OPENCODE_ISSUE` | worker **commits locally and never pushes** (profile text); `PR_BODY.md` untracked. Orchestrator pushes the branch and runs `gh pr create --body-file PR_BODY.md`. Exit 6 from `--wait` = failure; re-check state, no retry |
-| 2 | Cheap review | fresh opencode `reviewer` task (`file:REVIEW.md`), given issue text (quoted, marked untrusted) + diff file; **not** the PR body or worker narrative | `REVIEW.md` with 0 findings = pass, otherwise ≤8 findings; advisory |
+| 2 | Cheap review | fresh opencode `reviewer` task (`file:REVIEW.md`), given issue text (quoted, marked untrusted) + diff file; **not** the PR body or worker narrative | `REVIEW.md` with 0 findings = pass, otherwise ≤8 findings, each HIGH, MEDIUM or LOW; advisory |
 | 3 | Fix round (≤ 2) | **fresh** `scoped-fix` task on the same branch, prompt = findings; orchestrator pushes | new head; back to 2. Fresh task per round: no dependency on reaching an exited session via `kookr reply` |
 | 4 | Gate review | Claude `independent-merge-review` on the final head, **all repos** | verdict comment bound to head sha. Worker/reviewer tasks are already stopped |
 | 5 | Merge | `pnpm merge` / existing local-gate rules, using the sha the verdict names | merged, or PR left open with report |
@@ -51,8 +51,11 @@ accounting rows after dogfood (n is small: signal only, not a decision).
   claim conflict; 4 = failed task **or** API error. On any non-zero exit the
   orchestrator `kookr stop`s the child, waits for a terminal state, reads the
   task status to tell failure from API error, and only then proceeds.
-* **Reviewer verdict**: the stage-2 prompt requires a final line
-  `FINDINGS: <n>`; a missing/malformed line counts as findings present.
+* **Reviewer verdict**: the stage-2 prompt is fixed text in the playbook
+  (the orchestrator copies it verbatim, adding no review categories) and
+  requires a final line `FINDINGS: <n> HIGH:<h> MEDIUM:<m> LOW:<l>`; a
+  missing, malformed or inconsistent line counts as findings present, all
+  of them blocking (#3581).
   Reviewer runs in a separate disposable checkout of the PR head (REVIEW.md
   never lands in the PR worktree).
 * **Pause check**: `kookr orchestration status --json` before each spawn;
@@ -60,8 +63,12 @@ accounting rows after dogfood (n is small: signal only, not a decision).
 
 ## 4. Bounds and stopping
 
-* Rounds: max 2 fix rounds. Exhausted with findings -> post summary, `kookr
-  issue release`, label `opencode-pipeline-failed`, never merge. Preflight
+* Rounds: max 2 fix rounds. Exhausted with HIGH or MEDIUM findings -> post
+  summary, `kookr issue release`, label `opencode-pipeline-failed`, never
+  merge. Exhausted with only LOW findings -> stage 4 still runs on the final
+  head and decides: `block` = the same failure exit, `pass` = stage 5 as
+  usual (merge when `mergeEnabled`, else ready-for-merge), with the LOW
+  findings posted on the PR (#3581). Preflight
   refuses relabelled-failed issues until an operator removes the label.
 * Time: each spawn uses `--wait=<seconds>`; total wall cap 2 h; total cap
   `usdCap` (default $3) enforced from the state file before each spawn.
@@ -83,7 +90,8 @@ accounting rows after dogfood (n is small: signal only, not a decision).
 
 Task `tokenUsage` (incl. `costUsd`, from the opencode usage scanner) read
 via the task API, stored in the state file, posted once as a PR comment table
-(stage, task, wall, tokens, usd, verdict). Derived: cost per merged PR.
+(stage, task, wall, tokens, usd, verdict), plus any unfixed LOW findings
+when the gate passed with them (#3581). Derived: cost per merged PR.
 
 ## 6. Safety
 
@@ -99,7 +107,7 @@ via the task API, stored in the state file, posted once as a PR comment table
 
 1. **Slice A**: playbook, stages 0-2, no merge (stops after cheap review),
    plus a wording **contract test** (state-file after every transition,
-   never-merge on exhausted rounds, head re-check, mandatory stage 4,
+   never-merge on exhausted rounds with HIGH/MEDIUM findings, head re-check, mandatory stage 4,
    untrusted-text framing).
 2. **Slice B**: stages 3-4 (fix round, gate review).
 3. **Slice C**: stage 5 behind an explicit playbook parameter `mergeEnabled=true`.
