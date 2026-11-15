@@ -39,12 +39,16 @@ fi
 json_list() { jq -r ".$1[]" "$WORK/selection.json" > "$2"; }
 json_list related "$WORK/related"
 json_list tests "$WORK/tests"
+json_list hookTests "$WORK/hook-tests"
 json_list commands "$WORK/commands"
 json_list deferred "$WORK/deferred"
 json_list unmapped "$WORK/unmapped"
 
 count() { grep -c . "$1" || true; }
-echo "[fast-gate] $(count "$WORK/related") source files -> related tests, $(count "$WORK/tests") extra test files, $(count "$WORK/commands") lane command(s); full suite runs on the integration train"
+echo "[fast-gate] $(count "$WORK/related") source files -> related tests, $(count "$WORK/tests") extra test files, $(count "$WORK/hook-tests") hook test suite(s), $(count "$WORK/commands") lane command(s); full suite runs on the integration train"
+# One line with the estimated size and its three largest contributors, so an
+# oversized selection is visible in the push output.
+echo "[fast-gate] selection: ~$(jq -r '.summary.estimate' "$WORK/selection.json") test files (Vitest estimate plus hook suites); largest: $(jq -r '[.summary.top[] | "\(.path) (~\(.estimate))"] | if length == 0 then "none" else join(", ") end' "$WORK/selection.json")"
 
 status=0
 
@@ -93,6 +97,17 @@ EOF
   fi
 fi
 
+# --- Hook test suites selected for the changed hook and shell files. Close
+# stdin as scripts/run-hook-tests.sh does (#3752).
+while IFS= read -r suite; do
+  [ -n "$suite" ] || continue
+  echo "[fast-gate] hook test: $suite"
+  if ! bash "$suite" </dev/null; then
+    echo "[fast-gate] hook test failed: $suite" >&2
+    status=1
+  fi
+done < "$WORK/hook-tests"
+
 # --- Lane commands (fixed strings from the selector's rule table).
 while IFS= read -r cmd; do
   [ -n "$cmd" ] || continue
@@ -109,14 +124,21 @@ while IFS= read -r p; do
   [ -n "$p" ] && echo "[fast-gate] $p: verified by the integration train"
 done < "$WORK/deferred"
 
-if [ -s "$WORK/unmapped" ]; then
-  UNMAPPED_LOG="$(git rev-parse --git-common-dir 2>/dev/null)/kookr-fast-gate-unmapped.log"
-  BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    echo "[fast-gate] $p: no fast-gate rule; left to the integration train"
-    printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BRANCH" "$p" >> "$UNMAPPED_LOG" 2>/dev/null || true
-  done < "$WORK/unmapped"
-fi
+UNMAPPED_LOG="$(git rev-parse --git-common-dir 2>/dev/null)/kookr-fast-gate-unmapped.log"
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  echo "[fast-gate] $p: no fast-gate rule; left to the integration train"
+  printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BRANCH" "$p" >> "$UNMAPPED_LOG" 2>/dev/null || true
+done < "$WORK/unmapped"
+
+# Capped: a non-code file whose references would select too many tests ran only
+# the tests naming its full path. Logged with the estimate it would have pulled in.
+jq -r '.capped[] | "\(.path)\t\(.estimate)"' "$WORK/selection.json" > "$WORK/capped"
+while IFS="$(printf '\t')" read -r p n; do
+  [ -n "$p" ] || continue
+  echo "[fast-gate] $p: references select ~$n test files; ran only the tests naming its path, the rest is left to the integration train"
+  printf '%s\t%s\t%s\tcapped:%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BRANCH" "$p" "$n" >> "$UNMAPPED_LOG" 2>/dev/null || true
+done < "$WORK/capped"
 
 exit "$status"

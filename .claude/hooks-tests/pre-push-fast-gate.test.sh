@@ -30,8 +30,10 @@ trap cleanup EXIT
 #   mode: fast (config on origin/main), none (no config), other (prePushGate
 #   is not "fast"), missing (no prePushGate key), branch-only (config only on
 #   the pushed branch, not on origin/main).
+# hooktest: when set, the base commit holds .claude/hooks-tests/x.test.sh, which
+#   appends "ran" to $HOOKTEST_LOG and exits with that status.
 setup_repo() {
-  local repo="$1" mode="$2" hookfile="${3:-}" noorigin="${4:-}" cfg=""
+  local repo="$1" mode="$2" hookfile="${3:-}" noorigin="${4:-}" hooktest="${5:-}" cfg=""
   git init -q -b main "$repo"
   git -C "$repo" config user.email "test@example.com"
   git -C "$repo" config user.name "test"
@@ -53,6 +55,11 @@ PNPM
   chmod +x "$repo/bin/pnpm"
   printf 'base\n' > "$repo/README.md"
   git -C "$repo" add README.md
+  if [ -n "$hooktest" ]; then
+    mkdir -p "$repo/.claude/hooks-tests"
+    printf 'echo ran >> "$HOOKTEST_LOG"\nexit %s\n' "$hooktest" > "$repo/.claude/hooks-tests/x.test.sh"
+    git -C "$repo" add .claude/hooks-tests/x.test.sh
+  fi
   case "$mode" in
     fast) cfg='{ "integrationBranch": "staging", "prePushGate": "fast" }' ;;
     other) cfg='{ "integrationBranch": "staging", "prePushGate": "full" }' ;;
@@ -87,10 +94,11 @@ PNPM
 }
 
 # run_case <name> <mode> <related-exit> [option...] -> sets STATUS, REPO
-# options: killswitch, noorigin, hookfile=<path>, hooksfail, summaryfail, rerunfail
+# options: killswitch, noorigin, hookfile=<path>, hooksfail, summaryfail, rerunfail,
+#          hooktest=<exit status of .claude/hooks-tests/x.test.sh>
 run_case() {
   local repo="$TMPDIR/$1" mode="$2" related="$3" opt
-  local hookfile="" noorigin="" killswitch="" hooks_exit=0 summary_fail=0 rerun_exit=0
+  local hookfile="" noorigin="" killswitch="" hooks_exit=0 summary_fail=0 rerun_exit=0 hooktest=""
   shift 3
   for opt in "$@"; do
     case "$opt" in
@@ -100,14 +108,16 @@ run_case() {
       hooksfail) hooks_exit=1 ;;
       summaryfail) summary_fail=1 ;;
       rerunfail) rerun_exit=1 ;;
+      hooktest=*) hooktest="${opt#hooktest=}" ;;
     esac
   done
   mkdir -p "$repo"
-  setup_repo "$repo" "$mode" "$hookfile" "$noorigin"
+  setup_repo "$repo" "$mode" "$hookfile" "$noorigin" "$hooktest"
   [ -n "$killswitch" ] && : > "$repo/.git/kookr-full-gate"
   : > "$repo/pnpm.log"
+  : > "$repo/hooktest.log"
   STATUS=0
-  (cd "$repo" && PNPM_LOG="$repo/pnpm.log" RELATED_EXIT="$related" HOOKS_EXIT="$hooks_exit" \
+  (cd "$repo" && PNPM_LOG="$repo/pnpm.log" HOOKTEST_LOG="$repo/hooktest.log" RELATED_EXIT="$related" HOOKS_EXIT="$hooks_exit" \
     SUMMARY_FAIL="$summary_fail" RERUN_EXIT="$rerun_exit" SKIP_PORTABILITY_CHECK=1 PATH="$repo/bin:$PATH" \
     bash "$HOOK" < /dev/null > "$repo/hook.out" 2>&1) || STATUS=$?
   REPO="$repo"
@@ -175,11 +185,24 @@ run_case missing-key missing 0
 assert_full "prePushGate missing"
 printf 'PASS: prePushGate other than fast, or missing, keeps the full gate\n'
 
-# 7. A changed hook file adds the pnpm test:hooks lane; a failing lane rejects.
-run_case hooks-lane fast 0 hookfile=hooks/x.sh
+# 7. A changed hook file runs its own hook test suite, not the whole lane; a
+# failing suite rejects (#3816).
+run_case hook-suite fast 0 hookfile=hooks/x.sh hooktest=0
+[ "$STATUS" -eq 0 ] || fail "fast gate with a passing hook suite should not reject (status $STATUS)"
+grep -Fxq "ran" "$REPO/hooktest.log" || fail "expected .claude/hooks-tests/x.test.sh to run for hooks/x.sh"
+grep -Fxq "test:hooks" "$REPO/pnpm.log" && fail "a hook change with its own suite must not run the whole lane"
+grep -Fq "[fast-gate] selection: ~" "$REPO/hook.out" || fail "expected the one-line selection summary"
+run_case hook-suite-fail fast 0 hookfile=hooks/x.sh hooktest=1
+[ "$STATUS" -ne 0 ] || fail "a failing hook suite must reject the push"
+grep -Fq "Push rejected: fast-gate tests failed" "$REPO/hook.out" || fail "expected the fast-gate rejection message"
+printf 'PASS: a hook change runs its own suite, and a failing suite rejects\n'
+
+# 7b. The hook-test runner or a shared helper adds the pnpm test:hooks lane; a
+# failing lane rejects.
+run_case hooks-lane fast 0 hookfile=scripts/run-hook-tests.sh
 [ "$STATUS" -eq 0 ] || fail "fast gate with a passing hook lane should not reject (status $STATUS)"
-grep -Fxq "test:hooks" "$REPO/pnpm.log" || fail "expected the hook-test lane for a changed hook file"
-run_case hooks-lane-fail fast 0 hookfile=.hooks/x hooksfail
+grep -Fxq "test:hooks" "$REPO/pnpm.log" || fail "expected the hook-test lane for a changed hook runner"
+run_case hooks-lane-fail fast 0 hookfile=scripts/lib/x.sh hooksfail
 [ "$STATUS" -ne 0 ] || fail "a failing hook-test lane must reject the push"
 grep -Fxq "test:hooks" "$REPO/pnpm.log" || fail "expected the hook-test lane to run"
 grep -Fq "Push rejected: fast-gate tests failed" "$REPO/hook.out" || fail "expected the fast-gate rejection message"
