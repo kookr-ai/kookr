@@ -349,6 +349,7 @@ the reviewer gets (§4a):
 
   ```bash
   PREV=<review-head-sha of the latest block comment>
+  git cat-file -e "$PREV^{commit}" 2>/dev/null || git fetch --quiet origin "$PREV"
   if git merge-base --is-ancestor "$PREV" HEAD; then
     git diff "$PREV" HEAD > /tmp/kookr-review-$PR.fix.diff
   else  # the branch was rebased since: compare the two versions of the PR
@@ -357,8 +358,12 @@ the reviewer gets (§4a):
   fi
   ```
 
+  If the fix diff comes out empty or a command fails, the round has no fix to
+  check: run the round-1 full review instead. In `range-diff` output, the
+  changed lines are the ones the inner diff adds or removes.
+
   Put this in the brief: "Time budget: about 4 minutes. For each blocking
-  finding of the previous verdict, confirm it is fixed or say why it is not.
+  finding of the latest BLOCK, confirm it is fixed or say why it is not.
   Then review only the lines the fix diff changes. Run no mutation checks
   outside those lines. A new non-critical finding on a line the fix diff does
   not change goes under `Follow-ups` and does not block. A new critical finding
@@ -450,12 +455,12 @@ non-critical. The rules:
 2. **Round 1 is the full review** (§2 round-1 brief, about 8 minutes). Any
    blocking finding blocks, critical or not.
 3. **Round 2 and later are fix checks** (§2 round-2 brief, about 4 minutes):
-   confirm each blocking finding of the previous verdict is fixed, then review
+   confirm each blocking finding of the latest BLOCK is fixed, then review
    only the lines the fix diff changes. What blocks:
 
    | Finding | Round 2 | Round 3 and later |
    |---|---|---|
-   | A blocking finding of the previous verdict, not fixed | blocks | blocks only if critical |
+   | A blocking finding of the latest BLOCK, not fixed | blocks | blocks only if critical |
    | New, critical, anywhere in the PR | blocks | blocks |
    | New, non-critical, on a line the fix diff changes | blocks | follow-up |
    | New, non-critical, on a line the fix diff does not change | follow-up | follow-up |
@@ -468,10 +473,12 @@ non-critical. The rules:
    every non-blocking finding under `Follow-ups`, each naming the file, the
    line and what is wrong. With nothing blocking, the verdict is `pass`. The
    Codex lane runs read-only, so the session that posts the verdict files
-   **one** issue for the whole PR, with one checklist item per follow-up, then
-   links it from the `pass` body. If an earlier round of this PR already filed
-   one, add the new items to it (`gh issue edit --body-file`) instead of
-   opening a second:
+   **one** issue for the whole PR, with one checklist item per follow-up, and
+   links it from the verdict body. Do this at **every** verdict that lists
+   follow-ups, a BLOCK included, so none is lost when a later round adds
+   nothing or the PR ends in a recorded blocker. If an earlier round of this PR
+   already filed the issue, add the new items to it (`gh issue edit
+   --body-file`) instead of opening a second:
 
    ```bash
    gh issue create --repo "$REPO" --title "Follow-ups from the review of #$PR" \
@@ -502,14 +509,15 @@ non-critical. The rules:
   round-1 findings are fixed. Two new findings. (1) non-critical, on a changed
   line: the new empty-history test asserts nothing after the call. (2)
   non-critical, on an unchanged line: the helper `archiveName()` is exported
-  but unused. (1) blocks; (2) is a follow-up. Verdict: BLOCK. The implementer
-  adds the assertion and commits: H3.
+  but unused. (1) blocks; (2) is a follow-up. Verdict: BLOCK. The session
+  files (2) as #4101, a follow-up issue with one checklist item, and links it
+  from the BLOCK. The implementer adds the assertion and commits: H3.
 - **Review 3 on H3** (`e5f6…`), a fix check on `git diff c3d4… e5f6…`: the
   assertion is there. The PR carries two BLOCKs, so only critical findings
   block. The reviewer finds none and returns one more follow-up:
   `docs/reference/tasks.md` still says pruning deletes history. The session
-  files both follow-ups as one issue, #4101, with two checklist items, and
-  posts:
+  adds it to #4101, which now holds both follow-ups as two checklist items,
+  and posts:
 
   ```
   <!-- kookr-independent-review -->

@@ -105,22 +105,28 @@ describe('independent-merge-review round rules (issue #3844)', () => {
     expect(to).toBeGreaterThan(from);
     return skill.slice(from, to);
   };
-  const spawnStep = section('### 2. Spawn the reviewer', '### 3. Post the verdict comment');
-  const roundRules = section('### 4a. Round rules', '### 5. Latency budget');
+  const spawn = () => section('### 2. Spawn the reviewer', '### 3. Post the verdict comment');
+  const rules = () => section('### 4a. Round rules', '### 5. Latency budget');
 
   test('the reviewer brief gives round 1 an 8-minute budget and caps mutation checks to changed runtime lines', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
     expect(spawnStep).toMatch(/Round 1 \(no BLOCK on the PR yet\): the full review/);
     expect(spawnStep).toMatch(/Time budget: about 8 minutes/);
     expect(spawnStep).toMatch(/mutation\s+checks[^.]*only on runtime lines this PR\s+changes/);
   });
 
   test('round 2 and later are fix checks fed the previous BLOCK and the diff since its head', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
     expect(spawnStep).toMatch(/Round 2 and later \(the PR carries a BLOCK\): the fix check/);
     expect(spawnStep).toMatch(/Time budget: about 4 minutes/);
     expect(spawnStep).toMatch(/latest BLOCK comment and the \*\*fix diff\*\*/);
     expect(spawnStep).toContain('git merge-base --is-ancestor "$PREV" HEAD');
     expect(spawnStep).toContain('git diff "$PREV" HEAD');
     expect(spawnStep).toContain('git range-diff');
+    expect(spawnStep).toContain('git cat-file -e "$PREV^{commit}" 2>/dev/null || git fetch --quiet origin "$PREV"');
+    expect(spawnStep).toMatch(/fix diff comes out empty or a command fails, the round has no fix to\s+check: run the round-1 full review instead/);
     expect(spawnStep).toMatch(/confirm it is fixed/);
     expect(spawnStep).toMatch(/review only the lines the fix diff changes/);
     expect(spawnStep).toMatch(/Run no mutation checks\s+outside those lines/);
@@ -130,6 +136,8 @@ describe('independent-merge-review round rules (issue #3844)', () => {
   });
 
   test('a later round cannot block on a new non-critical finding on an unchanged line; critical blocks in any round', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
     expect(roundRules).toContain(
       '| New, non-critical, on a line the fix diff does not change | follow-up | follow-up |',
     );
@@ -140,20 +148,30 @@ describe('independent-merge-review round rules (issue #3844)', () => {
   });
 
   test('keeps the two-BLOCK round cap as the backstop', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
     expect(roundRules).toMatch(/From round 3 on \(the PR already\s+carries two or more BLOCKs\) this is the round cap: only critical findings\s+block/);
   });
 
   test('files one follow-up issue per PR with a checklist, not one per finding', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
     expect(roundRules).toMatch(/\*\*one\*\* issue for the whole PR, with one checklist item per follow-up/);
     expect(roundRules).toContain('--title "Follow-ups from the review of #$PR"');
     expect(roundRules).toContain('- [ ] <file>:<line> <what is wrong> (round <n>)');
     expect(roundRules).not.toMatch(/--title "<follow-up title>"/);
+    // Follow-ups listed by a BLOCK must be filed then, not only at the pass,
+    // or a round-2 follow-up is lost when round 3 adds nothing.
+    expect(roundRules).toMatch(/at \*\*every\*\* verdict that lists\s+follow-ups, a BLOCK included/);
   });
 
   test('the worked example shows a round-2 fix check and the single follow-up issue', () => {
+    const spawnStep = spawn();
+    const roundRules = rules();
     expect(roundRules).toMatch(/\*\*Review 2 on H2\*\* \(`c3d4…`\), a fix check on `git diff a1b2… c3d4…`/);
     expect(roundRules).toMatch(/\(2\) is a follow-up\. Verdict: BLOCK/);
-    expect(roundRules).toMatch(/files both follow-ups as one issue, #4101, with two checklist items/);
+    expect(roundRules).toMatch(/files \(2\) as #4101, a follow-up issue with one checklist item, and links it\s+from the BLOCK/);
+    expect(roundRules).toMatch(/adds it to #4101, which now holds both follow-ups as two checklist items/);
     expect(roundRules).toContain('Follow-ups (non-critical, one issue for this PR): #4101');
   });
 
@@ -166,7 +184,7 @@ describe('independent-merge-review round rules (issue #3844)', () => {
     ['plugin/skills/autonomous-review-loop/SKILL.md'],
   ])('%s restates the fix-check rule and points at §4a', (path) => {
     const text = read(...path.split('/')).replace(/\s+/g, ' ');
-    expect(text).toMatch(/fix check on the diff since the blocked head|fix check(?: of about 4 minutes)? on the diff since the blocked head|diff since the blocked head/);
+    expect(text).toMatch(/diff since the blocked head/);
     expect(text).toMatch(/fix check/);
     expect(text).toContain('§4a');
   });
