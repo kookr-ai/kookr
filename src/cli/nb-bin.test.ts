@@ -221,6 +221,93 @@ describe('bin/nb.js — per-change git auto-commit (Objective C)', () => {
     expect(git(['diff', '--cached', '--name-only'])).toBe(''); // nothing left staged either
   });
 
+  test('a call that deletes a shelf that was staged but never committed still commits the shelf it changed', () => {
+    // #3834: the staged-only shelf is in the index, so it passes the pre-add filter, but
+    // `git add` then takes it out of the index and naming it would make `git commit` fail.
+    initRepo();
+    nb(['add', 'other', 'a committed lesson']);
+    nb(['add', 'stray', 'a lesson about widgets'], { NB_GIT_AUTOCOMMIT: '0' });
+    git(['add', 'stray.md']);
+    const before = Number(git(['rev-list', '--count', 'HEAD']));
+    expect(nb(['move', 'stray', 'other', 'widgets']).code).toBe(0);
+    expect(existsSync(join(dir, 'stray.md'))).toBe(false);
+    expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before + 1);
+    expect(git(['log', '-1', '--format=%s'])).toBe('nb move stray');
+    expect(git(['show', '--name-only', '--format=', 'HEAD'])).toBe('other.md');
+    expect(git(['status', '--porcelain'])).toBe('');
+  });
+
+  test('a call whose only change is deleting a shelf that was staged but never committed commits nothing', () => {
+    // An unrelated staged edit is the trap: committing with an empty path list would
+    // commit everything staged, so it must stay staged and out of HEAD.
+    initRepo();
+    nb(['add', 'loose', 'the only lesson'], { NB_GIT_AUTOCOMMIT: '0' });
+    git(['add', 'loose.md']);
+    writeFileSync(join(dir, '.gitignore'), `${NOTEBOOK_GITIGNORE}# a hand edit nobody committed\n`);
+    git(['add', '.gitignore']);
+    const before = git(['rev-list', '--count', 'HEAD']);
+    expect(nb(['rm', 'loose', 'only']).code).toBe(0);
+    expect(existsSync(join(dir, 'loose.md'))).toBe(false);
+    expect(git(['rev-list', '--count', 'HEAD'])).toBe(before);
+    expect(git(['status', '--porcelain'])).toBe('M  .gitignore'); // the staged add of loose.md was undone
+  });
+
+  describe('while the store has a merge in progress (#3835)', () => {
+    /** Start `git merge --no-commit` of a side branch; `sideFile` is what the side branch writes. */
+    function startMerge(sideFile: string, sideText: string, mainText: string | null): number {
+      git(['checkout', '-q', '-b', 'side']);
+      writeFileSync(join(dir, sideFile), sideText);
+      git(['add', '-A']);
+      git(['commit', '--quiet', '-m', 'side']);
+      git(['checkout', '-q', '-']);
+      if (mainText !== null) writeFileSync(join(dir, sideFile), mainText);
+      else writeFileSync(join(dir, 'main.txt'), 'main\n');
+      git(['add', '-A']);
+      git(['commit', '--quiet', '-m', 'main']);
+      // A conflicting merge exits 1, which git() would throw on.
+      return spawnSync('git', ['-C', dir, 'merge', '--no-commit', '--no-ff', 'side'], { env: cleanGitEnv() }).status ?? -1;
+    }
+    const merging = () => spawnSync('git', ['-C', dir, 'rev-parse', '-q', '--verify', 'MERGE_HEAD'], { env: cleanGitEnv() }).status === 0;
+
+    test('a mutation concludes a clean merge with its change, leaving an untracked file alone', () => {
+      initRepo();
+      nb(['add', 'other', 'a committed lesson']);
+      expect(startMerge('side.txt', 'side\n', null)).toBe(0);
+      expect(merging()).toBe(true);
+      writeFileSync(join(dir, 'stray.md'), '+1\ta hand edit nobody committed\n');
+      expect(nb(['add', 'other', 'a lesson added during the merge']).code).toBe(0);
+      expect(merging()).toBe(false);
+      expect(git(['log', '-1', '--format=%s'])).toBe('nb add other');
+      expect(git(['rev-list', '--parents', '-1', 'HEAD']).split(' ')).toHaveLength(3); // a merge commit
+      expect(git(['show', 'HEAD:other.md'])).toContain('a lesson added during the merge');
+      expect(git(['show', 'HEAD:side.txt'])).toBe('side');
+      expect(git(['status', '--porcelain'])).toBe('?? stray.md');
+    });
+
+    test('a mutation that writes nothing does not conclude the merge', () => {
+      initRepo();
+      nb(['add', 'other', 'a committed lesson']);
+      expect(startMerge('side.txt', 'side\n', null)).toBe(0);
+      const head = git(['rev-parse', 'HEAD']);
+      expect(nb(['add', 'other', 'a committed lesson']).code).toBe(0); // duplicate: no write
+      expect(git(['rev-parse', 'HEAD'])).toBe(head);
+      expect(merging()).toBe(true);
+    });
+
+    test('a mutation commits and stages nothing while the merge has unresolved conflicts', () => {
+      initRepo();
+      nb(['add', 'other', 'a committed lesson']);
+      expect(startMerge('notes.txt', 'the side version\n', 'the main version\n')).not.toBe(0);
+      const head = git(['rev-parse', 'HEAD']);
+      expect(nb(['add', 'other', 'a lesson added during the conflict']).code).toBe(0);
+      expect(git(['rev-parse', 'HEAD'])).toBe(head);
+      expect(merging()).toBe(true);
+      expect(git(['ls-files', '-u', '--', 'notes.txt'])).not.toBe(''); // still unresolved
+      expect(git(['diff', '--cached', '--name-only', '--', 'other.md'])).toBe(''); // nb staged nothing
+      expect(git(['status', '--porcelain', '--', 'other.md'])).toBe('M other.md');
+    });
+  });
+
   test('NB_DIR with a leading ~ is committed in the directory nb writes to', () => {
     // nb 0.8.0 expands a leading `~` in NB_DIR itself. The shim used the raw value for its
     // git check, found no repository at `./~/store`, and left the change uncommitted.

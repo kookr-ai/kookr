@@ -77,6 +77,13 @@ The notebooks directory can be a **private git repo**, exactly like
   unrelated commit. Reads (`show` / `stats`) never commit. Fail-open: a git error never
   fails the `nb` call (the lesson is already on disk). Opt out with
   `NB_GIT_AUTOCOMMIT=0`.
+- **During a merge, the commit concludes the merge.** While the store has a merge in
+  progress, git refuses a commit limited to named files, so `bin/nb.js` makes a
+  plain commit instead. That commit concludes the merge under the `nb` call's
+  subject, and records everything the merge already staged plus the call's own
+  change. Untracked files are still left out. While the merge still has unresolved
+  conflicts, `bin/nb.js` stages and commits nothing, and a call that wrote nothing
+  never concludes a merge.
 - **A daily job pushes.** `scripts/nb-backup.sh` (run from cron) commits any
   straggler and pushes the accumulated commits to the private remote. Unlike the
   KB auto-backup it pushes even when the tree is clean, because per-change commits
