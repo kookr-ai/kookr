@@ -1,5 +1,5 @@
 import type { AgentEvent, Anomaly, AnomalySeverity, AnomalyType } from './types.js';
-import { isBackgroundParked } from './background-parked.js';
+import { isBackgroundParked, isSilentBackgroundPark, messageTail } from './background-parked.js';
 import type { AnomalyDetectorConfig } from './detection-stats.js';
 import type {
   AnomalyReconciliation,
@@ -374,15 +374,20 @@ function detectNeedsInput(events: AgentEvent[], agentId: string): Anomaly | null
   // The agent ended its turn only to wait on its own background work
   // (a `run_in_background` shell or a scheduled wakeup). That is not a request
   // for the operator — mirror the check `turn-state.ts` already uses so a
-  // 20-minute sleep never surfaces as `needs_input`. (RFC R3.)
-  if (isBackgroundParked(last)) return null;
+  // 20-minute sleep never surfaces as `needs_input`. (RFC R3.) Exception: a
+  // park whose last message ends in a question to the operator IS waiting on
+  // a human, so it still flags (issue #3569).
+  if (isSilentBackgroundPark(last)) return null;
 
   return {
     agentId,
     type: 'needs_input',
     subType: 'stop' as const,
     severity: 'info',
-    explanation: `Agent is waiting for input. Last message: "${last.lastMessage.slice(0, 100)}"`,
+    // A question-park's question is at the END of its message — show the tail.
+    explanation: isBackgroundParked(last)
+      ? `Agent asked a question while parked on background work: "${messageTail(last.lastMessage)}"`
+      : `Agent is waiting for input. Last message: "${last.lastMessage.slice(0, 100)}"`,
     detectedAt: new Date(),
   };
 }
