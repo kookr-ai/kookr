@@ -1052,6 +1052,8 @@ supervise_integration_train() {
   if [[ -z "$branch" ]]; then
     return 0
   fi
+  # A running train restarts itself once its current cycle ends, so the deploy
+  # never kills a verify in flight (issue #3841).
   echo "Integration branch '${branch}' is configured; restarting the integration train on the deployed code..."
   # The train runs APP_DIR's integration-train.ts, never the copy next to this
   # script (RESTART_SCRIPT_DIR is the checkout `pnpm prod:update` was run from).

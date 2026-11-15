@@ -215,9 +215,36 @@ needs a reviewer marker and runs tests; the train's own verify replaces it.
 restarts the train after every deploy when `.kookr/delivery-gate.json` on
 `origin/main` names an integration branch. The train then runs the deployed
 code, and a host that rebooted gets its train back with the next deploy. The
-restart keeps the options of the last start (for example `--worktree`). A failed
-restart prints a warning and does not fail the deploy.
+restart keeps the options of the last start (for example `--worktree` and
+`--workers`). A failed restart prints a warning and does not fail the deploy.
 `KOOKR_INTEGRATION_TRAIN_SUPERVISE=0` skips the step.
+
+A deploy never kills a verify in flight (issue #3841). Each promotion moves
+`main`, and the deploy schedule deploys `main` every 15 minutes, so killing the
+verify would restart almost every run from zero. Instead:
+
+- `restart` writes `restart-request.json` in the state directory and returns at
+  once. The train finishes its current cycle (verify, then promote or revert),
+  then starts a new process from the checkout `restart` ran in, with the same
+  options, and exits. `train.pid` then names the new process.
+- An idle or halted train has nothing in flight. It checks for a request every
+  second between cycles, so the request applies at once.
+- With no train running, `restart` starts one, as `start` does.
+- The train also re-executes between cycles, without a request, when the
+  `HEAD` of the checkout it was launched from is no longer the one it started
+  on. A lost request therefore leaves old code running for at most one cycle.
+  This check can fire while a deploy is still installing dependencies; if the
+  new process fails to start, the deploy's own `restart` starts a train.
+- While a request waits, `pnpm train:status` and `/api/health` show
+  `restartPending` (with `requestedAt`), and `kookr status` adds
+  `restart pending` to its `Integration train:` line.
+- `restart --now` keeps the old behaviour: stop the train at once (killing a
+  verify in flight) and start a new one. `stop` still stops at once.
+
+Only a train that honours requests gets one. Its run loop writes
+`run-info.json` (pid, checkout `HEAD`) when it starts. A train started by
+code from before #3841 has no such file; `restart` stops it and starts a new one,
+as before. The first deploy of this change therefore still kills one verify.
 
 The production server (port 4800, or `KOOKR_INTEGRATION_TRAIN_MONITOR=1`)
 checks every 5 minutes, with `git ls-remote`, whether the integration branch
@@ -240,8 +267,10 @@ Run from inside a Kookr checkout. Each has a pnpm alias except `run` and `restar
 - `cycle`: run one cycle and exit 0.
 - `run [--interval <sec>]`: loop forever (default 60 seconds).
 - `start`: launch `run` detached, write `train.pid` and remember the options.
-- `restart`: stop the train and start it from this checkout, with the options
-  given, else those of the last start, else those of the running process.
+- `restart [--now]`: make the train run this checkout's code, with the options
+  given, else those of the last start, else those of the running process. A
+  running train restarts itself once its current cycle ends; `--now` stops it at
+  once instead (see Supervision).
 - `stop`: signal the train and wait up to 30 seconds for it to exit. Only a
   process whose command line is the train's `run` loop is signalled, so a stale
   `train.pid` naming a reused pid is left alone.
@@ -266,8 +295,9 @@ consecutive rejected pushes), `train.log`, `train.pid`, `train.lock`
 (one instance only; a second `cycle` or `run` exits quietly), `events.jsonl`
 (notifications), `verify-<sha>.log` (20 newest kept), and
 `<idempotency key>.prompt.md` (the prompt handed to a spawned fix task),
-`last-cycle.json` (outcome of the newest cycle) and `start-args.json` (options of
-the last `start`).
+`last-cycle.json` (outcome of the newest cycle), `start-args.json` (options of
+the last `start`), `run-info.json` (pid and checkout `HEAD` of the running loop)
+and `restart-request.json` (a restart waiting for the cycle to end).
 
 Before #3796 the state sat directly in `integration-train/`. A train started by
 that older code keeps using it until it is restarted. While it runs, the new

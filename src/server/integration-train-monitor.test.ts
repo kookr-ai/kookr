@@ -24,7 +24,7 @@ function harness(initial: { refs: RemoteRefs | null; status: Partial<Integration
     nowMs: Date.parse('2026-11-15T10:00:00Z'),
     refs: initial.refs,
     branch: initial.branch === undefined ? 'staging' : initial.branch,
-    status: { stateDir: dir, running: true, pid: 1, halted: null, lastCycle: null, ...initial.status } as IntegrationTrainStatus,
+    status: { stateDir: dir, running: true, pid: 1, halted: null, lastCycle: null, restartPending: null, ...initial.status } as IntegrationTrainStatus,
   };
   const signals: WriteOperatorSignalInput[] = [];
   const make = () => new IntegrationTrainMonitor({
@@ -118,6 +118,12 @@ describe('IntegrationTrainMonitor', () => {
     h.world.status = { ...h.world.status, running: true, pid: 2 };
     await h.monitor.maybeRun();
     expect(h.signals.map((s) => s.kind)).toEqual(['alert', 'clear']);
+  });
+
+  it('shows a restart that waits for the cycle to end in the health snapshot (issue #3841)', async () => {
+    const h = harness({ refs: AHEAD, status: { restartPending: { requestedAt: '2026-11-15T21:13:22Z' } } });
+    await h.monitor.maybeRun();
+    expect(h.monitor.getHealthSnapshot()).toMatchObject({ running: true, restartPending: { requestedAt: '2026-11-15T21:13:22Z' } });
   });
 
   it('keeps the clock and the alert across a server restart', async () => {

@@ -48,6 +48,8 @@ export interface IntegrationTrainHealth {
   pid: number | null;
   halted: IntegrationTrainStatus['halted'];
   lastCycle: IntegrationTrainStatus['lastCycle'];
+  /** Set while a restart waits for the train's current cycle to end. */
+  restartPending: IntegrationTrainStatus['restartPending'];
   /** Since when the integration branch has differed from `main` with `main` not moving; null when equal. */
   pendingSince: string | null;
   /** True while a stall alert is out and not yet cleared. */
@@ -211,6 +213,7 @@ export class IntegrationTrainMonitor {
       pid: status?.pid ?? null,
       halted: status?.halted ?? null,
       lastCycle: status?.lastCycle ?? null,
+      restartPending: status?.restartPending ?? null,
       pendingSince: this.state.pendingSince,
       alerting: this.state.alerting,
       checkedAt: this.checkedAt,

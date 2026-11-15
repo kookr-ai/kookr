@@ -877,6 +877,8 @@ function summarizeIntegrationTrain(health) {
     halted,
     lastCycle,
     pendingSince: typeof b.pendingSince === 'string' ? b.pendingSince : null,
+    // Issue #3841: a restart waits for the train's verify in flight to finish.
+    restartPending: b.restartPending !== null && typeof b.restartPending === 'object',
     alerting: b.alerting === true,
   };
 }
@@ -1323,6 +1325,7 @@ function renderReport({ port, health, agents, readiness, degraded }) {
         `  branch=${integrationTrain.integrationBranch}` +
         `  lastCycle=${last}` +
         `  pendingSince=${integrationTrain.pendingSince ?? 'none'}` +
+        (integrationTrain.restartPending ? '  restart pending' : '') +
         (integrationTrain.alerting ? '  STALL ALERT' : ''),
     );
   }
