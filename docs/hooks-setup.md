@@ -160,6 +160,15 @@ enforcement.** Its fail model:
   appends a JSON line to `~/.kookr/pr-checklist-degrade.log`. While it is
   failing open, nothing checks the PR body.
 
+**PR title.** When the repo tracks a commitlint config that extends
+`@commitlint/config-conventional`, the gate also checks a literal
+`--title`/`-t` on the command against that preset's header rules (result id
+`pr-title`). A title containing `$` (for example `--title "$TITLE"`) is not
+checked, since the shell would expand it. A repo can turn the check off with
+`{ "disable": ["pr-title"] }` in `.kookr/pr-checklist.json`. To write a body the
+gate accepts without remembering the row syntax, start from
+`kookr pr-checklist scaffold` (see [the CLI reference](reference/cli.md#scaffold)).
+
 **Which `gh pr create` body shapes the gate verifies** (the hook forwards the raw
 command to `kookr pr-checklist verify --from-command`):
 

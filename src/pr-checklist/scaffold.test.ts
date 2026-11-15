@@ -91,6 +91,13 @@ describe('scaffoldBody', () => {
 
   it('returns a marker-less template unchanged', () => {
     const r = scaffoldBody('## Summary\n- [ ] a plain box', ['README.md']);
-    expect(r).toEqual({ body: '## Summary\n- [ ] a plain box', checked: [], struck: [], undecided: [] });
+    expect(r).toEqual({ body: '## Summary\n- [ ] a plain box', checked: [], struck: [], undecided: [], disabled: [] });
+  });
+
+  it('leaves a row whose rule the repo disabled exactly as the template has it (verify would drop its TODO)', () => {
+    const r = scaffoldBody(TEMPLATE, changed, new Set(['readme']));
+    expect(r.disabled).toEqual(['readme']);
+    expect(r.struck).toEqual([]);
+    expect(r.body.split('\n')[6]).toBe(TEMPLATE.split('\n')[6]);
   });
 });

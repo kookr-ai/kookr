@@ -14,7 +14,7 @@ export interface CheckResult {
   /**
    * On a rejected checklist row: the line(s) `verify` would accept instead,
    * rendered from the repo's PR-template row (marker + label), never from the
-   * PR body (S6). A `<one-line reason>` slot marks where a waiver reason goes.
+   * PR body (S6). A `TODO: one-line reason` slot marks where a waiver reason goes.
    */
   expected?: string[];
 }

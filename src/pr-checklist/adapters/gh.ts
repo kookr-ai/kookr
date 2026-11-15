@@ -37,7 +37,7 @@ export interface GhExtract {
   base: string | null;
   /** Explicit `--repo`/`-R` target (`owner/repo`), or null (gh infers it from the cwd). */
   repo: string | null;
-  /** Literal `--title`/`-t` value, or null when absent or a shell expansion (not checkable). */
+  /** Literal `--title`/`-t` value, or null when absent or containing `$` (a possible expansion — not checkable). */
   title: string | null;
   bodySource: GhBodySource;
 }
@@ -289,8 +289,10 @@ export function extractFromGhCommand(rawCommand: string): GhExtract | null {
 
   const base = flagValue(args, ['--base', '-B']).value;
   const repo = repoTarget(args);
+  // Any `$` may be a variable the shell expands (`--title "$TITLE"`); the text
+  // on the command is then not the real title, so it is not checked at all.
   const titleFlag = flagValue(args, ['--title', '-t']);
-  const title = titleFlag.expanded ? null : titleFlag.value;
+  const title = titleFlag.value === null || titleFlag.value.includes('$') ? null : titleFlag.value;
 
   const file = flagValue(args, ['--body-file', '-F']);
   if (file.value !== null) {

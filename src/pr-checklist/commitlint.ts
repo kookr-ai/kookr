@@ -8,8 +8,8 @@
 // look at its text: a config that extends `config-conventional` gets the
 // preset's header rules re-implemented below; any other config is reported as
 // "not checked". Custom `rules` in the config are not evaluated (noted instead),
-// so this check can miss a failure a stricter config adds, but it does not
-// invent a failure the preset would not report.
+// so this check can miss a failure a stricter config adds. For the preset itself
+// it reports what commitlint reports (see commitlint.test.ts's oracle corpus).
 // Pure: strings in, data out. The tracked-file reads live in engine.ts.
 
 import type { CheckResult } from './types.js';
@@ -71,11 +71,15 @@ const HEADER = /^(\w*)(?:\((.*)\))?!?: (.*)$/;
 
 /**
  * Problems `@commitlint/config-conventional` would report for `title` used as a
- * commit header, in plain words; empty when it passes. Pure.
+ * commit header, in plain words; empty when it passes. Mirrors the preset's
+ * header rules (header-trim, header-max-length, type-empty/-case/-enum,
+ * subject-empty, subject-full-stop, subject-case) and commitlint's own case
+ * logic; checked against real commitlint on a title corpus. Pure.
  */
 export function lintConventionalTitle(title: string): string[] {
   const header = title.split('\n')[0];
   const problems: string[] = [];
+  if (header !== header.trim()) problems.push('it has leading or trailing whitespace');
   if (header.length > CONVENTIONAL_HEADER_MAX) {
     problems.push(`it is ${header.length} characters; the limit is ${CONVENTIONAL_HEADER_MAX}`);
   }
@@ -84,34 +88,35 @@ export function lintConventionalTitle(title: string): string[] {
     problems.push('it does not have the "type(scope): subject" shape');
     return problems;
   }
-  const [, type, scope, subject] = m;
+  const [, type, , subject] = m;
   if (!type) problems.push('the type before the colon is empty');
   else if (type !== type.toLowerCase()) problems.push(`the type "${type}" must be lower-case`);
   else if (!CONVENTIONAL_TYPES.includes(type)) {
     problems.push(`the type "${type}" is not one of ${CONVENTIONAL_TYPES.join(', ')}`);
   }
-  if (scope !== undefined && scope !== scope.toLowerCase()) problems.push(`the scope "${scope}" must be lower-case`);
-  const trimmed = subject.trim();
-  if (!trimmed) problems.push('the subject after the colon is empty');
+  if (!subject.trim()) problems.push('the subject after the colon is empty');
   else {
-    if (trimmed.endsWith('.')) problems.push('the subject must not end with a full stop');
-    if (isForbiddenSubjectCase(trimmed)) {
-      problems.push('the subject must not start with a capital letter (sentence-, start-, pascal- or upper-case)');
+    if (subject.endsWith('.')) problems.push('the subject must not end with a full stop');
+    if (isForbiddenSubjectCase(subject)) {
+      problems.push('the subject must not start with a capital letter or be all upper-case');
     }
   }
   return problems;
 }
 
-/** config-conventional's `subject-case: never [sentence, start, pascal, upper]`, as commitlint computes those cases. */
+/**
+ * commitlint's `subject-case: never [sentence, start, pascal, upper]`. As in
+ * commitlint, a subject that does not start with a letter is never judged, and
+ * quoted / backticked spans are removed first (they may hold proper names).
+ * A start- or pascal-case subject begins with a capital, so the sentence-case
+ * test (first character upper-case) covers both.
+ */
 function isForbiddenSubjectCase(subject: string): boolean {
-  if (!/[A-Za-z]/.test(subject)) return false;
-  if (subject === subject.toUpperCase()) return true; // upper-case
-  const [first] = subject.split(' ');
-  // sentence-case: first word is Upper + lower rest. Start- and pascal-case
-  // subjects also begin with such a word, so this one test covers all three for
-  // their usual spellings.
-  return first.charAt(0) === first.charAt(0).toUpperCase() && first.charAt(0) !== first.charAt(0).toLowerCase()
-    && first.slice(1) === first.slice(1).toLowerCase();
+  if (!/^[\p{Ll}\p{Lu}\p{Lt}]/u.test(subject)) return false;
+  const input = subject.replace(/`.*?`|".*?"|'.*?'/g, '').trim();
+  if (input === '') return true;
+  const first = input.charAt(0);
+  return first.toUpperCase() === first || input.toUpperCase() === input;
 }
 
 /**

@@ -7,29 +7,70 @@ import {
   packageJsonCommitlintText,
 } from './commitlint.js';
 
+// Verdicts from real commitlint (@commitlint/cli 21 with config-conventional,
+// loaded through @commitlint/load so the conventionalcommits parser preset
+// applies) on 2026-11-15. The local re-implementation must agree on every one.
+const COMMITLINT_ORACLE: [string, boolean][] = [
+  ["fix(cli): README typo", false],
+  ["feat: API key rotation", false],
+  ["fix: GitHub token refresh", false],
+  ["fix: 2FA", true],
+  ["fix: `ABC` X", true],
+  ["feat: add x ", false],
+  ["  feat: add x", false],
+  ["feat: Add x", false],
+  ["fix(ui): iOS crash", true],
+  ["chore: v2 bump", true],
+  ["feat(cli): add scaffold", true],
+  ["feat(CLI): add scaffold", true],
+  ["Feat: add x", false],
+  ["feature: add x", false],
+  ["feat: ADD X", false],
+  ["feat: add x.", false],
+  ["feat:  ", false],
+  ["feat: ", false],
+  ["feat:add", false],
+  ["feat(a,b)!: add x", true],
+  ["fix: \"Foo\" bar", true],
+  ["fix: \u00c9LAN thing", false],
+  ["fix: \u00e9lan thing", true],
+  ["feat: a `B`", true],
+  ["fix: 123", true],
+  ["Add scaffold", false],
+  ["feat: x\nbody", true],
+  ["fix: aPI", true],
+  ["fix: \u00c4pfel", false],
+  ["revert: \"feat: x\"", true],
+  ["feat(): add x", true],
+  ["(x): add", false],
+];
+
 describe('lintConventionalTitle (config-conventional header rules)', () => {
-  it.each([
-    'feat(cli): add a scaffold subcommand',
-    'fix: handle an empty diff',
-    'refactor(pr-checklist)!: rename the row renderer',
-    'docs: update README examples', // first word not sentence-case
-    'chore(deps): bump vitest to 4',
-  ])('accepts %s', (title) => {
-    expect(lintConventionalTitle(title)).toEqual([]);
+  it.each(COMMITLINT_ORACLE)('agrees with real commitlint on %j (valid: %s)', (title, valid) => {
+    expect(lintConventionalTitle(title)).toEqual(valid ? [] : expect.arrayContaining([expect.any(String)]));
+  });
+
+  it('pins the header-length boundary at exactly 100 characters', () => {
+    const at = (n: number) => `feat: ${'a'.repeat(n - 'feat: '.length)}`;
+    expect(lintConventionalTitle(at(CONVENTIONAL_HEADER_MAX))).toEqual([]);
+    expect(lintConventionalTitle(at(CONVENTIONAL_HEADER_MAX + 1))).toEqual(['it is 101 characters; the limit is 100']);
   });
 
   it.each([
     ['Add a scaffold subcommand', /type\(scope\): subject/],
     ['feature: add scaffold', /type "feature" is not one of/],
-    ['Feat: add scaffold', /must be lower-case/],
-    ['feat(CLI): add scaffold', /scope "CLI" must be lower-case/],
+    ['Feat: add scaffold', /type "Feat" must be lower-case/],
     ['feat: Add scaffold', /must not start with a capital/],
-    ['feat: ADD SCAFFOLD', /must not start with a capital/],
+    ['feat: ADD SCAFFOLD', /must not start with a capital letter or be all upper-case/],
     ['feat: add scaffold.', /full stop/],
+    ['feat: add scaffold ', /leading or trailing whitespace/],
     ['feat:  ', /subject after the colon is empty/],
-    [`feat: ${'a'.repeat(CONVENTIONAL_HEADER_MAX)}`, /characters; the limit is 100/],
-  ])('rejects %s', (title, problem) => {
+  ])('names the problem for %j', (title, problem) => {
     expect(lintConventionalTitle(title).join('; ')).toMatch(problem);
+  });
+
+  it('does not judge scope case (config-conventional has no scope-case rule)', () => {
+    expect(lintConventionalTitle('feat(CLI): add scaffold')).toEqual([]);
   });
 });
 

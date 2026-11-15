@@ -355,6 +355,7 @@ async function runScaffold(
       checked: scaffold.checked,
       struck: scaffold.struck,
       undecided: scaffold.undecided,
+      disabled: scaffold.disabled,
       results: title.results,
       notes: title.notes,
     }, null, 2));
@@ -370,6 +371,9 @@ async function runScaffold(
     out.error(
       `  ? no diff rule — tick the row and remove the strikethrough if you did it, else give the reason: ${scaffold.undecided.join(', ')}`,
     );
+  }
+  if (scaffold.disabled.length) {
+    out.error(`  • left as in the template (rule disabled by .kookr/pr-checklist.json): ${scaffold.disabled.join(', ')}`);
   }
   for (const note of title.notes) out.error(`  • ${note}`);
   for (const r of title.results) out.error(`  ${r.status === 'fail' ? '✗' : '✓'} [${r.status}] ${r.id}: ${r.summary}`);

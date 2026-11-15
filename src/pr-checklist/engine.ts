@@ -183,16 +183,24 @@ export async function collectScaffold(deps: Omit<CollectDeps, 'body' | 'template
   const read = deps.readFileText ?? ((p, cap) => readConfined(deps.cwd, p, cap));
   const templateText = await readTemplate(runner, read, deps.cwd);
   if (!templateText.trim()) return { kind: 'no-template' };
+  // Honour the repo's disable list exactly as verify does, so the two verbs agree.
+  const config = parseChecklistConfig(
+    await readTracked(runner, read, deps.cwd, '.kookr/pr-checklist.json', MAX_CONFIG_BYTES),
+  );
   const noMarkers = parseChecklist(templateText).length === 0;
   // Without a diff every row would be struck — refuse rather than mislead.
   const facts = noMarkers ? null : await collectDiffFacts(runner, deps.base);
   if (facts?.baseUnresolved) return { kind: 'base-unresolved' };
-  const commitlint = typeof deps.title === 'string' ? await readCommitlintConfig(runner, read, deps.cwd) : null;
+  const commitlint =
+    typeof deps.title === 'string' && !config.disable.has('pr-title')
+      ? await readCommitlintConfig(runner, read, deps.cwd)
+      : null;
+  const title = evaluateTitle(deps.title, commitlint);
   return {
     kind: 'ok',
-    scaffold: scaffoldBody(templateText, facts?.changedPaths ?? []),
+    scaffold: scaffoldBody(templateText, facts?.changedPaths ?? [], config.disable),
     noMarkers,
-    title: evaluateTitle(deps.title, commitlint),
+    title: { results: title.results, notes: [...title.notes, ...config.notes] },
   };
 }
 

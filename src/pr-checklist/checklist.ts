@@ -63,10 +63,14 @@ const MARKER_LINE = /^[ \t]*(~~)?-\s*\[( |x|X)\]\s*(~~)?\s*<!--\s*(?:kookr:check
 export const WAIVER_REASON_PLACEHOLDER = 'TODO: say why this row does not apply';
 /** Placeholder for a row with no diff evidence rule: only the author knows if it was done. */
 export const DECIDE_REASON_PLACEHOLDER = 'TODO: if done, tick the box and remove the strikethrough; else say why it does not apply';
-// Neither placeholder may contain `~~`: the parser takes the reason from after the LAST `~~`.
-const PLACEHOLDERS = [WAIVER_REASON_PLACEHOLDER, DECIDE_REASON_PLACEHOLDER];
-/** Reason slot shown in an "expected" line. */
-const REASON_SLOT = '<one-line reason>';
+/**
+ * Reason slot shown in an "expected" line. Also a rejected placeholder, so a
+ * line pasted from verify's output unchanged still fails. Plain text, not
+ * `<…>`: GitHub would strip an angle-bracket slot as an HTML tag.
+ */
+const REASON_SLOT = 'TODO: one-line reason';
+// No placeholder may contain `~~`: the parser takes the reason from after the LAST `~~`.
+const PLACEHOLDERS = [WAIVER_REASON_PLACEHOLDER, DECIDE_REASON_PLACEHOLDER, REASON_SLOT];
 
 /** A marked checklist row of the repo's PR template, kept with its exact marker and label text. */
 export interface TemplateRow {
@@ -80,6 +84,8 @@ export interface TemplateRow {
   label: string;
 }
 
+// Same row grammar as MARKER_LINE above (keep the two in step), but per line and
+// capturing indent + the exact marker spelling, which scaffold must reproduce.
 const TEMPLATE_ROW = /^([ \t]*)(?:~~)?-\s*\[(?: |x|X)\]\s*(?:~~)?\s*(<!--\s*(?:kookr:check:|pr:)([a-z0-9-]+)\s*-->)(.*)$/;
 
 /** Parse the marked rows of a PR template, keeping line index, indent, marker and label. Pure. */
@@ -195,7 +201,7 @@ export function evaluateAttestation(
   templateText = '',
 ): { results: CheckResult[]; waived: Set<string>; notes: string[] } {
   const templateRows = templateRowsById(templateText);
-  const expect = (id: string, ...states: ('checked' | 'waived')[]) => expectedFor(id, templateRows, states);
+  const expectedLines = (id: string, ...states: ('checked' | 'waived')[]) => expectedFor(id, templateRows, states);
   const results: CheckResult[] = [];
   const waived = new Set<string>();
   const notes: string[] = [];
@@ -212,7 +218,7 @@ export function evaluateAttestation(
           summary:
             `checklist waiver for ${row.id} requires a one-line waiver reason, written after the closing ~~ ` +
             `(a reason inside the strikethrough does not count)`,
-          expected: expect(row.id, 'waived'),
+          expected: expectedLines(row.id, 'waived'),
         });
         continue;
       }
@@ -221,7 +227,7 @@ export function evaluateAttestation(
           id: row.id,
           status: 'fail',
           summary: `checklist waiver for ${row.id} still has the scaffold placeholder reason — replace it with the real one`,
-          expected: expect(row.id, 'checked', 'waived'),
+          expected: expectedLines(row.id, 'checked', 'waived'),
         });
         continue;
       }
@@ -245,7 +251,7 @@ export function evaluateAttestation(
               id: row.id,
               status: 'fail',
               summary: `checklist item ${row.id} is neither checked nor struck through`,
-              expected: expect(row.id, 'checked', 'waived'),
+              expected: expectedLines(row.id, 'checked', 'waived'),
             },
       );
       continue;
@@ -255,7 +261,7 @@ export function evaluateAttestation(
         id: row.id,
         status: 'fail',
         summary: `"${spec.label}" is neither checked nor struck through — do it, or strike the box with a reason`,
-        expected: expect(row.id, 'checked', 'waived'),
+        expected: expectedLines(row.id, 'checked', 'waived'),
       });
       continue;
     }
@@ -264,7 +270,7 @@ export function evaluateAttestation(
         id: row.id,
         status: 'fail',
         summary: `"${spec.label}" is checked but no matching change is in the diff — update it, or strike the box`,
-        expected: expect(row.id, 'waived'),
+        expected: expectedLines(row.id, 'waived'),
       });
       continue;
     }

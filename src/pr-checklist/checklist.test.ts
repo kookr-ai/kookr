@@ -245,9 +245,9 @@ describe('evaluateTemplatePresence', () => {
     expect(results[0].summary).toMatch(/2 template checklist row\(s\) \(readme, tests\) present but not in a recognised/);
     expect(results[0].expected).toEqual([
       '- [x] <!-- kookr:check:readme --> README',
-      '- [ ] ~~<!-- kookr:check:readme --> README~~ — <one-line reason>',
+      '- [ ] ~~<!-- kookr:check:readme --> README~~ — TODO: one-line reason',
       '- [x] <!-- pr:tests --> tests',
-      '- [ ] ~~<!-- pr:tests --> tests~~ — <one-line reason>',
+      '- [ ] ~~<!-- pr:tests --> tests~~ — TODO: one-line reason',
     ]);
     expect(results[0].summary).not.toMatch(/omits/);
   });
@@ -297,7 +297,7 @@ describe('expected lines on a rejected row (#3651)', () => {
     '- [ ] <!-- kookr:check:mbse --> System design documents are up to date',
     '- [ ] <!-- kookr:check:tests --> Tests added',
   ].join('\n');
-  const mbseWaive = '- [ ] ~~<!-- kookr:check:mbse --> System design documents are up to date~~ — <one-line reason>';
+  const mbseWaive = '- [ ] ~~<!-- kookr:check:mbse --> System design documents are up to date~~ — TODO: one-line reason';
   const mbseTick = '- [x] <!-- kookr:check:mbse --> System design documents are up to date';
 
   it('a struck row with the checkbox inside the strikethrough shows the accepted form', () => {
@@ -313,7 +313,7 @@ describe('expected lines on a rejected row (#3651)', () => {
     expect(results[0].summary).toMatch(/checkbox inside the strikethrough/);
     expect(results[0].expected).toEqual([mbseTick, mbseWaive]);
     // The accepted form really is accepted once its reason slot is filled.
-    expect(parseChecklist(mbseWaive.replace('<one-line reason>', 'CLI-only change'))).toEqual([
+    expect(parseChecklist(mbseWaive.replace('TODO: one-line reason', 'CLI-only change'))).toEqual([
       { id: 'mbse', checked: false, struck: true, reason: 'CLI-only change' },
     ]);
   });
@@ -341,11 +341,27 @@ describe('expected lines on a rejected row (#3651)', () => {
     expect(waived.has('mbse')).toBe(false);
   });
 
+  it('a verify-suggested line pasted unchanged still fails (its reason slot is a placeholder)', () => {
+    const blank = evaluateAttestation(parseChecklist('- [ ] <!-- kookr:check:mbse --> x'), [], template);
+    const pasted = blank.results[0].expected![1];
+    const { results } = evaluateAttestation(parseChecklist(pasted), [], template);
+    expect(results[0]).toMatchObject({ id: 'mbse', status: 'fail' });
+  });
+
+  it('quotes an indented template row without its indent, and the first of duplicate ids', () => {
+    const tpl = '  - [ ] <!-- kookr:check:mbse --> first\n- [ ] <!-- kookr:check:mbse --> second';
+    const { results } = evaluateAttestation(parseChecklist('- [ ] <!-- kookr:check:mbse --> x'), [], tpl);
+    expect(results[0].expected).toEqual([
+      '- [x] <!-- kookr:check:mbse --> first',
+      '- [ ] ~~<!-- kookr:check:mbse --> first~~ — TODO: one-line reason',
+    ]);
+  });
+
   it('falls back to a bare marker line when the template lacks the row', () => {
     const { results } = evaluateAttestation(parseChecklist('- [ ] <!-- kookr:check:docs --> x'), []);
     expect(results[0].expected).toEqual([
       '- [x] <!-- kookr:check:docs --> <row text>',
-      '- [ ] ~~<!-- kookr:check:docs --> <row text>~~ — <one-line reason>',
+      '- [ ] ~~<!-- kookr:check:docs --> <row text>~~ — TODO: one-line reason',
     ]);
   });
 

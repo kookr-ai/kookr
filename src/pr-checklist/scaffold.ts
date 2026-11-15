@@ -27,13 +27,25 @@ export interface ScaffoldResult {
   struck: string[];
   /** Rows with no evidence rule — struck, the author decides (tick or give a reason). */
   undecided: string[];
+  /** Rows whose rule the repo disabled in .kookr/pr-checklist.json — left as the template wrote them. */
+  disabled: string[];
 }
 
 /** Build the PR body for `changedPaths` from the template text. Pure. */
-export function scaffoldBody(templateText: string, changedPaths: string[]): ScaffoldResult {
+export function scaffoldBody(
+  templateText: string,
+  changedPaths: string[],
+  disabled: ReadonlySet<string> = new Set(),
+): ScaffoldResult {
   const lines = templateText.split('\n');
-  const result: ScaffoldResult = { body: '', checked: [], struck: [], undecided: [] };
+  const result: ScaffoldResult = { body: '', checked: [], struck: [], undecided: [], disabled: [] };
   for (const row of parseTemplateRows(templateText)) {
+    // verify drops every result for a disabled rule, so a TODO written here
+    // would never be caught: leave the row exactly as the template has it.
+    if (disabled.has(row.id)) {
+      result.disabled.push(row.id);
+      continue;
+    }
     const evidence = hasEvidence(row.id, changedPaths);
     const cr = lines[row.line].endsWith('\r') ? '\r' : '';
     if (evidence === true) {
