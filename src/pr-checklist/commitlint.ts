@@ -7,9 +7,11 @@
 // S1: the repo's commitlint config is never executed (it may be JS). We only
 // look at its text: a config that extends `config-conventional` gets the
 // preset's header rules re-implemented below; any other config is reported as
-// "not checked". Custom `rules` in the config are not evaluated (noted instead),
-// so this check can miss a failure a stricter config adds. For the preset itself
-// it reports what commitlint reports (see commitlint.test.ts's oracle corpus).
+// "not checked". Only a config that is exactly `extends: [config-conventional]`
+// can fail the gate; any customisation (rules, ignores, parser preset, more
+// presets) could change the verdict, so a failure there is only a note. For the
+// plain preset it reports what commitlint reports, default ignores included
+// (see commitlint.test.ts's oracle corpus).
 // Pure: strings in, data out. The tracked-file reads live in engine.ts.
 
 import type { CheckResult } from './types.js';
@@ -38,19 +40,79 @@ export const COMMITLINT_CONFIG_PATHS = [
 export interface CommitlintConfig {
   /** Repo-relative file the config came from (`package.json` for the `commitlint` key). */
   path: string;
-  /** The config extends `@commitlint/config-conventional`, so its header rules apply. */
+  /** The config mentions `@commitlint/config-conventional`, so its header rules are a fair guide. */
   conventional: boolean;
-  /** The config declares its own `rules`, which this check does not evaluate. */
-  customRules: boolean;
+  /**
+   * The config is ONLY `extends: ['@commitlint/config-conventional']` (one of
+   * the recognised plain shapes). Only then do this module's rules equal the
+   * repo's verdict, so only then can a failing title fail the gate. Anything
+   * else (own `rules`, `ignores`, a parser preset, more presets, computed
+   * config) could change the verdict either way; a failure is then a note.
+   */
+  plain: boolean;
+}
+
+const PRESET = '"@commitlint/config-conventional"';
+const EXTENDS = `"?extends"?:(?:\\[${PRESET}\\]|${PRESET})`;
+/** Plain shapes, matched against the normalised text (see `normaliseConfig`). */
+const PLAIN_SHAPES = [
+  new RegExp(`^(?:module\\.exports=|exportdefault)\\{${EXTENDS}\\}$`), // JS / TS
+  new RegExp(`^\\{${EXTENDS}\\}$`), // JSON, .commitlintrc, package.json key
+  new RegExp(`^extends:(?:-${PRESET}|\\[${PRESET}\\])$`), // YAML
+  // The TS form commitlint documents: a typed const, then default-exported.
+  new RegExp(`^(?:importtype\\{UserConfig\\}from"@commitlint/types")?const(\\w+)(?::UserConfig)?=\\{${EXTENDS}\\}(?:exportdefault|module\\.exports=)\\1$`),
+];
+
+/** Comments, whitespace, quote style, trailing commas and semicolons removed. */
+function normaliseConfig(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+    .replace(/^\s*#.*$/gm, '')
+    .replace(/'/g, '"')
+    .replace(/\s+/g, '')
+    .replace(/;/g, '')
+    .replace(/,(?=[\]}])/g, '');
 }
 
 /** Classify a commitlint config from its text. Pure; never evaluates it (S1). */
 export function classifyCommitlintConfig(path: string, text: string): CommitlintConfig {
+  const normalised = normaliseConfig(text);
   return {
     path,
     conventional: /config-conventional/.test(text),
-    customRules: /["']?\brules["']?\s*[:=]/.test(text),
+    plain: PLAIN_SHAPES.some((re) => re.test(normalised)),
   };
+}
+
+/**
+ * commitlint's default ignores (`@commitlint/is-ignored` `wildcards`): titles
+ * like these are never linted, so they must never fail here either.
+ */
+const DEFAULT_IGNORES: RegExp[] = [
+  /^((Merge pull request)|(Merge (.*?) into (.*?)|(Merge branch (.*?)))(?:\r?\n)*$)/m,
+  /^(Merge tag (.*?))(?:\r?\n)*$/m,
+  /^(R|r)evert (.*)/,
+  /^(R|r)eapply (.*)/,
+  /^(amend|fixup|squash)!/,
+  /^(Merged (.*?)(in|into) (.*)|Merged PR (.*): (.*))/,
+  /^Merge remote-tracking branch(\s*)(.*)/,
+  /^Automatic merge(.*)/,
+  /^Auto-merged (.*?) into (.*)/,
+];
+/** semver.valid() on the first line, after commitlint's chore:/[skip ci] stripping. */
+const SEMVER = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+/** Would commitlint skip this title entirely (default ignores)? Pure. */
+export function isDefaultIgnored(title: string): boolean {
+  if (DEFAULT_IGNORES.some((re) => re.test(title))) return true;
+  const stripped = title
+    .split('\n')[0]
+    .replace(/^chore(\([^)]+\))?:/, '')
+    .replace(/\[(skip|ci)(-|\s)(ci|skip)\]/i, '')
+    .replace(/\((skip|ci)(-|\s)(ci|skip)\)/i, '')
+    .trim();
+  return SEMVER.test(stripped);
 }
 
 /** The `commitlint` key of a package.json, re-serialised for `classifyCommitlintConfig`, or null. */
@@ -77,6 +139,7 @@ const HEADER = /^(\w*)(?:\((.*)\))?!?: (.*)$/;
  * logic; checked against real commitlint on a title corpus. Pure.
  */
 export function lintConventionalTitle(title: string): string[] {
+  if (isDefaultIgnored(title)) return [];
   const header = title.split('\n')[0];
   const problems: string[] = [];
   if (header !== header.trim()) problems.push('it has leading or trailing whitespace');
@@ -90,9 +153,9 @@ export function lintConventionalTitle(title: string): string[] {
   }
   const [, type, , subject] = m;
   if (!type) problems.push('the type before the colon is empty');
-  else if (type !== type.toLowerCase()) problems.push(`the type "${type}" must be lower-case`);
+  else if (type !== type.toLowerCase()) problems.push('the type before the colon must be lower-case');
   else if (!CONVENTIONAL_TYPES.includes(type)) {
-    problems.push(`the type "${type}" is not one of ${CONVENTIONAL_TYPES.join(', ')}`);
+    problems.push(`the type before the colon is not one of ${CONVENTIONAL_TYPES.join(', ')}`);
   }
   if (!subject.trim()) problems.push('the subject after the colon is empty');
   else {
@@ -122,8 +185,10 @@ function isForbiddenSubjectCase(subject: string): boolean {
 
 /**
  * The `pr-title` result for a PR title against the repo's commit-lint config.
- * No config, or no title to check → no result. A config this check cannot
- * evaluate → a note, never a fail. Pure; never echoes the title (S6).
+ * No config, or no title to check → no result. Only a plain config-conventional
+ * config can fail; a customised one turns a failure into a note (the hook must
+ * never deny a title the repo's real commitlint accepts). Pure; never echoes
+ * the title (S6).
  */
 export function evaluateTitle(
   title: string | null | undefined,
@@ -136,11 +201,19 @@ export function evaluateTitle(
       notes: [`commit-lint config ${config.path} does not extend config-conventional — PR title not checked`],
     };
   }
-  const notes = config.customRules
-    ? [`commit-lint config ${config.path} declares custom rules; the PR title was checked against config-conventional defaults only`]
-    : [];
   const problems = lintConventionalTitle(title);
-  if (problems.length === 0) return { results: [{ id: 'pr-title', status: 'pass', summary: 'PR title passes the repo commit-lint rule' }], notes };
+  if (problems.length === 0) {
+    return { results: [{ id: 'pr-title', status: 'pass', summary: 'PR title passes the repo commit-lint rule' }], notes: [] };
+  }
+  if (!config.plain) {
+    return {
+      results: [],
+      notes: [
+        `PR title may fail commit-lint (${config.path} customises config-conventional, so this is not enforced): ` +
+          `${problems.join('; ')}`,
+      ],
+    };
+  }
   return {
     results: [
       {
@@ -151,6 +224,6 @@ export function evaluateTitle(
           `Use "type(scope): subject", e.g. "feat(cli): add a scaffold subcommand".`,
       },
     ],
-    notes,
+    notes: [],
   };
 }

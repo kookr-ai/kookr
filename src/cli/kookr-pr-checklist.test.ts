@@ -525,7 +525,7 @@ describe('runPrChecklistCli scaffold + title', () => {
     opts: {
       base?: boolean;
       template?: boolean | string;
-      commitlint?: boolean | 'package.json' | 'angular';
+      commitlint?: boolean | 'package.json' | 'angular' | 'custom';
       config?: string;
     } = {},
   ) {
@@ -535,7 +535,7 @@ describe('runPrChecklistCli scaffold + title', () => {
     };
     if (opts.base !== false) map['merge-base origin/main HEAD'] = { stdout: 'B' };
     if (opts.template !== false) map['ls-files -- .github/pull_request_template.md'] = { stdout: '.github/pull_request_template.md' };
-    if (opts.commitlint === true || opts.commitlint === 'angular') {
+    if (opts.commitlint === true || opts.commitlint === 'angular' || opts.commitlint === 'custom') {
       map['ls-files -- commitlint.config.cjs'] = { stdout: 'commitlint.config.cjs' };
     }
     if (opts.commitlint === 'package.json') map['ls-files -- package.json'] = { stdout: 'package.json' };
@@ -545,7 +545,11 @@ describe('runPrChecklistCli scaffold + title', () => {
       gitRunner: fakeGit(map),
       readFileText: async (p: string) => {
         if (p.endsWith('commitlint.config.cjs')) {
-          return opts.commitlint === 'angular' ? 'module.exports = { extends: ["@commitlint/config-angular"] };' : COMMITLINT;
+          if (opts.commitlint === 'angular') return 'module.exports = { extends: ["@commitlint/config-angular"] };';
+          if (opts.commitlint === 'custom') {
+            return 'module.exports = { extends: ["@commitlint/config-conventional"], rules: { "subject-case": [0] } };';
+          }
+          return COMMITLINT;
         }
         if (p.endsWith('package.json')) return JSON.stringify({ name: 'x', commitlint: { extends: ['@commitlint/config-conventional'] } });
         if (p.endsWith('pr-checklist.json')) return opts.config ?? '';
@@ -717,6 +721,24 @@ describe('runPrChecklistCli scaffold + title', () => {
     expect(await runPrChecklistCli(['scaffold', '--title', 'Add x'], { out: o, cwd: '/repo', ...repo({ commitlint: 'angular' }) }))
       .toBe(EXIT_PASS);
     expect(stderr(o)).toMatch(/does not extend config-conventional — PR title not checked/);
+  });
+
+  // Independent review of #3782: the hook must not deny titles real commitlint accepts.
+  it('never denies a title commitlint ignores by default, or one a customised config may accept', async () => {
+    const body = '- [x] <!-- kookr:check:tests --> Tests added\n- [ ] ~~<!-- kookr:check:mbse --> docs~~ — CLI-only';
+    const cmd = (title: string) => `gh pr create --title '${title}' --body "${body}"`;
+    expect(await runPrChecklistCli(['verify', '--from-command', cmd('Revert "feat: add x"')], {
+      out: out(), cwd: '/repo', ...repo({ commitlint: true }),
+    })).toBe(EXIT_PASS);
+    const o = out();
+    expect(await runPrChecklistCli(['verify', '--from-command', cmd('feat: Add OAuth login')], {
+      out: o, cwd: '/repo', ...repo({ commitlint: 'custom' }),
+    })).toBe(EXIT_PASS);
+    expect(stdout(o)).toMatch(/may fail commit-lint .*not enforced/);
+    // The same title with the plain preset is a real failure.
+    expect(await runPrChecklistCli(['verify', '--from-command', cmd('feat: Add OAuth login')], {
+      out: out(), cwd: '/repo', ...repo({ commitlint: true }),
+    })).toBe(EXIT_VERIFICATION_FAILURE);
   });
 
   it('fails closed (2), not internal (70), when a repo file trips the input guard', async () => {

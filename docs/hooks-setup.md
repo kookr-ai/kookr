@@ -163,7 +163,9 @@ enforcement.** Its fail model:
 **PR title.** When the repo tracks a commitlint config that extends
 `@commitlint/config-conventional`, the gate also checks a literal
 `--title`/`-t` on the command against that preset's header rules (result id
-`pr-title`). A title containing `$` or a backtick (for example `--title "$TITLE"`) is not
+`pr-title`). It blocks only when the config is exactly that preset; a config
+that customises it gets a printed note instead, and titles commitlint ignores
+by default (`Revert …`, `Merge …`, `fixup!`) always pass. A title containing `$` or a backtick (for example `--title "$TITLE"`) is not
 checked, since the shell would expand it. A repo can turn the check off with
 `{ "disable": ["pr-title"] }` in `.kookr/pr-checklist.json`. To write a body the
 gate accepts without remembering the row syntax, start from
