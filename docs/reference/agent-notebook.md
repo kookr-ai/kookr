@@ -165,13 +165,21 @@ that runs its `.mjs`) run for every session:
     or not a valid shelf name) or shelves holding git merge-conflict markers
     (`conflicts`), a `WARNING:` line under the index header names them (at most
     five each), since `nb` reports both only on stderr, which the agent never sees.
-    The flat view below does not print these warnings.
+    The flat view below prints the same lines.
   - **Flat view.** With no `KOOKR_REPO_SLUG` (unset, empty or whitespace), with
     `KOOKR_NB_LAYERS=0` (the kill switch), if the layers module cannot be
     loaded, or if `nb list --json` answers in a shape the hook does not
-    recognise, it prints the flat `nb list --limit 1000` index instead.
+    recognise, it prints the flat `nb list --limit 1000` index instead. Its rows
+    come from that text listing, whose skipped/conflict notes go to stderr, so
+    the hook also runs `nb list --json --limit 1000` once (2 s timeout; it
+    reuses the output when the layered attempt already fetched it) only to
+    print the same `WARNING:` lines under the header. If that extra call fails
+    or its output is not JSON, the flat index is printed without them. A store
+    whose only files are skipped is not silent: it prints the header and the
+    warning.
   - **Bounds.** The flat view is capped at 60 rows / 8 KB (richest shelves first,
-    with a "N more shelves not shown" tail). The layered view applies the same cap
+    with a "N more shelves not shown" tail; the warning lines count against the
+    8 KB). The layered view applies the same cap
     to everything except the project group: this repo's own shelves are never
     truncated (they are the ones most likely to apply, and a repo has few), so a
     repo with more than 60 project shelves would exceed the cap. The domain and

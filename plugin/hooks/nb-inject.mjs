@@ -35,6 +35,12 @@
 // behind a count, and states which layer wins and where a new lesson goes. Without a
 // slug, with the kill switch on, or when the layers module cannot be loaded or `nb`
 // answers in an unexpected shape, it prints today's flat index instead.
+//
+// Both views state the store problems `nb` reports only on stderr (files it skipped,
+// shelves holding merge-conflict markers; see storeWarnings). The flat view reads its
+// rows from the text `nb list`, so it gets those problems from one extra, best-effort
+// `nb list --json` call (or reuses the JSON the layered attempt already fetched); if
+// that call fails in any way the flat index is printed without them (issue #3836).
 import { execFileSync } from 'node:child_process';
 
 const TIMEOUT_MS = 4000;
@@ -44,6 +50,7 @@ const TAIL_RESERVE = 96; // bytes kept free for the "N more" line
 const DESC_WIDTH = 80; // `nb list` bounds a description column to 80 characters
 const MAX_NAMED = 5; // shelves a store warning names before it says "and N more"
 const NAME_WIDTH = 60; // characters of one shelf name a store warning shows
+const WARN_TIMEOUT_MS = 2000; // the flat view's extra `nb list --json` call, best-effort only
 
 /**
  * Run `nb <args>` and return its trimmed stdout. A missing `nb` exits 0 silently; a
@@ -93,9 +100,11 @@ const slug = layers ? layers.repoSlugFromEnv() : undefined;
 const layered = layers !== null && slug !== undefined && (process.env.KOOKR_NB_LAYERS ?? '').trim() !== '0';
 
 let body = null;
+let jsonRaw; // the layered attempt's `nb list --json` output, reused by the flat view
 if (layered) {
   try {
-    body = layeredIndex(runNb(['list', '--json', '--limit', '1000']), slug);
+    jsonRaw = runNb(['list', '--json', '--limit', '1000']);
+    body = layeredIndex(jsonRaw, slug);
   } catch {
     body = null; // unexpected shape: fall back to the flat index below
   }
@@ -103,19 +112,48 @@ if (layered) {
 if (body === null) {
   // `nb list` shows 50 rows by default; ask for more so the cap applied below is ours.
   const index = runNb(['list', '--limit', '1000']);
+  const listing = jsonListing(jsonRaw);
+  const warnings = storeWarnings(listing);
   // Empty store → `nb list` leaves stdout empty (its "no notebooks yet" notice
-  // goes to stderr). Nothing to surface → stay silent.
-  if (!index) process.exit(0);
-  body = boundIndex(index);
+  // goes to stderr). Nothing to surface → stay silent, unless the store has files
+  // `nb` could not use: then it is not empty, and the warnings say why.
+  if (!index && warnings.length === 0) process.exit(0);
+  body = index
+    ? boundIndex(index, warnings)
+    : [`agent-notebook notebooks — 0 in ${typeof listing?.dir === 'string' ? listing.dir : 'the notebook store'}`, ...warnings].join('\n');
 }
 if (body === '') process.exit(0);
 
 /**
+ * The parsed `nb list --json` listing for the flat view's store warnings: `raw` when
+ * the layered attempt already fetched it, else one quiet call of its own. Any failure
+ * (non-zero exit, timeout, output that is not JSON) gives null, so the flat index is
+ * still printed, just without warnings; a broken `nb` is already reported by the text
+ * call that ran first.
+ */
+function jsonListing(raw) {
+  try {
+    const text =
+      raw ??
+      execFileSync('nb', ['list', '--json', '--limit', '1000'], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: WARN_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Keep the header line plus at most MAX_ROWS rows and MAX_BYTES bytes (whole rows
  * only; rows arrive richest-first, so the ones dropped are the thinnest). Adds a
- * "N more" tail when anything was dropped.
+ * "N more" tail when anything was dropped. `warnings` (store problems) go right under
+ * the header and count against the byte budget.
  */
-function boundIndex(text) {
+function boundIndex(text, warnings = []) {
   const lines = text.split('\n');
   const hasHeader = !/^\s/.test(lines[0]); // rows are indented; the header is not
   const header = hasHeader ? lines[0] : '';
@@ -125,7 +163,7 @@ function boundIndex(text) {
   const totalFromHeader = Number(/ — (?:\d+ of )?(\d+) in /.exec(header)?.[1]);
   const total = Number.isFinite(totalFromHeader) && totalFromHeader >= rows.length ? totalFromHeader : rows.length;
 
-  let used = Buffer.byteLength(header) + 1;
+  let used = [header, ...warnings].reduce((n, l) => n + Buffer.byteLength(l) + 1, 0);
   const kept = [];
   for (const row of rows) {
     const cost = Buffer.byteLength(row) + 1;
@@ -133,7 +171,7 @@ function boundIndex(text) {
     kept.push(row);
     used += cost;
   }
-  const out = (header ? [header] : []).concat(kept);
+  const out = (header ? [header] : []).concat(warnings, kept);
   if (kept.length < total) {
     const left = total - kept.length;
     out.push(`… ${left} more shel${left === 1 ? 'f' : 'ves'} not shown: run \`nb list --limit 1000\` (or \`nb list <prefix>\`) to see them`);
