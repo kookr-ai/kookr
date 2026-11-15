@@ -43,7 +43,7 @@ runs it, it does not re-decide. For every open PR:
   names an integration branch (see `docs/reference/integration-train.md`),
   a PR reaches `main` only through the integration train. The sweep then
   merges only PRs whose base is the integration branch; a green PR aimed at
-  `main` is skipped with "deliver it with pnpm merge" (#3797).
+  `main` is skipped with "deliver it with kookr merge" (#3797).
 
 ## Steps
 
