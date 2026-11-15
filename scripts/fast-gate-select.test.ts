@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { referenceNeedles, selectFastGate } from './fast-gate-select.mjs';
+import { CAP_TESTS, buildTestCounter, hookTestsFor, referenceNeedles, selectFastGate } from './fast-gate-select.mjs';
 
 const TRACKED = [
   'src/frontend/design-tokens.test.ts',
@@ -14,9 +14,25 @@ const TRACKED = [
   'plugin/agents/reviewer.test.mjs',
   'plugin/playbooks/nightly.test.mjs',
   '.claude/skills/demo-skill/helper.test.mjs',
+  'hooks/pr-workflow-gate.sh',
+  '.hooks/pre-push',
+  '.claude/hooks-tests/pr-workflow-gate.test.sh',
+  '.claude/hooks-tests/pr-workflow-gate-worktree-key.test.sh',
+  '.claude/hooks-tests/pre-push-fast-gate.test.sh',
+  '.claude/hooks-tests/pre-push-git-env.test.sh',
+  '.claude/hooks-tests/verify-script.test.sh',
+  '.claude/hooks-tests/shims/gh',
 ];
 
-function run(changed: string[], opts: { gone?: string[]; refs?: Record<string, string[]> } = {}) {
+type RunOpts = {
+  gone?: string[];
+  refs?: Record<string, string[]>;
+  hookRefs?: Record<string, string[]>;
+  tracked?: string[];
+  countTests?: (files: string[]) => number;
+};
+
+function run(changed: string[], opts: RunOpts = {}) {
   const gone = new Set(opts.gone ?? []);
   const lookups: string[][] = [];
   const result = selectFastGate({
@@ -26,7 +42,9 @@ function run(changed: string[], opts: { gone?: string[]; refs?: Record<string, s
       lookups.push(needles);
       return [...new Set(needles.flatMap((n) => opts.refs?.[n] ?? []))];
     },
-    tracked: TRACKED,
+    findHookTestReferences: (needles: string[]) => [...new Set(needles.flatMap((n) => opts.hookRefs?.[n] ?? []))],
+    tracked: opts.tracked ?? TRACKED,
+    countTests: opts.countTests,
   });
   return { result, lookups };
 }
@@ -61,7 +79,7 @@ describe('selectFastGate', () => {
   it('looks up a deleted non-code file by its old path', () => {
     const { result, lookups } = run(['templates/old-template.yaml'], {
       gone: ['templates/old-template.yaml'],
-      refs: { 'old-template.yaml': ['src/t.test.ts'] },
+      refs: { 'templates/old-template.yaml': ['src/t.test.ts'] },
     });
     expect(lookups[0]).toContain('templates/old-template.yaml');
     expect(result.tests).toEqual(['src/t.test.ts']);
@@ -77,10 +95,54 @@ describe('selectFastGate', () => {
     expect(run(['assets/logo.svg']).result.unmapped).toEqual(['assets/logo.svg']);
   });
 
-  it('maps hook and shell tooling to the hook-test lane', () => {
-    const { result } = run(['.hooks/pre-push', 'scripts/foo.sh', '.claude/hooks-tests/a.test.sh']);
-    expect(result.commands).toEqual(['pnpm test:hooks']);
+  it('runs a hook change\'s own suites (<name>.test.sh and <name>-*.test.sh), not the whole lane', () => {
+    const { result } = run(['hooks/pr-workflow-gate.sh']);
+    expect(result.hookTests).toEqual([
+      '.claude/hooks-tests/pr-workflow-gate-worktree-key.test.sh',
+      '.claude/hooks-tests/pr-workflow-gate.test.sh',
+    ]);
+    expect(result.commands).toEqual([]);
+    expect(result.tests).toEqual([]);
     expect(result.unmapped).toEqual([]);
+  });
+
+  it('adds the hook suites that mention the changed file by path', () => {
+    const { result } = run(['.hooks/pre-push'], {
+      hookRefs: { '.hooks/pre-push': ['.claude/hooks-tests/verify-script.test.sh', 'scripts/not-a-hook-test.sh'] },
+    });
+    expect(result.hookTests).toEqual([
+      '.claude/hooks-tests/pre-push-fast-gate.test.sh',
+      '.claude/hooks-tests/pre-push-git-env.test.sh',
+      '.claude/hooks-tests/verify-script.test.sh',
+    ]);
+    expect(result.commands).toEqual([]);
+  });
+
+  it('runs a changed hook suite itself', () => {
+    const { result } = run(['.claude/hooks-tests/verify-script.test.sh']);
+    expect(result.hookTests).toEqual(['.claude/hooks-tests/verify-script.test.sh']);
+    expect(result.commands).toEqual([]);
+  });
+
+  it('runs the whole hook lane only when the runner or a shared helper changes', () => {
+    for (const path of ['scripts/run-hook-tests.sh', 'scripts/lib/repo-slug.sh', '.claude/hooks-tests/shims/gh', '.claude/hooks-tests/fixtures/open-issue/x.json', 'plugin/hooks/lib/notebook-layers.mjs']) {
+      expect(run([path]).result.commands, path).toEqual(['pnpm test:hooks']);
+    }
+    expect(run(['scripts/foo.sh']).result.commands).toEqual([]);
+  });
+
+  it('logs a shell file with no suite of its own and no reference as unmapped', () => {
+    const { result } = run(['scripts/foo.sh']);
+    expect(result.hookTests).toEqual([]);
+    expect(result.unmapped).toEqual(['scripts/foo.sh']);
+  });
+
+  it('never sends a hook suite to the Vitest lists', () => {
+    const { result } = run(['hooks/pr-workflow-gate.sh'], {
+      refs: { 'hooks/pr-workflow-gate.sh': ['src/pr-gate.test.ts'] },
+    });
+    expect(result.tests).toEqual(['src/pr-gate.test.ts']);
+    expect([...result.related, ...result.tests].some((f) => f.endsWith('.test.sh'))).toBe(false);
   });
 
   it('maps stt/** to the stt lane', () => {
@@ -115,11 +177,12 @@ describe('selectFastGate', () => {
     expect(result.unmapped).toEqual([]);
   });
 
-  it('maps plugin/hooks/** to its own tests, the validators and the hook-test lane', () => {
+  it('maps plugin/hooks/** to its own tests and the validators', () => {
     const { result } = run(['plugin/hooks/delivery-step-stop.mjs']);
     expect(result.related).toEqual(['plugin/hooks/delivery-step-stop.mjs']);
     expect(result.tests).toEqual(['plugin/hooks/delivery-step-stop.test.mjs', ...VALIDATORS]);
-    expect(result.commands).toEqual(['pnpm test:hooks']);
+    expect(result.commands).toEqual([]);
+    expect(result.unmapped).toEqual([]);
   });
 
   it('maps plugin/playbooks/** to its own tests plus the validators', () => {
@@ -141,7 +204,7 @@ describe('selectFastGate', () => {
   });
 
   it('defers build configuration and suite setup, even TypeScript ones', () => {
-    const changed = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'vitest.config.mts', 'vitest.fast-gate.config.mts', 'tsconfig.json', 'src/tsconfig.build.json', 'test/setup-env.ts', 'test/fixtures/x.json'];
+    const changed = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'vitest.config.mts', 'vitest.fast-gate.config.mts', 'vite.config.mts', 'tsconfig.json', 'src/tsconfig.build.json', 'test/setup-env.ts', 'test/fixtures/x.json'];
     const { result } = run(changed);
     expect(result.deferred).toEqual([...changed].sort());
     expect(result.related).toEqual([]);
@@ -162,34 +225,136 @@ describe('selectFastGate', () => {
   });
 
   it('de-duplicates and sorts every list', () => {
-    const { result } = run(['scripts/b.sh', 'scripts/a.sh', 'scripts/a.sh', 'z.ts', 'a.ts']);
+    const { result } = run(['scripts/lib/b.sh', 'scripts/lib/a.sh', 'scripts/lib/a.sh', 'z.ts', 'a.ts']);
     expect(result.related).toEqual(['a.ts', 'z.ts']);
     expect(result.commands).toEqual(['pnpm test:hooks']);
   });
 });
 
+describe('selectFastGate reference hits (#3816)', () => {
+  it('never hands a config or suite-setup reference hit to vitest', () => {
+    const { result } = run(['.hooks/pre-push'], {
+      refs: { 'pre-push': ['vitest.config.mts', 'vite.config.mts', 'test/setup-env.ts', 'src/a.ts', 'src/a.test.ts'] },
+    });
+    expect(result.related).toEqual(['src/a.ts']);
+    expect(result.tests).toEqual(['src/a.test.ts']);
+    expect(result.deferred).toEqual([]);
+  });
+
+  it('does not search a base name another tracked file shares', () => {
+    // The plugin.json shape: a manifest whose base name a second manifest shares.
+    const tracked = [...TRACKED, 'manifests/main/registry.json', 'deploy/other/registry.json'];
+    const refs = { 'registry.json': ['src/other-registry-reader.ts', 'src/other-registry-reader.test.ts'] };
+    const { result, lookups } = run(['manifests/main/registry.json'], { tracked, refs });
+    expect(lookups.flat()).not.toContain('registry.json');
+    expect(result.related).toEqual([]);
+    expect(result.tests).toEqual([]);
+  });
+
+  it('finds a reference written as a path suffix of two or more segments', () => {
+    const { result } = run(['docs/reference/api.md'], { refs: { 'reference/api.md': ['src/docs/api-drift.test.ts'] } });
+    expect(result.tests).toEqual(['src/docs/api-drift.test.ts']);
+  });
+
+  describe('per-file cap', () => {
+    // Each hit stands for 10 downstream test files; a test hit for one.
+    const countTests = (files: string[]) => files.reduce((n, f) => n + (/\.test\./.test(f) ? 1 : 10), 0);
+
+    it(`keeps only the tests naming the full path when one file would select more than ${CAP_TESTS}`, () => {
+      const broad = ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts'];
+      const { result } = run(['CLAUDE.md'], {
+        countTests,
+        refs: { CLAUDE: [], 'CLAUDE.md': [...broad, 'src/claude-md.test.ts'] },
+      });
+      expect(result.related).toEqual([]);
+      expect(result.tests).toEqual(['src/claude-md.test.ts']);
+      expect(result.capped).toEqual([{ path: 'CLAUDE.md', estimate: 51 }]);
+      expect(result.unmapped).toEqual([]);
+    });
+
+    it('drops weak (base-name-only) hits under the cap', () => {
+      const { result } = run(['docs/reference/auto-close-on-signal.md'], {
+        countTests,
+        refs: {
+          'auto-close-on-signal.md': ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts'],
+          'docs/reference/auto-close-on-signal.md': ['src/doc-link.test.ts'],
+        },
+      });
+      expect(result.related).toEqual([]);
+      expect(result.tests).toEqual(['src/doc-link.test.ts']);
+      expect(result.capped.map((c) => c.path)).toEqual(['docs/reference/auto-close-on-signal.md']);
+    });
+
+    it('leaves a selection at or under the cap alone', () => {
+      const { result } = run(['docs/guides/x.yaml'], { countTests, refs: { 'docs/guides/x.yaml': ['src/a.ts', 'src/b.ts'] } });
+      expect(result.related).toEqual(['src/a.ts', 'src/b.ts']);
+      expect(result.capped).toEqual([]);
+    });
+
+    it('never caps a changed source file: vitest related still gets it', () => {
+      const { result } = run(['src/shared/contracts/messages.ts'], { countTests: () => 999 });
+      expect(result.related).toEqual(['src/shared/contracts/messages.ts']);
+      expect(result.capped).toEqual([]);
+    });
+  });
+
+  it('reports the estimated size and the three largest contributors', () => {
+    const countTests = (files: string[]) => files.reduce((n, f) => n + ({ 'src/a.ts': 30, 'src/b.ts': 20, 'src/c.ts': 10, 'src/d.ts': 5 }[f] ?? 1), 0);
+    const { result } = run(['src/d.ts', 'src/c.ts', 'src/b.ts', 'src/a.ts', 'hooks/pr-workflow-gate.sh'], { countTests });
+    expect(result.summary.top).toEqual([
+      { path: 'src/a.ts', estimate: 30 },
+      { path: 'src/b.ts', estimate: 20 },
+      { path: 'src/c.ts', estimate: 10 },
+    ]);
+    expect(result.summary.estimate).toBe(30 + 20 + 10 + 5 + 2);
+  });
+});
+
+describe('hookTestsFor', () => {
+  it('matches <stem>.test.sh and <stem>-*.test.sh, nothing looser', () => {
+    const tracked = ['.claude/hooks-tests/gate.test.sh', '.claude/hooks-tests/gate-extra.test.sh', '.claude/hooks-tests/gatekeeper.test.sh'];
+    expect(hookTestsFor('plugin/hooks/gate.sh', tracked)).toEqual(['.claude/hooks-tests/gate.test.sh', '.claude/hooks-tests/gate-extra.test.sh']);
+  });
+});
+
+describe('buildTestCounter', () => {
+  it('counts the test files that reach a file through relative imports', () => {
+    const files: Record<string, string> = {
+      'src/a.ts': 'export const a = 1;',
+      'src/b.ts': "import { a } from './a.js';\nexport const b = a;",
+      'src/b.test.ts': "import { b } from './b.js';",
+      'src/a.test.ts': "import { a } from './a';",
+      'src/other.test.ts': "import x from 'vitest';",
+    };
+    const count = buildTestCounter(Object.keys(files), (p: string) => files[p] ?? null);
+    expect(count(['src/a.ts'])).toBe(2);
+    expect(count(['src/b.ts'])).toBe(1);
+    expect(count(['src/other.test.ts'])).toBe(1);
+    expect(count([])).toBe(0);
+  });
+});
+
 describe('referenceNeedles', () => {
-  it('always includes the repo-relative path', () => {
-    expect(referenceNeedles('a/b/c.yaml')).toEqual(['a/b/c.yaml']);
+  it('searches the repo-relative path and its suffixes of two or more segments', () => {
+    expect(referenceNeedles('docs/reference/api.md')).toEqual({ strong: ['docs/reference/api.md', 'reference/api.md'], weak: [] });
   });
 
-  it('adds a distinctive basename (8+ chars)', () => {
-    expect(referenceNeedles('a/b/delivery-gate.json')).toEqual(['a/b/delivery-gate.json', 'delivery-gate.json']);
+  it('adds a distinctive base name only when no other tracked file has it', () => {
+    expect(referenceNeedles('a/b/delivery-gate.json', ['a/b/delivery-gate.json']).weak).toEqual(['delivery-gate.json']);
+    expect(referenceNeedles('a/b/delivery-gate.json', ['a/b/delivery-gate.json', 'c/delivery-gate.json']).weak).toEqual([]);
+    expect(referenceNeedles('a/b/delivery-gate.json').weak).toEqual([]);
   });
 
-  it('skips generic and short basenames', () => {
-    expect(referenceNeedles('docs/README.md')).toEqual(['docs/README.md']);
-    expect(referenceNeedles('x/CHANGELOG.md')).toEqual(['x/CHANGELOG.md']);
-    expect(referenceNeedles('x/index.html')).toEqual(['x/index.html']);
-    expect(referenceNeedles('x/a.css')).toEqual(['x/a.css']);
+  it('skips generic and short base names', () => {
+    const tracked = ['docs/README.md', 'x/CHANGELOG.md', 'x/index.html', 'x/a.css'];
+    for (const p of tracked) expect(referenceNeedles(p, tracked).weak, p).toEqual([]);
   });
 
   it('searches SKILL.md by <dir>/SKILL.md and a long <dir>', () => {
-    expect(referenceNeedles('plugin/skills/disk-reclaim/SKILL.md')).toEqual([
-      'plugin/skills/disk-reclaim/SKILL.md',
-      'disk-reclaim/SKILL.md',
-      'disk-reclaim',
-    ]);
-    expect(referenceNeedles('plugin/skills/tdd/SKILL.md')).toEqual(['plugin/skills/tdd/SKILL.md', 'tdd/SKILL.md']);
+    expect(referenceNeedles('plugin/skills/disk-reclaim/SKILL.md')).toEqual({
+      strong: ['plugin/skills/disk-reclaim/SKILL.md', 'skills/disk-reclaim/SKILL.md', 'disk-reclaim/SKILL.md'],
+      weak: ['disk-reclaim'],
+    });
+    expect(referenceNeedles('plugin/skills/tdd/SKILL.md').weak).toEqual([]);
   });
 });
