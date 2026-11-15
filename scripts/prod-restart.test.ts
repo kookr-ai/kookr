@@ -1421,6 +1421,9 @@ describe('prod-restart integration train supervision (issue #3796)', () => {
         mkdirSync(join(appDir, '.kookr'));
         writeFileSync(join(appDir, '.kookr/delivery-gate.json'), opts.config);
       }
+      // The deployed checkout carries its own delivery-gate reader.
+      mkdirSync(join(appDir, 'scripts/lib'), { recursive: true });
+      writeFileSync(join(appDir, 'scripts/lib/delivery-gate.sh'), readFileSync('scripts/lib/delivery-gate.sh', 'utf8'));
       git(appDir, 'add', '-A');
       git(appDir, 'commit', '-q', '-m', 'base');
       git(appDir, 'push', '-q', 'origin', 'main');
@@ -1442,7 +1445,7 @@ exit ${opts.stubExit ?? 0}
             ...gitEnv,
             HOME: dir,
             KOOKR_PORT: '4800',
-            ...(opts.useStub === false ? {} : { KOOKR_INTEGRATION_TRAIN_CMD: stub }),
+            ...(opts.useStub === false ? {} : { KOOKR_INTEGRATION_TRAIN_NODE: stub }),
             ...(opts.extraEnv ?? {}),
           },
           encoding: 'utf8',
@@ -1459,7 +1462,8 @@ exit ${opts.stubExit ?? 0}
   it('restarts the train from the deployed checkout when origin/main names an integration branch', () => {
     const r = runSupervise({ config: '{"integrationBranch":"staging"}\n' });
     expect(r.status).toBe(0);
-    expect(r.calls).toEqual([`restart|${r.appDir}|${r.home}/.kookr`]);
+    // the deployed checkout's train script, not the copy next to prod-restart.sh
+    expect(r.calls).toEqual([`--import tsx ${r.appDir}/scripts/integration-train.ts restart|${r.appDir}|${r.home}/.kookr`]);
     expect(r.stdout).toContain("Integration branch 'staging' is configured");
   });
 
@@ -1484,7 +1488,8 @@ exit ${opts.stubExit ?? 0}
   });
 
   it('never reaches the real train from the sourced test mode without a stub', () => {
-    const r = runSupervise({ config: '{"integrationBranch":"staging"}\n', useStub: false });
+    // VITEST unset, so the sourced-for-test guard alone must hold
+    const r = runSupervise({ config: '{"integrationBranch":"staging"}\n', useStub: false, extraEnv: { VITEST: '' } });
     expect(r.status).toBe(0);
     expect(r.stdout).not.toContain('restarting the integration train');
   });

@@ -1032,31 +1032,31 @@ supervise_integration_train() {
     echo "Skipping integration train supervision (KOOKR_INTEGRATION_TRAIN_SUPERVISE=0)"
     return 0
   fi
-  # Test seam: an executable that receives `restart`. The shell tests source
+  # Test seam: the node binary that runs the train CLI. The shell tests source
   # this script from inside a Kookr checkout whose origin/main is configured,
   # so without a seam they must never reach the real train.
-  local train_cmd="${KOOKR_INTEGRATION_TRAIN_CMD:-}"
+  local train_node="${KOOKR_INTEGRATION_TRAIN_NODE:-}"
   # VITEST: a second guard for the suite, which inherits it into every child.
-  if [[ -z "$train_cmd" && ( "${PROD_RESTART_SOURCED_FOR_TEST:-}" == "1" || -n "${VITEST:-}" ) ]]; then
+  if [[ -z "$train_node" && ( "${PROD_RESTART_SOURCED_FOR_TEST:-}" == "1" || -n "${VITEST:-}" ) ]]; then
     return 0
   fi
   local branch=""
   branch="$(
     cd "$APP_DIR" 2>/dev/null || exit 0
+    # The deployed checkout's copy: `pnpm prod:update` runs this script from
+    # the operator's development checkout, which may be on any branch.
     # shellcheck source=lib/delivery-gate.sh
-    . "${RESTART_SCRIPT_DIR}/lib/delivery-gate.sh"
+    . "${APP_DIR}/scripts/lib/delivery-gate.sh"
     delivery_gate_integration_branch
   )" || branch=""
   if [[ -z "$branch" ]]; then
     return 0
   fi
   echo "Integration branch '${branch}' is configured; restarting the integration train on the deployed code..."
+  # The train runs APP_DIR's integration-train.ts, never the copy next to this
+  # script (RESTART_SCRIPT_DIR is the checkout `pnpm prod:update` was run from).
   local status=0
-  if [[ -n "$train_cmd" ]]; then
-    (cd "$APP_DIR" && KOOKR_DIR="$KOOKR_DIR" "$train_cmd" restart) || status=$?
-  else
-    (cd "$APP_DIR" && KOOKR_DIR="$KOOKR_DIR" node --import tsx "${RESTART_SCRIPT_DIR}/integration-train.ts" restart) || status=$?
-  fi
+  (cd "$APP_DIR" && KOOKR_DIR="$KOOKR_DIR" "${train_node:-node}" --import tsx "${APP_DIR}/scripts/integration-train.ts" restart) || status=$?
   if [[ "$status" != "0" ]]; then
     {
       echo "WARN: the integration train could not be restarted (exit ${status}). Until it runs,"
