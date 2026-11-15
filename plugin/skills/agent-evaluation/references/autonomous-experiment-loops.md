@@ -35,7 +35,10 @@ which write-up claims to trust: [research ideas and write-ups](research-ideas-an
 5. **Held-out split, sealed test read once.** Validation gains overstated held-out gains ~2.6x even with a
    clean split, and the gap varied by seed; expect a large, noisy drop, not an exact ratio. Reading the test
    set every generation turns it into validation. Size the selection set before deepening the search: the
-   winner overshot held-out accuracy by 13-20 points at 16 items, 1-5 at 256.
+   winner overshot held-out accuracy by 13-20 points at 16 items, 1-5 at 256. A sealed ground-truth audit
+   set of at least 64 items (~10% of the evaluation budget), scored once on the final candidate, cut the error
+   of the reported gain by about two thirds. Score the requirements you did not optimize too: prompt
+   optimizers raised exact match by 21-34 points while citation validity fell by 11-42.
 6. **Gate on regressions too.** A gain on failed tasks says nothing about tasks that used to pass; 2 of 96
    candidates cleared a two-gate rule. Expect most candidates to fail and list the tasks that got worse next
    to any aggregate gain. Strict zero-regression gates can stall the search (see [prompt
@@ -77,4 +80,4 @@ For unattended implement-and-review delivery loops, see the `autonomous-review-l
   took one run from ~$0.6 to ~$11.75 against a $10 cap. Keep GPU jobs sequential. Keep idea teams to ~5-7
   agents (more added no diversity); selector quality mattered more than generator diversity.
 
-Evidence: kb://agentic-capability-reports/notes/2026-11-14-autonomous-experiment-loop-false-discovery-controls.md, kb://agentic-capability-reports/notes/2026-11-14-autonomous-research-search-policy-and-stopping.md
+Evidence: kb://agentic-capability-reports/notes/2026-11-14-autonomous-experiment-loop-false-discovery-controls.md, kb://agentic-capability-reports/notes/2026-11-14-autonomous-research-search-policy-and-stopping.md, kb://agentic-capability-reports/notes/2026-11-14-self-improvement-without-ground-truth-feedback-signals.md

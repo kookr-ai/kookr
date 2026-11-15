@@ -35,5 +35,14 @@ candidate starts from its parent's changes.
    design](../../agent-memory-and-learning/references/skill-library-design.md) rules 6-7). Cap rounds and
    re-run the gate after a model change (see **Keep the best checkpoint** in [experiment
    loops](autonomous-experiment-loops.md)).
+8. **When the only signal is self-generated, select with it; do not learn from it.** A self or same-family
+   judge, a majority vote or self-certainty may rank and filter candidates; a deterministic check or
+   held-out labels still decide keep (see **Verifier the loop cannot edit** in [experiment
+   loops](autonomous-experiment-loops.md)). Put a deterministic filter in front of self-generated tasks:
+   ungated self-play collapsed while gated runs held. Where failures can earn partial credit, do not
+   promote on self-voted success: training on execution-consensus votes lowered the best-of-many ceiling
+   even as zero-shot accuracy rose, because wrong programs with partly right behavior earn reward (both
+   measured on weight training: re-test on a harness). Resampling the same judge tripled judge time and
+   added nothing; its misses vote together. Cap rounds on a self-generated signal at about 3 (heuristic).
 
-Evidence: kb://agentic-capability-reports/notes/2026-11-14-self-evolving-harness-archive-search-vs-hill-climb.md, kb://agentic-capability-reports/notes/2026-11-14-multi-round-self-evolution-drift-and-maintenance-rules.md
+Evidence: kb://agentic-capability-reports/notes/2026-11-14-self-evolving-harness-archive-search-vs-hill-climb.md, kb://agentic-capability-reports/notes/2026-11-14-multi-round-self-evolution-drift-and-maintenance-rules.md, kb://agentic-capability-reports/notes/2026-11-14-self-improvement-without-ground-truth-feedback-signals.md
