@@ -321,17 +321,18 @@ The system SHALL automatically navigate to the next agent needing attention afte
 
 ### R3.3a: Reliable Empty-Terminal Enter [F3.3] — SHALL — `done`
 
-The system SHALL treat Enter on an empty managed terminal input as a server-authorized attention-advance intent, not as raw PTY Enter.
+The system SHALL treat Enter on an empty managed terminal input as dashboard navigation to the next task, not as a raw PTY Enter, unless the screen shows that Enter belongs to the agent. The dashboard decides this locally, from its own record of what was typed and from the text on the terminal screen. It does not wait for the server, because waiting on server-side prompt readiness made empty Enter work once and then stall.
 
 **Acceptance criteria:**
 - Every Kookr-controlled PTY input write flows through a terminal input writer boundary that advances `readinessVersion` before attempting the write.
-- Empty-terminal Enter carries a server terminal-input epoch/readiness snapshot and the server-owned dashboard selection version.
-- The server rejects stale epoch, stale readiness, unknown prompt, blocked prompt, missing session, and stale selection intents without forwarding `\r`.
-- Only parent `Notification(idle_prompt)` marks a prompt ready in V1; `Stop` returns the prompt state to unknown.
-- Duplicate or stale empty-enter intents are consumed/rejected by an atomic selection compare-and-swap.
+- Empty-terminal Enter moves to the next task by the same rule as Enter in an empty reply box: it cycles the active findings while any exist, and otherwise cycles the tasks. It never dismisses a finding and never writes `\r` to the PTY.
 - While the agent shows a selection menu (a question, a permission prompt, the folder-trust dialog), Enter is forwarded to the agent so it confirms the highlighted choice. This holds wherever the menu is drawn above the blank remainder of the screen, including partway down a screen the session has not filled yet.
+- While the agent's input box visibly holds text that the dashboard did not see being typed (for example a prompt the adapter injected), Enter is forwarded to the agent.
+- Each advance records, in the `shortcut_used` telemetry event (`action: 'advance_empty_input'`), where the Enter came from (`source`: `terminal`, `reply_box` or `global`), the selected agent's turn state (`turnState`, or null when the agent reports none), and what the terminal screen check saw (`screen`): `input_box` when the idle, empty input box was visible, `unrecognized` when neither a menu nor an input box was found, and `not_checked` for the reply box and the dashboard-wide Enter, which run no screen check.
 
-**Evidence:** `src/server/terminal-input-coordinator.ts`, `src/server/dashboard-selection-controller.ts`, `src/server/session-bridge.ts`, `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/TerminalPanel.tsx`, `src/frontend/terminal-input-draft.ts`, `src/server/terminal-input-coordinator.test.ts`, `src/server/dashboard-selection-controller.test.ts`, `src/server/terminal-input-boundary.test.ts`, `src/frontend/components/DetailPanel.empty-enter.test.ts`, `src/frontend/components/TerminalPanel.test.ts`, `src/frontend/terminal-input-draft.xterm.test.ts`.
+The server still implements a server-authorized intent path: an `emptyEnterIntent` request checked against the terminal-input epoch, prompt readiness and the dashboard selection version, answered by an `emptyEnterDecision` message. The dashboard does not send that request and ignores the `emptyEnterDecision` message, so this requirement does not depend on it.
+
+**Evidence:** `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/TerminalPanel.tsx`, `src/frontend/terminal-input-draft.ts`, `src/frontend/store/slices/triage-navigation-slice.ts` (`advanceEmptyEnter`), `src/frontend/App.tsx` (dashboard-wide Enter), `src/server/terminal-input-coordinator.ts`, `src/server/terminal-input-boundary.test.ts`, `src/frontend/components/DetailPanel.empty-enter.test.ts`, `src/frontend/components/TerminalPanel.test.ts`, `src/frontend/terminal-input-draft.test.ts`, `src/frontend/terminal-input-draft.xterm.test.ts`. The unused intent path: `src/server/ws.ts` (`emptyEnterIntent`), `src/server/dashboard-selection-controller.ts`, `src/server/terminal-input-coordinator.test.ts`, `src/server/dashboard-selection-controller.test.ts`.
 
 ### R3.4: "All Clear" State [F3.4] — SHOULD — `partial`
 
@@ -2288,7 +2289,7 @@ See [speech recognition usage](reference/speech-recognition.md).
 | R3.1 | F3.1 | SHALL | done | AgentDetail, useStore |
 | R3.2 | F3.2 | SHALL | done | AgentDetail, ws, claude-code-adapter |
 | R3.3 | F3.3 | SHALL | done | attention-queue, loop.test |
-| R3.3a | F3.3 | SHALL | done | terminal-input-coordinator, dashboard-selection-controller, session-bridge, DetailPanel |
+| R3.3a | F3.3 | SHALL | done | DetailPanel, TerminalPanel, terminal-input-draft, triage-navigation-slice, terminal-input-coordinator |
 | R3.4 | F3.4 | SHOULD | partial | attention-queue, AgentDetail |
 | R3.5 | F3.5 | SHOULD | done | AgentList, useStore |
 | R3.6 | F3.6 | SHALL | done | attention-queue, ws, loop.test |

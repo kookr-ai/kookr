@@ -1219,7 +1219,15 @@ export function App() {
         && globalEnterShouldNavigate(document.activeElement ?? (e.target as Element | null))
       ) {
         e.preventDefault();
-        track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'global' });
+        track({
+          type: 'shortcut_used',
+          key: 'Enter',
+          action: 'advance_empty_input',
+          context: 'global',
+          source: 'global',
+          screen: 'not_checked',
+          turnState: selectedAgent?.turnState ?? null,
+        });
         advanceEmptyEnter();
       }
     }

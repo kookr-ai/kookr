@@ -33,6 +33,7 @@ import { DecisionCard } from './DetailPanel/DecisionCard.js';
 import { TaskFactsColumn } from './DetailPanel/TaskFactsColumn.js';
 import { usePaneAtLeast, FACTS_DOCK_MIN_PANE_PX } from './DetailPanel/use-pane-at-least.js';
 import { appendDictation } from '../append-dictation.js';
+import type { EmptyEnterAdvanceScreen } from '../terminal-input-draft.js';
 import { TaskCompletionDigest } from './TaskCompletionDigest.js';
 import { TranscriptView, TranscriptToggle } from './TranscriptView.js';
 
@@ -599,7 +600,10 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     setPermissionButtonsDisabled(false);
   }, [agent?.agentId, suggestion]);
 
-  const handleEmptyEnterAdvance = useCallback(() => {
+  // `screen` is what the terminal's screen check saw; the reply box runs no
+  // screen check. Recording it with the turn state makes an advance that
+  // should have answered a menu visible in telemetry (#3568).
+  const handleEmptyEnterAdvance = useCallback((screen: EmptyEnterAdvanceScreen | 'not_checked') => {
     if (!hasAgent) return;
     // Empty Enter is pure navigation — it never dismisses a finding. The
     // finding-vs-healthy cursor rule lives in the store (advanceEmptyEnter) so
@@ -607,9 +611,17 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     // Local dashboard navigation must not depend on terminal readiness: the
     // server-side terminal-input coordinator can lag until an idle notification
     // arrives, which made empty Enter appear to work once and then stall.
-    track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'input_focused' });
+    track({
+      type: 'shortcut_used',
+      key: 'Enter',
+      action: 'advance_empty_input',
+      context: 'input_focused',
+      source: screen === 'not_checked' ? 'reply_box' : 'terminal',
+      screen,
+      turnState: agent?.turnState ?? null,
+    });
     advanceEmptyEnter();
-  }, [hasAgent, advanceEmptyEnter]);
+  }, [hasAgent, advanceEmptyEnter, agent?.turnState]);
 
   if (!agent) {
     return (
@@ -832,7 +844,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       if (!input.trim()) {
-        handleEmptyEnterAdvance();
+        handleEmptyEnterAdvance('not_checked');
         return;
       }
       // Plain Enter advances after a finding reply, but healthy direct replies

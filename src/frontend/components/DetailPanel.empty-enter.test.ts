@@ -13,11 +13,13 @@ vi.mock('../telemetry.js', () => ({ track: vi.fn(), trackClick: vi.fn() }));
 vi.mock('./ActivityPanel.js', () => ({ ActivityPanel: () => React.createElement('div', { 'data-testid': 'activity-panel' }) }));
 vi.mock('./GitHubPanel.js', () => ({ GitHubPanel: () => React.createElement('div', { 'data-testid': 'github-panel' }) }));
 vi.mock('./TerminalPanel.js', () => ({
-  TerminalPanel: ({ onEmptySubmit }: { onEmptySubmit?: () => void }) => React.createElement(
+  // The real TerminalPanel reports what its screen check saw; this stand-in
+  // reports an unrecognized screen (no menu, no input box).
+  TerminalPanel: ({ onEmptySubmit }: { onEmptySubmit?: (screen: 'input_box' | 'unrecognized') => void }) => React.createElement(
     'button',
     {
       'data-testid': 'terminal-empty-submit',
-      onClick: onEmptySubmit,
+      onClick: () => onEmptySubmit?.('unrecognized'),
     },
     'terminal',
   ),
@@ -124,6 +126,9 @@ describe('DetailPanel empty Enter behavior', () => {
       key: 'Enter',
       action: 'advance_empty_input',
       context: 'input_focused',
+      source: 'reply_box',
+      screen: 'not_checked',
+      turnState: null,
     });
   });
 
@@ -161,12 +166,12 @@ describe('DetailPanel empty Enter behavior', () => {
 
     expect(sent).toEqual([]);
     expect(useKookrStore.getState().selectedAgentId).toBe(second.agentId);
-    expect(track).toHaveBeenCalledWith({
+    expect(track).toHaveBeenCalledWith(expect.objectContaining({
       type: 'shortcut_used',
       key: 'Enter',
       action: 'advance_empty_input',
       context: 'input_focused',
-    });
+    }));
   });
 
   test('treats whitespace-only input as empty and cycles findings without dismissing', () => {
@@ -228,12 +233,12 @@ describe('DetailPanel empty Enter behavior', () => {
 
     expect(sent).toEqual([]);
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-finding');
-    expect(track).toHaveBeenCalledWith({
+    expect(track).toHaveBeenCalledWith(expect.objectContaining({
       type: 'shortcut_used',
       key: 'Enter',
       action: 'advance_empty_input',
       context: 'input_focused',
-    });
+    }));
   });
 
   test('on a healthy task with no findings, empty Enter advances to the next task without sending skip', () => {
@@ -254,12 +259,12 @@ describe('DetailPanel empty Enter behavior', () => {
 
     expect(sent).toEqual([]);
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
-    expect(track).toHaveBeenCalledWith({
+    expect(track).toHaveBeenCalledWith(expect.objectContaining({
       type: 'shortcut_used',
       key: 'Enter',
       action: 'advance_empty_input',
       context: 'input_focused',
-    });
+    }));
   });
 
   test('on a healthy task, whitespace-only Enter advances without sending skip', () => {
@@ -449,6 +454,7 @@ describe('DetailPanel empty Enter behavior', () => {
       explanation: 'stuck',
       detectedAt: new Date('2026-05-24T16:01:00.000Z'),
     });
+    first.turnState = 'waiting_for_input';
     useKookrStore.setState({ agents: [first, second], selectedAgentId: first.agentId });
     const sent: ClientMessage[] = [];
     root = renderDetailPanel(container, first, (msg) => {
@@ -465,11 +471,17 @@ describe('DetailPanel empty Enter behavior', () => {
     // Same pure-navigation path as the reply input: cycle findings, no skip.
     expect(sent).toEqual([]);
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
+    // The event says the Enter came from the terminal, what the screen check
+    // saw, and the agent's turn state, so an advance that should have answered
+    // a pending question shows up in telemetry (#3568).
     expect(track).toHaveBeenCalledWith({
       type: 'shortcut_used',
       key: 'Enter',
       action: 'advance_empty_input',
       context: 'input_focused',
+      source: 'terminal',
+      screen: 'unrecognized',
+      turnState: 'waiting_for_input',
     });
   });
 
@@ -491,11 +503,11 @@ describe('DetailPanel empty Enter behavior', () => {
 
     expect(sent).toEqual([]);
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
-    expect(track).toHaveBeenCalledWith({
+    expect(track).toHaveBeenCalledWith(expect.objectContaining({
       type: 'shortcut_used',
       key: 'Enter',
       action: 'advance_empty_input',
       context: 'input_focused',
-    });
+    }));
   });
 });

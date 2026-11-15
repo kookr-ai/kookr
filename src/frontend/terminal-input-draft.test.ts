@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classifyEmptyEnterScreen,
   looksLikeInteractiveMenu,
   looksLikeVisibleComposerDraft,
   stripTerminalReports,
@@ -88,6 +89,20 @@ describe('looksLikeVisibleComposerDraft', () => {
     ['ordinary output', 'Tests passed'],
   ])('does not treat a %s as a visible draft', (_name, tail) => {
     expect(looksLikeVisibleComposerDraft(tail)).toBe(false);
+  });
+});
+
+describe('classifyEmptyEnterScreen', () => {
+  it.each([
+    ['selection row', '❯ 1. Submit answers', 'menu'],
+    ['selection footer above an idle composer', 'Enter to select · Esc to cancel\n❯ ', 'menu'],
+    ['composer with a draft', '❯ run tests', 'draft'],
+    ['empty composer', '╭──╮\n❯ \n╰──╯', 'input_box'],
+    ['composer placeholder', '❯ Try "write a test"', 'input_box'],
+    ['unmarked, footerless rows', 'Which option?\n  1. First\n  2. Second', 'unrecognized'],
+    ['empty tail', '', 'unrecognized'],
+  ])('classifies a %s', (_name, tail, expected) => {
+    expect(classifyEmptyEnterScreen(tail)).toBe(expected);
   });
 });
 
