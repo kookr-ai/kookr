@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Terminal } from '@xterm/xterm';
 import {
   advancePastIncompleteEscSequence,
   advancePastIncompleteUtf8,
@@ -125,5 +126,106 @@ describe('advancePastIncompleteEscSequence', () => {
   it('does not move when CSI completed before start', () => {
     const b = new Uint8Array([0x1b, 0x5b, 0x6d, 0x58, 0x59]);
     expect(advancePastIncompleteEscSequence(b, 3)).toBe(3);
+  });
+});
+
+describe('cut inside a long escape string (issue #3565)', () => {
+  const ESC = '\x1b';
+  const ST = `${ESC}\\`;
+
+  /** Plain filler made of printable ASCII lines, no ESC bytes. */
+  function filler(n: number): string {
+    return 'x'.repeat(n - 1) + '\n';
+  }
+
+  it('does not start inside an OSC 8 URL whose opener is far before the cut', () => {
+    // The issue's reproduction: ~70 KB buffer, a 420-byte URL, cut 200 bytes into it.
+    const url = 'https://example.test/' + 'p'.repeat(420 - 'https://example.test/'.length);
+    const opener = `${ESC}]8;;${url}${ST}`;
+    const head = filler(4000);
+    const urlOffset = head.length + `${ESC}]8;;`.length;
+    const tail = `link text${ESC}]8;;${ST} after the link\n` + filler(64 * 1024);
+    const all = head + opener + tail;
+    const buf = enc(all);
+    // Choose maxBytes so the rough cut lands 200 bytes into the URL.
+    const maxBytes = buf.length - (urlOffset + 200);
+
+    const out = dec(cutStreamingAttachSeed(buf, maxBytes));
+
+    expect(out.startsWith('link text')).toBe(true);
+    expect(out).not.toContain('pppp');
+  });
+
+  it('skips to just after BEL when the OSC is BEL-terminated', () => {
+    const buf = enc(`${ESC}]0;${'t'.repeat(500)}\x07TITLE-DONE`);
+    const out = dec(cutStreamingAttachSeed(buf, 'TITLE-DONE'.length + 300));
+    expect(out).toBe('TITLE-DONE');
+  });
+
+  it('leaves the cut alone when a long string ended well before it', () => {
+    const buf = enc(`${ESC}]8;;${'u'.repeat(500)}${ST}` + 'A'.repeat(300) + 'KEEP');
+    const out = dec(cutStreamingAttachSeed(buf, 200));
+    expect(out).toBe('A'.repeat(196) + 'KEEP');
+  });
+
+  it('leaves the cut alone when the string ended with BEL well before it', () => {
+    const buf = enc(`${ESC}]0;title\x07` + 'B'.repeat(300));
+    expect(dec(cutStreamingAttachSeed(buf, 150))).toBe('B'.repeat(150));
+  });
+
+  it('paints the link text, not the URL tail, in xterm.js when the cut lands in an OSC 8 URL', async () => {
+    const url = 'https://example.test/' + 'q'.repeat(400);
+    const all = enc(`${filler(2000)}${ESC}]8;;${url}${ST}LINK${ESC}]8;;${ST}\r\nend\r\n`);
+    // Cut 150 bytes into the URL.
+    const cutAt = all.indexOf(0x71 /* q */) + 150;
+    const seed = cutStreamingAttachSeed(all, all.length - cutAt);
+
+    const terminal = new Terminal({ cols: 80, rows: 5, allowProposedApi: true });
+    try {
+      await new Promise<void>((resolve) => terminal.write(seed, resolve));
+      const buffer = terminal.buffer.active;
+      const rows = Array.from({ length: 5 }, (_, y) => buffer.getLine(y)?.translateToString(true) ?? '');
+      expect(rows.slice(0, 2)).toEqual(['LINK', 'end']);
+    } finally {
+      terminal.dispose();
+    }
+  });
+
+  it('treats APC, DCS, PM and SOS as strings ended by ST', () => {
+    for (const intro of ['_', 'P', '^', 'X']) {
+      const buf = enc(`${ESC}${intro}${'Z'.repeat(400)}${ST}VISIBLE`);
+      const out = dec(cutStreamingAttachSeed(buf, 'VISIBLE'.length + 100));
+      expect(out, `intro ${intro}`).toBe('VISIBLE');
+    }
+  });
+
+  it('does not end a DCS string at BEL (only OSC accepts BEL)', () => {
+    const buf = enc(`${ESC}P${'d'.repeat(200)}\x07${'d'.repeat(200)}${ST}VISIBLE`);
+    // Rough cut lands after the BEL, still inside the DCS body.
+    const out = dec(cutStreamingAttachSeed(buf, 'VISIBLE'.length + 100));
+    expect(out).toBe('VISIBLE');
+  });
+
+  it('resumes at the ESC that cancels an unterminated string', () => {
+    const buf = enc(`${ESC}]8;;${'u'.repeat(400)}${ESC}[0mNEXT`);
+    const out = dec(cutStreamingAttachSeed(buf, `${ESC}[0mNEXT`.length + 100));
+    expect(out).toBe(`${ESC}[0mNEXT`);
+  });
+
+  it('resumes after CAN that cancels a string', () => {
+    const buf = enc(`${ESC}]8;;${'u'.repeat(400)}\x18NEXT`);
+    expect(dec(cutStreamingAttachSeed(buf, 'NEXT'.length + 100))).toBe('NEXT');
+  });
+
+  it('drops the seed when the string is still open at the end of the buffer', () => {
+    const buf = enc(`${ESC}]8;;${'u'.repeat(400)}`);
+    expect(cutStreamingAttachSeed(buf, 100).length).toBe(0);
+  });
+
+  it('still ignores a CSI that began more than the CSI lookback before the cut', () => {
+    // A CSI whose final byte is far after its ESC is malformed; the 96-byte
+    // CSI lookback is unchanged, so the cut is left where it is.
+    const buf = enc(`${ESC}[${'1;'.repeat(100)}m` + 'C'.repeat(50));
+    expect(advancePastIncompleteEscSequence(buf, 150)).toBe(150);
   });
 });
