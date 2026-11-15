@@ -15,9 +15,21 @@
  *
  * Covered signals (any one is enough):
  *  - `stop_failure` with `billing_error` / rate-limit / auth-failed errors
- *  - lastMessage / tool output / pane text matching credit, quota, or
- *    GitHub Actions spending-limit / payment-failure wording (same fingerprint
- *    the CI signal classifier uses for account-level blocks)
+ *  - stop_failure lastMessage / error events / pane text matching credit,
+ *    quota, rate-limit, or GitHub Actions spending-limit / payment-failure
+ *    wording (same fingerprint the CI signal classifier uses for account-level
+ *    blocks)
+ *  - tool output, but ONLY for GitHub Actions account-block wording
+ *    ({@link GITHUB_ACTIONS_ACCOUNT_BLOCK_RE})
+ *
+ * Provenance (issue #3574): tool results and notifications are text the agent
+ * READ, not statements about its own provider requests. A supervisor polling
+ * `GET /api/health` reads `quotaPoller.lastError: "Rate limited (429) ..."`
+ * while every one of its own calls succeeds; matching the generic pattern there
+ * marked healthy tasks paused and armed the provider-paused TTL reclaim. So
+ * notifications are not evidence at all, and tool output counts only for the
+ * GitHub Actions billing block that `gh run view` surfaces for the task's own
+ * CI run (the #1667 / #1694 shape), which no first-party event reports.
  */
 
 import type { AgentEvent } from './agent-events.js';
@@ -76,6 +88,15 @@ export interface ProviderPauseDecision {
   detail?: string;
 }
 
+/**
+ * GitHub Actions account-level block wording only: the run was not started
+ * because of a spending limit or failed payment. Used for tool output, where
+ * the generic provider wording (rate limit, quota, credits) is too often text
+ * the agent merely read about some other system (issue #3574).
+ */
+export const GITHUB_ACTIONS_ACCOUNT_BLOCK_RE =
+  /spending limit|recent account payments|account payment|payment (?:has |method )?fail|exceeded (?:your |the )?(?:included )?minutes|out of minutes|not started because|actions? (?:minutes|billing)/i;
+
 function textLooksPaused(text: string): boolean {
   return PROVIDER_PAUSE_TEXT_RE.test(text);
 }
@@ -124,24 +145,19 @@ export function classifyProviderPause(evidence: ProviderPauseEvidence): Provider
         detail: 'error_event',
       };
     }
-    // Tool results and notification messages often carry GH Actions billing
-    // annotations the agent just fetched via `gh run view`.
+    // Tool results carry GH Actions billing annotations the agent just fetched
+    // via `gh run view` (#1694), so that narrow wording still counts. Generic
+    // rate-limit / quota text in tool output and notifications is something the
+    // agent read, not evidence about its own provider state (#3574).
     if (event.type === 'tool_result') {
       const surface = stringifyToolSurface(event.toolResponse);
-      if (surface && textLooksPaused(surface)) {
+      if (surface && GITHUB_ACTIONS_ACCOUNT_BLOCK_RE.test(surface)) {
         return {
           paused: true,
           reason: PROVIDER_PAUSED_REASON,
           detail: 'tool_result',
         };
       }
-    }
-    if (event.type === 'notification' && textLooksPaused(event.message)) {
-      return {
-        paused: true,
-        reason: PROVIDER_PAUSED_REASON,
-        detail: 'notification',
-      };
     }
   }
 
