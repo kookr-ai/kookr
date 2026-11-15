@@ -702,7 +702,7 @@ delete_head_branch() {
   if declare -F delivery_gate_integration_branch >/dev/null; then
     integration="$(delivery_gate_integration_branch 2>/dev/null || true)"
   fi
-  if [[ -n "$integration" && "$HEAD_REF" == "$integration" ]]; then
+  if [[ -n "$integration" && "$HEAD_REF" == "$integration" ]] && checkout_matches_repo; then
     echo "kookr-merge: head branch $HEAD_REF is the integration branch (.kookr/delivery-gate.json); it was left in place"
     return 0
   fi

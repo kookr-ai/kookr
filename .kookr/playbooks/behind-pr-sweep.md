@@ -53,7 +53,7 @@ runs it, it does not re-decide. For every open PR:
    (`readIntegrationBranch` is in `src/core/delivery-gate-config.ts`)
    → `renderSweepAuditLog(result, <ISO now>)` from a small tsx runner.
    Equivalent manual flow if running by hand:
-   - `gh pr list -R kookr-ai/kookr --state open --limit 100 --json number,title,isDraft,mergeable,mergeStateStatus,statusCheckRollup`
+   - `gh pr list -R kookr-ai/kookr --state open --limit 100 --json number,title,isDraft,mergeable,mergeStateStatus,statusCheckRollup,baseRefName`
    - For each `update-branch` PR: `gh api -X PUT repos/kookr-ai/kookr/pulls/<n>/update-branch` (or `gh pr update-branch <n>`).
    - Re-check state; for each PR now CLEAN + green: `gh pr merge <n> -R kookr-ai/kookr --squash`,
      except, with an integration branch configured, a PR whose base is not that branch.

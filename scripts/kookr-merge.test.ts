@@ -1663,6 +1663,12 @@ describe('integration branch retarget (#3788)', () => {
     expect(result.calls.some((c) => c.startsWith('api --method DELETE') && c.endsWith('/git/refs/heads/feat/x'))).toBe(true);
   });
 
+  it('deletes a staging head branch of a different repository named by --repo', () => {
+    const result = run({ headRef: 'staging' }, INTEGRATION, ['123', '--repo', 'other/thing']);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.calls.some((c) => c.startsWith('api --method DELETE') && c.endsWith('/git/refs/heads/staging'))).toBe(true);
+  });
+
   it('without a config, a head branch named staging is deleted as before', () => {
     const result = run({ headRef: 'staging' }, undefined);
     expect(result.status, result.stderr).toBe(0);

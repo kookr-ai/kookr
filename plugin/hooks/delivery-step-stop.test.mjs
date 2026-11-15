@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { decide, lastTestOutcome, latestVerdict, isParked, hasMergeAuthority, parseIntegrationBranch, isSharedBranch } from './delivery-step-stop.mjs';
+import { decide, lastTestOutcome, latestVerdict, isParked, hasMergeAuthority, parseIntegrationBranch, isSharedBranch, readIntegrationBranch } from './delivery-step-stop.mjs';
 import { taskHasMergeAuthority } from '../../src/core/merge-required.ts';
 import { parseIntegrationBranch as parseIntegrationBranchTs } from '../../src/core/integration-branch.ts';
+import { readIntegrationBranch as readIntegrationBranchTs } from '../../src/core/delivery-gate-config.ts';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 const tu = (id, command) =>
   JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } });
@@ -110,10 +115,64 @@ describe('integration branch (#3797)', () => {
     '{"integrationBranch":"a b"}',
     '{"integrationBranch":""}',
     '{"integrationBranch":3}',
+    '{"prePushGate":"fast"}',
     '{}',
+    '"staging"',
+    '[]',
     'null',
     'not json',
   ])('parser matches src/core/integration-branch.ts for %s', (json) => {
     expect(parseIntegrationBranch(json)).toBe(parseIntegrationBranchTs(json));
+  });
+});
+
+describe('readIntegrationBranch matches src/core/delivery-gate-config.ts (#3797)', () => {
+  const dirs = [];
+  const repo = () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'stop-hook-gate-'));
+    dirs.push(dir);
+    const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+    git('init', '-q', '-b', 'feature');
+    git('config', 'user.email', 't@example.com');
+    git('config', 'user.name', 't');
+    git('commit', '-q', '--allow-empty', '-m', 'root');
+    return { dir, git };
+  };
+  const writeConfig = (dir, json) => {
+    mkdirSync(path.join(dir, '.kookr'), { recursive: true });
+    writeFileSync(path.join(dir, '.kookr', 'delivery-gate.json'), json);
+  };
+  const both = async (dir) => {
+    const js = readIntegrationBranch(dir);
+    expect(js).toBe(await readIntegrationBranchTs(dir));
+    return js;
+  };
+
+  it('no config: null', async () => {
+    const { dir } = repo();
+    expect(await both(dir)).toBeNull();
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('working tree when origin/main is missing', async () => {
+    const { dir } = repo();
+    writeConfig(dir, '{"integrationBranch":"staging"}');
+    expect(await both(dir)).toBe('staging');
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('origin/main wins over the working tree, including its absence', async () => {
+    const { dir, git } = repo();
+    writeConfig(dir, '{"integrationBranch":"staging"}');
+    git('add', '.kookr/delivery-gate.json');
+    git('commit', '-q', '-m', 'config');
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+    expect(await both(dir)).toBe('staging');
+    git('rm', '-q', '.kookr/delivery-gate.json');
+    git('commit', '-q', '-m', 'revert');
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+    writeConfig(dir, '{"integrationBranch":"staging"}');
+    expect(await both(dir)).toBeNull();
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 });

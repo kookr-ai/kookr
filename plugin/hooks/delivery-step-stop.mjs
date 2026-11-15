@@ -184,7 +184,7 @@ export function isSharedBranch(branch, integrationBranch) {
 }
 
 /** Same lookup as `delivery_gate_config_json` (scripts/lib/delivery-gate.sh): origin/main wins. */
-function readIntegrationBranch(cwd) {
+export function readIntegrationBranch(cwd) {
   try {
     sh('git', ['rev-parse', '--verify', '--quiet', 'origin/main'], cwd);
   } catch {
@@ -233,7 +233,7 @@ async function main() {
   try {
     const cwd = event.cwd || process.cwd();
     const branch = sh('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd).trim();
-    if (isSharedBranch(branch, null)) return 0;
+    if (isSharedBranch(branch, null)) return 0; // skip the config read for main/HEAD
     if (isSharedBranch(branch, readIntegrationBranch(cwd))) return 0;
     const list = JSON.parse(sh('gh', ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,headRefOid'], cwd));
     if (!Array.isArray(list) || list.length === 0) return 0;

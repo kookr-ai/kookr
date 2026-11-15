@@ -1,4 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { Task } from '../core/tasks.js';
 import { aSession, aTask } from '../core/__fixtures__/task-builders.js';
 import {
@@ -188,6 +192,35 @@ describe('createMergedPrByBranchProbe (issue #3578)', () => {
     await expect(probe(onStaging)).resolves.toBeNull();
     expect(runGh).not.toHaveBeenCalled();
     expect(readIntegrationBranch).toHaveBeenCalledWith(onStaging);
+  });
+
+  it('by default reads the config from the latest session cwd, falling back to the task cwd (#3797)', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'probe-gate-'));
+    try {
+      execFileSync('git', ['init', '-q', '-b', 'staging'], { cwd: dir });
+      mkdirSync(path.join(dir, '.kookr'));
+      writeFileSync(path.join(dir, '.kookr', 'delivery-gate.json'), '{"integrationBranch":"staging"}');
+      const runGh = vi.fn(async () => ({ stdout: '[]' }));
+      const probe = createMergedPrByBranchProbe({ runGh });
+      const session = (cwd: string) => aSession({ tmuxSession: 'a', gitBranch: 'staging', gitIsWorktree: true, cwd });
+      // Latest session's cwd configures staging.
+      await expect(probe(makeTask({ sessions: [session(dir)] }))).resolves.toBeNull();
+      // The session's worktree is gone: the task cwd still answers.
+      await expect(probe(makeTask({ cwd: dir, sessions: [session(path.join(dir, 'gone'))] }))).resolves.toBeNull();
+      expect(runGh).not.toHaveBeenCalled();
+      // A repository without the config: staging is probed as before.
+      await probe(makeTask({ sessions: [session(tmpdir())] }));
+      expect(runGh).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not read the config for a task that is not a probe candidate (#3797)', async () => {
+    const readIntegrationBranch = vi.fn(async () => 'staging');
+    const probe = createMergedPrByBranchProbe({ runGh: vi.fn(), readIntegrationBranch });
+    await expect(probe(makeTask({ projectId: 'local/thing' }))).resolves.toBeNull();
+    expect(readIntegrationBranch).not.toHaveBeenCalled();
   });
 
   it('a failing config read falls back to the legacy behaviour (#3797)', async () => {

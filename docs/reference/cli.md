@@ -739,7 +739,9 @@ reviewed head. Then:
   from a linked worktree whose base branch is checked out in another worktree,
   that local step fails after the remote merge and `gh` exits 1. On a cross-repo
   PR the branch is deleted in the fork. A branch the repository already deleted
-  is reported as gone. `--preserve-branch` skips deletion.
+  is reported as gone. `--preserve-branch` skips deletion. The configured
+  integration branch is never deleted (merging its promotion PR into `main` says
+  it was left in place).
 - **Closing issues are checked.** Each issue the PR declares as closing (a
   `Closes #N` keyword or a manual link) that is still open is reported on stderr,
   after one re-check `KOOKR_MERGE_CHECK_INTERVAL_SECONDS` later, because GitHub

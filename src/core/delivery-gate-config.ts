@@ -21,8 +21,6 @@ import { parseIntegrationBranch, TRAIN_TARGET_BRANCH } from './integration-branc
 
 const execFileAsync = promisify(execFile);
 
-export { parseIntegrationBranch, TRAIN_TARGET_BRANCH };
-
 export type GitRunner = (args: string[], cwd: string) => Promise<{ ok: boolean; stdout: string }>;
 
 const defaultGit: GitRunner = async (args, cwd) => {

@@ -136,8 +136,13 @@ export interface MergedPrByBranchProbeDeps {
 }
 
 async function integrationBranchOfTask(task: Task): Promise<string | null> {
-  const cwd = task.sessions[task.sessions.length - 1]?.cwd ?? task.cwd;
-  return cwd ? readIntegrationBranch(cwd) : null;
+  // The session's worktree may already be cleaned up; fall back to the task's cwd.
+  const candidates = [task.sessions[task.sessions.length - 1]?.cwd, task.cwd];
+  for (const cwd of new Set(candidates.filter((c): c is string => typeof c === 'string' && c !== ''))) {
+    const branch = await readIntegrationBranch(cwd);
+    if (branch !== null) return branch;
+  }
+  return null;
 }
 
 /**
