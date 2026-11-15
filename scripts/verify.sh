@@ -99,37 +99,38 @@ smoke_lane() { run_lane "Running local-only smoke gates" pnpm test:smoke; }
 hooks_lane() { run_lane "Running hook regression tests" pnpm test:hooks; }
 stt_lane() { run_lane "Running stt sidecar tests" pnpm test:stt; }
 
-# run_concurrently <function>... runs each lane function in the background with
-# its output in its own file, waits for all of them, then prints the outputs:
-# passing lanes first, failing ones last, so the tail of the log (what the train
-# quotes in an issue comment) shows the failure. Returns the exit status of the
-# first failing lane in argument order, or 0.
+# run_concurrently <function>... runs each lane function in the background and
+# waits for all of them. Each lane's output streams as it happens, every line
+# prefixed with `[<function>] `, so a run the train kills on a hang still shows
+# which lane stopped where. Each lane also keeps its own copy, and once all have
+# finished the failing lanes' output is printed again, unprefixed, at the end:
+# the tail of the log (what the train quotes in an issue comment) then shows the
+# failure. Returns the exit status of the first failing lane in argument order,
+# or 0.
 run_concurrently() {
-  local dir fn i status=0
-  local -a pids=() codes=()
+  local dir fn code status=0
+  local -a pids=()
   dir=$(mktemp -d "${TMPDIR:-/tmp}/kookr-verify-lanes.XXXXXX")
-  printf '==> Running concurrently: %s\n' "$*"
+  printf '==> Running concurrently: %s (lane logs in %s)\n' "$*" "$dir"
   for fn in "$@"; do
-    ( set -e; "$fn" ) > "$dir/$fn.log" 2>&1 &
+    # The outer subshell must not stop on the lane's failure: it records the
+    # status. The inner one keeps errexit, so a lane stops at its first failure.
+    ( set +e; ( set -e; "$fn" ); echo "$?" > "$dir/$fn.code" ) 2>&1 \
+      | tee "$dir/$fn.log" \
+      | while IFS= read -r line || [ -n "$line" ]; do printf '[%s] %s\n' "$fn" "$line"; done &
     pids+=("$!")
   done
-  for i in "${!pids[@]}"; do
-    codes[i]=0
-    wait "${pids[i]}" || codes[i]=$?
+  for fn in "${pids[@]}"; do
+    wait "$fn" || true
   done
-  i=0
   for fn in "$@"; do
-    [ "${codes[i]}" -eq 0 ] && cat "$dir/$fn.log"
-    i=$((i + 1))
-  done
-  i=0
-  for fn in "$@"; do
-    if [ "${codes[i]}" -ne 0 ]; then
+    code=$(cat "$dir/$fn.code" 2>/dev/null || echo 1)
+    if [ "$code" -ne 0 ]; then
+      printf '==> Output of failed lane %s:\n' "$fn"
       cat "$dir/$fn.log"
-      printf '==> FAILED (exit %s): %s\n' "${codes[i]}" "$fn"
-      [ "$status" -ne 0 ] || status=${codes[i]}
+      printf '==> FAILED (exit %s): %s\n' "$code" "$fn"
+      [ "$status" -ne 0 ] || status=$code
     fi
-    i=$((i + 1))
   done
   rm -rf "$dir"
   return "$status"
