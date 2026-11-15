@@ -135,6 +135,244 @@ if [ -n "$HEAD_FLAG" ] && [ "$BODY_FILE_PRESENT" -eq 1 ]; then
   fi
 fi
 
+# ===========================================================================
+# Closing-keyword gate (issue #3642). GitHub closes an issue on merge only for a
+# closing keyword (close/fix/resolve + #N) written as plain text. The same text
+# inside inline code or a fenced code block is ignored, and an inline `(#N)`
+# reference never closes anything. This check runs before the checklist, scope
+# and pre-PR-review gates (their early exits cannot skip it) and applies to
+# every repo. (Like everything here it is skipped when the repo/branch cannot
+# be resolved at all — the fail-open exits above.)
+#   - a closing keyword that appears ONLY inside code is denied, and the deny
+#     reason prints the bare form to use instead (when the branch names an
+#     issue, only that issue's keyword is checked);
+#   - when the branch names an issue (`issue-<N>`) and the body mentions #N only
+#     as a `(#N)` reference, the hook allows the command but returns a warning
+#     to the model through hookSpecificOutput.additionalContext.
+# Scanned text: the body parts of the command (inline --body / heredoc bodies)
+# plus the --body-file contents when that file is already readable. Every command is
+# guarded so a parsing hiccup can never trip the ERR trap (which would skip
+# all the later gates).
+# ===========================================================================
+CLOSES_WARN=""
+
+# Print one tab-separated record per finding:
+#   CODE <ref> <bare form>  closing keyword inside inline code / a fenced block
+#   BARE <ref>              closing keyword in plain text (GitHub honours it)
+#   PAREN <n>               a plain-text `(#n)` reference
+# <ref> is the lowercased issue reference (`#12` or `owner/repo#12`).
+# POSIX awk only (macOS ships BSD awk); always exits 0.
+closes_scan() {
+  awk '
+    function emit_kw(text, kind,   low, s, m, ref, i) {
+      low = tolower(text)
+      while (match(low, KW) > 0) {
+        m = substr(text, RSTART, RLENGTH)
+        sub(/^[^A-Za-z]+/, "", m)
+        ref = tolower(m)
+        i = index(ref, "#")
+        while (i > 1 && substr(ref, i - 1, 1) != " " && substr(ref, i - 1, 1) != "\t" && substr(ref, i - 1, 1) != ":") i--
+        ref = substr(ref, i)
+        if (kind == "CODE") print "CODE\t" ref "\t" m
+        else print "BARE\t" ref
+        text = substr(text, RSTART + RLENGTH)
+        low = substr(low, RSTART + RLENGTH)
+      }
+    }
+    function emit_paren(text,   m) {
+      while (match(text, /\(#[0-9]+\)/) > 0) {
+        m = substr(text, RSTART + 2, RLENGTH - 3)
+        print "PAREN\t" m
+        text = substr(text, RSTART + RLENGTH)
+      }
+    }
+    BEGIN {
+      KW = "(^|[^a-z0-9_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[ \t]+([a-z0-9_.-]+/[a-z0-9_.-]+)?#[0-9]+"
+      infence = 0; fchar = ""; flen = 0
+    }
+    {
+      line = $0
+      gsub(/\\`/, "`", line)      # double-quoted --body "…" carries \` escapes
+      # Fences (CommonMark): open on 3+ backticks or tildes (up to 3 spaces of
+      # indent); close only on the SAME character, at least as long, with
+      # nothing but whitespace after it.
+      if (match(line, /^ ? ? ?(```+|~~~+)/) > 0) {
+        f = substr(line, RSTART, RLENGTH); sub(/^ +/, "", f)
+        after = substr(line, RSTART + RLENGTH)
+        if (!infence) {
+          infence = 1; fchar = substr(f, 1, 1); flen = length(f); next
+        }
+        if (substr(f, 1, 1) == fchar && length(f) >= flen && after ~ /^[ \t]*$/) {
+          infence = 0; next
+        }
+      }
+      if (infence) { emit_kw(line, "CODE"); next }
+      # Split on backtick runs; parity resets on every line. An unclosed
+      # trailing backtick is literal text, so its segment counts as plain.
+      n = 0; rest = line
+      while (match(rest, /`+/) > 0) {
+        seg[n++] = substr(rest, 1, RSTART - 1)
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      seg[n++] = rest
+      for (i = 0; i < n; i++) {
+        if (i % 2 == 1 && i < n - 1) emit_kw(seg[i], "CODE")
+        else { emit_kw(seg[i], "BARE"); emit_paren(seg[i]) }
+      }
+    }
+  ' 2>/dev/null || true
+}
+
+# Print only the PR-body text a `gh pr create` command carries: every heredoc
+# body (`--body "$(cat <<'EOF' …)"`, or `cat > f <<EOF … EOF && … --body-file
+# f`) and the quoted value of an inline --body/-b. The title, other flags and
+# chained commands are left out: GitHub never closes an issue from them.
+# POSIX awk only; always exits 0.
+closes_body_text() {
+  awk '
+    BEGIN { RS = "\001" }
+    {
+      cmd = $0
+      # Heredocs: print the body, then cut it out of cmd.
+      while (match(cmd, /<<-?[ \t]*["\047]?[A-Za-z_][A-Za-z0-9_]*["\047]?/) > 0) {
+        d = substr(cmd, RSTART, RLENGTH)
+        strip = (d ~ /^<<-/)
+        sub(/^<<-?[ \t]*["\047]?/, "", d); sub(/["\047]$/, "", d)
+        head = substr(cmd, 1, RSTART - 1)
+        rest = substr(cmd, RSTART + RLENGTH)
+        nl = index(rest, "\n")
+        if (nl == 0) { cmd = head rest; continue }
+        tail = substr(rest, 1, nl - 1)
+        rest = substr(rest, nl + 1)
+        body = ""; found = 0
+        while (length(rest) > 0) {
+          nl = index(rest, "\n")
+          if (nl == 0) { ln = rest; rest = "" } else { ln = substr(rest, 1, nl - 1); rest = substr(rest, nl + 1) }
+          cmp = ln
+          if (strip) sub(/^\t+/, "", cmp)
+          if (cmp == d) { found = 1; break }
+          body = body ln "\n"
+        }
+        printf "%s", body
+        cmd = head tail "\n" rest
+      }
+      # Inline --body/-b "…" or \047…\047 (also --body=…).
+      while (match(cmd, /(^|[ \t])(--body|-b)(=|[ \t]+)["\047]/) > 0) {
+        q = substr(cmd, RSTART + RLENGTH - 1, 1)
+        rest = substr(cmd, RSTART + RLENGTH)
+        val = ""; i = 1; L = length(rest)
+        while (i <= L) {
+          c = substr(rest, i, 1)
+          if (q == "\"" && c == "\\" && i < L) { val = val c substr(rest, i + 1, 1); i += 2; continue }
+          if (c == q) break
+          val = val c; i++
+        }
+        print val
+        cmd = substr(rest, i + 1)
+      }
+    }
+  ' 2>/dev/null || true
+}
+
+closes_keyword_gate() {
+  local text body_file="" abs="" findings d
+  text=$(closes_body_text <<<"$COMMAND") || text=""
+  # Add the --body-file / -F contents when the file already exists. (A body
+  # written by a heredoc in the same command does not exist yet, but then the
+  # heredoc text is part of $COMMAND.)
+  body_file=$(printf '%s\n' "$COMMAND" \
+    | sed -nE 's/.*(^|[[:space:]])(--body-file|-F)[=[:space:]]+"?'"'"'?([^"'"'"'[:space:]]+).*/\3/p' \
+    | head -1) || body_file=""
+  if [ -n "$body_file" ] && [ "$body_file" != "-" ]; then
+    case "$body_file" in
+      /*) abs="$body_file" ;;
+      *) for d in "${CHECKLIST_CWD:-}" "${CWD:-}"; do
+           if [ -n "$d" ] && [ -f "$d/$body_file" ]; then abs="$d/$body_file"; break; fi
+         done ;;
+    esac
+    if [ -n "$abs" ] && [ -f "$abs" ] && [ -r "$abs" ]; then
+      text="$text"$'\n'"$(cat "$abs" 2>/dev/null || true)"
+    fi
+  fi
+
+  findings=$(closes_scan <<<"$text") || findings=""
+  [ -n "$findings" ] || return 0
+
+  # The branch's own issue (`issue-<N>`), when it names one.
+  local issue_n="" issue_re='(^|[^A-Za-z0-9])issue-([0-9]+)([^0-9]|$)'
+  if [[ "${BRANCH:-}" =~ $issue_re ]]; then
+    issue_n="${BASH_REMATCH[2]}"
+  fi
+
+  # Deny: a ref closed only from inside code (no plain-text closer for it).
+  local bare_refs bad="" ref form
+  bare_refs=$(printf '%s\n' "$findings" | awk -F'\t' '$1=="BARE"{print $2}' 2>/dev/null) || bare_refs=""
+  while IFS=$'\t' read -r kind ref form; do
+    [ "$kind" = "CODE" ] || continue
+    # When the branch names its issue, only that issue matters: a fenced
+    # `git log` line such as "fix: resolve #77" is a quote, not an intent.
+    if [ -n "$issue_n" ] && [[ "$ref" != *"#$issue_n" ]]; then
+      continue
+    fi
+    if printf '%s\n' "$bare_refs" | grep -qxF -- "$ref" 2>/dev/null; then
+      continue
+    fi
+    case $'\n'"$bad"$'\n' in *$'\n'"$form"$'\n'*) continue ;; esac
+    bad="${bad:+$bad$'\n'}$form"
+  done <<<"$findings"
+
+  if [ -n "$bad" ]; then
+    local reason
+    reason="PR body has a closing keyword inside inline code or a code block. GitHub ignores it there, so the issue will NOT close on merge. Write it as a bare line outside code instead:
+${bad}
+(If the code text is only an example and should close nothing, rephrase it without the closing keyword.)"
+    if ! jq -n --arg r "$reason" '{
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: $r
+      }
+    }' 2>/dev/null; then
+      printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"PR body has a closing keyword (Closes/Fixes/Resolves #N) inside inline code or a code block; GitHub ignores it there. Write it as a bare line outside code."}}'
+    fi
+    exit 0
+  fi
+
+  # Warn: the branch issue appears only as an inline (#N) reference.
+  [ -n "$issue_n" ] || return 0
+  if printf '%s\n' "$findings" | grep -qxF -- "PAREN"$'\t'"$issue_n" 2>/dev/null \
+     && ! printf '%s\n' "$bare_refs" | grep -qE -- "(^|/[^#]*)#${issue_n}\$" 2>/dev/null; then
+    CLOSES_WARN="pr-workflow-gate: the PR body mentions issue #${issue_n} only as an inline (#${issue_n}) reference. GitHub does not close an issue from that form. If this PR should close the issue, add this bare line to the body (outside code): Closes #${issue_n}"
+  fi
+  return 0
+}
+
+closes_keyword_gate || true
+
+# A warning must reach the model only when the command is allowed (stdout can
+# carry one JSON object). Buffer stdout from here on; at exit, pass through any
+# later gate's output unchanged, or emit the warning when nothing else spoke.
+if [ -n "$CLOSES_WARN" ]; then
+  CLOSES_BUF=$(mktemp "${TMPDIR:-/tmp}/pr-gate-warn.XXXXXX" 2>/dev/null) || CLOSES_BUF=""
+  if [ -n "$CLOSES_BUF" ]; then
+    exec 3>&1 1>"$CLOSES_BUF"
+    closes_flush() {
+      exec 1>&3
+      if [ -s "$CLOSES_BUF" ]; then
+        cat "$CLOSES_BUF" 2>/dev/null || true
+      else
+        jq -n --arg m "$CLOSES_WARN" '{
+          hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: $m }
+        }' 2>/dev/null || true
+      fi
+      rm -f "$CLOSES_BUF" 2>/dev/null || true
+    }
+    trap closes_flush EXIT
+  else
+    echo "$CLOSES_WARN" >&2
+  fi
+fi
+
 # --- Scope check (issue #405 / rfc-oss-extension-distribution) ---
 # Derive the full owner/repo for scope-list lookup. This is SEPARATE from
 # REPO_NAME above (a bare repo name used for the state-file key). A
