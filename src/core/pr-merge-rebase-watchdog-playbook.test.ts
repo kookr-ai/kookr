@@ -109,7 +109,7 @@ describe('pr-merge-rebase-watchdog playbook', () => {
   });
 
   test('respects merge gates via the repo merge wrapper and does not merge in the update tick', () => {
-    expect(pb.body).toContain('pnpm merge');
+    expect(pb.body).toContain('kookr merge');
     expect(pb.body).toMatch(/Don't merge a BEHIND PR in the same tick you update it/i);
   });
 

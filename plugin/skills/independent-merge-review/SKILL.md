@@ -27,7 +27,7 @@ Classify the current repo once, then follow that lane. Do not mix them.
 
 **Hard gate** — `kookr-ai/kookr`. Every autonomous self-merge must carry a
 fresh-context verdict bound to the exact current head. `scripts/kookr-merge.sh`
-(`pnpm merge`) refuses to merge (exit 4) without a `pass` for that head.
+(`kookr merge`) refuses to merge (exit 4) without a `pass` for that head.
 BLOCK, timeout, or a missing verdict starts another correction cycle. Do not
 set `KOOKR_MERGE_REQUIRE_REVIEW=0` for an autonomous merge. Do not weaken this
 repo's merge wrapper.
@@ -86,7 +86,7 @@ opted out, not a human-merge exception.
 git show origin/main:.kookr/delivery-gate.json 2>/dev/null | jq -r '.prePushGate // empty' 2>/dev/null
 ```
 
-- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. When the same file also names an `integrationBranch`, the merge wrapper (`pnpm merge`) retargets the PR to it; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
+- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. When the same file also names an `integrationBranch`, the merge wrapper (`kookr merge`) retargets the PR to it; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
 - **It prints anything else, or nothing (no such file):** keep the full-suite steps below unchanged.
 
 With a fast pre-push gate, "the gate" below is the push's fast gate (static
@@ -124,9 +124,9 @@ specialist pass covers that stage.
 **Amending after a PASS usually invalidates it.** A PASS binds to the exact
 `review-head-sha`. `git commit --amend`, a rebase, a squash, or any new commit
 produces a different sha, so the old PASS no longer applies — even when the
-content looks unchanged — and `pnpm merge` refuses it. One exception: when the
+content looks unchanged — and `kookr merge` refuses it. One exception: when the
 PASS carries `review-patch-id:` and a rebase left every file the PR changes
-untouched, the patch id still matches and `pnpm merge` accepts the PASS with no
+untouched, the patch id still matches and `kookr merge` accepts the PASS with no
 new review. After any other change,
 run a new review for the new head (a full review, or the delta review below
 when it qualifies). Never re-post or edit an old PASS with the new sha.
@@ -446,4 +446,4 @@ Before declaring the merge review done, report:
 
 - [[pre-pr-review]] — the reviewer-specialist fan-out this reuses
 - [[pr-review-triage]] — triaging review comments after they arrive
-- `kookr-post-push` step 6 (wait-then-merge) — where this gate runs before `pnpm merge`
+- `kookr-post-push` step 6 (wait-then-merge) — where this gate runs before `kookr merge`

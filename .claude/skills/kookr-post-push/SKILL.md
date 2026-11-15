@@ -90,9 +90,12 @@ fails with `Auto merge is not allowed for this repository`.
 Use the repo wrapper instead:
 
 ```bash
-pnpm merge <PR_NUMBER>            # equivalent to:
-bash scripts/kookr-merge.sh <PR_NUMBER>
+kookr merge <PR_NUMBER> --repo kookr-ai/kookr   # from your own worktree
 ```
+
+`kookr merge` always runs the merge wrapper of the deployed production checkout, which follows `main`; `pnpm merge` runs the wrapper of the checkout you are in, which may be old and skip the retarget (that is how #3802 landed on `main` unverified). Run it from your own worktree; never change directory to the main checkout to merge. A plugin hook (`merge-retarget-guard`) denies `pnpm merge`, a too-old
+`scripts/kookr-merge.sh`, and a bare `gh pr merge` into `main` while an
+integration branch is configured.
 
 The wrapper first retargets a PR aimed at `main` to `staging` (the integration
 branch named in `.kookr/delivery-gate.json`), then waits for checks and
@@ -105,7 +108,7 @@ or scheduling wakeups. Do not invoke `gh pr merge --auto` on this repo.
 the wrapper additionally refuses (exit 4) unless the PR carries a fresh-context
 reviewer verdict of `pass` with an exact `review-head-sha` for the current head.
 The `review-skipped-timeout` label is telemetry only and never bypasses the
-gate. Before calling `pnpm merge`, run the [[independent-merge-review]] skill:
+gate. Before calling `kookr merge`, run the [[independent-merge-review]] skill:
 it spawns a reviewer blind to your implementation reasoning (Codex lane, Claude
 fallback when Codex is rate-limited), posts the verdict comment, and applies the
 timeout label if no verdict lands within the 10-minute budget; retry up to the

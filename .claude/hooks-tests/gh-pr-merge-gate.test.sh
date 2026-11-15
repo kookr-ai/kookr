@@ -62,12 +62,12 @@ check "no KOOKR_TASK_ID → allow" allow "$(classify "$OUT")" "$OUT"
 # 2. KOOKR_TASK_ID + default require review → deny bare gh pr merge
 OUT=$(run_hook "$(mk_payload 'gh pr merge 42 --squash --delete-branch')" KOOKR_TASK_ID=task-1)
 check "kookr session bare merge → deny" deny "$(classify "$OUT")" "$OUT"
-if [ "$(classify "$OUT")" = "deny" ] && printf '%s' "$OUT" | grep -q 'pnpm merge'; then
+if [ "$(classify "$OUT")" = "deny" ] && printf '%s' "$OUT" | grep -q 'kookr merge'; then
   PASS=$((PASS + 1))
-  printf '  [OK]   deny reason steers to pnpm merge\n'
+  printf '  [OK]   deny reason steers to kookr merge\n'
 else
   FAIL=$((FAIL + 1))
-  printf '  [FAIL] deny reason steers to pnpm merge\n'
+  printf '  [FAIL] deny reason steers to kookr merge\n'
 fi
 
 # 3. KOOKR_MERGE_REQUIRE_REVIEW=0 → allow even in kookr session

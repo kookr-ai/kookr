@@ -71,7 +71,7 @@ pr_create_guard() {
 ## 2. Create the PR
 
 Open every PR against `main`, the default base (your worktree was cut from
-`origin/main`). Do not pass `--base staging`: `pnpm merge` retargets the PR to
+`origin/main`). Do not pass `--base staging`: `kookr merge` retargets the PR to
 `staging` itself (§8).
 
 ```bash
@@ -209,25 +209,22 @@ On this repo (no auto-merge — issue #29) use the wrapper. It retargets a PR
 aimed at `main` to `staging`, squash-merges it into `staging`, **and deletes the
 head branch**. Never merge into `main` or push to `main` or `staging` yourself.
 
-**Run `pnpm merge` from the PR's own worktree**, which was cut from
-`origin/main`, never from the primary checkout or another older worktree.
-`pnpm merge` runs the `scripts/kookr-merge.sh` of the checkout you are in. A
-checkout whose branch predates the integration-branch support has no
-`scripts/lib/delivery-gate.sh`, so it skips the retarget and merges straight
-into `main`, bypassing the train. Check for that file before merging, and
-afterwards confirm the PR's base is `staging` (the output only prints
+**Merge with `kookr merge`, run from the PR's own worktree**, which was cut
+from `origin/main`. Never change directory to the primary checkout or another
+older worktree to merge. `kookr merge` always runs the merge wrapper of the
+deployed production checkout, which follows `main`. `pnpm merge` instead runs
+the `scripts/kookr-merge.sh` of the checkout you are in; a checkout whose branch
+predates the integration-branch support skips the retarget and merges straight
+into `main`, bypassing the train (that is how #3802 landed on `main`
+unverified). The plugin's `merge-retarget-guard` hook denies that case (#3803).
+Afterwards confirm the PR's base is `staging` (the output only prints
 `retargeted PR #<n> from main to staging` when it retargeted, so check the base
 itself). If the PR landed on `main` anyway, report it on the PR and its issue.
 
 ```bash
-cd <the PR's worktree>
-if test -f "$(git rev-parse --show-toplevel)/scripts/lib/delivery-gate.sh"; then
-  pnpm merge <PR_NUMBER>          # = bash scripts/kookr-merge.sh <PR_NUMBER>
+kookr merge <PR_NUMBER> --repo kookr-ai/kookr   # from the PR's own worktree:
                                  # retarget to staging, squash-merge, delete branch
-  gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName   # expect: staging
-else
-  echo "stale checkout: do not merge from here" >&2
-fi
+gh pr view <PR_NUMBER> --repo kookr-ai/kookr --json baseRefName --jq .baseRefName   # expect: staging
 ```
 
 The wrapper deletes the remote head branch through the REST API after GitHub

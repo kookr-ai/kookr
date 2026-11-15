@@ -68,7 +68,7 @@ kookr-ai/kookr; re-run Step 1 if something looks missing.
 
 | Label | When to use |
 |---|---|
-| `local-verified` | CI never executed (Actions budget block) and the local gate passed; `pnpm merge` requires it plus a local-gate comment bound to the head SHA |
+| `local-verified` | CI never executed (Actions budget block) and the local gate passed; `kookr merge` requires it plus a local-gate comment bound to the head SHA |
 | `macos` | Runs the macOS CI job on this PR — add it for changes to shell scripts, hooks, or other platform-sensitive code |
 | `merge-conflict` | Set by the merge watchdog when it cannot auto-resolve a base conflict |
 | `review-skipped-timeout` | Telemetry only: the independent review timed out; it never waives the review gate |

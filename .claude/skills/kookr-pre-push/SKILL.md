@@ -165,4 +165,4 @@ These checks live here (not in the global PR gate) because they apply **before**
 
 - `[[pre-pr-review]]` is the enforced pre-PR gate and the place where the reviewer specialists live
 - `.hooks/pre-push` is the enforced push-time verification
-- `[[kookr-post-push]]` starts after the branch is on GitHub and continues through PR follow-through, including the `pnpm merge <PR>` wrapper that retargets the PR to `staging` and merges it there (issue #29, #3788)
+- `[[kookr-post-push]]` starts after the branch is on GitHub and continues through PR follow-through, including the `kookr merge <PR>` wrapper that retargets the PR to `staging` and merges it there (issue #29, #3788)

@@ -5,7 +5,7 @@
 #
 # Blocks direct PR merges from autonomous Kookr-managed sessions when the
 # independent-review gate is on (KOOKR_MERGE_REQUIRE_REVIEW default on). Agents
-# must use `pnpm merge <PR>` / `bash scripts/kookr-merge.sh <PR>`, which enforces
+# must use `kookr merge <PR>` (the deployed scripts/kookr-merge.sh), which enforces
 # the independent-merge-review verdict contract (issue #1717).
 #
 # Two merge verbs are gated (issue #2944):
@@ -110,7 +110,7 @@ if [ "$is_merge" -eq 0 ]; then
   exit 0
 fi
 
-REASON='Directly merging a PR (bare `gh pr merge`, or `gh api --method PUT .../pulls/<n>/merge`) is blocked in Kookr-managed sessions while KOOKR_MERGE_REQUIRE_REVIEW is on. Use `pnpm merge <PR>` (or `bash scripts/kookr-merge.sh <PR>`) so the independent-merge-review verdict is enforced. For a deliberate human-driven merge only: KOOKR_MERGE_REQUIRE_REVIEW=0 gh pr merge ...'
+REASON='Directly merging a PR (bare `gh pr merge`, or `gh api --method PUT .../pulls/<n>/merge`) is blocked in Kookr-managed sessions while KOOKR_MERGE_REQUIRE_REVIEW is on. Use `kookr merge <PR> --repo <owner/name>` from your own worktree so the independent-merge-review verdict is enforced (it runs the deployed merge wrapper; `pnpm merge` runs the wrapper of the current checkout, which may be old). For a deliberate human-driven merge only: KOOKR_MERGE_REQUIRE_REVIEW=0 gh pr merge ...'
 
 if ! jq -n --arg r "$REASON" '{
   hookSpecificOutput: {
@@ -119,6 +119,6 @@ if ! jq -n --arg r "$REASON" '{
     permissionDecisionReason: $r
   }
 }' 2>/dev/null; then
-  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Directly merging a PR is blocked in Kookr sessions. Use pnpm merge instead."}}'
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Directly merging a PR is blocked in Kookr sessions. Use kookr merge <PR> instead."}}'
 fi
 exit 0

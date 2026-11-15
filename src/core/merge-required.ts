@@ -165,13 +165,13 @@ export function extractPrNumbersFromCommand(command: string): number[] {
     const n = parseInt(match[1]!, 10);
     if (Number.isFinite(n) && n > 0) nums.add(n);
   }
-  // `gh pr merge 123` / `pnpm merge 123` / `gh pr create` with no number yet.
+  // `gh pr merge 123` / `pnpm merge 123` / `kookr merge 123` / `gh pr create` with no number yet.
   const ghMerge = command.match(/\bgh\s+pr\s+merge\s+(\d+)\b/i);
   if (ghMerge) {
     const n = parseInt(ghMerge[1]!, 10);
     if (Number.isFinite(n) && n > 0) nums.add(n);
   }
-  const pnpmMerge = command.match(/\bpnpm\s+merge\s+(\d+)\b/i);
+  const pnpmMerge = command.match(/\b(?:pnpm|kookr)\s+merge\s+(\d+)\b/i);
   if (pnpmMerge) {
     const n = parseInt(pnpmMerge[1]!, 10);
     if (Number.isFinite(n) && n > 0) nums.add(n);

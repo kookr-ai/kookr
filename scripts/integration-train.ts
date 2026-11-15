@@ -428,7 +428,7 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
   // (once, after an alert, never while halted).
   const signalDir = defaultOperatorSignalDir(process.env);
   let signalSeq = 0;
-  const signal = async (name: string, kind: 'alert' | 'clear', title: string, detail: string): Promise<void> => {
+  const signal = async (name: string, kind: 'alert' | 'clear' | 'info', title: string, detail: string): Promise<void> => {
     const key = `integration-train:${name}:${Date.now()}-${process.pid}-${signalSeq++}`;
     await writeOperatorSignal(signalDir, { key, kind, source: 'integration-train', title, detail: detail.slice(0, 2000) });
   };
@@ -436,7 +436,8 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
   const notifier: TrainDeps['notifier'] = {
     async notify(kind: TrainEventKind, detail: string) {
       appendFileSync(p.events, `${JSON.stringify({ at: new Date().toISOString(), kind, detail })}\n`);
-      await signal(kind, 'alert', `integration train: ${kind}`, detail);
+      // `main-bypassed` is a notice (nothing to recover from); every other event is an alert.
+      await signal(kind, kind === 'main-bypassed' ? 'info' : 'alert', `integration train: ${kind}`, detail);
     },
     async healthy() {
       await signal('recovered', 'clear', 'integration train recovered', 'a healthy cycle ran after the last alert');

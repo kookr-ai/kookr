@@ -264,7 +264,7 @@ a parallel flow.
    fails closed. A correction changes the head and therefore requires a new
    verdict. This architecture-refactor tail stays fail-closed even on repos
    whose CLAUDE.md documents independent review as advisory (issue #3027).
-3. **Merge with an exact-head guard.** In `kookr-ai/kookr`, use `pnpm merge` so
+3. **Merge with an exact-head guard.** In `kookr-ai/kookr`, use `kookr merge` so
    the independent verdict is enforced by the repository wrapper. Elsewhere,
    resolve the repository's allowed merge method and use the pull-request merge
    REST endpoint with the reviewed head as its expected `sha`. Never merge

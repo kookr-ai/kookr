@@ -73,7 +73,7 @@ describe('gh-pr-merge-gate.sh advisory-repo split (issue #3027)', () => {
     const cwd = makeRepo('git@github.com:kookr-ai/kookr.git', ADVISORY);
     const out = runHook(cwd, { KOOKR_TASK_ID: 'task-1' }, MERGE);
     expect(denied(out)).toBe(true);
-    expect(out).toContain('pnpm merge');
+    expect(out).toContain('kookr merge');
   });
 
   test('allows bare gh pr merge when origin is not kookr and CLAUDE.md is advisory', () => {
