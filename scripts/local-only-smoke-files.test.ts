@@ -8,6 +8,7 @@ import { assertKookrDiff, snapshotDir, type FileSnapshot } from './local-only-sm
 
 const startupFiles = [
   'last-good-health.json',
+  'plugin-auto-update.json',
   'server.lock.sqlite',
   'tasks.json.pre-sqlite-2026-09-14T02-20-45-356Z',
   'tasks.sqlite',
@@ -55,6 +56,9 @@ describe('local-only smoke filesystem assertion', () => {
     'server.lock.sqlite-journal',
     'tasks.sqlite/extra.json',
     'last-good-health.json.tmp',
+    'plugin-auto-update.json.tmp',
+    'plugin-auto-update.json.bak',
+    'nested/plugin-auto-update.json',
     'tasks.json.pre-sqlite-',
     'tasks.json.pre-sqlite-unrelated',
     'tasks.json.pre-sqlite-2026-09-14T02-20-45-356Z.extra',
