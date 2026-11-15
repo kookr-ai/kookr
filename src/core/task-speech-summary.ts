@@ -1,5 +1,5 @@
 import type { CompletionDigest } from './completion-digest.js';
-import type { LlmClient } from './llm-client.js';
+import { completeLlmWithFailureAudit, type LlmClient } from './llm-client.js';
 import type { TaskStatus, TurnState } from './task-status.js';
 import type { AgentEvent } from './agent-events.js';
 import type { SpeakAgentFallbackReason } from '../shared/contracts/speech.js';
@@ -658,7 +658,10 @@ export async function summarizeTaskForSpeech(
 
   let raw: string | null;
   try {
-    raw = await client.complete({
+    // The server's client (circuit breaker around a fallback chain) returns null on a
+    // timeout or a provider error instead of throwing; the failure category tells a
+    // failed call apart from a reply that was empty.
+    const completion = await completeLlmWithFailureAudit(client, {
       useCase: 'task_speech_summary',
       maxTokens: MAX_OUTPUT_TOKENS,
       system: SYSTEM_PROMPT,
@@ -669,6 +672,10 @@ export async function summarizeTaskForSpeech(
       },
       timeoutMs: TIMEOUT_MS,
     });
+    raw = completion.text;
+    if (!raw && completion.failureCategory !== null && completion.failureCategory !== 'malformed_response') {
+      return fallbackSummary(input, 'timeout');
+    }
   } catch {
     // A timeout and a provider error are reported alike, as the agent speak route does.
     return fallbackSummary(input, 'timeout');

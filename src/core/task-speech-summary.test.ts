@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   buildTaskSpeechActivityLines,
   fallbackTaskSpeechSummary,
@@ -9,6 +9,7 @@ import {
 } from './task-speech-summary.js';
 import { makeSpeakable } from './speakable-text.js';
 import type { LlmClient } from './llm-client.js';
+import { FallbackLlmClient, resetHelperLlmDiagnosticsForTest } from './llm-factory.js';
 import type { AgentEvent } from './agent-events.js';
 
 function mockClient(response: string | null): LlmClient {
@@ -66,6 +67,29 @@ describe('summarizeTaskForSpeech', () => {
       expect(result.usedFallback).toBe(true);
       expect(result.fallbackReason).toBe(reason);
       expect(result.text).toContain('Fix auth is completed');
+    });
+
+    // The server's client never throws for a failed call: FallbackLlmClient (and the
+    // circuit breaker around it) returns null, with the failure category on the side.
+    describe('through the FallbackLlmClient the server uses', () => {
+      afterEach(() => resetHelperLlmDiagnosticsForTest());
+      const provider = (result: string | null | Error): LlmClient => ({
+        provider: 'p',
+        model: 'p-model',
+        complete: vi.fn().mockImplementation(async () => {
+          if (result instanceof Error) throw result;
+          return result;
+        }),
+      });
+
+      test.each<[string, string | null | Error, string]>([
+        ['the provider times out', Object.assign(new Error('timed out'), { name: 'TimeoutError' }), 'timeout'],
+        ['the provider is down', Object.assign(new Error('Service Unavailable'), { status: 503 }), 'timeout'],
+        ['the provider replies with nothing', null, 'empty'],
+      ])('reports the reason when %s', async (_label, result, reason) => {
+        const summary = await summarizeTaskForSpeech(new FallbackLlmClient([provider(result)]), baseInput);
+        expect(summary).toMatchObject({ usedFallback: true, fallbackReason: reason });
+      });
     });
 
     test('a summary the model wrote carries no reason', async () => {

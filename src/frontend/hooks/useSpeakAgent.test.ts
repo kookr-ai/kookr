@@ -492,6 +492,17 @@ describe('useSpeakAgent request shape', () => {
       __resetDndForTests();
     });
 
+    test('a clip spoken from template wording is remembered as such, so the message list can mark it (issue #3631)', async () => {
+      mount(async () => clipResponse({ usedFallback: true, fallbackReason: 'timeout' }));
+      await speakAndSettle();
+      expect(getLastClip()!.usedFallback).toBe(true);
+
+      mount(async () => clipResponse({ clipId: 'clip-srv-2' }));
+      await speakAndSettle();
+      expect(getLastClip()!.clipId).toBe('clip-srv-2');
+      expect(getLastClip()!.usedFallback).toBeUndefined();
+    });
+
     test('a played clip is remembered with its server clip id, starts unheard and is heard when it finishes in a visible tab', async () => {
       mount(async () => clipResponse());
       await speakAndSettle();
