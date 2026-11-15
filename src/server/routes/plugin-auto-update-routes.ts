@@ -120,6 +120,7 @@ export function registerPluginAutoUpdateRoutes(app: Hono, deps: PluginAutoUpdate
       await service.dismissBanner(id);
       return c.json<AutoUpdateActionResult>({ status: 'ok', plugin: await service.viewFor(id) });
     } catch (err) {
+      if (err instanceof PluginMutationBusyError) return busyResponse(c, err, id);
       console.error(`[plugins] auto-update dismiss-banner failed id=${id}: ${errorMessage(err)}`);
       return c.json<AutoUpdateActionError>({ error: errorMessage(err), pluginId: id }, 500);
     }

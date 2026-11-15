@@ -284,10 +284,11 @@ keep that honest without inventing a second store:
   reuses the mechanism the auto-update module has for `apply-when-idle` plugins,
   and it is a write to the operator's user settings
   (`extraKnownMarketplaces.<marketplace>.autoUpdate` in
-  `~/.claude/settings.json`). That mechanism records the value it found, writes
-  `false`, keeps it `false` while Kookr owns the decision, and restores exactly
-  the recorded value when the last fleet plugin from that marketplace is
-  removed. It therefore **does** override an operator's own `true` for as long
+  `~/.claude/settings.json`), plus any higher-precedence settings file that
+  sets the flag to `true` and would otherwise override it. That mechanism
+  records the value each file held, writes `false`, keeps it `false` while
+  Kookr owns the decision, and restores exactly each recorded value when the
+  last fleet plugin from that marketplace is removed. It therefore **does** override an operator's own `true` for as long
   as the marketplace has a fleet plugin, and it changes auto-update for the
   operator's own sessions too. Because of that it must not be silent, and it
   ships in **slice 3**, with the screen that can disclose it: switching on the
@@ -295,11 +296,13 @@ keep that honest without inventing a second store:
   disclosure with this effect spelled out, and the manager shows "updates
   controlled by Kookr" on the marketplace. Slices 1 and 2 only detect. The pin
   is released, and the recorded value restored, when the last fleet plugin of
-  the marketplace is removed **or** when the kill switch is set. One known limit
-  of the reused mechanism is carried over and must be covered by slice 3's
-  tests: it reads the flag as resolved across all settings scopes but writes and
-  restores at user scope only, so an operator value set at project scope is
-  neither overridden nor restored correctly.
+  the marketplace is removed **or** when the kill switch is set. The
+  mechanism reads each settings file's own value, keeps the user-scope pin
+  (every session reads it, whatever its folder), and also pins any
+  higher-precedence file that sets `true`, so an operator value set at project
+  or local scope is both overridden and restored (issue #3504). The project
+  scopes it sees are those of the Kookr server's folder; a `true` in another
+  repository's project settings still overrides the pin for sessions there.
 - **Say so.** The record is "version at spawn". There is no pin and no
   downgrade. Undoing a bad plugin release means releasing a fixed version in the
   marketplace and updating again.

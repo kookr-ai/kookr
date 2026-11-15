@@ -17,10 +17,18 @@ import {
   AUTO_UPDATE_POLICIES,
   DEFAULT_AUTO_UPDATE_POLICY,
   type AutoUpdateBanner,
+  type AutoUpdateFlagScope,
   type AutoUpdatePolicy,
   type AutoUpdateSnapshotMeta,
   type AutoUpdateStoreData,
 } from '../../shared/contracts/plugins.js';
+import { SETTINGS_SCOPES_HIGHEST_FIRST, type SettingsScope } from '../../core/claude-settings/settings-store.js';
+
+// Compile-time guard: the contract's scope union must stay identical to the
+// settings store's `SettingsScope` (the contract cannot import from core).
+type Equal<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const FLAG_SCOPE_MATCHES_SETTINGS_SCOPE: Equal<AutoUpdateFlagScope, SettingsScope> = true;
+void FLAG_SCOPE_MATCHES_SETTINGS_SCOPE;
 
 export const AUTO_UPDATE_STORE_FILENAME = 'plugin-auto-update.json';
 export const AUTO_UPDATE_STORE_VERSION = 1;
@@ -34,6 +42,10 @@ function emptyData(): AutoUpdateStoreData {
     snapshots: {},
     autoUpdateOwnership: {},
   };
+}
+
+function isFlagScope(value: unknown): value is AutoUpdateFlagScope {
+  return typeof value === 'string' && (SETTINGS_SCOPES_HIGHEST_FIRST as readonly string[]).includes(value);
 }
 
 function isPolicy(value: unknown): value is AutoUpdatePolicy {
@@ -97,9 +109,16 @@ function coerceData(parsed: unknown): AutoUpdateStoreData {
   }
   for (const [marketplace, o] of Object.entries(obj.autoUpdateOwnership ?? {})) {
     if (typeof o !== 'object' || o === null) continue;
-    const prev = (o as { previousValue?: unknown }).previousValue;
+    const { previousValue: prev, alsoPinned } = o as { previousValue?: unknown; alsoPinned?: unknown };
     if (prev === true || prev === false || prev === null) {
-      out.autoUpdateOwnership[marketplace] = { previousValue: prev };
+      const pins: Partial<Record<AutoUpdateFlagScope, boolean | null>> = {};
+      if (typeof alsoPinned === 'object' && alsoPinned !== null) {
+        for (const [scope, v] of Object.entries(alsoPinned)) {
+          if (isFlagScope(scope) && (v === true || v === false || v === null)) pins[scope] = v;
+        }
+      }
+      out.autoUpdateOwnership[marketplace] =
+        Object.keys(pins).length > 0 ? { previousValue: prev, alsoPinned: pins } : { previousValue: prev };
     }
   }
   return out;

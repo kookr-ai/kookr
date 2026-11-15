@@ -50,6 +50,33 @@ describe('AutoUpdateStore', () => {
     expect(Object.keys(data.snapshots)).toEqual(['a@m']);
   });
 
+  test('autoUpdateOwnership keeps valid higher-scope pins across a round trip; drops invalid entries', async () => {
+    await store.update((d) => {
+      d.autoUpdateOwnership.mkt = { previousValue: true, alsoPinned: { projectLocal: true, userLocal: null } };
+      d.autoUpdateOwnership.legacy = { previousValue: null };
+    });
+    expect((await store.read()).autoUpdateOwnership).toEqual({
+      mkt: { previousValue: true, alsoPinned: { projectLocal: true, userLocal: null } },
+      legacy: { previousValue: null },
+    });
+
+    writeFileSync(
+      join(dir, AUTO_UPDATE_STORE_FILENAME),
+      JSON.stringify({
+        version: 1,
+        autoUpdateOwnership: {
+          mkt: { previousValue: false, alsoPinned: { bogus: true, project: 'yes', projectLocal: false } },
+          other: { previousValue: null, alsoPinned: { bogus: true } },
+        },
+      }),
+    );
+    // Unknown scopes and non-boolean values are dropped; the base provenance value is kept.
+    expect((await store.read()).autoUpdateOwnership).toEqual({
+      mkt: { previousValue: false, alsoPinned: { projectLocal: false } },
+      other: { previousValue: null },
+    });
+  });
+
   test('update() mutates and persists atomically', async () => {
     await store.update((d) => {
       d.observed['a@m'] = '2.0.0';

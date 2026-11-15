@@ -21,6 +21,14 @@ import { join } from 'node:path';
 /** The settings scopes Claude Code reads, highest precedence first. */
 export type SettingsScope = 'projectLocal' | 'project' | 'userLocal' | 'user';
 
+/** Every {@link SettingsScope} in Claude Code's precedence order, highest first. */
+export const SETTINGS_SCOPES_HIGHEST_FIRST: readonly SettingsScope[] = ['projectLocal', 'project', 'userLocal', 'user'];
+
+/** True when scope `a` takes precedence over scope `b` (a setting in `a` overrides one in `b`). */
+export function scopeOutranks(a: SettingsScope, b: SettingsScope): boolean {
+  return SETTINGS_SCOPES_HIGHEST_FIRST.indexOf(a) < SETTINGS_SCOPES_HIGHEST_FIRST.indexOf(b);
+}
+
 /** Resolved tri-state enablement for a plugin. */
 export type Enablement = 'enabled' | 'disabled' | 'default';
 
@@ -236,6 +244,22 @@ export class ClaudeSettingsStore {
       if (typeof value === 'boolean') return value;
     }
     return undefined;
+  }
+
+  /**
+   * The explicit per-marketplace `autoUpdate` boolean held by EACH scope file
+   * (a scope that does not set it is absent from the result). Unlike
+   * {@link readAutoUpdate} this does not resolve precedence: a writer that must
+   * restore each file exactly needs every file's own value, and one that wants
+   * its value to take effect must also cover any higher-precedence scope.
+   */
+  async readAutoUpdateByScope(marketplace: string): Promise<Partial<Record<SettingsScope, boolean>>> {
+    const out: Partial<Record<SettingsScope, boolean>> = {};
+    for (const { scope, data } of await this.loadScopes()) {
+      const value = data.extraKnownMarketplaces?.[marketplace]?.autoUpdate;
+      if (typeof value === 'boolean') out[scope] = value;
+    }
+    return out;
   }
 
   /**

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerPluginAutoUpdateRoutes } from './plugin-auto-update-routes.js';
 import { AutoUpdateStore } from '../plugin-manager/auto-update-store.js';
+import { PluginMutationService } from '../plugin-manager/mutation-service.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type { AutoUpdateActionResult, AutoUpdateSurface } from '../../shared/contracts/plugins.js';
 
@@ -17,7 +18,7 @@ describe('plugin auto-update routes', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  function makeApp(): { app: Hono; dir: string } {
+  function makeApp(pluginMutationService?: PluginMutationService): { app: Hono; dir: string } {
     dir = mkdtempSync(join(tmpdir(), 'plugin-au-routes-'));
     home = mkdtempSync(join(tmpdir(), 'plugin-au-home-'));
     mkdirSync(join(home, '.claude'), { recursive: true });
@@ -29,6 +30,7 @@ describe('plugin auto-update routes', () => {
       serverCwd: dir,
       serverPort: 0,
       hookHomeDir: home,
+      ...(pluginMutationService ? { pluginMutationService } : {}),
     });
     return { app, dir };
   }
@@ -87,6 +89,25 @@ describe('plugin auto-update routes', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as AutoUpdateActionResult;
     expect(body.plugin.banner).toBeNull();
+  });
+
+  it('dismiss-banner returns 409 and keeps the banner while another mutation holds the lock', async () => {
+    const mutation = new PluginMutationService();
+    const { app, dir: kookrDir } = makeApp(mutation);
+    const store = new AutoUpdateStore(kookrDir);
+    await store.update((d) => {
+      d.banners['a@m'] = { pluginId: 'a@m', kind: 'verify-failed', message: 'm', raisedAt: 't' };
+    });
+    let release!: () => void;
+    const held = mutation.withLock('test-holder', () => new Promise<void>((r) => (release = r)));
+    try {
+      const res = await app.request('/api/plugins/a@m/auto-update/dismiss-banner', { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect((await store.read()).banners['a@m']).toBeDefined();
+    } finally {
+      release();
+      await held;
+    }
   });
 
   it('evaluate returns 200 with the plugin view (degrades gracefully with no claude binary)', async () => {

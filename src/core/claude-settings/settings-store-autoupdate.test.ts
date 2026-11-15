@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ClaudeSettingsStore, applyAutoUpdateEdit, defaultScopeFiles } from './settings-store.js';
+import { ClaudeSettingsStore, applyAutoUpdateEdit, defaultScopeFiles, scopeOutranks } from './settings-store.js';
 
 const identityLock = <T>(fn: () => Promise<T>): Promise<T> => fn();
 
@@ -41,6 +41,15 @@ describe('applyAutoUpdateEdit (pure)', () => {
   });
 });
 
+describe('scopeOutranks', () => {
+  test('follows Claude Code precedence: projectLocal > project > userLocal > user', () => {
+    expect(scopeOutranks('projectLocal', 'user')).toBe(true);
+    expect(scopeOutranks('project', 'userLocal')).toBe(true);
+    expect(scopeOutranks('user', 'userLocal')).toBe(false);
+    expect(scopeOutranks('user', 'user')).toBe(false);
+  });
+});
+
 describe('ClaudeSettingsStore.writeAutoUpdate (write + revert)', () => {
   let home: string;
   let cwd: string;
@@ -72,6 +81,16 @@ describe('ClaudeSettingsStore.writeAutoUpdate (write + revert)', () => {
     expect(r.previousValue).toBe(false);
     expect(await store.readAutoUpdate('mkt')).toBeUndefined();
     expect(JSON.parse(readFileSync(userSettings, 'utf8')).enabledPlugins).toEqual({ 'a@mkt': true });
+  });
+
+  test('readAutoUpdateByScope reports each file\'s own value; readAutoUpdate the highest-precedence one', async () => {
+    expect(await store.readAutoUpdateByScope('mkt')).toEqual({});
+
+    await store.writeAutoUpdate('mkt', false, { scope: 'user', withLock: identityLock });
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    await store.writeAutoUpdate('mkt', true, { scope: 'projectLocal', withLock: identityLock });
+    expect(await store.readAutoUpdateByScope('mkt')).toEqual({ user: false, projectLocal: true });
+    expect(await store.readAutoUpdate('mkt')).toBe(true);
   });
 
   test('backs the file up before writing', async () => {
