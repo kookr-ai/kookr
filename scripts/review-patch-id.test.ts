@@ -1,5 +1,5 @@
 /**
- * review-patch-id.sh: the stable patch id of a PR's own diff (#3788).
+ * review-patch-id.sh: an id of the exact file versions a PR changes (#3788).
  * Runs the real script against throwaway git repos; the PR mode additionally
  * uses a stub `gh` and a bare origin that carries refs/pull/<n>/head.
  */
@@ -103,7 +103,11 @@ describe('review-patch-id.sh (local refs)', () => {
     expect(after).not.toBe(before);
   });
 
-  it('is stable when the base moves in the SAME file far from the hunk', () => {
+  it('prints a DIFFERENT id after a rebase onto a base that changed the SAME file', () => {
+    // Intended, fail-closed trade-off: the id names the exact blobs the PR
+    // changes, so a base that also edited a file the PR touches changes the
+    // PR's "old" blob and therefore the id, even far from the hunk. The
+    // reviewer re-reviews instead of the gate guessing the change is the same.
     const repo = makeRepo();
     const lines = Array.from({ length: 40 }, (_, i) => `line ${i}`);
     commitFile(repo, 'big.txt', `${lines.join('\n')}\n`);
@@ -118,7 +122,27 @@ describe('review-patch-id.sh (local refs)', () => {
     git(repo, 'rebase', '-q', 'main');
     const after = run(repo, ['main', 'feature']);
     expect(after.status, after.stderr).toBe(0);
-    expect(after.stdout).toBe(before);
+    expect(after.stdout).toMatch(/^[0-9a-f]{40}$/);
+    expect(after.stdout).not.toBe(before);
+  });
+
+  it('differs for the same edit made in the first vs the second of two identical functions', () => {
+    const body = (name: string) => `function ${name}(u) {\n  if (u.flag) {\n    return deny();\n  }\n  return 0;\n}\n`;
+    const original = `${body('check_admin')}\n${body('check_guest')}`;
+    const edit = (text: string, fn: string) =>
+      text.replace(new RegExp(`(function ${fn}\\(u\\) \\{\\n  if \\(u.flag\\) \\{\\n    return )deny\\(\\)`), '$1allow()');
+    const make = (fn: string) => {
+      const repo = makeRepo();
+      commitFile(repo, 'auth.js', original);
+      git(repo, 'checkout', '-q', '-b', 'feature');
+      const changed = edit(original, fn);
+      expect(changed).not.toBe(original);
+      commitFile(repo, 'auth.js', changed);
+      const r = run(repo, ['main']);
+      expect(r.status, r.stderr).toBe(0);
+      return r.stdout;
+    };
+    expect(make('check_admin')).not.toBe(make('check_guest'));
   });
 
   describe('is sensitive to every content byte', () => {

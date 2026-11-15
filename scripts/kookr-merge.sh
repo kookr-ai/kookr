@@ -50,8 +50,10 @@
 # integration train promotes the change. Inert without the config.
 #
 # A verdict may also carry `review-patch-id:` (scripts/review-patch-id.sh), the
-# stable patch id of the PR's own diff. The gate then accepts a pass whose head
-# SHA moved (a clean rebase) as long as the PR's current patch id still equals it.
+# id of the exact file versions the PR changes. The gate then accepts a pass whose
+# head SHA moved as long as the PR's current id still equals it. A rebase keeps the
+# id only when the new base did not touch the files the PR changes; otherwise the
+# reviewer must re-review.
 #
 # Also reachable from any repository as `kookr merge <PR> [--repo OWNER/NAME]`.
 #
@@ -309,7 +311,7 @@ require_review_verdict() {
       ;;
     *)
       echo "kookr-merge: BLOCKED by the independent-review gate: ${decision#block:}" >&2
-      echo "kookr-merge: the latest reviewer verdict must be 'pass' with review-head-sha equal to the current head ($head_sha), or with review-patch-id equal to the PR's current diff patch id." >&2
+      echo "kookr-merge: the latest reviewer verdict must be 'pass' with review-head-sha equal to the current head ($head_sha), or with review-patch-id equal to the id of the exact file versions the PR currently changes (it survives a rebase only when the base did not touch those files)." >&2
       echo "kookr-merge: '$KOOKR_REVIEW_TIMEOUT_LABEL' is telemetry only and cannot bypass review." >&2
       echo "kookr-merge: run the independent-merge-review skill, or set KOOKR_MERGE_REQUIRE_REVIEW=0 for a manual merge." >&2
       return 4
@@ -731,6 +733,14 @@ unclosed_issues() {
   done
 }
 
+# body_closing_numbers — read a PR body on stdin and print the same-repository
+# issue numbers it closes by keyword (close/closes/closed, fix/fixes/fixed,
+# resolve/resolves/resolved, optional colon, whitespace, `#N`), one per line.
+# `owner/repo#N` and URLs never match: the keyword must be followed by `#`.
+body_closing_numbers() {
+  jq -r '[(.body // "") | scan("(?i)(?<![A-Za-z0-9_])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\\s+#([0-9]+)(?![0-9A-Za-z_])") | .[0]] | .[]' 2>/dev/null
+}
+
 # report_open_closing_issues — after the merge, report every issue the PR
 # declares as closing (closingIssuesReferences: a `Closes #N` keyword or a
 # manual link) that is still open. GitHub closes them asynchronously, and only
@@ -739,7 +749,7 @@ unclosed_issues() {
 # Report only: never changes the exit code.
 report_open_closing_issues() {
   local refs="" list="" unclosed="" slug number state
-  if ! refs="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json closingIssuesReferences 2>/dev/null)"; then
+  if ! refs="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json closingIssuesReferences,body 2>/dev/null)"; then
     echo "kookr-merge: could not read the issues PR #$PR declares as closing (gh too old?); check them by hand" >&2
     return 0
   fi
@@ -747,18 +757,20 @@ report_open_closing_issues() {
     (.closingIssuesReferences // [])[]
     | select(.number != null and (.repository.owner.login // "") != "" and (.repository.name // "") != "")
     | "\(.repository.owner.login)/\(.repository.name) \(.number)"' 2>/dev/null)" || list=""
-  if [[ -z "$list" ]]; then
-    return 0
-  fi
-
   if [[ -n "$MERGE_INTO_INTEGRATION" ]]; then
     # Merged into the integration branch: GitHub only auto-closes on the default
-    # branch, so these stay open by design. No wait, no retry.
-    local nums=""
-    nums="$(printf '%s\n' "$list" | awk 'NF { printf "%s%s", (n++ ? ", " : ""), "#" $2 }')"
+    # branch, so these stay open by design. No wait, no retry. GitHub returns an
+    # empty closingIssuesReferences for a PR whose base is not the default
+    # branch, so the numbers the body closes by keyword are added (de-duplicated).
+    local nums="" body_nums=""
+    body_nums="$(printf '%s' "$refs" | body_closing_numbers)" || body_nums=""
+    nums="$({ printf '%s\n' "$list" | awk 'NF { print $2 }'; printf '%s\n' "$body_nums"; } \
+      | awk 'NF && !seen[$1]++ { printf "%s%s", (n++ ? ", " : ""), "#" $1 }')"
+    [[ -n "$nums" ]] || return 0
     echo "kookr-merge: closing issue(s) $nums stay open until the integration train promotes this change to $MERGE_INTO_INTEGRATION"
     return 0
   fi
+  [[ -n "$list" ]] || return 0
 
   unclosed="$(printf '%s\n' "$list" | unclosed_issues)"
   if [[ -n "$unclosed" ]]; then

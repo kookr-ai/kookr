@@ -113,6 +113,9 @@ function makeStubDir(opts: {
   // non-zero exit models a gh too old to know the field).
   closingIssuesJson?: string;
   closingIssuesExit?: number;
+  // PR body served in the same `gh pr view --json ...,body` response (merged
+  // into closingIssuesJson).
+  prBody?: string;
   // Issue states served by `gh api repos/<owner>/<name>/issues/<n> --jq .state`,
   // keyed "owner/name#n". Read k serves states[min(k, len)-1], so ['open',
   // 'closed'] models GitHub closing the issue a moment after the merge. A key
@@ -153,7 +156,13 @@ function makeStubDir(opts: {
   }
   writeFileSync(join(dir, 'annotations.json'), opts.annotationsJson ?? '[]');
   writeFileSync(join(dir, 'status.json'), opts.statusJson ?? '{"state":"pending","total_count":0,"statuses":[]}');
-  writeFileSync(join(dir, 'closing.json'), opts.closingIssuesJson ?? '{"closingIssuesReferences":[]}');
+  writeFileSync(
+    join(dir, 'closing.json'),
+    JSON.stringify({
+      ...(JSON.parse(opts.closingIssuesJson ?? '{"closingIssuesReferences":[]}') as object),
+      body: opts.prBody ?? '',
+    }),
+  );
   writeFileSync(join(dir, 'base.txt'), opts.baseRef ?? 'main');
   writeFileSync(join(dir, 'default.txt'), opts.defaultBranch ?? 'main');
   writeFileSync(join(dir, 'delete.stderr'), opts.deleteStderr ?? '');
@@ -1656,6 +1665,49 @@ describe('closing issues after a merge into the integration branch (#3788)', () 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+  describe('with the PR body (GitHub returns no references for a non-default base)', () => {
+    function runBody(opts: Partial<Parameters<typeof makeStubDir>[0]>) {
+      const repo = makeCheckout(INTEGRATION);
+      const dir = makeStubDir({ checksResponses: [CLEAN], modernGh: true, headRef: 'feat/x', ...opts });
+      try {
+        return runMerge(dir, {}, ['123'], repo);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    const LINE = (nums: string) =>
+      `kookr-merge: closing issue(s) ${nums} stay open until the integration train promotes this change to main`;
+
+    it('lists an issue named only by a closing keyword in the body', () => {
+      const result = runBody({ prBody: 'Summary\n\nFixes: #42 and resolved #43' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain(LINE('#42, #43'));
+    });
+
+    it('de-duplicates issues named by both the references and the body', () => {
+      const result = runBody({
+        closingIssuesJson: closingRefs(['owner', 'repo', 7]),
+        prBody: 'closes #7, Closes #9',
+      });
+      expect(result.stdout).toContain(LINE('#7, #9'));
+    });
+
+    it('ignores cross-repository references and URLs in the body', () => {
+      const result = runBody({
+        prBody: 'Fixes other/repo#5, closes https://github.com/o/r/issues/6, see #8, fixes #10',
+      });
+      expect(result.stdout).toContain(LINE('#10'));
+      expect(result.stdout).not.toContain('#5');
+      expect(result.stdout).not.toContain('#6');
+      expect(result.stdout).not.toContain('#8');
+    });
+
+    it('prints no line without a keyword and without references', () => {
+      const result = runBody({ prBody: 'Related to #3, part of the train.' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).not.toContain('stay open until the integration train');
+    });
   });
 });
 

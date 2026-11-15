@@ -22,7 +22,9 @@ import {
   type TrainEventKind,
   type TrainState,
   type VerifyResult,
+  closingIssueNumbersFromText,
   emptyTrainState,
+  isOutdatedLockfileFailure,
   normalizeTrainState,
   runTrainCycle,
   tailForComment,
@@ -315,15 +317,23 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     const lockHash = (() => {
       try { return createHash('sha256').update(readFileSync(join(wt, 'pnpm-lock.yaml'))).digest('hex'); } catch { return ''; }
     })();
-    // The last-installed lockfile hash lives in its own file, not in state.json:
-    // the cycle saves its in-memory state at the end and would clobber it.
-    const hashFile = join(dir, 'last-install-hash');
+    // The last-installed lockfile hash lives in the worktree's private git
+    // directory (next to the ownership marker), so it lives and dies with the
+    // worktree: a recreated worktree has no node_modules and must reinstall.
+    const gitDirResult = await git(['rev-parse', '--path-format=absolute', '--git-dir']);
+    const hashFile = gitDirResult.ok ? join(gitDirResult.stdout.trim(), 'last-install-hash') : null;
     let lastHash = '';
-    try { lastHash = readFileSync(hashFile, 'utf8').trim(); } catch { /* first run */ }
-    if (lockHash !== lastHash) {
+    try { if (hashFile) lastHash = readFileSync(hashFile, 'utf8').trim(); } catch { /* first run */ }
+    if (lockHash !== lastHash || !hashFile) {
       const installed = await runLogged('pnpm install --frozen-lockfile --prefer-offline', wt, env, logFile);
-      if (!installed) return { ...finish(logFile, sha, false), infra: true };
-      writeFileSync(hashFile, lockHash);
+      if (!installed) {
+        let text = '';
+        try { text = readFileSync(logFile, 'utf8'); } catch { /* no output */ }
+        // A lockfile that does not match package.json is a defect of this commit
+        // (it can be bisected and reverted); any other failure is an outage.
+        return { ...finish(logFile, sha, false), infra: !isOutdatedLockfileFailure(text) };
+      }
+      if (hashFile) writeFileSync(hashFile, lockHash);
     }
     const ok = await runLogged(opts.verifyCmd, wt, env, logFile);
     return finish(logFile, sha, ok);
@@ -343,15 +353,42 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     return r.stdout;
   };
 
+  // `owner/name` of the current repository, fetched once.
+  let currentRepo: string | null = null;
+  const repoName = async (): Promise<string | null> => {
+    if (currentRepo === null) {
+      try {
+        const v = JSON.parse(await gh(['repo', 'view', '--json', 'nameWithOwner'])) as { nameWithOwner?: string };
+        currentRepo = v.nameWithOwner?.toLowerCase() ?? null;
+      } catch { /* unknown: cross-repository references are then dropped */ }
+    }
+    return currentRepo;
+  };
+
   const github: TrainDeps['github'] = {
     async closingIssues(pr): Promise<ClosingIssue[]> {
-      const json = JSON.parse(await gh(['pr', 'view', String(pr), '--json', 'closingIssuesReferences'])) as {
-        closingIssuesReferences?: Array<{ number: number }>;
+      // GitHub returns no closing references for a PR whose base is not the
+      // default branch, so the PR body is read for closing keywords as well.
+      const json = JSON.parse(await gh(['pr', 'view', String(pr), '--json', 'closingIssuesReferences,body'])) as {
+        closingIssuesReferences?: Array<{ number: number; repository?: { name?: string; owner?: { login?: string } } }>;
+        body?: string | null;
       };
+      const numbers = new Set<number>();
+      const refs = json.closingIssuesReferences ?? [];
+      if (refs.length > 0) {
+        const repo = await repoName();
+        for (const ref of refs) {
+          const full = `${ref.repository?.owner?.login ?? ''}/${ref.repository?.name ?? ''}`.toLowerCase();
+          if (repo !== null && full === repo) numbers.add(ref.number);
+        }
+      }
+      for (const n of closingIssueNumbersFromText(json.body ?? '')) numbers.add(n);
       const issues: ClosingIssue[] = [];
-      for (const ref of json.closingIssuesReferences ?? []) {
-        const view = JSON.parse(await gh(['issue', 'view', String(ref.number), '--json', 'state'])) as { state: string };
-        issues.push({ number: ref.number, state: view.state.toUpperCase() === 'OPEN' ? 'open' : 'closed' });
+      for (const n of [...numbers].sort((a, b) => a - b)) {
+        try {
+          const view = JSON.parse(await gh(['issue', 'view', String(n), '--json', 'state'])) as { state: string };
+          issues.push({ number: n, state: view.state.toUpperCase() === 'OPEN' ? 'open' : 'closed' });
+        } catch { /* not an issue we can read (a pull request number, a typo): skip it */ }
       }
       return issues;
     },
@@ -372,15 +409,26 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     },
   };
 
+  const emitStatus = async (status: 'ok' | 'alert', detail?: string): Promise<void> => {
+    await run('kookr', [
+      'signal-emit', 'transition', '--source', 'integration-train', '--status', status,
+      ...(detail ? ['--detail', detail] : []),
+    ], root);
+  };
+
   const notifier: TrainDeps['notifier'] = {
     async notify(kind: TrainEventKind, detail: string) {
       appendFileSync(p.events, `${JSON.stringify({ at: new Date().toISOString(), kind, detail })}\n`);
-      // Best effort: surface in the operator signal outbox. Every train event
-      // needs a human eye, so they are all alerts.
-      await run('kookr', [
-        'signal-emit', 'transition', '--source', 'integration-train', '--status', 'alert',
-        '--detail', `${kind}: ${detail}`.slice(0, 500),
-      ], root);
+      // Best effort: surface in the operator signal outbox. `signal-emit
+      // transition` only emits when the status crosses between ok and alert, so
+      // report ok first: the alert then always crosses, even on the first cycle
+      // ever or when an earlier alert was never cleared.
+      await emitStatus('ok');
+      await emitStatus('alert', `${kind}: ${detail}`.slice(0, 500));
+    },
+    async healthy() {
+      // Delivers the "recovered" signal once an earlier alert has cleared.
+      await emitStatus('ok');
     },
   };
 

@@ -11,7 +11,9 @@ import {
   type TrainDeps,
   type TrainEventKind,
   type TrainState,
+  closingIssueNumbersFromText,
   emptyTrainState,
+  isOutdatedLockfileFailure,
   parseIntegrationBranch,
   prNumberFromSubject,
   runTrainCycle,
@@ -59,6 +61,7 @@ interface Harness {
   ghLog: string[];
   spawns: Array<{ idempotencyKey: string; prompt: string }>;
   notes: Array<{ kind: TrainEventKind; detail: string }>;
+  healthyCalls: number;
   deps: TrainDeps;
   commit(branch: string, files: Record<string, string>, subject: string): string;
   cycle(): Promise<CycleResult>;
@@ -103,6 +106,7 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean } = {
     ghLog: [] as string[],
     spawns: [] as Array<{ idempotencyKey: string; prompt: string }>,
     notes: [] as Array<{ kind: TrainEventKind; detail: string }>,
+    healthyCalls: 0,
   } as unknown as Harness;
 
   h.deps = {
@@ -146,7 +150,10 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean } = {
       },
     },
     spawner: { async spawn(req) { h.spawns.push(req); } },
-    notifier: { async notify(kind, detail) { h.notes.push({ kind, detail }); } },
+    notifier: {
+      async notify(kind, detail) { h.notes.push({ kind, detail }); },
+      async healthy() { h.healthyCalls++; },
+    },
     state: { load: () => h.state, save: (s) => { h.state = s; } },
     log: () => {},
     now: () => new Date('2026-01-01T00:00:00Z'),
@@ -184,6 +191,23 @@ describe('helpers', () => {
     expect(parseIntegrationBranch('{"integrationBranch":"staging"}')).toBe('staging');
     expect(parseIntegrationBranch('{"integrationBranch":"--evil"}')).toBeNull();
     expect(parseIntegrationBranch('not json')).toBeNull();
+  });
+
+  it('reads closing keywords from a pull request body', () => {
+    expect(closingIssueNumbersFromText('Closes #1')).toEqual([1]);
+    expect(closingIssueNumbersFromText('fixed #2 and RESOLVES: #3')).toEqual([2, 3]);
+    expect(closingIssueNumbersFromText('close #4\nfix #5\nresolve #6\nresolved #7\nfixes #8\nclosed #9')).toEqual([4, 5, 6, 7, 8, 9]);
+    expect(closingIssueNumbersFromText('Closes #5, fixes #5\nCloses #5')).toEqual([5]);
+    expect(closingIssueNumbersFromText('Closes other/repo#9 and Fixes https://github.com/o/r/issues/10')).toEqual([]);
+    expect(closingIssueNumbersFromText('see #12 for context')).toEqual([]);
+    expect(closingIssueNumbersFromText('this prefixes #3 and unfixes #4')).toEqual([]);
+    expect(closingIssueNumbersFromText('')).toEqual([]);
+  });
+
+  it('recognises an outdated-lockfile install failure only', () => {
+    expect(isOutdatedLockfileFailure('ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with "frozen-lockfile"')).toBe(true);
+    expect(isOutdatedLockfileFailure('ERR_PNPM_FETCH_404 registry unreachable')).toBe(false);
+    expect(isOutdatedLockfileFailure('')).toBe(false);
   });
 });
 
@@ -266,12 +290,13 @@ describe('integration train cycle', () => {
 
     const r = await h.cycle();
     expect(r.outcome).toBe('reverted');
-    expect(h.originRef('main')).toBe(c2);
-    expect(h.mainPushes).toEqual([c2]);
+    // one cycle: the last good commit, then the verified revert
+    const stagingHead = h.originRef('staging');
+    expect(h.originRef('main')).toBe(stagingHead);
+    expect(h.mainPushes).toEqual([c2, stagingHead]);
     // promotion of c2 closed the open issue of PR #12
     expect(h.ghLog.some((l) => l.startsWith('close 120: Verified on main in '))).toBe(true);
 
-    const stagingHead = h.originRef('staging');
     expect(git(h.origin, 'log', '-1', '--format=%s', stagingHead)).toContain('Revert');
     expect(git(h.origin, 'show', `${stagingHead}:4.txt`)).toBe('4');
     expect(gitSoft(h.origin, ['cat-file', '-e', `${stagingHead}:bad.txt`]).ok).toBe(false);
@@ -289,13 +314,97 @@ describe('integration train cycle', () => {
     expect(h.state.fixTasks['issue-130']).toBe(1);
     expect(h.notes.map((n) => n.kind)).toContain('reverted');
 
-    // next cycle: the reverted head is green and gets promoted
-    expect((await h.cycle()).outcome).toBe('promoted');
-    expect(h.originRef('main')).toBe(stagingHead);
     // the reverted PR reaches main together with its revert: its reopened issue
     // must stay open, while the PRs after it are closed as usual
     expect(h.ghLog.some((l) => l.startsWith('close 130:'))).toBe(false);
     expect(h.issues.get(13)?.[0].state).toBe('open');
+    expect((await h.cycle()).outcome).toBe('idle');
+  });
+
+  it('halts revert-not-sufficient when the culprit was fixed forward and the head is red for another reason', async () => {
+    h = makeHarness();
+    // X is red at its own commit, F fixes it forward, H is red for a different reason.
+    h.commit('staging', { 'bad.txt': 'x' }, 'x (#201)');
+    h.commit('staging', { 'bad.txt': '' }, 'fix forward (#202)');
+    const head = h.commit('staging', { 'bad2.txt': 'y' }, 'h (#203)');
+    h.issues.set(201, [{ number: 2010, state: 'closed' }]);
+
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'revert-not-sufficient' });
+    expect(r.detail).toContain('(x (#201))');
+    expect(h.originRef('staging')).toBe(head);
+    expect(h.originRef('main')).toBe(git(h.seed, 'rev-parse', 'origin/main'));
+    expect(h.mainPushes).toEqual([]);
+    expect(h.ghLog).toEqual([]);
+    expect(h.spawns).toEqual([]);
+    expect(h.notes.map((n) => n.kind)).toEqual(['halted']);
+    expect(git(h.train, 'rev-parse', 'HEAD')).toBe(head); // the local revert was discarded
+    expect(h.healthyCalls).toBe(0);
+  });
+
+  it('halts train-error, pushing nothing, when the revert commit cannot be created', async () => {
+    h = makeHarness();
+    const head = h.commit('staging', { 'bad.txt': 'x' }, 'bad (#301)');
+    const realGit = h.deps.git;
+    h.deps.git = async (args) => (args[0] === 'commit'
+      ? { ok: false, stdout: '', stderr: 'Author identity unknown' }
+      : realGit(args));
+
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'train-error' });
+    expect(r.detail).toContain('Author identity unknown');
+    expect(h.originRef('staging')).toBe(head);
+    expect(h.mainPushes).toEqual([]);
+    expect(h.spawns).toEqual([]);
+    expect(h.ghLog).toEqual([]);
+    expect(h.notes.map((n) => n.kind)).toEqual(['halted']);
+  });
+
+  it('does not consume the fix budget when the spawn fails, and notifies fix-spawn-failed', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'bad.txt': 'x' }, 'broken (#401)');
+    h.deps.spawner = { async spawn() { throw new Error('kookr spawn failed'); } };
+    const r = await h.cycle();
+    expect(r.outcome).toBe('reverted');
+    expect(h.state.fixTasks).toEqual({});
+    const failed = h.notes.find((n) => n.kind === 'fix-spawn-failed');
+    expect(failed?.detail).toContain('PR #401');
+    expect(failed?.detail).toContain('train-fix-ref-401-1');
+
+    // the budget is intact: the same PR failing again gets its task
+    h.deps.spawner = { async spawn(req) { h.spawns.push(req); } };
+    h.commit('staging', { 'bad.txt': 'y' }, 'broken again (#401)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual(['train-fix-ref-401-1']);
+    expect(h.state.fixTasks['ref-401']).toBe(1);
+  });
+
+  it('reports healthy for idle, promoted and reconciled cycles, not for halts or reverts', async () => {
+    h = makeHarness();
+    expect((await h.cycle()).outcome).toBe('idle');
+    expect(h.healthyCalls).toBe(1);
+    h.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    expect((await h.cycle()).outcome).toBe('promoted');
+    expect(h.healthyCalls).toBe(2);
+    h.commit('main', { 'm.txt': 'm' }, 'hotfix on main');
+    expect((await h.cycle()).outcome).toBe('reconciled');
+    expect(h.healthyCalls).toBe(3);
+    h.commit('staging', { 'bad.txt': 'x' }, 'bad (#2)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.healthyCalls).toBe(3);
+
+    const before = h.healthyCalls;
+    h = makeHarness();
+    h.commit('main', { 'bad.txt': 'x' }, 'broken main');
+    git(h.seed, 'fetch', '-q', 'origin');
+    git(h.seed, 'checkout', '-q', '-B', 'staging', 'origin/staging');
+    git(h.seed, 'merge', '-q', '--no-edit', 'origin/main');
+    git(h.seed, 'push', '-q', 'origin', 'staging');
+    h.commit('staging', { 'c.txt': '1' }, 'change (#5)');
+    expect((await h.cycle()).outcome).toBe('halted');
+    expect((await h.cycle()).outcome).toBe('halted'); // standing halt
+    expect(h.healthyCalls).toBe(0);
+    expect(before).toBe(3);
   });
 
   it('reverts nothing when the bisected culprit passes on a confirming re-run', async () => {
@@ -351,33 +460,52 @@ describe('integration train cycle', () => {
     expect(h.notes.map((n) => n.kind)).toEqual(['halted']);
   });
 
-  it('halts when the head is still red after its own revert (a second failing change in the batch)', async () => {
+  it('halts revert-not-sufficient, pushing nothing, when a second failing change is in the batch', async () => {
     h = makeHarness();
     h.commit('staging', { 'bad.txt': 'x' }, 'first bad (#81)');
-    h.commit('staging', { 'bad2.txt': 'x' }, 'second bad (#82)');
-    expect((await h.cycle()).outcome).toBe('reverted');
-    const afterFirstRevert = h.originRef('staging');
+    const head = h.commit('staging', { 'bad2.txt': 'x' }, 'second bad (#82)');
 
     const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'revert-not-sufficient' });
+    expect(h.originRef('staging')).toBe(head);
+    expect(h.mainPushes).toEqual([]);
+    expect(h.spawns).toHaveLength(0);
+    expect(h.ghLog).toEqual([]);
+  });
+
+  it('halts multiple-failures when an earlier unpromoted revert now fails verify', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'bad.txt': 'x' }, 'first bad (#81)');
+    h.rejectMainPush = true; // the revert is pushed to staging but not promoted
+    expect((await h.cycle()).outcome).toBe('reverted');
+    const revert = h.originRef('staging');
+    const base = h.originRef('main');
+    expect(base).not.toBe(revert);
+
+    h.commit('staging', { 'bad2.txt': 'x' }, 'later bad (#82)');
+    h.scripted.set(revert, [false]);
+    const r = await h.cycle();
     expect(r).toMatchObject({ outcome: 'halted', reason: 'multiple-failures' });
-    expect(h.originRef('staging')).toBe(afterFirstRevert); // #81 is not reverted a second time
-    expect(h.spawns).toHaveLength(1);
+    expect(h.originRef('main')).toBe(base);
   });
 
   it('bisects only after an unpromoted revert, so the reverted commit is not blamed again', async () => {
     h = makeHarness();
     const first = h.commit('staging', { 'bad.txt': 'x' }, 'first bad (#81)');
+    h.rejectMainPush = true; // the first revert is pushed to staging but not promoted
     expect((await h.cycle()).outcome).toBe('reverted');
     const revertOfFirst = h.originRef('staging');
+    expect(h.originRef('main')).not.toBe(revertOfFirst);
     // a new failing change merges before the revert was promoted
     const second = h.commit('staging', { 'bad2.txt': 'x' }, 'later bad (#83)');
 
     expect((await h.cycle()).outcome).toBe('reverted');
-    expect(h.originRef('main')).toBe(revertOfFirst); // the green revert was promoted on the way
     const head = h.originRef('staging');
+    expect(h.mainPushes).toEqual([revertOfFirst, head]); // the green revert was promoted on the way, then the new one
+    expect(h.originRef('main')).toBe(head);
     expect(git(h.origin, 'log', '-1', '--format=%B', head)).toContain(`This reverts commit ${second}`);
     expect(git(h.origin, 'log', '--format=%B', `${revertOfFirst}..${head}`)).not.toContain(first);
-    expect((await h.cycle()).outcome).toBe('promoted');
+    expect((await h.cycle()).outcome).toBe('idle');
   });
 
   it('halts without reverting when verify cannot run (install or checkout failure)', async () => {
@@ -411,7 +539,7 @@ describe('integration train cycle', () => {
     h.issues.set(14, [{ number: 130, state: 'open' }]);
     h.commit('staging', { 'bad.txt': 'x' }, 'broken (#13)');
     expect((await h.cycle()).outcome).toBe('reverted');
-    expect((await h.cycle()).outcome).toBe('promoted');
+    expect((await h.cycle()).outcome).toBe('idle');
     h.commit('staging', { 'bad.txt': 'y' }, 're-land, still broken (#14)');
     expect((await h.cycle()).outcome).toBe('reverted');
     expect(h.spawns.map((s) => s.idempotencyKey)).toEqual(['train-fix-issue-130-1']);
@@ -453,14 +581,15 @@ describe('integration train cycle', () => {
     const message = git(h.origin, 'log', '-1', '--format=%B', head);
     expect(message).toContain(`This reverts commit ${bad}`);
     expect(message).toContain('Kookr-Integration-Train: revert');
-    expect((await h.cycle()).outcome).toBe('promoted');
+    expect(h.originRef('main')).toBe(head);
+    expect((await h.cycle()).outcome).toBe('idle');
   });
 
   it('does not spawn a second fix task for the same PR and notifies fix-budget-exhausted', async () => {
     h = makeHarness();
     h.commit('staging', { 'bad.txt': 'x' }, 'broken (#13)');
     expect((await h.cycle()).outcome).toBe('reverted');
-    expect((await h.cycle()).outcome).toBe('promoted');
+    expect((await h.cycle()).outcome).toBe('idle');
     h.commit('staging', { 'bad.txt': 'y' }, 'broken again (#13)');
     expect((await h.cycle()).outcome).toBe('reverted');
     expect(h.spawns).toHaveLength(1);

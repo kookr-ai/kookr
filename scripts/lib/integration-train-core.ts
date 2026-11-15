@@ -49,10 +49,14 @@ export interface TrainSpawner {
 export type TrainEventKind =
   | 'halted'
   | 'reverted'
-  | 'fix-budget-exhausted';
+  | 'fix-budget-exhausted'
+  | 'fix-spawn-failed';
 
 export interface TrainNotifier {
+  /** Something needs a human: raise an alert. */
   notify(kind: TrainEventKind, detail: string): Promise<void>;
+  /** The train is healthy again (an idle, promoting or reconciling cycle): clear the alert. */
+  healthy(): Promise<void>;
 }
 
 export interface TrainHalt {
@@ -166,6 +170,34 @@ export function firstReferenceFromSubject(subject: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * Issue numbers a pull request body closes by the standard keywords
+ * (`close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved`, any case,
+ * an optional colon, then `#<number>`). GitHub reports no closing references for
+ * a pull request whose base is not the default branch, which is every pull
+ * request once they target the integration branch, so the train reads the body
+ * itself. `owner/repo#n` and URLs are ignored, and so is a keyword that is only
+ * the end of a longer word (`prefixes #3`).
+ */
+export function closingIssueNumbersFromText(text: string): number[] {
+  const re = /(?<![A-Za-z0-9_])(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s*:?\s+#(\d+)(?![A-Za-z0-9_])/gi;
+  const found: number[] = [];
+  for (const m of text.matchAll(re)) {
+    const n = Number(m[1]);
+    if (n > 0 && !found.includes(n)) found.push(n);
+  }
+  return found;
+}
+
+/**
+ * True when a failed `pnpm install --frozen-lockfile` failed because the lockfile
+ * does not match package.json. That is a defect of the commit (it can be
+ * bisected and reverted), not an outage of the machine.
+ */
+export function isOutdatedLockfileFailure(installOutput: string): boolean {
+  return installOutput.includes('ERR_PNPM_OUTDATED_LOCKFILE');
+}
+
 /** Trailer the train puts on its own revert commits, so it can recognise them later. */
 export const TRAIN_REVERT_TRAILER = 'Kookr-Integration-Train: revert';
 
@@ -184,7 +216,12 @@ function pushCapped(list: string[], sha: string, cap: number): void {
 export async function runTrainCycle(deps: TrainDeps): Promise<CycleResult> {
   const state = normalizeTrainState(deps.state.load());
   try {
-    return await cycle(deps, state);
+    const result = await cycle(deps, state);
+    // A standing halt stays quiet: it was announced when it started.
+    if (result.outcome === 'idle' || result.outcome === 'promoted' || result.outcome === 'reconciled') {
+      await safe(deps, () => deps.notifier.healthy());
+    }
+    return result;
   } finally {
     deps.state.save(state);
   }
@@ -393,17 +430,10 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   }
 
   // Promote the last good commit so main keeps moving while the culprit is
-  // dealt with. Skip it when main is not an ancestor of that commit: after a
-  // reconcile merge, commits older than the merge do not contain main, the push
-  // could never fast-forward, and retrying it would loop forever. The reverted
-  // head contains main and is promoted by a later cycle.
-  if (lastGood !== mainSha) {
-    const containsMain = await git(['merge-base', '--is-ancestor', mainSha, lastGood]);
-    if (!containsMain.ok) {
-      log(`last good ${lastGood.slice(0, 10)} predates the merge of main; not promoting it`);
-    } else if (!(await promote(lastGood))) {
-      return { outcome: 'retry', detail: 'promotion of last good rejected' };
-    }
+  // dealt with. Candidates are limited to commits that contain main, so this is
+  // always a fast-forward.
+  if (lastGood !== mainSha && !(await promote(lastGood))) {
+    return { outcome: 'retry', detail: 'promotion of last good rejected' };
   }
 
   const parents = (await out(['rev-list', '--parents', '-n', '1', culprit])).split(/\s+/).filter(Boolean);
@@ -417,23 +447,52 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     await git(['revert', '--abort']);
     return halt('revert-conflict', mainSha, headSha, `reverting ${culprit.slice(0, 10)} conflicts`);
   }
-  // Commit with the train's trailer. Step 9a recognises only reverts that carry
+  // Commit with the train's trailer. `--allow-empty` because a culprit that was
+  // already fixed forward reverts to nothing; that case is rejected just below
+  // rather than failing here as an unexpected git error. Step 9a recognises only
   // it: a revert a person made of some unrelated change says nothing about
   // which commits in the range are known-bad.
   const culpritSubject = await out(['log', '-1', '--format=%s', culprit]);
   await out([
-    'commit', '-q', '-m', `Revert "${culpritSubject}"`,
+    'commit', '-q', '--allow-empty', '-m', `Revert "${culpritSubject}"`,
     '-m', `This reverts commit ${culprit}.`,
     '-m', TRAIN_REVERT_TRAILER,
   ]);
   const revertSha = await out(['rev-parse', 'HEAD']);
-  const push = await pushRef(deps, `HEAD:refs/heads/${integration}`);
+  const subject = culpritSubject;
+
+  // A revert that changes nothing (the culprit was already undone or fixed
+  // forward) cannot be what makes the head pass. Do not even verify it: the
+  // tree is the head's, which failed twice, and a flaky green run here would
+  // push an empty revert and reopen an issue for nothing.
+  if ((await out(['rev-parse', `${revertSha}^{tree}`])) === (await out(['rev-parse', `${headSha}^{tree}`]))) {
+    await git(['reset', '--hard', '-q', headSha]);
+    return halt(
+      'revert-not-sufficient', mainSha, headSha,
+      `reverting suspected culprit ${culprit.slice(0, 10)} (${subject}) changes nothing; nothing pushed`,
+    );
+  }
+
+  // The bisect assumes one good-to-bad transition. When the head is red for a
+  // reason that is not the culprit (the culprit was fixed forward, then something
+  // else broke), the revert would not help and the culprit's issue would be
+  // reopened for nothing. So the revert itself must pass before it is pushed.
+  if (!(await verify(revertSha))) {
+    await git(['reset', '--hard', '-q', headSha]);
+    return halt(
+      'revert-not-sufficient', mainSha, headSha,
+      `reverting suspected culprit ${culprit.slice(0, 10)} (${subject}) does not make the head pass; nothing pushed`,
+    );
+  }
+  const push = await pushRef(deps, `${revertSha}:refs/heads/${integration}`);
   if (!push.ok) {
     log(`revert push rejected (branch moved?): ${push.stderr.trim()}`);
     return { outcome: 'retry', detail: 'revert push rejected' };
   }
+  // The revert is verified green and contains main: promote it right away. A
+  // rejected push is not an error; the next cycle promotes it.
+  const revertPromoted = await promote(revertSha);
 
-  const subject = culpritSubject;
   const pr = prNumberFromSubject(subject);
   const failTail = tailForComment(redTails.get(culprit) ?? redTails.get(headSha) ?? '');
   let fixNote = '';
@@ -468,8 +527,17 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
         });
         return true;
       });
-      state.fixTasks[budgetKey] = 1;
-      fixNote = ok !== true ? `fix task ${key} could not be spawned` : `fix task ${key} spawned`;
+      if (ok === true) {
+        // The budget is consumed only by a task that exists.
+        state.fixTasks[budgetKey] = 1;
+        fixNote = `fix task ${key} spawned`;
+      } else {
+        fixNote = `fix task ${key} could not be spawned`;
+        await safe(deps, () => deps.notifier.notify(
+          'fix-spawn-failed',
+          `PR #${pr} reverted as ${revertSha}; fix task ${key} could not be spawned. Needs a human.`,
+        ));
+      }
     } else {
       fixNote = `fix budget exhausted for ${budgetKey} (PR #${pr})`;
       await safe(deps, () => deps.notifier.notify(
@@ -478,6 +546,7 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
       ));
     }
   }
+  if (!revertPromoted) fixNote += '; promotion of the revert rejected, the next cycle retries';
   await safe(deps, () => deps.notifier.notify(
     'reverted', `reverted ${culprit} as ${revertSha} on ${integration}; ${fixNote}`,
   ));
@@ -489,7 +558,10 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   } catch (err) {
     // The suite could not run (checkout or install failed): halt, blame nothing.
     if (err instanceof VerifyInfraError) return halt('verify-infra', mainSha, headSha, err.message);
-    throw err;
+    // Anything else (a failing checkout or commit, no committer identity): halt
+    // and tell the operator, instead of crashing and re-running every verify on
+    // each interval with nobody notified.
+    return halt('train-error', mainSha, headSha, err instanceof Error ? err.message : String(err));
   }
 }
 

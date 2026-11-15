@@ -1,25 +1,33 @@
 #!/usr/bin/env bash
-# review-patch-id — print a content id of a pull request's own diff.
+# review-patch-id — print an id of the exact file versions a pull request changes.
 #
 # A verdict from the independent reviewer can be bound to this id (the optional
-# `review-patch-id:` line) as well as to the head SHA. A clean rebase moves the
-# head SHA but leaves the diff, and therefore the id, unchanged, so a passed
+# `review-patch-id:` line) as well as to the head SHA. A rebase moves the head
+# SHA; if it leaves the PR's changes untouched the id is unchanged, so a passed
 # review survives it. scripts/kookr-merge.sh recomputes the id with --pr and
 # compares it with the verdict.
 #
-# `git patch-id` is deliberately NOT used: it strips all whitespace and the diff
-# it reads has no binary content, so a re-indent, a removed space inside a
-# string literal, or a replaced binary file would keep the same id and let
-# unreviewed content through the gate.
+# The id is a git blob hash (40 lowercase hex) of the tree-level change list
+#   git diff-tree -r --no-commit-id --full-index --no-renames <merge-base> <head>
+# i.e. one raw line per changed path: old mode, new mode, old blob id, new blob
+# id, status and path. Blob ids are content hashes, so ANY change to ANY byte of
+# ANY file the PR touches changes the id (whitespace, NUL bytes, binary files,
+# modes, renames, and the same edit made at a different place in a file).
+# Rename detection is off, so the output never depends on similarity scores.
 #
-# The id is a git blob hash (40 lowercase hex) of
-#   git diff --binary --full-index --no-color --no-ext-diff --no-textconv -M
-#       <merge-base(base, head)> <head>
-# after normalising only what a clean rebase legitimately changes: `index ...`
-# lines are dropped (blob ids depend on the base) and every hunk header
-# `@@ -a,b +c,d @@ section` is reduced to `@@` (line numbers and the section
-# heading shift when the base moves). Every other byte of the diff counts.
-# An empty diff prints nothing and exits non-zero.
+# Trade-off, stated plainly: the id survives a rebase ONLY when the new base did
+# not change any file the PR also touches. If it did, the PR's "old" blob for
+# that file differs, the id changes, and the reviewer must re-review. That fails
+# closed on purpose; a rebase onto a base that changed only other files keeps
+# the id.
+#
+# Neither common alternative is used. `git patch-id` strips all whitespace and
+# sees no binary content, so a re-indent, a removed space inside a string or a
+# replaced binary file keeps the same id. A normalised text diff (hunk headers
+# reduced to `@@`) ignores WHERE a hunk applies, so the same edit made in a
+# different but identical-looking function gets the same id.
+#
+# An empty change list (empty diff) prints nothing and exits non-zero.
 #
 # Usage:
 #   review-patch-id.sh <base-ref> [<head-ref>]       local refs; head defaults to HEAD
@@ -42,20 +50,19 @@ USAGE
 # patch_id <base> <head> — print the id; non-zero on an empty diff or a git failure.
 patch_id() {
   local base="$1" head="$2" mb id
-  local -a diff_cmd
+  local -a list_cmd
   mb="$(git merge-base "$base" "$head")" || { echo "review-patch-id: no merge base between $base and $head" >&2; return 1; }
-  diff_cmd=(git diff --binary --full-index --no-color --no-ext-diff --no-textconv -M --src-prefix=a/ --dst-prefix=b/ "$mb" "$head")
+  list_cmd=(git diff-tree -r --no-commit-id --full-index --no-renames "$mb" "$head")
   # `--quiet` exits 0 when there is no difference, 1 when there is one.
-  if "${diff_cmd[@]}" --quiet; then
+  if git diff-tree -r --quiet --no-renames "$mb" "$head"; then
     echo "review-patch-id: the diff between $mb and $head is empty" >&2
     return 1
   fi
-  # The diff is piped straight into the hash and never held in a shell variable:
-  # bash drops NUL bytes from a variable, so a NUL added to a file git treats as
-  # text would not change the id. pipefail makes a failing `git diff` fail the
-  # whole pipeline.
-  id="$(set -o pipefail; "${diff_cmd[@]}" | sed -e '/^index /d' -e 's/^@@ .*/@@/' | git hash-object --stdin)" \
-    || { echo "review-patch-id: could not hash the diff between $mb and $head" >&2; return 1; }
+  # The change list is piped straight into the hash and never held in a shell
+  # variable (bash drops NUL bytes from a variable; paths may hold odd bytes).
+  # pipefail makes a failing git fail the whole pipeline.
+  id="$(set -o pipefail; "${list_cmd[@]}" | git hash-object --stdin)" \
+    || { echo "review-patch-id: could not hash the changes between $mb and $head" >&2; return 1; }
   printf '%s\n' "$id"
 }
 

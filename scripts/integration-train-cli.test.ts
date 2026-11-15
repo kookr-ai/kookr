@@ -20,6 +20,7 @@ const CLI = join(REPO_ROOT, 'scripts/integration-train.ts');
 const TSX_LOADER = pathToFileURL(join(REPO_ROOT, 'node_modules/tsx/dist/loader.mjs')).href;
 // Red when the checked-out commit contains bad.txt. Runs in the train worktree.
 const VERIFY = 'test ! -e bad.txt';
+const SIGNAL_OK = 'kookr signal-emit transition --source integration-train --status ok';
 
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'Train Test', GIT_AUTHOR_EMAIL: 'train@test.invalid',
@@ -77,7 +78,10 @@ function makeSandbox(): Sandbox {
     '#!/usr/bin/env bash',
     `printf 'gh %s\\n' "$*" >> "${callLog}"`,
     'case "$*" in',
-    '  *closingIssuesReferences*) echo \'{"closingIssuesReferences":[]}\' ;;',
+    // GitHub gives no closing references for a PR that targets a non-default branch;
+    // the issue is only in the body.
+    '  *closingIssuesReferences*) echo \'{"closingIssuesReferences":[],"body":"Closes #42"}\' ;;',
+    '  *nameWithOwner*) echo \'{"nameWithOwner":"acme/kookr"}\' ;;',
     '  *"--json state"*) echo \'{"state":"OPEN"}\' ;;',
     'esac',
     'exit 0',
@@ -130,25 +134,35 @@ describe('integration train CLI', () => {
     // the train worked in its own worktree, not in the launching checkout
     expect(git(s.launch, 'rev-parse', 'HEAD')).not.toBe(head);
     expect(git(s.launch, 'status', '--porcelain')).toBe('');
+    // linked issue 42 comes from the PR body, and is closed once main has the commit
+    expect(s.calls().filter((c) => c.startsWith('gh issue close 42 '))).toHaveLength(1);
+    // a green cycle reports ok once, never an alert
+    expect(s.calls().filter((c) => c.startsWith('kookr signal-emit'))).toEqual([SIGNAL_OK]);
   }, 120_000);
 
-  it('leaves main alone and reverts the commit whose tree fails the verify command', () => {
+  it('reverts the commit whose tree fails the verify command', () => {
     const s = makeSandbox();
-    const base = s.ref('main');
     const bad = s.commit('staging', { 'bad.txt': 'x' }, 'broken (#7)');
 
     expect(s.cycle().status).toBe(0);
-    expect(s.ref('main')).toBe(base);
     const head = s.ref('staging');
     expect(git(s.origin, 'log', '-1', '--format=%B', head)).toContain(`This reverts commit ${bad}`);
-    // one fix task was requested through the real spawner wiring
+    // the issue named only in the PR body was commented on and got the fix task
+    expect(s.calls().some((c) => c.startsWith('gh issue comment 42 --body '))).toBe(true);
     const spawns = s.calls().filter((c) => c.startsWith('kookr spawn '));
     expect(spawns).toHaveLength(1);
-    expect(spawns[0]).toContain('--idempotency-key train-fix-ref-7-1');
+    expect(spawns[0]).toContain('--idempotency-key train-fix-issue-42-1');
+    // the operator is alerted: ok first so the alert crosses the boundary, then the alert
+    const signals = s.calls().filter((c) => c.startsWith('kookr signal-emit'));
+    expect(signals).toHaveLength(2);
+    expect(signals[0]).toBe(SIGNAL_OK);
+    expect(signals[1]).toContain('--source integration-train --status alert --detail reverted: reverted ');
 
-    // the reverted head passes and is promoted by the next cycle
+    // the verified revert was promoted in the same cycle; the next one is idle and reports ok
+    expect(s.ref('main')).toBe(head);
     expect(s.cycle().status).toBe(0);
     expect(s.ref('main')).toBe(head);
+    expect(s.calls().filter((c) => c.startsWith('kookr signal-emit')).at(-1)).toBe(SIGNAL_OK);
   }, 120_000);
 
   it('does nothing while another live process holds the lock', () => {

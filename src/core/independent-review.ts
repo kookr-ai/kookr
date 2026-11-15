@@ -23,9 +23,10 @@ export const REVIEW_VERDICT_LINE_PREFIX = 'kookr-review-verdict:';
 export const REVIEW_HEAD_SHA_LINE_PREFIX = 'review-head-sha:';
 
 /**
- * Optional line binding a verdict to the stable patch id of the PR's own diff
- * (`scripts/review-patch-id.sh`). A clean rebase moves the head SHA but keeps
- * the patch id, so this lets a passed review survive it.
+ * Optional line binding a verdict to an id of the exact file versions the PR
+ * changes (`scripts/review-patch-id.sh`, a hash of the tree-level change list).
+ * A rebase moves the head SHA but keeps the id only when the new base did not
+ * touch the files the PR changes, so a passed review survives that rebase only.
  */
 export const REVIEW_PATCH_ID_LINE_PREFIX = 'review-patch-id:';
 

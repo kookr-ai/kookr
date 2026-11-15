@@ -755,9 +755,9 @@ reviewed head. Then:
   is never retargeted. Without the config file nothing changes.
 - **A verdict can be bound to the diff.** A verdict comment may carry an optional
   `review-patch-id: <40 hex>` line (the id `scripts/review-patch-id.sh <base-ref>`
-  prints for the PR's own diff). The gate then also accepts a `pass` whose
+  prints for the exact file versions the PR changes). The gate then also accepts a `pass` whose
   `review-head-sha` is stale, provided the PR's current patch id equals it (a
-  clean rebase), and pins the merge to the current head. A `block` for the same
+  rebase that did not change the files the PR touches), and pins the merge to the current head. A `block` for the same
   diff stays blocking. If the patch id cannot be computed the head-SHA rule alone
   applies.
 
