@@ -559,7 +559,10 @@ export function FindingsPanel({
             className={`findings-needs-you${findings.length === 0 ? ' findings-needs-you-empty' : ''}`}
             data-testid="findings-needs-you-header"
           >
-            <span className="findings-needs-you-label">Needs you ({findings.length})</span>
+            {/* The count follows the type and name filters so it matches the
+                rows below (#3617); "nothing waiting" stays truthful only when
+                the unfiltered queue is empty. */}
+            <span className="findings-needs-you-label">Needs you ({visibleFindings.length})</span>
             {findings.length === 0 && <span className="findings-needs-you-hint">nothing waiting</span>}
             <OldestFindingWaitChip
               findings={findings.length}

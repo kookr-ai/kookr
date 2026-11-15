@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useKookrStore } from '../store/useStore.js';
 import { useProjectNotificationMute } from '../hooks/useProjectNotificationMute.js';
@@ -301,6 +301,48 @@ export function projectMatchesSidebarFilter(
   return typeof localPath === 'string' && localPath.toLowerCase().includes(needle);
 }
 
+/**
+ * Nearest neighbours a context-menu move can swap with: the closest project
+ * above and below `project` in its section that the navigation actually
+ * shows. Rows that `isShown` rejects (idle projects tucked behind the
+ * "All N projects" toggle) are skipped, so a move never lands next to a row
+ * the user cannot see (#3617).
+ */
+export function shownMoveNeighbours(
+  section: readonly string[],
+  project: string,
+  isShown: (project: string) => boolean,
+): { up: string | null; down: string | null } {
+  const index = section.indexOf(project);
+  if (index < 0) return { up: null, down: null };
+  let up: string | null = null;
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (isShown(section[i]!)) { up = section[i]!; break; }
+  }
+  let down: string | null = null;
+  for (let i = index + 1; i < section.length; i += 1) {
+    if (isShown(section[i]!)) { down = section[i]!; break; }
+  }
+  return { up, down };
+}
+
+// Width at which the labelled layout applies and hides `.project-nav-idle`
+// rows; must match the `@media (min-width: 1280px)` block in styles.css.
+const LABELLED_LAYOUT_QUERY = '(min-width: 1280px)';
+
+function subscribeLabelledLayout(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {};
+  const query = window.matchMedia(LABELLED_LAYOUT_QUERY);
+  query.addEventListener?.('change', onChange);
+  return () => query.removeEventListener?.('change', onChange);
+}
+
+function labelledLayoutMatches(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia(LABELLED_LAYOUT_QUERY).matches;
+}
+
 function ProjectSidebarFilter({
   value,
   onChange,
@@ -457,7 +499,6 @@ export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true,
     pinProjectToTop,
     unpinSidebarProject,
     hideSidebarProject,
-    moveSidebarProject,
     reorderSidebarProject,
     agents,
     maxActiveTasks,
@@ -472,6 +513,7 @@ export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true,
   // icon rail under 1280 px still shows every project: the idle class only
   // hides rows in the labelled layout (see styles.css).
   const [showIdleProjects, setShowIdleProjects] = useState(false);
+  const labelledLayoutWide = useSyncExternalStore(subscribeLabelledLayout, labelledLayoutMatches, () => false);
   const projectMute = useProjectNotificationMute();
   const pendingCount = useMemo(
     () => agents.filter((a) => a.taskStatus === 'pending').length,
@@ -610,7 +652,23 @@ export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true,
   ).length;
   const menuRow = menuProjectId ? visibleRowMap.get(menuProjectId) ?? null : null;
   const menuSection = menuRow?.pinned ? pinnedSummaries : unpinnedSummaries;
-  const menuIndex = menuProjectId ? menuSection.findIndex((summary) => summary.project === menuProjectId) : -1;
+  // Idle rows are only hidden in the labelled layout at 1280 px and wider;
+  // the icon rail shows them, so moves count them there.
+  const idleRowsHidden = labelled && labelledLayoutWide && tuckIdle;
+  const hiddenIdleIds = new Set(
+    idleRowsHidden
+      ? menuSection
+        .filter((summary) => isIdleProject(summary, Boolean(menuRow?.pinned)))
+        .map((summary) => summary.project)
+      : [],
+  );
+  const menuNeighbours = menuProjectId
+    ? shownMoveNeighbours(
+      menuSection.map((summary) => summary.project),
+      menuProjectId,
+      (project) => !hiddenIdleIds.has(project),
+    )
+    : { up: null, down: null };
 
   useEffect(() => {
     if (!menuProjectId) return undefined;
@@ -818,8 +876,8 @@ export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true,
 
       {menuProjectId && menuRow && (
         <ProjectContextMenu
-          canMoveDown={!filterActive && menuIndex >= 0 && menuIndex < menuSection.length - 1}
-          canMoveUp={!filterActive && menuIndex > 0}
+          canMoveDown={!filterActive && menuNeighbours.down !== null}
+          canMoveUp={!filterActive && menuNeighbours.up !== null}
           muted={projectMute.isMuted(menuProjectId)}
           pinned={menuRow.pinned}
           x={menuPosition.x}
@@ -829,11 +887,15 @@ export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true,
             closeMenu(true);
           }}
           onMoveDown={() => {
-            moveSidebarProject(menuProjectId, 'down');
+            if (menuNeighbours.down) {
+              reorderSidebarProject(menuProjectId, menuRow.pinned, menuNeighbours.down, 'after');
+            }
             closeMenu(true);
           }}
           onMoveUp={() => {
-            moveSidebarProject(menuProjectId, 'up');
+            if (menuNeighbours.up) {
+              reorderSidebarProject(menuProjectId, menuRow.pinned, menuNeighbours.up, 'before');
+            }
             closeMenu(true);
           }}
           onMuteToggle={() => {
