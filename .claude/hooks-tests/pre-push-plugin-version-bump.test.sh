@@ -22,7 +22,8 @@ FAILURES=0
 
 # Build a temp repo whose feature branch edits a plugin playbook. `$1` is extra
 # work to run on the feature branch before committing (e.g. bump the version).
-# Echoes "STATUS<TAB>OUTPUT" for the caller to assert on.
+# Echoes "STATUS<TAB>LANES<TAB>OUTPUT" for the caller to assert on, where LANES
+# is the comma-separated list of pnpm lanes the hook ran (install excluded).
 run_case() {
   local mutate_plugin_json="$1"
   local TMPDIR
@@ -58,38 +59,54 @@ run_case() {
   bash "$REPO_ROOT/scripts/write-review-state-marker.sh" \
     --repo-root "$TMPDIR" --status approved --specialists "test" --key "feature" >/dev/null
 
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR/bin/pnpm"
+  # The stub logs every lane it is asked to run, so a case can assert which
+  # lanes (if any) ran before the hook decided.
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$PNPM_LOG"\nexit 0\n' > "$TMPDIR/bin/pnpm"
   chmod +x "$TMPDIR/bin/pnpm"
 
-  local OUT STATUS
+  local OUT STATUS LANES
   set +e
-  OUT=$(cd "$TMPDIR" && PATH="$TMPDIR/bin:$PATH" bash "$HOOK" 2>&1)
+  OUT=$(cd "$TMPDIR" && PNPM_LOG="$TMPDIR/pnpm.log" PATH="$TMPDIR/bin:$PATH" bash "$HOOK" 2>&1)
   STATUS=$?
   set -e
+  # `pnpm install` (node_modules self-heal) is setup, not a check lane.
+  LANES=$(grep -v '^install' "$TMPDIR/pnpm.log" 2>/dev/null | awk '{print $1}' | paste -sd, - || true)
   rm -rf "$TMPDIR"
-  printf '%s\t%s' "$STATUS" "$OUT"
+  printf '%s\t%s\t%s' "$STATUS" "$LANES" "$OUT"
 }
 
 # Case 1: plugin content changed, no version bump -> rejected.
 RESULT=$(run_case "none")
 STATUS="${RESULT%%	*}"
-OUT="${RESULT#*	}"
+REST="${RESULT#*	}"
+LANES="${REST%%	*}"
+OUT="${REST#*	}"
 if [ "$STATUS" -eq 0 ]; then
   printf 'FAIL: plugin change without version bump was accepted\n' >&2
   FAILURES=$((FAILURES + 1))
 elif ! printf '%s' "$OUT" | grep -q 'without bumping plugin.json#version'; then
   printf 'FAIL: rejection did not cite the missing version bump\n%s\n' "$OUT" >&2
   FAILURES=$((FAILURES + 1))
+elif [ -n "$LANES" ]; then
+  # Issue #3646: the bump check is a millisecond git read, so it must reject
+  # before any type-check or test lane spends minutes.
+  printf 'FAIL: missing version bump was rejected only after lanes ran: %s\n' "$LANES" >&2
+  FAILURES=$((FAILURES + 1))
 else
-  printf 'PASS: plugin change without version bump is rejected\n'
+  printf 'PASS: plugin change without version bump is rejected before any lane runs\n'
 fi
 
 # Case 2: plugin.json touched but version line unchanged (description-only) -> rejected.
 RESULT=$(run_case "description-only")
 STATUS="${RESULT%%	*}"
-OUT="${RESULT#*	}"
+REST="${RESULT#*	}"
+LANES="${REST%%	*}"
+OUT="${REST#*	}"
 if [ "$STATUS" -eq 0 ]; then
   printf 'FAIL: touching plugin.json without changing the version line was accepted\n' >&2
+  FAILURES=$((FAILURES + 1))
+elif [ -n "$LANES" ]; then
+  printf 'FAIL: unchanged version line was rejected only after lanes ran: %s\n' "$LANES" >&2
   FAILURES=$((FAILURES + 1))
 else
   printf 'PASS: plugin.json edit that leaves the version line unchanged is rejected\n'
@@ -98,9 +115,14 @@ fi
 # Case 3: plugin content changed WITH a version bump -> allowed.
 RESULT=$(run_case "bump")
 STATUS="${RESULT%%	*}"
-OUT="${RESULT#*	}"
+REST="${RESULT#*	}"
+LANES="${REST%%	*}"
+OUT="${REST#*	}"
 if [ "$STATUS" -ne 0 ]; then
   printf 'FAIL: plugin change with version bump was rejected\n%s\n' "$OUT" >&2
+  FAILURES=$((FAILURES + 1))
+elif ! printf '%s\n' "$LANES" | tr ',' '\n' | grep -qx 'test'; then
+  printf 'FAIL: bumped plugin change passed without running the test lanes: %s\n' "$LANES" >&2
   FAILURES=$((FAILURES + 1))
 else
   printf 'PASS: plugin change with version bump is allowed\n'

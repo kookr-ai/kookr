@@ -289,6 +289,92 @@ if [ -n "$NONTRIVIAL" ]; then
   esac
 fi
 
+# --- kookr-toolkit plugin hygiene + version bump enforcement ---
+# Runs BEFORE the type-check and test lanes (issue #3646): these checks are
+# pure git/grep reads that finish in milliseconds, so a missed version bump is
+# rejected up front instead of after a multi-minute `pnpm test` run.
+# The kookr-toolkit plugin ships together with Kookr, so plugin playbooks MAY
+# couple to the Kookr runtime (KOOKR_* env vars, the issue-claim API, Ralph
+# verdict files) when that integration is the whole point of the workflow —
+# a Kookr-aware playbook is a legitimate thing to bundle with Kookr. We still
+# reject hardcoded absolute home paths (they break every checkout but the
+# author's) and enforce a plugin.json#version bump on ANY change to bundled
+# plugin content (skills, agents, hooks, playbooks, commands, README, ...).
+if [ -d plugin ]; then
+  # Three-dot symmetric form so unrelated origin/main movement doesn't pollute
+  # the diff (same fix rationale as the review-gate range above).
+  RANGE="origin/main...HEAD"
+  git rev-parse --verify --quiet origin/main >/dev/null 2>&1 || RANGE="HEAD"
+
+  # 1. Hardcoded absolute home path — breaks any checkout but the author's.
+  BAD=$(grep -rIE '/home/[^/]+/git/kookr' plugin/ 2>/dev/null || true)
+  if [ -n "$BAD" ]; then
+    echo ""
+    echo "Push rejected: plugin/ contains a hardcoded absolute home path."
+    echo "Absolute paths like /home/<user>/git/kookr break every checkout but"
+    echo "yours (CI, other developers, marketplace installs). Use a relative path,"
+    echo "a '~/...' reference, or discover the path at runtime instead."
+    echo ""
+    echo "$BAD" | head -20
+    exit 1
+  fi
+
+  # 2. Skill/agent placement gate — covers naming, empty-agents, collisions,
+  #    and unqualified subagent_type references. See hooks/skill-placement-gate.sh.
+  if [ -x hooks/skill-placement-gate.sh ] || [ -f hooks/skill-placement-gate.sh ]; then
+    if ! bash hooks/skill-placement-gate.sh "$REPO_ROOT"; then
+      echo ""
+      echo "Push rejected: skill/agent placement violations (see above)."
+      exit 1
+    fi
+  fi
+
+  # 2b. Legacy collision check for non-skill/agent kinds (commands, etc.) that
+  #     the placement gate doesn't cover.
+  for kind in commands; do
+    if [ -d ".claude/$kind" ] && [ -d "plugin/$kind" ]; then
+      DUPES=$(comm -12 \
+        <(ls ".claude/$kind" 2>/dev/null | sort -u) \
+        <(ls "plugin/$kind" 2>/dev/null | sort -u))
+      if [ -n "$DUPES" ]; then
+        echo ""
+        echo "Push rejected: same name in both .claude/$kind and plugin/$kind:"
+        echo "$DUPES" | sed 's/^/  /'
+        echo "User-scope plugin install would silently shadow project-scope."
+        exit 1
+      fi
+    fi
+  done
+
+  # 3. Version bump — ANY change to bundled plugin content (skills, agents,
+  #    hooks, playbooks, commands, reviewer-specialists, README, ...) requires a
+  #    real bump of the version VALUE, because installed-plugin users only
+  #    receive updates when the version string changes. The trigger is "any
+  #    plugin/ path except plugin.json itself"; the satisfier compares the
+  #    extracted version value at origin/main vs HEAD — not a line-level diff,
+  #    which a trailing comma or reordering could fake without a real release.
+  PLUGIN_CONTENT_CHANGED=$(git diff --name-only "$RANGE" 2>/dev/null \
+    | grep -E '^plugin/' | grep -vE '^plugin/\.claude-plugin/plugin\.json$' || true)
+  if [ -n "$PLUGIN_CONTENT_CHANGED" ]; then
+    PLUGIN_VER_RE='"version"[[:space:]]*:[[:space:]]*"[^"]+"'
+    NEW_VER=$(git show HEAD:plugin/.claude-plugin/plugin.json 2>/dev/null | grep -oE "$PLUGIN_VER_RE" | head -1)
+    if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+      OLD_VER=$(git show origin/main:plugin/.claude-plugin/plugin.json 2>/dev/null | grep -oE "$PLUGIN_VER_RE" | head -1)
+    else
+      OLD_VER=""
+    fi
+    if [ -n "$OLD_VER" ] && [ "$OLD_VER" = "$NEW_VER" ]; then
+      echo ""
+      echo "Push rejected: plugin/ content changed without bumping plugin.json#version."
+      echo "Installed-plugin users only get updates when the version string changes."
+      echo "Version is unchanged (${NEW_VER:-<unreadable>}); bump \"version\" in"
+      echo "plugin/.claude-plugin/plugin.json. Changed plugin files:"
+      echo "$PLUGIN_CONTENT_CHANGED" | sed 's/^/  /' | head -20
+      exit 1
+    fi
+  fi
+fi
+
 if [ "$DOCS_ONLY_SKIP" -eq 1 ]; then
   echo "Docs-only prose diff detected; skipping server and E2E type-check lanes."
 else
@@ -476,87 +562,4 @@ if [ -f .github/PULL_REQUEST_TEMPLATE.md ] || [ -f .github/pull_request_template
   echo "  gh pr create --base main --head <branch> --title \"...\" --body-file .tmp/pr-body.md"
   echo "  Do NOT pass --body inline: it skips the template and the pr-checklist CI verifies the blank/missing boxes."
   echo ""
-fi
-
-# --- kookr-toolkit plugin hygiene + version bump enforcement ---
-# The kookr-toolkit plugin ships together with Kookr, so plugin playbooks MAY
-# couple to the Kookr runtime (KOOKR_* env vars, the issue-claim API, Ralph
-# verdict files) when that integration is the whole point of the workflow —
-# a Kookr-aware playbook is a legitimate thing to bundle with Kookr. We still
-# reject hardcoded absolute home paths (they break every checkout but the
-# author's) and enforce a plugin.json#version bump on ANY change to bundled
-# plugin content (skills, agents, hooks, playbooks, commands, README, ...).
-if [ -d plugin ]; then
-  # Three-dot symmetric form so unrelated origin/main movement doesn't pollute
-  # the diff (same fix rationale as the review-gate range above).
-  RANGE="origin/main...HEAD"
-  git rev-parse --verify --quiet origin/main >/dev/null 2>&1 || RANGE="HEAD"
-
-  # 1. Hardcoded absolute home path — breaks any checkout but the author's.
-  BAD=$(grep -rIE '/home/[^/]+/git/kookr' plugin/ 2>/dev/null || true)
-  if [ -n "$BAD" ]; then
-    echo ""
-    echo "Push rejected: plugin/ contains a hardcoded absolute home path."
-    echo "Absolute paths like /home/<user>/git/kookr break every checkout but"
-    echo "yours (CI, other developers, marketplace installs). Use a relative path,"
-    echo "a '~/...' reference, or discover the path at runtime instead."
-    echo ""
-    echo "$BAD" | head -20
-    exit 1
-  fi
-
-  # 2. Skill/agent placement gate — covers naming, empty-agents, collisions,
-  #    and unqualified subagent_type references. See hooks/skill-placement-gate.sh.
-  if [ -x hooks/skill-placement-gate.sh ] || [ -f hooks/skill-placement-gate.sh ]; then
-    if ! bash hooks/skill-placement-gate.sh "$REPO_ROOT"; then
-      echo ""
-      echo "Push rejected: skill/agent placement violations (see above)."
-      exit 1
-    fi
-  fi
-
-  # 2b. Legacy collision check for non-skill/agent kinds (commands, etc.) that
-  #     the placement gate doesn't cover.
-  for kind in commands; do
-    if [ -d ".claude/$kind" ] && [ -d "plugin/$kind" ]; then
-      DUPES=$(comm -12 \
-        <(ls ".claude/$kind" 2>/dev/null | sort -u) \
-        <(ls "plugin/$kind" 2>/dev/null | sort -u))
-      if [ -n "$DUPES" ]; then
-        echo ""
-        echo "Push rejected: same name in both .claude/$kind and plugin/$kind:"
-        echo "$DUPES" | sed 's/^/  /'
-        echo "User-scope plugin install would silently shadow project-scope."
-        exit 1
-      fi
-    fi
-  done
-
-  # 3. Version bump — ANY change to bundled plugin content (skills, agents,
-  #    hooks, playbooks, commands, reviewer-specialists, README, ...) requires a
-  #    real bump of the version VALUE, because installed-plugin users only
-  #    receive updates when the version string changes. The trigger is "any
-  #    plugin/ path except plugin.json itself"; the satisfier compares the
-  #    extracted version value at origin/main vs HEAD — not a line-level diff,
-  #    which a trailing comma or reordering could fake without a real release.
-  PLUGIN_CONTENT_CHANGED=$(git diff --name-only "$RANGE" 2>/dev/null \
-    | grep -E '^plugin/' | grep -vE '^plugin/\.claude-plugin/plugin\.json$' || true)
-  if [ -n "$PLUGIN_CONTENT_CHANGED" ]; then
-    PLUGIN_VER_RE='"version"[[:space:]]*:[[:space:]]*"[^"]+"'
-    NEW_VER=$(git show HEAD:plugin/.claude-plugin/plugin.json 2>/dev/null | grep -oE "$PLUGIN_VER_RE" | head -1)
-    if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
-      OLD_VER=$(git show origin/main:plugin/.claude-plugin/plugin.json 2>/dev/null | grep -oE "$PLUGIN_VER_RE" | head -1)
-    else
-      OLD_VER=""
-    fi
-    if [ -n "$OLD_VER" ] && [ "$OLD_VER" = "$NEW_VER" ]; then
-      echo ""
-      echo "Push rejected: plugin/ content changed without bumping plugin.json#version."
-      echo "Installed-plugin users only get updates when the version string changes."
-      echo "Version is unchanged (${NEW_VER:-<unreadable>}); bump \"version\" in"
-      echo "plugin/.claude-plugin/plugin.json. Changed plugin files:"
-      echo "$PLUGIN_CONTENT_CHANGED" | sed 's/^/  /' | head -20
-      exit 1
-    fi
-  fi
 fi
