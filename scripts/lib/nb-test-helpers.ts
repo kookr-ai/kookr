@@ -56,8 +56,10 @@ export function makeStore(opts: { git?: boolean } = {}): string {
     git(dir, 'init', '-q', '-b', 'main');
     git(dir, 'config', 'user.email', 'test@example.invalid');
     git(dir, 'config', 'user.name', 'test');
-    // The real store ignores the usage ring; without this every nb call would dirty the tree.
-    writeFileSync(join(dir, '.gitignore'), '.nb-usage*\n*.tmp\n');
+    // The real store ignores the usage ring and the write lock (since agent-notebook 0.8.0 a
+    // held lock is a directory holding an `owner` file, which git would otherwise stage);
+    // without this every nb call would dirty the tree.
+    writeFileSync(join(dir, '.gitignore'), '.nb-usage*\n.nb.lock\n*.tmp\n');
   }
   return dir;
 }
@@ -112,4 +114,22 @@ export function readDescription(dir: string, shelf: string): string | null {
   if (!existsSync(p)) return null;
   const m = /^#\s*desc:\s?(.*)$/m.exec(readFileSync(p, 'utf-8').split('\n').filter((l) => l.startsWith('#')).join('\n'));
   return m ? m[1] : null;
+}
+
+/**
+ * The client, calling `hook` once, just before the first `nb move`: a test uses it to
+ * change the store after the run has planned, as a concurrent merge would.
+ */
+export function beforeFirstMove<C extends { runJson: (args: string[]) => unknown }>(client: C, hook: () => void): C {
+  let done = false;
+  return {
+    ...client,
+    runJson: (args: string[]) => {
+      if (!done && args[0] === 'move') {
+        done = true;
+        hook();
+      }
+      return client.runJson(args);
+    },
+  };
 }

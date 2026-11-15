@@ -11,6 +11,7 @@ import { relative } from 'node:path';
 import {
   RAW_NB,
   breakCommits,
+  beforeFirstMove,
   cleanEnv,
   commitAll,
   destroy,
@@ -48,11 +49,13 @@ interface RunOpts {
   stopAfter?: number;
   stopAfterStage?: 'reap' | null;
   env?: Record<string, string>;
+  beforeMove?: () => void;
 }
 function run(dir: string, opts: RunOpts = {}) {
   const cap = opts.cap ?? 50;
   // The shim (default) commits every mutation, which the git assertions rely on; the raw CLI is faster for the rest.
-  const client = createNbClient({ dir, nb: opts.shim ? undefined : RAW_NB, env: cleanEnv({ NB_MAX_LINES: String(cap), ...(opts.env ?? {}) }) });
+  const raw = createNbClient({ dir, nb: opts.shim ? undefined : RAW_NB, env: cleanEnv({ NB_MAX_LINES: String(cap), ...(opts.env ?? {}) }) });
+  const client = opts.beforeMove ? beforeFirstMove(raw, opts.beforeMove) : raw;
   const lines: string[] = [];
   const result = runMigration({
     client,
@@ -144,11 +147,19 @@ describe('migrate-notebook-slugs: --apply', { timeout: 120_000 }, () => {
   test('a move that nb fails stops the migration with nb\'s message and keeps the legacy lesson', () => {
     // nb 0.8.0 refuses to write a shelf that holds git merge-conflict markers and reports it under
     // --json as an error object on stdout; that must stop the run, not be logged as a skip.
+    // The conflict is committed after planning, as a concurrent merge would; one already there
+    // is refused at planning (snapshotStore, scripts/lib/nb-sim.test.ts).
     const dir = store();
     writeShelf(dir, 'tester@agent-notebook', L([2, 'tester one']));
-    writeFileSync(join(dir, `tester@${CANON}.md`), '<<<<<<< HEAD\n+2\tours\n=======\n+2\ttheirs\n>>>>>>> other\n');
     commitAll(dir);
-    const { result, text } = run(dir, { apply: true, shim: true });
+    const { result, text } = run(dir, {
+      apply: true,
+      shim: true,
+      beforeMove: () => {
+        writeFileSync(join(dir, `tester@${CANON}.md`), '<<<<<<< HEAD\n+2\tours\n=======\n+2\ttheirs\n>>>>>>> other\n');
+        commitAll(dir, 'a merge that kept its conflict markers');
+      },
+    });
     expect(result.ok, text).toBe(false);
     expect(result.error).toMatch(/nb move failed for .*merge-conflict marker/);
     expect(text).toContain('FAILED');

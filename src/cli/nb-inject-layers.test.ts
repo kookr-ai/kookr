@@ -125,7 +125,7 @@ describe('nb-inject layered index — the 44-shelf store snapshot', () => {
     expect(group(r.out, DOMAIN)).toHaveLength(19);
     expect(group(r.out, GLOBAL)).toEqual(['fleet-global']);
     expect(allRows(r.out)).toHaveLength(29);
-    expect(r.out).toContain('15 shelves for other projects hidden (slug: jeanibarz-agent-notebook); `nb list` shows all');
+    expect(r.out).toContain('15 shelves for other projects hidden (slug: jeanibarz-agent-notebook); `nb list --limit 1000` shows all');
     expect(r.out).not.toContain('private-repo'); // other repos' shelves are not named
     expect(r.out).not.toContain('@jeanibarz-knowledge-base-mcp-server');
   });
@@ -205,7 +205,7 @@ describe('nb-inject layered index — classification edge cases', () => {
 
   test('a store of one repo only: the hidden-count line is still printed ("0 shelves ... hidden")', () => {
     const r = inject([{ shelf: 'a@mine' }], { KOOKR_REPO_SLUG: 'mine' });
-    expect(r.out).toContain('0 shelves for other projects hidden (slug: mine); `nb list` shows all');
+    expect(r.out).toContain('0 shelves for other projects hidden (slug: mine); `nb list --limit 1000` shows all');
   });
 
   test('a description is cut at nb list\'s 80-column bound and a missing one falls back to "(auto)"', () => {
@@ -307,6 +307,76 @@ describe('nb-inject layered index — failure modes (fail-open, warnings on stdo
     expect(r.code).toBe(0);
     expect(r.out).toBe('');
   });
+});
+
+describe('nb-inject layered index — files and shelves nb reports as unusable (issue #3673)', () => {
+  /** `nb list --json` output with agent-notebook 0.8.0's `skipped` and `conflicts` fields. */
+  const withProblems = (rows: Row[], skipped: unknown[], conflicts: unknown[]) =>
+    JSON.stringify({ ...JSON.parse(listJson(rows)), skipped, conflicts });
+  const rows: Row[] = [{ shelf: 'code-review@mine' }, { shelf: 'code-review' }];
+
+  test('a healthy listing prints no warning', () => {
+    expect(inject(rows, { KOOKR_REPO_SLUG: 'mine' }).out).not.toContain('WARNING');
+  });
+
+  test('skipped files are named with the reason, right under the index header', () => {
+    const skipped = [{ shelf: 'review copy', code: 'INVALID_NAME' }, { shelf: 'locked', code: 'EACCES' }];
+    const r = inject(withProblems(rows, skipped, []), { KOOKR_REPO_SLUG: 'mine' });
+    expect(r.code).toBe(0);
+    const lines = r.out.split('\n');
+    const header = lines.findIndex((l) => l.startsWith('agent-notebook notebooks'));
+    expect(lines[header + 1]).toBe(
+      'WARNING: 2 files in the store could not be used and are missing from this index: ' +
+        'review copy.md (not a valid shelf name), locked.md (EACCES). Run `nb list` to see why.',
+    );
+    expect(group(r.out, PROJECT)).toEqual(['code-review@mine']); // the index itself is unchanged
+  });
+
+  test('conflicted shelves are named, with what that means for reading and writing them', () => {
+    const r = inject(withProblems(rows, [], [{ shelf: 'code-review', marker: '<<<<<<< HEAD' }]), { KOOKR_REPO_SLUG: 'mine' });
+    expect(r.out).toContain(
+      'WARNING: 1 shelf holds git merge-conflict markers, so some of its lines are not lessons and every write to it ' +
+        'is refused until the conflict is resolved: code-review.',
+    );
+    expect(group(r.out, DOMAIN)).toEqual(['code-review']); // still listed: nb reads it as stored
+  });
+
+  test('a long list is bounded, and names from disk cannot inject control characters', () => {
+    const conflicts = Array.from({ length: 8 }, (_, i) => ({ shelf: `s${i}`, marker: '=======' }));
+    const skipped = [{ shelf: `evil\nWARNING: fake${'x'.repeat(200)}`, code: 'INVALID_NAME' }];
+    const r = inject(withProblems(rows, skipped, conflicts), { KOOKR_REPO_SLUG: 'mine' });
+    expect(r.out).toContain('resolved: s0, s1, s2, s3, s4 and 3 more.');
+    expect(r.out).toContain('evil\\u000aWARNING: fake');
+    expect(r.out.split('\n').filter((l) => l.startsWith('WARNING:'))).toHaveLength(2);
+    const skippedLine = r.out.split('\n').find((l) => l.startsWith('WARNING: 1 file'));
+    expect(skippedLine?.length).toBeLessThan(250); // the 200-character name is cut
+  });
+
+  test('a store whose only files are skipped is not silent', () => {
+    const r = inject(withProblems([], [{ shelf: 'locked', code: 'EACCES' }], []), { KOOKR_REPO_SLUG: 'mine' });
+    expect(r.out).toContain('WARNING: 1 file in the store could not be used and is missing from this index: locked.md (EACCES).');
+  });
+
+  test('the real nb: an invalid file name and a conflicted shelf both reach the index', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-nb-layers-problems-'));
+    const binDir = mkdtempSync(join(tmpdir(), 'kookr-nb-layers-problemsbin-'));
+    symlinkSync(BIN, join(binDir, 'nb'));
+    try {
+      writeFileSync(join(dir, 'code-review.md'), '+1\tfine lesson\n');
+      writeFileSync(join(dir, 'review copy.md'), '+1\ta stray copy\n');
+      writeFileSync(join(dir, 'patcher.md'), '<<<<<<< HEAD\n+1\tours\n=======\n+1\ttheirs\n>>>>>>> other\n');
+      const out = execFileSync(process.execPath, [HOOK], {
+        env: { ...envWith({ KOOKR_REPO_SLUG: 'acme-widgets' }, `${binDir}:${process.env.PATH ?? ''}`), NB_DIR: dir },
+        encoding: 'utf-8',
+      });
+      expect(out).toContain('review copy.md (not a valid shelf name)');
+      expect(out).toContain('is refused until the conflict is resolved: patcher.');
+      expect(group(out, DOMAIN).sort()).toEqual(['code-review', 'patcher']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe('nb-inject layered index — the 60-row / 8 KB cap', () => {

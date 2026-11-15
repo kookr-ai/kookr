@@ -457,12 +457,19 @@ export function snapshotStore(client) {
   // Since agent-notebook 0.8.0 a shelf file nb cannot read, or whose name is not a
   // valid shelf name, no longer fails `nb list`: it is left out of `rows` and named
   // in `skipped`. That is a partial index too.
+  // The names come from disk, so show control characters as visible escapes
+  // rather than sending them to the operator's terminal.
+  const visible = (v) => String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
   if (Array.isArray(listed.json.skipped) && listed.json.skipped.length > 0) {
-    // The names come from disk, so show control characters as visible escapes
-    // rather than sending them to the operator's terminal.
-    const visible = (v) => String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
     const names = listed.json.skipped.map((s) => `${visible(s?.shelf ?? '?')} (${visible(s?.code ?? 'unreadable')})`).join(', ');
     throw new Error(`nb list --json skipped ${listed.json.skipped.length} shelf file(s) it could not use (unreadable, or not a valid shelf name): ${names}; refusing to plan from a partial index`);
+  }
+  // A shelf holding git merge-conflict markers is listed in `rows`, with the marker
+  // lines read as lessons, and 0.8.0 refuses every write to it. Planning from it would
+  // only fail later, at the first write; refuse now and name the shelves to resolve.
+  if (Array.isArray(listed.json.conflicts) && listed.json.conflicts.length > 0) {
+    const names = listed.json.conflicts.map((c) => visible(c?.shelf ?? '?')).join(', ');
+    throw new Error(`nb list --json reports git merge-conflict markers in ${listed.json.conflicts.length} shelf file(s): ${names}; resolve the conflict before planning`);
   }
   const dir = listed.json.dir;
   const store = new Map();
