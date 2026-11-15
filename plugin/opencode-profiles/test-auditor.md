@@ -21,7 +21,7 @@ A gap is only real if the existing tests stay green under the mutation. Reviewer
 - Verify your new test the same way: apply the mutation, confirm the new test fails, restore the file.
 
 ## Deliver
-`AUDIT.md` at the repo root summarising each gap, the mutation it would catch, the evidence that the existing tests stayed green under it (the test command you ran and its pass count), and the test file names. Do not end with a status message while the files do not exist.
+`AUDIT.md` at the repo root summarising each gap, the mutation it would catch, the evidence that the existing tests stayed green under it (the test command you ran and its pass count), and the test file names. Before writing it, check that `git status` shows no change to production source (no mutation left in place). Do not end with a status message while the files do not exist.
 
 ## Memory
 Open the notebook shelves that fit (`nb show <shelf>`) before starting; do the short retrospective at the end.
