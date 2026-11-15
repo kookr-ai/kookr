@@ -4,19 +4,16 @@ group: design-analysis
 keywords: agent loop, tool design, MCP, best-of-N, reasoning effort, prompt cache, inference cost, planning, replan, failure recovery, latent reasoning, probes, steering, parallel tool calls, self-refine, debate, diffusion LM, CoT monitor, abstention
 related: token-efficiency, agent-fleet-orchestration, automation-design, autonomous-watch-loop, error-handling-patterns, agent-safety, adversarial-swarm-analysis
 description: >
-  Evidence-based rules for designing an agent's loop: tool surface (tool count, descriptions, output
-  bounds, error wording), spending extra inference (best-of-N, voting, thinking effort, retries),
-  making a loop cheaper or faster (prompt cache, serving levers), up-front plans vs reactive and replan
-  triggers, recovering from mid-task failures (retry, rollback, escalate), latent vs text handoffs and
-  diffusion decoders, white-box probes or steering vs output checks, and monitoring closed-API agents
-  (reasoning text, self-reports, confidence). Use when building or tuning an agent loop or
-  harness, or before adding tools, samples, retries, a planner or a monitor.
+  Evidence-based rules for designing an agent's loop: tool surface and MCP servers, best-of-N, voting,
+  effort and retries, making a loop cheaper or faster (prompt cache, serving), plans vs replanning, recovering from mid-task
+  failures, latent handoffs and diffusion decoders, probes, steering, and monitoring closed-API agents
+  (reasoning text, "done" claims, confidence, ask or abstain gates). Use when building or tuning an agent
+  loop, or before adding tools, samples, retries, a planner or a monitor.
 ---
 
 # Agent loop design
 
-Each guide holds evidence-based rules for one design decision, with the papers behind them and a list
-of gaps, so you can act without over-claiming.
+Each guide holds evidence-based rules for one design decision.
 
 Read only the guide that matches the decision in front of you (several if the task spans them).
 

@@ -3,12 +3,17 @@ name: agent-evaluation
 group: design-analysis
 keywords: agent evaluation, citation verification, claim support, benchmark, LLM judge, verifier, merge gate, patch acceptance, keep gate, noise floor, self-evolution, prompt optimization
 related: independent-merge-review, autonomous-review-loop, pre-pr-review, agent-fleet-orchestration, agent-memory-and-learning
-description: Agent evaluation and acceptance gates. Decides whether a benchmark score gap between agent setups is real, which verifier or LLM judge should gate an agent's output, whether a coding agent's passing patch is mergeable, and how to keep mutate-and-score loops honest (keep gate, noise floor, held-out split), including harness self-evolution and prompt or skill optimization on a small eval budget, in-house regression suites, agents with growing memory or skills, research ideas and write-ups, and checking that cited claims are supported by their sources. Use when comparing agent configs, designing a merge or acceptance gate, accepting agent patches, or running or trusting a self-improvement loop.
+description: >
+  Agent evaluation and acceptance gates. Decides whether a benchmark gap between agent setups is real,
+  which verifier or LLM judge gates agent output, if a passing coding patch is mergeable, and how to keep
+  mutate-and-score loops honest (keep gate, noise floor, held-out split). Use when comparing agent
+  configs, building an in-house regression suite, evaluating an agent whose memory or skills grow,
+  designing an acceptance gate, optimizing a prompt or skill on a small eval budget, trusting a
+  self-improvement loop, ranking research ideas or trusting a write-up, or checking cited claims.
 ---
 # Agent evaluation
 
-Evidence-based rules, each with the paper figure behind it and a list of what the evidence does not show,
-for deciding whether an agent's result is real and acceptable.
+Rules for deciding whether an agent's result is real and acceptable.
 
 Read only the guide that matches the decision in front of you (several if the task spans them).
 

@@ -4,8 +4,8 @@ Use when: an agent run is too slow or too expensive, when choosing llama.cpp / v
 options for an agent, or before trusting an efficiency claim made on a perplexity or LongBench result.
 
 An agent loop costs roughly **context size times turns**, so the cheapest wins come from the loop, not
-the server, and which levers you may pull depends on who runs the model. To spend *more* compute for a
-better answer instead, see [inference budget allocation](inference-budget-allocation.md).
+the server. To spend *more* compute for a better answer instead, see [inference budget
+allocation](inference-budget-allocation.md).
 
 ## Step 1: who owns the serving stack?
 
@@ -18,70 +18,57 @@ better answer instead, see [inference budget allocation](inference-budget-alloca
 
 Any change early in the prompt (a timestamp, a tool-list reorder) invalidates the cache after it. Keep
 the system prompt and tool list frozen and in a fixed order, keep history append-only, and put
-timestamps and IDs after the last cache breakpoint. Check cache-read tokens per call. Evidence:
-"Long-session context policy" in the `token-efficiency` skill; cache-write pricing in
-`agent-fleet-orchestration`.
+timestamps and IDs after the last cache breakpoint. Check cache-read tokens per call. See "Long-session
+context policy" in `token-efficiency`; cache-write pricing in `claude-api`.
 
 ## Step 3: cut tokens before touching the server
 
-- **Thinking tokens and turn count decide price.** In 32% of model pairs the cheaper-listed model cost
-  more, by up to 28x. Over 95% of single-turn cost gaps came from thinking tokens; multi-turn gaps came
-  from turn count and cached tokens (2603.23971).
-- **Measure the spend split before cutting reasoning.** In the author's runs agentic loops were about
-  96% cache reads and about 1% output, so a reasoning cut barely moves the bill there; it pays in
-  single-turn calls (the 95% above) and in subagents with small context.
-- **Tune effort per route and per step, never one global cap.** Adaptive effort beats a fixed low effort
-  (2603.07915, open models only), and the best thinking length differs by difficulty (evidence in
-  [inference budget allocation](inference-budget-allocation.md) rules 3, 5 and 15).
-- **Test any cap or early exit on the hardest 20% of tasks.** Headlines hide hard-item losses: Step-GRPO
-  reports "no degradation" but loses 6.0 GPQA points, 56.1% vs 62.1% (2604.16890).
-- **Don't strip reasoning between tool calls without an A/B on your own tasks.** No surveyed source
-  tests this on a multi-step agent task, and per-step deliberation can also hurt (1.8-2.7x tokens, up to
-  3.37x worse return, 2605.16205), so the answer is selective, not blanket.
+- **Thinking tokens and turn count decide price.** In a third of model pairs the cheaper-listed model
+  cost more, by up to 28x. Single-turn gaps came from thinking tokens; multi-turn gaps from turn count
+  and cached tokens.
+- **Measure the spend split before cutting reasoning.** In the author's runs agentic loops were ~96%
+  cache reads and ~1% output, so a reasoning cut barely moves the bill there; it pays in single-turn
+  calls and in subagents with small context.
+- **Tune effort per route and per step, never one global cap.** Adaptive effort beats a fixed low effort,
+  and the best thinking length differs by difficulty (see [inference budget
+  allocation](inference-budget-allocation.md)).
+- **Test any cap or early exit on the hardest 20% of tasks.** Headlines hide hard-item losses: one
+  method reported "no degradation" yet lost 6 points on a hard benchmark.
+- **Don't strip reasoning between tool calls without an A/B on your own tasks.** Per-step deliberation
+  can also hurt (about 2x tokens, worse return), so the answer is selective, not blanket.
 - **Fewer model calls in the agent's own control logic** (deciding the next step, recovering from
-  errors): one study made 93% fewer such calls than ReAct (9 vs 123) across 19 scenarios, mock tools
-  only (2603.01548).
-- Context-pruning savings can shrink with a stronger model (see `token-efficiency`); measure on yours.
+  errors): one mock-tool study made 93% fewer such calls than ReAct.
+- Context-pruning savings can shrink with a stronger model (`token-efficiency`); measure on yours.
 
 ## Step 4: self-hosted levers, in order of risk
 
-1. **Server prefix caching: keep it on, know the cost.** On BFCL (multi-turn tool use), cache-hit and
-   recompute runs generated different text in 36.2% to 91.2% of episodes, more with quantization (37.4%
-   at F16 to 82.5% at Q4_K_M). GSM8K accuracy did not move (single-turn; +0.46 points, 95% CI -0.15 to
-   +1.15), so this is a reproducibility hazard; agent success was not measured. Turning the server cache
-   off cost about 5% latency per request (0.290 to 0.305 s); recomputing everything took 0.871 s
-   (2609.04748). Turn it off for A/B comparisons and audits.
+1. **Server prefix caching: keep it on, know the cost.** Cache-hit and recompute runs generated different
+   text in 36-91% of multi-turn tool-use episodes, more under quantization. Single-turn accuracy did not
+   move, so this is a reproducibility hazard; agent success was not measured. Turning the cache off cost
+   ~5% latency per request; recomputing everything was ~3x slower. Turn it off for A/B comparisons and
+   audits.
 2. **Speculative decoding (a small draft model proposes tokens the main model verifies): re-measure at
-   your batch size**; a batch-1 speedup does not hold on a loaded server. Qwen3-Coder-Next got 1.51x,
-   1.23x, 0.94x at batch 1, 8, 32 (2602.06932). Acceptance of drafted tokens decays on long outputs
-   (2605.09329). Locally, multi-token prediction (MTP) on Gemma-4 E4B in llama.cpp gave about 1.9x to
-   2.0x faster decode and about 1.3x end to end, with slightly different text (operator run notes).
+   your batch size**; a batch-1 speedup does not hold on a loaded server (1.5x at batch 1, 0.9x at 32 in
+   one test), and draft acceptance decays on long outputs. Locally, multi-token prediction in llama.cpp
+   gave ~2x decode and ~1.3x end to end, with slightly different text.
 3. **KV quantization (store the attention cache at fewer bits): only with an agent result for your
-   model.** TriAxialKV mixed precision stayed within 1.1 points of BF16 on BFCL Memory and 1.8 on
-   OSWorld, with 4.5x less KV memory and 1.26x to 1.52x throughput; uniform SGLang FP4 lost 4 to 5
-   points. It needs calibration and an SGLang fork (2605.17170).
+   model.** Mixed precision stayed within ~1-2 points of BF16 with 4.5x less KV memory; uniform FP4 lost
+   4-5 points. It needs calibration and a forked SGLang.
 4. **KV eviction (drop cached tokens to save memory): avoid on multi-turn agents, and never without
-   protecting prompt-boundary tokens.** Unprotected eviction at 13% retention scored F1 of 0.064 or
-   less; reserving 10% of the cache at each end recovered 69% to 90% of full-cache F1 (2605.18053). At
-   small budgets all seven mechanisms tested failed (2605.14292). Eviction raised jailbreak success from
-   0.299 to 0.632 for one method (2606.17872).
-5. **Weight quantization: do not trust aggregate scores.** 4-bit NF4 weights fell from 81.0% to 68.3% on
-   a test where earlier facts are overwritten by later ones, while aggregate accuracy moved only 1 to 2
-   points (2608.18578).
+   protecting prompt-boundary tokens.** Unprotected eviction at 13% retention was near-useless; reserving
+   10% of the cache at each end recovered 69-90% of full-cache F1. At small budgets all seven tested
+   mechanisms failed, and eviction raised jailbreak success for one method.
+5. **Weight quantization: do not trust aggregate scores.** 4-bit weights fell from 81% to 68% on a test
+   where later facts overwrite earlier ones, while aggregate accuracy moved only 1-2 points.
 
 ## Step 5: judge by cost per solved task
 
-Tokens per second misleads: one method cut output tokens up to 70% but wall-clock only about 35%
-(2605.01111), and diffusion-decoding "5x" claims are often tokens per forward pass, not latency (see
-[latent vs text](latent-vs-text-agent-design.md) rule 9). Perplexity, MMLU, LongBench and GSM8K are single-turn or non-agent scores and do not show
-an agent keeps its success rate. Compare dollars and seconds per solved task on your own tasks. When
-benchmarking serving throughput, switch warm-cache features off (cache reuse inflates tokens per
-second); keep them on in production.
+Tokens per second misleads: one method cut output tokens up to 70% but wall-clock only ~35%, and
+diffusion-decoding "5x" claims are often tokens per forward pass, not latency (see [latent vs
+text](latent-vs-text-agent-design.md), **Read "Nx faster"**). Perplexity, MMLU, LongBench and GSM8K
+are single-turn or non-agent scores and do not show an agent keeps its success rate. Compare dollars and
+seconds per solved task on your own tasks. When benchmarking serving throughput, switch warm-cache features off;
+keep them on in production.
 
-## Gaps (no evidence found)
-
-- Cost per solved task for any lever; a head-to-head comparison of these levers on one workload.
-- Multi-turn tests of KV eviction; 4-bit weight quantization measured on agent success.
-- Speculative decoding on structured tool-call JSON; what invalidates a provider prompt cache.
-- A Claude effort setting measured on a real agent run; a token split of an agent run into reasoning,
-  tool output, context re-read and action; trained-short vs prompted or capped models at matched budget.
+Evidence: kb://agentic-capability-reports/notes/2026-11-14-agent-loop-serving-levers-cost-vs-accuracy.md,
+kb://agentic-capability-reports/notes/2026-11-14-reasoning-length-levers-output-token-cost.md

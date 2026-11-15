@@ -4,19 +4,16 @@ group: agent-automation
 keywords: prompt injection, untrusted content, sandbox, permissions, secrets, pre-tool hook, monitor, test tampering, dry run, destructive action
 related: claude-code-permissions, hook-driven-workflow-enforcement, shell-subprocess-safety, git-commit-discipline, asking-the-operator
 description: >
-  Agent safety for tool-using and coding agents: prompt injection through issues, web pages, tool/MCP
-  output, memory and third-party skills; containing unsafe actions with no attacker (sandboxes, secret
-  brokers, permission policies, pre-tool gates, monitors, test tampering); and predicting before
-  hard-to-undo actions (dry runs, verifying effects, when lookahead pays). Use when granting tools or
-  credentials, installing a skill or MCP server, choosing a guard, sandbox or monitor, or about to run a
-  destructive or outward-facing command.
+  Agent safety for tool-using and coding agents: defending against prompt injection (issues, web pages,
+  tool/MCP output, memory, third-party skills, CI workflows, lead-worker handoffs), containing unsafe
+  actions (sandboxes, secrets, permissions, gates, monitors, test tampering), and predicting before
+  hard-to-undo actions (dry runs, when lookahead pays). Use when granting tools or credentials, installing
+  a skill or MCP server, choosing a guard, or about to run a destructive or outward-facing command.
 ---
 
 # Agent Safety
 
-Evidence-based rules, each with its paper citation and a list of what the evidence does not show, for
-keeping tool-using agents from doing harm. Read only the guide that matches the decision in front of you
-(several if the task spans them).
+Read only the guide that matches the decision in front of you (several if the task spans them).
 
 | Decision you face | Read |
 |---|---|
