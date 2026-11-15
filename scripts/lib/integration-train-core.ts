@@ -103,6 +103,8 @@ export interface TrainStateStore {
 export interface TrainDeps {
   /** Runs git inside the train's dedicated worktree. */
   git(args: string[]): Promise<GitResult>;
+  /** Writes a file at `path`, relative to the train's worktree (the plugin version bump). */
+  writeFile(path: string, content: string): Promise<void>;
   /** Verifies the given SHA (checks it out in the worktree, runs the suite). */
   verify(sha: string): Promise<VerifyResult>;
   github: TrainGithub;
@@ -119,6 +121,8 @@ export type CycleOutcome =
   | 'halted'
   | 'idle'
   | 'reconciled'
+  /** The train pushed a plugin version bump to the integration branch; the next cycle verifies it. */
+  | 'version-bumped'
   | 'promoted'
   | 'reverted'
   | 'retry';
@@ -244,6 +248,48 @@ export function isOutdatedLockfileFailure(installOutput: string): boolean {
   return installOutput.includes('ERR_PNPM_OUTDATED_LOCKFILE');
 }
 
+/** The kookr-toolkit plugin manifest whose `version` the train bumps (issue #3793). */
+export const PLUGIN_JSON_PATH = 'plugin/.claude-plugin/plugin.json';
+
+/** Trailer on the train's plugin version bump commits. */
+export const TRAIN_VERSION_BUMP_TRAILER = 'Kookr-Integration-Train: plugin-version-bump';
+
+const PLUGIN_VERSION_RE = /("version"\s*:\s*")([^"]*)(")/;
+
+/** The `version` value of a plugin.json text, or null when it has none. */
+export function pluginVersionOf(json: string): string | null {
+  return PLUGIN_VERSION_RE.exec(json)?.[2] ?? null;
+}
+
+/** `MAJOR.MINOR.PATCH` as numbers, or null for anything else (pre-release tags included). */
+function versionParts(version: string): [number, number, number] | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/**
+ * The version the integration head must ship, or null when it needs no bump.
+ * A bump is needed when the head's version is not numerically greater than
+ * main's (`0.16.114` is greater than `0.16.99`). The new version is main's with
+ * the patch number plus one. Null too when either value is not a plain
+ * `MAJOR.MINOR.PATCH`: the train does not guess, a person bumps by hand.
+ */
+export function nextPluginVersion(mainVersion: string, headVersion: string): string | null {
+  const m = versionParts(mainVersion);
+  const h = versionParts(headVersion);
+  if (!m || !h) return null;
+  for (let i = 0; i < 3; i++) {
+    if (h[i] > m[i]) return null;
+    if (h[i] < m[i]) break;
+  }
+  return `${m[0]}.${m[1]}.${m[2] + 1}`;
+}
+
+/** The plugin.json text with only its first `version` value replaced. */
+export function withPluginVersion(json: string, version: string): string {
+  return json.replace(PLUGIN_VERSION_RE, (_all, pre: string, _old: string, post: string) => `${pre}${version}${post}`);
+}
+
 /** Trailer the train puts on its own revert commits, so it can recognise them later. */
 export const TRAIN_REVERT_TRAILER = 'Kookr-Integration-Train: revert';
 
@@ -266,7 +312,8 @@ export async function runTrainCycle(deps: TrainDeps): Promise<CycleResult> {
     // A standing halt stays quiet: it was announced when it started. Recovery
     // is reported once, by the first healthy cycle after an alert; a failed
     // report is tried again by the next healthy cycle.
-    const healthy = result.outcome === 'idle' || result.outcome === 'promoted' || result.outcome === 'reconciled';
+    const healthy = result.outcome === 'idle' || result.outcome === 'promoted' || result.outcome === 'reconciled'
+      || result.outcome === 'version-bumped';
     if (healthy && state.alerting && !state.halted) {
       const sent = await safe(deps, async () => { await deps.notifier.healthy(); return true; });
       if (sent === true) state.alerting = false;
@@ -456,6 +503,15 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     return { outcome: 'reconciled' };
   }
 
+  // 4b. Plugin version (issue #3793). Pull requests no longer bump
+  // plugin.json#version: two that bump to the same value ship one change
+  // unbumped, and two that bump differently conflict. The train bumps once per
+  // promotion instead. It does so here, before verify, so main still only
+  // receives a commit the train verified: push the bump and let the next cycle
+  // verify and promote it, the way a reconcile does.
+  const bumped = await bumpPluginVersion();
+  if (bumped) return bumped;
+
   // 5. Only commits that contain main. After a reconcile merge (step 4) the
   // commits older than that merge do not include main's changes, so "main is
   // green" proves nothing about them: testing them could fail for a reason main
@@ -465,6 +521,50 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   return (await out([
     'rev-list', '--first-parent', '--ancestry-path', '--reverse', `origin/main..${intRef}`,
   ])).split('\n').filter(Boolean);
+  };
+
+  /**
+   * When the integration head changes plugin content (anything under plugin/
+   * other than plugin.json) and its version is not above main's, commit main's
+   * version plus one patch on top of the head and push it to the integration
+   * branch. Returns null when no bump is needed or possible.
+   */
+  const bumpPluginVersion = async (): Promise<CycleResult | null> => {
+    const changed = (await out(['diff', '--name-only', mainSha, headSha, '--', 'plugin/']))
+      .split('\n').filter((p) => p !== '' && p !== PLUGIN_JSON_PATH);
+    if (changed.length === 0) return null;
+    const mainJson = await git(['show', `${mainSha}:${PLUGIN_JSON_PATH}`]);
+    const headJson = await git(['show', `${headSha}:${PLUGIN_JSON_PATH}`]);
+    if (!mainJson.ok || !headJson.ok) return null; // no manifest on one side: nothing to compare
+    const mainVersion = pluginVersionOf(mainJson.stdout);
+    const headVersion = pluginVersionOf(headJson.stdout);
+    if (mainVersion === null || headVersion === null) {
+      log(`plugin version bump skipped: no "version" in ${PLUGIN_JSON_PATH}`);
+      return null;
+    }
+    const next = nextPluginVersion(mainVersion, headVersion);
+    if (next === null) {
+      if (versionParts(mainVersion) === null || versionParts(headVersion) === null) {
+        log(`plugin version bump skipped: "${mainVersion}" (main) or "${headVersion}" (head) is not MAJOR.MINOR.PATCH`);
+      }
+      return null;
+    }
+    await out(['checkout', '--detach', '-q', headSha]);
+    await deps.writeFile(PLUGIN_JSON_PATH, withPluginVersion(headJson.stdout, next));
+    await out(['add', '--', PLUGIN_JSON_PATH]);
+    await out([
+      'commit', '-q', '-m', `chore(plugin): bump kookr-toolkit to ${next}`,
+      '-m', `The integration branch changes plugin content since main (${mainVersion}); ` +
+        'installed plugins only update when the version changes.',
+      '-m', TRAIN_VERSION_BUMP_TRAILER,
+    ]);
+    const bumpSha = await out(['rev-parse', 'HEAD']);
+    // A plain push: if a merge moved the integration branch meanwhile, it is
+    // rejected and the next cycle bumps on top of the new head.
+    const pushed = await push(`${bumpSha}:refs/heads/${integration}`);
+    if (!pushed.ok) return rejected('plugin version bump push', pushed);
+    log(`bumped plugin version ${headVersion} -> ${next} on ${integration} (${bumpSha.slice(0, 10)})`);
+    return { outcome: 'version-bumped', detail: `plugin version ${next}` };
   };
 
   // Verify bookkeeping for this cycle.

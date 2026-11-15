@@ -46,6 +46,9 @@ copy pinned to it by a test) and behave as before when it is absent:
 4. If `main` has commits the integration branch lacks, merge `main` into the
    integration branch and push it (`reconciled`), and send a `main-bypassed`
    notice listing those commits. The next cycle verifies it.
+   Otherwise, when the head changes plugin content without a version above
+   `main`'s, commit and push a plugin version bump (`version-bumped`, see "The
+   plugin version bump" below). The next cycle verifies it.
 5. Verify the integration head. Green: fast-forward `main` to it (`promoted`).
    If that push is rejected because `main` moved, nothing else happens and the
    next cycle starts over (`retry`). A push (to `main` or to the integration
@@ -84,6 +87,41 @@ copy pinned to it by a test) and behave as before when it is absent:
    spawned: if the spawn fails, the train notifies `fix-spawn-failed` and tries
    again the next time that PR fails. A second failure after a spawned task
    spawns nothing; it notifies `fix-budget-exhausted`.
+
+### The plugin version bump
+
+Installed kookr-toolkit plugins update only when
+`plugin/.claude-plugin/plugin.json#version` changes. Pull requests no longer
+bump it (issue #3793): when every plugin pull request edited that one line, two
+that bumped to the same value merged without a conflict and shipped one change
+unbumped, two that bumped differently conflicted, and each rebase moved the
+shared file and voided the review.
+
+The train bumps instead, once per promotion. After the reconcile check (step 4)
+and before verify, it compares the integration head with `main`. When files
+under `plugin/` other than `plugin.json` differ, and the head's version is not
+numerically greater than `main`'s, it commits `main`'s version with the patch
+number plus one (`chore(plugin): bump kookr-toolkit to <version>`, trailer
+`Kookr-Integration-Train: plugin-version-bump`) on top of the head, pushes it to
+the integration branch, and ends the cycle (`version-bumped`). The next cycle
+verifies and promotes it like any other head, so `main` still receives only
+verified commits. A rejected push counts towards `push-rejected` like the
+others. Plugin changes that merge before that promotion ride on the same bump. A
+pull request that already ships a higher version gets no extra bump, and a
+version that is not `MAJOR.MINOR.PATCH` is left for a person (the train logs
+it).
+
+Why not at merge time: a bump pushed to the pull request moves the reviewed
+head and adds `plugin.json` to the reviewed files, and the next pull request's
+own bump would conflict with it on `staging`. The train's commit changes only
+`plugin.json`, which no pull request touches any more, so a pull request rebased
+over it keeps its `review-patch-id`.
+
+Without an integration branch the train does nothing, and the pre-push hook
+asks each pull request to bump the version as before.
+
+The running train loads its code once, at start. A change to this step takes
+effect after the train is restarted from an updated checkout.
 
 ### Commits that skip the train
 

@@ -49,6 +49,13 @@
 # a PR merged there reports its closing issues as staying open until the
 # integration train promotes the change. Inert without the config.
 #
+# The plugin version (plugin/.claude-plugin/plugin.json) is not bumped here
+# (issue #3793). The integration train commits one bump on the integration
+# branch before it verifies and promotes plugin changes. A bump on the pull
+# request at merge time would move the reviewed head and add plugin.json to the
+# reviewed files, and a second pull request bumping the same line would
+# conflict. See docs/reference/integration-train.md.
+#
 # A verdict may also carry `review-patch-id:` (scripts/review-patch-id.sh), the
 # id of the exact file versions the PR changes. The gate then accepts a pass whose
 # head SHA moved as long as the PR's current id still equals it. A rebase keeps the

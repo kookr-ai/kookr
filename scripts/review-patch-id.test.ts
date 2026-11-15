@@ -76,6 +76,30 @@ describe('review-patch-id.sh (local refs)', () => {
     expect(after.stdout).toBe(before.stdout);
   });
 
+  it('keeps a plugin PR\'s id when the base gains the train\'s plugin version bump (#3793)', () => {
+    // Pull requests no longer edit plugin.json; the integration train bumps it
+    // in its own commit. A plugin PR rebased over that commit keeps its id, so a
+    // passed review stays bound. (When every plugin PR bumped the version, each
+    // such rebase changed the shared plugin.json blob and voided the review.)
+    const repo = makeRepo();
+    mkdirSync(join(repo, 'plugin/.claude-plugin'), { recursive: true });
+    mkdirSync(join(repo, 'plugin/skills'), { recursive: true });
+    commitFile(repo, 'plugin/.claude-plugin/plugin.json', '{\n  "version": "0.1.0"\n}\n');
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    commitFile(repo, 'plugin/skills/demo.md', 'skill\n');
+    const before = run(repo, ['main']);
+    expect(before.status, before.stderr).toBe(0);
+
+    git(repo, 'checkout', '-q', 'main');
+    commitFile(repo, 'plugin/.claude-plugin/plugin.json', '{\n  "version": "0.1.1"\n}\n');
+    git(repo, 'checkout', '-q', 'feature');
+    git(repo, 'rebase', '-q', 'main');
+
+    const after = run(repo, ['main', 'feature']);
+    expect(after.status, after.stderr).toBe(0);
+    expect(after.stdout).toBe(before.stdout);
+  });
+
   it('prints a different id after an extra change', () => {
     const repo = makeRepo();
     git(repo, 'checkout', '-q', '-b', 'feature');

@@ -103,7 +103,7 @@ working in other repositories.
 
 ## Versioning
 
-`plugin.json#version` is bumped on every PR that changes bundled plugin content under `plugin/**` except `plugin/.claude-plugin/plugin.json` itself (skills, agents, hooks, playbooks, reviewer specialists, README, etc.). Without a version bump, installed-plugin users would not receive updates. The repo's pre-push hook enforces the bump.
+Installed-plugin users only receive updates when `plugin.json#version` changes, so every change to bundled plugin content under `plugin/**` (skills, agents, hooks, playbooks, reviewer specialists, README, and so on, but not `plugin/.claude-plugin/plugin.json` itself) must reach `main` with a higher version. While the repository has an integration branch (`.kookr/delivery-gate.json`), the integration train adds that bump: one commit per promotion, so pull requests leave the version alone. Without an integration branch, each pull request bumps the version itself and the repo's pre-push hook enforces it.
 
 ## License
 

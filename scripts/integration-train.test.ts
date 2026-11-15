@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { gitExecEnv } from '../src/core/git-helpers.js';
 import { CLOSING_KEYWORD_CASES } from './closing-keyword-cases.js';
@@ -16,7 +16,12 @@ import {
   closingIssueNumbersFromText,
   emptyTrainState,
   isOutdatedLockfileFailure,
+  nextPluginVersion,
   parseIntegrationBranch,
+  PLUGIN_JSON_PATH,
+  pluginVersionOf,
+  TRAIN_VERSION_BUMP_TRAILER,
+  withPluginVersion,
   prNumberFromSubject,
   runTrainCycle,
 } from './lib/integration-train-core.js';
@@ -74,7 +79,7 @@ interface Harness {
 
 const roots: string[] = [];
 
-function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seedVerified?: boolean } = {}): Harness {
+function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seedVerified?: boolean; pluginVersion?: string } = {}): Harness {
   const root = mkdtempSync(join(tmpdir(), 'integration-train-'));
   roots.push(root);
   const origin = join(root, 'origin.git');
@@ -89,6 +94,11 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
     writeFileSync(join(seed, '.kookr/delivery-gate.json'), '{"integrationBranch":"staging","prePushGate":"fast"}\n');
   }
   writeFileSync(join(seed, 'README.md'), 'base\n');
+  if (opts.pluginVersion !== undefined) {
+    mkdirSync(join(seed, 'plugin/.claude-plugin'), { recursive: true });
+    writeFileSync(join(seed, PLUGIN_JSON_PATH), pluginJson(opts.pluginVersion));
+    writeFileSync(join(seed, 'plugin/README.md'), 'plugin\n');
+  }
   git(seed, 'add', '-A');
   git(seed, 'commit', '-q', '-m', 'base');
   git(seed, 'push', '-q', 'origin', 'main');
@@ -115,6 +125,9 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
   } as unknown as Harness;
 
   h.deps = {
+    async writeFile(path, content) {
+      writeFileSync(join(train, path), content);
+    },
     async git(args) {
       const push = args.find((a) => /:refs\/heads\/main$/.test(a));
       const target = args[0] === 'push' ? /:refs\/heads\/(.+)$/.exec(args[args.length - 1])?.[1] : undefined;
@@ -173,7 +186,10 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
     git(seed, 'checkout', '-q', '-B', branch, `origin/${branch}`);
     for (const [name, content] of Object.entries(files)) {
       if (content === '') git(seed, 'rm', '-q', '-f', name);
-      else writeFileSync(join(seed, name), content);
+      else {
+        mkdirSync(dirname(join(seed, name)), { recursive: true });
+        writeFileSync(join(seed, name), content);
+      }
     }
     git(seed, 'add', '-A');
     git(seed, 'commit', '-q', '-m', subject);
@@ -189,6 +205,10 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
 }
 
 let h: Harness;
+
+function pluginJson(version: string): string {
+  return `{\n  "name": "kookr-toolkit",\n  "version": "${version}",\n  "description": "demo"\n}\n`;
+}
 
 afterEach(() => {
   // Invariant for every scenario: main only ever received SHAs the fake verify saw green.
@@ -905,4 +925,90 @@ describe('integration train cycle', () => {
       expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'verify-infra' });
     });
   });
+
+  describe('plugin version bump (#3793)', () => {
+    const versionAt = (ref: string): string | null =>
+      pluginVersionOf(git(h.origin, 'show', `${ref}:${PLUGIN_JSON_PATH}`));
+
+    for (const order of [['a', 'b'], ['b', 'a']]) {
+      it(`bumps once for two plugin PRs merged in order ${order.join(', ')}, then promotes the bump`, async () => {
+        h = makeHarness({ pluginVersion: '0.1.9' });
+        // Neither PR touches plugin.json, so they cannot conflict on it.
+        for (const name of order) h.commit('staging', { [`plugin/skills/${name}.md`]: name }, `skill ${name} (#${name === 'a' ? 1 : 2})`);
+        const prHead = h.originRef('staging');
+
+        const bumped = await h.cycle();
+        expect(bumped).toMatchObject({ outcome: 'version-bumped', detail: 'plugin version 0.1.10' });
+        expect(h.verifyCalls).toEqual([]); // verify happens on the next cycle
+        expect(h.mainPushes).toEqual([]);
+        const bumpSha = h.originRef('staging');
+        expect(git(h.origin, 'rev-parse', `${bumpSha}^`)).toBe(prHead);
+        expect(git(h.origin, 'diff', '--name-only', prHead, bumpSha)).toBe(PLUGIN_JSON_PATH);
+        expect(git(h.origin, 'show', `${bumpSha}:${PLUGIN_JSON_PATH}`)).toBe(pluginJson('0.1.10').trim());
+        expect(git(h.origin, 'log', '-1', '--format=%B', bumpSha)).toContain(TRAIN_VERSION_BUMP_TRAILER);
+
+        expect((await h.cycle()).outcome).toBe('promoted');
+        expect(h.originRef('main')).toBe(bumpSha);
+        expect(versionAt('main')).toBe('0.1.10');
+        expect(git(h.origin, 'show', 'main:plugin/skills/a.md')).toBe('a');
+        expect(git(h.origin, 'show', 'main:plugin/skills/b.md')).toBe('b');
+        expect((await h.cycle()).outcome).toBe('idle');
+
+        // The next batch with plugin content gets the next version.
+        h.commit('staging', { 'plugin/skills/c.md': 'c' }, 'skill c (#3)');
+        expect((await h.cycle()).outcome).toBe('version-bumped');
+        expect((await h.cycle()).outcome).toBe('promoted');
+        expect(versionAt('main')).toBe('0.1.11');
+      });
+    }
+
+    it('never changes the version for a batch that does not touch plugin/', async () => {
+      h = makeHarness({ pluginVersion: '0.1.0' });
+      const sha = h.commit('staging', { 'src.txt': 'x' }, 'not plugin (#1)');
+      expect((await h.cycle()).outcome).toBe('promoted');
+      expect(h.originRef('main')).toBe(sha);
+      expect(versionAt('main')).toBe('0.1.0');
+    });
+
+    it('does not bump again when the batch already ships a higher version', async () => {
+      h = makeHarness({ pluginVersion: '0.1.0' });
+      const sha = h.commit('staging', {
+        'plugin/skills/a.md': 'a', [PLUGIN_JSON_PATH]: pluginJson('0.2.0'),
+      }, 'skill with a manual bump (#1)');
+      expect((await h.cycle()).outcome).toBe('promoted');
+      expect(h.originRef('main')).toBe(sha);
+      expect(versionAt('main')).toBe('0.2.0');
+    });
+
+    it('does not bump a batch that only edits plugin.json', async () => {
+      h = makeHarness({ pluginVersion: '0.1.0' });
+      const sha = h.commit('staging', { [PLUGIN_JSON_PATH]: pluginJson('0.1.0').replace('demo', 'other') }, 'describe (#1)');
+      expect((await h.cycle()).outcome).toBe('promoted');
+      expect(h.originRef('main')).toBe(sha);
+    });
+
+    it('retries when the bump push is rejected, and halts after repeated rejections', async () => {
+      h = makeHarness({ pluginVersion: '0.1.0' });
+      const sha = h.commit('staging', { 'plugin/skills/a.md': 'a' }, 'skill (#1)');
+      h.rejectPushesTo.add('staging');
+      expect(await h.cycle()).toMatchObject({ outcome: 'retry', detail: 'plugin version bump push rejected' });
+      expect(h.originRef('staging')).toBe(sha);
+      expect((await h.cycle()).outcome).toBe('retry');
+      expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'push-rejected' });
+      h.rejectPushesTo.clear();
+    });
+
+    it('computes the next version and rewrites only the version value', () => {
+      expect(nextPluginVersion('0.16.114', '0.16.114')).toBe('0.16.115');
+      expect(nextPluginVersion('0.16.114', '0.16.99')).toBe('0.16.115');
+      expect(nextPluginVersion('0.16.99', '0.16.114')).toBeNull();
+      expect(nextPluginVersion('0.16.114', '0.17.0')).toBeNull();
+      expect(nextPluginVersion('1.0.0', '0.99.99')).toBe('1.0.1');
+      expect(nextPluginVersion('0.16.114-rc.1', '0.16.114-rc.1')).toBeNull();
+      const text = '{\n  "name": "kookr-toolkit",\n  "version":  "0.1.0",\n  "x": {"version": "9"}\n}\n';
+      expect(withPluginVersion(text, '0.1.1')).toBe(text.replace('"version":  "0.1.0"', '"version":  "0.1.1"'));
+      expect(pluginVersionOf('{"name": "x"}')).toBeNull();
+    });
+  });
 });
+

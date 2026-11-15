@@ -7,7 +7,9 @@
 # pre-push gate (.hooks/pre-push) enforces. This is the in-session
 # early-warning layer; the git hook is the hard backstop. It only fires when
 # the version is NOT yet bumped vs origin/main, so it won't nag once the
-# agent has done the right thing.
+# agent has done the right thing. It stays silent, like the pre-push rule,
+# when .kookr/delivery-gate.json on origin/main names an integration branch:
+# the integration train bumps the version then (issue #3793).
 #
 # Non-blocking: emits hookSpecificOutput.additionalContext on stdout so the
 # reminder reaches the model without blocking the tool. Fail-open: any error
@@ -41,6 +43,17 @@ case "$FILE" in
   "$ROOT"/plugin/*) ;;
   *) exit 0 ;;
 esac
+
+# The integration train bumps the version when an integration branch is
+# configured; the pull request must not.
+for GATE_LIB in "$ROOT/scripts/lib/delivery-gate.sh" "$(dirname "$0")/../scripts/lib/delivery-gate.sh"; do
+  if [ -f "$GATE_LIB" ]; then
+    # shellcheck disable=SC1090
+    INTEGRATION=$(cd "$ROOT" && . "$GATE_LIB" && delivery_gate_integration_branch 2>/dev/null) || INTEGRATION=""
+    [ -n "$INTEGRATION" ] && exit 0
+    break
+  fi
+done
 
 # Stay silent if the version was already bumped vs origin/main — mirrors the
 # pre-push satisfier (compare the version VALUE, not a line-level diff).

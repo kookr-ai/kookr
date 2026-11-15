@@ -303,8 +303,10 @@ fi
 # verdict files) when that integration is the whole point of the workflow —
 # a Kookr-aware playbook is a legitimate thing to bundle with Kookr. We still
 # reject hardcoded absolute home paths (they break every checkout but the
-# author's) and enforce a plugin.json#version bump on ANY change to bundled
-# plugin content (skills, agents, hooks, playbooks, commands, README, ...).
+# author's) and, without an integration branch, enforce a plugin.json#version
+# bump on ANY change to bundled plugin content (skills, agents, hooks,
+# playbooks, commands, README, ...). With one, the integration train bumps the
+# version itself (issue #3793), so a pull request must not.
 if [ -d plugin ]; then
   # Three-dot symmetric form so unrelated origin/main movement doesn't pollute
   # the diff (same fix rationale as the review-gate range above).
@@ -351,7 +353,22 @@ if [ -d plugin ]; then
     fi
   done
 
-  # 3. Version bump — ANY change to bundled plugin content (skills, agents,
+  # 3. Version bump. When .kookr/delivery-gate.json on origin/main names an
+  #    integration branch, the integration train commits the bump once per
+  #    promotion (issue #3793): pull requests that all bumped the same line
+  #    conflicted, or shipped a change unbumped. Without one (the default, or
+  #    after a rollback deletes the file) the pull request still bumps.
+  _BUMP_HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P) || _BUMP_HOOK_DIR=""
+  TRAIN_BUMPS_PLUGIN_VERSION=""
+  for _bump_root in "$_BUMP_HOOK_DIR/.." "$REPO_ROOT"; do
+    if [ -f "$_bump_root/scripts/lib/delivery-gate.sh" ]; then
+      # shellcheck disable=SC1090,SC1091
+      . "$_bump_root/scripts/lib/delivery-gate.sh"
+      [ -n "$(delivery_gate_integration_branch 2>/dev/null || true)" ] && TRAIN_BUMPS_PLUGIN_VERSION=1
+      break
+    fi
+  done
+  #    Legacy rule: ANY change to bundled plugin content (skills, agents,
   #    hooks, playbooks, commands, reviewer-specialists, README, ...) requires a
   #    real bump of the version VALUE, because installed-plugin users only
   #    receive updates when the version string changes. The trigger is "any
@@ -360,7 +377,7 @@ if [ -d plugin ]; then
   #    which a trailing comma or reordering could fake without a real release.
   PLUGIN_CONTENT_CHANGED=$(git diff --name-only "$RANGE" 2>/dev/null \
     | grep -E '^plugin/' | grep -vE '^plugin/\.claude-plugin/plugin\.json$' || true)
-  if [ -n "$PLUGIN_CONTENT_CHANGED" ]; then
+  if [ -n "$PLUGIN_CONTENT_CHANGED" ] && [ -z "$TRAIN_BUMPS_PLUGIN_VERSION" ]; then
     PLUGIN_VER_RE='"version"[[:space:]]*:[[:space:]]*"[^"]+"'
     NEW_VER=$(git show HEAD:plugin/.claude-plugin/plugin.json 2>/dev/null | grep -oE "$PLUGIN_VER_RE" | head -1)
     if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
