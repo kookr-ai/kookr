@@ -319,7 +319,19 @@ export class TaskLifecycleCommands {
     // than only reappearing on the next periodic snapshot; if capacity is full
     // or automation is drained it stays queued as pending (still visible).
     await this.deps.tryPromotePending?.();
-    return { outcome: 'reopened', task: this.deps.taskStore.getTask(taskId) ?? pended };
+    const reopened = this.deps.taskStore.getTask(taskId) ?? pended;
+    // The awaited promotion may already have failed the relaunch (e.g. an
+    // unreadable opencode session DB on resume) and cancelled the task. Report
+    // that instead of a silent success, so the operator sees why it stopped.
+    const receipt = reopened.terminalReceipt;
+    if (reopened.status === 'cancelled' && receipt?.reason === 'launch_failure') {
+      return {
+        outcome: 'invalid',
+        code: 'reopen_launch_failed',
+        error: `Task ${taskId} was reopened but its relaunch failed: ${receipt.detail ?? 'unknown launch error'}`,
+      };
+    }
+    return { outcome: 'reopened', task: reopened };
   }
 
   /**

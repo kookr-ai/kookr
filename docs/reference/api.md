@@ -1730,7 +1730,7 @@ delta sequence number.
 | `relaunch` | Relaunch an existing task with a new prompt. | `taskId`, `prompt`, optional `agentType`, `dependencies` |
 | `cancelTask` | Cancel a task and terminate its session. | `taskId` |
 | `batchAbortTasks` | Idempotently abort multiple tasks at once, interrupting each live session; broadcasts a concise result summary. | `taskIds`, optional `reason` |
-| `reopenTask` | Reopen a terminal task. | `taskId` |
+| `reopenTask` | Reopen a terminal task. Fails with an alert (`reopen_launch_failed`) when the relaunch it triggers is cancelled with a `launch_failure` receipt, for example `opencode_session_unreadable`. | `taskId` |
 | `dismissAgentSignal` | Dismiss a surfaced agent signal. | `taskId` |
 | `keepTaskAlive` | Veto a pending hung-task reap, extending its grace deadline. | `taskId` |
 | `deleteTask` | Delete a task. | `taskId` |

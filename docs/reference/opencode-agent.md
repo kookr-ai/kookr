@@ -198,14 +198,26 @@ conversation instead of starting over.
   "nothing to resume" and fall back as above. A database that exists but
   cannot be read (locked, schema drift, native addon failure) is not treated
   as empty: the resume launch fails with `OpenCodeSessionUnreadableError`
-  (code `opencode_session_unreadable`), the data is kept untouched, and the
-  operator can retry once the database is readable.
+  (code `opencode_session_unreadable`, which also leads the error message),
+  the data is kept untouched, and the operator can retry once the database is
+  readable. A database without a `session` table (for example a header-only
+  WAL file) is classified the same way; resume is only requested after a hook
+  recorded a session id, so this is not expected in practice.
+  When the resume is a reopen, the queued relaunch fails, the task is
+  cancelled with a terminal receipt of reason `launch_failure` whose `detail`
+  starts with `opencode_session_unreadable:` (visible in `GET /api/tasks`),
+  and the reopen command reports the failure (`reopen_launch_failed`) instead
+  of succeeding silently. Reopen always asks for a resume, so to start over
+  launch a new task; the old data is reclaimed by the retention sweep.
 - **Aborted and timed-out launches.** A launch aborted at any point (including
   before the session is created) releases its session directory and
   bookkeeping. The task-data directory carries a per-launch token in its
   ownership marker; a failed launch's late cleanup only removes a directory
   carrying its own token, so a retry of the same task that recreated the
-  directory keeps it. Sweeps and fresh-launch resets match on the task id only.
+  directory keeps it. That token and the fresh-launch record are dropped as
+  soon as the launch succeeds, so a session that ends without `stop` leaves no
+  per-launch bookkeeping behind. Sweeps and fresh-launch resets match on the
+  task id only.
 - **Cleanup and caps.** Disk use is bounded by a retention sweep that runs
   at the first launch after boot, on every launch (at most once a minute) and
   after every stop (immediately and again 5 s later, which catches a delete

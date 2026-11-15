@@ -319,6 +319,53 @@ describe('TaskLifecycleCommands.reopenTask (resume prior conversation)', () => {
     expect(taskStore.wantsResumeOnNextLaunch(taskId)).toBe(false);
   });
 
+  test('reports a relaunch that the awaited promotion failed instead of a silent success (#3531)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Resume me where it stopped', '/repo');
+    addSession(taskStore, task.id, 'kookr-prior');
+    taskStore.updateSession(task.id, 'kookr-prior', { claudeSessionId: 'ses_prior' });
+    taskStore.terminateTask(task.id);
+    // Stand-in for promotePendingTasks hitting an unreadable opencode DB on resume.
+    const { deps } = makeDeps(taskStore, {
+      tryPromotePending: vi.fn(async () => {
+        taskStore.cancelTask(task.id, {
+          source: 'provider_admission',
+          reason: 'launch_failure',
+          detail: 'opencode_session_unreadable: cannot resume opencode task',
+        });
+      }),
+    });
+
+    const result = await new TaskLifecycleCommands(deps).reopenTask(task.id);
+
+    expect(result).toMatchObject({ outcome: 'invalid', code: 'reopen_launch_failed' });
+    expect(result.outcome === 'invalid' && result.error).toContain('opencode_session_unreadable');
+  });
+
+  test('a reopen whose task is cancelled for a non-launch reason still reports reopened', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Reopen me', '/repo');
+    addSession(taskStore, task.id, 'kookr-prior');
+    taskStore.terminateTask(task.id);
+    const { deps } = makeDeps(taskStore, {
+      tryPromotePending: vi.fn(async () => {
+        taskStore.cancelTask(task.id, { source: 'user', reason: 'manual' });
+      }),
+    });
+
+    expect((await new TaskLifecycleCommands(deps).reopenTask(task.id)).outcome).toBe('reopened');
+  });
+
+  test('a launch_failure receipt left from an earlier cancel does not fail a reopen that is still queued', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Retry me', '/repo');
+    taskStore.cancelTask(task.id, { source: 'provider_admission', reason: 'launch_failure', detail: 'earlier failure' });
+    // Default makeDeps: promotion is a no-op, so the task stays pending with its old receipt.
+    const { deps } = makeDeps(taskStore);
+
+    expect((await new TaskLifecycleCommands(deps).reopenTask(task.id)).outcome).toBe('reopened');
+  });
+
   test('a fresh pend of the same task does not inherit a consumed resume request', async () => {
     const { taskStore, taskId } = await reopenTerminated((store, id) => {
       store.updateSession(id, 'kookr-prior', { claudeSessionId: 'sess-resumable' });

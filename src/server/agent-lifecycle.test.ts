@@ -17,6 +17,9 @@ import {
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { aSession, aTask } from '../core/__fixtures__/task-builders.js';
+import { projectTerminalReceipt } from '../core/terminal-receipt.js';
+import { OpenCodeSessionUnreadableError } from '../adapters/opencode-adapter.js';
+import { TaskLifecycleCommands } from './use-cases/task-lifecycle-commands.js';
 import { Monitor } from '../core/monitor.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
@@ -1297,7 +1300,11 @@ describe('promotePendingTasks', () => {
     const result = await promotePendingTasks(deps);
 
     expect(result).toBe(0);
-    expect(mockTaskStore.cancelTask).toHaveBeenCalledWith('fail-1');
+    expect(mockTaskStore.cancelTask).toHaveBeenCalledWith('fail-1', {
+      source: 'provider_admission',
+      reason: 'launch_failure',
+      detail: 'terminal backend not available',
+    });
     // Mutation guard: deleting the promote-loop's finally{endLaunch} must fail here.
     expect(mockTaskStore.endLaunch).toHaveBeenCalledWith('fail-1', 'test-launch-reservation');
     expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -1559,6 +1566,48 @@ describe('promotePendingTasks (integration)', () => {
     await promotePendingTasks(deps);
 
     expect(taskStore.getTask(t1.id)!.status).toBe('cancelled');
+  });
+
+  test('a failed resume promotion records the adapter error code on the task receipt, not a manual cancel (#3531)', async () => {
+    const t1 = taskStore.createTask('Task 1', '/cwd');
+    taskStore.pendTask(t1.id);
+    (adapter.launch as any).mockRejectedValueOnce(new OpenCodeSessionUnreadableError(t1.id, 'database is locked'));
+
+    await promotePendingTasks(deps);
+
+    const receipt = projectTerminalReceipt(taskStore.getTask(t1.id)!);
+    expect(receipt).toMatchObject({ status: 'cancelled', reason: 'launch_failure', source: 'provider_admission' });
+    expect(receipt?.detail).toMatch(/^opencode_session_unreadable: /);
+    expect(receipt?.detail).toContain('database is locked');
+  });
+
+  test('reopen reports the resume relaunch that real promotion failed (#3531, end to end)', async () => {
+    const task = taskStore.createTask('Task 1', '/cwd');
+    taskStore.terminateTask(task.id);
+    (adapter.launch as any).mockRejectedValueOnce(new OpenCodeSessionUnreadableError(task.id, 'database is locked'));
+    // reopenTask only needs the store and the promotion hook.
+    const commands = new TaskLifecycleCommands({
+      taskStore,
+      tryPromotePending: async () => { await promotePendingTasks(deps); },
+    } as never);
+
+    const result = await commands.reopenTask(task.id);
+
+    expect(result).toMatchObject({ outcome: 'invalid', code: 'reopen_launch_failed' });
+    expect(result.outcome === 'invalid' && result.error).toContain('opencode_session_unreadable: ');
+    expect(taskStore.getTask(task.id)?.status).toBe('cancelled');
+  });
+
+  test('caps a long launch error in the receipt detail, keeping the leading code', async () => {
+    const t1 = taskStore.createTask('Task 1', '/cwd');
+    taskStore.pendTask(t1.id);
+    (adapter.launch as any).mockRejectedValueOnce(new OpenCodeSessionUnreadableError(t1.id, 'x'.repeat(5000)));
+
+    await promotePendingTasks(deps);
+
+    const detail = projectTerminalReceipt(taskStore.getTask(t1.id)!)?.detail ?? '';
+    expect(detail.length).toBeLessThanOrEqual(500);
+    expect(detail).toMatch(/^opencode_session_unreadable: /);
   });
 
   test('cancels a healthy dependency launch failure instead of treating it as a probe retry', async () => {

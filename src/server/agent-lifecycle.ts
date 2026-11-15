@@ -1607,7 +1607,17 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         continue;
       }
       try {
-        taskStore.cancelTask(pending.id);
+        // Typed receipt, not the bare cancel default (`manual`): the operator
+        // reads why the launch failed (e.g. `opencode_session_unreadable` on a
+        // reopen-for-resume) from /api/tasks and the reopen response, not only
+        // the server log. Source mirrors launch-service's pre-session cancel.
+        taskStore.cancelTask(pending.id, {
+          source: 'provider_admission',
+          reason: 'launch_failure',
+          // Capped: the receipt detail is a short operator-facing line; a
+          // leading error code (as opencode's) survives the cut.
+          detail: (err instanceof Error ? err.message : String(err)).slice(0, 500),
+        });
       } catch (cancelErr) {
         console.warn(
           `[promotion] Could not cancel failed pending task ${pending.id}:`,

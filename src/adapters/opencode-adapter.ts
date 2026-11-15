@@ -205,9 +205,12 @@ function resolveModelConfig(base: OpenCodeModelConfig, override?: string): OpenC
 export class OpenCodeSessionUnreadableError extends Error {
   readonly code = 'opencode_session_unreadable';
   constructor(taskId: string, detail: string) {
+    // The code leads the message: callers that only record `err.message` (the promotion cancel receipt,
+    // the launch disposition, the crash-recovery report) still carry a greppable failure reason.
     super(
-      `cannot resume opencode task ${taskId}: its persistent session database is unreadable (${detail}). ` +
-        'The conversation data was kept; retry once the database is readable instead of starting fresh.',
+      `opencode_session_unreadable: cannot resume opencode task ${taskId}: its persistent session database is ` +
+        `unreadable (${detail}). The conversation data was kept; retry the reopen once the database is readable, ` +
+        'or launch a new task to start fresh.',
     );
     this.name = 'OpenCodeSessionUnreadableError';
   }
@@ -415,6 +418,10 @@ export class OpenCodeAdapter implements AgentAdapter {
     }
 
     opts?.onPhase?.('ack');
+    // Launch-scoped bookkeeping: only `cleanupFailedLaunch` reads it, and no failure path remains past this
+    // point. Dropping it here (not only in `stop`) keeps a session that ends any other way from leaking it.
+    this.launchTokens.delete(tmuxName);
+    this.freshTaskDirs.delete(tmuxName);
     this.taskStore.addSession(taskId, {
       tmuxSession: tmuxName,
       agentType: 'opencode',

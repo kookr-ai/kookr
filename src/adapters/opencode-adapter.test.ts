@@ -515,11 +515,20 @@ describe('OpenCodeAdapter', () => {
       mkdirSync(join(dataHome, 'opencode'), { recursive: true });
       writeFileSync(join(dataHome, 'opencode', 'opencode.db'), 'not sqlite');
       writeFileSync(join(dataHome, 'conversation-marker.txt'), 'keep');
-      await expect(adapter.launch(task.id, 'x', '/workspace', { sessionId: 'kookr-oc1' }, { tmuxName: 'kookr-oc2' }))
-        .rejects.toBeInstanceOf(OpenCodeSessionUnreadableError);
+      const failure = adapter.launch(task.id, 'x', '/workspace', { sessionId: 'kookr-oc1' }, { tmuxName: 'kookr-oc2' });
+      await expect(failure).rejects.toBeInstanceOf(OpenCodeSessionUnreadableError);
+      // The code leads the message: server paths that only keep err.message still carry it (#3531).
+      await expect(failure).rejects.toThrow(/^opencode_session_unreadable: /);
       expect(backend.sessions.has('kookr-oc2')).toBe(false);
       expect(readFileSync(join(dataHome, 'conversation-marker.txt'), 'utf8')).toBe('keep');
       expect((adapter as any).tmuxToTaskId.size).toBe(0);
+    });
+
+    test('a successful launch drops its launch-scoped bookkeeping, so a session that never hits stop leaks none (#3531)', async () => {
+      const adapter = makeAdapter();
+      await launch(adapter);
+      expect((adapter as any).launchTokens.size).toBe(0);
+      expect((adapter as any).freshTaskDirs.size).toBe(0);
     });
 
     test('an already-aborted launch throws LaunchAbortedError and leaks no session bookkeeping', async () => {
