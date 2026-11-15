@@ -1015,6 +1015,55 @@ run_post_restart_checks() {
   # tracked relay predates the freshly built relay artifacts. Operators can opt
   # into restarting it as part of the deploy by setting KOOKR_RESTART_RELAY=1.
   check_relay_drift_after_restart
+
+  supervise_integration_train
+}
+
+supervise_integration_train() {
+  # Integration train supervision (issue #3796). When `.kookr/delivery-gate.json`
+  # on origin/main names an integration branch, (re)start the train from this
+  # checkout so it runs the code just deployed, and so a reboot followed by a
+  # deploy brings it back. `restart` keeps the options of the last start (for
+  # example --worktree) and starts the train when none is running. A failure
+  # warns and never fails the deploy: the server is already live, and the
+  # server's train-liveness alert reports a train that is not running.
+  # KOOKR_INTEGRATION_TRAIN_SUPERVISE=0 skips this step.
+  if [[ "${KOOKR_INTEGRATION_TRAIN_SUPERVISE:-1}" == "0" ]]; then
+    echo "Skipping integration train supervision (KOOKR_INTEGRATION_TRAIN_SUPERVISE=0)"
+    return 0
+  fi
+  # Test seam: the node binary that runs the train CLI. The shell tests source
+  # this script from inside a Kookr checkout whose origin/main is configured,
+  # so without a seam they must never reach the real train.
+  local train_node="${KOOKR_INTEGRATION_TRAIN_NODE:-}"
+  # VITEST: a second guard for the suite, which inherits it into every child.
+  if [[ -z "$train_node" && ( "${PROD_RESTART_SOURCED_FOR_TEST:-}" == "1" || -n "${VITEST:-}" ) ]]; then
+    return 0
+  fi
+  local branch=""
+  branch="$(
+    cd "$APP_DIR" 2>/dev/null || exit 0
+    # The deployed checkout's copy: `pnpm prod:update` runs this script from
+    # the operator's development checkout, which may be on any branch.
+    # shellcheck source=lib/delivery-gate.sh
+    . "${APP_DIR}/scripts/lib/delivery-gate.sh"
+    delivery_gate_integration_branch
+  )" || branch=""
+  if [[ -z "$branch" ]]; then
+    return 0
+  fi
+  echo "Integration branch '${branch}' is configured; restarting the integration train on the deployed code..."
+  # The train runs APP_DIR's integration-train.ts, never the copy next to this
+  # script (RESTART_SCRIPT_DIR is the checkout `pnpm prod:update` was run from).
+  local status=0
+  (cd "$APP_DIR" && KOOKR_DIR="$KOOKR_DIR" "${train_node:-node}" --import tsx "${APP_DIR}/scripts/integration-train.ts" restart) || status=$?
+  if [[ "$status" != "0" ]]; then
+    {
+      echo "WARN: the integration train could not be restarted (exit ${status}). Until it runs,"
+      echo "      nothing promotes '${branch}' to main. Run \`pnpm train:start\` in ${APP_DIR}."
+    } >&2
+  fi
+  return 0
 }
 
 check_relay_drift_after_restart() {
@@ -1186,6 +1235,10 @@ run_post_deploy_smoke() {
   return "$status"
 }
 
+# Captured while sourcing: the tests run `KOOKR_PROD_RESTART_TEST_ONLY=1 source
+# prod-restart.sh`, which sets the variable only for the duration of the source,
+# not for the functions they call afterwards.
+PROD_RESTART_SOURCED_FOR_TEST="${KOOKR_PROD_RESTART_TEST_ONLY:-}"
 if [[ "${KOOKR_PROD_RESTART_TEST_ONLY:-}" == "1" ]]; then
   return 0 2>/dev/null || exit 0
 fi

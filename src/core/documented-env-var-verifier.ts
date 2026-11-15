@@ -188,6 +188,8 @@ export const DOCUMENTED_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
   // Read through the injected opencode env map in create-agent-runtime.ts (`openCodeEnv.KOOKR_OPENCODE_SEED`), which the scanner's
   // `env.X` pattern does not match.
   'KOOKR_OPENCODE_SEED',
+  // Read by scripts/prod-restart.sh (integration train supervision, issue #3796).
+  'KOOKR_INTEGRATION_TRAIN_SUPERVISE',
   // Shared speech writer and Compose overlay live under stt/, outside the
   // scanned app roots. Their actual configuration is covered by STT tests.
   'KOOKR_STT_CORPUS',

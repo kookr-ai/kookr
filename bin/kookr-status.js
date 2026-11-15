@@ -853,6 +853,34 @@ function summarizeOssAttempts(health) {
   };
 }
 
+// Integration train projection (issue #3796). /api/health publishes
+// `integrationTrain` when the server's train monitor is on and an integration
+// branch is configured: whether the train runs, its halt, its last cycle, and
+// whether a stall alert is out. Null when absent or malformed.
+function summarizeIntegrationTrain(health) {
+  const block = health?.integrationTrain;
+  if (!block || typeof block !== 'object') return null;
+  const b = /** @type {Record<string, unknown>} */ (block);
+  if (typeof b.integrationBranch !== 'string' || typeof b.running !== 'boolean') return null;
+  const halted = b.halted && typeof b.halted === 'object'
+    && typeof (/** @type {{ reason?: unknown }} */ (b.halted)).reason === 'string'
+    ? { reason: String((/** @type {{ reason: string }} */ (b.halted)).reason) }
+    : null;
+  const last = b.lastCycle && typeof b.lastCycle === 'object' ? /** @type {Record<string, unknown>} */ (b.lastCycle) : null;
+  const lastCycle = last && typeof last.outcome === 'string' && typeof last.at === 'string'
+    ? { outcome: last.outcome, at: last.at, ...(typeof last.reason === 'string' ? { reason: last.reason } : {}) }
+    : null;
+  return {
+    integrationBranch: b.integrationBranch,
+    running: b.running,
+    pid: typeof b.pid === 'number' ? b.pid : null,
+    halted,
+    lastCycle,
+    pendingSince: typeof b.pendingSince === 'string' ? b.pendingSince : null,
+    alerting: b.alerting === true,
+  };
+}
+
 // Scheduled maintenance-prune projection (issue #2345). /api/health always
 // publishes `maintenancePrune` when the tracker is wired (enabled, intervalHours,
 // lastRunAt, lastReclaimedBytes, lastRemovedCount, lastError). Always-on gauge
@@ -1278,6 +1306,24 @@ function renderReport({ port, health, agents, readiness, degraded }) {
         `  total=${ossAttempts.totalCount}` +
         `  lastRefresh=${refresh}` +
         `  issueCheckErrors=${ossAttempts.issueCheckErrorCount}`,
+    );
+  }
+
+  // Integration train (issue #3796) — shown whenever an integration branch is configured.
+  const integrationTrain = summarizeIntegrationTrain(health);
+  if (integrationTrain) {
+    const state = integrationTrain.running
+      ? (integrationTrain.halted ? `halted (${integrationTrain.halted.reason})` : 'running')
+      : 'NOT RUNNING';
+    const last = integrationTrain.lastCycle
+      ? `${integrationTrain.lastCycle.outcome}${integrationTrain.lastCycle.reason ? ` (${integrationTrain.lastCycle.reason})` : ''} at ${integrationTrain.lastCycle.at}`
+      : 'none';
+    lines.push(
+      `Integration train: ${state}` +
+        `  branch=${integrationTrain.integrationBranch}` +
+        `  lastCycle=${last}` +
+        `  pendingSince=${integrationTrain.pendingSince ?? 'none'}` +
+        (integrationTrain.alerting ? '  STALL ALERT' : ''),
     );
   }
 
@@ -1725,6 +1771,7 @@ function buildHealthDetailProjections(health) {
   const lessonYieldSummary = summarizeLessonYield(health);
   const ossAttemptsSummary = summarizeOssAttempts(health);
   const maintenancePruneSummary = summarizeMaintenancePrune(health);
+  const integrationTrainSummary = summarizeIntegrationTrain(health);
   const startupRecoverySummary = summarizeStartupRecovery(health);
   return {
     ...(starvationSummary ? { pipelineStarvation: starvationSummary } : {}),
@@ -1744,6 +1791,7 @@ function buildHealthDetailProjections(health) {
     ...(maintenancePruneSummary
       ? { maintenancePrune: maintenancePruneSummary }
       : {}),
+    ...(integrationTrainSummary ? { integrationTrain: integrationTrainSummary } : {}),
     ...(startupRecoverySummary
       ? { startupRecovery: startupRecoverySummary }
       : {}),
@@ -2136,6 +2184,7 @@ export {
   summarizeLessonYield,
   summarizeOssAttempts,
   summarizeMaintenancePrune,
+  summarizeIntegrationTrain,
   summarizeStartupRecovery,
   renderReport,
   resolvePort,

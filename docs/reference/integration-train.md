@@ -178,9 +178,10 @@ to the operator signal outbox (`KOOKR_OPERATOR_SIGNAL_DIR`, default
 title `integration train: <event>` and the event's detail. `main-bypassed` is an
 `info` signal, because nothing needs recovering; every other event is an
 `alert`.
-Every event gets its own file (key `integration-train:<event>:<time>-<pid>-<n>`),
-so two events of the same cycle, for example `fix-spawn-failed` and `reverted`,
-are both delivered.
+Every event gets its own file (key `integration-train:<time>-<pid>-<n>:<event>`,
+the time zero-padded first), so two events of the same cycle, for example
+`fix-spawn-failed` and `reverted`, are both delivered, and a batch the delivery
+service sends in file-name order lists them in the order they happened.
 
 After an alert, the first cycle that is `idle`, `promoted` or `reconciled`
 writes one `clear` signal, "integration train recovered". It is written once per
@@ -194,8 +195,10 @@ branch). Linked issues are found from two places, because GitHub reports no
 closing references for a PR that targets a non-default branch: the PR's own
 closing references, and the closing keywords in the PR body (`close`, `fix`,
 `resolve` and their `-s`/`-d` forms, case-insensitive, then `#<number>`). Only
-the body's prose counts: fenced code blocks, inline code, HTML comments and
-quoted lines (`>`) are ignored, so a quoted commit list such as
+the body's prose counts: fenced code blocks at any indentation, indented code
+blocks (four spaces after a blank line, outside a list), inline code (also when
+it wraps onto the next line), HTML comments, `<pre>` blocks, and quoted lines
+(`>`) with the lines that continue them are ignored, so a quoted commit list such as
 `fix: resolve #77 crash` closes nothing. Numbers longer than 9 digits are
 ignored. Only issues of the same repository count; `owner/repo#n` references
 and URLs are ignored. Each number is looked up with the REST issue endpoint
@@ -206,14 +209,43 @@ on. `pnpm merge` reads the body with the same rules (`body_closing_numbers` in
 issue stays open. All train pushes use `--no-verify`, because the repo's pre-push hook
 needs a reviewer marker and runs tests; the train's own verify replaces it.
 
+## Supervision
+
+`scripts/prod-restart.sh` (so `pnpm prod:restart` and `pnpm prod:update`)
+restarts the train after every deploy when `.kookr/delivery-gate.json` on
+`origin/main` names an integration branch. The train then runs the deployed
+code, and a host that rebooted gets its train back with the next deploy. The
+restart keeps the options of the last start (for example `--worktree`). A failed
+restart prints a warning and does not fail the deploy.
+`KOOKR_INTEGRATION_TRAIN_SUPERVISE=0` skips the step.
+
+The production server (port 4800, or `KOOKR_INTEGRATION_TRAIN_MONITOR=1`)
+checks every 5 minutes, with `git ls-remote`, whether the integration branch
+differs from `main`. When it has differed for 30 minutes
+(`KOOKR_INTEGRATION_TRAIN_STALL_MINUTES`) without `main` moving, and the train
+is not running or is halted, it sends one operator alert (source
+`integration-train-monitor`), and one `clear` when that ends. A train that keeps
+promoting resets the clock, so a long verify never alerts. The monitor only
+alerts; it never starts or resumes the train. Its state is in
+`${KOOKR_DIR}/integration-train-monitor.json`.
+
+`/api/health` shows the train under `integrationTrain` (running, pid, halt,
+last cycle, `pendingSince`, `alerting`), and `kookr status` prints it as one
+`Integration train:` line.
+
 ## Commands
 
-Run from inside a Kookr checkout. Each has a pnpm alias except `run`: `pnpm train:cycle`, `pnpm train:start`, `pnpm train:stop`, `pnpm train:status`, `pnpm train:logs` and `pnpm train:resume`.
+Run from inside a Kookr checkout. Each has a pnpm alias except `run` and `restart`: `pnpm train:cycle`, `pnpm train:start`, `pnpm train:stop`, `pnpm train:status`, `pnpm train:logs` and `pnpm train:resume`.
 
 - `cycle`: run one cycle and exit 0.
 - `run [--interval <sec>]`: loop forever (default 60 seconds).
-- `start`: launch `run` detached and write `train.pid`.
-- `stop`, `status` (JSON), `logs` (last 120 lines).
+- `start`: launch `run` detached, write `train.pid` and remember the options.
+- `restart`: stop the train and start it from this checkout, with the options
+  given, else those of the last start, else those of the running process.
+- `stop`: signal the train and wait up to 30 seconds for it to exit. Only a
+  process whose command line is the train's `run` loop is signalled, so a stale
+  `train.pid` naming a reused pid is left alone.
+- `status` (JSON), `logs` (last 120 lines).
 - `resume`: clear a halt.
 
 Options: `--worktree <path>` (default: a sibling of the launching checkout, `<repo>-train`),
@@ -224,14 +256,21 @@ The verify also runs with `KOOKR_VERIFY_FLAKY_RERUN=1`, so `scripts/verify.sh` a
 
 ## State files
 
-Under `${KOOKR_DIR:-~/.kookr}/integration-train/`: `state.json` (halt, green
+Under `${KOOKR_DIR:-~/.kookr}/integration-train/<owner>-<repo>/` (the `origin`
+remote's name, so every checkout of one repository shares it and two
+repositories never do): `state.json` (halt, green
 SHAs, flaky heads, fix-task counts, whether an alert awaits its recovery signal,
 consecutive rejected pushes), `train.log`, `train.pid`, `train.lock`
 (one instance only; a second `cycle` or `run` exits quietly), `events.jsonl`
 (notifications), `verify-<sha>.log` (20 newest kept), and
-`<idempotency key>.prompt.md` (the prompt handed to a spawned fix task). The state
-directory is shared by everything that uses the same `KOOKR_DIR`, so run one train
-per host data directory.
+`<idempotency key>.prompt.md` (the prompt handed to a spawned fix task),
+`last-cycle.json` (outcome of the newest cycle) and `start-args.json` (options of
+the last `start`).
+
+Before #3796 the state sat directly in `integration-train/`. A train started by
+that older code keeps using it until it is restarted. While it runs, the new
+code's cycles wait. Once it has exited, the first cycle moves its state (halt,
+fix-task budget, alert flag, logs) into the keyed directory.
 
 The lockfile hash of the last `pnpm install` (`last-install-hash`) is not in that
 directory: it sits in the train worktree's private git directory, next to its

@@ -182,6 +182,7 @@ import { runTranscriptBackfill } from './use-cases/transcript-backfill.js';
 import { hasCompleteSnapshot } from './use-cases/transcript-store.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
+import { createIntegrationTrainMonitorFromEnv } from './integration-train-monitor.js';
 import { createDeployConvergenceControllerFromEnv } from './deploy-convergence-controller.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { GhUmbrellaChainClient } from '../adapters/github-umbrella-chain-client.js';
@@ -2889,6 +2890,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // assembly can never wait on or trigger the full-file rollup.
   const inventPriorityHealth = new InventPriorityHealthRefresher({ kookrDir });
   inventPriorityHealth.start();
+  // Integration train liveness monitor (issue #3796). Created before
+  // createRoutes so GET /api/health can project the train's state. Enabled by
+  // default only on the canonical prod port (4800); undefined ⇒ no timer and no
+  // health block.
+  const integrationTrainMonitor = createIntegrationTrainMonitorFromEnv({
+    env: process.env,
+    port,
+    kookrDir,
+    repoPath: serverCwd,
+  });
   // Hourly prod smoke tick (issue #1593 / #2031). Created before createRoutes so
   // GET /api/health can project consecutiveFailures + failingChecks from the
   // alert artifact without re-running checks. Enabled by default only on the
@@ -3250,6 +3261,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     resourceWatchdog: resourceWatchdogService,
     staleProcessSummaryCache,
     ...(prodSmokeTick ? { prodSmokeTick } : {}),
+    ...(integrationTrainMonitor ? { integrationTrainMonitor } : {}),
     // systemd notifier arming projection (issue #2853). Same notifier instance
     // the liveness tick pings; /api/health reads only its in-memory arming state.
     ...(systemdNotifier ? { systemdNotifier } : {}),
@@ -4280,6 +4292,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       // agent schedule was never registered: past the 15m grace, POST
       // /api/deploy/trigger; if behindCount≥1 + deploying=false for the residual
       // window, page via operator signal. Enabled by default on port 4800 only.
+      ...(integrationTrainMonitor ? { integrationTrainMonitor } : {}),
       deployConvergenceController: createDeployConvergenceControllerFromEnv({
         env: process.env,
         port,

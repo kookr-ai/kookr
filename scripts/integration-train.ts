@@ -17,6 +17,16 @@ import { promisify } from 'node:util';
 import { gitExecEnv } from '../src/core/git-helpers.js';
 import { defaultOperatorSignalDir, writeOperatorSignal } from '../src/observability/signal-delivery/operator-signal.js';
 import {
+  integrationTrainBaseDir,
+  integrationTrainPaths,
+  integrationTrainStateDir,
+  isIntegrationTrainProcess,
+  readIntegrationTrainStatus,
+  readPidFile,
+  readProcessArgv,
+  resolveRepoKey,
+} from '../src/server/integration-train-runtime.js';
+import {
   type ClosingIssue,
   type GitResult,
   type TrainDeps,
@@ -65,19 +75,28 @@ function parseArgs(argv: string[]): Options {
   return opts;
 }
 
-function stateDir(): string {
-  return join(process.env.KOOKR_DIR ?? join(homedir(), '.kookr'), 'integration-train');
+function kookrDir(): string {
+  return process.env.KOOKR_DIR ?? join(homedir(), '.kookr');
 }
 
-function paths(dir: string) {
-  return {
-    state: join(dir, 'state.json'),
-    log: join(dir, 'train.log'),
-    pid: join(dir, 'train.pid'),
-    lock: join(dir, 'train.lock'),
-    events: join(dir, 'events.jsonl'),
-  };
+/**
+ * The state directory of this repository's train:
+ * `<KOOKR_DIR>/integration-train/<owner-name>/`. Keyed by repository so trains
+ * of two repositories never share a lock or a halt (issue #3796).
+ */
+function stateDir(): string {
+  return integrationTrainStateDir(kookrDir(), resolveRepoKey(process.cwd()));
 }
+
+/**
+ * Before issue #3796 every train used `<KOOKR_DIR>/integration-train/` itself.
+ * A train started by older code keeps using it until it is restarted.
+ */
+function legacyDir(): string {
+  return integrationTrainBaseDir(kookrDir());
+}
+
+const paths = integrationTrainPaths;
 
 function isAlive(pid: number): boolean {
   try {
@@ -88,13 +107,37 @@ function isAlive(pid: number): boolean {
   }
 }
 
-function readPid(file: string): number | null {
-  try {
-    const n = Number(readFileSync(file, 'utf8').trim());
-    return Number.isInteger(n) && n > 0 ? n : null;
-  } catch {
-    return null;
+const readPid = readPidFile;
+
+/** Pid of a train that still runs from the pre-#3796 shared directory, or null. */
+function legacyTrainPid(): number | null {
+  const lp = paths(legacyDir());
+  for (const file of [lp.pid, lp.lock]) {
+    const pid = readPid(file);
+    if (pid !== null && pid !== process.pid && isIntegrationTrainProcess(pid)) return pid;
   }
+  return null;
+}
+
+/**
+ * Move a pre-#3796 shared state directory into this repository's keyed one, so
+ * a standing halt, the fix-task budget and the alert flag survive the upgrade.
+ * Runs only when no train is using the old directory any more and the keyed
+ * directory has no state yet. The old pid and lock files are dropped: their
+ * process is gone.
+ */
+function migrateLegacyState(dir: string): void {
+  const old = legacyDir();
+  if (!existsSync(join(old, 'state.json')) || existsSync(join(dir, 'state.json'))) return;
+  if (legacyTrainPid() !== null) return;
+  mkdirSync(dir, { recursive: true });
+  for (const name of readdirSync(old)) {
+    const isStateFile = name === 'state.json' || name === 'events.jsonl' || name === 'train.log'
+      || /^verify-.*\.log$/.test(name) || name.endsWith('.prompt.md');
+    if (!isStateFile) continue;
+    try { renameSync(join(old, name), join(dir, name)); } catch { /* raced or vanished */ }
+  }
+  for (const name of ['train.pid', 'train.lock']) rmSync(join(old, name), { force: true });
 }
 
 /**
@@ -429,7 +472,9 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
   const signalDir = defaultOperatorSignalDir(process.env);
   let signalSeq = 0;
   const signal = async (name: string, kind: 'alert' | 'clear' | 'info', title: string, detail: string): Promise<void> => {
-    const key = `integration-train:${name}:${Date.now()}-${process.pid}-${signalSeq++}`;
+    // Time first: the delivery service sends a batch in file-name order, so a
+    // `reverted` alert and the recovery after it arrive in the order they happened.
+    const key = `integration-train:${String(Date.now()).padStart(15, '0')}-${process.pid}-${String(signalSeq++).padStart(6, '0')}:${name}`;
     await writeOperatorSignal(signalDir, { key, kind, source: 'integration-train', title, detail: detail.slice(0, 2000) });
   };
 
@@ -452,8 +497,25 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
   return { git, writeFile, verify, github, spawner, notifier, state, log, now: () => new Date() };
 }
 
+function writeLastCycle(file: string, result: { outcome: string; reason?: string; detail?: string }): void {
+  try {
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, JSON.stringify({
+      at: new Date().toISOString(),
+      outcome: result.outcome,
+      ...(result.reason ? { reason: result.reason } : {}),
+      ...(result.detail ? { detail: result.detail.slice(0, 2000) } : {}),
+    }, null, 2));
+    renameSync(tmp, file);
+  } catch { /* status only; must not break a cycle */ }
+}
+
 async function cycleOnce(opts: Options): Promise<number> {
   const dir = stateDir();
+  // A train started by older code still works from the shared directory, with
+  // a different lock file: wait for it to exit rather than run beside it.
+  if (legacyTrainPid() !== null) return 0;
+  migrateLegacyState(dir);
   mkdirSync(dir, { recursive: true });
   const p = paths(dir);
   const release = acquireLock(p.lock);
@@ -469,6 +531,7 @@ async function cycleOnce(opts: Options): Promise<number> {
     const deps = buildDeps(opts, dir, root, wt);
     const result = await runTrainCycle(deps);
     deps.log(`cycle: ${result.outcome}${result.reason ? ` (${result.reason})` : ''}${result.detail ? ` - ${result.detail}` : ''}`);
+    writeLastCycle(p.lastCycle, result);
   } finally {
     inCycle = false;
     activeRelease = null;
@@ -497,47 +560,114 @@ async function runForever(opts: Options): Promise<void> {
   }
 }
 
-function startDetached(argv: string[]): void {
+/** The pid of this repository's train, or null. A pid file whose process is not the train does not count. */
+function runningTrainPid(dir: string): number | null {
+  const pid = readPid(paths(dir).pid);
+  return pid !== null && isIntegrationTrainProcess(pid) ? pid : null;
+}
+
+function startDetached(args: string[], stopping: ReadonlySet<number> = new Set()): void {
   const dir = stateDir();
   mkdirSync(dir, { recursive: true });
   const p = paths(dir);
-  const existing = readPid(p.pid);
-  if (existing !== null && isAlive(existing)) {
+  // A train that was just told to stop may still be finishing its cycle. The
+  // new one starts anyway: it waits for the lock (or for the old shared
+  // directory to be released) before its first cycle.
+  const existing = [runningTrainPid(dir), legacyTrainPid()].find((x) => x !== null && !stopping.has(x)) ?? null;
+  if (existing !== null) {
     console.log(`integration train already running (pid ${existing})`);
     return;
   }
+  parseArgs(['run', ...args]); // reject bad options before detaching
   const out = openSync(p.log, 'a');
-  const forwarded = argv.slice(1);
   const child = spawn(
     process.execPath,
-    ['--import', 'tsx', fileURLToPath(import.meta.url), 'run', ...forwarded],
+    // The loader flags this process was started with (`--import tsx`, or an
+    // absolute loader URL), so the child resolves TypeScript the same way.
+    [...process.execArgv, fileURLToPath(import.meta.url), 'run', ...args],
     { cwd: process.cwd(), detached: true, stdio: ['ignore', out, out], env: process.env },
   );
   child.unref();
   writeFileSync(p.pid, String(child.pid));
+  writeFileSync(p.startArgs, JSON.stringify(args));
   console.log(`integration train started (pid ${child.pid}), log: ${p.log}`);
 }
 
-function stop(): void {
-  const p = paths(stateDir());
-  const pid = readPid(p.pid);
-  if (pid !== null && isAlive(pid)) {
+async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    // Not "is the pid alive": an exited child not yet reaped by its parent
+    // still answers kill(0), but it no longer has a command line.
+    if (!isIntegrationTrainProcess(pid)) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return !isIntegrationTrainProcess(pid);
+}
+
+/**
+ * Signal this repository's train, and a train still running from the pre-#3796
+ * shared directory. Only a process whose command line is the train's run loop
+ * is signalled: a stale pid file may name a pid the system has reused.
+ * Waits up to `waitMs` for it to exit (a train between two verifies finishes
+ * its cycle first, normally within seconds).
+ */
+async function stop(waitMs = 30_000): Promise<Set<number>> {
+  const dir = stateDir();
+  const p = paths(dir);
+  const targets = [runningTrainPid(dir), legacyTrainPid()].filter((x): x is number => x !== null);
+  const filed = readPid(p.pid);
+  if (targets.length === 0) {
+    if (filed !== null && isAlive(filed)) {
+      console.log(`pid ${filed} in ${p.pid} is not the integration train; not signalling it`);
+    } else {
+      console.log('integration train is not running');
+    }
+    rmSync(p.pid, { force: true });
+    return new Set();
+  }
+  const signalled = new Set(targets);
+  for (const pid of signalled) {
     try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ }
-    console.log(`stopped integration train (pid ${pid})`);
-  } else {
-    console.log('integration train is not running');
+    const exited = await waitForExit(pid, waitMs);
+    console.log(exited
+      ? `stopped integration train (pid ${pid})`
+      : `integration train (pid ${pid}) is finishing its cycle; it exits when the cycle ends`);
   }
   rmSync(p.pid, { force: true });
+  rmSync(paths(legacyDir()).pid, { force: true });
+  return signalled;
+}
+
+/** Options to restart with: the ones given, else those of the last start, else those of the live process. */
+function restartArgs(given: string[], dir: string): string[] {
+  if (given.length > 0) return given;
+  try {
+    const saved = JSON.parse(readFileSync(paths(dir).startArgs, 'utf8')) as unknown;
+    if (Array.isArray(saved) && saved.every((a) => typeof a === 'string')) return saved;
+  } catch { /* none saved */ }
+  const pid = runningTrainPid(dir) ?? legacyTrainPid();
+  const argv = pid === null ? null : readProcessArgv(pid);
+  const at = argv?.indexOf('run') ?? -1;
+  return argv && at >= 0 ? argv.slice(at + 1) : [];
+}
+
+/**
+ * Stop the train and start it again from this checkout, so it runs this
+ * checkout's code. `scripts/prod-restart.sh` calls it after every deploy.
+ */
+async function restart(given: string[]): Promise<void> {
+  const args = restartArgs(given, stateDir());
+  const signalled = await stop();
+  startDetached(args, signalled);
 }
 
 function status(): void {
   const dir = stateDir();
   const p = paths(dir);
-  const pid = readPid(p.pid);
+  const legacy = legacyTrainPid();
   console.log(JSON.stringify({
-    running: pid !== null && isAlive(pid),
-    pid,
-    stateDir: dir,
+    ...readIntegrationTrainStatus(dir),
+    ...(legacy !== null ? { legacyTrainPid: legacy, legacyStateDir: legacyDir() } : {}),
     state: loadState(p.state),
   }, null, 2));
 }
@@ -551,7 +681,9 @@ function logs(): void {
 }
 
 function resume(): void {
-  const p = paths(stateDir());
+  const dir = stateDir();
+  migrateLegacyState(dir);
+  const p = paths(dir);
   const st = loadState(p.state);
   if (!st.halted) {
     console.log('integration train is not halted');
@@ -569,13 +701,14 @@ async function main(): Promise<void> {
   switch (opts.command) {
     case 'cycle': installSignalHandlers(); process.exitCode = await cycleOnce(opts); return;
     case 'run': await runForever(opts); return;
-    case 'start': startDetached(argv); return;
-    case 'stop': stop(); return;
+    case 'start': startDetached(argv.slice(1)); return;
+    case 'restart': await restart(argv.slice(1)); return;
+    case 'stop': await stop(); return;
     case 'status': status(); return;
     case 'logs': logs(); return;
     case 'resume': resume(); return;
     default:
-      console.error('usage: integration-train <cycle|run|start|stop|status|logs|resume> [--interval <sec>] [--worktree <path>] [--verify-cmd "<cmd>"] [--workers <n>]');
+      console.error('usage: integration-train <cycle|run|start|restart|stop|status|logs|resume> [--interval <sec>] [--worktree <path>] [--verify-cmd "<cmd>"] [--workers <n>]');
       process.exitCode = 2;
   }
 }

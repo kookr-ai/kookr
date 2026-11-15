@@ -19,6 +19,7 @@ export const LIFECYCLE_TIMER_NAMES = [
   'prodSmokeTick',
   'deployLagDetector',
   'deployConvergence',
+  'integrationTrainMonitor',
   'relayOrphanSweep',
   'hostStaleDtachReap',
   'reflectWorktreeSweep',
