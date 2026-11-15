@@ -907,11 +907,27 @@ describe('options and probes', () => {
     for (const bad of ['~/git/homelink', '~/git/rootlink', '~/git/parentlink']) {
       expect(() => parseArgs(['--roots', bad], {}, home), bad).toThrow(/it is, or contains/);
     }
-    // A symlinked home: a root that is the real home, or a symlink to it, is refused too.
-    const linkHome = join(tmp, 'link-home3');
-    symlinkSync(home, linkHome);
-    expect(() => parseArgs(['--roots', home], {}, linkHome)).toThrow(/it is, or contains/);
     expect(() => parseArgs(['--roots', '~/git'], {}, home)).not.toThrow();
+  });
+
+  test('--roots refuses the real home of a symlinked home and the outside parent of a symlinked ~/.config', () => {
+    // No ~/.ssh, ~/.config or data dir inside these homes, so only the resolved-path checks can refuse.
+    const elsewhere = join(tmp, 'elsewhere-data');
+    const realHome = join(tmp, 'real-home4');
+    mkdirSync(join(realHome, 'git'), { recursive: true });
+    const linkHome = join(tmp, 'link-home4');
+    symlinkSync(realHome, linkHome);
+    expect(() => parseArgs(['--roots', realHome, '--data-dir', elsewhere], {}, linkHome)).toThrow(/it is, or contains/);
+    expect(() => parseArgs(['--roots', join(realHome, 'git'), '--data-dir', elsewhere], {}, linkHome)).not.toThrow();
+    // ~/.config managed as a symlink into a dotfiles folder outside home: that folder contains ~/.config.
+    const home = join(tmp, 'home5');
+    const dotfiles = join(tmp, 'dotfiles5');
+    mkdirSync(join(dotfiles, 'config'), { recursive: true });
+    mkdirSync(join(dotfiles, 'other'));
+    mkdirSync(home);
+    symlinkSync(join(dotfiles, 'config'), join(home, '.config'));
+    expect(() => parseArgs(['--roots', dotfiles, '--data-dir', elsewhere], {}, home)).toThrow(/it is, or contains/);
+    expect(() => parseArgs(['--roots', join(dotfiles, 'other'), '--data-dir', elsewhere], {}, home)).not.toThrow();
   });
 
   test('--roots refuses a root inside the real target of a symlinked protected directory or home', () => {
