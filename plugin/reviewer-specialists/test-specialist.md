@@ -27,6 +27,8 @@ You have access to a **full repository checkout** at `{repoDir}`. Use it to:
 - New code paths (branches, error cases) without corresponding tests
 - Edge cases visible in the implementation but not tested
 - Feature toggle states — is the feature tested with toggle on AND off?
+- A guard with several AND/OR conditions needs one negative test per condition, each with only that condition flipped. One test that flips everything at once still passes if a condition is deleted. Example: for `if (isOwner && !isArchived)`, test owner+archived and non-owner+not-archived separately.
+- A rule extracted into a helper needs a test that drives the route or caller that uses it, not only the helper. Helper-only tests still pass if the caller stops calling it. Example: `canDelete()` has unit tests, so also send a request to `DELETE /tasks/:id` and assert the 403.
 
 **Test patterns:**
 - Snapshot tests (generally being removed — flag new ones)
