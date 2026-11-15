@@ -313,6 +313,40 @@ describe('AutoUpdateService', () => {
       expect((await store.read()).autoUpdateOwnership.mkt).toBeUndefined();
     });
 
+    test('operator true at user AND in a higher scope: both pinned, both restored to their own true', async () => {
+      await settings.writeAutoUpdate('mkt', true, { scope: 'user', withLock: lock });
+      await settings.writeAutoUpdate('mkt', true, { scope: 'projectLocal', withLock: lock });
+      const svc = makeService();
+
+      await svc.setPolicy(ID, 'apply-when-idle');
+      expect(flagIn(userFile())).toBe(false);
+      expect(flagIn(projectLocalFile())).toBe(false);
+      expect((await store.read()).autoUpdateOwnership.mkt).toEqual({
+        previousValue: true,
+        alsoPinned: { projectLocal: true },
+      });
+
+      await svc.setPolicy(ID, 'off');
+      expect(flagIn(userFile())).toBe(true);
+      expect(flagIn(projectLocalFile())).toBe(true);
+    });
+
+    test('a reconcile with nothing changed writes no file', async () => {
+      await settings.writeAutoUpdate('mkt', true, { scope: 'projectLocal', withLock: lock });
+      const svc = makeService();
+      await svc.setPolicy('a@mkt', 'apply-when-idle');
+      const before = [
+        backupsIn(join(dir, '.claude'), 'settings.local.json').length,
+        backupsIn(join(home, '.claude'), 'settings.json').length,
+      ];
+
+      await svc.setPolicy('b@mkt', 'apply-when-idle'); // both pins are already false
+      expect([
+        backupsIn(join(dir, '.claude'), 'settings.local.json').length,
+        backupsIn(join(home, '.claude'), 'settings.json').length,
+      ]).toEqual(before);
+    });
+
     test('operator false in a higher scope: that file is never written; only the user pin is taken', async () => {
       await settings.writeAutoUpdate('mkt', false, { scope: 'projectLocal', withLock: lock });
       const svc = makeService();
@@ -357,7 +391,8 @@ describe('AutoUpdateService', () => {
         d.autoUpdateOwnership.mkt = { previousValue: null };
       });
 
-      await makeService().setPolicy(ID, 'apply-when-idle');
+      const svc = makeService();
+      await svc.setPolicy(ID, 'apply-when-idle');
       expect(await settings.readAutoUpdate('mkt')).toBe(false);
       expect(flagIn(userFile())).toBe(false);
       expect(flagIn(projectLocalFile())).toBe(false);
@@ -365,6 +400,11 @@ describe('AutoUpdateService', () => {
         previousValue: null,
         alsoPinned: { projectLocal: true },
       });
+
+      await svc.setPolicy(ID, 'off');
+      expect(flagIn(userFile())).toBeUndefined();
+      expect(flagIn(projectLocalFile())).toBe(true);
+      expect((await store.read()).autoUpdateOwnership.mkt).toBeUndefined();
     });
 
     test('self-heal re-pins a higher scope whose pin was removed', async () => {

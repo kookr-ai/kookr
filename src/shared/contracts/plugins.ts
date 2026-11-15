@@ -549,7 +549,11 @@ export interface AutoUpdateSnapshotMeta {
  * Kookr currently owns the flag for that marketplace.
  */
 export interface AutoUpdateFlagOwnership {
-  /** The `autoUpdate` value present before Kookr took over: `null` = the key was absent. */
+  /**
+   * The `autoUpdate` value the base (user) settings file itself held before
+   * Kookr took over: `null` = the key was absent. Records written before
+   * #3504 hold the value resolved across all scopes instead.
+   */
   previousValue: boolean | null;
   /**
    * Higher-precedence settings scopes where Kookr ALSO pinned `false`, each with
