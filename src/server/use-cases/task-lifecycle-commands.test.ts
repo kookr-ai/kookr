@@ -356,6 +356,16 @@ describe('TaskLifecycleCommands.reopenTask (resume prior conversation)', () => {
     expect((await new TaskLifecycleCommands(deps).reopenTask(task.id)).outcome).toBe('reopened');
   });
 
+  test('a launch_failure receipt left from an earlier cancel does not fail a reopen that is still queued', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Retry me', '/repo');
+    taskStore.cancelTask(task.id, { source: 'provider_admission', reason: 'launch_failure', detail: 'earlier failure' });
+    // Default makeDeps: promotion is a no-op, so the task stays pending with its old receipt.
+    const { deps } = makeDeps(taskStore);
+
+    expect((await new TaskLifecycleCommands(deps).reopenTask(task.id)).outcome).toBe('reopened');
+  });
+
   test('a fresh pend of the same task does not inherit a consumed resume request', async () => {
     const { taskStore, taskId } = await reopenTerminated((store, id) => {
       store.updateSession(id, 'kookr-prior', { claudeSessionId: 'sess-resumable' });

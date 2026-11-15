@@ -1614,7 +1614,9 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         taskStore.cancelTask(pending.id, {
           source: 'provider_admission',
           reason: 'launch_failure',
-          detail: err instanceof Error ? err.message : String(err),
+          // Capped: the receipt detail is a short operator-facing line; a
+          // leading error code (as opencode's) survives the cut.
+          detail: (err instanceof Error ? err.message : String(err)).slice(0, 500),
         });
       } catch (cancelErr) {
         console.warn(
