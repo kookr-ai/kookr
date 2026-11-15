@@ -157,7 +157,9 @@ describe('NFR-TERM-001: native isolated terminal ownership', () => {
     }
   });
 
-  it('restores surviving readiness with a fresh epoch after child replacement', async () => {
+  // Host-restart tests chain several 10 s polls; under host load the 15 s default
+  // test timeout would cut them short (issue #3657).
+  it('restores surviving readiness with a fresh epoch after child replacement', { timeout: 40_000 }, async () => {
     const backend = await start();
     await expect.poll(() => backend.inputCoordinator.getSnapshot('shell')).not.toBeNull();
     const previous = backend.inputCoordinator.getSnapshot('shell')!;
@@ -166,7 +168,7 @@ describe('NFR-TERM-001: native isolated terminal ownership', () => {
     await expect.poll(() => backend.getHostHealth().generation, { timeout: 10_000 }).not.toBe(old.generation);
     await expect.poll(() => backend.getHostHealth().status, { timeout: 10_000 }).toBe('ready');
     expect(await backend.isAlive('shell')).toBe(true);
-    await expect.poll(() => backend.inputCoordinator.getSnapshot('shell')).not.toBeNull();
+    await expect.poll(() => backend.inputCoordinator.getSnapshot('shell'), { timeout: 10_000 }).not.toBeNull();
     expect(backend.inputCoordinator.getSnapshot('shell')!.inputStateEpoch).not.toBe(previous.inputStateEpoch);
     await backend.inputCoordinator.markToolStarted('shell');
     await backend.inputCoordinator.markTurnStopped('shell');
@@ -180,16 +182,16 @@ describe('NFR-TERM-001: native isolated terminal ownership', () => {
     })).toBe(true);
   });
 
-  it('restores registrations made during an outage and excludes sessions cleaned up during it', async () => {
+  it('restores registrations made during an outage and excludes sessions cleaned up during it', { timeout: 40_000 }, async () => {
     const backend = await start();
     const coordinator = backend.inputCoordinator;
     const old = backend.getHostHealth();
     process.kill(old.pid!, 'SIGKILL');
-    await expect.poll(() => backend.getHostHealth().status).toBe('unavailable');
+    await expect.poll(() => backend.getHostHealth().status, { timeout: 10_000 }).toBe('unavailable');
     coordinator.cleanupSession('shell');
     coordinator.registerSession('recovered-during-outage');
     await expect.poll(() => backend.getHostHealth().generation, { timeout: 10_000 }).not.toBe(old.generation);
-    await expect.poll(() => coordinator.getSnapshot('recovered-during-outage')).not.toBeNull();
+    await expect.poll(() => coordinator.getSnapshot('recovered-during-outage'), { timeout: 10_000 }).not.toBeNull();
     await coordinator.markToolStarted('shell');
     expect(coordinator.getSnapshot('shell')).toBeNull();
     await coordinator.markToolStarted('recovered-during-outage');
@@ -225,7 +227,7 @@ describe('NFR-TERM-001: native isolated terminal ownership', () => {
     expect(await backend.isAlive('shell')).toBe(true);
   });
 
-  it('rejects capture/write RPCs during an outage without declaring the agent dead or replaying input', async () => {
+  it('rejects capture/write RPCs during an outage without declaring the agent dead or replaying input', { timeout: 40_000 }, async () => {
     const backend = await start(); const old = backend.getHostHealth();
     process.kill(old.pid!, 'SIGSTOP');
     const pending = backend.write('shell', new TextEncoder().encode('MUST_NOT_REPLAY'));
