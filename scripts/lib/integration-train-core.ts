@@ -155,6 +155,20 @@ export function prNumberFromSubject(subject: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * The first `(#N)` in a squash subject. By this repo's convention that is the
+ * issue (`fix: … (#issue) (#pr)`), and a re-land made by cherry-picking keeps
+ * the original subject in front of its own PR number, so this reference stays
+ * the same across re-lands where the trailing PR number does not.
+ */
+export function firstReferenceFromSubject(subject: string): number | null {
+  const m = /\(#(\d+)\)/.exec(subject);
+  return m ? Number(m[1]) : null;
+}
+
+/** Trailer the train puts on its own revert commits, so it can recognise them later. */
+export const TRAIN_REVERT_TRAILER = 'Kookr-Integration-Train: revert';
+
 export function tailForComment(output: string): string {
   const lines = output.split('\n').slice(-COMMENT_TAIL_LINES).join('\n');
   return lines.length > COMMENT_TAIL_CHARS ? lines.slice(lines.length - COMMENT_TAIL_CHARS) : lines;
@@ -325,6 +339,18 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     return halt('base-red', mainSha, headSha, `main ${mainSha.slice(0, 10)} fails verify; nothing reverted`);
   }
 
+  // The bisect below indexes the candidate list, which must end at the head.
+  // It does not when main is reachable from the head only through a second
+  // parent (a merge commit made by hand or by the GitHub UI rather than a
+  // squash): `--first-parent --ancestry-path` then lists nothing useful. A green
+  // head in that shape is promoted correctly above; a red one needs a human.
+  if (candidates.length === 0 || candidates[candidates.length - 1] !== headSha) {
+    return halt(
+      'history-shape', mainSha, headSha,
+      'the integration branch is not a first-parent line from main (a non-squash merge?); cannot bisect',
+    );
+  }
+
   // 9a. A revert the train made earlier may still be in the range (main has not
   // caught up with it yet). Every commit between the reverted change and that
   // revert is red because of the reverted change, so a bisect across them
@@ -386,11 +412,20 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   }
 
   await out(['checkout', '--detach', '-q', headSha]);
-  const revert = await git(['revert', '--no-edit', culprit]);
+  const revert = await git(['revert', '--no-commit', culprit]);
   if (!revert.ok) {
     await git(['revert', '--abort']);
     return halt('revert-conflict', mainSha, headSha, `reverting ${culprit.slice(0, 10)} conflicts`);
   }
+  // Commit with the train's trailer. Step 9a recognises only reverts that carry
+  // it: a revert a person made of some unrelated change says nothing about
+  // which commits in the range are known-bad.
+  const culpritSubject = await out(['log', '-1', '--format=%s', culprit]);
+  await out([
+    'commit', '-q', '-m', `Revert "${culpritSubject}"`,
+    '-m', `This reverts commit ${culprit}.`,
+    '-m', TRAIN_REVERT_TRAILER,
+  ]);
   const revertSha = await out(['rev-parse', 'HEAD']);
   const push = await pushRef(deps, `HEAD:refs/heads/${integration}`);
   if (!push.ok) {
@@ -398,7 +433,7 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     return { outcome: 'retry', detail: 'revert push rejected' };
   }
 
-  const subject = await out(['log', '-1', '--format=%s', culprit]);
+  const subject = culpritSubject;
   const pr = prNumberFromSubject(subject);
   const failTail = tailForComment(redTails.get(culprit) ?? redTails.get(headSha) ?? '');
   let fixNote = '';
@@ -418,7 +453,11 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     // Budget by issue when there is one: the re-land is a new PR, so a count
     // kept per PR number would never reach its limit.
     const issueNumbers = issues.map((i) => i.number).sort((a, b) => a - b);
-    const budgetKey = issueNumbers.length > 0 ? `issue-${issueNumbers[0]}` : `pr-${pr}`;
+    // With no linked issue (or when GitHub could not be asked), fall back to
+    // the first reference in the subject, which a cherry-picked re-land keeps.
+    const budgetKey = issueNumbers.length > 0
+      ? `issue-${issueNumbers[0]}`
+      : `ref-${firstReferenceFromSubject(subject) ?? pr}`;
     const spawned = state.fixTasks[budgetKey] ?? 0;
     if (spawned === 0) {
       const key = `train-fix-${budgetKey}-1`;
@@ -454,13 +493,13 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   }
 }
 
-/** Index in `candidates` of the newest commit that reverts another candidate, or -1. */
+/** Index in `candidates` of the newest train-made revert of another candidate, or -1. */
 async function newestRevertIndex(deps: TrainDeps, candidates: string[]): Promise<number> {
   const inRange = new Set(candidates);
   for (let i = candidates.length - 1; i >= 0; i--) {
     const body = await deps.git(['log', '-1', '--format=%B', candidates[i]]);
     const m = body.ok ? /^This reverts commit ([0-9a-f]{40})\b/m.exec(body.stdout) : null;
-    if (m && inRange.has(m[1])) return i;
+    if (m && inRange.has(m[1]) && body.stdout.includes(TRAIN_REVERT_TRAILER)) return i;
   }
   return -1;
 }

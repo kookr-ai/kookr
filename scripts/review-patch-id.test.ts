@@ -87,6 +87,22 @@ describe('review-patch-id.sh (local refs)', () => {
     expect(after).not.toBe(before);
   });
 
+  it('changes when a NUL byte is added to a file git diffs as text', () => {
+    // The diff must never pass through a shell variable: bash drops NUL bytes,
+    // so "X\0Y" and "XY" would hash the same and unreviewed bytes would pass.
+    const repo = makeRepo();
+    commitFile(repo, '.gitattributes', 'data.txt text diff\n');
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    commitFile(repo, 'data.txt', 'XY\n');
+    const before = run(repo, ['main']).stdout;
+    writeFileSync(join(repo, 'data.txt'), Buffer.from('X\0Y\n'));
+    git(repo, 'commit', '-q', '-am', 'add a NUL');
+    const after = run(repo, ['main']).stdout;
+    expect(before).toMatch(/^[0-9a-f]{40}$/);
+    expect(after).toMatch(/^[0-9a-f]{40}$/);
+    expect(after).not.toBe(before);
+  });
+
   it('is stable when the base moves in the SAME file far from the hunk', () => {
     const repo = makeRepo();
     const lines = Array.from({ length: 40 }, (_, i) => `line ${i}`);

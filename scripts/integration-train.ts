@@ -120,7 +120,13 @@ function acquireLock(lockPath: string): (() => void) | null {
           if (readPid(lockPath) === process.pid) unlinkSync(lockPath);
         } catch { /* already gone */ }
       };
-    } catch {
+    } catch (err) {
+      // Only "the lock exists" means someone else may hold it. Anything else
+      // (disk full, a filesystem without hard links) must be loud: returning
+      // "held" would make the train silently do nothing forever.
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw new Error(`cannot create the train lock ${lockPath}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       const holder = readPid(lockPath);
       if (holder !== null && isAlive(holder)) return null;
       try {
@@ -182,7 +188,13 @@ async function ensureWorktree(root: string, wt: string): Promise<void> {
   if (!r.ok) throw new Error(`could not create the train worktree: ${r.stderr.trim()}`);
   const gitDir = await gitPath(wt, '--git-dir');
   if (!gitDir) throw new Error('could not locate the git directory of the new train worktree');
-  writeFileSync(join(gitDir, TRAIN_MARKER), `created ${new Date().toISOString()}\n`);
+  try {
+    writeFileSync(join(gitDir, TRAIN_MARKER), `created ${new Date().toISOString()}\n`);
+  } catch (err) {
+    // Without its marker the next run would refuse this worktree forever.
+    await run('git', ['worktree', 'remove', '--force', wt], root);
+    throw err;
+  }
 }
 
 function makeLogger(logPath: string): (m: string) => void {
@@ -224,14 +236,31 @@ const VERIFY_TIMEOUT_MS = 90 * 60 * 1000;
 // the single-instance lock.
 let activeChildPid: number | null = null;
 let activeRelease: (() => void) | null = null;
+let inCycle = false;
+let stopRequested = false;
 
+/**
+ * Stop cleanly. Three moments, three behaviours:
+ * - a verify is running: kill its process group and exit. Nothing has been
+ *   pushed for that commit yet, so nothing is left half-done;
+ * - a cycle is between verifies (pushing a revert, commenting, spawning the fix
+ *   task; a few seconds): let it finish, then exit, so a revert is never pushed
+ *   without its issue comment and fix task;
+ * - idle between cycles: exit now.
+ */
 function installSignalHandlers(): void {
   const onSignal = (signal: NodeJS.Signals): void => {
+    const code = signal === 'SIGINT' ? 130 : 143;
     if (activeChildPid !== null) {
       try { process.kill(-activeChildPid, 'SIGKILL'); } catch { /* already gone */ }
+      if (activeRelease) activeRelease();
+      process.exit(code);
     }
-    if (activeRelease) activeRelease();
-    process.exit(signal === 'SIGINT' ? 130 : 143);
+    if (inCycle) {
+      stopRequested = true;
+      return;
+    }
+    process.exit(code);
   };
   process.on('SIGTERM', onSignal);
   process.on('SIGINT', onSignal);
@@ -365,6 +394,7 @@ async function cycleOnce(opts: Options): Promise<number> {
   const release = acquireLock(p.lock);
   if (!release) return 0; // another instance is working; exit quietly
   activeRelease = release;
+  inCycle = true;
   try {
     const root = await repoRoot();
     // Default: a sibling of the launching checkout (`<repo>-train`), not inside
@@ -375,6 +405,7 @@ async function cycleOnce(opts: Options): Promise<number> {
     const result = await runTrainCycle(deps);
     deps.log(`cycle: ${result.outcome}${result.reason ? ` (${result.reason})` : ''}${result.detail ? ` - ${result.detail}` : ''}`);
   } finally {
+    inCycle = false;
     activeRelease = null;
     release();
   }
@@ -392,6 +423,10 @@ async function runForever(opts: Options): Promise<void> {
       await cycleOnce(opts);
     } catch (err) {
       log(`cycle crashed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+    }
+    if (stopRequested) {
+      log('stop requested during a cycle; exiting after it finished');
+      return;
     }
     await new Promise((r) => setTimeout(r, opts.intervalSec * 1000));
   }
@@ -467,7 +502,7 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
   switch (opts.command) {
-    case 'cycle': process.exitCode = await cycleOnce(opts); return;
+    case 'cycle': installSignalHandlers(); process.exitCode = await cycleOnce(opts); return;
     case 'run': await runForever(opts); return;
     case 'start': startDetached(argv); return;
     case 'stop': stop(); return;

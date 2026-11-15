@@ -144,7 +144,7 @@ describe('integration train CLI', () => {
     // one fix task was requested through the real spawner wiring
     const spawns = s.calls().filter((c) => c.startsWith('kookr spawn '));
     expect(spawns).toHaveLength(1);
-    expect(spawns[0]).toContain('--idempotency-key train-fix-pr-7-1');
+    expect(spawns[0]).toContain('--idempotency-key train-fix-ref-7-1');
 
     // the reverted head passes and is promoted by the next cycle
     expect(s.cycle().status).toBe(0);

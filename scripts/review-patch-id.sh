@@ -41,16 +41,21 @@ USAGE
 
 # patch_id <base> <head> — print the id; non-zero on an empty diff or a git failure.
 patch_id() {
-  local base="$1" head="$2" mb raw id
+  local base="$1" head="$2" mb id
+  local -a diff_cmd
   mb="$(git merge-base "$base" "$head")" || { echo "review-patch-id: no merge base between $base and $head" >&2; return 1; }
-  raw="$(git diff --binary --full-index --no-color --no-ext-diff --no-textconv -M --src-prefix=a/ --dst-prefix=b/ "$mb" "$head")" \
-    || { echo "review-patch-id: git diff failed between $mb and $head" >&2; return 1; }
-  if [[ -z "$raw" ]]; then
+  diff_cmd=(git diff --binary --full-index --no-color --no-ext-diff --no-textconv -M --src-prefix=a/ --dst-prefix=b/ "$mb" "$head")
+  # `--quiet` exits 0 when there is no difference, 1 when there is one.
+  if "${diff_cmd[@]}" --quiet; then
     echo "review-patch-id: the diff between $mb and $head is empty" >&2
     return 1
   fi
-  id="$(printf '%s\n' "$raw" | sed -e '/^index /d' -e 's/^@@ .*/@@/' | git hash-object --stdin)" \
-    || { echo "review-patch-id: could not hash the diff" >&2; return 1; }
+  # The diff is piped straight into the hash and never held in a shell variable:
+  # bash drops NUL bytes from a variable, so a NUL added to a file git treats as
+  # text would not change the id. pipefail makes a failing `git diff` fail the
+  # whole pipeline.
+  id="$(set -o pipefail; "${diff_cmd[@]}" | sed -e '/^index /d' -e 's/^@@ .*/@@/' | git hash-object --stdin)" \
+    || { echo "review-patch-id: could not hash the diff between $mb and $head" >&2; return 1; }
   printf '%s\n' "$id"
 }
 

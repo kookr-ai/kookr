@@ -41,11 +41,14 @@ configured gate.
    and the head, then run that commit once more. If it passes, a flaky test
    steered the bisect: nothing is reverted and the next cycle starts over
    (`retry`). If it fails again, the last good commit is promoted and the bad
-   commit is reverted on the integration branch.
+   commit is reverted on the integration branch. The train's revert commits
+   carry the trailer `Kookr-Integration-Train: revert`, which is how a later
+   cycle tells them from a revert a person made.
 9. After a revert, the linked issues of the reverted PR are reopened with the
    failure output and one fix task is spawned. The budget is one automatic
-   re-land per linked issue (key `train-fix-issue-<n>-1`), or per PR when it has
-   no issue. A re-land is a new PR, which is why the count follows the issue. A
+   re-land per linked issue (key `train-fix-issue-<n>-1`). With no linked issue
+   the key follows the first `(#N)` in the commit subject (`train-fix-ref-<n>-1`),
+   which a cherry-picked re-land keeps. A re-land is a new PR, which is why the count follows the issue. A
    second failure spawns nothing; it notifies `fix-budget-exhausted`.
 
 ### When the train halts instead of reverting
@@ -59,6 +62,7 @@ guess in these cases:
 | `base-red` | `main` itself fails verify. The environment is suspect. |
 | `verify-infra` | The suite could not run: the checkout or `pnpm install` failed. No commit is blamed. |
 | `culprit-is-merge` | The first bad commit is the merge that folded `main` into the integration branch. Only commits that contain `main` are bisected, because an older commit can fail for a reason `main` already fixed. |
+| `history-shape` | The head is red and the integration branch is not a first-parent line from `main`, which happens after a non-squash merge. The commits cannot be bisected. |
 | `multiple-failures` | The head is still red at a commit that already reverts an earlier culprit, so a second change in the same batch is failing and commit bisection cannot separate them. |
 | `revert-conflict` | Reverting the culprit conflicts with later commits. |
 | `reconcile-conflict` | Merging `main` into the integration branch conflicts. |

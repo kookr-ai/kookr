@@ -418,6 +418,44 @@ describe('integration train cycle', () => {
     expect(h.notes.map((n) => n.kind)).toContain('fix-budget-exhausted');
   });
 
+  it('halts on a red head when the integration branch is not a first-parent line from main', async () => {
+    h = makeHarness();
+    // A hotfix lands on main; a branch cut from it is merged into staging with a
+    // real merge commit (by hand or the GitHub UI), not a squash. main is then
+    // reachable from the head only through the second parent.
+    h.commit('main', { 'hotfix.txt': 'h' }, 'hotfix on main');
+    git(h.seed, 'fetch', '-q', 'origin');
+    git(h.seed, 'checkout', '-q', '-B', 'feature', 'origin/main');
+    writeFileSync(join(h.seed, 'bad.txt'), 'x');
+    git(h.seed, 'add', '-A');
+    git(h.seed, 'commit', '-q', '-m', 'feature work');
+    git(h.seed, 'checkout', '-q', '-B', 'staging', 'origin/staging');
+    git(h.seed, 'merge', '-q', '--no-ff', '--no-edit', 'feature');
+    git(h.seed, 'push', '-q', 'origin', 'staging');
+    const head = h.originRef('staging');
+
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'history-shape' });
+    expect(h.originRef('staging')).toBe(head);
+    expect(h.spawns).toHaveLength(0);
+  });
+
+  it('does not mistake a person\'s revert of an unrelated change for its own', async () => {
+    h = makeHarness();
+    const bad = h.commit('staging', { 'bad.txt': 'x' }, 'bad (#7)');
+    const good = h.commit('staging', { 'g.txt': '1' }, 'good (#8)');
+    git(h.seed, 'revert', '--no-edit', good); // a human changes their mind about #8
+    git(h.seed, 'push', '-q', 'origin', 'staging');
+    h.commit('staging', { 'n.txt': '1' }, 'next (#9)');
+
+    expect((await h.cycle()).outcome).toBe('reverted');
+    const head = h.originRef('staging');
+    const message = git(h.origin, 'log', '-1', '--format=%B', head);
+    expect(message).toContain(`This reverts commit ${bad}`);
+    expect(message).toContain('Kookr-Integration-Train: revert');
+    expect((await h.cycle()).outcome).toBe('promoted');
+  });
+
   it('does not spawn a second fix task for the same PR and notifies fix-budget-exhausted', async () => {
     h = makeHarness();
     h.commit('staging', { 'bad.txt': 'x' }, 'broken (#13)');
