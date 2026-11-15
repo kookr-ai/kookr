@@ -105,8 +105,9 @@ SAFE, caches and Kookr data included: tell the operator and fix the probe.
   by hand; use `kookr maintenance prune` (the script does).
 - The script refuses `--roots` that are `/`, the home directory, the data
   directory, or contain `~/.ssh` or `~/.config`. It also refuses roots inside
-  the data directory, `~/.ssh`, `~/.config` or any `~/.kookr*` directory, as
-  given or as resolved through symlinks.
+  the data directory, `~/.ssh`, `~/.config` or any `~/.kookr*` directory. Both
+  checks apply to the root as given and as resolved through symlinks, so a
+  symlink to `~` or `/` is refused too.
 
 ## Platform notes
 

@@ -513,6 +513,14 @@ describe('ignored files and hidden edits', () => {
     expect(find(r, wt).reason).toMatch(/operation in progress: MERGE_HEAD/);
   });
 
+  test('the pnpm patch check applies to node_modules only, not to a tool cache', async () => {
+    const wt = addWorktree('cache-pnpm-name', { merge: true });
+    mkdirSync(join(wt, '__pycache__', '.pnpm_patches'), { recursive: true });
+    writeFileSync(join(wt, '__pycache__', '.pnpm_patches', 'a.pyc'), '1');
+    const r = await buildReport(opts(), deps());
+    expect(find(r, wt)).toMatchObject({ tier: 'SAFE', kind: 'worktree' });
+  });
+
   test('a git repo nested inside an ignored tool cache makes the worktree REVIEW', async () => {
     const wt = addWorktree('cache-repo', { merge: true });
     const nested = join(wt, '__pycache__', 'lib');
@@ -889,6 +897,23 @@ describe('options and probes', () => {
     expect(() => parseArgs(['--roots', '~/git'], {}, home)).not.toThrow();
   });
 
+  test('--roots refuses a symlink to /, to the home directory or to a parent of a protected directory', () => {
+    const home = join(tmp, 'home3');
+    mkdirSync(join(home, 'git'), { recursive: true });
+    mkdirSync(join(home, '.ssh'));
+    symlinkSync(home, join(home, 'git', 'homelink'));
+    symlinkSync('/', join(home, 'git', 'rootlink'));
+    symlinkSync(tmp, join(home, 'git', 'parentlink')); // contains the whole home
+    for (const bad of ['~/git/homelink', '~/git/rootlink', '~/git/parentlink']) {
+      expect(() => parseArgs(['--roots', bad], {}, home), bad).toThrow(/it is, or contains/);
+    }
+    // A symlinked home: a root that is the real home, or a symlink to it, is refused too.
+    const linkHome = join(tmp, 'link-home3');
+    symlinkSync(home, linkHome);
+    expect(() => parseArgs(['--roots', home], {}, linkHome)).toThrow(/it is, or contains/);
+    expect(() => parseArgs(['--roots', '~/git'], {}, home)).not.toThrow();
+  });
+
   test('--roots refuses a root inside the real target of a symlinked protected directory or home', () => {
     // ~/.config managed as a symlink (dotfiles): a root inside its real target is still inside ~/.config.
     const home = join(tmp, 'home2');
@@ -906,7 +931,8 @@ describe('options and probes', () => {
   });
 
   test('the hook-variable strip list comes from git and covers GIT_CONFIG_PARAMETERS', () => {
-    expect(LOCAL_GIT_VARS).toEqual(expect.arrayContaining(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT']));
+    // Listed by every git this suite supports (GIT_CONFIG_COUNT only from git 2.31, so not asserted).
+    expect(LOCAL_GIT_VARS).toEqual(expect.arrayContaining(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_CONFIG_PARAMETERS']));
     // What a pre-push hook run by `git -c test.marker=from-hook push` sees.
     const hookEnv = { ...GIT_ENV, GIT_DIR: join(tmp, 'not-a-repo'), GIT_CONFIG_PARAMETERS: "'test.marker'='from-hook'" };
     expect(execFileSync('git', ['config', '--get', 'test.marker'], { cwd: main, env: { ...GIT_ENV, GIT_CONFIG_PARAMETERS: hookEnv.GIT_CONFIG_PARAMETERS }, encoding: 'utf8' }).trim()).toBe('from-hook');
@@ -925,6 +951,21 @@ describe('options and probes', () => {
     } finally {
       if (saved === undefined) delete process.env.GIT_CONFIG_PARAMETERS;
       else process.env.GIT_CONFIG_PARAMETERS = saved;
+    }
+  });
+
+  test("the script's own git calls drop hook variables such as GIT_CONFIG_PARAMETERS and GIT_PREFIX", async () => {
+    const wt = addWorktree('script-strips-hook-env', { merge: true });
+    // What a git hook run by `git -c … push` from a subdirectory exports; git refuses to run with
+    // a malformed GIT_CONFIG_PARAMETERS, so any git call that kept it would fail. GIT_CONFIG_COUNT
+    // with no GIT_CONFIG_KEY_0 breaks git 2.31+ too (older git ignores it) and is covered only by
+    // git's own --local-env-vars list, so this also fails if that query is not used.
+    setExecEnvForTests({ ...GIT_ENV, GIT_CONFIG_PARAMETERS: 'malformed', GIT_CONFIG_COUNT: '1', GIT_PREFIX: 'no/such/dir/', GIT_DIR: join(tmp, 'not-a-repo') });
+    try {
+      const r = await buildReport(opts(), deps());
+      expect(find(r, wt)).toMatchObject({ tier: 'SAFE', kind: 'worktree' });
+    } finally {
+      setExecEnvForTests(GIT_ENV);
     }
   });
 

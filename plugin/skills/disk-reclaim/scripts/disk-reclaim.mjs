@@ -6,7 +6,7 @@
 // Usage: node disk-reclaim.mjs [--roots a,b] [--data-dir D] [--min-idle-days 2]
 //   [--json] [--apply safe] [--until-free-percent 10] [--fetch]
 //   [--concurrency 8] [--timeout-s 600] [--top 15]
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import {
   appendFileSync,
   closeSync,
@@ -159,11 +159,16 @@ export function parseArgs(argv, env = process.env, home = homedir()) {
   o.roots = o.roots.map((r) => resolve(r));
   o.dataDir = resolve(o.dataDir);
   const protectedDirs = [o.dataDir, join(home, '.ssh'), join(home, '.config')];
+  const homes = new Set([resolve(home), safeRealpath(home)]);
   for (const r of o.roots) {
-    if (r === '/' || r === resolve(home) || protectedDirs.some((d) => under(d, r))) {
-      throw new Error(`refusing --roots entry ${r}: it is, or contains, the home directory, the data directory, ~/.ssh or ~/.config`);
+    // Both checks run on the path as given and as resolved through symlinks (a root that is a
+    // symlink to ~ or / is refused like ~ or / itself).
+    for (const p of new Set([r, safeRealpath(r)])) {
+      if (p === '/' || homes.has(p) || protectedDirs.some((d) => under(d, p) || under(safeRealpath(d), p))) {
+        throw new Error(`refusing --roots entry ${r}: it is, or contains, the home directory, the data directory, ~/.ssh or ~/.config`);
+      }
     }
-    // Inside one of them is refused too, checked on the path as given and as resolved through symlinks.
+    // Inside one of them is refused too.
     for (const p of new Set([r, safeRealpath(r)])) {
       const inside = protectedDirs.find((d) => under(p, d) || under(p, safeRealpath(d)));
       if (inside) throw new Error(`refusing --roots entry ${r}: it is inside ${inside}`);
@@ -195,13 +200,38 @@ function expandHome(p, home) {
 
 // ---------------------------------------------------------------- helpers
 
-/** Runs a command; never rejects. `code` is the exit status (number) or null. */
-/** Drop variables that would point every `git -C <dir>` at some other repository (e.g. inside a git hook). */
+/**
+ * Variables that would point every `git -C <dir>` at some other repository or inject config
+ * (e.g. inside a git hook, or under `git -c … push`): every variable git itself lists as
+ * repository-local (asked with no GIT_* variables set, so a malformed one cannot break the query),
+ * plus a fixed list in case that query fails and the hook-only variables git does not list.
+ */
+let stripGitVars = null;
+function gitVarsToStrip() {
+  if (stripGitVars) return stripGitVars;
+  let local = [];
+  try {
+    local = execFileSync('git', ['rev-parse', '--local-env-vars'], {
+      cwd: tmpdir(),
+      env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 10_000,
+    }).split('\n').filter(Boolean);
+  } catch {
+    local = [];
+  }
+  const fixed = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_CONFIG_PARAMETERS', 'GIT_PREFIX'];
+  stripGitVars = [...new Set([...local, ...fixed, 'GIT_NAMESPACE', 'GIT_QUARANTINE_PATH'])];
+  return stripGitVars;
+}
+
 function childEnv(env) {
-  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_NAMESPACE']) delete env[k];
+  for (const k of gitVarsToStrip()) delete env[k];
   return env;
 }
 
+/** Runs a command; never rejects. `code` is the exit status (number) or null. */
 function exec(cmd, args, { cwd, timeoutMs = 60_000, env } = {}) {
   return new Promise((done) => {
     execFile(
@@ -503,11 +533,18 @@ export async function homeReviewProbe(opts, home = homedir()) {
  */
 /**
  * Is it safe to treat this `node_modules` as rebuildable? Needs no uncommitted
- * `pnpm patch` edits and a nested-`.git` search (no symlink following) that
- * finds nothing and does not time out. Returns null when fine, else a short reason.
+ * `pnpm patch` edits and no nested git repository. Returns null when fine, else a short reason.
  */
 async function nodeModulesProblem(abs, timeoutMs) {
   if (hasPnpmPatches(abs)) return `uncommitted pnpm patch edits in ${PNPM_PATCHES}/ (finish with pnpm patch-commit)`;
+  return nestedGitProblem(abs, timeoutMs);
+}
+
+/**
+ * A nested-`.git` search (no symlink following) that must find nothing and not time out, used for
+ * `node_modules` and for tool caches. Returns null when fine, else a short reason.
+ */
+async function nestedGitProblem(abs, timeoutMs) {
   const f = await exec('find', [abs, '-name', '.git', '-print', '-quit'], { timeoutMs });
   if (f.timedOut) return 'nested .git search timed out';
   if (f.code !== 0) return 'nested .git search failed';
@@ -706,7 +743,7 @@ async function inspectGit(dir, e, opts, deps, left, fetched, nmCheck) {
         const kind = classifyIgnoredEntry(entry);
         if (kind === 'cache') {
           // A tool cache is disposable only if nobody put a git repo inside it.
-          const why = await nmCheck(join(dir, entry));
+          const why = await nestedGitProblem(join(dir, entry), left());
           if (!why) continue;
           raw.push(entry);
           e.ignoredEntries.push(`${entry} (${why})`);
