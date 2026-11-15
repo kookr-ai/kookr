@@ -1,3 +1,4 @@
 {
-  "integrationBranch": "staging"
+  "integrationBranch": "staging",
+  "prePushGate": "fast"
 }
