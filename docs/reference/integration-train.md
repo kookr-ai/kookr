@@ -254,7 +254,7 @@ Options: `--worktree <path>` (default: a sibling of the launching checkout, `<re
 
 The verify also runs with `KOOKR_VERIFY_FLAKY_RERUN=1`, so `scripts/verify.sh` applies the pre-push hook's flaky policy to the unit lane: when at most five test files fail they are re-run once, a pass continues and is logged to `<git common dir>/kookr-flaky-tests.log`, and a second failure is a red result.
 
-In that mode `scripts/verify.sh` also gives each test a 60 s timeout instead of 15 s (`KOOKR_VITEST_TEST_TIMEOUT_MS`), and runs the unit suite at the same time as the static checks, the hook tests and the STT tests; the integration, FAA and smoke lanes follow. A developer's plain `pnpm verify` keeps the sequential order. In every mode, the unit suite runs the files in `scripts/lib/vitest-serial-files.mjs` (they spawn real processes or race timers) after the rest, one at a time, with two retries (issue #3794).
+In that mode `scripts/verify.sh` also gives each test a 60 s timeout instead of 15 s (`KOOKR_VITEST_TEST_TIMEOUT_MS`), and, once `build:server` has written `dist/`, runs the unit suite at the same time as the other static checks, the hook tests and the STT tests; the integration, FAA and smoke lanes follow. A developer's plain `pnpm verify` keeps the sequential order. In every mode, the unit suite runs the files in `scripts/lib/vitest-serial-files.mjs` (they spawn real processes or race timers) after the rest, one at a time, with two retries (issue #3794).
 
 ## State files
 

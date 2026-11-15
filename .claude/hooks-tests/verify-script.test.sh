@@ -174,3 +174,22 @@ if ! printf '%s\n' "$out" | tail -n 3 | grep -Fq 'lane-output-of-test:hooks'; th
   exit 1
 fi
 printf 'PASS: train-mode verify fails on a concurrent lane failure and prints it last\n'
+
+# A static lane failing mid-list stops the static lanes after it (train mode).
+status=0
+PNPM_LOG="$TMPDIR/train-static.log" PNPM_FAIL_LANE=check:cycles KOOKR_VERIFY_FLAKY_RERUN=1 \
+  PATH="$TMPDIR/bin:$PATH" bash "$VERIFY_SCRIPT" >/dev/null 2>&1 || status=$?
+if [ "$status" -ne 42 ]; then
+  printf 'FAIL: train-mode verify did not propagate a static lane failure (status=%s)\n' "$status" >&2
+  exit 1
+fi
+if grep -Fxq 'validate:skills' "$TMPDIR/train-static.log" || grep -Fxq 'test:integration' "$TMPDIR/train-static.log"; then
+  printf 'FAIL: train-mode verify kept running static or later lanes after check:cycles failed\n' >&2
+  exit 1
+fi
+# build:server writes dist/, which spawned tests load: it must finish first.
+if [ "$(head -n 1 "$TMPDIR/train.log")" != build:server ]; then
+  printf 'FAIL: train-mode verify did not run build:server before the concurrent lanes\n' >&2
+  exit 1
+fi
+printf 'PASS: train-mode verify stops the static lanes on a failure, build:server first\n'

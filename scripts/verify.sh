@@ -73,8 +73,11 @@ train_mode() {
 }
 
 # --- Lanes shared with the pre-push gate (same relative order) --------------
+# build:server is `tsc`, which writes dist/, and bin/kookr.js runs dist/ when it
+# exists: tests that spawn it must never see a half-written build, so in train
+# mode this lane finishes before the concurrent group starts.
+build_server_lane() { run_lane "Type-checking server" pnpm build:server; }
 static_checks() {
-  run_lane "Type-checking server" pnpm build:server
   run_lane "Type-checking E2E tests" pnpm check:e2e
   run_lane "Checking for import cycles" pnpm check:cycles
   run_lane "Validating skill frontmatter" pnpm validate:skills
@@ -135,16 +138,18 @@ run_concurrently() {
 if train_mode; then
   export KOOKR_VITEST_TEST_TIMEOUT_MS="${KOOKR_VITEST_TEST_TIMEOUT_MS:-60000}"
   # The unit suite runs beside the lanes that start no root-config Vitest: the
-  # static checks, the hook tests and the STT sidecar (its own Vitest project,
+  # static checks other than build:server, the hook tests and the STT sidecar (its own Vitest project,
   # without the root global setup). test:integration and test:smoke stay after
   # it, because the root global setup's teardown reaps every test-suite relay
   # and dtach master on the host (test/*-reaper.global.ts), including ones a
   # concurrent unit run is still using.
+  build_server_lane
   run_concurrently static_checks unit_lane hooks_lane stt_lane
   integration_lane
   faa_lane
   smoke_lane
 else
+  build_server_lane
   static_checks
   unit_lane
   integration_lane
