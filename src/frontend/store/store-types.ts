@@ -377,7 +377,6 @@ export interface ProjectSidebarSlice {
   unpinSidebarProject: (project: string) => void;
   hideSidebarProject: (project: string) => void;
   showSidebarProject: (project: string) => void;
-  moveSidebarProject: (project: string, direction: 'up' | 'down') => void;
   reorderSidebarProject: (project: string, targetPinned: boolean, targetProject: string | null, position: 'before' | 'after') => void;
   resetProjectSidebar: () => void;
   clearProjectSidebarError: () => void;

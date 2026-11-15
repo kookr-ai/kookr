@@ -50,7 +50,6 @@ export type ProjectSidebarCommand =
   | { type: 'unpin'; project: string }
   | { type: 'hide'; project: string }
   | { type: 'show'; project: string }
-  | { type: 'move'; project: string; direction: 'up' | 'down' }
   | { type: 'reorder'; project: string; targetPinned: boolean; targetProject: string | null; position: DropPosition }
   | { type: 'reset' }
   | { type: 'forget'; project: string };
@@ -434,40 +433,6 @@ function showProjectInPrefs(
   };
 }
 
-function moveVisibleProjectInPrefs(
-  prefs: ProjectSidebarPrefs,
-  project: string,
-  direction: 'up' | 'down',
-  projects: ProjectSummary[],
-  catalog: Record<string, ProjectSidebarCatalogEntry>,
-): ProjectSidebarPrefs {
-  const normalized = normalizePrefs(prefs);
-  const orderedIds = buildOrderedIds(projects, normalized, catalog);
-  const { pinnedVisibleIds, unpinnedVisibleIds } = buildVisibleSectionIds(orderedIds, projects, normalized.hidden, normalized.pinned);
-  const pinned = new Set(normalized.pinned);
-  const currentSection = pinned.has(project) ? pinnedVisibleIds : unpinnedVisibleIds;
-  const currentIdx = currentSection.indexOf(project);
-  if (currentIdx < 0) return normalized;
-
-  const targetIdx = direction === 'up' ? currentIdx - 1 : currentIdx + 1;
-  if (targetIdx < 0 || targetIdx >= currentSection.length) return normalized;
-
-  const nextSection = [...currentSection];
-  [nextSection[currentIdx], nextSection[targetIdx]] = [nextSection[targetIdx], nextSection[currentIdx]];
-  const visibleIds = [...pinnedVisibleIds, ...unpinnedVisibleIds];
-  const nextVisibleIds = pinned.has(project)
-    ? [...nextSection, ...unpinnedVisibleIds]
-    : [...pinnedVisibleIds, ...nextSection];
-  const nextOrdered = replaceVisibleOrder(orderedIds, visibleIds, nextVisibleIds);
-
-  return {
-    version: 2,
-    ordered: nextOrdered,
-    pinned: orderMembership(nextOrdered, normalized.pinned),
-    hidden: [...normalized.hidden],
-  };
-}
-
 function reorderVisibleProjectInPrefs(
   prefs: ProjectSidebarPrefs,
   project: string,
@@ -541,11 +506,6 @@ export function applyProjectSidebarCommand(
     case 'show':
       return {
         prefs: showProjectInPrefs(snapshot.prefs, command.project, projects, snapshot.catalog),
-        catalog: snapshot.catalog,
-      };
-    case 'move':
-      return {
-        prefs: moveVisibleProjectInPrefs(snapshot.prefs, command.project, command.direction, projects, snapshot.catalog),
         catalog: snapshot.catalog,
       };
     case 'reorder':

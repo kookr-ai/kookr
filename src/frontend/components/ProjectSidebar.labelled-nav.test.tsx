@@ -256,6 +256,13 @@ describe('ProjectSidebar labelled navigation (#3561 slice 5a)', () => {
       vi.restoreAllMocks();
     });
 
+    test('shownMoveNeighbours returns the nearest shown project on each side', () => {
+      const shown = (p: string) => !p.startsWith('hidden');
+      expect(shownMoveNeighbours(['a', 'hidden1', 'b', 'hidden2'], 'b', shown)).toEqual({ up: 'a', down: null });
+      expect(shownMoveNeighbours(['a', 'b'], 'a', shown)).toEqual({ up: null, down: 'b' });
+      expect(shownMoveNeighbours(['a'], 'missing', shown)).toEqual({ up: null, down: null });
+    });
+
     const order = () => useKookrStore.getState().visibleProjectSummaries.map((s) => s.project);
 
     async function openMenu(project: string) {
@@ -276,7 +283,7 @@ describe('ProjectSidebar labelled navigation (#3561 slice 5a)', () => {
       expect(order()).toEqual(['github.com/org/waiting', 'github.com/org/live', 'github.com/org/idle-a']);
     });
 
-    test('wide labelled layout: Move down jumps over the hidden idle neighbour', async () => {
+    test('wide labelled layout: Move down jumps over the hidden idle neighbour; Move up is off at the top', async () => {
       setWide(true);
       await render();
       await openMenu('github.com/org/live');
@@ -326,12 +333,5 @@ describe('ProjectSidebar labelled navigation (#3561 slice 5a)', () => {
       await act(async () => { menuItem('Move up')!.click(); });
       expect(order()).toEqual(['github.com/org/live', 'github.com/org/waiting', 'github.com/org/idle-a']);
     });
-  });
-
-  test('shownMoveNeighbours returns the nearest shown project on each side', () => {
-    const shown = (p: string) => !p.startsWith('hidden');
-    expect(shownMoveNeighbours(['a', 'hidden1', 'b', 'hidden2'], 'b', shown)).toEqual({ up: 'a', down: null });
-    expect(shownMoveNeighbours(['a', 'b'], 'a', shown)).toEqual({ up: null, down: 'b' });
-    expect(shownMoveNeighbours(['a'], 'missing', shown)).toEqual({ up: null, down: null });
   });
 });
