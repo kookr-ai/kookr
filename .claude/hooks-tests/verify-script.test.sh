@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+# A plain verify is the subject below; a parent train-mode run (the integration
+# train runs this suite inside its own verify) must not leak its mode in.
+unset KOOKR_VERIFY_FLAKY_RERUN KOOKR_VITEST_TEST_TIMEOUT_MS
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 VERIFY_SCRIPT="$REPO_ROOT/scripts/verify.sh"
