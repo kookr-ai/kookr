@@ -17,6 +17,8 @@ import {
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { aSession, aTask } from '../core/__fixtures__/task-builders.js';
+import { projectTerminalReceipt } from '../core/terminal-receipt.js';
+import { OpenCodeSessionUnreadableError } from '../adapters/opencode-adapter.js';
 import { Monitor } from '../core/monitor.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
@@ -1297,7 +1299,11 @@ describe('promotePendingTasks', () => {
     const result = await promotePendingTasks(deps);
 
     expect(result).toBe(0);
-    expect(mockTaskStore.cancelTask).toHaveBeenCalledWith('fail-1');
+    expect(mockTaskStore.cancelTask).toHaveBeenCalledWith('fail-1', {
+      source: 'provider_admission',
+      reason: 'launch_failure',
+      detail: 'terminal backend not available',
+    });
     // Mutation guard: deleting the promote-loop's finally{endLaunch} must fail here.
     expect(mockTaskStore.endLaunch).toHaveBeenCalledWith('fail-1', 'test-launch-reservation');
     expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -1559,6 +1565,19 @@ describe('promotePendingTasks (integration)', () => {
     await promotePendingTasks(deps);
 
     expect(taskStore.getTask(t1.id)!.status).toBe('cancelled');
+  });
+
+  test('a failed resume promotion records the adapter error code on the task receipt, not a manual cancel (#3531)', async () => {
+    const t1 = taskStore.createTask('Task 1', '/cwd');
+    taskStore.pendTask(t1.id);
+    (adapter.launch as any).mockRejectedValueOnce(new OpenCodeSessionUnreadableError(t1.id, 'database is locked'));
+
+    await promotePendingTasks(deps);
+
+    const receipt = projectTerminalReceipt(taskStore.getTask(t1.id)!);
+    expect(receipt).toMatchObject({ status: 'cancelled', reason: 'launch_failure', source: 'provider_admission' });
+    expect(receipt?.detail).toMatch(/^opencode_session_unreadable: /);
+    expect(receipt?.detail).toContain('database is locked');
   });
 
   test('cancels a healthy dependency launch failure instead of treating it as a probe retry', async () => {
