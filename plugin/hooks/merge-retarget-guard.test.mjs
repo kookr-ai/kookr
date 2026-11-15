@@ -152,6 +152,9 @@ describe('splitCommands', () => {
       ['cd', '/x'], ['pnpm', '-s', 'merge', '1'], ['echo', 'a; b'], ['tee', 'f'],
     ]);
     expect(splitCommands("cat <<'EOF'\npnpm merge 1\nEOF\nls")).toEqual([['cat'], ['ls']]);
+    expect(splitCommands("# don't merge yet\npnpm merge 1")).toEqual([['pnpm', 'merge', '1']]);
+    expect(splitCommands('echo a # b; c\nls')).toEqual([['echo', 'a'], ['ls']]);
+    expect(splitCommands('jq . <<< "$x"\npnpm merge 1')).toEqual([['jq', '.', '$x'], ['pnpm', 'merge', '1']]);
     expect(splitCommands('(cd /y && bash scripts/kookr-merge.sh 2)')).toEqual([
       ['cd', '/y'], ['bash', 'scripts/kookr-merge.sh', '2'],
     ]);

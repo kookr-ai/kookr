@@ -61,7 +61,8 @@ function run(cmd, args, cwd, timeout = 5_000) {
 /**
  * Splits a shell command into simple commands, each a list of words. Quotes are
  * honoured (a quoted `;` or `gh pr merge` stays inside one word), heredoc bodies
- * are dropped, and `;`, `&&`, `||`, `|`, `&`, newlines and parentheses end a
+ * and `#` comments are dropped, a `<<<` here-string is not taken for a heredoc,
+ * and `;`, `&&`, `||`, `|`, `&`, newlines and parentheses end a
  * command. Not a full shell parser; enough to find what runs at command position.
  */
 export function splitCommands(src) {
@@ -106,7 +107,19 @@ export function splitCommands(src) {
       i = j;
       continue;
     }
-    if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<') {
+    if (c === '#' && !inWord) {
+      // Comment: skip to the end of the line (an apostrophe in it opens no quote).
+      const eol = src.indexOf('\n', i);
+      i = (eol === -1 ? src.length : eol) - 1;
+      continue;
+    }
+    if (c === '<' && src[i + 1] === '<' && src[i + 2] === '<') {
+      // Here-string `<<<`: a redirect, not a heredoc; its word follows.
+      endWord();
+      i += 2;
+      continue;
+    }
+    if (c === '<' && src[i + 1] === '<') {
       // Heredoc: remember the delimiter; its body is skipped at the next newline.
       endWord();
       let j = i + 2;

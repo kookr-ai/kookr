@@ -2,8 +2,9 @@
 // wrapper, as Claude Code does) on PreToolUse events and read its decision.
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { decide } from './rm-dynamic-path-guard.mjs';
 
 const HOOK = join(import.meta.dirname, 'rm-dynamic-path-guard.sh');
 
@@ -52,6 +53,17 @@ describe('rm-dynamic-path-guard', () => {
     expect(hook('for d in a b; do rm -rf "$d"; done')).not.toBeNull();
     expect(hook('if test -d x; then rm -rf "$x"; fi')).not.toBeNull();
     expect(hook('trap true EXIT\nrm -rf "$T"')).not.toBeNull();
+    expect(hook('rm -r -- "-$X"')).not.toBeNull();
+    expect(hook('timeout 60 rm -rf "$D"')).not.toBeNull();
+    expect(hook('FOO=1 env rm -rf "$D"')).not.toBeNull();
+    expect(hook('command rm -rf "$D"')).not.toBeNull();
+    expect(hook('exec rm -rf "$D"')).not.toBeNull();
+  });
+
+  it('keeps checking after a comment with an apostrophe or a here-string', () => {
+    expect(hook("# don't leave junk\nrm -rf \"$TMP\"\necho 'done'")).not.toBeNull();
+    expect(hook('jq . <<< "$json"\nrm -rf "$D"')).not.toBeNull();
+    expect(hook('# rm -rf "$D" is denied\nls')).toBeNull();
   });
 
   it('allows literal paths, non-recursive rm and git rm', () => {
@@ -63,6 +75,7 @@ describe('rm-dynamic-path-guard', () => {
     expect(hook('rm -rf /tmp/a/b 2>>"$LOG"')).toBeNull();
     expect(hook('rm -rf /tmp/a/b > "$LOG" 2>&1')).toBeNull();
     expect(hook('echo "$HOME" && rm -rf /tmp/a')).toBeNull();
+    expect(hook('"$RM" -rf "$D"')).toBeNull();
   });
 
   it('allows text that only mentions such a command', () => {
@@ -79,6 +92,25 @@ describe('rm-dynamic-path-guard', () => {
     const r = spawnSync('bash', [HOOK], { input: 'not json rm $', encoding: 'utf-8' });
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');
+  });
+
+  it('allows every bash block the shipped playbooks and skills tell agents to run', () => {
+    const plugin = join(import.meta.dirname, '..');
+    const docs = [
+      ...readdirSync(join(plugin, 'playbooks')).filter((f) => f.endsWith('.md')).map((f) => join(plugin, 'playbooks', f)),
+      ...readdirSync(join(plugin, 'skills'), { recursive: true })
+        .filter((f) => String(f).endsWith('.md'))
+        .map((f) => join(plugin, 'skills', String(f))),
+    ];
+    const denied = [];
+    for (const doc of docs) {
+      const text = readFileSync(doc, 'utf-8');
+      for (const m of text.matchAll(/^ *```(?:bash|sh)\n([\s\S]*?)^ *```/gm)) {
+        const target = decide(m[1]);
+        if (target !== null) denied.push(`${doc}: ${target}`);
+      }
+    }
+    expect(denied).toEqual([]);
   });
 
   it('is registered for Bash in the plugin hook manifest', () => {

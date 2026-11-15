@@ -615,7 +615,7 @@ describe('repository-idea-scout playbook', () => {
       expect(phase1).toContain('cleanup_analysis');
       expect(phase1).toMatch(/chmod -R a-w "\$ANALYSIS_STAGING_ROOT"/);
       expect(phase1).toContain("trap 'cleanup_analysis_git || true' EXIT");
-      expect(phase8).toContain('rm -rf "$ANALYSIS_ROOT"');
+      expect(phase8).toContain('find "$ANALYSIS_ROOT" -depth -delete');
       expect(pb.body).toMatch(/submodule/i);
       expect(pb.body).toMatch(/Git[- ]LFS/i);
       expect(pb.body).toMatch(/pointer files|LFS payloads/i);
