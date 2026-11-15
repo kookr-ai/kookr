@@ -57,7 +57,10 @@ function parseArgs(argv: string[]): Options {
     intervalSec: 60,
     worktree: null,
     verifyCmd: 'pnpm verify',
-    workers: Math.max(4, cpus().length - 4),
+    // Measured on a loaded 16-CPU host (issue #3794, one unit-suite run per
+    // setting): 8 workers was the fastest of 4, 6, 8 and 12, and 12 used about
+    // 17% more CPU than 8, which slows every other task on the host.
+    workers: Math.min(8, Math.max(4, cpus().length - 4)),
   };
   for (let i = 1; i < argv.length; i++) {
     const flag = argv[i];

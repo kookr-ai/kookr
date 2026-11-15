@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+# A plain verify is the subject below; a parent train-mode run (the integration
+# train runs this suite inside its own verify) must not leak its mode in.
+unset KOOKR_VERIFY_FLAKY_RERUN KOOKR_VITEST_TEST_TIMEOUT_MS
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 VERIFY_SCRIPT="$REPO_ROOT/scripts/verify.sh"
@@ -130,3 +134,84 @@ if [ "$(tail -n 1 "$TMPDIR/integration-failure.log")" != test:integration ]; the
   exit 1
 fi
 printf 'PASS: verify.sh stops on the integration lane failure\n'
+
+# --- Train mode (#3794) -------------------------------------------------------
+# KOOKR_VERIFY_FLAKY_RERUN=1 (the integration train) runs independent lanes at
+# the same time. It must still run exactly the lanes a plain verify runs, give
+# tests the longer train timeout, and fail on any lane's failure.
+cat > "$TMPDIR/bin/pnpm" <<'PNPM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$PNPM_LOG"
+if [ "$1" = "test" ]; then
+  printf '%s\n' "${KOOKR_VITEST_TEST_TIMEOUT_MS:-unset}" > "$PNPM_LOG.timeout"
+  sleep 1
+  printf 'test-done\n' >> "$PNPM_LOG"
+fi
+if [ "$*" = "${PNPM_FAIL_LANE:-}" ]; then echo "lane-output-of-$*"; exit 42; fi
+exit 0
+PNPM
+chmod +x "$TMPDIR/bin/pnpm"
+
+PNPM_LOG="$TMPDIR/train.log" KOOKR_VERIFY_FLAKY_RERUN=1 PATH="$TMPDIR/bin:$PATH" \
+  bash "$VERIFY_SCRIPT" >/dev/null
+if ! diff <(awk '$1 != "test-done" {print $1}' "$TMPDIR/train.log" | sort) <(sort "$TMPDIR/verify-lanes") >/dev/null; then
+  printf 'FAIL: train-mode verify does not run the same lanes as a plain verify\n' >&2
+  diff <(awk '$1 != "test-done" {print $1}' "$TMPDIR/train.log" | sort) <(sort "$TMPDIR/verify-lanes") >&2 || true
+  exit 1
+fi
+# The root Vitest global teardown reaps every test relay and dtach master on the
+# host, so test:integration and test:smoke must start after the unit suite ends.
+done_line=$(grep -nx 'test-done' "$TMPDIR/train.log" | cut -d: -f1)
+for lane in test:integration test:smoke; do
+  lane_line=$(grep -nx "$lane" "$TMPDIR/train.log" | cut -d: -f1)
+  if [ -z "$done_line" ] || [ -z "$lane_line" ] || [ "$lane_line" -lt "$done_line" ]; then
+    printf 'FAIL: train-mode verify started %s before the unit suite finished\n' "$lane" >&2
+    exit 1
+  fi
+done
+if [ "$(cat "$TMPDIR/train.log.timeout")" != 60000 ]; then
+  printf 'FAIL: train-mode verify did not give the unit suite the 60 s test timeout\n' >&2
+  exit 1
+fi
+printf 'PASS: train-mode verify runs the same lanes, with the train timeout, integration and smoke after the unit suite\n'
+
+status=0
+out=$(PNPM_LOG="$TMPDIR/train-failure.log" PNPM_FAIL_LANE=test:hooks KOOKR_VERIFY_FLAKY_RERUN=1 \
+  PATH="$TMPDIR/bin:$PATH" bash "$VERIFY_SCRIPT" 2>&1) || status=$?
+if [ "$status" -ne 42 ]; then
+  printf 'FAIL: train-mode verify did not propagate a concurrent lane failure (status=%s)\n' "$status" >&2
+  exit 1
+fi
+if grep -Fxq 'test:integration' "$TMPDIR/train-failure.log"; then
+  printf 'FAIL: train-mode verify went on to later lanes after a concurrent lane failed\n' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -Fxq '[hooks_lane] lane-output-of-test:hooks'; then
+  printf 'FAIL: train-mode verify did not stream the lane output with its lane prefix\n' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | tail -n 3 | grep -Fxq 'lane-output-of-test:hooks'; then
+  printf 'FAIL: train-mode verify did not print the failing lane output last\n' >&2
+  printf '%s\n' "$out" | tail -n 10 >&2
+  exit 1
+fi
+printf 'PASS: train-mode verify fails on a concurrent lane failure and prints it last\n'
+
+# A static lane failing mid-list stops the static lanes after it (train mode).
+status=0
+PNPM_LOG="$TMPDIR/train-static.log" PNPM_FAIL_LANE=check:cycles KOOKR_VERIFY_FLAKY_RERUN=1 \
+  PATH="$TMPDIR/bin:$PATH" bash "$VERIFY_SCRIPT" >/dev/null 2>&1 || status=$?
+if [ "$status" -ne 42 ]; then
+  printf 'FAIL: train-mode verify did not propagate a static lane failure (status=%s)\n' "$status" >&2
+  exit 1
+fi
+if grep -Fxq 'validate:skills' "$TMPDIR/train-static.log" || grep -Fxq 'test:integration' "$TMPDIR/train-static.log"; then
+  printf 'FAIL: train-mode verify kept running static or later lanes after check:cycles failed\n' >&2
+  exit 1
+fi
+# build:server writes dist/, which spawned tests load: it must finish first.
+if [ "$(head -n 1 "$TMPDIR/train.log")" != build:server ]; then
+  printf 'FAIL: train-mode verify did not run build:server before the concurrent lanes\n' >&2
+  exit 1
+fi
+printf 'PASS: train-mode verify stops the static lanes on a failure, build:server first\n'

@@ -84,7 +84,10 @@ describe('verify.sh flaky re-run (KOOKR_VERIFY_FLAKY_RERUN)', () => {
     const s = setup(['src/broken.test.ts']);
     const r = s.run({ KOOKR_VERIFY_FLAKY_RERUN: '1', RERUN_EXIT: '1' });
     expect(r.status).not.toBe(0);
-    expect(r.calls.at(-1)).toBe('exec vitest run src/broken.test.ts | summary=');
+    // Train mode runs the static checks beside the unit lane (#3794), so their
+    // calls interleave; what matters is the re-run happened and nothing after it.
+    expect(r.calls).toContain('exec vitest run src/broken.test.ts | summary=');
+    expect(r.calls).not.toContain('test:integration | summary=');
     expect(existsSync(s.flakyLog)).toBe(false);
   });
 
@@ -92,7 +95,9 @@ describe('verify.sh flaky re-run (KOOKR_VERIFY_FLAKY_RERUN)', () => {
     const s = setup(['a', 'b', 'c', 'd', 'e', 'f'].map((n) => `src/${n}.test.ts`));
     const r = s.run({ KOOKR_VERIFY_FLAKY_RERUN: '1' });
     expect(r.status).not.toBe(0);
-    expect(r.calls.at(-1)).toBe('test | summary=set');
+    expect(r.calls).toContain('test | summary=set');
+    expect(r.calls.some((c) => c.startsWith('exec vitest run'))).toBe(false);
+    expect(r.calls).not.toContain('test:integration | summary=');
   });
 
   it('leaves a plain pnpm verify unchanged: one unit run, no summary, no re-run', () => {

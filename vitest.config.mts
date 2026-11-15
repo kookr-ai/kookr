@@ -1,11 +1,27 @@
 import { defineConfig } from 'vitest/config';
 import { vitestMaxWorkers } from './scripts/lib/vitest-max-workers.mjs';
+import { DEFAULT_TEST_TIMEOUT_MS, SERIAL_TEST_FILES, vitestTestTimeoutMs } from './scripts/lib/vitest-serial-files.mjs';
 
 // The pre-push hook sets this to get a run summary (failed files, unhandled
 // errors, unfinished files) so it can re-run only the failed files once to
 // tell a flake from a real failure (test/rerun-gate.reporter.mjs,
 // scripts/flaky-rerun-files.mjs). Unset, the reporters stay Vitest's default.
 const rerunSummaryFile = process.env.VITEST_RERUN_SUMMARY_FILE;
+
+const testTimeout = vitestTestTimeoutMs(process.env.KOOKR_VITEST_TEST_TIMEOUT_MS);
+
+const UNIT_INCLUDE = ['plugin/**/*.test.mjs', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'];
+// Integration-style files run via `pnpm test:integration` /
+// `pnpm test:integration:live` (#2823). Patterns cover hyphen, dot, and e2e
+// naming under both src/ and relay/.
+const UNIT_EXCLUDE = [
+  'src/**/*.integration.test.ts',
+  'src/**/*-integration.test.ts',
+  'src/**/*-e2e.test.ts',
+  'relay/**/*.integration.test.ts',
+  'relay/**/*-integration.test.ts',
+  'relay/**/*-e2e.test.ts',
+];
 
 export default defineConfig({
   test: {
@@ -17,22 +33,38 @@ export default defineConfig({
     // The integration train (scripts/integration-train.ts) sets KOOKR_VITEST_MAX_WORKERS to use a bigger share.
     // Only a positive integer is accepted; anything else keeps 4.
     maxWorkers: vitestMaxWorkers(process.env.KOOKR_VITEST_MAX_WORKERS),
-    include: ['plugin/**/*.test.mjs', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'],
-    // Integration-style files run via `pnpm test:integration` /
-    // `pnpm test:integration:live` (#2823). Patterns cover hyphen, dot, and e2e
-    // naming under both src/ and relay/.
-    exclude: [
-      'src/**/*.integration.test.ts',
-      'src/**/*-integration.test.ts',
-      'src/**/*-e2e.test.ts',
-      'relay/**/*.integration.test.ts',
-      'relay/**/*-integration.test.ts',
-      'relay/**/*-e2e.test.ts',
+    // Two projects (issue #3794), both inheriting everything else here:
+    //   unit    every test file except the serial ones, in parallel;
+    //   serial  files that spawn real processes or race timers against I/O
+    //           (scripts/lib/vitest-serial-files.mjs). They run after `unit`
+    //           finishes (groupOrder), one at a time, and a failed test is
+    //           retried twice: under load they miss their timing, alone they pass.
+    //           Vitest runs projects whose pool settings differ one after the
+    //           other anyway (measured: no overlap even without groupOrder), so
+    //           this states the order rather than adding one.
+    // `vitest run <file>` and `vitest related` pick the project from the path,
+    // so the fast gate and the flaky re-run apply the same rules.
+    projects: [
+      { extends: true, test: { name: 'unit', include: UNIT_INCLUDE, exclude: [...UNIT_EXCLUDE, ...SERIAL_TEST_FILES] } },
+      {
+        extends: true,
+        test: {
+          name: 'serial',
+          include: SERIAL_TEST_FILES,
+          exclude: UNIT_EXCLUDE,
+          fileParallelism: false,
+          retry: 2,
+          sequence: { groupOrder: 1 },
+        },
+      },
     ],
     // Multi-server integration tests (relay + createKookrServerInternal) regularly
     // need >5s under concurrent suite load on a busy workstation. Unit tests still
-    // finish in ms; this only raises the hang ceiling.
-    testTimeout: 15_000,
+    // finish in ms; this only raises the hang ceiling. KOOKR_VITEST_TEST_TIMEOUT_MS
+    // raises it further: scripts/verify.sh sets it in train mode.
+    // Hooks keep Vitest's 10 s default unless that variable is set.
+    testTimeout,
+    ...(testTimeout > DEFAULT_TEST_TIMEOUT_MS ? { hookTimeout: testTimeout } : {}),
     // Fails the run if a test poisons the shared git config (test identity,
     // core.bare flip, or bare-repo debris) and heals it. See test/git-repo-guard.ts.
     // git-repo-guard: heals a poisoned shared git config. relay-orphan-reaper
