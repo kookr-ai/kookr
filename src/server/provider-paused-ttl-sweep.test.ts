@@ -9,11 +9,14 @@ import {
   ProviderPausedOccupancyMetrics,
   ProviderPausedStartTracker,
   buildProviderPausedTtlDisposition,
+  classifyProviderResetState,
+  type ProviderResetSource,
 } from './provider-paused-ttl-sweep.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
   DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
+  PROVIDER_RESET_HOLD_GRACE_MS,
 } from '../core/provider-paused-ttl.js';
 
 const mockCleanupTaskWorktrees = vi.fn().mockResolvedValue(undefined);
@@ -716,5 +719,380 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
     expect(result.occupancy.taskIds).toEqual(expect.arrayContaining(['a', 'b']));
     expect(metrics.getSnapshot().count).toBe(2);
     expect(metrics.getSnapshot().hardTtlMs).toBe(TTL_MS);
+  });
+});
+
+describe('provider reset holds in the sweep (issue #3562)', () => {
+  const nowMs = NOW.getTime();
+  const MIN = 60_000;
+  const SOFT = DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+
+  const exhaustedWindow = (resetsAtMs: number) => ({
+    utilization: 100,
+    resetsAt: new Date(resetsAtMs).toISOString(),
+  });
+
+  async function runSweep(opts: {
+    task: Task;
+    pausedForMs: number;
+    source: ProviderResetSource | (() => ProviderResetSource) | undefined;
+    tracker?: ProviderPausedStartTracker;
+    now?: Date;
+    capacity?: boolean;
+  }) {
+    const taskStore = makeMockTaskStore([opts.task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new ProviderPausedOccupancyMetrics();
+    const tracker = opts.tracker ?? new ProviderPausedStartTracker();
+    if (!opts.tracker) tracker.observe(opts.task, true, nowMs - opts.pausedForMs);
+    const source = opts.source;
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        isHoldingOpenPr: () => false,
+        metrics,
+        ...(source === undefined
+          ? {}
+          : { getProviderResetSource: typeof source === 'function' ? source : () => source }),
+      },
+      {
+        now: opts.now ?? NOW,
+        ttlMs: TTL_MS,
+        softTtlMs: SOFT,
+        capacityAllowsEarlyReclaim: opts.capacity ?? true,
+      },
+    );
+    return { result, metrics, taskStore, tracker };
+  }
+
+  it('regression: poller in 429 backoff with no snapshot, soft TTL elapsed, capacity allows → task survives', async () => {
+    const task = makePausedTask(); // prompt-launched: no issueClaim
+    const { result, metrics, taskStore } = await runSweep({
+      task,
+      pausedForMs: SOFT + MIN,
+      source: { quota: null, pollerState: 'backoff' },
+    });
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.terminateTask).not.toHaveBeenCalled();
+    const snap = metrics.getSnapshot();
+    expect(snap.skippedProviderResetUnresolved).toBe(1);
+    expect(snap.skippedAwaitingProviderReset).toBe(0);
+  });
+
+  it('pre-#3562 behavior without a reset source: the same task is soft-reclaimed', async () => {
+    const { result } = await runSweep({
+      task: makePausedTask(),
+      pausedForMs: SOFT + MIN,
+      source: undefined,
+    });
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+  });
+
+  it('holds an unclaimed task on a known reset and counts it as awaiting reset', async () => {
+    const { result, metrics } = await runSweep({
+      task: makePausedTask(),
+      pausedForMs: SOFT + MIN,
+      source: {
+        quota: { fiveHour: exhaustedWindow(nowMs + 204 * MIN), sevenDay: null, updatedAt: nowMs },
+        pollerState: 'healthy',
+      },
+    });
+    expect(result.reclaimedTaskIds).toEqual([]);
+    const snap = metrics.getSnapshot();
+    expect(snap.skippedAwaitingProviderReset).toBe(1);
+    expect(snap.skippedProviderResetUnresolved).toBe(0);
+  });
+
+  it('still reclaims an unresolved pause at the hard TTL (#2423)', async () => {
+    const { result } = await runSweep({
+      task: makePausedTask(),
+      pausedForMs: TTL_MS,
+      source: { quota: null, pollerState: 'backoff' },
+    });
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+  });
+
+  it('latches the known reset so it survives the window vanishing from a later snapshot', async () => {
+    const task = makePausedTask();
+    const tracker = new ProviderPausedStartTracker();
+    const pauseStart = nowMs - 3 * 60 * MIN;
+    tracker.observe(task, true, pauseStart);
+    const resetAt = nowMs + 30 * MIN;
+    // Tick 1: snapshot names the reset.
+    await runSweep({
+      task,
+      pausedForMs: 0,
+      tracker,
+      source: {
+        quota: { fiveHour: exhaustedWindow(resetAt), sevenDay: null, updatedAt: nowMs },
+        pollerState: 'healthy',
+      },
+    });
+    expect(tracker.getKnownResetMs(task.id)).toBe(resetAt);
+
+    // Tick 2: 5 minutes after the reset, a fresh snapshot no longer shows an
+    // exhausted window. Still in grace → held, not reclaimed.
+    const afterReset = new Date(resetAt + 5 * MIN);
+    const freshNoWindow: ProviderResetSource = {
+      quota: { fiveHour: { utilization: 3, resetsAt: new Date(resetAt + 5 * 60 * MIN).toISOString() }, sevenDay: null, updatedAt: afterReset.getTime() },
+      pollerState: 'healthy',
+    };
+    const held = await runSweep({ task, pausedForMs: 0, tracker, now: afterReset, source: freshNoWindow });
+    expect(held.result.reclaimedTaskIds).toEqual([]);
+    expect(held.metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+
+    // Tick 3: grace over and still paused → normal TTL applies (past hard) → reclaimed.
+    const graceOver = new Date(resetAt + PROVIDER_RESET_HOLD_GRACE_MS);
+    const reclaimed = await runSweep({ task, pausedForMs: 0, tracker, now: graceOver, source: freshNoWindow });
+    expect(reclaimed.result.reclaimedTaskIds).toEqual(['task-1']);
+  });
+
+  it('clears the latched reset when the pause ends', () => {
+    const tracker = new ProviderPausedStartTracker();
+    const task = makePausedTask();
+    tracker.observe(task, true, nowMs);
+    tracker.latchKnownReset(task.id, nowMs + 60 * MIN);
+    tracker.observe(task, false, nowMs + MIN);
+    expect(tracker.getKnownResetMs(task.id)).toBeUndefined();
+    // Not latched without a pause start.
+    tracker.latchKnownReset(task.id, nowMs + 60 * MIN);
+    expect(tracker.getKnownResetMs(task.id)).toBeUndefined();
+  });
+
+  it('regression: a weekly window at 90%+ does not hide the 5h reset, on soft or hard path', async () => {
+    const task = makePausedTask();
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, nowMs - 45 * MIN);
+    const source: ProviderResetSource = {
+      quota: {
+        fiveHour: exhaustedWindow(nowMs + 4 * 60 * MIN),
+        sevenDay: { utilization: 92, resetsAt: new Date(nowMs + 3 * 24 * 60 * MIN).toISOString() },
+        updatedAt: nowMs,
+      },
+      pollerState: 'healthy',
+    };
+    const soft = await runSweep({ task, pausedForMs: 0, tracker, source });
+    expect(soft.result.reclaimedTaskIds).toEqual([]);
+    expect(soft.metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+
+    // 2h50m later: past the hard TTL, poller now in backoff with the old snapshot.
+    const later = new Date(nowMs + 170 * MIN);
+    const hard = await runSweep({
+      task,
+      pausedForMs: 0,
+      tracker,
+      now: later,
+      source: { ...source, pollerState: 'backoff' },
+    });
+    expect(hard.result.reclaimedTaskIds).toEqual([]);
+    expect(hard.metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+  });
+
+  it('keeps today\'s soft reclaim on an install with no quota source (poller disabled)', async () => {
+    const { result } = await runSweep({
+      task: makePausedTask(),
+      pausedForMs: SOFT + MIN,
+      source: { quota: null, pollerState: 'disabled' },
+    });
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+  });
+
+  it('regression: measures the 6h fit from the activity-advanced pause start, like the selector', async () => {
+    // Pause latched 5h ago, agent activity until 2h ago (the effective start,
+    // so effective age = 2h = hard TTL), 5h window resetting in 3h. The hold
+    // would end 5h15m after the effective start (within 6h) but 8h15m after
+    // the raw latch — measuring from the latch misclassified it as unresolved
+    // and reclaimed it at the hard TTL.
+    const task = makePausedTask();
+    const taskStore = makeMockTaskStore([task]);
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, nowMs - 5 * 60 * MIN);
+    const lastActivity = nowMs - 2 * 60 * MIN;
+    const metrics = new ProviderPausedOccupancyMetrics();
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        getLiveness: () => ({
+          lastHookEventAt: lastActivity,
+          lastPaneChangeAt: 0,
+          lastTokenActivityAt: 0,
+        }) as any,
+        isHoldingOpenPr: () => false,
+        metrics,
+        getProviderResetSource: () => ({
+          quota: { fiveHour: exhaustedWindow(nowMs + 3 * 60 * MIN), sevenDay: null, updatedAt: nowMs },
+          pollerState: 'healthy',
+        }),
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+    expect(metrics.getSnapshot().skippedProviderResetUnresolved).toBe(0);
+  });
+
+  it('keeps the latest known reset seen during a pause (never under-wait)', () => {
+    const tracker = new ProviderPausedStartTracker();
+    const task = makePausedTask();
+    tracker.observe(task, true, nowMs);
+    tracker.latchKnownReset(task.id, nowMs + 60 * MIN);
+    tracker.latchKnownReset(task.id, nowMs + 30 * MIN);
+    expect(tracker.getKnownResetMs(task.id)).toBe(nowMs + 60 * MIN);
+    tracker.latchKnownReset(task.id, nowMs + 90 * MIN);
+    expect(tracker.getKnownResetMs(task.id)).toBe(nowMs + 90 * MIN);
+  });
+
+  it('holds a claimed task past the hard TTL on a known reset (sweep end to end)', async () => {
+    const task = makePausedTask({ issueClaim: { repo: 'kookr-ai/kookr', number: 3562 } });
+    const taskStore = makeMockTaskStore([task]);
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, nowMs - 3 * 60 * MIN);
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        recordProviderPause: () => ({ holdForResume: true }),
+        isHoldingOpenPr: () => false,
+        getProviderResetSource: () => ({
+          quota: { fiveHour: exhaustedWindow(nowMs + 90 * MIN), sevenDay: null, updatedAt: nowMs },
+          pollerState: 'healthy',
+        }),
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.selection?.outcomes[0]?.outcome).toBe('skipped_awaiting_provider_reset');
+  });
+
+  it('treats a task without agentType as a Claude task', async () => {
+    const { result, metrics } = await runSweep({
+      task: makePausedTask({ agentType: undefined }),
+      pausedForMs: SOFT + MIN,
+      source: { quota: null, pollerState: 'backoff' },
+    });
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot().skippedProviderResetUnresolved).toBe(1);
+  });
+
+  it('keeps today\'s soft reclaim for non-Claude agents (the quota poller does not describe them)', async () => {
+    const { result } = await runSweep({
+      task: makePausedTask({ agentType: 'codex-cli' }),
+      pausedForMs: SOFT + MIN,
+      source: { quota: null, pollerState: 'backoff' },
+    });
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+  });
+
+  it('treats a throwing reset source as unresolved (fail toward holding)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { result, metrics } = await runSweep({
+      task: makePausedTask(),
+      pausedForMs: SOFT + MIN,
+      source: () => {
+        throw new Error('boom');
+      },
+    });
+    errSpy.mockRestore();
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot().skippedProviderResetUnresolved).toBe(1);
+  });
+});
+
+describe('classifyProviderResetState (issue #3562)', () => {
+  const nowMs = NOW.getTime();
+  const pauseStartedAtMs = nowMs - 60 * 60_000;
+  const window = (utilization: number, resetsAtMs: number) => ({
+    utilization,
+    resetsAt: new Date(resetsAtMs).toISOString(),
+  });
+
+  it('is known for an exhausted window with a future reset, even from a stale snapshot in backoff', () => {
+    const resetAt = nowMs + 30 * 60_000;
+    expect(classifyProviderResetState({
+      source: {
+        quota: { fiveHour: window(100, resetAt), sevenDay: null, updatedAt: pauseStartedAtMs - 1 },
+        pollerState: 'backoff',
+      },
+      nowMs,
+      pauseStartedAtMs,
+    })).toEqual({ kind: 'known', resetsAtMs: resetAt });
+  });
+
+  it('is unresolved with no snapshot, an unhealthy poller, or a snapshot older than the pause', () => {
+    const fresh = { fiveHour: window(10, nowMs + 60_000), sevenDay: null, updatedAt: nowMs };
+    expect(classifyProviderResetState({ source: { quota: null, pollerState: 'healthy' }, nowMs, pauseStartedAtMs }).kind)
+      .toBe('unresolved');
+    for (const pollerState of ['backoff', 'auth_failed', 'idle'] as const) {
+      expect(classifyProviderResetState({ source: { quota: fresh, pollerState }, nowMs, pauseStartedAtMs }).kind)
+        .toBe('unresolved');
+    }
+    expect(classifyProviderResetState({
+      source: { quota: { ...fresh, updatedAt: pauseStartedAtMs - 1 }, pollerState: 'healthy' },
+      nowMs,
+      pauseStartedAtMs,
+    }).kind).toBe('unresolved');
+  });
+
+  it('treats a poll in flight with a fresh snapshot as resolvable, and an updatedAt equal to the pause start as fresh', () => {
+    const fresh = { fiveHour: window(10, nowMs + 60_000), sevenDay: null, updatedAt: pauseStartedAtMs };
+    expect(classifyProviderResetState({ source: { quota: fresh, pollerState: 'polling' }, nowMs, pauseStartedAtMs }))
+      .toEqual({ kind: 'none' });
+    expect(classifyProviderResetState({
+      source: { quota: { ...fresh, updatedAt: Number.NaN }, pollerState: 'healthy' },
+      nowMs,
+      pauseStartedAtMs,
+    }).kind).toBe('unresolved');
+  });
+
+  it('picks the exhausted reset that fits the 6h cap when a weekly window at 90%+ resets in days', () => {
+    // Heavy user: 5h window exhausted (reset in 4h), weekly at 92% (reset in 3 days).
+    const fiveHourReset = nowMs + 4 * 60 * 60_000;
+    expect(classifyProviderResetState({
+      source: {
+        quota: {
+          fiveHour: window(100, fiveHourReset),
+          sevenDay: window(92, nowMs + 3 * 24 * 60 * 60_000),
+          updatedAt: nowMs,
+        },
+        pollerState: 'healthy',
+      },
+      nowMs,
+      pauseStartedAtMs: nowMs - 30 * 60_000,
+    })).toEqual({ kind: 'known', resetsAtMs: fiveHourReset });
+  });
+
+  it('is unresolved when every exhausted reset is beyond the 6h cap', () => {
+    expect(classifyProviderResetState({
+      source: {
+        quota: { fiveHour: null, sevenDay: window(100, nowMs + 3 * 24 * 60 * 60_000), updatedAt: nowMs },
+        pollerState: 'healthy',
+      },
+      nowMs,
+      pauseStartedAtMs,
+    })).toEqual({ kind: 'unresolved' });
+  });
+
+  it('is none when the poller is disabled (no quota source on this install)', () => {
+    expect(classifyProviderResetState({ source: { quota: null, pollerState: 'disabled' }, nowMs, pauseStartedAtMs }))
+      .toEqual({ kind: 'none' });
+  });
+
+  it('is none for a fresh healthy snapshot without a binding window', () => {
+    expect(classifyProviderResetState({
+      source: {
+        quota: { fiveHour: window(50, nowMs + 60_000), sevenDay: window(100, nowMs - 60_000), updatedAt: nowMs },
+        pollerState: 'healthy',
+      },
+      nowMs,
+      pauseStartedAtMs,
+    })).toEqual({ kind: 'none' });
   });
 });

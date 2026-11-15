@@ -96,17 +96,31 @@ export function resolveProviderResetMs(
   now: number,
   fallbackCooldownMs: number = DEFAULT_UNKNOWN_RESET_COOLDOWN_MS,
 ): number {
-  let latestExhaustedReset: number | undefined;
+  const resets = listExhaustedProviderResetsMs(quota, now);
+  return resets.length > 0 ? Math.max(...resets) : now + fallbackCooldownMs;
+}
+
+/**
+ * Every exhausted window's future reset (epoch ms), unordered, with no
+ * fallback cooldown (issue #3562). The provider_paused TTL reclaim needs to
+ * tell "reset known" from "reset unknown" — the fallback would make every
+ * reset look known — and needs them all, not just the latest: a weekly window
+ * at 90%+ resetting in days must not hide the 5-hour reset the CLI will
+ * actually resume at.
+ */
+export function listExhaustedProviderResetsMs(
+  quota: { fiveHour: ResetWindow | null; sevenDay: ResetWindow | null } | null | undefined,
+  now: number,
+): number[] {
+  const resets: number[] = [];
   for (const window of [quota?.fiveHour, quota?.sevenDay]) {
     if (!window) continue;
     if (window.utilization < BINDING_WINDOW_UTILIZATION) continue;
     const at = Date.parse(window.resetsAt);
     if (!Number.isFinite(at) || at <= now) continue;
-    if (latestExhaustedReset === undefined || at > latestExhaustedReset) {
-      latestExhaustedReset = at;
-    }
+    resets.push(at);
   }
-  return latestExhaustedReset ?? now + fallbackCooldownMs;
+  return resets;
 }
 
 /** Minimal task shape needed to replay a provider-paused issue's launch. */

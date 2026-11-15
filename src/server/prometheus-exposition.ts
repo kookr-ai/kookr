@@ -169,6 +169,7 @@ export interface PrometheusExpositionSnapshot {
     skippedOpenPrUnknown?: number;
     skippedNoPauseStart?: number;
     skippedAwaitingProviderReset?: number;
+    skippedProviderResetUnresolved?: number;
   };
   /**
    * First-hook miss counter (issue #2036). Cumulative post-spawn sessions
@@ -985,6 +986,7 @@ function appendProviderPausedOccupancyMetrics(
         skippedOpenPrUnknown?: number;
         skippedNoPauseStart?: number;
         skippedAwaitingProviderReset?: number;
+        skippedProviderResetUnresolved?: number;
       }
     | undefined,
 ): void {
@@ -1047,6 +1049,11 @@ function appendProviderPausedOccupancyMetrics(
       'kookr_provider_paused_ttl_reclaim_skipped_total',
       { reason: 'awaiting_provider_reset' },
       snapshot.skippedAwaitingProviderReset ?? 0,
+    ),
+    metricLine(
+      'kookr_provider_paused_ttl_reclaim_skipped_total',
+      { reason: 'provider_reset_unresolved' },
+      snapshot.skippedProviderResetUnresolved ?? 0,
     ),
   );
 }

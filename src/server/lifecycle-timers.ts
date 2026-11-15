@@ -2208,6 +2208,17 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
               // cannot occupy the slot forever.
               getLiveness: (task) => hungSuspectSignals(task).liveness,
               recordProviderPause: deps.recordProviderPause,
+              // Issue #3562: hold any paused task while the provider's known
+              // reset is ahead, and keep the soft bound off an unresolvable
+              // reset (poller in backoff / no snapshot).
+              ...(deps.quotaAdapter
+                ? {
+                    getProviderResetSource: () => ({
+                      quota: deps.quotaAdapter!.getLatest(),
+                      pollerState: deps.quotaAdapter!.getState(),
+                    }),
+                  }
+                : {}),
               isHoldingOpenPr: deps.isTaskHoldingOpenPr,
               // Disposition label only (issue #3578): a task whose PR already
               // merged is recorded delivered_then_hung, still terminated.

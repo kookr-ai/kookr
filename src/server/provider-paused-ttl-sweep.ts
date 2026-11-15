@@ -6,6 +6,9 @@ import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
   DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
+  MAX_PROVIDER_PAUSED_HARD_TTL_MS,
+  effectiveProviderPausedStartMs,
+  PROVIDER_RESET_HOLD_GRACE_MS,
   emptyProviderPausedTtlSkipCounts,
   effectiveProviderPausedTtlMs,
   providerPausedOpenPrFailsafeSkipTotal,
@@ -16,7 +19,11 @@ import {
   type ProviderPausedOccupancySnapshot,
   type ProviderPausedTtlCandidateOutcome,
   type ProviderPausedTtlSkipCounts,
+  type ProviderResetState,
 } from '../core/provider-paused-ttl.js';
+import type { PollerState } from '../adapters/quota-adapter.js';
+import type { QuotaStatus } from '../shared/contracts/quota.js';
+import { listExhaustedProviderResetsMs } from './provider-reset-scheduler.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';
 import { nowISO } from '../core/interaction-log.js';
@@ -36,6 +43,14 @@ const MAX_LAST_OUTCOMES = 16;
  */
 export class ProviderPausedStartTracker {
   private readonly pauseStartedAt = new Map<string, number>();
+  /**
+   * Latest known provider reset observed during the current pause (issue
+   * #3562). Latched because once the window resets, a fresh quota snapshot no
+   * longer names it — without the latch the task would be reclaimed on the
+   * first tick after the reset, just as the CLI resumes. Cleared with the
+   * pause start.
+   */
+  private readonly knownResetAt = new Map<string, number>();
 
   /**
    * Observe one task: latch start if paused+inProgress, else clear.
@@ -43,11 +58,11 @@ export class ProviderPausedStartTracker {
    */
   observe(task: Task, isPaused: boolean, nowMs: number): number | undefined {
     if (task.status !== 'inProgress' || task.pendingSignal?.kind === 'completion_ready') {
-      this.pauseStartedAt.delete(task.id);
+      this.clear(task.id);
       return undefined;
     }
     if (!isPaused) {
-      this.pauseStartedAt.delete(task.id);
+      this.clear(task.id);
       return undefined;
     }
     const existing = this.pauseStartedAt.get(task.id);
@@ -62,9 +77,28 @@ export class ProviderPausedStartTracker {
     return this.pauseStartedAt.get(taskId);
   }
 
+  /**
+   * Record a known provider reset for a currently paused task (issue #3562).
+   * Keeps the latest one seen during this pause (never under-wait). Ignored
+   * when the task has no latched pause start.
+   */
+  latchKnownReset(taskId: string, resetsAtMs: number): void {
+    if (!this.pauseStartedAt.has(taskId) || !Number.isFinite(resetsAtMs)) return;
+    const existing = this.knownResetAt.get(taskId);
+    if (existing === undefined || resetsAtMs > existing) {
+      this.knownResetAt.set(taskId, resetsAtMs);
+    }
+  }
+
+  /** Latched known provider reset for the current pause, if any (issue #3562). */
+  getKnownResetMs(taskId: string): number | undefined {
+    return this.knownResetAt.get(taskId);
+  }
+
   /** Drop a task (after reclaim / terminal). */
   clear(taskId: string): void {
     this.pauseStartedAt.delete(taskId);
+    this.knownResetAt.delete(taskId);
   }
 
   /**
@@ -83,10 +117,81 @@ export class ProviderPausedStartTracker {
     }
     // Drop starts for tasks no longer in the store (completed/pruned elsewhere).
     for (const id of this.pauseStartedAt.keys()) {
-      if (!liveIds.has(id)) this.pauseStartedAt.delete(id);
+      if (!liveIds.has(id)) this.clear(id);
     }
     return (task: Task) => this.getPauseStartedAtMs(task.id);
   }
+}
+
+/**
+ * Quota-poller view the reclaim reads to learn when a pause lifts (issue
+ * #3562). `quota` is the last successful snapshot (`QuotaAdapter.getLatest()`),
+ * `pollerState` the poller's current state (`QuotaAdapter.getState()`).
+ */
+export interface ProviderResetSource {
+  quota: Pick<QuotaStatus, 'fiveHour' | 'sevenDay' | 'updatedAt'> | null;
+  pollerState: PollerState;
+}
+
+/**
+ * Classify what a quota snapshot says about a paused task's reset (issue
+ * #3562). A stale snapshot can prove a reset is pending (the timestamp is
+ * fixed) but never that none is, so:
+ *
+ * - an exhausted window whose reset (+ grace) lands within the 6h max of the
+ *   pause start → `known`, whatever the poller state. With several, the
+ *   latest that fits: a weekly window at 90%+ resetting in days must not hide
+ *   the 5-hour reset the CLI resumes at;
+ * - exhausted windows that all reset beyond that ceiling → `unresolved`: the
+ *   CLI will not resume within any hold we allow, and the 90% binding
+ *   threshold cannot tell us which window actually paused it, so keep the
+ *   soft bound off and let the hard TTL decide;
+ * - a `disabled` poller (no OAuth credentials file — e.g. Keychain, API-key
+ *   or Bedrock installs) → `none`: there is no quota source at all, so keep
+ *   the pre-#3562 behavior rather than disable soft reclaim forever;
+ * - no snapshot, a poller that is not healthy (backoff, auth-failed, idle),
+ *   or a snapshot last refreshed before the pause began → `unresolved`;
+ * - otherwise (fresh, healthy, no binding window) → `none`.
+ */
+export function classifyProviderResetState(input: {
+  source: ProviderResetSource;
+  nowMs: number;
+  /**
+   * Effective pause start — the same activity-advanced start the selector
+   * measures pause age and the 6h hold cap from
+   * ({@link effectiveProviderPausedStartMs}).
+   */
+  pauseStartedAtMs?: number;
+}): ProviderResetState {
+  const { quota, pollerState } = input.source;
+  const exhausted = listExhaustedProviderResetsMs(quota, input.nowMs);
+  if (exhausted.length > 0) {
+    const start = input.pauseStartedAtMs ?? input.nowMs;
+    const fitting = exhausted.filter(
+      (at) => at + PROVIDER_RESET_HOLD_GRACE_MS - start <= MAX_PROVIDER_PAUSED_HARD_TTL_MS,
+    );
+    if (fitting.length === 0) return { kind: 'unresolved' };
+    return { kind: 'known', resetsAtMs: Math.max(...fitting) };
+  }
+  if (pollerState === 'disabled') return { kind: 'none' };
+  if (!quota) return { kind: 'unresolved' };
+  if (pollerState !== 'healthy' && pollerState !== 'polling') return { kind: 'unresolved' };
+  if (
+    typeof input.pauseStartedAtMs === 'number'
+    && (!Number.isFinite(quota.updatedAt) || quota.updatedAt < input.pauseStartedAtMs)
+  ) {
+    return { kind: 'unresolved' };
+  }
+  return { kind: 'none' };
+}
+
+/**
+ * The quota poller reads the Claude account's usage, so it only describes
+ * Claude Code sessions. Other agent types keep today's soft/hard behavior
+ * (issue #3562). A task with no recorded agentType is a legacy Claude task.
+ */
+function taskUsesClaudeQuota(task: Task): boolean {
+  return task.agentType === undefined || task.agentType === 'claude-code';
 }
 
 /**
@@ -114,7 +219,18 @@ export interface ProviderPausedOccupancyMetricsSnapshot {
   /** Unknown/unwired PR hold (GitHub state lag or predicate omitted) — issue #2228. */
   skippedOpenPrUnknown: number;
   skippedNoPauseStart: number;
+  /**
+   * Holds waiting on a provider reset: the #1896 auto-resume hold, plus (issue
+   * #3562) any task, issueClaim or not, whose known reset is still ahead.
+   */
   skippedAwaitingProviderReset: number;
+  /**
+   * Soft-bound reclaims withheld because the reset could not be resolved (no
+   * or untrustworthy quota snapshot) — issue #3562. Distinct from
+   * {@link skippedAwaitingProviderReset}: this one is "unknown", not "known
+   * and pending". The hard TTL still reclaims these.
+   */
+  skippedProviderResetUnresolved: number;
   /**
    * Oldest current open-PR fail-safe hold age (ms) — the max `pausedForMs`
    * among `skipped_open_pr_*` outcomes on the last selection pass, or `null`
@@ -232,6 +348,8 @@ export class ProviderPausedOccupancyMetrics {
     this.skips.skipped_no_pause_start += selection.skips.skipped_no_pause_start;
     this.skips.skipped_awaiting_provider_reset +=
       selection.skips.skipped_awaiting_provider_reset;
+    this.skips.skipped_provider_reset_unresolved +=
+      selection.skips.skipped_provider_reset_unresolved;
     const outcomes = selection.outcomes ?? [];
     this.lastOutcomes = outcomes.slice(0, MAX_LAST_OUTCOMES).map((o) => ({ ...o }));
     this.lastAttemptedTaskIds = outcomes
@@ -261,6 +379,7 @@ export class ProviderPausedOccupancyMetrics {
       skippedOpenPrUnknown: this.skips.skipped_open_pr_unknown,
       skippedNoPauseStart: this.skips.skipped_no_pause_start,
       skippedAwaitingProviderReset: this.skips.skipped_awaiting_provider_reset,
+      skippedProviderResetUnresolved: this.skips.skipped_provider_reset_unresolved,
       oldestOpenPrFailsafeHoldMs: this.lastOpenPrFailsafeHoldAge.oldestHoldMs,
       openPrFailsafeOverHardTtlCount:
         this.lastOpenPrFailsafeHoldAge.overHardTtlCount,
@@ -303,6 +422,12 @@ export interface ReclaimProviderPausedTasksDeps {
     detail?: string,
   ) => { holdForResume: boolean } | void;
   isHoldingOpenPr?: (task: Task) => boolean | undefined;
+  /**
+   * Quota-poller view used to hold paused tasks on a known provider reset and
+   * to keep the soft bound off an unresolvable one (issue #3562). Read once
+   * per pass. Omitted → no reset-based holds (pre-#3562 behavior).
+   */
+  getProviderResetSource?: () => ProviderResetSource;
   /**
    * Delivery attribution for the disposition label only (issue #3578) — the
    * same in-memory probe the hungSuspect TTL reclaim uses. A merged PR turns
@@ -448,6 +573,50 @@ export async function reclaimAgedProviderPausedTasks(
     return { reclaimedTaskIds: [], occupancy };
   }
 
+  const getLastActivityAtMs = (task: Task): number | undefined => {
+    const liveness = deps.getLiveness?.(task);
+    if (!liveness) return undefined;
+    const last = Math.max(
+      liveness.lastHookEventAt,
+      liveness.lastPaneChangeAt,
+      liveness.lastTokenActivityAt,
+    );
+    return last > 0 ? last : undefined;
+  };
+
+  // Issue #3562: classify every paused task's reset each pass and latch a
+  // known reset as soon as it is seen, so a later poller backoff — or the
+  // window resetting and vanishing from the snapshot — cannot lose it.
+  // Measured from the same effective (activity-advanced) pause start the
+  // selector uses, so the 6h-fit filter and snapshot freshness agree with
+  // `knownProviderResetHoldApplies`.
+  const resetSource = readProviderResetSource(deps);
+  const resetStates = new Map<string, ProviderResetState>();
+  if (resetSource) {
+    for (const task of tasks) {
+      const latchedStartMs = getPauseStartedAtMs(task);
+      if (latchedStartMs === undefined || !taskUsesClaudeQuota(task)) continue;
+      const fresh = classifyProviderResetState({
+        source: resetSource,
+        nowMs,
+        pauseStartedAtMs: effectiveProviderPausedStartMs(
+          latchedStartMs,
+          getLastActivityAtMs(task),
+        ),
+      });
+      if (fresh.kind === 'known') {
+        deps.pauseStartTracker.latchKnownReset(task.id, fresh.resetsAtMs);
+      }
+      const latched = deps.pauseStartTracker.getKnownResetMs(task.id);
+      resetStates.set(
+        task.id,
+        latched !== undefined && nowMs < latched + PROVIDER_RESET_HOLD_GRACE_MS
+          ? { kind: 'known', resetsAtMs: latched }
+          : fresh,
+      );
+    }
+  }
+
   const selection = selectExpiredProviderPausedTasks(tasks, {
     now,
     ttlMs: hardTtlMs,
@@ -455,22 +624,14 @@ export async function reclaimAgedProviderPausedTasks(
     capacityAllowsEarlyReclaim,
     isProviderPaused: deps.isProviderPaused,
     getPauseStartedAtMs: (task) => getPauseStartedAtMs(task),
-    getLastActivityAtMs: (task) => {
-      const liveness = deps.getLiveness?.(task);
-      if (!liveness) return undefined;
-      const last = Math.max(
-        liveness.lastHookEventAt,
-        liveness.lastPaneChangeAt,
-        liveness.lastTokenActivityAt,
-      );
-      return last > 0 ? last : undefined;
-    },
+    getLastActivityAtMs,
     isAwaitingProviderReset: (task) => {
       if (!deps.recordProviderPause) return false;
       // Production recordProviderPause returns holdForResume:true for tasks
       // with no issueClaim (hung reaper keeps holding forever — no resume to
-      // schedule). Hard TTL is the upper bound that frees those slots with
-      // needs-human; only skip when a real #1896 resume path can exist.
+      // schedule), so it cannot tell whether a reset is actually pending.
+      // Only skip here when a real #1896 resume path can exist; unclaimed
+      // tasks are held on a *known* reset via getProviderResetState (#3562).
       if (!task.issueClaim) return false;
       try {
         const decision = deps.recordProviderPause(task, 'provider_paused_ttl');
@@ -485,6 +646,7 @@ export async function reclaimAgedProviderPausedTasks(
         return true;
       }
     },
+    getProviderResetState: (task) => resetStates.get(task.id),
     isHoldingOpenPr: deps.isHoldingOpenPr,
   });
 
@@ -622,6 +784,19 @@ export async function reclaimAgedProviderPausedTasks(
       outcomes: selection.outcomes,
     },
   };
+}
+
+function readProviderResetSource(
+  deps: ReclaimProviderPausedTasksDeps,
+): ProviderResetSource | undefined {
+  if (!deps.getProviderResetSource) return undefined;
+  try {
+    return deps.getProviderResetSource();
+  } catch (err) {
+    // Fail toward holding: an unreadable poller is an unresolved reset.
+    console.error('[provider-paused-ttl] getProviderResetSource failed:', err);
+    return { quota: null, pollerState: 'backoff' };
+  }
 }
 
 async function writeProviderPausedDispositionEntry(

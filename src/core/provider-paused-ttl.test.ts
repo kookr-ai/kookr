@@ -9,7 +9,11 @@ import {
   selectExpiredProviderPausedTasks,
   summarizeOpenPrFailsafeHoldAge,
   summarizeProviderPausedOccupancy,
+  knownProviderResetHoldApplies,
+  MAX_PROVIDER_PAUSED_HARD_TTL_MS,
+  PROVIDER_RESET_HOLD_GRACE_MS,
   type ProviderPausedTtlCandidateOutcome,
+  type ProviderResetState,
 } from './provider-paused-ttl.js';
 import { aSession, aTask } from './__fixtures__/task-builders.js';
 
@@ -527,5 +531,144 @@ describe('summarizeOpenPrFailsafeHoldAge (issue #3115)', () => {
     expect(summary.oldestHoldMs).toBe(3 * 60 * 60_000);
     expect(summary.holdCount).toBe(1);
     expect(summary.overHardTtlCount).toBe(1);
+  });
+});
+
+describe('provider reset holds (issue #3562)', () => {
+  const nowMs = NOW.getTime();
+  const MIN = 60_000;
+  const SOFT = DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+
+  function select(opts: {
+    pausedForMs: number;
+    state: ProviderResetState | undefined;
+    capacity?: boolean;
+    task?: Task;
+  }) {
+    const task = opts.task ?? pausedTask();
+    return selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      softTtlMs: SOFT,
+      capacityAllowsEarlyReclaim: opts.capacity ?? true,
+      isProviderPaused: () => true,
+      getPauseStartedAtMs: () => nowMs - opts.pausedForMs,
+      getProviderResetState: () => opts.state,
+      isHoldingOpenPr: () => false,
+    });
+  }
+
+  const knownIn = (ms: number): ProviderResetState => ({ kind: 'known', resetsAtMs: nowMs + ms });
+
+  it('holds an unclaimed task past the soft TTL while a known reset is ahead', () => {
+    // The 2026-11-09 shape: 40m into the pause, reset 3.4h away, no issueClaim.
+    const sel = select({ pausedForMs: 41 * MIN, state: knownIn(204 * MIN) });
+    expect(sel.expired).toEqual([]);
+    expect(sel.outcomes[0].outcome).toBe('skipped_awaiting_provider_reset');
+    expect(sel.skips.skipped_awaiting_provider_reset).toBe(1);
+  });
+
+  it('holds past the hard TTL too while the known reset is ahead (5h window)', () => {
+    const sel = select({ pausedForMs: 3 * 60 * MIN, state: knownIn(90 * MIN), capacity: false });
+    expect(sel.expired).toEqual([]);
+    expect(sel.outcomes[0].outcome).toBe('skipped_awaiting_provider_reset');
+  });
+
+  it('keeps holding through the grace after the reset, then reclaims', () => {
+    const inGrace = select({ pausedForMs: 3 * 60 * MIN, state: knownIn(-(PROVIDER_RESET_HOLD_GRACE_MS - MIN)) });
+    expect(inGrace.outcomes[0].outcome).toBe('skipped_awaiting_provider_reset');
+
+    const graceOver = select({ pausedForMs: 3 * 60 * MIN, state: knownIn(-PROVIDER_RESET_HOLD_GRACE_MS) });
+    expect(graceOver.outcomes[0].outcome).toBe('selected');
+  });
+
+  it('caps the hold at the 6h max from pause start (inclusive)', () => {
+    const pausedForMs = 60 * MIN;
+    const atCap = MAX_PROVIDER_PAUSED_HARD_TTL_MS - pausedForMs - PROVIDER_RESET_HOLD_GRACE_MS;
+    expect(select({ pausedForMs, state: knownIn(atCap) }).outcomes[0].outcome)
+      .toBe('skipped_awaiting_provider_reset');
+    // One ms further out: the hold could not end within 6h, so no hold at all.
+    expect(select({ pausedForMs, state: knownIn(atCap + 1) }).outcomes[0].outcome)
+      .toBe('selected');
+  });
+
+  it('gives no hold to a reset beyond the 6h ceiling (7-day window)', () => {
+    const sel = select({ pausedForMs: 41 * MIN, state: knownIn(3 * 24 * 60 * MIN) });
+    expect(sel.outcomes[0].outcome).toBe('selected');
+  });
+
+  it('does not soft-reclaim an unresolved reset, but the hard TTL still does (#2423)', () => {
+    const soft = select({ pausedForMs: 41 * MIN, state: { kind: 'unresolved' } });
+    expect(soft.expired).toEqual([]);
+    expect(soft.outcomes[0].outcome).toBe('skipped_provider_reset_unresolved');
+    expect(soft.skips.skipped_provider_reset_unresolved).toBe(1);
+    expect(soft.skips.skipped_awaiting_provider_reset).toBe(0);
+
+    const hard = select({ pausedForMs: TTL_MS, state: { kind: 'unresolved' } });
+    expect(hard.outcomes[0].outcome).toBe('selected');
+  });
+
+  it('keeps today\'s soft reclaim when the reset is resolved as none', () => {
+    expect(select({ pausedForMs: 41 * MIN, state: { kind: 'none' } }).outcomes[0].outcome)
+      .toBe('selected');
+    expect(select({ pausedForMs: 41 * MIN, state: undefined }).outcomes[0].outcome)
+      .toBe('selected');
+  });
+
+  it('still honours the open-PR fail-safe when no reset hold applies', () => {
+    const sel = selectExpiredProviderPausedTasks([pausedTask()], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isProviderPaused: () => true,
+      getPauseStartedAtMs: () => nowMs - TTL_MS,
+      getProviderResetState: () => ({ kind: 'none' }),
+      isHoldingOpenPr: () => true,
+    });
+    expect(sel.outcomes[0].outcome).toBe('skipped_open_pr_confirmed');
+  });
+
+  it('holds a claimed task past the hard TTL on a known reset, where the #1896 hold no longer applies', () => {
+    const task = pausedTask({ issueClaim: { repo: 'kookr-ai/kookr', number: 3562 } });
+    const sel = selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isProviderPaused: () => true,
+      getPauseStartedAtMs: () => nowMs - 3 * 60 * MIN,
+      isAwaitingProviderReset: () => true,
+      getProviderResetState: () => knownIn(90 * MIN),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.outcomes[0].outcome).toBe('skipped_awaiting_provider_reset');
+  });
+
+  it('measures the 6h cap from the effective (activity-advanced) pause start', () => {
+    // Raw latch 7h ago, last activity 1h ago: effective pause age is 1h, so a
+    // reset 4h ahead ends the hold 5h15m after the effective start — within 6h.
+    const sel = selectExpiredProviderPausedTasks([pausedTask()], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      softTtlMs: SOFT,
+      capacityAllowsEarlyReclaim: true,
+      isProviderPaused: () => true,
+      getPauseStartedAtMs: () => nowMs - 7 * 60 * MIN,
+      getLastActivityAtMs: () => nowMs - 60 * MIN,
+      getProviderResetState: () => knownIn(4 * 60 * MIN),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.outcomes[0].outcome).toBe('skipped_awaiting_provider_reset');
+  });
+
+  it('knownProviderResetHoldApplies measures the cap from the effective pause start', () => {
+    const start = nowMs - 30 * MIN;
+    expect(knownProviderResetHoldApplies({
+      resetsAtMs: start + MAX_PROVIDER_PAUSED_HARD_TTL_MS - PROVIDER_RESET_HOLD_GRACE_MS,
+      nowMs,
+      effectivePauseStartMs: start,
+    })).toBe(true);
+    expect(knownProviderResetHoldApplies({
+      resetsAtMs: Number.NaN,
+      nowMs,
+      effectivePauseStartMs: start,
+    })).toBe(false);
   });
 });

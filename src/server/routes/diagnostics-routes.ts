@@ -892,6 +892,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           skippedNoPauseStart: providerPausedOccupancySnapshot.skippedNoPauseStart,
           skippedAwaitingProviderReset:
             providerPausedOccupancySnapshot.skippedAwaitingProviderReset,
+          // Issue #3562: soft reclaims withheld on an unresolvable reset —
+          // counted apart from "reset known and pending" above.
+          skippedProviderResetUnresolved:
+            providerPausedOccupancySnapshot.skippedProviderResetUnresolved,
           // Issue #3115: age of the oldest open-PR fail-safe hold and how many
           // holds have run past the hard TTL. The open-PR exemption still holds
           // reclaim (unchanged); these fields only make an indefinitely pinned
