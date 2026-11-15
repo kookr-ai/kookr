@@ -276,9 +276,14 @@ reviewers' own working time.
    tests ending in `.test.` or `.spec.` plus `ts`, `tsx`, `js` or `jsx`, `tsconfig*.json`,
    `.gitignore`). A `.test.sh` or `.test.mjs` file is not in it, so write the
    marker for those.
-5. **Blocks and the round cap** follow `independent-merge-review` §4 and §4a:
-   after two blocked rounds, only correctness, data-loss and security findings
-   keep blocking.
+5. **Blocks and the round rules** follow `independent-merge-review` §4 and §4a:
+   round 1 is the one full review (about 8 minutes). Every later round is a fix
+   check of about 4 minutes on the diff since the blocked head: it confirms
+   each blocking finding is fixed and reviews only the changed lines. A new
+   non-critical finding on a line that did not change is a follow-up, not a
+   block. After two blocked rounds, only correctness, data-loss and security
+   findings keep blocking. The follow-ups go into one issue per PR, with a
+   checklist.
 
 When the §3 check prints anything else, run the panel below unchanged.
 
