@@ -29,8 +29,11 @@ import {
 const PROMPT_ID_LEN = 12;
 
 export interface TelegramTaskBridge {
-  /** Deliver a free-text instruction to the task's live agent session. */
-  sendText(taskId: string, text: string): Promise<TelegramReplyResult>;
+  /**
+   * Deliver a free-text instruction to the task's live agent session. With `expectedSessionId`,
+   * refuse when the live session is a different one (the task was relaunched since).
+   */
+  sendText(taskId: string, text: string, expectedSessionId?: string): Promise<TelegramReplyResult>;
   /**
    * Approve the task's current permission prompt (keystroke '1'), anti-stale.
    * When `expectedPromptId` is given (from the button that was shown), refuses
@@ -58,7 +61,7 @@ export interface TelegramTaskBridgeDeps {
 }
 
 /** The task's most recent still-live session (mirrors the dashboard selector). */
-function latestLiveSession(task: Task): Task['sessions'][number] | undefined {
+export function latestLiveSession(task: Task): Task['sessions'][number] | undefined {
   return [...task.sessions].reverse().find(
     (session) => session.lastStatus !== 'completed'
       && session.lastStatus !== 'aborted'
@@ -89,11 +92,14 @@ export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): Telegram
   }
 
   return {
-    async sendText(taskId, text): Promise<TelegramReplyResult> {
+    async sendText(taskId, text, expectedSessionId): Promise<TelegramReplyResult> {
       const trimmed = text.trim();
       if (!trimmed) return { ok: false, reason: 'empty message' };
       const sessionId = resolveSession(taskId);
       if (!sessionId) return { ok: false, reason: 'no live session for this task' };
+      if (expectedSessionId !== undefined && sessionId !== expectedSessionId) {
+        return { ok: false, reason: 'the session that asked is no longer live' };
+      }
       try {
         await deps.submitMessage(sessionId, trimmed, 'directReply');
         return { ok: true };

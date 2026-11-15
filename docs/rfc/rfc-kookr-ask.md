@@ -87,6 +87,12 @@ interface AskRecord {
 * Liveness on answer: the service asks `taskLiveness`; if the task is gone or
   terminal the ask becomes `cancelled/task_gone`, **nothing is typed into any
   session**, and the Telegram message is edited to say so.
+* Session pinning (issue #3548): the ask records `sessionId`, the task's live
+  session when the question was asked. If another session is live when the
+  answer arrives (the task was relaunched), the ask also becomes
+  `cancelled/task_gone` and nothing is typed. The expiry notice follows the same
+  rule. An idempotent re-ask from the new session re-pins the pending ask to
+  it. Asks without `sessionId` (older records) keep the unpinned behaviour.
 * Delivery text: `Operator answered ask <id>: <label>` (or `… (free text): <text>`),
   via the existing `TelegramTaskBridge.sendText` → `submitMessage` path.
 * Expiry: a 30 s unref'd sweeper plus lazy check on read. On expiry the message
@@ -317,9 +323,8 @@ Rejected / accepted as limits (stated in the RFC rather than engineered away):
   trust boundary (it can run `kookr reply` and edit files too).
 * **API is not per-task scoped** (no per-task credential exists today); the API
   is loopback/bearer protected like the rest of `/api/*`.
-* **Session pinning** (deliver only to the session alive at ask time) is
-  deferred; a late relaunch could receive the typed answer. The record still
-  shows `taskDelivery`.
+* **Session pinning** was deferred here and has since shipped (issue #3548,
+  see "Liveness on answer" above).
 * **Double delivery with `--wait`** (typed notice + stdout): accepted, both
   carry the same label; the skill says to treat them as one answer.
 * HMAC + nonce kept despite the minimalist's note: the operator asked for

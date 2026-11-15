@@ -97,6 +97,12 @@ Use `--wait` (or `--wait=<seconds>`) **only when you have nothing else to do**:
 it blocks and prints the chosen label on stdout. If you used `--wait` you may
 also receive the typed message above; they are the same answer, act once.
 
+The answer is typed only into the session that asked. If the task is relaunched
+before the operator answers, the fresh session gets nothing and the operator is
+told the answer was not delivered. A relaunched session that asks the same
+question again (same question, options and context) takes over the pending ask
+instead of sending a second message.
+
 You can look an ask up later: `GET /api/asks/<id>` on the Kookr API
 (`$KOOKR_API_BASE_URL`) returns its `state` and `answer`. Treat that record,
 or `--wait`'s output, as authoritative; a typed message is a convenience.

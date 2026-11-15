@@ -92,6 +92,28 @@ describe('sendText', () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/no live session/);
   });
+
+  test('delivers to the expected session while it is still the live one', async () => {
+    const { deps, submitMessage } = makeDeps();
+    const res = await createTelegramTaskBridge(deps).sendText('task-1', 'hi', SESSION);
+    expect(res.ok).toBe(true);
+    expect(submitMessage).toHaveBeenCalledWith(SESSION, 'hi', 'directReply');
+  });
+
+  test('refuses when a different session replaced the expected one (task relaunched)', async () => {
+    const relaunched = {
+      sessions: [
+        { tmuxSession: SESSION, lastStatus: 'aborted', crashRecovered: false },
+        { tmuxSession: 'tmux-new', lastStatus: 'running', crashRecovered: false },
+      ],
+    } as unknown as Task;
+    const { deps, submitMessage } = makeDeps({
+      over: { taskStore: { getTask: vi.fn(() => relaunched) } as unknown as TelegramTaskBridgeDeps['taskStore'] },
+    });
+    const res = await createTelegramTaskBridge(deps).sendText('task-1', 'hi', SESSION);
+    expect(res).toEqual({ ok: false, reason: 'the session that asked is no longer live' });
+    expect(submitMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe('approvePermission', () => {

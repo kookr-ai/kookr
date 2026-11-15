@@ -338,6 +338,107 @@ describe('expiry, cancel and boot reconciliation', () => {
   });
 });
 
+describe('session pinning (#3548)', () => {
+  /** The live session of each task; a relaunch replaces it. */
+  let live: Map<string, string>;
+  let pinned: AskService;
+
+  beforeEach(() => {
+    live = new Map([['t1', 'sess-a'], ['t2', 'sess-b']]);
+    pinned = new AskService({
+      store: h.store,
+      getNotifier: () => h.notifier as unknown as AskNotifier,
+      taskStatus: (id) => h.statuses.get(id),
+      deliverToTask: h.deliver,
+      liveSession: (id) => live.get(id),
+      now: () => h.clock.now,
+    });
+  });
+
+  async function createPinned(over: Partial<Parameters<AskService['create']>[0]> = {}): Promise<AskRecord> {
+    const r = await pinned.create({ ...base, ...over });
+    if (!r.ok) throw new Error(`create failed: ${JSON.stringify(r.error)}`);
+    return r.ask;
+  }
+
+  function tapPinned(ask: AskRecord, index: number) {
+    return pinned.answer({
+      askId: ask.id, senderId: 7, chatId: ask.delivery!.chatId, messageId: ask.delivery!.messageId,
+      option: { index, mac: pinned.callbackData(ask, index).split(':')[3] },
+    });
+  }
+
+  it('records the session that was live when the question was asked', async () => {
+    const ask = await createPinned();
+    expect(ask.sessionId).toBe('sess-a');
+  });
+
+  it('types the answer into the pinned session while it is still live', async () => {
+    const ask = await createPinned();
+    const r = await tapPinned(ask, 1);
+    expect(r).toMatchObject({ ok: true, ask: { state: 'answered', taskDelivery: 'delivered' } });
+    expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${ask.id}: No`, 'sess-a');
+  });
+
+  it('does not type the answer into a fresh session after a relaunch, and tells the operator', async () => {
+    const ask = await createPinned();
+    live.set('t1', 'sess-relaunched'); // the task is still running, in a session that never saw the question
+    const r = await tapPinned(ask, 0);
+    expect(r).toMatchObject({ ok: false, reason: 'task_gone', ask: { state: 'cancelled', resolution: 'task_gone' } });
+    expect(h.store.get(ask.id)?.answer).toBeUndefined();
+    expect(h.deliver).not.toHaveBeenCalled();
+    expect(h.notifier.finalizeAsk).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('relaunched'));
+  });
+
+  it('refuses a dashboard answer after a relaunch the same way', async () => {
+    const ask = await createPinned();
+    live.delete('t1'); // between sessions: none is live
+    const r = await pinned.answerFromDashboard({ askId: ask.id, optionIndex: 0 });
+    expect(r).toMatchObject({ ok: false, reason: 'task_gone' });
+    expect(h.deliver).not.toHaveBeenCalled();
+  });
+
+  it('re-pins a pending ask when the relaunched session asks the same question again', async () => {
+    const first = await createPinned({ idempotencyKey: 'k' });
+    live.set('t1', 'sess-relaunched');
+    const again = await pinned.create({ ...base, idempotencyKey: 'k' });
+    expect(again).toMatchObject({ ok: true, deduped: true, ask: { id: first.id, sessionId: 'sess-relaunched' } });
+    expect(h.notifier.sendAsk).toHaveBeenCalledOnce();
+    const r = await tapPinned(first, 1);
+    expect(r).toMatchObject({ ok: true, ask: { taskDelivery: 'delivered' } });
+    expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${first.id}: No`, 'sess-relaunched');
+  });
+
+  it('does not type the expiry notice into a session that replaced the pinned one', async () => {
+    const stale = await createPinned({ timeoutSec: 60 });
+    const kept = await createPinned({ taskId: 't2', timeoutSec: 60 });
+    live.set('t1', 'sess-relaunched');
+    h.clock.now += 61_000;
+    await pinned.sweepExpired();
+    expect(h.store.get(stale.id)?.state).toBe('expired');
+    expect(h.store.get(kept.id)?.state).toBe('expired');
+    expect(h.deliver).toHaveBeenCalledOnce();
+    expect(h.deliver).toHaveBeenCalledWith('t2', `Ask ${kept.id} expired with no answer.`, 'sess-b');
+  });
+
+  it('still delivers an unpinned ask (recorded before pinning, or with no live session) to the live session', async () => {
+    live.delete('t1');
+    const ask = await createPinned();
+    expect(ask.sessionId).toBeUndefined();
+    live.set('t1', 'sess-later');
+    const r = await tapPinned(ask, 1);
+    expect(r).toMatchObject({ ok: true, ask: { taskDelivery: 'delivered' } });
+    expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${ask.id}: No`);
+  });
+
+  it('keeps the pinned session across a restart', async () => {
+    const ask = await createPinned();
+    await h.store.flush();
+    const reopened = await AskStore.open(h.dir);
+    expect(reopened.get(ask.id)?.sessionId).toBe('sess-a');
+  });
+});
+
 describe('AskStore', () => {
   it('keeps the secret stable across reopen and refuses to regenerate it on a read error', async () => {
     const again = await AskStore.open(h.dir);

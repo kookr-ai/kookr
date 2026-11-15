@@ -302,7 +302,7 @@ import type { SystemdNotifier } from './systemd-notify.js';
 import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import { createLucyOperatorHolder } from './lucy-operator/holder.js';
-import { createTelegramTaskBridge } from './telegram-task-bridge.js';
+import { createTelegramTaskBridge, latestLiveSession } from './telegram-task-bridge.js';
 import { AskStore } from './asks/ask-store.js';
 import { AskService } from './asks/ask-service.js';
 import type { AskNotifier } from '../shared/contracts/asks.js';
@@ -1320,7 +1320,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // The notifier and the task-delivery function are filled in below once the
   // Telegram handle and reply bridge exist (the routes are built before them).
   let askNotifierHolder: AskNotifier | undefined;
-  let askDeliverHolder: ((taskId: string, text: string) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+  let askDeliverHolder: ((taskId: string, text: string, sessionId?: string) => Promise<{ ok: boolean; reason?: string }>) | undefined;
   let askService: AskService | undefined;
   if (process.env.KOOKR_TELEGRAM_BOT_TOKEN && process.env.KOOKR_REMOTE_CHAT_DISABLED !== '1') {
     try {
@@ -1328,9 +1328,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         store: await AskStore.open(kookrDir, (err) => console.warn('[asks] persist failed:', err)),
         getNotifier: () => askNotifierHolder,
         taskStatus: (taskId) => taskStore.getTask(taskId)?.status,
-        deliverToTask: async (taskId, text) => askDeliverHolder
-          ? askDeliverHolder(taskId, text)
+        deliverToTask: async (taskId, text, sessionId) => askDeliverHolder
+          ? askDeliverHolder(taskId, text, sessionId)
           : { ok: false, reason: 'reply bridge not ready' },
+        liveSession: (taskId) => {
+          const task = taskStore.getTask(taskId);
+          return task ? latestLiveSession(task)?.tmuxSession : undefined;
+        },
         log: (message) => console.log(message),
       });
     } catch (err) {
@@ -4497,7 +4501,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // POST /api/asks keeps returning 503.
   if (askService && telegramHandle?.ask) {
     askNotifierHolder = telegramHandle.ask;
-    askDeliverHolder = (taskId, text) => telegramTaskBridge.sendText(taskId, text);
+    askDeliverHolder = (taskId, text, sessionId) => telegramTaskBridge.sendText(taskId, text, sessionId);
     await askService.start();
   }
   onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;
