@@ -85,7 +85,7 @@ export async function fetchPRState(ref: GitHubReference): Promise<GitHubPRState 
     const { stdout: json } = await execGh([
       'pr', 'view', String(ref.number),
       '--repo', `${ref.owner}/${ref.repo}`,
-      '--json', 'title,state,author,headRefName,baseRefName,reviewDecision,isDraft,comments,mergeable',
+      '--json', 'title,state,author,headRefName,baseRefName,reviewDecision,isDraft,comments,mergeable,mergedAt',
     ], {
       timeout: 15000,
     });
@@ -120,6 +120,7 @@ export async function fetchPRState(ref: GitHubReference): Promise<GitHubPRState 
       unresolvedThreads: threads.filter((t) => !t.isResolved),
       totalComments: Array.isArray(data.comments) ? data.comments.length : 0,
       checks,
+      ...parseMergedAt(data.mergedAt),
       lastFetchedAt: new Date(),
     };
   } catch (err) {
@@ -169,6 +170,7 @@ interface GraphQLStatusContextNode {
 interface GraphQLPRNode {
   title?: unknown;
   state?: unknown;
+  mergedAt?: unknown;
   mergeable?: unknown;
   isDraft?: unknown;
   author?: GraphQLAuthor | null;
@@ -431,6 +433,7 @@ function uniqueGitHubObjects(refs: GitHubReference[]): GitHubReference[] {
 
 const PR_STATE_SELECTION = `      title
       state
+      mergedAt
       mergeable
       isDraft
       author { login }
@@ -555,6 +558,17 @@ function areGraphQLErrorsFieldLevel(parsed: unknown): boolean {
   });
 }
 
+/**
+ * GitHub's `mergedAt` (ISO string, `null` while unmerged) as an optional
+ * `mergedAt` field — omitted unless it parses, so a missing value never reads
+ * as a real merge time (issue #3746).
+ */
+function parseMergedAt(raw: unknown): Pick<GitHubPRState, 'mergedAt'> {
+  if (typeof raw !== 'string') return {};
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? { mergedAt: new Date(ms) } : {};
+}
+
 function parsePRNode(ref: GitHubReference, node: GraphQLPRNode): GitHubPRState {
   const status = node.isDraft === true ? 'draft'
     : stringValue(node.state) === 'MERGED' ? 'merged'
@@ -602,6 +616,7 @@ function parsePRNode(ref: GitHubReference, node: GraphQLPRNode): GitHubPRState {
     unresolvedThreads: threads.filter((thread) => !thread.isResolved),
     totalComments: numberValue(node.comments?.totalCount),
     checks: parseChecks(node),
+    ...parseMergedAt(node.mergedAt),
     lastFetchedAt: new Date(),
   };
 }

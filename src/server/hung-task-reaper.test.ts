@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
-import { selectDeliveredMergedPr } from '../core/completion/index.js';
 import { readDispositionEntries } from '../core/disposition-ledger.js';
 import * as dispositionLedger from '../core/disposition-ledger.js';
 import * as auditLog from '../core/audit-log.js';
@@ -19,13 +18,15 @@ import {
   reapHungTask,
   type HungTaskReapEvidence,
 } from './hung-task-reaper.js';
+import { createStoreDeliveredPrResolver } from './delivered-task-completion-sweep.js';
 
 /**
  * Record a merged PR on a `GitHubStateStore` for `taskId`, detected from the
  * agent's own activity (`detectedFrom` ≠ 'prompt'), and return a resolver wired
- * exactly like production (`index.ts`): `getTaskState(id).prs` →
- * `selectDeliveredMergedPr`. This replays the real #1560 delivery attribution
- * the reaper reuses — no canned `MergedPrAttribution`.
+ * exactly like production (`index.ts`): `createStoreDeliveredPrResolver`. This
+ * replays the real #1560 delivery attribution the reaper reuses — no canned
+ * `MergedPrAttribution`. Call it after the task exists: the PR's `mergedAt` is
+ * "now", so it passes the task-creation bound (issue #3746).
  */
 function mergedPrResolver(taskId: string, prNumber: number, prUrl: string): (task: Task) => MergedPrAttribution | null {
   const store = new GitHubStateStore();
@@ -53,20 +54,11 @@ function mergedPrResolver(taskId: string, prNumber: number, prUrl: string): (tas
     unresolvedThreads: [],
     totalComments: 0,
     checks: [],
+    mergedAt: new Date(),
     lastFetchedAt: new Date('2026-07-25T18:10:00.000Z'),
   };
   store.updatePRState(prState);
-  return (task: Task) =>
-    selectDeliveredMergedPr(
-      store.getTaskState(task.id).prs.map((pr) => ({
-        status: pr.status,
-        number: pr.ref.number,
-        url: pr.ref.url,
-        owner: pr.ref.owner,
-        repo: pr.ref.repo,
-        detectedFrom: pr.ref.detectedFrom,
-      })),
-    );
+  return createStoreDeliveredPrResolver(store);
 }
 
 function makeTask(taskStore: TaskStore) {
@@ -724,19 +716,15 @@ describe('reapHungTask — delivered_then_hung outcome (issue #1559)', () => {
       ref, title: 'port the fix', status: 'merged', mergeable: 'MERGEABLE',
       author: 'someone', branch: 'x', baseBranch: 'main', reviewDecision: 'approved',
       reviewers: [], unresolvedThreads: [], totalComments: 0, checks: [],
+      // Merged after the task exists, so only the prompt exclusion can reject it.
+      mergedAt: new Date(),
       lastFetchedAt: new Date('2026-07-25T18:10:00.000Z'),
     });
 
     const result = await reapHungTask(task, incidentEvidence(), {
       taskStore,
       lifecycleDeps: lifecycleDeps(taskStore),
-      resolveMergedPr: (t: Task) =>
-        selectDeliveredMergedPr(
-          store.getTaskState(t.id).prs.map((pr) => ({
-            status: pr.status, number: pr.ref.number, url: pr.ref.url,
-            owner: pr.ref.owner, repo: pr.ref.repo, detectedFrom: pr.ref.detectedFrom,
-          })),
-        ),
+      resolveMergedPr: createStoreDeliveredPrResolver(store),
     });
 
     expect(result.outcome).toBe('terminated');

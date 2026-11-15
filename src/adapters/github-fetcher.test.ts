@@ -218,6 +218,41 @@ describe('github-fetcher batching helpers', () => {
       message: 'x-ratelimit-remaining: 0',
     });
   });
+  it('carries GitHub mergedAt on a merged PR and omits it when unmerged (issue #3746)', () => {
+    expect(buildRepoStateBatchQuery([ref('pr', 855)])).toContain('mergedAt');
+
+    const node = (state: string, mergedAt: string | null) => ({
+      title: 'PR',
+      state,
+      mergedAt,
+      mergeable: 'UNKNOWN',
+      isDraft: false,
+      author: { login: 'alice' },
+      headRefName: 'branch',
+      baseRefName: 'main',
+      reviewDecision: null,
+      comments: { totalCount: 0 },
+      reviewThreads: { nodes: [] },
+      reviews: { nodes: [] },
+      commits: { nodes: [] },
+    });
+    const result = parseRepoStateBatchResponse({
+      data: {
+        repository: {
+          pr_855: node('MERGED', '2026-06-10T09:00:00Z'),
+          pr_900: node('OPEN', null),
+          pr_901: node('MERGED', 'garbage'),
+        },
+      },
+    }, [ref('pr', 855), ref('pr', 900), ref('pr', 901)]);
+
+    const byNumber = new Map(result.prs.map((pr) => [pr.ref.number, pr]));
+    expect(byNumber.get(855)?.status).toBe('merged');
+    expect(byNumber.get(855)?.mergedAt?.toISOString()).toBe('2026-06-10T09:00:00.000Z');
+    expect(byNumber.get(900)).not.toHaveProperty('mergedAt');
+    // An unparseable timestamp is dropped, never coerced into a fake merge time.
+    expect(byNumber.get(901)).not.toHaveProperty('mergedAt');
+  });
 });
 
 describe('evaluatePRMergeReadiness / isPRGreenAndMergeable (#1148)', () => {

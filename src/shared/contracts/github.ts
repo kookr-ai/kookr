@@ -46,6 +46,8 @@ export interface GitHubPRState {
   unresolvedThreads: GitHubReviewThread[];
   totalComments: number;
   checks: GitHubCheck[];
+  /** When the PR was merged (GitHub `mergedAt`); absent while unmerged or unreported (issue #3746). */
+  mergedAt?: Date;
   lastFetchedAt: Date;
 }
 

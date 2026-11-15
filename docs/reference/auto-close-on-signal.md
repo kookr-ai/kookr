@@ -68,7 +68,11 @@ outbox drain (#1608), which would otherwise drop a hung agent's signal.
 **discovered from the agent's own activity** — a PR the task opened during its
 run. A merged PR merely **referenced in the task prompt** (e.g. a prompt "port
 the fix from PR #1500") is excluded (`detectedFrom === 'prompt'`), so a live task
-that mentions an already-merged PR is never force-completed.
+that mentions an already-merged PR is never force-completed. A merged PR is also
+excluded when it merged **before the task was created**, or when its merge time
+(GitHub `mergedAt`) is unknown (issue #3746): the agent sees old PR numbers in
+docs, test fixtures and `gh` output, and none of them is its delivery. The
+hung-task, hung-suspect and provider-paused reapers share this attribution.
 
 **Only opted-in tasks.** This path fires only for tasks with
 `autoCloseOnSignal` — the same population the signal path serves. An ask-first /

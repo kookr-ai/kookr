@@ -50,6 +50,12 @@ export interface GitHubPRState {
   unresolvedThreads: GitHubReviewThread[];
   totalComments: number;
   checks: GitHubCheck[];
+  /**
+   * When the PR was merged (GitHub `mergedAt`); absent while unmerged or when
+   * the fetch did not report it. Lets delivery attribution reject a PR that
+   * merged before the task existed (issue #3746).
+   */
+  mergedAt?: Date;
   lastFetchedAt: Date;
 }
 

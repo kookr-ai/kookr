@@ -37,8 +37,10 @@ import {
   buildDeliveredCompletionDigest,
   buildDeliveredCompletionNote,
   classifyDeliveredCompletion,
+  selectDeliveredMergedPr,
   type MergedPrAttribution,
 } from '../core/completion/index.js';
+import type { GitHubStateStore } from '../core/github-state-store.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 
@@ -81,6 +83,35 @@ export class DeliveredCompletionTracker {
 
 export function createDeliveredCompletionTracker(): DeliveredCompletionTracker {
   return new DeliveredCompletionTracker();
+}
+
+/**
+ * Production delivery attribution over the server's `GitHubStateStore` — the
+ * `resolveMergedPr` dep for this sweep and for the reapers that share it.
+ *
+ * Two exclusions keep a live task from being completed over someone else's PR:
+ * - PRs merely cited in the task prompt (`detectedFrom === 'prompt'`, #1560);
+ * - PRs merged before the task was created (issue #3746). The scanner records
+ *   any PR number the agent saw in its own activity (a doc, a test fixture,
+ *   `gh` output), so an old merged PR could otherwise count as this task's
+ *   delivery. A PR with no recorded `mergedAt` is not attributed either.
+ */
+export function createStoreDeliveredPrResolver(
+  store: Pick<GitHubStateStore, 'getTaskState'>,
+): (task: Pick<Task, 'id' | 'createdAt'>) => MergedPrAttribution | null {
+  return (task) =>
+    selectDeliveredMergedPr(
+      store.getTaskState(task.id).prs.map((pr) => ({
+        status: pr.status,
+        number: pr.ref.number,
+        url: pr.ref.url,
+        owner: pr.ref.owner,
+        repo: pr.ref.repo,
+        detectedFrom: pr.ref.detectedFrom,
+        ...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
+      })),
+      { notBefore: task.createdAt },
+    );
 }
 
 export interface AutoCompleteDeliveredDeps {

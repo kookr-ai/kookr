@@ -59,6 +59,23 @@ export interface TrackedPrRef {
   repo?: string;
   /** Provenance: an agent/session id for agent-authored refs, `'prompt'` otherwise. */
   detectedFrom: string;
+  /** GitHub `mergedAt`, when known (issue #3746). */
+  mergedAt?: Date;
+}
+
+/** Options for {@link selectDeliveredMergedPr}. */
+export interface SelectDeliveredMergedPrOptions {
+  /**
+   * The task's creation time (issue #3746). When given, a merged PR counts as
+   * delivery only if its `mergedAt` is known and not earlier than this — a PR
+   * merged before the task existed cannot be the task's work, however often
+   * the agent saw its number in docs, fixtures or `gh` output. A PR with no
+   * known `mergedAt` is rejected too: this attribution force-completes live
+   * tasks, so unprovable evidence must not count. Accepts an ISO string
+   * because persisted task records can surface `createdAt` that way; an
+   * unparseable value rejects every merged PR (fail closed).
+   */
+  notBefore?: Date | string;
 }
 
 /**
@@ -67,12 +84,19 @@ export interface TrackedPrRef {
  * Only PRs discovered from the **agent's activity** count as delivery —
  * prompt-referenced merged PRs are excluded, so a live task whose prompt cites
  * an already-merged PR is never force-completed (correctness review, #1560).
- * Returns the first qualifying merged PR (references are agent-authored PRs the
- * task opened during its run).
+ * With `opts.notBefore`, PRs merged before the task existed are excluded too
+ * (issue #3746). Returns the first qualifying merged PR, so a stale PR listed
+ * first never masks a real delivery listed after it.
  */
-export function selectDeliveredMergedPr(prs: readonly TrackedPrRef[]): MergedPrAttribution | null {
+export function selectDeliveredMergedPr(
+  prs: readonly TrackedPrRef[],
+  opts: SelectDeliveredMergedPrOptions = {},
+): MergedPrAttribution | null {
+  const notBeforeMs = opts.notBefore === undefined ? undefined : toEpochMs(opts.notBefore);
   const merged = prs.find(
-    (pr) => pr.status === 'merged' && pr.detectedFrom !== PROMPT_DETECTED_FROM,
+    (pr) => pr.status === 'merged'
+      && pr.detectedFrom !== PROMPT_DETECTED_FROM
+      && (notBeforeMs === undefined || mergedNotBefore(pr.mergedAt, notBeforeMs)),
   );
   if (!merged) return null;
   return {
@@ -81,6 +105,16 @@ export function selectDeliveredMergedPr(prs: readonly TrackedPrRef[]): MergedPrA
     ...(merged.owner ? { owner: merged.owner } : {}),
     ...(merged.repo ? { repo: merged.repo } : {}),
   };
+}
+
+function toEpochMs(value: Date | string): number {
+  return value instanceof Date ? value.getTime() : Date.parse(value);
+}
+
+/** True only when `mergedAt` is known and at or after `notBeforeMs` (NaN → false). */
+function mergedNotBefore(mergedAt: Date | undefined, notBeforeMs: number): boolean {
+  if (!(mergedAt instanceof Date)) return false;
+  return mergedAt.getTime() >= notBeforeMs;
 }
 
 /**
