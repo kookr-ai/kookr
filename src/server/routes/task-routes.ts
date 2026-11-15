@@ -758,8 +758,12 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         playbook?: unknown;
       };
 
-      if (!body.prompt || typeof body.prompt !== 'string') {
-        return c.json({ error: 'prompt is required and must be a string' }, 400);
+      // #3644: a playbook launch may omit the prompt — a playbook without a
+      // `prompt` parameter is launched from its parameterValues alone.
+      if (body.playbook === undefined || body.prompt !== undefined) {
+        if (!body.prompt || typeof body.prompt !== 'string') {
+          return c.json({ error: 'prompt is required and must be a string' }, 400);
+        }
       }
       if (!body.cwd || typeof body.cwd !== 'string') {
         return c.json({ error: 'cwd is required and must be a string' }, 400);
@@ -770,21 +774,30 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (body.modelTier !== undefined && (body.model !== undefined || body.effort !== undefined)) {
         return c.json({ error: 'modelTier cannot be combined with model or effort pins', code: 'model_tier_conflict' }, 400);
       }
-      let playbookWrapper: { path: string; scope?: PlaybookScope } | undefined;
+      let playbookWrapper: {
+        path: string;
+        scope?: PlaybookScope;
+        parameterValues: Record<string, string>;
+      } | undefined;
       if (body.playbook !== undefined) {
         if (typeof body.playbook !== 'object' || body.playbook === null || Array.isArray(body.playbook)) {
           return c.json({ error: 'playbook must be an object with path and optional scope' }, 400);
         }
-        const raw = body.playbook as { path?: unknown; scope?: unknown };
+        const raw = body.playbook as { path?: unknown; scope?: unknown; parameterValues?: unknown };
         if (typeof raw.path !== 'string' || raw.path.trim().length === 0) {
           return c.json({ error: 'playbook.path must be a non-empty string' }, 400);
         }
         if (raw.scope !== undefined && raw.scope !== 'project' && raw.scope !== 'user' && raw.scope !== 'plugin') {
           return c.json({ error: 'playbook.scope must be project, user, or plugin' }, 400);
         }
+        const parameterValues = parsePlaybookParameterValues(raw.parameterValues);
+        if (parameterValues instanceof Error) {
+          return c.json({ error: parameterValues.message }, 400);
+        }
         playbookWrapper = {
           path: raw.path.trim(),
           ...(raw.scope === undefined ? {} : { scope: raw.scope }),
+          parameterValues,
         };
       }
       if (body.parentTaskId !== undefined) {
@@ -877,17 +890,38 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
             taskTargetCwdExplicit: true,
             playbookPath: playbookWrapper.path,
             scope: playbookWrapper.scope,
-            parameterValues: { prompt: body.prompt },
+            parameterValues: {
+              ...playbookWrapper.parameterValues,
+              ...(body.prompt === undefined ? {} : { prompt: body.prompt }),
+            },
             agentType,
           });
-          const promptParameter = preparedPlaybook.playbook.parameters.find(
-            (parameter) => parameter.name === 'prompt',
-          );
-          if (!promptParameter?.required) {
-            return c.json({ error: 'Prompt-wrapper playbook must declare a required prompt parameter' }, 400);
+          const declared = preparedPlaybook.playbook.parameters.map((parameter) => parameter.name);
+          const declaredList = declared.length > 0 ? declared.join(', ') : '(none)';
+          const unknown = Object.keys(playbookWrapper.parameterValues).filter((name) => !declared.includes(name));
+          if (unknown.length > 0) {
+            return c.json({
+              error: `Playbook ${playbookWrapper.path} does not declare parameter(s): ${unknown.join(', ')}. `
+                + `Declared parameters: ${declaredList}.`,
+            }, 400);
           }
-          if (!preparedPlaybook.playbook.body.includes('{{prompt}}')) {
-            return c.json({ error: 'Prompt-wrapper playbook body must contain {{prompt}}' }, 400);
+          if (body.prompt !== undefined) {
+            // Prompt-wrapper mode: the prompt must land in the task, never be
+            // silently dropped by a playbook that has nowhere to put it.
+            const promptParameter = preparedPlaybook.playbook.parameters.find(
+              (parameter) => parameter.name === 'prompt',
+            );
+            if (!promptParameter?.required) {
+              return c.json({
+                error: `Prompt-wrapper playbook must declare a required prompt parameter; `
+                  + `${playbookWrapper.path} does not. To launch it, omit the prompt and pass its parameters `
+                  + `(kookr spawn --playbook ${playbookWrapper.path} --param name=value; `
+                  + `API: playbook.parameterValues). Declared parameters: ${declaredList}.`,
+              }, 400);
+            }
+            if (!preparedPlaybook.playbook.body.includes('{{prompt}}')) {
+              return c.json({ error: 'Prompt-wrapper playbook body must contain {{prompt}}' }, 400);
+            }
           }
           if (body.idempotencyKey === undefined) {
             return c.json({ error: 'playbook launches require idempotencyKey' }, 400);
@@ -902,9 +936,19 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       // field — lift it so the task is named that instead of the payload's
       // opening brace. Ordinary prose prompts return undefined and are
       // unaffected; a set name skips AI naming (see LaunchOpts.name).
-      const embeddedName = preparedPlaybook ? undefined : extractEmbeddedTaskName(body.prompt);
+      let baseLaunchOpts: NonNullable<typeof preparedPlaybook>['launchOpts'];
+      if (preparedPlaybook) {
+        baseLaunchOpts = preparedPlaybook.launchOpts;
+      } else if (typeof body.prompt === 'string') {
+        baseLaunchOpts = { prompt: body.prompt, cwd: body.cwd };
+      } else {
+        // Backstop for the prompt guard at the top of this handler (and the
+        // type narrowing): a launch without a playbook must carry a prompt.
+        return c.json({ error: 'prompt is required and must be a string' }, 400);
+      }
+      const embeddedName = preparedPlaybook ? undefined : extractEmbeddedTaskName(baseLaunchOpts.prompt);
       const launchOpts = {
-        ...(preparedPlaybook?.launchOpts ?? { prompt: body.prompt, cwd: body.cwd }),
+        ...baseLaunchOpts,
         name: preparedPlaybook?.launchOpts.name ?? embeddedName,
         criteria: preparedPlaybook?.launchOpts.criteria ?? body.criteria,
         parentTaskId: body.parentTaskId,
@@ -2066,6 +2110,32 @@ function parseTaskMetadataIntent(raw: unknown): TaskMetadataIntent | undefined |
   if (intent === undefined) return undefined;
   if (intent === 'keep_as_duplicate') return intent;
   return new Error('metadata.intent must be "keep_as_duplicate"');
+}
+
+/**
+ * #3644: `playbook.parameterValues` — the named playbook parameters
+ * (`kookr spawn --param key=value`). `prompt` is reserved for the top-level
+ * prompt field so a wrapper launch has exactly one source for it.
+ */
+function parsePlaybookParameterValues(raw: unknown): Record<string, string> | Error {
+  if (raw === undefined) return {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return new Error('playbook.parameterValues must be an object of strings');
+  }
+  const values: Record<string, string> = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (name.trim() === '') {
+      return new Error('playbook.parameterValues keys must be non-empty');
+    }
+    if (name === 'prompt') {
+      return new Error('playbook.parameterValues must not contain prompt; send it as the top-level prompt field');
+    }
+    if (typeof value !== 'string') {
+      return new Error(`playbook.parameterValues.${name} must be a string`);
+    }
+    values[name] = value;
+  }
+  return values;
 }
 
 function parseLaunchDependencies(value: unknown): LaunchDependency[] | undefined {

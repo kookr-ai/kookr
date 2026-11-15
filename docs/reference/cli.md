@@ -77,13 +77,14 @@ Options:
 | `--criteria` | text | unset | Acceptance criteria sent with the task request. This value is argv-exposed; use prompt files or stdin for hook-sensitive text. |
 | `--dedupe` | `warn`, `block`, or `skip` | `warn` | Active duplicate-prompt handling. `warn` prompts interactively and blocks in non-interactive shells, `block` exits with code 5, and `skip` creates the task intentionally while suppressing duplicate-cluster findings. |
 | `--idempotency-key` | opaque string, ≤200 chars | unset | Retry key (issue #1526). Re-running `kookr spawn` with the SAME key replays the earlier launch outcome instead of launching a second task. A replayed active-prompt duplicate repeats the warning and confirmation flow. |
-| `--auto-idempotency` / `--no-auto-idempotency` | none | off (env-controlled) | When no `--idempotency-key` is given, derive one (`auto-<hash>`) from prompt, cwd, criteria, agent, effort, model, model tier, playbook path, and playbook scope. A client-timeout retry replays only when all inputs are unchanged (bounded by the server's configured rolling idempotency TTL, 24h by default — no calendar component). If any input can change between retries, pass an explicit `--idempotency-key` that encodes the logical intent instead. Also enabled by `KOOKR_SPAWN_AUTO_IDEMPOTENCY=1`; `--no-auto-idempotency` forces it off. No effect under `--dedupe=skip`; an explicit `--idempotency-key` always wins. |
+| `--auto-idempotency` / `--no-auto-idempotency` | none | off (env-controlled) | When no `--idempotency-key` is given, derive one (`auto-<hash>`) from prompt, cwd, criteria, agent, effort, model, model tier, playbook path, playbook scope, and `--param` values (in any order). A client-timeout retry replays only when all inputs are unchanged (bounded by the server's configured rolling idempotency TTL, 24h by default — no calendar component). If any input can change between retries, pass an explicit `--idempotency-key` that encodes the logical intent instead. Also enabled by `KOOKR_SPAWN_AUTO_IDEMPOTENCY=1`; `--no-auto-idempotency` forces it off. No effect under `--dedupe=skip`; an explicit `--idempotency-key` always wins. |
 | `--wait` | optional seconds via `--wait=<seconds>` | false | Poll until the spawned task raises `completion-ready` or reaches a terminal state. |
 | `--parent-task-id` | task id | `KOOKR_TASK_ID` when set | Explicit parent task to link in the dashboard. Mutually exclusive with `--no-parent-task`. |
 | `--no-parent-task` | none | false | Launch detached and ignore `KOOKR_TASK_ID`. Mutually exclusive with `--parent-task-id`. |
 | `--unattended` | none | false | Mark the task autonomous: the spawned agent's settings deny interactive tools (`AskUserQuestion` and equivalents) so a blocking call fails fast and flags the task **operator-needed** instead of hanging with nobody to answer (issue #1562). |
-| `--playbook` | playbook path | unset | Wrap the resolved prompt with a playbook before launch. The playbook must declare a required `prompt` parameter and use `{{prompt}}` in its body. Kookr reads delivery policy from the playbook's metadata rather than accepting a client-side delivery toggle. Requires either `--idempotency-key` or auto-idempotency so an ambiguous launch can be reconciled safely. |
+| `--playbook` | playbook path | unset | Launch a playbook. If you give a prompt, the playbook must declare a required `prompt` parameter and use `{{prompt}}` in its body, and the prompt is placed there. A playbook without a `prompt` parameter, such as `implement-github-issue.md`, takes no prompt: pass its parameters with `--param`. With `--playbook`, an empty stdin counts as no prompt. Kookr reads delivery policy from the playbook's metadata rather than accepting a client-side delivery toggle. Requires either `--idempotency-key` or auto-idempotency so an ambiguous launch can be reconciled safely. |
 | `--playbook-scope` | `project`, `user`, or `plugin` | `project` | Select the playbook collection searched by `--playbook`: the current project's `.kookr/playbooks`, the user's playbooks, or the installed plugin. Requires `--playbook`. |
+| `--param` | `key=value` | unset | Set one playbook parameter; repeat the flag for several. The value is everything after the first `=`, so it may contain `=`. Sent as `playbook.parameterValues`. Kookr rejects a key the playbook does not declare and names any required parameter that is missing. `prompt` is not accepted as a key: give the prompt as an argument, with `--prompt-file`, or on stdin. Requires `--playbook`. |
 | `-f`, `--prompt-file` | path | unset | Read the prompt from a file instead of positional argv or stdin. |
 | `--dry-run` | none | false | Validate discovery, resolve the prompt/cwd/idempotency key, run the read-only active-duplicate check, print the would-be `POST /api/tasks` body, and exit **without launching**. Exit codes match a real spawn for discovery failures and blocked duplicates (including exit 5). With `--json`, the envelope uses `code: "DRY_RUN"` on success. |
 | `-h`, `--help` | none | false | Print command help and exit. |
@@ -96,6 +97,18 @@ kookr spawn --prompt-file /tmp/phase.md \
   --playbook architecture-refactor-phase.md --playbook-scope plugin \
   --idempotency-key "chain:owner/repo:42:phase:P1" --unattended
 ```
+
+A playbook that takes parameters instead of a prompt is launched with `--param`
+and no prompt. This runs the shipped issue-delivery playbook on issue 123:
+
+```bash
+kookr spawn --playbook implement-github-issue.md --playbook-scope plugin \
+  --param issueSelector=123 --param repo=owner/repo \
+  --idempotency-key "issue:owner/repo:123" --unattended </dev/null
+```
+
+`</dev/null` matters here: without a prompt argument, `kookr spawn` reads stdin
+when it is not a terminal, so an open pipe would make it wait.
 
 Wait for readiness:
 

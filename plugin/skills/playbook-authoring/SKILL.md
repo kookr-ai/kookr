@@ -176,9 +176,12 @@ changes to the configured default without being rewritten.
 
 CLI prompt-wrapper launch example:
 
-`kookr spawn --playbook` wraps a supplied prompt; it does not launch an
-arbitrary dashboard playbook. The referenced wrapper must declare a required
-`prompt` parameter and interpolate `{{prompt}}` in its body.
+`kookr spawn --playbook` launches a playbook in one of two ways. With a prompt,
+it wraps that prompt: the playbook must declare a required `prompt` parameter
+and interpolate `{{prompt}}` in its body. With no prompt, it launches a playbook
+from its `--param key=value` values, for example
+`kookr spawn --playbook implement-github-issue.md --playbook-scope plugin --param issueSelector=123 --auto-idempotency </dev/null`.
+Kookr rejects a parameter name the playbook does not declare.
 
 ```bash
 kookr spawn --model-tier small --playbook my-wrapper.md --auto-idempotency \

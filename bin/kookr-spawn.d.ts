@@ -33,6 +33,8 @@ export interface ParsedArgs {
   unattended: boolean;
   playbook: string | null;
   playbookScope: 'project' | 'user' | 'plugin' | null;
+  /** #3644: `--param key=value` pairs; null when none were given. */
+  playbookParams: Record<string, string> | null;
   json: boolean;
   wait: boolean;
   waitTimeoutSeconds: number | null;
@@ -100,7 +102,8 @@ export const RETRY_DELAY_MS: number;
 
 export interface PostTaskArgs {
   baseUrl: string;
-  prompt: string;
+  /** null: a playbook launch with no prompt (#3644); the body omits `prompt`. */
+  prompt: string | null;
   cwd: string;
   agent: 'claude-code' | 'codex-cli' | 'grok-build' | null;
   effort?: string | null;
@@ -116,6 +119,8 @@ export interface PostTaskArgs {
   unattended?: boolean;
   playbook?: string | null;
   playbookScope?: 'project' | 'user' | 'plugin' | null;
+  /** #3644: sent as `playbook.parameterValues`. */
+  playbookParams?: Record<string, string> | null;
 }
 
 export interface TaskPayload {
@@ -209,7 +214,8 @@ export function parseWaitTimeoutSeconds(raw: string): number;
 export function defaultProbeBudgetMs(retries: number, retryDelayMs?: number): number;
 export function parseRedeployWaitMs(raw: string | undefined | null): number | null;
 export function selectProbeWaitBudget(input: SelectProbeWaitBudgetInput): ProbeWaitBudget;
-export function resolvePrompt(inputs: ResolvePromptInputs): Promise<string>;
+/** Resolves to null only with --playbook and no prompt source (or empty stdin). */
+export function resolvePrompt(inputs: ResolvePromptInputs): Promise<string | null>;
 export function resolveCwd(explicit: string | null, pwd: string): string;
 export function probeHealth(baseUrl: string, timeoutMs: number): Promise<boolean>;
 export function probeDeployStatus(

@@ -385,7 +385,7 @@ GET /api/tasks?limit=50&offset=100
 
 ### `POST /api/tasks` body fields
 
-`prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
+`prompt` (required, except for a `playbook` launch, see below) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
 `agentType`, `modelTier`, `effort`, `model`, `profile`, `issue`, `disableDedup`, `metadata`,
 `dependencies`, `autoCloseOnSignal`, `unattended`, `idempotencyKey`, and `playbook`.
 
@@ -414,20 +414,32 @@ in the commit message. `profile` and `issue` are part of the launch identity:
 the same prompt with a different profile or issue is a different task, not a
 duplicate.
 
-`playbook` (optional) wraps the supplied prompt with a parsed playbook before
-launch. Its shape is `{ "path": "phase.md", "scope": "project" }`. `path` must
-be non-empty. `scope` may be `project`, `user`, or `plugin` and defaults to
-`project`. These select `<cwd>/.kookr/playbooks`, the user's configured playbook
-directory (normally `~/.kookr/playbooks`), or the installed plugin's `playbooks`
-directory, respectively. The selected playbook must exist, parse successfully,
-declare a required parameter named `prompt`, and contain `{{prompt}}` in its
-body; Kookr interpolates the request's `prompt` at that placeholder. A missing
-or out-of-scope path returns `400` without launching a task. Kookr also returns
-`400` when the playbook is malformed or lacks the required `prompt` parameter
-or `{{prompt}}` placeholder. Wrapped launches require `idempotencyKey`, which
-makes retrying an ambiguous request resolve to the original task. Delivery
-policy is derived only from the parsed playbook metadata, so a raw client
-`deliveryMode` or
+`playbook` (optional) launches a parsed playbook. Its shape is
+`{ "path": "phase.md", "scope": "project", "parameterValues": { "name": "value" } }`.
+`path` must be non-empty. `scope` may be `project`, `user`, or `plugin` and
+defaults to `project`. These select `<cwd>/.kookr/playbooks`, the user's
+configured playbook directory (normally `~/.kookr/playbooks`), or the installed
+plugin's `playbooks` directory, respectively. `parameterValues` (optional) is an
+object of string values for the playbook's declared parameters; the
+`kookr spawn --param key=value` flag maps to it. It may not contain `prompt`.
+A playbook launch can take one of two shapes:
+
+- **With `prompt`** (a prompt wrapper). The playbook must declare a required
+  parameter named `prompt` and contain `{{prompt}}` in its body; Kookr
+  interpolates the request's `prompt` at that placeholder. Otherwise Kookr
+  returns `400`, and the error says to omit the prompt and pass the playbook's
+  parameters instead, and lists the parameters it declares.
+- **Without `prompt`**. Kookr launches the playbook from `parameterValues`
+  alone, for example `implement-github-issue.md` with
+  `{ "issueSelector": "123" }`.
+
+The selected playbook must exist and parse successfully. A missing or
+out-of-scope path, a malformed playbook, a missing required parameter (the error
+names it), or a `parameterValues` key that the playbook does not declare
+returns `400` without launching a task. Playbook launches require
+`idempotencyKey`, which makes retrying an ambiguous request resolve to the
+original task. Delivery policy is derived only from the parsed playbook
+metadata, so a raw client `deliveryMode` or
 `deliveryPolicy` field cannot grant self-advancing delivery.
 
 When a declared dependency is confirmed degraded, `POST /api/tasks` still

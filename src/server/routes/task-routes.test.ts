@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { TaskCleanupInProgressError, TaskStore } from '../../core/tasks.js';
 import { loadTasks } from '../../core/task-persistence.js';
@@ -1432,6 +1433,180 @@ parameters:
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+
+  // #3644: `kookr spawn --playbook X --param k=v` — playbook.parameterValues.
+  describe('playbook parameterValues', () => {
+    let cwd: string;
+    let taskStore: TaskStore;
+
+    beforeEach(() => {
+      cwd = mkdtempSync(join(tmpdir(), 'task-route-playbook-params-'));
+      taskStore = new TaskStore();
+      mockRouteLaunchTask(taskStore);
+      mkdirSync(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      writeFileSync(join(cwd, '.kookr', 'playbooks', 'issue.md'), `---
+name: Issue Runner
+parameters:
+  - name: issue
+    required: true
+  - name: repo
+    required: false
+---
+
+Implement issue {{issue}} in {{repo}}.
+`);
+      writeFileSync(join(cwd, '.kookr', 'playbooks', 'wrapper.md'), `---
+name: Param Wrapper
+parameters:
+  - name: prompt
+    required: true
+  - name: phase
+    required: true
+---
+
+Phase {{phase}}: {{prompt}}
+`);
+    });
+
+    afterEach(() => {
+      rmSync(cwd, { recursive: true, force: true });
+    });
+
+    const post = (body: Record<string, unknown>) => mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    test('launches the shipped implement-github-issue playbook with a parameter and no prompt', async () => {
+      const previousPluginDir = process.env.KOOKR_PLUGIN_DIR;
+      process.env.KOOKR_PLUGIN_DIR = fileURLToPath(new URL('../../../plugin', import.meta.url));
+      try {
+        const res = await post({
+          cwd,
+          playbook: {
+            path: 'implement-github-issue.md',
+            scope: 'plugin',
+            parameterValues: { issueSelector: '123' },
+          },
+          idempotencyKey: 'issue:123',
+        });
+
+        expect(res.status, await res.clone().text()).toBe(201);
+        const opts = vi.mocked(launchTask).mock.calls[0]![1];
+        expect(opts).toMatchObject({
+          playbookId: 'implement-github-issue.md',
+          idempotencyKey: 'issue:123',
+          playbookParameterValues: expect.objectContaining({ issueSelector: '123' }),
+        });
+        expect(opts.prompt).toContain('full batch implied by `123`');
+        // No declared parameter may reach the agent as a literal placeholder:
+        // omitted optional ones (repo, assignee) render empty, like the UI.
+        const declared = [...readFileSync(
+          fileURLToPath(new URL('../../../plugin/playbooks/implement-github-issue.md', import.meta.url)),
+          'utf-8',
+        ).matchAll(/^  - name: (\w+)$/gm)].map((match) => match[1]);
+        expect(declared).toEqual(expect.arrayContaining(['issueSelector', 'repo', 'assignee']));
+        for (const name of declared) {
+          expect(opts.prompt, name).not.toContain(`{{${name}}}`);
+        }
+        expect(opts.prompt).toContain('ASSIGNEE=""');
+      } finally {
+        if (previousPluginDir === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+        else process.env.KOOKR_PLUGIN_DIR = previousPluginDir;
+      }
+    });
+
+    test('merges parameterValues with the prompt of a prompt-wrapper playbook', async () => {
+      const res = await post({
+        prompt: 'ship it',
+        cwd,
+        playbook: { path: 'wrapper.md', parameterValues: { phase: 'P2' } },
+        idempotencyKey: 'wrapper:P2',
+      });
+
+      expect(res.status).toBe(201);
+      expect(vi.mocked(launchTask).mock.calls[0]![1].prompt).toContain('Phase P2: ship it');
+    });
+
+    test('names a missing required parameter', async () => {
+      const res = await post({
+        cwd,
+        playbook: { path: 'issue.md', parameterValues: { repo: 'o/r' } },
+        idempotencyKey: 'issue:missing',
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: expect.stringContaining('Required parameter "issue" is missing') });
+      expect(launchTask).not.toHaveBeenCalled();
+    });
+
+    test('rejects a parameter the playbook does not declare and lists the declared ones', async () => {
+      const res = await post({
+        cwd,
+        playbook: { path: 'issue.md', parameterValues: { issue: '7', isue: '8' } },
+        idempotencyKey: 'issue:typo',
+      });
+
+      expect(res.status).toBe(400);
+      const { error } = await res.json() as { error: string };
+      expect(error).toContain('does not declare parameter(s): isue');
+      expect(error).toContain('Declared parameters: issue, repo');
+      expect(launchTask).not.toHaveBeenCalled();
+    });
+
+    test('tells a prompt sent to a playbook without a prompt parameter how to launch it', async () => {
+      const res = await post({
+        prompt: 'This must not be discarded',
+        cwd,
+        playbook: { path: 'issue.md', parameterValues: { issue: '7' } },
+        idempotencyKey: 'issue:prompted',
+      });
+
+      expect(res.status).toBe(400);
+      const { error } = await res.json() as { error: string };
+      expect(error).toMatch(/required prompt parameter/i);
+      expect(error).toContain('omit the prompt');
+      expect(error).toContain('--param name=value');
+      expect(error).toContain('Declared parameters: issue, repo');
+      expect(launchTask).not.toHaveBeenCalled();
+    });
+
+    test('still requires a prompt when no playbook is named', async () => {
+      const res = await post({ cwd });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'prompt is required and must be a string' });
+    });
+
+    test('rejects an empty or non-string prompt on a playbook launch instead of treating it as absent', async () => {
+      for (const prompt of ['', 42, null]) {
+        vi.mocked(launchTask).mockClear();
+        const res = await post({
+          prompt,
+          cwd,
+          playbook: { path: 'wrapper.md', parameterValues: { phase: 'P1' } },
+          idempotencyKey: 'wrapper:bad-prompt',
+        });
+        expect(res.status, JSON.stringify(prompt)).toBe(400);
+        expect(await res.json()).toMatchObject({ error: 'prompt is required and must be a string' });
+        expect(launchTask).not.toHaveBeenCalled();
+      }
+    });
+
+    test('rejects malformed parameterValues before reading the playbook', async () => {
+      for (const parameterValues of [[], 'issue=7', null, { issue: 7 }, { '': 'x' }, { prompt: 'p' }]) {
+        vi.mocked(launchTask).mockClear();
+        const res = await post({
+          cwd,
+          playbook: { path: 'issue.md', parameterValues },
+          idempotencyKey: 'issue:malformed',
+        });
+        expect(res.status, JSON.stringify(parameterValues)).toBe(400);
+        expect(await res.json()).toMatchObject({ error: expect.stringMatching(/^playbook\.parameterValues/) });
+        expect(launchTask).not.toHaveBeenCalled();
+      }
+    });
   });
 
   test('preserves dependency parking metadata on an idempotent replay', async () => {
