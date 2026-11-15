@@ -39,6 +39,9 @@ export default defineConfig({
     //           (scripts/lib/vitest-serial-files.mjs). They run after `unit`
     //           finishes (groupOrder), one at a time, and a failed test is
     //           retried twice: under load they miss their timing, alone they pass.
+    //           Vitest runs projects whose pool settings differ one after the
+    //           other anyway (measured: no overlap even without groupOrder), so
+    //           this states the order rather than adding one.
     // `vitest run <file>` and `vitest related` pick the project from the path,
     // so the fast gate and the flaky re-run apply the same rules.
     projects: [
