@@ -376,9 +376,10 @@ The end reason and detail are durable on the tip and visible in the badge.
   blocked on a permission dialog is not idle, so the backstop leaves it alone;
   the dashboard's attention queue surfaces it like any blocked task. (The
   operator's install runs with bypass on.)
-- **Stop request vs crash.** A stop request is persisted on the next store
-  flush; a crash inside that window loses it, and the operator sees the chain
-  still running and can press Stop again.
+- **Stop request vs crash.** A stop request is saved to disk before it is
+  acknowledged (HTTP 200 / `kookr chain stop`), and a stop carried onto a
+  just-launched iteration is saved again. If that save fails, the failure is
+  logged and the stop stays in effect in memory until the periodic save.
 
 ## Alternatives considered
 

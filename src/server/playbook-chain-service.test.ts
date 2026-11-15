@@ -653,7 +653,8 @@ describe('launch errors that only hold a chain', () => {
     await h.service.sweep();
     const second = h.service.findTip(first.chain!.chainId)!;
     expect(second.chain!.iteration).toBe(2);
-    h.finish(second);
+    // Shorter than the log interval, so only the reset on launch makes the next hold log at once.
+    h.finish(second, 3 * 60_000);
     hold = 'project_automation';
     await h.service.sweep();
     expect(heldLines()).toHaveLength(4);
