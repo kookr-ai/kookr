@@ -145,6 +145,82 @@ describe('bin/nb.js — per-change git auto-commit (Objective C)', () => {
     expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(Number(before) + 1);
   });
 
+  test('a mutating verb that writes nothing commits nothing, even with an uncommitted edit in the store', () => {
+    // Issue #3673 item 1: the read form of `describe` and an `add`/`move` refused as a
+    // duplicate exit 0 without writing. The shim used to `git add -A` and commit anyway,
+    // sweeping an unrelated uncommitted file in under a subject such as `nb describe patcher`.
+    initRepo();
+    nb(['describe', 'patcher', 'open me when patching']);
+    nb(['add', 'patcher', 'a committed lesson']);
+    nb(['add', 'other', 'a committed lesson']); // the same text on another shelf: a move to it is a duplicate
+    const before = git(['rev-list', '--count', 'HEAD']);
+    writeFileSync(join(dir, 'stray.md'), '+1\ta hand edit nobody committed\n');
+    const noWriteCalls = [
+      ['describe', 'patcher'],
+      ['add', 'patcher', 'a committed lesson'],
+      ['move', 'patcher', 'other', 'committed'],
+    ];
+    for (const args of noWriteCalls) {
+      expect(nb(args).code, args.join(' ')).toBe(0);
+      expect(git(['rev-list', '--count', 'HEAD']), args.join(' ')).toBe(before);
+    }
+    expect(nb(['show', 'patcher']).out).toContain('a committed lesson'); // the move really was refused
+    expect(git(['status', '--porcelain'])).toBe('?? stray.md'); // still uncommitted, nothing else dirty
+  });
+
+  test('a mutation commits only the files it changed, not an unrelated uncommitted edit', () => {
+    // `git status --porcelain` lines, trimmed (git() trims the whole output) and in a fixed order.
+    const dirty = () => git(['status', '--porcelain']).split('\n').map((l) => l.trim()).sort((a, b) => a.localeCompare(b));
+    initRepo();
+    nb(['add', 'patcher', 'a committed lesson']);
+    nb(['add', 'other', 'a lesson on another shelf']);
+    const before = Number(git(['rev-list', '--count', 'HEAD']));
+    writeFileSync(join(dir, 'stray.md'), '+1\ta hand edit nobody committed\n');
+    writeFileSync(join(dir, 'other.md'), '+1\ta hand edit to another shelf\n');
+
+    expect(nb(['add', 'patcher', 'a second lesson']).code).toBe(0);
+    expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before + 1);
+    expect(git(['log', '-1', '--format=%s'])).toBe('nb add patcher');
+    expect(git(['show', '--name-only', '--format=', 'HEAD'])).toBe('patcher.md');
+    expect(dirty()).toEqual(['?? stray.md', 'M other.md']);
+
+    // A call that removes a shelf file commits the deletion.
+    expect(nb(['rm', 'patcher', 'second']).code).toBe(0);
+    expect(nb(['rm', 'patcher', 'committed']).code).toBe(0);
+    expect(git(['log', '-1', '--format=%s'])).toBe('nb rm patcher');
+    expect(dirty()).toEqual(['?? stray.md', 'M other.md']);
+  });
+
+  test('a call that deletes a shelf git never tracked still commits the shelf it changed', () => {
+    // A straggler shelf written with the auto-commit off, then emptied by `nb move`: its
+    // deletion is in the before/after comparison but cannot be staged, and must not cost
+    // the commit of the move's target.
+    initRepo();
+    nb(['add', 'other', 'a committed lesson']);
+    nb(['add', 'stray', 'a lesson about widgets'], { NB_GIT_AUTOCOMMIT: '0' });
+    const before = Number(git(['rev-list', '--count', 'HEAD']));
+    expect(nb(['move', 'stray', 'other', 'widgets']).code).toBe(0);
+    expect(existsSync(join(dir, 'stray.md'))).toBe(false);
+    expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before + 1);
+    expect(git(['log', '-1', '--format=%s'])).toBe('nb move stray');
+    expect(git(['show', '--name-only', '--format=', 'HEAD'])).toBe('other.md');
+    expect(git(['status', '--porcelain'])).toBe('');
+  });
+
+  test('a call whose only change is deleting a shelf git never tracked commits nothing', () => {
+    // Nothing the call changed can be committed, so no commit at all: falling back to
+    // committing everything would sweep the unrelated stray file in under `nb rm loose`.
+    initRepo();
+    nb(['add', 'loose', 'the only lesson'], { NB_GIT_AUTOCOMMIT: '0' });
+    writeFileSync(join(dir, 'stray.md'), '+1\ta hand edit nobody committed\n');
+    const before = git(['rev-list', '--count', 'HEAD']);
+    expect(nb(['rm', 'loose', 'only']).code).toBe(0);
+    expect(nb(['show', 'loose']).out).not.toContain('the only lesson');
+    expect(git(['rev-list', '--count', 'HEAD'])).toBe(before);
+    expect(git(['status', '--porcelain', '--', 'stray.md'])).toBe('?? stray.md');
+    expect(git(['diff', '--cached', '--name-only'])).toBe(''); // nothing left staged either
+  });
+
   test('NB_DIR with a leading ~ is committed in the directory nb writes to', () => {
     // nb 0.8.0 expands a leading `~` in NB_DIR itself. The shim used the raw value for its
     // git check, found no repository at `./~/store`, and left the change uncommitted.

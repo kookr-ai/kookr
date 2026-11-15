@@ -34,9 +34,18 @@ try {
 if (event.stop_hook_active) process.exit(0);
 
 const sid = String(event.session_id ?? event.sessionId ?? 'nosession').replace(/[^A-Za-z0-9._-]/g, '_');
+// NB_DIR with a leading `~` expanded the way agent-notebook and bin/nb.js expand it
+// (only `~` and `~/…`; `~user/…` stays as it is). Set where no shell expands it
+// (settings.json, systemd, cron), NB_DIR reaches the hook with the `~` still in it.
+function expandHomeDir(value) {
+  if (value === '~') return homedir();
+  if (value.startsWith('~/')) return join(homedir(), value.slice(2));
+  if (process.platform === 'win32' && value.startsWith('~\\')) return join(homedir(), value.slice(2));
+  return value;
+}
 const dir =
   process.env.NB_DIR && process.env.NB_DIR.trim() !== ''
-    ? process.env.NB_DIR
+    ? expandHomeDir(process.env.NB_DIR)
     : join(homedir(), '.kookr', 'notebooks');
 const sentinel = join(dir, `.retro-${sid}`);
 

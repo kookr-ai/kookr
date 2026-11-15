@@ -20,6 +20,14 @@
 set -uo pipefail
 
 NB_DIR="${NB_DIR:-${HOME}/.kookr/notebooks}"
+# A leading `~` reaches this script unexpanded when NB_DIR is set where no shell
+# expands it (cron, systemd, settings.json). Expand `~` and `~/...` to the home
+# directory, as agent-notebook and bin/nb.js do; `~user/...` stays as it is.
+# The patterns are quoted so the shell does not tilde-expand them.
+case "$NB_DIR" in
+    '~') NB_DIR="$HOME" ;;
+    '~/'*) NB_DIR="${HOME}/${NB_DIR:2}" ;;
+esac
 LOG_FILE="${NB_DIR}/.nb-backup.log"
 LOCK_FILE="/tmp/kookr-nb-backup.lock"
 TIMESTAMP="$(date -Iseconds)"

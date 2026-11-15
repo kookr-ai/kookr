@@ -13,7 +13,7 @@ import {
   runPromotion,
   tokenSet,
 } from './promote-notebook-lessons.mjs';
-import { RAW_NB, breakCommits, cleanEnv, commitAll, destroy, dirContents, fileExists, git, makeStore, readLessons, writeShelf, type Lesson } from './lib/nb-test-helpers';
+import { RAW_NB, beforeFirstMove, breakCommits, cleanEnv, commitAll, destroy, dirContents, fileExists, git, makeStore, readLessons, writeShelf, type Lesson } from './lib/nb-test-helpers';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const aliases = loadSlugAliases();
@@ -40,10 +40,12 @@ interface Opts {
   shim?: boolean;
   tag?: string;
   env?: Record<string, string>;
+  beforeMove?: () => void;
 }
 function run(dir: string, o: Opts = {}) {
   const cap = o.cap ?? 50;
-  const client = createNbClient({ dir, nb: o.shim ? undefined : RAW_NB, env: cleanEnv({ NB_MAX_LINES: String(cap), ...(o.env ?? {}) }) });
+  const raw = createNbClient({ dir, nb: o.shim ? undefined : RAW_NB, env: cleanEnv({ NB_MAX_LINES: String(cap), ...(o.env ?? {}) }) });
+  const client = o.beforeMove ? beforeFirstMove(raw, o.beforeMove) : raw;
   const lines: string[] = [];
   const result = runPromotion({
     client,
@@ -699,12 +701,19 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
   test('a move that nb fails stops the run with nb\'s message; it is not logged as a skip', () => {
     // nb 0.8.0 refuses to write a shelf that holds git merge-conflict markers, and reports that under
     // --json as an error object on stdout. The run must stop there with both copies still in place.
+    // The conflict is committed after planning (a conflict already there is refused at planning, below).
     const dir = store();
     writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
     writeShelf(dir, 'code-review@repo-two', L([5, SAME]));
-    writeFileSync(join(dir, 'code-review.md'), '<<<<<<< HEAD\n+2\tours\n=======\n+2\ttheirs\n>>>>>>> other\n');
     commitAll(dir);
-    const { result, text } = run(dir, { apply: true, shim: true });
+    const { result, text } = run(dir, {
+      apply: true,
+      shim: true,
+      beforeMove: () => {
+        writeFileSync(join(dir, 'code-review.md'), '<<<<<<< HEAD\n+2\tours\n=======\n+2\ttheirs\n>>>>>>> other\n');
+        commitAll(dir, 'a merge that kept its conflict markers');
+      },
+    });
     expect(result.ok, text).toBe(false);
     expect(result.error).toMatch(/nb move failed for .*code-review/);
     expect(result.error).toMatch(/merge-conflict marker/); // nb's own message, not a generic one
@@ -714,6 +723,18 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
     expect(readLessons(dir, 'code-review@repo-one')).toEqual([[3, SAME]]);
     expect(readLessons(dir, 'code-review@repo-two')).toEqual([[5, SAME]]);
     expect(git(dir, 'status', '--porcelain')).toBe(''); // nothing half-written
+  });
+
+  test('a shelf already holding conflict markers stops the run at planning, before any move', () => {
+    const dir = store();
+    writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
+    writeShelf(dir, 'code-review@repo-two', L([5, SAME]));
+    writeFileSync(join(dir, 'code-review.md'), '<<<<<<< HEAD\n+2\tours\n=======\n+2\ttheirs\n>>>>>>> other\n');
+    commitAll(dir);
+    expect(() => run(dir, { apply: true, shim: true })).toThrow(/merge-conflict markers in 1 shelf file\(s\): code-review/);
+    expect(readLessons(dir, 'code-review@repo-one')).toEqual([[3, SAME]]);
+    expect(readLessons(dir, 'code-review@repo-two')).toEqual([[5, SAME]]);
+    expect(git(dir, 'status', '--porcelain')).toBe('');
   });
 
   test('moving a shelf\'s last lesson leaves no file behind and nothing uncommitted', () => {

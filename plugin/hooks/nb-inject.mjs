@@ -42,6 +42,8 @@ const MAX_ROWS = 60;
 const MAX_BYTES = 8 * 1024;
 const TAIL_RESERVE = 96; // bytes kept free for the "N more" line
 const DESC_WIDTH = 80; // `nb list` bounds a description column to 80 characters
+const MAX_NAMED = 5; // shelves a store warning names before it says "and N more"
+const NAME_WIDTH = 60; // characters of one shelf name a store warning shows
 
 /**
  * Run `nb <args>` and return its trimmed stdout. A missing `nb` exits 0 silently; a
@@ -139,6 +141,47 @@ function boundIndex(text) {
   return out.join('\n');
 }
 
+/**
+ * Warning lines for the parts of the store `nb list --json` reports as unusable. Since
+ * agent-notebook 0.8.0 the listing carries two extra fields, present only when
+ * non-empty: `skipped`, the `.md` files it could not use (unreadable, or not a valid
+ * shelf name), which are missing from `rows`; and `conflicts`, the shelves holding git
+ * merge-conflict markers, which are in `rows` but whose marker lines are counted as
+ * lessons and to which every write is refused. `nb` reports both on stderr, which never
+ * reaches the agent, so the index states them. Names come from disk: control
+ * characters are shown as escapes, and each name and the number named are bounded.
+ */
+function storeWarnings(listing) {
+  const visible = (v) => {
+    const text = String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    return text.length > NAME_WIDTH ? `${text.slice(0, NAME_WIDTH - 1)}…` : text;
+  };
+  const named = (items, label) => {
+    const shown = items.slice(0, MAX_NAMED).map(label).join(', ');
+    return items.length > MAX_NAMED ? `${shown} and ${items.length - MAX_NAMED} more` : shown;
+  };
+  const skipped = Array.isArray(listing?.skipped) ? listing.skipped : [];
+  const conflicts = Array.isArray(listing?.conflicts) ? listing.conflicts : [];
+  const out = [];
+  if (skipped.length) {
+    const one = skipped.length === 1;
+    const why = (s) => (s?.code === 'INVALID_NAME' ? 'not a valid shelf name' : visible(s?.code ?? 'unreadable'));
+    out.push(
+      `WARNING: ${skipped.length} file${one ? '' : 's'} in the store could not be used and ${one ? 'is' : 'are'} missing from this index: ` +
+        `${named(skipped, (s) => `${visible(s?.shelf ?? '?')}.md (${why(s)})`)}. Run \`nb list\` to see why.`,
+    );
+  }
+  if (conflicts.length) {
+    const one = conflicts.length === 1;
+    out.push(
+      `WARNING: ${conflicts.length} shel${one ? 'f holds' : 'ves hold'} git merge-conflict markers, so some of ${one ? 'its' : 'their'} lines ` +
+        `are not lessons and every write to ${one ? 'it' : 'them'} is refused until the conflict is resolved: ` +
+        `${named(conflicts, (c) => visible(c?.shelf ?? '?'))}.`,
+    );
+  }
+  return out;
+}
+
 /** One row of the layered view, laid out like `nb list`'s own rows. */
 function renderRow(r, nameWidth, countWidth) {
   const trigger = r.desc ?? r.auto;
@@ -162,7 +205,10 @@ function layeredIndex(raw, slug) {
   const listing = JSON.parse(raw);
   const rows = listing?.rows;
   if (!Array.isArray(rows) || rows.some((r) => typeof r?.shelf !== 'string')) throw new Error('unexpected nb list --json shape');
-  if (rows.length === 0) return '';
+  const warnings = storeWarnings(listing);
+  if (rows.length === 0) {
+    return warnings.length ? [`agent-notebook notebooks — 0 of 0 in ${listing.dir ?? 'the notebook store'}`, ...warnings].join('\n') : '';
+  }
 
   const aliases = layers.loadSlugAliases();
   const mine = layers.canonicalSlug(slug, aliases);
@@ -196,8 +242,8 @@ function layeredIndex(raw, slug) {
   const globalTitle = 'Global — host-wide facts, written only by promotion:';
   const hiddenLine =
     (project.length
-      ? `${noun(hidden)} for other projects hidden (slug: ${slug}); \`nb list\` shows all`
-      : `No shelf is scoped to this project yet (slug: ${slug}); ${noun(hidden)} for other projects hidden; \`nb list\` shows all`) +
+      ? `${noun(hidden)} for other projects hidden (slug: ${slug}); \`nb list --limit 1000\` shows all`
+      : `No shelf is scoped to this project yet (slug: ${slug}); ${noun(hidden)} for other projects hidden; \`nb list --limit 1000\` shows all`) +
     (malformed ? `; ${noun(malformed)} with a malformed name skipped` : '');
   const precedence = 'Precedence: when shelves disagree, the more specific layer wins: project > domain > global.';
   const placement =
@@ -208,7 +254,7 @@ function layeredIndex(raw, slug) {
   const moreTail = `… ${rows.length} more shelves not shown: run \`nb list --limit 1000\` (or \`nb list <prefix>\`) to see them`;
   // Bytes every line that is always printed takes, plus the header and the "more" tail
   // at their longest, so the rows below can fill exactly what is left of the budget.
-  const fixed = [projectTitle, domainTitle, globalTitle, hiddenLine, precedence, placement, header, moreTail];
+  const fixed = [projectTitle, domainTitle, globalTitle, hiddenLine, precedence, placement, header, moreTail, ...warnings];
   let used = fixed.reduce((n, l) => n + Buffer.byteLength(l) + 1, 0);
 
   const projectRows = render(project);
@@ -229,7 +275,7 @@ function layeredIndex(raw, slug) {
   const domainRows = take(domain);
   const cut = domain.length + global.length - domainRows.length - globalRows.length;
 
-  const out = [`agent-notebook notebooks — ${count} of ${rows.length} in ${listing.dir ?? 'the notebook store'}`];
+  const out = [`agent-notebook notebooks — ${count} of ${rows.length} in ${listing.dir ?? 'the notebook store'}`, ...warnings];
   const section = (title, lines) => {
     if (lines.length) out.push(title, ...lines);
   };

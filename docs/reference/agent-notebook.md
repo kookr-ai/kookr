@@ -68,9 +68,13 @@ downvote it, `nb rm` it, or just edit the file.
 The notebooks directory can be a **private git repo**, exactly like
 `~/knowledge_bases`. When `~/.kookr/notebooks/.git` exists:
 
-- **Every notebook mutation commits.** `bin/nb.js` runs `git add -A && git commit`
-  after a successful `add` / `vote` / `merge` / `rm` / `split` / `move` / `describe`, so `main` carries one commit
-  per change. Reads (`show` / `stats`) never commit. Fail-open: a git error never
+- **Every notebook mutation commits.** After a successful `add` / `vote` / `merge` /
+  `rm` / `split` / `move` / `describe`, `bin/nb.js` commits the files that call
+  changed, so `main` carries one commit per change. It compares the store's files
+  before and after the call, so a call that wrote nothing (`nb describe <shelf>`
+  with no text, an `add` or `move` refused as a duplicate, a `--help` request)
+  makes no commit, and a file left uncommitted in the store is not swept into an
+  unrelated commit. Reads (`show` / `stats`) never commit. Fail-open: a git error never
   fails the `nb` call (the lesson is already on disk). Opt out with
   `NB_GIT_AUTOCOMMIT=0`.
 - **A daily job pushes.** `scripts/nb-backup.sh` (run from cron) commits any
@@ -95,9 +99,10 @@ The `.gitignore` keeps the churny usage ring, backup log, and retro sentinels ou
 of history — only the `<shelf>.md` lesson files are versioned.
 
 > **Only point `NB_DIR` at a dedicated notebooks directory.** The per-change
-> `git add -A` commits everything in `NB_DIR`; aiming it at a real source repo
-> would sweep unrelated working-tree changes into an `nb …` commit. The default
-> `~/.kookr/notebooks` is safe.
+> commit only takes the files an `nb` call changed, but the daily
+> `scripts/nb-backup.sh` runs `git add -A` and commits everything in `NB_DIR`;
+> aiming it at a real source repo would sweep unrelated working-tree changes into
+> a backup commit. The default `~/.kookr/notebooks` is safe.
 
 ## Read the analytics
 
@@ -141,7 +146,7 @@ that runs its `.mjs`) run for every session:
     is set, the hook runs `nb list --json --limit 1000` and prints this repo's
     shelves first, then the domain shelves, then `fleet-global`. Shelves of other
     repos are not listed; a line such as `22 shelves for other projects hidden
-    (slug: kookr-ai-kookr); nb list shows all` is always printed (it also says so
+    (slug: kookr-ai-kookr); nb list --limit 1000 shows all` is always printed (it also says so
     plainly when this repo has no shelf yet). It then states the precedence
     (project > domain > global when shelves disagree) and the placement rule
     (the same wording as the retro nudge below). The slug is split on the **last**
@@ -149,6 +154,11 @@ that runs its `.mjs`) run for every session:
     `plugin/notebooks/slug-aliases.json` maps a legacy slug (`agent-notebook`) to
     its canonical one (`jeanibarz-agent-notebook`) so the filter is right before
     the store migration finishes.
+    When `nb list --json` reports files it could not use (`skipped`: unreadable,
+    or not a valid shelf name) or shelves holding git merge-conflict markers
+    (`conflicts`), a `WARNING:` line under the index header names them (at most
+    five each), since `nb` reports both only on stderr, which the agent never sees.
+    The flat view below does not print these warnings.
   - **Flat view.** With no `KOOKR_REPO_SLUG` (unset, empty or whitespace), with
     `KOOKR_NB_LAYERS=0` (the kill switch), if the layers module cannot be
     loaded, or if `nb list --json` answers in a shape the hook does not

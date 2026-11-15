@@ -12,16 +12,17 @@
 //   1. NB_DIR defaults to ~/.kookr/notebooks (the package default is
 //      ~/.agent-notebook/notebooks). Pinning it preserves every existing
 //      notebook, the usage ring, and the retro-hook sentinel location.
-//   2. When NB_DIR is a git repo, a successful mutating command is committed
-//      (one commit per notebook modification). A daily job pushes those commits
+//   2. When NB_DIR is a git repo, the files a successful mutating command
+//      changed are committed (one commit per notebook modification; none when the
+//      command wrote nothing). A daily job pushes those commits
 //      to the private remote — see scripts/nb-backup.sh. Fail-open: a git error
 //      never fails the `nb` call (the change is already on disk).
 
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 // Commands that write the notebook — only these are worth a git commit.
@@ -94,30 +95,86 @@ function notebooksDir() {
 }
 
 /**
- * Commit a notebook modification when NB_DIR is a git repo. Best-effort and
- * fail-open: any failure (not a repo, no identity, index lock, nothing staged)
- * is swallowed — the lesson is already written to disk, and the daily backup
- * job will pick up any straggler. Opt out with NB_GIT_AUTOCOMMIT=0.
+ * A git runner for the notebook repo `dir`. Bounded and non-interactive: a hung
+ * pre-commit hook or a credential/pinentry prompt must never wedge this inline hot
+ * path, so stdin is ignored and each call has a short timeout (on timeout
+ * execFileSync throws, and every caller is fail-open). Pathspecs are literal: the
+ * paths passed are file names read from git, never patterns.
  */
-function autoCommit(dir, argv) {
-  if (process.env.NB_GIT_AUTOCOMMIT === '0') return;
-  if (!existsSync(join(dir, '.git'))) return;
-  // Bounded + non-interactive: a hung pre-commit hook or a credential/pinentry
-  // prompt must never wedge this inline hot path. stdin is ignored and each git
-  // call has a short timeout; on timeout execFileSync throws and the catch below
-  // makes it fail-open (the lesson is already on disk; the daily job sweeps it).
-  const gitEnv = cleanGitEnv();
-  const run = (args) =>
+function gitIn(dir, extraEnv = {}) {
+  const env = { ...cleanGitEnv(), GIT_LITERAL_PATHSPECS: '1', ...extraEnv };
+  return (args) =>
     execFileSync('git', ['-C', dir, ...args], {
-      stdio: ['ignore', 'ignore', 'ignore'],
+      stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5000,
-      env: gitEnv,
+      env,
+      encoding: 'utf-8',
     });
+}
+
+/** True when the auto-commit applies to `dir`: it is a git repo and NB_GIT_AUTOCOMMIT is not 0. */
+function autoCommitEnabled(dir) {
+  return process.env.NB_GIT_AUTOCOMMIT !== '0' && existsSync(join(dir, '.git'));
+}
+
+/**
+ * The git tree id of the files in `dir` right now, ignored files left out, or null
+ * when it cannot be computed. It is built in a throwaway index, so the store's own
+ * index is never touched. Two equal ids mean no file was added, removed or changed
+ * in between.
+ */
+function workingTreeId(dir) {
+  let tmp;
   try {
+    tmp = mkdtempSync(join(tmpdir(), 'nb-index-'));
+    const run = gitIn(dir, { GIT_INDEX_FILE: join(tmp, 'index') });
     run(['add', '-A']);
+    return run(['write-tree']).trim() || null;
+  } catch {
+    return null;
+  } finally {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Commit a notebook modification when NB_DIR is a git repo. Opt out with
+ * NB_GIT_AUTOCOMMIT=0.
+ *
+ * `before` is workingTreeId(dir) taken just before the nb call. Several calls of a
+ * mutating verb write nothing: `nb describe <shelf>` with no text only prints the
+ * description, and an `add` or `move` refused as a duplicate exits 0 unchanged. So
+ * the files are compared with `before`: when nothing changed there is no commit,
+ * and otherwise only the paths that changed are committed. A file someone left
+ * uncommitted in the store is therefore never swept into a commit named after an
+ * unrelated nb call. When either tree id is unavailable, everything uncommitted is
+ * committed, as before this check existed.
+ *
+ * Best-effort and fail-open: any failure (no identity, index lock, a rejecting
+ * hook) is swallowed. The lesson is already written to disk, and the daily backup
+ * job (scripts/nb-backup.sh) commits any straggler.
+ */
+function autoCommit(dir, argv, before) {
+  if (!autoCommitEnabled(dir)) return;
+  const run = gitIn(dir);
+  try {
+    let pathspec = [];
+    const after = before ? workingTreeId(dir) : null;
+    if (before && after) {
+      if (after === before) return; // the call changed no file
+      const differ = run(['diff', '--name-only', '-z', '--no-renames', before, after]).split('\0').filter(Boolean);
+      // A path git never tracked that the call deleted (an uncommitted shelf emptied by
+      // `nb move`) has nothing to commit, and naming it would make `git add` fail and
+      // lose the whole commit. Keep the paths that are on disk or in the index.
+      const tracked = new Set(differ.length ? run(['ls-files', '-z', '--', ...differ]).split('\0') : []);
+      const changed = differ.filter((p) => tracked.has(p) || existsSync(join(dir, p)));
+      if (changed.length === 0) return;
+      pathspec = ['--', ...changed];
+    }
+    run(['add', '-A', ...pathspec]);
     // `diff --cached --quiet` exits 1 when there IS something staged.
     try {
-      run(['diff', '--cached', '--quiet']);
+      run(['diff', '--cached', '--quiet', ...pathspec]);
       return; // exit 0 → nothing staged → nothing to commit
     } catch {
       /* staged changes present — fall through to commit */
@@ -125,7 +182,8 @@ function autoCommit(dir, argv) {
     const cmd = (argv[0] ?? '').trim();
     const role = (argv[1] ?? '').trim();
     const msg = `nb ${cmd}${role ? ` ${role}` : ''}`.slice(0, 72);
-    run(['commit', '--quiet', '-m', msg]);
+    // With a pathspec, `git commit` records only those paths, whatever else is staged.
+    run(['commit', '--quiet', '-m', msg, ...pathspec]);
   } catch {
     /* fail-open: never fail an nb call because the backup commit failed */
   }
@@ -272,6 +330,9 @@ async function main() {
 
   const mod = await import(pathToFileURL(entry).href);
   const argv = process.argv.slice(2);
+  const mutating = MUTATING.has((argv[0] ?? '').trim()) && !isHelpRequest(argv);
+  // The store's files before the call, so the auto-commit can tell whether it wrote.
+  const before = mutating && autoCommitEnabled(process.env.NB_DIR) ? workingTreeId(process.env.NB_DIR) : null;
   const code = await mod.runNbCli(argv);
   process.exitCode = code;
 
@@ -282,9 +343,7 @@ async function main() {
   await adviseOnAdd(argv);
 
   // One commit per successful notebook modification (Objective C).
-  if (MUTATING.has((argv[0] ?? '').trim())) {
-    autoCommit(process.env.NB_DIR, argv);
-  }
+  if (mutating) autoCommit(process.env.NB_DIR, argv, before);
 }
 
 main().catch((e) => {

@@ -335,6 +335,15 @@ describe('parity with the real nb binary', () => {
     expect(message).toContain('esc\\u001b[31m');
     expect(message).not.toContain('\u001b');
   });
+
+  test('snapshotStore refuses a shelf holding git merge-conflict markers (0.8.0 lists it but refuses writes to it)', () => {
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv() });
+    writeShelf(dir, 'good', [[1, 'a lesson']]);
+    writeFileSync(join(dir, 'torn.md'), '<<<<<<< HEAD\n+1\tours\n=======\n+1\ttheirs\n>>>>>>> other\n');
+    expect(() => snapshotStore(client)).toThrow(/merge-conflict markers in 1 shelf file\(s\): torn; resolve the conflict/);
+  });
 });
 
 describe('nbMove result handling', () => {
