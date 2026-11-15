@@ -45,9 +45,18 @@ If the project is "Other / unknown", skip this step and state so in the output c
 
 ### 3. Tests
 
-While iterating, run targeted tests (`pnpm test:changed` or the touched files). Run the full suite once on the final head, not after every fix. After the PR exists, the independent reviewer runs concurrently with the full gate on that head (see [[independent-merge-review]], "Ordering").
+**Fast pre-push gate (check once per task).** Some repositories run only the tests related to a diff on each push and run the full suite later, on an integration branch, before anything reaches `main`. Find out which kind this repository is:
 
-Run the test command from the detected row. Must be green. New functionality should have tests. Modified behavior should have updated tests.
+```bash
+git show origin/main:.kookr/delivery-gate.json 2>/dev/null | jq -r '.prePushGate // empty' 2>/dev/null
+```
+
+- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. When the same file also names an `integrationBranch`, the merge wrapper (`pnpm merge`) retargets the PR to it; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
+- **It prints anything else, or nothing (no such file):** keep the full-suite steps below unchanged.
+
+While iterating, run targeted tests (`pnpm test:changed` or the touched files). Without a fast pre-push gate, run the full suite once on the final head, not after every fix; after the PR exists, the independent reviewer runs concurrently with the full gate on that head (see [[independent-merge-review]], "Ordering"). With one, the targeted tests are the whole test step; the push runs the fast gate.
+
+Run the test command from the detected row (with a fast pre-push gate, scoped to the related test files). Must be green. New functionality should have tests. Modified behavior should have updated tests.
 
 If the project has no test script / test suite, skip this step and state so in the output contract.
 
@@ -449,7 +458,7 @@ upstream that declares a base-branch rule.
 
 ## Waiting and test output
 
-Run the full gate with `cmd 2>&1 | tee "$LOG" | tail -40; echo
+Run the gate (the full gate, or the push in a fast-gate repository) with `cmd 2>&1 | tee "$LOG" | tail -40; echo
 "exit=${PIPESTATUS[0]}"` so the full log survives and the exit code is not
 masked by `tail`. To wait on a background job, use
 `${CLAUDE_PLUGIN_ROOT}/hooks/kookr-wait.sh --pid <PID>` or `--file "$LOG.exit"`

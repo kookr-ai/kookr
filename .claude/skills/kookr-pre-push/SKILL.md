@@ -7,7 +7,7 @@ related: pre-pr-review, kookr-post-push, kookr-pr-lifecycle, pr-review-triage, g
 
 # Pre-Push
 
-> **Requires:** the OSS extension's `[[pre-pr-review]]` skill for the review-layer step (not bundled — see `docs/hooks-setup.md`). If absent, skip the review-layer step rather than fabricating output. The repo-level `pnpm build:server`, `pnpm check:e2e`, `pnpm test`, and `pnpm test:integration` checks always run.
+> **Requires:** the OSS extension's `[[pre-pr-review]]` skill for the review-layer step (not bundled — see `docs/hooks-setup.md`). If absent, skip the review-layer step rather than fabricating output. The repo hook's checks (static checks plus the fast test gate) always run on `git push`.
 
 Use this before every non-trivial `git push` in Kookr. This skill does not replace existing checks. It sequences the checks that already exist so the branch is ready for push and for `gh pr create`.
 
@@ -42,13 +42,13 @@ Check these before you push: each one is cheaper to satisfy up front than to lea
 11. `pnpm validate:docs-commands` (`pnpm` and `kookr` commands quoted in `README.md` and `docs/` exist).
 12. `pnpm validate:rerun-bound` (the max-2 CI-rerun rule stays in the pr-lifecycle skill and implement playbooks).
 13. `pnpm validate:requirements` (requirements status matrix).
-14. `pnpm test`. Skipped for docs-only diffs. When at most five unit-test files fail, the hook re-runs only those once; a pass continues the push with a `FLAKY` notice (logged to `<git-common-dir>/kookr-flaky-tests.log`), while a second failure, an unhandled error, or a crashed worker rejects it.
-15. `pnpm test:integration` (self-contained integration tests). Skipped for docs-only diffs. Items 14 and 15 are the full gate: when `.kookr/delivery-gate.json` on `origin/main` sets `"prePushGate": "fast"`, the hook runs `bash scripts/fast-gate-tests.sh` instead, which runs only the tests related to the diff, and the integration train runs the full suite (see [integration-train](../../../docs/reference/integration-train.md)).
+14. **Tests: the fast gate.** Skipped for docs-only diffs. `.kookr/delivery-gate.json` on `origin/main` sets `"prePushGate": "fast"`, so the hook runs `bash scripts/fast-gate-tests.sh <merge-base>`: only the tests related to the diff, never the whole suite. The integration train runs the full suite later on `staging` (see [integration-train](../../../docs/reference/integration-train.md)). When at most five test files fail, they are re-run once; a pass continues the push with a `FLAKY` notice (logged to `<git-common-dir>/kookr-flaky-tests.log`), a second failure rejects it.
+15. **Tests: the full lanes, only as a fallback.** The hook runs `pnpm test` and then `pnpm test:integration` instead of item 14 only when it does not resolve to the fast gate: `.kookr/delivery-gate.json` on `origin/main` is missing or its `prePushGate` is not `"fast"`, `jq` is not installed, a file named `kookr-full-gate` exists in the git common directory (the operator's kill switch), or the branch has no merge base with `origin/main`. The push output says which one ran (`Running fast gate ...` or `Running tests...`). The same five-file flaky re-run applies to `pnpm test`.
 16. `pnpm check:faa-gate`: a change to a finishedAwaitingAck mitigation surface must cite a classified root cause (read from `KOOKR_PR_BODY`) or a reasoned bypass.
 
 A "docs-only" diff means `origin/main` exists, the diff against it is non-empty, and every changed file is an addition or modification of prose Markdown under `docs/` or a top-level `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CLA.md`, or `SECURITY.md`. A delete or rename runs the full gate.
 
-**`pnpm verify` only (not in the hook).** `pnpm verify` is the local merge gate (`pnpm merge` needs its result recorded on the PR), so these fail the merge rather than the push:
+**`pnpm verify` only (not in the hook).** The integration train runs `pnpm verify` on `staging` before anything reaches `main`. Do not run it yourself for a pull request. These checks are in it and not in the hook, so a slip here is caught by the train, which then reverts your pull request; check the ones your diff touches by hand:
 
 - `pnpm check:cycles`: no import cycles.
 - `pnpm validate:delivery-ownership` and `pnpm validate:parent-fallback`: orchestration rehearsals.
@@ -78,7 +78,7 @@ Confirm:
 For any branch that you expect to push for review or turn into a PR, run [[pre-pr-review]] before `git push`.
 
 In this repo, that means:
-- Run the repo's type-check and test lanes: `pnpm build:server`, `pnpm check:e2e`, `pnpm test`, `pnpm test:integration`
+- Run the targeted tests for the files you touched (`pnpm exec vitest run <files>`), plus any `pnpm verify`-only check from the list above that your diff touches. Do not run the full `pnpm test` or `pnpm verify`: the push runs the fast gate and the integration train runs the full suite.
 - Run the reviewer specialists for non-trivial changes
 - Fix blocking findings before proceeding
 - Create the PR gate state file only after the mandatory checks pass
@@ -130,7 +130,7 @@ Before you tell the user "push succeeded", "looks good", or "open a PR", report 
 
 - `pre-pr-review`: run / skipped, with reason
 - reviewer specialists: run / skipped, with reason
-- repo pre-push hook: passed / failed
+- repo pre-push hook: passed / failed, and whether it ran the fast gate (and how many related test files) or the full lanes
 - branch state: pushed / needs another push
 - next step: create PR / run `[[kookr-post-push]]` / fix blockers
 
@@ -165,4 +165,4 @@ These checks live here (not in the global PR gate) because they apply **before**
 
 - `[[pre-pr-review]]` is the enforced pre-PR gate and the place where the reviewer specialists live
 - `.hooks/pre-push` is the enforced push-time verification
-- `[[kookr-post-push]]` starts after the branch is on GitHub and continues through PR follow-through, including the `pnpm merge <PR>` wrapper that substitutes for `gh pr merge --auto` on this repo (issue #29)
+- `[[kookr-post-push]]` starts after the branch is on GitHub and continues through PR follow-through, including the `pnpm merge <PR>` wrapper that retargets the PR to `staging` and merges it there (issue #29, #3788)

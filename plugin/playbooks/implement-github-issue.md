@@ -504,16 +504,25 @@ If the worktree path already exists or the branch is checked out elsewhere, the 
 
 ## Phase 6: Verify
 
+**Fast pre-push gate (check once per task).** Some repositories run only the tests related to a diff on each push and run the full suite later, on an integration branch, before anything reaches `main`. Find out which kind this repository is:
+
+```bash
+git show origin/main:.kookr/delivery-gate.json 2>/dev/null | jq -r '.prePushGate // empty' 2>/dev/null
+```
+
+- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. When the same file also names an `integrationBranch`, the merge wrapper (`pnpm merge`) retargets the PR to it; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
+- **It prints anything else, or nothing (no such file):** keep the full-suite steps below unchanged.
+
 Run the project's standard verification commands:
 
 1. **Type-check** (if TypeScript): `npx tsc --noEmit` or the project's type-check script
 2. **Lint**: run the project's lint command if one exists
-3. **Tests**: run the full test suite, or at minimum the tests related to changed files
+3. **Tests**: with a fast pre-push gate, the tests related to changed files only; otherwise the full test suite, or at minimum the tests related to changed files
 4. **Build**: verify the project builds successfully
 
 Fix any failures before proceeding.
 
-Before pushing or creating a PR, run the repo delivery pre-push workflow (`kookr-pre-push` when available). For Kookr itself, this includes the mandatory focused checks for changed files plus `pnpm build:server`, `pnpm check:e2e`, and `pnpm test`, reviewer specialists for non-trivial changes, and the SHA-bound `.review-state/<branch-key>.json` marker. Do not stop after verification to ask whether to push when this playbook already pre-authorized delivery.
+Before pushing or creating a PR, run the repo delivery pre-push workflow (`kookr-pre-push` when available). In a repository with that workflow (Kookr itself, for example), this includes the targeted tests for changed files (plus the full suite only when the repository has no fast pre-push gate, see above), reviewer specialists for non-trivial changes, and the SHA-bound `.review-state/<branch-key>.json` marker. Do not stop after verification to ask whether to push when this playbook already pre-authorized delivery.
 
 ### Resolving conflicts when you sync the base branch into the PR
 
@@ -664,14 +673,16 @@ If `{{mergeAfterImplementation}}` is `true`:
    - **`never-executed`** — the checks never ran (billing/quota). This is non-blocking only when `{{ignoreBudgetCiFailures}}` is `true` (the default — see the CLAUDE.md CI policy). Before merging you MUST run the repo's local gate and record the evidence on the PR as the audit trail that replaces CI:
 
      ```bash
-     pnpm verify   # or the repo's documented local gate; capture the pass/fail + test counts
+     # The repo's local gate: with a fast pre-push gate (Phase 6), the fast-gate result of the
+     # push plus your targeted tests; otherwise `pnpm verify` or the repo's documented full gate.
+     # Capture the pass/fail + test counts.
      HEAD_SHA=$(gh pr view <PR_NUMBER> --repo "$REPO" --json commits --jq '.commits[-1].oid')
      # The comment MUST carry the `<!-- kookr-local-gate -->` marker AND a
      # `local-gate-head-sha:` line equal to the current head — that head binding is
      # what `pnpm merge` checks (see below). A plain-prose comment is NOT accepted.
      gh pr comment <PR_NUMBER> --repo "$REPO" --body "$(printf '%s\n' \
        '<!-- kookr-local-gate -->' \
-       'Local gate (CI never executed — billing/quota): `pnpm verify` passed — <N> tests. Recorded per CLAUDE.md CI policy.' \
+       'Local gate (CI never executed — billing/quota): <the gate you ran, e.g. fast gate + targeted tests, or `pnpm verify`> passed — <N> tests. Recorded per CLAUDE.md CI policy.' \
        "local-gate-head-sha: ${HEAD_SHA}")"
      gh label create local-verified --repo "$REPO" --color 0e8a16 --description "Merged on local-gate evidence because CI never executed" 2>/dev/null || true
      gh pr edit <PR_NUMBER> --repo "$REPO" --add-label local-verified
@@ -697,6 +708,8 @@ If `{{mergeAfterImplementation}}` is `true`:
    ```bash
    pnpm merge <PR_NUMBER> --repo "$REPO"
    ```
+
+   With a fast pre-push gate and an integration branch (Phase 6), `pnpm merge` retargets the PR to the integration branch and merges it there. That merge is the terminal state for this task: the linked issue stays open until the integration train promotes the change to `main`, so do not wait for it to close or treat it as a missed auto-close.
 
    For other repositories, use the repository's expected merge command, for example:
 

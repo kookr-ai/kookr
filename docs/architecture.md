@@ -787,6 +787,56 @@ kookr/
 >
 > **Design note:** Anomaly detection patterns are implemented as pure functions in `anomaly-detector.ts` rather than as SKILL.md files. The SKILL.md approach (community-contributable, discoverable patterns) remains a valid V2 direction, but V1 keeps detection logic co-located with its tests for simplicity.
 
+## Delivery pipeline: fast gate, integration branch, train
+
+How a change gets from a task's worktree to `main` in this repository. GitHub
+Actions is disabled (see the CI policy in `CLAUDE.md`), so every step runs on
+the operator's machine. One tracked file, `.kookr/delivery-gate.json` on
+`origin/main`, switches the pipeline on: `"prePushGate": "fast"` selects the
+fast gate and `"integrationBranch": "staging"` names the integration branch
+(read by `scripts/lib/delivery-gate.sh`). Without the file everything falls back
+to the full suite on every push and merges straight into `main`.
+
+1. **Branch.** A task cuts its worktree from `origin/main`, which only ever
+   holds commits the train verified.
+2. **Fast gate per push.** `.hooks/pre-push` runs the static checks
+   (type-checks, validators) and only the tests related to the diff
+   (`scripts/fast-gate-tests.sh`, selection in `scripts/fast-gate-select.mjs`).
+   A push never runs the full suite. A file named `kookr-full-gate` in the git
+   common directory forces the full lanes in every worktree at once.
+3. **Review and merge.** An independent reviewer posts a verdict bound to the
+   exact head. `pnpm merge <PR>` retargets the pull request from `main` to
+   `staging` and squash-merges it there. Nobody pushes to `main` or `staging`
+   directly.
+4. **Integration train.** A plain script (not an AI agent) runs the full
+   `pnpm verify` on the head of `staging` and fast-forwards `main` to the exact
+   commit it verified. This is the only authoritative full run. The verify runs
+   with `KOOKR_VERIFY_FLAKY_RERUN=1`: when at most five test files fail, they are
+   re-run once; a pass counts as green and is logged as a flake, a second failure
+   is red. It then closes
+   the issues linked to the promoted pull requests; an issue does not close
+   when its pull request merges into `staging`.
+5. **Revert and fix task.** When the full run fails, the train bisects the
+   commits between `main` and `staging`, reverts the offending pull request on
+   `staging`, reopens its issue with the failing output, and spawns one task to
+   fix and re-land it. When it cannot tell which change is at fault, it halts and
+   notifies the operator instead of guessing.
+
+**Rollback.** To turn off only the fast gate, run
+`touch "$(git rev-parse --git-common-dir)/kookr-full-gate"`: every worktree of
+the clone runs the full pre-push lanes again, with no commit. To turn off
+everything, delete `.kookr/delivery-gate.json` on `main` and run
+`pnpm train:stop`. While the file is on `main`, `pnpm merge` retargets every
+pull request aimed at `main` to `staging`, including the one that deletes the
+file, so if the train is halted that pull request cannot reach `main` that way.
+Then either push the deletion to `main` directly, or run
+`kookr merge <n> --repo kookr-ai/kookr` from a directory that is not a Kookr
+checkout, which skips the retarget. After a full rollback, commits still on
+`staging` and pull requests already retargeted to `staging` must be moved by
+hand.
+
+Reference: [`docs/reference/integration-train.md`](reference/integration-train.md).
+
 ## Redeploy resilience
 
 Production-style deploy (`pnpm prod:update` / `pnpm prod:restart`) still uses

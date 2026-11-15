@@ -347,6 +347,17 @@ Kookr can hand a bounded, read-only analysis job to a sandboxed Hermes worker an
 | F18.4 | **Restart-safe** | A write-ahead record lets Kookr re-attach to, or truthfully fail, every unfinished job after a restart. A corrupt store disables delegation with an error naming the file rather than reading as empty. |
 | F18.5 | **Bounded and fail-closed** | Per-worker and global caps, distinct per-worker tokens (the shared default token is refused), loopback-or-allow-listed worker URLs, and untrusted-by-default treatment of everything the worker returns. |
 
+### F19: Delivery pipeline (fast gate, integration branch, integration train)
+
+Pull requests merge quickly while `main` stays fully verified. A push runs only the checks and tests the diff needs; the full suite runs once, on the integration branch, before anything reaches `main`. Configured by `.kookr/delivery-gate.json` on `origin/main`; without that file the full suite runs on every push and pull requests merge into `main` as before. Reference: [`docs/reference/integration-train.md`](reference/integration-train.md).
+
+| ID | Feature | Description |
+|----|---------|-------------|
+| F19.1 | **Fast pre-push gate** | With `"prePushGate": "fast"`, `.hooks/pre-push` runs the static checks plus only the tests related to the diff (`scripts/fast-gate-tests.sh`). A `kookr-full-gate` file in the git common directory forces the full lanes again. |
+| F19.2 | **Integration branch** | With `"integrationBranch": "staging"`, `pnpm merge <PR>` retargets a pull request aimed at `main` to `staging` and squash-merges it there. Linked issues stay open until the change reaches `main`. |
+| F19.3 | **Integration train** | `pnpm train:start` runs a loop that verifies the head of `staging` with the full `pnpm verify` and fast-forwards `main` to the exact commit it verified, then closes the linked issues. When at most five test files fail, the verify re-runs them once (`KOOKR_VERIFY_FLAKY_RERUN`) before calling the head red. `pnpm train:status` and `pnpm train:logs` show what it did. |
+| F19.4 | **Revert and fix task** | When the full run fails, the train finds the offending pull request by bisecting, reverts it on `staging`, reopens its issue with the failing output, and spawns one task to fix and re-land it. It halts and notifies the operator instead when the culprit is unclear. |
+
 ### Local voice dictation
 
 When speech-to-text is enabled, microphone buttons in task launch, quick launch,
