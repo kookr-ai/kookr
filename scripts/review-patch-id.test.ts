@@ -271,6 +271,33 @@ describe('review-patch-id.sh --pr', () => {
     expect(bad.stderr).toContain('not the expected head');
   });
 
+  it('names the commits by SHA, so a concurrent fetch that replaces FETCH_HEAD changes nothing', () => {
+    const { repo, stub } = setup();
+    // An unrelated branch on origin: whatever a second fetch brings in.
+    git(repo, 'checkout', '-q', '-b', 'decoy', 'main');
+    commitFile(repo, 'decoy.txt', 'not the PR\n');
+    git(repo, 'push', '-q', 'origin', 'decoy');
+    git(repo, 'checkout', '-q', 'feature');
+    // A `git` shim: after each fetch, another fetch in the same worktree
+    // overwrites FETCH_HEAD with the decoy.
+    const realGit = spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+    const shim = mkdtempSync(join(tmpdir(), 'review-patch-id-git-'));
+    dirs.push(shim);
+    writeFileSync(join(shim, 'git'), [
+      '#!/usr/bin/env bash',
+      `"${realGit}" "$@"; status=$?`,
+      `if [ "$1" = fetch ] && [ "$status" -eq 0 ]; then "${realGit}" fetch -q origin refs/heads/decoy; fi`,
+      'exit "$status"',
+      '',
+    ].join('\n'));
+    chmodSync(join(shim, 'git'), 0o755);
+    const head = git(repo, 'rev-parse', 'feature');
+
+    const r = run(repo, ['--pr', '7', '--expect-head', head], { PATH: `${shim}:${stub}:${process.env.PATH}` });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toBe(run(repo, ['main', 'feature']).stdout);
+  });
+
   it('--expect-head is rejected without --pr', () => {
     expect(run(makeRepo(), ['main', '--expect-head', 'a'.repeat(40)]).status).toBe(2);
   });

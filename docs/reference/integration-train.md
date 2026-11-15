@@ -31,7 +31,10 @@ configured gate.
    integration branch and push it (`reconciled`). The next cycle verifies it.
 5. Verify the integration head. Green: fast-forward `main` to it (`promoted`).
    If that push is rejected because `main` moved, nothing else happens and the
-   next cycle starts over (`retry`).
+   next cycle starts over (`retry`). A push (to `main` or to the integration
+   branch) that is rejected three cycles in a row halts the train
+   (`push-rejected`): retrying will not get past branch protection or lost
+   credentials.
 6. Red: verify the same head once more. Green now means a flake: promote it and
    record it in `flakyHeads`.
 7. Still red: verify `main` itself, every time, even if the train verified that
@@ -50,6 +53,8 @@ configured gate.
    pushed to the integration branch and the same commit is promoted to `main`
    in the same cycle (it is verified and contains `main`). If that promotion push
    is rejected the outcome is still `reverted` and the next cycle promotes it.
+   A revert that changes nothing (the culprit was already undone) is never
+   verified or pushed: the train halts (`revert-not-sufficient`).
    The train's revert commits carry the trailer `Kookr-Integration-Train: revert`,
    which is how a later cycle tells them from a revert a person made.
 10. After a pushed revert, the linked issues of the reverted PR are reopened with
@@ -77,20 +82,26 @@ guess in these cases:
 | `revert-not-sufficient` | The suspected culprit was reverted locally but the result still fails verify: another change is failing too, or the culprit was already fixed. The revert is discarded and nothing is pushed. The detail names the suspected culprit. |
 | `multiple-failures` | Rare. A revert the train pushed earlier was not promoted yet (its promotion push was rejected) and now fails verify itself, or is the red head. |
 | `revert-conflict` | Reverting the culprit conflicts with later commits. |
-| `reconcile-conflict` | Merging `main` into the integration branch conflicts. |
-| `train-error` | Something unexpected failed inside a cycle, such as `git commit` with no committer identity. The message is in the detail. Halting stops the train from re-running every verify each interval with nobody told. |
+| `reconcile-conflict` | Merging `main` into the integration branch conflicts (the merge left unmerged paths). |
+| `push-rejected` | A push to `main` or to the integration branch was rejected three cycles in a row (branch protection, credentials). The detail has git's message. |
+| `train-error` | Something unexpected failed inside a cycle, such as `git commit` or the reconcile merge with no committer identity, or `git rev-parse`, `git rev-list` or the reconcile checkout failing. The message is in the detail. Halting stops the train from re-running every verify each interval with nobody told. When the refs themselves cannot be resolved, the halt is announced once and later failing cycles stay quiet; it clears by itself once git works again. |
 
 ## Notifications
 
 Each event the train raises (`halted`, `reverted`, `fix-budget-exhausted`,
-`fix-spawn-failed`) is appended to `events.jsonl` and sent to the operator signal
-outbox with `kookr signal-emit transition --source integration-train`. That
-command only delivers when the status changes between `ok` and `alert`, so the
-train first reports `ok` and then `alert` with the event as detail: every event
-becomes an alert, even the first one ever. A later cycle that is `idle`,
-`promoted` or `reconciled` reports `ok` once more, which delivers the
-"recovered" signal after a problem is cleared. A halt that is still standing does
-not notify again.
+`fix-spawn-failed`) is appended to `events.jsonl` and written to the operator
+signal outbox (`KOOKR_OPERATOR_SIGNAL_DIR`, default
+`~/.kookr/playbook-state/operator-signals`) as an `alert` signal with source
+`integration-train`, title `integration train: <event>` and the event's detail.
+Every event gets its own file (key `integration-train:<event>:<time>-<pid>-<n>`),
+so two events of the same cycle, for example `fix-spawn-failed` and `reverted`,
+are both delivered.
+
+After an alert, the first cycle that is `idle`, `promoted` or `reconciled`
+writes one `clear` signal, "integration train recovered". It is written once per
+problem (`state.json` keeps an `alerting` flag), never while a halt stands, and
+not on an ordinary idle cycle. A halt that is still standing does not notify
+again.
 
 After each promotion the train closes the still-open issues linked to the PRs
 that reached `main` (GitHub does not do it for merges into a non-default
@@ -98,8 +109,15 @@ branch). Linked issues are found from two places, because GitHub reports no
 closing references for a PR that targets a non-default branch: the PR's own
 closing references, and the closing keywords in the PR body (`close`, `fix`,
 `resolve` and their `-s`/`-d` forms, case-insensitive, then `#<number>`). Only
-issues of the same repository count; `owner/repo#n` references and URLs are
-ignored. A PR the train reverted reaches `main` together with its revert; its
+the body's prose counts: fenced code blocks, inline code, HTML comments and
+quoted lines (`>`) are ignored, so a quoted commit list such as
+`fix: resolve #77 crash` closes nothing. Numbers longer than 9 digits are
+ignored. Only issues of the same repository count; `owner/repo#n` references
+and URLs are ignored. Each number is looked up with the REST issue endpoint
+(`gh api repos/{owner}/{repo}/issues/<n>`), and a number that is a pull request
+(the answer has a `pull_request` field) is never closed, reopened or commented
+on. `pnpm merge` reads the body with the same rules (`body_closing_numbers` in
+`scripts/kookr-merge.sh`). A PR the train reverted reaches `main` together with its revert; its
 issue stays open. All train pushes use `--no-verify`, because the repo's pre-push hook
 needs a reviewer marker and runs tests; the train's own verify replaces it.
 
@@ -117,10 +135,13 @@ Options: `--worktree <path>` (default: a sibling of the launching checkout, `<re
 `--verify-cmd "<cmd>"` (default `pnpm verify`), `--workers <n>` (sets
 `KOOKR_VITEST_MAX_WORKERS`).
 
+The verify also runs with `KOOKR_VERIFY_FLAKY_RERUN=1`, so `scripts/verify.sh` applies the pre-push hook's flaky policy to the unit lane: when at most five test files fail they are re-run once, a pass continues and is logged to `<git common dir>/kookr-flaky-tests.log`, and a second failure is a red result.
+
 ## State files
 
 Under `${KOOKR_DIR:-~/.kookr}/integration-train/`: `state.json` (halt, green
-SHAs, flaky heads, fix-task counts), `train.log`, `train.pid`, `train.lock`
+SHAs, flaky heads, fix-task counts, whether an alert awaits its recovery signal,
+consecutive rejected pushes), `train.log`, `train.pid`, `train.lock`
 (one instance only; a second `cycle` or `run` exits quietly), `events.jsonl`
 (notifications), `verify-<sha>.log` (20 newest kept), and
 `<idempotency key>.prompt.md` (the prompt handed to a spawned fix task). The state
@@ -149,6 +170,8 @@ on purpose, because pruning and disk-reclaim jobs operate there.
   integration branch.
 - `revert-not-sufficient`, `multiple-failures`: more than one change is failing;
   fix the integration branch by hand (the detail names the suspected culprit).
+- `push-rejected`: read git's message in the detail, fix the cause (branch
+  protection for the train's pushes, credentials), then `pnpm train:resume`.
 - `train-error`: read the detail and `train.log`, fix the cause (for example the
   git committer identity), then `pnpm train:resume`.
 

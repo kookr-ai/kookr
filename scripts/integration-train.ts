@@ -15,6 +15,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { gitExecEnv } from '../src/core/git-helpers.js';
+import { defaultOperatorSignalDir, writeOperatorSignal } from '../src/observability/signal-delivery/operator-signal.js';
 import {
   type ClosingIssue,
   type GitResult,
@@ -312,7 +313,11 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     if (!checkout.ok) return { ok: false, infra: true, tail: `checkout failed: ${checkout.stderr}` };
     // Same environment a developer's `pnpm verify` gets, plus the worker count:
     // no CI flag, so the train checks exactly what the local gate used to.
-    const env: NodeJS.ProcessEnv = { ...gitExecEnv(), KOOKR_VITEST_MAX_WORKERS: String(opts.workers) };
+    // KOOKR_VERIFY_FLAKY_RERUN: scripts/verify.sh then applies the pre-push
+    // hook's flaky policy to the unit lane (a few failed files are re-run once).
+    const env: NodeJS.ProcessEnv = {
+      ...gitExecEnv(), KOOKR_VITEST_MAX_WORKERS: String(opts.workers), KOOKR_VERIFY_FLAKY_RERUN: '1',
+    };
 
     const lockHash = (() => {
       try { return createHash('sha256').update(readFileSync(join(wt, 'pnpm-lock.yaml'))).digest('hex'); } catch { return ''; }
@@ -386,9 +391,16 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
       const issues: ClosingIssue[] = [];
       for (const n of [...numbers].sort((a, b) => a - b)) {
         try {
-          const view = JSON.parse(await gh(['issue', 'view', String(n), '--json', 'state'])) as { state: string };
-          issues.push({ number: n, state: view.state.toUpperCase() === 'OPEN' ? 'open' : 'closed' });
-        } catch { /* not an issue we can read (a pull request number, a typo): skip it */ }
+          // The REST issue endpoint answers for pull requests too and marks
+          // them with a `pull_request` field. The train must never close,
+          // reopen or comment on a pull request, so those are dropped.
+          const view = JSON.parse(await gh(['api', `repos/{owner}/{repo}/issues/${n}`])) as {
+            state?: string; pull_request?: unknown;
+          };
+          if (view.pull_request !== undefined && view.pull_request !== null) continue;
+          if (typeof view.state !== 'string') continue;
+          issues.push({ number: n, state: view.state.toLowerCase() === 'open' ? 'open' : 'closed' });
+        } catch { /* not an issue we can read (a typo, no access): skip it */ }
       }
       return issues;
     },
@@ -409,26 +421,25 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     },
   };
 
-  const emitStatus = async (status: 'ok' | 'alert', detail?: string): Promise<void> => {
-    await run('kookr', [
-      'signal-emit', 'transition', '--source', 'integration-train', '--status', status,
-      ...(detail ? ['--detail', detail] : []),
-    ], root);
+  // Operator signal outbox (the delivery service pushes each new file to the
+  // operator's channels). Every event gets a file of its own: the outbox keeps
+  // one file per key, so a shared key would let a second event overwrite the
+  // first before it was delivered. The core decides when recovery is due
+  // (once, after an alert, never while halted).
+  const signalDir = defaultOperatorSignalDir(process.env);
+  let signalSeq = 0;
+  const signal = async (name: string, kind: 'alert' | 'clear', title: string, detail: string): Promise<void> => {
+    const key = `integration-train:${name}:${Date.now()}-${process.pid}-${signalSeq++}`;
+    await writeOperatorSignal(signalDir, { key, kind, source: 'integration-train', title, detail: detail.slice(0, 2000) });
   };
 
   const notifier: TrainDeps['notifier'] = {
     async notify(kind: TrainEventKind, detail: string) {
       appendFileSync(p.events, `${JSON.stringify({ at: new Date().toISOString(), kind, detail })}\n`);
-      // Best effort: surface in the operator signal outbox. `signal-emit
-      // transition` only emits when the status crosses between ok and alert, so
-      // report ok first: the alert then always crosses, even on the first cycle
-      // ever or when an earlier alert was never cleared.
-      await emitStatus('ok');
-      await emitStatus('alert', `${kind}: ${detail}`.slice(0, 500));
+      await signal(kind, 'alert', `integration train: ${kind}`, detail);
     },
     async healthy() {
-      // Delivers the "recovered" signal once an earlier alert has cleared.
-      await emitStatus('ok');
+      await signal('recovered', 'clear', 'integration train recovered', 'a healthy cycle ran after the last alert');
     },
   };
 

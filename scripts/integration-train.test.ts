@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { gitExecEnv } from '../src/core/git-helpers.js';
+import { CLOSING_KEYWORD_CASES } from './closing-keyword-cases.js';
+import { vitestMaxWorkers } from './lib/vitest-max-workers.mjs';
 import {
   type ClosingIssue,
   type CycleResult,
@@ -57,6 +59,8 @@ interface Harness {
   infra: Set<string>;
   /** When set, the next push to main is rejected (someone else moved main). */
   rejectMainPush: boolean;
+  /** Every push to these branches is rejected until the set is cleared. */
+  rejectPushesTo: Set<string>;
   issues: Map<number, ClosingIssue[]>;
   ghLog: string[];
   spawns: Array<{ idempotencyKey: string; prompt: string }>;
@@ -102,6 +106,7 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean } = {
     scripted: new Map<string, boolean[]>(),
     infra: new Set<string>(),
     rejectMainPush: false,
+    rejectPushesTo: new Set<string>(),
     issues: new Map<number, ClosingIssue[]>(),
     ghLog: [] as string[],
     spawns: [] as Array<{ idempotencyKey: string; prompt: string }>,
@@ -112,6 +117,10 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean } = {
   h.deps = {
     async git(args) {
       const push = args.find((a) => /:refs\/heads\/main$/.test(a));
+      const target = args[0] === 'push' ? /:refs\/heads\/(.+)$/.exec(args[args.length - 1])?.[1] : undefined;
+      if (target !== undefined && h.rejectPushesTo.has(target)) {
+        return { ok: false, stdout: '', stderr: `! [remote rejected] ${target} (protected branch hook declined)` };
+      }
       if (args[0] === 'push' && push && h.rejectMainPush) {
         h.rejectMainPush = false;
         return { ok: false, stdout: '', stderr: '! [rejected] (fetch first)' };
@@ -194,14 +203,19 @@ describe('helpers', () => {
   });
 
   it('reads closing keywords from a pull request body', () => {
-    expect(closingIssueNumbersFromText('Closes #1')).toEqual([1]);
-    expect(closingIssueNumbersFromText('fixed #2 and RESOLVES: #3')).toEqual([2, 3]);
     expect(closingIssueNumbersFromText('close #4\nfix #5\nresolve #6\nresolved #7\nfixes #8\nclosed #9')).toEqual([4, 5, 6, 7, 8, 9]);
-    expect(closingIssueNumbersFromText('Closes #5, fixes #5\nCloses #5')).toEqual([5]);
-    expect(closingIssueNumbersFromText('Closes other/repo#9 and Fixes https://github.com/o/r/issues/10')).toEqual([]);
-    expect(closingIssueNumbersFromText('see #12 for context')).toEqual([]);
-    expect(closingIssueNumbersFromText('this prefixes #3 and unfixes #4')).toEqual([]);
-    expect(closingIssueNumbersFromText('')).toEqual([]);
+  });
+
+  it.each(CLOSING_KEYWORD_CASES)('closing keywords: $name', ({ body, closes }) => {
+    expect(closingIssueNumbersFromText(body)).toEqual(closes);
+  });
+
+  it('accepts only a positive integer as the vitest worker cap, else 4', () => {
+    expect(vitestMaxWorkers('12')).toBe(12);
+    expect(vitestMaxWorkers(' 7 ')).toBe(7);
+    for (const bad of [undefined, '', '0', '-2', '2.5', '1e3', '0x10', 'four', '+3', '99999999999999999999']) {
+      expect(vitestMaxWorkers(bad), String(bad)).toBe(4);
+    }
   });
 
   it('recognises an outdated-lockfile install failure only', () => {
@@ -379,21 +393,39 @@ describe('integration train cycle', () => {
     expect(h.state.fixTasks['ref-401']).toBe(1);
   });
 
-  it('reports healthy for idle, promoted and reconciled cycles, not for halts or reverts', async () => {
+  it('reports recovery once, on the first healthy cycle after an alert, never on a plain idle cycle', async () => {
     h = makeHarness();
     expect((await h.cycle()).outcome).toBe('idle');
-    expect(h.healthyCalls).toBe(1);
     h.commit('staging', { 'a.txt': '1' }, 'one (#1)');
     expect((await h.cycle()).outcome).toBe('promoted');
-    expect(h.healthyCalls).toBe(2);
     h.commit('main', { 'm.txt': 'm' }, 'hotfix on main');
     expect((await h.cycle()).outcome).toBe('reconciled');
-    expect(h.healthyCalls).toBe(3);
+    expect(h.healthyCalls).toBe(0); // nothing was ever wrong
+
     h.commit('staging', { 'bad.txt': 'x' }, 'bad (#2)');
     expect((await h.cycle()).outcome).toBe('reverted');
-    expect(h.healthyCalls).toBe(3);
+    expect(h.healthyCalls).toBe(0);
+    expect(h.state.alerting).toBe(true);
+    expect((await h.cycle()).outcome).toBe('idle');
+    expect(h.healthyCalls).toBe(1);
+    expect((await h.cycle()).outcome).toBe('idle');
+    expect(h.healthyCalls).toBe(1); // once, not on every idle cycle
+  });
 
-    const before = h.healthyCalls;
+  it('tries the recovery report again when it failed', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'bad.txt': 'x' }, 'bad (#2)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    h.deps.notifier.healthy = async () => { throw new Error('outbox not writable'); };
+    expect((await h.cycle()).outcome).toBe('idle');
+    expect(h.state.alerting).toBe(true);
+    h.deps.notifier.healthy = async () => { h.healthyCalls++; };
+    expect((await h.cycle()).outcome).toBe('idle');
+    expect(h.healthyCalls).toBe(1);
+    expect(h.state.alerting).toBe(false);
+  });
+
+  it('reports no recovery while halted, nor when a moved ref only leads to another halt', async () => {
     h = makeHarness();
     h.commit('main', { 'bad.txt': 'x' }, 'broken main');
     git(h.seed, 'fetch', '-q', 'origin');
@@ -403,8 +435,153 @@ describe('integration train cycle', () => {
     h.commit('staging', { 'c.txt': '1' }, 'change (#5)');
     expect((await h.cycle()).outcome).toBe('halted');
     expect((await h.cycle()).outcome).toBe('halted'); // standing halt
+    h.commit('staging', { 'd.txt': '1' }, 'another (#6)'); // the ref moves, main is still red
+    expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'base-red' });
     expect(h.healthyCalls).toBe(0);
-    expect(before).toBe(3);
+    expect(h.notes.map((n) => n.kind)).toEqual(['halted', 'halted']);
+  });
+
+  it('notifies every event of one cycle with its own detail', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'bad.txt': 'x' }, 'broken (#401)');
+    h.deps.spawner = { async spawn() { throw new Error('kookr spawn failed'); } };
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.notes.map((n) => n.kind)).toEqual(['fix-spawn-failed', 'reverted']);
+    expect(h.notes[0].detail).toContain('could not be spawned');
+    expect(h.notes[1].detail).toContain('reverted ');
+  });
+
+  it('halts push-rejected after a push to main is rejected three cycles in a row', async () => {
+    h = makeHarness();
+    const base = h.originRef('main');
+    h.commit('staging', { 'a.txt': '1' }, 'one (#111)');
+    h.rejectPushesTo.add('main');
+    expect((await h.cycle()).outcome).toBe('retry');
+    expect((await h.cycle()).outcome).toBe('retry');
+    expect(h.notes).toEqual([]);
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'push-rejected' });
+    expect(r.detail).toContain('protected branch hook declined');
+    expect(h.notes.map((n) => n.kind)).toEqual(['halted']);
+    expect(h.originRef('main')).toBe(base);
+    // a standing halt: no more verifies, no more notifications
+    const calls = h.verifyCalls.length;
+    expect((await h.cycle()).outcome).toBe('halted');
+    expect(h.verifyCalls.length).toBe(calls);
+    expect(h.notes).toHaveLength(1);
+  });
+
+  it('does not halt when a push goes through after two rejections, and starts counting again', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'a.txt': '1' }, 'one (#111)');
+    h.rejectPushesTo.add('main');
+    expect((await h.cycle()).outcome).toBe('retry');
+    expect((await h.cycle()).outcome).toBe('retry');
+    h.rejectPushesTo.clear();
+    expect((await h.cycle()).outcome).toBe('promoted');
+    expect(h.state.pushRejections).toBe(0);
+    h.commit('staging', { 'b.txt': '2' }, 'two (#112)');
+    h.rejectPushesTo.add('main');
+    expect((await h.cycle()).outcome).toBe('retry');
+    expect((await h.cycle()).outcome).toBe('retry');
+    expect(h.notes).toEqual([]);
+  });
+
+  it('halts push-rejected after a push to the integration branch is rejected three cycles in a row', async () => {
+    h = makeHarness();
+    h.commit('staging', { 's.txt': 's' }, 'staging work (#31)');
+    h.commit('main', { 'm.txt': 'm' }, 'hotfix on main');
+    h.rejectPushesTo.add('staging');
+    expect((await h.cycle()).outcome).toBe('retry');
+    expect((await h.cycle()).outcome).toBe('retry');
+    expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'push-rejected' });
+    expect(h.notes.map((n) => n.kind)).toEqual(['halted']);
+  });
+
+  it('halts train-error once, not every interval, when the refs cannot be resolved', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    const realGit = h.deps.git;
+    h.deps.git = async (args) => (args[0] === 'rev-parse'
+      ? { ok: false, stdout: '', stderr: 'fatal: bad object' }
+      : realGit(args));
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'train-error' });
+    expect(r.detail).toContain('fatal: bad object');
+    expect((await h.cycle()).outcome).toBe('halted');
+    expect(h.notes.map((n) => n.kind)).toEqual(['halted']);
+    expect(h.verifyCalls).toEqual([]);
+    // once git works again the halt (recorded with no refs) clears by itself
+    h.deps.git = realGit;
+    expect((await h.cycle()).outcome).toBe('promoted');
+  });
+
+  it('halts train-error when listing the candidate commits fails', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    const realGit = h.deps.git;
+    h.deps.git = async (args) => (args[0] === 'rev-list'
+      ? { ok: false, stdout: '', stderr: 'fatal: corrupt pack' }
+      : realGit(args));
+    expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'train-error' });
+    expect((await h.cycle()).outcome).toBe('halted');
+    expect(h.notes.map((n) => n.kind)).toEqual(['halted']);
+    expect(h.mainPushes).toEqual([]);
+  });
+
+  it('halts train-error, not reconcile-conflict, when the reconcile checkout or merge fails for another reason', async () => {
+    h = makeHarness();
+    h.commit('staging', { 's.txt': 's' }, 'staging work (#31)');
+    h.commit('main', { 'm.txt': 'm' }, 'hotfix on main');
+    const realGit = h.deps.git;
+    h.deps.git = async (args) => (args[0] === 'checkout'
+      ? { ok: false, stdout: '', stderr: 'fatal: unable to write index' }
+      : realGit(args));
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'train-error' });
+    expect(r.detail).toContain('unable to write index');
+
+    h = makeHarness();
+    const stagingHead = h.commit('staging', { 's.txt': 's' }, 'staging work (#31)');
+    h.commit('main', { 'm.txt': 'm' }, 'hotfix on main');
+    const realGit2 = h.deps.git;
+    h.deps.git = async (args) => (args[0] === 'merge' && args[1] === '--no-edit'
+      ? { ok: false, stdout: '', stderr: 'Committer identity unknown' }
+      : realGit2(args));
+    const r2 = await h.cycle();
+    expect(r2).toMatchObject({ outcome: 'halted', reason: 'train-error' });
+    expect(r2.detail).toContain('Committer identity unknown');
+    expect(h.originRef('staging')).toBe(stagingHead);
+  });
+
+  it('never verifies or pushes a revert that changes nothing', async () => {
+    h = makeHarness();
+    // X adds bad.txt, F removes it again, H is harmless but red twice (scripted).
+    // Reverting X at H changes nothing. Any commit the train creates would
+    // verify green here, so only the empty-revert guard keeps it from pushing.
+    h.commit('staging', { 'bad.txt': 'x' }, 'x (#201)');
+    h.commit('staging', { 'bad.txt': '' }, 'fix forward (#202)');
+    const head = h.commit('staging', { 'h.txt': '1' }, 'h (#203)');
+    h.scripted.set(head, [false, false]);
+    const known = new Set(git(h.seed, 'rev-list', 'origin/staging').split('\n'));
+    const realVerify = h.deps.verify;
+    h.deps.verify = async (sha) => {
+      if (!known.has(sha)) {
+        h.verifyCalls.push(sha);
+        h.greens.push(sha);
+        return { ok: true, tail: '' };
+      }
+      return realVerify(sha);
+    };
+
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'revert-not-sufficient' });
+    expect(r.detail).toContain('changes nothing');
+    expect(h.verifyCalls.filter((sha) => !known.has(sha))).toEqual([]);
+    expect(h.originRef('staging')).toBe(head);
+    expect(h.mainPushes).toEqual([]);
+    expect(h.ghLog).toEqual([]);
+    expect(h.spawns).toEqual([]);
   });
 
   it('reverts nothing when the bisected culprit passes on a confirming re-run', async () => {

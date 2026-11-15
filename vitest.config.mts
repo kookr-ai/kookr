@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { vitestMaxWorkers } from './scripts/lib/vitest-max-workers.mjs';
 
 // The pre-push hook sets this to get a run summary (failed files, unhandled
 // errors, unfinished files) so it can re-run only the failed files once to
@@ -14,7 +15,8 @@ export default defineConfig({
     // Agent suites share the host with the supervisor and desktop. Bound each
     // run rather than letting every agent allocate workers for the whole CPU.
     // The integration train (scripts/integration-train.ts) sets KOOKR_VITEST_MAX_WORKERS to use a bigger share.
-    maxWorkers: Number(process.env.KOOKR_VITEST_MAX_WORKERS) || 4,
+    // Only a positive integer is accepted; anything else keeps 4.
+    maxWorkers: vitestMaxWorkers(process.env.KOOKR_VITEST_MAX_WORKERS),
     include: ['plugin/**/*.test.mjs', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'],
     // Integration-style files run via `pnpm test:integration` /
     // `pnpm test:integration:live` (#2823). Patterns cover hyphen, dot, and e2e
