@@ -26,7 +26,7 @@
 import { randomUUID } from 'node:crypto';
 import type { LaunchOpts } from '../shared/contracts/launch.js';
 import type { TaskLaunchSource } from '../shared/contracts/task.js';
-import type { ChainEndReason, ChainSpec, TaskChainState } from '../shared/contracts/playbook-chain.js';
+import { isChainSettled, type ChainEndReason, type ChainSpec, type TaskChainState } from '../shared/contracts/playbook-chain.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { AgentEvent, Anomaly } from '../core/types.js';
 import { deriveTurnStateDetails } from '../core/turn-state.js';
@@ -54,6 +54,8 @@ import {
 } from './use-cases/playbook-launch.js';
 
 export const PLAYBOOK_CHAIN_SWEEP_INTERVAL_MS = 15_000;
+/** A chain whose next launch stays held for the same reason is logged at most this often. */
+export const CHAIN_HELD_LOG_INTERVAL_MS = 5 * 60_000;
 /**
  * How long a chain tip must sit idle at its prompt, with nothing asked, before
  * the service completes it on the agent's behalf (the idle backstop).
@@ -99,6 +101,12 @@ export interface PlaybookChainServiceDeps {
   preparePlaybookLaunch?: (input: PreparePlaybookLaunchInput) => Promise<PreparedPlaybookLaunch>;
   /** Called after any chain state change or successor launch so the dashboard refreshes. */
   onChanged?: (taskId: string) => void;
+  /**
+   * Write the task store to disk now. Called after recording a stop request
+   * (and after carrying one over to a just-launched successor), so a stop the
+   * caller was told about survives a crash before the periodic save.
+   */
+  flushTasks?: () => Promise<void>;
   now?: () => Date;
   intervalMs?: number;
   logger?: PlaybookChainLogger;
@@ -133,6 +141,13 @@ function isHoldError(err: unknown): boolean {
     || err instanceof SpawnBurstLimitError;
 }
 
+/** Stable identity of a hold, so a changing detail in its message is not a new reason. */
+function holdReason(err: unknown): string {
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === 'string') return code;
+  return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
 export class PlaybookChainService {
   private readonly now: () => Date;
   private readonly prepare: (input: PreparePlaybookLaunchInput) => Promise<PreparedPlaybookLaunch>;
@@ -142,6 +157,14 @@ export class PlaybookChainService {
   private readonly launchFailures = new Map<string, number>();
   /** Tip id → when the service first saw it idle with nothing asked. Reset on any activity. */
   private readonly idleSince = new Map<string, number>();
+  /**
+   * Chain id → the last "next iteration held" line logged for it. A hold can
+   * last hours (SAFE MODE, a long drain) and is retried on every sweep, so the
+   * line is repeated at most once per {@link CHAIN_HELD_LOG_INTERVAL_MS}, or
+   * at once when the reason (the hold error's `code`) changes. Cleared when the
+   * chain launches or ends.
+   */
+  private readonly heldLog = new Map<string, { atMs: number; reason: string; suppressed: number }>();
 
   constructor(private readonly deps: PlaybookChainServiceDeps) {
     this.now = deps.now ?? (() => new Date());
@@ -203,7 +226,7 @@ export class PlaybookChainService {
    * Ask the chain containing `taskId` to stop after its current iteration.
    * Any member's id is accepted; the request lands on the chain's tip.
    */
-  stopChain(taskId: string, by: 'operator' | 'agent', reason?: string): StopChainResult {
+  async stopChain(taskId: string, by: 'operator' | 'agent', reason?: string): Promise<StopChainResult> {
     const member = this.deps.taskStore.getTask(taskId);
     if (!member) return { ok: false, status: 404, error: `Task not found: ${taskId}` };
     if (!member.chain) return { ok: false, status: 409, error: `Task ${taskId} is not part of a playbook chain` };
@@ -212,7 +235,11 @@ export class PlaybookChainService {
     if (tip.chain.ended) {
       return { ok: false, status: 409, error: `Chain already ended (${tip.chain.ended.reason})` };
     }
-    if (tip.chain.stopRequest) return { ok: true, tip, alreadyRequested: true };
+    if (tip.chain.stopRequest) {
+      // An earlier request may still be waiting for its save.
+      await this.flushStop(tip.chain.chainId);
+      return { ok: true, tip, alreadyRequested: true };
+    }
     const trimmed = reason?.trim().slice(0, 500);
     const updated = this.deps.taskStore.updateChain(tip.id, (chain) => ({
       ...chain,
@@ -222,7 +249,23 @@ export class PlaybookChainService {
       `[playbook-chain] stop requested for chain ${tip.chain.chainId} by ${by} at iteration ${tip.chain.iteration}${trimmed ? `: ${trimmed}` : ''}`,
     );
     this.deps.onChanged?.(tip.id);
+    await this.flushStop(tip.chain.chainId);
     return { ok: true, tip: updated ?? tip, alreadyRequested: false };
+  }
+
+  /**
+   * Save a recorded stop request before acknowledging it. A failed save is
+   * logged, not reported: the stop is already in effect in memory and the
+   * periodic save retries it.
+   */
+  private async flushStop(chainId: string): Promise<void> {
+    try {
+      await this.deps.flushTasks?.();
+    } catch (err) {
+      this.deps.logger?.warn?.(
+        `[playbook-chain] chain ${chainId}: stop request recorded but not yet saved: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /** Every member of a chain, oldest first. */
@@ -270,12 +313,12 @@ export class PlaybookChainService {
       const current = tips.get(task.chain.chainId);
       if (!current || task.chain.iteration > current.chain!.iteration) tips.set(task.chain.chainId, task);
     }
-    return [...tips.values()].filter((tip) => !tip.chain!.ended && !tip.chain!.successorTaskId);
+    return [...tips.values()].filter((tip) => !isChainSettled(tip.chain!));
   }
 
   private async advance(tipRef: Task): Promise<void> {
     const tip = this.deps.taskStore.getTask(tipRef.id);
-    if (!tip?.chain || tip.chain.ended || tip.chain.successorTaskId) return;
+    if (!tip?.chain || isChainSettled(tip.chain)) return;
     const decision = decideChainStep({
       status: tip.status,
       chain: tip.chain,
@@ -303,7 +346,8 @@ export class PlaybookChainService {
     const existing = this.deps.taskStore.viewTasks().find((task) =>
       task.chain?.chainId === tip.chain!.chainId && task.chain.iteration === decision.next.iteration);
     if (existing) {
-      this.linkSuccessor(tip.id, existing.id);
+      this.heldLog.delete(tip.chain.chainId);
+      await this.linkSuccessor(tip.id, existing.id);
       return;
     }
 
@@ -311,7 +355,8 @@ export class PlaybookChainService {
     try {
       const result = await this.launchSuccessor(tip, decision.next);
       this.launchFailures.delete(chainId);
-      this.linkSuccessor(tip.id, result.task.id);
+      this.heldLog.delete(chainId);
+      await this.linkSuccessor(tip.id, result.task.id);
       this.deps.logger?.info?.(
         `[playbook-chain] chain ${chainId}: launched iteration ${decision.next.iteration} as task ${result.task.id}`
         + `${result.queued ? ' (queued)' : ''}`,
@@ -320,7 +365,7 @@ export class PlaybookChainService {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (isHoldError(err)) {
-        this.deps.logger?.info?.(`[playbook-chain] chain ${chainId}: next iteration held (${message}); will retry`);
+        this.logHeld(chainId, holdReason(err), message);
         return;
       }
       // The launcher created the task before failing: it is now the tip and
@@ -328,7 +373,7 @@ export class PlaybookChainService {
       const created = this.deps.taskStore.viewTasks().find((task) =>
         task.chain?.chainId === chainId && task.chain.iteration === decision.next.iteration);
       if (created) {
-        this.linkSuccessor(tip.id, created.id);
+        await this.linkSuccessor(tip.id, created.id);
         this.deps.logger?.warn?.(`[playbook-chain] chain ${chainId}: iteration ${decision.next.iteration} failed to start: ${message}`);
         return;
       }
@@ -447,17 +492,38 @@ export class PlaybookChainService {
   /**
    * Record that `predecessorId` advanced to `successorId`. A stop request that
    * landed on the predecessor while the successor was being launched is
-   * carried over, so it is never lost whichever way the launch went.
+   * carried over, so it is never lost whichever way the launch went. The copy
+   * is saved at once: the launch already saved the successor without it, and
+   * after a crash the successor is the tip.
    */
-  private linkSuccessor(predecessorId: string, successorId: string): void {
+  private async linkSuccessor(predecessorId: string, successorId: string): Promise<void> {
     this.deps.taskStore.updateChain(predecessorId, (chain) => ({ ...chain, successorTaskId: successorId }));
     const stopRequest = this.deps.taskStore.getTask(predecessorId)?.chain?.stopRequest;
     if (stopRequest && !this.deps.taskStore.getTask(successorId)?.chain?.stopRequest) {
       this.deps.taskStore.updateChain(successorId, (chain) => ({ ...chain, stopRequest }));
+      const chainId = this.deps.taskStore.getTask(successorId)?.chain?.chainId ?? successorId;
+      await this.flushStop(chainId);
     }
   }
 
+  /** Log a held successor launch, rate-limited per chain (see {@link heldLog}). */
+  private logHeld(chainId: string, reason: string, message: string): void {
+    const nowMs = this.now().getTime();
+    const last = this.heldLog.get(chainId);
+    const sameReason = last?.reason === reason;
+    if (last && sameReason && nowMs - last.atMs < CHAIN_HELD_LOG_INTERVAL_MS) {
+      last.suppressed++;
+      return;
+    }
+    const repeats = last && sameReason && last.suppressed > 0
+      ? `; held on ${last.suppressed} more checks since the last report`
+      : '';
+    this.heldLog.set(chainId, { atMs: nowMs, reason, suppressed: 0 });
+    this.deps.logger?.info?.(`[playbook-chain] chain ${chainId}: next iteration held (${message})${repeats}; will retry`);
+  }
+
   private endChain(tip: Task, reason: ChainEndReason, detail?: string): void {
+    if (tip.chain) this.heldLog.delete(tip.chain.chainId);
     this.deps.taskStore.updateChain(tip.id, (chain) => ({
       ...chain,
       ended: { at: this.now().toISOString(), reason, ...(detail ? { detail } : {}) },

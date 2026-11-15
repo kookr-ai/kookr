@@ -80,6 +80,16 @@ describe('selectPrunableTasks', () => {
       expect(selectPrunableTasks(store.listTasks(), cutoff)).toEqual([]);
     });
 
+    it('prunes a chain whose newest remaining member links a successor that was deleted by hand', () => {
+      // The chain service treats a member with a successor as settled and never
+      // advances it, so no `ended` marker is ever written; keeping it would keep
+      // the chain forever.
+      const store = new TaskStore();
+      const first = seedTask(store, { session: 'c1', finishedAt: AGED });
+      first.chain = { chainId: first.id, iteration: 1, maxIterations: 3, startedAt: AGED.toISOString(), unhealthyStreak: 0, successorTaskId: 'deleted-task' };
+      expect(selectPrunableTasks(store.listTasks(), cutoff).map((t) => t.id)).toEqual([first.id]);
+    });
+
     it('keeps an aged ended tip while an earlier iteration is still recent, so the chain never loses its end marker', () => {
       const store = new TaskStore();
       const first = seedTask(store, { session: 'c1', finishedAt: RECENT });

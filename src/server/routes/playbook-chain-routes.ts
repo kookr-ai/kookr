@@ -119,7 +119,7 @@ export function registerPlaybookChainRoutes(app: Hono, deps: PlaybookChainRouteD
     if (body.by !== undefined && body.by !== 'operator' && body.by !== 'agent') {
       return c.json({ error: 'by must be operator or agent' }, 400);
     }
-    const result = service.stopChain(
+    const result = await service.stopChain(
       c.req.param('id'),
       body.by === 'agent' ? 'agent' : 'operator',
       typeof body.reason === 'string' ? body.reason : undefined,
