@@ -684,9 +684,11 @@ describe('runPrChecklistCli scaffold + title', () => {
     expect(await runPrChecklistCli(['scaffold', '--title', 'Add x'], { out: out(), cwd: '/repo', ...repo({ commitlint: true, config }) }))
       .toBe(EXIT_PASS);
     const body = '- [x] <!-- kookr:check:tests --> Tests added\n- [ ] ~~<!-- kookr:check:mbse --> docs~~ — CLI-only';
+    const v = out();
     expect(await runPrChecklistCli(['verify', '--title', 'Add x', '--pr-body', '-'], {
-      out: out(), cwd: '/repo', ...repo({ commitlint: true, config }), readStdin: async () => body,
+      out: v, cwd: '/repo', ...repo({ commitlint: true, config }), readStdin: async () => body,
     })).toBe(EXIT_PASS);
+    expect(stdout(v)).not.toMatch(/PR title/); // disabled means no check, not even the warning
   });
 
   it('scaffold leaves a disabled row as the template wrote it and says so', async () => {

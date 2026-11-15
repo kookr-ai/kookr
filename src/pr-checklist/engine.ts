@@ -160,7 +160,12 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
   const envFileText = needsEnv ? await readTracked(runner, read, deps.cwd, '.env.example', MAX_ENV_FILE_BYTES) : '';
   const testCorpus = needsTests ? await readTestCorpus(runner, read, deps.cwd) : '';
 
-  const commitlint = typeof deps.title === 'string' ? await readCommitlintConfig(runner, read, deps.cwd) : null;
+  // A repo that disables `pr-title` gets no title check at all — no warning
+  // note either (the disable filter below only removes results).
+  const commitlint =
+    typeof deps.title === 'string' && !config.disable.has('pr-title')
+      ? await readCommitlintConfig(runner, read, deps.cwd)
+      : null;
 
   return verifyChecklist({
     body: deps.body,
