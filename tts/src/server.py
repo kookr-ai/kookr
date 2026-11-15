@@ -1,6 +1,7 @@
 
 import os
 import io
+import math
 import re
 import base64
 import logging
@@ -37,8 +38,9 @@ DEFAULT_KOKORO_SPEED = 0.88
 
 
 def read_kokoro_speed() -> float:
-    """A value that is not a positive number falls back to the default: raising here
-    would stop the whole service from starting, Pocket TTS voices included."""
+    """A value that is not a finite positive number (nan and inf included) falls back
+    to the default: raising here would stop the whole service from starting, Pocket TTS
+    voices included."""
     raw = os.environ.get("TTS_KOKORO_SPEED", "").strip()
     if not raw:
         return DEFAULT_KOKORO_SPEED
@@ -46,7 +48,7 @@ def read_kokoro_speed() -> float:
         speed = float(raw)
     except ValueError:
         speed = 0.0
-    if speed <= 0:
+    if not math.isfinite(speed) or speed <= 0:
         logger.warning(f"Ignoring TTS_KOKORO_SPEED={raw!r}; using {DEFAULT_KOKORO_SPEED}")
         return DEFAULT_KOKORO_SPEED
     return speed
@@ -100,7 +102,7 @@ def load_model():
 
         logger.info(f"Loading Pocket TTS Model (temp={temperature}, steps={lsd_steps})")
         
-        model = TTSModel.load_model(
+        loaded = TTSModel.load_model(
             temp=temperature,
             lsd_decode_steps=lsd_steps,
             eos_threshold=eos_threshold,
@@ -109,8 +111,12 @@ def load_model():
         
         if torch.cuda.is_available():
             logger.info("Moving model to CUDA")
-            model = model.cuda()
-            
+            loaded = loaded.cuda()
+
+        # Publish the model only once it is on its final device: ensure_pocket_model
+        # reads the global without the lock, so a request arriving mid-move would
+        # otherwise use a half-moved model.
+        model = loaded
         logger.info(f"Model loaded on {model.device}")
     except Exception as e:
         logger.critical(f"Failed to load model: {e}")
