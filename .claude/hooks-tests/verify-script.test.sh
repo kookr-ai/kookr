@@ -130,3 +130,47 @@ if [ "$(tail -n 1 "$TMPDIR/integration-failure.log")" != test:integration ]; the
   exit 1
 fi
 printf 'PASS: verify.sh stops on the integration lane failure\n'
+
+# --- Train mode (#3794) -------------------------------------------------------
+# KOOKR_VERIFY_FLAKY_RERUN=1 (the integration train) runs independent lanes at
+# the same time. It must still run exactly the lanes a plain verify runs, give
+# tests the longer train timeout, and fail on any lane's failure.
+cat > "$TMPDIR/bin/pnpm" <<'PNPM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$PNPM_LOG"
+if [ "$1" = "test" ]; then printf '%s\n' "${KOOKR_VITEST_TEST_TIMEOUT_MS:-unset}" > "$PNPM_LOG.timeout"; fi
+if [ "$*" = "${PNPM_FAIL_LANE:-}" ]; then echo "lane-output-of-$*"; exit 42; fi
+exit 0
+PNPM
+chmod +x "$TMPDIR/bin/pnpm"
+
+PNPM_LOG="$TMPDIR/train.log" KOOKR_VERIFY_FLAKY_RERUN=1 PATH="$TMPDIR/bin:$PATH" \
+  bash "$VERIFY_SCRIPT" >/dev/null
+if ! diff <(awk '{print $1}' "$TMPDIR/train.log" | sort) <(sort "$TMPDIR/verify-lanes") >/dev/null; then
+  printf 'FAIL: train-mode verify does not run the same lanes as a plain verify\n' >&2
+  diff <(awk '{print $1}' "$TMPDIR/train.log" | sort) <(sort "$TMPDIR/verify-lanes") >&2 || true
+  exit 1
+fi
+if [ "$(cat "$TMPDIR/train.log.timeout")" != 60000 ]; then
+  printf 'FAIL: train-mode verify did not give the unit suite the 60 s test timeout\n' >&2
+  exit 1
+fi
+printf 'PASS: train-mode verify runs the same lanes, with the train timeout\n'
+
+status=0
+out=$(PNPM_LOG="$TMPDIR/train-failure.log" PNPM_FAIL_LANE=test:hooks KOOKR_VERIFY_FLAKY_RERUN=1 \
+  PATH="$TMPDIR/bin:$PATH" bash "$VERIFY_SCRIPT" 2>&1) || status=$?
+if [ "$status" -ne 42 ]; then
+  printf 'FAIL: train-mode verify did not propagate a concurrent lane failure (status=%s)\n' "$status" >&2
+  exit 1
+fi
+if grep -Fxq 'test:integration' "$TMPDIR/train-failure.log"; then
+  printf 'FAIL: train-mode verify went on to later lanes after a concurrent lane failed\n' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$out" | tail -n 3 | grep -Fq 'lane-output-of-test:hooks'; then
+  printf 'FAIL: train-mode verify did not print the failing lane output last\n' >&2
+  printf '%s\n' "$out" | tail -n 10 >&2
+  exit 1
+fi
+printf 'PASS: train-mode verify fails on a concurrent lane failure and prints it last\n'
