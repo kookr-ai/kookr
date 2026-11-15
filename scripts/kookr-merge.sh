@@ -750,24 +750,44 @@ unclosed_issues() {
 # `owner/repo#N` and URLs never match: the keyword must be followed by `#`.
 # Only the prose counts, as in `prBodyProse` in
 # scripts/lib/integration-train-core.ts (both are tested on one table of
-# bodies): fenced code blocks, quoted lines (`>`) and inline code are removed,
-# then HTML comments (an unclosed fence or comment runs to the end), so a quoted
+# bodies): fenced code blocks at any indentation, indented code blocks, quoted
+# lines (`>`) with their continuation lines and inline code (which may wrap onto
+# the next line) are removed, then HTML comments and `<pre>` blocks (an unclosed
+# fence, comment or `<pre>` runs to the end), so a quoted
 # commit list such as `fix: resolve #77 crash` closes nothing and a `<!--`
 # written as code hides nothing. Numbers longer than 9 digits are ignored.
 body_closing_numbers() {
   jq -r '
     (.body // "")
-    | reduce (split("\n")[] | sub("\r\\z"; "")) as $line ({fence: null, out: []};
-        ([$line | capture("^ {0,3}(?<m>`{3,}|~{3,})")] | first | .m?) as $marker
+    | reduce (split("\n")[] | sub("\r\\z"; "")) as $line (
+        {fence: null, out: [], prevBlank: true, code: false, quote: false, list: false};
+        ([$line | capture("^\\s*(?<m>`{3,}|~{3,})")] | first | .m?) as $marker
+        | ($line | test("^\\s*\\z")) as $blank
+        | ($line | test("^( {4}|\t)")) as $indented
         | if .fence != null then
             if $marker != null and ($marker[0:1] == .fence[0:1]) and (($marker | length) >= (.fence | length))
-               and ($line | test("^ {0,3}[`~]+\\s*\\z")) then .fence = null else . end
-          elif $marker != null then .fence = $marker
-          elif ($line | test("^\\s*>")) then .
-          else .out += [$line | gsub("(`+)[\\s\\S]*?\\1"; " ")]
+               and ($line | test("^\\s*[`~]+\\s*\\z")) then .fence = null | .prevBlank = true else . end
+          elif .code and ($blank or $indented) then .prevBlank = $blank
+          else
+            .code = false
+            | if $marker != null then .fence = $marker | .quote = false
+              elif $blank then .prevBlank = true | .quote = false | .out += [$line]
+              elif $indented and .prevBlank and (.list | not) then .code = true | .prevBlank = false
+              elif ($line | test("^\\s*>")) then .quote = true | .prevBlank = false
+              else
+                ($line | test("^\\s*(?:[-*+]|[0-9]{1,9}[.)])\\s")) as $item
+                | .prevBlank = false
+                | if .quote and ($item | not) and ($line | test("^\\s{0,3}#{1,6}(\\s|\\z)") | not) then .
+                  else .quote = false
+                    | (if $item then .list = true elif ($indented | not) then .list = false else . end)
+                    | .out += [$line]
+                  end
+              end
           end)
     | .out | join("\n")
+    | gsub("(`+)(?:(?!\n[ \t]*\n)[\\s\\S])*?\\1"; " ")
     | gsub("<!--[\\s\\S]*?(?:-->|\\z)"; " ")
+    | gsub("(?i)<pre(?:\\s[^>]*)?>[\\s\\S]*?(?:</pre\\s*>|\\z)"; " ")
     | [scan("(?i)(?<![A-Za-z0-9_])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s*:?\\s+#([0-9]{1,9})(?![0-9A-Za-z_])") | .[0]]
     | map(tonumber | select(. > 0)) | reduce .[] as $n ([]; if index([$n]) then . else . + [$n] end) | .[]' 2>/dev/null
 }

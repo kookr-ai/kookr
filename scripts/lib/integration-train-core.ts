@@ -182,10 +182,13 @@ export function firstReferenceFromSubject(subject: string): number | null {
 
 /**
  * The prose of a pull request body: what is left after removing everything a
- * reader does not see as a sentence of the author's. Fenced code blocks (an
- * unclosed one runs to the end), quoted lines (`>`) and inline code spans are
- * removed first, then HTML comments (an unclosed one runs to the end). Code
- * goes first so that a `<!--` written as code does not hide the rest. A body that
+ * reader does not see as a sentence of the author's. Fenced code blocks at any
+ * indentation (an unclosed one runs to the end), indented code blocks (4+
+ * spaces after a blank line, outside a list), quoted lines (`>`) with the
+ * lines that continue them, and inline code spans (which may wrap onto the
+ * next line) are removed first, then HTML comments and `<pre>` blocks (an
+ * unclosed one runs to the end). Code goes first so that a `<!--` written as
+ * code does not hide the rest. A body that
  * quotes a commit list such as `fix: resolve #77 crash` inside a code block
  * then closes nothing. `body_closing_numbers` in scripts/kookr-merge.sh applies
  * the same rules; the two are tested against one table of bodies.
@@ -193,24 +196,66 @@ export function firstReferenceFromSubject(subject: string): number | null {
 export function prBodyProse(text: string): string {
   const kept: string[] = [];
   let fence: string | null = null;
+  let prevBlank = true; // the start of the body counts as after a blank line
+  let indentedCode = false;
+  let quote = false;
+  let list = false;
   for (const raw of text.split('\n')) {
     const line = raw.replace(/\r$/, '');
-    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
+    // Any indentation: a fence inside a nested list item is indented 4+ spaces.
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1] ?? null;
+    const blank = line.trim() === '';
+    const indented = /^( {4}|\t)/.test(line);
     if (fence !== null) {
       // A closing fence: the same character, at least as long, nothing after it.
-      if (marker !== null && marker[0] === fence[0] && marker.length >= fence.length && /^ {0,3}[`~]+\s*$/.test(line)) {
+      if (marker !== null && marker[0] === fence[0] && marker.length >= fence.length && /^\s*[`~]+\s*$/.test(line)) {
         fence = null;
+        prevBlank = true;
       }
       continue;
     }
-    if (marker !== null) {
-      fence = marker;
+    if (indentedCode && (blank || indented)) {
+      prevBlank = blank;
       continue;
     }
-    if (/^\s*>/.test(line)) continue;
-    kept.push(line.replace(/(`+)[\s\S]*?\1/g, ' '));
+    indentedCode = false;
+    if (marker !== null) {
+      fence = marker;
+      quote = false;
+      continue;
+    }
+    if (blank) {
+      prevBlank = true;
+      quote = false;
+      kept.push(line);
+      continue;
+    }
+    // An indented code block starts after a blank line, outside a list (where
+    // indentation continues the list item instead).
+    if (indented && prevBlank && !list) {
+      indentedCode = true;
+      prevBlank = false;
+      continue;
+    }
+    prevBlank = false;
+    if (/^\s*>/.test(line)) {
+      quote = true;
+      continue;
+    }
+    const item = /^\s*(?:[-*+]|\d{1,9}[.)])\s/.test(line);
+    // A line right after a quoted line continues the quote ("lazy"
+    // continuation) unless it starts a list item or a heading.
+    if (quote && !item && !/^\s{0,3}#{1,6}(\s|$)/.test(line)) continue;
+    quote = false;
+    if (item) list = true;
+    else if (!indented) list = false;
+    kept.push(line);
   }
-  return kept.join('\n').replace(/<!--[\s\S]*?(?:-->|$)/g, ' ');
+  return kept.join('\n')
+    // Inline code may wrap onto the next line, but never across a blank line.
+    .replace(/(`+)(?:(?!\n[ \t]*\n)[\s\S])*?\1/g, ' ')
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, ' ')
+    .replace(/<pre(?:\s[^>]*)?>[\s\S]*?(?:<\/pre\s*>|$)/gi, ' ');
 }
 
 /**
