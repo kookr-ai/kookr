@@ -227,6 +227,11 @@ kookr merge <PR_NUMBER> --repo kookr-ai/kookr   # from the PR's own worktree:
 gh pr view <PR_NUMBER> --repo kookr-ai/kookr --json baseRefName --jq .baseRefName   # expect: staging
 ```
 
+If `kookr merge` exits 3 with `PR #<n> conflicts with <base>`, the pull request
+conflicts with its base and waiting will not help: rebase on `origin/<base>`,
+push (the pre-push gate runs again), get a new review verdict if the diff
+changed, then run `kookr merge` again.
+
 The wrapper deletes the remote head branch through the REST API after GitHub
 confirms the merge, so merging from the worktree that holds the branch is fine.
 

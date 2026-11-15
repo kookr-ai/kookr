@@ -29,9 +29,14 @@
  * - zero checks + BLOCKED→CLEAN → polls, then merges once state settles
  * - zero checks stays BLOCKED   → times out exit 3, never merges
  * - no mergeStateStatus field   → falls back to mergeable (MERGEABLE merges,
- *                                  CONFLICTING keeps waiting)
+ *                                  CONFLICTING never merges; #3813 makes it fail fast)
  * - real checks all green       → merges (existing behavior preserved)
  * - real check failed           → exit 3, never merges (existing behavior)
+ *
+ * Conflict fail-fast (#3813): a PR GitHub reports as conflicting with its base
+ * (mergeable=CONFLICTING / DIRTY) on two consecutive polls exits 3 at once with
+ * a rebase instruction instead of polling for up to an hour; UNKNOWN and a
+ * single stale CONFLICTING are still polled through.
  *
  * Acceptance (#3222):
  * - CLI and REST paths both pin the exact reviewed commit
@@ -480,6 +485,119 @@ describe('kookr-merge.sh zero-check eligibility (#2148)', () => {
       expect(status).toBe(3);
       expect(merged).toBe(false);
       expect(stderr).toContain('ci: FAILURE');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+const CONFLICTING =
+  '{"statusCheckRollup":[],"mergeStateStatus":"DIRTY","mergeable":"CONFLICTING"}';
+const UNKNOWN = '{"statusCheckRollup":[],"mergeStateStatus":"UNKNOWN","mergeable":"UNKNOWN"}';
+const PENDING_CONFLICTING =
+  '{"statusCheckRollup":[{"name":"ci","status":"IN_PROGRESS","conclusion":""}],"mergeStateStatus":"DIRTY","mergeable":"CONFLICTING"}';
+
+describe('a pull request that conflicts with its base fails fast (#3813)', () => {
+  // A 5 s interval and a 60 s timeout: failing "in under two poll intervals"
+  // is only distinguishable from polling to the timeout with a long interval.
+  const slow = {
+    KOOKR_MERGE_CHECK_INTERVAL_SECONDS: '5',
+    KOOKR_MERGE_CHECK_TIMEOUT_SECONDS: '60',
+  };
+
+  it('exits 3 within two poll intervals when CONFLICTING is reported twice, naming the base and the rebase step', () => {
+    const dir = makeStubDir({ checksResponses: [CONFLICTING], baseRef: 'staging' });
+    try {
+      const started = Date.now();
+      const { status, stderr, merged, pollCount } = runMerge(dir, slow);
+      const elapsedMs = Date.now() - started;
+      expect(status).toBe(3);
+      expect(merged).toBe(false);
+      // Load-independent proof: pre-flight + two conflicting polls, then stop.
+      expect(pollCount).toBe(3);
+      expect(elapsedMs).toBeLessThan(10_000);
+      expect(stderr).toContain('conflicts with staging');
+      expect(stderr).toContain('rebase on origin/staging');
+      expect(stderr).not.toContain('timed out');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies the same rule while real checks are still pending', () => {
+    const dir = makeStubDir({ checksResponses: [PENDING_CONFLICTING], baseRef: 'staging' });
+    try {
+      const started = Date.now();
+      const { status, stderr, merged, pollCount } = runMerge(dir, slow);
+      expect(pollCount).toBe(3);
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(status).toBe(3);
+      expect(merged).toBe(false);
+      expect(stderr).toContain('conflicts with staging');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not hand a conflicting PR with checks to gh pr checks --watch', () => {
+    // --watch would wait for the checks and never see the conflict; the stub's
+    // --watch exits 0, so reaching it would merge.
+    const dir = makeStubDir({ checksResponses: [PENDING_CONFLICTING], baseRef: 'staging' });
+    try {
+      const { status, stderr, merged, calls } = runMerge(dir, { GH_HAS_WATCH: '1' });
+      expect(status).toBe(3);
+      expect(merged).toBe(false);
+      expect(calls.some((c) => c.includes('--watch') && !c.includes('--help'))).toBe(false);
+      expect(stderr).toContain('conflicts with staging');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still merges when the state is UNKNOWN and then CLEAN', () => {
+    const dir = makeStubDir({ checksResponses: [UNKNOWN, UNKNOWN, CLEAN] });
+    try {
+      const { status, merged } = runMerge(dir);
+      expect(status).toBe(0);
+      expect(merged).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still merges when CONFLICTING is reported once and then CLEAN', () => {
+    // Read 1 is the pre-flight; the poll loop sees the conflict once (read 2),
+    // then CLEAN (read 3): a stale value right after a retarget.
+    const dir = makeStubDir({ checksResponses: [UNKNOWN, CONFLICTING, CLEAN] });
+    try {
+      const { status, merged, pollCount } = runMerge(dir);
+      expect(status).toBe(0);
+      expect(merged).toBe(true);
+      expect(pollCount).toBe(3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('needs the conflict on two consecutive polls, not two polls in total', () => {
+    const dir = makeStubDir({
+      checksResponses: [UNKNOWN, CONFLICTING, UNKNOWN, CONFLICTING, CLEAN],
+    });
+    try {
+      const { status, merged } = runMerge(dir);
+      expect(status).toBe(0);
+      expect(merged).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints the wait reason once instead of once per poll', () => {
+    const dir = makeStubDir({ checksResponses: [BLOCKED, BLOCKED, BLOCKED, BLOCKED, CLEAN] });
+    try {
+      const { status, stdout } = runMerge(dir);
+      expect(status).toBe(0);
+      expect(stdout.split('no checks yet and merge state not clean').length - 1).toBe(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

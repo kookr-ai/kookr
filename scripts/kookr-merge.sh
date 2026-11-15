@@ -407,7 +407,8 @@ command -v jq >/dev/null || { echo "kookr-merge: jq is required" >&2; exit 1; }
 #
 # mergeStateStatus is authoritative — it is the only field that reflects branch
 # protection AND check registration. CLEAN means nothing is blocking; every
-# other value (BLOCKED, BEHIND, UNSTABLE, DIRTY, UNKNOWN) means "keep waiting".
+# other value (BLOCKED, BEHIND, UNSTABLE, UNKNOWN) means "keep waiting", except
+# a conflict (DIRTY / CONFLICTING), which the poll loop fails fast (#3813).
 #
 # mergeable is only a Git-level conflict signal (MERGEABLE / CONFLICTING /
 # UNKNOWN); it flips to MERGEABLE within seconds of PR creation regardless of
@@ -513,6 +514,39 @@ never_executed_merge_allowed() {
   return 1
 }
 
+# pr_conflicts — true when GitHub reports that the PR conflicts with its base
+# (mergeable=CONFLICTING, or merge state DIRTY). Unlike BLOCKED or UNKNOWN, a
+# conflict never clears while we wait: someone has to rebase (issue #3813).
+pr_conflicts() {
+  printf '%s' "$1" | jq -e '((.mergeable // "") | ascii_upcase) == "CONFLICTING" or ((.mergeStateStatus // "") | ascii_upcase) == "DIRTY"' >/dev/null
+}
+
+# report_conflict — the one message for a PR that conflicts with its base.
+report_conflict() {
+  local checks="$1" base=""
+  base="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json baseRefName --jq .baseRefName 2>/dev/null)" || base=""
+  [[ -n "$base" ]] || base="<base>"
+  echo "kookr-merge: PR #$PR conflicts with $base and cannot merge until it is rebased: rebase on origin/$base, push, and get a new review verdict if the diff changed; then run kookr merge again" >&2
+  printf '%s\n' "$checks" | jq -r '"  mergeStateStatus=\(.mergeStateStatus // "?") mergeable=\(.mergeable // "?")"' >&2
+}
+
+# wait_note — print a wait reason when it changes, then at most one progress
+# line a minute, instead of one line per poll. Uses WAIT_LAST_REASON and
+# WAIT_LAST_PRINT, which the poll loop owns.
+wait_note() {
+  local reason="$1" elapsed="$2" now
+  now=$(date +%s)
+  if [[ "$reason" != "$WAIT_LAST_REASON" ]]; then
+    echo "kookr-merge: $reason; polling every ${interval}s"
+  elif (( now - WAIT_LAST_PRINT >= 60 )); then
+    echo "kookr-merge: still waiting (${elapsed}s): $reason"
+  else
+    return 0
+  fi
+  WAIT_LAST_REASON="$reason"
+  WAIT_LAST_PRINT=$now
+}
+
 watch_checks() {
   # Shared pre-flight for BOTH the --watch fast path and the poll loop.
   # A PR with no reported checks has statusCheckRollup=null (repos without CI)
@@ -539,7 +573,9 @@ watch_checks() {
   # With real checks present, prefer gh's built-in --watch when available.
   # Zero-check-but-not-yet-clean PRs must NOT use --watch (it exits 1 on "no
   # checks", issue #2102) — they fall through to the poll loop below.
-  if [[ "$total" != "0" ]] && gh pr checks --help 2>/dev/null | grep -q -- '--watch'; then
+  # A PR that already reports a conflict skips --watch too: --watch would wait
+  # for every check and never notice the conflict (issue #3813).
+  if [[ "$total" != "0" ]] && ! pr_conflicts "$checks" && gh pr checks --help 2>/dev/null | grep -q -- '--watch'; then
     if gh pr checks "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --watch; then
       return 0
     fi
@@ -554,12 +590,25 @@ watch_checks() {
 
   local timeout="${KOOKR_MERGE_CHECK_TIMEOUT_SECONDS:-3600}"
   local interval="${KOOKR_MERGE_CHECK_INTERVAL_SECONDS:-15}"
-  local start now elapsed failed pending
+  local start now elapsed failed pending conflicts=0
+  local WAIT_LAST_REASON="" WAIT_LAST_PRINT=0
   start=$(date +%s)
   echo "kookr-merge: polling statusCheckRollup + mergeStateStatus"
 
   while true; do
     checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup,mergeStateStatus,mergeable)" || return 3
+    # A conflict never clears by itself, so stop instead of polling to the
+    # timeout. Require it on two consecutive polls, one interval apart: right
+    # after a retarget or a push GitHub can still serve a stale value.
+    if pr_conflicts "$checks"; then
+      conflicts=$((conflicts + 1))
+      if (( conflicts >= 2 )); then
+        report_conflict "$checks"
+        return 3
+      fi
+    else
+      conflicts=0
+    fi
     # `// []` keeps the jq iterations from erroring if the rollup becomes null mid-poll.
     total="$(printf '%s' "$checks" | jq '(.statusCheckRollup // []) | length')"
 
@@ -578,7 +627,7 @@ watch_checks() {
         printf '%s\n' "$checks" | jq -r '"  mergeStateStatus=\(.mergeStateStatus // "?") mergeable=\(.mergeable // "?")"' >&2
         return 3
       fi
-      echo "kookr-merge: no checks yet and merge state not clean; sleeping ${interval}s"
+      wait_note "no checks yet and merge state not clean" "$elapsed"
       sleep "$interval"
       continue
     fi
@@ -609,7 +658,7 @@ watch_checks() {
       return 3
     fi
 
-    echo "kookr-merge: checks pending (${pending}/${total}); sleeping ${interval}s"
+    wait_note "checks pending" "$elapsed"
     sleep "$interval"
   done
 }
