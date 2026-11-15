@@ -627,6 +627,37 @@ describe('provider reset holds (issue #3562)', () => {
     expect(sel.outcomes[0].outcome).toBe('skipped_open_pr_confirmed');
   });
 
+  it('holds a claimed task past the hard TTL on a known reset, where the #1896 hold no longer applies', () => {
+    const task = pausedTask({ issueClaim: { repo: 'kookr-ai/kookr', number: 3562 } });
+    const sel = selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isProviderPaused: () => true,
+      getPauseStartedAtMs: () => nowMs - 3 * 60 * MIN,
+      isAwaitingProviderReset: () => true,
+      getProviderResetState: () => knownIn(90 * MIN),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.outcomes[0].outcome).toBe('skipped_awaiting_provider_reset');
+  });
+
+  it('measures the 6h cap from the effective (activity-advanced) pause start', () => {
+    // Raw latch 7h ago, last activity 1h ago: effective pause age is 1h, so a
+    // reset 4h ahead ends the hold 5h15m after the effective start — within 6h.
+    const sel = selectExpiredProviderPausedTasks([pausedTask()], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      softTtlMs: SOFT,
+      capacityAllowsEarlyReclaim: true,
+      isProviderPaused: () => true,
+      getPauseStartedAtMs: () => nowMs - 7 * 60 * MIN,
+      getLastActivityAtMs: () => nowMs - 60 * MIN,
+      getProviderResetState: () => knownIn(4 * 60 * MIN),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.outcomes[0].outcome).toBe('skipped_awaiting_provider_reset');
+  });
+
   it('knownProviderResetHoldApplies measures the cap from the effective pause start', () => {
     const start = nowMs - 30 * MIN;
     expect(knownProviderResetHoldApplies({

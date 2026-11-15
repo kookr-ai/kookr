@@ -6,6 +6,7 @@ import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
   DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
+  MAX_PROVIDER_PAUSED_HARD_TTL_MS,
   PROVIDER_RESET_HOLD_GRACE_MS,
   emptyProviderPausedTtlSkipCounts,
   effectiveProviderPausedTtlMs,
@@ -21,7 +22,7 @@ import {
 } from '../core/provider-paused-ttl.js';
 import type { PollerState } from '../adapters/quota-adapter.js';
 import type { QuotaStatus } from '../shared/contracts/quota.js';
-import { resolveKnownProviderResetMs } from './provider-reset-scheduler.js';
+import { listExhaustedProviderResetsMs } from './provider-reset-scheduler.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';
 import { nowISO } from '../core/interaction-log.js';
@@ -136,11 +137,19 @@ export interface ProviderResetSource {
  * #3562). A stale snapshot can prove a reset is pending (the timestamp is
  * fixed) but never that none is, so:
  *
- * - an exhausted window with a future reset → `known`, whatever the poller
- *   state;
- * - no snapshot, a poller that is not healthy (backoff, auth-failed,
- *   disabled, idle), or a snapshot last refreshed before the pause began →
- *   `unresolved`;
+ * - an exhausted window whose reset (+ grace) lands within the 6h max of the
+ *   pause start → `known`, whatever the poller state. With several, the
+ *   latest that fits: a weekly window at 90%+ resetting in days must not hide
+ *   the 5-hour reset the CLI resumes at;
+ * - exhausted windows that all reset beyond that ceiling → `unresolved`: the
+ *   CLI will not resume within any hold we allow, and the 90% binding
+ *   threshold cannot tell us which window actually paused it, so keep the
+ *   soft bound off and let the hard TTL decide;
+ * - a `disabled` poller (no OAuth credentials file — e.g. Keychain, API-key
+ *   or Bedrock installs) → `none`: there is no quota source at all, so keep
+ *   the pre-#3562 behavior rather than disable soft reclaim forever;
+ * - no snapshot, a poller that is not healthy (backoff, auth-failed, idle),
+ *   or a snapshot last refreshed before the pause began → `unresolved`;
  * - otherwise (fresh, healthy, no binding window) → `none`.
  */
 export function classifyProviderResetState(input: {
@@ -149,8 +158,16 @@ export function classifyProviderResetState(input: {
   pauseStartedAtMs?: number;
 }): ProviderResetState {
   const { quota, pollerState } = input.source;
-  const known = resolveKnownProviderResetMs(quota, input.nowMs);
-  if (known !== undefined) return { kind: 'known', resetsAtMs: known };
+  const exhausted = listExhaustedProviderResetsMs(quota, input.nowMs);
+  if (exhausted.length > 0) {
+    const start = input.pauseStartedAtMs ?? input.nowMs;
+    const fitting = exhausted.filter(
+      (at) => at + PROVIDER_RESET_HOLD_GRACE_MS - start <= MAX_PROVIDER_PAUSED_HARD_TTL_MS,
+    );
+    if (fitting.length === 0) return { kind: 'unresolved' };
+    return { kind: 'known', resetsAtMs: Math.max(...fitting) };
+  }
+  if (pollerState === 'disabled') return { kind: 'none' };
   if (!quota) return { kind: 'unresolved' };
   if (pollerState !== 'healthy' && pollerState !== 'polling') return { kind: 'unresolved' };
   if (

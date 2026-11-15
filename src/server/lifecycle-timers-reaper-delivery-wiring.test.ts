@@ -111,3 +111,51 @@ describe('liveness tick wires delivery probes into the TTL reapers (issue #3578)
     }
   });
 });
+
+describe('liveness tick wires the quota poller into the provider-paused reaper (issue #3562)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    hungSuspectCalls.length = 0;
+    providerPausedCalls.length = 0;
+  });
+
+  test('passes getProviderResetSource reading the quota adapter snapshot and state', async () => {
+    vi.useFakeTimers();
+    const snap = { fiveHour: null, sevenDay: null, updatedAt: 1 };
+    const quotaAdapter = {
+      getLatest: vi.fn(() => snap),
+      getState: vi.fn(() => 'backoff' as const),
+      getCurrentIntervalMs: vi.fn(() => 600_000),
+      poll: vi.fn(async () => false),
+    } as unknown as TimerDeps['quotaAdapter'];
+
+    const handles = startLifecycleTimers(wiringDeps({
+      quotaAdapter,
+      providerPausedStartTracker: new ProviderPausedStartTracker(),
+    }));
+    try {
+      await vi.advanceTimersByTimeAsync(60);
+      expect(providerPausedCalls.length).toBeGreaterThan(0);
+      const deps = providerPausedCalls[0] as {
+        getProviderResetSource?: () => unknown;
+      };
+      expect(deps.getProviderResetSource?.()).toEqual({ quota: snap, pollerState: 'backoff' });
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('omits getProviderResetSource when no quota adapter is wired', async () => {
+    vi.useFakeTimers();
+    const handles = startLifecycleTimers(wiringDeps({
+      providerPausedStartTracker: new ProviderPausedStartTracker(),
+    }));
+    try {
+      await vi.advanceTimersByTimeAsync(60);
+      expect(providerPausedCalls.length).toBeGreaterThan(0);
+      expect(providerPausedCalls[0]).not.toHaveProperty('getProviderResetSource');
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});

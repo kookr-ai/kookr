@@ -862,6 +862,89 @@ describe('provider reset holds in the sweep (issue #3562)', () => {
     expect(tracker.getKnownResetMs(task.id)).toBeUndefined();
   });
 
+  it('regression: a weekly window at 90%+ does not hide the 5h reset, on soft or hard path', async () => {
+    const task = makePausedTask();
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, nowMs - 45 * MIN);
+    const source: ProviderResetSource = {
+      quota: {
+        fiveHour: exhaustedWindow(nowMs + 4 * 60 * MIN),
+        sevenDay: { utilization: 92, resetsAt: new Date(nowMs + 3 * 24 * 60 * MIN).toISOString() },
+        updatedAt: nowMs,
+      },
+      pollerState: 'healthy',
+    };
+    const soft = await runSweep({ task, pausedForMs: 0, tracker, source });
+    expect(soft.result.reclaimedTaskIds).toEqual([]);
+    expect(soft.metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+
+    // 2h50m later: past the hard TTL, poller now in backoff with the old snapshot.
+    const later = new Date(nowMs + 170 * MIN);
+    const hard = await runSweep({
+      task,
+      pausedForMs: 0,
+      tracker,
+      now: later,
+      source: { ...source, pollerState: 'backoff' },
+    });
+    expect(hard.result.reclaimedTaskIds).toEqual([]);
+    expect(hard.metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+  });
+
+  it('keeps today\'s soft reclaim on an install with no quota source (poller disabled)', async () => {
+    const { result } = await runSweep({
+      task: makePausedTask(),
+      pausedForMs: SOFT + MIN,
+      source: { quota: null, pollerState: 'disabled' },
+    });
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+  });
+
+  it('keeps the latest known reset seen during a pause (never under-wait)', () => {
+    const tracker = new ProviderPausedStartTracker();
+    const task = makePausedTask();
+    tracker.observe(task, true, nowMs);
+    tracker.latchKnownReset(task.id, nowMs + 60 * MIN);
+    tracker.latchKnownReset(task.id, nowMs + 30 * MIN);
+    expect(tracker.getKnownResetMs(task.id)).toBe(nowMs + 60 * MIN);
+    tracker.latchKnownReset(task.id, nowMs + 90 * MIN);
+    expect(tracker.getKnownResetMs(task.id)).toBe(nowMs + 90 * MIN);
+  });
+
+  it('holds a claimed task past the hard TTL on a known reset (sweep end to end)', async () => {
+    const task = makePausedTask({ issueClaim: { repo: 'kookr-ai/kookr', number: 3562 } });
+    const taskStore = makeMockTaskStore([task]);
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, nowMs - 3 * 60 * MIN);
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        recordProviderPause: () => ({ holdForResume: true }),
+        isHoldingOpenPr: () => false,
+        getProviderResetSource: () => ({
+          quota: { fiveHour: exhaustedWindow(nowMs + 90 * MIN), sevenDay: null, updatedAt: nowMs },
+          pollerState: 'healthy',
+        }),
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.selection?.outcomes[0]?.outcome).toBe('skipped_awaiting_provider_reset');
+  });
+
+  it('treats a task without agentType as a Claude task', async () => {
+    const { result, metrics } = await runSweep({
+      task: makePausedTask({ agentType: undefined }),
+      pausedForMs: SOFT + MIN,
+      source: { quota: null, pollerState: 'backoff' },
+    });
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot().skippedProviderResetUnresolved).toBe(1);
+  });
+
   it('keeps today\'s soft reclaim for non-Claude agents (the quota poller does not describe them)', async () => {
     const { result } = await runSweep({
       task: makePausedTask({ agentType: 'codex-cli' }),
@@ -910,7 +993,7 @@ describe('classifyProviderResetState (issue #3562)', () => {
     const fresh = { fiveHour: window(10, nowMs + 60_000), sevenDay: null, updatedAt: nowMs };
     expect(classifyProviderResetState({ source: { quota: null, pollerState: 'healthy' }, nowMs, pauseStartedAtMs }).kind)
       .toBe('unresolved');
-    for (const pollerState of ['backoff', 'auth_failed', 'disabled', 'idle'] as const) {
+    for (const pollerState of ['backoff', 'auth_failed', 'idle'] as const) {
       expect(classifyProviderResetState({ source: { quota: fresh, pollerState }, nowMs, pauseStartedAtMs }).kind)
         .toBe('unresolved');
     }
@@ -919,6 +1002,50 @@ describe('classifyProviderResetState (issue #3562)', () => {
       nowMs,
       pauseStartedAtMs,
     }).kind).toBe('unresolved');
+  });
+
+  it('treats a poll in flight with a fresh snapshot as resolvable, and an updatedAt equal to the pause start as fresh', () => {
+    const fresh = { fiveHour: window(10, nowMs + 60_000), sevenDay: null, updatedAt: pauseStartedAtMs };
+    expect(classifyProviderResetState({ source: { quota: fresh, pollerState: 'polling' }, nowMs, pauseStartedAtMs }))
+      .toEqual({ kind: 'none' });
+    expect(classifyProviderResetState({
+      source: { quota: { ...fresh, updatedAt: Number.NaN }, pollerState: 'healthy' },
+      nowMs,
+      pauseStartedAtMs,
+    }).kind).toBe('unresolved');
+  });
+
+  it('picks the exhausted reset that fits the 6h cap when a weekly window at 90%+ resets in days', () => {
+    // Heavy user: 5h window exhausted (reset in 4h), weekly at 92% (reset in 3 days).
+    const fiveHourReset = nowMs + 4 * 60 * 60_000;
+    expect(classifyProviderResetState({
+      source: {
+        quota: {
+          fiveHour: window(100, fiveHourReset),
+          sevenDay: window(92, nowMs + 3 * 24 * 60 * 60_000),
+          updatedAt: nowMs,
+        },
+        pollerState: 'healthy',
+      },
+      nowMs,
+      pauseStartedAtMs: nowMs - 30 * 60_000,
+    })).toEqual({ kind: 'known', resetsAtMs: fiveHourReset });
+  });
+
+  it('is unresolved when every exhausted reset is beyond the 6h cap', () => {
+    expect(classifyProviderResetState({
+      source: {
+        quota: { fiveHour: null, sevenDay: window(100, nowMs + 3 * 24 * 60 * 60_000), updatedAt: nowMs },
+        pollerState: 'healthy',
+      },
+      nowMs,
+      pauseStartedAtMs,
+    })).toEqual({ kind: 'unresolved' });
+  });
+
+  it('is none when the poller is disabled (no quota source on this install)', () => {
+    expect(classifyProviderResetState({ source: { quota: null, pollerState: 'disabled' }, nowMs, pauseStartedAtMs }))
+      .toEqual({ kind: 'none' });
   });
 
   it('is none for a fresh healthy snapshot without a binding window', () => {

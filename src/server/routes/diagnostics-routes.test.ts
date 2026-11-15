@@ -4360,7 +4360,8 @@ describe('diagnostics routes', () => {
           skipped_open_pr_confirmed: 1,
           skipped_open_pr_unknown: 0,
           skipped_no_pause_start: 0,
-          skipped_awaiting_provider_reset: 0,
+          skipped_awaiting_provider_reset: 2,
+          skipped_provider_reset_unresolved: 1,
         },
         outcomes: [
           { taskId: 'p1', outcome: 'selected', pausedForMs: 2 * 60 * 60_000 },
@@ -4384,6 +4385,9 @@ describe('diagnostics routes', () => {
         skippedOpenPrFailsafe: 1,
         skippedOpenPrConfirmed: 1,
         skippedOpenPrUnknown: 0,
+        // Issue #3562: the two reset holds are counted apart.
+        skippedAwaitingProviderReset: 2,
+        skippedProviderResetUnresolved: 1,
         // Issue #3115: p2 held by the open-PR fail-safe for 3h, past the 2h
         // hard TTL, so it surfaces as the oldest hold and counts as over-TTL.
         oldestOpenPrFailsafeHoldMs: 3 * 60 * 60_000,
