@@ -115,11 +115,6 @@ function lastComposerDraft(tail: string): string | null {
   return null;
 }
 
-export function looksLikeVisibleComposerDraft(tail: string): boolean {
-  const draft = lastComposerDraft(tail);
-  return draft !== null && draft.length > 0;
-}
-
 /**
  * What the screen check saw at the bottom of the terminal when Enter was
  * pressed with nothing typed:

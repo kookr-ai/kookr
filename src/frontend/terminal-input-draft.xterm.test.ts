@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Terminal } from '@xterm/xterm';
 import {
+  classifyEmptyEnterScreen,
   looksLikeInteractiveMenu,
-  looksLikeVisibleComposerDraft,
   terminalContentTail,
 } from './terminal-input-draft.js';
 
@@ -155,7 +155,6 @@ describe('menu detection on a screen the session has not filled yet', () => {
 
   it('reads the idle composer as empty, so Enter still advances', async () => {
     const tail = await tailOf(SCREENS.idleComposer);
-    expect(looksLikeInteractiveMenu(tail)).toBe(false);
-    expect(looksLikeVisibleComposerDraft(tail)).toBe(false);
+    expect(classifyEmptyEnterScreen(tail)).toBe('input_box');
   });
 });
