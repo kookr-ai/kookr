@@ -11,6 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { ASK_LIMITS } from '../shared/contracts/asks.js';
 import { resolveStopBaseUrl } from './kookr-stop.js';
 
 export const EXIT_OK = 0;
@@ -112,7 +113,9 @@ export function parseAskArgs(argv: string[]): ParsedAskArgs {
         if (v === undefined) break;
         const seconds = parseDuration(v);
         if (seconds === undefined) fail(`--timeout must look like 30s, 10m, 2h or a number of seconds (got: ${v})`);
-        else out.timeoutSec = seconds;
+        else if (seconds < ASK_LIMITS.minTimeoutSec || seconds > ASK_LIMITS.maxTimeoutSec) {
+          fail(`--timeout must be between ${ASK_LIMITS.minTimeoutSec}s and ${ASK_LIMITS.maxTimeoutSec / 3600}h (got: ${v})`);
+        } else out.timeoutSec = seconds;
         break;
       }
       case '--wait': {

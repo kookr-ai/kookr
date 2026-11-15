@@ -58,7 +58,7 @@ export interface AskRecord {
 /** The record as returned over HTTP: the nonce is server-internal. */
 export type AskView = Omit<AskRecord, 'nonce'>;
 
-/** Hard limits, enforced server-side (the CLI mirrors the shape, not the numbers). */
+/** Hard limits, enforced server-side. The CLI also checks the timeout bounds, so a bad `--timeout` exits 2 without a request. */
 export const ASK_LIMITS = {
   maxOptions: 4,
   maxLabelChars: 48,
