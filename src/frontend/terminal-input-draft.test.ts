@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classifyEmptyEnterScreen,
   looksLikeInteractiveMenu,
-  looksLikeVisibleComposerDraft,
   stripTerminalReports,
   terminalContentTail,
   updateTerminalInputDraft,
@@ -69,25 +69,39 @@ describe('looksLikeInteractiveMenu', () => {
   });
 });
 
-describe('looksLikeVisibleComposerDraft', () => {
+describe('classifyEmptyEnterScreen: composer drafts', () => {
   it.each([
     ['Claude composer', '❯ run tests'],
     ['Codex composer', '› explain this failure'],
-  ])('recognizes a non-empty %s', (_name, tail) => {
-    expect(looksLikeVisibleComposerDraft(tail)).toBe(true);
+  ])('reads a non-empty %s as a draft', (_name, tail) => {
+    expect(classifyEmptyEnterScreen(tail)).toBe('draft');
   });
 
   it('uses the most recent composer row', () => {
-    expect(looksLikeVisibleComposerDraft('❯ old submitted prompt\nWorking complete\n❯ ')).toBe(false);
+    expect(classifyEmptyEnterScreen('❯ old submitted prompt\nWorking complete\n❯ ')).toBe('input_box');
   });
 
   it.each([
-    ['empty composer', '❯ '],
-    ['Try placeholder', '❯ Try "write a test"'],
-    ['rule placeholder', '❯ ──────────'],
-    ['ordinary output', 'Tests passed'],
-  ])('does not treat a %s as a visible draft', (_name, tail) => {
-    expect(looksLikeVisibleComposerDraft(tail)).toBe(false);
+    ['empty composer', '❯ ', 'input_box'],
+    ['Try placeholder', '❯ Try "write a test"', 'input_box'],
+    ['rule placeholder', '❯ ──────────', 'input_box'],
+    ['ordinary output', 'Tests passed', 'unrecognized'],
+  ])('does not treat a %s as a draft', (_name, tail, expected) => {
+    expect(classifyEmptyEnterScreen(tail)).toBe(expected);
+  });
+});
+
+describe('classifyEmptyEnterScreen', () => {
+  it.each([
+    ['selection row', '❯ 1. Submit answers', 'menu'],
+    ['selection footer above an idle composer', 'Enter to select · Esc to cancel\n❯ ', 'menu'],
+    ['composer with a draft', '❯ run tests', 'draft'],
+    ['empty composer', '╭──╮\n❯ \n╰──╯', 'input_box'],
+    ['composer placeholder', '❯ Try "write a test"', 'input_box'],
+    ['unmarked, footerless rows', 'Which option?\n  1. First\n  2. Second', 'unrecognized'],
+    ['empty tail', '', 'unrecognized'],
+  ])('classifies a %s', (_name, tail, expected) => {
+    expect(classifyEmptyEnterScreen(tail)).toBe(expected);
   });
 });
 

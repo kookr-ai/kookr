@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { AgentState } from '../shared/protocol.js';
 import { App } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
+import { track } from './telemetry.js';
 
 vi.mock('./hooks/useWebSocket.js', () => ({
   useWebSocket: () => ({ send: () => true }),
@@ -462,5 +463,41 @@ describe('App terminal focus mode', () => {
     expect(useKookrStore.getState().narrowTab).toBe('terminal');
     expect(container.querySelector('[data-testid="project-sidebar"]')).not.toBeNull();
     expect(container.querySelector('.app')?.className).toBe('app app-mobile');
+  });
+  test('a bare Enter outside any text field records the advance with the selected agent\'s turn state', async () => {
+    const waiting: AgentState = {
+      agentId: 'agent-waiting',
+      taskId: 'task-waiting',
+      taskName: 'Waiting Task',
+      events: [],
+      anomaly: null,
+      taskStatus: 'inProgress',
+      turnState: 'waiting_for_input',
+    };
+    const other: AgentState = { ...waiting, agentId: 'agent-other', taskId: 'task-other', taskName: 'Other Task', turnState: 'running' };
+    useKookrStore.setState({ agents: [waiting, other], selectedAgentId: waiting.agentId });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await waitForElement(container, '[data-testid="detail-panel"]');
+    vi.mocked(track).mockClear();
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    // The dashboard-wide Enter runs no screen check, and says so (#3568).
+    expect(track).toHaveBeenCalledWith({
+      type: 'shortcut_used',
+      key: 'Enter',
+      action: 'advance_empty_input',
+      context: 'global',
+      source: 'global',
+      screen: 'not_checked',
+      turnState: 'waiting_for_input',
+    });
   });
 });

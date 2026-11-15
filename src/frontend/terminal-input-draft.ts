@@ -102,13 +102,39 @@ export function looksLikeInteractiveMenu(tail: string): boolean {
   return tail.split('\n').some((line) => MENU_SELECTION_ROW_RE.test(line) || MENU_FOOTER_RE.test(line));
 }
 
-export function looksLikeVisibleComposerDraft(tail: string): boolean {
+// The text in the last composer row (`❯ …`), or null when the tail has none.
+// Placeholder text such as `Try "…"` reads as an empty composer.
+function lastComposerDraft(tail: string): string | null {
   const lines = tail.split('\n');
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const match = COMPOSER_ROW_RE.exec(lines[i] ?? '');
     if (!match) continue;
     const draft = match[1]?.trim() ?? '';
-    return draft.length > 0 && !COMPOSER_PLACEHOLDER_RE.test(draft);
+    return COMPOSER_PLACEHOLDER_RE.test(draft) ? '' : draft;
   }
-  return false;
+  return null;
+}
+
+/**
+ * What the screen check saw at the bottom of the terminal when Enter was
+ * pressed with nothing typed:
+ * - `menu`: a selection menu, so Enter goes to the agent;
+ * - `draft`: text in the agent's input box, so Enter goes to the agent;
+ * - `input_box`: the agent's idle, empty input box, so Enter moves to the next task;
+ * - `unrecognized`: none of these, so Enter also moves to the next task.
+ *
+ * Only the last two lead to an advance. An advance on an `unrecognized` screen
+ * is the case to watch: it is where a menu the check does not know would be
+ * misread as an idle terminal (#3568).
+ */
+export type EmptyEnterScreen = 'menu' | 'draft' | 'input_box' | 'unrecognized';
+
+/** The screen-check results that let an empty Enter move to the next task. */
+export type EmptyEnterAdvanceScreen = Exclude<EmptyEnterScreen, 'menu' | 'draft'>;
+
+export function classifyEmptyEnterScreen(tail: string): EmptyEnterScreen {
+  if (looksLikeInteractiveMenu(tail)) return 'menu';
+  const draft = lastComposerDraft(tail);
+  if (draft === null) return 'unrecognized';
+  return draft.length > 0 ? 'draft' : 'input_box';
 }

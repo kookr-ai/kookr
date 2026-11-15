@@ -1071,6 +1071,8 @@ describe('TerminalPanel', () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(onEmptySubmit).toHaveBeenCalledOnce();
+    // The screen check saw the idle input box, and says so for telemetry.
+    expect(onEmptySubmit).toHaveBeenCalledWith('input_box');
     expect(ws.send).not.toHaveBeenCalled();
   });
 
@@ -1155,7 +1157,46 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).toHaveBeenCalledOnce();
+    // Nothing on screen: neither a menu nor the input box was recognized.
+    expect(onEmptySubmit).toHaveBeenCalledWith('unrecognized');
     expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('reports the idle input box to onEmptySubmit on the typed-Enter path', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    setTerminalBufferLines(terminal, ['╭────────────────╮', '❯ ', '╰────────────────╯']);
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(onEmptySubmit).toHaveBeenCalledWith('input_box');
+  });
+
+  test('reports an unrecognized screen to onEmptySubmit on the keyboard path', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    // Unmarked, footerless rows: the shape of a menu the screen check misses.
+    setTerminalBufferLines(terminal, ['Which option?', '  1. First', '  2. Second']);
+    const xtermContainer = container.querySelector('.terminal-xterm');
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    act(() => {
+      xtermContainer!.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(onEmptySubmit).toHaveBeenCalledWith('unrecognized');
   });
 
   test('forwards Enter after terminal input has content', () => {

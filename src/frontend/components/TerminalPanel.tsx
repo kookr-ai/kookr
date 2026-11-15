@@ -27,15 +27,17 @@ import { track } from '../telemetry.js';
 import { installTerminalRenderer, type InstalledTerminalRenderer } from '../terminal-renderer.js';
 import { createTerminalWheelScroller, type TerminalWheelScroller } from '../terminal-wheel.js';
 import {
-  looksLikeInteractiveMenu,
-  looksLikeVisibleComposerDraft,
+  classifyEmptyEnterScreen,
   terminalContentTail,
   updateTerminalInputDraft,
+  type EmptyEnterAdvanceScreen,
 } from '../terminal-input-draft.js';
 import {
   DEFAULT_TERMINAL_FONT_SIZE,
   usePersistedTerminalFontSize,
 } from '../hooks/usePersistedTerminalFontSize.js';
+
+type EmptySubmitHandler = (screen: EmptyEnterAdvanceScreen) => void;
 
 interface Props {
   tmuxName: string | null;
@@ -48,7 +50,8 @@ interface Props {
    * cols leaves the browser pane nearly blank (only left-edge chrome).
    */
   agentType?: string | null;
-  onEmptySubmit?: () => void;
+  /** Enter with nothing typed, on a screen that moves to the next task. */
+  onEmptySubmit?: EmptySubmitHandler;
   /** Click handler for a viewable file path detected in terminal output. */
   onOpenFile?: (path: string) => void;
 }
@@ -118,27 +121,32 @@ function getVisibleTerminalTail(terminal: Terminal): string {
   }
 }
 
-function shouldHandleEmptyTerminalEnter(
+/**
+ * Decides whether Enter, pressed with nothing typed, moves to the next task.
+ * Returns what the screen check saw when it does (`input_box` or
+ * `unrecognized`), so the caller can record it, and null when Enter must go to
+ * the agent instead.
+ */
+function emptyTerminalEnterAdvanceScreen(
   draft: string,
   terminal: Terminal,
-  onEmptySubmit?: () => void,
-): boolean {
+  onEmptySubmit?: EmptySubmitHandler,
+): EmptyEnterAdvanceScreen | null {
   // Emptiness stays byte-tracked (reliable across streaming/session switches) —
   // this preserves the prior draft-only navigation behavior exactly.
-  if (draft.length !== 0 || !onEmptySubmit) return false;
+  if (draft.length !== 0 || !onEmptySubmit) return null;
   // Rendered-buffer backstops catch agent UI states that xterm's local draft
   // tracker cannot observe. If the agent is showing a selection menu
   // (Claude/Codex render these inline, so there is no terminal-mode signal —
   // only the marked numbered row and the "enter to select"/"press enter"
   // footer distinguish it), forward Enter so the highlighted choice is
   // confirmed instead of being swallowed as task navigation.
-  const tail = getVisibleTerminalTail(terminal);
-  if (looksLikeInteractiveMenu(tail)) return false;
   // Adapter-injected prompt text is not visible to xterm's local onData draft
-  // tracker. If the composer visibly contains a user draft, forward Enter to
-  // the agent instead of consuming it as empty-task navigation.
-  if (looksLikeVisibleComposerDraft(tail)) return false;
-  return true;
+  // tracker either: if the input box visibly holds a user draft, forward Enter
+  // to the agent instead of consuming it as empty-task navigation.
+  const screen = classifyEmptyEnterScreen(getVisibleTerminalTail(terminal));
+  if (screen === 'menu' || screen === 'draft') return null;
+  return screen;
 }
 
 export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onOpenFile }: Props) {
@@ -613,16 +621,15 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
         return;
       }
       if (e.key !== 'Enter' || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
-      if (!shouldHandleEmptyTerminalEnter(
+      const advanceScreen = emptyTerminalEnterAdvanceScreen(
         terminalInputDraftRef.current,
         terminal,
         onEmptySubmitRef.current,
-      )) {
-        return;
-      }
+      );
+      if (!advanceScreen) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      onEmptySubmitRef.current?.();
+      onEmptySubmitRef.current?.(advanceScreen);
     }
     container.addEventListener('keydown', handleKeyDownCapture, { capture: true });
 
@@ -952,10 +959,11 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
 
     const inputDisposable = terminal.onData((data) => {
       if (!visibleRef.current) return;
-      if (data === '\r' && shouldHandleEmptyTerminalEnter(
-        terminalInputDraftRef.current, terminal, onEmptySubmitRef.current,
-      )) {
-        onEmptySubmitRef.current?.();
+      const advanceScreen = data === '\r'
+        ? emptyTerminalEnterAdvanceScreen(terminalInputDraftRef.current, terminal, onEmptySubmitRef.current)
+        : null;
+      if (advanceScreen) {
+        onEmptySubmitRef.current?.(advanceScreen);
         return;
       }
       if (!controller.isEstablished()) return;
