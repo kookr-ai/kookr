@@ -49,6 +49,8 @@ interface Options {
   worktree: string | null;
   verifyCmd: string;
   workers: number;
+  /** `restart --now`: stop at once, even mid-verify, instead of after the cycle. */
+  now: boolean;
 }
 
 function parseArgs(argv: string[]): Options {
@@ -61,6 +63,7 @@ function parseArgs(argv: string[]): Options {
     // setting): 8 workers was the fastest of 4, 6, 8 and 12, and 12 used about
     // 17% more CPU than 8, which slows every other task on the host.
     workers: Math.min(8, Math.max(4, cpus().length - 4)),
+    now: false,
   };
   for (let i = 1; i < argv.length; i++) {
     const flag = argv[i];
@@ -73,6 +76,7 @@ function parseArgs(argv: string[]): Options {
     else if (flag === '--worktree') opts.worktree = resolve(next());
     else if (flag === '--verify-cmd') opts.verifyCmd = next();
     else if (flag === '--workers') opts.workers = Math.max(1, Number(next()) || opts.workers);
+    else if (flag === '--now' && opts.command === 'restart') opts.now = true;
     else throw new Error(`unknown option ${flag}`);
   }
   return opts;
@@ -287,6 +291,8 @@ let activeChildPid: number | null = null;
 let activeRelease: (() => void) | null = null;
 let inCycle = false;
 let stopRequested = false;
+// The successor started by `reexec`, while it is not yet confirmed (issue #3841).
+let handoverChildPid: number | null = null;
 
 /**
  * Stop cleanly. Three moments, three behaviours:
@@ -300,6 +306,12 @@ let stopRequested = false;
 function installSignalHandlers(): void {
   const onSignal = (signal: NodeJS.Signals): void => {
     const code = signal === 'SIGINT' ? 130 : 143;
+    // A stop during a hand-over stops both processes: `train.pid` still names
+    // this one, so it is the one `stop` signals.
+    if (handoverChildPid !== null) {
+      try { process.kill(-handoverChildPid, 'SIGKILL'); } catch { /* already gone */ }
+      process.exit(code);
+    }
     if (activeChildPid !== null) {
       try { process.kill(-activeChildPid, 'SIGKILL'); } catch { /* already gone */ }
       if (activeRelease) activeRelease();
@@ -543,12 +555,149 @@ async function cycleOnce(opts: Options): Promise<number> {
   return 0;
 }
 
-async function runForever(opts: Options): Promise<void> {
+/** `HEAD` of the checkout the train was launched from (not of its worktree), or null when unreadable. */
+async function checkoutHead(): Promise<string | null> {
+  const r = await run('git', ['rev-parse', 'HEAD'], process.cwd());
+  return r.ok ? r.stdout.trim() : null;
+}
+
+interface RestartRequest {
+  requestedAt: string;
+  /** Options given to `restart`; empty means "keep the running train's". */
+  args: string[];
+  /** The checkout `restart` ran from, and its copy of this script: the new code. */
+  cwd: string;
+  script: string;
+}
+
+function readRestartRequest(file: string): RestartRequest | null {
+  try {
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<RestartRequest>;
+    if (typeof raw.requestedAt !== 'string') return null;
+    return {
+      requestedAt: raw.requestedAt,
+      args: Array.isArray(raw.args) && raw.args.every((a) => typeof a === 'string') ? raw.args : [],
+      cwd: typeof raw.cwd === 'string' ? raw.cwd : process.cwd(),
+      script: typeof raw.script === 'string' ? raw.script : fileURLToPath(import.meta.url),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Launch `run` detached from `cwd` with `script`, record its pid and options,
+ * and return the pid. The loader flags of this process (`--import tsx`, or an
+ * absolute loader URL) are passed on, so the child resolves TypeScript the same way.
+ */
+function spawnTrain(args: string[], cwd: string, script: string, record = true): number {
+  const p = paths(stateDir());
+  const out = openSync(p.log, 'a');
+  let child;
+  try {
+    child = spawn(
+      process.execPath,
+      [...process.execArgv, script, 'run', ...args],
+      { cwd, detached: true, stdio: ['ignore', out, out], env: process.env },
+    );
+  } finally {
+    closeSync(out);
+  }
+  // An asynchronous spawn failure must not crash the caller (a running train
+  // handing over); the missing pid below, or the hand-over check, reports it.
+  child.on('error', () => { /* reported by the caller */ });
+  child.unref();
+  if (child.pid === undefined) throw new Error(`could not start ${script}`);
+  if (record) recordTrain(p, child.pid, args);
+  return child.pid;
+}
+
+function recordTrain(p: ReturnType<typeof paths>, pid: number, args: string[]): void {
+  writeFileSync(p.pid, String(pid));
+  writeFileSync(p.startArgs, JSON.stringify(args));
+}
+
+/**
+ * Wait out the interval between two cycles. Returns why the train must
+ * re-execute itself instead of running another cycle, or null: a `restart`
+ * request (checked every second, so an idle or halted train restarts at once),
+ * or a launching checkout whose `HEAD` is no longer the one this process
+ * started on (a deploy whose restart request never arrived).
+ */
+async function waitBetweenCycles(intervalSec: number, requestFile: string, startHead: string | null): Promise<string | null> {
+  const deadline = Date.now() + intervalSec * 1000;
+  for (;;) {
+    if (existsSync(requestFile)) return 'restart requested';
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(1000, left)));
+  }
+  const head = await checkoutHead();
+  if (startHead !== null && head !== null && head !== startHead) {
+    return `checkout HEAD moved from ${startHead.slice(0, 10)} to ${head.slice(0, 10)}`;
+  }
+  return null;
+}
+
+/** How long a successor gets to show it is up (its run loop writes `run-info.json`). */
+const HANDOVER_TIMEOUT_MS = 60_000;
+
+/**
+ * Hand over to a new process running the deployed code (issue #3841). Called
+ * only between cycles, so no verify is in flight and the lock is released.
+ * This process exits only once the successor's run loop has recorded itself.
+ * A successor that fails to start (bad options, or a deploy still installing
+ * its dependencies) is killed and false is returned: the caller keeps running
+ * the old code rather than leaving no train at all, and a moved `HEAD` makes
+ * it try again after the next cycle.
+ */
+async function reexec(reason: string, runArgs: string[], log: (m: string) => void): Promise<boolean> {
+  const p = paths(stateDir());
+  const request = readRestartRequest(p.restartRequest);
+  // Consumed first: a request left behind would restart the successor again.
+  rmSync(p.restartRequest, { force: true });
+  // The options are checked by the successor's own (new) code, not by this one.
+  const args = request && request.args.length > 0 ? request.args : runArgs;
+  const cwd = request && existsSync(request.cwd) ? request.cwd : process.cwd();
+  const script = request && existsSync(request.script) ? request.script : fileURLToPath(import.meta.url);
+  log(`re-executing after the cycle (${reason}): ${script} from ${cwd}`);
+  let pid: number | null = null;
+  try {
+    // `train.pid` keeps naming this process until the successor is confirmed,
+    // so a `stop` meanwhile reaches this process, which then stops both.
+    pid = spawnTrain(args, cwd, script, false);
+    handoverChildPid = pid;
+    const deadline = Date.now() + HANDOVER_TIMEOUT_MS;
+    while (Date.now() < deadline && isAlive(pid) && runInfoPid(p.runInfo) !== pid) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (runInfoPid(p.runInfo) !== pid) throw new Error(`pid ${pid} did not start its run loop`);
+    recordTrain(p, pid, args);
+    handoverChildPid = null;
+    log(`handed over to pid ${pid}; pid ${process.pid} exits`);
+    return true;
+  } catch (err) {
+    if (pid !== null) {
+      try { process.kill(-pid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+    handoverChildPid = null;
+    log(`re-execution failed, this process keeps running: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+async function runForever(opts: Options, runArgs: string[]): Promise<void> {
   installSignalHandlers();
   const dir = stateDir();
   mkdirSync(dir, { recursive: true });
-  const log = makeLogger(paths(dir).log);
-  log(`run loop started, interval ${opts.intervalSec}s`);
+  const p = paths(dir);
+  const log = makeLogger(p.log);
+  const startHead = await checkoutHead();
+  // Tells `restart` that this train honours restart requests (old code does not).
+  writeFileSync(p.runInfo, JSON.stringify({
+    pid: process.pid, head: startHead, startedAt: new Date().toISOString(), restartRequests: true,
+  }));
+  log(`run loop started, interval ${opts.intervalSec}s, checkout HEAD ${startHead?.slice(0, 10) ?? 'unknown'}`);
   for (;;) {
     try {
       await cycleOnce(opts);
@@ -559,7 +708,8 @@ async function runForever(opts: Options): Promise<void> {
       log('stop requested during a cycle; exiting after it finished');
       return;
     }
-    await new Promise((r) => setTimeout(r, opts.intervalSec * 1000));
+    const why = await waitBetweenCycles(opts.intervalSec, p.restartRequest, startHead);
+    if (why !== null && await reexec(why, runArgs, log)) return;
   }
 }
 
@@ -582,18 +732,10 @@ function startDetached(args: string[], stopping: ReadonlySet<number> = new Set()
     return;
   }
   parseArgs(['run', ...args]); // reject bad options before detaching
-  const out = openSync(p.log, 'a');
-  const child = spawn(
-    process.execPath,
-    // The loader flags this process was started with (`--import tsx`, or an
-    // absolute loader URL), so the child resolves TypeScript the same way.
-    [...process.execArgv, fileURLToPath(import.meta.url), 'run', ...args],
-    { cwd: process.cwd(), detached: true, stdio: ['ignore', out, out], env: process.env },
-  );
-  child.unref();
-  writeFileSync(p.pid, String(child.pid));
-  writeFileSync(p.startArgs, JSON.stringify(args));
-  console.log(`integration train started (pid ${child.pid}), log: ${p.log}`);
+  // A request left by a train that is gone would restart the new one at once.
+  rmSync(p.restartRequest, { force: true });
+  const pid = spawnTrain(args, process.cwd(), fileURLToPath(import.meta.url));
+  console.log(`integration train started (pid ${pid}), log: ${p.log}`);
 }
 
 async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
@@ -626,6 +768,7 @@ async function stop(waitMs = 30_000): Promise<Set<number>> {
       console.log('integration train is not running');
     }
     rmSync(p.pid, { force: true });
+    rmSync(p.restartRequest, { force: true });
     return new Set();
   }
   const signalled = new Set(targets);
@@ -637,6 +780,7 @@ async function stop(waitMs = 30_000): Promise<Set<number>> {
       : `integration train (pid ${pid}) is finishing its cycle; it exits when the cycle ends`);
   }
   rmSync(p.pid, { force: true });
+  rmSync(p.restartRequest, { force: true });
   rmSync(paths(legacyDir()).pid, { force: true });
   return signalled;
 }
@@ -654,12 +798,42 @@ function restartArgs(given: string[], dir: string): string[] {
   return argv && at >= 0 ? argv.slice(at + 1) : [];
 }
 
+/** Pid named by `run-info.json`, written by a run loop that honours restart requests. */
+function runInfoPid(file: string): number | null {
+  try {
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as { pid?: unknown; restartRequests?: unknown };
+    return raw.restartRequests === true && typeof raw.pid === 'number' ? raw.pid : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Stop the train and start it again from this checkout, so it runs this
- * checkout's code. `scripts/prod-restart.sh` calls it after every deploy.
+ * Make the train run this checkout's code. `scripts/prod-restart.sh` calls it
+ * after every deploy (issue #3841):
+ * - a train that honours restart requests gets one and this returns at once.
+ *   It finishes its current cycle (verify, promote or revert), then
+ *   re-executes itself from this checkout with the same options;
+ * - no train running: start one;
+ * - `--now`, or a train started by older code that would ignore the request:
+ *   stop it (killing a verify in flight) and start a new one.
  */
-async function restart(given: string[]): Promise<void> {
-  const args = restartArgs(given, stateDir());
+async function restart(given: string[], now: boolean): Promise<void> {
+  const dir = stateDir();
+  const p = paths(dir);
+  const pid = runningTrainPid(dir);
+  if (!now && pid !== null && legacyTrainPid() === null && runInfoPid(p.runInfo) === pid) {
+    if (given.length > 0) parseArgs(['run', ...given]); // reject bad options now, not in the train
+    const request: RestartRequest = {
+      requestedAt: new Date().toISOString(), args: given, cwd: process.cwd(), script: fileURLToPath(import.meta.url),
+    };
+    const tmp = `${p.restartRequest}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(request, null, 2));
+    renameSync(tmp, p.restartRequest);
+    console.log(`restart requested: integration train (pid ${pid}) re-executes from ${process.cwd()} once its current cycle ends`);
+    return;
+  }
+  const args = restartArgs(given, dir);
   const signalled = await stop();
   startDetached(args, signalled);
 }
@@ -698,20 +872,31 @@ function resume(): void {
   console.log(`cleared halt "${was}"; the next cycle will run`);
 }
 
+/** The options without `--now`, keeping an option value that happens to read `--now`. */
+function withoutNowFlag(args: string[]): string[] {
+  const valued = new Set(['--interval', '--worktree', '--verify-cmd', '--workers']);
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (valued.has(args[i]) && i + 1 < args.length) out.push(args[i], args[++i]);
+    else if (args[i] !== '--now') out.push(args[i]);
+  }
+  return out;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
   switch (opts.command) {
     case 'cycle': installSignalHandlers(); process.exitCode = await cycleOnce(opts); return;
-    case 'run': await runForever(opts); return;
+    case 'run': await runForever(opts, argv.slice(1)); return;
     case 'start': startDetached(argv.slice(1)); return;
-    case 'restart': await restart(argv.slice(1)); return;
+    case 'restart': await restart(withoutNowFlag(argv.slice(1)), opts.now); return;
     case 'stop': await stop(); return;
     case 'status': status(); return;
     case 'logs': logs(); return;
     case 'resume': resume(); return;
     default:
-      console.error('usage: integration-train <cycle|run|start|restart|stop|status|logs|resume> [--interval <sec>] [--worktree <path>] [--verify-cmd "<cmd>"] [--workers <n>]');
+      console.error('usage: integration-train <cycle|run|start|restart [--now]|stop|status|logs|resume> [--interval <sec>] [--worktree <path>] [--verify-cmd "<cmd>"] [--workers <n>]');
       process.exitCode = 2;
   }
 }

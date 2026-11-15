@@ -260,6 +260,7 @@ export interface HealthLike {
     pid?: number | null;
     halted?: { reason?: string; at?: string } | null;
     lastCycle?: { at?: string; outcome?: string; reason?: string; detail?: string } | null;
+    restartPending?: { requestedAt?: string } | null;
     pendingSince?: string | null;
     alerting?: boolean;
     checkedAt?: string | null;
@@ -577,6 +578,7 @@ export interface IntegrationTrainSummary {
   halted: { reason: string } | null;
   lastCycle: { outcome: string; at: string; reason?: string } | null;
   pendingSince: string | null;
+  restartPending: boolean;
   alerting: boolean;
 }
 export function summarizeIntegrationTrain(

@@ -1230,6 +1230,25 @@ describe('kookr-status renderReport', () => {
     expect(renderReport({ port: 4800, health: baseHealth, agents: [] })).not.toContain('Integration train:');
   });
 
+  it('says when a restart of the integration train waits for its cycle to end (issue #3841)', () => {
+    const health = {
+      ...baseHealth,
+      integrationTrain: {
+        integrationBranch: 'staging',
+        running: true,
+        pid: 7,
+        halted: null,
+        lastCycle: null,
+        restartPending: { requestedAt: '2026-11-15T21:13:22.000Z' },
+        pendingSince: null,
+        alerting: false,
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] })).toContain(
+      'Integration train: running  branch=staging  lastCycle=none  pendingSince=none  restart pending',
+    );
+  });
+
   it('always surfaces maintenancePrune as a compact gauge when present (issue #2345)', () => {
     const health = {
       ...baseHealth,
@@ -4841,6 +4860,7 @@ describe('kookr-status summarizeIntegrationTrain (issue #3796)', () => {
       halted: { reason: 'base-red' },
       lastCycle: { outcome: 'halted', at: '2026-11-15T10:01:00.000Z', reason: 'base-red' },
       pendingSince: '2026-11-15T09:30:00.000Z',
+      restartPending: false,
       alerting: true,
     });
   });

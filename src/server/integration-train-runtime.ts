@@ -26,6 +26,13 @@ export function integrationTrainPaths(dir: string) {
     startArgs: join(dir, 'start-args.json'),
     /** Outcome of the newest finished cycle. */
     lastCycle: join(dir, 'last-cycle.json'),
+    /**
+     * Written by the run loop when it starts (pid, checkout HEAD). Its pid
+     * proves the running train understands restart requests (issue #3841).
+     */
+    runInfo: join(dir, 'run-info.json'),
+    /** A pending `restart`: the train re-executes itself once its cycle ends. */
+    restartRequest: join(dir, 'restart-request.json'),
   };
 }
 
@@ -151,6 +158,8 @@ export interface IntegrationTrainStatus {
   pid: number | null;
   halted: { reason: string; at: string } | null;
   lastCycle: IntegrationTrainLastCycle | null;
+  /** Set while a `restart` waits for the running train's cycle to end (issue #3841). */
+  restartPending: { requestedAt: string } | null;
 }
 
 function readJson(file: string): unknown {
@@ -171,9 +180,11 @@ export function readIntegrationTrainStatus(
   const state = readJson(p.state) as { halted?: { reason?: unknown; at?: unknown } | null } | null;
   const halt = state?.halted;
   const last = readJson(p.lastCycle) as Partial<IntegrationTrainLastCycle> | null;
+  const running = pid !== null && isTrain(pid);
+  const request = running ? readJson(p.restartRequest) as { requestedAt?: unknown } | null : null;
   return {
     stateDir: dir,
-    running: pid !== null && isTrain(pid),
+    running,
     pid,
     halted: halt && typeof halt.reason === 'string'
       ? { reason: halt.reason, at: typeof halt.at === 'string' ? halt.at : '' }
@@ -186,6 +197,7 @@ export function readIntegrationTrainStatus(
         ...(typeof last.detail === 'string' ? { detail: last.detail } : {}),
       }
       : null,
+    restartPending: request && typeof request.requestedAt === 'string' ? { requestedAt: request.requestedAt } : null,
   };
 }
 

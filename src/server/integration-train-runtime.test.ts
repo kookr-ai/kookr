@@ -71,8 +71,18 @@ describe('readIntegrationTrainStatus', () => {
       pid: 1234,
       halted: { reason: 'base-red', at: '2026-11-15T10:00:00Z' },
       lastCycle: { at: '2026-11-15T10:01:00Z', outcome: 'halted', reason: 'base-red' },
+      restartPending: null,
     });
     expect(readIntegrationTrainStatus(dir, () => false).running).toBe(false);
+  });
+
+  it('reports a restart pending only while the train that must honour it runs (issue #3841)', () => {
+    const dir = tmp();
+    writeFileSync(join(dir, 'train.pid'), '1234');
+    writeFileSync(join(dir, 'restart-request.json'), JSON.stringify({ requestedAt: '2026-11-15T21:13:22Z', args: [] }));
+    expect(readIntegrationTrainStatus(dir, (pid) => pid === 1234).restartPending).toEqual({ requestedAt: '2026-11-15T21:13:22Z' });
+    // a request left by a train that is gone is not pending: nothing will act on it
+    expect(readIntegrationTrainStatus(dir, () => false).restartPending).toBeNull();
   });
 
   it('is empty and never throws for a missing or corrupt directory', () => {

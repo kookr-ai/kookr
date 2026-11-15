@@ -4422,6 +4422,7 @@ describe('diagnostics routes', () => {
         pid: null,
         halted: { reason: 'base-red', at: '2026-11-15T10:00:00.000Z' },
         lastCycle: { at: '2026-11-15T10:01:00.000Z', outcome: 'halted', reason: 'base-red' },
+        restartPending: null,
         pendingSince: '2026-11-15T09:30:00.000Z',
         alerting: true,
         checkedAt: '2026-11-15T10:05:00.000Z',
