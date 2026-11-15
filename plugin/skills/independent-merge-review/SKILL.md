@@ -80,6 +80,19 @@ opted out, not a human-merge exception.
 
 ## Ordering: review and gate run concurrently on one head
 
+**Fast pre-push gate (check once per task).** Some repositories run only the tests related to a diff on each push and run the full suite later, on an integration branch, before anything reaches `main`. Find out which kind this repository is:
+
+```bash
+git show origin/main:.kookr/delivery-gate.json 2>/dev/null | jq -r '.prePushGate // empty' 2>/dev/null
+```
+
+- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. The merge wrapper (`pnpm merge`) retargets the PR to the integration branch; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
+- **It prints anything else, or nothing (no such file):** keep the full-suite steps below unchanged.
+
+With a fast pre-push gate, "the gate" below is the push's fast gate (static
+checks plus related tests), not a full-suite run; the rules otherwise apply
+unchanged. Without one, the gate is the full gate.
+
 In the session data behind #3691 (135 delivery sessions), a reviewer was active
 for only 0.3–4 min per round, while the full gate took 10–16 min. The time was
 lost by running review *after* the gate and then re-running the gate on the
@@ -144,10 +157,19 @@ live in `src/core/independent-review.ts`):
 kookr-review-verdict: pass        # or: block
 review-lane: codex                # or: claude
 review-head-sha: <full HEAD sha the reviewer actually reviewed>
+review-patch-id: <id>             # only when the repo has scripts/review-patch-id.sh
 
 ## Independent reviewer verdict: PASS
 <one-paragraph summary; for BLOCK, a numbered list of confirmed findings>
 ```
+
+**`review-patch-id:` (optional).** When the repository has
+`scripts/review-patch-id.sh`, also record the id of the exact file versions the
+PR changes: `git fetch origin <base>` then
+`bash scripts/review-patch-id.sh origin/<base>`, where `<base>` is the PR's base
+branch. It lets the `pass` survive a rebase that does not touch the files the
+PR changes, so a moved head does not force a second review. Omit the line when
+the script is absent.
 
 On a **hard-gate** repo, the merge wrapper depends on:
 
@@ -290,11 +312,20 @@ Instruct the reviewer to return a verdict:
 Translate the reviewer's result into the contract above and post it:
 
 ```bash
+# Patch id of the reviewed diff, only where the repo ships the script.
+PATCH_ID_LINE=""
+if [ -f scripts/review-patch-id.sh ]; then
+  BASE=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName)
+  git fetch --quiet origin "$BASE" \
+    && PATCH_ID=$(bash scripts/review-patch-id.sh "origin/$BASE" "$HEAD_SHA") \
+    && PATCH_ID_LINE="review-patch-id: $PATCH_ID"
+fi
 cat > /tmp/kookr-verdict-$PR.md <<EOF
 <!-- kookr-independent-review -->
 kookr-review-verdict: ${VERDICT}      # pass | block
 review-lane: ${LANE}                  # codex | claude
 review-head-sha: ${HEAD_SHA}
+${PATCH_ID_LINE}
 
 ## Independent reviewer verdict: $(printf '%s' "$VERDICT" | tr '[:lower:]' '[:upper:]')
 ${SUMMARY_AND_FINDINGS}

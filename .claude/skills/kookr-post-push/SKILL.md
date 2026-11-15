@@ -42,10 +42,11 @@ Read `mergeable` / `mergeStateStatus` right away.
 Read the PR body and clear any checklist items that are already complete.
 
 Typical Kookr checklist items:
-- Server type-check clean: `pnpm build:server`
-- E2E type-check clean: `pnpm check:e2e`
-- Tests pass: `pnpm test`
+- Fast pre-push gate passed (the hook's static checks plus the related tests; say how many test files it ran)
+- Targeted tests you ran yourself: the command and the counts
 - Manual verification: describe what was actually checked
+
+Do not add a "full suite passes" or `pnpm verify` item: nobody runs those per pull request here. The integration train runs `pnpm verify` on `staging` after the merge.
 
 Use the `[[kookr-pr-lifecycle]]` REST-update flow to keep the PR body current. Do not leave stale unchecked items behind.
 
@@ -72,11 +73,7 @@ gh api repos/{owner}/{repo}/pulls/{number}/comments
 
 If checks are still pending, poll for a short window rather than walking away. A practical default is up to about 5 minutes after PR creation or after a review-fix push.
 
-If the push changed tests, test helpers, mocks, or build/test harness code, re-run verification in the same runtime/version CI uses before considering the branch healthy. For example:
-
-- match the CI tool version when local and CI differ
-- treat platform-specific test setup as higher risk, especially for Windows
-- prefer one matrix-aligned rerun over assuming a targeted local pass is enough
+GitHub Actions is disabled on this repo, so `gh pr checks` normally reports no checks; that is expected, not an outage. If the push changed tests, test helpers, mocks, or build/test harness code, re-run the affected test files yourself; do not run the full suite. The integration train runs it on `staging`.
 
 ### 5. Hand off to the right existing flow
 
@@ -97,9 +94,11 @@ pnpm merge <PR_NUMBER>            # equivalent to:
 bash scripts/kookr-merge.sh <PR_NUMBER>
 ```
 
-The wrapper performs `gh pr checks --watch` and then squash-merges with
-`--delete-branch` once checks pass. It refuses to merge a closed, draft, or
-changes-requested PR. Use it instead of writing one-off `sleep` polling loops
+The wrapper first retargets a PR aimed at `main` to `staging` (the integration
+branch named in `.kookr/delivery-gate.json`), then waits for checks and
+squash-merges into `staging` and deletes the head branch. It refuses to merge a
+closed, draft, or changes-requested PR. Never merge into `main` or push to
+`main` or `staging` yourself. Use it instead of writing one-off `sleep` polling loops
 or scheduling wakeups. Do not invoke `gh pr merge --auto` on this repo.
 
 **Independent merge-review gate (issue #1717).** For an autonomous self-merge,
@@ -125,6 +124,18 @@ Before you say the branch is in good shape, report:
 - feedback: none / bot comments pending / review comments pending
 - independent review (before an autonomous merge): exact-head verdict `pass`/`block` (lane) / timeout-blocked / not yet run
 - next action: wait / fix / triage / merge-ready
+
+### 8. After the merge
+
+"Merged" means merged into `staging`. The task is done at that point. The
+integration train then runs the full `pnpm verify` on `staging` and
+fast-forwards `main` to the commit it verified; the linked issue closes then,
+not at the merge. If the train finds your change broke the suite, it reverts
+the PR on `staging` (a commit with the trailer `Kookr-Integration-Train: revert`),
+reopens the linked issue with the failing output, and spawns one task to fix and
+re-land it. To see what happened to a change: `pnpm train:status`,
+`pnpm train:logs`, and the reopened issue. See
+`docs/reference/integration-train.md`.
 
 Do not leave the user to ask whether CI, mergeability, or the post-push workflow was checked.
 

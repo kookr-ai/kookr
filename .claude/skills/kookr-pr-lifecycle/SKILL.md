@@ -14,11 +14,13 @@ End-to-end workflow for managing a pull request from creation through merge. Con
 Before creating a PR, run these checks (see also [[pre-pr-review]] and [[kookr-pre-push]]):
 
 ```bash
-pnpm build:server # must be clean
-pnpm check:e2e   # must be clean
-pnpm test         # must be green
+pnpm exec vitest run <the test files for what you changed>   # must be green
 git diff --stat   # review — no accidental files, no secrets
 ```
+
+Do not run the full `pnpm test` or `pnpm verify` for a pull request. `git push`
+runs the fast gate (static checks plus the tests related to the diff), and the
+integration train runs the full `pnpm verify` on `staging` after the merge.
 
 ### Pre-`gh pr create` duplicate-guard (mandatory)
 
@@ -68,20 +70,21 @@ pr_create_guard() {
 
 ## 2. Create the PR
 
-Target `staging` for feature/fix PRs. Target `main` only for hotfixes or docs-only changes.
+Open every PR against `main`, the default base (your worktree was cut from
+`origin/main`). Do not pass `--base staging`: `pnpm merge` retargets the PR to
+`staging` itself (§8).
 
 ```bash
 # Guard first — never open a duplicate PR (see §1):
 pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" "$N" || exit 1
 
-gh pr create --base staging --title "feat: short description" --body "$(cat <<'EOF'
+gh pr create --title "feat: short description" --body "$(cat <<'EOF'
 ## Summary
 - What was done
 
 ## Test plan
-- [ ] `pnpm test` passes
-- [ ] `pnpm build:server` clean
-- [ ] `pnpm check:e2e` clean
+- [ ] Fast pre-push gate passed (static checks + <N> related test files)
+- [ ] Targeted tests: `<command>` — <counts>
 - [ ] Manual verification (describe what to check)
 
 Closes #N
@@ -114,9 +117,8 @@ After `gh pr create`, scan the body for unchecked `[ ]` items. For each:
 
 | Item type | Action |
 |-----------|--------|
-| Tests pass | Run `pnpm test` and check off |
-| Server type-check | Run `pnpm build:server` and check off |
-| E2E type-check | Run `pnpm check:e2e` and check off |
+| Fast pre-push gate | Check off once `git push` passed; note how many related test files it ran |
+| Targeted tests | Run the test files for what you changed and record the counts |
 | Manual UI verification | Use Playwright to verify, then check off |
 | Requires human judgment | Flag explicitly to the user |
 
@@ -176,28 +178,22 @@ mutation {
 
 Do not wait to be asked — resolving threads is part of completing the fix.
 
-## 7. Staging → Main Merge
+## 7. After the Merge: the Integration Train
 
-After a staging PR is merged and validated, create a merge PR to main:
+There is no manual `staging` → `main` pull request; never open one. The
+integration train (`docs/reference/integration-train.md`) runs the full
+`pnpm verify` on `staging` and fast-forwards `main` to the exact commit it
+verified.
 
-```bash
-git checkout staging && git pull
-# A staging→main merge PR is not issue-scoped, so the §1 duplicate-guard does
-# not apply (its merged-<24h rule would false-abort routine merges). Guard only
-# against a second *open* staging→main PR for the same head:
-[ -z "$(gh pr list --head staging --base main --state open --json number -q '.[].number' 2>/dev/null)" ] \
-  || { echo "An open staging→main PR already exists — not creating a duplicate." >&2; exit 1; }
-gh pr create --base main --title "Staging" --body "$(cat <<'EOF'
-## Summary
-- Merge staging changes into main
-
-## Changes included
-- List the PRs/features included
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
-```
+- **"Merged" means merged into `staging`.** The task is done at that point.
+- **The linked issue closes when the change reaches `main`**, not at the merge.
+  The train closes it after promotion. `Closes #N` in the PR body is what links
+  it, so keep it there.
+- **If the train reverted your change**, it did three things: pushed a revert
+  commit to `staging` carrying the trailer `Kookr-Integration-Train: revert`,
+  reopened the linked issue with the failing output, and spawned one task to fix
+  and re-land it. Look at the reopened issue first, then `pnpm train:status` and
+  `pnpm train:logs`.
 
 ## 8. Merge & Head-Branch Cleanup
 
@@ -207,14 +203,15 @@ still shows a full stale diff and is PR-able a second time, producing net-no-op
 duplicate PRs — the 2026-07-26 duplicate-PR incident (issue #1572). Branch
 survival, not the merge method, is the root cause, so deletion is part of the
 merge step, never an optional follow-up. (This does **not** apply to the
-long-lived `staging` branch in §7's staging→main merge — never delete `staging`.)
+long-lived `staging` integration branch — never delete `staging`.)
 
-On this repo (private + Free plan, no auto-merge — issue #29) use the wrapper,
-which squash-merges **and deletes the branch** once checks pass:
+On this repo (no auto-merge — issue #29) use the wrapper. It retargets a PR
+aimed at `main` to `staging`, squash-merges it into `staging`, **and deletes the
+head branch**. Never merge into `main` or push to `main` or `staging` yourself.
 
 ```bash
 pnpm merge <PR_NUMBER>            # = bash scripts/kookr-merge.sh <PR_NUMBER>
-                                 # squash-merges with --delete-branch
+                                 # retarget to staging, squash-merge, delete branch
 ```
 
 For any other repo, delete the branch as part of the merge:
@@ -252,7 +249,7 @@ gh api "repos/<owner>/<repo>/branches/<head-branch>"   # expect: HTTP 404
 - **Never use `gh pr edit --body` or `gh pr edit --title`** — it fails with a GraphQL Projects Classic deprecation error
 - **Never leave checklist items unchecked** after they've been validated
 - **Never skip thread resolution** after pushing a review fix
-- **Never create a PR without running the repo checks first**
+- **Never create a PR without running the targeted tests first**; never run the full suite or `pnpm verify` per PR either (§1)
 - **Never run `gh pr create` without passing the pre-create duplicate-guard** (§1) — a CLOSED issue or an already-open/recently-merged head branch means the work already shipped
 - **Never leave a merged issue/feature head branch alive** (§8) — a surviving squash-merged branch is re-PR-able and produces net-no-op duplicate PRs (issue #1572); the long-lived `staging` branch is the sole exception
 

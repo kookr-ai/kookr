@@ -47,7 +47,7 @@ plugin/agents/         — Distributed review subagents
 - Agent monitoring: Claude Code hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) injected via `--settings` flag. Hooks are additive to user settings. See docs/poc/001-hook-mechanism-validation.md
 - Skill/agent distribution: Kookr Toolkit ships as a Claude Code plugin at `plugin/` with `.claude-plugin/marketplace.json` listing it. `ClaudeCodeAdapter` injects `--plugin-dir <kookr>/plugin` into every spawned `claude` so Kookr-spawned agents see the toolkit regardless of cwd. Other developers install via `/plugin marketplace add kookr-ai/kookr` + `/plugin install kookr-toolkit@kookr`.
 
-## CI policy: GitHub Actions is DISABLED — local verification is the merge gate (operator decision, standing)
+## CI policy: GitHub Actions is DISABLED — verification is local: the fast gate per push, the integration train before `main` (operator decision, standing)
 
 **GitHub Actions is turned OFF at the repository level for this repo.** Even
 though this repo is public (free minutes), its CI kept going red on real
@@ -68,13 +68,34 @@ outright rather than left to run:
   neutered): it is a legal CLA collector for outside contributors, not a
   test/CI gate. If Actions is ever re-enabled for legal reasons, CLA must work
   as-is. Do not neuter it as part of the CI-disable policy.
-- **Verify locally, fully, before opening the PR.** Typecheck, the full test
-  suite, and touched-surface gates run on this machine, are enforced by the
-  pre-push review hooks, and are the ONLY authoritative green. Record the
-  evidence (commands + summary counts) in the PR body.
-- **Then create the PR and merge it yourself** once local gates are green. There
-  are no GitHub checks to wait for — do not stall on pending checks, bot
-  reviewers, or a human unless the task explicitly says otherwise.
+- **Verification is split in two, and both halves run on this machine.**
+  - **Per pull request: the fast gate.** `git push` runs `.hooks/pre-push`.
+    Because `.kookr/delivery-gate.json` on `origin/main` sets
+    `"prePushGate": "fast"`, the hook runs the static checks (type-checks,
+    validators) plus only the tests related to the diff
+    (`scripts/fast-gate-tests.sh`), not the whole suite. Do not run
+    `pnpm verify` or the full `pnpm test` for a pull request; while iterating,
+    run the tests for the files you touched.
+  - **Before `main`: the integration train.** `pnpm merge <PR>` retargets the
+    pull request to `staging` and squash-merges it there. The integration train
+    (`docs/reference/integration-train.md`) runs the full `pnpm verify` on
+    `staging` and fast-forwards `main` to the exact commit it verified. That run
+    is the only authoritative full green. Nobody pushes to `main` or `staging`
+    directly.
+- **Record the evidence in the PR body:** the fast-gate result from your push
+  (passed, and how many related test files it ran) and the targeted tests you
+  ran yourself (commands and counts). Do not claim a full-suite run you did not
+  make.
+- **Then merge it yourself** with `pnpm merge <PR>` once the push passed and the
+  independent review returned `pass`. There are no GitHub checks to wait for —
+  do not stall on pending checks, bot reviewers, or a human unless the task
+  explicitly says otherwise. The task is done when the pull request is merged
+  into `staging`. Its linked issue closes later, when the train promotes the
+  change to `main`. If the train finds a failure, it reverts the offending pull
+  request on `staging`, reopens its issue with the failing output, and spawns
+  one task to fix and re-land it.
+- Branch every task from `origin/main`: it only ever holds commits the train
+  verified.
 - **Never** re-enable Actions, restore automatic triggers, add required status
   checks, alert about CI billing, file issues to "fix CI billing", propose
   paying for CI, or add workflows that consume paid minutes. This is a standing
