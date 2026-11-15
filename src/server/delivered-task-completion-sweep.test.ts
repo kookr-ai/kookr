@@ -39,8 +39,11 @@ import {
 import {
   autoCompleteDeliveredTasks,
   createDeliveredCompletionTracker,
+  createStoreDeliveredPrResolver,
   type AutoCompleteDeliveredDeps,
 } from './delivered-task-completion-sweep.js';
+import { GitHubStateStore } from '../core/github-state-store.js';
+import type { GitHubPRState, GitHubReference } from '../core/github-types.js';
 import { SignalOutboxService } from './signal-outbox-service.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
 
@@ -486,5 +489,90 @@ describe('autoCompleteDeliveredTasks (issue #1560)', () => {
     );
     expect(resumed.completedTaskIds).toEqual([id]);
     expect(taskStore.getTask(id)?.status).toBe('completed');
+  });
+});
+
+/**
+ * Issue #3746: the sweep wired to the PRODUCTION attribution
+ * (`createStoreDeliveredPrResolver` over a real `GitHubStateStore`), not a
+ * canned resolver — prod task 07eeed57 was completed over PR #855, merged five
+ * months before the task existed, because the agent merely saw its number.
+ */
+describe('autoCompleteDeliveredTasks over the GitHubStateStore attribution (issue #3746)', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  /** Record a merged PR seen in the task's own agent activity (not the prompt). */
+  function storeWithMergedPr(taskId: string, prNumber: number, mergedAt: Date | undefined): GitHubStateStore {
+    const store = new GitHubStateStore();
+    const ref: GitHubReference = {
+      type: 'pr',
+      owner: 'kookr-ai',
+      repo: 'kookr',
+      number: prNumber,
+      url: `https://github.com/kookr-ai/kookr/pull/${prNumber}`,
+      detectedAt: new Date(),
+      detectedFrom: `kookr-${taskId}`,
+      taskId,
+    };
+    store.addReference(ref);
+    const prState: GitHubPRState = {
+      ref,
+      title: 'feat/ux-dogfooding-rfc-and-fixes',
+      status: 'merged',
+      mergeable: 'UNKNOWN',
+      author: 'someone',
+      branch: 'feat/ux-dogfooding-rfc-and-fixes',
+      baseBranch: 'main',
+      reviewDecision: null,
+      reviewers: [],
+      unresolvedThreads: [],
+      totalComments: 0,
+      checks: [],
+      ...(mergedAt ? { mergedAt } : {}),
+      lastFetchedAt: new Date(),
+    };
+    store.updatePRState(prState);
+    return store;
+  }
+
+  /** Two sweep ticks: first sighting, then well past the budget. */
+  async function sweepPastBudget(taskStore: TaskStore, store: GitHubStateStore): Promise<string[]> {
+    const tracker = createDeliveredCompletionTracker();
+    const resolveMergedPr = createStoreDeliveredPrResolver(store);
+    const start = new Date();
+    await autoCompleteDeliveredTasks(baseDeps(taskStore, resolveMergedPr, { tracker, now: () => start }));
+    const later = plus(start, DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS * 2);
+    const r = await autoCompleteDeliveredTasks(baseDeps(taskStore, resolveMergedPr, { tracker, now: () => later }));
+    return r.completedTaskIds;
+  }
+
+  test('AC: a live task whose activity mentions a long-merged PR is never auto-completed', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const createdAt = taskStore.getTask(id)!.createdAt;
+    const store = storeWithMergedPr(id, 855, new Date(createdAt.getTime() - 157 * DAY_MS));
+
+    expect(await sweepPastBudget(taskStore, store)).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+  });
+
+  test('a PR merged after the task was created still auto-completes once the budget elapses', async () => {
+    // Positive control: same wiring, so the negative case above cannot pass vacuously.
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const createdAt = taskStore.getTask(id)!.createdAt;
+    const store = storeWithMergedPr(id, 3800, new Date(createdAt.getTime() + 60_000));
+
+    expect(await sweepPastBudget(taskStore, store)).toEqual([id]);
+    expect(taskStore.getTask(id)?.status).toBe('completed');
+  });
+
+  test('a merged PR with no recorded merge time is not treated as delivery', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const store = storeWithMergedPr(id, 855, undefined);
+
+    expect(await sweepPastBudget(taskStore, store)).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
   });
 });

@@ -196,6 +196,74 @@ describe('selectDeliveredMergedPr', () => {
     expect(selectDeliveredMergedPr([agentPr(1542, 'open')])).toBeNull();
     expect(selectDeliveredMergedPr([])).toBeNull();
   });
+
+  describe('notBefore — the task creation bound (issue #3746)', () => {
+    const TASK_CREATED = new Date('2026-11-14T13:56:12.000Z');
+    const mergedAt = (n: number, iso: string): TrackedPrRef => ({ ...agentPr(n), mergedAt: new Date(iso) });
+
+    it('never attributes a PR merged before the task existed', () => {
+      // Prod: task 07eeed57 was completed over PR #855, merged five months earlier.
+      expect(
+        selectDeliveredMergedPr([mergedAt(855, '2026-06-10T09:00:00.000Z')], { notBefore: TASK_CREATED }),
+      ).toBeNull();
+    });
+
+    it('rejects a PR merged one millisecond before creation and accepts one merged exactly at it', () => {
+      expect(
+        selectDeliveredMergedPr([mergedAt(1, '2026-11-14T13:56:11.999Z')], { notBefore: TASK_CREATED }),
+      ).toBeNull();
+      expect(
+        selectDeliveredMergedPr([mergedAt(2, '2026-11-14T13:56:12.000Z')], { notBefore: TASK_CREATED })?.prNumber,
+      ).toBe(2);
+    });
+
+    it('attributes a PR merged after creation', () => {
+      expect(
+        selectDeliveredMergedPr([mergedAt(3800, '2026-11-14T15:00:00.000Z')], { notBefore: TASK_CREATED }),
+      ).toEqual({
+        prNumber: 3800,
+        prUrl: 'https://github.com/kookr-ai/kookr/pull/3800',
+        owner: 'kookr-ai',
+        repo: 'kookr',
+      });
+    });
+
+    it('skips a stale PR listed first and returns the real delivery after it', () => {
+      expect(
+        selectDeliveredMergedPr(
+          [mergedAt(855, '2026-06-10T09:00:00.000Z'), mergedAt(3800, '2026-11-14T15:00:00.000Z')],
+          { notBefore: TASK_CREATED },
+        )?.prNumber,
+      ).toBe(3800);
+    });
+
+    it('fails closed when the merge time is unknown', () => {
+      expect(selectDeliveredMergedPr([agentPr(855)], { notBefore: TASK_CREATED })).toBeNull();
+    });
+
+    it('accepts an ISO-string creation time (persisted task records)', () => {
+      expect(
+        selectDeliveredMergedPr([mergedAt(855, '2026-06-10T09:00:00.000Z')], {
+          notBefore: '2026-11-14T13:56:12.000Z',
+        }),
+      ).toBeNull();
+      expect(
+        selectDeliveredMergedPr([mergedAt(3800, '2026-11-14T15:00:00.000Z')], {
+          notBefore: '2026-11-14T13:56:12.000Z',
+        })?.prNumber,
+      ).toBe(3800);
+    });
+
+    it('fails closed on an unparseable creation time', () => {
+      expect(
+        selectDeliveredMergedPr([mergedAt(3800, '2026-11-14T15:00:00.000Z')], { notBefore: 'not-a-date' }),
+      ).toBeNull();
+    });
+
+    it('without notBefore, keeps the pre-#3746 behaviour (merge time ignored)', () => {
+      expect(selectDeliveredMergedPr([mergedAt(855, '2026-06-10T09:00:00.000Z')])?.prNumber).toBe(855);
+    });
+  });
 });
 
 describe('buildDeliveredCompletionNote', () => {

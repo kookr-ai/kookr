@@ -79,7 +79,8 @@ import {
   type OpenPrHoldCandidate,
 } from '../core/open-pr-hold.js';
 import type { Task } from '../core/tasks.js';
-import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
+import type { MergedPrAttribution } from '../core/completion/index.js';
+import { createStoreDeliveredPrResolver } from './delivered-task-completion-sweep.js';
 import { createMergedPrByBranchProbe } from './merged-pr-by-branch-probe.js';
 import {
   countDeliveredPullRequests,
@@ -1158,22 +1159,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     setTrackedGithubRepos: (repos) => githubScanner.setTrackedGithubRepos(repos),
   });
 
-  // Delivery attribution for the delivered-completion sweep (issue #1560): the
-  // task's own merged PR. `selectDeliveredMergedPr` excludes PRs merely
-  // referenced in the task prompt (`detectedFrom === 'prompt'`) so a live task
-  // that mentions an already-merged PR is never force-completed — only PRs
-  // discovered from the agent's own activity count as delivery.
-  const resolveMergedPr = (task: Task): MergedPrAttribution | null =>
-    selectDeliveredMergedPr(
-      githubStateStore.getTaskState(task.id).prs.map((pr) => ({
-        status: pr.status,
-        number: pr.ref.number,
-        url: pr.ref.url,
-        owner: pr.ref.owner,
-        repo: pr.ref.repo,
-        detectedFrom: pr.ref.detectedFrom,
-      })),
-    );
+  // Delivery attribution for the delivered-completion sweep (issue #1560) and
+  // the reapers that share it: the task's own merged PR. Excludes PRs cited in
+  // the prompt and PRs merged before the task existed (issue #3746) — see
+  // `createStoreDeliveredPrResolver`.
+  const resolveMergedPr: (task: Task) => MergedPrAttribution | null =
+    createStoreDeliveredPrResolver(githubStateStore);
 
   // Label-only fallback for the TTL reapers (issue #3578): the in-memory store
   // above can be empty for a task that did merge its PR, so the reapers ask
