@@ -1576,3 +1576,132 @@ describe('inspectTaskWorktrees', () => {
     expect(await inspectTaskWorktrees(new TaskStore(), 'nope')).toEqual([]);
   });
 });
+
+describe('cleanupTaskWorktrees — playbook chain tips (issue #3743)', () => {
+  const CHAIN_CWD = '/wt/chain';
+
+  function setupCleanWorktree() {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'log': '',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+      'worktree prune': '',
+      'branch -d': 'Deleted branch feature (was abc1234).\n',
+    });
+  }
+
+  /** A completed task with a clean, merged worktree session at CHAIN_CWD. */
+  function completedTask(
+    taskStore: TaskStore,
+    session: string,
+    chain?: { chainId: string; iteration: number; maxIterations?: number },
+  ) {
+    const task = taskStore.createTask({
+      prompt: 'Chain iteration',
+      cwd: CHAIN_CWD,
+      ...(chain
+        ? { chain: { maxIterations: 5, ...chain, startedAt: new Date().toISOString(), unhealthyStreak: 0 } }
+        : {}),
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: session,
+      agentType: 'claude-code',
+      cwd: CHAIN_CWD,
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+      gitCommit: 'abc123',
+    });
+    taskStore.completeTask(task.id);
+    return task;
+  }
+
+  function endChain(taskStore: TaskStore, taskId: string) {
+    taskStore.updateChain(taskId, (chain) => ({
+      ...chain,
+      ended: { at: new Date().toISOString(), reason: 'iterations_reached' },
+    }));
+  }
+
+  test('a finished iteration waiting for its successor keeps its worktree', async () => {
+    const taskStore = new TaskStore();
+    const tip = completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    const { log, events } = makeFakeLog();
+    setupCleanWorktree();
+
+    expect(await cleanupTaskWorktrees(taskStore, tip.id, log)).toBe(0);
+
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({ type: 'worktree_skipped', reason: 'shared' }));
+    expect(taskStore.getTask(tip.id)!.sessions[0].worktreeHealth).not.toBe('cleaned_up');
+  });
+
+  test('the inspection reports the live tip as a user of the worktree', async () => {
+    const taskStore = new TaskStore();
+    const tip = completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    setupCleanWorktree();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, tip.id, CHAIN_CWD);
+
+    expect(verdict.removable).toBe(false);
+    expect(verdict.blocker).toBe('shared-with-active-task');
+  });
+
+  test('another finished task cannot remove the cwd of a live chain tip', async () => {
+    const taskStore = new TaskStore();
+    completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    const unrelated = completedTask(taskStore, 's2');
+    const { log, events } = makeFakeLog();
+    setupCleanWorktree();
+
+    await cleanupTaskWorktrees(taskStore, unrelated.id, log);
+
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({ type: 'worktree_skipped', reason: 'shared' }));
+  });
+
+  test('an ended chain no longer holds its worktree', async () => {
+    const taskStore = new TaskStore();
+    const tip = completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    endChain(taskStore, tip.id);
+    setupCleanWorktree();
+
+    expect(await cleanupTaskWorktrees(taskStore, tip.id)).toBe(1);
+
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith(CHAIN_CWD, expect.anything());
+  });
+
+  test('the final iteration releases its worktree before the sweep marks the chain ended', async () => {
+    const taskStore = new TaskStore();
+    // maxIterations reached: the next sweep will end the chain, not launch.
+    const last = completedTask(taskStore, 's1', { chainId: '', iteration: 3, maxIterations: 3 });
+    setupCleanWorktree();
+
+    expect(await cleanupTaskWorktrees(taskStore, last.id)).toBe(1);
+  });
+
+  test('a tip with a stop request releases its worktree', async () => {
+    const taskStore = new TaskStore();
+    const tip = completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    taskStore.updateChain(tip.id, (chain) => ({
+      ...chain,
+      stopRequest: { at: new Date().toISOString(), by: 'operator' },
+    }));
+    setupCleanWorktree();
+
+    expect(await cleanupTaskWorktrees(taskStore, tip.id)).toBe(1);
+  });
+
+  test('an older iteration does not hold the worktree once a newer one has ended the chain', async () => {
+    const taskStore = new TaskStore();
+    // Iteration 1 never got its successorTaskId link (for example, the link
+    // write was lost), so only the newer iteration shows it is not the tip.
+    const first = completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    const second = completedTask(taskStore, 's2', { chainId: first.id, iteration: 2 });
+    endChain(taskStore, second.id);
+    setupCleanWorktree();
+
+    expect(await cleanupTaskWorktrees(taskStore, first.id)).toBe(1);
+  });
+});
