@@ -69,7 +69,8 @@ const EFFORT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhig
 const GPT_6_ASTRA_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 // #1518: known model base ids for CLI fast-fail. Keep in sync with
 // ALL_MODEL_IDS and the per-agent model-id lists in
-// src/shared/contracts/agent-types.ts.
+// src/shared/contracts/agent-types.ts (CLAUDE_MODEL_IDS is parity-tested against
+// CLAUDE_CODE_MODEL_IDS in src/cli/claude-model-allowlist-parity.test.ts).
 // Dated suffixes (e.g. claude-haiku-4-5-20251001) are accepted when they start
 // with a known base. Authoritative agent-specific check still runs server-side.
 const CLAUDE_MODEL_IDS = [
