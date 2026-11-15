@@ -10,6 +10,15 @@ set -u
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || exit 1
 
+# git exports GIT_DIR into this hook (a caller may add GIT_WORK_TREE /
+# GIT_INDEX_FILE). Every lane below inherits them, so a test that runs a bare
+# `git init` / `git commit` in a temp dir writes into THIS worktree instead —
+# a stray commit on the branch being pushed (issue #3647). Clear them now that
+# REPO_ROOT is resolved and we are cd'd into it: the hook's own git calls (and
+# the hooks/*.sh helpers) then find the repo by normal discovery from cwd,
+# which resolves main checkouts and linked worktrees alike.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 # --- Delete-only push fast-path -------------------------------------------
 # git feeds the hook one line per pushed ref on stdin:
 #   <local ref> <local sha> <remote ref> <remote sha>
