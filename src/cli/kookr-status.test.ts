@@ -28,6 +28,7 @@ import {
   summarizeLessonYield,
   summarizeOssAttempts,
   summarizeMaintenancePrune,
+  summarizeIntegrationTrain,
   summarizeStartupRecovery,
   renderReport,
   parsePortEnv,
@@ -1208,6 +1209,25 @@ describe('kookr-status renderReport', () => {
   it('is a no-op when ossAttempts is absent (issue #2332)', () => {
     expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
       .not.toContain('OSS attempts:');
+  });
+
+  it('shows the integration train and flags one that is not running (issue #3796)', () => {
+    const health = {
+      ...baseHealth,
+      integrationTrain: {
+        integrationBranch: 'staging',
+        running: false,
+        pid: null,
+        halted: null,
+        lastCycle: { at: '2026-11-15T10:01:00.000Z', outcome: 'promoted' },
+        pendingSince: '2026-11-15T10:30:00.000Z',
+        alerting: true,
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] })).toContain(
+      'Integration train: NOT RUNNING  branch=staging  lastCycle=promoted at 2026-11-15T10:01:00.000Z  pendingSince=2026-11-15T10:30:00.000Z  STALL ALERT',
+    );
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] })).not.toContain('Integration train:');
   });
 
   it('always surfaces maintenancePrune as a compact gauge when present (issue #2345)', () => {
@@ -4793,6 +4813,35 @@ describe('kookr-status boundStatusJson (issue #2846)', () => {
     expect(bounded.details).toMatchObject({
       summary: { statusCounts: { inProgress: 0, completed: 0 }, totalCost: 12.5 },
       health: { capacity: { pendingQueueDepth: 7 } },
+    });
+  });
+});
+
+describe('kookr-status summarizeIntegrationTrain (issue #3796)', () => {
+  it('returns null when the block is absent or malformed', () => {
+    expect(summarizeIntegrationTrain({ status: 'ok' })).toBeNull();
+    expect(summarizeIntegrationTrain({ integrationTrain: { running: 'yes' } } as never)).toBeNull();
+  });
+
+  it('projects running, halt, last cycle and the stall alert', () => {
+    expect(summarizeIntegrationTrain({
+      integrationTrain: {
+        integrationBranch: 'staging',
+        running: true,
+        pid: 12,
+        halted: { reason: 'base-red', at: 'x' },
+        lastCycle: { at: '2026-11-15T10:01:00.000Z', outcome: 'halted', reason: 'base-red', detail: 'long' },
+        pendingSince: '2026-11-15T09:30:00.000Z',
+        alerting: true,
+      },
+    })).toEqual({
+      integrationBranch: 'staging',
+      running: true,
+      pid: 12,
+      halted: { reason: 'base-red' },
+      lastCycle: { outcome: 'halted', at: '2026-11-15T10:01:00.000Z', reason: 'base-red' },
+      pendingSince: '2026-11-15T09:30:00.000Z',
+      alerting: true,
     });
   });
 });

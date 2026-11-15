@@ -827,6 +827,12 @@ export interface RouteDeps {
    */
   prodSmokeTick?: Pick<import('../prod-smoke-tick.js').ProdSmokeTick, 'getHealthSnapshot'>;
   /**
+   * Integration train liveness monitor (issue #3796). `/api/health` reads only
+   * `getHealthSnapshot()`: the last remote-ref check plus the train's state
+   * files, never git on the request path. Absent when the monitor is disabled.
+   */
+  integrationTrainMonitor?: Pick<import('../integration-train-monitor.js').IntegrationTrainMonitor, 'getHealthSnapshot'>;
+  /**
    * Optional systemd readiness/watchdog notifier (issues #2491, #2853).
    * `/api/health` reads only its in-memory configuration and helper completion
    * snapshot (`sendHealth`) to project the notifier block —

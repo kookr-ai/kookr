@@ -434,6 +434,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // the durable alert artifact only — never re-run smoke checks here. Absent
     // when the tick is disabled (dep not wired).
     const prodSmokeTickBlock = deps.prodSmokeTick?.getHealthSnapshot();
+    // Integration train (issue #3796): running, halt, last cycle, stall alert.
+    const integrationTrainBlock = deps.integrationTrainMonitor?.getHealthSnapshot() ?? null;
     const idempotencyLedgerBlock = deps.idempotencyLedger?.getMetrics();
 
     // #808 / R10: surface the revocation sweep liveness + viewer count + grant
@@ -1034,6 +1036,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // unwired (partial test harnesses) or the bounded read errored.
       ...(auditLogSizesBlock ? { auditLogSizes: auditLogSizesBlock } : {}),
       ...(prodSmokeTickBlock ? { prodSmokeTick: prodSmokeTickBlock } : {}),
+      ...(integrationTrainBlock ? { integrationTrain: integrationTrainBlock } : {}),
       ...(idempotencyLedgerBlock ? { idempotencyLedger: idempotencyLedgerBlock } : {}),
       // systemd notifier arming (issue #2853): process-local readiness/watchdog
       // state only — externalUnitStatus is always "unknown" (no systemctl probe).

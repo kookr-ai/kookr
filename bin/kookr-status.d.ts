@@ -253,6 +253,18 @@ export interface HealthLike {
    * Scheduled data-directory prune schedule state (issue #2345). Present when
    * the tracker is wired (always on current servers, including enabled=false).
    */
+  /** Integration train state (issue #3796). Present when an integration branch is configured. */
+  integrationTrain?: {
+    integrationBranch?: string;
+    running?: boolean;
+    pid?: number | null;
+    halted?: { reason?: string; at?: string } | null;
+    lastCycle?: { at?: string; outcome?: string; reason?: string; detail?: string } | null;
+    pendingSince?: string | null;
+    alerting?: boolean;
+    checkedAt?: string | null;
+    lastError?: string;
+  };
   maintenancePrune?: {
     enabled?: boolean;
     intervalHours?: number;
@@ -558,6 +570,18 @@ export function summarizeLessonYield(
 export function summarizeOssAttempts(
   health: HealthLike,
 ): OssAttemptsSummary | null;
+export interface IntegrationTrainSummary {
+  integrationBranch: string;
+  running: boolean;
+  pid: number | null;
+  halted: { reason: string } | null;
+  lastCycle: { outcome: string; at: string; reason?: string } | null;
+  pendingSince: string | null;
+  alerting: boolean;
+}
+export function summarizeIntegrationTrain(
+  health: HealthLike,
+): IntegrationTrainSummary | null;
 export function summarizeMaintenancePrune(
   health: HealthLike,
 ): MaintenancePruneSummary | null;

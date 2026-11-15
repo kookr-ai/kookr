@@ -4403,6 +4403,36 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — integrationTrain block (issue #3796)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health integrationTrain block (issue #3796)', () => {
+    const base = () => ({ taskStore: new TaskStore(), queue: new AttentionQueue(), buildInfo: {} as never });
+
+    test('omits the block when the monitor is off or no integration branch is configured', async () => {
+      for (const deps of [base(), { ...base(), integrationTrainMonitor: { getHealthSnapshot: () => null } }]) {
+        const body = (await (await mkApp(deps).request('/api/health')).json()) as Record<string, unknown>;
+        expect(body).not.toHaveProperty('integrationTrain');
+      }
+    });
+
+    test('projects the train state from the monitor snapshot', async () => {
+      const snapshot = {
+        integrationBranch: 'staging',
+        running: false,
+        pid: null,
+        halted: { reason: 'base-red', at: '2026-11-15T10:00:00.000Z' },
+        lastCycle: { at: '2026-11-15T10:01:00.000Z', outcome: 'halted', reason: 'base-red' },
+        pendingSince: '2026-11-15T09:30:00.000Z',
+        alerting: true,
+        checkedAt: '2026-11-15T10:05:00.000Z',
+      };
+      const res = await mkApp({ ...base(), integrationTrainMonitor: { getHealthSnapshot: () => snapshot } }).request('/api/health');
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { integrationTrain?: unknown }).integrationTrain).toEqual(snapshot);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — prodSmokeTick block (issue #2031)
   // ---------------------------------------------------------------------------
   describe('GET /api/health prodSmokeTick block (issue #2031)', () => {

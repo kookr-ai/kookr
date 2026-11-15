@@ -58,6 +58,7 @@ import {
 import type { ProdSmokeTick } from './prod-smoke-tick.js';
 import type { DeployLagDetector } from './deploy-lag-detector.js';
 import type { DeployConvergenceController } from './deploy-convergence-controller.js';
+import type { IntegrationTrainMonitor } from './integration-train-monitor.js';
 import { pruneLoopDeliveryWatchdog, type LoopDeliveryWatchdogRegistry } from '../core/loop-delivery-watchdog.js';
 import {
   autoCompleteDeliveredTasks,
@@ -588,6 +589,14 @@ export interface TimerDeps {
    */
   deployConvergenceController?: DeployConvergenceController;
   /**
+   * Optional integration train liveness monitor (issue #3796). When provided, a
+   * dedicated interval alerts the operator when the integration branch has
+   * differed from `main` past a threshold while the train is not running or is
+   * halted. It never starts or resumes the train. `maybeRun()` never throws and
+   * guards against pile-up itself.
+   */
+  integrationTrainMonitor?: IntegrationTrainMonitor;
+  /**
    * Optional relay-orphan sweep (issue #1723). When `intervalHours > 0`
    * (resolved from `KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS`, default off), a
    * dedicated interval reaps leaked `relay/server.ts` processes whose task
@@ -673,6 +682,9 @@ export interface TimerHandles {
   deployConvergenceInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the deploy-convergence startup fire (issue #2635) is pending. */
   deployConvergenceStartupTimer: ReturnType<typeof setTimeout> | null;
+  /** Null unless the integration train monitor (issue #3796) was configured. */
+  integrationTrainMonitorInterval: ReturnType<typeof setInterval> | null;
+  integrationTrainMonitorStartupTimer: ReturnType<typeof setTimeout> | null;
   /** Null unless the relay-orphan sweep (issue #1723) was configured. */
   relayOrphanSweepInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the relay-orphan sweep startup reclaim (issue #1885) is pending. */
@@ -2725,6 +2737,29 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
+  // --- Integration train liveness monitor (issue #3796), optional ---
+  let integrationTrainMonitorInterval: ReturnType<typeof setInterval> | null = null;
+  let integrationTrainMonitorStartupTimer: ReturnType<typeof setTimeout> | null = null;
+  const integrationTrainMonitor = deps.integrationTrainMonitor;
+  if (integrationTrainMonitor) {
+    const intervalMs = integrationTrainMonitor.hostIntervalMs;
+    console.log(`[integration-train-monitor] enabled (every ${Math.round(intervalMs / 60_000)}m)`);
+    timerHealth?.register('integrationTrainMonitor', intervalMs);
+    integrationTrainMonitorStartupTimer = scheduleNonCriticalStartupTick({
+      delayMs: HOURLY_SAFETY_NET_STARTUP_DELAY_MS,
+      name: 'integrationTrainMonitor',
+      intervalMs,
+      gate: nonCriticalTickPause,
+      timerHealth,
+      run: () => { void integrationTrainMonitor.maybeRun(); },
+    });
+    integrationTrainMonitorInterval = setInterval(() => {
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'integrationTrainMonitor')) return;
+      timerHealth?.recordFire('integrationTrainMonitor', intervalMs);
+      void integrationTrainMonitor.maybeRun();
+    }, intervalMs);
+  }
+
   return {
     tokenScanInterval,
     watchdogInterval,
@@ -2741,6 +2776,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     deployLagDetectorStartupTimer,
     deployConvergenceInterval,
     deployConvergenceStartupTimer,
+    integrationTrainMonitorInterval,
+    integrationTrainMonitorStartupTimer,
     relayOrphanSweepInterval,
     relayOrphanSweepStartupTimer,
     hostStaleDtachReapInterval,
@@ -2782,6 +2819,8 @@ export function clearAllTimers(handles: TimerHandles): void {
   if (handles.deployLagDetectorStartupTimer) clearTimeout(handles.deployLagDetectorStartupTimer);
   if (handles.deployConvergenceInterval) clearInterval(handles.deployConvergenceInterval);
   if (handles.deployConvergenceStartupTimer) clearTimeout(handles.deployConvergenceStartupTimer);
+  if (handles.integrationTrainMonitorInterval) clearInterval(handles.integrationTrainMonitorInterval);
+  if (handles.integrationTrainMonitorStartupTimer) clearTimeout(handles.integrationTrainMonitorStartupTimer);
   if (handles.relayOrphanSweepInterval) clearInterval(handles.relayOrphanSweepInterval);
   if (handles.relayOrphanSweepStartupTimer) clearTimeout(handles.relayOrphanSweepStartupTimer);
   if (handles.hostStaleDtachReapInterval) clearInterval(handles.hostStaleDtachReapInterval);
