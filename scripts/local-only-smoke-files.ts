@@ -48,6 +48,8 @@ export function assertKookrDiff(before: FileSnapshot, after: FileSnapshot): void
       || entry === 'server.lock.sqlite'
       || entry === 'last-good-health.json'
       || entry === 'timer-health.state.json'
+      // The plugin auto-update store is written at server startup (auto-update-store.ts).
+      || entry === 'plugin-auto-update.json'
       || /^tasks\.json\.pre-sqlite-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/.test(entry)
     )) return true;
     return entry === 'tasks.json'
