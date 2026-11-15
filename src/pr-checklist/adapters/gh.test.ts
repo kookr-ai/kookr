@@ -33,6 +33,7 @@ describe('extractFromGhCommand', () => {
     // A plain variable is expanded by the shell, so the command text is not the title.
     expect(extractFromGhCommand(`gh pr create --title "$TITLE" --body b`)?.title).toBeNull();
     expect(extractFromGhCommand(`gh pr create -t "feat: $X" --body b`)?.title).toBeNull();
+    expect(extractFromGhCommand('gh pr create --title "`git log -1 --format=%s`" --body b')?.title).toBeNull();
   });
 
   it('extracts an inline --body and default (null) base', () => {

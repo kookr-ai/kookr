@@ -96,7 +96,8 @@ export function lintConventionalTitle(title: string): string[] {
   }
   if (!subject.trim()) problems.push('the subject after the colon is empty');
   else {
-    if (subject.endsWith('.')) problems.push('the subject must not end with a full stop');
+    // commitlint exempts a trailing ellipsis from subject-full-stop.
+    if (subject.endsWith('.') && !subject.endsWith('...')) problems.push('the subject must not end with a full stop');
     if (isForbiddenSubjectCase(subject)) {
       problems.push('the subject must not start with a capital letter or be all upper-case');
     }
