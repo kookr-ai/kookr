@@ -12,7 +12,7 @@ import {
   type LaunchResult,
   type LaunchTaskServerOptions,
 } from './launch-service.js';
-import { CHAIN_IDLE_COMPLETE_MS, CHAIN_SIGNAL_CLOSE_CEILING_MS, CHAIN_SIGNAL_SETTLE_MS, PlaybookChainService } from './playbook-chain-service.js';
+import { CHAIN_HELD_LOG_INTERVAL_MS, CHAIN_IDLE_COMPLETE_MS, CHAIN_SIGNAL_CLOSE_CEILING_MS, CHAIN_SIGNAL_SETTLE_MS, PlaybookChainService } from './playbook-chain-service.js';
 import type { PreparePlaybookLaunchInput, PreparedPlaybookLaunch } from './use-cases/playbook-launch.js';
 
 const HOUR = 60 * 60_000;
@@ -26,7 +26,11 @@ afterEach(() => {
  * contract the service relies on: it creates the task with the server-only
  * `chain` stamp, then starts it with one session.
  */
-function harness(opts: { launchImpl?: (o: LaunchOpts, s?: LaunchTaskServerOptions) => Promise<LaunchResult> } = {}) {
+function harness(opts: {
+  launchImpl?: (o: LaunchOpts, s?: LaunchTaskServerOptions) => Promise<LaunchResult>;
+  flushTasks?: () => Promise<void>;
+  logger?: { info: (msg: string) => void; warn: (msg: string) => void };
+} = {}) {
   // One clock for everything: TaskStore stamps createdAt/finishedAt with
   // `new Date()`, the service reads `now()`; both must agree.
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -99,6 +103,8 @@ function harness(opts: { launchImpl?: (o: LaunchOpts, s?: LaunchTaskServerOption
     completeIteration: completeIdleIteration,
     preparePlaybookLaunch: prepare,
     now: () => new Date(nowMs),
+    ...(opts.flushTasks ? { flushTasks: opts.flushTasks } : {}),
+    ...(opts.logger ? { logger: opts.logger } : {}),
   });
 
   return {
@@ -276,16 +282,16 @@ describe('PlaybookChainService.stopChain', () => {
     const first = await startResearchChain(h, { maxIterations: 5 });
     h.finish(first);
     await h.service.sweep();
-    const result = h.service.stopChain(first.id, 'agent', 'no questions left');
+    const result = await h.service.stopChain(first.id, 'agent', 'no questions left');
     expect(result).toMatchObject({ ok: true, alreadyRequested: false });
     const tip = h.service.findTip(first.chain!.chainId)!;
     expect(tip.chain!.stopRequest).toMatchObject({ by: 'agent', reason: 'no questions left' });
-    expect(h.service.stopChain(tip.id, 'operator')).toMatchObject({ ok: true, alreadyRequested: true });
+    expect(await h.service.stopChain(tip.id, 'operator')).toMatchObject({ ok: true, alreadyRequested: true });
     h.finish(tip);
     await h.service.sweep();
     expect(h.launches).toHaveLength(2);
     expect(h.service.findTip(first.chain!.chainId)!.chain!.ended).toMatchObject({ reason: 'stopped', detail: 'no questions left' });
-    expect(h.service.stopChain(first.id, 'operator')).toMatchObject({ ok: false, status: 409 });
+    expect(await h.service.stopChain(first.id, 'operator')).toMatchObject({ ok: false, status: 409 });
   });
 
   it('carries a stop that lands while the successor launch is in flight onto the new tip', async () => {
@@ -307,7 +313,7 @@ describe('PlaybookChainService.stopChain', () => {
     h.finish(first);
     const sweeping = h.service.sweep();
     await Promise.resolve();
-    expect(h.service.stopChain(first.id, 'operator', 'enough')).toMatchObject({ ok: true });
+    expect(await h.service.stopChain(first.id, 'operator', 'enough')).toMatchObject({ ok: true });
     release();
     await sweeping;
     const tip = h.service.findTip(first.chain!.chainId)!;
@@ -315,11 +321,40 @@ describe('PlaybookChainService.stopChain', () => {
     expect(tip.chain!.stopRequest).toMatchObject({ reason: 'enough' });
   });
 
-  it('rejects tasks that are not in a chain', () => {
+  it('rejects tasks that are not in a chain', async () => {
     const h = harness();
     const plain = h.taskStore.createTask({ prompt: 'p', cwd: '/repo' });
-    expect(h.service.stopChain(plain.id, 'operator')).toMatchObject({ ok: false, status: 409 });
-    expect(h.service.stopChain('nope', 'operator')).toMatchObject({ ok: false, status: 404 });
+    expect(await h.service.stopChain(plain.id, 'operator')).toMatchObject({ ok: false, status: 409 });
+    expect(await h.service.stopChain('nope', 'operator')).toMatchObject({ ok: false, status: 404 });
+  });
+
+  it('saves the stop request before acknowledging it', async () => {
+    let saved: unknown;
+    // eslint-disable-next-line prefer-const
+    let h: ReturnType<typeof harness>;
+    const flushTasks = vi.fn(async () => {
+      saved = h.service.findTip(first.chain!.chainId)!.chain!.stopRequest;
+    });
+    h = harness({ flushTasks });
+    const first = await startResearchChain(h, { maxIterations: 5 });
+    expect(await h.service.stopChain(first.id, 'operator', 'enough')).toMatchObject({ ok: true, alreadyRequested: false });
+    expect(flushTasks).toHaveBeenCalledTimes(1);
+    expect(saved).toMatchObject({ by: 'operator', reason: 'enough' });
+    // A repeated request also waits for the save: the first may not have landed yet.
+    expect(await h.service.stopChain(first.id, 'operator')).toMatchObject({ ok: true, alreadyRequested: true });
+    expect(flushTasks).toHaveBeenCalledTimes(2);
+    // Refusals record nothing, so there is nothing to save.
+    expect(await h.service.stopChain('nope', 'operator')).toMatchObject({ ok: false });
+    expect(flushTasks).toHaveBeenCalledTimes(2);
+  });
+
+  it('still acknowledges a stop whose save failed, and logs it', async () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const h = harness({ flushTasks: async () => { throw new Error('disk full'); }, logger });
+    const first = await startResearchChain(h, { maxIterations: 5 });
+    expect(await h.service.stopChain(first.id, 'operator')).toMatchObject({ ok: true });
+    expect(h.service.findTip(first.chain!.chainId)!.chain!.stopRequest).toBeDefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('not yet saved: disk full'));
   });
 });
 
@@ -559,6 +594,54 @@ describe('launch errors that only hold a chain', () => {
     expect(calls).toBe(7);
   });
 
+  it('logs a long hold once per interval, at once when its reason changes, and afresh after a launch', async () => {
+    let hold: 'safe_mode' | 'project_automation' | undefined;
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    // eslint-disable-next-line prefer-const
+    let h: ReturnType<typeof harness>;
+    h = harness({
+      logger,
+      launchImpl: async (o, s) => {
+        if (hold) throw new AutomationKillSwitchError(hold);
+        const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, parentTaskId: o.parentTaskId, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
+        h.taskStore.startTask(task.id);
+        h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
+        return { task: h.taskStore.getTask(task.id)!, queued: false } as LaunchResult;
+      },
+    });
+    const heldLines = () => logger.info.mock.calls.map(([msg]) => String(msg)).filter((msg) => msg.includes('next iteration held'));
+    const first = await startResearchChain(h, { maxIterations: 5 });
+    h.finish(first);
+
+    hold = 'safe_mode';
+    for (let i = 0; i < 10; i++) {
+      await h.service.sweep();
+      h.advance(15_000);
+    }
+    expect(heldLines()).toHaveLength(1);
+    expect(heldLines()[0]).toContain('SAFE MODE');
+
+    h.advance(CHAIN_HELD_LOG_INTERVAL_MS);
+    await h.service.sweep();
+    expect(heldLines()).toHaveLength(2);
+    expect(heldLines()[1]).toContain('held on 9 more checks since the last report');
+
+    hold = 'project_automation';
+    await h.service.sweep();
+    expect(heldLines()).toHaveLength(3);
+    expect(heldLines()[2]).toContain('Project automation paused');
+
+    hold = undefined;
+    await h.service.sweep();
+    const second = h.service.findTip(first.chain!.chainId)!;
+    expect(second.chain!.iteration).toBe(2);
+    h.finish(second);
+    hold = 'project_automation';
+    await h.service.sweep();
+    expect(heldLines()).toHaveLength(4);
+    expect(heldLines()[3]).not.toContain('more checks');
+  });
+
   it('resets the failure count after a successful launch', async () => {
     const plan = ['ok', 'fail', 'fail', 'ok', 'fail', 'fail', 'ok'];
     let call = 0;
@@ -676,7 +759,7 @@ describe('review fixes', () => {
         const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, parentTaskId: o.parentTaskId, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
         if (calls === 2) {
           // The operator asks to stop while this launch is in flight...
-          h.service.stopChain(o.parentTaskId!, 'operator', 'enough');
+          await h.service.stopChain(o.parentTaskId!, 'operator', 'enough');
           // ...and the launch then fails after creating the task.
           h.taskStore.terminateTask(task.id, { reason: 'unknown' });
           throw new Error('agent failed to boot');

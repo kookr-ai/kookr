@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 
 import type { Monitor } from '../../core/monitor.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
+import { isChainSettled } from '../../shared/contracts/playbook-chain.js';
 import { isAgedTerminalTask, taskSnapshotRecencyMs } from './snapshot-projection.js';
 
 /**
@@ -155,7 +156,9 @@ export function selectPrunableTasks(
   // The chain service treats the member with the highest iteration as the
   // chain's live tip: pruning an unfinished tip would lose the chain, and
   // pruning only an ended tip would make its predecessor the tip again and
-  // relaunch a finished chain.
+  // relaunch a finished chain. "Unfinished" is the service's own test
+  // (`isChainSettled`): a newest member that already links a successor (which
+  // was then deleted) is settled too, so such a chain is not kept forever.
   const chainMembers = new Map<string, Task[]>();
   for (const task of tasks) {
     if (!task.chain) continue;
@@ -169,7 +172,7 @@ export function selectPrunableTasks(
     changed = false;
     for (const members of chainMembers.values()) {
       const tip = members.reduce((a, b) => (b.chain!.iteration > a.chain!.iteration ? b : a));
-      const keepWhole = !tip.chain!.ended || members.some((member) => !prunable.has(member.id));
+      const keepWhole = !isChainSettled(tip.chain!) || members.some((member) => !prunable.has(member.id));
       if (!keepWhole) continue;
       for (const member of members) {
         if (prunable.delete(member.id)) changed = true;

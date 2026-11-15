@@ -2235,6 +2235,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Called only after startup (sweeps, routes), by which time the snapshot
     // broadcaster wired below exists.
     onChanged: () => requestSnapshotBroadcast(),
+    flushTasks: flushLaunchTaskState,
     logger: console,
   });
   lifecycleDeps.onPendingTaskPromoted = async (task) => {

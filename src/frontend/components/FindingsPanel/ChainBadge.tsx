@@ -88,6 +88,17 @@ export function ChainBadge({ agent }: { agent: AgentState }): React.ReactElement
   );
 }
 
+/**
+ * Confirmation shown after a stop is accepted. A tip whose iteration already
+ * finished (it waits for the next sweep to launch its successor) has no
+ * "this iteration" left to wait for: the chain ends at that sweep.
+ */
+function stopChainToast(taskStatus: AgentState['taskStatus']): string {
+  return taskStatus === 'completed'
+    ? 'This iteration has already finished, so the chain will end within about 15 seconds without launching another.'
+    : 'The chain will stop after this iteration.';
+}
+
 /** "Stop chain" button, shown only on the active tip of a chain without a pending stop. */
 export function ChainStopButton({ agent }: { agent: AgentState }): React.ReactElement | null {
   const [pending, setPending] = useState(false);
@@ -99,7 +110,7 @@ export function ChainStopButton({ agent }: { agent: AgentState }): React.ReactEl
     setPending(true);
     try {
       await stopPlaybookChain(taskId!);
-      useKookrStore.getState().handleAlert('', 'The chain will stop after this iteration.', 'info');
+      useKookrStore.getState().handleAlert('', stopChainToast(agent.taskStatus), 'info');
     } catch (err) {
       useKookrStore.getState().handleAlert('', `Could not stop chain: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {

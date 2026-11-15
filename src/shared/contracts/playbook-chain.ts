@@ -98,6 +98,17 @@ export const CHAIN_MAX_DURATION_MINUTES = 7 * 24 * 60;
 export const CHAIN_TIME_ONLY_SAFETY_CAP = 50;
 
 /**
+ * True once a chain member no longer carries live chain state: the chain ended
+ * on it, or a successor was linked to it. The chain service never advances a
+ * settled tip, and pruning may drop a chain whose newest member is settled
+ * (its successor may have been deleted by hand, so the chain never got an
+ * `ended` marker). Shared so the service and pruning agree.
+ */
+export function isChainSettled(chain: TaskChainState): boolean {
+  return Boolean(chain.ended || chain.successorTaskId);
+}
+
+/**
  * True for the task that currently carries a chain's live state: not ended,
  * not yet followed by a successor, and (when the other tasks are given) the
  * newest iteration of its chain. Deleting it would silently lose the chain,
@@ -108,7 +119,7 @@ export function isLiveChainTip(
   allTasks?: Iterable<{ chain?: TaskChainState }>,
 ): boolean {
   const chain = task.chain;
-  if (!chain || chain.ended || chain.successorTaskId) return false;
+  if (!chain || isChainSettled(chain)) return false;
   if (allTasks) {
     for (const other of allTasks) {
       if (other.chain?.chainId === chain.chainId && other.chain.iteration > chain.iteration) return false;
@@ -122,5 +133,5 @@ export const LIVE_CHAIN_TIP_DELETE_ERROR =
   'This task is the current iteration of a running playbook chain, and deleting it would lose the chain. '
   + 'If it has finished, press "Stop chain" on its row (or run `kookr chain stop <taskId>`) and delete it once '
   + 'its badge shows the chain as ended, within about 15 seconds. If it is still running, cancel it first: '
-  + 'that ends the chain at once.';
+  + 'the chain then ends within about 15 seconds, and the task can be deleted after that.';
 

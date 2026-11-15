@@ -54,7 +54,7 @@ describe('POST /api/playbook-chains', () => {
 
 describe('POST /api/tasks/:id/chain/stop', () => {
   it('records the requester and returns the fields the CLI prints', async () => {
-    const stopChain = vi.fn(() => ({ ok: true as const, tip: { id: 'tip', chain: { chainId: 'c', iteration: 4 } } as never, alreadyRequested: false }));
+    const stopChain = vi.fn(async () => ({ ok: true as const, tip: { id: 'tip', chain: { chainId: 'c', iteration: 4 } } as never, alreadyRequested: false }));
     const res = await post(app({ startChain: okStart(), stopChain }), '/api/tasks/any/chain/stop', { by: 'agent', reason: 'done' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, chainId: 'c', tipTaskId: 'tip', iteration: 4, alreadyRequested: false });
@@ -63,9 +63,9 @@ describe('POST /api/tasks/:id/chain/stop', () => {
 
   it('defaults to an operator stop with an empty body, and passes through 404/409', async () => {
     const stopChain = vi.fn()
-      .mockReturnValueOnce({ ok: true, tip: { id: 'tip', chain: { chainId: 'c', iteration: 1 } }, alreadyRequested: true })
-      .mockReturnValueOnce({ ok: false, status: 404, error: 'Task not found: x' })
-      .mockReturnValueOnce({ ok: false, status: 409, error: 'Chain already ended (stopped)' });
+      .mockResolvedValueOnce({ ok: true, tip: { id: 'tip', chain: { chainId: 'c', iteration: 1 } }, alreadyRequested: true })
+      .mockResolvedValueOnce({ ok: false, status: 404, error: 'Task not found: x' })
+      .mockResolvedValueOnce({ ok: false, status: 409, error: 'Chain already ended (stopped)' });
     const a = app({ startChain: okStart(), stopChain });
     const empty = await a.request('/api/tasks/t/chain/stop', { method: 'POST' });
     expect(empty.status).toBe(200);

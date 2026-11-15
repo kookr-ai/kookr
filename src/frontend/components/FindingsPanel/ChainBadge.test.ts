@@ -61,7 +61,7 @@ describe('parseRepeatInputs', () => {
 });
 
 describe('ChainStopButton', () => {
-  async function render(chain: TaskChainState) {
+  async function render(chain: TaskChainState, taskStatus?: string) {
     const React = await import('react');
     const { act } = await import('react');
     const { createRoot } = await import('react-dom/client');
@@ -71,7 +71,7 @@ describe('ChainStopButton', () => {
     document.body.appendChild(container);
     const root = createRoot(container);
     act(() => {
-      root.render(React.createElement(ChainStopButton, { agent: { agentId: 'a', taskId: 'tip-1', chain } as never }));
+      root.render(React.createElement(ChainStopButton, { agent: { agentId: 'a', taskId: 'tip-1', chain, taskStatus } as never }));
     });
     return { container, act, root };
   }
@@ -85,6 +85,23 @@ describe('ChainStopButton', () => {
     await act(async () => { button.click(); });
     expect(fetchMock).toHaveBeenCalledWith('/api/tasks/tip-1/chain/stop', expect.objectContaining({ method: 'POST', body: JSON.stringify({ by: 'operator' }) }));
     act(() => root.unmount());
+    vi.unstubAllGlobals();
+  });
+
+  it('confirms a stop on a running iteration as stopping after it, and on a finished one as ending shortly', async () => {
+    const { useKookrStore } = await import('../../store/useStore.js');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })));
+    const handleAlert = vi.spyOn(useKookrStore.getState(), 'handleAlert').mockImplementation(() => {});
+    for (const [taskStatus, expected] of [
+      ['inProgress', 'The chain will stop after this iteration.'],
+      ['completed', 'This iteration has already finished, so the chain will end within about 15 seconds without launching another.'],
+    ] as const) {
+      const { container, act, root } = await render({ ...base, maxIterations: 10 }, taskStatus);
+      await act(async () => { container.querySelector('button')!.click(); });
+      expect(handleAlert).toHaveBeenLastCalledWith('', expected, 'info');
+      act(() => root.unmount());
+    }
+    handleAlert.mockRestore();
     vi.unstubAllGlobals();
   });
 
