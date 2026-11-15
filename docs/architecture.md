@@ -567,7 +567,7 @@ kookr/
 │   │   ├── shadow-report.ts               # Offline shadow report generator
 │   │   ├── self-diagnostic.ts             # Runtime self-diagnostic
 │   │   ├── turn-state.ts                  # Current-turn state derivation
-│   │   ├── background-parked.ts           # Shared "Stop parked on background work" predicate (turn-state + anomaly-detector)
+│   │   ├── background-parked.ts           # Shared "Stop parked on background work" predicates (turn-state; anomaly-detector + watchdog question-park exception)
 │   │   ├── activity-ledger.ts             # Persistent activity log
 │   │   ├── attention-miss-review.ts       # Attention miss review helpers
 │   │   ├── finding-evidence-audit.ts      # Evidence audit model

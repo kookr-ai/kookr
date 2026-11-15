@@ -56,7 +56,11 @@ event (the agent finished its turn — `detectNeedsInput`), or a trailing
 `AskUserQuestion` tool call with no subsequent `tool_result`/`input_received`
 resolving it (`detectAskUserQuestion`). The watchdog
 (`src/core/watchdog.ts`) also raises it when the pane shows a confident input
-prompt and the agent is stale.
+prompt and the agent is stale. A Stop that parks the agent on its own
+background work (a `run_in_background` shell or session cron) does not raise
+it — unless its last message ends in a question to the operator, which is
+raised immediately on the event path and by the watchdog once the agent is
+stale (issue #3569).
 
 **Recommended response.** Read the explanation (it includes the last assistant
 message), inspect the terminal if needed, then send a reply or hint. Kookr
@@ -160,7 +164,9 @@ relaunch.
 whose last turn ended parked on its own background work (a
 `run_in_background` shell or session cron reported by the Stop hook) is not
 flagged at all while the park is younger than `backgroundParkGracePeriodMs`
-(default 45 min) — its silence is expected. The default sits below the
+(default 45 min) — its silence is expected. Exception: a park whose last
+message ends in a question to the operator is raised as `needs_input`
+instead (issue #3569). The default sits below the
 hungSuspect-TTL ceiling (60 min) on purpose: a park that outlives the bound
 surfaces as `stale_agent` before the TTL reclaim can act on it. Snooze the
 finding to pause monitoring for a chosen duration (F3.7).
