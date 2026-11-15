@@ -102,9 +102,9 @@ export interface PlaybookChainServiceDeps {
   /** Called after any chain state change or successor launch so the dashboard refreshes. */
   onChanged?: (taskId: string) => void;
   /**
-   * Write the task store to disk now. Called after recording a stop request,
-   * so a stop the caller was told about survives a crash before the periodic
-   * save.
+   * Write the task store to disk now. Called after recording a stop request
+   * (and after carrying one over to a just-launched successor), so a stop the
+   * caller was told about survives a crash before the periodic save.
    */
   flushTasks?: () => Promise<void>;
   now?: () => Date;
@@ -347,7 +347,7 @@ export class PlaybookChainService {
       task.chain?.chainId === tip.chain!.chainId && task.chain.iteration === decision.next.iteration);
     if (existing) {
       this.heldLog.delete(tip.chain.chainId);
-      this.linkSuccessor(tip.id, existing.id);
+      await this.linkSuccessor(tip.id, existing.id);
       return;
     }
 
@@ -356,7 +356,7 @@ export class PlaybookChainService {
       const result = await this.launchSuccessor(tip, decision.next);
       this.launchFailures.delete(chainId);
       this.heldLog.delete(chainId);
-      this.linkSuccessor(tip.id, result.task.id);
+      await this.linkSuccessor(tip.id, result.task.id);
       this.deps.logger?.info?.(
         `[playbook-chain] chain ${chainId}: launched iteration ${decision.next.iteration} as task ${result.task.id}`
         + `${result.queued ? ' (queued)' : ''}`,
@@ -373,7 +373,7 @@ export class PlaybookChainService {
       const created = this.deps.taskStore.viewTasks().find((task) =>
         task.chain?.chainId === chainId && task.chain.iteration === decision.next.iteration);
       if (created) {
-        this.linkSuccessor(tip.id, created.id);
+        await this.linkSuccessor(tip.id, created.id);
         this.deps.logger?.warn?.(`[playbook-chain] chain ${chainId}: iteration ${decision.next.iteration} failed to start: ${message}`);
         return;
       }
@@ -492,13 +492,17 @@ export class PlaybookChainService {
   /**
    * Record that `predecessorId` advanced to `successorId`. A stop request that
    * landed on the predecessor while the successor was being launched is
-   * carried over, so it is never lost whichever way the launch went.
+   * carried over, so it is never lost whichever way the launch went. The copy
+   * is saved at once: the launch already saved the successor without it, and
+   * after a crash the successor is the tip.
    */
-  private linkSuccessor(predecessorId: string, successorId: string): void {
+  private async linkSuccessor(predecessorId: string, successorId: string): Promise<void> {
     this.deps.taskStore.updateChain(predecessorId, (chain) => ({ ...chain, successorTaskId: successorId }));
     const stopRequest = this.deps.taskStore.getTask(predecessorId)?.chain?.stopRequest;
     if (stopRequest && !this.deps.taskStore.getTask(successorId)?.chain?.stopRequest) {
       this.deps.taskStore.updateChain(successorId, (chain) => ({ ...chain, stopRequest }));
+      const chainId = this.deps.taskStore.getTask(successorId)?.chain?.chainId ?? successorId;
+      await this.flushStop(chainId);
     }
   }
 

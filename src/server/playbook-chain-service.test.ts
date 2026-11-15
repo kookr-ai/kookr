@@ -308,7 +308,11 @@ describe('PlaybookChainService.stopChain', () => {
       h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
       return { task: h.taskStore.getTask(task.id)!, queued: false } as LaunchResult;
     };
-    h = harness({ launchImpl: slowLaunch });
+    const savedStops: unknown[] = [];
+    const flushTasks = vi.fn(async () => {
+      savedStops.push(h.service.findTip(h.taskStore.viewTasks()[0].chain!.chainId)?.chain?.stopRequest);
+    });
+    h = harness({ launchImpl: slowLaunch, flushTasks });
     const first = await startResearchChain(h, { maxIterations: 5 });
     h.finish(first);
     const sweeping = h.service.sweep();
@@ -319,6 +323,9 @@ describe('PlaybookChainService.stopChain', () => {
     const tip = h.service.findTip(first.chain!.chainId)!;
     expect(tip.chain!.iteration).toBe(2);
     expect(tip.chain!.stopRequest).toMatchObject({ reason: 'enough' });
+    // The copy onto the new tip is saved too: after a crash, that task is the tip.
+    expect(flushTasks).toHaveBeenCalledTimes(2);
+    expect(savedStops[1]).toMatchObject({ reason: 'enough' });
   });
 
   it('rejects tasks that are not in a chain', async () => {
@@ -329,20 +336,31 @@ describe('PlaybookChainService.stopChain', () => {
   });
 
   it('saves the stop request before acknowledging it', async () => {
-    let saved: unknown;
+    let releaseSave!: () => void;
+    let savedStop: unknown;
     // eslint-disable-next-line prefer-const
     let h: ReturnType<typeof harness>;
-    const flushTasks = vi.fn(async () => {
-      saved = h.service.findTip(first.chain!.chainId)!.chain!.stopRequest;
+    const flushTasks = vi.fn(() => {
+      savedStop = h.service.findTip(first.chain!.chainId)!.chain!.stopRequest;
+      return new Promise<void>((resolve) => { releaseSave = resolve; });
     });
     h = harness({ flushTasks });
     const first = await startResearchChain(h, { maxIterations: 5 });
-    expect(await h.service.stopChain(first.id, 'operator', 'enough')).toMatchObject({ ok: true, alreadyRequested: false });
+    let acknowledged = false;
+    const stopping = h.service.stopChain(first.id, 'operator', 'enough').then((result) => { acknowledged = true; return result; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(flushTasks).toHaveBeenCalledTimes(1);
-    expect(saved).toMatchObject({ by: 'operator', reason: 'enough' });
-    // A repeated request also waits for the save: the first may not have landed yet.
-    expect(await h.service.stopChain(first.id, 'operator')).toMatchObject({ ok: true, alreadyRequested: true });
+    expect(savedStop).toMatchObject({ by: 'operator', reason: 'enough' });
+    // Not acknowledged while the save is still running.
+    expect(acknowledged).toBe(false);
+    releaseSave();
+    expect(await stopping).toMatchObject({ ok: true, alreadyRequested: false });
+    // A repeated request also waits for a save: the first may not have landed yet.
+    const again = h.service.stopChain(first.id, 'operator');
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(flushTasks).toHaveBeenCalledTimes(2);
+    releaseSave();
+    expect(await again).toMatchObject({ ok: true, alreadyRequested: true });
     // Refusals record nothing, so there is nothing to save.
     expect(await h.service.stopChain('nope', 'operator')).toMatchObject({ ok: false });
     expect(flushTasks).toHaveBeenCalledTimes(2);
