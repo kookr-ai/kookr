@@ -29,7 +29,7 @@ import { appendFileSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { splitCommands } from './merge-retarget-guard.mjs';
+import { bothSplits } from './merge-retarget-guard.mjs';
 
 function logError(message) {
   try {
@@ -97,9 +97,11 @@ function computedRmTarget(words) {
 
 /** The computed target of the first recursive `rm` in `command`, or null to allow. */
 export function decide(command) {
-  for (const words of splitCommands(command)) {
-    const target = computedRmTarget(words);
-    if (target !== null) return target;
+  for (const commands of bothSplits(command)) {
+    for (const words of commands) {
+      const target = computedRmTarget(words);
+      if (target !== null) return target;
+    }
   }
   return null;
 }

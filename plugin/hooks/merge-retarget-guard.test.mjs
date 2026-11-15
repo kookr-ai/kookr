@@ -144,6 +144,15 @@ describe('merge-retarget-guard', () => {
     expect(hook('cat <<EOF > notes.md\npnpm merge 3802\ngh pr merge 1\nEOF\nls', stale)).toBeNull();
     expect(hook('git merge --no-edit origin/main', stale)).toBeNull();
   });
+
+  it('still denies a merge after a # that bash does not read as a comment', () => {
+    for (const prefix of ['l=${l%% #*}', 'echo ${x:- #y}', 'echo ${x:+ #}', 'echo ${x/ #/_}', 'echo `echo a #b`', 'x=`ls #`']) {
+      expect(hook(`${prefix}; pnpm merge 1`, stale), prefix).toMatch(/predates/);
+    }
+    expect(hook('[[ $l =~ ^( #|$) ]] && pnpm merge 1', stale)).toMatch(/predates/);
+    // A real comment with an apostrophe does not hide the next line either.
+    expect(hook("# don't skip it\npnpm merge 1", stale)).toMatch(/predates/);
+  });
 });
 
 describe('splitCommands', () => {
@@ -152,12 +161,12 @@ describe('splitCommands', () => {
       ['cd', '/x'], ['pnpm', '-s', 'merge', '1'], ['echo', 'a; b'], ['tee', 'f'],
     ]);
     expect(splitCommands("cat <<'EOF'\npnpm merge 1\nEOF\nls")).toEqual([['cat'], ['ls']]);
-    expect(splitCommands("# don't merge yet\npnpm merge 1")).toEqual([['pnpm', 'merge', '1']]);
-    expect(splitCommands('echo a # b; c\nls')).toEqual([['echo', 'a'], ['ls']]);
+    expect(splitCommands("# don't merge yet\npnpm merge 1", { comments: true })).toEqual([['pnpm', 'merge', '1']]);
+    expect(splitCommands('echo a # b; c\nls', { comments: true })).toEqual([['echo', 'a'], ['ls']]);
     expect(splitCommands('jq . <<< "$x"\npnpm merge 1')).toEqual([['jq', '.', '$x'], ['pnpm', 'merge', '1']]);
     // A `#` inside a word, or right after `(` or `)`, does not start a comment.
     for (const src of ['echo $#', 'echo ${#x}', 'echo a#b', 'echo "x"#y', 'f=out-$(date +%s)#1', '[[ $l =~ ^(#|$) ]]', 'echo $((16#ff))#y']) {
-      expect(splitCommands(`${src}; pnpm merge 1`).at(-1), src).toEqual(['pnpm', 'merge', '1']);
+      expect(splitCommands(`${src}; pnpm merge 1`, { comments: true }).at(-1), src).toEqual(['pnpm', 'merge', '1']);
     }
     expect(splitCommands('(cd /y && bash scripts/kookr-merge.sh 2)')).toEqual([
       ['cd', '/y'], ['bash', 'scripts/kookr-merge.sh', '2'],

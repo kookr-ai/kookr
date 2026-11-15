@@ -65,6 +65,8 @@ describe('rm-dynamic-path-guard', () => {
     expect(hook('jq . <<< "$json"\nrm -rf "$D"')).not.toBeNull();
     expect(hook('# rm -rf "$D" is denied\nls')).toBeNull();
     expect(hook('echo $(date)#x; rm -rf "$D"')).not.toBeNull();
+    expect(hook('l=${l%% #*}; rm -rf "$D"')).not.toBeNull();
+    expect(hook('x=`ls #`; rm -rf "$D"')).not.toBeNull();
   });
 
   it('allows literal paths, non-recursive rm and git rm', () => {

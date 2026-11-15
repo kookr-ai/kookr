@@ -61,11 +61,17 @@ function run(cmd, args, cwd, timeout = 5_000) {
 /**
  * Splits a shell command into simple commands, each a list of words. Quotes are
  * honoured (a quoted `;` or `gh pr merge` stays inside one word), heredoc bodies
- * and `#` comments are dropped, a `<<<` here-string is not taken for a heredoc,
- * and `;`, `&&`, `||`, `|`, `&`, newlines and parentheses end a
- * command. Not a full shell parser; enough to find what runs at command position.
+ * are dropped, a `<<<` here-string is not taken for a heredoc, and `;`, `&&`,
+ * `||`, `|`, `&`, newlines and parentheses end a command. Not a full shell
+ * parser; enough to find what runs at command position.
+ *
+ * With `comments: true`, a `#` that starts a word after a blank or an operator
+ * also skips the rest of the line, so an apostrophe in a comment opens no
+ * quote. That rule is approximate (bash does not start a comment inside `${…}`
+ * or backticks), so a guard must not trust that split alone: check both splits
+ * with `bothSplits` and deny if either one denies.
  */
-export function splitCommands(src) {
+export function splitCommands(src, { comments = false } = {}) {
   const commands = [];
   let words = [];
   let word = '';
@@ -107,10 +113,9 @@ export function splitCommands(src) {
       i = j;
       continue;
     }
-    if (c === '#' && !inWord && (i === 0 || /[\s;&|]/.test(src[i - 1]))) {
-      // Comment: skip to the end of the line (an apostrophe in it opens no quote).
-      // Only at the start of a word that follows a blank or an operator, as in
-      // bash: in `$(date)#x` or `^(#|$)` the `#` is part of a word.
+    if (comments && c === '#' && !inWord && (i === 0 || /[\s;&|]/.test(src[i - 1]))) {
+      // Comment: skip to the end of the line. In `$(date)#x` or `^(#|$)` the
+      // `#` follows no blank, so it stays part of a word.
       const eol = src.indexOf('\n', i);
       i = (eol === -1 ? src.length : eol) - 1;
       continue;
@@ -342,11 +347,22 @@ function examine(words, state) {
 }
 
 /** Denial reason for the whole command, or null to allow. */
+/**
+ * The command split without and with comment handling. A guard that denies
+ * when either split denies sees at least what the plain split sees, so the
+ * approximate comment rule can add a denial but never hide a command.
+ */
+export function bothSplits(src) {
+  return [splitCommands(src), splitCommands(src, { comments: true })];
+}
+
 export function decide(command, cwd) {
-  const state = { dir: cwd || process.cwd() };
-  for (const words of splitCommands(command)) {
-    const reason = examine(words, state);
-    if (reason) return reason;
+  for (const commands of bothSplits(command)) {
+    const state = { dir: cwd || process.cwd() };
+    for (const words of commands) {
+      const reason = examine(words, state);
+      if (reason) return reason;
+    }
   }
   return null;
 }
