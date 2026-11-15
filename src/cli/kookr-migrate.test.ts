@@ -260,3 +260,33 @@ describe('parseArgs --json guard', () => {
     expect(() => parseArgs(['--to', 'codex-cli', '--all', '--json'])).toThrowError(/--json requires --yes/);
   });
 });
+
+describe('same-agent hint (issue #3671)', () => {
+  it('plan output points same_agent_use_restore tasks at `kookr reopen`', async () => {
+    const { formatPlan } = await import('../../bin/kookr-migrate.js');
+    const text = formatPlan(
+      { eligible: [], blocked: [{ taskId: 't1', eligible: false, reason: 'same_agent_use_restore' }], notFound: [] },
+      'claude-code',
+    );
+    expect(text).toContain('same_agent_use_restore: 1');
+    expect(text).toContain('kookr reopen <taskId>');
+  });
+
+  it('plan output without a same-agent block carries no reopen hint', async () => {
+    const { formatPlan } = await import('../../bin/kookr-migrate.js');
+    const text = formatPlan(
+      { eligible: [], blocked: [{ taskId: 't1', eligible: false, reason: 'cwd_gone' }], notFound: [] },
+      'claude-code',
+    );
+    expect(text).not.toContain('kookr reopen');
+  });
+
+  it('results output points a same-agent block at `kookr reopen`', async () => {
+    const { formatResults } = await import('../../bin/kookr-migrate.js');
+    const text = formatResults({
+      targetAgent: 'claude-code',
+      results: [{ taskId: 't1', outcome: 'blocked', reason: 'same_agent_use_restore' }],
+    });
+    expect(text).toContain('kookr reopen <taskId>');
+  });
+});

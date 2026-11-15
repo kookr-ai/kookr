@@ -1222,6 +1222,41 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     }
   });
 
+  // Reopen a terminal task from the CLI (issue #3671): the same
+  // `reopenTask` lifecycle command as the dashboard's Reopen button. The task is
+  // re-queued and relaunched (immediately when a slot is free), and `resume`
+  // reports whether the relaunch continues the prior conversation, starts
+  // fresh by design, or cannot resume it and why. Supervisor-gated like
+  // `/complete`, since it launches an agent on an existing task.
+  app.post('/api/tasks/:id/reopen', async (c) => {
+    if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
+      return supervisorUnauthorizedResponse(c);
+    }
+    const id = c.req.param('id');
+    if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
+
+    try {
+      const result = await lifecycleCommands.reopenTask(id);
+      if (result.outcome === 'not_found') {
+        return c.json({ error: 'Task not found' }, 404);
+      }
+      if (result.outcome === 'invalid') {
+        // The relaunch was attempted and failed: the task changed state, so the
+        // dashboard must see it even though the call reports an error.
+        if (result.code === 'reopen_launch_failed') broadcastSnapshotWithCoordinator();
+        return c.json({ error: result.error, code: result.code }, 409);
+      }
+      if (result.outcome !== 'reopened') {
+        return c.json({ error: `unexpected reopen outcome: ${result.outcome}` }, 500);
+      }
+      broadcastSnapshotWithCoordinator();
+      return c.json({ ok: true, task: result.task, resume: result.resume });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
   // Cross-agent task migration (RFC: rfc-cross-agent-task-migration). Continue
   // interrupted tasks under a DIFFERENT, user-chosen agent by creating linked
   // continuation tasks through the ordinary launch path. Single / id-batch /

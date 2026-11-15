@@ -109,6 +109,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--json', '-h', '--help'],
   },
   {
+    // Reopen a terminal task (#3671). Positional is the task id; keep in sync
+    // with src/cli/kookr-reopen.ts.
+    name: 'reopen',
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     // Agent -> operator multiple-choice question over Telegram (RFC kookr-ask);
     // keep in sync with src/cli/kookr-ask.ts.
     name: 'ask',
@@ -483,6 +489,7 @@ function renderBashCompletion(): string {
   const abortFlags = flagsFor('abort');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
+  const reopenFlags = flagsFor('reopen');
   const askFlags = flagsFor('ask');
   const peekFlags = flagsFor('peek');
   const superviseFlags = flagsFor('supervise');
@@ -631,6 +638,9 @@ _kookr()
       ;;
     reply)
       COMPREPLY=( $(compgen -W "${replyFlags}" -- "\${cur}") )
+      ;;
+    reopen)
+      COMPREPLY=( $(compgen -W "${reopenFlags}" -- "\${cur}") )
       ;;
     ask)
       COMPREPLY=( $(compgen -W "${askFlags}" -- "\${cur}") )
@@ -876,6 +886,7 @@ function renderZshCompletion(): string {
   const abortFlags = flagsFor('abort');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
+  const reopenFlags = flagsFor('reopen');
   const askFlags = flagsFor('ask');
   const peekFlags = flagsFor('peek');
   const superviseFlags = flagsFor('supervise');
@@ -980,6 +991,9 @@ _kookr()
       ;;
     reply)
       compadd -- ${replyFlags}
+      ;;
+    reopen)
+      compadd -- ${reopenFlags}
       ;;
     ask)
       compadd -- ${askFlags}

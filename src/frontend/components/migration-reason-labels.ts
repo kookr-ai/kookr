@@ -10,7 +10,7 @@ const MIGRATION_REASON_LABELS: Record<string, string> = {
   status_not_migratable: "Task status doesn't support migration",
   workflow_owner_unsupported: 'Managed by an unsupported workflow (Ralph loop)',
   already_migrated: 'Already has an active migration',
-  same_agent_use_restore: 'Same agent — use Restore instead',
+  same_agent_use_restore: 'Same agent — use Reopen instead',
   target_agent_unavailable: "Target agent isn't available right now",
   live_session_exists: 'Task is still running — stop it first, then migrate',
   missing_cwd: 'No working directory on record',

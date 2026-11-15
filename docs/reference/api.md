@@ -249,6 +249,7 @@ capacity).
 | `POST /api/supervisions/:id/end` | End a supervision on the operator's say-so: records `endedReason: "operator"`, so the server stops waking its supervisor and never restarts it. Cancels **no** task (not the supervisor, not the targets). Idempotent. Returns `{ ok: true, supervision }`; 404 `{error}` for an unknown id |
 | `POST /api/tasks` | Create and launch a new task |
 | `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive), tear down its idle session, and apply the saved worktree-cleanup policy. Supervisor endpoint — see below |
+| `POST /api/tasks/:id/reopen` | Reopen a terminal task (the dashboard's Reopen button) and report whether its relaunch resumes the prior conversation. Supervisor endpoint — see below |
 | `POST /api/tasks/:id/signal` | Raise an agent → user signal (e.g. `completion_ready`); schedules delayed auto-completion when the task opted into `autoCloseOnSignal` |
 | `POST /api/tasks/abort` | Idempotent batch abort: cancel the given `taskIds` (with an optional operator `reason`), interrupting each live session. Returns a per-task result (`aborted`/`already_terminal`/`not_found`/`failed`) and a summary; retries are safe. Supervisor endpoint — see below |
 | `POST /api/tasks/completion-ready/ack-all` | Complete every stale `completion_ready` task in one call (`{"force": true}` to ignore auto-close policy). Supervisor endpoint — see below |
@@ -683,6 +684,47 @@ reconcile/liveness pass rather than inline (the lease service and adapter
 registry are not wired into the route layer — same as `DELETE`); the
 dashboard's WebSocket complete action does both inline.
 
+### `POST /api/tasks/:id/reopen`
+
+A [supervisor endpoint](#supervisor-surface): gated by `KOOKR_SUPERVISOR_TOKEN`
+when set, like `POST /api/tasks/:id/complete`. It runs the same `reopenTask`
+lifecycle command as the dashboard's Reopen button and the WebSocket
+`reopenTask` message (issue #3671), and is what [`kookr reopen`](./cli.md#kookr-reopen)
+calls.
+
+A `completed`, `terminated`, or `cancelled` task is re-queued as `pending` and
+promoted at once when an active slot is free. The response waits for that
+launch attempt. Success returns
+`200 {"ok": true, "task": {...}, "resume": {...}}`. `task.status` is `pending`
+when the task is still queued, and `resume` says what the relaunch does with
+the task's prior conversation:
+
+- `{"mode": "resume", "conversationId": "<id>"}`: the relaunch continues
+  that provider conversation (`claude --resume <id> --fork-session` for Claude
+  Code; opencode resolves the id against its own session database and can
+  still start fresh if the session is gone from it).
+- `{"mode": "fresh", "reason": "..."}`: the relaunch starts from the original
+  prompt by design. This happens for a task with an active Ralph loop, because
+  every iteration is a fresh context.
+- `{"mode": "not_resumable", "reason": "..."}`: the relaunch starts from the
+  original prompt because the conversation cannot be continued. Reasons: no
+  session recorded a provider conversation id (the agent never reported
+  `SessionStart`, or the hook event was lost), the recorded Claude Code
+  transcript no longer exists, or the agent type (Codex CLI, Grok Build) does
+  not support resume.
+
+In all three cases the task is reopened. Error responses:
+
+- Unknown id returns `404`.
+- A task that is not terminal (`open`, `pending`, `inProgress`) returns
+  `409 {"code": "task_not_terminal"}` and nothing is launched.
+- A task whose dependency-probe cleanup is still settling returns
+  `409 {"code": "task_cleanup_in_progress"}`.
+- A relaunch that fails and cancels the task with a `launch_failure` receipt
+  returns `409 {"code": "reopen_launch_failed"}`, with the launch error in
+  `error`.
+- Remote-owned `shared:` ids return `403`.
+
 ### `POST /api/tasks/:id/signal`
 
 Raise a non-blocking agent → user signal for a task. The motivating case is
@@ -917,6 +959,7 @@ instance (issue #1526 Phase B / FM12, FM16).
 | `POST /api/observed-activity/hermes-fleet/ping` | Observer-token self-test / re-sync probe for the Hermes loop (verify auth + routing, e.g. after a deploy). Same flag + token gate |
 | `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals (see [above](#get-apitaskscompletion-readystale)) |
 | `POST /api/tasks/:id/complete` | Mark one task complete (see [above](#post-apitasksidcomplete)) — **token-gated** |
+| `POST /api/tasks/:id/reopen` | Reopen one terminal task and report resume vs fresh (see [above](#post-apitasksidreopen)) — **token-gated** |
 | `POST /api/tasks/abort` | Idempotent batch abort (see [above](#tasks-and-agents)) — **token-gated** |
 | `POST /api/tasks/completion-ready/ack-all` | Drain the whole completion-ready backlog in one call (see [above](#post-apitaskscompletion-readyack-all)) — **token-gated** |
 
@@ -1744,7 +1787,7 @@ delta sequence number.
 | `relaunch` | Relaunch an existing task with a new prompt. | `taskId`, `prompt`, optional `agentType`, `dependencies` |
 | `cancelTask` | Cancel a task and terminate its session. | `taskId` |
 | `batchAbortTasks` | Idempotently abort multiple tasks at once, interrupting each live session; broadcasts a concise result summary. | `taskIds`, optional `reason` |
-| `reopenTask` | Reopen a terminal task. Fails with an alert (`reopen_launch_failed`) when the relaunch it triggers is cancelled with a `launch_failure` receipt, for example `opencode_session_unreadable`. | `taskId` |
+| `reopenTask` | Reopen a terminal task (same command as [`POST /api/tasks/:id/reopen`](#post-apitasksidreopen)). A task that is not terminal is refused with an alert (`task_not_terminal`). Fails with an alert (`reopen_launch_failed`) when the relaunch it triggers is cancelled with a `launch_failure` receipt, for example `opencode_session_unreadable`. | `taskId` |
 | `dismissAgentSignal` | Dismiss a surfaced agent signal. | `taskId` |
 | `keepTaskAlive` | Veto a pending hung-task reap, extending its grace deadline. | `taskId` |
 | `deleteTask` | Delete a task. | `taskId` |

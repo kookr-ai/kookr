@@ -46,8 +46,9 @@ export interface MigrationProbe {
   liveSession: boolean;
   /**
    * True when the target equals the source agent AND a conversation-preserving
-   * provider fork is possible — in which case the user should use restore, not
-   * migrate. See {@link https} rfc-restore-lost-agent-sessions.
+   * provider fork is possible — in which case the user should Reopen the task
+   * (dashboard Reopen button, `kookr reopen <taskId>`), not migrate it. See
+   * docs/rfc/rfc-restore-lost-agent-sessions.md.
    */
   forkEligibleSameAgent: boolean;
   /** True when this task already has a live successor migration task. */

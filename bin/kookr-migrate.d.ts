@@ -40,3 +40,24 @@ export interface MigrateMainDeps {
 
 export function parseArgs(argv: string[]): MigrateArgs;
 export function main(deps?: MigrateMainDeps): Promise<number>;
+
+export interface MigratePlanCandidate {
+  taskId: string;
+  eligible: boolean;
+  reason?: string;
+  name?: string;
+  fromAgent?: string;
+  cwd?: string;
+  worktreeShared?: boolean;
+}
+
+export function formatPlan(
+  plan: { eligible: MigratePlanCandidate[]; blocked: MigratePlanCandidate[]; notFound: string[] },
+  targetAgent: string,
+): string;
+export function formatResults(body: {
+  targetAgent: string;
+  results: Array<{ taskId: string; outcome: string; reason?: string; newTaskId?: string }>;
+  defaultUpdated?: boolean;
+  defaultUpdateReason?: string;
+}): string;
