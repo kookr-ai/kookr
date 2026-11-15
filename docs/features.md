@@ -356,7 +356,7 @@ Pull requests merge quickly while `main` stays fully verified. A push runs only 
 | F19.1 | **Fast pre-push gate** | With `"prePushGate": "fast"`, `.hooks/pre-push` runs the static checks plus only the tests related to the diff (`scripts/fast-gate-tests.sh`). A `kookr-full-gate` file in the git common directory forces the full lanes again. |
 | F19.2 | **Integration branch** | With `"integrationBranch": "staging"`, `pnpm merge <PR>` retargets a pull request aimed at `main` to `staging` and squash-merges it there. Linked issues stay open until the change reaches `main`. |
 | F19.3 | **Integration train** | `pnpm train:start` runs a loop that verifies the head of `staging` with the full `pnpm verify` and fast-forwards `main` to the exact commit it verified, then closes the linked issues. When at most five test files fail, the verify re-runs them once (`KOOKR_VERIFY_FLAKY_RERUN`) before calling the head red. `pnpm train:status` and `pnpm train:logs` show what it did. |
-| F19.4 | **Revert and fix task** | When the full run fails, the train finds the offending pull request by bisecting, reverts it on `staging`, reopens its issue with the failing output, and spawns one task to fix and re-land it. It halts and notifies the operator instead when the culprit is unclear. |
+| F19.4 | **Revert and fix task** | When the full run fails, the train finds the offending pull request by bisecting, reverts it on `staging`, reopens its issue with the failing output, and spawns one task to fix and re-land it, up to three times per issue; a fourth failure notifies the operator instead. It halts and notifies the operator instead when the culprit is unclear. |
 
 ### Local voice dictation
 

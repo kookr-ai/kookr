@@ -97,7 +97,8 @@ outright rather than left to run:
   into `staging`. Its linked issue closes later, when the train promotes the
   change to `main`. If the train finds a failure, it reverts the offending pull
   request on `staging`, reopens its issue with the failing output, and spawns
-  one task to fix and re-land it.
+  one task to fix and re-land it (at most three such tasks per issue; after
+  that it notifies the operator).
 - Branch every task from `origin/main`: it only ever holds commits the train
   verified.
 - **Never** re-enable Actions, restore automatic triggers, add required status

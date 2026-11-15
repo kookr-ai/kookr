@@ -79,14 +79,17 @@ copy pinned to it by a test) and behave as before when it is absent:
    The train's revert commits carry the trailer `Kookr-Integration-Train: revert`,
    which is how a later cycle tells them from a revert a person made.
 10. After a pushed revert, the linked issues of the reverted PR are reopened with
-   the failure output and one fix task is spawned. The budget is one automatic
-   re-land per linked issue (key `train-fix-issue-<n>-1`). With no linked issue
-   the key follows the first `(#N)` in the commit subject (`train-fix-ref-<n>-1`),
-   which a cherry-picked re-land keeps. A re-land is a new PR, which is why the
-   count follows the issue. The budget is used up only by a task that was really
-   spawned: if the spawn fails, the train notifies `fix-spawn-failed` and tries
-   again the next time that PR fails. A second failure after a spawned task
-   spawns nothing; it notifies `fix-budget-exhausted`.
+   the failure output and one fix task is spawned. The budget is three automatic
+   re-lands per linked issue (keys `train-fix-issue-<n>-1` to `-3`). With no
+   linked issue the key follows the first `(#N)` in the commit subject
+   (`train-fix-ref-<n>-<attempt>`), which a cherry-picked re-land keeps. A re-land
+   is a new PR, which is why the count follows the issue. From the second
+   attempt on, the fix task is told how many earlier fixes were reverted and to
+   read their failing output first. The budget is used up only by a task that
+   was really spawned: if the spawn fails, the train notifies `fix-spawn-failed`
+   and tries again the next time that PR fails. When a change fails after its
+   third fix task, the train still reverts it but spawns nothing; it notifies
+   `fix-budget-exhausted` and a human takes over.
 
 ### The plugin version bump
 
