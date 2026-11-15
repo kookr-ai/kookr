@@ -37,8 +37,11 @@ import { isTestSuiteDtachCmdline, reapDtachReferencing } from '../test-utils/rea
  * host with several workers running push gates and train runs at once, another
  * run's teardown killed this file's sessions mid-test (`[EOF - dtach
  * terminating]` in the ring; kookr-ai/kookr#3825, #3544). Each describe's
- * afterEach still reaps its own tmpDir, so nothing leaks. Same length as the
- * old prefix, so the sun_path budgets of the socket paths do not change.
+ * afterEach still reaps its own tmpDir. The cost: if a vitest worker dies
+ * mid-file before its afterEach runs, its `ldb-case-*` masters (setsid'd, so
+ * they outlive the worker) are not swept by the global reaper and must be
+ * killed by hand. Same length as the old prefix, so the sun_path budgets of the
+ * socket paths do not change.
  */
 const LDB_TMP_PREFIX = 'ldb-case-';
 
@@ -1377,6 +1380,7 @@ describe('LocalDtachBackend', () => {
   });
 
   skipIfNoDtach('persists wrapped ring buffer (head > capacity) across restart', async () => {
+    const testStartedAt = Date.now();
     // Wraparound regression guard. The fresh-ring case (head < capacity) and
     // the wrapped case use different code paths in `persistRing` — wrapped
     // rings split the logical-ordered copy across the modular boundary. A
@@ -1429,7 +1433,7 @@ describe('LocalDtachBackend', () => {
       // a quiet host but more than 10 s at load average ~40, where the old
       // fixed 10 s window failed with ~0.9 MB echoed (#3825). Leave a reserve
       // for the restart + cleanup below.
-      const deadline = Date.now() + WRAP_TEST_TIMEOUT_MS - WRAP_RESTART_RESERVE_MS;
+      const deadline = testStartedAt + WRAP_TEST_TIMEOUT_MS - WRAP_RESTART_RESERVE_MS;
       let preCapture = new Uint8Array(0);
       while (Date.now() < deadline) {
         preCapture = await backend.captureBytes(id);
