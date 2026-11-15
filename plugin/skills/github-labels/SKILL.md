@@ -1,106 +1,108 @@
 ---
 name: github-labels
 group: oss-contribution
-description: GitHub label taxonomy for kookr-ai/kookr. Use when creating issues, PRs, or triaging work to apply correct labels.
+description: Which GitHub labels to apply on kookr-ai/kookr issues and PRs, and how to check a repository's real label set first. Use when creating issues, PRs, or triaging work.
 user_invocable: false
 related: github-issue-workflow
 ---
 
 # GitHub Labels — kookr-ai/kookr
 
-When creating or updating issues and PRs, apply labels from the categories below. Every issue/PR should have at least one **type** label and one **area** label. Add **priority** and **phase** labels when known.
+Apply only labels that already exist on the repository. A label name that does
+not exist makes `gh issue create --label` / `gh pr create --label` fail, and the
+REST labels endpoint silently creates a new, undocumented label instead. Do not
+invent a taxonomy (`type: chore`, `status: blocked`, `phase: 2`, ...) and do not
+create labels to make one fit.
 
-## Label taxonomy
+## Step 1 — check the real label set
 
-### Type (pick one — what kind of work is this?)
+This skill ships in the `kookr-toolkit` plugin and runs in other repositories
+too. The tables below describe kookr-ai/kookr only; they say nothing about any
+other repository. Before applying a label, list what the target repository
+actually has:
 
-| Label | When to use |
-|---|---|
-| `bug` | Something is broken or behaving incorrectly |
-| `type: feature` | New user-facing capability or behavior |
-| `enhancement` | Improvement to existing functionality |
-| `type: refactor` | Code restructuring with no behavior change |
-| `type: test` | Adding or improving tests (unit, integration, E2E) |
-| `type: chore` | Build system, CI, tooling, dependency updates |
-| `type: design` | ADR, RFC, or architecture proposal |
-| `type: spike` | Research, proof-of-concept, or exploration |
-| `type: security` | Security vulnerability, fix, or hardening |
-| `type: performance` | Performance regression or optimization |
-| `documentation` | Docs-only changes (README, feature specs, guides) |
+```bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+# The repo carries hundreds of generated idea:<n> join keys; hide them.
+gh label list --repo "$REPO" --limit 1000 --json name,description \
+  -q '.[] | select(.name | test("^idea[:-]") | not) | "\(.name)\t\(.description)"'
+```
 
-### Priority (pick one — how urgent?)
+If a label you want is not in that output, leave it off. Labels are optional;
+a wrong one is worse than none.
 
-| Label | When to use |
-|---|---|
-| `priority: critical` | Blocks release or causes data loss — drop everything |
-| `priority: high` | Important, resolve in current work cycle |
-| `priority: medium` | Normal priority, scheduled for near-term |
-| `priority: low` | Nice to have, no time pressure |
+## Step 2 — pick labels (kookr-ai/kookr)
 
-### Status (pick one — current state)
+Checked against `gh label list` on 2026-11-15. Every label named here exists on
+kookr-ai/kookr; re-run Step 1 if something looks missing.
 
-| Label | When to use |
-|---|---|
-| `status: needs triage` | New issue, not yet prioritized or assigned |
-| `status: in progress` | Actively being worked on |
-| `status: blocked` | Waiting on external dependency or decision |
-| `status: needs review` | PR or design ready for review |
-| `status: stale` | No activity for 30+ days, needs re-evaluation |
-
-### Area (pick all that apply — which parts of the codebase?)
-
-| Label | Scope |
-|---|---|
-| `area: core` | `src/core/` — types, parsers, task store, anomaly detection, attention queue |
-| `area: adapters` | `src/adapters/` — terminal manager interface, tmux impl, Claude Code adapter |
-| `area: server` | `src/server/` — HTTP (Hono), WebSocket, hook file watcher, reconciliation |
-| `area: frontend` | `src/frontend/` — React SPA, components, Zustand store, WebSocket hook |
-| `area: cli` | CLI entry point, command parsing, `npx kookr` startup |
-| `area: supervisor` | Supervisor agent logic: anomaly detection, explanations, attention routing |
-| `area: e2e` | `e2e/` — Playwright E2E tests and canary validation |
-
-### Phase (pick one if applicable — roadmap alignment)
-
-| Label | Milestone |
-|---|---|
-| `phase: 1` | Foundation + Managed Terminal Sessions |
-| `phase: 2` | GUI + Multi-Agent |
-| `phase: 3` | The Loop (V1 Complete) |
-| `phase: 4` | V2: Multi-agent-type support + polish |
-
-### Workflow (add when relevant)
+### Kind of work (usually one)
 
 | Label | When to use |
 |---|---|
-| `breaking change` | Introduces an incompatible API or behavior change |
-| `needs adr` | Requires an Architecture Decision Record before starting work |
-| `needs rfc` | Requires an RFC before starting work |
-| `tech debt` | Known shortcut or quality issue to address later |
-| `dependencies` | Dependency updates (Dependabot, manual upgrades) |
-| `ci/cd` | CI pipeline, GitHub Actions, deployment configuration |
-| `dx` | Developer experience improvement (tooling, ergonomics) |
-| `good first issue` | Accessible for newcomers to the project |
-| `help wanted` | Extra attention or external contributions welcome |
-| `duplicate` | Already tracked in another issue |
-| `wontfix` | Intentionally not going to be addressed |
+| `bug` | Something is broken or behaves incorrectly ("did it used to work?" yes) |
+| `enhancement` | New capability or improvement to existing behavior — the default for feature work |
+| `documentation` | Docs-only change |
+| `architecture` | Architecture health: boundaries, coupling, structural drift |
+| `question` | A question, not a work item |
 
-## Decision rules
+### Backlog gating (issues)
 
-1. **Every issue/PR gets a type label.** If unsure between `bug` and `enhancement`, ask: "Did it used to work?" Yes = `bug`. No = `enhancement` or `type: feature`.
-2. **Every issue/PR gets at least one area label.** Cross-cutting changes get multiple area labels.
-3. **Use `type: design` + `needs adr`** for proposals that change architecture decisions.
-4. **Use `type: spike`** for time-boxed investigation that may not produce shippable code.
-5. **`priority: critical`** should be rare — reserve for data loss, security incidents, or release blockers.
-6. **Phase labels** connect work to the roadmap. Apply when the issue clearly belongs to a specific phase.
-7. **`status: needs triage`** is the default for new issues. Remove it once priority and assignment are set.
-8. **`breaking change`** requires a note in the PR description explaining the migration path.
+| Label | When to use |
+|---|---|
+| `blocked` | Waiting on a human decision or an external dependency |
+| `automation-blocked` | Not implementable by an autonomous agent until a human decides or rewrites it; issue-draining automation skips these |
+| `invariant-gate` | Needs an invariant spec before it may be drained (#1568) |
+
+### Initiative / milestone tracking (issues)
+
+| Label | When to use |
+|---|---|
+| `public-launch` | Prerequisites and improvements for opening the repo to the public |
+| `required` | Must be addressed before its milestone can ship |
+| `optional` | Nice to have; can be deferred or closed without blocking |
+| `remote-collaboration` | Remote collaboration architecture work |
+| `autonomous-evolution` | Follow-up slices of the autonomous evolution playbook (RFC #1061) |
+
+### Merge and CI workflow (PRs)
+
+| Label | When to use |
+|---|---|
+| `local-verified` | CI never executed (Actions budget block) and the local gate passed; `pnpm merge` requires it plus a local-gate comment bound to the head SHA |
+| `macos` | Runs the macOS CI job on this PR — add it for changes to shell scripts, hooks, or other platform-sensitive code |
+| `merge-conflict` | Set by the merge watchdog when it cannot auto-resolve a base conflict |
+| `review-skipped-timeout` | Telemetry only: the independent review timed out; it never waives the review gate |
+
+### Set by automation — do not apply by hand
+
+| Label | Set by |
+|---|---|
+| `idea-scout`, `idea:<n>` | The Repository Idea Scout playbook (provenance and conversion join keys) |
+| `dependencies`, `javascript`, `python`, `github_actions` | Dependabot |
+
+### Rarely used
+
+These exist but are applied to only a handful of issues and PRs. Use them when
+they clearly fit; nothing depends on them being present.
+
+- Area: `area: core`, `area: server`, `area: frontend`, `area: cli`, `area: adapters`
+- Priority: `priority: high`, `priority: medium` (no low or critical priority label exists)
+- Type: `type: feature`, `type: refactor`, `type: test`, `type: security`, `type: performance`
+- Other: `status: needs review`, `dx`
+- GitHub defaults: `good first issue`, `help wanted`, `duplicate`, `invalid`, `wontfix`
 
 ## Applying labels via CLI
 
 ```bash
-# On issues
-gh api repos/kookr-ai/kookr/issues/{number}/labels -X POST --input - <<< '{"labels":["bug","area: core","priority: high"]}'
+# At creation time (fails loudly if a label does not exist)
+gh issue create --repo "$REPO" --title "..." --body "..." --label bug
+gh pr create --title "..." --body "..." --label documentation
 
-# On PRs (PRs are issues in the GitHub API)
-gh api repos/kookr-ai/kookr/issues/{number}/labels -X POST --input - <<< '{"labels":["type: feature","area: frontend","phase: 2"]}'
+# Afterwards
+gh issue edit 123 --repo "$REPO" --add-label "enhancement"
+gh pr edit 456 --repo "$REPO" --add-label "local-verified"
 ```
+
+Prefer `gh issue edit` / `gh pr edit --add-label` over
+`gh api repos/<owner>/<repo>/issues/<n>/labels -X POST`: the `gh` subcommands
+reject an unknown label, while the API call creates it.
