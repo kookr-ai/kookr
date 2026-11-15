@@ -26,7 +26,7 @@ failures and proposes the next prompt; *churn* is the count of rows whose outcom
 4. **Split three ways and keep one set untouched**: selection slice, audit set the optimizer never sees,
    final test. The winner overshot held-out accuracy by 13-20 points with 16 selection items, 1-5 with 256.
    A 64-item audit cut the reported-gain error from ~15 to ~6 points. At 250 calls a probe plus a 64-item
-   audit leave ~106 calls (about 1 step at s = 25, 4 at s = 10). Shrink the audit or raise the budget and
+   audit (128 evaluations) leave ~106 calls (about 1 step at s = 25, 4 at s = 10). Shrink the audit or raise the budget and
    say which; do not skip the audit.
 5. **Feed the reflector reasons, not a score.** Per-dimension feedback gained held-out reward; a scalar
    reward lost it (one task).

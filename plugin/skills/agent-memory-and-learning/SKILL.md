@@ -4,10 +4,12 @@ group: design-analysis
 keywords: agent memory, lessons, skill writing, SKILL.md, notebook, continual learning, regression gate, RAG, retrieval, long context, context window, skill library, fine-tuning, distillation, cheap model
 related: notebook-role-reuse, placement-picker, self-reflect, task-feedback-reflect, agent-fleet-orchestration, agent-evaluation
 description: >
-  Agent memory and learning: what to remember and forget; a user's evolving preferences; post-task
-  lessons; gating learned changes against regressions; agentic retrieval and index design (reranker,
-  chunking, hybrid, graph); load vs retrieve vs delegate reading; skill-library design and skill writing;
-  making a cheaper model do a strong one's work, including fine-tuning and synthetic training tasks. Use
+  Agent memory and learning: what to remember, consolidate or forget, and shared fleet memory; a user's
+  evolving preferences; post-task lessons and lesson-store curation; gating learned changes against
+  regressions; agentic retrieval (single-shot vs multi-step search, stopping, code search, bad evidence)
+  and index design (reranker, chunking, hybrid, graph); load vs retrieve vs delegate reading;
+  skill-library design and skill writing; making a cheaper or local model do a strong one's work
+  (harness tuning first, then fine-tuning, synthetic training tasks). Use
   when designing or reviewing a memory store, notebook, RAG tool or skill library, or before downgrading a
   worker model.
 ---

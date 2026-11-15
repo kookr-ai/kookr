@@ -30,8 +30,9 @@ live: the `placement-picker` skill; regression gate: [continual learning](agent-
    active set and retire what stops helping. Without retirement and a cap a growing library stagnates or
    falls below the no-skill baseline; retirement was load-bearing, explicit dedup was not.
 7. **Audit the judge before trusting its pass decisions**, and do not retire with the same judge that
-   approved. A judge with even a modest false-pass rate switches off retirement entirely,
-   whatever the data volume. Inject known defects and measure how many it passes.
+   approved. A judge whose false-pass rate exceeds (1 - tau) / 2, where tau is the retirement threshold,
+   switches off retirement entirely, whatever the data volume. Inject known defects, measure how many it
+   passes, and lower tau or replace the judge if the rate is past that bound.
 8. **Match the skills to the model.** The same skills helped a strong model by about 8 points and
    slightly hurt a weaker one. Re-test after every model change.
 9. **Prefer a tested, executable tool when the task allows**; it is also easier to review than prose.

@@ -9,7 +9,7 @@ description: >
   mutate-and-score loops honest (keep gate, noise floor, held-out split). Use when comparing agent
   configs, building an in-house regression suite, evaluating an agent whose memory or skills grow,
   designing an acceptance gate, optimizing a prompt or skill on a small eval budget, trusting a
-  self-improvement loop, ranking research ideas, or checking cited claims.
+  self-improvement loop, ranking research ideas or trusting a write-up, or checking cited claims.
 ---
 # Agent evaluation
 

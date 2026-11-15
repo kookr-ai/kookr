@@ -5,7 +5,7 @@ keywords: agent loop, tool design, MCP, best-of-N, reasoning effort, prompt cach
 related: token-efficiency, agent-fleet-orchestration, automation-design, autonomous-watch-loop, error-handling-patterns, agent-safety, adversarial-swarm-analysis
 description: >
   Evidence-based rules for designing an agent's loop: tool surface and MCP servers, best-of-N, voting,
-  effort and retries, prompt cache and serving cost, plans vs replanning, recovering from mid-task
+  effort and retries, making a loop cheaper or faster (prompt cache, serving), plans vs replanning, recovering from mid-task
   failures, latent handoffs and diffusion decoders, probes, steering, and monitoring closed-API agents
   (reasoning text, "done" claims, confidence, ask or abstain gates). Use when building or tuning an agent
   loop, or before adding tools, samples, retries, a planner or a monitor.

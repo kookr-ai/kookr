@@ -57,8 +57,9 @@ For `nb` commands see the `notebook-role-reuse` skill; for storage and forgettin
    unmeasured starting guess.
 15. **Retire on evidence, then re-check what was derived from the retired lesson.** Cascade repair of derived
    entries took stale use from 92-99% to 0% at about 0.6-0.8 of exhaustive repair cost. The retirement
-   signal must not be a biased judge: past a modest false-pass rate it disables retirement regardless of
-   data volume, so retire on execution or unit-test outcomes.
+   signal must not be a biased judge: past a false-pass rate of (1 - tau) / 2 (tau is the retirement
+   threshold) it disables retirement regardless of data volume, so retire on execution or unit-test
+   outcomes.
 
 Do not add machinery before the cheap version fails: a self-written note capped at about 2,000 tokens and
 chosen only by scalar outcomes matched costlier loops at about two-thirds fewer tokens. Add each check in
