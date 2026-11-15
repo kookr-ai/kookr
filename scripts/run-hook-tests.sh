@@ -22,7 +22,10 @@ for suite in "$TEST_DIR"/*.test.sh; do
 
   selected=$((selected + 1))
   printf '== %s ==\n' "$suite_name"
-  if bash "$suite"; then
+  # Close stdin: a suite that runs a git hook would otherwise inherit the
+  # caller's stdin, and a hook that `cat`s it blocks forever when that is an
+  # agent's never-EOF socket (#3752).
+  if bash "$suite" </dev/null; then
     passed=$((passed + 1))
   else
     failed=$((failed + 1))

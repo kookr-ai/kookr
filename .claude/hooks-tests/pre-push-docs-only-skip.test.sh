@@ -41,9 +41,11 @@ PNPM
 }
 
 run_hook() {
+  # stdin is /dev/null: the hook reads refspecs with `cat` whenever stdin is
+  # not a TTY, which blocks forever on an agent's never-EOF socket (#3752).
   local repo="$1"
   : > "$repo/pnpm.log"
-  (cd "$repo" && PNPM_LOG="$repo/pnpm.log" PATH="$repo/bin:$PATH" bash "$HOOK")
+  (cd "$repo" && PNPM_LOG="$repo/pnpm.log" PATH="$repo/bin:$PATH" bash "$HOOK" </dev/null)
 }
 
 assert_log_contains() {
@@ -186,7 +188,7 @@ git -C "$failing_repo" commit -q -m "code"
 write_review_marker "$failing_repo" "integration-fail"
 failing_status=0
 : > "$failing_repo/pnpm.log"
-(cd "$failing_repo" && PNPM_LOG="$failing_repo/pnpm.log" PATH="$failing_repo/bin:$PATH" bash "$HOOK") \
+(cd "$failing_repo" && PNPM_LOG="$failing_repo/pnpm.log" PATH="$failing_repo/bin:$PATH" bash "$HOOK" </dev/null) \
   || failing_status=$?
 if [ "$failing_status" -eq 0 ]; then
   printf 'FAIL: pre-push accepted a failing integration lane\n' >&2
