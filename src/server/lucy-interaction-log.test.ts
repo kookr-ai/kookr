@@ -57,6 +57,16 @@ describe('LucyInteractionLog', () => {
     expect('audioBase64' in rec).toBe(false);
   });
 
+  it('writes why the template wording was used', async () => {
+    const log = createLucyInteractionLog({ filePath: file, now });
+    log.recordSaid({ ...said, usedFallback: true, fallbackReason: 'schema-violation' });
+    log.recordSaid(said);
+    await log.flush();
+    const [fallback, model] = lines();
+    expect(fallback).toMatchObject({ usedFallback: true, fallbackReason: 'schema-violation' });
+    expect('fallbackReason' in model).toBe(false);
+  });
+
   it('omits undefined optional fields', async () => {
     const log = createLucyInteractionLog({ filePath: file, now });
     log.recordSaid({ ...said, rawText: undefined, taskName: undefined });

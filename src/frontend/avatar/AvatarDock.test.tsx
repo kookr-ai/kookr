@@ -1008,6 +1008,18 @@ describe('AvatarDock', () => {
       expect(item.querySelector('[data-testid="avatar-msg-unheard"]')).toBeNull();
     });
 
+    test('a message spoken from template wording is marked "template"; a model summary is not (issue #3631)', () => {
+      startWith({});
+      render();
+      clip('model', 'Fix login is done.');
+      act(() => {
+        captureLastClip({ clipId: 'template', text: 'This task stopped unexpectedly.', usedFallback: true, audio: new ArrayBuffer(4), durationMs: 1000 });
+      });
+      const [templateItem, modelItem] = messages();
+      expect(templateItem.querySelector('[data-testid="avatar-msg-template"]')!.textContent!.trim()).toBe('template');
+      expect(modelItem.querySelector('[data-testid="avatar-msg-template"]')).toBeNull();
+    });
+
     test('a message without a subject shows only the time', () => {
       startWith({});
       render();

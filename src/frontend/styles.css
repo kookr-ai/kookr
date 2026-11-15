@@ -17042,6 +17042,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 .avatar-msg-subject { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .avatar-msg-sep, .avatar-msg-time { flex: none; }
+.avatar-msg-template { flex: none; margin-left: 3px; font-style: italic; }
 .avatar-msg-unheard { flex: none; display: inline-flex; align-items: center; gap: 4px; margin-left: 3px; color: var(--amber); }
 .avatar-msg-replay { grid-column: 2; grid-row: 1 / span 2; }
 .avatar-msg-replay:focus-visible { outline-offset: -2px; }

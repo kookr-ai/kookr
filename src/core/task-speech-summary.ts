@@ -2,6 +2,7 @@ import type { CompletionDigest } from './completion-digest.js';
 import type { LlmClient } from './llm-client.js';
 import type { TaskStatus, TurnState } from './task-status.js';
 import type { AgentEvent } from './agent-events.js';
+import type { SpeakAgentFallbackReason } from '../shared/contracts/speech.js';
 import {
   compactToolSummary,
   pasteBurstLabel,
@@ -290,6 +291,14 @@ export interface TaskSpeechSummary {
   /** The speakable text: synthesised by TTS and listed in the avatar's message list. */
   text: string;
   usedFallback: boolean;
+  /**
+   * Why the template wording was spoken; null when the model's summary was used.
+   * `no-llm-client`: no model configured. `timeout`: the call timed out or failed.
+   * `empty`: the model returned nothing. `schema-violation`: the reply was not the
+   * expected JSON. `validator-reject`: the summary was too long. `denylist`: it read as
+   * an instruction to the operator.
+   */
+  fallbackReason: SpeakAgentFallbackReason | null;
   /** The wording before the speakable-text step. Set only when that step changed it. */
   rawText?: string;
 }
@@ -430,10 +439,9 @@ function spokenWithinLimits(spoken: string): boolean {
     && !spokenGivesInstruction(spoken);
 }
 
-function normalizeSummary(raw: string): string | null {
-  const summary = raw.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
-  if (!summary) return null;
-  return withinSummaryLimits(summary) ? summary : null;
+/** The summary without surrounding whitespace and quotes. */
+function trimSummary(raw: string): string {
+  return raw.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
 }
 
 function extractSummary(raw: string): string | null {
@@ -622,25 +630,35 @@ function promptPayload(input: TaskSpeechSummaryInput): string {
   return `<<<TASK_CONTEXT>>>\n${lines.join('\n')}\n<<<END>>>`;
 }
 
-function toSpeakableSummary(raw: string, usedFallback: boolean): TaskSpeechSummary | null {
+function toSpeakableSummary(raw: string): TaskSpeechSummary | null {
   const text = makeSpeakable(raw);
   if (!text) return null;
-  return text === raw ? { text, usedFallback } : { text, usedFallback, rawText: raw };
+  const base = { text, usedFallback: false, fallbackReason: null };
+  return text === raw ? base : { ...base, rawText: raw };
 }
 
-function fallbackSummary(input: TaskSpeechSummaryInput): TaskSpeechSummary {
+function fallbackSummary(input: TaskSpeechSummaryInput, reason: SpeakAgentFallbackReason): TaskSpeechSummary {
   const raw = rawFallbackTaskSpeechSummary(input);
-  return toSpeakableSummary(raw, true) ?? { text: raw, usedFallback: true };
+  const text = makeSpeakable(raw);
+  const base = { usedFallback: true, fallbackReason: reason };
+  if (!text) return { ...base, text: raw };
+  return text === raw ? { ...base, text } : { ...base, text, rawText: raw };
+}
+
+/** Why a model summary that was too long or read as an instruction is rejected. */
+function rejectionReason(gaveInstruction: boolean): SpeakAgentFallbackReason {
+  return gaveInstruction ? 'denylist' : 'validator-reject';
 }
 
 export async function summarizeTaskForSpeech(
   client: LlmClient | null,
   input: TaskSpeechSummaryInput,
 ): Promise<TaskSpeechSummary> {
-  if (!client) return fallbackSummary(input);
+  if (!client) return fallbackSummary(input, 'no-llm-client');
 
+  let raw: string | null;
   try {
-    const raw = await client.complete({
+    raw = await client.complete({
       useCase: 'task_speech_summary',
       maxTokens: MAX_OUTPUT_TOKENS,
       system: SYSTEM_PROMPT,
@@ -651,18 +669,25 @@ export async function summarizeTaskForSpeech(
       },
       timeoutMs: TIMEOUT_MS,
     });
-    if (!raw) return fallbackSummary(input);
-    const parsed = extractSummary(raw);
-    // Validate the model text (caps, instruction check), make it speakable, then validate
-    // the spoken text again (ignoring the sentence-final period the rewrite may
-    // add): the rewrite can turn an identifier into a decision or action word
-    // ("run_tests" -> "run tests") or change the length.
-    const summary = parsed ? normalizeSummary(parsed) : null;
-    const speakable = summary ? toSpeakableSummary(summary, false) : null;
-    return speakable && spokenWithinLimits(speakable.text.replace(/[.!?]+$/, '')) ? speakable : fallbackSummary(input);
   } catch {
-    return fallbackSummary(input);
+    // A timeout and a provider error are reported alike, as the agent speak route does.
+    return fallbackSummary(input, 'timeout');
   }
+  if (!raw) return fallbackSummary(input, 'empty');
+  const parsed = extractSummary(raw);
+  if (parsed === null) return fallbackSummary(input, 'schema-violation');
+  // Validate the model text (caps, instruction check), make it speakable, then validate
+  // the spoken text again (ignoring the sentence-final period the rewrite may
+  // add): the rewrite can turn an identifier into a decision or action word
+  // ("run_tests" -> "run tests") or change the length.
+  const summary = trimSummary(parsed);
+  if (!summary) return fallbackSummary(input, 'empty');
+  if (!withinSummaryLimits(summary)) return fallbackSummary(input, rejectionReason(givesInstruction(summary)));
+  const speakable = toSpeakableSummary(summary);
+  if (!speakable) return fallbackSummary(input, 'empty');
+  const spoken = speakable.text.replace(/[.!?]+$/, '');
+  if (!spokenWithinLimits(spoken)) return fallbackSummary(input, rejectionReason(spokenGivesInstruction(spoken)));
+  return speakable;
 }
 
 /**

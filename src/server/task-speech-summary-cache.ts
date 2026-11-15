@@ -6,6 +6,7 @@ import {
   summarizeTaskForSpeech,
   type TaskSpeechSummaryInput,
 } from '../core/task-speech-summary.js';
+import type { SpeakAgentFallbackReason } from '../shared/contracts/speech.js';
 import { TTSClientError } from '../adapters/tts-client.js';
 import { synthesizeWithCircuitBreaker } from '../adapters/circuit-breaker-tts-client.js';
 
@@ -18,6 +19,8 @@ export interface TaskSpeakResult {
   mimeType: 'audio/wav';
   durationMs: number;
   usedFallback: boolean;
+  /** Why the template wording was spoken; null when the model's summary was used. */
+  fallbackReason: SpeakAgentFallbackReason | null;
   llmMs: number;
   ttsMs: number;
   cached: boolean;
@@ -135,6 +138,7 @@ export class TaskSpeechSummaryCache {
       mimeType: 'audio/wav',
       durationMs: ttsResult.durationMs,
       usedFallback: summary.usedFallback,
+      fallbackReason: summary.fallbackReason,
       llmMs,
       ttsMs,
       ...(summary.rawText !== undefined ? { rawText: summary.rawText } : {}),

@@ -816,6 +816,8 @@ Both routes return the spoken clip (`text`, `audioBase64`, `mimeType`, `duration
 - `rawText` (optional): the wording before the speakable-text rewrite; present only when the rewrite changed it.
 - `subject` (optional, issue #3605): display title of the task the message was about, for the avatar panel's message list. It is redacted exactly like the spoken wording (secret-shaped runs become `[redacted]`, prompt delimiters become `[delimiter]`), flattened to one line and at most 80 characters. Absent when the task has no title. The `said` record in `lucy-interactions.jsonl` logs the same text as `taskName`, so the log is never less redacted than `subject`.
 
+When `usedFallback` is true, the template wording was spoken instead of a model summary, and the avatar panel's message list marks that message "template". `fallbackReason` says why: `no-llm-client` (no model configured), `timeout` (the call timed out or failed), `empty` (no text came back), `schema-violation` (the reply was not the expected JSON), `validator-reject` (the summary was too long) or `denylist` (it read as an instruction to the operator). It is `null` when the model's summary was used. The task-summary route has carried it since issue #3631. The `said` record in `lucy-interactions.jsonl` stores it as `fallbackReason` for both routes.
+
 The spoken fallback wording never reads a long or cut-off title aloud: a title is spoken only when it is at most 6 words, at most 48 characters, not cut with `...` or `…`, and holds nothing the speakable rewrite would change (identifiers, paths, hashes, issue numbers). Otherwise the sentence says "This task" ("This task needs your input."). `subject` still carries the full (80-character) title.
 
 ## Issue Claims

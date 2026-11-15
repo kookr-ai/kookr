@@ -576,6 +576,23 @@ describe('Lucy interaction log wiring', () => {
     expect(JSON.stringify(said[0])).not.toContain('AUDIO');
   });
 
+  test('agent speak: the said record carries the fallback reason, and none when the model was used', async () => {
+    const { log, said } = captureLog();
+    const fallbackApp = mkApp({
+      agents: [fakeAgent()],
+      cache: fakeCache({ result: { ...agentResult, usedFallback: true, fallbackReason: 'denylist' } }),
+      ttsUrl: 'http://tts',
+      lucyLog: log,
+    });
+    await fallbackApp.request('/api/agents/agent-1/speak', { method: 'POST' });
+    const modelApp = mkApp({ agents: [fakeAgent()], cache: fakeCache({ result: agentResult }), ttsUrl: 'http://tts', lucyLog: log });
+    await modelApp.request('/api/agents/agent-1/speak', { method: 'POST' });
+    expect(said).toHaveLength(2);
+    expect(said[0]).toMatchObject({ usedFallback: true, fallbackReason: 'denylist' });
+    expect(said[1].usedFallback).toBe(false);
+    expect(said[1].fallbackReason).toBeUndefined();
+  });
+
   test('agent speak: omits rawText when the speakable step changed nothing, new clipId on a cache hit', async () => {
     const { log, said } = captureLog();
     const cache = fakeCache({ cached: true, result: agentResult });
@@ -597,6 +614,7 @@ describe('Lucy interaction log wiring', () => {
       mimeType: 'audio/wav',
       durationMs: 1500,
       usedFallback: true,
+      fallbackReason: 'timeout',
       llmMs: 0,
       ttsMs: 200,
       cached: false,
@@ -622,10 +640,12 @@ describe('Lucy interaction log wiring', () => {
       text: 'Fix login is done.',
       rawText: 'Fix login (#12) is done.',
       usedFallback: true,
+      fallbackReason: 'timeout',
       cached: false,
       durationMs: 1500,
       words: 4,
     });
+    expect(body.fallbackReason).toBe('timeout');
     expect(JSON.stringify(said[0])).not.toContain('AUDIO');
   });
 

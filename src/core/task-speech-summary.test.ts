@@ -36,6 +36,41 @@ describe('summarizeTaskForSpeech', () => {
     expect(result).toEqual({
       text: 'Fix auth completed with token expiry verified.',
       usedFallback: false,
+      fallbackReason: null,
+    });
+  });
+
+  // Issue #3631: the interaction log records why the template was spoken.
+  describe('fallbackReason', () => {
+    const failing = (err: Error): LlmClient => ({
+      provider: 'test',
+      model: 'test-model',
+      complete: vi.fn().mockRejectedValue(err),
+    });
+
+    test.each<[string, LlmClient | null, string]>([
+      ['no model is configured', null, 'no-llm-client'],
+      ['the call fails', failing(new Error('provider down')), 'timeout'],
+      ['the call times out', failing(Object.assign(new Error('timed out'), { name: 'TimeoutError' })), 'timeout'],
+      ['the reply is null', mockClient(null), 'empty'],
+      ['the reply is an empty string', mockClient(''), 'empty'],
+      ['the summary is blank', mockClient('{"summary":"  \'\'  "}'), 'empty'],
+      ['the reply is not JSON', mockClient('Fix auth completed.'), 'schema-violation'],
+      ['the reply has no summary field', mockClient('{"text":"Fix auth completed."}'), 'schema-violation'],
+      ['the summary is too long', mockClient(JSON.stringify({ summary: 'The agent checked one more file. '.repeat(12) })), 'validator-reject'],
+      ['the summary is an instruction', mockClient('{"summary":"Approve the permission request now."}'), 'denylist'],
+      ['the spoken form is an instruction', mockClient('{"summary":"Next step is run_tests on the branch."}'), 'denylist'],
+      ['the spoken form is too long', mockClient(JSON.stringify({ summary: Array.from({ length: 40 }, (_, i) => `#${i + 1}`).join(' ') })), 'validator-reject'],
+    ])('reports the reason when %s', async (_label, client, reason) => {
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(true);
+      expect(result.fallbackReason).toBe(reason);
+      expect(result.text).toContain('Fix auth is completed');
+    });
+
+    test('a summary the model wrote carries no reason', async () => {
+      const result = await summarizeTaskForSpeech(mockClient('{"summary":"Fix auth completed."}'), baseInput);
+      expect(result).toMatchObject({ usedFallback: false, fallbackReason: null });
     });
   });
 
@@ -326,6 +361,7 @@ describe('summarizeTaskForSpeech', () => {
       expect(result).toEqual({
         text: 'Fixed foo-bar.ts and opened pull request 3608 for review.',
         usedFallback: false,
+        fallbackReason: null,
         rawText: 'Fixed `src/core/foo-bar.ts` and opened https://github.com/o/r/pull/3608 for review.',
       });
     });
@@ -333,7 +369,7 @@ describe('summarizeTaskForSpeech', () => {
     test('rawText is absent when the transform changes nothing', async () => {
       const client = mockClient('{"summary":"Fix auth completed."}');
       const result = await summarizeTaskForSpeech(client, baseInput);
-      expect(result).toEqual({ text: 'Fix auth completed.', usedFallback: false });
+      expect(result).toEqual({ text: 'Fix auth completed.', usedFallback: false, fallbackReason: null });
       expect('rawText' in result).toBe(false);
     });
 
@@ -382,7 +418,7 @@ describe('summarizeTaskForSpeech', () => {
     ])('a commit hash does not trip the denylist: %s', async (summary, text) => {
       const client = mockClient(JSON.stringify({ summary }));
       const result = await summarizeTaskForSpeech(client, baseInput);
-      expect(result).toEqual({ text, usedFallback: false, rawText: summary });
+      expect(result).toEqual({ text, usedFallback: false, fallbackReason: null, rawText: summary });
     });
 
     test('an at-cap summary that grows when "#42" becomes "number 42" is still accepted', async () => {
@@ -397,7 +433,7 @@ describe('summarizeTaskForSpeech', () => {
       const summary = `${Array(48).fill('word').join(' ')} done.`;
       const client = mockClient(JSON.stringify({ summary }));
       const result = await summarizeTaskForSpeech(client, baseInput);
-      expect(result).toEqual({ text: summary, usedFallback: false });
+      expect(result).toEqual({ text: summary, usedFallback: false, fallbackReason: null });
     });
 
     // The model may run a fifth over the requested 45 words and 280 characters: 54 words, 336 characters.
@@ -664,7 +700,7 @@ describe('summarizeTaskForSpeech', () => {
         taskStatus: 'inProgress',
         activeFinding: { type: 'needs_input', severity: 'info', explanation: '' },
       });
-      expect(result).toEqual({ text: 'Repository Idea Scout needs your input.', usedFallback: true });
+      expect(result).toEqual({ text: 'Repository Idea Scout needs your input.', usedFallback: true, fallbackReason: 'no-llm-client' });
     });
 
     test('system prompt tells the model to write speakable text', async () => {

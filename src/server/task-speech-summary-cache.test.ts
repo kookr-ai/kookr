@@ -164,6 +164,38 @@ describe('TaskSpeechSummaryCache', () => {
     expect(second.rawText).toBe(raw);
   });
 
+  test('carries the fallback reason through a cache hit and a shared request in flight', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = await new Request(input, init).json() as { text: string };
+      await gate;
+      return new Response(JSON.stringify(ttsResponse(body.text)), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const cache = new TaskSpeechSummaryCache({ llmClient: null, ttsUrl: 'http://tts.local', voice: 'matilda' });
+    const input = { taskName: 'Auth task', taskStatus: 'completed' as const };
+    const leader = cache.get(input);
+    const joiner = cache.get(input);
+    release();
+    const [first, shared] = await Promise.all([leader, joiner]);
+    const hit = await cache.get(input);
+
+    expect(first).toMatchObject({ cached: false, usedFallback: true, fallbackReason: 'no-llm-client' });
+    expect(shared).toMatchObject({ cached: true, usedFallback: true, fallbackReason: 'no-llm-client' });
+    expect(hit).toMatchObject({ cached: true, usedFallback: true, fallbackReason: 'no-llm-client' });
+  });
+
+  test('a model summary carries no fallback reason', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = await new Request(input, init).json() as { text: string };
+      return new Response(JSON.stringify(ttsResponse(body.text)), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const cache = new TaskSpeechSummaryCache({ llmClient: mockClient('Auth task completed.'), ttsUrl: 'http://tts.local', voice: 'matilda' });
+    const result = await cache.get({ taskName: 'Auth task', taskStatus: 'completed' as const });
+    expect(result).toMatchObject({ usedFallback: false, fallbackReason: null });
+  });
+
   test('omits rawText when the speakable step changed nothing', async () => {
     const client = mockClient('Auth task completed.');
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

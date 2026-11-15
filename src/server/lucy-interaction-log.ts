@@ -6,7 +6,8 @@
  *
  * Five kinds of line, all carrying `v: 1` and an ISO `ts`:
  *  - `said`: the server produced a clip (task summary or agent speak). Carries
- *    the final text, the pre-"speakable" wording when it differs, and timings.
+ *    the final text, the pre-"speakable" wording when it differs, why the
+ *    template wording was used when it was (`fallbackReason`), and timings.
  *    Audio bytes are never recorded.
  *  - `live_turn`: one finished Lucy live conversation turn (issue #3659): the
  *    transcript, the spoken answer, how it ended and the latencies. No audio.
@@ -33,6 +34,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { appendJsonlWithRotation, type JsonlRotationOptions } from '../core/jsonl-rotation.js';
+import type { SpeakAgentFallbackReason } from '../shared/contracts/speech.js';
 
 export const LUCY_INTERACTION_LOG_FILENAME = 'lucy-interactions.jsonl';
 export const LUCY_INTERACTION_LOG_VERSION = 1;
@@ -141,6 +143,8 @@ export interface LucySaidRecordInput {
   /** Wording before the speakable-text step, when it differs from `text`. */
   rawText?: string;
   usedFallback: boolean;
+  /** Why the template wording was spoken (issue #3631); absent when the model's wording was used. */
+  fallbackReason?: SpeakAgentFallbackReason;
   cached: boolean;
   verbosity?: string;
   voice?: string;
@@ -294,7 +298,7 @@ export function createLucyInteractionLog(options: LucyInteractionLogOptions = {}
 
 const SAID_FIELDS = [
   'clipId', 'source', 'taskId', 'agentId', 'taskName', 'text', 'rawText',
-  'usedFallback', 'cached', 'verbosity', 'voice', 'findingType',
+  'usedFallback', 'fallbackReason', 'cached', 'verbosity', 'voice', 'findingType',
   'llmMs', 'ttsMs', 'durationMs', 'words',
 ] as const;
 

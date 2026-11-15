@@ -307,6 +307,7 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
         text: result.text,
         rawText: result.rawText,
         usedFallback: result.usedFallback,
+        fallbackReason: result.fallbackReason ?? undefined,
         cached,
         verbosity,
         voice,
@@ -454,6 +455,7 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
         text: result.text,
         rawText: result.rawText,
         usedFallback: result.usedFallback,
+        fallbackReason: result.fallbackReason ?? undefined,
         cached: result.cached,
         voice,
         findingType: subject.input.activeFinding?.type,
@@ -463,7 +465,7 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
         words: countSpokenWords(result.text),
       });
       console.log(
-        `[task-speak] task=${taskId} agent=${subject.agentState?.agentId ?? 'none'} status=${subject.input.taskStatus ?? 'unknown'} cached=${result.cached} usedFallback=${result.usedFallback} collectMs=${collectMs} llmMs=${result.llmMs} ttsMs=${result.ttsMs} totalMs=${Date.now() - startedAt + collectMs}`,
+        `[task-speak] task=${taskId} agent=${subject.agentState?.agentId ?? 'none'} status=${subject.input.taskStatus ?? 'unknown'} cached=${result.cached} usedFallback=${result.usedFallback} fallbackReason=${result.fallbackReason ?? 'none'} collectMs=${collectMs} llmMs=${result.llmMs} ttsMs=${result.ttsMs} totalMs=${Date.now() - startedAt + collectMs}`,
       );
       return c.json(response, 200);
     } catch (err) {

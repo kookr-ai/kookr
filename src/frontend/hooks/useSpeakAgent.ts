@@ -361,6 +361,7 @@ export function useSpeakAgent(
         clipId: payload.clipId,
         text: payload.text,
         subject: payload.subject,
+        usedFallback: payload.usedFallback,
         audio: audioBytes,
         durationMs: payload.durationMs,
       });
