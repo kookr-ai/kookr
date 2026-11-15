@@ -291,6 +291,8 @@ let activeChildPid: number | null = null;
 let activeRelease: (() => void) | null = null;
 let inCycle = false;
 let stopRequested = false;
+// The successor started by `reexec`, while it is not yet confirmed (issue #3841).
+let handoverChildPid: number | null = null;
 
 /**
  * Stop cleanly. Three moments, three behaviours:
@@ -304,6 +306,12 @@ let stopRequested = false;
 function installSignalHandlers(): void {
   const onSignal = (signal: NodeJS.Signals): void => {
     const code = signal === 'SIGINT' ? 130 : 143;
+    // A stop during a hand-over stops both processes: `train.pid` still names
+    // this one, so it is the one `stop` signals.
+    if (handoverChildPid !== null) {
+      try { process.kill(-handoverChildPid, 'SIGKILL'); } catch { /* already gone */ }
+      process.exit(code);
+    }
     if (activeChildPid !== null) {
       try { process.kill(-activeChildPid, 'SIGKILL'); } catch { /* already gone */ }
       if (activeRelease) activeRelease();
@@ -582,7 +590,7 @@ function readRestartRequest(file: string): RestartRequest | null {
  * and return the pid. The loader flags of this process (`--import tsx`, or an
  * absolute loader URL) are passed on, so the child resolves TypeScript the same way.
  */
-function spawnTrain(args: string[], cwd: string, script: string): number {
+function spawnTrain(args: string[], cwd: string, script: string, record = true): number {
   const p = paths(stateDir());
   const out = openSync(p.log, 'a');
   let child;
@@ -600,9 +608,13 @@ function spawnTrain(args: string[], cwd: string, script: string): number {
   child.on('error', () => { /* reported by the caller */ });
   child.unref();
   if (child.pid === undefined) throw new Error(`could not start ${script}`);
-  writeFileSync(p.pid, String(child.pid));
-  writeFileSync(p.startArgs, JSON.stringify(args));
+  if (record) recordTrain(p, child.pid, args);
   return child.pid;
+}
+
+function recordTrain(p: ReturnType<typeof paths>, pid: number, args: string[]): void {
+  writeFileSync(p.pid, String(pid));
+  writeFileSync(p.startArgs, JSON.stringify(args));
 }
 
 /**
@@ -651,20 +663,24 @@ async function reexec(reason: string, runArgs: string[], log: (m: string) => voi
   log(`re-executing after the cycle (${reason}): ${script} from ${cwd}`);
   let pid: number | null = null;
   try {
-    pid = spawnTrain(args, cwd, script);
+    // `train.pid` keeps naming this process until the successor is confirmed,
+    // so a `stop` meanwhile reaches this process, which then stops both.
+    pid = spawnTrain(args, cwd, script, false);
+    handoverChildPid = pid;
     const deadline = Date.now() + HANDOVER_TIMEOUT_MS;
     while (Date.now() < deadline && isAlive(pid) && runInfoPid(p.runInfo) !== pid) {
       await new Promise((r) => setTimeout(r, 200));
     }
     if (runInfoPid(p.runInfo) !== pid) throw new Error(`pid ${pid} did not start its run loop`);
+    recordTrain(p, pid, args);
+    handoverChildPid = null;
     log(`handed over to pid ${pid}; pid ${process.pid} exits`);
     return true;
   } catch (err) {
     if (pid !== null) {
       try { process.kill(-pid, 'SIGKILL'); } catch { /* already gone */ }
     }
-    writeFileSync(p.pid, String(process.pid));
-    writeFileSync(p.startArgs, JSON.stringify(runArgs));
+    handoverChildPid = null;
     log(`re-execution failed, this process keeps running: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
@@ -856,6 +872,17 @@ function resume(): void {
   console.log(`cleared halt "${was}"; the next cycle will run`);
 }
 
+/** The options without `--now`, keeping an option value that happens to read `--now`. */
+function withoutNowFlag(args: string[]): string[] {
+  const valued = new Set(['--interval', '--worktree', '--verify-cmd', '--workers']);
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (valued.has(args[i]) && i + 1 < args.length) out.push(args[i], args[++i]);
+    else if (args[i] !== '--now') out.push(args[i]);
+  }
+  return out;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
@@ -863,7 +890,7 @@ async function main(): Promise<void> {
     case 'cycle': installSignalHandlers(); process.exitCode = await cycleOnce(opts); return;
     case 'run': await runForever(opts, argv.slice(1)); return;
     case 'start': startDetached(argv.slice(1)); return;
-    case 'restart': await restart(argv.slice(1).filter((a) => a !== '--now'), opts.now); return;
+    case 'restart': await restart(withoutNowFlag(argv.slice(1)), opts.now); return;
     case 'stop': await stop(); return;
     case 'status': status(); return;
     case 'logs': logs(); return;

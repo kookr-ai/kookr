@@ -534,6 +534,47 @@ describe('integration train CLI', () => {
       expect(await until(() => !alive(old), 10_000)).toBe(true);
     }, 180_000);
 
+    it('stop during a hand-over stops both the old train and its unconfirmed successor', async () => {
+      const s = makeSandbox();
+      const old = await startTrain(s, ['--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '1']);
+      // a successor that looks like the train but never starts its run loop
+      const slow = join(s.root, 'slow', 'integration-train.mjs');
+      mkdirSync(dirname(slow), { recursive: true });
+      const successorFile = join(s.root, 'successor.pid');
+      writeFileSync(slow, [
+        "import { writeFileSync } from 'node:fs';",
+        `writeFileSync(${JSON.stringify(successorFile)}, String(process.pid));`,
+        'setInterval(() => {}, 1000);',
+        '',
+      ].join('\n'));
+      writeFileSync(join(s.stateDir, 'restart-request.json'), JSON.stringify({
+        requestedAt: new Date().toISOString(), args: [], cwd: s.launch, script: slow,
+      }));
+      expect(await until(() => existsSync(successorFile), 60_000)).toBe(true);
+      const successor = Number(readFileSync(successorFile, 'utf8'));
+      pidsToKill.push(successor);
+      // the old train is still the one on record while the hand-over is unconfirmed
+      expect(trainPid(s)).toBe(old);
+
+      const r = s.cli(['stop']);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain(`stopped integration train (pid ${old})`);
+      expect(await until(() => !alive(old) && !alive(successor), 10_000)).toBe(true);
+    }, 180_000);
+
+    it('restart rejects bad options at once instead of filing them for a running train', async () => {
+      const s = makeSandbox();
+      const old = await startTrain(s, ['--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '1']);
+
+      const r = s.cli(['restart', '--bogus']);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('unknown option --bogus');
+      expect(existsSync(join(s.stateDir, 'restart-request.json'))).toBe(false);
+      expect(alive(old)).toBe(true);
+      expect(trainPid(s)).toBe(old);
+      expect(s.cli(['stop']).status).toBe(0);
+    }, 120_000);
+
     it('stops and starts a train started by code that ignores restart requests', async () => {
       const s = makeSandbox();
       // a run loop of pre-#3841 code in the keyed directory: no run-info.json
