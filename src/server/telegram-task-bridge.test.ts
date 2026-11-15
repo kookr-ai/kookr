@@ -166,6 +166,19 @@ describe('liveSessionContinues', () => {
     expect(liveSessionContinues({ sessions: [asker] } as unknown as Task, 'tmux-a')).toBe(false);
   });
 
+  test('opencode keeps one conversation id across resumes: a pin on a middle session is still found', () => {
+    const task = {
+      sessions: [
+        { tmuxSession: 'tmux-a', claudeSessionId: 'ses_1', lastStatus: 'aborted' },
+        { tmuxSession: 'tmux-b', claudeSessionId: 'ses_1', resumedConversationId: 'ses_1', lastStatus: 'aborted' },
+        { tmuxSession: 'tmux-c', claudeSessionId: 'ses_1', resumedConversationId: 'ses_1', lastStatus: 'running' },
+      ],
+    } as unknown as Task;
+    expect(liveSessionContinues(task, 'tmux-b')).toBe(true);
+    expect(liveSessionContinues(task, 'tmux-a')).toBe(true);
+    expect(liveSessionContinues(task, 'tmux-other')).toBe(false);
+  });
+
   test('terminates on a resume cycle', () => {
     const cyclic = {
       sessions: [

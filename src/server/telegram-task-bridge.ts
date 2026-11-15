@@ -62,7 +62,7 @@ export interface TelegramTaskBridgeDeps {
 }
 
 /** The task's most recent still-live session (mirrors the dashboard selector). */
-export function latestLiveSession(task: Task): Task['sessions'][number] | undefined {
+function latestLiveSession(task: Task): Task['sessions'][number] | undefined {
   return [...task.sessions].reverse().find(
     (session) => session.lastStatus !== 'completed'
       && session.lastStatus !== 'aborted'
@@ -72,19 +72,25 @@ export function latestLiveSession(task: Task): Task['sessions'][number] | undefi
 
 /**
  * Whether the task's live session is `sessionId` or continues its conversation. Crash recovery and
- * an operator Reopen launch a new session with `--resume --fork-session`; that session records the
- * conversation it resumed (`resumedConversationId`), so the chain is followed back through any
- * number of resumes. A fresh relaunch has no such link and does not continue `sessionId`.
+ * an operator Reopen launch a new session that resumes the provider conversation (Claude Code
+ * `--resume --fork-session`, opencode `--session`). The adapter records the conversation it resumed
+ * (`resumedConversationId`), so the chain is followed back through any number of resumes. A fresh
+ * relaunch has no such link and does not continue `sessionId`.
+ *
+ * Each step looks only at sessions launched before the current one, newest first: opencode keeps
+ * one conversation id across resumes, so several sessions can carry the same `claudeSessionId`.
  */
 export function liveSessionContinues(task: Task, sessionId: string): boolean {
-  let current = latestLiveSession(task);
-  const seen = new Set<string>();
-  while (current && !seen.has(current.tmuxSession)) {
+  const live = latestLiveSession(task);
+  let index = live ? task.sessions.indexOf(live) : -1;
+  while (index >= 0) {
+    const current = task.sessions[index] as Task['sessions'][number];
     if (current.tmuxSession === sessionId) return true;
-    seen.add(current.tmuxSession);
     const resumed = current.resumedConversationId;
     if (!resumed) return false;
-    current = task.sessions.find((s) => s.claudeSessionId === resumed);
+    let previous = index - 1;
+    while (previous >= 0 && task.sessions[previous]?.claudeSessionId !== resumed) previous--;
+    index = previous;
   }
   return false;
 }

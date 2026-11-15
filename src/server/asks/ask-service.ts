@@ -63,7 +63,7 @@ export interface AskServiceDeps {
   liveSession?: (taskId: string) => string | undefined;
   /**
    * Whether the task's live session is `sessionId` or a session that resumed its conversation
-   * (crash recovery, operator Reopen). Without it, pinned asks are delivered as if unpinned.
+   * (crash recovery, operator Reopen). Without it (or `liveSession`), pinned asks are delivered as if unpinned.
    */
   sessionContinues?: (taskId: string, sessionId: string) => boolean;
   now?: () => number;
@@ -415,7 +415,7 @@ export class AskService {
     }
     // Nor into a fresh session that replaced the one that asked (the task was relaunched without
     // resuming): it never saw the question. A session that resumed the asker's conversation did.
-    if (!this.pinnedSessionLive(ask)) {
+    if (this.replacedByFreshSession(ask)) {
       this.transition(ask.id, 'cancelled', 'task_gone');
       const gone = this.deps.store.get(ask.id) as AskRecord;
       await this.finalize(gone, '⚠️ The task was relaunched in a new session since it asked — your answer was not delivered.');
@@ -476,7 +476,7 @@ export class AskService {
     // notices into sessions that have long moved on: only notify when fresh.
     const status = this.deps.taskStatus(ask.taskId);
     const fresh = this.now() - ask.expiresAt <= STALE_EXPIRY_NOTICE_MS;
-    if (fresh && status !== undefined && !isTerminalStatus(status) && this.pinnedSessionLive(ask)) {
+    if (fresh && status !== undefined && !isTerminalStatus(status) && !this.replacedByFreshSession(ask)) {
       await this.deliver(ask, `Ask ${ask.id} expired with no answer.`).catch(() => undefined);
     }
   }
@@ -490,10 +490,15 @@ export class AskService {
       : this.deps.deliverToTask(ask.taskId, text, ask.sessionId);
   }
 
-  /** Whether the task's live session is the pinned one or continues its conversation. Unpinned asks always pass. */
-  private pinnedSessionLive(ask: AskRecord): boolean {
-    if (ask.sessionId === undefined || !this.deps.sessionContinues) return true;
-    return this.deps.sessionContinues(ask.taskId, ask.sessionId);
+  /**
+   * Whether a session that does not continue the pinned one is now live. False for unpinned asks, and
+   * while no session is live at all (for example a Reopen still waiting for a worker slot): the answer
+   * is then recorded as usual, and delivery, which is still bound to the pin, fails without typing.
+   */
+  private replacedByFreshSession(ask: AskRecord): boolean {
+    if (ask.sessionId === undefined || !this.deps.sessionContinues || !this.deps.liveSession) return false;
+    if (this.deps.liveSession(ask.taskId) === undefined) return false;
+    return !this.deps.sessionContinues(ask.taskId, ask.sessionId);
   }
 
   /** CAS pending → `state`. Returns false when the ask was not pending. */

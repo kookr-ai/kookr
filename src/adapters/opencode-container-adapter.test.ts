@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { FakeDocker } from '../containers/fake-docker.js';
@@ -223,6 +224,23 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
     expect(existsSync(join(root, 'rt', 'tasks', task.id, 'secrets'))).toBe(false);
     // the conversation data and the clone are kept for resume / deliverable extraction
     expect(existsSync(join(root, 'rt', 'tasks', task.id, 'work', '.git'))).toBe(true);
+  });
+
+  test('a resumed launch links its session to the conversation it continues; a fresh one does not', async () => {
+    const task = newTask();
+    const a = make();
+    const fresh = await a.launch(task.id, 'first', src);
+    await a.stop(fresh);
+    const dataHome = join(root, 'data', task.id, 'data');
+    mkdirSync(join(dataHome, 'opencode'), { recursive: true });
+    const db = new Database(join(dataHome, 'opencode', 'opencode.db'));
+    db.exec('CREATE TABLE session (id text PRIMARY KEY, parent_id text, time_updated integer NOT NULL)');
+    db.prepare('INSERT INTO session VALUES (?, ?, ?)').run('ses_abc123', null, 5);
+    db.close();
+    const resumed = await a.launch(task.id, 'first', src, { sessionId: 'ses_abc123' });
+    const sessions = store.getTask(task.id)!.sessions;
+    expect(sessions.find((s) => s.tmuxSession === resumed)?.resumedConversationId).toBe('ses_abc123');
+    expect(sessions.find((s) => s.tmuxSession === fresh)?.resumedConversationId).toBeUndefined();
   });
 
   test('stop still stops the container when the A2A cancel fails (A2A is advisory)', async () => {

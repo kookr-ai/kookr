@@ -408,10 +408,19 @@ describe('session pinning (#3548)', () => {
 
   it('refuses a dashboard answer after a relaunch the same way', async () => {
     const ask = await createPinned();
-    live.delete('t1'); // between sessions: none is live
+    live.set('t1', 'sess-relaunched');
     const r = await pinned.answerFromDashboard({ askId: ask.id, optionIndex: 0 });
     expect(r).toMatchObject({ ok: false, reason: 'task_gone' });
     expect(h.deliver).not.toHaveBeenCalled();
+  });
+
+  it('records the answer while no session is live (a resume may be pending), with delivery still bound to the pin', async () => {
+    const ask = await createPinned();
+    live.delete('t1');
+    h.deliver.mockResolvedValueOnce({ ok: false, reason: 'no live session for this task' });
+    const r = await tapPinned(ask, 1);
+    expect(r).toMatchObject({ ok: true, ask: { state: 'answered', answer: { label: 'No' }, taskDelivery: 'failed' } });
+    expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${ask.id}: No`, 'sess-a');
   });
 
   it('re-pins a pending ask when the relaunched session asks the same question again', async () => {

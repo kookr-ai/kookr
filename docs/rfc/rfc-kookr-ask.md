@@ -91,13 +91,16 @@ interface AskRecord {
 * Session pinning (issue #3548): the ask records `sessionId`, the task's live
   session when the question was asked. The answer is typed only while the live
   session is that one or continues its conversation: crash recovery and an
-  operator Reopen launch `claude --resume <id> --fork-session` in a new session
-  that records the conversation it resumed (`resumedConversationId`), and the
-  chain is followed back. A fresh relaunch, which never saw the question, gets
-  nothing: the ask becomes `cancelled/task_gone` and the operator is told. The
-  expiry notice follows the same rule. An idempotent re-ask from the new session
-  re-pins the pending ask to it. Asks without `sessionId` (older records) keep
-  the unpinned behaviour.
+  operator Reopen resume the conversation in a new session (Claude Code
+  `--resume <id> --fork-session`, opencode `--session <id>`), the adapter records
+  the conversation it resumed (`resumedConversationId`), and the chain is
+  followed back. A fresh relaunch, which never saw the question, gets nothing:
+  the ask becomes `cancelled/task_gone` and the operator is told. While no
+  session is live at all, the answer is recorded as before and its delivery,
+  still bound to the pin, fails. The expiry notice follows the same rule. An
+  idempotent re-ask from the new session re-pins the pending ask to it. Asks
+  without `sessionId` (older records) keep the unpinned behaviour. Agent types
+  that do not resume (Codex, Grok) always relaunch fresh.
 * Delivery text: `Operator answered ask <id>: <label>` (or `… (free text): <text>`),
   via the existing `TelegramTaskBridge.sendText` → `submitMessage` path.
 * Expiry: a 30 s unref'd sweeper plus lazy check on read. On expiry the message
