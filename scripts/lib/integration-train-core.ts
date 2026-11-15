@@ -338,6 +338,12 @@ export function withPluginVersion(json: string, version: string): string {
 /** Trailer the train puts on its own revert commits, so it can recognise them later. */
 export const TRAIN_REVERT_TRAILER = 'Kookr-Integration-Train: revert';
 
+/**
+ * Automatic fix-and-re-land tasks the train starts for one linked issue before
+ * it stops and asks for a human (`fix-budget-exhausted`).
+ */
+export const MAX_AUTOMATIC_RELANDS = 3;
+
 export function tailForComment(output: string): string {
   const lines = output.split('\n').slice(-COMMENT_TAIL_LINES).join('\n');
   return lines.length > COMMENT_TAIL_CHARS ? lines.slice(lines.length - COMMENT_TAIL_CHARS) : lines;
@@ -830,19 +836,20 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
       ? `issue-${issueNumbers[0]}`
       : `ref-${firstReferenceFromSubject(subject) ?? pr}`;
     const spawned = state.fixTasks[budgetKey] ?? 0;
-    if (spawned === 0) {
-      const key = `train-fix-${budgetKey}-1`;
+    if (spawned < MAX_AUTOMATIC_RELANDS) {
+      const attempt = spawned + 1;
+      const key = `train-fix-${budgetKey}-${attempt}`;
       const ok = await safe(deps, async () => {
         await deps.spawner.spawn({
           idempotencyKey: key,
-          prompt: fixPrompt({ pr, culprit, revertSha, integration, failTail, issues: issueNumbers }),
+          prompt: fixPrompt({ pr, culprit, revertSha, integration, failTail, issues: issueNumbers, attempt }),
         });
         return true;
       });
       if (ok === true) {
         // The budget is consumed only by a task that exists.
-        state.fixTasks[budgetKey] = 1;
-        fixNote = `fix task ${key} spawned`;
+        state.fixTasks[budgetKey] = attempt;
+        fixNote = `fix task ${key} spawned (automatic re-land ${attempt} of ${MAX_AUTOMATIC_RELANDS})`;
       } else {
         fixNote = `fix task ${key} could not be spawned`;
         await raise(
@@ -854,7 +861,7 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
       fixNote = `fix budget exhausted for ${budgetKey} (PR #${pr})`;
       await raise(
         deps, state, 'fix-budget-exhausted',
-        `PR #${pr} failed again after an automatic fix task; reverted ${culprit} (${revertSha}). Needs a human.`,
+        `PR #${pr} failed again after ${spawned} automatic fix task(s), the limit; reverted ${culprit} (${revertSha}). Needs a human.`,
       );
     }
   }
@@ -888,7 +895,16 @@ async function newestRevertIndex(deps: TrainDeps, candidates: string[]): Promise
 
 function fixPrompt(p: {
   pr: number; culprit: string; revertSha: string; integration: string; failTail: string; issues: number[];
+  attempt: number;
 }): string {
+  // A later attempt must not repeat the fix that was just reverted.
+  const earlier = p.attempt > 1
+    ? [
+      '',
+      `This is automatic re-land ${p.attempt} of ${MAX_AUTOMATIC_RELANDS} for this change: ${p.attempt - 1} earlier fix attempt(s) were reverted too.`,
+      'Before choosing a fix, read the earlier failing output in the comments of the linked issue and the earlier fix pull requests, and do not repeat an approach that already failed.',
+    ]
+    : [];
   const closes = p.issues.length > 0
     ? `5. Deliver through the normal flow (pull request, review, merge). Put ${p.issues.map((n) => `\`Closes #${n}\``).join(' and ')} in the pull request body: the train counts automatic re-lands per issue.`
     : '5. Deliver through the normal flow (pull request, review, merge).';
@@ -897,6 +913,7 @@ function fixPrompt(p: {
     '',
     `- Reverted commit: ${p.culprit}`,
     `- Revert commit: ${p.revertSha}`,
+    ...earlier,
     '',
     'Your job:',
     '1. Branch from `origin/main` (fetch first).',

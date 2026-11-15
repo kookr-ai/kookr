@@ -16,6 +16,7 @@ import {
   closingIssueNumbersFromText,
   emptyTrainState,
   isOutdatedLockfileFailure,
+  MAX_AUTOMATIC_RELANDS,
   nextPluginVersion,
   parseIntegrationBranch,
   PLUGIN_JSON_PATH,
@@ -735,17 +736,35 @@ describe('integration train cycle', () => {
     expect((await h.cycle()).outcome).toBe('promoted');
   });
 
-  it('counts the fix budget per issue, so a re-land under a new PR number does not get a second task', async () => {
+  it('counts the fix budget per issue: three re-lands under new PR numbers, then fix-budget-exhausted', async () => {
     h = makeHarness();
-    h.issues.set(13, [{ number: 130, state: 'open' }]);
-    h.issues.set(14, [{ number: 130, state: 'open' }]);
+    // The original PR and its three re-lands all close the same issue.
+    for (const pr of [13, 14, 15, 16]) h.issues.set(pr, [{ number: 130, state: 'open' }]);
     h.commit('staging', { 'bad.txt': 'x' }, 'broken (#13)');
     expect((await h.cycle()).outcome).toBe('reverted');
     expect((await h.cycle()).outcome).toBe('idle');
-    h.commit('staging', { 'bad.txt': 'y' }, 're-land, still broken (#14)');
+    for (const pr of [14, 15]) {
+      h.commit('staging', { 'bad.txt': `again-${pr}` }, `re-land, still broken (#${pr})`);
+      expect((await h.cycle()).outcome).toBe('reverted');
+      expect((await h.cycle()).outcome).toBe('idle');
+      expect(h.notes.map((n) => n.kind)).not.toContain('fix-budget-exhausted');
+    }
+    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual([
+      'train-fix-issue-130-1', 'train-fix-issue-130-2', 'train-fix-issue-130-3',
+    ]);
+    expect(h.state.fixTasks['issue-130']).toBe(MAX_AUTOMATIC_RELANDS);
+    // Only a later attempt is told that earlier fixes were reverted.
+    expect(h.spawns[0].prompt).not.toContain('earlier fix attempt');
+    expect(h.spawns[1].prompt).toContain('automatic re-land 2 of 3');
+    expect(h.spawns[2].prompt).toContain('2 earlier fix attempt(s) were reverted too');
+
+    // The third re-land fails as well: the change is still reverted, but no fourth task starts.
+    h.commit('staging', { 'bad.txt': 'again-16' }, 're-land, still broken (#16)');
     expect((await h.cycle()).outcome).toBe('reverted');
-    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual(['train-fix-issue-130-1']);
-    expect(h.notes.map((n) => n.kind)).toContain('fix-budget-exhausted');
+    expect(h.spawns).toHaveLength(3);
+    const exhausted = h.notes.find((n) => n.kind === 'fix-budget-exhausted');
+    expect(exhausted?.detail).toContain('after 3 automatic fix task(s)');
+    expect(h.state.fixTasks['issue-130']).toBe(3);
   });
 
   it('halts on a red head when the integration branch is not a first-parent line from main', async () => {
@@ -787,14 +806,20 @@ describe('integration train cycle', () => {
     expect((await h.cycle()).outcome).toBe('idle');
   });
 
-  it('does not spawn a second fix task for the same PR and notifies fix-budget-exhausted', async () => {
+  it('with no linked issue, counts by the PR reference and stops after the third fix task', async () => {
     h = makeHarness();
-    h.commit('staging', { 'bad.txt': 'x' }, 'broken (#13)');
+    for (const content of ['a', 'b', 'c']) {
+      h.commit('staging', { 'bad.txt': content }, 'broken (#13)');
+      expect((await h.cycle()).outcome).toBe('reverted');
+      expect((await h.cycle()).outcome).toBe('idle');
+    }
+    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual([
+      'train-fix-ref-13-1', 'train-fix-ref-13-2', 'train-fix-ref-13-3',
+    ]);
+    expect(h.notes.map((n) => n.kind)).not.toContain('fix-budget-exhausted');
+    h.commit('staging', { 'bad.txt': 'd' }, 'broken (#13)');
     expect((await h.cycle()).outcome).toBe('reverted');
-    expect((await h.cycle()).outcome).toBe('idle');
-    h.commit('staging', { 'bad.txt': 'y' }, 'broken again (#13)');
-    expect((await h.cycle()).outcome).toBe('reverted');
-    expect(h.spawns).toHaveLength(1);
+    expect(h.spawns).toHaveLength(3);
     expect(h.notes.map((n) => n.kind)).toContain('fix-budget-exhausted');
   });
 
