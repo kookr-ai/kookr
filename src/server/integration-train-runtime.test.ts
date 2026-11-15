@@ -42,7 +42,7 @@ describe('repoKeyFromRemoteUrl', () => {
 
 describe('train process identity', () => {
   it('recognises only the run loop of the train script', () => {
-    expect(looksLikeTrainCommand('/usr/bin/node --import tsx /home/x/kookr-prod/scripts/integration-train.ts run --worktree /w')).toBe(true);
+    expect(looksLikeTrainCommand('/usr/bin/node --import tsx /srv/kookr/scripts/integration-train.ts run --worktree /w')).toBe(true);
     expect(looksLikeTrainCommand('node scripts/integration-train.ts run')).toBe(true);
     expect(looksLikeTrainCommand('node scripts/integration-train.ts cycle')).toBe(false);
     expect(looksLikeTrainCommand('node scripts/integration-train.ts runner')).toBe(false);
