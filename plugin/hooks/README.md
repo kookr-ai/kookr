@@ -134,6 +134,36 @@ quotes and heredocs are not commands, so a commit message that mentions
 `kookr merge <PR> --repo <owner/name>`, which always runs the merge wrapper of
 the deployed production checkout. `kookr merge` itself is always allowed.
 
+## Rm Dynamic Path Guard
+
+`rm-dynamic-path-guard.sh` is a `PreToolUse` hook on `Bash` that denies a
+recursive `rm` whose target is computed by the shell (issue #3867). Claude Code
+cannot see where such a path points, so it asks a human for permission even in
+`bypassPermissions` mode. In an unattended task nobody answers: on 15 Nov 2026
+two review agents cleaning up a temp directory with
+`rm -rf "$(cat <scratchpad>/mutdir)"` waited 76 and 52 minutes. A hook denial
+reaches the agent at once, so it retries instead of waiting.
+
+It denies `rm` at command position (also `/bin/rm`, `sudo rm`, and after `&&`,
+`;`, `|`, `do` or `then`) when it has a recursive flag (`-r`, `-R`, a cluster
+such as `-rf`, or `--recursive`) and a target containing a variable or a
+command substitution: `rm -rf "$(cat f)"`, ``rm -rf `cat f` ``, `rm -rf "$DIR"`,
+`rm -r -- $X`. The denial tells the agent to print the path first and delete it
+by its literal path, or to empty a directory with
+`find /literal/dir -mindepth 1 -delete`.
+
+Allowed: literal targets (`rm -rf /tmp/x/scratchpad/mutdir`), non-recursive
+`rm "$f"`, `git rm -r dir`, a variable in a redirect (`2>>"$LOG"`), and text
+that only mentions such a command (inside quotes, a commit message, a grep
+pattern or a heredoc body). It reuses the word splitter of
+`merge-retarget-guard.mjs`.
+
+Known limits: it does not look inside `bash -c`, `eval`, `xargs rm` or
+`find -exec rm`. The splitter drops quoting, so a single-quoted or escaped `$`
+(`rm -rf '$DIR'`) counts as a variable and is denied. It never runs a
+subprocess, and it fails open: a crash allows the command and is logged to
+`~/.kookr/hook-errors.log`.
+
 ## Delivery-Step Stop Guard
 
 `delivery-step-stop.sh` (Stop) stops an agent from ending its turn while the
