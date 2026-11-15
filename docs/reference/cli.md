@@ -744,7 +744,22 @@ reviewed head. Then:
   `Closes #N` keyword or a manual link) that is still open is reported on stderr,
   after one re-check `KOOKR_MERGE_CHECK_INTERVAL_SECONDS` later, because GitHub
   closes them asynchronously. GitHub only auto-closes issues when the PR merges
-  into the default branch.
+  into the default branch. When the PR merged into the configured integration
+  branch, one informational line says the issues stay open until the integration
+  train promotes the change, and nothing waits for an auto-close.
+- **Integration branch.** When the current checkout's repository configures one
+  (`.kookr/delivery-gate.json`), a PR aimed at the default branch is retargeted
+  to it with `gh pr edit --base` before the review gate runs; a failed edit
+  stops the merge (exit 1). Stacked PRs and a PR from the integration branch
+  itself are left alone, and a `--repo` other than the checkout's own repository
+  is never retargeted. Without the config file nothing changes.
+- **A verdict can be bound to the diff.** A verdict comment may carry an optional
+  `review-patch-id: <40 hex>` line (the id `scripts/review-patch-id.sh <base-ref>`
+  prints for the exact file versions the PR changes). The gate then also accepts a `pass` whose
+  `review-head-sha` is stale, provided the PR's current patch id equals it (a
+  rebase that did not change the files the PR touches), and pins the merge to the current head. A `block` for the same
+  diff stays blocking. If the patch id cannot be computed the head-SHA rule alone
+  applies.
 
 Without `--repo`, the PR is resolved from the git remote of the current
 directory, as with `gh`. The verb runs the wrapper from the checkout that the

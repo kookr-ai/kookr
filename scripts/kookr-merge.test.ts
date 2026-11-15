@@ -43,6 +43,7 @@
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -52,7 +53,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { gitExecEnv } from '../src/core/git-helpers.js';
 
 const SCRIPT = join(process.cwd(), 'scripts/kookr-merge.sh');
 
@@ -111,11 +113,19 @@ function makeStubDir(opts: {
   // non-zero exit models a gh too old to know the field).
   closingIssuesJson?: string;
   closingIssuesExit?: number;
+  // PR body served in the same `gh pr view --json ...,body` response (merged
+  // into closingIssuesJson).
+  prBody?: string;
   // Issue states served by `gh api repos/<owner>/<name>/issues/<n> --jq .state`,
   // keyed "owner/name#n". Read k serves states[min(k, len)-1], so ['open',
   // 'closed'] models GitHub closing the issue a moment after the merge. A key
   // with an empty list makes the lookup fail.
   issueStates?: Record<string, string[]>;
+  // Integration-branch surface (#3788): the PR's current base and the repo's
+  // default branch, and the exit code of `gh pr edit` (the retarget).
+  baseRef?: string;
+  defaultBranch?: string;
+  editExit?: number;
 }): string {
   const dir = mkdtempSync(join(tmpdir(), 'kookr-merge-stub-'));
   writeFileSync(
@@ -146,7 +156,15 @@ function makeStubDir(opts: {
   }
   writeFileSync(join(dir, 'annotations.json'), opts.annotationsJson ?? '[]');
   writeFileSync(join(dir, 'status.json'), opts.statusJson ?? '{"state":"pending","total_count":0,"statuses":[]}');
-  writeFileSync(join(dir, 'closing.json'), opts.closingIssuesJson ?? '{"closingIssuesReferences":[]}');
+  writeFileSync(
+    join(dir, 'closing.json'),
+    JSON.stringify({
+      ...(JSON.parse(opts.closingIssuesJson ?? '{"closingIssuesReferences":[]}') as object),
+      body: opts.prBody ?? '',
+    }),
+  );
+  writeFileSync(join(dir, 'base.txt'), opts.baseRef ?? 'main');
+  writeFileSync(join(dir, 'default.txt'), opts.defaultBranch ?? 'main');
   writeFileSync(join(dir, 'delete.stderr'), opts.deleteStderr ?? '');
   for (const [key, states] of Object.entries(opts.issueStates ?? {})) {
     // "owner/name#7" -> issue.owner_name_7.states, one state per line.
@@ -179,6 +197,17 @@ case "$args" in
     cat "$DIR/review.json"; exit 0 ;;
   *"--json headRefName,headRepository,headRepositoryOwner"*)
     echo '{"headRefName":"${opts.headRef ?? 'paired/change'}","headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"${opts.headOwner ?? 'owner'}"}}'; exit 0 ;;
+  "pr edit "*)
+    [ ${opts.editExit ?? 0} -eq 0 ] || { echo 'GraphQL: edit refused' >&2; exit ${opts.editExit ?? 0}; }
+    printf '%s' "\${args##*--base }" > "$DIR/base.txt"
+    printf 'edited\\n' > "$DIR/edited.marker"
+    exit 0 ;;
+  *"--json baseRefName,headRefName"*)
+    printf '{"baseRefName":"%s","headRefName":"%s"}\\n' "$(cat "$DIR/base.txt")" '${opts.headRef ?? 'paired/change'}'; exit 0 ;;
+  *"--json baseRefName"*)
+    cat "$DIR/base.txt"; echo; exit 0 ;;
+  "repo view "*"defaultBranchRef"*)
+    cat "$DIR/default.txt"; echo; exit 0 ;;
   "repo view "*)
     echo 'owner/repo'; exit 0 ;;
   "api --method PUT "*)
@@ -266,6 +295,7 @@ function runMerge(
   stubDir: string,
   env: Record<string, string> = {},
   args: string[] = ['123'],
+  cwd?: string,
 ): {
   status: number | null;
   stdout: string;
@@ -277,8 +307,9 @@ function runMerge(
   const result = spawnSync('bash', [SCRIPT, ...args], {
     encoding: 'utf8',
     timeout: 30_000,
+    ...(cwd ? { cwd } : {}),
     env: {
-      ...process.env,
+      ...(cwd ? gitExecEnv() : process.env),
       PATH: `${stubDir}:${process.env.PATH ?? ''}`,
       // Isolate watch_checks from the independent-review gate.
       KOOKR_MERGE_REQUIRE_REVIEW: '0',
@@ -1455,6 +1486,401 @@ describe('kookr merge dispatches the wrapper from any cwd (#3641)', () => {
     } finally {
       rmSync(stub, { recursive: true, force: true });
       rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+});
+
+// --- Integration branch, diff-bound verdicts, closing issues (#3788) ---------
+
+const scratchDirs: string[] = [];
+afterEach(() => {
+  for (const d of scratchDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+function git(cwd: string, ...args: string[]): string {
+  const r = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...gitExecEnv(),
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@t',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@t',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+    },
+  });
+  if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  return r.stdout.trim();
+}
+
+function commitFile(repo: string, name: string, body: string): string {
+  writeFileSync(join(repo, name), body);
+  git(repo, 'add', name);
+  git(repo, 'commit', '-q', '-m', `add ${name}`);
+  return git(repo, 'rev-parse', 'HEAD');
+}
+
+/**
+ * A checkout whose `origin` is a local bare repo but whose recorded URL is
+ * https://github.com/owner/repo.git (insteadOf redirects the transport), so the
+ * script sees a real slug. `config` is committed on origin/main, which is where
+ * delivery-gate.sh reads it; undefined leaves the file absent (the default).
+ */
+function makeCheckout(config?: object): string {
+  const root = mkdtempSync(join(tmpdir(), 'kookr-merge-repo-'));
+  scratchDirs.push(root);
+  const bare = join(root, 'origin.git');
+  const repo = join(root, 'work');
+  git(root, 'init', '-q', '--bare', '-b', 'main', bare);
+  git(root, 'init', '-q', '-b', 'main', repo);
+  commitFile(repo, 'base.txt', 'one\ntwo\nthree\n');
+  if (config) {
+    mkdirSync(join(repo, '.kookr'));
+    commitFile(repo, '.kookr/delivery-gate.json', JSON.stringify(config));
+  }
+  git(repo, 'remote', 'add', 'origin', 'https://github.com/owner/repo.git');
+  git(repo, 'config', `url.${bare}.insteadOf`, 'https://github.com/owner/repo.git');
+  git(repo, 'push', '-q', 'origin', 'main');
+  git(repo, 'fetch', '-q', 'origin');
+  return repo;
+}
+
+const INTEGRATION = { integrationBranch: 'staging', prePushGate: 'fast' };
+
+describe('integration branch retarget (#3788)', () => {
+  function run(opts: Partial<Parameters<typeof makeStubDir>[0]>, config: object | undefined, args = ['123']) {
+    const repo = makeCheckout(config);
+    const dir = makeStubDir({ checksResponses: [CLEAN], modernGh: true, headRef: 'feat/x', ...opts });
+    try {
+      const result = runMerge(dir, {}, args, repo);
+      return { ...result, edited: existsSync(join(dir, 'edited.marker')), base: readFileSync(join(dir, 'base.txt'), 'utf8') };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('without a config file never calls gh pr edit and merges as before', () => {
+    const result = run({}, undefined);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.merged).toBe(true);
+    expect(result.calls.some((c) => c.startsWith('pr edit'))).toBe(false);
+    expect(result.calls.some((c) => c.includes('defaultBranchRef'))).toBe(false);
+    expect(result.stdout).not.toContain('retargeted');
+  });
+
+  it('retargets a PR aimed at the default branch, then merges', () => {
+    const result = run({}, INTEGRATION);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.edited).toBe(true);
+    expect(result.base).toBe('staging');
+    expect(result.stdout).toContain(
+      'kookr-merge: retargeted PR #123 from main to staging (integration branch configured in .kookr/delivery-gate.json)',
+    );
+    const editIdx = result.calls.findIndex((c) => c === 'pr edit 123 --base staging');
+    const waitIdx = result.calls.findIndex((c) => c.includes('--json statusCheckRollup'));
+    expect(editIdx).toBeGreaterThanOrEqual(0);
+    expect(editIdx).toBeLessThan(waitIdx);
+    expect(result.merged).toBe(true);
+  });
+
+  it('does not edit a PR that already targets the integration branch', () => {
+    const result = run({ baseRef: 'staging' }, INTEGRATION);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.edited).toBe(false);
+    expect(result.merged).toBe(true);
+  });
+
+  it('leaves a stacked PR (any other base) alone', () => {
+    const result = run({ baseRef: 'feat/parent' }, INTEGRATION);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.edited).toBe(false);
+  });
+
+  it('leaves the integration branch\'s own promotion PR alone', () => {
+    const result = run({ headRef: 'staging' }, INTEGRATION);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.edited).toBe(false);
+  });
+
+  it('skips retargeting when --repo names a different repository', () => {
+    const result = run({}, INTEGRATION, ['123', '--repo', 'other/thing']);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.edited).toBe(false);
+    expect(result.calls.some((c) => c.includes('defaultBranchRef'))).toBe(false);
+  });
+
+  it('retargets when --repo names the checkout\'s own repository', () => {
+    const result = run({}, INTEGRATION, ['123', '--repo', 'owner/repo']);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.edited).toBe(true);
+  });
+
+  it('fails closed, without merging, when gh pr edit fails', () => {
+    const result = run({ editExit: 1 }, INTEGRATION);
+    expect(result.status).toBe(1);
+    expect(result.merged).toBe(false);
+    expect(result.stderr).toContain('could not retarget PR #123 from main to staging');
+  });
+});
+
+describe('closing issues after a merge into the integration branch (#3788)', () => {
+  it('reports them as staying open, without waiting or looking them up', () => {
+    const repo = makeCheckout(INTEGRATION);
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      modernGh: true,
+      headRef: 'feat/x',
+      closingIssuesJson: closingRefs(['owner', 'repo', 7], ['owner', 'repo', 8]),
+      issueStates: { 'owner/repo#7': ['open', 'open'], 'owner/repo#8': ['open'] },
+    });
+    try {
+      const result = runMerge(dir, {}, ['123'], repo);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.merged).toBe(true);
+      expect(result.stdout).toContain(
+        'kookr-merge: closing issue(s) #7, #8 stay open until the integration train promotes this change to main',
+      );
+      expect(result.stderr).not.toContain('still open');
+      expect(result.calls.some((c) => c.startsWith('api repos/owner/repo/issues/'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the still-open warning for a merge into the default branch', () => {
+    const repo = makeCheckout();
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      modernGh: true,
+      closingIssuesJson: closingRefs(['owner', 'repo', 7]),
+      issueStates: { 'owner/repo#7': ['open', 'open'] },
+    });
+    try {
+      const result = runMerge(dir, {}, ['123'], repo);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toContain('owner/repo#7 is declared as closed by PR #123 but is still open');
+      expect(result.stdout).not.toContain('stay open until the integration train');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  describe('with the PR body (GitHub returns no references for a non-default base)', () => {
+    function runBody(opts: Partial<Parameters<typeof makeStubDir>[0]>) {
+      const repo = makeCheckout(INTEGRATION);
+      const dir = makeStubDir({ checksResponses: [CLEAN], modernGh: true, headRef: 'feat/x', ...opts });
+      try {
+        return runMerge(dir, {}, ['123'], repo);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    const LINE = (nums: string) =>
+      `kookr-merge: closing issue(s) ${nums} stay open until the integration train promotes this change to main`;
+
+    it('lists an issue named only by a closing keyword in the body', () => {
+      const result = runBody({ prBody: 'Summary\n\nFixes: #42 and resolved #43' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain(LINE('#42, #43'));
+    });
+
+    it('de-duplicates issues named by both the references and the body', () => {
+      const result = runBody({
+        closingIssuesJson: closingRefs(['owner', 'repo', 7]),
+        prBody: 'closes #7, Closes #9',
+      });
+      expect(result.stdout).toContain(LINE('#7, #9'));
+    });
+
+    it('ignores cross-repository references and URLs in the body', () => {
+      const result = runBody({
+        prBody: 'Fixes other/repo#5, closes https://github.com/o/r/issues/6, see #8, fixes #10',
+      });
+      expect(result.stdout).toContain(LINE('#10'));
+      expect(result.stdout).not.toContain('#5');
+      expect(result.stdout).not.toContain('#6');
+      expect(result.stdout).not.toContain('#8');
+    });
+
+    it('prints no line without a keyword and without references', () => {
+      const result = runBody({ prBody: 'Related to #3, part of the train.' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).not.toContain('stay open until the integration train');
+    });
+  });
+});
+
+describe('diff-bound review verdicts (#3788)', () => {
+  const helper = join(process.cwd(), 'scripts/review-patch-id.sh');
+  function patchId(repo: string, base: string, head: string): string {
+    const r = spawnSync('bash', [helper, base, head], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...gitExecEnv(), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+    });
+    if (r.status !== 0) throw new Error(r.stderr);
+    return r.stdout.trim();
+  }
+
+  /**
+   * main moves under a feature branch that is then rebased: new head SHA, same
+   * diff. The pull ref on origin carries the REBASED head; `oldSha`/`oldPid` are
+   * what a review of the pre-rebase head recorded.
+   */
+  function rebasedPr(variant: 'clean' | 'changed') {
+    const repo = makeCheckout();
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    const oldSha = commitFile(repo, 'feature.txt', 'hello\n');
+    const oldPid = patchId(repo, 'main', 'feature');
+    git(repo, 'checkout', '-q', 'main');
+    commitFile(repo, 'other.txt', 'moved base\n');
+    git(repo, 'push', '-q', 'origin', 'main');
+    git(repo, 'checkout', '-q', 'feature');
+    git(repo, 'rebase', '-q', 'main');
+    if (variant === 'changed') commitFile(repo, 'extra.txt', 'extra\n');
+    const newSha = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'push', '-q', 'origin', 'feature:refs/pull/123/head');
+    return { repo, oldSha, oldPid, newSha };
+  }
+
+  const comment = (verdict: 'pass' | 'block', sha: string, pid?: string, createdAt = '2026-11-01T10:00:00Z') => ({
+    createdAt,
+    body: [
+      '<!-- kookr-independent-review -->',
+      `kookr-review-verdict: ${verdict}`,
+      'review-lane: claude',
+      `review-head-sha: ${sha}`,
+      ...(pid ? [`review-patch-id: ${pid}`] : []),
+    ].join('\n'),
+  });
+
+  function gate(
+    pr: ReturnType<typeof rebasedPr>,
+    comments: object[],
+    modernGh = true,
+  ) {
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      modernGh,
+      reviewJson: { commits: [{ oid: pr.newSha }], labels: [], comments },
+    });
+    try {
+      return runMerge(dir, { KOOKR_MERGE_REQUIRE_REVIEW: '1' }, ['123'], pr.repo);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it.each([true, false])('merges a pass with a matching patch id on a stale SHA, pinned to the current head (modern gh: %s)', (modernGh) => {
+    const pr = rebasedPr('clean');
+    expect(pr.newSha).not.toBe(pr.oldSha);
+    const result = gate(pr, [comment('pass', pr.oldSha, pr.oldPid)], modernGh);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      'kookr-merge: review verdict matches the PR diff (patch id); head moved without changing the diff',
+    );
+    expect(result.merged).toBe(true);
+    if (modernGh) {
+      expect(result.calls).toContain(`pr merge 123 --squash --match-head-commit ${pr.newSha}`);
+    } else {
+      expect(result.calls.some((c) => c.startsWith('api --method PUT') && c.includes(`sha=${pr.newSha}`))).toBe(true);
+    }
+  });
+
+  it('blocks a stale SHA whose patch id differs from the current diff', () => {
+    const pr = rebasedPr('changed');
+    const result = gate(pr, [comment('pass', pr.oldSha, pr.oldPid)]);
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain('stale-verdict');
+    expect(result.merged).toBe(false);
+  });
+
+  it('blocks a stale pass that carries no patch-id line, exactly as before', () => {
+    const pr = rebasedPr('clean');
+    const result = gate(pr, [comment('pass', pr.oldSha)]);
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain('stale-verdict');
+    expect(result.merged).toBe(false);
+  });
+
+  it('does not even compute the patch id when the head SHA matches', () => {
+    const pr = rebasedPr('clean');
+    const result = gate(pr, [comment('pass', pr.newSha, pr.oldPid)]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).not.toContain('patch id');
+    expect(result.calls.some((c) => c.includes('--json baseRefName'))).toBe(false);
+  });
+
+  it('blocks when the latest verdict is a block whose patch id matches the current diff', () => {
+    const pr = rebasedPr('clean');
+    const result = gate(pr, [comment('block', pr.oldSha, pr.oldPid)]);
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain('blocked-finding');
+    expect(result.merged).toBe(false);
+  });
+
+  it('keeps an earlier block on the same diff sticky against a later pass on it', () => {
+    const pr = rebasedPr('clean');
+    const result = gate(pr, [
+      comment('block', pr.oldSha, pr.oldPid, '2026-11-01T10:00:00Z'),
+      comment('pass', pr.newSha, pr.oldPid, '2026-11-01T11:00:00Z'),
+    ]);
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain('sticky-block');
+    expect(result.merged).toBe(false);
+  });
+
+  it('keeps a no-patch-id block on the reviewed head sticky after a clean rebase', () => {
+    const pr = rebasedPr('clean');
+    const result = gate(pr, [
+      comment('block', pr.oldSha, undefined, '2026-11-01T10:00:00Z'),
+      comment('pass', pr.oldSha, pr.oldPid, '2026-11-01T11:00:00Z'),
+    ]);
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain('sticky-block');
+    expect(result.merged).toBe(false);
+  });
+
+  it('allows a pass via patch id when the earlier no-patch-id block was on a different head and diff', () => {
+    const pr = rebasedPr('clean');
+    const result = gate(pr, [
+      comment('block', 'c'.repeat(40), undefined, '2026-11-01T10:00:00Z'),
+      comment('pass', pr.oldSha, pr.oldPid, '2026-11-01T11:00:00Z'),
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('head moved without changing the diff');
+    expect(result.merged).toBe(true);
+  });
+
+  it('refuses a patch id computed from a pull ref that is no longer the pinned head', () => {
+    const pr = rebasedPr('clean');
+    // The PR head moves on origin after the gate read it from gh.
+    commitFile(pr.repo, 'late.txt', 'late\n');
+    git(pr.repo, 'push', '-q', 'origin', 'feature:refs/pull/123/head');
+    const result = gate(pr, [comment('pass', pr.oldSha, pr.oldPid)]);
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain('could not compute the PR patch id');
+    expect(result.merged).toBe(false);
+  });
+
+  it('falls back to the SHA rule, saying so, when the patch id cannot be computed', () => {
+    const pr = rebasedPr('clean');
+    // Same verdict, but from a checkout with no origin to fetch the PR from.
+    const bare = mkdtempSync(join(tmpdir(), 'kookr-merge-nogit-'));
+    scratchDirs.push(bare);
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      modernGh: true,
+      reviewJson: { commits: [{ oid: pr.newSha }], labels: [], comments: [comment('pass', pr.oldSha, pr.oldPid)] },
+    });
+    try {
+      const result = runMerge(dir, { KOOKR_MERGE_REQUIRE_REVIEW: '1' }, ['123'], bare);
+      expect(result.status).toBe(4);
+      expect(result.stderr).toContain('could not compute the PR patch id; using the head-SHA rule alone');
+      expect(result.merged).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
