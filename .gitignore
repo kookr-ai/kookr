@@ -141,6 +141,8 @@ vite.config.mts.timestamp-*
 # Playwright test results and reports
 test-results/
 playwright-report/
+# Local run artifacts, e.g. runs/dictation-corpus-browser/ from e2e/dictation-corpus.spec.ts
+/runs/
 
 # Playwright MCP local logs
 .playwright-mcp/

@@ -155,8 +155,10 @@ test.describe('Terminal viewport budgets', () => {
     await seedTerminalBudgetTask(page, request);
 
     await expect(page.getByTestId('mobile-dashboard-tabs')).toBeVisible();
-    await expect(page.getByTestId(`project-icon-${PROJECT_ID}`)).toBeVisible();
-    await page.locator('.finding-card').first().click();
+    // Selecting a task from All Projects leaves the project drawer closed
+    // (#3446), so open the project instead: that selects its only finding and
+    // shows the Task tab, and the Findings tab then holds the project drawer.
+    await page.getByTestId(`project-icon-${PROJECT_ID}`).click();
     await expect(page.getByTestId('mobile-tab-task')).toHaveClass(/active/);
     await expect(page.getByTestId('project-detail-drawer')).toHaveCount(0);
     await expect(page.getByTestId('mobile-quick-actions')).toHaveCount(0);

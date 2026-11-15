@@ -71,7 +71,10 @@ test.describe('Detail pane visibility controls', () => {
     await expect(page.locator('.logo')).toHaveText('KOOKR');
   });
 
-  test('#3561 4a: tabs by default, Split view toggle, terminal focus, and reload persistence', async ({ page, request }) => {
+  test('#3561 4a: tabs by default, Split view toggle, terminal focus, and reload persistence', async ({ page, request }, testInfo) => {
+    // Two task selections around a reload take about 12 s on an idle host,
+    // too close to the 15 s default when other suites share the CPU.
+    testInfo.setTimeout(30_000);
     await seedDetailTask(page, request);
     await selectDetailTask(page);
 
@@ -107,7 +110,7 @@ test.describe('Detail pane visibility controls', () => {
       () => page.evaluate((key) => localStorage.getItem(key), DETAIL_PANE_MODE_STORAGE_KEY),
     ).toBe('split');
 
-    // Terminal focus hides the tab bar; "Show conversation" returns to tabs.
+    // Terminal focus hides the tab bar and the conversation.
     await page.getByRole('button', { name: /terminal focus/i }).click();
     await expect(page.locator('.detail-panel.terminal-focus')).toBeVisible();
     await expect(page.locator('.detail-split-left')).toHaveCount(0);
@@ -117,13 +120,18 @@ test.describe('Detail pane visibility controls', () => {
       () => page.evaluate((key) => localStorage.getItem(key), DETAIL_PANE_MODE_STORAGE_KEY),
     ).toBe('right');
 
+    // Leaving terminal focus returns to the layout used before it, here Split
+    // view (#3618), and that choice is stored again.
     await page.getByRole('button', { name: 'Show conversation' }).click();
-    await expect(page.locator('.detail-panel.detail-tabbed')).toBeVisible();
-    await expect(conversationTab).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.detail-panel.terminal-focus')).toHaveCount(0);
+    await expect(splitToggle).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('.detail-split-left')).toBeVisible();
+    await expect(page.locator('.detail-split-right')).toBeVisible();
+    await expect.poll(
+      () => page.evaluate((key) => localStorage.getItem(key), DETAIL_PANE_MODE_STORAGE_KEY),
+    ).toBe('split');
 
     // Split view survives a reload.
-    await splitToggle.click();
     await page.reload();
     await expect(page.locator('.logo')).toHaveText('KOOKR');
     await selectDetailTask(page);
