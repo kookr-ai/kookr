@@ -93,7 +93,10 @@ export interface SpeakAudioResponse {
  * Wire response for POST /api/tasks/:taskId/speak-summary. See
  * docs/rfc/rfc-smart-task-speech-summary.md.
  */
-export interface SpeakTaskSummaryResponse extends SpeakAudioResponse {}
+export interface SpeakTaskSummaryResponse extends SpeakAudioResponse {
+  /** Why the template wording was spoken (issue #3631); null when the model's summary was used. */
+  fallbackReason: SpeakAgentFallbackReason | null;
+}
 
 /**
  * Verbosity scale for speak-agent summaries. Drives prompt selection in the

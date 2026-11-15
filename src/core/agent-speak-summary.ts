@@ -1,4 +1,4 @@
-import type { LlmClient } from './llm-client.js';
+import { completeLlmWithFailureAudit, type LlmClient } from './llm-client.js';
 import type {
   AgentSpeakContext,
   SpeakAgentFallbackReason,
@@ -318,7 +318,10 @@ export async function summarizeAgent(
   const cfg = RUNG_CONFIG[verbosity];
   let raw: string | null;
   try {
-    raw = await client.complete({
+    // The server's client (circuit breaker around a fallback chain) returns null on a
+    // timeout or a provider error instead of throwing; the failure category tells a
+    // failed call apart from a reply that was empty. An abort still throws.
+    const completion = await completeLlmWithFailureAudit(client, {
       useCase: 'agent_speech_summary',
       maxTokens: cfg.maxTokens,
       system: buildSystemPrompt(mode, verbosity),
@@ -330,6 +333,10 @@ export async function summarizeAgent(
       timeoutMs: PER_RUNG_TIMEOUT_MS,
       signal,
     });
+    raw = completion.text;
+    if (!raw && completion.failureCategory !== null && completion.failureCategory !== 'malformed_response') {
+      return fallbackResult(context, verbosity, 'timeout');
+    }
   } catch (err) {
     const name = (err as { name?: string } | null)?.name;
     if (name === 'AbortError') throw err;

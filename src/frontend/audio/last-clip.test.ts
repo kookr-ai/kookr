@@ -55,6 +55,16 @@ describe('last-clip store', () => {
     }
   });
 
+  test('remembers that a clip was template wording, and passes it to the history view (issue #3631)', () => {
+    captureLastClip({ clipId: 'model', text: 'm', usedFallback: false, audio: bytes(1) });
+    captureLastClip({ clipId: 'none', text: 'n', audio: bytes(1) });
+    // The payload is untrusted JSON: only a real `true` marks the clip.
+    captureLastClip({ clipId: 'odd', text: 'o', usedFallback: 'yes' as unknown as boolean, audio: bytes(1) });
+    expect(getClipHistory().every((c) => !('usedFallback' in c))).toBe(true);
+    captureLastClip({ clipId: 'template', text: 't', usedFallback: true, audio: bytes(1) });
+    expect(getClipHistory()[0]).toMatchObject({ clipId: 'template', usedFallback: true });
+  });
+
   test('keeps the newest clips first and at most MAX_CLIP_HISTORY of them; older ones are dropped with their audio', () => {
     expect(MAX_CLIP_HISTORY).toBe(3);
     for (const id of ['one', 'two', 'three', 'four']) captureLastClip({ clipId: id, text: id, audio: bytes(1) });

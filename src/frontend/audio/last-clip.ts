@@ -27,6 +27,8 @@ export interface LastClip {
    * Untrusted display text: render it as text only. Absent when the task had no title.
    */
   subject?: string;
+  /** True when the server spoke template wording instead of a model summary (issue #3631). */
+  usedFallback?: boolean;
   /** When the clip arrived (epoch milliseconds). */
   at: number;
   /** The encoded audio (a WAV file) exactly as received; decoded again for each replay. */
@@ -42,6 +44,7 @@ export interface ClipHistoryItem {
   clipId: string;
   text: string;
   subject?: string;
+  usedFallback?: boolean;
   at: number;
   heard: boolean;
 }
@@ -79,6 +82,7 @@ function publish(): void {
         clipId: c.clipId,
         text: c.text,
         ...(c.subject ? { subject: c.subject } : {}),
+        ...(c.usedFallback ? { usedFallback: true } : {}),
         at: c.at,
         heard: c.heard,
       })),
@@ -99,6 +103,8 @@ export interface CaptureClipInput {
   text: string;
   /** See {@link LastClip.subject}; blank or missing means no subject. */
   subject?: string | null;
+  /** See {@link LastClip.usedFallback}. */
+  usedFallback?: boolean;
   audio: ArrayBuffer;
   durationMs?: number;
 }
@@ -114,6 +120,7 @@ export function captureLastClip(input: CaptureClipInput): LastClip {
     clipId,
     text: input.text,
     ...(subject ? { subject } : {}),
+    ...(input.usedFallback === true ? { usedFallback: true } : {}),
     at: Date.now(),
     audio: input.audio,
     durationMs: input.durationMs && input.durationMs > 0 ? input.durationMs : 0,

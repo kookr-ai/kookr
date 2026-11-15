@@ -261,6 +261,7 @@ async function prepareClip(askId: string, options: AnnounceAskOptions, request: 
     clipId: payload.clipId,
     text: payload.text,
     subject: payload.subject,
+    usedFallback: payload.usedFallback,
     audio: base64ToArrayBuffer(payload.audioBase64),
     durationMs: payload.durationMs,
   });

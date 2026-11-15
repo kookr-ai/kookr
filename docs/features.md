@@ -415,7 +415,8 @@ things she said.
   system, the decorative rings and particles stand still; only her mouth and a slight sway remain.
 - **Recent messages.** Under the 3D view, the last three things she said are listed, newest first.
   Each shows its full text (the list scrolls when it is long, and can be focused with Tab to scroll it by keyboard), the task it was about and how long
-  ago ("just now", "5 min ago", "3 h ago", "2 d ago"), plus a Replay button of its own. Before she has
+  ago ("just now", "5 min ago", "3 h ago", "2 d ago"), plus a Replay button of its own. A message she
+  read from fixed template wording, because the summary model was not used, is marked "template". Before she has
   said anything the list shows a hint instead. The list is kept in memory only: a page reload forgets
   it, and a fourth message pushes the oldest one (and its audio) out.
 - **Hear it again.** If you were away, or the tab was in the background, when she spoke, the message
@@ -537,7 +538,8 @@ line; it rotates at 10 MB and keeps three older files).
 
 - **What is recorded.** For every spoken summary: the text that was spoken, the wording before it was
   tidied for speech (when that differs), whether it came from the language model or the plain
-  fallback, whether it was cached, word count, and timings. From the browser: when a clip started
+  fallback and, for a fallback, why (no model configured, the call timed out or failed, an empty or
+  malformed reply, or wording that was too long or read as an instruction), whether it was cached, word count, and timings. From the browser: when a clip started
   (click or replay), how it ended (finished, stopped by you, replaced) and how much of it
   played, clips that were never heard (muted, do-not-disturb, audio blocked), and avatar-panel
   actions (enable, disable, minimise, restore, move, replay). Each clip has an id that links the two

@@ -1,4 +1,4 @@
-import { describe, test, expect, vi } from 'vitest';
+import { afterEach, describe, test, expect, vi } from 'vitest';
 import {
   buildFallbackText,
   buildSystemPrompt,
@@ -7,6 +7,9 @@ import {
 } from './agent-speak-summary.js';
 import type { AgentSpeakContext, VerbosityScale } from '../shared/contracts/speech.js';
 import type { LlmClient } from './llm-client.js';
+import { FallbackLlmClient, resetHelperLlmDiagnosticsForTest } from './llm-factory.js';
+import { CircuitBreakerLlmClient } from './circuit-breaker-llm-client.js';
+import { CircuitBreaker } from './circuit-breaker.js';
 
 const baseContext: AgentSpeakContext = {
   taskName: 'Refactor auth',
@@ -376,6 +379,37 @@ describe('summarizeAgent', () => {
     const result = await summarizeAgent(client, baseContext, 'medium', 'activity');
     expect(result.usedFallback).toBe(true);
     expect(result.fallbackReason).toBe('timeout');
+  });
+
+  // Issue #3631: the server's client never throws for a failed call. The circuit breaker
+  // around the fallback chain returns null, with the failure category on the side.
+  describe('fallbackReason through the client stack the server uses', () => {
+    afterEach(() => resetHelperLlmDiagnosticsForTest());
+    const serverClient = (result: string | null | Error): LlmClient => new CircuitBreakerLlmClient(
+      new FallbackLlmClient([{
+        provider: 'p',
+        model: 'p-model',
+        complete: vi.fn().mockImplementation(async () => {
+          if (result instanceof Error) throw result;
+          return result;
+        }),
+      }]),
+      new CircuitBreaker({ name: 'test', failureThreshold: 100 }),
+    );
+
+    test.each<[string, string | null | Error, string]>([
+      ['the provider times out', Object.assign(new Error('timed out'), { name: 'TimeoutError' }), 'timeout'],
+      ['the provider is down', Object.assign(new Error('Service Unavailable'), { status: 503 }), 'timeout'],
+      ['the provider replies with nothing', null, 'empty'],
+    ])('reports the reason when %s', async (_label, result, reason) => {
+      const summary = await summarizeAgent(serverClient(result), baseContext, 'medium', 'activity');
+      expect(summary).toMatchObject({ usedFallback: true, fallbackReason: reason });
+    });
+
+    test('an abort still propagates instead of falling back', async () => {
+      const err = Object.assign(new Error('aborted'), { name: 'AbortError' });
+      await expect(summarizeAgent(serverClient(err), baseContext, 'medium', 'activity')).rejects.toMatchObject({ name: 'AbortError' });
+    });
   });
 
   test('passes maxTokens scaled to the verbosity rung', async () => {

@@ -803,6 +803,16 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
                         </>
                       )}
                       <span className="avatar-msg-time">{time}</span>
+                      {clip.usedFallback && (
+                        // Template wording, not a model summary (issue #3631): say so, or it reads as Lucy's own words.
+                        <span
+                          className="avatar-msg-template"
+                          data-testid="avatar-msg-template"
+                          title="Template wording: the summary model was not used for this message"
+                        >
+                          template
+                        </span>
+                      )}
                       {!clip.heard && (
                         <span className="avatar-msg-unheard" data-testid="avatar-msg-unheard">
                           <span className="avatar-mark-dot" aria-hidden="true" />
