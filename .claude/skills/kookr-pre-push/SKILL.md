@@ -79,23 +79,24 @@ For any branch that you expect to push for review or turn into a PR, run [[pre-p
 
 In this repo, that means:
 - Run the targeted tests for the files you touched (`pnpm exec vitest run <files>`), plus any `pnpm verify`-only check from the list above that your diff touches. Do not run the full `pnpm test` or `pnpm verify`: the push runs the fast gate and the integration train runs the full suite.
-- Run the reviewer specialists for non-trivial changes
-- Fix blocking findings before proceeding
+- Run **one review pass** (issue #3792, `[[pre-pr-review]]` §8 "One review pass"): at the first commit, start the `[[independent-merge-review]]` reviewer on that head in the background, then push while it works. That single fresh-context reviewer covers what the correctness, test and lint-like specialists covered; do not also run the specialist panel. Docs-only and test-only diffs get the lint-level pass alone.
+- When the verdict is a BLOCK, fix and re-review on a new head. After two blocked rounds, only correctness, data-loss and security findings keep blocking; the rest become follow-up issues linked from the `pass` (`[[independent-merge-review]]` §4a).
 - Create the PR gate state file only after the mandatory checks pass
 
 This is intentionally earlier than the `gh pr create` hook. The hook is the backstop; this skill is the normal path.
 
 ### 3. Write the review-gate marker
 
-The repo's `.hooks/pre-push` blocks any push of non-trivial source changes that does not have a SHA-bound review marker at `.review-state/<branch>.json` (slashes in branch names flattened to underscores). The marker proves that reviewer specialists ran against the *current* HEAD, not a stale earlier commit.
+The repo's `.hooks/pre-push` blocks any push of non-trivial source changes that does not have a SHA-bound review marker at `.review-state/<branch>.json` (slashes in branch names flattened to underscores). The hook checks the marker before the fast gate, while the review runs in parallel with that gate, so the marker cannot mean "review passed". It attests that the one independent review was **started** for the *current* HEAD, not a stale earlier commit. The merge-time verdict is the gate: `kookr merge` refuses without a `pass` bound to the exact head.
 
-After the reviewer specialists complete and any blocking findings are addressed, write the marker via the producer script (issue #1968). **Do NOT** `cat > .review-state/...` with only `sha`+`status` — the pre-push gate rejects approved markers that lack a valid producer HMAC token.
+Right after starting the reviewer on HEAD, write the marker via the producer script (issue #1968). **Do NOT** `cat > .review-state/...` with only `sha`+`status` — the pre-push gate rejects approved markers that lack a valid producer HMAC token.
 
 ```bash
-# List the specialists that actually ran (must be non-empty for approved).
 bash scripts/write-review-state-marker.sh --status approved \
-  --specialists "correctness,lint-like,test"
+  --specialists independent-review
 ```
+
+The `--specialists` value is recorded and signed. Only if the repository has no fast pre-push gate (the full lanes run instead), run the specialist panel and list the roles that ran, for example `--specialists "correctness,lint-like,test"`.
 
 The writer derives the same marker key as `.hooks/pre-push` (branch name with `[^A-Za-z0-9.-]` → `_`, or `detached-<short-sha>`), binds the token to HEAD, and writes atomically.
 
@@ -110,7 +111,7 @@ bash scripts/write-review-state-marker.sh --status bypass \
 
 The reason field is mandatory for bypass markers — the hook rejects bypass markers without a `reason`.
 
-Every new commit (including amend) shifts the SHA and invalidates the marker. Re-run specialists and re-write the marker after every amend.
+Every new commit (including amend) shifts the SHA and invalidates the marker. Start the review on the new head and re-write the marker after every amend.
 
 ### 4. Push and let the repo hook re-check
 
@@ -129,7 +130,7 @@ Do not bypass the hook. If it fails, fix the issue and push again.
 Before you tell the user "push succeeded", "looks good", or "open a PR", report the delivery milestones in plain language:
 
 - `pre-pr-review`: run / skipped, with reason
-- reviewer specialists: run / skipped, with reason
+- independent review: started on which head (full or lint-level pass) / skipped, with reason
 - repo pre-push hook: passed / failed, and whether it ran the fast gate (and how many related test files) or the full lanes
 - branch state: pushed / needs another push
 - next step: create PR / run `[[kookr-post-push]]` / fix blockers

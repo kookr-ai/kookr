@@ -233,6 +233,52 @@ For non-trivial changes, quick-check:
 
 Run specialized reviewer subagents in parallel against the diff. **Skip for trivial changes** (typo fixes, comment updates, single-line config changes).
 
+#### One review pass in a fast-gate repository (issue #3792)
+
+When the §3 check prints `fast`, do **not** run the panel below as a separate
+step. The independent reviewer from `independent-merge-review` is the only
+review the pull request gets. In a sample of 77 merged pull requests, review
+caught real defects, but running the panel and then the independent reviewer
+one after the other, and repeating both every round, cost far more than the
+reviewers' own working time.
+
+1. **Start the reviewer at the first commit.** Once head H is committed, start
+   the `independent-merge-review` reviewer on H in the background, then push
+   (the push runs the fast gate) while the reviewer works. Open the PR in the
+   same window. The reviewer does not need the PR to exist; post its verdict
+   comment once the PR exists.
+2. **One reviewer covers the whole panel.** Run `select-specialists.sh` as below
+   and put the body of every specialist it selects into the one reviewer
+   prompt: `correctness`, `test` when listed, and the `lint-like` bodies
+   (conventions, dead code, and docs drift when `DOCS_DRIFT=active`). Ask for a
+   separate labelled verdict per concern. The reviewer runs at the
+   `independent-merge-review` §2 strength floor and stays blind to your
+   reasoning: never give it a context pack or your summary.
+3. **Docs-only and test-only diffs get the lint-level pass alone.** That is a
+   diff where every changed file is either prose Markdown that the pre-push
+   hook counts as docs-only (under `docs/`, or a top-level `README.md`,
+   `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CLA.md` or `SECURITY.md`) or a test
+   file (`*.test.*`, `*.spec.*`). Skill, playbook, agent, `CLAUDE.md` and other
+   Markdown that defines behaviour is **not** docs. For such a diff, drop the
+   `correctness` and `test` bodies and send only the `lint-like` bodies. This
+   pass may run on the cheap `lint-like` model and still posts the normal
+   verdict comment, with "lint-level pass" in its summary line, because the
+   merge wrapper needs a `pass` for every pull request.
+4. **The marker records the started review.** The hook checks the marker
+   before the fast gate runs, so the marker cannot mean "review passed".
+   Write it right after starting the reviewer on H:
+   `bash scripts/write-review-state-marker.sh --status approved --specialists independent-review`.
+   It attests that the one review was started for that exact head. The
+   merge-time verdict (`kookr merge` refuses without an exact-head `pass`) is
+   the gate. The marker stays HMAC-signed and bound to H, so a new commit
+   still needs a new marker. Docs-only and test-only diffs need no marker: the
+   hook skips it for those paths.
+5. **Blocks and the round cap** follow `independent-merge-review` §4 and §4a:
+   after two blocked rounds, only correctness, data-loss and security findings
+   keep blocking.
+
+When the §3 check prints anything else, run the panel below unchanged.
+
 #### Diff-adaptive panel selection (issue #1305)
 
 Do **not** launch a fixed 5-agent fan-out on every PR. Select the panel from the
@@ -380,7 +426,9 @@ Use when the change touches module boundaries, imports, or public APIs:
 **How to run:**
 1. Prepare context: `git diff main..HEAD` and `git diff main..HEAD --stat`, then run `select-specialists.sh` (see *Diff-adaptive panel selection* above) to decide the panel and capture the gating rationale.
 
-   **Use a review context pack when one exists (cold-start saver).** If a review
+   **Use a review context pack when one exists (cold-start saver).** This applies
+   only to the panel; with one review pass (above) there is no panel and the
+   reviewer never receives a pack. If a review
    pack has already been built for this unit (e.g. `parallel-issue-batch` writes
    `/tmp/<unit-slug>.review.md` via `kookr context-pack`), inline it into **every**
    Layer-1 specialist prompt so each one warm-starts instead of re-reading the
@@ -515,7 +563,7 @@ Before you conclude this skill, report the checklist result explicitly:
 - scope guard: clean / flagged (with fix or PR-body justification)
 - portability check: clean / flagged (with reason or fix) / skipped
 - PR prose (cold-reader): drafted via clear-technical-writing; clear-writing-reviewer pass run (required for non-trivial bodies) with findings fixed / reviewer skipped (state the one-line tiny-only reason)
-- reviewer specialists: run / skipped, with reason — record the exact `SPECIALISTS=…` selection, whether `--force` was used, and the per-specialist gating `rationale:` block from `select-specialists.sh`
+- reviewer specialists: run / one review pass started (fast-gate repository; full or lint-level) / skipped, with reason — record the exact `SPECIALISTS=…` selection, whether `--force` was used, and the per-specialist gating `rationale:` block from `select-specialists.sh`
 - docs-drift: no drift / drift found (list stale docs + suggested edits) / skipped with reason — call out any requirement or system-model doc left stale; note whether the docs-drift concern was `active` or dormant per the gating decision
 - OSS base-branch policy (external PRs only): matched / failed / skipped with reason
 - gate file: created / not created

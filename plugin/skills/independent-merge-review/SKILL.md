@@ -116,8 +116,11 @@ head review changed (#3692). The rule:
 5. Wait only on a notification, PID, or exit-marker file (see §5), never a
    `pgrep -f` loop.
 
-Before the PR exists there is no `$PR` to post a verdict on; the `pre-pr-review`
-specialist pass covers that stage.
+Before the PR exists there is no `$PR` to post a verdict on. With a fast
+pre-push gate, this reviewer is the only review (`pre-pr-review` §8, "One review
+pass"): start it at the first commit, before the PR exists, and post its
+verdict once the PR is open. Without a fast pre-push gate, the `pre-pr-review`
+specialist panel covers the stage before the PR.
 
 ## Delta re-review after a PASS
 
@@ -127,7 +130,8 @@ produces a different sha, so the old PASS no longer applies — even when the
 content looks unchanged — and `kookr merge` refuses it. One exception: when the
 PASS carries `review-patch-id:` and a rebase left every file the PR changes
 untouched, the patch id still matches and `kookr merge` accepts the PASS with no
-new review. After any other change,
+new review. Do not request one: a later head with the same `review-patch-id` as
+the latest PASS is already reviewed. After any other change,
 run a new review for the new head (a full review, or the delta review below
 when it qualifies). Never re-post or edit an old PASS with the new sha.
 
@@ -285,10 +289,16 @@ is never downgraded to save tokens: a cheap pass here would silently weaken the
 one hard merge gate, and under a Codex outage the same-vendor Claude fallback is
 only safe *because* it holds this floor. If you cannot spawn at the floor, treat
 it as a reviewer failure (fall back / timeout path), not as a cheaper review.
+The one exception is the lint-level pass for a docs-only or test-only diff in a
+fast-gate repository (`pre-pr-review` §8, "One review pass"), which may run on
+the cheap `lint-like` model.
 
 Reuse the reviewer-specialist prompts (`plugin/reviewer-specialists/`), at
 minimum `correctness-specialist.md`, prefixed with the fan-out marker header
-(see `pre-pr-review` §8). Give the reviewer only:
+(see `pre-pr-review` §8). With a fast pre-push gate, this reviewer replaces the
+panel, so include every body `select-specialists.sh` selects (`correctness`,
+`test` when listed, and the `lint-like` bodies) and ask for one labelled
+verdict per concern. Give the reviewer only:
 
 - `{repoDir}` — the worktree path
 - the staged diff (`/tmp/kookr-review-$PR.diff`) and changed-file list
@@ -309,6 +319,22 @@ Instruct the reviewer to return a verdict:
   speculation).
 - **PASS** otherwise. Suggestions and nits do not block — note them, verdict
   stays PASS.
+
+When the reviewer replaces the panel (fast pre-push gate), it also BLOCKs on
+the findings the panel used to block on: a changed runtime path with no test
+that exercises it, documentation the diff made stale, and a convention break
+or dead code the diff introduced. Each finding in a BLOCK is tagged
+**critical** or **non-critical** by the reviewer, not by the implementer:
+
+- **critical:** a correctness defect (wrong behaviour with a concrete failure
+  scenario), possible data loss, or a security weakness.
+- **non-critical:** everything else, including missing tests, stale docs,
+  conventions and dead code.
+
+Also tell the reviewer how many `kookr-review-verdict: block` comments the PR
+already carries, and pass it those comments. They are reviewer output, not your
+reasoning, so the reviewer stays blind. From the third review on, the round
+cap in §4a applies.
 
 ### 3. Post the verdict comment
 
@@ -353,7 +379,9 @@ instance and re-review. Spawn a new fresh-context reviewer, give it only the
 class name from the BLOCK comment, and ask it to list **every** instance in the
 lines the PR changes, plus other call sites of the same function or the same
 pattern in files the PR touches. It returns a list, not a verdict. Fix them all,
-then request the next review; that review is the counted §6 iteration.
+then request the next review; that review is the counted §6 iteration. From
+review 3 on this applies only to a critical class, because the §4a round cap
+turns the other classes into follow-up issues.
 In the #3691 sample, one PR took 12 BLOCK rounds and another 8, each round
 finding one more instance of the same class (analyst-reported).
 
@@ -363,6 +391,76 @@ gate reads the latest.
 On an **advisory** repo, post the BLOCK as evidence. Do not stall or refuse
 merge because of it. Fix confirmed findings when they are cheap and clearly
 right; otherwise merge after local gates and leave the BLOCK on the PR.
+
+### 4a. Round cap: two blocked rounds, then only critical findings block (hard-gate)
+
+Of 56 reviewed pull requests in the 10–15 Nov 2026 sample, 13 were blocked at
+least once, and those then took a median of 3 rounds (mean 4.1). Most of the
+extra rounds were spent on findings that could have waited. The rule:
+
+1. **Count the rounds from the PR, not from memory.** The round count is the
+   number of `kookr-review-verdict: block` comments on the PR. Give the
+   reviewer that count with the comments (§2).
+2. **Reviews 1 and 2** block on any blocking finding, critical or not (§2).
+3. **From review 3 on** (the PR already carries two or more BLOCKs), only
+   **critical** findings block. The reviewer lists every non-critical finding
+   under `Follow-ups`, each with a short issue title and a body that names the
+   file, the line and what is wrong. With no critical finding, the verdict is
+   `pass`.
+4. **The relaying session files the follow-ups before posting the verdict.**
+   The Codex lane runs read-only, so the session that posts the verdict files
+   each follow-up as written, then puts the issue links in the `pass` body:
+
+   ```bash
+   gh issue create --repo "$REPO" --title "<follow-up title>" \
+     --body "<follow-up body>
+
+   Found by the independent review of #$PR (round $ROUND, non-critical under the round cap)."
+   ```
+
+5. **The capped pass needs a new head.** The merge wrapper keeps a BLOCK sticky
+   for the head it reviewed (`sticky-block`), so a `pass` on the head that got
+   the second BLOCK is refused. Commit the round-2 fixes first; the third
+   review runs on that new head. If you disagree with every round-2 finding,
+   rebut them on the PR and still push the fixes you do accept.
+6. The merge rule does not change: the latest verdict must be a `pass` bound to
+   the current head (or to its `review-patch-id`).
+
+**Worked example.** PR #4100 changes `src/core/task-archive.ts`.
+
+- **Review 1 on H1** (`a1b2…`): BLOCK. (1) critical: a pruned task is deleted
+  before its archive write is flushed, so a crash loses it. (2) non-critical:
+  no test covers the empty-history path. The implementer fixes both: H2.
+- **Review 2 on H2** (`c3d4…`): BLOCK. (1) non-critical: `docs/reference/tasks.md`
+  still says pruning deletes history. (2) non-critical: the helper
+  `archiveName()` is exported but unused. The implementer fixes the doc,
+  leaves the helper for now, and commits: H3.
+- **Review 3 on H3** (`e5f6…`): the PR carries two BLOCKs, so the cap applies.
+  The reviewer finds no critical defect and returns one follow-up, the unused
+  export. The session files it as #4101 and posts:
+
+  ```
+  <!-- kookr-independent-review -->
+  kookr-review-verdict: pass
+  review-lane: codex
+  review-head-sha: e5f6...
+  review-patch-id: 9f8e...
+
+  ## Independent reviewer verdict: PASS
+  Round 3 of the review; the PR already had two BLOCKs, so only correctness,
+  data-loss and security findings block. No such finding on this head: the
+  crash window from round 1 is closed, and the archive is written and flushed
+  before the prune.
+
+  Follow-ups (non-critical, filed under the round cap):
+  - #4101 `archiveName()` in src/core/task-archive.ts is exported but never used
+  ```
+
+  `kookr merge 4100` accepts this `pass`: it is the latest verdict and is bound
+  to the current head H3.
+
+If review 3 had found a critical defect, it would BLOCK as before, and every
+later review keeps applying the cap.
 
 ### 5. Latency budget — never turn timeout into quality
 
@@ -403,7 +501,9 @@ one fresh independent review of the resulting head. A BLOCK must be fixed or
 rebutted and followed by another review; a PASS is usable only for the exact
 current head. The durable attempt counter belongs to the unit/continuation
 lineage, survives restart and branch-head changes, and defaults to 10. It must
-not reset when a successor task or reviewer task is launched.
+not reset when a successor task or reviewer task is launched. The §4a round cap
+works inside this budget: past review 2, only critical findings start another
+iteration, so the budget is reached only by a PR that keeps producing them.
 
 On an **advisory** repo this budget does not stall the implementation task.
 
@@ -439,6 +539,7 @@ Before declaring the merge review done, report:
 - verdict: `pass` / `block` / `skipped` (+ confirmed-finding count for block)
 - verdict comment posted: yes (URL) / no
 - for a hard-gate block that was resolved: fixed (new head SHA) / rebutted + re-reviewed
+- review round (count of BLOCK comments before this verdict) and, under the §4a cap, the follow-up issues filed
 - timeout label applied: no / yes (with reason)
 - on advisory: whether merge proceeded after local gates despite missing/BLOCK/timeout
 
