@@ -133,9 +133,10 @@ Exit codes:
      is reported on stderr but does not change the exit code)
   1  pre-flight failed (state/draft/review) or merge command failed
   2  bad usage
-  3  one or more checks RAN and failed, or never-executed checks lacked the
-     recorded local gate (local-verified label + a local-gate-head-sha comment
-     bound to the current head)
+  3  one or more checks RAN and failed, the PR conflicts with its base branch
+     (rebase on origin/<base>, push, run again), or never-executed checks
+     lacked the recorded local gate (local-verified label + a
+     local-gate-head-sha comment bound to the current head)
   4  blocked by the independent-review gate (no pass verdict / confirmed finding)
 EOF
 }
@@ -648,7 +649,9 @@ watch_checks() {
       return 3
     fi
 
-    if [[ "$pending" == "0" ]]; then
+    # Green checks do not make a conflicting PR mergeable: take one more poll
+    # to confirm the conflict, so the rebase message is shown, not a failed merge.
+    if [[ "$pending" == "0" ]] && (( conflicts == 0 )); then
       printf '%s\n' "$checks" | jq -r '(.statusCheckRollup // [])[] | "  \(.name): \(.conclusion)"'
       return 0
     fi

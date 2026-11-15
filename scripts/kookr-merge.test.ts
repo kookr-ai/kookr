@@ -541,6 +541,36 @@ describe('a pull request that conflicts with its base fails fast (#3813)', () =>
     }
   });
 
+  it('reports the conflict, not a failed merge, when every check is already green', () => {
+    const greenConflicting =
+      '{"statusCheckRollup":[{"name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}],"mergeStateStatus":"DIRTY","mergeable":"CONFLICTING"}';
+    const dir = makeStubDir({ checksResponses: [greenConflicting], baseRef: 'staging' });
+    try {
+      const { status, stderr, merged, calls } = runMerge(dir);
+      expect(status).toBe(3);
+      expect(merged).toBe(false);
+      expect(calls.some((c) => c.startsWith('pr merge') && !c.includes('--help'))).toBe(false);
+      expect(stderr).toContain('conflicts with staging');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('merges green checks after a single stale conflict reading', () => {
+    const green = (state: string, mergeable: string) =>
+      `{"statusCheckRollup":[{"name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}],"mergeStateStatus":"${state}","mergeable":"${mergeable}"}`;
+    const dir = makeStubDir({
+      checksResponses: [green('UNKNOWN', 'UNKNOWN'), green('DIRTY', 'CONFLICTING'), green('CLEAN', 'MERGEABLE')],
+    });
+    try {
+      const { status, merged } = runMerge(dir);
+      expect(status).toBe(0);
+      expect(merged).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not hand a conflicting PR with checks to gh pr checks --watch', () => {
     // --watch would wait for the checks and never see the conflict; the stub's
     // --watch exits 0, so reaching it would merge.
