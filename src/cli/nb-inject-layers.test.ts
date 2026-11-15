@@ -228,7 +228,9 @@ describe('nb-inject layered index — when the flat index is shown instead', () 
   ])('%s -> today\'s flat, capped index (no grouping, nothing hidden)', (_name, env) => {
     const r = inject([{ shelf: 'a@mine' }], env, { flatOut: flat });
     expect(r.code).toBe(0);
-    expect(r.calls.trim()).toBe('list --limit 1000'); // never asked for --json
+    // The rows come from the text listing; `--json` is asked for afterwards, only for the store warnings (#3836).
+    expect(r.calls.trim().split('\n')).toEqual(['list --limit 1000', 'list --json --limit 1000']);
+    expect(r.out).not.toContain('WARNING'); // a healthy store
     expect(r.out).toContain('a@mine');
     expect(r.out).toContain('other@theirs'); // everything is listed
     expect(r.out).not.toContain('Project shelves');
@@ -372,6 +374,97 @@ describe('nb-inject layered index — files and shelves nb reports as unusable (
       expect(out).toContain('review copy.md (not a valid shelf name)');
       expect(out).toContain('is refused until the conflict is resolved: patcher.');
       expect(group(out, DOMAIN).sort()).toEqual(['code-review', 'patcher']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe('nb-inject flat index — files and shelves nb reports as unusable (issue #3836)', () => {
+  const withProblems = (rows: Row[], skipped: unknown[], conflicts: unknown[]) =>
+    JSON.stringify({ ...JSON.parse(listJson(rows)), skipped, conflicts });
+  const flat = 'agent-notebook notebooks — 2 in /store\n  code-review  1  x\n  patcher  1  y\n';
+  const problems = withProblems([{ shelf: 'code-review' }, { shelf: 'patcher' }], [{ shelf: 'review copy', code: 'INVALID_NAME' }], [{ shelf: 'patcher', marker: '<<<<<<< HEAD' }]);
+  const skippedLine =
+    'WARNING: 1 file in the store could not be used and is missing from this index: review copy.md (not a valid shelf name). Run `nb list` to see why.';
+
+  test.each([
+    ['KOOKR_REPO_SLUG unset', {}],
+    ['kill switch KOOKR_NB_LAYERS=0', { KOOKR_REPO_SLUG: 'mine', KOOKR_NB_LAYERS: '0' }],
+  ])('%s -> the same WARNING lines as the layered view, right under the header, rows unchanged', (_name, env) => {
+    const r = inject(problems, env, { flatOut: flat });
+    expect(r.code).toBe(0);
+    const lines = r.out.split('\n');
+    const header = lines.findIndex((l) => l.startsWith('agent-notebook notebooks'));
+    expect(lines[header + 1]).toBe(skippedLine);
+    expect(lines[header + 2]).toContain('WARNING: 1 shelf holds git merge-conflict markers');
+    expect(lines[header + 2]).toContain('is refused until the conflict is resolved: patcher.');
+    expect(lines.slice(header + 3, header + 5)).toEqual(['  code-review  1  x', '  patcher  1  y']);
+  });
+
+  test('a missing layers module still prints the warnings', () => {
+    const lonely = join(work, 'lonely-hooks');
+    execFileSync('mkdir', ['-p', lonely]);
+    copyFileSync(HOOK, join(lonely, 'nb-inject.mjs'));
+    const r = inject(problems, { KOOKR_REPO_SLUG: 'mine' }, { flatOut: flat, hook: join(lonely, 'nb-inject.mjs') });
+    expect(r.out).toContain(skippedLine);
+    expect(r.out).not.toContain('Project shelves');
+  });
+
+  test('layered JSON of the wrong shape is reused for the warnings, not fetched twice', () => {
+    const wrongShape = JSON.stringify({ rows: [{ shelf: 7 }], skipped: [{ shelf: 'review copy', code: 'INVALID_NAME' }] });
+    const r = inject(wrongShape, { KOOKR_REPO_SLUG: 'mine' }, { flatOut: flat });
+    expect(r.calls.trim().split('\n')).toEqual(['list --json --limit 1000', 'list --limit 1000']);
+    expect(r.out).toContain(skippedLine);
+    expect(r.out).toContain('  patcher  1  y');
+  });
+
+  test('a failing or garbled `--json` call leaves the flat index as it was, with no warning, exit 0', () => {
+    const failing =
+      `#!/bin/sh\nif [ "$*" = "list --limit 1000" ]; then printf '%s' '${flat}'; exit 0; fi\n` + `echo "boom" >&2; exit 3\n`;
+    for (const script of [failing, `#!/bin/sh\nprintf '%s' '${flat}'\n`]) {
+      const r = inject([], {}, { script });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('  patcher  1  y');
+      expect(r.out).not.toContain('WARNING');
+    }
+  });
+
+  test('a store whose only files are skipped is not silent in the flat view either', () => {
+    const r = inject(withProblems([], [{ shelf: 'locked', code: 'EACCES' }], []), {}, { flatOut: '' });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('agent-notebook notebooks — 0 in /store');
+    expect(r.out).toContain('WARNING: 1 file in the store could not be used and is missing from this index: locked.md (EACCES).');
+  });
+
+  test('the warnings count against the 8 KB budget', () => {
+    const many = Array.from({ length: 60 }, (_, i) => `  shelf-${String(i).padStart(3, '0')}  1  ${'é'.repeat(70)}`);
+    const big = `agent-notebook notebooks — 60 in /store\n${many.join('\n')}\n`;
+    const conflicts = Array.from({ length: 5 }, (_, i) => ({ shelf: `c${i}${'x'.repeat(55)}`, marker: '=======' }));
+    const r = inject(withProblems([], [], conflicts), {}, { flatOut: big });
+    expect(r.out).toContain('WARNING: 5 shelves hold git merge-conflict markers');
+    const block = r.out.slice(r.out.indexOf('agent-notebook notebooks'));
+    expect(Buffer.byteLength(block)).toBeLessThanOrEqual(8 * 1024 + 1);
+    expect(block).toMatch(/… \d+ more shelves not shown/);
+  });
+
+  test('the real nb: an invalid file name and a conflicted shelf reach the flat index', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-nb-flat-problems-'));
+    const binDir = mkdtempSync(join(tmpdir(), 'kookr-nb-flat-problemsbin-'));
+    symlinkSync(BIN, join(binDir, 'nb'));
+    try {
+      writeFileSync(join(dir, 'code-review.md'), '+1\tfine lesson\n');
+      writeFileSync(join(dir, 'review copy.md'), '+1\ta stray copy\n');
+      writeFileSync(join(dir, 'patcher.md'), '<<<<<<< HEAD\n+1\tours\n=======\n+1\ttheirs\n>>>>>>> other\n');
+      const out = execFileSync(process.execPath, [HOOK], {
+        env: { ...envWith({}, `${binDir}:${process.env.PATH ?? ''}`), NB_DIR: dir },
+        encoding: 'utf-8',
+      });
+      expect(out).toContain('review copy.md (not a valid shelf name)');
+      expect(out).toContain('is refused until the conflict is resolved: patcher.');
+      expect(out).not.toContain('Project shelves');
+      expect(out).toMatch(/^ {2}code-review\s/m);
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(binDir, { recursive: true, force: true });
