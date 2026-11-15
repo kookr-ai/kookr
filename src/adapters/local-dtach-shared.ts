@@ -115,6 +115,12 @@ export interface AttachedSession extends DtachRingState {
   /** First non-empty chunk from explicit recovery is replay, even if delayed. */
   attachReplayPending: boolean;
   /**
+   * Strip dtach's `ESC[H ESC[J` attach clear from the first non-empty chunk of
+   * this attach generation. Set only for the first attach to a session that
+   * survived a server restart (issue #3565).
+   */
+  dropAttachClearPending: boolean;
+  /**
    * Disposes the current attach child's `onData`/`onExit` listeners. Called
    * before `pty.kill()` on every teardown so a just-killed attach cannot fan
    * trailing bytes into the shared ring / subscribers — which would otherwise

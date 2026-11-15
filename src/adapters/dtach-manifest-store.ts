@@ -19,6 +19,36 @@ export interface DtachManifestEntry {
   launchState?: 'unadopted' | 'adopted';
   /** Unique id of the server process generation that began this launch. */
   launchCreatorId?: string;
+  /**
+   * Last terminal size applied to the session (issue #3565). A restarted
+   * server re-attaches at this size: dtach forwards the attach size to the
+   * agent's PTY, so falling back to 80x24 would re-wrap every agent.
+   * Optional so manifests written before this field still load.
+   */
+  size?: DtachTerminalSize;
+}
+
+export interface DtachTerminalSize {
+  cols: number;
+  rows: number;
+}
+
+/** Upper bound for a persisted dimension; anything larger is treated as corrupt. */
+const MAX_TERMINAL_DIMENSION = 10_000;
+
+/**
+ * Return the entry's persisted size when it is a usable terminal size, or
+ * `undefined` when absent or malformed (the manifest is hand-editable JSON on
+ * disk, and a bad value handed to `spawn` is worse than the 80x24 default).
+ */
+export function readPersistedSize(entry: DtachManifestEntry | undefined): DtachTerminalSize | undefined {
+  const size = entry?.size as Partial<DtachTerminalSize> | undefined;
+  if (!size || typeof size !== 'object') return undefined;
+  const valid = (n: unknown): n is number => (
+    Number.isInteger(n) && (n as number) > 0 && (n as number) <= MAX_TERMINAL_DIMENSION
+  );
+  if (!valid(size.cols) || !valid(size.rows)) return undefined;
+  return { cols: size.cols, rows: size.rows };
 }
 
 export interface DtachManifestFile {
@@ -75,6 +105,23 @@ export class DtachManifestStore {
       const manifest = this.read();
       fn(manifest);
       this.writeAtomic(manifest);
+    });
+  }
+
+  /**
+   * Record `size` on the session's existing entry. Never creates an entry and
+   * never rewrites a missing or unparseable manifest (startup recovery owns
+   * those), and skips the write when the stored size already matches.
+   */
+  async setSize(id: SessionId, size: DtachTerminalSize): Promise<void> {
+    await this.withLock(() => {
+      const recovery = this.readForRecovery();
+      if (recovery.kind !== 'valid') return;
+      const entry = recovery.manifest.entries.find((candidate) => candidate.sessionId === id);
+      if (!entry) return;
+      if (entry.size?.cols === size.cols && entry.size.rows === size.rows) return;
+      entry.size = { cols: size.cols, rows: size.rows };
+      this.writeAtomic(recovery.manifest);
     });
   }
 
