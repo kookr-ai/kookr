@@ -21,6 +21,7 @@ import {
   type AgentSelection,
 } from '../core/agent-types.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
+import { withBlankOptionalParameters } from './use-cases/playbook-launch.js';
 import { isModelTier } from '../shared/contracts/model-tier.js';
 
 export interface ResolvedScheduleLaunch {
@@ -164,7 +165,11 @@ export class ScheduleValidator {
         ? sourceCwd
         : (playbookScopeDir(scope, sourceCwd) ?? sourceCwd);
       const playbook = parsePlaybook(raw, schedule.playbook.path, identityCwd, scope);
-      const prompt = interpolateParameters(playbook.body, playbook.parameters, schedule.playbook.parameters);
+      const prompt = interpolateParameters(
+        playbook.body,
+        playbook.parameters,
+        withBlankOptionalParameters(playbook.parameters, schedule.playbook.parameters),
+      );
       const criteria = playbook.checklist.length > 0
         ? playbook.checklist.join('\n')
         : undefined;

@@ -266,10 +266,11 @@ export function normalizePlaybookLaunchInput(input: PreparePlaybookLaunchInput):
  * #3644: render an omitted optional parameter that has no default as '' rather
  * than leaving a literal `{{name}}` in the prompt. The dashboard already sends
  * '' for every such parameter; CLI/API launches (`kookr spawn --param`) send
- * only the ones the caller named. Used for interpolation only: the recorded
- * playbookParameterValues stay exactly what the caller sent.
+ * only the ones the caller named, and so can schedules created through the
+ * API (#3862, `ScheduleValidator.resolveLaunch`). Used for interpolation only:
+ * the recorded playbookParameterValues stay exactly what the caller sent.
  */
-function withBlankOptionalParameters(
+export function withBlankOptionalParameters(
   parameters: PlaybookParameter[],
   values: Record<string, string>,
 ): Record<string, string> {

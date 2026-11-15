@@ -90,6 +90,36 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
       expect(launch.dependencies).toEqual(['kb']);
     });
 
+    it('renders an omitted optional parameter with no default as empty, not a literal {{name}} (#3862)', async () => {
+      await writeFile(join(projectCwd, '.kookr', 'playbooks', 'optional.md'), `---
+name: Optional Params
+description: A playbook with optional parameters
+parameters:
+  - name: repo
+    description: Repository
+    required: true
+  - name: assignee
+    description: Optional assignee, no default
+    required: false
+  - name: label
+    description: Optional label with a default
+    required: false
+    default: triage
+---
+
+REPO="{{repo}}" ASSIGNEE="{{assignee}}" LABEL="{{label}}"
+`);
+
+      const launch = await validator.resolveLaunch(makeSchedule({
+        playbook: { path: 'optional.md', parameters: { repo: 'kookr-ai/kookr' }, scope: 'project' },
+      }));
+
+      expect(launch.prompt).toContain('REPO="kookr-ai/kookr" ASSIGNEE="" LABEL="triage"');
+      expect(launch.prompt).not.toContain('{{');
+      // The recorded values stay exactly what the schedule stored.
+      expect(launch.playbookParameterValues).toEqual({ repo: 'kookr-ai/kookr' });
+    });
+
     it('resolves a user-scoped playbook whose cwd lacks the file', async () => {
       const launch = await validator.resolveLaunch(makeSchedule({
         playbook: { path: 'usr.md', parameters: {}, scope: 'user' },
