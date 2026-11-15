@@ -900,6 +900,43 @@ describe('provider reset holds in the sweep (issue #3562)', () => {
     expect(result.reclaimedTaskIds).toEqual(['task-1']);
   });
 
+  it('regression: measures the 6h fit from the activity-advanced pause start, like the selector', async () => {
+    // Pause latched 5h ago, agent activity until 2h ago (the effective start,
+    // so effective age = 2h = hard TTL), 5h window resetting in 3h. The hold
+    // would end 5h15m after the effective start (within 6h) but 8h15m after
+    // the raw latch — measuring from the latch misclassified it as unresolved
+    // and reclaimed it at the hard TTL.
+    const task = makePausedTask();
+    const taskStore = makeMockTaskStore([task]);
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, nowMs - 5 * 60 * MIN);
+    const lastActivity = nowMs - 2 * 60 * MIN;
+    const metrics = new ProviderPausedOccupancyMetrics();
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        getLiveness: () => ({
+          lastHookEventAt: lastActivity,
+          lastPaneChangeAt: 0,
+          lastTokenActivityAt: 0,
+        }) as any,
+        isHoldingOpenPr: () => false,
+        metrics,
+        getProviderResetSource: () => ({
+          quota: { fiveHour: exhaustedWindow(nowMs + 3 * 60 * MIN), sevenDay: null, updatedAt: nowMs },
+          pollerState: 'healthy',
+        }),
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+    expect(metrics.getSnapshot().skippedProviderResetUnresolved).toBe(0);
+  });
+
   it('keeps the latest known reset seen during a pause (never under-wait)', () => {
     const tracker = new ProviderPausedStartTracker();
     const task = makePausedTask();

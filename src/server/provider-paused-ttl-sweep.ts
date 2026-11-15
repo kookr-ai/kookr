@@ -7,6 +7,7 @@ import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
   DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
   MAX_PROVIDER_PAUSED_HARD_TTL_MS,
+  effectiveProviderPausedStartMs,
   PROVIDER_RESET_HOLD_GRACE_MS,
   emptyProviderPausedTtlSkipCounts,
   effectiveProviderPausedTtlMs,
@@ -155,6 +156,11 @@ export interface ProviderResetSource {
 export function classifyProviderResetState(input: {
   source: ProviderResetSource;
   nowMs: number;
+  /**
+   * Effective pause start — the same activity-advanced start the selector
+   * measures pause age and the 6h hold cap from
+   * ({@link effectiveProviderPausedStartMs}).
+   */
   pauseStartedAtMs?: number;
 }): ProviderResetState {
   const { quota, pollerState } = input.source;
@@ -567,19 +573,36 @@ export async function reclaimAgedProviderPausedTasks(
     return { reclaimedTaskIds: [], occupancy };
   }
 
+  const getLastActivityAtMs = (task: Task): number | undefined => {
+    const liveness = deps.getLiveness?.(task);
+    if (!liveness) return undefined;
+    const last = Math.max(
+      liveness.lastHookEventAt,
+      liveness.lastPaneChangeAt,
+      liveness.lastTokenActivityAt,
+    );
+    return last > 0 ? last : undefined;
+  };
+
   // Issue #3562: classify every paused task's reset each pass and latch a
   // known reset as soon as it is seen, so a later poller backoff — or the
   // window resetting and vanishing from the snapshot — cannot lose it.
+  // Measured from the same effective (activity-advanced) pause start the
+  // selector uses, so the 6h-fit filter and snapshot freshness agree with
+  // `knownProviderResetHoldApplies`.
   const resetSource = readProviderResetSource(deps);
   const resetStates = new Map<string, ProviderResetState>();
   if (resetSource) {
     for (const task of tasks) {
-      const pauseStartedAtMs = getPauseStartedAtMs(task);
-      if (pauseStartedAtMs === undefined || !taskUsesClaudeQuota(task)) continue;
+      const latchedStartMs = getPauseStartedAtMs(task);
+      if (latchedStartMs === undefined || !taskUsesClaudeQuota(task)) continue;
       const fresh = classifyProviderResetState({
         source: resetSource,
         nowMs,
-        pauseStartedAtMs,
+        pauseStartedAtMs: effectiveProviderPausedStartMs(
+          latchedStartMs,
+          getLastActivityAtMs(task),
+        ),
       });
       if (fresh.kind === 'known') {
         deps.pauseStartTracker.latchKnownReset(task.id, fresh.resetsAtMs);
@@ -601,16 +624,7 @@ export async function reclaimAgedProviderPausedTasks(
     capacityAllowsEarlyReclaim,
     isProviderPaused: deps.isProviderPaused,
     getPauseStartedAtMs: (task) => getPauseStartedAtMs(task),
-    getLastActivityAtMs: (task) => {
-      const liveness = deps.getLiveness?.(task);
-      if (!liveness) return undefined;
-      const last = Math.max(
-        liveness.lastHookEventAt,
-        liveness.lastPaneChangeAt,
-        liveness.lastTokenActivityAt,
-      );
-      return last > 0 ? last : undefined;
-    },
+    getLastActivityAtMs,
     isAwaitingProviderReset: (task) => {
       if (!deps.recordProviderPause) return false;
       // Production recordProviderPause returns holdForResume:true for tasks
