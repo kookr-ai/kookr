@@ -510,7 +510,7 @@ If the worktree path already exists or the branch is checked out elsewhere, the 
 git show origin/main:.kookr/delivery-gate.json 2>/dev/null | jq -r '.prePushGate // empty' 2>/dev/null
 ```
 
-- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. The merge wrapper (`pnpm merge`) retargets the PR to the integration branch; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
+- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. When the same file also names an `integrationBranch`, the merge wrapper (`pnpm merge`) retargets the PR to it; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
 - **It prints anything else, or nothing (no such file):** keep the full-suite steps below unchanged.
 
 Run the project's standard verification commands:

@@ -86,7 +86,7 @@ opted out, not a human-merge exception.
 git show origin/main:.kookr/delivery-gate.json 2>/dev/null | jq -r '.prePushGate // empty' 2>/dev/null
 ```
 
-- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. The merge wrapper (`pnpm merge`) retargets the PR to the integration branch; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
+- **It prints `fast`:** run only the tests related to your diff (the test files for what you changed). Do not run the full test suite or `pnpm verify` for the pull request, and do not take a shared gate lock: `git push` runs the fast gate, and the repository's integration train runs the full suite after the merge. Record the fast-gate result from the push and the targeted tests you ran (commands and counts) as the PR's verification evidence. When the same file also names an `integrationBranch`, the merge wrapper (`pnpm merge`) retargets the PR to it; "merged" then means merged there, the task is done at that point, and the linked issue closes when the train promotes the change to `main`.
 - **It prints anything else, or nothing (no such file):** keep the full-suite steps below unchanged.
 
 With a fast pre-push gate, "the gate" below is the push's fast gate (static
@@ -121,10 +121,13 @@ specialist pass covers that stage.
 
 ## Delta re-review after a PASS
 
-**Amending after a PASS invalidates it.** A PASS binds to the exact
+**Amending after a PASS usually invalidates it.** A PASS binds to the exact
 `review-head-sha`. `git commit --amend`, a rebase, a squash, or any new commit
 produces a different sha, so the old PASS no longer applies — even when the
-content looks unchanged — and `pnpm merge` refuses it. After any such change,
+content looks unchanged — and `pnpm merge` refuses it. One exception: when the
+PASS carries `review-patch-id:` and a rebase left every file the PR changes
+untouched, the patch id still matches and `pnpm merge` accepts the PASS with no
+new review. After any other change,
 run a new review for the new head (a full review, or the delta review below
 when it qualifies). Never re-post or edit an old PASS with the new sha.
 
@@ -141,7 +144,7 @@ as an API reference), the next verdict may come from a **delta review**:
   merge wrapper still needs that exact-head `pass`.
 - The full gate is **not** re-run for such an edit; the earlier green run stands.
 
-A rebase gets the same treatment only when the sole change is the PR's own
+Without a `review-patch-id:` line on the PASS, a rebase gets the same treatment only when the sole change is the PR's own
 `plugin.json` version line re-bumped after a conflict, and none of the commits
 pulled in from `main` touch files the PR touches. Anything else, including docs
 that define agent behavior or a contract, needs a full review and gate.
