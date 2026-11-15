@@ -770,8 +770,9 @@ does not ship `scripts/`.
 
 Exit codes are the wrapper's: `0` merged (a failed branch delete or a
 still-open closing issue is a warning and does not change it); `1` pre-flight or
-merge failed; `2` usage error; `3` checks failed, or never-executed checks
-without the recorded local gate; `4` blocked by the independent-review gate.
+merge failed; `2` usage error; `3` checks failed, the PR conflicts with its base
+branch (rebase on `origin/<base>` and push), or never-executed checks without
+the recorded local gate; `4` blocked by the independent-review gate.
 
 ## Server Discovery
 

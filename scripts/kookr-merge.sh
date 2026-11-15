@@ -110,8 +110,8 @@ merge is confirmed (never with `gh pr merge --delete-branch`, whose local
 cleanup fails in a linked worktree). Afterwards, any issue the PR declares as
 closing that is still open is reported. When the repository configures an
 integration branch, a PR aimed at the default branch is retargeted to it first.
-Aborts before merging if the PR is closed, a draft, has changes requested, or
-any check fails.
+Aborts before merging if the PR is closed, a draft, has changes requested,
+conflicts with its base branch, or any check fails.
 
 Use --preserve-branch for paired delivery: a change reviewed in two
 repositories, where both source branches are still needed for audit, replay,
@@ -526,20 +526,23 @@ report_conflict() {
   local checks="$1" base=""
   base="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json baseRefName --jq .baseRefName 2>/dev/null)" || base=""
   [[ -n "$base" ]] || base="<base>"
+  CONFLICT_REPORTED=1
   echo "kookr-merge: PR #$PR conflicts with $base and cannot merge until it is rebased: rebase on origin/$base, push, and get a new review verdict if the diff changed; then run kookr merge again" >&2
   printf '%s\n' "$checks" | jq -r '"  mergeStateStatus=\(.mergeStateStatus // "?") mergeable=\(.mergeable // "?")"' >&2
 }
 
 # wait_note — print a wait reason when it changes, then at most one progress
 # line a minute, instead of one line per poll. Uses WAIT_LAST_REASON and
-# WAIT_LAST_PRINT, which the poll loop owns.
+# WAIT_LAST_PRINT, which the poll loop owns. An optional detail (such as a
+# pending-check count) is shown on each printed line but is not part of the
+# reason, so a changing count does not reprint.
 wait_note() {
-  local reason="$1" elapsed="$2" now
+  local reason="$1" elapsed="$2" detail="${3:+ ($3)}" now
   now=$(date +%s)
   if [[ "$reason" != "$WAIT_LAST_REASON" ]]; then
-    echo "kookr-merge: $reason; polling every ${interval}s"
+    echo "kookr-merge: $reason$detail; polling every ${interval}s"
   elif (( now - WAIT_LAST_PRINT >= 60 )); then
-    echo "kookr-merge: still waiting (${elapsed}s): $reason"
+    echo "kookr-merge: still waiting (${elapsed}s): $reason$detail"
   else
     return 0
   fi
@@ -658,7 +661,7 @@ watch_checks() {
       return 3
     fi
 
-    wait_note "checks pending" "$elapsed"
+    wait_note "checks pending" "$elapsed" "${pending}/${total}"
     sleep "$interval"
   done
 }
@@ -909,8 +912,10 @@ if ! require_review_verdict; then
 fi
 
 echo "kookr-merge: watching checks for PR #$PR"
+CONFLICT_REPORTED=0
 if ! watch_checks; then
-  echo "kookr-merge: checks did not pass for PR #$PR" >&2
+  # A conflict already printed its own message (issue #3813).
+  [[ "$CONFLICT_REPORTED" == "1" ]] || echo "kookr-merge: checks did not pass for PR #$PR" >&2
   exit 3
 fi
 

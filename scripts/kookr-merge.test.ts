@@ -519,6 +519,8 @@ describe('a pull request that conflicts with its base fails fast (#3813)', () =>
       expect(stderr).toContain('conflicts with staging');
       expect(stderr).toContain('rebase on origin/staging');
       expect(stderr).not.toContain('timed out');
+      // One clear message: no generic "checks did not pass" line after it.
+      expect(stderr).not.toContain('checks did not pass');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -587,6 +589,39 @@ describe('a pull request that conflicts with its base fails fast (#3813)', () =>
       const { status, merged } = runMerge(dir);
       expect(status).toBe(0);
       expect(merged).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints a progress line at most once a minute while waiting', () => {
+    // A fake `date +%s` that advances 20 s per call, so a few polls span
+    // minutes. The wrapper reads the clock twice per poll (about 40 s), so a
+    // progress line every poll would mean it ignores the one-minute limit.
+    const dir = makeStubDir({
+      checksResponses: [BLOCKED, BLOCKED, BLOCKED, BLOCKED, BLOCKED, BLOCKED, CLEAN],
+    });
+    writeFileSync(
+      join(dir, 'date'),
+      `#!/usr/bin/env bash
+if [ "$*" = "+%s" ]; then
+  n=0; [ -f "${dir}/date.count" ] && n=$(cat "${dir}/date.count")
+  n=$((n + 1)); printf '%s' "$n" > "${dir}/date.count"
+  echo $((1700000000 + n * 20)); exit 0
+fi
+exec /usr/bin/env -u PATH date "$@"
+`,
+    );
+    chmodSync(join(dir, 'date'), 0o755);
+    try {
+      const { status, stdout } = runMerge(dir, { KOOKR_MERGE_CHECK_TIMEOUT_SECONDS: '100000' });
+      expect(status).toBe(0);
+      const progress = stdout.split('\n').filter((l) => l.includes('still waiting'));
+      // Five waiting polls span about 200 s of fake time: at least one progress
+      // line, but fewer than one per poll.
+      expect(progress.length).toBeGreaterThanOrEqual(1);
+      expect(progress.length).toBeLessThan(4);
+      expect(progress[0]).toMatch(/still waiting \(\d+s\): no checks yet and merge state not clean/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
