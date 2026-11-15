@@ -10,8 +10,15 @@ VALIDATOR="$REPO_ROOT/scripts/validate-skills.ts"
 PASS=0
 FAIL=0
 
+# The validator's output goes to a file private to this run. A fixed path under
+# /tmp is shared by every concurrent run of this test (two agents' pushes, or a
+# push and the integration train's verify). One run then reads the other's
+# output, or deletes it on exit: that made the full verify fail on main for no
+# real reason.
+VALIDATOR_OUT=$(mktemp "${TMPDIR:-/tmp}/skill-validator-out.XXXXXX")
+
 run_validator() {
-  pnpm --dir "$REPO_ROOT" exec tsx "$VALIDATOR" "$@" >/tmp/skill-validator.out 2>&1
+  pnpm --dir "$REPO_ROOT" exec tsx "$VALIDATOR" "$@" >"$VALIDATOR_OUT" 2>&1
 }
 
 assert_pass() {
@@ -23,7 +30,7 @@ assert_pass() {
   else
     FAIL=$((FAIL + 1))
     printf 'FAIL: %s — expected exit 0, got non-zero\n' "$label" >&2
-    sed 's/^/    /' /tmp/skill-validator.out >&2
+    sed 's/^/    /' "$VALIDATOR_OUT" >&2
   fi
 }
 
@@ -44,13 +51,13 @@ assert_warns() {
   local label="$1"
   local pattern="$2"
   shift 2
-  if run_validator "$@" && grep -q "$pattern" /tmp/skill-validator.out; then
+  if run_validator "$@" && grep -q "$pattern" "$VALIDATOR_OUT"; then
     PASS=$((PASS + 1))
     printf 'PASS: %s\n' "$label"
   else
     FAIL=$((FAIL + 1))
     printf 'FAIL: %s — expected exit 0 with warning matching: %s\n' "$label" "$pattern" >&2
-    sed 's/^/    /' /tmp/skill-validator.out >&2
+    sed 's/^/    /' "$VALIDATOR_OUT" >&2
   fi
 }
 
@@ -64,7 +71,7 @@ write_skill() {
 }
 
 TMP=$(mktemp -d)
-trap "rm -rf '$TMP' /tmp/skill-validator.out" EXIT
+trap "rm -rf '$TMP' '$VALIDATOR_OUT'" EXIT
 
 # --- frontmatter checks (errors: fail in both modes) ---
 
@@ -178,7 +185,7 @@ if [ "$rc" -eq 2 ]; then
 else
   FAIL=$((FAIL + 1))
   printf 'FAIL: unknown flag rejected — expected exit 2, got %s\n' "$rc" >&2
-  sed 's/^/    /' /tmp/skill-validator.out >&2
+  sed 's/^/    /' "$VALIDATOR_OUT" >&2
 fi
 
 echo ""

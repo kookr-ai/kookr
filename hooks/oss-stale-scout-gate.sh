@@ -18,7 +18,9 @@ set -euo pipefail
 KOOKR_DIR="${KOOKR_HOOKS_DIR:-$HOME/.kookr}"
 LEDGER_FILE="$KOOKR_DIR/contribution-ledger.jsonl"
 ERROR_LOG="$KOOKR_DIR/hook-errors.log"
-STATE_DIR="/dev/shm"
+# Overridable so tests can use a private directory: with the fixed default,
+# concurrent test runs share the bypass files and flip each other's results.
+STATE_DIR="${STALE_SCOUT_STATE_DIR:-/dev/shm}"
 GH_BIN="${GH_BIN:-gh}"
 REST_TIMEOUT="${STALE_SCOUT_REST_TIMEOUT:-5}"
 AUTH_TIMEOUT="${STALE_SCOUT_AUTH_TIMEOUT:-2}"
@@ -89,8 +91,11 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || CWD=""
 [ -z "$COMMAND" ] && exit 0
 
 # --- 2. Match gh pr create; allow drafts ---
-printf '%s' "$COMMAND" | grep -qE '\bgh\s+pr\s+create\b' || exit 0
-if printf '%s' "$COMMAND" | grep -qE '(^|[[:space:]])--draft([[:space:]]|$)'; then
+# Here-strings, not `printf … | grep -q`: under `set -o pipefail` a pipeline
+# whose reader exits early can report failure, which would turn "this is a
+# draft, allow it" into a deny.
+grep -qE '\bgh\s+pr\s+create\b' <<<"$COMMAND" || exit 0
+if grep -qE '(^|[[:space:]])--draft([[:space:]]|$)' <<<"$COMMAND"; then
   exit 0
 fi
 
@@ -211,7 +216,7 @@ if [ -n "$BODY_FILE_PATH" ]; then
   fi
 else
   # Heredoc form — match <<DELIM or <<'DELIM' or <<"DELIM"
-  if printf '%s' "$COMMAND" | grep -qE "<<['\"]?[A-Za-z_]"; then
+  if grep -qE "<<['\"]?[A-Za-z_]" <<<"$COMMAND"; then
     BODY=$(printf '%s\n' "$COMMAND" | extract_heredoc_body) || BODY=""
   fi
   # Plain double-quoted fallback — best effort, only if no heredoc
@@ -401,7 +406,7 @@ if [ -n "$GRAPHQL_RESP" ]; then
 fi
 
 CLOSED_SLUG="${CLOSED_OWNER}/${CLOSED_REPO}"
-BYPASS_HINT="touch /dev/shm/.stale-scout-${CLOSED_OWNER}-${CLOSED_REPO}-${CLOSED_ISSUE}-bypass"
+BYPASS_HINT="touch ${STATE_DIR}/.stale-scout-${CLOSED_OWNER}-${CLOSED_REPO}-${CLOSED_ISSUE}-bypass"
 
 if [ -n "$CLOSING_PR" ]; then
   ledger_append "pr_blocked_stale_scout" "$CLOSED_ISSUE" "$CLOSING_PR" "$CLOSING_PR_MERGED_AT" "$CLOSED_STATE_REASON" "$CLOSED_SLUG"
