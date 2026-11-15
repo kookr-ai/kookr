@@ -12,7 +12,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { ProjectSidebar, type ProjectSidebarQueues } from './ProjectSidebar.js';
+import { ProjectSidebar, shownMoveNeighbours, type ProjectSidebarQueues } from './ProjectSidebar.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetProjectNotificationMuteForTests } from '../hooks/useProjectNotificationMute.js';
 import type { ProjectSummary } from '../../shared/protocol.js';
@@ -227,5 +227,111 @@ describe('ProjectSidebar labelled navigation (#3561 slice 5a)', () => {
     ]);
     await render();
     expect(byTestId('project-nav-idle-toggle')).toBeNull();
+  });
+
+  describe('Move up / Move down skip idle projects the layout hides (#3617)', () => {
+    function setWide(wide: boolean) {
+      vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+        matches: wide && query === '(min-width: 1280px)',
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }) as MediaQueryList);
+    }
+
+    // Unpinned order: live, idle-a, waiting. idle-a is tucked when wide.
+    beforeEach(() => {
+      useKookrStore.getState().handleProjectSummaries([
+        summary('github.com/org/live', 'org/live', { activeAgents: 2 }),
+        summary('github.com/org/idle-a', 'org/idle-a'),
+        summary('github.com/org/waiting', 'org/waiting', { findingCount: 3 }),
+      ]);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    test('shownMoveNeighbours returns the nearest shown project on each side', () => {
+      const shown = (p: string) => !p.startsWith('hidden');
+      expect(shownMoveNeighbours(['a', 'hidden1', 'b', 'hidden2'], 'b', shown)).toEqual({ up: 'a', down: null });
+      expect(shownMoveNeighbours(['a', 'b'], 'a', shown)).toEqual({ up: null, down: 'b' });
+      expect(shownMoveNeighbours(['a'], 'missing', shown)).toEqual({ up: null, down: null });
+    });
+
+    const order = () => useKookrStore.getState().visibleProjectSummaries.map((s) => s.project);
+
+    async function openMenu(project: string) {
+      const icon = byTestId(`project-icon-${project}`);
+      await act(async () => {
+        icon!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+      });
+    }
+    const menuItem = (label: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('.project-sidebar-menu-item'))
+      .find((button) => button.textContent === label);
+
+    test('wide labelled layout: Move up jumps over the hidden idle neighbour', async () => {
+      setWide(true);
+      await render();
+      await openMenu('github.com/org/waiting');
+      expect(menuItem('Move up')?.disabled).toBe(false);
+      await act(async () => { menuItem('Move up')!.click(); });
+      expect(order()).toEqual(['github.com/org/waiting', 'github.com/org/live', 'github.com/org/idle-a']);
+    });
+
+    test('wide labelled layout: Move down jumps over the hidden idle neighbour; Move up is off at the top', async () => {
+      setWide(true);
+      await render();
+      await openMenu('github.com/org/live');
+      expect(menuItem('Move up')?.disabled).toBe(true);
+      await act(async () => { menuItem('Move down')!.click(); });
+      expect(order()).toEqual(['github.com/org/idle-a', 'github.com/org/waiting', 'github.com/org/live']);
+    });
+
+    test('wide labelled layout: Move down is disabled when only hidden idle rows follow', async () => {
+      useKookrStore.getState().handleProjectSummaries([
+        summary('github.com/org/live', 'org/live', { activeAgents: 2 }),
+        summary('github.com/org/waiting', 'org/waiting', { findingCount: 3 }),
+        summary('github.com/org/idle-a', 'org/idle-a'),
+      ]);
+      setWide(true);
+      await render();
+      expect(order()).toEqual(['github.com/org/live', 'github.com/org/waiting', 'github.com/org/idle-a']);
+      await openMenu('github.com/org/waiting');
+      expect(menuItem('Move down')?.disabled).toBe(true);
+      expect(menuItem('Move up')?.disabled).toBe(false);
+    });
+
+    test('under 1280 px the icon rail shows idle rows, so Move up swaps with them', async () => {
+      setWide(false);
+      await render();
+      await openMenu('github.com/org/waiting');
+      await act(async () => { menuItem('Move up')!.click(); });
+      expect(order()).toEqual(['github.com/org/live', 'github.com/org/waiting', 'github.com/org/idle-a']);
+    });
+
+    test('with the labelled layout off, Move up swaps with the idle neighbour', async () => {
+      setWide(true);
+      await act(async () => {
+        root.render(<ProjectSidebar onManage={() => {}} queues={queues()} labelled={false} />);
+      });
+      await flush();
+      await openMenu('github.com/org/waiting');
+      await act(async () => { menuItem('Move up')!.click(); });
+      expect(order()).toEqual(['github.com/org/live', 'github.com/org/waiting', 'github.com/org/idle-a']);
+    });
+
+    test('with idle projects expanded, Move up swaps with the idle neighbour', async () => {
+      setWide(true);
+      await render();
+      await act(async () => { byTestId('project-nav-idle-toggle')!.click(); });
+      await openMenu('github.com/org/waiting');
+      await act(async () => { menuItem('Move up')!.click(); });
+      expect(order()).toEqual(['github.com/org/live', 'github.com/org/waiting', 'github.com/org/idle-a']);
+    });
   });
 });

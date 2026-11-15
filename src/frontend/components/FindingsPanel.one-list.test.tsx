@@ -152,6 +152,42 @@ describe('FindingsPanel one list (#3561 slice 3)', () => {
     expect(header?.classList.contains('findings-needs-you-empty')).toBe(false);
   });
 
+  describe('"Needs you" count follows the active filters (#3617)', () => {
+    function makeTypedFinding(id: string, type: string, taskName: string): AgentState {
+      const finding = makeFinding(id);
+      // A distinct explanation per finding keeps them out of the identical-prompt group.
+      const anomaly = { ...finding.anomaly!, type, explanation: `Blocked on ${taskName}` };
+      return { ...finding, taskName, anomaly: anomaly as AgentState['anomaly'] };
+    }
+    const findings = () => [
+      makeTypedFinding('a', 'permission_blocked', 'Deploy docs'),
+      makeTypedFinding('b', 'permission_blocked', 'Fix login'),
+      makeTypedFinding('c', 'error_loop', 'Deploy api'),
+    ];
+    const header = () => container.querySelector('[data-testid="findings-needs-you-header"]');
+
+    test('a type filter narrows the count to the listed findings', () => {
+      localStorage.setItem('kookr:findingsPanel.typeFilter', JSON.stringify(['error_loop']));
+      render(root, { findings: findings() });
+      expect(container.querySelectorAll('.finding-card')).toHaveLength(1);
+      expect(header()?.textContent).toBe('Needs you (1)');
+    });
+
+    test('a name filter narrows the count to the listed findings', () => {
+      localStorage.setItem('kookr:findingsPanel.nameFilter', 'deploy');
+      render(root, { findings: findings() });
+      expect(container.querySelectorAll('.finding-card')).toHaveLength(2);
+      expect(header()?.textContent).toBe('Needs you (2)');
+    });
+
+    test('a filter that hides every finding reads 0 without claiming nothing is waiting', () => {
+      localStorage.setItem('kookr:findingsPanel.nameFilter', 'no such task');
+      render(root, { findings: findings() });
+      expect(header()?.textContent).toBe('Needs you (0)');
+      expect(header()?.classList.contains('findings-needs-you-empty')).toBe(false);
+    });
+  });
+
   test('a cold, empty rail shows the launch prompt without a "Needs you" line', () => {
     render(root, {});
     expect(container.querySelector('[data-testid="findings-needs-you-header"]')).toBeNull();

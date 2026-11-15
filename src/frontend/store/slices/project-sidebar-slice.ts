@@ -312,23 +312,6 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       });
     },
 
-    moveSidebarProject: (project, direction) => {
-      const prev = get();
-      const nextSnapshot = applyProjectSidebarCommand(sidebarSnapshotFromStore(prev), { type: 'move', project, direction }, prev.projectSummaries);
-      const derived = deriveProjectSidebarState(prev.projectSummaries, nextSnapshot.prefs, nextSnapshot.catalog);
-      const error = persistProjectSidebarSnapshot(nextSnapshot);
-      if (prev.projectSidebarServerHydrated) {
-        saveProjectSidebarToServer(nextSnapshot, set);
-      }
-
-      set({
-        projectSidebarPrefs: nextSnapshot.prefs,
-        visibleProjectSummaries: derived.visibleProjects,
-        projectSidebarRows: derived.managerRows,
-        projectSidebarError: error,
-      });
-    },
-
     reorderSidebarProject: (project, targetPinned, targetProject, position) => {
       const prev = get();
       const nextSnapshot = applyProjectSidebarCommand(

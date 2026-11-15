@@ -235,7 +235,7 @@ describe('project-sidebar-prefs', () => {
     });
   });
 
-  test('move swaps visible projects within the same section while leaving hidden ids in place', () => {
+  test('reorder before the previous visible project swaps them while leaving hidden ids in place', () => {
     const projects = [
       summary('a', 'alpha', 1),
       summary('b', 'bravo', 2),
@@ -257,7 +257,7 @@ describe('project-sidebar-prefs', () => {
           lastSeenAt: '2026-04-02T10:00:00.000Z',
         },
       },
-    }, { type: 'move', project: 'b', direction: 'up' }, projects).prefs;
+    }, { type: 'reorder', project: 'b', targetPinned: true, targetProject: 'a', position: 'before' }, projects).prefs;
 
     expect(moved).toEqual({
       version: 2,
