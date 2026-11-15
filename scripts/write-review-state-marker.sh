@@ -6,6 +6,7 @@
 # BYPASS markers keep the human escape hatch (reason required, no token).
 #
 # Usage:
+#   bash scripts/write-review-state-marker.sh --status approved --specialists "independent-review"
 #   bash scripts/write-review-state-marker.sh --status approved --specialists "correctness,lint-like,test"
 #   bash scripts/write-review-state-marker.sh --status bypass --reason "docs-only prose + comment typo"
 #
@@ -28,7 +29,7 @@ SHA_OVERRIDE=""
 KEY_OVERRIDE=""
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
 }
 
@@ -86,7 +87,7 @@ case "$STATUS" in
   approved)
     if [ -z "$SPECIALISTS" ]; then
       echo "write-review-state-marker: --specialists is required for status=approved" >&2
-      echo "  (comma-separated roles that actually ran, e.g. correctness,lint-like,test)" >&2
+      echo "  (independent-review, or the comma-separated roles that ran, e.g. correctness,lint-like,test)" >&2
       exit 2
     fi
     MATERIAL=$(review_state_token_material "$HEAD_SHA" "$SPECIALISTS")

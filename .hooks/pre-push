@@ -91,8 +91,9 @@ fi
 # Cheap (file-read + jq) check FIRST, so a missing marker fails-fast in
 # milliseconds rather than after a multi-minute build+test cycle.
 #
-# Forces a SHA-bound marker that the `pre-push` skill writes after running
-# reviewer specialists in parallel. Without the marker, non-trivial pushes
+# Forces a SHA-bound marker that the `pre-push` skill writes after starting
+# the review (with a fast pre-push gate: the one independent review, issue
+# #3792; otherwise: the reviewer specialists in parallel). Without the marker, non-trivial pushes
 # are blocked. Fail-CLOSED.
 #
 # Marker layout (.review-state/<key>.json — gitignored):
@@ -102,8 +103,8 @@ fi
 #   bypass (human escape hatch; reason required; no token):
 #     { "sha", "status":"bypass", "reason":"..." }
 #
-# Write APPROVED markers via scripts/write-review-state-marker.sh after real
-# specialist fan-out. Raw `cat > .review-state/...` with only sha+status fails.
+# Write APPROVED markers via scripts/write-review-state-marker.sh after the
+# review is started (see above). Raw `cat > .review-state/...` with only sha+status fails.
 #
 # Why: across recent PRs in this and adjacent repos (kb-mcp-server, LRA),
 # 10/10 substantive Codex findings (incl. 2 P1) would have been caught by
@@ -190,8 +191,8 @@ if [ -n "$NONTRIVIAL" ]; then
     echo "  Non-trivial change e.g.: $(echo "$NONTRIVIAL" | head -1)"
     echo "  Marker:     $MARKER_FILE"
     echo ""
-    echo "Run the \`kookr-pre-push\` skill in Claude Code (it runs reviewer"
-    echo "specialists and writes the marker). See"
+    echo "Run the \`kookr-pre-push\` skill in Claude Code (it starts the review"
+    echo "for this head and writes the marker). See"
     echo ".claude/skills/kookr-pre-push/SKILL.md for the marker schema."
     echo ""
     echo "Not using Claude Code? After self-reviewing your diff, write the marker"
@@ -201,8 +202,11 @@ if [ -n "$NONTRIVIAL" ]; then
     echo "  mkdir -p \"$MARKER_DIR\""
     echo "  printf '{\"sha\":\"$HEAD_SHA\",\"status\":\"bypass\",\"reason\":\"REPLACE: why you are bypassing\"}\n' > \"$MARKER_FILE\""
     echo ""
-    echo "  For a real APPROVED marker (after specialist review), use the writer:"
-    echo "  bash scripts/write-review-state-marker.sh --status approved --specialists \"correctness,lint-like,test\""
+    echo "  For a real APPROVED marker, use the writer. With a fast pre-push gate it"
+    echo "  records that the one independent review was started for this head:"
+    echo "  bash scripts/write-review-state-marker.sh --status approved --specialists \"independent-review\""
+    echo "  Without one, list the reviewer specialists that ran instead"
+    echo "  (e.g. --specialists \"correctness,lint-like,test\")."
     exit 1
   fi
 
@@ -254,10 +258,11 @@ if [ -n "$NONTRIVIAL" ]; then
           echo "  File: $MARKER_FILE"
           echo ""
           echo "Raw shell forgery (cat > .review-state/...) no longer works."
-          echo "After real reviewer specialists finish, write the marker with:"
+          echo "After starting the review for this head, write the marker with:"
           echo ""
           echo "  bash scripts/write-review-state-marker.sh --status approved \\"
-          echo "    --specialists \"correctness,lint-like,test\""
+          echo "    --specialists \"independent-review\""
+          echo "(or the specialists that ran, when the repo has no fast pre-push gate)."
           echo ""
           echo "For a deliberate human skip, use a bypass marker with a reason"
           echo "(recipe printed when the marker file is missing)."
