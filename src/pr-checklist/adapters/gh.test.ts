@@ -34,6 +34,9 @@ describe('extractFromGhCommand', () => {
     expect(extractFromGhCommand(`gh pr create --title "$TITLE" --body b`)?.title).toBeNull();
     expect(extractFromGhCommand(`gh pr create -t "feat: $X" --body b`)?.title).toBeNull();
     expect(extractFromGhCommand('gh pr create --title "`git log -1 --format=%s`" --body b')?.title).toBeNull();
+    // gh keeps the last of a repeated --title; we do not guess.
+    expect(extractFromGhCommand(`gh pr create --title WIP --body b --title "feat: add login"`)?.title).toBeNull();
+    expect(extractFromGhCommand(`gh pr create -t WIP --title=feat:x --body b`)?.title).toBeNull();
   });
 
   it('extracts an inline --body and default (null) base', () => {

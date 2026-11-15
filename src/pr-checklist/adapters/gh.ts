@@ -292,8 +292,10 @@ export function extractFromGhCommand(rawCommand: string): GhExtract | null {
   // Any `$` or backtick may be something the shell expands (`--title "$TITLE"`,
   // `` `git log -1 --format=%s` ``); the text on the command is then not the
   // real title, so it is not checked at all.
+  // gh keeps the LAST of a repeated --title; we refuse to guess (as for -R).
   const titleFlag = flagValue(args, ['--title', '-t']);
-  const title = titleFlag.value === null || /[$`]/.test(titleFlag.value) ? null : titleFlag.value;
+  const repeated = args.filter((a) => /^(?:--title|-t)(?:=|$)/.test(a)).length > 1;
+  const title = titleFlag.value === null || repeated || /[$`]/.test(titleFlag.value) ? null : titleFlag.value;
 
   const file = flagValue(args, ['--body-file', '-F']);
   if (file.value !== null) {

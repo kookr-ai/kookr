@@ -16,7 +16,11 @@
 
 import type { CheckResult } from './types.js';
 
-/** Commitlint config file names, in commitlint's own lookup order (package.json `commitlint` key handled separately). */
+/**
+ * Commitlint config file names in @commitlint/load's own search order (its
+ * cosmiconfig `searchPlaces`), after `package.json` and `package.yaml`, which
+ * come first and count only when they carry a `commitlint` key (engine.ts).
+ */
 export const COMMITLINT_CONFIG_PATHS = [
   '.commitlintrc',
   '.commitlintrc.json',
@@ -25,12 +29,12 @@ export const COMMITLINT_CONFIG_PATHS = [
   '.commitlintrc.js',
   '.commitlintrc.cjs',
   '.commitlintrc.mjs',
-  '.commitlintrc.ts',
-  '.commitlintrc.cts',
-  '.commitlintrc.mts',
   'commitlint.config.js',
   'commitlint.config.cjs',
   'commitlint.config.mjs',
+  '.commitlintrc.ts',
+  '.commitlintrc.cts',
+  '.commitlintrc.mts',
   'commitlint.config.ts',
   'commitlint.config.cts',
   'commitlint.config.mts',
@@ -128,7 +132,12 @@ export function packageJsonCommitlintText(packageJsonText: string): string | nul
 /** `@commitlint/config-conventional`'s `type-enum`. */
 export const CONVENTIONAL_TYPES = ['build', 'chore', 'ci', 'docs', 'feat', 'fix', 'perf', 'refactor', 'revert', 'style', 'test'];
 export const CONVENTIONAL_HEADER_MAX = 100;
-/** The conventional-commits parser preset's header pattern. */
+/**
+ * The conventionalcommits parser preset's header patterns. The parser tries the
+ * breaking-change (`!:`) pattern first: with a greedy scope, `!?` alone would
+ * split `feat(api)!: drop x (v1): Y` at the later `): `.
+ */
+const BREAKING_HEADER = /^(\w*)(?:\((.*)\))?!: (.*)$/;
 const HEADER = /^(\w*)(?:\((.*)\))?!?: (.*)$/;
 
 /**
@@ -146,7 +155,7 @@ export function lintConventionalTitle(title: string): string[] {
   if (header.length > CONVENTIONAL_HEADER_MAX) {
     problems.push(`it is ${header.length} characters; the limit is ${CONVENTIONAL_HEADER_MAX}`);
   }
-  const m = HEADER.exec(header);
+  const m = BREAKING_HEADER.exec(header) ?? HEADER.exec(header);
   if (!m) {
     problems.push('it does not have the "type(scope): subject" shape');
     return problems;
@@ -194,7 +203,8 @@ export function evaluateTitle(
   title: string | null | undefined,
   config: CommitlintConfig | null,
 ): { results: CheckResult[]; notes: string[] } {
-  if (!config || title === null || title === undefined) return { results: [], notes: [] };
+  // An empty title is valid to commitlint (and GitHub rejects it anyway).
+  if (!config || title === null || title === undefined || !title.trim()) return { results: [], notes: [] };
   if (!config.conventional) {
     return {
       results: [],

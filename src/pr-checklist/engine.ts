@@ -82,10 +82,18 @@ export function verifyChecklist(input: VerifyInput): VerifyReport {
 
   const structural = evaluateStructural(input.facts, input.envFileText, input.testCorpus, attest.waived);
 
+  // The title check is REPORTED, never enforced, in verify (#3651): verify is
+  // the local gh-pr-create gate, and a text-only re-implementation of
+  // commitlint can never be proven identical to the repo's real one, so a
+  // mismatch must not deny a PR. A failing title becomes a warning note.
   const title = evaluateTitle(input.title, input.commitlint ?? null);
   notes.push(...title.notes);
+  for (const r of title.results) {
+    if (r.status === 'fail') notes.push(`⚠ ${r.summary} (reported only — the gate does not block on the title)`);
+  }
+  const titleResults = title.results.filter((r) => r.status !== 'fail');
 
-  const allResults = [...presence, ...attest.results, ...structural, ...title.results];
+  const allResults = [...presence, ...attest.results, ...structural, ...titleResults];
 
   // P4a: drop results for rules the repo disabled in .kookr/pr-checklist.json.
   // This can only REMOVE checks, never add a fail — a repo relaxing its own gate.
@@ -213,13 +221,21 @@ async function readCommitlintConfig(
   read: (absPath: string, cap: number) => Promise<string>,
   cwd: string,
 ): Promise<CommitlintConfig | null> {
+  // Same order as @commitlint/load: package.json / package.yaml (only with a
+  // `commitlint` key) first, then the config files.
+  const pkg = await readTracked(runner, read, cwd, 'package.json', MAX_BODY_BYTES);
+  const key = pkg ? packageJsonCommitlintText(pkg) : null;
+  if (key !== null) return classifyCommitlintConfig('package.json', key);
+  const pkgYaml = await readTracked(runner, read, cwd, 'package.yaml', MAX_BODY_BYTES);
+  if (/^commitlint:/m.test(pkgYaml)) {
+    // Not parsed: the key's YAML is never matched against the plain shapes.
+    return { ...classifyCommitlintConfig('package.yaml', pkgYaml), plain: false };
+  }
   for (const path of COMMITLINT_CONFIG_PATHS) {
     const text = await readTracked(runner, read, cwd, path, MAX_CONFIG_BYTES);
     if (text.trim()) return classifyCommitlintConfig(path, text);
   }
-  const pkg = await readTracked(runner, read, cwd, 'package.json', MAX_BODY_BYTES);
-  const key = pkg ? packageJsonCommitlintText(pkg) : null;
-  return key === null ? null : classifyCommitlintConfig('package.json', key);
+  return null;
 }
 
 /** Pure: does the repo opt in to the checklist gate (marker template or rule config)? */

@@ -55,7 +55,8 @@ Options:
   --base <ref>           Diff base branch (default: main; --from-command's base wins).
   --title <t>            PR title to check against the repo's commit-lint rule, when the
                          repo has one (config-conventional only; --from-command's
-                         --title is used automatically).
+                         --title is used automatically). verify only WARNS on a bad
+                         title, never fails on it; scaffold exits 2.
   --json                 Emit one machine-readable JSON report to stdout.
   --explain              Print the resolved built-in checklist rules and exit.
   -h, --help             Show this help.

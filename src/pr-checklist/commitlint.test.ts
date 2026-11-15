@@ -65,6 +65,10 @@ const COMMITLINT_ORACLE: [string, boolean][] = [
   ["Automatic merge from x", true],
   ["WIP draft scaffold", false],
   ["revert: feat: x", true],
+  ["feat(api)!: remove legacy endpoints (v1): Clients must migrate", true],
+  ["feat(api): remove legacy endpoints (v1): Clients must migrate", false],
+  ["feat!: drop node 18", true],
+  ["fix(a)!: x (b): y", true],
 ];
 
 describe('lintConventionalTitle (config-conventional header rules)', () => {
@@ -89,6 +93,16 @@ describe('lintConventionalTitle (config-conventional header rules)', () => {
     ['feat:  ', /subject after the colon is empty/],
   ])('names the problem for %j', (title, problem) => {
     expect(lintConventionalTitle(title).join('; ')).toMatch(problem);
+  });
+
+  it('splits a breaking-change header the way the conventionalcommits parser does', () => {
+    // Greedy `!?` alone would take "api)!: remove legacy endpoints (v1" as the scope.
+    expect(lintConventionalTitle('feat(api)!: remove legacy endpoints (v1): Clients must migrate')).toEqual([]);
+    expect(lintConventionalTitle('feat(api): remove legacy endpoints (v1): Clients must migrate')).not.toEqual([]);
+  });
+
+  it('treats an empty title as not checked', () => {
+    expect(evaluateTitle('', { path: 'c', conventional: true, plain: true })).toEqual({ results: [], notes: [] });
   });
 
   it('does not judge scope case (config-conventional has no scope-case rule)', () => {

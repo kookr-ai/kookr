@@ -639,13 +639,16 @@ describe('runPrChecklistCli scaffold + title', () => {
     expect(await runPrChecklistCli(['scaffold', '--title', 'Add scaffold'], { out: out(), cwd: '/repo', ...repo() })).toBe(EXIT_PASS);
   });
 
-  it('verify --from-command checks the --title on the gh command against commit-lint', async () => {
+  // verify is the local gh-pr-create gate: it REPORTS a bad title but never
+  // blocks on it, since its commitlint re-implementation cannot be proven exact.
+  it('verify --from-command reports (warns, exit 0) a --title that would fail commit-lint', async () => {
     const body = '- [x] <!-- kookr:check:tests --> Tests added\n- [ ] ~~<!-- kookr:check:mbse --> docs~~ — CLI-only';
     const cmd = (title: string) => `gh pr create --title "${title}" --body "${body}"`;
     const bad = out();
     expect(await runPrChecklistCli(['verify', '--from-command', cmd('Add scaffold')], { out: bad, cwd: '/repo', ...repo({ commitlint: true }) }))
-      .toBe(EXIT_VERIFICATION_FAILURE);
-    expect(stdout(bad)).toMatch(/\[fail\] pr-title/);
+      .toBe(EXIT_PASS);
+    expect(stdout(bad)).toMatch(/⚠ PR title would fail the repo's commit-lint rule .*reported only — the gate does not block on the title/);
+    expect(stdout(bad)).not.toMatch(/\[fail\] pr-title/);
     expect(await runPrChecklistCli(['verify', '--from-command', cmd('feat(cli): add scaffold')], { out: out(), cwd: '/repo', ...repo({ commitlint: true }) }))
       .toBe(EXIT_PASS);
   });
@@ -656,12 +659,15 @@ describe('runPrChecklistCli scaffold + title', () => {
     const direct = await runPrChecklistCli(['verify', '--title', 'Add x', '--pr-body', '-'], {
       out: o, cwd: '/repo', ...repo({ commitlint: true }), readStdin: async () => body,
     });
-    expect(direct).toBe(EXIT_VERIFICATION_FAILURE);
-    expect(stdout(o)).toMatch(/\[fail\] pr-title/);
+    expect(direct).toBe(EXIT_PASS);
+    expect(stdout(o)).toMatch(/⚠ PR title would fail/);
     const cmd = `gh pr create --title "Add x" --body "${body}"`;
+    const o2 = out();
     expect(await runPrChecklistCli(['verify', '--title', 'feat: ok', '--from-command', cmd], {
-      out: out(), cwd: '/repo', ...repo({ commitlint: true }),
+      out: o2, cwd: '/repo', ...repo({ commitlint: true }),
     })).toBe(EXIT_PASS);
+    expect(stdout(o2)).toMatch(/\[pass\] pr-title/);
+    expect(stdout(o2)).not.toMatch(/⚠ PR title/);
   });
 
   it('a gh --title built from a shell variable is not checked (the hook must not block it)', async () => {
@@ -735,10 +741,34 @@ describe('runPrChecklistCli scaffold + title', () => {
       out: o, cwd: '/repo', ...repo({ commitlint: 'custom' }),
     })).toBe(EXIT_PASS);
     expect(stdout(o)).toMatch(/may fail commit-lint .*not enforced/);
-    // The same title with the plain preset is a real failure.
+    // The same title with the plain preset is reported, and scaffold (not a gate) exits 2 on it.
+    const plain = out();
     expect(await runPrChecklistCli(['verify', '--from-command', cmd('feat: Add OAuth login')], {
+      out: plain, cwd: '/repo', ...repo({ commitlint: true }),
+    })).toBe(EXIT_PASS);
+    expect(stdout(plain)).toMatch(/⚠ PR title would fail/);
+    expect(await runPrChecklistCli(['scaffold', '--title', 'feat: Add OAuth login'], {
       out: out(), cwd: '/repo', ...repo({ commitlint: true }),
     })).toBe(EXIT_VERIFICATION_FAILURE);
+  });
+
+  it('reads package.json first, as @commitlint/load does, so it shadows a plain config file', async () => {
+    const { gitRunner } = repo({ commitlint: true });
+    const runner: GitRunner = async (args) =>
+      args.join(' ') === 'ls-files -- package.json' ? { stdout: 'package.json', stderr: '', exitCode: 0 } : gitRunner(args);
+    const o = out();
+    const code = await runPrChecklistCli(['scaffold', '--title', 'feat: Add OAuth login'], {
+      out: o, cwd: '/repo', gitRunner: runner,
+      readFileText: async (p: string) => {
+        if (p.endsWith('package.json')) {
+          return JSON.stringify({ commitlint: { extends: ['@commitlint/config-conventional'], rules: { 'subject-case': [0] } } });
+        }
+        if (p.endsWith('commitlint.config.cjs')) return COMMITLINT;
+        return TEMPLATE;
+      },
+    });
+    expect(code).toBe(EXIT_PASS); // the customised package.json config wins → note only
+    expect(stderr(o)).toMatch(/package\.json customises config-conventional/);
   });
 
   it('fails closed (2), not internal (70), when a repo file trips the input guard', async () => {
