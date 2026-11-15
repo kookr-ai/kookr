@@ -24,7 +24,31 @@ import { execFileSync, spawn } from 'node:child_process';
 import { LocalDtachBackend, buildDtachSpawn } from './local-dtach-backend.js';
 import { findDtachMasterPidSync, verifyMasterIdentity } from './local-dtach-process-identity.js';
 import { type BackendError, SessionGoneError, WriteTimeoutError } from './terminal-backend.js';
-import { reapDtachReferencing } from '../test-utils/reap-dtach.js';
+import { isTestSuiteDtachCmdline, reapDtachReferencing } from '../test-utils/reap-dtach.js';
+
+/**
+ * mkdtemp prefix for every test here that spawns a real dtach session.
+ *
+ * It must NOT match the host-wide markers of the vitest global teardown reaper
+ * (`TEST_DTACH_DIR_MARKERS` in `src/test-utils/reap-dtach.ts`). That reaper runs
+ * when ANY vitest process on the host finishes, and it kills every dtach whose
+ * command line matches a marker, including the live sessions of a different
+ * vitest run that is still going. The old `ldb-test-` prefix matched, so on a
+ * host with several workers running push gates and train runs at once, another
+ * run's teardown killed this file's sessions mid-test (`[EOF - dtach
+ * terminating]` in the ring; kookr-ai/kookr#3825, #3544). Each describe's
+ * afterEach still reaps its own tmpDir, so nothing leaks. Same length as the
+ * old prefix, so the sun_path budgets of the socket paths do not change.
+ */
+const LDB_TMP_PREFIX = 'ldb-case-';
+
+describe('local-dtach-backend test tmpdir prefix', () => {
+  it('is outside the scope of the host-wide test dtach reaper', () => {
+    const sock = join(tmpdir(), `${LDB_TMP_PREFIX}abc123`, 'test', 's1.sock');
+    expect(isTestSuiteDtachCmdline(`/vendor/dtach/dtach -n ${sock} -r winch -E /bin/sh`)).toBe(false);
+    expect(isTestSuiteDtachCmdline(`/vendor/dtach/dtach -a ${sock} -E`)).toBe(false);
+  });
+});
 
 describe('buildDtachSpawn', () => {
   const dtach = '/vendor/dtach/dtach';
@@ -226,6 +250,10 @@ const TIMING_SCALE = Math.max(1, Number(process.env.KOOKR_TEST_TIMING_SCALE) || 
 const LIVE_SETTLE_MS = Math.round(100 * TIMING_SCALE);
 /** Grace ceiling: outlast fresh-attach first-byte latency under load. */
 const LIVE_GRACE_MS = Math.round(5_000 * TIMING_SCALE);
+/** Timeout of the wrapped-ring restart test, which echoes ~1 MB through a tty. */
+const WRAP_TEST_TIMEOUT_MS = Math.round(60_000 * TIMING_SCALE);
+/** Part of that timeout kept for the restart, the byte compare and cleanup. */
+const WRAP_RESTART_RESERVE_MS = Math.round(10_000 * TIMING_SCALE);
 
 describe('LocalDtachBackend', () => {
   let tmpDir: string;
@@ -372,7 +400,7 @@ describe('LocalDtachBackend', () => {
   skipIfNoDtach(
     'launches after the instance directory is swept out of /tmp mid-run (#3042)',
     async () => {
-      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-sweep-'));
+      tmpDir = mkdtempSync(join(tmpdir(), `${LDB_TMP_PREFIX}sweep-`));
       backend = new LocalDtachBackend({
         socketDir: tmpDir,
         instanceId: 'test',
@@ -424,7 +452,7 @@ describe('LocalDtachBackend', () => {
   });
 
   skipIfNoDtach('rejects session ids with unsafe characters', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -441,7 +469,7 @@ describe('LocalDtachBackend', () => {
   });
 
   skipIfNoDtach('rejects session ids that would overflow the UDS path limit', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -458,7 +486,7 @@ describe('LocalDtachBackend', () => {
   });
 
   it('handles dtach master spawn errors as a per-session failure', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     const missingDtach = join(tmpDir, 'missing-dtach');
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
@@ -493,7 +521,7 @@ describe('LocalDtachBackend', () => {
   });
 
   skipIfNoSetsidWrapper('handles missing setsid as a per-session failure', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     const fakeDtach = join(tmpDir, 'fake-dtach');
     writeFileSync(fakeDtach, '#!/bin/sh\nexit 0\n');
     chmodSync(fakeDtach, 0o755);
@@ -556,7 +584,7 @@ describe('LocalDtachBackend', () => {
   );
 
   skipIfNoDtach('creates a session and writes a manifest entry with status active', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -590,7 +618,7 @@ describe('LocalDtachBackend', () => {
   }, 10_000);
 
   skipIfNoDtach('write throws SessionGoneError for unknown id', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -603,7 +631,7 @@ describe('LocalDtachBackend', () => {
   });
 
   skipIfNoDtach('killSession on an unknown id is a no-op', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -616,7 +644,7 @@ describe('LocalDtachBackend', () => {
   skipIfNoDtach(
     'killSession reaps the agent child, not just the dtach master (kookr#784)',
     async () => {
-      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+      tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
       backend = new LocalDtachBackend({
         socketDir: tmpDir,
         instanceId: 'test',
@@ -672,7 +700,7 @@ describe('LocalDtachBackend', () => {
   skipIfNoProc(
     'resolves the dtach -n master, not the -a attach child, when both reference the socket',
     async () => {
-      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+      tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
       backend = new LocalDtachBackend({
         socketDir: tmpDir,
         instanceId: 'test',
@@ -710,7 +738,7 @@ describe('LocalDtachBackend', () => {
   skipIfNoProc(
     'killSession reaps via socket scan when the manifest pid is unresolved (-1)',
     async () => {
-      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+      tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
       backend = new LocalDtachBackend({
         socketDir: tmpDir,
         instanceId: 'test',
@@ -749,7 +777,7 @@ describe('LocalDtachBackend', () => {
     // a write→tty-echo loop so the test doesn't depend on child-startup
     // output ordering — the only guarantee we need is that bytes the monitor
     // observed before dispose are replayed to a fresh attachSession.
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -799,7 +827,7 @@ describe('LocalDtachBackend', () => {
   }, 15_000);
 
   it('captureBytes returns logical-order bytes after the in-memory ring wraps', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -864,7 +892,7 @@ describe('LocalDtachBackend', () => {
     // UTF-8 character was corrupted ("—" reached the agent as "â\x80\x94").
     // The pty is faked here so the test asserts the exact payload handed to
     // node-pty; the string case emulates node-pty's own UTF-8 string encode.
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -917,7 +945,7 @@ describe('LocalDtachBackend', () => {
   });
 
   it('tracks writeMutex queue depth high-water and WriteTimeoutError counts (issue #1776)', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -1003,7 +1031,7 @@ describe('LocalDtachBackend', () => {
     // accented character must come back exactly as written. Pre-fix, the
     // Latin-1 round trip in the write path corrupted the bytes before they
     // ever reached the child.
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -1055,7 +1083,7 @@ describe('LocalDtachBackend', () => {
     // — which flushes + disposes the attach but does NOT kill the dtach master —
     // and (3) spawning a fresh backend at the same instanceDir. The first
     // captureBytes() on the new backend must replay the persisted marker.
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -1358,7 +1386,7 @@ describe('LocalDtachBackend', () => {
     // codex). Drive the ring well past its capacity by writing a bytes
     // pattern from a `head -c` source; assert the trailing slice (the part
     // that should survive eviction) is preserved across restart byte-exact.
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -1395,9 +1423,13 @@ describe('LocalDtachBackend', () => {
       await backend.write(id, new TextEncoder().encode(TAIL_MARKER + '\n'));
 
       // Wait for the cat-echoed bytes to populate the ring past its capacity.
-      // We poll a bounded window and break as soon as captureBytes shows the
-      // marker — that guarantees the tail bytes have arrived.
-      const deadline = Date.now() + 10_000;
+      // We poll and break as soon as captureBytes shows the marker — that
+      // guarantees the tail bytes have arrived. The deadline is a CEILING tied
+      // to the test timeout, not a fixed cost: ~1 MB of tty echo takes ~7 s on
+      // a quiet host but more than 10 s at load average ~40, where the old
+      // fixed 10 s window failed with ~0.9 MB echoed (#3825). Leave a reserve
+      // for the restart + cleanup below.
+      const deadline = Date.now() + WRAP_TEST_TIMEOUT_MS - WRAP_RESTART_RESERVE_MS;
       let preCapture = new Uint8Array(0);
       while (Date.now() < deadline) {
         preCapture = await backend.captureBytes(id);
@@ -1431,7 +1463,7 @@ describe('LocalDtachBackend', () => {
       }
       if (backend2) backend2.close();
     }
-  }, 30_000);
+  }, WRAP_TEST_TIMEOUT_MS);
 
   skipIfNoDtach('re-attach after pty crash restores the last-known size', async () => {
     // Regression guard: when the internal attach child exits (crash, OS kill),
@@ -1440,7 +1472,7 @@ describe('LocalDtachBackend', () => {
     // the replacement pty would snap back to node-pty's 80x24 default and the
     // hosted TUI would re-flow its viewport. This test locks the "reapply
     // stored size" behavior in place.
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -1534,7 +1566,7 @@ describe('LocalDtachBackend reconnectTransport', () => {
   skipIfNoProc(
     'rebuilds only the internal attach child, preserving master + agent pids',
     async () => {
-      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+      tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
       backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
       const id = 'reconnect-ok';
@@ -1588,7 +1620,7 @@ describe('LocalDtachBackend reconnectTransport', () => {
   );
 
   skipIfNoProc('rejects when the master identity cannot be verified', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'reconnect-identity';
@@ -1617,7 +1649,7 @@ describe('LocalDtachBackend reconnectTransport', () => {
   });
 
   skipIfNoDtach('rejects when the dtach socket is missing', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'reconnect-nosock';
@@ -1633,7 +1665,7 @@ describe('LocalDtachBackend reconnectTransport', () => {
   });
 
   skipIfNoProc('reports attach-spawn-failed when the fresh attach cannot be opened', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'reconnect-spawnfail';
@@ -1658,7 +1690,7 @@ describe('LocalDtachBackend reconnectTransport', () => {
   }, 30_000);
 
   skipIfNoProc('reports inconclusive when no fresh-liveness byte arrives in the window', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'reconnect-timeout';
@@ -1695,7 +1727,7 @@ describe('LocalDtachBackend reconnectTransport', () => {
   }, 30_000);
 
   skipIfNoProc('collapses concurrent duplicate requests onto one reconnect attempt', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'reconnect-dup';
@@ -1719,7 +1751,7 @@ describe('LocalDtachBackend reconnectTransport', () => {
   }, 30_000);
 
   skipIfNoProc('rejects a second reconnect within the cooldown window', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
       instanceId: 'test',
@@ -1753,7 +1785,7 @@ describe('LocalDtachBackend reconnectTransport', () => {
   }, 40_000);
 
   skipIfNoProc('writes zero bytes to the fresh attach on the real path (no-input guarantee)', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'reconnect-noinput';
@@ -1790,7 +1822,7 @@ describe('LocalDtachBackend reconnectTransport', () => {
   }, 30_000);
 
   skipIfNoProc('keeps existing onData subscribers attached across a real reconnect', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'reconnect-subs';
@@ -1829,7 +1861,7 @@ describe('LocalDtachBackend reconnectTransport', () => {
   }, 40_000);
 
   skipIfNoProc('reports attach-spawn-failed when the fresh attach exits immediately', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'reconnect-immediate-exit';
@@ -1892,7 +1924,7 @@ describe('LocalDtachBackend captureCurrentFrame', () => {
   skipIfNoProc(
     'returns the current screen without recycling the primary attach',
     async () => {
-      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+      tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
       backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
       const id = 'frame-snapshot';
@@ -1938,7 +1970,7 @@ describe('LocalDtachBackend captureCurrentFrame', () => {
   );
 
   skipIfNoProc('throws SessionGoneError for an unknown session', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
     await expect(backend.captureCurrentFrame('no-such-session')).rejects.toBeInstanceOf(SessionGoneError);
   });
@@ -2011,7 +2043,7 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
 
   // Criterion 1: dtach-backed agent, restart the backend, post-restart output continues.
   skipIfNoProc('classifies a still-emitting recovered session live and output continues', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'recover-live';
@@ -2074,7 +2106,7 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
   // Criterion 2 + 4: wedged internal attach → recycle ONLY the attach child with
   // a REAL fresh dtach -a; dtach master + agent PID unchanged and alive.
   skipIfNoProc('repairs a wedged attach by recycling only the (real) attach child', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'recover-wedged';
@@ -2141,7 +2173,7 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
   // bounded by the repair cap with REAL dtach spawns (no orphan storm), surfaces
   // the distinct unverified finding, and records structured diagnostics.
   skipIfNoProc('bounds real repairs (no attach storm) and surfaces a distinct unverified finding', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'recover-storm';
@@ -2203,7 +2235,7 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
 
   // Criterion 5: a known-idle (not-expected-working) session is never repaired.
   skipIfNoProc('does not repair a known-idle session that is legitimately silent', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'recover-idle';
@@ -2242,7 +2274,7 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
   // Medium coverage: a repair attach that cannot be spawned is a distinct terminal
   // failure (attach-spawn-failed), not masked as generic no-liveness.
   skipIfNoProc('reports attach-spawn-failed when a repair attach cannot be opened', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'recover-spawnfail';
@@ -2276,7 +2308,7 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
 
   // Coverage: an unknown session id classifies unverified without any repair.
   it('reports session-unknown for an id with no manifest entry', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH ?? 'dtach' });
 
     const result = await backend.verifyRecoveredSession('no-such-session', { expectWorking: true });
@@ -2288,7 +2320,7 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
 
   // Criterion: identity that cannot be verified never touches the attach child.
   skipIfNoProc('reports unverified with identity-unverified when the master is not ours', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const id = 'recover-identity';
@@ -2316,7 +2348,7 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
   // Criterion 8: multiple sessions recover concurrently; one failure does not
   // block the others.
   skipIfNoProc('recovers multiple sessions concurrently without one failure blocking others', async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), LDB_TMP_PREFIX));
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
 
     const liveA = 'concurrent-a';
