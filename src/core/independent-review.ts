@@ -22,6 +22,13 @@ export const REVIEW_VERDICT_LINE_PREFIX = 'kookr-review-verdict:';
 /** Optional line binding a verdict to the commit it reviewed (staleness guard). */
 export const REVIEW_HEAD_SHA_LINE_PREFIX = 'review-head-sha:';
 
+/**
+ * Optional line binding a verdict to the stable patch id of the PR's own diff
+ * (`scripts/review-patch-id.sh`). A clean rebase moves the head SHA but keeps
+ * the patch id, so this lets a passed review survive it.
+ */
+export const REVIEW_PATCH_ID_LINE_PREFIX = 'review-patch-id:';
+
 /** Optional line naming which reviewer lane produced the verdict. */
 export const REVIEW_LANE_LINE_PREFIX = 'review-lane:';
 
@@ -40,6 +47,8 @@ export type ReviewLane = 'codex' | 'claude' | string;
 export interface ParsedVerdict {
   verdict: ReviewVerdict;
   headSha: string | null;
+  /** Stable patch id of the reviewed diff, when the verdict carries one. */
+  patchId?: string | null;
   lane: ReviewLane | null;
 }
 
@@ -58,6 +67,7 @@ export function parseVerdictComment(body: string): ParsedVerdict | null {
 
   let verdict: ReviewVerdict | null = null;
   let headSha: string | null = null;
+  let patchId: string | null = null;
   let lane: ReviewLane | null = null;
 
   for (const rawLine of body.split(/\r?\n/)) {
@@ -68,6 +78,9 @@ export function parseVerdictComment(body: string): ParsedVerdict | null {
     } else if (line.toLowerCase().startsWith(REVIEW_HEAD_SHA_LINE_PREFIX)) {
       const value = line.slice(REVIEW_HEAD_SHA_LINE_PREFIX.length).trim();
       if (value) headSha = value.toLowerCase();
+    } else if (line.toLowerCase().startsWith(REVIEW_PATCH_ID_LINE_PREFIX)) {
+      const value = line.slice(REVIEW_PATCH_ID_LINE_PREFIX.length).trim();
+      if (value) patchId = value.toLowerCase();
     } else if (line.toLowerCase().startsWith(REVIEW_LANE_LINE_PREFIX)) {
       const value = line.slice(REVIEW_LANE_LINE_PREFIX.length).trim();
       if (value) lane = value.toLowerCase();
@@ -75,7 +88,7 @@ export function parseVerdictComment(body: string): ParsedVerdict | null {
   }
 
   if (!verdict) return null;
-  return { verdict, headSha, lane };
+  return patchId ? { verdict, headSha, patchId, lane } : { verdict, headSha, lane };
 }
 
 /**
@@ -116,6 +129,13 @@ export interface MergeReviewGateInput {
   labels: string[];
   /** Current PR head SHA; used to reject a `pass` verdict bound to an older commit. */
   headSha?: string | null;
+  /**
+   * Stable patch id of the PR's current diff, or null/absent when it could not
+   * be computed (then only the head-SHA rule applies; an unknown id never
+   * matches). Callers should compute it lazily, only when the head SHA does not
+   * match the verdict and the verdict carries a patch id.
+   */
+  patchId?: string | null;
   /** Defaults to true. When false the gate is a no-op (`disabled`). */
   requireReview?: boolean;
 }
@@ -125,6 +145,8 @@ export interface MergeReviewGateResult {
   code: MergeReviewGateCode;
   reason: string;
   verdict: ParsedVerdict | null;
+  /** On an allowed `pass`: which binding authorized it. */
+  boundBy?: 'head-sha' | 'patch-id';
 }
 
 /**
@@ -138,6 +160,12 @@ export interface MergeReviewGateResult {
  * (`pass` / `block` / `sticky-block` / `stale-verdict` / `unbound-verdict` /
  * `timeout-label` / `no-verdict` / `disabled`). When you change one, change the
  * other and update both suites.
+ *
+ * A verdict is bound to the current state by EITHER `review-head-sha` equal to
+ * the current head OR (`review-patch-id` present AND equal to the current patch
+ * id). The patch-id path lets a clean rebase keep a passed review. A BLOCK is
+ * also sticky for a diff: an earlier BLOCK whose patch id equals the current
+ * one blocks a later PASS exactly like a same-head BLOCK does.
  *
  * Precedence:
  *  1. Gate disabled → allow.
@@ -176,7 +204,7 @@ export function evaluateMergeReviewGate(input: MergeReviewGateInput): MergeRevie
 
   const headSha = input.headSha ? input.headSha.toLowerCase() : null;
   if (verdict && verdict.verdict === 'pass') {
-    if (!headSha || !verdict.headSha) {
+    if (!headSha) {
       return {
         allowed: false,
         code: 'unbound-verdict',
@@ -184,36 +212,52 @@ export function evaluateMergeReviewGate(input: MergeReviewGateInput): MergeRevie
         verdict,
       };
     }
-    const stale = verdict.headSha !== headSha;
-    if (!stale) {
-      // Sticky-block guard: a BLOCK is bound to the exact commit it reviewed. If
-      // this current head was ever BLOCKed, a later PASS on the *same* head is a
-      // re-poll flip on identical content, not a fix — it must not clear the
-      // block. A genuine fix pushes a new commit (a different head), whose own
-      // PASS lands in the `!stale` branch with no block bound to it.
+    const patchId = input.patchId ? input.patchId.toLowerCase() : null;
+    const shaMatch = verdict.headSha !== null && verdict.headSha === headSha;
+    const patchMatch = Boolean(patchId) && Boolean(verdict.patchId) && verdict.patchId === patchId;
+    if (!verdict.headSha && !verdict.patchId) {
+      return {
+        allowed: false,
+        code: 'unbound-verdict',
+        reason: 'independent-review PASS is missing an exact current-head binding',
+        verdict,
+      };
+    }
+    if (shaMatch || patchMatch) {
+      // Sticky-block guard: a BLOCK is bound to the exact commit (or diff) it
+      // reviewed. If this current head or diff was ever BLOCKed, a later PASS on
+      // it is a re-poll flip on identical content, not a fix — it must not clear
+      // the block. A genuine fix changes the head and the diff, so its own PASS
+      // meets no block bound to it.
       const headWasBlocked = input.comments.some((comment) => {
         const parsed = parseVerdictComment(comment.body);
-        return parsed?.verdict === 'block' && parsed.headSha === headSha;
+        if (parsed?.verdict !== 'block') return false;
+        return (
+          parsed.headSha === headSha || (Boolean(patchId) && parsed.patchId === patchId)
+        );
       });
       if (headWasBlocked) {
         return {
           allowed: false,
           code: 'sticky-block',
-          reason: `independent-review BLOCK for the current head (${headSha}) is sticky — a re-review PASS on the same commit cannot clear it; push a fix (a new commit) and re-run the reviewer`,
+          reason: `independent-review BLOCK for the current head (${headSha}) or diff is sticky — a re-review PASS on the same content cannot clear it; push a fix (a new commit) and re-run the reviewer`,
           verdict,
         };
       }
       return {
         allowed: true,
         code: 'pass',
-        reason: 'independent-review verdict is PASS for the current head',
+        reason: shaMatch
+          ? 'independent-review verdict is PASS for the current head'
+          : 'independent-review verdict is PASS for the current diff (patch id); the head moved without changing the diff',
         verdict,
+        boundBy: shaMatch ? 'head-sha' : 'patch-id',
       };
     }
     return {
       allowed: false,
       code: 'stale-verdict',
-      reason: `independent-review PASS is stale — it reviewed ${verdict.headSha}, not the current head; re-run the reviewer`,
+      reason: `independent-review PASS is stale — it reviewed ${verdict.headSha ?? 'another diff'}, not the current head or diff; re-run the reviewer`,
       verdict,
     };
   }

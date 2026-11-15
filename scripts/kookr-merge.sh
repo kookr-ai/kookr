@@ -43,6 +43,16 @@
 # After the merge, any issue the PR declares as closing (closingIssuesReferences)
 # that is still open is reported, so a missed auto-close is seen, not assumed.
 #
+# Integration branch (issue #3788): when the current checkout's repository
+# configures one (.kookr/delivery-gate.json, read by scripts/lib/delivery-gate.sh)
+# a PR aimed at the default branch is retargeted to it before anything else, and
+# a PR merged there reports its closing issues as staying open until the
+# integration train promotes the change. Inert without the config.
+#
+# A verdict may also carry `review-patch-id:` (scripts/review-patch-id.sh), the
+# stable patch id of the PR's own diff. The gate then accepts a pass whose head
+# SHA moved (a clean rebase) as long as the PR's current patch id still equals it.
+#
 # Also reachable from any repository as `kookr merge <PR> [--repo OWNER/NAME]`.
 #
 # Usage: kookr-merge <pr-number> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]
@@ -55,6 +65,14 @@ KOOKR_MERGE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # --- independent-review gate literals (keep in sync with src/core/independent-review.ts) ---
 KOOKR_REVIEW_MARKER='<!-- kookr-independent-review -->'
 KOOKR_REVIEW_TIMEOUT_LABEL='review-skipped-timeout'
+KOOKR_REVIEW_HEAD_SHA_PREFIX='review-head-sha:'
+KOOKR_REVIEW_PATCH_ID_PREFIX='review-patch-id:'
+
+# Integration-branch configuration reader (issue #3788); absent => behave as before.
+if [[ -f "$KOOKR_MERGE_DIR/lib/delivery-gate.sh" ]]; then
+  # shellcheck source=lib/delivery-gate.sh
+  source "$KOOKR_MERGE_DIR/lib/delivery-gate.sh"
+fi
 
 # --- local-gate literals (never-executed CI waiver, issue #3396) ---
 # A never-executed (billing/quota) block is waived only by the local-verified
@@ -79,7 +97,9 @@ Watches the PR's checks via `gh pr checks --watch` and squash-merges once they
 pass. By default the source branch is deleted through the GitHub API after the
 merge is confirmed (never with `gh pr merge --delete-branch`, whose local
 cleanup fails in a linked worktree). Afterwards, any issue the PR declares as
-closing that is still open is reported. Aborts before merging if the PR is
+closing that is still open is reported. When the repository configures an
+integration branch, a PR aimed at the default branch is retargeted to it first.
+Aborts before merging if the PR is
 closed, a draft, has changes requested, or any check fails.
 
 Use --preserve-branch for paired delivery: a change reviewed in two
@@ -109,6 +129,73 @@ Exit codes:
 EOF
 }
 
+# repo_slug_of_url — OWNER/NAME (lowercase) of a remote URL or `--repo` value
+# (https, ssh, scp-like, HOST/OWNER/NAME); empty when it cannot be derived.
+repo_slug_of_url() {
+  local u="$1"
+  u="${u%/}"; u="${u%.git}"; u="${u#*://}"; u="${u#*@}"; u="${u//://}"
+  case "$u" in
+    */*/*) u="${u#"${u%/*/*}/"}" ;;
+    */*) ;;
+    *) return 0 ;;
+  esac
+  printf '%s' "$u" | tr '[:upper:]' '[:lower:]'
+}
+
+# checkout_matches_repo — true when the PR belongs to the repository of the
+# current checkout. Without --repo, gh resolves the PR from this checkout, so it
+# does. With --repo, compare it with origin's slug; unknown means no.
+checkout_matches_repo() {
+  [[ -n "$REPO_SLUG" ]] || return 0
+  local want have
+  want="$(repo_slug_of_url "$REPO_SLUG")"
+  have="$(repo_slug_of_url "$(git config --get remote.origin.url 2>/dev/null || true)")"
+  [[ -n "$want" && -n "$have" && "$want" == "$have" ]]
+}
+
+# MERGE_INTO_INTEGRATION — set to the default branch name when this PR's base is
+# the configured integration branch (after any retarget), else empty.
+MERGE_INTO_INTEGRATION=""
+
+# retarget_to_integration_branch — when the current checkout's repository
+# configures an integration branch and the PR is aimed at the default branch,
+# retarget it (gh pr edit --base) before the review gate and the mergeability
+# wait. Stacked PRs (any other base) and the integration branch's own promotion
+# PR (head == integration) are left alone. Never merge into the default branch
+# when an integration branch is configured: a failed edit is fatal.
+retarget_to_integration_branch() {
+  declare -F delivery_gate_integration_branch >/dev/null || return 0
+  local integration=""
+  integration="$(delivery_gate_integration_branch 2>/dev/null || true)"
+  [[ -n "$integration" ]] || return 0
+  checkout_matches_repo || return 0
+
+  local pr_json base head default
+  if ! pr_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json baseRefName,headRefName)"; then
+    echo "kookr-merge: an integration branch ($integration) is configured but PR #$PR could not be read; refusing to merge" >&2
+    exit 1
+  fi
+  base="$(printf '%s' "$pr_json" | jq -r '.baseRefName // ""')"
+  head="$(printf '%s' "$pr_json" | jq -r '.headRefName // ""')"
+  if ! default="$(gh repo view ${REPO_SLUG:+"$REPO_SLUG"} --json defaultBranchRef --jq .defaultBranchRef.name)" || [[ -z "$default" ]]; then
+    echo "kookr-merge: an integration branch ($integration) is configured but the default branch could not be read; refusing to merge" >&2
+    exit 1
+  fi
+
+  if [[ "$base" == "$integration" ]]; then
+    MERGE_INTO_INTEGRATION="$default"
+    return 0
+  fi
+  [[ "$base" == "$default" && "$head" != "$integration" ]] || return 0
+
+  if ! gh pr edit "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --base "$integration"; then
+    echo "kookr-merge: could not retarget PR #$PR from $default to $integration; refusing to merge into $default while an integration branch is configured" >&2
+    exit 1
+  fi
+  echo "kookr-merge: retargeted PR #$PR from $default to $integration (integration branch configured in .kookr/delivery-gate.json)"
+  MERGE_INTO_INTEGRATION="$default"
+}
+
 # require_review_verdict — enforce the independent merge-review gate (#1717).
 # Allows the merge only when the latest reviewer verdict comment is `pass` for
 # the current head SHA. Timeout labels are telemetry only. Returns 0 to allow,
@@ -120,7 +207,7 @@ require_review_verdict() {
     return 0
   fi
 
-  local view head_sha decision
+  local view head_sha decision current_pid=""
   # Prefer fields available across gh versions. `headRefOid` is missing on gh < ~2.14
   # (issue #1853); `commits` has been a valid `gh pr view --json` field much longer.
   # An empty head SHA is a hard block: exact-head binding is part of the safety
@@ -133,14 +220,16 @@ require_review_verdict() {
   # Export the reviewed head so the final merge can pin to it (--match-head-commit),
   # closing the TOCTOU window where the head advances during the check-watch wait
   # and an unreviewed commit would otherwise merge. Older gh lacks that flag; the
-  # merge step feature-probes and degrades gracefully (issue #1853).
+  # merge step feature-probes and degrades gracefully (issue #1853). When a
+  # patch-id match authorizes a moved head, the pin is this CURRENT head.
   REVIEW_HEAD_SHA="$head_sha"
 
-  decision="$(printf '%s' "$view" | jq -r \
-    --arg marker "$KOOKR_REVIEW_MARKER" \
-    --arg tlabel "$KOOKR_REVIEW_TIMEOUT_LABEL" \
-    --arg head "$head_sha" '
+  # shellcheck disable=SC2016  # jq program, not shell
+  local program='
     def strip: gsub("^\\s+|\\s+$"; "");
+    def field($lines; $prefix):
+      ( [ $lines[] | select(ascii_downcase | startswith($prefix)) ] | last // "" )
+      | ascii_downcase | ltrimstr($prefix) | strip;
     def verdicts:
       [ .comments[]
         | select(.body | contains($marker))
@@ -149,40 +238,82 @@ require_review_verdict() {
         | ( [ $lines[] | select(ascii_downcase | startswith("kookr-review-verdict:")) ] | last // "" ) as $vline
         | ( $vline | ascii_downcase | ltrimstr("kookr-review-verdict:") | strip ) as $verdict
         | select($verdict == "pass" or $verdict == "block")
-        | ( [ $lines[] | select(ascii_downcase | startswith("review-head-sha:")) ] | last // "" ) as $sline
-        | ( $sline | ascii_downcase | ltrimstr("review-head-sha:") | strip ) as $sha
-        | { ts: ($ts // ""), verdict: $verdict, sha: $sha } ];
+        | { ts: ($ts // ""), verdict: $verdict,
+            sha: field($lines; $shaPrefix), pid: field($lines; $pidPrefix) } ];
     ([ .labels[]?.name | ascii_downcase ] | index($tlabel)) as $hasLabel
     | verdicts as $vs
     | ( $vs | sort_by(.ts) | last ) as $v
-    # A BLOCK is sticky for the exact head it reviewed: once this current head is
-    # blocked, a later same-head PASS is a re-poll flip on identical content and
-    # cannot clear it. A fix pushes a new commit (different head), so its PASS is
-    # not caught here. Mirrors the evaluateMergeReviewGate sticky-block branch.
-    | ( [ $vs[] | select(.verdict == "block" and .sha != "" and .sha == $head) ] | length > 0 ) as $blockedThisHead
-    | if $v == null then
+    # A BLOCK is sticky for the exact head (or diff) it reviewed: once this current
+    # head or patch id is blocked, a later PASS on it is a re-poll flip on
+    # identical content and cannot clear it. A fix pushes a new commit with a new
+    # diff, so its PASS is not caught here. Mirrors evaluateMergeReviewGate.
+    | ( [ $vs[] | select(.verdict == "block"
+          and ((.sha != "" and .sha == $head) or (.pid != "" and $cpid != "" and .pid == $cpid))) ]
+        | length > 0 ) as $blockedThis
+    | ( $v != null and $v.sha != "" and $head != "" and $v.sha == $head ) as $shaMatch
+    | ( $v != null and $v.pid != "" and $cpid != "" and $v.pid == $cpid ) as $pidMatch
+    | if $mode == "need-pid" then
+        # Is the PR diff patch id worth computing? Only for a latest PASS that is
+        # not already head-bound, or when any BLOCK carries a patch id.
+        ( $v != null and $v.verdict == "pass" and $head != ""
+          and ( ($shaMatch | not) and $v.pid != ""
+                or ([ $vs[] | select(.verdict == "block" and .pid != "") ] | length > 0) ) )
+        | tostring
+      elif $v == null then
         (if $hasLabel then "block:timeout-label" else "block:no-verdict" end)
       elif $v.verdict == "block" then
         "block:blocked-finding"
-      elif ($v.sha == "" or $head == "") then
+      elif ($head == "" or ($v.sha == "" and $v.pid == "")) then
         "block:unbound-verdict"
-      elif $v.sha != $head then
+      elif ($shaMatch | not) and ($pidMatch | not) then
         "block:stale-verdict"
-      elif $blockedThisHead then
+      elif $blockedThis then
         "block:sticky-block"
-      else
+      elif $shaMatch then
         "allow:pass"
+      else
+        "allow:pass-patch-id"
       end
-  ')"
+  '
+  run_gate_program() {
+    printf '%s' "$view" | jq -r \
+      --arg marker "$KOOKR_REVIEW_MARKER" \
+      --arg tlabel "$KOOKR_REVIEW_TIMEOUT_LABEL" \
+      --arg shaPrefix "$KOOKR_REVIEW_HEAD_SHA_PREFIX" \
+      --arg pidPrefix "$KOOKR_REVIEW_PATCH_ID_PREFIX" \
+      --arg head "$head_sha" \
+      --arg cpid "$current_pid" \
+      --arg mode "$1" "$program"
+  }
+
+  # Compute the PR's current patch id lazily: only when the head SHA alone does
+  # not decide. An uncomputable id falls back to the SHA rule and never matches.
+  if [[ "$(run_gate_program need-pid)" == "true" ]]; then
+    if [[ -n "$REPO_SLUG" ]] && ! checkout_matches_repo; then
+      echo "kookr-merge: this checkout is not $REPO_SLUG; cannot compute the PR patch id, using the head-SHA rule alone" >&2
+    elif [[ -x "$KOOKR_MERGE_DIR/review-patch-id.sh" ]] \
+        && current_pid="$("$KOOKR_MERGE_DIR/review-patch-id.sh" --pr "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} | tr '[:upper:]' '[:lower:]')" \
+        && [[ -n "$current_pid" ]]; then
+      :
+    else
+      current_pid=""
+      echo "kookr-merge: could not compute the PR patch id; using the head-SHA rule alone" >&2
+    fi
+  fi
+  decision="$(run_gate_program decide)"
 
   case "$decision" in
+    allow:pass-patch-id)
+      echo "kookr-merge: review verdict matches the PR diff (patch id); head moved without changing the diff"
+      return 0
+      ;;
     allow:*)
       echo "kookr-merge: independent-review gate: ${decision#allow:}"
       return 0
       ;;
     *)
       echo "kookr-merge: BLOCKED by the independent-review gate: ${decision#block:}" >&2
-      echo "kookr-merge: the latest reviewer verdict must be 'pass' with review-head-sha equal to the current head ($head_sha)." >&2
+      echo "kookr-merge: the latest reviewer verdict must be 'pass' with review-head-sha equal to the current head ($head_sha), or with review-patch-id equal to the PR's current diff patch id." >&2
       echo "kookr-merge: '$KOOKR_REVIEW_TIMEOUT_LABEL' is telemetry only and cannot bypass review." >&2
       echo "kookr-merge: run the independent-merge-review skill, or set KOOKR_MERGE_REQUIRE_REVIEW=0 for a manual merge." >&2
       return 4
@@ -624,6 +755,15 @@ report_open_closing_issues() {
     return 0
   fi
 
+  if [[ -n "$MERGE_INTO_INTEGRATION" ]]; then
+    # Merged into the integration branch: GitHub only auto-closes on the default
+    # branch, so these stay open by design. No wait, no retry.
+    local nums=""
+    nums="$(printf '%s\n' "$list" | awk 'NF { printf "%s%s", (n++ ? ", " : ""), "#" $2 }')"
+    echo "kookr-merge: closing issue(s) $nums stay open until the integration train promotes this change to $MERGE_INTO_INTEGRATION"
+    return 0
+  fi
+
   unclosed="$(printf '%s\n' "$list" | unclosed_issues)"
   if [[ -n "$unclosed" ]]; then
     sleep "${KOOKR_MERGE_CHECK_INTERVAL_SECONDS:-15}"
@@ -666,6 +806,8 @@ if [[ "$review_decision" == "CHANGES_REQUESTED" ]]; then
   echo "kookr-merge: PR #$PR has changes requested — address feedback before merging" >&2
   exit 1
 fi
+
+retarget_to_integration_branch
 
 if ! require_review_verdict; then
   exit 4

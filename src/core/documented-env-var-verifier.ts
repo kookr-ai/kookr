@@ -210,6 +210,8 @@ export const DOCUMENTED_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
   // Consumed by the merge wrapper scripts/kookr-merge.sh (`pnpm merge` / `kookr merge`).
   'KOOKR_MERGE_CHECK_INTERVAL_SECONDS',
   'KOOKR_MERGE_CHECK_TIMEOUT_SECONDS',
+  // Read by vitest.config.mts (outside the scanned roots); the integration train sets it.
+  'KOOKR_VITEST_MAX_WORKERS',
   // Consumed by hook shell scripts.
   'KOOKR_HOOKS_DIR',
   // Relay incident escalation target — documented for operators; read by deploy tooling.

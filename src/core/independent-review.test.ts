@@ -231,3 +231,106 @@ describe('computeReviewCoverage', () => {
     expect(summary.coveragePct).toBe(33.3);
   });
 });
+
+describe('evaluateMergeReviewGate: diff-bound verdicts (patch id, #3788)', () => {
+  const head = 'a'.repeat(40);
+  const moved = 'b'.repeat(40);
+  const pid = '1'.repeat(40);
+  const otherPid = '2'.repeat(40);
+  const comment = (verdict: 'pass' | 'block', headSha: string, patchId?: string) => ({
+    body: verdictComment({ verdict, headSha, extra: patchId ? `review-patch-id: ${patchId}` : undefined }),
+  });
+
+  test('parses the review-patch-id line (lowercased) and omits it when absent', () => {
+    expect(parseVerdictComment(comment('pass', head, pid.toUpperCase()).body)?.patchId).toBe(pid);
+    expect(parseVerdictComment(comment('pass', head).body)).not.toHaveProperty('patchId');
+  });
+
+  test('a pass with a matching patch id survives a moved head', () => {
+    const result = evaluateMergeReviewGate({
+      comments: [comment('pass', head, pid)],
+      labels: [],
+      headSha: moved,
+      patchId: pid,
+    });
+    expect(result).toMatchObject({ allowed: true, code: 'pass', boundBy: 'patch-id' });
+  });
+
+  test('a head-SHA match still reports head-sha binding, whatever the patch id', () => {
+    const result = evaluateMergeReviewGate({
+      comments: [comment('pass', head, pid)],
+      labels: [],
+      headSha: head,
+      patchId: otherPid,
+    });
+    expect(result).toMatchObject({ allowed: true, code: 'pass', boundBy: 'head-sha' });
+  });
+
+  test('stale SHA and a different patch id is stale', () => {
+    const result = evaluateMergeReviewGate({
+      comments: [comment('pass', head, pid)],
+      labels: [],
+      headSha: moved,
+      patchId: otherPid,
+    });
+    expect(result).toMatchObject({ allowed: false, code: 'stale-verdict' });
+  });
+
+  test('an uncomputable current patch id never matches', () => {
+    for (const patchId of [undefined, null, '']) {
+      const result = evaluateMergeReviewGate({
+        comments: [comment('pass', head, pid)],
+        labels: [],
+        headSha: moved,
+        patchId,
+      });
+      expect(result).toMatchObject({ allowed: false, code: 'stale-verdict' });
+    }
+  });
+
+  test('a stale pass without a patch-id line is blocked exactly as before', () => {
+    const result = evaluateMergeReviewGate({
+      comments: [comment('pass', head)],
+      labels: [],
+      headSha: moved,
+      patchId: pid,
+    });
+    expect(result).toMatchObject({ allowed: false, code: 'stale-verdict' });
+  });
+
+  test('a latest block with a matching patch id blocks', () => {
+    const result = evaluateMergeReviewGate({
+      comments: [comment('block', head, pid)],
+      labels: [],
+      headSha: moved,
+      patchId: pid,
+    });
+    expect(result).toMatchObject({ allowed: false, code: 'blocked-finding' });
+  });
+
+  test('an earlier block on the same diff makes a later pass on it sticky', () => {
+    const result = evaluateMergeReviewGate({
+      comments: [
+        { ...comment('block', head, pid), createdAt: '2026-11-01T10:00:00Z' },
+        { ...comment('pass', moved, pid), createdAt: '2026-11-01T11:00:00Z' },
+      ],
+      labels: [],
+      headSha: moved,
+      patchId: pid,
+    });
+    expect(result).toMatchObject({ allowed: false, code: 'sticky-block' });
+  });
+
+  test('a pass on a changed diff clears an earlier block on the old diff', () => {
+    const result = evaluateMergeReviewGate({
+      comments: [
+        { ...comment('block', head, pid), createdAt: '2026-11-01T10:00:00Z' },
+        { ...comment('pass', moved, otherPid), createdAt: '2026-11-01T11:00:00Z' },
+      ],
+      labels: [],
+      headSha: moved,
+      patchId: otherPid,
+    });
+    expect(result).toMatchObject({ allowed: true, code: 'pass' });
+  });
+});

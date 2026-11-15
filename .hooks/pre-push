@@ -480,8 +480,35 @@ if ! pnpm validate:requirements; then
   exit 1
 fi
 
+# Fast gate (issue #3788): when .kookr/delivery-gate.json on origin/main sets
+# "prePushGate": "fast", a push runs only the tests related to its diff and the
+# integration train runs the full suite. Absent config, the kill-switch file, or
+# a missing library all mean "full" - the lanes below run exactly as before.
+# Resolve the library and runner from this hook's source tree first (hook tests
+# run the real hook against scratch repos), then $REPO_ROOT.
+_GATE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P) || _GATE_DIR=""
+_GATE_LIB=""
+_FAST_GATE_RUNNER=""
+for _gate_root in "$_GATE_DIR/.." "$REPO_ROOT"; do
+  [ -z "$_GATE_LIB" ] && [ -f "$_gate_root/scripts/lib/delivery-gate.sh" ] && _GATE_LIB="$_gate_root/scripts/lib/delivery-gate.sh"
+  [ -z "$_FAST_GATE_RUNNER" ] && [ -f "$_gate_root/scripts/fast-gate-tests.sh" ] && _FAST_GATE_RUNNER="$_gate_root/scripts/fast-gate-tests.sh"
+done
+_GATE_MODE=full
+if [ -n "$_GATE_LIB" ] && [ -n "$_FAST_GATE_RUNNER" ]; then
+  # shellcheck disable=SC1090
+  . "$_GATE_LIB"
+  _GATE_MODE=$(delivery_gate_prepush_mode 2>/dev/null || echo full)
+fi
+
 if [ "$DOCS_ONLY_SKIP" -eq 1 ]; then
   echo "Docs-only prose diff detected; skipping Vitest lanes."
+elif [ "$_GATE_MODE" = "fast" ]; then
+  echo "Running fast gate (related tests only; the integration train runs the full suite)..."
+  if ! bash "$_FAST_GATE_RUNNER" "$(git merge-base origin/main HEAD)"; then
+    echo ""
+    echo "Push rejected: fast-gate tests failed. Fix failing tests before pushing."
+    exit 1
+  fi
 else
   echo "Running tests..."
   # Flake handling: when only a few files fail, re-run just those files once
