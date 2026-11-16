@@ -67,12 +67,17 @@ export const PROVIDER_RESET_HOLD_GRACE_MS = 15 * 60_000;
  *   auth-failed, or last refreshed before the pause began). The same rate
  *   limiting that pauses agents also throttles the poller, so this is the
  *   normal state during a quota pause, not an edge case.
- * - `none` — a fresh, healthy snapshot shows no exhausted window: nothing is
- *   pending (account-level billing hold, or the reset already passed).
+ * - `quota_healthy` — a fresh, healthy snapshot shows no exhausted window and
+ *   no reset was seen during this pause (issue #3574). The quota contradicts
+ *   the pause classification, which is then most likely a false positive (a
+ *   working task that read rate-limit text), so the reclaim holds the task.
+ * - `none` — nothing to go on, or nothing pending: no quota source at all (the
+ *   poller is disabled), or a reset seen earlier in this pause has passed.
  */
 export type ProviderResetState =
   | { kind: 'known'; resetsAtMs: number }
   | { kind: 'unresolved' }
+  | { kind: 'quota_healthy' }
   | { kind: 'none' };
 
 /**
@@ -197,7 +202,13 @@ export type ProviderPausedTtlSkipReason =
    * Reset time cannot be resolved (no / untrustworthy quota snapshot): the soft
    * capacity bound does not reclaim; the hard TTL still does (issue #3562).
    */
-  | 'skipped_provider_reset_unresolved';
+  | 'skipped_provider_reset_unresolved'
+  /**
+   * The quota poller is healthy and no window is exhausted, so the quota
+   * contradicts the pause (issue #3574). Neither bound reclaims; the 6h max
+   * from the effective pause start still does.
+   */
+  | 'skipped_provider_quota_healthy';
 
 export const PROVIDER_PAUSED_TTL_SKIP_REASONS: readonly ProviderPausedTtlSkipReason[] = [
   'skipped_under_ttl',
@@ -206,6 +217,7 @@ export const PROVIDER_PAUSED_TTL_SKIP_REASONS: readonly ProviderPausedTtlSkipRea
   'skipped_no_pause_start',
   'skipped_awaiting_provider_reset',
   'skipped_provider_reset_unresolved',
+  'skipped_provider_quota_healthy',
 ] as const;
 
 export type ProviderPausedTtlSkipCounts = Record<ProviderPausedTtlSkipReason, number>;
@@ -218,6 +230,7 @@ export function emptyProviderPausedTtlSkipCounts(): ProviderPausedTtlSkipCounts 
     skipped_no_pause_start: 0,
     skipped_awaiting_provider_reset: 0,
     skipped_provider_reset_unresolved: 0,
+    skipped_provider_quota_healthy: 0,
   };
 }
 
@@ -362,6 +375,8 @@ export interface SelectExpiredProviderPausedTasksOpts {
    * - `unresolved` and still under the hard TTL → skip
    *   `skipped_provider_reset_unresolved` (the soft bound never reclaims an
    *   unknown; the hard bound still does, #2423);
+   * - `quota_healthy` and still under the 6h max → skip
+   *   `skipped_provider_quota_healthy`, on the soft AND hard path (issue #3574);
    * - `none` / omitted → today's soft/hard behavior.
    */
   getProviderResetState?: (task: Task) => ProviderResetState | undefined;
@@ -476,6 +491,8 @@ export function effectiveProviderPausedStartMs(
  *   `skipped_awaiting_provider_reset`, past the hard TTL too, up to the 6h max;
  * - reset unresolved and still under hard TTL →
  *   `skipped_provider_reset_unresolved` (issue #3562);
+ * - quota healthy (no exhausted window) and under the 6h max →
+ *   `skipped_provider_quota_healthy` (issue #3574);
  * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
  *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
  * - otherwise selected (oldest-paused first).
@@ -569,6 +586,21 @@ export function selectExpiredProviderPausedTasks(
       outcomes.push({
         taskId: task.id,
         outcome: 'skipped_provider_reset_unresolved',
+        pausedForMs,
+      });
+      continue;
+    }
+
+    // #3574: a healthy quota poller with no exhausted window contradicts the
+    // pause — it is most likely a working task that read rate-limit text. Hold
+    // past the hard TTL too, so a quiet false positive is not reclaimed at 2h,
+    // but only up to the 6h max: a healthy snapshot cannot rule out an
+    // account-level billing hold, and nothing may hold a slot forever (#2079).
+    if (resetState?.kind === 'quota_healthy' && pausedForMs < MAX_PROVIDER_PAUSED_HARD_TTL_MS) {
+      skips.skipped_provider_quota_healthy += 1;
+      outcomes.push({
+        taskId: task.id,
+        outcome: 'skipped_provider_quota_healthy',
         pausedForMs,
       });
       continue;

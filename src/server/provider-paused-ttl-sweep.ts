@@ -151,7 +151,10 @@ export interface ProviderResetSource {
  *   the pre-#3562 behavior rather than disable soft reclaim forever;
  * - no snapshot, a poller that is not healthy (backoff, auth-failed, idle),
  *   or a snapshot last refreshed before the pause began → `unresolved`;
- * - otherwise (fresh, healthy, no binding window) → `none`.
+ * - otherwise (fresh, healthy, no binding window) → `quota_healthy` (issue
+ *   #3574): the quota contradicts the pause. The sweep downgrades it to `none`
+ *   when a reset was latched earlier in this pause — then the window rolled
+ *   over and the pause was real.
  */
 export function classifyProviderResetState(input: {
   source: ProviderResetSource;
@@ -182,7 +185,7 @@ export function classifyProviderResetState(input: {
   ) {
     return { kind: 'unresolved' };
   }
-  return { kind: 'none' };
+  return { kind: 'quota_healthy' };
 }
 
 /**
@@ -231,6 +234,12 @@ export interface ProviderPausedOccupancyMetricsSnapshot {
    * and pending". The hard TTL still reclaims these.
    */
   skippedProviderResetUnresolved: number;
+  /**
+   * Reclaims withheld because the quota poller is healthy and no window is
+   * exhausted, so the quota contradicts the pause (issue #3574). Held on both
+   * bounds up to the 6h max from the effective pause start.
+   */
+  skippedProviderQuotaHealthy: number;
   /**
    * Oldest current open-PR fail-safe hold age (ms) — the max `pausedForMs`
    * among `skipped_open_pr_*` outcomes on the last selection pass, or `null`
@@ -350,6 +359,8 @@ export class ProviderPausedOccupancyMetrics {
       selection.skips.skipped_awaiting_provider_reset;
     this.skips.skipped_provider_reset_unresolved +=
       selection.skips.skipped_provider_reset_unresolved;
+    this.skips.skipped_provider_quota_healthy +=
+      selection.skips.skipped_provider_quota_healthy;
     const outcomes = selection.outcomes ?? [];
     this.lastOutcomes = outcomes.slice(0, MAX_LAST_OUTCOMES).map((o) => ({ ...o }));
     this.lastAttemptedTaskIds = outcomes
@@ -380,6 +391,7 @@ export class ProviderPausedOccupancyMetrics {
       skippedNoPauseStart: this.skips.skipped_no_pause_start,
       skippedAwaitingProviderReset: this.skips.skipped_awaiting_provider_reset,
       skippedProviderResetUnresolved: this.skips.skipped_provider_reset_unresolved,
+      skippedProviderQuotaHealthy: this.skips.skipped_provider_quota_healthy,
       oldestOpenPrFailsafeHoldMs: this.lastOpenPrFailsafeHoldAge.oldestHoldMs,
       openPrFailsafeOverHardTtlCount:
         this.lastOpenPrFailsafeHoldAge.overHardTtlCount,
@@ -608,12 +620,18 @@ export async function reclaimAgedProviderPausedTasks(
         deps.pauseStartTracker.latchKnownReset(task.id, fresh.resetsAtMs);
       }
       const latched = deps.pauseStartTracker.getKnownResetMs(task.id);
-      resetStates.set(
-        task.id,
-        latched !== undefined && nowMs < latched + PROVIDER_RESET_HOLD_GRACE_MS
-          ? { kind: 'known', resetsAtMs: latched }
-          : fresh,
-      );
+      let state: ProviderResetState = fresh;
+      if (latched !== undefined) {
+        if (nowMs < latched + PROVIDER_RESET_HOLD_GRACE_MS) {
+          state = { kind: 'known', resetsAtMs: latched };
+        } else if (fresh.kind === 'quota_healthy') {
+          // Issue #3574: the window this pause waited on has reset, so a
+          // healthy snapshot is expected now, not a sign the pause was false.
+          // Past the grace the normal soft/hard TTL applies again (#3562).
+          state = { kind: 'none' };
+        }
+      }
+      resetStates.set(task.id, state);
     }
   }
 

@@ -16,6 +16,7 @@ import type { LifecycleDeps } from './agent-lifecycle.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
   DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
+  MAX_PROVIDER_PAUSED_HARD_TTL_MS,
   PROVIDER_RESET_HOLD_GRACE_MS,
 } from '../core/provider-paused-ttl.js';
 
@@ -1006,6 +1007,137 @@ describe('provider reset holds in the sweep (issue #3562)', () => {
   });
 });
 
+describe('healthy-quota hold in the sweep (issue #3574)', () => {
+  const nowMs = NOW.getTime();
+  const MIN = 60_000;
+  const SOFT = DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+
+  // The 2026-11-10 incident: quota poller healthy, weekly window at 39%, the
+  // 5h window far from exhaustion, snapshot refreshed after the pause began.
+  const healthyQuota = (updatedAt: number): ProviderResetSource => ({
+    quota: {
+      fiveHour: { utilization: 12, resetsAt: new Date(nowMs + 3 * 60 * MIN).toISOString() },
+      sevenDay: { utilization: 39, resetsAt: new Date(nowMs + 4 * 24 * 60 * MIN).toISOString() },
+      updatedAt,
+    },
+    pollerState: 'healthy',
+  });
+
+  async function sweep(opts: {
+    pausedForMs: number;
+    source: ProviderResetSource;
+    capacity?: boolean;
+    tracker?: ProviderPausedStartTracker;
+    task?: Task;
+    now?: Date;
+  }) {
+    const task = opts.task ?? makePausedTask();
+    const taskStore = makeMockTaskStore([task]);
+    const metrics = new ProviderPausedOccupancyMetrics();
+    const tracker = opts.tracker ?? new ProviderPausedStartTracker();
+    if (!opts.tracker) tracker.observe(task, true, nowMs - opts.pausedForMs);
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        isHoldingOpenPr: () => false,
+        metrics,
+        getProviderResetSource: () => opts.source,
+      },
+      {
+        now: opts.now ?? NOW,
+        ttlMs: TTL_MS,
+        softTtlMs: SOFT,
+        capacityAllowsEarlyReclaim: opts.capacity ?? true,
+      },
+    );
+    return { result, metrics, taskStore };
+  }
+
+  it('regression: a quiet task past the soft and hard TTL is not reclaimed while the quota is healthy', async () => {
+    const { result, metrics, taskStore } = await sweep({
+      pausedForMs: TTL_MS + 10 * MIN,
+      source: healthyQuota(nowMs),
+    });
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.terminateTask).not.toHaveBeenCalled();
+    expect(result.selection?.outcomes[0]?.outcome).toBe('skipped_provider_quota_healthy');
+    const snap = metrics.getSnapshot();
+    expect(snap.skippedProviderQuotaHealthy).toBe(1);
+    expect(snap.skippedProviderResetUnresolved).toBe(0);
+    expect(snap.skippedAwaitingProviderReset).toBe(0);
+  });
+
+  it('still reclaims at the 6h max from the pause start (inclusive)', async () => {
+    const atMax = await sweep({ pausedForMs: MAX_PROVIDER_PAUSED_HARD_TTL_MS, source: healthyQuota(nowMs) });
+    expect(atMax.result.reclaimedTaskIds).toEqual(['task-1']);
+    expect(atMax.metrics.getSnapshot().skippedProviderQuotaHealthy).toBe(0);
+
+    const justUnder = await sweep({ pausedForMs: MAX_PROVIDER_PAUSED_HARD_TTL_MS - 1, source: healthyQuota(nowMs) });
+    expect(justUnder.result.reclaimedTaskIds).toEqual([]);
+  });
+
+  it('does not hold on a snapshot older than the pause (it cannot prove the quota is healthy now)', async () => {
+    const pausedForMs = TTL_MS + 10 * MIN;
+    const { result, metrics } = await sweep({
+      pausedForMs,
+      source: healthyQuota(nowMs - pausedForMs - 1),
+    });
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+    expect(metrics.getSnapshot().skippedProviderQuotaHealthy).toBe(0);
+  });
+
+  it('does not hold when a window is exhausted (a real quota pause, reset beyond 6h)', async () => {
+    const { result, metrics } = await sweep({
+      pausedForMs: TTL_MS + 10 * MIN,
+      source: {
+        quota: {
+          fiveHour: null,
+          sevenDay: { utilization: 95, resetsAt: new Date(nowMs + 3 * 24 * 60 * MIN).toISOString() },
+          updatedAt: nowMs,
+        },
+        pollerState: 'healthy',
+      },
+    });
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+    expect(metrics.getSnapshot().skippedProviderQuotaHealthy).toBe(0);
+  });
+
+  it('does not hold when the poller is disabled (no quota source on this install)', async () => {
+    const { result } = await sweep({
+      pausedForMs: SOFT + MIN,
+      source: { quota: null, pollerState: 'disabled' },
+    });
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+  });
+
+  it('does not hold non-Claude agents (the quota poller does not describe them)', async () => {
+    const { result } = await sweep({
+      task: makePausedTask({ agentType: 'codex-cli' }),
+      pausedForMs: SOFT + MIN,
+      source: healthyQuota(nowMs),
+    });
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+  });
+
+  it('does not hold a pause whose latched reset has passed: the healthy quota is the window rolling over', async () => {
+    const task = makePausedTask();
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, nowMs - 3 * 60 * MIN);
+    tracker.latchKnownReset(task.id, nowMs - PROVIDER_RESET_HOLD_GRACE_MS);
+    const { result, metrics } = await sweep({
+      task,
+      tracker,
+      pausedForMs: 0,
+      source: healthyQuota(nowMs),
+    });
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+    expect(metrics.getSnapshot().skippedProviderQuotaHealthy).toBe(0);
+  });
+});
+
 describe('classifyProviderResetState (issue #3562)', () => {
   const nowMs = NOW.getTime();
   const pauseStartedAtMs = nowMs - 60 * 60_000;
@@ -1044,7 +1176,7 @@ describe('classifyProviderResetState (issue #3562)', () => {
   it('treats a poll in flight with a fresh snapshot as resolvable, and an updatedAt equal to the pause start as fresh', () => {
     const fresh = { fiveHour: window(10, nowMs + 60_000), sevenDay: null, updatedAt: pauseStartedAtMs };
     expect(classifyProviderResetState({ source: { quota: fresh, pollerState: 'polling' }, nowMs, pauseStartedAtMs }))
-      .toEqual({ kind: 'none' });
+      .toEqual({ kind: 'quota_healthy' });
     expect(classifyProviderResetState({
       source: { quota: { ...fresh, updatedAt: Number.NaN }, pollerState: 'healthy' },
       nowMs,
@@ -1085,7 +1217,7 @@ describe('classifyProviderResetState (issue #3562)', () => {
       .toEqual({ kind: 'none' });
   });
 
-  it('is none for a fresh healthy snapshot without a binding window', () => {
+  it('is quota_healthy for a fresh healthy snapshot without a binding window (issue #3574)', () => {
     expect(classifyProviderResetState({
       source: {
         quota: { fiveHour: window(50, nowMs + 60_000), sevenDay: window(100, nowMs - 60_000), updatedAt: nowMs },
@@ -1093,6 +1225,6 @@ describe('classifyProviderResetState (issue #3562)', () => {
       },
       nowMs,
       pauseStartedAtMs,
-    })).toEqual({ kind: 'none' });
+    })).toEqual({ kind: 'quota_healthy' });
   });
 });

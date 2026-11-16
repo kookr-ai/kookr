@@ -615,6 +615,22 @@ describe('provider reset holds (issue #3562)', () => {
       .toBe('selected');
   });
 
+  it('holds a healthy-quota pause on the soft AND hard path, up to the 6h max (issue #3574)', () => {
+    const quotaHealthy: ProviderResetState = { kind: 'quota_healthy' };
+    const soft = select({ pausedForMs: 41 * MIN, state: quotaHealthy });
+    expect(soft.expired).toEqual([]);
+    expect(soft.outcomes[0].outcome).toBe('skipped_provider_quota_healthy');
+    expect(soft.skips.skipped_provider_quota_healthy).toBe(1);
+    expect(soft.skips.skipped_provider_reset_unresolved).toBe(0);
+
+    expect(select({ pausedForMs: TTL_MS, state: quotaHealthy, capacity: false }).outcomes[0].outcome)
+      .toBe('skipped_provider_quota_healthy');
+    expect(select({ pausedForMs: MAX_PROVIDER_PAUSED_HARD_TTL_MS - 1, state: quotaHealthy }).outcomes[0].outcome)
+      .toBe('skipped_provider_quota_healthy');
+    expect(select({ pausedForMs: MAX_PROVIDER_PAUSED_HARD_TTL_MS, state: quotaHealthy }).outcomes[0].outcome)
+      .toBe('selected');
+  });
+
   it('still honours the open-PR fail-safe when no reset hold applies', () => {
     const sel = selectExpiredProviderPausedTasks([pausedTask()], {
       now: NOW,
