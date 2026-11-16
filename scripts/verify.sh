@@ -89,6 +89,7 @@ static_checks() {
   run_lane "Validating documented environment variables" pnpm validate:docs-env-vars
   run_lane "Validating documented API routes" pnpm validate:docs-api-routes
   run_lane "Validating requirements status matrix" pnpm validate:requirements
+  run_lane "Checking new feature switches ship on" pnpm validate:default-on
 }
 unit_lane() { run_lane "Running tests" unit_tests; }
 integration_lane() { run_lane "Running self-contained integration tests" pnpm test:integration; }

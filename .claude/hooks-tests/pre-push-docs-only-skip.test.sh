@@ -83,6 +83,7 @@ assert_validators_run() {
   assert_log_contains "$repo" "validate:skills"
   assert_log_contains "$repo" "validate:docs-commands"
   assert_log_contains "$repo" "validate:requirements"
+  assert_log_contains "$repo" "validate:default-on"
 }
 
 write_review_marker() {

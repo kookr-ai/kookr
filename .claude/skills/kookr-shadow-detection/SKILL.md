@@ -1,20 +1,21 @@
 ---
 name: kookr-shadow-detection
-description: Shadow detection system for validating new stuck-detection strategies against production traffic before activation
+description: Shadow detection registry and report for measuring stuck-detection strategies against the real detector on live traffic, while tuning a strategy and after it ships
 keywords: shadow, detection, canary, validation, anomaly, stuck, strategy, coverage, precision, report
 ---
 
 # Shadow Detection System
 
-Kookr has a shadow detection infrastructure that lets you safely validate new stuck-detection strategies. New strategies run alongside the real detector: they see the same data but their verdicts are **logged, not acted upon**. An offline report compares shadow vs. real verdicts using interval-based coverage metrics.
+Kookr has a shadow detection infrastructure for measuring stuck-detection strategies. New strategies run alongside the real detector: they see the same data but their verdicts are **logged, not acted upon**. An offline report compares shadow vs. real verdicts using interval-based coverage metrics.
 
 ## Purpose
 
-The real anomaly detector (needs_input, permission_blocked, stale_agent, etc.) is stable and reliable. When adding new detection strategies (pane pattern matching, PID monitoring, HTTP push), we need to prove they work correctly before activating them. Shadow mode provides this proof:
+The real anomaly detector (needs_input, permission_blocked, stale_agent, etc.) drives the attention queue. The shadow registry runs other strategies (pane pattern matching, PID monitoring, HTTP push) beside it on the same data and logs what they would have flagged, so you can compare them with the real detector:
 
-1. **Strategy runs in shadow mode** — evaluates live data, logs verdicts to `~/.kookr/shadow-detection.jsonl`
-2. **Shadow report compares** — reconstructs anomaly intervals, computes coverage/precision/latency
-3. **Promotion when validated** — strategy moves from `shadow` to `active` after meeting thresholds
+1. **Registered strategies log verdicts** — they evaluate live data and write to `~/.kookr/shadow-detection.jsonl`
+2. **The shadow report compares** — it reconstructs anomaly intervals and computes coverage, precision and latency against the real detector
+
+**Ship finished detection switched on (issue #3936).** The shadow registry is a measuring tool, not a waiting room. Use it while you tune a strategy on your own instance, and after a strategy ships to watch how it does. Do not merge a finished strategy that only runs in shadow and then wait for a soak period (for example 48 hours) or a threshold before it may act. When its tests pass, wire it into the real detector in the same pull request, keep a kill switch that turns it off, and keep its shadow logging as the after-ship measurement. If the report shows it misfiring, fix it or revert it.
 
 ## Shadow Report Endpoint
 
@@ -57,7 +58,7 @@ curl -s "http://localhost:4800/api/shadow-report?format=text"
 
 ### Key Metrics
 
-| Metric | What it measures | Promotion threshold |
+| Metric | What it measures | Target |
 |--------|-----------------|---------------------|
 | `coverage` (recall) | Fraction of real-anomaly-time that shadow also flagged | >= 0.95 (95%) |
 | `precision` | Fraction of shadow-anomaly-time that was actual anomaly | >= 0.90 (90%) |
@@ -67,9 +68,9 @@ curl -s "http://localhost:4800/api/shadow-report?format=text"
 
 ### Interpreting Results
 
-- **Coverage 94%, precision 92%**: Shadow is ready — the gap is tick-based lag (expected for 5s watchdog).
+- **Coverage 94%, precision 92%**: on target — the gap is tick-based lag (expected for 5s watchdog).
 - **Coverage 100%, precision 60%**: Shadow has too many false positives — tune detection logic.
-- **Coverage 50%**: Shadow is missing half of real anomalies — detection gap, not ready.
+- **Coverage 50%**: the strategy is missing half of real anomalies — a detection gap to fix (or revert, if it already acts).
 - **`unmatchedShadowIntervals` > 0 with `realIntervals` all matched**: Shadow detects new things real can't (e.g., shell_prompt for crashes). This is the point — new capability.
 - **No data (`strategies` empty)**: No shadow strategies are registered yet.
 
@@ -135,12 +136,10 @@ shadowRegistry.register(new MyNewStrategy());
 
 The registry handles state tracking, transition detection, and logging automatically.
 
-## Workflow for Validating a Strategy
+## Workflow for a New Strategy
 
-1. Implement the strategy and register it with `shadowRegistry`
-2. Deploy to production (shadow mode — no risk)
-3. Let it run for >= 48h with >= 10 real anomaly intervals observed
-4. Check the report: `curl -s "http://localhost:4800/api/shadow-report?format=text"`
-5. If coverage >= 95%, precision >= 90%, and all real intervals matched: promote to active
-6. If not: investigate `unmatchedShadowIntervals` and `detectionDelays`, tune the strategy
-7. After promotion, shadow logging continues as ongoing validation
+1. Implement the strategy with unit tests built from real hook logs and pane captures (see the repo rule "Verify with real data")
+2. While tuning, register it with `shadowRegistry` on your own instance and read the report: `curl -s "http://localhost:4800/api/shadow-report?format=text"`
+3. When its tests pass, wire it into the real detector in the same pull request, with a kill switch that turns it off; leave it registered in the shadow registry too
+4. After it ships, read the report to measure it. Coverage >= 95% and precision >= 90% against the old detector are the targets to compare with, not a gate before it may act
+5. If it misfires: investigate `unmatchedShadowIntervals` and `detectionDelays`, then fix the strategy or revert it

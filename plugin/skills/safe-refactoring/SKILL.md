@@ -2,7 +2,7 @@
 name: safe-refactoring
 group: engineering-patterns
 description: Safe refactoring patterns - code smell detection thresholds, baby-step refactoring, characterization tests, Expand-Migrate-Contract, Strangler Fig, primitive obsession, value objects
-keywords: refactoring, code smell, extract method, extract class, long method, god class, primitive obsession, value object, branded type, parallel change, expand contract, strangler fig, characterization test, feature flag, safe migration
+keywords: refactoring, code smell, extract method, extract class, long method, god class, primitive obsession, value object, branded type, parallel change, expand contract, strangler fig, characterization test, revert, safe migration
 related: monorepo-architecture, tdd-workflow, error-handling-patterns, typescript-type-safety, domain-driven-design
 ---
 
@@ -20,7 +20,7 @@ Rules for detecting code smells and refactoring safely without breaking producti
 | 2 | **Baby steps: extract, compile, test, commit** | Each step is independently revertable |
 | 3 | **Characterization test first** | Capture existing behavior before changing structure |
 | 4 | **Public API changes use Expand-Migrate-Contract** | Prevents downstream breakage |
-| 5 | **Feature flags for risky refactors** | Enables instant rollback without deploy |
+| 5 | **Ship each step switched on; roll back by reverting** | A behaviour-preserving step needs no flag: its tests prove it, and a revert undoes it. Keep a toggle only when a step migrates data or is otherwise hard to undo |
 | 6 | **Method >50 LOC or >3 logical sections -> extract** | God methods attract bugs and prevent reuse |
 | 7 | **Class >500 LOC or >10 public methods -> split** | God classes violate SRP; see [[monorepo-architecture]] |
 | 8 | **Primitives with domain meaning -> Value Object** | Prevents invalid state and scattered validation |
@@ -55,14 +55,11 @@ function calculateSubtotal(items: OrderItem[]): number {
 // Step 4: Repeat for next extraction
 ```
 
-**Sequence:** (1) Write characterization test -> (2) Extract small function -> (3) Compile + test -> (4) Commit -> repeat. If >3 extraction steps needed, wrap in feature flag.
+**Sequence:** (1) Write characterization test -> (2) Extract small function -> (3) Compile + test -> (4) Commit -> repeat. If >3 extraction steps are needed, land them as separate commits or pull requests, each tested and each revertable on its own. Do not hide the new path behind a flag that defaults to off.
 
-### Feature flag for risky refactors
+### Risky refactors: small reverts, not dormant flags
 
-```typescript
-const useNewProcessor = config.get('feature.newOrderProcessor');
-const processor = useNewProcessor ? newOrderProcessor : legacyProcessor;
-```
+A finished refactor ships switched on. Do not keep the old and new paths side by side behind an off-by-default flag (`useNewProcessor ? newOrderProcessor : legacyProcessor`) while waiting for a soak period: the new path then never runs, and nobody learns whether it works. Make the step small enough that its tests prove it and a revert undoes it. A toggle is justified only when the step migrates or deletes data, or is otherwise hard to undo; then it is a kill switch for a path that is already on, or a gate whose reason is written down.
 
 ## Pattern 2: Expand-Migrate-Contract (Parallel Change)
 
@@ -234,7 +231,7 @@ Before proposing or executing a refactor:
 - [ ] Characterization test exists for the behavior being changed
 - [ ] Each step is small enough to revert independently
 - [ ] Public API changes follow Expand-Migrate-Contract
-- [ ] Feature flag wraps risky structural changes
+- [ ] Each risky structural change ships on and can be undone by one revert (no dormant flag)
 - [ ] No big-bang rewrite without Strangler Fig consideration
 - [ ] Primitives with domain meaning replaced with Value Objects (not raw strings/numbers)
 - [ ] Switch statements checked for duplication across codebase
