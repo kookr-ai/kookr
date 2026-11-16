@@ -52,6 +52,10 @@ export interface ResolvePromptInputs {
   args: ParsedArgs;
   stdin: NodeJS.ReadableStream & { isTTY?: boolean };
   env: Record<string, string | undefined>;
+  /** Receives a one-line notice when a playbook launch gives up on silent stdin. */
+  warn?: (message: string) => void;
+  /** Playbook launches only: ms to wait for the first stdin byte (default 5000). */
+  stdinFirstByteTimeoutMs?: number;
 }
 
 export type PortEnvParse =
@@ -246,6 +250,8 @@ export interface FormatDedupArgs {
 export interface MainDeps {
   /** #3928 test seam: defaults to reading the restart note from local disk. */
   lookupRestartIntent?: LookupRestartIntent;
+  /** #3861 test seam: ms a playbook launch waits for the first stdin byte (default 5000). */
+  stdinFirstByteTimeoutMs?: number;
   argv?: string[];
   env?: Record<string, string | undefined>;
   stdin?: NodeJS.ReadableStream & { isTTY?: boolean };
@@ -266,8 +272,15 @@ export function parseWaitTimeoutSeconds(raw: string): number;
 export function defaultProbeBudgetMs(retries: number, retryDelayMs?: number): number;
 export function parseRedeployWaitMs(raw: string | undefined | null): number | null;
 export function selectProbeWaitBudget(input: SelectProbeWaitBudgetInput): ProbeWaitBudget;
-/** Resolves to null only with --playbook and no prompt source (or empty stdin). */
+/**
+ * Resolves to null only with --playbook and no prompt source, an empty stdin,
+ * or a stdin that sent no byte within `stdinFirstByteTimeoutMs`.
+ */
 export function resolvePrompt(inputs: ResolvePromptInputs): Promise<string | null>;
+export function resolvePromptSource(
+  args: ParsedArgs,
+  stdin: (NodeJS.ReadableStream & { isTTY?: boolean }) | null | undefined,
+): 'prompt-file' | 'argv' | 'stdin' | null;
 export function resolveCwd(explicit: string | null, pwd: string): string;
 export function probeHealth(baseUrl: string, timeoutMs: number): Promise<boolean>;
 export function probeDeployStatus(

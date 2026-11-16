@@ -305,6 +305,10 @@ Options:
                            playbook's required \`prompt\` parameter; a playbook
                            without one (e.g. implement-github-issue.md) is
                            launched with no prompt and its --param values.
+                           With no prompt argument or file, it still reads a
+                           piped stdin, but gives up after 5s with no data;
+                           pass </dev/null to skip that wait, and always
+                           inside a \`while read\` loop.
                            Requires --idempotency-key or --auto-idempotency.
       --playbook-scope <scope>
                            Select the playbook collection to search: project,
@@ -740,10 +744,53 @@ function readPromptFile(path, maxBytes) {
   }
 }
 
-async function readStdin(stream, maxBytes) {
+/**
+ * How long a playbook launch waits for the FIRST byte of piped stdin before it
+ * gives up and launches without a prompt (#3861). A parent process that keeps
+ * stdin open as a pipe and never writes would otherwise hang the spawn forever.
+ * Once any byte arrives the read runs to EOF with no timeout, so a slow
+ * producer's prompt is never cut short.
+ */
+const DEFAULT_PLAYBOOK_STDIN_FIRST_BYTE_TIMEOUT_MS = 5000;
+
+const STDIN_TIMED_OUT = Symbol('stdin-timed-out');
+
+const NO_PROMPT_MESSAGE = 'no prompt provided. Pass a positional argument, pipe stdin, or use --prompt-file.';
+
+/**
+ * Read all of `stream` as UTF-8. With `firstByteTimeoutMs`, resolve to
+ * {@link STDIN_TIMED_OUT} (and destroy the stream so the process can exit)
+ * when no chunk arrives in time.
+ */
+async function readStdin(stream, maxBytes, { firstByteTimeoutMs } = {}) {
   const chunks = [];
   let size = 0;
-  for await (const chunk of stream) {
+  const iterator = stream[Symbol.asyncIterator]();
+  let next = iterator.next();
+  if (firstByteTimeoutMs !== undefined) {
+    let timer;
+    const timedOut = new Promise((resolveTimeout) => {
+      timer = setTimeout(() => resolveTimeout(STDIN_TIMED_OUT), firstByteTimeoutMs);
+    });
+    let first;
+    try {
+      first = await Promise.race([next, timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (first === STDIN_TIMED_OUT) {
+      // Do not await iterator.return(): it queues behind the pending next(),
+      // which never settles on a silent pipe. Destroy the stream instead and
+      // swallow the rejection the abandoned next() may get from it.
+      next.catch(() => {});
+      if (typeof stream.destroy === 'function') stream.destroy();
+      return STDIN_TIMED_OUT;
+    }
+    next = Promise.resolve(first);
+  }
+  for (;;) {
+    const { value: chunk, done } = await next;
+    if (done) break;
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buf.length;
     if (size > maxBytes) {
@@ -752,8 +799,19 @@ async function readStdin(stream, maxBytes) {
       );
     }
     chunks.push(buf);
+    next = iterator.next();
   }
   return Buffer.concat(chunks).toString('utf-8');
+}
+
+/**
+ * Whether stdin is a pipe, file or /dev/null that may carry a prompt.
+ * #3959: Node sets `isTTY` to `true` on a terminal and leaves it `undefined`
+ * otherwise, never `false`, so test for "not a terminal" rather than
+ * `isTTY === false`.
+ */
+function stdinMayCarryPrompt(stdin) {
+  return Boolean(stdin) && !stdin.isTTY;
 }
 
 /**
@@ -764,7 +822,7 @@ async function readStdin(stream, maxBytes) {
 function resolvePromptSource(args, stdin) {
   if (args.promptFile !== null) return 'prompt-file';
   if (args.positional.length > 0) return 'argv';
-  if (stdin && stdin.isTTY === false) return 'stdin';
+  if (stdinMayCarryPrompt(stdin)) return 'stdin';
   return null;
 }
 
@@ -776,9 +834,20 @@ function resolvePromptSource(args, stdin) {
  * `prompt` parameter is launched from its --param values alone. Then no source,
  * or an empty stdin (agents often run with stdin closed), resolves to null and
  * the server decides whether the playbook needs a prompt.
+ *
+ * #3861: for a playbook launch the stdin read also gives up when no byte
+ * arrives within `stdinFirstByteTimeoutMs`, reports it through `warn`, and
+ * resolves to null. Without --playbook stdin is the only prompt source, so the
+ * read waits for EOF as before.
  * @returns {Promise<string|null>}
  */
-async function resolvePrompt({ args, stdin, env }) {
+async function resolvePrompt({
+  args,
+  stdin,
+  env,
+  warn = () => {},
+  stdinFirstByteTimeoutMs = DEFAULT_PLAYBOOK_STDIN_FIRST_BYTE_TIMEOUT_MS,
+}) {
   const maxBytes = parseMaxBytes(env.KOOKR_SPAWN_MAX_PROMPT_BYTES);
   const promptOptional = args.playbook !== null;
   let raw;
@@ -787,19 +856,30 @@ async function resolvePrompt({ args, stdin, env }) {
     raw = readPromptFile(args.promptFile, maxBytes);
   } else if (args.positional.length > 0) {
     raw = args.positional.join(' ');
-  } else if (stdin && stdin.isTTY === false) {
-    raw = await readStdin(stdin, maxBytes);
+  } else if (stdinMayCarryPrompt(stdin)) {
+    raw = await readStdin(
+      stdin,
+      maxBytes,
+      promptOptional ? { firstByteTimeoutMs: stdinFirstByteTimeoutMs } : {},
+    );
+    if (raw === STDIN_TIMED_OUT) {
+      warn(
+        `no data on stdin after ${stdinFirstByteTimeoutMs}ms; launching the playbook without a prompt `
+        + '(pass </dev/null to skip this wait)',
+      );
+      return null;
+    }
     fromStdin = true;
   } else if (promptOptional) {
     return null;
   } else {
-    throw new UsageError(
-      'no prompt provided. Pass a positional argument, pipe stdin, or use --prompt-file.',
-    );
+    throw new UsageError(NO_PROMPT_MESSAGE);
   }
   const trimmed = raw.replace(/\s+$/, '');
   if (trimmed.trim().length === 0) {
     if (promptOptional && fromStdin) return null;
+    // An empty stdin (`</dev/null`, a closed pipe) means no prompt was given.
+    if (fromStdin) throw new UsageError(NO_PROMPT_MESSAGE);
     throw new UsageError('prompt is empty, aborting');
   }
   if (trimmed.indexOf('\0') !== -1) {
@@ -2589,6 +2669,7 @@ async function main({
   sleep = defaultSleep,
   now,
   lookupRestartIntent = defaultLookupRestartIntent,
+  stdinFirstByteTimeoutMs = DEFAULT_PLAYBOOK_STDIN_FIRST_BYTE_TIMEOUT_MS,
 } = {}) {
   let args;
   try {
@@ -2631,7 +2712,13 @@ async function main({
   let prompt;
   let cwdAbs;
   try {
-    prompt = await resolvePrompt({ args, stdin, env });
+    prompt = await resolvePrompt({
+      args,
+      stdin,
+      env,
+      warn: (message) => err.error(`kookr-spawn: ${message}`),
+      stdinFirstByteTimeoutMs,
+    });
     cwdAbs = resolveCwd(args.cwd, cwd);
   } catch (e) {
     if (e instanceof UsageError) {
@@ -2852,7 +2939,8 @@ async function main({
       baseUrl,
       prompt,
       cwdAbs,
-      promptSource: resolvePromptSource(args, stdin),
+      // An empty or silent stdin on a playbook launch resolves to no prompt.
+      promptSource: prompt === null ? null : resolvePromptSource(args, stdin),
       body,
       parentTaskId,
       out,

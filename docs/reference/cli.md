@@ -84,7 +84,7 @@ Options:
 | `--parent-task-id` | task id | `KOOKR_TASK_ID` when set | Explicit parent task to link in the dashboard. Mutually exclusive with `--no-parent-task`. |
 | `--no-parent-task` | none | false | Launch detached and ignore `KOOKR_TASK_ID`. Mutually exclusive with `--parent-task-id`. |
 | `--unattended` | none | false | Mark the task autonomous: the spawned agent's settings deny interactive tools (`AskUserQuestion` and equivalents) so a blocking call fails fast and flags the task **operator-needed** instead of hanging with nobody to answer (issue #1562). |
-| `--playbook` | playbook path | unset | Launch a playbook. If you give a prompt, the playbook must declare a required `prompt` parameter and use `{{prompt}}` in its body, and the prompt is placed there. A playbook without a `prompt` parameter, such as `implement-github-issue.md`, takes no prompt: pass its parameters with `--param`. With `--playbook`, an empty stdin counts as no prompt. Kookr reads delivery policy from the playbook's metadata rather than accepting a client-side delivery toggle. Requires either `--idempotency-key` or auto-idempotency so an ambiguous launch can be reconciled safely. |
+| `--playbook` | playbook path | unset | Launch a playbook. If you give a prompt, the playbook must declare a required `prompt` parameter and use `{{prompt}}` in its body, and the prompt is placed there. A playbook without a `prompt` parameter, such as `implement-github-issue.md`, takes no prompt: pass its parameters with `--param`. With `--playbook`, an empty stdin counts as no prompt, and so does a piped stdin that sends nothing within 5 seconds. Kookr reads delivery policy from the playbook's metadata rather than accepting a client-side delivery toggle. Requires either `--idempotency-key` or auto-idempotency so an ambiguous launch can be reconciled safely. |
 | `--playbook-scope` | `project`, `user`, or `plugin` | `project` | Select the playbook collection searched by `--playbook`: the current project's `.kookr/playbooks`, the user's playbooks, or the installed plugin. Requires `--playbook`. |
 | `--param` | `key=value` | unset | Set one playbook parameter; repeat the flag for several. The value is everything after the first `=`, so it may contain `=`. Sent as `playbook.parameterValues`. Kookr rejects a key the playbook does not declare and names any required parameter that is missing. `prompt` is not accepted as a key: give the prompt as an argument, with `--prompt-file`, or on stdin. Requires `--playbook`. |
 | `-f`, `--prompt-file` | path | unset | Read the prompt from a file instead of positional argv or stdin. |
@@ -110,7 +110,12 @@ kookr spawn --playbook implement-github-issue.md --playbook-scope plugin \
 ```
 
 `</dev/null` matters here: without a prompt argument, `kookr spawn` reads stdin
-when it is not a terminal, so an open pipe would make it wait.
+when it is not a terminal. With `--playbook`, an open pipe that sends nothing
+makes it wait 5 seconds, print a notice, and launch without a prompt; once data
+arrives it reads to the end of the input. Without `--playbook`, stdin is the only
+prompt source, so it waits until the pipe closes. In a `while read` loop, pass
+`</dev/null` to every `kookr spawn`: otherwise the first one reads the rest of
+the loop's input as its prompt.
 
 Wait for readiness:
 
