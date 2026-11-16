@@ -35,10 +35,20 @@
  * words that map to one listed choice become a read-back ("You want: X. Shall I send that?"), and the
  * answer is sent only by a clear "yes" in the next turn that did not begin over her own voice.
  *
+ * A question from a task (`say_ask`) is a turn the server starts itself: it waits in a queue until
+ * nothing else is going on (no turn, no candidate interruption, her voice silent for
+ * {@link ANNOUNCE_GAP_MS}, no read-back waiting for its "yes"), then is spoken through
+ * {@link answer} like a scripted answer, so ducking, interruption, `audibleUntil` and the history all
+ * work as for an answer. Speech that begins before its first sentence was sent holds it back to be said
+ * after the operator's own turn; speech over it interrupts it like any answer.
+ *
  * Conversation memory is plain text, the last {@link MAX_HISTORY_EXCHANGES} exchanges.
  * For Lucy's side it keeps only what the operator heard: the sentences the browser
  * reported as `played`, or, if the browser never reported, the sentences sent. An
- * interrupted answer is kept truncated and marked, so the model knows it was cut off.
+ * interrupted answer is kept truncated and marked, so the model knows it was cut off;
+ * one with no `played` report was cut before any of it started (the browser reports every
+ * sentence it started when it cuts her, and the history is read only at the next answer, after
+ * those reports), so none of it was heard (issue #4015).
  */
 
 import {
@@ -71,6 +81,20 @@ export const DRAFT_INTERVAL_BYTES = LUCY_LIVE_SAMPLE_RATE * 2;
 const MAX_TURN_BYTES = LUCY_LIVE_MAX_TURN_SECONDS * LUCY_LIVE_SAMPLE_RATE * 2;
 const INTERRUPTED_MARKER = '(interrupted)';
 const CONTINUED_REASON = 'continued: the operator kept talking before Lucy answered; this text was joined to the next turn';
+const POSTPONED_REASON = 'postponed: the operator began to speak first; the question will be said after their turn';
+const ASK_CLOSED_REASON = 'the question was closed while she was reading it';
+/**
+ * The user side of a history entry for a question she read out unprompted. The history is kept as
+ * user/assistant pairs, which some chat templates require, so the operator's side says that nobody spoke.
+ */
+export const UNPROMPTED_ASK_NOTE = '[Nobody spoke. Lucy read out, unprompted, a new question a task is asking the operator:]';
+/** Silence after her voice ends before she starts reading a waiting question, so she does not run straight on from an answer. */
+export const ANNOUNCE_GAP_MS = 800;
+/** Questions a connection keeps waiting to be said; more are dropped (the card still shows them). */
+const MAX_QUEUED_ASKS = 10;
+
+/** A recogniser session for a turn that has no microphone audio (a question she reads out unprompted). */
+const NO_EARS: EarsTurnPort = { append: () => {}, finish: async () => '', abort: () => {} };
 
 function joinParts(...parts: string[]): string {
   return parts.map((p) => p.trim()).filter((p) => p.length > 0).join(' ');
@@ -162,6 +186,16 @@ export interface LucyLivePorts {
    */
   noteAudible?(until: number): void;
   synthesize(text: string, signal: AbortSignal): Promise<SpokenSentence>;
+  /**
+   * The sentence that reads out the waiting question `askId` (who asks, the question, the choices), or
+   * undefined when it is no longer waiting. Absent: `say_ask` is ignored.
+   */
+  askSpeech?(askId: string): string | undefined;
+  /**
+   * She said a question unprompted (`said`, as sent, with "(interrupted)" when cut off). Lets a
+   * conversation that keeps its own history (the operator conversation) remember it too.
+   */
+  noteUnprompted?(note: string, said: string): void;
   /** Fresh task status text, built for every turn. */
   buildBriefing(): string;
   /** Questions from tasks that are still waiting for the operator. Absent: answering by voice is off. */
@@ -198,10 +232,14 @@ interface ExchangeMemory {
   /** seq -> whether the browser played that sentence to its end. Empty until a `played` arrives. */
   played: Map<number, boolean>;
   interrupted: boolean;
+  /** She said it unprompted (a task's question): only sentences the browser reported as played count as heard. */
+  unprompted: boolean;
 }
 
 interface Turn {
   id: string;
+  /** Set for a turn the server started to read out a task's question; it has no microphone audio. */
+  unprompted?: { askId: string };
   /** Server clock when this part of the request began. */
   startedAt: number;
   /** It began while her voice was audible, or within a moment of it ending. */
@@ -295,6 +333,10 @@ export class LucyLiveSession {
   /** Open requests sent to the browser, waiting for its `open_result`. */
   private readonly openWaiters = new Map<string, (outcome: OpenOutcome | undefined) => void>();
   private openCounter = 0;
+  /** Questions to read out, oldest first, waiting for a quiet moment. */
+  private readonly askQueue: string[] = [];
+  private announceTimer: ReturnType<typeof setTimeout> | null = null;
+  private announceCounter = 0;
 
   constructor(private readonly ports: LucyLivePorts) {}
 
@@ -331,6 +373,12 @@ export class LucyLiveSession {
         waiter?.(msg.outcome);
         return;
       }
+      case 'say_ask':
+        this.onSayAsk(msg.askId);
+        return;
+      case 'drop_ask':
+        this.onDropAsk(msg.askId);
+        return;
     }
   }
 
@@ -360,6 +408,9 @@ export class LucyLiveSession {
     this.closedForGood = true;
     this.candidate = null;
     this.proposal = null;
+    this.askQueue.length = 0;
+    if (this.announceTimer) clearTimeout(this.announceTimer);
+    this.announceTimer = null;
     const turn = this.turn;
     if (turn) this.discard(turn);
   }
@@ -373,7 +424,9 @@ export class LucyLiveSession {
     // Lucy is busy: hold the audio aside and let Silero decide whether it is really the operator.
     // The browser's `lucyAudible` is the authority (it is what made the browser duck her);
     // old clients do not send it, so fall back to what the server knows of the answer.
-    const answering = previous?.phase === 'thinking' || previous?.phase === 'speaking';
+    // A question she started reading unprompted does not count: a browser that knew of it says
+    // `lucyAudible: true`, and one that did not is the operator speaking first, who wins.
+    const answering = !previous?.unprompted && (previous?.phase === 'thinking' || previous?.phase === 'speaking');
     const lucyBusy = lucyAudible ?? answering;
     if (vad && lucyBusy) {
       this.candidate = {
@@ -397,18 +450,21 @@ export class LucyLiveSession {
     }
   }
 
-  private newTurn(id: string, vad: VadTurnPort | null, carried?: { priorText: Promise<string>; parts: number }): Turn {
+  private newTurn(
+    id: string, vad: VadTurnPort | null, carried?: { priorText: Promise<string>; parts: number }, unprompted?: { askId: string },
+  ): Turn {
     let settleOwnText: (text: string) => void = () => {};
     const ownText = new Promise<string>((resolve) => { settleOwnText = resolve; });
     return {
       id,
+      ...(unprompted ? { unprompted } : {}),
       startedAt: this.ports.now(),
       overlapsAudio: this.ports.now() < this.audibleUntil + AUDIBLE_TAIL_MS,
       language: this.language,
       phase: 'listening',
       closed: false,
       abort: new AbortController(),
-      ears: this.ports.openEars(this.language),
+      ears: unprompted ? NO_EARS : this.ports.openEars(this.language),
       chunks: [],
       bytes: 0,
       bytesAtLastDraft: 0,
@@ -437,6 +493,13 @@ export class LucyLiveSession {
    */
   private retire(previous: Turn | null, startedBeforeSpeech = false): { priorText: Promise<string>; parts: number } | undefined {
     if (!previous) return undefined;
+    if (previous.unprompted) {
+      // Never part of the operator's request. Not begun when they started to speak (a sentence that
+      // went out while Silero checked their voice does not count): say it after their turn. Begun: interrupted.
+      if (previous.sentences.length === 0 || startedBeforeSpeech) this.postpone(previous);
+      else this.endTurn(previous, 'interrupted', undefined, false);
+      return undefined;
+    }
     if (previous.phase === 'listening') {
       this.discard(previous);
       return previous.parts > 1 ? { priorText: previous.priorText, parts: previous.parts } : undefined;
@@ -546,6 +609,7 @@ export class LucyLiveSession {
     if (this.candidate !== candidate) return;
     this.candidate = null;
     this.ports.send({ type: 'speech_rejected', turnId: candidate.id });
+    this.scheduleAnnouncement();
   }
 
   /** Score a listening turn's audio so the turn can be called empty when Silero never hears speech. */
@@ -578,6 +642,7 @@ export class LucyLiveSession {
     }
     this.discard(turn);
     this.setState('idle');
+    this.scheduleAnnouncement();
   }
 
   /**
@@ -820,6 +885,7 @@ export class LucyLiveSession {
     const history = this.historyMessages();
     const memory: ExchangeMemory = {
       turnId: turn.id, user: transcript, sentences: turn.sentences, played: new Map(), interrupted: false,
+      unprompted: turn.unprompted !== undefined,
     };
     turn.memory = memory;
     this.memory.push(memory);
@@ -923,6 +989,96 @@ export class LucyLiveSession {
     this.endTurn(turn, 'answered');
   }
 
+  // -- questions she reads out unprompted --------------------------------------
+
+  private onSayAsk(askId: string): void {
+    if (!this.ports.askSpeech) return;
+    if (this.askQueue.includes(askId) || this.turn?.unprompted?.askId === askId) return;
+    if (this.askQueue.length >= MAX_QUEUED_ASKS) {
+      this.ports.warn('lucy-live: too many questions waiting to be read out; this one stays on its card');
+      return;
+    }
+    this.askQueue.push(askId);
+    this.scheduleAnnouncement();
+  }
+
+  private onDropAsk(askId: string): void {
+    const at = this.askQueue.indexOf(askId);
+    if (at >= 0) this.askQueue.splice(at, 1);
+    const turn = this.turn;
+    if (turn?.unprompted?.askId === askId) this.endTurn(turn, 'interrupted', ASK_CLOSED_REASON);
+  }
+
+  /** Look again for a quiet moment to read the next waiting question. Called whenever something ends. */
+  private scheduleAnnouncement(): void {
+    if (this.announceTimer) clearTimeout(this.announceTimer);
+    this.announceTimer = null;
+    if (this.closedForGood || this.askQueue.length === 0) return;
+    if (this.turn || this.candidate) return; // called again when that ends
+    const now = this.ports.now();
+    let wait = Math.max(0, this.audibleUntil + ANNOUNCE_GAP_MS - now);
+    // A read-back waiting for its "yes" keeps the floor: a question read now would take the "yes" for itself.
+    if (this.proposal && now <= this.proposal.until) wait = Math.max(wait, this.proposal.until - now + 1);
+    this.announceTimer = setTimeout(() => {
+      this.announceTimer = null;
+      this.startAnnouncement();
+    }, wait);
+  }
+
+  private startAnnouncement(): void {
+    if (this.closedForGood || this.turn || this.candidate) return;
+    const now = this.ports.now();
+    if (now < this.audibleUntil + ANNOUNCE_GAP_MS || (this.proposal && now <= this.proposal.until)) {
+      this.scheduleAnnouncement();
+      return;
+    }
+    while (this.askQueue.length > 0) {
+      const askId = this.askQueue.shift()!;
+      let text: string | undefined;
+      try {
+        text = this.ports.askSpeech?.(askId);
+      } catch (err) {
+        this.ports.warn(`lucy-live: could not word the question: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (!text) continue; // answered or gone meanwhile
+      const turn = this.newTurn(`lucy-ask-${++this.announceCounter}`, null, undefined, { askId });
+      turn.phase = 'thinking';
+      this.turn = turn;
+      this.ports.send({ type: 'turn_start', turnId: turn.id, askId });
+      this.setState('thinking');
+      void this.runAnnouncement(turn, text);
+      return;
+    }
+  }
+
+  private async runAnnouncement(turn: Turn, text: string): Promise<void> {
+    try {
+      await this.answer(turn, UNPROMPTED_ASK_NOTE, text);
+    } catch (err) {
+      if (turn.closed) return;
+      if (err instanceof StageError) this.endTurn(turn, 'error', describeFailure(err.stage, err.cause));
+      else this.endTurn(turn, 'error', `Something went wrong: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * The operator began to speak before she said anything of the question: end it quietly (nothing enters
+   * the history or the log) and put it back at the head of the queue, to be said after their turn.
+   */
+  private postpone(turn: Turn): void {
+    if (turn.closed || !turn.unprompted) return;
+    turn.closed = true;
+    turn.abort.abort();
+    if (this.turn === turn) this.turn = null;
+    if (turn.memory) {
+      const at = this.memory.indexOf(turn.memory);
+      if (at >= 0) this.memory.splice(at, 1);
+      if (turn.evicted) this.memory.unshift(turn.evicted);
+    }
+    if (!this.askQueue.includes(turn.unprompted.askId)) this.askQueue.unshift(turn.unprompted.askId);
+    this.ports.send({ type: 'turn_done', turnId: turn.id, end: 'interrupted', reason: POSTPONED_REASON });
+  }
+
   // -- ending and bookkeeping ------------------------------------------------
 
   /** Drop a turn that never reached a transcript request: no message, no history. */
@@ -957,6 +1113,14 @@ export class LucyLiveSession {
     }
     this.ports.send({ type: 'turn_done', turnId: turn.id, end, ...(reason ? { reason } : {}) });
     if (settleToIdle) this.setState('idle');
+    if (turn.unprompted && turn.sentences.length > 0) {
+      const said = turn.sentences.join(' ');
+      try {
+        this.ports.noteUnprompted?.(UNPROMPTED_ASK_NOTE, end === 'interrupted' ? `${said} ${INTERRUPTED_MARKER}` : said);
+      } catch (err) {
+        this.ports.warn(`lucy-live: noting the question she read failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     try {
       this.ports.recordTurn({
         turnId: turn.id,
@@ -973,6 +1137,7 @@ export class LucyLiveSession {
     } catch (err) {
       this.ports.warn(`lucy-live: recording the turn failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+    this.scheduleAnnouncement();
   }
 
   private elapsed(turn: Turn): number {
@@ -989,6 +1154,8 @@ export class LucyLiveSession {
   private historyMessages(): ChatTurn[] {
     const out: ChatTurn[] = [];
     for (const entry of this.memory) {
+      // A question nobody reported hearing (the browser ignored it, or is still on its first sentence) is left out.
+      if (entry.unprompted && entry.played.size === 0) continue;
       out.push({ role: 'user', content: entry.user });
       out.push({ role: 'assistant', content: this.heardText(entry) });
     }
@@ -1005,7 +1172,9 @@ export class LucyLiveSession {
       // Sentences that were sent but never reported played were not heard.
       if (seqs.length < entry.sentences.length) cutShort = true;
     } else {
-      spoken = entry.sentences;
+      // No report at all: an interrupted answer was stopped before any of it played; otherwise
+      // the browser does not report (or has not yet), and what was sent is taken as heard.
+      spoken = entry.interrupted ? [] : entry.sentences;
     }
     const text = spoken.join(' ');
     if (!cutShort) return text || INTERRUPTED_MARKER;

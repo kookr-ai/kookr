@@ -286,6 +286,20 @@ describe('LucyLiveSession', () => {
     ]);
   });
 
+  it('an answer stopped by barge_in before the browser played any of it is recorded as unheard (#4015)', async () => {
+    const h = harness();
+    await speak(h, 't1', 'First question here');
+    h.brain.feed('Alpha one. Beta two.');
+    await tick(); await tick();
+    // A clip started while the browser was still decoding her first sentence: no played report.
+    h.session.handleMessage({ type: 'barge_in' });
+    await speak(h, 't2', 'Second question here');
+    expect(h.brain.calls[1].history).toEqual([
+      { role: 'user', content: 'First question here' },
+      { role: 'assistant', content: '(interrupted)' },
+    ]);
+  });
+
   it('falls back to sent sentences when no played arrives, and caps history at 8 exchanges', async () => {
     const h = harness();
     for (let i = 0; i < 10; i++) {

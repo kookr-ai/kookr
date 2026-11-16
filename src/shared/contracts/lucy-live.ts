@@ -23,6 +23,13 @@
  * in the status), the older behaviour applies: the browser stops her audio at once and
  * sends `barge_in`, then `speech_start`.
  *
+ * Questions from tasks. With Talk on, a question a task asks the operator (`kookr ask`) is said
+ * in the conversation itself rather than by the dashboard's clip player: the tab that won the
+ * question sends `say_ask`, and the server says it as a turn of its own, started by the server
+ * (`turn_start`), once the operator's turn and her answer are over. Its sentences are played,
+ * ducked and interrupted exactly like an answer's, and it enters the conversation history marked
+ * as something she said unprompted.
+ *
  * Wire format. Text frames are JSON matching the unions below. Binary frames, sent
  * only by the browser between `speech_start` and `speech_end`, are raw PCM: signed
  * 16-bit little-endian, mono, at `LUCY_LIVE_SAMPLE_RATE`.
@@ -102,7 +109,15 @@ export type LucyLiveClientMessage =
    */
   | { type: 'played'; turnId: string; seq: number; complete: boolean }
   /** What the browser did with an `open` request: opened it, the browser blocked the tab, or there was nothing to open. */
-  | { type: 'open_result'; requestId: string; outcome: 'opened' | 'blocked' | 'unavailable' };
+  | { type: 'open_result'; requestId: string; outcome: 'opened' | 'blocked' | 'unavailable' }
+  /**
+   * Say the waiting question `askId` in the conversation (this tab is the one to speak it). The server
+   * says it when nothing else is going on (no operator turn, no answer, no read-back waiting for a yes),
+   * questions one at a time in the order asked, and skips it if it is no longer waiting by then.
+   */
+  | { type: 'say_ask'; askId: string }
+  /** The question `askId` closed: do not say it, and stop saying it if she has begun. */
+  | { type: 'drop_ask'; askId: string };
 
 /** What Lucy asks the browser to open by voice ("show me the mockups"): a question's link in a new tab, or the asking task. */
 export type LucyLiveOpenTarget = { kind: 'link'; url: string } | { kind: 'task'; taskId: string };
@@ -131,6 +146,14 @@ export type LucyLiveServerMessage =
    * talk (it is re-transcribed as more audio arrives); `final: true` is what Lucy answers.
    */
   | { type: 'transcript'; turnId: string; text: string; final: boolean }
+  /**
+   * Lucy begins a turn the operator did not open: she reads out the waiting question `askId`
+   * (requested with `say_ask`). Its sentences and its `turn_done` follow under `turnId`, as for an
+   * answer, and the browser plays them as the current turn. If the operator had just begun to speak,
+   * the browser ignores it: the server then sees that `speech_start` and holds the question back
+   * (`turn_done` with `interrupted`) to say it after the operator has been answered.
+   */
+  | { type: 'turn_start'; turnId: string; askId: string }
   /**
    * One spoken sentence of Lucy's answer, ready to play. `seq` counts from 0 within the
    * turn; the browser plays sentences in `seq` order. `wavBase64` is a complete WAV file.
@@ -190,6 +213,9 @@ export function isLucyLiveClientMessage(value: unknown): value is LucyLiveClient
     case 'open_result':
       return typeof v.requestId === 'string' && v.requestId.length > 0 && v.requestId.length <= 64
         && (v.outcome === 'opened' || v.outcome === 'blocked' || v.outcome === 'unavailable');
+    case 'say_ask':
+    case 'drop_ask':
+      return typeof v.askId === 'string' && v.askId.length > 0 && v.askId.length <= 64;
     default:
       return false;
   }
