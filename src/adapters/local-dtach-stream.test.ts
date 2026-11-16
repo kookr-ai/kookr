@@ -7,11 +7,14 @@ import { DtachRingStore, shrinkRing } from './dtach-ring-store.js';
 import { DtachManifestStore } from './dtach-manifest-store.js';
 import { LocalDtachStream, type LocalDtachStreamHost } from './local-dtach-stream.js';
 
-const ptyMock = vi.hoisted(() => ({ data: undefined as ((data: string) => void) | undefined }));
+const ptyMock = vi.hoisted(() => ({
+  data: undefined as ((data: string) => void) | undefined,
+  exit: undefined as (() => void) | undefined,
+}));
 vi.mock('node-pty', () => ({
   spawn: vi.fn(() => ({
     onData: (callback: (data: string) => void) => { ptyMock.data = callback; return { dispose() {} }; },
-    onExit: () => ({ dispose() {} }),
+    onExit: (callback: () => void) => { ptyMock.exit = callback; return { dispose() {} }; },
     kill: vi.fn(),
   })),
 }));
@@ -154,9 +157,8 @@ describe('issue #3565: a session that survives a restart', () => {
     const sess = before.host.attached.get('s')!;
     before.stream.setGeometry(sess, { cols: 83, rows: 30 });
     ptyMock.data?.('screen');
-    before.host.ringStore.persist(sess);
-    // The size write is fire-and-forget; queue behind it so it has landed.
-    await before.host.manifestStore.withLock(() => undefined);
+    // The flush tick persists the ring and the size changed since the last tick.
+    await before.stream.flushAllRings();
     return generation(dir);
   }
 
@@ -206,9 +208,57 @@ describe('issue #3565: a session that survives a restart', () => {
 
   test('a frame capture before the session is in memory uses the saved size', async () => {
     const after = await launchResizeAndRestart();
-    // The capture's temporary attach never emits, so it ends on its timeout.
-    await after.stream.captureCurrentFrame('s', { timeoutMs: 1 });
+    vi.mocked(spawn).mockClear();
+    const capture = after.stream.captureCurrentFrame('s', { timeoutMs: 60_000 });
+    // The capture reads the manifest before it spawns its temporary attach.
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1));
     expect(lastSpawnSize()).toEqual({ cols: 83, rows: 30 });
+    // End it the way a real capture of a dead master ends: the attach exits.
+    ptyMock.exit?.();
+    await expect(capture).resolves.toEqual(new Uint8Array(0));
+  });
+
+  test('a lazy re-attach after the attach child died drops the clear too (issue #3909)', () => {
+    const { dir, sock } = instanceDir();
+    const launch = generation(dir);
+    launch.stream.openAttach('s', sock, { cols: 100, rows: 30 }, true);
+    ptyMock.data?.('screen');
+    // The attach child exits; the next write re-attaches lazily.
+    launch.host.attached.get('s')!.pty = null;
+    launch.stream.ensureWritable('s');
+    expect(spawn).toHaveBeenCalledTimes(2);
+    ptyMock.data?.(`${CLEAR}reply`);
+    expect(ringText(launch.stream)).toBe('screenreply');
+  });
+
+  test('resizes are saved once per flush tick, with the last size (issue #3909)', async () => {
+    const { dir, sock } = instanceDir();
+    const launch = generation(dir);
+    const setSizes = vi.spyOn(launch.host.manifestStore, 'setSizes');
+    launch.stream.openAttach('s', sock, { cols: 100, rows: 30 }, true);
+    const sess = launch.host.attached.get('s')!;
+    for (let cols = 101; cols <= 140; cols++) launch.stream.setGeometry(sess, { cols, rows: 30 });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(setSizes).not.toHaveBeenCalled();
+    expect(launch.host.manifestStore.read().entries[0].size).toBeUndefined();
+    await launch.stream.flushAllRings();
+    expect(setSizes).toHaveBeenCalledTimes(1);
+    expect(launch.host.manifestStore.read().entries[0].size).toEqual({ cols: 140, rows: 30 });
+    // Nothing changed since: the next tick has no size to save.
+    await launch.stream.flushAllRings();
+    expect(setSizes.mock.calls[1]?.[0].size).toBe(0);
+  });
+
+  test('a failed size write is logged, not swallowed (issue #3909)', async () => {
+    const { dir, sock } = instanceDir();
+    const launch = generation(dir);
+    vi.spyOn(launch.host.manifestStore, 'setSizes').mockRejectedValue(new Error('ENOSPC'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      launch.stream.openAttach('s', sock, { cols: 100, rows: 30 }, true);
+      await expect(launch.stream.flushAllRings()).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/failed to save terminal sizes for s: Error: ENOSPC/));
+    } finally { warn.mockRestore(); }
   });
 
   test('a fresh launch still records its first chunk as live output', () => {

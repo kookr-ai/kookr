@@ -1,5 +1,6 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -8,7 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DtachRingStore,
   RING_BUFFER_BYTES,
@@ -492,5 +493,146 @@ describe('ring fleet budget (issue #1779)', () => {
     enforceRingFleetBudget([never, recent], full + RING_IDLE_CAPACITY_BYTES, RING_IDLE_CAPACITY_BYTES);
     expect(ringCapacity(never)).toBe(RING_IDLE_CAPACITY_BYTES);
     expect(ringCapacity(recent)).toBe(full);
+  });
+});
+
+describe('fleet shrink keeps the scrollback it drops (issue #3565)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  function newStore(options: { asyncPersistence?: boolean } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'dtach-ring-pre-shrink-'));
+    dirs.push(dir);
+    return { dir, store: new DtachRingStore(dir, options) };
+  }
+  const write = (store: DtachRingStore, state: ReturnType<typeof createDtachRingState>, text: string) =>
+    store.copyInto(state, Buffer.from(text));
+  /** What a new server generation restores for `s` from `dir`. */
+  function restored(dir: string): string {
+    const state = createDtachRingState('s');
+    new DtachRingStore(dir).load(state);
+    const out = Buffer.alloc(Math.min(state.ringHead, state.ringBuffer.length));
+    new DtachRingStore(dir).copyFrom(state, state.ringHead, out.length, out);
+    return out.toString();
+  }
+
+  it.each([false, true])('restores the full ring plus later output after the flush (async=%s)', async (asyncPersistence) => {
+    const { dir, store } = newStore({ asyncPersistence });
+    const state = createDtachRingState('s', 32);
+    write(store, state, '0123456789ABCDEFGHIJ');
+    expect(store.shrink(state, 8)).toBe(true);
+    expect(ringCapacity(state)).toBe(8);
+    write(store, state, 'xyz');
+    // The periodic flush now writes the 8-byte ring over `s.ring`.
+    store.persist(state);
+    await store.drain();
+    expect(restored(dir)).toBe('0123456789ABCDEFGHIJxyz');
+  });
+
+  it('enforceRingFleetBudget saves through the shrink it is given', () => {
+    const { dir, store } = newStore();
+    const state = createDtachRingState('s', 4 * RING_IDLE_CAPACITY_BYTES);
+    const history = 'h'.repeat(RING_IDLE_CAPACITY_BYTES) + 'tail';
+    write(store, state, history);
+    enforceRingFleetBudget([state], RING_IDLE_CAPACITY_BYTES, RING_IDLE_CAPACITY_BYTES,
+      (s, capacity) => store.shrink(s, capacity));
+    expect(ringCapacity(state)).toBe(RING_IDLE_CAPACITY_BYTES);
+    store.persist(state);
+    expect(restored(dir)).toBe(history);
+  });
+
+  it('a ring that already fits loses nothing and writes no snapshot', () => {
+    const { dir, store } = newStore();
+    const state = createDtachRingState('s', 32);
+    write(store, state, 'short');
+    expect(store.shrink(state, 8)).toBe(true);
+    expect(existsSync(join(dir, 's.pre-shrink.ring'))).toBe(false);
+    store.persist(state);
+    expect(restored(dir)).toBe('short');
+  });
+
+  it('drops the snapshot once more output arrived than the ring holds, instead of splicing across the hole', () => {
+    const { dir, store } = newStore();
+    const state = createDtachRingState('s', 32);
+    write(store, state, '0123456789ABCDEFGHIJ');
+    store.shrink(state, 8);
+    write(store, state, 'abcdefghi'); // 9 new bytes: the ring keeps only 'bcdefghi'
+    store.persist(state);
+    expect(existsSync(join(dir, 's.pre-shrink.ring'))).toBe(false);
+    expect(restored(dir)).toBe('bcdefghi');
+  });
+
+  it('keeps joining after a restart until the ring stops continuing the snapshot', () => {
+    const { dir, store } = newStore();
+    const state = createDtachRingState('s', 32);
+    write(store, state, '0123456789ABCDEFGHIJ');
+    store.shrink(state, 8);
+    store.persist(state);
+
+    // Next generation: the joined history loads into a full-size ring and its
+    // flushes keep naming the snapshot.
+    const next = new DtachRingStore(dir);
+    const reloaded = createDtachRingState('s');
+    next.load(reloaded);
+    next.copyInto(reloaded, Buffer.from('new'));
+    next.persist(reloaded);
+    expect(restored(dir)).toBe('0123456789ABCDEFGHIJnew');
+  });
+
+  it('carries the older snapshot forward when an expanded ring is shrunk again', () => {
+    const { dir, store } = newStore();
+    const state = createDtachRingState('s', 32);
+    write(store, state, '0123456789ABCDEFGHIJ');
+    store.shrink(state, 8);
+    expect(expandRing(state, 32)).toBe(true);
+    write(store, state, 'abcdefghijkl');
+    store.shrink(state, 8);
+    write(store, state, '!');
+    store.persist(state);
+    expect(restored(dir)).toBe('0123456789ABCDEFGHIJabcdefghijkl!');
+  });
+
+  it('ignores and deletes a snapshot the ring file does not name', () => {
+    const { dir, store } = newStore();
+    const state = createDtachRingState('s', 32);
+    write(store, state, '0123456789ABCDEFGHIJ');
+    store.shrink(state, 8);
+    store.persist(state);
+    // A stale snapshot from another shrink replaces the one `s.ring` names.
+    const path = join(dir, 's.pre-shrink.ring');
+    const file = readFileSync(path);
+    const sep = file.indexOf(0x0a);
+    const header = { ...JSON.parse(file.subarray(0, sep).toString()), snapshotId: 'other' };
+    writeFileSync(path, Buffer.concat([Buffer.from(JSON.stringify(header) + '\n'), file.subarray(sep + 1)]));
+    expect(restored(dir)).toBe('CDEFGHIJ');
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('shrinks anyway when the snapshot cannot be written', () => {
+    const { dir, store } = newStore();
+    // A directory in the snapshot's place makes the atomic rename fail.
+    mkdirSync(join(dir, 's.pre-shrink.ring'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const state = createDtachRingState('s', 32);
+      write(store, state, '0123456789ABCDEFGHIJ');
+      expect(store.shrink(state, 8)).toBe(true);
+      expect(ringCapacity(state)).toBe(8);
+      expect(state.preShrink).toBeNull();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('failed to save pre-shrink scrollback for s'));
+    } finally { warn.mockRestore(); }
+  });
+
+  it.each([false, true])('remove deletes the snapshot too (async=%s)', async (asyncPersistence) => {
+    const { dir, store } = newStore({ asyncPersistence });
+    const state = createDtachRingState('s', 32);
+    write(store, state, '0123456789ABCDEFGHIJ');
+    store.shrink(state, 8);
+    store.persist(state);
+    await store.drain();
+    expect(existsSync(join(dir, 's.pre-shrink.ring'))).toBe(true);
+    await store.remove('s');
+    expect(readdirSync(dir)).toEqual([]);
   });
 });

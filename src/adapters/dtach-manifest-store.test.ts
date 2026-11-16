@@ -96,28 +96,50 @@ describe('DtachManifestStore', () => {
     expect(store.read().entries.map((entry) => entry.sessionId)).toEqual(['after-sweep']);
   });
 
-  describe('setSize (issue #3565)', () => {
+  it('holds the lock until an async callback finishes (issue #3909)', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-manifest-test-'));
+    const store = new DtachManifestStore(join(tmpDir, 'manifest.json'), 'test-instance');
+    const order: string[] = [];
+    let release!: () => void;
+    const first = store.withLock(async () => {
+      order.push('first:start');
+      await new Promise<void>((resolve) => { release = resolve; });
+      order.push('first:end');
+    });
+    const second = store.withLock(() => { order.push('second'); });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(order).toEqual(['first:start']);
+    release();
+    await Promise.all([first, second]);
+    expect(order).toEqual(['first:start', 'first:end', 'second']);
+  });
+
+  describe('setSizes (issue #3565)', () => {
     const entry = (sessionId: string) => ({
       sessionId, pid: 1, startedAt: '2026-05-19T00:00:00.000Z', status: 'active' as const, sock: `/tmp/${sessionId}.sock`,
     });
 
-    it('records the size on the existing entry only', async () => {
+    it('records each size on its existing entry only', async () => {
       tmpDir = mkdtempSync(join(tmpdir(), 'dtach-manifest-test-'));
       const store = new DtachManifestStore(join(tmpDir, 'manifest.json'), 'test-instance');
-      await store.update((manifest) => { manifest.entries.push(entry('one'), entry('two')); });
-      await store.setSize('one', { cols: 132, rows: 43 });
-      await store.setSize('missing', { cols: 10, rows: 10 });
-      expect(store.read().entries).toEqual([{ ...entry('one'), size: { cols: 132, rows: 43 } }, entry('two')]);
+      await store.update((manifest) => { manifest.entries.push(entry('one'), entry('two'), entry('three')); });
+      await store.setSizes(new Map([
+        ['one', { cols: 132, rows: 43 }], ['three', { cols: 90, rows: 30 }], ['missing', { cols: 10, rows: 10 }],
+      ]));
+      expect(store.read().entries).toEqual([
+        { ...entry('one'), size: { cols: 132, rows: 43 } }, entry('two'), { ...entry('three'), size: { cols: 90, rows: 30 } },
+      ]);
     });
 
     it('leaves a missing or unparseable manifest for startup recovery', async () => {
       tmpDir = mkdtempSync(join(tmpdir(), 'dtach-manifest-test-'));
       const path = join(tmpDir, 'manifest.json');
       const store = new DtachManifestStore(path, 'test-instance');
-      await store.setSize('one', { cols: 132, rows: 43 });
+      const sizes = new Map([['one', { cols: 132, rows: 43 }]]);
+      await store.setSizes(sizes);
       expect(existsSync(path)).toBe(false);
       writeFileSync(path, '{not json');
-      await store.setSize('one', { cols: 132, rows: 43 });
+      await store.setSizes(sizes);
       expect(store.readForRecovery()).toEqual({ kind: 'invalid' });
     });
   });

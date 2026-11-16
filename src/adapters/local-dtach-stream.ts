@@ -68,6 +68,13 @@ export interface LocalDtachStreamHost {
 }
 
 export class LocalDtachStream {
+  /**
+   * Sessions whose size changed since the last manifest write. Writing on the
+   * flush tick instead of on every resize turns a window drag into at most
+   * one manifest write per tick (issue #3909).
+   */
+  private readonly unsavedSizes = new Set<SessionId>();
+
   constructor(private readonly host: LocalDtachStreamHost) {}
 
   /**
@@ -268,8 +275,10 @@ export class LocalDtachStream {
       this.host.reattachCounts[id] = sess.reattachCount;
       // This path is immediately followed by a user write. Keep its bytes in
       // the ring; replay suppression is reserved for explicit recovery probes
-      // that are measuring post-restart transport liveness.
-      this.attachPtyInto(sess, entry.sock, undefined, false, false);
+      // that are measuring post-restart transport liveness. dtach's attach
+      // clear is not agent output, though: drop it as the cold path does, or
+      // every later replay of the ring would blank the screen (issue #3909).
+      this.attachPtyInto(sess, entry.sock, undefined, false, false, true);
       this.host.emitError({
         kind: 'session-attach-recovered',
         id,
@@ -504,6 +513,7 @@ export class LocalDtachStream {
     }
     sess.dataSubscribers.clear();
     this.host.attached.delete(id);
+    this.unsavedSizes.delete(id);
   }
 
   /**
@@ -589,12 +599,31 @@ export class LocalDtachStream {
    * Failures are swallowed (best-effort): a missing snapshot only degrades
    * to "blank terminal on restart", which is the pre-fix behavior — strictly
    * worse to crash the backend over a tmp-disk hiccup.
+   *
+   * Also records every size changed since the last tick in the manifest. The
+   * returned promise settles once that write is done and never rejects; a
+   * shutdown awaits it so the last size survives the restart.
    */
-  flushAllRings(): void {
+  flushAllRings(): Promise<void> {
     for (const sess of this.host.attached.values()) {
       if (sess.ringHead === sess.lastFlushedHead) continue;
       this.host.ringStore.persist(sess);
     }
+    return this.saveSizes();
+  }
+
+  private saveSizes(): Promise<void> {
+    const sizes = new Map<SessionId, { cols: number; rows: number }>();
+    for (const id of this.unsavedSizes) {
+      const size = this.host.attached.get(id)?.currentSize;
+      if (size) sizes.set(id, size);
+    }
+    this.unsavedSizes.clear();
+    // Best-effort: a lost size costs one 80x24 re-attach after a restart.
+    return this.host.manifestStore.setSizes(sizes).catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[dtach-backend] failed to save terminal sizes for ${[...sizes.keys()].join(', ')}: ${String(err)}`);
+    });
   }
 
   copyFromRing(sess: AttachedSession, head: number, size: number, out: Buffer): void {
@@ -616,9 +645,9 @@ export class LocalDtachStream {
     if (sess.currentSize?.cols === size.cols && sess.currentSize.rows === size.rows) return;
     sess.currentSize = { ...size };
     sess.geometryRevision++;
-    // Persist so a restarted server re-attaches at this size (issue #3565).
-    // Best-effort: a failed manifest write must not fail a resize or attach.
-    this.host.manifestStore.setSize(sess.id, size).catch(() => {});
+    // Saved on the next flush so a restarted server re-attaches at this size
+    // (issue #3565).
+    this.unsavedSizes.add(sess.id);
   }
 
   private sourceRange(sess: AttachedSession, start: number): TerminalSourceRange {
