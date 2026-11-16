@@ -825,7 +825,8 @@ describe('archivedTaskToAgentState (issue #2760)', () => {
         cwd: '/tmp/kookr',
         createdAt: '2026-08-01T10:00:00.000Z',
         finishedAt: '2026-08-01T12:00:00.000Z',
-        tokenUsage: { inputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.02 },
+        tokenUsage: { inputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.02, model: 'gpt-5.3-codex' },
+        launchIntent: { schemaVersion: 1, agentType: 'codex-cli', model: 'gpt-5.3-codex' },
         sessions: [{ tmuxSession: 'sess-9', agentType: 'codex-cli', cwd: '/tmp/kookr' }],
       },
     });
@@ -840,6 +841,9 @@ describe('archivedTaskToAgentState (issue #2760)', () => {
       terminalAt: '2026-08-01T12:00:00.000Z',
       terminalAtSource: 'finished_at',
       archivedAt: '2026-08-01T00:00:00.000Z',
+      // The facts column's Model row (#3559) survives the archive round trip.
+      tokenUsage: { model: 'gpt-5.3-codex' },
+      requestedModel: 'gpt-5.3-codex',
     });
   });
 
