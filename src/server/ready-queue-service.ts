@@ -58,7 +58,11 @@ export interface ReadyQueueServiceDeps {
   filePath: string;
   /** Read once per tick: drain, SAFE MODE, capacity ledger, host load. */
   getGateInputs: () => ReadyQueueGateInputs;
-  /** Operational-alert channel; called once when an entry is marked failed. */
+  /**
+   * Operational-alert channel. Called once when an entry is marked failed
+   * (`ready_queue_launch_failed`), and once when the head keeps getting the
+   * same "retry later" refusal for 15 minutes (`ready_queue_head_refused`).
+   */
   emitAlert?: (alert: AlertMessage) => void;
   now?: () => number;
   tickIntervalMs?: number;
@@ -184,8 +188,29 @@ function describeRequest(request: Record<string, unknown>): string {
   return prompt.length > 80 ? `"${prompt.slice(0, 77)}..."` : `"${prompt}"`;
 }
 
+/**
+ * The run of identical "retry later" answers the current head has received.
+ * A 429/503 never counts as a failed attempt, so a refusal that never clears
+ * (an auth preflight that keeps failing, a quota 429 with no `Retry-After`)
+ * would hold every later entry behind the head with no alert at all.
+ */
+interface RefusalStreak {
+  entryId: string;
+  /** The refusal's error code, or its wait reason when the answer had no code. */
+  code: string;
+  /** Time of the first refusal in the run. */
+  sinceMs: number;
+}
+
 export class ReadyQueueService {
   private entries: ReadyQueueEntry[] = [];
+  private refusalStreak: RefusalStreak | null = null;
+  /**
+   * Entries that already got the `ready_queue_head_refused` alert. Kept in
+   * memory only: after a restart the alert can fire once more if the head is
+   * still refused 15 minutes later.
+   */
+  private readonly refusalAlerted = new Set<string>();
   private dispatcher: ReadyQueueDispatcher | null = null;
   private writeChain: Promise<void> = Promise.resolve();
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -301,6 +326,8 @@ export class ReadyQueueService {
     if (!entry) return 'not_found';
     if (entry.state === 'launching') return 'launching';
     this.entries = this.entries.filter((candidate) => candidate.id !== id);
+    if (this.refusalStreak?.entryId === id) this.refusalStreak = null;
+    this.refusalAlerted.delete(id);
     await this.persist();
     return 'removed';
   }
@@ -388,9 +415,59 @@ export class ReadyQueueService {
         this.log(`entry ${entry.id} failed to start (attempt ${final.attempts}): ${outcome.error}`);
       }
       if (becameFailed && final.alerted && !entry.alerted) this.sendFailedAlert(final);
+      this.trackRefusal(final, outcome, this.now());
       return decision;
     } finally {
       this.ticking = false;
+    }
+  }
+
+  /**
+   * Follow the head's run of identical refusals. The run survives the `wait`
+   * ticks in between (a `Retry-After` delay, a full fleet); it ends when the
+   * entry gets any other answer or a different refusal code. Once one run has
+   * lasted at least 15 minutes (two refusals or more), send one alert.
+   * Measured in time, not in refusals, so a long `Retry-After` still alerts.
+   */
+  private trackRefusal(entry: ReadyQueueEntry, outcome: ReadyQueueLaunchOutcome, nowMs: number): void {
+    if (outcome.kind !== 'refused') {
+      if (this.refusalStreak?.entryId === entry.id) this.refusalStreak = null;
+      if (outcome.kind === 'started' || entry.state === 'failed') this.refusalAlerted.delete(entry.id);
+      return;
+    }
+    const code = outcome.code ?? outcome.reason;
+    const streak = this.refusalStreak;
+    if (!streak || streak.entryId !== entry.id || streak.code !== code) {
+      this.refusalStreak = { entryId: entry.id, code, sinceMs: nowMs };
+      return;
+    }
+    const refusedForMs = nowMs - streak.sinceMs;
+    if (refusedForMs < READY_QUEUE_STALL_MS || this.refusalAlerted.has(entry.id) || !this.deps.emitAlert) return;
+    this.refusalAlerted.add(entry.id);
+    this.sendRefusedAlert(entry, code, refusedForMs);
+  }
+
+  private sendRefusedAlert(entry: ReadyQueueEntry, code: string, refusedForMs: number): void {
+    const behind = this.entries.filter((candidate) => candidate.id !== entry.id && candidate.state === 'queued').length;
+    const minutes = Math.floor(refusedForMs / 60_000);
+    try {
+      this.deps.emitAlert?.({
+        type: 'alert',
+        agentId: '',
+        summary: `Ready queue: launch ${entry.id} has been refused (${code}) for ${minutes} minutes; `
+          + `${behind} entr${behind === 1 ? 'y waits' : 'ies wait'} behind it`,
+        details: `${describeRequest(entry.request)}: ${entry.lastError ?? 'no error text'}. `
+          + 'The server keeps answering "retry later", which never counts as a failed attempt, so the entry '
+          + `is retried with no limit. Fix the cause, or remove it with \`kookr queue remove ${entry.id}\`.`,
+        severity: 'warning',
+        operationalAlert: {
+          key: `ready-queue-refused:${entry.id}`,
+          metric: 'ready_queue_head_refused',
+          state: 'fired',
+        },
+      });
+    } catch (err) {
+      this.log(`failed to send the head-refused alert: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
