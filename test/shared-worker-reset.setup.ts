@@ -65,5 +65,12 @@ afterAll(() => {
   for (const [key, value] of Object.entries(envSnapshot)) {
     if (process.env[key] !== value) process.env[key] = value;
   }
-  if (process.cwd() !== cwdSnapshot) process.chdir(cwdSnapshot);
+  // process.cwd() throws when a test deleted the directory it moved into.
+  let cwd: string | undefined;
+  try {
+    cwd = process.cwd();
+  } catch {
+    cwd = undefined;
+  }
+  if (cwd !== cwdSnapshot) process.chdir(cwdSnapshot);
 });
