@@ -32,6 +32,8 @@ import { audioDropDecision, extractAudioAttachment, filenameFromFilePath, MAX_AU
 import { parseTaskCommand } from './parse-task.js';
 import { redactCredentials } from './redact.js';
 import { fetchTasksSummary, formatTasksReply, isTasksCommand, selectActiveTasks, type TaskSummaryRow } from './tasks-command.js';
+import { formatBriefReply, isBriefCommand, type BriefReply } from './brief-command.js';
+import type { OperatorInbox } from '../../shared/contracts/operator-inbox.js';
 import { rephrase } from './rephrase.js';
 import { classifyVoiceError, transcribeVoice as defaultTranscribeVoice } from './transcribe.js';
 import { TaskSpecBypassSchema, type ProjectInfo, type ValidatedTaskSpec } from './types.js';
@@ -135,6 +137,11 @@ export interface StartTelegramTriggerDeps {
    * are registered together so a question is never sent that cannot be answered.
    */
   asks?: AskAnswerPort;
+  /**
+   * The operator's inbox for `/brief` (issue #3931), read in-process from the
+   * server. When unset, `/brief` replies that it is unavailable.
+   */
+  getOperatorInbox?: () => OperatorInbox;
 }
 
 /**
@@ -236,6 +243,7 @@ function helpText(allowedProjects: ProjectInfo[]): string {
     '',
     'Or use /task <project> <prompt> to bypass the LLM.',
     'Use /tasks to see active tasks and their blockers.',
+    'Use /brief to see what is waiting on you, across all projects.',
     '',
     'Available projects:',
     projects,
@@ -605,6 +613,11 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       return;
     }
 
+    if (isBriefCommand(text)) {
+      await handleBriefCommand(m.chat.id, userId);
+      return;
+    }
+
     const agentCommand = parseAgentCommand(text);
     if (agentCommand) {
       await handleAgentCommand(m.chat.id, userId, agentCommand);
@@ -698,6 +711,31 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     const opts = { allowedCwds: deps.allowedProjects.map((p) => p.cwd) };
     audit({ kind: 'tasks_replied', sender: userId, count: selectActiveTasks(rows, opts).length });
     await sendMessageSafe(chatId, formatTasksReply(rows, opts));
+  }
+
+  /**
+   * `/brief` (issue #3931): what waits on the operator, across every project.
+   * Items in projects not enabled here are counted, not named.
+   */
+  async function handleBriefCommand(chatId: number, userId: number): Promise<void> {
+    if (!deps.getOperatorInbox) {
+      await sendMessageSafe(chatId, '/brief is not available on this server.');
+      return;
+    }
+    let reply: BriefReply;
+    try {
+      reply = formatBriefReply(deps.getOperatorInbox(), {
+        allowedCwds: deps.allowedProjects.map((p) => p.cwd),
+        dashboardBaseUrl: deps.dashboardBaseUrl,
+        now: Date.now(),
+      });
+    } catch (err) {
+      audit({ kind: 'brief_query_failed', sender: userId, err: String(err) });
+      await sendMessageSafe(chatId, 'Could not read what is waiting right now; try again shortly.');
+      return;
+    }
+    audit({ kind: 'brief_replied', sender: userId, named: reply.namedCount, hidden: reply.hiddenCount });
+    await sendMessageSafe(chatId, reply.text);
   }
 
   async function handleAgentCommand(chatId: number, userId: number, command: 'status' | 'claude' | 'codex' | 'usage'): Promise<void> {

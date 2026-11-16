@@ -300,6 +300,7 @@ import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import type { SystemdNotifier } from './systemd-notify.js';
 import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
+import { readOperatorInbox } from './operator-inbox.js';
 import { createLucyOperatorHolder } from './lucy-operator/holder.js';
 import { operatorNeeds } from './lucy-operator/look-source.js';
 import { createAskTaskPorts, createTelegramTaskBridge, type TelegramTaskBridge } from './telegram-task-bridge.js';
@@ -4577,6 +4578,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     lifecycleSignal,
     taskBridge: telegramTaskBridge,
     ...(askService ? { asks: askService } : {}),
+    // `/brief` (issue #3931): the same inbox as GET /api/operator/inbox.
+    getOperatorInbox: () => readOperatorInbox({
+      taskStore,
+      monitor,
+      ...(askService ? { asks: askService } : {}),
+      ...(integrationTrainMonitor ? { train: integrationTrainMonitor } : {}),
+    }),
   });
   const telegramHandle = remoteChatTrigger.handle;
   // `kookr ask`: the sender and the answer handler were registered together by

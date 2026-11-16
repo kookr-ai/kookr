@@ -9,6 +9,7 @@ import { HELP_TEXT as SPAWN_HELP_TEXT } from '../../bin/kookr-spawn.js';
 import { HELP_TEXT as STATUS_HELP_TEXT } from '../../bin/kookr-status.js';
 import { REOPEN_HELP_TEXT } from './kookr-reopen.js';
 import { QUEUE_HELP_TEXT } from './kookr-queue.js';
+import { BRIEF_HELP_TEXT } from './kookr-brief.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -97,6 +98,18 @@ describe('kookr dispatcher', () => {
       await main({ argv: ['queue', '--help'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
       expect(deps.codes).toEqual([0]);
       expect(deps.logs).toEqual([QUEUE_HELP_TEXT]);
+      expect(deps.errors).toEqual([]);
+    } finally {
+      process.exitCode = undefined;
+    }
+  });
+
+  it('dispatches brief help through the main binary (#3931)', async () => {
+    const deps = makeDeps();
+    try {
+      await main({ argv: ['brief', '--help'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
+      expect(deps.codes).toEqual([0]);
+      expect(deps.logs).toEqual([BRIEF_HELP_TEXT]);
       expect(deps.errors).toEqual([]);
     } finally {
       process.exitCode = undefined;

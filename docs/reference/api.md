@@ -911,6 +911,21 @@ Question and context text is credential-scrubbed (a matching field is replaced b
 
 Every route that returns an ask (`POST /api/asks`, the list, `GET /api/asks/:id` and `POST /api/asks/:id/cancel`) includes `sessionId` when the ask has one: the id of the task's tmux session at the moment it asked. The answer and the expiry notice are typed only into that session, or into a session that resumed its conversation (crash recovery, operator Reopen). If the task was relaunched into a fresh session and that session is live, nothing is typed: the answer is recorded and the ask ends `answered` with `taskDelivery: skipped`, the same as when the task itself has ended. If no session is live yet when the answer arrives (for example a Reopen still waiting for a worker slot), the answer is recorded but not typed in (`taskDelivery: failed`). A deduped `POST` (same pending `(taskId, idempotencyKey)`) from a fresh session moves `sessionId` to that session. `sessionId` is absent on older records and when the task had no live session at ask time; those asks are typed into whatever session is live.
 
+## Operator inbox
+
+`GET /api/operator/inbox` (issue #3931) lists everything waiting on the operator, across every project, oldest first. `kookr brief` prints it and `/brief` on Telegram sends it. Owner only: a read-only viewer gets `403`, like every data route. It reads the task store, the monitor, pending `kookr ask` questions and the integration train monitor; it adds no detector of its own. The item kinds and the rule that lists a task once are described under [`kookr brief`](./cli.md#kookr-brief).
+
+Success returns `200` with:
+
+| Field | Meaning |
+| --- | --- |
+| `schema` | `"kookr.operator-inbox.v1"`. |
+| `generatedAt` | ISO time the inbox was built. |
+| `summary` | The first line every surface prints: `"5 waiting: 2 permission prompts, 1 question, 1 review, train halted"`, or `"Nothing is waiting on you. 8 tasks are working in 2 projects."` |
+| `totals` | Count per kind: `{permission, question, flagged, review, train}`. |
+| `working` | `{tasks, projects}`: in-progress tasks and how many projects they span. |
+| `items[]` | Oldest first. Each has `kind`, `summary` (what it is, built from fixed phrases and the tool name only), `since` (ISO), `howToAnswer`, and for task items `taskId`, `taskName`, `project`, `cwd` and `link` (dashboard path `/?task=<id>`). Kind-specific fields: `toolName` and `command` (secrets hidden) for `permission`; `askId`, `question` and `options` for `question`; `findingType` for `flagged` (an anomaly type, or `operator_needed`); `trainState` for `train` (the halt reason, such as `base-red`, or `stalled`). |
+
 ### Environment blockers (issue #1690, escalation heartbeat #1702)
 
 A durable registry of active external blockers (e.g. a GitHub Actions billing limit) so the first detector registers a blocker once, other agents consult it instead of re-diagnosing, and the owner is escalated. The registry is durable across daemon restart and auto-clears on a successful probe.

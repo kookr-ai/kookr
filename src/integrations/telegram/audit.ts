@@ -79,7 +79,9 @@ export type AuditEvent =
   | { kind: 'dropped_audio_disabled'; source: 'voice' | 'audio' | 'video_note' | 'document' }
   // `/tasks` read-back command — see issue #1394 and integrations/telegram/tasks-command.ts.
   | { kind: 'tasks_replied'; sender: number; count: number }
-  | { kind: 'tasks_query_failed'; sender: number; err: string };
+  | { kind: 'tasks_query_failed'; sender: number; err: string }
+  | { kind: 'brief_replied'; sender: number; named: number; hidden: number }
+  | { kind: 'brief_query_failed'; sender: number; err: string };
 
 export interface AuditWriter {
   /** Fire-and-forget append; never throws into the caller. */

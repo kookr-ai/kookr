@@ -90,7 +90,7 @@ function stripEdgePrefix(edge: string): string {
  * worktree of an allowed project is excluded, which errs toward never leaking
  * out-of-scope work rather than toward over-sharing.
  */
-function isWithinAllowedProject(cwd: string | undefined, allowedCwds: string[]): boolean {
+export function isWithinAllowedProject(cwd: string | undefined, allowedCwds: string[]): boolean {
   if (!cwd) return false;
   return allowedCwds.some((base) => {
     const normalized = base.replace(/\/+$/, '');
