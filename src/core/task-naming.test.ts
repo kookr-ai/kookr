@@ -3,10 +3,14 @@ import {
   deterministicTaskName,
   extractEmbeddedTaskName,
   generateTaskName,
+  generateTaskNameDetailed,
   presentTaskName,
   stripPromptOpeners,
+  taskNamerOutcomeOf,
 } from './task-naming.js';
+import { ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON, FallbackLlmClient } from './llm-client.js';
 import type { LlmClient, LlmCompletionDetail, LlmCompletionRequest } from './llm-client.js';
+import { resetHelperLlmDiagnosticsForTest } from './llm-factory.js';
 import {
   GUARDRAIL_PREFIXED_USER_PROMPT,
   GUARDRAIL_PREFIXED_USER_PROMPT_BODY,
@@ -313,6 +317,88 @@ describe('generateTaskName', () => {
 
     expect(result).toBeNull();
     expect((client.completeDetailed as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+});
+
+describe('generateTaskNameDetailed: why no name came back (issue #3980)', () => {
+  const callsOf = (client: LlmClient) => (client.completeDetailed as ReturnType<typeof vi.fn>).mock.calls.length;
+
+  test('a usable name comes back as the name', async () => {
+    const client = detailedClient(() => ({ text: '{"name":"Fix auth"}', finishReason: 'stop' }));
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: 'Fix auth' });
+  });
+
+  test('an empty or unparseable answer from the provider is a failure', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const empty = detailedClient(() => ({ text: null, finishReason: 'stop' }));
+    const garbage = detailedClient(() => ({ text: '{"nope":1}', finishReason: 'stop' }));
+    expect(await generateTaskNameDetailed(empty, 'Fix bug', '/project')).toEqual({ name: null, failure: 'failed' });
+    expect(await generateTaskNameDetailed(garbage, 'Fix bug', '/project')).toEqual({ name: null, failure: 'failed' });
+  });
+
+  test('a call kept local by the breaker or the attempt budget is skipped after one try', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const breaker = detailedClient(() => ({ text: null, finishReason: 'circuit_open' }));
+    const budget = detailedClient(() => ({ text: null, finishReason: ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON }));
+    expect(await generateTaskNameDetailed(breaker, 'Fix bug', '/project')).toEqual({ name: null, failure: 'skipped' });
+    expect(await generateTaskNameDetailed(budget, 'Fix bug', '/project')).toEqual({ name: null, failure: 'skipped' });
+    expect(callsOf(breaker)).toBe(1);
+    expect(callsOf(budget)).toBe(1);
+  });
+
+  test('provider errors that can clear by retrying are transient, thrown or reported', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const thrown429 = detailedClient(() => {
+      throw Object.assign(new Error('429 Too Many Requests'), { status: 429 });
+    });
+    const reported5xx = detailedClient(() => ({ text: null, finishReason: null, failureCategory: 'server_5xx' }));
+    expect(await generateTaskNameDetailed(thrown429, 'Fix bug', '/project')).toEqual({ name: null, failure: 'transient' });
+    expect(await generateTaskNameDetailed(reported5xx, 'Fix bug', '/project')).toEqual({ name: null, failure: 'transient' });
+    // Transient failures keep the per-mode retry.
+    expect(callsOf(reported5xx)).toBe(3);
+  });
+
+  test('a reported auth failure is a failure and stops after one try', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient(() => ({ text: null, finishReason: null, failureCategory: 'auth' }));
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'failed' });
+    expect(callsOf(client)).toBe(1);
+  });
+
+  test('one unusable answer outweighs transient errors on the other modes', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient((req) => (modeOf(req) === 'json_object'
+      ? { text: '{"nope":1}', finishReason: 'stop' }
+      : { text: null, finishReason: null, failureCategory: 'network_timeout' }));
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'failed' });
+  });
+
+  test('through the real fallback client, a spent attempt budget reads as skipped', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const previous = process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET;
+    process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = '1';
+    resetHelperLlmDiagnosticsForTest();
+    try {
+      const provider: LlmClient = {
+        provider: 'p', model: 'p-model', complete: vi.fn(),
+        completeDetailed: vi.fn(async () => ({ text: '{"name":"First name"}', finishReason: 'stop' })),
+      };
+      const client = new FallbackLlmClient([provider]);
+      expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: 'First name' });
+      expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'skipped' });
+      expect(provider.completeDetailed).toHaveBeenCalledOnce();
+    } finally {
+      if (previous === undefined) delete process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET;
+      else process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = previous;
+      resetHelperLlmDiagnosticsForTest();
+    }
+  });
+
+  test('only a name or a failed call is recorded in namer health', () => {
+    expect(taskNamerOutcomeOf({ name: 'Fix auth' })).toBe('success');
+    expect(taskNamerOutcomeOf({ name: null, failure: 'failed' })).toBe('failure');
+    expect(taskNamerOutcomeOf({ name: null, failure: 'transient' })).toBeNull();
+    expect(taskNamerOutcomeOf({ name: null, failure: 'skipped' })).toBeNull();
   });
 });
 

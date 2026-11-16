@@ -1,6 +1,12 @@
 import { basename } from 'node:path';
-import { classifyLlmProviderFailure, completeLlmDetailed } from './llm-client.js';
-import type { LlmClient, LlmCompletionRequest, LlmResponseFormat } from './llm-client.js';
+import { ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON, classifyLlmProviderFailure, completeLlmDetailed } from './llm-client.js';
+import type {
+  LlmClient,
+  LlmCompletionDetail,
+  LlmCompletionRequest,
+  LlmProviderFailureCategory,
+  LlmResponseFormat,
+} from './llm-client.js';
 import { firstMeaningfulPromptLine, stripPromptOpeners } from '../shared/task-name-display.js';
 import { logTaskNaming } from './training-data-logger.js';
 
@@ -156,6 +162,56 @@ function namingResponseFormat(mode: NamingMode): LlmResponseFormat | undefined {
   }
 }
 
+/**
+ * Why a naming call produced no name (issue #3980), so the namer health signal
+ * (#3616) counts only evidence about the provider:
+ * - `failed` — a provider answered with nothing usable (empty or unparseable),
+ *   or failed for good (`auth`: 401/402/403/410, or skipped while paused after
+ *   such a failure). Counts toward "Task namer failing".
+ * - `transient` — every attempt that reached a provider failed with a timeout,
+ *   a 429, a 5xx or an unclassified error. Not counted: it says the provider
+ *   was briefly unreachable, not that it is dead.
+ * - `skipped` — no provider was contacted (circuit breaker open, or the
+ *   process-wide helper-LLM attempt budget spent). Not counted.
+ */
+export type TaskNamingFailure = 'failed' | 'transient' | 'skipped';
+
+export type TaskNamingResult =
+  | { name: string }
+  | { name: null; failure: TaskNamingFailure };
+
+/** Severity order: one `failed` attempt outweighs any number of the others. */
+const FAILURE_RANK: Record<TaskNamingFailure, number> = { skipped: 0, transient: 1, failed: 2 };
+
+function worseFailure(a: TaskNamingFailure | undefined, b: TaskNamingFailure): TaskNamingFailure {
+  return a !== undefined && FAILURE_RANK[a] >= FAILURE_RANK[b] ? a : b;
+}
+
+function failureForCategory(category: LlmProviderFailureCategory): TaskNamingFailure {
+  // A malformed response is the provider answering with garbage, and auth is
+  // a dead or deprecated provider; the other categories can clear by retrying.
+  return category === 'auth' || category === 'malformed_response' ? 'failed' : 'transient';
+}
+
+/** Classify one attempt that returned no usable name. */
+function failureForDetail(detail: LlmCompletionDetail): TaskNamingFailure {
+  if (detail.text !== null) return 'failed';
+  if (detail.finishReason === 'circuit_open' || detail.finishReason === ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON) {
+    return 'skipped';
+  }
+  if (detail.failureCategory) return failureForCategory(detail.failureCategory);
+  return 'failed';
+}
+
+/**
+ * The namer health outcome for one naming call, or null when the call says
+ * nothing about the provider and must not be recorded (issue #3980).
+ */
+export function taskNamerOutcomeOf(result: TaskNamingResult): 'success' | 'failure' | null {
+  if (result.name !== null) return 'success';
+  return result.failure === 'failed' ? 'failure' : null;
+}
+
 /** Generates a short task name via an LLM. Returns null on any failure. */
 export async function generateTaskName(
   client: LlmClient,
@@ -163,6 +219,19 @@ export async function generateTaskName(
   cwd: string,
   criteria?: string,
 ): Promise<string | null> {
+  return (await generateTaskNameDetailed(client, prompt, cwd, criteria)).name;
+}
+
+/**
+ * Like {@link generateTaskName}, but says why no name came back (issue #3980),
+ * so the caller can record namer health from provider evidence only.
+ */
+export async function generateTaskNameDetailed(
+  client: LlmClient,
+  prompt: string,
+  cwd: string,
+  criteria?: string,
+): Promise<TaskNamingResult> {
   const contextParts = [
     `Task prompt: ${prompt}`,
     `Working directory: ${cwd}`,
@@ -183,28 +252,37 @@ export async function generateTaskName(
   // diagnosable from logs (finish_reason=length ⇒ truncated budget) instead of
   // a bare "empty name".
   let lastFailure = 'no attempt made';
+  let failure: TaskNamingFailure | undefined;
 
   for (const mode of NAMING_MODES) {
     const responseFormat = namingResponseFormat(mode);
     try {
-      const { text, finishReason } = await completeLlmDetailed(client, {
+      const detail = await completeLlmDetailed(client, {
         ...baseRequest,
         ...(responseFormat ? { responseFormat } : {}),
       });
+      const { text, finishReason } = detail;
       const name = text ? parseTaskName(text) : null;
       if (name) {
         logTaskNaming(prompt, cwd, criteria, name);
-        return name;
+        return { name };
       }
+      failure = worseFailure(failure, failureForDetail(detail));
       lastFailure = text === null
-        ? `empty completion (mode=${mode}, finish_reason=${finishReason ?? 'unknown'})`
+        ? `empty completion (mode=${mode}, finish_reason=${finishReason ?? 'unknown'}${
+          detail.failureCategory ? `, category=${detail.failureCategory}` : ''})`
         : `unparseable completion (mode=${mode}, finish_reason=${finishReason ?? 'unknown'})`;
-      // A client-level condition (breaker open) fails identically for every
-      // mode. Stop rather than re-trip the breaker — and re-log — once per mode.
-      if (finishReason === 'circuit_open') break;
+      // A client-level condition (breaker open, attempt budget spent) fails
+      // identically for every mode. Stop rather than re-trip it — and re-log —
+      // once per mode.
+      if (finishReason === 'circuit_open' || finishReason === ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON) break;
+      // A dead provider (auth) rejects the remaining modes the same way.
+      if (detail.failureCategory === 'auth') break;
     } catch (err) {
       if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
       lastFailure = `error (mode=${mode}): ${err instanceof Error ? err.message : String(err)}`;
+      const category = classifyLlmProviderFailure(err);
+      failure = worseFailure(failure, failureForCategory(category));
       // A permanent/cooldown-class provider failure (the 'auth' category, which
       // covers 401/402/403/410 Gone) fails identically for every mode: they share
       // one client, so a dead or deprecated provider will reject the remaining
@@ -212,10 +290,10 @@ export async function generateTaskName(
       // — instead of paying two more dead round-trips per spawn (issue #2960).
       // Transient failures (network/timeout/429/5xx ⇒ non-auth category) keep
       // the per-mode retry.
-      if (classifyLlmProviderFailure(err) === 'auth') break;
+      if (category === 'auth') break;
     }
   }
 
   console.warn(`[task-naming] No usable name after structured-output fallbacks — ${lastFailure}`);
-  return null;
+  return { name: null, failure: failure ?? 'failed' };
 }

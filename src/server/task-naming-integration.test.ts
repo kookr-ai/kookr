@@ -18,13 +18,20 @@ vi.mock('../adapters/llm/factory.js', () => ({
 
 // Mock generateTaskName so we control naming behavior. deterministicTaskName
 // stays REAL: it is the guaranteed fallback under test (issue #1526 Phase C4).
+// The server calls generateTaskNameDetailed; the mock maps a null name to the
+// failure kind `mockNamingFailure` returns (issue #3980), `failed` by default.
 const mockGenerateTaskName = vi.fn();
+const mockNamingFailure = vi.fn((): 'failed' | 'transient' | 'skipped' => 'failed');
 
 vi.mock('../core/task-naming.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../core/task-naming.js')>();
   return {
     ...actual,
     generateTaskName: (...args: unknown[]) => mockGenerateTaskName(...args),
+    generateTaskNameDetailed: async (...args: unknown[]) => {
+      const name = (await mockGenerateTaskName(...args)) as string | null;
+      return name ? { name } : { name: null, failure: mockNamingFailure() };
+    },
   };
 });
 
@@ -420,6 +427,21 @@ describe('AI task naming integration', () => {
         expect(saved.failedAttempts).toBe(2);
       }, { timeout: 3000 });
       expect(await taskNamerHealth()).toMatchObject({ enabled: true, failedAttempts: 2, lastSuccessAt: null });
+    });
+
+    test('a transient or locally skipped naming call is not counted; a failed one is (issue #3980)', async () => {
+      mockGenerateTaskName.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+      mockNamingFailure.mockReturnValueOnce('transient').mockReturnValueOnce('skipped').mockReturnValueOnce('failed');
+      await launchAndAwaitNaming('Fix bug one');
+      await launchAndAwaitNaming('Fix bug two');
+      await launchAndAwaitNaming('Fix bug three');
+      await vi.waitFor(() => {
+        expect(mockNamingFailure).toHaveBeenCalledTimes(3);
+        const saved = JSON.parse(readFileSync(join(tempDir, 'task-namer-health.json'), 'utf-8')) as { failedAttempts: number };
+        expect(saved.failedAttempts).toBe(1);
+      }, { timeout: 3000 });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(await taskNamerHealth()).toMatchObject({ failedAttempts: 1, lastSuccessAt: null });
     });
 
     test('an aborted naming call is not counted', async () => {

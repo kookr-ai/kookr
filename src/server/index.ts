@@ -29,7 +29,7 @@ import type { PermissionPromptCardPort, TelegramTaskOutcome } from '../shared/co
 import type { Scope } from './viewer-data-policy.js';
 import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
-import { deterministicTaskName, generateTaskName } from '../core/task-naming.js';
+import { deterministicTaskName, generateTaskNameDetailed, taskNamerOutcomeOf } from '../core/task-naming.js';
 import { readTaskNamerAlertThresholdMs, TaskNamerHealthTracker } from '../core/task-namer-health.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
 import type { TerminalSessionDiagnosticsSource } from '../adapters/terminal-session-diagnostics.js';
@@ -1792,14 +1792,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       applyFallbackName();
       return;
     }
-    generateTaskName(llmClient, prompt, cwd, criteria)
+    generateTaskNameDetailed(llmClient, prompt, cwd, criteria)
       // Record only the naming call's own outcome (issue #3616), before the
       // name is applied, so a later rename error is not counted as a failure.
-      // An aborted call says nothing about the provider.
+      // An aborted call, a call kept local (breaker open, attempt budget
+      // spent) and a transient provider failure say nothing about whether the
+      // provider is dead, so none of them is recorded (issue #3980).
       .then(
-        (name) => {
-          taskNamerHealth.record(name ? 'success' : 'failure');
-          return name;
+        (result) => {
+          const outcome = taskNamerOutcomeOf(result);
+          if (outcome) taskNamerHealth.record(outcome);
+          return result.name;
         },
         (err: unknown) => {
           if ((err as { name?: string } | null)?.name !== 'AbortError') taskNamerHealth.record('failure');

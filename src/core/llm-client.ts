@@ -4,6 +4,7 @@ export {
   completeLlmWithFailureAudit,
   FallbackLlmClient,
 } from './llm-factory.js';
+export { ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON } from './llm-types.js';
 export type {
   LlmClient,
   LlmCompletionAuditResult,
