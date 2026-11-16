@@ -162,11 +162,11 @@ export function isKillSwitch(row: EnvVarRow): boolean {
 /** True when the row's default leaves the switch off. */
 export function hasOffDefault(row: EnvVarRow): boolean {
   const def = normalize(row.defaultValue);
-  if (/^(on|true|1)\b/.test(def)) return false;
   if (/^(off|disabled|false)\b/.test(def)) return true;
-  if (/^(unset|0|false)\s*\([^)]*\b(off|disabled)\b[^)]*\)/.test(def)) return true;
-  if (/^unset\b/.test(def)) {
-    if (/_ENABLED$/.test(row.name)) return true;
+  if (/^(unset|0)\s*\([^)]*\b(off|disabled)\b[^)]*\)/.test(def)) return true;
+  if (/^unset\b/.test(def) && /_ENABLED$/.test(row.name)) return true;
+  // A bare `unset` or `0` default is off when the accepted values turn it on.
+  if (/^(unset|0)\b/.test(def)) {
     const accepted = normalize(row.accepted);
     return /\b(to enable|enables?|to opt in)\b|=\s*on\b/.test(accepted);
   }

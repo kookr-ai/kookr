@@ -47,6 +47,8 @@ describe('hasOffDefault', () => {
     ['unset', '`1`/`true` to opt in'],
     ['unset', 'Exact string `true` enables'],
     ['unset', '`1` = on'],
+    ['`0`', '`1` to enable'],
+    ['`false`', '`true`'],
   ])('default %s with accepted %s is off', (def, accepted) => {
     expect(hasOffDefault(row('KOOKR_X', def, accepted))).toBe(true);
   });
@@ -62,6 +64,8 @@ describe('hasOffDefault', () => {
     ['`4800`', 'Integer port'],
     ['unset', 'Secret string'],
     ['unset', '`true` to assert'],
+    ['`0`', 'Non-negative integer cents'],
+    ['`0`', '`0` disables, a positive number sets the limit'],
   ])('default %s with accepted %s is not off', (def, accepted) => {
     expect(hasOffDefault(row('KOOKR_X', def, accepted))).toBe(false);
   });

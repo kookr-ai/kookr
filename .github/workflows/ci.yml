@@ -113,6 +113,9 @@ jobs:
       - name: Validate requirements status matrix
         run: pnpm validate:requirements
 
+      - name: Check new feature switches ship on
+        run: pnpm validate:default-on
+
       # Reporter list and reportOnFailure live in vitest.config.mts so local
       # `pnpm test:coverage` and CI produce the same artifacts. `--coverage`
       # is the only flag this step adds; do not re-pass reporters here or
