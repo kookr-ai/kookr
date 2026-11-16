@@ -214,8 +214,8 @@ describe('read_questions', () => {
     expect(facts).toContain('Questions waiting for the operator (3;');
     const lines = facts!.split('\n').filter((l) => /^\d\./.test(l));
     expect(lines).toEqual([
-      '1. [aaaa] "Bake-off report" asked 5 minutes ago, closes in 10 minutes; its task is waiting.',
-      '2. [aaaa] "Bake-off report" asked 5 minutes ago, closes in 3 hours; its task is waiting.',
+      '1. [aaaa] "Bake-off report" asked 5 minutes ago, closes in 10 minutes; its task is still running and may be waiting on it.',
+      '2. [aaaa] "Bake-off report" asked 5 minutes ago, closes in 3 hours; its task is still running and may be waiting on it.',
       '3. [aaaa] "Old job" asked 5 minutes ago, closes in 1 minute; its task has finished, so nothing is waiting on it.',
     ]);
     expect(outcome.content).toContain('1. Running soon? Choices: Postgres; SQLite.');

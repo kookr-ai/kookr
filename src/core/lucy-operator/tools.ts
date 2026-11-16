@@ -202,7 +202,7 @@ function describeQuestions(board: LucyBoardInput, nowMs: number): string {
   let size = 0;
   for (const ask of pending.slice(0, MAX_QUESTION_LINES)) {
     const n = facts.length + 1;
-    const state = ask.taskEnded === true ? 'its task has finished, so nothing is waiting on it' : 'its task is waiting';
+    const state = ask.taskEnded === true ? 'its task has finished, so nothing is waiting on it' : 'its task is still running and may be waiting on it';
     const fact = `${n}. ${askWho(ask, handles)} asked ${agoWords(ask.createdAt, nowMs)}, closes ${inWords(ask.expiresAt, nowMs)}; ${state}.`;
     const choices = ask.options.map((o) => boardText(o, MAX_QUESTION_OPTION_CHARS)).join('; ');
     const text = `${n}. ${boardText(ask.question, MAX_QUESTION_TEXT_CHARS)} Choices: ${choices}.`;
