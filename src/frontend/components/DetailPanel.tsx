@@ -34,6 +34,7 @@ import { TaskFactsColumn } from './DetailPanel/TaskFactsColumn.js';
 import { usePaneAtLeast, FACTS_DOCK_MIN_PANE_PX } from './DetailPanel/use-pane-at-least.js';
 import { appendDictation } from '../append-dictation.js';
 import type { EmptyEnterAdvanceScreen } from '../terminal-input-draft.js';
+import { useTerminalEmptyEnterAdvance } from '../store/terminal-empty-enter-pref.js';
 import { TaskCompletionDigest } from './TaskCompletionDigest.js';
 import { TranscriptView, TranscriptToggle } from './TranscriptView.js';
 
@@ -622,6 +623,9 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     });
     advanceEmptyEnter();
   }, [hasAgent, advanceEmptyEnter, agent?.turnState]);
+  // The operator can turn off the terminal's empty-Enter advance in Settings;
+  // the terminal then sends every Enter to the agent (#3568).
+  const terminalEmptyEnterAdvance = useTerminalEmptyEnterAdvance();
 
   if (!agent) {
     return (
@@ -1283,7 +1287,8 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                           tmuxName={agent.agentId}
                           agentType={agent.agentType}
                           visible={terminalVisible}
-                          onEmptySubmit={handleEmptyEnterAdvance}
+                          onEmptySubmit={terminalEmptyEnterAdvance ? handleEmptyEnterAdvance : undefined}
+                          turnState={agent.turnState ?? null}
                           onOpenFile={handleOpenFile}
                         />
                       </Suspense>

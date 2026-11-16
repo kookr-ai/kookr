@@ -10,6 +10,11 @@ import type { AgentSelection } from '../../shared/protocol.js';
 import { AVAILABLE_AGENT_TYPES } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { AVATAR_PANEL_KEY, updateAvatarPanelPrefs } from '../store/avatar-panel-prefs.js';
+import {
+  TERMINAL_EMPTY_ENTER_ADVANCE_KEY,
+  getTerminalEmptyEnterAdvance,
+  setTerminalEmptyEnterAdvance,
+} from '../store/terminal-empty-enter-pref.js';
 
 interface MockSettings {
   githubPollingEnabled: boolean;
@@ -1224,6 +1229,39 @@ describe('SettingsDialog tabs', () => {
     expect(alert?.textContent).toContain('Revoked 1 shares; 1 revocations failed.');
     expect(container.textContent).not.toContain('Relay logs are at');
     confirmSpy.mockRestore();
+  });
+
+  test('the terminal empty-Enter switch sits under Keyboard Shortcuts, defaults on, and saves per browser', async () => {
+    await flush();
+    await act(async () => {
+      setTerminalEmptyEnterAdvance(true);
+    });
+    try {
+      const toggle = container.querySelector<HTMLButtonElement>('button[aria-labelledby="terminal-empty-enter-label"]');
+      expect(toggle).not.toBeNull();
+      expect(toggle!.closest('.settings-section')?.querySelector('.settings-section-title')?.textContent)
+        .toBe('Keyboard Shortcuts');
+      expect(container.querySelector('#terminal-empty-enter-label')?.textContent?.trim())
+        .toBe('Enter in an empty terminal goes to the next task');
+      // The help text names the dedicated shortcuts that still navigate when it is off.
+      const desc = container.querySelector('#terminal-empty-enter-desc')?.textContent ?? '';
+      expect(desc).toContain('(next task)');
+      expect(desc).toContain('(next finding)');
+      expect(toggle!.getAttribute('aria-pressed')).toBe('true');
+
+      await act(async () => {
+        toggle!.click();
+      });
+
+      expect(toggle!.getAttribute('aria-pressed')).toBe('false');
+      expect(getTerminalEmptyEnterAdvance()).toBe(false);
+      expect(localStorage.getItem(TERMINAL_EMPTY_ENTER_ADVANCE_KEY)).toBe('false');
+      expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+    } finally {
+      await act(async () => {
+        setTerminalEmptyEnterAdvance(true);
+      });
+    }
   });
 
   test('switching the avatar panel on always opens it, even if it was left minimised', async () => {

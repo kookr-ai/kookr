@@ -8,21 +8,30 @@ import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track } from '../telemetry.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { DetailPanel } from './DetailPanel.js';
+import {
+  TERMINAL_EMPTY_ENTER_ADVANCE_KEY,
+  __resetTerminalEmptyEnterAdvanceForTests,
+  setTerminalEmptyEnterAdvance,
+} from '../store/terminal-empty-enter-pref.js';
 
 vi.mock('../telemetry.js', () => ({ track: vi.fn(), trackClick: vi.fn() }));
 vi.mock('./ActivityPanel.js', () => ({ ActivityPanel: () => React.createElement('div', { 'data-testid': 'activity-panel' }) }));
 vi.mock('./GitHubPanel.js', () => ({ GitHubPanel: () => React.createElement('div', { 'data-testid': 'github-panel' }) }));
+const terminalProps = vi.hoisted(() => ({ last: null as null | Record<string, unknown> }));
 vi.mock('./TerminalPanel.js', () => ({
   // The real TerminalPanel reports what its screen check saw; this stand-in
   // reports an unrecognized screen (no menu, no input box).
-  TerminalPanel: ({ onEmptySubmit }: { onEmptySubmit?: (screen: 'input_box' | 'unrecognized') => void }) => React.createElement(
-    'button',
-    {
-      'data-testid': 'terminal-empty-submit',
-      onClick: () => onEmptySubmit?.('unrecognized'),
-    },
-    'terminal',
-  ),
+  TerminalPanel: (props: { onEmptySubmit?: (screen: 'input_box' | 'unrecognized') => void }) => {
+    terminalProps.last = props;
+    return React.createElement(
+      'button',
+      {
+        'data-testid': 'terminal-empty-submit',
+        onClick: () => props.onEmptySubmit?.('unrecognized'),
+      },
+      'terminal',
+    );
+  },
 }));
 vi.mock('./DiffPane.js', () => ({ DiffPane: () => React.createElement('div', { 'data-testid': 'diff-pane' }) }));
 vi.mock('./SnoozeDialog.js', () => ({ SnoozeDialog: () => null }));
@@ -77,6 +86,9 @@ describe('DetailPanel empty Enter behavior', () => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();
+    localStorage.removeItem(TERMINAL_EMPTY_ENTER_ADVANCE_KEY);
+    __resetTerminalEmptyEnterAdvanceForTests();
+    terminalProps.last = null;
     syncGlobalStore();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -509,5 +521,43 @@ describe('DetailPanel empty Enter behavior', () => {
       action: 'advance_empty_input',
       context: 'input_focused',
     }));
+  });
+  test('passes the agent turn state to the terminal for its question guard', () => {
+    const first = { ...makeAgent('agent-1', null), turnState: 'waiting_for_input' as const };
+    useKookrStore.setState({ agents: [first], selectedAgentId: first.agentId });
+    root = renderDetailPanel(container, first, () => true);
+
+    expect(terminalProps.last?.turnState).toBe('waiting_for_input');
+    expect(terminalProps.last?.onEmptySubmit).toEqual(expect.any(Function));
+  });
+
+  test('with the setting off, the terminal gets no advance handler; the reply box still advances', () => {
+    const first = makeAgent('agent-1', null);
+    const second = makeAgent('agent-2', null);
+    useKookrStore.setState({ agents: [first, second], selectedAgentId: first.agentId });
+    act(() => setTerminalEmptyEnterAdvance(false));
+    root = renderDetailPanel(container, first, () => true);
+
+    // No handler: the terminal sends every Enter to the agent.
+    expect(terminalProps.last).not.toBeNull();
+    expect(terminalProps.last?.onEmptySubmit).toBeUndefined();
+    expect(localStorage.getItem(TERMINAL_EMPTY_ENTER_ADVANCE_KEY)).toBe('false');
+
+    const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+    act(() => {
+      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
+  });
+
+  test('turning the setting back on restores the terminal advance handler live', () => {
+    const first = makeAgent('agent-1', null);
+    useKookrStore.setState({ agents: [first], selectedAgentId: first.agentId });
+    act(() => setTerminalEmptyEnterAdvance(false));
+    root = renderDetailPanel(container, first, () => true);
+    expect(terminalProps.last?.onEmptySubmit).toBeUndefined();
+
+    act(() => setTerminalEmptyEnterAdvance(true));
+    expect(terminalProps.last?.onEmptySubmit).toEqual(expect.any(Function));
   });
 });

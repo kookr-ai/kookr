@@ -26,8 +26,10 @@ import { createTerminalScrollbackGuard } from '../terminal-scrollback.js';
 import { track } from '../telemetry.js';
 import { installTerminalRenderer, type InstalledTerminalRenderer } from '../terminal-renderer.js';
 import { createTerminalWheelScroller, type TerminalWheelScroller } from '../terminal-wheel.js';
+import type { TurnState } from '../../shared/protocol.js';
 import {
   classifyEmptyEnterScreen,
+  emptyEnterAdvances,
   terminalContentTail,
   updateTerminalInputDraft,
   type EmptyEnterAdvanceScreen,
@@ -50,8 +52,16 @@ interface Props {
    * cols leaves the browser pane nearly blank (only left-edge chrome).
    */
   agentType?: string | null;
-  /** Enter with nothing typed, on a screen that moves to the next task. */
+  /**
+   * Enter with nothing typed, on a screen that moves to the next task. Leave it
+   * unset to send every Enter to the agent (the operator turned the shortcut off).
+   */
   onEmptySubmit?: EmptySubmitHandler;
+  /**
+   * The agent's turn state from hook events. `waiting_for_input` (an unanswered
+   * question) makes Enter on a screen the check cannot read go to the agent.
+   */
+  turnState?: TurnState | null;
   /** Click handler for a viewable file path detected in terminal output. */
   onOpenFile?: (path: string) => void;
 }
@@ -130,7 +140,8 @@ function getVisibleTerminalTail(terminal: Terminal): string {
 function emptyTerminalEnterAdvanceScreen(
   draft: string,
   terminal: Terminal,
-  onEmptySubmit?: EmptySubmitHandler,
+  onEmptySubmit: EmptySubmitHandler | undefined,
+  turnState: TurnState | null | undefined,
 ): EmptyEnterAdvanceScreen | null {
   // Emptiness stays byte-tracked (reliable across streaming/session switches) —
   // this preserves the prior draft-only navigation behavior exactly.
@@ -144,12 +155,13 @@ function emptyTerminalEnterAdvanceScreen(
   // Adapter-injected prompt text is not visible to xterm's local onData draft
   // tracker either: if the input box visibly holds a user draft, forward Enter
   // to the agent instead of consuming it as empty-task navigation.
+  // When the screen shows neither a menu nor the idle input box, the turn state
+  // breaks the tie: an unanswered question keeps Enter with the agent (#3568).
   const screen = classifyEmptyEnterScreen(getVisibleTerminalTail(terminal));
-  if (screen === 'menu' || screen === 'draft') return null;
-  return screen;
+  return emptyEnterAdvances(screen, turnState) ? screen : null;
 }
 
-export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onOpenFile }: Props) {
+export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, turnState, onOpenFile }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -175,6 +187,8 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
   const currentTmuxRef = useRef<string | null>(null);
   const terminalInputDraftRef = useRef('');
   const onEmptySubmitRef = useRef(onEmptySubmit);
+  const turnStateRef = useRef(turnState);
+  turnStateRef.current = turnState;
   const onOpenFileRef = useRef(onOpenFile);
   const searchOpenRef = useRef(false);
   const visibleRef = useRef(visible);
@@ -625,6 +639,7 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
         terminalInputDraftRef.current,
         terminal,
         onEmptySubmitRef.current,
+        turnStateRef.current,
       );
       if (!advanceScreen) return;
       e.preventDefault();
@@ -960,7 +975,9 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
     const inputDisposable = terminal.onData((data) => {
       if (!visibleRef.current) return;
       const advanceScreen = data === '\r'
-        ? emptyTerminalEnterAdvanceScreen(terminalInputDraftRef.current, terminal, onEmptySubmitRef.current)
+        ? emptyTerminalEnterAdvanceScreen(
+          terminalInputDraftRef.current, terminal, onEmptySubmitRef.current, turnStateRef.current,
+        )
         : null;
       if (advanceScreen) {
         onEmptySubmitRef.current?.(advanceScreen);

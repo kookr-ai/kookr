@@ -1,3 +1,5 @@
+import type { TurnState } from '../shared/protocol.js';
+
 const CTRL_C = '\u0003';
 const CTRL_U = '\u0015';
 const BACKSPACE = '\b';
@@ -123,9 +125,9 @@ function lastComposerDraft(tail: string): string | null {
  * - `input_box`: the agent's idle, empty input box, so Enter moves to the next task;
  * - `unrecognized`: none of these, so Enter also moves to the next task.
  *
- * Only the last two lead to an advance. An advance on an `unrecognized` screen
- * is the case to watch: it is where a menu the check does not know would be
- * misread as an idle terminal (#3568).
+ * Only the last two can lead to an advance. An `unrecognized` screen is where a
+ * menu the check does not know would be misread as an idle terminal, so
+ * `emptyEnterAdvances` also consults the agent's turn state there (#3568).
  */
 export type EmptyEnterScreen = 'menu' | 'draft' | 'input_box' | 'unrecognized';
 
@@ -137,4 +139,27 @@ export function classifyEmptyEnterScreen(tail: string): EmptyEnterScreen {
   const draft = lastComposerDraft(tail);
   if (draft === null) return 'unrecognized';
   return draft.length > 0 ? 'draft' : 'input_box';
+}
+
+/**
+ * Whether an empty Enter in the terminal moves to the next task, given what the
+ * screen check saw and the agent's turn state (from hook events).
+ *
+ * The turn state is a second, independent signal: while a Claude Code question
+ * is unanswered (`waiting_for_input`), Enter on a screen the check cannot read
+ * goes to the agent, so a question menu drawn in a layout or wording the screen
+ * check does not know is answered rather than skipped.
+ *
+ * It is never the only gate. If the operator dismisses the question with Esc,
+ * no hook event may mark the end of the wait, so the turn state can stay
+ * `waiting_for_input` until the next prompt. The idle, empty input box on
+ * screen therefore still advances whatever the turn state says.
+ */
+export function emptyEnterAdvances(
+  screen: EmptyEnterScreen,
+  turnState: TurnState | null | undefined,
+): screen is EmptyEnterAdvanceScreen {
+  if (screen === 'input_box') return true;
+  if (screen === 'unrecognized') return turnState !== 'waiting_for_input';
+  return false;
 }

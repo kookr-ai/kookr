@@ -32,6 +32,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { applyRoundRobinIndex } from '../store/round-robin-cursor.js';
 import { applyQuotaHeadroomThreshold } from '../store/quota-headroom-threshold.js';
 import { updateAvatarPanelPrefs, useAvatarPanelPrefs } from '../store/avatar-panel-prefs.js';
+import { setTerminalEmptyEnterAdvance, useTerminalEmptyEnterAdvance } from '../store/terminal-empty-enter-pref.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { HookInventorySection } from './HookInventorySection.js';
 import { DictationCorpusPanel } from './DictationCorpusPanel.js';
@@ -168,7 +169,7 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, readonly string[]> = {
     'claude quota headroom', 'auto-close delay',
     'completion-ready ttl escalation', 'hung-task reaper', 'hung-task reap threshold',
     'clean worktrees on completion', 'effort', 'reply snippets', 'saved replies',
-    'keyboard shortcuts', 'platform defaults', 'github polling', 'enable polling',
+    'keyboard shortcuts', 'enter in an empty terminal', 'platform defaults', 'github polling', 'enable polling',
     'polling interval', 'oss sources', 'auto-watch local sources',
   ],
   sharing: [
@@ -653,6 +654,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   // Only agents the server registered (opt-in agents such as opencode are absent when their flag is off).
   const settingsAgents = settingsVisibleAgentTypes(availableAgentTypes, settings?.blacklistedAgentTypes ?? []);
   const sound = useSoundPreference();
+  const terminalEmptyEnterAdvance = useTerminalEmptyEnterAdvance();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -1938,6 +1940,30 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                   {/* Keyboard Shortcuts */}
                   <div className="settings-section">
                     <div className="settings-section-title">Keyboard Shortcuts</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span id="terminal-empty-enter-label" className="settings-label">
+                          Enter in an empty terminal goes to the next task
+                        </span>
+                        <span id="terminal-empty-enter-desc" className="settings-desc">
+                          When on, Enter with nothing typed in a task&apos;s terminal moves to the next task,
+                          unless the agent is showing a menu or waiting on a question. When off, Enter always
+                          goes to the agent; use {formatShortcutBinding(resolvedShortcuts.next_task)} (next task)
+                          or {formatShortcutBinding(resolvedShortcuts.next_bottleneck)} (next finding) to move on.
+                          This choice is saved for this browser only.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className={`settings-toggle ${terminalEmptyEnterAdvance ? 'active' : ''}`}
+                        onClick={() => setTerminalEmptyEnterAdvance(!terminalEmptyEnterAdvance)}
+                        aria-labelledby="terminal-empty-enter-label"
+                        aria-describedby="terminal-empty-enter-desc"
+                        aria-pressed={terminalEmptyEnterAdvance}
+                      >
+                        <span className="settings-toggle-knob" />
+                      </button>
+                    </div>
                     <div className="settings-row">
                       <div className="settings-row-info">
                         <span className="settings-label">Platform defaults</span>

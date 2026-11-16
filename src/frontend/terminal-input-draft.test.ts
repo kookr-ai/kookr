@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifyEmptyEnterScreen,
+  emptyEnterAdvances,
   looksLikeInteractiveMenu,
   stripTerminalReports,
   terminalContentTail,
@@ -102,6 +103,32 @@ describe('classifyEmptyEnterScreen', () => {
     ['empty tail', '', 'unrecognized'],
   ])('classifies a %s', (_name, tail, expected) => {
     expect(classifyEmptyEnterScreen(tail)).toBe(expected);
+  });
+});
+
+describe('emptyEnterAdvances', () => {
+  it.each([
+    // The idle input box advances whatever the turn state, so a turn state left
+    // stale by an Esc-dismissed question never leaves Enter-to-advance dead.
+    ['input_box', 'waiting_for_input', true],
+    ['input_box', 'completed_turn', true],
+    ['input_box', null, true],
+    // An unreadable screen advances unless a question is pending.
+    ['unrecognized', 'waiting_for_input', false],
+    ['unrecognized', 'completed_turn', true],
+    ['unrecognized', 'running', true],
+    // `blocked` also covers a turn killed by an API error, with no menu on screen.
+    ['unrecognized', 'blocked', true],
+    ['unrecognized', 'unknown', true],
+    ['unrecognized', null, true],
+    ['unrecognized', undefined, true],
+    // A menu or a draft always keeps Enter with the agent.
+    ['menu', 'completed_turn', false],
+    ['menu', null, false],
+    ['draft', 'completed_turn', false],
+    ['draft', 'waiting_for_input', false],
+  ] as const)('screen %s with turn state %s advances: %s', (screen, turnState, expected) => {
+    expect(emptyEnterAdvances(screen, turnState)).toBe(expected);
   });
 });
 
