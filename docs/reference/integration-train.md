@@ -76,6 +76,28 @@ copy pinned to it by a test) and behave as before when it is absent:
    is rejected the outcome is still `reverted` and the next cycle promotes it.
    A revert that changes nothing (the culprit was already undone) is never
    verified or pushed: the train halts (`revert-not-sufficient`).
+   A pull request that merges into the integration branch while the revert is
+   being verified makes the revert push fail (issue #4014). The train does not
+   throw the verified revert away: it fetches, re-applies the same revert on the
+   new head and pushes it at once, without a second full run, up to three times
+   in the same cycle. That re-applied revert is not promoted; the next cycle
+   verifies the new head like any other before anything reaches `main`. If the
+   re-applied revert conflicts (a later commit touched the same lines) the train
+   halts `revert-conflict`. If the culprit was meanwhile reverted, or the revert
+   now changes nothing, the train drops it and the next cycle starts afresh
+   (`retry`). When the integration head did not move, the refusal is not a race
+   (branch protection, credentials) and counts towards `push-rejected` as usual.
+   When revert pushes for the same culprit are rejected twice in a row, the
+   train alerts once (`revert-push-rejected`) and keeps going.
+   The confirmed culprit is saved in `state.json` (`pendingRevert`) as soon as
+   it is confirmed, before the revert is built. A cycle that ends before the
+   revert is pushed (a rejected push, a restart, a crash) does not bisect again:
+   the next cycle checks that the culprit is still on the integration branch,
+   not on `main` and not reverted, and goes straight to the revert. It verifies
+   the revert only if no revert of that culprit passed yet. A halt forgets it,
+   so the cycle after a person cleared the halt starts from the head again,
+   except the halts that say nothing about the culprit: `verify-infra`,
+   `push-rejected`, `train-error` and `reconcile-conflict`.
    The train's revert commits carry the trailer `Kookr-Integration-Train: revert`,
    which is how a later cycle tells them from a revert a person made.
 10. After a pushed revert, the linked issues of the reverted PR are reopened with
@@ -176,7 +198,7 @@ guess in these cases:
 ## Notifications
 
 Each event the train raises (`halted`, `reverted`, `fix-budget-exhausted`,
-`fix-spawn-failed`, `main-bypassed`) is appended to `events.jsonl` and written
+`fix-spawn-failed`, `revert-push-rejected`, `main-bypassed`) is appended to `events.jsonl` and written
 to the operator signal outbox (`KOOKR_OPERATOR_SIGNAL_DIR`, default
 `~/.kookr/playbook-state/operator-signals`) with source `integration-train`,
 title `integration train: <event>` and the event's detail. `main-bypassed` is an
@@ -328,7 +350,8 @@ Under `${KOOKR_DIR:-~/.kookr}/integration-train/<owner>-<repo>/` (the `origin`
 remote's name, so every checkout of one repository shares it and two
 repositories never do): `state.json` (halt, green
 SHAs, flaky heads, fix-task counts, whether an alert awaits its recovery signal,
-consecutive rejected pushes), `train.log`, `train.pid`, `train.lock`
+consecutive rejected pushes, a confirmed culprit whose revert is not pushed yet),
+`train.log`, `train.pid`, `train.lock`
 (one instance only; a second `cycle` or `run` exits quietly), `events.jsonl`
 (notifications), `verify-<sha>.log` (20 newest kept) with its
 `verify-<sha>.report.json`, and
