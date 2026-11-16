@@ -1,5 +1,5 @@
 /**
- * `kookr opinion sweep` — turn the operator's `/opinion` replies into work
+ * `kookr opinion sweep` — turn the operator's replies to opinion requests into work
  * (issue #3920).
  *
  * Unattended tasks ask for the operator's opinion without waiting: they post a
@@ -38,9 +38,10 @@ Usage:
 
 sweep  For every issue or pull request labelled ${OPINION_LABEL} (open or
        closed) that has an opinion request comment, act once on each new reply:
-       a comment whose first line starts with /opinion.
-         /opinion ok, or the recommended option's letter alone: removes the label.
-         /opinion <another option or a change>: starts one follow-up task.
+       any comment after the request, in the operator's own words, that carries
+       no Kookr marker (<!-- kookr:... -->) and is not an "Automation note".
+         A short accept (ok, lgtm, looks good, the recommended letter): removes the label.
+         Anything else: starts one follow-up task that reads it and applies it.
        Each handled reply gets a marker comment, so a second run does nothing.
 
 Options:
@@ -209,7 +210,7 @@ export async function runOpinionCli(argv: string[], io: OpinionCliIo = {}): Prom
         const spawned = await run(process.execPath, [
           spawnBin,
           '--cwd', cwd,
-          '--criteria', `The operator's /opinion reply ${action.reply.url} on ${repo}#${item.number} is applied (merged), or one clarifying question is posted on the item`,
+          '--criteria', `The comment ${action.reply.url} on ${repo}#${item.number} is applied (merged), found not to be an answer, or answered by one clarifying question on the item`,
           '--idempotency-key', `opinion:${repo}#${item.number}:${action.reply.commentId}`,
           '--dedupe', 'block',
           '--auto-close-on-signal',

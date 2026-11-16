@@ -341,7 +341,7 @@ describe('implement-github-issue playbook: asynchronous opinion requests (#3920)
 
   test('an operator-visible design choice uses the opinion request flow and carries on', () => {
     expect(pb.body).toContain('use the opinion request flow (`asking-the-operator` skill');
-    expect(pb.body).toContain('carry on with the recommended option. Only a hard-to-undo choice');
+    expect(pb.body).toContain('carry on with the recommended option; from then on, start every comment you post on that item with `<!-- kookr:automation -->`. Only a hard-to-undo choice');
   });
 
   test('Phase 2.6 does not quarantine an issue that only needs a mockup or a reversible decision', () => {

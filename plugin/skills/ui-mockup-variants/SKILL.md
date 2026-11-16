@@ -66,7 +66,9 @@ Instead:
    options.
 4. Implement the recommended variant (Step 5) and deliver the pull request with
    before/after screenshots and a link to the request. The operator answers
-   later with an `/opinion` comment; a different pick becomes a follow-up task.
+   later with a comment in their own words; a different pick becomes a
+   follow-up task. Start every comment you post on that item with
+   `<!-- kookr:automation -->` so it is not read as their answer.
 
 ## Step 1 — Offer the menu (one AskUserQuestion call)
 

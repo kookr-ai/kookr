@@ -68,7 +68,7 @@ function io(run: CommandRunner) {
 
 describe('kookr opinion sweep', () => {
   it('starts exactly one follow-up for a reply choosing another variant, and none on a second run', async () => {
-    const host = fakeHost([{ number: 7, comments: [REQUEST, '/opinion B'] }]);
+    const host = fakeHost([{ number: 7, comments: [REQUEST, 'B'] }]);
     const first = io(host.run);
     expect(await runOpinionCli(['sweep', '--repo', 'o/r'], first.io)).toBe(0);
     expect(host.spawns).toHaveLength(1);
@@ -85,7 +85,7 @@ describe('kookr opinion sweep', () => {
   });
 
   it('removes the label on an accepting reply and starts no task', async () => {
-    const host = fakeHost([{ number: 8, isPullRequest: true, comments: [REQUEST, '/opinion ok'] }]);
+    const host = fakeHost([{ number: 8, isPullRequest: true, comments: [REQUEST, 'ok'] }]);
     expect(await runOpinionCli(['sweep', '--repo', 'o/r'], io(host.run).io)).toBe(0);
     expect(host.labelRemovals).toEqual([8]);
     expect(host.spawns).toEqual([]);
@@ -93,7 +93,7 @@ describe('kookr opinion sweep', () => {
   });
 
   it('changes nothing in a dry run', async () => {
-    const host = fakeHost([{ number: 9, comments: [REQUEST, '/opinion C'] }]);
+    const host = fakeHost([{ number: 9, comments: [REQUEST, 'Let us take C'] }]);
     const run = io(host.run);
     expect(await runOpinionCli(['sweep', '--repo', 'o/r', '--dry-run', '--json'], run.io)).toBe(0);
     expect(host.spawns).toEqual([]);
@@ -103,7 +103,7 @@ describe('kookr opinion sweep', () => {
   });
 
   it('does not record a reply whose follow-up failed to start, so the next run retries it', async () => {
-    const host = fakeHost([{ number: 10, comments: [REQUEST, '/opinion B'] }]);
+    const host = fakeHost([{ number: 10, comments: [REQUEST, 'B'] }]);
     const failing: CommandRunner = async (cmd, args, input) =>
       cmd === 'gh' ? host.run(cmd, args, input) : { code: 3, stdout: '', stderr: 'no server' };
     const run = io(failing);
@@ -113,7 +113,7 @@ describe('kookr opinion sweep', () => {
   });
 
   it('stops on an item after a failed follow-up, so a later accept cannot hide the reply', async () => {
-    const host = fakeHost([{ number: 11, comments: [REQUEST, '/opinion B', '/opinion ok'] }]);
+    const host = fakeHost([{ number: 11, comments: [REQUEST, 'B', 'ok'] }]);
     const failing: CommandRunner = async (cmd, args, input) =>
       cmd === 'gh' ? host.run(cmd, args, input) : { code: 4, stdout: '', stderr: 'server error' };
     expect(await runOpinionCli(['sweep', '--repo', 'o/r'], io(failing).io)).toBe(4);

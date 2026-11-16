@@ -1091,7 +1091,7 @@ Related: the advisory `github.scanner-backoff` check in [`kookr doctor`](#kookr-
 
 ## `kookr opinion`
 
-Act on the operator's answers to asynchronous opinion requests (issue #3920). An unattended task that needs a mockup or a reversible decision posts a request comment (marker `kookr:opinion-request`) on the issue or pull request, adds the `needs-operator-opinion` label, and carries on; the operator answers later with a comment whose first line starts with `/opinion`. The flow is described in the `asking-the-operator` skill ("Unattended tasks").
+Act on the operator's answers to asynchronous opinion requests (issue #3920). An unattended task that needs a mockup or a reversible decision posts a request comment (marker `kookr:opinion-request`) on the issue or pull request, adds the `needs-operator-opinion` label, and carries on; the operator answers later with an ordinary comment, in their own words. Because workers post with the operator's GitHub account, automation is told apart by its markers: from the request on, every comment a task posts on the item starts with `<!-- kookr:automation -->` (or carries another Kookr marker). The flow is described in the `asking-the-operator` skill ("Unattended tasks").
 
 ```bash
 kookr opinion sweep --repo kookr-ai/kookr            # act on new replies
@@ -1102,8 +1102,9 @@ For every labelled item, open or closed, each new reply after the request is han
 
 | Reply | Effect |
 | --- | --- |
-| `/opinion ok` (or `accept`, `lgtm`, …), or the recommended letter alone | Removes the `needs-operator-opinion` label. |
-| `/opinion <another option or a change>` | Starts one follow-up task (`kookr spawn`) that applies the reply. |
+| A short accept alone (`ok`, `lgtm`, `looks good`, …), or the recommended letter alone | Removes the `needs-operator-opinion` label. |
+| Any other unmarked comment | Starts one follow-up task (`kookr spawn`) that reads it and decides: implement another option or a change, remove the label for an accept in other words, or do nothing when it is not an answer. |
+| A comment with a Kookr marker (`<!-- kookr:… -->`, except `kookr:opinion-relay`), or one starting with "Automation note:" / "Automation check:" | Ignored (automation). |
 | Any reply to a request marked `stopped` (the task stopped before a hard-to-undo choice) | Starts one follow-up task that carries out the chosen option. |
 
 Only comments by the repository owner, members and collaborators (`author_association`) count, because on a public repository anyone can comment and a reply becomes a task prompt. After an accept the item is no longer labelled, so later replies on it are not swept. If an action fails, the sweep stops on that item and retries it on the next run. After acting, the sweep posts a `kookr:opinion-handled` marker comment naming the reply, so a second run does nothing. If that marker cannot be posted, the next run sees the reply again; the follow-up's idempotency key (`opinion:<repo>#<n>:<reply id>`) replays the same task for 24 hours. The `Deliver GitHub Issues` playbook runs the sweep at the start of Phase 2.
@@ -2334,7 +2335,7 @@ kookr ops timers     # lifecycle-timer lastFiredAt + overdue (GET /api/diagnosti
 kookr ops timers --json  # same timer table as one JSON envelope (includes overdue list)
 kookr github status  # GitHub scanner liveness, backoff, and tracked-ref count (GET /api/github/status)
 kookr github status --json  # same scanner status as one JSON envelope
-kookr opinion sweep --repo OWNER/NAME [--dry-run]  # turn /opinion replies on needs-operator-opinion items into follow-up tasks
+kookr opinion sweep --repo OWNER/NAME [--dry-run]  # turn the operator's replies on needs-operator-opinion items into follow-up tasks
 ```
 
 ## `kookr containers`

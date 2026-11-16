@@ -16,7 +16,7 @@ keywords: >
   decision, multiple choice question, Telegram question, need approval,
   which option, unblock from phone, human in the loop, escalate a decision,
   opinion request, needs-operator-opinion, needs a mockup, needs a decision,
-  unattended task, ask without waiting, /opinion
+  unattended task, ask without waiting, answer in a comment
 related: autonomous-watch-loop, automation-design
 ---
 
@@ -162,19 +162,25 @@ phone, with a comment.
    Material: <artifact link, or the embedded screenshots>. I am carrying on with **A**.
    Task: <task name> (issue #<N>)
 
+   Answer with a comment here, in your own words: "ok" keeps A, or name
+   another option, or say what to change.
+
    <full URL of the artifact or pull request, on its own line>
-   Reply with a comment that starts with `/opinion`: `/opinion ok` keeps A,
-   `/opinion B` picks B, `/opinion <what to change>` asks for a change.
    MD
    gh issue edit "$N" --repo "$REPO" --add-label needs-operator-opinion
    ```
 
-   The `/opinion` prefix is required. Workers post on GitHub with the
-   operator's own account, so a reply cannot be told apart by its author.
+   The operator answers in plain language, with no prefix or format. Workers
+   post on GitHub with the operator's own account, so a reply cannot be told
+   apart by its author; automation is told apart by its markers instead. So,
+   from the request on, **start every comment you post on that issue or pull
+   request with `<!-- kookr:automation -->`** on its own line (a request,
+   verdict or other Kookr marker also counts). An unmarked comment is read as
+   the operator's answer and becomes a follow-up task.
 4. **Notify, do not wait.** Send one `kookr ask` **without** `--wait`, with
    `--timeout 24h` (the maximum `kookr ask` accepts today), the options
    (recommended first) and the link in `--context` too. Say in the context
-   that the durable way to answer is a `/opinion` comment on the link. An
+   that the durable way to answer is a comment on the link. An
    answer tapped on Telegram reaches the task only while it is still running;
    after it ends, Kookr tells the operator the answer was not delivered.
 
@@ -185,9 +191,9 @@ phone, with a comment.
    on its own line**. The issue comment carries the same full URL.
 
    ```bash
-   kookr ask --no-other --timeout 24h \
+   kookr ask --timeout 24h \
      --question "$(printf 'Issue #%s (%s): which layout should the panel use?\n%s' "$N" "<short title>" "$COMMENT_URL")" \
-     --context "Opinion request: $COMMENT_URL — I am carrying on with A. Answer any time with a /opinion comment there." \
+     --context "Opinion request: $COMMENT_URL — I am carrying on with A. Answer any time with a comment there, in your own words." \
      --option "A: compact list (recommended)" --option "B: cards"
    ```
 5. **Carry on with the recommended option** when the choice is reversible (UI,
@@ -199,18 +205,22 @@ phone, with a comment.
    `<!-- kookr:opinion-request recommended=A stopped -->`, say in the comment
    that nothing past the choice was done, add `automation-blocked` as well
    (issue selection skips it, so no other task re-picks the issue), and record
-   the blocker. Every `/opinion` reply to a stopped request, `/opinion ok`
-   included, starts the follow-up that carries out the chosen option.
+   the blocker. Every reply to a stopped request, "ok" included, starts the
+   follow-up that carries out the chosen option.
 6. **If an answer arrives in your session** (`Operator answered ask …`), post
-   it on the issue as `/opinion <letter>` (or `/opinion <free text>`) with
-   `(answered on Telegram)` on the next line, and keep going. Do not change
-   course yourself; the sweep below turns it into work.
+   it on the issue as a relay: first line `<!-- kookr:opinion-relay -->`, then
+   the answer (the option letter, or the operator's free text), then
+   `(answered on Telegram)`. Keep going. Do not change course yourself; the
+   sweep below turns it into work.
 
 **How the answer comes back.** `kookr opinion sweep --repo <owner/name>` reads
-every item labelled `needs-operator-opinion`, open or closed. For each new
-`/opinion` reply after the request: `/opinion ok` (or the recommended letter
-alone) removes the label; any other reply, and every reply to a `stopped`
-request, starts one follow-up task that applies it. The sweep posts a `kookr:opinion-handled` marker for each reply it
+every item labelled `needs-operator-opinion`, open or closed. Every new
+unmarked comment after the request is a reply, in any words and any language.
+A short accept ("ok", "lgtm", "looks good", or the recommended letter alone)
+removes the label. Any other reply, and every reply to a `stopped` request,
+starts one follow-up task that reads it and decides: another option or a
+change is implemented, an accept in other words removes the label, and a
+comment that is not an answer is left alone. The sweep posts a `kookr:opinion-handled` marker for each reply it
 handled, so running it again does nothing. Only comments by the repository
 owner, members and collaborators count. After an accept the item is no longer
 labelled, so a later change of mind needs a new issue. The `Deliver GitHub Issues`

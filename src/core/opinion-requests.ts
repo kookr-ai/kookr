@@ -6,21 +6,25 @@
  * choice between options) does not stop. It posts one "opinion request"
  * comment on the issue or pull request, adds the `needs-operator-opinion`
  * label, carries on with its recommended option, and ends. The operator answers
- * later, from a phone, with a comment that starts with `/opinion`.
+ * later, from a phone, with an ordinary comment in their own words.
  *
  * Workers post on GitHub with the operator's own account, so the author of a
- * comment cannot tell an operator reply from an automation comment. The
- * `/opinion` prefix is what makes a comment a reply.
+ * comment cannot tell an operator reply from an automation comment. Automation
+ * is told apart by what it writes instead: every comment a task posts on an
+ * item in this flow carries a Kookr HTML marker (`<!-- kookr:… -->`), and the
+ * playbooks' own notes start with "Automation note:" or "Automation check:".
+ * Any other comment by a repository member is a reply.
  *
  * This module is the pure decision step of `kookr opinion sweep`: given one
  * labelled issue or pull request and its comments, it says what to do with
  * each reply that has not been handled yet.
  *
- * - An accepting reply (`/opinion ok`, or the recommended option's letter)
- *   removes the label.
- * - Any other reply (another option, or a requested change in free text)
- *   becomes exactly one follow-up task. The follow-up reads the reply itself;
- *   this module does not interpret it.
+ * - A short accepting reply ("ok", "lgtm", "looks good", or the recommended
+ *   option's letter alone) removes the label without starting a task.
+ * - Any other reply becomes exactly one follow-up task. The follow-up reads
+ *   the reply in natural language and decides what it means (another option, a
+ *   change, an accept in other words, or not an answer at all); this module
+ *   does not interpret it.
  * - When the request says the task stopped before a hard-to-undo choice, every
  *   reply becomes a follow-up: even an accept means "go ahead".
  *
@@ -36,6 +40,12 @@ export const OPINION_REQUEST_MARKER = 'kookr:opinion-request';
 
 /** Marker the sweep puts in the comment that records a handled reply. */
 export const OPINION_HANDLED_MARKER = 'kookr:opinion-handled';
+
+/** Marker every other automation comment on an item in this flow starts with. */
+export const AUTOMATION_MARKER = 'kookr:automation';
+
+/** Marker of a comment that relays an answer the operator gave on Telegram: it is a reply. */
+export const OPINION_RELAY_MARKER = 'kookr:opinion-relay';
 
 /** One issue comment, as `gh api repos/<repo>/issues/<n>/comments` returns it (fields used here). */
 export interface OpinionComment {
@@ -73,7 +83,7 @@ export interface OpinionRequest {
 export interface OpinionReply {
   commentId: number;
   url: string;
-  /** Text after `/opinion` on the first line, plus any following lines, trimmed. */
+  /** The comment body, trimmed, without a relay marker or a leading `/opinion`. */
   text: string;
 }
 
@@ -92,10 +102,17 @@ const REQUEST_RE = /<!--\s*kookr:opinion-request\b([^>]*)-->/i;
 const RECOMMENDED_RE = /\brecommended=([A-Za-z])\b/;
 const STOPPED_RE = /(?:^|\s)stopped(?:\s|$)/;
 const HANDLED_RE = /<!--\s*kookr:opinion-handled\b[^>]*\breply=(\d+)[^>]*-->/gi;
-const REPLY_RE = /^\s*\/opinion(?=\s|$)[ \t]*(.*)$/i;
+const RELAY_RE = /<!--\s*kookr:opinion-relay\b[^>]*-->/gi;
+const ANY_MARKER_RE = /<!--[\s\S]*?-->/;
+const AUTOMATION_PREFIX_RE = /^\s*(?:\*\*)?automation (?:note|check)\b/i;
+/** An optional `/opinion` prefix (the earlier reply convention) is still accepted and dropped. */
+const OPINION_PREFIX_RE = /^\s*\/opinion(?=\s|$)[ \t]*/i;
 /** Annotation a worker appends when it relays a Telegram answer (asking-the-operator skill). */
 const TELEGRAM_NOTE_RE = /\n?\s*\(answered on telegram[^)]*\)\s*$/i;
-const ACCEPT_WORDS = new Set(['ok', 'okay', 'accept', 'accepted', 'yes', 'lgtm', 'approve', 'approved', 'go', '👍', '+1']);
+const ACCEPT_PHRASES = new Set([
+  'ok', 'okay', 'accept', 'accepted', 'yes', 'lgtm', 'approve', 'approved', 'go', 'go ahead', '👍', '+1',
+  'looks good', 'sounds good', 'fine', 'agreed', 'ship it', 'good',
+]);
 
 export function parseOpinionRequest(comment: OpinionComment): OpinionRequest | undefined {
   if (!isTrustedComment(comment)) return undefined;
@@ -120,33 +137,42 @@ export function handledReplyIds(comments: readonly OpinionComment[]): Set<number
 }
 
 /**
- * A reply is a comment whose first non-blank line starts with `/opinion`.
- * Comments that carry an opinion marker (the request, the sweep's own records)
- * are never replies, even if they quote the command.
+ * A reply is any non-empty comment by a repository member, in any words,
+ * except automation: a comment that carries an HTML marker (the request, the
+ * sweep's records, `kookr:automation`, review verdicts) or starts with
+ * "Automation note:" / "Automation check:". A relayed Telegram answer carries
+ * `kookr:opinion-relay` and is a reply.
  */
 export function parseOpinionReply(comment: OpinionComment): OpinionReply | undefined {
   if (!isTrustedComment(comment)) return undefined;
-  if (/<!--\s*kookr:opinion-/i.test(comment.body)) return undefined;
-  const lines = comment.body.split(/\r?\n/);
-  const first = lines.findIndex((l) => l.trim().length > 0);
-  if (first < 0) return undefined;
-  const m = REPLY_RE.exec(lines[first]);
-  if (!m) return undefined;
-  const text = [m[1], ...lines.slice(first + 1)].join('\n').trim();
+  const relayed = comment.body.replace(RELAY_RE, '');
+  const isRelay = relayed !== comment.body;
+  if (ANY_MARKER_RE.test(relayed)) return undefined;
+  if (!isRelay && AUTOMATION_PREFIX_RE.test(relayed)) return undefined;
+  const text = relayed.replace(OPINION_PREFIX_RE, '').trim();
+  if (text.length === 0) return undefined;
   return { commentId: comment.id, url: comment.url, text };
 }
 
 /**
- * Whether a reply accepts the recommendation: an accept word alone, or the
- * recommended option's letter alone (`/opinion A`, `/opinion A.`). Anything
- * with more to say (`/opinion A but bigger`) is a requested change. A trailing
+ * Whether a reply is a short, unambiguous accept that needs no task: a common
+ * accept phrase alone ("ok", "lgtm", "looks good"), or the recommended
+ * option's letter alone ("A", "option A", "go with A"). Anything longer goes
+ * to a follow-up task, which may still read it as an accept. A trailing
  * `(answered on Telegram…)` note, added when a worker relays a Telegram
  * answer, is ignored.
  */
 export function isAcceptingReply(text: string, recommended: string | undefined): boolean {
-  const word = text.replace(TELEGRAM_NOTE_RE, '').trim().toLowerCase().replace(/[.!]+$/, '');
-  if (ACCEPT_WORDS.has(word)) return true;
-  return recommended !== undefined && word === recommended.toLowerCase();
+  const phrase = text
+    .replace(TELEGRAM_NOTE_RE, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[.!,;:]+$/, '')
+    .replace(/\s+/g, ' ');
+  if (ACCEPT_PHRASES.has(phrase)) return true;
+  if (recommended === undefined) return false;
+  const letter = recommended.toLowerCase();
+  return new RegExp(`^(?:(?:go with|keep|pick|choose)\\s+)?(?:option\\s+)?${letter}(?:\\s+(?:is fine|please))?$`).test(phrase);
 }
 
 /**
@@ -183,7 +209,7 @@ export function handledMarkerBody(action: OpinionAction, followUpTaskId?: string
   return `${marker}\n${line}`;
 }
 
-/** Prompt for the follow-up task that applies a non-accepting reply. */
+/** Prompt for the follow-up task that reads a reply and applies it. */
 export function followUpPrompt(input: {
   repo: string;
   number: number;
@@ -193,15 +219,20 @@ export function followUpPrompt(input: {
 }): string {
   const kind = input.isPullRequest ? 'pull request' : 'issue';
   return [
-    `The operator answered an opinion request on ${input.repo} ${kind} #${input.number} (${input.itemUrl}).`,
+    `A repository member commented after an opinion request on ${input.repo} ${kind} #${input.number} (${input.itemUrl}).`,
+    `The operator answers in their own words, in any language, with no required format.`,
     ``,
-    `Their reply (${input.reply.url}):`,
+    `The comment (${input.reply.url}):`,
     ``,
     '```text',
     input.reply.text || '(empty reply)',
     '```',
     ``,
-    `Read the opinion request comment and the reply on that ${kind}, then apply the reply: implement the option the operator picked, or the change they asked for, on top of what is already merged (or on the open pull request, if it is still open).`,
+    `Read the opinion request comment and this comment on that ${kind}, then decide what the comment means:`,
+    `- Not an answer to the request (an automation message, a status note, a remark about something else): do nothing and stop.`,
+    `- It accepts the recommended option: remove the \`${OPINION_LABEL}\` label and stop.`,
+    `- It picks another option or asks for a change: implement that on top of what is already merged (or on the open pull request, if it is still open).`,
+    `Start every comment you post on that ${kind} with \`<!-- ${AUTOMATION_MARKER} -->\` on its own line, so it is not read as the operator's next reply.`,
     `If the request says the asking task stopped before a hard-to-undo choice, the reply is the go-ahead: remove the \`automation-blocked\` label and deliver the rest of the ${kind} with the chosen option.`,
     `Treat the reply as the operator's decision for this question only; keep the change limited to it.`,
     `If the reply is unclear, do not guess: post one comment on the ${kind} that asks what to change, starting with your question, and stop.`,

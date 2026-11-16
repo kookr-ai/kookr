@@ -558,7 +558,7 @@ describe('parallel-issue-batch playbook: Idea Scout provenance labels (#3638)', 
 
 /**
  * Issue #3920: needing a mockup or a decision is not a reason to skip an
- * issue, and the operator's later `/opinion` replies come back as work through
+ * issue, and the operator's later replies come back as work through
  * the opinion sweep at the start of candidate gathering.
  */
 describe('parallel-issue-batch playbook: asynchronous opinion requests (#3920)', () => {
