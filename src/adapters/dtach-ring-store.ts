@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { mkdir, writeFile, rename, unlink } from 'node:fs/promises';
+import { existsSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdir, readdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { createLatestSnapshotWriter } from './latest-snapshot-writer.js';
 import { ensureDtachDir } from './dtach-instance-dir.js';
 import { join } from 'node:path';
@@ -42,11 +42,13 @@ const RING_SNAPSHOT_MARKER = 0x0a; // '\n' separating the JSON header from bytes
 
 /**
  * Where a shrunk ring's restorable history continues (issue #3565). A fleet
- * shrink first saves the full ring to `<id>.pre-shrink.ring`; the periodic
- * flush never writes that file, so it survives the smaller `.ring` flushes
- * that follow. `end` is the `ringHead` position at which the saved bytes stop:
- * ring bytes before it are the snapshot's tail, bytes from it on arrived after
- * the shrink.
+ * shrink first saves the full ring to `<id>.pre-shrink.<snapshotId>.ring`; the
+ * periodic flush never writes that file, so it survives the smaller `.ring`
+ * flushes that follow. Each shrink writes a new file rather than overwriting
+ * the last one, because the `.ring` on disk may still name the older snapshot
+ * until its next flush (issue #3965). `end` is the `ringHead` position at
+ * which the saved bytes stop: ring bytes before it are the snapshot's tail,
+ * bytes from it on arrived after the shrink.
  */
 export interface PreShrinkLink {
   snapshotId: string;
@@ -281,9 +283,28 @@ export function enforceRingFleetBudget(
   };
 }
 
+interface RingSnapshot {
+  head: number;
+  bytes: Buffer;
+  /** Pre-shrink snapshot ids no flush can name again; deleted once `bytes` commit. */
+  obsolete: string[];
+}
+
 export class DtachRingStore {
   private readonly asyncWriter: ReturnType<typeof createLatestSnapshotWriter> | null;
-  private readonly snapshotOwners = new WeakMap<Uint8Array, { state: DtachRingState; head: number; resetSeq: number }>();
+  private readonly snapshotOwners = new WeakMap<Uint8Array, { state: DtachRingState; head: number; resetSeq: number; obsolete: string[] }>();
+  /**
+   * Pre-shrink files this store knows are on disk (or being written), per
+   * session: snapshot id to path. The `.ring` on disk names at most one; the
+   * rest are deleted after a `.ring` that does not name them has committed.
+   */
+  private readonly preShrinkFiles = new Map<SessionId, Map<string, string>>();
+  /**
+   * Async mode only: each session's chain of pre-shrink writes. A `.ring`
+   * commit waits for it before its rename, so a committed `.ring` never names
+   * a snapshot that is not on disk yet.
+   */
+  private readonly preShrinkWrites = new Map<SessionId, Promise<void>>();
 
   constructor(private readonly ringsDir: string, options: { asyncPersistence?: boolean; asyncMaxBytes?: number } = {}) {
     ensureDtachDir(this.ringsDir);
@@ -334,27 +355,29 @@ export class DtachRingStore {
   persist(state: DtachRingState): void {
     try {
       if (this.asyncWriter) {
-        const { head, bytes } = this.snapshot(state);
-        this.snapshotOwners.set(bytes, { state, head, resetSeq: state.resetSeq ?? 0 });
+        const { head, bytes, obsolete } = this.snapshot(state);
+        this.snapshotOwners.set(bytes, { state, head, resetSeq: state.resetSeq ?? 0, obsolete });
         if (this.asyncWriter.enqueue(state.id, bytes)) return;
         this.snapshotOwners.delete(bytes);
         // A synchronous rename must never pass an older async rename for the
-        // same file. Keep this ring dirty for a later tick; shutdown drains old
-        // writes before its final flush. A session with no write in flight
+        // same file, nor commit a `.ring` naming a pre-shrink snapshot still
+        // being written. Keep this ring dirty for a later tick; shutdown drains
+        // old writes before its final flush. A session with no write in flight
         // can still use the synchronous fallback safely.
-        if (this.asyncWriter.owns(state.id)) return;
+        if (this.asyncWriter.owns(state.id) || this.preShrinkWrites.has(state.id)) return;
       }
       // `rings/` sits under the /tmp instance directory and can be swept away
       // while the server runs. Re-create it here so a vanished directory costs
       // one snapshot rather than every snapshot from now on (#3042).
       ensureDtachDir(this.ringsDir);
-      const { head, bytes } = this.snapshot(state);
+      const { head, bytes, obsolete } = this.snapshot(state);
       writeFileAtomicSync(this.ringPathFor(state.id), bytes);
 
       // The combined file is now the authoritative generation; drop any legacy
       // two-file snapshot left over from before the format upgrade so it can no
       // longer shadow or confuse recovery.
       this.removeLegacy(state.id);
+      this.dropPreShrink(state.id, obsolete);
 
       state.lastFlushedHead = head;
     } catch (err) {
@@ -365,11 +388,15 @@ export class DtachRingStore {
 
   /**
    * Shrink `state` like {@link shrinkRing}, but first save the bytes the
-   * shrink drops to `<id>.pre-shrink.ring` (issue #3565). Later flushes write
-   * only the smaller ring to `<id>.ring` and name the snapshot in its header,
-   * and {@link load} joins the two, so a restart still gets the full
+   * shrink drops to a pre-shrink snapshot file (issue #3565). Later flushes
+   * write only the smaller ring to `<id>.ring` and name the snapshot in its
+   * header, and {@link load} joins the two, so a restart still gets the full
    * scrollback. A failed save is logged and the shrink goes ahead: the fleet
    * budget matters more than one session's older scrollback.
+   *
+   * With async persistence the snapshot is written off the event loop
+   * (issue #3965), so a budget pass that shrinks many rings does not block on
+   * many MiB of synchronous writes.
    */
   shrink(state: DtachRingState, newCapacity: number): boolean {
     const target = Math.max(1, Math.floor(newCapacity));
@@ -384,32 +411,83 @@ export class DtachRingStore {
     return true;
   }
 
-  /** Write the full logical history to the pre-shrink file; null on failure. */
+  /**
+   * Save the full logical history to a new pre-shrink snapshot and return its
+   * id; null when a synchronous save failed.
+   */
   private savePreShrink(state: DtachRingState): string | null {
+    const id = state.id;
+    const snapshotId = randomUUID();
+    const path = this.preShrinkPathFor(id, snapshotId);
     try {
-      ensureDtachDir(this.ringsDir);
       const head = state.ringHead;
       const size = Math.min(head, state.ringBuffer.length);
+      // The shrink frees the old ring right after this; a pending async save
+      // holds this copy until it is written.
       const ring = Buffer.alloc(size);
       copyLogicalBytes(state.ringBuffer, head, size, ring);
       // A ring shrunk before, then expanded, still continues the older
       // snapshot: carry that history into the new one.
       const ref = this.preShrinkRef(state, head, size);
-      const earlier = ref ? this.readPreShrink(state.id, ref.snapshotId) : null;
-      let payload = earlier && ref ? Buffer.concat([earlier, ring.subarray(ref.join)]) : ring;
-      if (payload.length > RING_BUFFER_BYTES) payload = payload.subarray(payload.length - RING_BUFFER_BYTES);
-      const snapshotId = randomUUID();
-      writeFileAtomicSync(this.preShrinkPathFor(state.id), encodeSnapshot({
-        version: RING_META_VERSION_COMBINED,
-        size: payload.length,
-        savedAt: new Date().toISOString(),
-        snapshotId,
-      }, payload));
+      if (this.asyncWriter) {
+        this.trackPreShrink(id, snapshotId, path);
+        this.queuePreShrink(id, async () => {
+          try {
+            const earlier = ref ? await this.readPreShrinkAsync(id, ref.snapshotId) : null;
+            await mkdir(this.ringsDir, { recursive: true, mode: 0o700 });
+            await writeFileAtomicAsync(path, encodePreShrink(snapshotId, earlier, ring, ref));
+          } catch (err) {
+            // As when a synchronous save fails: the ring stops continuing it.
+            this.untrackPreShrink(id, snapshotId);
+            if (state.preShrink?.snapshotId === snapshotId) state.preShrink = null;
+            warnPreShrinkSaveFailed(id, err);
+          }
+        });
+        return snapshotId;
+      }
+      ensureDtachDir(this.ringsDir);
+      const earlier = ref ? this.readPreShrink(id, ref.snapshotId)?.payload ?? null : null;
+      writeFileAtomicSync(path, encodePreShrink(snapshotId, earlier, ring, ref));
+      this.trackPreShrink(id, snapshotId, path);
       return snapshotId;
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn(`[dtach-backend] failed to save pre-shrink scrollback for ${state.id}: ${String(err)}`);
+      warnPreShrinkSaveFailed(id, err);
       return null;
+    }
+  }
+
+  /** Run `write` after every earlier pre-shrink write for `id`. */
+  private queuePreShrink(id: SessionId, write: () => Promise<void>): void {
+    const job = (this.preShrinkWrites.get(id) ?? Promise.resolve()).then(write);
+    this.preShrinkWrites.set(id, job);
+    void job.then(() => {
+      if (this.preShrinkWrites.get(id) === job) this.preShrinkWrites.delete(id);
+    });
+  }
+
+  private trackPreShrink(id: SessionId, snapshotId: string, path: string): void {
+    let files = this.preShrinkFiles.get(id);
+    if (!files) this.preShrinkFiles.set(id, files = new Map());
+    files.set(snapshotId, path);
+  }
+
+  private untrackPreShrink(id: SessionId, snapshotId: string): void {
+    const files = this.preShrinkFiles.get(id);
+    files?.delete(snapshotId);
+    if (files?.size === 0) this.preShrinkFiles.delete(id);
+  }
+
+  /** Delete pre-shrink files that a just-committed `.ring` does not name. */
+  private dropPreShrink(id: SessionId, snapshotIds: string[]): void {
+    for (const snapshotId of snapshotIds) {
+      const path = this.preShrinkFiles.get(id)?.get(snapshotId);
+      if (path === undefined) continue;
+      try {
+        unlinkSync(path);
+      } catch {
+        // best-effort: absent already, or the next remove() retries
+      }
+      this.untrackPreShrink(id, snapshotId);
     }
   }
 
@@ -417,7 +495,8 @@ export class DtachRingStore {
    * The header reference for a `.ring` payload covering logical bytes
    * `[head - size, head)`, or null when the ring does not continue a
    * snapshot. Once more bytes have arrived since the shrink than the ring
-   * holds, joining the snapshot would splice across a hole: drop it.
+   * holds, joining the snapshot would splice across a hole: drop it. Its
+   * file goes once a `.ring` that no longer names it has committed.
    */
   private preShrinkRef(state: DtachRingState, head: number, size: number): PreShrinkRef | null {
     const link = state.preShrink;
@@ -425,35 +504,53 @@ export class DtachRingStore {
     const join = link.end - (head - size);
     if (join >= 0 && join <= size) return { snapshotId: link.snapshotId, join };
     state.preShrink = null;
-    this.removePreShrink(state.id);
     return null;
   }
 
-  /** The pre-shrink snapshot's bytes when it is the one `snapshotId` names. */
-  private readPreShrink(id: SessionId, snapshotId: string): Buffer | null {
-    const path = this.preShrinkPathFor(id);
-    if (!existsSync(path)) return null;
-    try {
-      const file = readFileSync(path);
-      const sep = file.indexOf(RING_SNAPSHOT_MARKER);
-      if (sep < 0) return null;
-      const meta = JSON.parse(file.subarray(0, sep).toString('utf-8')) as {
-        version?: number; size?: number; snapshotId?: unknown;
-      };
-      const payload = file.subarray(sep + 1);
-      if (meta.version !== RING_META_VERSION_COMBINED || meta.snapshotId !== snapshotId) return null;
-      if (meta.size !== payload.length) return null;
-      return payload;
-    } catch {
-      return null;
+  /**
+   * The pre-shrink snapshot `snapshotId` names, and the file it came from.
+   * Snapshots saved before issue #3965 share one fixed file name; the header
+   * id check tells whether that file is the one asked for.
+   */
+  private readPreShrink(id: SessionId, snapshotId: string): { payload: Buffer; path: string } | null {
+    for (const path of [this.preShrinkPathFor(id, snapshotId), this.legacyPreShrinkPathFor(id)]) {
+      if (!existsSync(path)) continue;
+      try {
+        const payload = parsePreShrink(readFileSync(path), snapshotId);
+        if (payload) return { payload, path };
+      } catch {
+        // unreadable: try the next name
+      }
     }
+    return null;
   }
 
-  private removePreShrink(id: SessionId): void {
+  /** {@link readPreShrink} off the event loop, for an async pre-shrink save. */
+  private async readPreShrinkAsync(id: SessionId, snapshotId: string): Promise<Buffer | null> {
+    for (const path of [this.preShrinkPathFor(id, snapshotId), this.legacyPreShrinkPathFor(id)]) {
+      try {
+        const payload = parsePreShrink(await readFile(path), snapshotId);
+        if (payload) return payload;
+      } catch {
+        // absent or unreadable: try the next name
+      }
+    }
+    return null;
+  }
+
+  /** Every pre-shrink file of `id` among `names`, current and pre-#3965 names alike. */
+  private preShrinkPathsIn(names: string[], id: SessionId): string[] {
+    // Session ids have no `.`, so this prefix cannot match another session.
+    const prefix = `${id}.pre-shrink.`;
+    return names.filter((name) => name.startsWith(prefix) && name.endsWith('.ring'))
+      .map((name) => join(this.ringsDir, name));
+  }
+
+  private listRingsDir(): string[] {
     try {
-      unlinkSync(this.preShrinkPathFor(id));
+      return readdirSync(this.ringsDir);
     } catch {
-      // best-effort: absent already, or the next remove() retries
+      return [];
     }
   }
 
@@ -464,23 +561,34 @@ export class DtachRingStore {
    * session.
    */
   load(state: DtachRingState): void {
-    if (!this.loadCombined(state)) this.loadLegacy(state);
+    const joined = this.loadCombined(state);
+    if (joined === undefined) this.loadLegacy(state);
     // A snapshot the restored ring does not continue can never be joined.
-    if (!state.preShrink) this.removePreShrink(state.id);
+    this.preShrinkFiles.delete(state.id);
+    for (const path of this.preShrinkPathsIn(this.listRingsDir(), state.id)) {
+      if (path === joined?.path) continue;
+      try {
+        unlinkSync(path);
+      } catch {
+        // best-effort
+      }
+    }
+    if (joined && state.preShrink) this.trackPreShrink(state.id, state.preShrink.snapshotId, joined.path);
   }
 
   /**
-   * Load the combined `<id>.ring` file. Returns true when a snapshot file was
-   * present and consumed (whether or not it yielded bytes), so the caller knows
-   * not to fall back to the legacy layout.
+   * Load the combined `<id>.ring` file. Returns undefined when there is none,
+   * so the caller falls back to the legacy layout. Otherwise the file was
+   * consumed (whether or not it yielded bytes), and the result names the
+   * pre-shrink file it was joined with, or is null.
    */
-  private loadCombined(state: DtachRingState): boolean {
+  private loadCombined(state: DtachRingState): { path: string } | null | undefined {
     const ringPath = this.ringPathFor(state.id);
-    if (!existsSync(ringPath)) return false;
+    if (!existsSync(ringPath)) return undefined;
     try {
       const file = readFileSync(ringPath);
       const sep = file.indexOf(RING_SNAPSHOT_MARKER);
-      if (sep < 0) return true; // header truncated: nothing to recover, fail-open
+      if (sep < 0) return null; // header truncated: nothing to recover, fail-open
       const meta = JSON.parse(file.subarray(0, sep).toString('utf-8')) as {
         version?: number;
         size?: number;
@@ -489,12 +597,12 @@ export class DtachRingStore {
       };
       // A present `.ring` is authoritative even when unreadable: a successful
       // persist removes the legacy pair, so a valid `.ring` is always the newest
-      // generation. Returning true (rather than falling back to a legacy pair)
+      // generation. Returning null (rather than falling back to a legacy pair)
       // is deliberate — the worst case is an empty ring, never resurrected stale
       // scrollback.
-      if (meta.version !== RING_META_VERSION_COMBINED) return true;
+      if (meta.version !== RING_META_VERSION_COMBINED) return null;
       const payload = file.subarray(sep + 1);
-      if (typeof meta.size !== 'number' || meta.size !== payload.length) return true;
+      if (typeof meta.size !== 'number' || meta.size !== payload.length) return null;
       const { snapshotId, join } = meta.preShrink ?? {};
       const earlier = typeof snapshotId === 'string' && typeof join === 'number'
         && Number.isInteger(join) && join >= 0 && join <= payload.length
@@ -502,18 +610,19 @@ export class DtachRingStore {
         : null;
       if (!earlier || snapshotId === undefined || join === undefined) {
         this.applySnapshot(state, payload, meta.lastByteAt);
-        return true;
+        return null;
       }
-      const joined = Buffer.concat([earlier, payload.subarray(join)]);
+      const joined = Buffer.concat([earlier.payload, payload.subarray(join)]);
       this.applySnapshot(state, joined, meta.lastByteAt);
       // Keep the link in the loaded ring's coordinates, so its next flush
       // still names the snapshot until the ring no longer joins onto it.
       const dropped = joined.length - state.ringHead;
-      state.preShrink = { snapshotId, end: earlier.length - dropped };
+      state.preShrink = { snapshotId, end: earlier.payload.length - dropped };
+      return { path: earlier.path };
     } catch {
       // fail-open: a torn header/body leaves the ring empty rather than crashing
     }
-    return true;
+    return null;
   }
 
   /** Load the pre-#2829 `<id>.bin` + `<id>.meta.json` pair. */
@@ -551,7 +660,9 @@ export class DtachRingStore {
 
   remove(id: SessionId): void | Promise<void> {
     if (this.asyncWriter) return this.removeAsync(id);
-    for (const path of [this.ringPathFor(id), this.preShrinkPathFor(id), this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]) {
+    this.preShrinkFiles.delete(id);
+    for (const path of [this.ringPathFor(id), ...this.preShrinkPathsIn(this.listRingsDir(), id),
+      this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]) {
       try {
         if (existsSync(path)) unlinkSync(path);
       } catch {
@@ -561,16 +672,23 @@ export class DtachRingStore {
   }
 
   /** Waits for admitted snapshots; the host supplies the shutdown deadline. */
-  async drain(): Promise<void> { await this.asyncWriter?.drain(); }
+  async drain(): Promise<void> {
+    await Promise.all([...this.preShrinkWrites.values()]);
+    await this.asyncWriter?.drain();
+  }
 
   persistenceStats() {
     return this.asyncWriter?.stats() ?? { pendingBytes: 0, sessions: 0, rejected: 0 };
   }
 
-  private snapshot(state: DtachRingState): { head: number; bytes: Buffer } {
+  private snapshot(state: DtachRingState): RingSnapshot {
     const head = state.ringHead;
     const size = Math.min(head, state.ringBuffer.length);
     const preShrink = this.preShrinkRef(state, head, size);
+    // The link only ever moves to a newer snapshot or goes away, so a file
+    // this `.ring` does not name will never be named again.
+    const obsolete = [...(this.preShrinkFiles.get(state.id)?.keys() ?? [])]
+      .filter((snapshotId) => snapshotId !== preShrink?.snapshotId);
     const header = Buffer.from(JSON.stringify({ version: RING_META_VERSION_COMBINED, size,
       savedAt: new Date().toISOString(), lastByteAt: state.lastByteAt,
       ...(preShrink ? { preShrink } : {}) }) + '\n');
@@ -579,7 +697,7 @@ export class DtachRingStore {
     const bytes = Buffer.allocUnsafe(header.length + size);
     header.copy(bytes);
     copyLogicalBytes(state.ringBuffer, head, size, bytes.subarray(header.length));
-    return { head, bytes };
+    return { head, bytes, obsolete };
   }
 
   private async commitAsync(id: SessionId, bytes: Uint8Array): Promise<void> {
@@ -588,6 +706,8 @@ export class DtachRingStore {
     const temporary = `${target}.${randomUUID()}.tmp`;
     try {
       await writeFile(temporary, bytes, { mode: 0o600 });
+      // The pre-shrink snapshot this `.ring` names must be on disk first.
+      await this.preShrinkWrites.get(id);
       await rename(temporary, target);
       const owner = this.snapshotOwners.get(bytes);
       // Only mark this head persisted if the ring has not been re-linearized
@@ -595,6 +715,7 @@ export class DtachRingStore {
       // lastFlushedHead reset would be undone here, stranding re-linearized/newer
       // output as "already flushed" and losing it across a restart.
       if (owner && (owner.state.resetSeq ?? 0) === owner.resetSeq) owner.state.lastFlushedHead = owner.head;
+      if (owner) this.dropPreShrink(id, owner.obsolete);
       await Promise.all([this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]
         .map((path) => unlink(path).catch(() => {})));
     } finally { await unlink(temporary).catch(() => {}); }
@@ -604,7 +725,12 @@ export class DtachRingStore {
     const writer = this.asyncWriter!;
     await writer.retire(id);
     try {
-      await Promise.all([this.ringPathFor(id), this.preShrinkPathFor(id), this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]
+      // Fence an in-flight pre-shrink save too, or it would land after the unlink.
+      await this.preShrinkWrites.get(id);
+      this.preShrinkFiles.delete(id);
+      const names = await readdir(this.ringsDir).catch(() => [] as string[]);
+      await Promise.all([this.ringPathFor(id), ...this.preShrinkPathsIn(names, id),
+        this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]
         .map((path) => unlink(path).catch(() => {})));
     } finally { writer.release(id); }
   }
@@ -624,7 +750,12 @@ export class DtachRingStore {
   }
 
   /** Session ids are `[A-Za-z0-9_-]`, so this never collides with a `.ring`. */
-  private preShrinkPathFor(id: SessionId): string {
+  private preShrinkPathFor(id: SessionId, snapshotId: string): string {
+    return join(this.ringsDir, `${id}.pre-shrink.${snapshotId}.ring`);
+  }
+
+  /** The one fixed pre-shrink file name used before issue #3965; read only. */
+  private legacyPreShrinkPathFor(id: SessionId): string {
     return join(this.ringsDir, `${id}.pre-shrink.ring`);
   }
 
@@ -635,6 +766,39 @@ export class DtachRingStore {
   private legacyMetaPathFor(id: SessionId): string {
     return join(this.ringsDir, `${id}.meta.json`);
   }
+}
+
+/**
+ * A pre-shrink snapshot file: the earlier snapshot it carries forward (if
+ * any), then the ring bytes after their join, capped at one full ring.
+ */
+function encodePreShrink(snapshotId: string, earlier: Buffer | null, ring: Buffer, ref: PreShrinkRef | null): Buffer {
+  let payload = earlier && ref ? Buffer.concat([earlier, ring.subarray(ref.join)]) : ring;
+  if (payload.length > RING_BUFFER_BYTES) payload = payload.subarray(payload.length - RING_BUFFER_BYTES);
+  return encodeSnapshot({
+    version: RING_META_VERSION_COMBINED,
+    size: payload.length,
+    savedAt: new Date().toISOString(),
+    snapshotId,
+  }, payload);
+}
+
+/** The payload of a pre-shrink file when its header is `snapshotId`'s. */
+function parsePreShrink(file: Buffer, snapshotId: string): Buffer | null {
+  const sep = file.indexOf(RING_SNAPSHOT_MARKER);
+  if (sep < 0) return null;
+  const meta = JSON.parse(file.subarray(0, sep).toString('utf-8')) as {
+    version?: number; size?: number; snapshotId?: unknown;
+  };
+  const payload = file.subarray(sep + 1);
+  if (meta.version !== RING_META_VERSION_COMBINED || meta.snapshotId !== snapshotId) return null;
+  if (meta.size !== payload.length) return null;
+  return payload;
+}
+
+function warnPreShrinkSaveFailed(id: SessionId, err: unknown): void {
+  // eslint-disable-next-line no-console
+  console.warn(`[dtach-backend] failed to save pre-shrink scrollback for ${id}: ${String(err)}`);
 }
 
 function encodeSnapshot(header: Record<string, unknown>, payload: Buffer): Buffer {
@@ -657,6 +821,17 @@ function writeFileAtomicSync(path: string, bytes: Uint8Array): void {
     if (!renamed) {
       try { unlinkSync(tmpPath); } catch { /* best-effort temp cleanup */ }
     }
+  }
+}
+
+/** {@link writeFileAtomicSync} off the event loop. */
+async function writeFileAtomicAsync(path: string, bytes: Uint8Array): Promise<void> {
+  const tmpPath = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmpPath, bytes, { mode: 0o600 });
+    await rename(tmpPath, path);
+  } finally {
+    await unlink(tmpPath).catch(() => {});
   }
 }
 
