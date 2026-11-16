@@ -183,7 +183,8 @@ export function askReminderDue(
 
   if (schedule.beforeCloseMinutes > 0 && !sent.some((r) => r.kind === 'before_close')) {
     const point = ask.expiresAt - schedule.beforeCloseMinutes * MINUTE_MS;
-    if (point > ask.createdAt && now >= point && point > last) return 'before_close';
+    // `last` is never before `createdAt`, so this also skips a question shorter than `beforeCloseMinutes`.
+    if (now >= point && point > last) return 'before_close';
   }
 
   if (sent.filter((r) => r.kind === undefined).length >= ASK_REMINDER_LIMITS.maxPerQuestion) return undefined;
