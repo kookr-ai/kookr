@@ -250,7 +250,11 @@ function pairedShellCommand(
   return extractCommand(shellUse?.toolInput);
 }
 
-const GIT_PUSH_COMMAND_RE = /\bgit\b(?:\s+-C\s+\S+)?\s+push\b/;
+const GIT_PUSH_COMMAND_RE = /\bgit\b(?:\s+-[Cc]\s+\S+)*\s+push\b/;
+/** `git push --dry-run` / `-n` prints the same ref lines without pushing anything. */
+const GIT_PUSH_DRY_RUN_RE = /\bpush\b[^|;&]*\s(?:--dry-run|-n)\b/;
+/** `gh pr create` on a branch that already has a PR prints that PR's URL; the task did not open it. */
+const PR_ALREADY_EXISTS_RE = /already exists/i;
 const GH_PR_CREATE_COMMAND_RE = /\bgh\s+pr\s+create\b/;
 /**
  * A ref line `git push` prints for an update that went through:
@@ -308,7 +312,7 @@ export function extractAuthorshipFromEvents(
     const text = responseText(event.toolResponse);
     if (text === '') continue;
 
-    if (GIT_PUSH_COMMAND_RE.test(command)) {
+    if (GIT_PUSH_COMMAND_RE.test(command) && !GIT_PUSH_DRY_RUN_RE.test(command)) {
       const remote = PUSH_REMOTE_LINE_RE.exec(text)?.[1];
       const parsed = remote ? GITHUB_REMOTE_RE.exec(remote) : null;
       const owner = parsed?.[1] ?? defaultOwner;
@@ -320,7 +324,7 @@ export function extractAuthorshipFromEvents(
         }
       }
     }
-    if (GH_PR_CREATE_COMMAND_RE.test(command)) {
+    if (GH_PR_CREATE_COMMAND_RE.test(command) && !PR_ALREADY_EXISTS_RE.test(text)) {
       for (const m of text.matchAll(PULL_URL_RE)) {
         createdPrs.push({ owner: m[1], repo: m[2], number: Number.parseInt(m[3], 10) });
       }

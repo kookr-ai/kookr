@@ -738,6 +738,16 @@ describe('extractAuthorshipFromEvents (issue #3678)', () => {
     expect(evidence.createdPrs).toEqual([{ owner: 'kookr-ai', repo: 'kookr', number: 42 }]);
   });
 
+  test('a dry-run push and a gh pr create that found an existing PR are not authorship; git -c k=v push is', () => {
+    const out = 'To github.com:kookr-ai/kookr.git\n * [new branch]   feat -> feat\n';
+    expect(extractAuthorshipFromEvents(shell('git push --dry-run origin feat', out)).pushedBranches).toEqual([]);
+    expect(extractAuthorshipFromEvents(shell('git push -n origin feat', out)).pushedBranches).toEqual([]);
+    expect(extractAuthorshipFromEvents(shell('git -c core.sshCommand=ssh push origin feat', out)).pushedBranches)
+      .toEqual([{ owner: 'kookr-ai', repo: 'kookr', branch: 'feat' }]);
+    const exists = 'a pull request for branch "feat" into branch "main" already exists:\nhttps://github.com/kookr-ai/kookr/pull/41\n';
+    expect(extractAuthorshipFromEvents(shell('gh pr create --fill', { stdout: '', stderr: exists })).createdPrs).toEqual([]);
+  });
+
   test('reading or acting on a PR is not authorship', () => {
     const pushLike = 'To github.com:kookr-ai/kookr.git\n * [new branch]   other -> other\n';
     for (const command of ['gh pr view 42', 'gh pr merge 42 --squash', 'gh pr review 42 --approve', 'git log --oneline']) {

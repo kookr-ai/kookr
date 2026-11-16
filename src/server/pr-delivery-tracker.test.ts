@@ -270,6 +270,34 @@ describe('PrDeliveryTracker delivery branches (issue #3983)', () => {
     expect(failing.getDeliveryBranches('kookr-ai', 'kookr')).toEqual({ defaultBranch: null, integrationBranch: null });
   });
 
+  test('a failed ls-remote is not retried before the backoff; a failed integration read keeps the last known branch', async () => {
+    let lsRemoteCalls = 0;
+    let gateReadable = true;
+    const tracker = trackerWith(async (args, cwd) => {
+      if (args[0] === 'ls-remote') {
+        lsRemoteCalls += 1;
+        return { code: 128, stdout: '' };
+      }
+      if (args[0] === 'show' && !gateReadable) return { code: 128, stdout: '' };
+      if (args[0] === 'symbolic-ref') return { code: 0, stdout: 'origin/main\n' };
+      return realGit(args, cwd);
+    });
+    await tracker.refresh();
+    expect(tracker.getDeliveryBranches('kookr-ai', 'kookr')).toEqual({ defaultBranch: 'main', integrationBranch: 'staging' });
+    gateReadable = false;
+    await tracker.refresh();
+    expect(tracker.getDeliveryBranches('kookr-ai', 'kookr')).toEqual({ defaultBranch: 'main', integrationBranch: 'staging' });
+
+    const offline = trackerWith(async (args) => {
+      if (args[0] === 'ls-remote') lsRemoteCalls += 1;
+      return { code: 128, stdout: '' };
+    });
+    lsRemoteCalls = 0;
+    await offline.refresh();
+    await offline.refresh();
+    expect(lsRemoteCalls).toBe(1);
+  });
+
   test('deliveryBranchList: unknown default branch means no check', () => {
     expect(deliveryBranchList(undefined)).toBeUndefined();
     expect(deliveryBranchList({ defaultBranch: null, integrationBranch: 'staging' })).toBeUndefined();
