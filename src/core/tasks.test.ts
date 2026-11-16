@@ -1073,6 +1073,18 @@ describe('TaskStore', () => {
       expect(reopened.status).toBe('open');
     });
 
+    test('reopening a completed task drops its keep-worktree choice (issue #3972)', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      store.getTaskForMutation(task.id)!.worktreeKeptOnComplete = true;
+      store.completeTask(task.id);
+      expect(store.getTask(task.id)!.worktreeKeptOnComplete).toBe(true);
+
+      store.reopenTask(task.id);
+
+      expect(store.getTask(task.id)!.worktreeKeptOnComplete).toBeUndefined();
+    });
+
     test('cancelled -> open via reopenTask (allows retry)', () => {
       const task = store.createTask('Task', '/cwd');
       store.startTask(task.id);

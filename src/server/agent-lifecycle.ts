@@ -14,7 +14,7 @@ import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { MAX_ACTIVE_TASKS } from './config.js';
-import { cleanupTaskWorktrees } from '../adapters/git-worktree.js';
+import { cleanupTaskWorktrees, isTaskWorktreeReservedForChain } from '../adapters/git-worktree.js';
 import { getProjectId, deriveCanonicalPath } from '../core/project-identity.js';
 import { isMissingWorktreeHealth } from '../core/worktree-health.js';
 import { displayPromptForTask } from '../core/prompt-display.js';
@@ -661,6 +661,8 @@ export async function completeTask(
     });
   }
 
+  if (mutable) stampWorktreeKeptOnComplete(mutable, opts.cleanupWorktree, deps);
+
   completeLiveSessionsInBackground(task, deps);
   deps.queue?.purgeTask(taskId);
   // The terminal receipt's initiator (issue #2847) is derived inside the store
@@ -695,6 +697,28 @@ export async function completeTask(
     cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
   }
   cleanupReflectWorktree(task, deps);
+}
+
+/**
+ * Record an operator's "keep worktree" choice on a playbook-chain member, so
+ * the reclaim that runs when the chain ends leaves that worktree alone (issue
+ * #3972). The dashboard also sends `cleanupWorktree: false` when its dialog
+ * showed the worktree as blocked, which for a chain member that is still the
+ * live tip means "the chain holds it", not a choice. The hold is checked on the
+ * state the dialog inspected, before the task turns completed, and a `false`
+ * sent while the chain held the worktree is not stored. Runs before the
+ * transition, which marks the record for persistence.
+ */
+function stampWorktreeKeptOnComplete(
+  mutable: Task,
+  cleanupWorktree: boolean | undefined,
+  deps: LifecycleDeps,
+): void {
+  const kept = mutable.chain !== undefined
+    && cleanupWorktree === false
+    && !isTaskWorktreeReservedForChain(deps.taskStore, mutable.id);
+  if (kept) mutable.worktreeKeptOnComplete = true;
+  else delete mutable.worktreeKeptOnComplete;
 }
 
 /** Cap the audited provider-error detail so a huge final message can't bloat audit.jsonl. */

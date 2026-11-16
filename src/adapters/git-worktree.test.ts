@@ -27,7 +27,9 @@ import {
   cleanupTaskWorktrees,
   inspectTaskWorktrees,
   inspectWorktreeCleanup,
+  isTaskWorktreeReservedForChain,
   parsePorcelainStatus,
+  reclaimEndedChainWorktree,
 } from './git-worktree.js';
 import { DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS } from '../core/git-helpers.js';
 import { TaskStore } from '../core/tasks.js';
@@ -1805,5 +1807,106 @@ describe('cleanupTaskWorktrees — playbook chain tips (issue #3743)', () => {
     setupCleanWorktree();
 
     expect(await cleanupTaskWorktrees(taskStore, first.id)).toBe(1);
+  });
+
+  test('the chain still holds a worktree that another active task also uses', () => {
+    // The dialog reports `shared-with-active-task` here, but completion must
+    // still know the chain holds the path (issue #3972).
+    const taskStore = new TaskStore();
+    const tip = completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    const other = taskStore.createTask({ prompt: 'Other work', cwd: CHAIN_CWD });
+    taskStore.addSession(other.id, {
+      tmuxSession: 's2', agentType: 'claude-code', cwd: CHAIN_CWD, createdAt: new Date(),
+      gitIsWorktree: true, gitBranch: 'feature',
+    });
+
+    expect(isTaskWorktreeReservedForChain(taskStore, tip.id)).toBe(true);
+    expect(isTaskWorktreeReservedForChain(taskStore, other.id)).toBe(true);
+  });
+
+  test('an ended chain or a task outside any chain reserves nothing', () => {
+    const taskStore = new TaskStore();
+    const tip = completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    endChain(taskStore, tip.id);
+    const plain = completedTask(taskStore, 's2');
+
+    expect(isTaskWorktreeReservedForChain(taskStore, tip.id)).toBe(false);
+    expect(isTaskWorktreeReservedForChain(taskStore, plain.id)).toBe(false);
+  });
+});
+
+describe('reclaimEndedChainWorktree (issue #3972)', () => {
+  const CHAIN_CWD = '/wt/chain';
+
+  function setupCleanWorktree() {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'log': '',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+      'worktree prune': '',
+      'branch -d': 'Deleted branch feature (was abc1234).\n',
+    });
+  }
+
+  /** The last member of an ended chain, with a clean worktree at CHAIN_CWD. */
+  function endedChainMember(taskStore: TaskStore, end: 'complete' | 'terminate', keptOnComplete = false) {
+    const task = taskStore.createTask({
+      prompt: 'Chain iteration',
+      cwd: CHAIN_CWD,
+      chain: { chainId: '', iteration: 3, maxIterations: 3, startedAt: new Date().toISOString(), unhealthyStreak: 0 },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1', agentType: 'claude-code', cwd: CHAIN_CWD, createdAt: new Date(),
+      gitIsWorktree: true, gitBranch: 'feature', gitCommit: 'abc123',
+    });
+    if (keptOnComplete) taskStore.getTaskForMutation(task.id)!.worktreeKeptOnComplete = true;
+    if (end === 'complete') taskStore.completeTask(task.id);
+    else taskStore.terminateTask(task.id);
+    taskStore.updateChain(task.id, (chain) => ({
+      ...chain,
+      ended: { at: new Date().toISOString(), reason: 'iterations_reached' },
+    }));
+    return task.id;
+  }
+
+  test('a completed member whose operator kept the worktree keeps it', async () => {
+    const taskStore = new TaskStore();
+    const id = endedChainMember(taskStore, 'complete', true);
+    setupCleanWorktree();
+
+    expect(await reclaimEndedChainWorktree(taskStore, id, undefined, { cleanupOnComplete: true })).toBe(false);
+
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+  });
+
+  test('a completed member with no keep choice is reclaimed while completion cleanup is on', async () => {
+    const taskStore = new TaskStore();
+    const id = endedChainMember(taskStore, 'complete');
+    setupCleanWorktree();
+
+    expect(await reclaimEndedChainWorktree(taskStore, id, undefined, { cleanupOnComplete: true })).toBe(true);
+
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith(CHAIN_CWD, expect.anything());
+  });
+
+  test('a completed member keeps its worktree while completion cleanup is off', async () => {
+    const taskStore = new TaskStore();
+    const id = endedChainMember(taskStore, 'complete');
+    setupCleanWorktree();
+
+    expect(await reclaimEndedChainWorktree(taskStore, id, undefined, { cleanupOnComplete: false })).toBe(false);
+
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+  });
+
+  test('a terminated member is reclaimed even while completion cleanup is off', async () => {
+    const taskStore = new TaskStore();
+    const id = endedChainMember(taskStore, 'terminate');
+    setupCleanWorktree();
+
+    expect(await reclaimEndedChainWorktree(taskStore, id, undefined, { cleanupOnComplete: false })).toBe(true);
+
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith(CHAIN_CWD, expect.anything());
   });
 });
