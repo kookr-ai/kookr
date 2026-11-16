@@ -174,4 +174,50 @@ describe('runReopenCli', () => {
     expect(await runReopenCli(['t-1'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(4);
     expect(io.errors.join('\n')).toContain('kookr peek t-1');
   });
+
+  describe('server discovery (no KOOKR_API_BASE_URL)', () => {
+    /** Health probes answer only on `upPorts`; the reopen POST always succeeds. */
+    function probeFetch(upPorts: number[]) {
+      return vi.fn(async (url: string) => {
+        const port = Number(new URL(url).port);
+        if (url.endsWith('/api/health')) {
+          if (upPorts.includes(port)) return jsonResponse({ ok: true });
+          throw new TypeError('fetch failed');
+        }
+        return jsonResponse(reopened({ mode: 'resume', conversationId: 's' }));
+      });
+    }
+
+    it('a non-numeric KOOKR_PORT is a user error, exit 2', async () => {
+      const io = captureConsole();
+      const fetchImpl = probeFetch([]);
+      const code = await runReopenCli(['t-1', '--json'], { env: { KOOKR_PORT: 'abc' }, ...io, fetchImpl: fetchImpl as never });
+      expect(code).toBe(2);
+      expect(JSON.parse(io.logs[0]!)).toMatchObject({ ok: false, code: 'USER_ERROR' });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it('two reachable instances is ambiguous, exit 5, and nothing is reopened', async () => {
+      const io = captureConsole();
+      const fetchImpl = probeFetch([4800, 4801]);
+      const code = await runReopenCli(['t-1', '--json'], { env: {}, ...io, fetchImpl: fetchImpl as never });
+      expect(code).toBe(5);
+      expect(JSON.parse(io.logs[0]!)).toMatchObject({ ok: false, code: 'AMBIGUOUS_PORT', details: { ports: [4800, 4801] } });
+      expect(fetchImpl.mock.calls.some(([u]) => String(u).endsWith('/reopen'))).toBe(false);
+    });
+
+    it('no reachable instance is exit 3', async () => {
+      const io = captureConsole();
+      const code = await runReopenCli(['t-1'], { env: {}, ...io, fetchImpl: probeFetch([]) as never });
+      expect(code).toBe(3);
+      expect(io.errors.join('\n')).toContain('no Kookr server reachable');
+    });
+
+    it('a single reachable instance is used', async () => {
+      const io = captureConsole();
+      const fetchImpl = probeFetch([4801]);
+      expect(await runReopenCli(['t-1'], { env: {}, ...io, fetchImpl: fetchImpl as never })).toBe(0);
+      expect(fetchImpl.mock.calls.map(([u]) => String(u))).toContain('http://127.0.0.1:4801/api/tasks/t-1/reopen');
+    });
+  });
 });

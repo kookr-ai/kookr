@@ -7,6 +7,7 @@ import { HELP_TEXT, main } from '../../bin/kookr.js';
 import { HELP_TEXT as RALPH_HELP_TEXT } from '../../bin/kookr-ralph.js';
 import { HELP_TEXT as SPAWN_HELP_TEXT } from '../../bin/kookr-spawn.js';
 import { HELP_TEXT as STATUS_HELP_TEXT } from '../../bin/kookr-status.js';
+import { REOPEN_HELP_TEXT } from './kookr-reopen.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -74,6 +75,18 @@ describe('kookr dispatcher', () => {
       expect(deps.errors).toEqual([]);
     } finally {
       process.exitCode = savedExitCode;
+    }
+  });
+
+  it('dispatches reopen help through the main binary (#3671)', async () => {
+    const deps = makeDeps();
+    try {
+      await main({ argv: ['reopen', '--help'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
+      expect(deps.codes).toEqual([0]);
+      expect(deps.logs).toEqual([REOPEN_HELP_TEXT]);
+      expect(deps.errors).toEqual([]);
+    } finally {
+      process.exitCode = undefined;
     }
   });
 

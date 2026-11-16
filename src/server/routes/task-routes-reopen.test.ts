@@ -5,6 +5,7 @@ import { Monitor } from '../../core/monitor.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { SUPERVISOR_TOKEN_ENV } from '../supervisor-auth.js';
 import { registerTaskRoutes } from './task-routes.js';
+import { SHARED_TASK_ID_PREFIX } from '../../shared/contracts/contact-share.js';
 import type { TaskRouteDeps } from './shared.js';
 
 // The route awaits promotion of the reopened task; stand in for it so a test can
@@ -150,6 +151,17 @@ describe('POST /api/tasks/:id/reopen (issue #3671)', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: 'task_cleanup_in_progress' });
     expect(taskStore.getTask(id)?.status).toBe('terminated');
+  });
+
+  test('refuses a remote-owned shared: id with 403 and touches nothing', async () => {
+    const taskStore = new TaskStore();
+    const { app, broadcastToAll } = mkApp(taskStore);
+
+    const res = await reopen(app, encodeURIComponent(`${SHARED_TASK_ID_PREFIX}peer-task`));
+
+    expect(res.status).toBe(403);
+    expect(promotePendingTasks).not.toHaveBeenCalled();
+    expect(broadcastToAll).not.toHaveBeenCalled();
   });
 
   test('404s for an unknown task id', async () => {
