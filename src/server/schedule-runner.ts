@@ -1300,6 +1300,9 @@ export class ScheduleRunner {
         projectId: launch.projectId,
         ...(launch.dependencies ? { dependencies: [...launch.dependencies] } : {}),
         ...(launch.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: launch.autoCloseOnSignal }),
+        // #3582: frontmatter model/effort; launchTask applies them under the
+        // schedule's own pins and drops any the final agent cannot take.
+        ...(launch.playbookDefaults ? { playbookDefaults: { ...launch.playbookDefaults } } : {}),
         agentType,
         ...(schedule.modelTier !== undefined ? { modelTier: schedule.modelTier } : {}),
         // #1518: forward schedule-level effort/model pins into the spawned

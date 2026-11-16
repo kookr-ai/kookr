@@ -63,6 +63,13 @@ export interface LaunchOpts {
    */
   model?: string;
   /**
+   * Model/effort declared in the launched playbook's frontmatter (#3582). These
+   * are defaults, not pins: `launchTask` applies a field only when the launch
+   * has no explicit pin for it and no `modelTier`, and drops it (logged) when
+   * the resolved agent does not accept it, instead of failing the launch.
+   */
+  playbookDefaults?: { model?: string; effort?: string };
+  /**
    * opencode worker profile id (`scoped-fix`, `reviewer`, `test-auditor`, ...). Only valid with
    * `agentType: 'opencode'`; existence is validated server-side in `launchTask`
    * (`ProfileValidationError`, API -> 400) and persisted as `metadata.opencodeProfile`.

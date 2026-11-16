@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import { readFile } from 'node:fs/promises';
-import { parsePlaybook, interpolateParameters, PlaybookParseError } from './playbook-parser.js';
+import { parsePlaybook, interpolateParameters, PlaybookParseError, findUnknownFrontmatterKeys } from './playbook-parser.js';
 
 const VALID_PLAYBOOK = `---
 name: Create staging MR
@@ -92,6 +92,44 @@ Ask first.
     const pb = parsePlaybook(content, 'ask.md', '/project');
 
     expect(pb.deliveryPreAuthorized).toBe(false);
+  });
+
+  test('parses model and effort defaults from frontmatter (#3582)', () => {
+    const content = `---
+name: Cheap orchestrator
+model: "claude-sonnet-5-5"
+effort: medium
+---
+Body.
+`;
+
+    const pb = parsePlaybook(content, 'cheap.md', '/project');
+
+    expect(pb.model).toBe('claude-sonnet-5-5');
+    expect(pb.effort).toBe('medium');
+    expect(findUnknownFrontmatterKeys(content)).toEqual([]);
+  });
+
+  test('omits model and effort when absent or blank', () => {
+    expect(parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/project')).not.toHaveProperty('model');
+    const blank = `---
+name: Blank
+model: ""
+---
+Body.
+`;
+    expect(parsePlaybook(blank, 'blank.md', '/project')).not.toHaveProperty('model');
+  });
+
+  test('throws on an effort no agent accepts rather than dropping it at every launch', () => {
+    const content = `---
+name: Typo
+effort: hihg
+---
+Body.
+`;
+
+    expect(() => parsePlaybook(content, 'typo.md', '/project')).toThrow(/Unsupported effort: hihg/);
   });
 
   test('parses deliveryMode: self-advancing', () => {

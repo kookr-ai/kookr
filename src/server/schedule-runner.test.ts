@@ -44,6 +44,7 @@ describe('ScheduleRunner', () => {
     launchSource?: string;
     dependencies?: string[];
     autoCloseOnSignal?: boolean;
+    playbookDefaults?: { model?: string; effort?: string };
     avoidAgentTypes?: readonly string[];
     playbookParameterValues?: Record<string, string>;
     playbookSource?: {
@@ -121,6 +122,7 @@ Do the test thing.
           dependencies: opts.dependencies,
           priorAgentSubstitutions: opts.priorAgentSubstitutions,
           autoCloseOnSignal: opts.autoCloseOnSignal,
+          playbookDefaults: opts.playbookDefaults,
           playbookParameterValues: opts.playbookParameterValues,
           playbookSource: opts.playbookSource,
         });
@@ -330,6 +332,36 @@ Run the scheduled task.
     await runner.tick();
 
     expect(launched[0]?.autoCloseOnSignal).toBe(autoCloseOnSignal);
+  });
+
+  it('forwards frontmatter model/effort defaults alongside the schedule pins (#3582)', async () => {
+    await writeFile(join(dir, '.kookr', 'playbooks', 'cheap.md'), `---
+name: Cheap
+model: claude-sonnet-5-5
+effort: medium
+parameters: []
+checklist: []
+---
+
+Run the scheduled task.
+`);
+    const schedule = store.create({
+      name: 'Cheap schedule',
+      cron: '* * * * *',
+      playbook: { path: 'cheap.md', parameters: {} },
+      cwd: dir,
+      effort: 'max',
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+
+    expect(launched[0]?.effort).toBe('max');
+    expect(launched[0]?.model).toBeUndefined();
+    expect(launched[0]?.playbookDefaults).toEqual({ model: 'claude-sonnet-5-5', effort: 'medium' });
   });
 
   it('records a dependency-parked one-shot separately from a capacity queue', async () => {

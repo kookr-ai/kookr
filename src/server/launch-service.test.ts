@@ -444,6 +444,67 @@ describe('launchTask', () => {
       expect(store.listTasks()).toHaveLength(0);
     });
 
+    describe('playbook frontmatter defaults (#3582)', () => {
+      const defaults = { model: 'claude-sonnet-5-5', effort: 'medium' };
+
+      it('applies both playbook values when the launch has no pins, and records them on the task', async () => {
+        const result = await launchTask(deps, { prompt: 'pb', cwd: '/tmp', playbookDefaults: defaults });
+        expect(launchOptsFor(deps, 'claude-code')).toMatchObject(defaults);
+        expect(result.task.launchIntent).toMatchObject(defaults);
+      });
+
+      it('lets each explicit pin win on its own field only', async () => {
+        await launchTask(deps, { prompt: 'pb', cwd: '/tmp', effort: 'max', playbookDefaults: defaults });
+        expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'max' });
+      });
+
+      it('lets an explicit model pin win while the playbook effort still applies', async () => {
+        await launchTask(deps, { prompt: 'pb', cwd: '/tmp', model: 'claude-fable-5', playbookDefaults: defaults });
+        expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ model: 'claude-fable-5', effort: 'medium' });
+      });
+
+      it('ignores both playbook values under a modelTier instead of raising model_tier_conflict', async () => {
+        const result = await launchTask(deps, {
+          prompt: 'pb', cwd: '/tmp', modelTier: 'small', playbookDefaults: defaults,
+        });
+        expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ model: 'claude-haiku-4-5' });
+        expect(launchOptsFor(deps, 'claude-code').effort).toBeUndefined();
+        expect(result.task.launchIntent).toMatchObject({ modelTier: 'small' });
+      });
+
+      it('drops a playbook model the resolved agent rejects and still launches', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const result = await launchTask(deps, {
+          prompt: 'pb', cwd: '/tmp', agentType: 'codex-cli', playbookDefaults: { model: 'claude-sonnet-5-5', effort: 'high' },
+        });
+        const opts = launchOptsFor(deps, 'codex-cli');
+        expect(opts.model).toBeUndefined();
+        expect(opts.effort).toBe('high');
+        expect(result.task.launchIntent?.model).toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('Ignoring playbook model "claude-sonnet-5-5"'));
+        warn.mockRestore();
+      });
+
+      it('drops a playbook effort that the pinned model narrows out', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        await launchTask(deps, {
+          prompt: 'pb', cwd: '/tmp', agentType: 'codex-cli', model: 'gpt-6-astra', playbookDefaults: { effort: 'minimal' },
+        });
+        const opts = launchOptsFor(deps, 'codex-cli');
+        expect(opts.model).toBe('gpt-6-astra');
+        expect(opts.effort).toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('Ignoring playbook effort "minimal"'));
+        warn.mockRestore();
+      });
+
+      it('keeps an invalid explicit pin fatal even when a valid playbook value exists', async () => {
+        await expect(launchTask(deps, {
+          prompt: 'pb', cwd: '/tmp', model: 'not-a-real-model', playbookDefaults: defaults,
+        })).rejects.toBeInstanceOf(ModelValidationError);
+        expect(store.listTasks()).toHaveLength(0);
+      });
+    });
+
     it('rejects an unknown model for claude-code without creating a task (#1518)', async () => {
       await expect(
         launchTask(deps, {
