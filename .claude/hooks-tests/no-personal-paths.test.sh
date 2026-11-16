@@ -65,6 +65,9 @@ ALLOWLIST=(
   "plugin/skills/claude-code-metrics-analysis/SKILL.md # follow-up: NONE — load-bearing user-scope path"
   "plugin/skills/claude-code-permissions/SKILL.md # follow-up: NONE — load-bearing user-scope path"
   "plugin/skills/codex-pr-lessons/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/codex-pr-lessons/references/distill.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/codex-pr-lessons/references/plan.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/codex-pr-lessons/references/threshold.md # follow-up: NONE — load-bearing user-scope path"
   "plugin/skills/github-issue-workflow/SKILL.md # follow-up: NONE — load-bearing user-scope path"
   "plugin/skills/hook-driven-workflow-enforcement/SKILL.md # follow-up: NONE — load-bearing user-scope path"
   "plugin/skills/notebook-role-reuse/SKILL.md # follow-up: NONE — load-bearing user-scope path"
@@ -132,6 +135,8 @@ TARGETS=()
 [ -e "AGENTS.md" ] && TARGETS+=("AGENTS.md")
 while IFS= read -r f; do TARGETS+=("$f"); done < <(find .claude/skills   -name 'SKILL.md' -type f 2>/dev/null | sort)
 while IFS= read -r f; do TARGETS+=("$f"); done < <(find plugin/skills   -name 'SKILL.md' -type f 2>/dev/null | sort)
+# Hub skills move detail into references/*.md (#3767); those ship too (#3977).
+while IFS= read -r f; do TARGETS+=("$f"); done < <(find plugin/skills   -path '*/references/*.md' -type f 2>/dev/null | sort)
 while IFS= read -r f; do TARGETS+=("$f"); done < <(find .claude/agents    -name '*.md'     -type f 2>/dev/null | sort)
 while IFS= read -r f; do TARGETS+=("$f"); done < <(find .claude/playbooks -name '*.md'     -type f 2>/dev/null | sort)
 
@@ -154,6 +159,7 @@ STRICT_TARGETS=()
 while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files '.kookr/playbooks/*.md' 2>/dev/null | sort)
 while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files '.claude/agents/*.md' 2>/dev/null | sort)
 while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files 'plugin/skills/*/SKILL.md' 2>/dev/null | sort)
+while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files 'plugin/skills/*/references/*.md' 2>/dev/null | sort)
 
 for f in "${STRICT_TARGETS[@]}"; do
   if grep -qF "$MAINTAINER_HOME_PATTERN" "$f"; then

@@ -149,100 +149,61 @@ description: Plan skill.
     }
   });
 
-  it('accepts a plugin.json skill count that matches loadable skills', () => {
+  it('accepts manifest descriptions that carry no skill or subagent count', () => {
     const root = makeRepo({
       'plugin/skills/sample-skill/SKILL.md': GOOD_SKILL,
       'plugin/.claude-plugin/plugin.json': JSON.stringify({
         name: 'kookr-toolkit',
         version: '0.0.1',
-        description: '1 skills and 0 review subagents for tests.',
+        description: 'Curated skills and subagents for tests.',
+      }),
+      '.claude-plugin/marketplace.json': JSON.stringify({
+        name: 'kookr',
+        plugins: [{ name: 'kookr-toolkit', description: 'Skills + subagents for tests.' }],
       }),
     });
     try {
       const { errors } = validateSkills(root);
-      expect(errors.filter((issue) => issue.file.endsWith('plugin.json'))).toEqual([]);
+      expect(errors.filter((issue) => issue.file.endsWith('.json'))).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('reports a plugin.json skill count that drifted from disk', () => {
-    const root = makeRepo({
-      'plugin/skills/sample-skill/SKILL.md': GOOD_SKILL,
-      'plugin/.claude-plugin/plugin.json': JSON.stringify({
-        name: 'kookr-toolkit',
-        version: '0.0.1',
-        description: '64 skills and 0 review subagents for tests.',
-      }),
-    });
-    try {
-      const { errors } = validateSkills(root);
-      const countError = errors.find((issue) => issue.message.includes('64 skills'));
-      expect(countError).toBeDefined();
-      expect(countError?.message).toContain('1 loadable SKILL.md');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('reports a plugin.json review-subagent count that drifted from disk', () => {
+  // A count next to the version line conflicts with every train bump (#3977),
+  // even when it is right.
+  it.each([
+    ['a skill count', '1 skills and nothing else.', '1 skills'],
+    ['a review-subagent count', 'Skills and 1 review subagents.', '1 review subagents'],
+    ['a subagent count phrased without "review" (#3538)', 'Skills and 1 subagents.', '1 subagents'],
+  ])('reports %s in plugin.json, even when it matches disk', (_label, description, quoted) => {
     const root = makeRepo({
       'plugin/skills/sample-skill/SKILL.md': GOOD_SKILL,
       'plugin/agents/boundary-critic.md': '# Boundary critic\n',
-      'plugin/.claude-plugin/plugin.json': JSON.stringify({
-        name: 'kookr-toolkit',
-        version: '0.0.1',
-        description: '1 skills and 19 review subagents for tests.',
-      }),
+      'plugin/.claude-plugin/plugin.json': JSON.stringify({ name: 'kookr-toolkit', version: '0.0.1', description }),
     });
     try {
       const { errors } = validateSkills(root);
-      const countError = errors.find((issue) => issue.message.includes('19 review subagents'));
-      expect(countError).toBeDefined();
-      expect(countError?.message).toContain('1 agent files');
+      const countErrors = errors.filter((issue) => issue.file.endsWith('plugin.json'));
+      expect(countErrors).toHaveLength(1);
+      expect(countErrors[0].message).toContain(`"${quoted}"`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('reports a drifted subagent count phrased without "review" (#3538)', () => {
-    const root = makeRepo({
-      'plugin/skills/sample-skill/SKILL.md': GOOD_SKILL,
-      'plugin/agents/boundary-critic.md': '# Boundary critic\n',
-      'plugin/.claude-plugin/plugin.json': JSON.stringify({
-        name: 'kookr-toolkit',
-        version: '0.0.1',
-        description: '1 skills and 19 subagents for tests.',
-      }),
-    });
-    try {
-      const { errors } = validateSkills(root);
-      const countError = errors.find((issue) => issue.message.includes('says 19'));
-      expect(countError).toBeDefined();
-      expect(countError?.message).toContain('1 agent files');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('reports a marketplace.json skill count that drifted from disk', () => {
+  it('reports a skill count in a marketplace.json plugin description', () => {
     const root = makeRepo({
       'plugin/skills/sample-skill/SKILL.md': GOOD_SKILL,
       '.claude-plugin/marketplace.json': JSON.stringify({
         name: 'kookr',
-        plugins: [
-          {
-            name: 'kookr-toolkit',
-            description: '64 skills and 0 review subagents for tests.',
-          },
-        ],
+        plugins: [{ name: 'kookr-toolkit', description: '64 skills for tests.' }],
       }),
     });
     try {
       const { errors } = validateSkills(root);
       const countError = errors.find((issue) => issue.file.endsWith('marketplace.json'));
-      expect(countError).toBeDefined();
-      expect(countError?.message).toContain('64 skills');
+      expect(countError?.message).toContain('"64 skills"');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -190,7 +190,7 @@ async function main({
   }
 
   // CI check classifier (issue #3643). Runs scripts/check-verification.mjs
-  // from this checkout with the caller's cwd, so a bare PR number resolves
+  // from this install (a checkout or the npm package) with the caller's cwd, so a bare PR number resolves
   // against the caller's repository; its exit code is passed through as is.
   if (command === 'check-verification') {
     return exit(runCheckVerificationCommand(rest, { env, err }));
@@ -414,7 +414,7 @@ function runMergeCommand(argv, { env = process.env, err = console } = {}) {
   const here = dirname(fileURLToPath(import.meta.url));
   const script = join(here, '..', 'scripts', 'kookr-merge.sh');
   if (!existsSync(script)) {
-    // The npm package ships bin/ and dist/ but not scripts/, so this verb needs
+    // The npm package does not ship scripts/kookr-merge.sh, so this verb needs
     // a source checkout (the one `kookr` on PATH points at).
     err.error(`[kookr] merge wrapper not found at ${script}`);
     err.error('[kookr] `kookr merge` needs a Kookr source checkout; run it from that checkout\'s bin/kookr.');
@@ -455,9 +455,10 @@ function runCheckVerificationCommand(argv, { env = process.env, err = console } 
   const here = dirname(fileURLToPath(import.meta.url));
   const script = join(here, '..', 'scripts', 'check-verification.mjs');
   if (!existsSync(script)) {
-    // The npm package ships bin/ and dist/ but not scripts/ (see runMergeCommand).
+    // package.json "files" ships this one script with the npm package (#4029), so it is missing
+    // only from a broken install or a checkout that lost it.
     err.error(`[kookr] check classifier not found at ${script}`);
-    err.error('[kookr] `kookr check-verification` needs a Kookr source checkout; run it from that checkout\'s bin/kookr.');
+    err.error('[kookr] reinstall kookr, or run `kookr check-verification` from a Kookr source checkout\'s bin/kookr.');
     return 1;
   }
   // Read-only, so a plain synchronous run is enough: no signal forwarding.

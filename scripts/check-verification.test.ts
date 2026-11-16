@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -237,10 +237,12 @@ describe('EXIT_CODES', () => {
 });
 
 // Several attempts of one check on the head SHA (issue #3643). Ids grow with
-// creation, so the higher id is the re-run.
+// creation, so the higher id is the re-run. These runs carry no Actions job
+// data (no github-actions slug, no /job/ details_url), so only ids and timing
+// decide; Actions jobs also need run_attempt (see the next describe).
 describe('classifyCheckRuns — re-runs of the same check', () => {
   const suite = { id: 500 };
-  const app = { id: 15368 };
+  const app = { id: 9426 };
   const failedOnCode = {
     id: 101,
     name: 'unit',
@@ -357,6 +359,73 @@ describe('classifyCheckRuns — re-runs of the same check', () => {
   });
 });
 
+// GitHub Actions jobs (#4029): a later same-named job that started after the
+// failure finished is either a re-run (a later attempt of the workflow run) or
+// a sibling job of the same attempt (a matrix with a fixed name and
+// max-parallel: 1, or jobs chained with needs:). Only run_attempt tells them
+// apart; the timing is identical.
+describe('classifyCheckRuns — re-runs of a GitHub Actions job', () => {
+  const actions = { id: 15368, slug: 'github-actions' };
+  const job = (id: number, attempt: number | undefined, conclusion: string, startedAt: string, completedAt: string) => ({
+    id,
+    name: 'unit',
+    app: actions,
+    check_suite: { id: 500 },
+    details_url: `https://github.com/o/r/actions/runs/77/job/${id}`,
+    ...(attempt === undefined ? {} : { run_attempt: attempt }),
+    status: 'completed',
+    conclusion,
+    started_at: startedAt,
+    completed_at: completedAt,
+  });
+  const failed = job(101, 1, 'failure', '2026-11-10T10:00:00Z', '2026-11-10T10:03:00Z');
+
+  it('retires a failure when the pass belongs to a later attempt of the workflow run', () => {
+    const rerun = job(102, 2, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
+    const result = classifyCheckRuns([rerun, failed]);
+    expect(result.classification).toBe(CLASSIFICATIONS.EXECUTED_GREEN);
+    expect(result.counts.superseded).toBe(1);
+  });
+
+  it('keeps a failure red when a same-named job of the same attempt passed after it', () => {
+    const sibling = job(102, 1, 'success', '2026-11-10T10:04:00Z', '2026-11-10T10:07:00Z');
+    const result = classifyCheckRuns([failed, sibling]);
+    expect(result.classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    expect(result.counts.superseded).toBe(0);
+  });
+
+  it('keeps a failure red when either attempt is unknown', () => {
+    const unknownLater = job(102, undefined, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
+    expect(classifyCheckRuns([failed, unknownLater]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    const unknownEarlier = { ...failed, run_attempt: undefined };
+    const rerun = job(102, 2, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
+    expect(classifyCheckRuns([unknownEarlier, rerun]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+  });
+
+  it('treats a run as an Actions job by its github-actions slug alone (no attempts: stays red)', () => {
+    const noUrl = (run: ReturnType<typeof job>) => ({ ...run, details_url: undefined, run_attempt: undefined });
+    const rerun = job(102, 2, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
+    expect(classifyCheckRuns([noUrl(failed), noUrl(rerun)]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+  });
+
+  it('needs attempts when only one of the two runs is an Actions job', () => {
+    // Same app and suite as the Actions job, so both land in one group; only the job markers are missing.
+    const plain = (run: ReturnType<typeof job>) => ({ ...run, app: { id: 15368 }, details_url: undefined, run_attempt: undefined });
+    const rerun = job(102, undefined, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
+    expect(classifyCheckRuns([plain(failed), rerun]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    const plainRerun = plain(job(102, undefined, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z'));
+    expect(classifyCheckRuns([{ ...failed, run_attempt: undefined }, plainRerun]).classification).toBe(
+      CLASSIFICATIONS.EXECUTED_RED,
+    );
+  });
+
+  it('treats a run as an Actions job by its details_url alone (no attempts: stays red)', () => {
+    const noSlug = (run: ReturnType<typeof job>) => ({ ...run, app: { id: 15368 }, run_attempt: undefined });
+    const rerun = job(102, 2, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
+    expect(classifyCheckRuns([noSlug(failed), noSlug(rerun)]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+  });
+});
+
 // `kookr check-verification` (issue #3643): the same classifier, reachable from
 // any repository.
 describe('kookr check-verification', () => {
@@ -429,4 +498,98 @@ esac
       rmSync(elsewhere, { recursive: true, force: true });
     }
   });
+});
+
+// The live path reads each Actions job's run_attempt from the jobs API, which
+// the check-runs API does not carry (#4029).
+describe('check-verification — Actions attempts from the jobs API', () => {
+  // Returns the exit code and the job ids the classifier looked up.
+  function classifyWithStub(
+    attempts: Record<string, string>,
+    runIds: number[] = [102, 101],
+  ): { status: number | null; jobLookups: string[] } {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-check-attempts-'));
+    try {
+      const stubDir = join(dir, 'bin');
+      spawnSync('mkdir', [stubDir]);
+      const run = (id: number, conclusion: string, startedAt: string, completedAt: string) => ({
+        id,
+        name: 'unit',
+        app: { id: 15368, slug: 'github-actions' },
+        check_suite: { id: 500 },
+        details_url: `https://github.com/caller/repo/actions/runs/77/job/${id}`,
+        status: 'completed',
+        conclusion,
+        started_at: startedAt,
+        completed_at: completedAt,
+        output: { annotations_count: 0 },
+      });
+      writeFileSync(
+        join(dir, 'runs.json'),
+        JSON.stringify({
+          total_count: runIds.length,
+          check_runs: [
+            run(102, 'success', '2026-11-10T10:04:00Z', '2026-11-10T10:07:00Z'),
+            run(101, 'failure', '2026-11-10T10:00:00Z', '2026-11-10T10:03:00Z'),
+          ].filter((r) => runIds.includes(r.id)),
+        }),
+      );
+      const jobArms = Object.entries(attempts)
+        .map(([id, body]) => `  "api repos/caller/repo/actions/jobs/${id}") echo '${body}' ;;`)
+        .join('\n');
+      writeFileSync(
+        join(stubDir, 'gh'),
+        `#!/bin/sh
+case "$*" in
+  *actions/jobs/*) printf '%s\\n' "\${*##*/}" >> "${dir}/jobs.log" ;;
+esac
+case "$*" in
+  *check-runs*) cat "${dir}/runs.json" ;;
+  *"/status") echo '{"state":"pending","total_count":0,"statuses":[]}' ;;
+${jobArms}
+  *) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac
+`,
+      );
+      chmodSync(join(stubDir, 'gh'), 0o755);
+      const env = { ...process.env, PATH: `${stubDir}:${process.env.PATH ?? ''}` };
+      const result = spawnSync(process.execPath, [CLASSIFIER, '--sha', 'abc123', '--repo', 'caller/repo'], { cwd: dir, env, encoding: 'utf8' });
+      const log = join(dir, 'jobs.log');
+      const jobLookups = existsSync(log) ? [...new Set(readFileSync(log, 'utf8').trim().split('\n'))].sort() : [];
+      return { status: result.status, jobLookups };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('is green when the pass is a later attempt', () => {
+    expect(classifyWithStub({ '101': '{"run_attempt":1}', '102': '{"run_attempt":2}' })).toEqual({
+      status: EXIT_CODES['executed-green'],
+      jobLookups: ['101', '102'],
+    });
+  });
+
+  it('stays red when both jobs belong to the same attempt', () => {
+    expect(classifyWithStub({ '101': '{"run_attempt":1}', '102': '{"run_attempt":1}' })).toEqual({
+      status: EXIT_CODES['executed-red'],
+      jobLookups: ['101', '102'],
+    });
+  });
+
+  it('stays red when the jobs API cannot be read', () => {
+    expect(classifyWithStub({ '101': '{"run_attempt":1}' })).toEqual({
+      status: EXIT_CODES['executed-red'],
+      jobLookups: ['101', '102'],
+    });
+  });
+
+  it('does not look up the attempt of a check that ran once', () => {
+    expect(classifyWithStub({}, [101])).toEqual({ status: EXIT_CODES['executed-red'], jobLookups: [] });
+  });
+});
+
+// The npm package must carry the classifier bin/kookr.js runs (#4029).
+it('ships scripts/check-verification.mjs in the npm package', () => {
+  const pkg = JSON.parse(readFileSync(join(scriptsDir, '..', 'package.json'), 'utf8')) as { files: string[] };
+  expect(pkg.files).toContain('scripts/check-verification.mjs');
 });
