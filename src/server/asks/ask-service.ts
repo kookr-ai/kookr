@@ -96,7 +96,7 @@ export class AskService {
   /**
    * Hear about every question sent (`created`, once its Telegram message exists),
    * every question that left `pending` (`resolved`: answered on either
-   * channel, expired, cancelled, or its task went away) and, for an answered
+   * channel, expired or cancelled) and, for an answered
    * one, the moment it is known whether the answer could be typed into the
    * task (`updated`). Returns an unsubscribe
    * function. A listener that throws is logged and never affects the ask.
@@ -418,26 +418,19 @@ export class AskService {
       answer = { kind: 'text', text };
     }
 
-    // Do not type into a session whose task is gone.
+    // The answer is always recorded. It is typed into the task only while the session that asked (or
+    // one that resumed its conversation) can still read it: not once the task has ended, and not into
+    // a fresh session that replaced the asker after a relaunch, because that session never saw the question.
     const status = this.deps.taskStatus(ask.taskId);
-    if (status === undefined || isTerminalStatus(status)) {
-      this.transition(ask.id, 'cancelled', 'task_gone');
-      const gone = this.deps.store.get(ask.id) as AskRecord;
-      await this.finalize(gone, '⚠️ The task is no longer running — your answer was not delivered.');
-      return { ok: false, reason: 'task_gone', ask: gone };
-    }
-    // Nor into a fresh session that replaced the one that asked (the task was relaunched without
-    // resuming): it never saw the question. A session that resumed the asker's conversation did.
-    if (this.replacedByFreshSession(ask)) {
-      this.transition(ask.id, 'cancelled', 'task_gone');
-      const gone = this.deps.store.get(ask.id) as AskRecord;
-      await this.finalize(gone, '⚠️ The task was relaunched in a new session since it asked — your answer was not delivered.');
-      return { ok: false, reason: 'task_gone', ask: gone };
-    }
+    const skipReason = status === undefined || isTerminalStatus(status)
+      ? 'The task has ended, so nothing was typed into it.'
+      : this.replacedByFreshSession(ask)
+        ? 'The task was relaunched in a new session since it asked, so nothing was typed into it.'
+        : undefined;
 
     // One-time answer. There is no `await` between the state checks above and this write, so a
-    // concurrent answer (a second tap, or the other channel) is normally refused by those checks; this
-    // re-check guards the one await that can sit in between, the task-liveness branch above.
+    // concurrent answer (a second tap, or the other channel) is refused by those checks; this
+    // re-check only keeps the compare-and-set explicit should an `await` ever be added in between.
     if (this.deps.store.get(ask.id)?.state !== 'pending') {
       return { ok: false, reason: 'already_answered', ask: this.deps.store.get(ask.id) };
     }
@@ -449,8 +442,20 @@ export class AskService {
       a.resolvedAt = a.answeredAt;
       a.answeredVia = source.via;
       if (source.senderId !== undefined) a.answeredBy = source.senderId;
+      if (skipReason !== undefined) a.taskDelivery = 'skipped';
     });
     this.emit('resolved', ask.id);
+
+    const chosen = answer.kind === 'option' ? answer.label : answer.text;
+    const headline = source.via === 'dashboard'
+      ? `✅ Already answered in Kookr: ${chosen}\nNothing more is needed here.`
+      : `✅ Answered: ${chosen}`;
+
+    if (skipReason !== undefined) {
+      const done = this.deps.store.get(ask.id) as AskRecord;
+      await this.finalize(done, `${headline}\nRecorded. ${skipReason}`);
+      return { ok: true, ask: done, notTyped: skipReason };
+    }
 
     // The text typed into the task is the same on both channels, so agents need not care which one answered.
     const label = answer.kind === 'option' ? answer.label : `(free text) ${oneLine(answer.text)}`;
@@ -461,10 +466,6 @@ export class AskService {
     this.emit('updated', ask.id);
 
     const done = this.deps.store.get(ask.id) as AskRecord;
-    const chosen = answer.kind === 'option' ? answer.label : answer.text;
-    const headline = source.via === 'dashboard'
-      ? `✅ Already answered in Kookr: ${chosen}\nNothing more is needed here.`
-      : `✅ Answered: ${chosen}`;
     await this.finalize(
       done,
       delivered.ok
@@ -505,8 +506,9 @@ export class AskService {
 
   /**
    * Whether a session that does not continue the pinned one is now live. False for unpinned asks, and
-   * while no session is live at all (for example a Reopen still waiting for a worker slot): the answer
-   * is then recorded as usual, and delivery, which is still bound to the pin, fails without typing.
+   * while no session is live at all (for example a Reopen still waiting for a worker slot): delivery is
+   * then attempted as usual and, still bound to the pin, fails without typing. When true, the answer is
+   * recorded and nothing is typed (`taskDelivery: 'skipped'`).
    */
   private replacedByFreshSession(ask: AskRecord): boolean {
     if (ask.sessionId === undefined || !this.deps.sessionContinues || !this.deps.liveSession) return false;

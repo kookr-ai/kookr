@@ -64,6 +64,8 @@ function chosenText(ask: OperatorAskView): string {
 
 /** Shown on the closed card when the answer was recorded but Kookr could not type it into the task's session. */
 export const UNDELIVERED_TEXT = 'Kookr could not type your answer into the task. It is recorded, and the task can still read it.';
+/** Shown when the answer came after the session that asked had ended: it is kept, and nothing was typed. */
+export const NOT_TYPED_TEXT = 'Recorded. The session that asked has ended, so nothing was typed into it.';
 
 /** A question shortened for a button's accessible name; the full text is in the card. */
 function shortQuestion(question: string): string {
@@ -118,6 +120,9 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask }:
         <p className="avatar-ask-question avatar-ask-question-closed">{ask.question}</p>
         {ask.state === 'answered' && ask.taskDelivery === 'failed' && (
           <p className="avatar-ask-warning" data-testid="avatar-ask-undelivered">{UNDELIVERED_TEXT}</p>
+        )}
+        {ask.state === 'answered' && ask.taskDelivery === 'skipped' && (
+          <p className="avatar-ask-warning" data-testid="avatar-ask-not-typed">{NOT_TYPED_TEXT}</p>
         )}
       </li>
     );

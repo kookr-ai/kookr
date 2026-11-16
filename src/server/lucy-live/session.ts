@@ -172,7 +172,7 @@ export interface LucyLivePorts {
    */
   matchAnswer?(req: { transcript: string; asks: readonly VoiceAskChoice[]; signal: AbortSignal }): Promise<AnswerMatch>;
   /** Record the operator's choice through the ask service's dashboard entry point (audited, one winner). */
-  answerAsk?(askId: string, optionIndex: number): Promise<{ ok: true } | { ok: false; reason?: string }>;
+  answerAsk?(askId: string, optionIndex: number): Promise<{ ok: true; notTyped?: string } | { ok: false; reason?: string }>;
   /**
    * Questions still waiting, newest first, with their links and asking task, for "show me" / "open it".
    * Absent: such requests go to the model like any other words.

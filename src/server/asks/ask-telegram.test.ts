@@ -319,15 +319,27 @@ describe('kookr ask over Telegram', () => {
     expect(store.get(a.id)?.state).toBe('pending');
   });
 
-  it('says so and delivers nothing when the task is gone by the time the operator answers', async () => {
+  it('records the answer, types nothing and says so when the task has ended by the time the operator taps', async () => {
     await boot();
     const a = await ask();
     statuses.set('t1', 'completed' as TaskStatus);
     tap(keyboard()[0].callback_data, { messageId: store.get(a.id)!.delivery!.messageId });
-    await waitFor(() => expect(store.get(a.id)?.resolution).toBe('task_gone'));
+    await waitFor(() => expect(store.get(a.id)?.state).toBe('answered'));
+    expect(store.get(a.id)).toMatchObject({ resolution: 'answered', answer: { label: 'Yes' }, taskDelivery: 'skipped' });
     expect(deliver).not.toHaveBeenCalled();
-    await waitFor(() => expect(fake.outbound.editMessageText.some((e) => e.text.includes('no longer running'))).toBe(true));
-    await waitFor(() => expect(toasts()).toContain('The session that asked has ended, so the answer was not delivered.'));
+    await waitFor(() => expect(fake.outbound.editMessageText.some((e) => e.text.startsWith('✅ Answered: Yes\nRecorded. The task has ended, so nothing was typed into it.'))).toBe(true));
+    await waitFor(() => expect(toasts()).toContain('Recorded. The task has ended, so nothing was typed into it.'));
+  });
+
+  it('replies in the chat when a free-text answer arrives after the task ended', async () => {
+    await boot();
+    const a = await ask();
+    statuses.set('t1', 'completed' as TaskStatus);
+    reply('ship it', store.get(a.id)!.delivery!.messageId);
+    await waitFor(() => expect(store.get(a.id)?.state).toBe('answered'));
+    expect(store.get(a.id)).toMatchObject({ answer: { kind: 'text', text: 'ship it' }, taskDelivery: 'skipped' });
+    expect(deliver).not.toHaveBeenCalled();
+    await waitFor(() => expect(fake.outbound.sendMessage.some((m) => m.text === 'Recorded. The task has ended, so nothing was typed into it.')).toBe(true));
   });
 
   it('expiry edits the message to "expired" and notifies the live task once', async () => {

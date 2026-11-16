@@ -156,6 +156,6 @@ describe('the skill documents the format the sweep parses', () => {
     expect(skill).not.toMatch(/prefix is required/);
     expect(skill).toContain('`<!-- kookr:opinion-request recommended=A stopped -->`');
     expect(skill).toContain('kookr opinion sweep --repo <owner/name>');
-    expect(skill).toContain('--timeout 24h');
+    expect(skill).toContain('--timeout 48h');
   });
 });

@@ -42,8 +42,9 @@ Options:
                         and on Telegram, never read aloud. Do not paste the URL in the question.
   --link-label <text>   Button text for the --link just before it (at most 40 characters,
                         default "Open link"), e.g. --link-label "Open mockups".
-  --timeout <dur>       How long the question stays open: 30s, 10m, 2h or plain seconds
-                        (default 30m, minimum 30s, maximum 24h).
+  --timeout <dur>       How long the question stays open: 30s, 10m, 2h, 2d or plain seconds
+                        (default 30m, minimum 30s, maximum 7d). With a long timeout, do
+                        not block on a bare --wait: carry on and read the answer later.
   --task-id <uuid>      Task asking (default: $KOOKR_TASK_ID, set in every Kookr task).
   --no-other            Do not accept a free-text reply as an answer.
   --wait[=<seconds>]    Block until answered or expired and print the answer. Without a
@@ -53,11 +54,12 @@ Options:
 
 Without --wait the command returns at once and prints the ask id. The operator's
 answer is also typed into this task's session as "Operator answered ask <id>: <label>".
-Check an ask later with: GET /api/asks/<id>.
+An answer given after the task ended (or was relaunched in a new session) is still
+recorded, but nothing is typed. Check an ask later with: GET /api/asks/<id>.
 
 Exit codes:
   0 answered, or created (no --wait)    5 expired with no answer
-  2 usage error                         6 cancelled (including: the task is gone)
+  2 usage error                         6 cancelled (withdrawn, or never sent)
   3 no Kookr server reachable           7 Telegram is not configured on this server
   4 server rejected the request         8 --wait window elapsed, ask still pending
 
@@ -140,7 +142,7 @@ export function parseAskArgs(argv: string[]): ParsedAskArgs {
         const seconds = parseDuration(v);
         if (seconds === undefined) fail(`--timeout must look like 30s, 10m, 2h or a number of seconds (got: ${v})`);
         else if (seconds < ASK_LIMITS.minTimeoutSec || seconds > ASK_LIMITS.maxTimeoutSec) {
-          fail(`--timeout must be between ${ASK_LIMITS.minTimeoutSec}s and ${ASK_LIMITS.maxTimeoutSec / 3600}h (got: ${v})`);
+          fail(`--timeout must be between ${ASK_LIMITS.minTimeoutSec}s and ${ASK_LIMITS.maxTimeoutSec / 86400}d (got: ${v})`);
         } else out.timeoutSec = seconds;
         break;
       }
