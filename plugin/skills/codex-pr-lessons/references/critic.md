@@ -1,14 +1,10 @@
----
-name: codex-pr-critic
-group: codex-pr-lessons
-description: Critic phase for codex-pr-lessons playbook — analyze a PR and extract quality signals
-keywords: codex, pr, critic, review, analysis, signals, quality
-related: [codex-pr-plan, codex-pr-state, codex-pr-threshold, codex-pr-distill]
----
+# Codex PR lessons: Critic phase
+
+Part of the [`codex-pr-lessons`](../SKILL.md) skill.
 
 ## When to Use
 
-This skill is invoked for each PR in the batch selected by `codex-pr-plan`. It deep-reads the PR and extracts structured quality signals.
+This phase runs for each PR in the batch selected by the plan phase ([plan.md](plan.md)). It deep-reads the PR and extracts structured quality signals.
 
 ## Non-Negotiable Rules
 

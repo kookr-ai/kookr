@@ -1,14 +1,10 @@
----
-name: codex-pr-plan
-group: codex-pr-lessons
-description: Plan phase for codex-pr-lessons playbook — load state, determine next batch of PRs to analyze
-keywords: codex, pr, plan, batch, pagination, state
-related: [codex-pr-critic, codex-pr-state, codex-pr-threshold, codex-pr-distill]
----
+# Codex PR lessons: Plan phase
+
+Part of the [`codex-pr-lessons`](../SKILL.md) skill.
 
 ## When to Use
 
-This skill is invoked at the start of each codex-pr-lessons iteration. It reads the current state, determines which PRs to fetch next, and prepares the batch.
+This phase runs at the start of each codex-pr-lessons iteration. It reads the current state, determines which PRs to fetch next, and prepares the batch.
 
 ## Non-Negotiable Rules
 

@@ -8,7 +8,7 @@ related: [oss-pr-plan, oss-pr-state, oss-pr-threshold, oss-pr-distill]
 
 # OSS PR Critic
 
-Deep-read a PR from any repository and extract structured quality signals. Generalized version of `codex-pr-critic`.
+Deep-read a PR from any repository and extract structured quality signals. Generalized version of the critic phase of `codex-pr-lessons`.
 
 ## When to Use
 
