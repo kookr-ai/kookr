@@ -202,4 +202,34 @@ describe('isolated screen-snapshot seeds (issue #3564)', { timeout: 30_000 }, ()
     expect(await worker.snapshot(encode('after close'), geometry)).toMatchObject({ kind: 'unavailable', reason: 'failed' });
     expect(worker.pendingBytes).toBe(0);
   });
+
+  it('reports a live model job that stalls the thread to onRetire, naming its session (issue #3564 step 2)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onRetire = vi.fn();
+    const worker = newWorker({ backoffMs: 60_000, onRetire });
+    await warmUp(worker);
+    onRetire.mockClear(); // a warm-up that had to retry may have retired a worker
+
+    const healthy = await worker.live({ op: 'reset', sessionKey: 'fine', epoch: 'e', end: 5, ...geometry }, encode('hello'), 2000);
+    expect(healthy).toMatchObject({ kind: 'done' });
+    expect(onRetire).not.toHaveBeenCalled();
+
+    const stalled = await worker.live(
+      { op: 'reset', sessionKey: 'poisoned', epoch: 'e', end: poisonedRing.byteLength, ...geometry }, poisonedRing, 700,
+    );
+    expect(stalled).toMatchObject({ kind: 'unavailable', reason: 'budget-exceeded' });
+    // The registry needs the culprit: it is what doubles that session's cool-down.
+    expect(onRetire).toHaveBeenCalledTimes(1);
+    expect(onRetire).toHaveBeenCalledWith('poisoned');
+    expect(await worker.live({ op: 'drop', sessionKey: 'poisoned' }, new Uint8Array(0), 2000))
+      .toMatchObject({ kind: 'unavailable', reason: 'backoff' });
+
+    // Closing a running worker retires it too, with nobody to blame.
+    await vi.waitFor(async () => {
+      expect(await worker.live({ op: 'drop', sessionKey: 'fine' }, new Uint8Array(0), 2000)).toMatchObject({ kind: 'done' });
+    }, { timeout: 20_000, interval: 100 });
+    onRetire.mockClear();
+    await worker.close();
+    expect(onRetire).toHaveBeenCalledWith(undefined);
+  });
 });
