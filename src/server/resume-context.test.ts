@@ -6,6 +6,7 @@ import type { SessionInfo, Task } from '../core/tasks.js';
 import {
   buildResumeContext,
   buildTaskResumeContext,
+  describeReopenResume,
   hasResumableSession,
   pickResumableSession,
 } from './resume-context.js';
@@ -149,5 +150,120 @@ describe('buildTaskResumeContext', () => {
     );
     expect(resumeContext).toBeUndefined();
     expect(fallbackReason).toContain('ghost.jsonl');
+  });
+});
+
+describe('describeReopenResume (issue #3671)', () => {
+  function agentTask(agentType: string, sessions: SessionInfo[]): Task {
+    return { id: 't1', agentType, sessions } as unknown as Task;
+  }
+  const noRalph = { activeRalphLoop: false };
+
+  test('claude-code session with a provider id → resume that conversation', async () => {
+    const report = await describeReopenResume(
+      agentTask('claude-code', [session({ tmuxSession: 'a', claudeSessionId: 'sess-1' })]),
+      noRalph,
+    );
+    expect(report).toEqual({ mode: 'resume', conversationId: 'sess-1' });
+  });
+
+  test('resumes the NEWEST session that carries a provider id', async () => {
+    const report = await describeReopenResume(
+      agentTask('claude-code', [
+        session({ tmuxSession: 'a', claudeSessionId: 'sess-old' }),
+        session({ tmuxSession: 'b', claudeSessionId: 'sess-new' }),
+        session({ tmuxSession: 'c' }),
+      ]),
+      noRalph,
+    );
+    expect(report).toEqual({ mode: 'resume', conversationId: 'sess-new' });
+  });
+
+  test('an active Ralph loop starts fresh by design, even with a resumable conversation', async () => {
+    const report = await describeReopenResume(
+      agentTask('claude-code', [session({ tmuxSession: 'a', claudeSessionId: 'sess-1' })]),
+      { activeRalphLoop: true },
+    );
+    expect(report.mode).toBe('fresh');
+    expect(report.mode === 'fresh' && report.reason).toMatch(/Ralph/);
+  });
+
+  // The c29a86b9 case from the issue: the SessionStart hook was never captured,
+  // so no session carries a provider id and Reopen would relaunch from the prompt.
+  test('no session recorded a provider id → not resumable, naming the missed SessionStart', async () => {
+    const report = await describeReopenResume(
+      agentTask('claude-code', [session({ tmuxSession: 'a' })]),
+      noRalph,
+    );
+    expect(report.mode).toBe('not_resumable');
+    expect(report.mode === 'not_resumable' && report.reason).toMatch(/SessionStart/);
+  });
+
+  test('a task with no sessions at all → not resumable', async () => {
+    const report = await describeReopenResume(agentTask('claude-code', []), noRalph);
+    expect(report.mode).toBe('not_resumable');
+  });
+
+  test.each(['codex-cli', 'grok-build'])('%s ignores resume → not resumable, naming the agent', async (agentType) => {
+    const report = await describeReopenResume(
+      agentTask(agentType, [session({ tmuxSession: 'a', agentType: agentType as never, claudeSessionId: 'sess-1' })]),
+      noRalph,
+    );
+    expect(report).toEqual({ mode: 'not_resumable', reason: `agent type ${agentType} does not support resume` });
+  });
+
+  test('claude-code conversation whose recorded transcript is gone → not resumable, naming the path', async () => {
+    const report = await describeReopenResume(
+      agentTask('claude-code', [
+        session({ tmuxSession: 'a', claudeSessionId: 'sess-1', transcriptPath: '/does/not/exist.jsonl' }),
+      ]),
+      noRalph,
+    );
+    expect(report.mode).toBe('not_resumable');
+    expect(report.mode === 'not_resumable' && report.reason).toContain('/does/not/exist.jsonl');
+  });
+
+  test('claude-code conversation whose recorded transcript exists → resume', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'reopen-resume-'));
+    try {
+      const transcriptPath = join(dir, 'sess-1.jsonl');
+      await writeFile(transcriptPath, '{}\n');
+      const report = await describeReopenResume(
+        agentTask('claude-code', [session({ tmuxSession: 'a', claudeSessionId: 'sess-1', transcriptPath })]),
+        noRalph,
+      );
+      expect(report).toEqual({ mode: 'resume', conversationId: 'sess-1' });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('opencode with a provider id → resume, with a caveat that it may start fresh', async () => {
+    const report = await describeReopenResume(
+      agentTask('opencode', [
+        session({ tmuxSession: 'a', agentType: 'opencode', claudeSessionId: 'ses_abc', transcriptPath: '/no/such/path' }),
+      ]),
+      noRalph,
+    );
+    expect(report).toMatchObject({ mode: 'resume', conversationId: 'ses_abc' });
+    expect(report.mode === 'resume' && report.caveat).toMatch(/starts fresh/);
+  });
+
+  test('claude-code resume carries no caveat', async () => {
+    const report = await describeReopenResume(
+      agentTask('claude-code', [session({ tmuxSession: 'a', claudeSessionId: 'sess-1' })]),
+      noRalph,
+    );
+    expect(report).not.toHaveProperty('caveat');
+  });
+
+  // A Codex session usually records no provider id at all; the reason must
+  // still name the agent, not a missed SessionStart.
+  test('codex-cli with NO provider id → not resumable because the agent cannot resume', async () => {
+    const report = await describeReopenResume(
+      agentTask('codex-cli', [session({ tmuxSession: 'a', agentType: 'codex-cli' })]),
+      noRalph,
+    );
+    expect(report).toEqual({ mode: 'not_resumable', reason: 'agent type codex-cli does not support resume' });
   });
 });

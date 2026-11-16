@@ -366,6 +366,92 @@ describe('TaskLifecycleCommands.reopenTask (resume prior conversation)', () => {
     expect((await new TaskLifecycleCommands(deps).reopenTask(task.id)).outcome).toBe('reopened');
   });
 
+  test('reports the resume decision on a reopened task (issue #3671)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Resume me', '/repo');
+    addSession(taskStore, task.id, 'kookr-prior');
+    taskStore.updateSession(task.id, 'kookr-prior', { claudeSessionId: 'sess-resumable' });
+    taskStore.terminateTask(task.id);
+    const { deps } = makeDeps(taskStore);
+
+    const result = await new TaskLifecycleCommands(deps).reopenTask(task.id);
+
+    expect(result).toMatchObject({ outcome: 'reopened', resume: { mode: 'resume', conversationId: 'sess-resumable' } });
+  });
+
+  test('reports not_resumable with a reason when no session recorded a provider id (issue #3671)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Lost my SessionStart', '/repo');
+    addSession(taskStore, task.id, 'kookr-prior');
+    taskStore.terminateTask(task.id);
+    const { deps } = makeDeps(taskStore);
+
+    const result = await new TaskLifecycleCommands(deps).reopenTask(task.id);
+
+    expect(result.outcome).toBe('reopened');
+    expect(result.outcome === 'reopened' && result.resume.mode).toBe('not_resumable');
+    expect(taskStore.getTask(task.id)?.status).toBe('pending');
+  });
+
+  test('refuses to reopen a running task instead of launching a second agent beside it', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Still running', '/repo');
+    addSession(taskStore, task.id, 'kookr-live'); // open -> inProgress
+    taskStore.updateSession(task.id, 'kookr-live', { claudeSessionId: 'sess-live' });
+    const tryPromotePending = vi.fn(async () => undefined);
+    const { deps } = makeDeps(taskStore, { tryPromotePending });
+
+    const result = await new TaskLifecycleCommands(deps).reopenTask(task.id);
+
+    expect(result).toMatchObject({ outcome: 'invalid', code: 'task_not_terminal' });
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    expect(taskStore.wantsResumeOnNextLaunch(task.id)).toBe(false);
+    expect(tryPromotePending).not.toHaveBeenCalled();
+  });
+
+  test('two concurrent reopens: one reopens, the other is refused as not terminal (no throw, no second launch)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'reopen-race-'));
+    try {
+      // A recorded transcript makes the resume report await a file check,
+      // which is where a second reopen can interleave.
+      const transcriptPath = join(dir, 'sess.jsonl');
+      await writeFile(transcriptPath, '{}\n');
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Double-clicked', '/repo');
+      addSession(taskStore, task.id, 'kookr-prior');
+      taskStore.updateSession(task.id, 'kookr-prior', { claudeSessionId: 'sess-resumable', transcriptPath });
+      taskStore.terminateTask(task.id);
+      const tryPromotePending = vi.fn(async () => undefined);
+      const { deps } = makeDeps(taskStore, { tryPromotePending });
+      const commands = new TaskLifecycleCommands(deps);
+
+      const results = await Promise.all([commands.reopenTask(task.id), commands.reopenTask(task.id)]);
+
+      expect(results.map((r) => r.outcome).sort()).toEqual(['invalid', 'reopened']);
+      expect(results.find((r) => r.outcome === 'invalid')).toMatchObject({ code: 'task_not_terminal' });
+      expect(tryPromotePending).toHaveBeenCalledTimes(1);
+      expect(taskStore.getTask(task.id)?.status).toBe('pending');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('reports cleanup-in-progress and leaves no resume request behind', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Probe still settling', '/repo');
+    addSession(taskStore, task.id, 'kookr-prior');
+    taskStore.updateSession(task.id, 'kookr-prior', { claudeSessionId: 'sess-resumable' });
+    taskStore.terminateTask(task.id);
+    taskStore.getTaskForMutation(task.id)!.launchAdmission = { status: 'probing' } as never;
+    const { deps } = makeDeps(taskStore);
+
+    const result = await new TaskLifecycleCommands(deps).reopenTask(task.id);
+
+    expect(result).toMatchObject({ outcome: 'invalid', code: 'task_cleanup_in_progress' });
+    expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+    expect(taskStore.wantsResumeOnNextLaunch(task.id)).toBe(false);
+  });
+
   test('a fresh pend of the same task does not inherit a consumed resume request', async () => {
     const { taskStore, taskId } = await reopenTerminated((store, id) => {
       store.updateSession(id, 'kookr-prior', { claudeSessionId: 'sess-resumable' });

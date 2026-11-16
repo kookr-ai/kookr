@@ -15,6 +15,7 @@ Usage:
   kookr spawn [OPTIONS] [PROMPT...]    Create a task from the current shell.
   kookr open [taskId] [--json]  Open the running dashboard in your browser (deep-link to a task).
   kookr reply <taskId|name> "<text>" [--json]  Deliver a terminal reply to a task's live agent.
+  kookr reopen <taskId> [--json]  Reopen a terminal task; reports whether it resumes its conversation.
   kookr ask --question "<text>" --option "<label>" ... [--wait] [--json]  Ask the operator a multiple-choice question (Telegram).
   kookr supervise <taskRef...> [--goal <text>]... [--until <+Nh|HH:MM>] [--print-brief] [--json]  Attach a supervisor task to running tasks.
   kookr supervision status|end [id] [--json]  Show attached supervisions (health, next wake), or end one.
@@ -58,7 +59,7 @@ Options:
   -v, --version                 Print the installed Kookr version.
   -h, --help                    Show this help.
 
-Use --json for one machine-readable output envelope with: spawn, stop, open, reply, ask, supervise, supervision status, peek, status, doctor,
+Use --json for one machine-readable output envelope with: spawn, stop, open, reply, reopen, ask, supervise, supervision status, peek, status, doctor,
 signal, ralph, issue, schedule, playbook, chain, drain, resume, ops digest, ops timers, github, logs, containers,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
@@ -124,6 +125,13 @@ async function main({
   // type a reply. Loads the src/cli module with a dist→src fallback.
   if (command === 'reply') {
     await runReplyCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
+  // Reopen a terminal task (issue #3671): the CLI counterpart of the
+  // dashboard's Reopen button, over POST /api/tasks/:id/reopen.
+  if (command === 'reopen') {
+    await runReopenCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
   }
 
@@ -685,6 +693,21 @@ async function runReplyCommand(argv, { env = process.env, out = console, err = c
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runReplyCli(argv, { env, out, err });
+}
+
+async function runReopenCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-reopen.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-reopen.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] reopen module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runReopenCli(argv, { env, out, err });
 }
 
 async function runAskCommand(argv, { env = process.env, out = console, err = console } = {}) {

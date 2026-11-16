@@ -1479,6 +1479,64 @@ timeout (the server was reachable but did not answer in time; the abort may stil
 be completing, so re-run to confirm), `5` ambiguous port (two instances reachable;
 set `KOOKR_PORT` to choose one).
 
+## `kookr reopen`
+
+Reopen a `completed`, `terminated`, or `cancelled` task from the terminal,
+resuming its conversation when possible (issue #3671). It is the CLI
+counterpart of the dashboard's Reopen button and calls
+[`POST /api/tasks/:id/reopen`](./api.md#post-apitasksidreopen). Use it when a
+task was reaped (hung-task reaper, hung-suspect TTL) and you want it to carry
+on where it stopped. `kookr spawn` with a new brief would throw that
+conversation away.
+
+```bash
+kookr reopen <taskId>          # reopen and print resume vs fresh
+kookr reopen <taskId> --json   # machine-readable envelope
+```
+
+The task is re-queued and relaunched as soon as a slot is free. The output
+states what the relaunch does with the prior conversation:
+
+```text
+Reopened task 1f2e… (now inProgress).
+Conversation: resumes c3753022-…
+```
+
+- `resumes <id>`: the relaunch continues that provider conversation.
+- `tries to resume <id> (<caveat>)`: an opencode task. opencode looks the
+  conversation up in the task's own session data at launch and starts fresh
+  if that data is gone (a finished task's data is pruned after 24 hours by
+  default, `KOOKR_OPENCODE_DATA_DONE_TTL_HOURS`).
+- `starts fresh (<reason>)`: the relaunch starts from the original prompt by
+  design (an active Ralph loop).
+- `not resumable — <reason>`: the relaunch starts from the original prompt
+  because the conversation cannot be continued. For example, the agent never
+  reported `SessionStart` so no conversation id was recorded, the Claude Code
+  transcript is gone, or the agent (Codex CLI, Grok Build) does not support
+  resume.
+
+`--json` prints one `{ ok, code, message, details }` envelope.
+`details.resume` carries `{ mode: "resume" | "fresh" | "not_resumable",
+conversationId?, caveat?, reason? }`, and `details.status` is the task's status
+after the call (`pending` while it waits for a slot). The resume request lives
+in server memory only: if the server restarts while the task is still
+`pending`, it launches fresh.
+
+Authentication and target selection are the same as for `kookr stop`: the
+command forwards `KOOKR_SUPERVISOR_TOKEN` (else `KOOKR_API_TOKEN`), and
+`KOOKR_API_BASE_URL` / `KOOKR_PORT` override the probe of ports `4800` and
+`4801`.
+
+Exit codes: `0` reopened. `2` usage error, unknown task (`NOT_FOUND`), or a
+task that is not terminal (`TASK_NOT_TERMINAL`; nothing is launched). `3` no
+server reachable. `4` server/HTTP error, including a relaunch that failed
+(`details.serverCode: "reopen_launch_failed"`), dependency-probe cleanup still
+in progress (`task_cleanup_in_progress`), a missing or wrong supervisor token
+(HTTP 401), a remote-owned `shared:` id (HTTP 403), and a request timeout. On a
+timeout the server may still be relaunching the task: check it with
+`kookr peek <taskId>` before retrying. A retry on a task that was already
+reopened is refused, not duplicated. `5` ambiguous port.
+
 ## `kookr open`
 
 Open the dashboard served by the running Kookr instance in your default browser,
@@ -1841,6 +1899,12 @@ working-tree state), not a conversation transplant.
 Exit codes: `0` migrated/queued (or dry-run found candidates), `1` declined at
 the prompt, `2` bad flags, `3` no server found, `4` server error, `5` every
 candidate blocked.
+
+A task whose `--to` agent is the agent it already runs on is blocked as
+`same_agent_use_restore`: migration only moves work between agents. To resume
+such a task in its own conversation, use [`kookr reopen <taskId>`](#kookr-reopen)
+(Codex CLI and Grok Build tasks relaunch fresh, since those agents cannot
+resume). The human output prints that hint whenever this reason appears.
 
 In `--json` mode a single JSON object is printed to stdout: a dry-run emits
 `{ ok: true, mode: "plan", targetAgent, candidates, notFound }` (`notFound`

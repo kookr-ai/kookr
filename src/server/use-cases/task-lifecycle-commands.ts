@@ -25,7 +25,7 @@ import { deleteTask, type DeleteTaskDeps } from './delete-task.js';
 import { writeFeedbackBundle } from './write-feedback-bundle.js';
 import { writeTaskSnapshotBundle } from './write-task-snapshot-bundle.js';
 import { requestTaskReflect } from './request-task-reflect.js';
-import { hasResumableSession } from '../resume-context.js';
+import { describeReopenResume, hasResumableSession, type ReopenResumeReport } from '../resume-context.js';
 import { hungTaskReportPrefix } from '../hung-task-report-paths.js';
 import { firstHookMissReportPrefix } from '../first-hook-miss-report-paths.js';
 
@@ -118,7 +118,7 @@ export type TaskLifecycleCommandResult =
   | { outcome: 'already_terminal'; task: Task }
   | { outcome: 'partial_ralph_completion'; task: Task }
   | { outcome: 'cancelled'; task: Task }
-  | { outcome: 'reopened'; task: Task }
+  | { outcome: 'reopened'; task: Task; resume: ReopenResumeReport }
   | { outcome: 'deleted' }
   | { outcome: 'cleared'; deletedTaskIds: string[] }
   | { outcome: 'not_found'; error: string }
@@ -281,8 +281,30 @@ export class TaskLifecycleCommands {
   }
 
   async reopenTask(taskId: string): Promise<TaskLifecycleCommandResult> {
+    // Only a terminal task can be reopened. The store also allows
+    // `inProgress -> open`, so without this guard a reopen of a running task
+    // would pend and promote it, launching a second agent beside the live one.
+    const notReopenable = (current: Task | undefined): TaskLifecycleCommandResult | undefined => {
+      if (!current) return { outcome: 'not_found', error: `Task not found: ${taskId}` };
+      if (isTerminalStatus(current.status)) return undefined;
+      return {
+        outcome: 'invalid',
+        code: 'task_not_terminal',
+        error: `Task ${taskId} is ${current.status}; only a completed, terminated, or cancelled task can be reopened`,
+      };
+    };
+    const before = this.deps.taskStore.getTask(taskId);
+    const refusedBefore = notReopenable(before);
+    if (refusedBefore || !before) return refusedBefore!;
+    // Decide what the relaunch does with the prior conversation BEFORE the
+    // launch: promotion consumes the resume flag and appends a new session.
+    const resume = await describeReopenResume(before, { activeRalphLoop: isActiveRalphLoop(before) });
+    // That await can yield (a transcript existence check), so a concurrent
+    // reopen may have re-queued the task meanwhile. Check again; from here to
+    // pendTask nothing awaits, so the check and the transitions are atomic.
     const task = this.deps.taskStore.getTask(taskId);
-    if (!task) return { outcome: 'not_found', error: `Task not found: ${taskId}` };
+    const refusedNow = notReopenable(task);
+    if (refusedNow || !task) return refusedNow!;
     // Reopening a terminal task must re-queue it, not merely un-terminate it.
     //
     // The bare `terminated -> open` transition is not durable on its own: the
@@ -310,10 +332,16 @@ export class TaskLifecycleCommands {
     // service, not a resumed conversation. The flag is consumed once by the
     // launch path (adapters that do not yet support resume degrade to a fresh
     // launch with a warning).
+    try {
+      this.deps.taskStore.reopenTask(taskId); // terminated -> open
+    } catch (err) {
+      if (!(err instanceof TaskCleanupInProgressError)) throw err;
+      return { outcome: 'invalid', code: 'task_cleanup_in_progress', error: err.message };
+    }
+    // Set after the reopen succeeded, so a refused reopen leaves no request.
     if (!isActiveRalphLoop(task) && hasResumableSession(task)) {
       this.deps.taskStore.requestResumeOnNextLaunch(taskId);
     }
-    this.deps.taskStore.reopenTask(taskId); // terminated -> open
     const pended = this.deps.taskStore.pendTask(taskId); // open -> pending
     // Launch immediately when a slot is free so the task visibly resumes rather
     // than only reappearing on the next periodic snapshot; if capacity is full
@@ -331,7 +359,7 @@ export class TaskLifecycleCommands {
         error: `Task ${taskId} was reopened but its relaunch failed: ${receipt.detail ?? 'unknown launch error'}`,
       };
     }
-    return { outcome: 'reopened', task: reopened };
+    return { outcome: 'reopened', task: reopened, resume };
   }
 
   /**

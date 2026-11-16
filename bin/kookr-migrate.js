@@ -302,6 +302,12 @@ function buildPlan({ candidates, scope, taskIds }) {
   };
 }
 
+// A same-agent target can't be migrated: the conversation-preserving action is
+// Reopen (issue #3671), which resumes the task under its own agent.
+const SAME_AGENT_REASON = 'same_agent_use_restore';
+const SAME_AGENT_HINT =
+  '  Tasks blocked as same_agent_use_restore already run on this agent: reopen them with `kookr reopen <taskId>` instead (it resumes the conversation when the agent supports resume).';
+
 function formatPlan(plan, targetAgent) {
   const lines = [`Migration plan -> ${targetAgent}`];
   if (plan.eligible.length === 0) {
@@ -324,6 +330,7 @@ function formatPlan(plan, targetAgent) {
     for (const [reason, count] of [...byReason.entries()].sort((a, b) => b[1] - a[1])) {
       lines.push(`    ${reason ?? 'unknown'}: ${count}`);
     }
+    if (byReason.has(SAME_AGENT_REASON)) lines.push(SAME_AGENT_HINT);
   }
   if (plan.notFound.length > 0) {
     lines.push(`  Not found among migratable/blocked tasks (${plan.notFound.length}): ${plan.notFound.join(', ')}`);
@@ -339,6 +346,9 @@ function formatResults(body) {
     } else {
       lines.push(`  ${r.taskId}  blocked${r.reason ? `  (${r.reason})` : ''}`);
     }
+  }
+  if (body.results.some((r) => r.outcome === 'blocked' && r.reason === SAME_AGENT_REASON)) {
+    lines.push(SAME_AGENT_HINT);
   }
   const migrated = body.results.filter((r) => r.outcome === 'migrated').length;
   const queued = body.results.filter((r) => r.outcome === 'queued').length;
