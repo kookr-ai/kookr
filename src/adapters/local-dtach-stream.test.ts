@@ -197,6 +197,20 @@ describe('issue #3565: a session that survives a restart', () => {
     expect(ringText(after.stream)).toBe('screen');
   });
 
+  test('a first chunk that does not start with the clear is kept whole', async () => {
+    const after = await launchResizeAndRestart();
+    after.stream.ensureReadable('s');
+    ptyMock.data?.('hello!');
+    expect(ringText(after.stream)).toBe('screenhello!');
+  });
+
+  test('a frame capture before the session is in memory uses the saved size', async () => {
+    const after = await launchResizeAndRestart();
+    // The capture's temporary attach never emits, so it ends on its timeout.
+    await after.stream.captureCurrentFrame('s', { timeoutMs: 1 });
+    expect(lastSpawnSize()).toEqual({ cols: 83, rows: 30 });
+  });
+
   test('a fresh launch still records its first chunk as live output', () => {
     const { dir, sock } = instanceDir();
     const launch = generation(dir);
@@ -211,6 +225,8 @@ describe('issue #3565: a session that survives a restart', () => {
     ['fractional', { cols: 80.5, rows: 24 }],
     ['absurd', { cols: 1_000_000, rows: 24 }],
     ['non-numeric', { cols: '120', rows: 40 }],
+    ['zero rows', { cols: 120, rows: 0 }],
+    ['fractional rows', { cols: 120, rows: 40.5 }],
   ])('falls back to 80x24 when the persisted size is %s', (_label, size) => {
     const { dir } = instanceDir(size);
     generation(dir).stream.ensureReadable('s');
