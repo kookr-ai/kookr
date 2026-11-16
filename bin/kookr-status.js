@@ -784,6 +784,29 @@ function summarizeSchedulesPausedByFailure(health) {
   return rows.length > 0 ? rows : null;
 }
 
+// Alert destination (issue #3924). /api/health publishes `alertDestination`
+// ({ channels, label, reason? }) saying where server alerts leave the machine:
+// "Telegram (owner chat)", "Telegram (configured chat)", "Discord", or
+// "nowhere outside the dashboard". Shown on every human report, because
+// "nowhere" is the case an operator cannot otherwise notice. Null when an older
+// server does not publish the field (no line is printed then).
+function summarizeAlertDestination(health) {
+  const block = health?.alertDestination;
+  if (!block || typeof block !== 'object') return null;
+  const label = /** @type {{ label?: unknown }} */ (block).label;
+  if (typeof label !== 'string' || label.length === 0) return null;
+  const rawChannels = /** @type {{ channels?: unknown }} */ (block).channels;
+  const channels = Array.isArray(rawChannels)
+    ? rawChannels.filter((c) => typeof c === 'string')
+    : [];
+  const reason = /** @type {{ reason?: unknown }} */ (block).reason;
+  return {
+    channels,
+    label,
+    ...(typeof reason === 'string' && reason.length > 0 ? { reason } : {}),
+  };
+}
+
 // Startup crash-recovery counts (issue #2351). /api/health publishes a slim
 // `startupRecovery` block after deferred recovery completes (relaunched /
 // skipped / failed / crashLoopSkips + generatedAt). Always-on compact gauge
@@ -1126,6 +1149,16 @@ function renderReport({ port, health, agents, readiness, degraded }) {
     } else {
       lines.push(`Readiness: unavailable (${readiness.error})`);
     }
+  }
+
+  const alertDestination = summarizeAlertDestination(health);
+  if (alertDestination) {
+    lines.push(
+      alertDestination.channels.length > 0
+        ? `Alerts:  ${alertDestination.label}`
+        : `WARN: Alerts go ${alertDestination.label}` +
+            (alertDestination.reason ? ` (${alertDestination.reason})` : ''),
+    );
   }
 
   if (degraded) {
@@ -1770,6 +1803,7 @@ function buildHealthDetailProjections(health) {
   const hookIngestionSummary = summarizeHookIngestion(health);
   const launchDependenciesSummary = summarizeLaunchDependencies(health);
   const schedulesPausedByFailureSummary = summarizeSchedulesPausedByFailure(health);
+  const alertDestinationSummary = summarizeAlertDestination(health);
   const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
   const lessonYieldSummary = summarizeLessonYield(health);
   const ossAttemptsSummary = summarizeOssAttempts(health);
@@ -1805,6 +1839,7 @@ function buildHealthDetailProjections(health) {
     ...(schedulesPausedByFailureSummary
       ? { schedulesPausedByFailure: schedulesPausedByFailureSummary }
       : {}),
+    ...(alertDestinationSummary ? { alertDestination: alertDestinationSummary } : {}),
     ...(capacitySummary ? { capacity: capacitySummary } : {}),
     ...(providerPausedSummary
       ? { providerPausedOccupancy: providerPausedSummary }
@@ -2183,6 +2218,7 @@ export {
   summarizeHookIngestion,
   summarizeLaunchDependencies,
   summarizeSchedulesPausedByFailure,
+  summarizeAlertDestination,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   summarizeOssAttempts,

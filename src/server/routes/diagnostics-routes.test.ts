@@ -8,6 +8,7 @@ import {
   sanitizeQuotaPollerLastError,
 } from '../../adapters/quota-adapter.js';
 import { TaskStore } from '../../core/tasks.js';
+import { resolveSignalDeliveryFromEnv } from '../../observability/signal-delivery/config.js';
 import { LaunchDependencyAdmission } from '../../core/launch-dependency-admission.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { DEFAULT_SETTINGS } from '../../core/settings-store.js';
@@ -1038,6 +1039,43 @@ describe('diagnostics routes', () => {
       }).request('/api/health')).json() as { signalDelivery?: unknown };
 
       expect(body).not.toHaveProperty('signalDelivery');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — alertDestination (issue #3924)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health alertDestination (issue #3924)', () => {
+    // Real resolver output for each of the four cases the issue names, so the
+    // health field is pinned to what the server wiring actually publishes.
+    const cases: Array<[string, Record<string, string>, string]> = [
+      ['owner chat', { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '4242' }, 'Telegram (owner chat)'],
+      ['configured chat', { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_SIGNAL_TELEGRAM_CHAT_ID: '-1001' }, 'Telegram (configured chat)'],
+      ['Discord', { KOOKR_DISCORD_WEBHOOK_URL: 'https://discord.com/api/webhooks/1/abc' }, 'Discord'],
+      ['nowhere', { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '1,2' }, 'nowhere outside the dashboard'],
+    ];
+    test.each(cases)('publishes the %s destination', async (_name, env, label) => {
+      const { destination } = resolveSignalDeliveryFromEnv(env as NodeJS.ProcessEnv, { warn: () => {} });
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getAlertDestination: () => destination,
+      }).request('/api/health')).json() as { alertDestination?: { label: string; channels: string[] } };
+
+      expect(body.alertDestination).toEqual(destination);
+      expect(body.alertDestination?.label).toBe(label);
+      // "nowhere" is the only case without a channel; the other three name one.
+      expect(body.alertDestination?.channels.length === 0).toBe(label === 'nowhere outside the dashboard');
+    });
+
+    test('omits the field when the getter is not wired (partial harness)', async () => {
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health')).json();
+      expect(body).not.toHaveProperty('alertDestination');
     });
   });
 

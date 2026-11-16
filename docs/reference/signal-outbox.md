@@ -70,3 +70,15 @@ daemon outage cannot grow the outbox unbounded.
   logs and task state.
 - Disable only the background service with `KOOKR_SIGNAL_OUTBOX=0`; the CLI
   outbox write path stays active.
+
+## Not the operator-alert outbox
+
+This outbox carries signals from agents to the daemon. Server alerts going the
+other way, to the operator's phone, use a separate folder
+(`~/.kookr/playbook-state/operator-signals/`) and a separate delivery service;
+see [Operator Signal Delivery](./environment-variables.md#operator-signal-delivery).
+Server detectors write that folder only when an alert channel resolves:
+`KOOKR_SIGNAL_TELEGRAM_CHAT_ID`, `KOOKR_DISCORD_WEBHOOK_URL`, or (issue #3924)
+the Telegram bot owner's private chat when `KOOKR_TELEGRAM_ALLOWED_USERS` holds
+exactly one user and no other channel is set. `GET /api/health` reports the
+result as `alertDestination`.

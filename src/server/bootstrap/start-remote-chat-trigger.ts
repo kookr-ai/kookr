@@ -3,6 +3,7 @@ import type { LaunchResult, LaunchOpts } from '../../shared/contracts/launch.js'
 import type { TelegramHandle, TelegramTaskOutcome, TelegramReplyResult } from '../../shared/contracts/telegram.js';
 import type { TelegramTaskBridge } from '../telegram-task-bridge.js';
 import type { AskAnswerPort } from '../../shared/contracts/asks.js';
+import { parseAllowedUserIds } from '../../integrations/telegram/allowed-users.js';
 
 type Env = Record<string, string | undefined>;
 
@@ -54,17 +55,6 @@ export interface RemoteChatTrigger {
   handle: TelegramHandle | null;
   onPermissionBlocked?: (taskId: string, promptText: string) => void;
   onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
-}
-
-function parseAllowedUserIds(value: string | undefined): Set<number> {
-  return new Set(
-    (value ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map(Number)
-      .filter((n) => !isNaN(n)),
-  );
 }
 
 function parseAllowedProjects(value: string | undefined): Array<{ name: string; cwd: string }> {

@@ -24,6 +24,7 @@ import {
   summarizeHookIngestion,
   summarizeLaunchDependencies,
   summarizeSchedulesPausedByFailure,
+  summarizeAlertDestination,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   summarizeOssAttempts,
@@ -2497,6 +2498,53 @@ describe('kookr-status summarizeSchedulesPausedByFailure (issue #2424)', () => {
   });
 });
 
+describe('kookr-status alert destination (issue #3924)', () => {
+  it('returns null when an older server does not publish alertDestination', () => {
+    expect(summarizeAlertDestination({ status: 'ok' })).toBeNull();
+    expect(summarizeAlertDestination({ alertDestination: { channels: [] } })).toBeNull();
+  });
+
+  it('keeps channels, label and reason, dropping non-string channels', () => {
+    expect(
+      summarizeAlertDestination({
+        alertDestination: { channels: ['telegram_owner_chat', 7], label: 'Telegram (owner chat)' },
+      }),
+    ).toEqual({ channels: ['telegram_owner_chat'], label: 'Telegram (owner chat)' });
+  });
+
+  it('prints the destination as a plain line when alerts leave the machine', () => {
+    const lines = renderReport({
+      port: 4800,
+      health: { status: 'ok', alertDestination: { channels: ['telegram_owner_chat'], label: 'Telegram (owner chat)' } },
+      agents: [],
+    }).split('\n');
+    expect(lines).toContain('Alerts:  Telegram (owner chat)');
+  });
+
+  it('prints a WARN with the reason when alerts go nowhere outside the dashboard', () => {
+    const lines = renderReport({
+      port: 4800,
+      health: {
+        status: 'ok',
+        alertDestination: {
+          channels: [],
+          label: 'nowhere outside the dashboard',
+          reason: 'no alert channel is configured and the Telegram bot is not set up',
+        },
+      },
+      agents: [],
+    }).split('\n');
+    expect(lines).toContain(
+      'WARN: Alerts go nowhere outside the dashboard (no alert channel is configured and the Telegram bot is not set up)',
+    );
+  });
+
+  it('prints no alert line for an older server', () => {
+    const out = renderReport({ port: 4800, health: { status: 'ok' }, agents: [] });
+    expect(out).not.toContain('Alerts');
+  });
+});
+
 describe('kookr-status summarizeHungSuspectTtlReclaim (issue #2229)', () => {
   it('returns null when hungSuspectTtlReclaim is absent', () => {
     expect(summarizeHungSuspectTtlReclaim({ status: 'ok' })).toBeNull();
@@ -3938,6 +3986,16 @@ describe('kookr-status main (integration-style)', () => {
       { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
     ]);
     expect(JSON.stringify(envelope.details.schedulesPausedByFailure)).not.toContain('timezone');
+  });
+
+  it('mirrors alertDestination (issue #3924) into --json details', async () => {
+    mockSuccessfulFetch([], {
+      alertDestination: { channels: ['discord'], label: 'Discord' },
+    });
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.alertDestination).toEqual({ channels: ['discord'], label: 'Discord' });
   });
 
   it('omits details.schedulesPausedByFailure in --json when absent or empty (issue #2424)', async () => {

@@ -29,6 +29,9 @@ export interface SettingsRouteDeps extends Omit<SettingsMutationDeps, 'settings'
     /** Issue #2085: load failure that forced fail-closed SAFE MODE. */
     getLoadError?: () => string | undefined;
   };
+  /** Issue #3924: where operator alerts go, shown in Settings → Notifications & Alerts. */
+  getAlertDestination?: () =>
+    import('../../observability/signal-delivery/config.js').AlertDestination;
   /** Adapter registry consulted for advertised-agent filtering in the PUT broadcast. */
   launchServiceDeps?: {
     adapterRegistry: Pick<LaunchServiceDeps['adapterRegistry'], 'getTypes'>;
@@ -42,6 +45,7 @@ export function registerSettingsRoutes(app: Hono, deps: SettingsRouteDeps): void
       ...deps.settings.get(),
       loadedFromDefaults: deps.settings.getLoadedFromDefaults(),
       warnings: deps.settings.getLoadWarnings?.() ?? [],
+      ...(deps.getAlertDestination ? { alertDestination: deps.getAlertDestination() } : {}),
     });
   });
 

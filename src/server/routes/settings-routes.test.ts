@@ -303,3 +303,21 @@ describe('settings routes', () => {
     }));
   });
 });
+
+describe('GET /api/settings alertDestination (issue #3924)', () => {
+  test('includes where server alerts go when the getter is wired', async () => {
+    const destination = {
+      channels: [],
+      label: 'nowhere outside the dashboard',
+      reason: 'no alert channel is configured and the Telegram bot is not set up',
+    };
+    const app = mkApp({ ...mkRouteDeps(), getAlertDestination: () => destination });
+    const body = await (await app.request('/api/settings')).json() as Record<string, unknown>;
+    expect(body.alertDestination).toEqual(destination);
+  });
+
+  test('omits the field when the getter is not wired', async () => {
+    const body = await (await mkApp(mkRouteDeps()).request('/api/settings')).json() as Record<string, unknown>;
+    expect(body).not.toHaveProperty('alertDestination');
+  });
+});

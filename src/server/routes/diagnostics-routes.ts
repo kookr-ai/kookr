@@ -922,6 +922,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // Delivery-bridge health (issue #3046). Undefined when the bridge is
     // unconfigured or before the service is wired at startup ⇒ block omitted.
     const signalDeliveryBlock = deps.getSignalDeliveryStatus?.();
+    // Issue #3924: where alerts go, including "nowhere outside the dashboard".
+    const alertDestinationBlock = deps.getAlertDestination?.();
     // Issue #3315: project the operational-alert JSONL sink's in-memory
     // writability so a frozen incident log (ENOSPC / EACCES) is distinguishable
     // from a quiet day. Cheap status() read — never opens the file, never dumps
@@ -1136,6 +1138,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // Makes a silently-failing (revoked webhook / bad token / 429) Discord or
       // Telegram bridge glanceable. Absent when the bridge is unconfigured.
       ...(signalDeliveryBlock ? { signalDelivery: signalDeliveryBlock } : {}),
+      ...(alertDestinationBlock ? { alertDestination: alertDestinationBlock } : {}),
       // Issue #3315: configured / writable / lastFailure from the sink's
       // in-memory status(). A Discord-only operator can tell "disk-full, alerts
       // not recording" from "no alerts fired" without reading the server log.
