@@ -55,7 +55,7 @@ const UNAVAILABLE_TEXT: Record<TaskChangesUnavailableReason, string> = {
   worktree_gone: "This task's worktree was removed, and no pull request of its own is known.",
   not_git: 'This task does not run in a git repository.',
   no_base: 'No base branch to compare against (no origin/main, origin/staging or origin/master).',
-  pull_request_unreachable: "This task's worktree was removed, and GitHub did not answer for its pull request's files. Press Refresh to try again.",
+  pull_request_unreachable: "This task has no worktree to read, and GitHub did not answer for its pull request's files. Press Refresh to try again.",
 };
 
 const STATUS_LETTER: Record<TaskChangedFile['status'], string> = {

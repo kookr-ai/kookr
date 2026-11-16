@@ -160,7 +160,7 @@ describe('ChangesPanel (#4024)', () => {
 
   test.each([
     ['worktree_gone', "This task's worktree was removed, and no pull request of its own is known."],
-    ['pull_request_unreachable', "This task's worktree was removed, and GitHub did not answer for its pull request's files. Press Refresh to try again."],
+    ['pull_request_unreachable', "This task has no worktree to read, and GitHub did not answer for its pull request's files. Press Refresh to try again."],
     ['no_cwd', 'No working directory is recorded for this task.'],
     ['not_git', 'This task does not run in a git repository.'],
   ] as const)('explains a %s task instead of an empty list', async (reason, text) => {

@@ -144,7 +144,7 @@ export class PullRequestChanges {
     const entry = cached.files.find((f) => f.filename === filePath);
     if (!entry) return null;
     if (entry.patch === undefined) {
-      return entry.status === 'renamed' && entry.additions === 0 && entry.deletions === 0
+      return (entry.status === 'renamed' || entry.status === 'changed') && entry.additions === 0 && entry.deletions === 0
         ? { kind: 'patch', path: entry.filename, hunks: [] }
         : { kind: 'no_patch', path: entry.filename };
     }

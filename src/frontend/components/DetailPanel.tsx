@@ -1294,8 +1294,8 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                       </Suspense>
                     )}
                     {/* The conversation stays mounted behind Changes, so closing an
-                        opened edit finds the row that opened it (focus, expanded
-                        tool group and scroll position survive) (#4024). */}
+                        opened edit finds the row that opened it, with its tool
+                        group still expanded (#4024). */}
                     <div
                       className="detail-conversation-slot"
                       data-testid="detail-conversation-slot"

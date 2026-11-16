@@ -88,7 +88,7 @@ The tab shows one plain line instead of an empty list:
 |---|---|
 | The task has no working directory recorded | No working directory is recorded for this task. |
 | The directory is gone (worktree removed), and the task has no own pull request | This task's worktree was removed, and no pull request of its own is known. |
-| The directory is gone, and GitHub did not answer for the pull request's files | This task's worktree was removed, and GitHub did not answer for its pull request's files. Press Refresh to try again. |
+| The directory is gone or was never recorded, and GitHub did not answer for the pull request's files | This task has no worktree to read, and GitHub did not answer for its pull request's files. Press Refresh to try again. |
 | The directory is not a git repository | This task does not run in a git repository. |
 | No base branch can be found | No base branch to compare against (no origin/main, origin/staging or origin/master). |
 | The branch has no changes yet | No changes against origin/staging on `<branch>`. |
