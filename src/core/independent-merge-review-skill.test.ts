@@ -142,7 +142,7 @@ describe('independent-merge-review round rules (issue #3844)', () => {
       '| New, non-critical, on a line the fix diff does not change | follow-up | follow-up |',
     );
     expect(roundRules).toContain('| New, critical, anywhere in the PR | blocks | blocks |');
-    expect(roundRules).toContain('| New, non-critical, on a line the fix diff changes | blocks | follow-up |');
+    expect(roundRules).toContain('| New, small `defect`, on a line the fix diff changes | blocks | follow-up |');
     expect(roundRules).toMatch(/it blocks in every round/);
     expect(spawnStep).toMatch(/A new critical finding\s+blocks wherever it is/);
   });
@@ -153,28 +153,23 @@ describe('independent-merge-review round rules (issue #3844)', () => {
     expect(roundRules).toMatch(/From round 3 on \(the PR already\s+carries two or more BLOCKs\) this is the round cap: only critical findings\s+block/);
   });
 
-  test('files one follow-up issue per PR with a checklist, not one per finding', () => {
-    const spawnStep = spawn();
+  test('files at most one follow-up issue per PR with a checklist, not one per finding', () => {
     const roundRules = rules();
-    expect(roundRules).toMatch(/\*\*one\*\* issue for the whole PR, with one checklist item per follow-up/);
-    expect(roundRules).toContain('--title "Follow-ups from the review of #$PR"');
+    expect(roundRules).toMatch(/\*\*one\*\* issue for the whole PR, with one checklist\s+item per defect/);
+    expect(roundRules).toContain('TITLE="Review follow-ups: $FILES (#$PR)"');
     expect(roundRules).toContain('- [ ] <file>:<line> <what is wrong> (round <n>)');
-    expect(roundRules).not.toMatch(/--title "<follow-up title>"/);
-    // Follow-ups listed by a BLOCK must be filed then, not only at the pass,
-    // or a round-2 follow-up is lost when round 3 adds nothing.
-    expect(roundRules).toMatch(/at \*\*every\*\* verdict that lists\s+follow-ups, a BLOCK included/);
+    expect(roundRules).not.toContain('Follow-ups from the review of #$PR"');
+    // Defects listed by a BLOCK must be filed then, not only at the pass,
+    // or a round-1 follow-up is lost when round 2 adds nothing.
+    expect(roundRules).toMatch(/at \*\*every\*\* verdict that lists defect follow-ups, a BLOCK\s+included/);
+    expect(roundRules).toMatch(/add the new\s+items to it \(`gh issue edit --body-file`/);
   });
 
-  test('the worked example shows a round-2 fix check and the single follow-up issue', () => {
-    const spawnStep = spawn();
+  test('the worked example shows a round-2 fix check confirming the round-1 small defect', () => {
     const roundRules = rules();
     expect(roundRules).toMatch(/\*\*Review 2 on H2\*\* \(`c3d4…`\), a fix check on `git diff a1b2… c3d4…`/);
-    expect(roundRules).toMatch(/\(2\) is a follow-up\. Verdict: BLOCK/);
-    expect(roundRules).toMatch(/files \(2\) as #4101, a follow-up issue with one checklist item, and links it\s+from the BLOCK/);
-    expect(roundRules).toMatch(/adds it to #4101, which now holds both follow-ups as two checklist items/);
-    expect(roundRules).toContain('Follow-ups (non-critical, one issue for this PR): #4101');
+    expect(roundRules).toMatch(/`kookr merge 4100`\s+accepts this `pass`/);
   });
-
   test.each([
     ['plugin/skills/pre-pr-review/SKILL.md'],
     ['.claude/skills/kookr-pre-push/SKILL.md'],
@@ -198,5 +193,114 @@ describe('independent-merge-review round rules (issue #3844)', () => {
     const text = read(...path.split('/')).replace(/\s+/g, ' ');
     expect(text).toMatch(/non-critical finding on (?:an unchanged line|a line that did not change) is a follow-up/);
     expect(text).toMatch(/one issue per PR/);
+  });
+});
+
+/**
+ * Issue #3903: review follow-ups were bypassing the issue-filing budget and
+ * filling the backlog with nits. Nits stay in the verdict; small defects are
+ * fixed inside the PR; only larger defects reach the one follow-up issue, and
+ * only through `kookr emission plan` and the logged dedupe.
+ */
+describe('independent-merge-review follow-up classes and budget (issue #3903)', () => {
+  const root = join(import.meta.dirname, '..', '..');
+  const read = (...parts: string[]) => readFileSync(join(root, ...parts), 'utf-8');
+  const skill = read('plugin', 'skills', 'independent-merge-review', 'SKILL.md');
+  const section = (start: string, end: string) => {
+    const from = skill.indexOf(start);
+    const to = skill.indexOf(end, from + start.length);
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(from);
+    return skill.slice(from, to);
+  };
+  const spawn = () => section('### 2. Spawn the reviewer', '### 3. Post the verdict comment');
+  const rules = () => section('### 4a. Round rules', '### 5. Latency budget');
+  const example = () => section('**Worked example.**', '### 5. Latency budget');
+
+  test('the reviewer brief defines critical, small defect, larger defect and nit', () => {
+    const brief = spawn();
+    expect(brief).toMatch(/Finding classes \(put this list in every reviewer brief/);
+    expect(brief).toMatch(/\*\*`defect`, small:\*\* wrong or missing behaviour, a real test gap on new code,\s+or a doc that is now false/);
+    expect(brief).toMatch(/fix stays within the files the PR already\s+touches \(plus their tests\), needs no design choice/);
+    expect(brief).toMatch(/\*\*`defect`, larger:\*\*[^]*touches other\s+files, needs a design choice, or is a separate piece of work/);
+    expect(brief).toMatch(/\*\*`nit`:\*\* style, wording, duplication, optional test polish/);
+    expect(brief).toMatch(/never blocks, is never fixed\s+on request and is never filed/);
+    // Both quoted briefs must ask for the class, since the reviewer sees only the brief.
+    const quotedBriefs = brief.match(/Put this in the\s+brief: "[^"]*"|Put this in the brief: "[^"]*"/g) ?? [];
+    expect(quotedBriefs).toHaveLength(2);
+    for (const quoted of quotedBriefs) expect(quoted).toMatch(/small `defect`,\s+larger\s+`defect`\s+or\s+`nit`/);
+    expect(brief).toMatch(/BLOCK on critical findings and\s+small defects/);
+    // Round 2 blocks on a new small defect on a changed line (the §4a table); the
+    // round-2 brief and the BLOCK rule must say so, or the reviewer passes it.
+    expect(brief).toMatch(/In round 2, a new small defect on a line the fix diff\s+changes blocks\./);
+    // The same brief serves round 3 and later, so it must carry the round cap too.
+    expect(brief).toMatch(/From round 3 on \(the PR carries two or more BLOCKs\), only\s+critical findings block: a new small defect is a follow-up, and an unfixed\s+non-critical finding of the latest BLOCK no longer blocks/);
+    expect(brief).toMatch(/small `defect` \(classes below\) in round 1, or in round 2\s+on a line the fix diff changes/);
+  });
+
+  test('round 1 blocks on small defects; nits never block', () => {
+    const roundRules = rules();
+    expect(roundRules).toMatch(/Critical\s+findings and small defects block\. Larger defects and nits are follow-ups/);
+    expect(roundRules).toContain('| New, small `defect`, on a line the fix diff changes | blocks | follow-up |');
+    expect(roundRules).toContain('| New, larger `defect`, on a line the fix diff changes | follow-up | follow-up |');
+    expect(roundRules).toContain('| New `nit`, anywhere | follow-up | follow-up |');
+    expect(roundRules).toMatch(/\*\*Nits stay in the verdict comment\.\*\* They are never filed as an issue\s+and never fixed on request/);
+  });
+
+  test('the filing runs the budget and dedupe before the only gh issue create, and never falls back to a bare create', () => {
+    const roundRules = rules();
+    const plan = roundRules.indexOf('kookr emission plan --repo "$REPO" --requested 1 --json');
+    const dedupe = roundRules.indexOf('kookr emission dedupe --repo "$REPO" --title "$TITLE" --json');
+    const create = roundRules.indexOf('gh issue create --repo');
+    expect(plan).toBeGreaterThan(0);
+    expect(dedupe).toBeGreaterThan(plan);
+    expect(create).toBeGreaterThan(dedupe);
+    // Exactly one create in the whole skill, inside the budgeted branch.
+    expect(skill.match(/gh issue create --repo/g)).toHaveLength(1);
+    expect(roundRules).toContain('elif [ -n "$DEDUPE" ] && [ "${ALLOWED:-0}" -ge 1 ]');
+    expect(roundRules).toContain('gh issue comment "$MATCH" --repo "$REPO" --body-file');
+    expect(roundRules).toContain('kookr emission defer --repo "$REPO" --title "$TITLE"');
+    expect(roundRules).toMatch(/Never fall back to a bare `gh issue create`/);
+    expect(roundRules).toMatch(/Follow-ups \(defects, not filed: issue\s+budget\)/);
+    // The two lines that decide whether to file must read the fields the CLI really emits.
+    expect(roundRules).toContain("jq -r '.plan.allowedBudget // 0'");
+    expect(roundRules).toContain("jq -r 'select(.isDuplicate == true) | .match.number'");
+    // Findings quote code in backticks: the checklist heredoc must be quoted.
+    expect(roundRules).toContain("cat <<'BODY'");
+    expect(roundRules).not.toMatch(/<<BODY\b/);
+  });
+
+  test('follow-up issues carry the review-followup label and name their files first', () => {
+    const roundRules = rules();
+    expect(roundRules).toContain('gh label create review-followup --repo "$REPO"');
+    expect(roundRules).toContain('--label review-followup');
+    expect(roundRules).toContain("printf 'Files: %s\\n");
+    expect(read('plugin', 'skills', 'github-labels', 'SKILL.md')).toContain('| `review-followup` |');
+  });
+
+  test('the worked example: two nits in the comment, a small defect fixed in the PR, a larger defect filed once', () => {
+    const ex = example();
+    expect(ex).toMatch(/one small\s+defect, one larger defect and two nits/);
+    expect(ex).toContain('kookr-review-verdict: block');
+    expect(ex).toMatch(/1\. \[small defect\] src\/core\/task-archive\.ts:58/);
+    expect(ex).toContain('Follow-ups (defects, one issue for this PR): #4101');
+    expect(ex).toMatch(/- \[defect\] src\/cli\/tasks-prune\.ts/);
+    const nits = ex.slice(ex.indexOf('Nits (this comment only, not filed):'));
+    expect(nits.match(/^ {2}- src\//gm)?.slice(0, 2)).toHaveLength(2);
+    expect(ex).toMatch(/adds the test in one commit \(H2\) and leaves both nits/);
+    expect(ex).toMatch(/a fix check on `git diff a1b2… c3d4…`: the new\s+test covers the empty-history branch/);
+    expect(ex).toMatch(/The PR filed one issue, for the one larger defect/);
+  });
+
+  test.each([
+    ['plugin/skills/pre-pr-review/SKILL.md'],
+    ['.claude/skills/kookr-pre-push/SKILL.md'],
+    ['plugin/playbooks/implement-github-issue.md'],
+    ['plugin/playbooks/parallel-issue-batch.md'],
+  ])('%s restates the nit, small-defect and budget rules', (path) => {
+    const text = read(...path.split('/')).replace(/\s+/g, ' ');
+    expect(text).toMatch(/blocks on critical findings and small defects, and the small defects are fixed inside the PR/);
+    expect(text).toMatch(/Nits stay in the verdict comment, never filed or fixed on request/);
+    expect(text).toMatch(/only larger defects go into at most one issue per PR, with a checklist, filed through `kookr emission plan` and the logged dedupe/);
   });
 });

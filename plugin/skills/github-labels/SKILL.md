@@ -78,6 +78,7 @@ kookr-ai/kookr; re-run Step 1 if something looks missing.
 | Label | Set by |
 |---|---|
 | `idea-scout`, `idea:<n>` | The Repository Idea Scout playbook (provenance and conversion join keys) |
+| `review-followup` | The `independent-merge-review` skill: the one issue per PR holding the defects its review left for later (#3903) |
 | `dependencies`, `javascript`, `python`, `github_actions` | Dependabot |
 
 ### Rarely used

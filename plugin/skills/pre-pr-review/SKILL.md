@@ -282,8 +282,11 @@ reviewers' own working time.
    each blocking finding is fixed and reviews only the changed lines. A new
    non-critical finding on a line that did not change is a follow-up, not a
    block. After two blocked rounds, only correctness, data-loss and security
-   findings keep blocking. The follow-ups go into one issue per PR, with a
-   checklist.
+   findings keep blocking. Round 1 blocks on critical findings and small
+   defects, and the small defects are fixed inside the PR. Nits stay in the
+   verdict comment, never filed or fixed on request; only larger defects go
+   into at most one issue per PR, with a checklist, filed through `kookr
+   emission plan` and the logged dedupe (§4a rule 4).
 
 When the §3 check prints anything else, run the panel below unchanged.
 
