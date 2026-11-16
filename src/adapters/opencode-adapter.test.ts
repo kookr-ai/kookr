@@ -256,6 +256,106 @@ describe('OpenCodeAdapter', () => {
       await adapter.stop(id);
       expect(taskStore.getTask(task.id)!.tokenUsage).toBeUndefined();
     });
+
+    // #3527: a fresh relaunch (a Ralph iteration) wipes the DB, so usage must accumulate across launches.
+    const FIXTURE_SESSION = 'ses_e40a99e51ffeNDXOMdLPpnyMew';
+    const ONE = { inputTokens: 5545, outputTokens: 2, cacheReadTokens: 1792 };
+    const times = (n: number) => ({ inputTokens: ONE.inputTokens * n, outputTokens: ONE.outputTokens * n, cacheReadTokens: ONE.cacheReadTokens * n });
+
+    test('a fresh relaunch adds its usage to the task instead of replacing it', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      stageDb(id);
+      await adapter.stop(id);
+      const first = taskStore.getTask(task.id)!.tokenUsage!;
+      const spendAfterFirst = taskStore.getLifetimeSpendUsd();
+
+      const id2 = await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc2' });
+      stageDb(id2);
+      await adapter.stop(id2);
+      const second = taskStore.getTask(task.id)!.tokenUsage!;
+      expect(second).toMatchObject(times(2));
+      expect(second.costUsd).toBeCloseTo(first.costUsd * 2, 10);
+      expect(taskStore.getLifetimeSpendUsd()).toBeGreaterThanOrEqual(spendAfterFirst);
+
+      const id3 = await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc3' });
+      stageDb(id3);
+      await adapter.stop(id3);
+      expect(taskStore.getTask(task.id)!.tokenUsage).toMatchObject(times(3));
+    });
+
+    test('a resume of the same DB is not counted twice', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      stageDb(id);
+      await adapter.stop(id);
+      const id2 = await adapter.launch(task.id, 'x', '/workspace', { sessionId: FIXTURE_SESSION }, { tmuxName: 'kookr-oc2' });
+      expect(backend.sessions.get(id2)!.spec.args).toEqual(['--session', FIXTURE_SESSION, '/workspace']);
+      await adapter.stop(id2);
+      expect(taskStore.getTask(task.id)!.tokenUsage).toMatchObject(times(1));
+    });
+
+    test('a resume after a fresh relaunch keeps the earlier launch, also through a Kookr restart', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      stageDb(id);
+      await adapter.stop(id);
+      const id2 = await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc2' });
+      stageDb(id2);
+      await adapter.stop(id2);
+
+      const restarted = makeAdapter(); // fresh in-memory state, same dataRoot and task store
+      const id3 = await restarted.launch(task.id, 'x', '/workspace', { sessionId: FIXTURE_SESSION }, { tmuxName: 'kookr-oc3' });
+      expect(backend.sessions.get(id3)!.spec.args).toEqual(['--session', FIXTURE_SESSION, '/workspace']);
+      await restarted.stop(id3);
+      expect(taskStore.getTask(task.id)!.tokenUsage).toMatchObject(times(2));
+    });
+
+    test('a DB whose stop was never recorded is counted before a fresh relaunch wipes it', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      stageDb(id); // Kookr restarts here: the session's stop never records its usage
+      expect(taskStore.getTask(task.id)!.tokenUsage).toBeUndefined();
+
+      const restarted = makeAdapter();
+      const id2 = await restarted.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc2' });
+      expect(taskStore.getTask(task.id)!.tokenUsage).toMatchObject(times(1));
+      stageDb(id2);
+      await restarted.stop(id2);
+      expect(taskStore.getTask(task.id)!.tokenUsage).toMatchObject(times(2));
+    });
+
+    test('a failed fresh relaunch leaves the usage already recorded intact', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      stageDb(id);
+      await adapter.stop(id);
+      const before = taskStore.getTask(task.id)!.tokenUsage!;
+
+      const failing = makeAdapter({ composeSession: async () => { throw new Error('compose boom'); } });
+      await expect(failing.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc2' })).rejects.toThrow('compose boom');
+      expect(taskStore.getTask(task.id)!.tokenUsage).toEqual(before);
+
+      const id3 = await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc3' });
+      stageDb(id3);
+      await adapter.stop(id3);
+      expect(taskStore.getTask(task.id)!.tokenUsage).toMatchObject(times(2));
+    });
+
+    test('a missing baseline never lowers the usage already recorded', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask('do it', '/workspace');
+      taskStore.updateTokenUsage(task.id, { inputTokens: 1_000_000, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 5 });
+      // Recorded usage larger than the outgoing DB, whose baseline file is gone (legacy dir or failed write).
+      const id = await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc1' });
+      rmSync(join(sessionRoot, 'opencode-data', task.id, 'usage-baseline.json'), { force: true });
+      stageDb(id);
+      await adapter.stop(id);
+      const id2 = await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc2' });
+      await adapter.stop(id2);
+      expect(taskStore.getTask(task.id)!.tokenUsage!.inputTokens).toBe(1_000_000);
+      expect(taskStore.getTask(task.id)!.tokenUsage!.costUsd).toBe(5);
+    });
   });
 
   test('composes the default provider/model and honors a per-task model pin', async () => {
