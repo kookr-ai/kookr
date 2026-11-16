@@ -558,6 +558,46 @@ describe('startTTS', () => {
       }
     });
 
+    it('starts the existing image, and remembers nothing, when the build fails and the old service is not answering', async () => {
+      const ttsDir = await createTTSFixture();
+      const failedPath = join(ttsDir, '.kookr-tts-failed.hash');
+      try {
+        await writeFile(join(ttsDir, '.kookr-tts-build.hash'), 'hash-of-older-files\n');
+        execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+          if (args[0] === 'inspect') return cb(null, { stdout: `${OLD_IMAGE} ${IMAGE_NAME}\n`, stderr: '' });
+          if (args.at(-1) === 'build') return cb(new Error('failed to solve: index unreachable'), '', '');
+          cb(null, '', '');
+        });
+        // The old service is still booting: it refuses the reuse check, then becomes healthy.
+        let booting = true;
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async (url: string | URL | Request) => {
+            if (booting && String(url).includes('/health')) {
+              booting = false;
+              throw new Error('connection refused');
+            }
+            return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+          }),
+        );
+
+        const manager = await startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
+
+        expect(manager.url).toBe('http://localhost:8004');
+        const verbs = dockerVerbs();
+        expect(verbs.filter((v) => v.startsWith('compose'))).toEqual([
+          expect.stringMatching(/ build$/),
+          expect.stringMatching(/ up -d --no-build$/),
+        ]);
+        expect(verbs.some((v) => v.startsWith('tag '))).toBe(false);
+        // A failed build is retried on the next start, so it is not recorded as a failed image.
+        await expect(readFile(failedPath, 'utf-8')).rejects.toThrow(/ENOENT/);
+        expect((await readFile(join(ttsDir, '.kookr-tts-build.hash'), 'utf-8')).trim()).toBe('hash-of-older-files');
+      } finally {
+        await rm(ttsDir, { recursive: true, force: true });
+      }
+    });
+
     it('does not remember the failed files when the restarted previous image fails its probe too', async () => {
       const ttsDir = await createTTSFixture();
       try {

@@ -9,8 +9,8 @@
  * 4. Probes synthesis with the configured voice (cold start only), then loads the
  *    other voice engine in the background so its first clip does not time out
  * 5. Exposes the TTS HTTP URL for synthesis requests
- * 6. Restarts the previous image when a rebuild of a healthy, outdated container
- *    fails to start or fails its checks (issue #3656)
+ * 6. Restarts the previous image when a rebuild of an outdated container fails to
+ *    start or fails its checks (issue #3656)
  * 7. Keeps a real stop() = compose down for failed-start cleanup and
  *    `pnpm prod:stop --with-sidecars` (routine SIGTERM detaches — see shutdown.ts)
  *
@@ -137,19 +137,33 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
   }
   // The image the existing container runs, noted before a rebuild replaces it, so a rebuilt
   // image that fails its checks can be swapped back for it (issue #3656).
-  const previousImage = buildPlan.stale && !knownBad ? await inspectRunningTTSImage(env) : null;
+  const previousImage = buildPlan.stale && !knownBad ? await inspectTTSContainerImage(env) : null;
   if (reuseResult.ok && knownBad) {
     return reused();
   }
-  if (reuseResult.ok && buildPlan.stale) {
+  if (reuseResult.ok && !buildPlan.stale) {
+    console.log(
+      `[tts] Reusing healthy TTS service at port ${port}` +
+        ` (status: ${reuseResult.status}; synthesis probe skipped on reuse)`,
+    );
+    return reused();
+  }
+  if (reuseResult.ok) {
     // A healthy container that was built from older inputs would keep serving the old
     // code after an update (for example, it would not know a voice the new code adds).
     console.log(
       `[tts] Healthy TTS service at port ${port} was built from older inputs; rebuilding instead of reusing it`,
     );
-    // Build before touching the running container. A build can fail for reasons that have
-    // nothing to do with this machine (a package index or model host is down); the service
-    // that is running still works, so keep it and try again on the next start.
+  } else {
+    console.log(`[tts] Cannot reuse existing TTS (reason=${reuseResult.reason}); starting container...`);
+  }
+
+  // Build before touching the existing container. A build can fail for reasons that have
+  // nothing to do with this machine (a package index or model host is down). The image built
+  // from older files still works, so keep it (or start it) and try again on the next start: a
+  // failed build is never remembered as a failed image.
+  let buildFailed = false;
+  if (buildPlan.stale && !knownBad) {
     try {
       await execFileAsync('docker', ['compose', ...composeFlags, 'build'], {
         env,
@@ -157,20 +171,17 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (reuseResult.ok) {
+        console.warn(
+          `[tts] Rebuilding the TTS image failed (${msg}); keeping the running service, which was built from older files`,
+        );
+        return reused();
+      }
       console.warn(
-        `[tts] Rebuilding the TTS image failed (${msg}); keeping the running service, which was built from older files`,
+        `[tts] Rebuilding the TTS image failed (${msg}); starting the existing image, which was built from older files`,
       );
-      return reused();
+      buildFailed = true;
     }
-  } else if (reuseResult.ok) {
-    console.log(
-      `[tts] Reusing healthy TTS service at port ${port}` +
-        ` (status: ${reuseResult.status}; synthesis probe skipped on reuse)`,
-    );
-    return reused();
-  }
-  if (!reuseResult.ok) {
-    console.log(`[tts] Cannot reuse existing TTS (reason=${reuseResult.reason}); starting container...`);
   }
 
   console.log(
@@ -179,9 +190,9 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
     }, voice: ${voice}, port: ${port})...`,
   );
 
-  const build = buildPlan.build && !knownBad;
-  if (knownBad) {
-    console.log('[tts] Starting the previous TTS image without a build');
+  const build = buildPlan.build && !knownBad && !buildFailed;
+  if (knownBad || buildFailed) {
+    console.log('[tts] Starting the existing TTS image without a build');
   } else if (build) {
     console.log(`[tts] Building TTS image (${buildPlan.reason})...`);
   } else {
@@ -193,10 +204,11 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
   try {
     manager = await startContainerAndProbe({
       ...startOpts,
-      upFlags: knownBad ? ['--no-build'] : build ? ['--build'] : [],
+      upFlags: knownBad || buildFailed ? ['--no-build'] : build ? ['--build'] : [],
     });
   } catch (err) {
-    if (!previousImage) throw err;
+    // Only a rebuilt image is rolled back; one that was started as it was has nothing older.
+    if (!previousImage || !build) throw err;
     return rollBackToPreviousImage(startOpts, previousImage, err, ttsDir, buildPlan.inputHash);
   }
   // Stamp only an image that passed its checks: a stamp written before the probe would make
@@ -225,7 +237,7 @@ interface StartContainerOptions {
 }
 
 /** The image the speech container (running or stopped) was created from, or null if there is none. */
-async function inspectRunningTTSImage(env: NodeJS.ProcessEnv): Promise<TTSImage | null> {
+async function inspectTTSContainerImage(env: NodeJS.ProcessEnv): Promise<TTSImage | null> {
   try {
     const { stdout } = await execFileAsync(
       'docker',
@@ -242,9 +254,9 @@ async function inspectRunningTTSImage(env: NodeJS.ProcessEnv): Promise<TTSImage 
 }
 
 /**
- * The rebuilt image failed to start or failed its checks, and the container it replaced was
- * healthy: point the image name back at the old image and start that again. The build stamp
- * keeps the old hash, and the failed hash is recorded so the next start does not retry it.
+ * The rebuilt image failed to start or failed its checks: point the image name back at the old
+ * image and start that again. The build stamp keeps the old hash, and the failed hash is
+ * recorded so the next start does not retry it.
  */
 async function rollBackToPreviousImage(
   opts: StartContainerOptions,
