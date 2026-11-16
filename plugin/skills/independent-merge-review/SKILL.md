@@ -321,20 +321,34 @@ Instruct the reviewer to return a verdict:
 
 - **BLOCK** if it finds any **confirmed** correctness or safety defect (a bug it
   can point at with a concrete failure scenario, not a style nit or a
-  speculation).
-- **PASS** otherwise. Suggestions and nits do not block — note them, verdict
-  stays PASS.
+  speculation), or, in round 1, a small `defect` (classes below).
+- **PASS** otherwise. Nits never block — note them, verdict stays PASS.
 
-When the reviewer replaces the panel (fast pre-push gate), it also BLOCKs on
-the findings the panel used to block on: a changed runtime path with no test
-that exercises it, documentation the diff made stale, and a convention break
-or dead code the diff introduced. Each finding in a BLOCK is tagged
-**critical** or **non-critical** by the reviewer, not by the implementer:
+**Finding classes (put this list in every reviewer brief, issue #3903).** The
+reviewer, not the implementer, puts each finding in one class:
 
 - **critical:** a correctness defect (wrong behaviour with a concrete failure
-  scenario), possible data loss, or a security weakness.
-- **non-critical:** everything else, including missing tests, stale docs,
-  conventions and dead code.
+  scenario), possible data loss, or a security weakness. Always blocks.
+- **`defect`, small:** wrong or missing behaviour, a real test gap on new code,
+  or a doc that is now false, whose fix stays within the files the PR already
+  touches (plus their tests), needs no design choice, and takes a few minutes.
+  Examples: a missing test for a new branch, a doc line that is now false, a
+  wrong message. It blocks in round 1, so it is fixed inside the PR before merge.
+- **`defect`, larger:** a `defect` that is not small: its fix touches other
+  files, needs a design choice, or is a separate piece of work. It does not
+  block; it goes into the PR's one follow-up issue (§4a rule 4).
+- **`nit`:** style, wording, duplication, optional test polish, a convention
+  break or dead code that changes no behaviour. It never blocks, is never fixed
+  on request and is never filed: it stays in the verdict comment only. The
+  implementer may fix a nit that sits in lines they are already changing.
+
+In round 1, critical findings and small defects block (§4a has the later
+rounds); small defects, larger defects and nits are all **non-critical**. When the reviewer
+replaces the panel (fast pre-push gate), the findings the panel used to block on
+fall into these classes: a changed runtime path with no test and documentation
+the diff made false are `defect`s (small when the fix stays in the PR's files);
+a convention break or dead code is a `nit`. Each finding in the verdict carries
+its class.
 
 Also tell the reviewer how many `kookr-review-verdict: block` comments the PR
 already carries, and pass it those comments. They are reviewer output, not your
@@ -344,7 +358,11 @@ the reviewer gets (§4a):
 - **Round 1 (no BLOCK on the PR yet): the full review.** Put this in the
   brief: "Time budget: about 8 minutes. Review the whole PR diff. Run mutation
   checks (change a line, see whether a test fails) only on runtime lines this PR
-  changes."
+  changes. Tag each finding critical, small `defect`, larger `defect` or
+  `nit` (the finding classes in this brief). BLOCK on critical findings and
+  small defects, listing every small defect so all of them are fixed in one
+  commit. List larger defects and nits under `Follow-ups`; they do not
+  block."
 - **Round 2 and later (the PR carries a BLOCK): the fix check.** It is short,
   not a second full review. Give the reviewer, on top of the inputs above, the
   latest BLOCK comment and the **fix diff**: the change from the head that
@@ -368,9 +386,14 @@ the reviewer gets (§4a):
   Put this in the brief: "Time budget: about 4 minutes. For each blocking
   finding of the latest BLOCK, confirm it is fixed or say why it is not.
   Then review only the lines the fix diff changes. Run no mutation checks
-  outside those lines. A new non-critical finding on a line the fix diff does
-  not change goes under `Follow-ups` and does not block. A new critical finding
+  outside those lines. Tag each new finding critical, small `defect`, larger
+  `defect` or `nit` (the finding classes in this brief). A new non-critical
+  finding on a line the fix diff does not change goes under `Follow-ups` and
+  does not block. A new nit never blocks. A new critical finding
   blocks wherever it is."
+
+  Paste the finding-class list above into both briefs; the reviewer sees
+  nothing else of this skill.
 
   The full PR diff stays available as context, so the reviewer can follow a
   changed line into code it calls. This fix check is not the "delta review
@@ -447,7 +470,9 @@ after the fast gate went live (#3844), the review loop took 30–38 minutes per
 blocked pull request, against 8–16 minutes of implementation: round 2 was a
 second full review that raised a new non-critical finding on code round 1 had
 already read, which forced a round 3. Every one of those blocking findings was
-non-critical. The rules:
+non-critical. On the evening of 15 Nov, about 50 of 56 new issues came from
+review follow-ups, many of them nits (#3903): rule 4 keeps nits out of the
+backlog and sends defects through the issue budget. The rules:
 
 1. **Count the rounds from the PR, not from memory.** The round count is the
    number of verdict comments (those carrying `<!-- kookr-independent-review -->`)
@@ -455,8 +480,11 @@ non-critical. The rules:
    re-poll on the same head is not a new round. Give the
    reviewer that count with the comments (§2). The review in progress is round
    count + 1.
-2. **Round 1 is the full review** (§2 round-1 brief, about 8 minutes). Any
-   blocking finding blocks, critical or not.
+2. **Round 1 is the full review** (§2 round-1 brief, about 8 minutes). Critical
+   findings and small defects block. Larger defects and nits are follow-ups
+   (rule 4). The implementer fixes every small defect in one commit, so small
+   real findings are fixed inside the PR before merge (operator decision,
+   #3903), and round 2 only has to confirm the fixes.
 3. **Round 2 and later are fix checks** (§2 round-2 brief, about 4 minutes):
    confirm each blocking finding of the latest BLOCK is fixed, then review
    only the lines the fix diff changes. What blocks:
@@ -465,30 +493,79 @@ non-critical. The rules:
    |---|---|---|
    | A blocking finding of the latest BLOCK, not fixed | blocks | blocks only if critical |
    | New, critical, anywhere in the PR | blocks | blocks |
-   | New, non-critical, on a line the fix diff changes | blocks | follow-up |
+   | New, small `defect`, on a line the fix diff changes | blocks | follow-up |
+   | New, larger `defect`, on a line the fix diff changes | follow-up | follow-up |
    | New, non-critical, on a line the fix diff does not change | follow-up | follow-up |
+   | New `nit`, anywhere | follow-up | follow-up |
 
    **Critical** means a correctness defect, possible data loss or a security
    weakness (§2); it blocks in every round. From round 3 on (the PR already
    carries two or more BLOCKs) this is the round cap: only critical findings
    block.
-4. **Follow-ups go into the verdict, one issue per PR.** The reviewer lists
-   every non-blocking finding under `Follow-ups`, each naming the file, the
-   line and what is wrong. With nothing blocking, the verdict is `pass`. The
-   Codex lane runs read-only, so the session that posts the verdict files
-   **one** issue for the whole PR, with one checklist item per follow-up, and
-   links it from the verdict body. Do this at **every** verdict that lists
-   follow-ups, a BLOCK included, so none is lost when a later round adds
-   nothing or the PR ends in a recorded blocker. If an earlier round of this PR
-   already filed the issue, add the new items to it (`gh issue edit
-   --body-file`) instead of opening a second:
+4. **Follow-ups go into the verdict; only defects reach an issue, at most one
+   per PR, through the issue budget.** The reviewer lists every non-blocking
+   finding under `Follow-ups`, each with its class, the file, the line and
+   what is wrong. With nothing blocking, the verdict is `pass`. Then:
+
+   - **Nits stay in the verdict comment.** They are never filed as an issue
+     and never fixed on request.
+   - **Defects** (larger ones, and small ones a later round left as
+     follow-ups) go into **one** issue for the whole PR, with one checklist
+     item per defect. The Codex lane runs read-only, so the session that posts
+     the verdict files it, before posting, and links it from the verdict body.
+     Do this at **every** verdict that lists defect follow-ups, a BLOCK
+     included, so none is lost when a later round adds nothing or the PR ends
+     in a recorded blocker.
+   - **An earlier round of this PR already filed the issue:** add the new
+     items to it (`gh issue edit --body-file`, and `--title` when the files
+     change) instead of opening a second. This opens nothing, so it needs no
+     budget.
+   - **Otherwise the filing goes through the issue budget and the logged
+     dedupe** of `github-issue-workflow` §1 (`kookr emission plan`, then
+     `kookr emission dedupe`). When a matching open issue exists, the
+     checklist goes on it as a comment. When the budget refuses, or either
+     check fails, no issue is opened: the checklist stays in the verdict
+     comment on the PR, under "Follow-ups (defects, not filed: issue
+     budget)", and the candidate is logged with `kookr emission defer`.
+     Never fall back to a bare `gh issue create`.
+   - **Title and label.** The issue carries the one label `review-followup`
+     (created if missing). Its title, its first line, names the files the
+     defects touch, and the body repeats them on its first line, so a later
+     task can bundle follow-ups by file. Leading with the files also keeps the
+     dedupe honest: a generic "Follow-ups from the review of #N" title matched
+     another PR's follow-up issue at 0.94 similarity, while file-led titles
+     for different files stayed near 0.2.
 
    ```bash
-   gh issue create --repo "$REPO" --title "Follow-ups from the review of #$PR" \
-     --body "Non-critical findings from the independent review of #$PR, left out of it under the round rules.
+   FILES="<file>, <file>"   # the files the defect items touch
+   TITLE="Review follow-ups: $FILES (#$PR)"
+   cat > /tmp/kookr-followups-$PR.md <<BODY
+   Files: $FILES
+
+   Defects from the independent review of #$PR that were not fixed in it. Nits stay in the verdict comment.
 
    - [ ] <file>:<line> <what is wrong> (round <n>)
-   - [ ] <file>:<line> <what is wrong> (round <n>)"
+   BODY
+   # Budget and logged dedupe first (github-issue-workflow §1). A failed check opens nothing.
+   PLAN=$(kookr emission plan --repo "$REPO" --requested 1 --json) || PLAN=""
+   ALLOWED=$(printf '%s' "$PLAN" | jq -r '.plan.allowedBudget // 0' 2>/dev/null)
+   DEDUPE=$(kookr emission dedupe --repo "$REPO" --title "$TITLE" --json 2>/tmp/kookr-dedupe-$PR.log) || DEDUPE=""
+   cat /tmp/kookr-dedupe-$PR.log 2>/dev/null || true
+   MATCH=$(printf '%s' "$DEDUPE" | jq -r 'select(.isDuplicate == true) | .match.number' 2>/dev/null)
+   if [ -n "$MATCH" ]; then
+     gh issue comment "$MATCH" --repo "$REPO" --body-file /tmp/kookr-followups-$PR.md
+     FOLLOWUP="#$MATCH"
+   elif [ -n "$DEDUPE" ] && [ "${ALLOWED:-0}" -ge 1 ] 2>/dev/null; then
+     gh label create review-followup --repo "$REPO" --color c5def5 \
+       --description "Defects left by an independent review; one issue per PR" 2>/dev/null || true
+     URL=$(gh issue create --repo "$REPO" --title "$TITLE" --label review-followup \
+       --body-file /tmp/kookr-followups-$PR.md)
+     FOLLOWUP="#${URL##*/}"
+   else
+     kookr emission defer --repo "$REPO" --title "$TITLE" \
+       --source independent-merge-review --reason "issue budget refused or a check failed"
+     FOLLOWUP="not filed: issue budget"
+   fi
    ```
 
 5. **The capped pass needs a new head.** The merge wrapper keeps a BLOCK sticky
@@ -503,50 +580,54 @@ non-critical. The rules:
 6. The merge rule does not change: the latest verdict must be a `pass` bound to
    the current head (or to its `review-patch-id`).
 
-**Worked example.** PR #4100 changes `src/core/task-archive.ts`.
+**Worked example.** PR #4100 changes `src/core/task-archive.ts` and its test.
 
-- **Review 1 on H1** (`a1b2…`): BLOCK. (1) critical: a pruned task is deleted
-  before its archive write is flushed, so a crash loses it. (2) non-critical:
-  no test covers the empty-history path. The implementer fixes both: H2.
-- **Review 2 on H2** (`c3d4…`), a fix check on `git diff a1b2… c3d4…`: both
-  round-1 findings are fixed. Two new findings. (1) non-critical, on a changed
-  line: the new empty-history test asserts nothing after the call. (2)
-  non-critical, on an unchanged line: the helper `archiveName()` is exported
-  but unused. (1) blocks; (2) is a follow-up. Verdict: BLOCK. The session
-  files (2) as #4101, a follow-up issue with one checklist item, and links it
-  from the BLOCK. The implementer adds the assertion and commits: H3.
-- **Review 3 on H3** (`e5f6…`), a fix check on `git diff c3d4… e5f6…`: the
-  assertion is there. The PR carries two BLOCKs, so only critical findings
-  block. The reviewer finds none and returns one more follow-up:
-  `docs/reference/tasks.md` still says pruning deletes history. The session
-  adds it to #4101, which now holds both follow-ups as two checklist items,
-  and posts:
+- **Review 1 on H1** (`a1b2…`), the full review, finds four things: one small
+  defect, one larger defect and two nits. The larger defect is a follow-up, so
+  the session runs the rule 4 block: the dedupe finds no match and the budget
+  allows one issue, so it files #4101, "Review follow-ups:
+  src/cli/tasks-prune.ts (#4100)", labelled `review-followup`, with one
+  checklist item. The nits are not filed. It posts:
 
   ```
   <!-- kookr-independent-review -->
-  kookr-review-verdict: pass
+  kookr-review-verdict: block
   review-lane: codex
-  review-head-sha: e5f6...
-  review-patch-id: 9f8e...
+  review-head-sha: a1b2...
+  review-patch-id: 7a6b...
 
-  ## Independent reviewer verdict: PASS
-  Round 3 of the review, a fix check: the empty-history test now asserts the
-  result. The PR already had two BLOCKs, so only correctness, data-loss and
-  security findings block, and there is none: the crash window from round 1
-  stays closed.
+  ## Independent reviewer verdict: BLOCK
+  Round 1 of the review, the full review.
 
-  Follow-ups (non-critical, one issue for this PR): #4101
-  - `archiveName()` in src/core/task-archive.ts is exported but never used (round 2)
-  - docs/reference/tasks.md still says pruning deletes history (round 3)
+  1. [small defect] src/core/task-archive.ts:58 the new empty-history branch
+     has no test. The fix is one test in src/core/task-archive.test.ts.
+
+  Follow-ups (defects, one issue for this PR): #4101
+  - [defect] src/cli/tasks-prune.ts: `--dry-run` does not say which tasks would
+    be archived. This file is not in the PR, and the fix needs an output-format choice.
+
+  Nits (this comment only, not filed):
+  - src/core/task-archive.ts:12 `archiveName()` duplicates `slugify()` from src/core/slug.ts
+  - src/core/task-archive.ts:40 the comment above `pruneTerminal()` still says "delete"
   ```
 
-  `kookr merge 4100` accepts this `pass`: it is the latest verdict and is bound
-  to the current head H3.
+  The implementer adds the test in one commit (H2) and leaves both nits: neither
+  sits in a line the fix changes.
+- **Review 2 on H2** (`c3d4…`), a fix check on `git diff a1b2… c3d4…`: the new
+  test covers the empty-history branch. The reviewer reads only the changed
+  lines, finds nothing new and posts `kookr-review-verdict: pass` for `c3d4…`,
+  repeating the follow-ups line for #4101 and the two nits. `kookr merge 4100`
+  accepts this `pass`: it is the latest verdict and is bound to the current
+  head H2.
 
-Before these rules, review 2 was a second full review and the unused export
-blocked it on its own. If review 2 had found only follow-ups, it would have
-been the `pass`. If review 3 had found a critical defect anywhere in the PR,
-it would BLOCK as before, and every later review keeps applying the cap.
+The PR filed one issue, for the one larger defect. Had the budget refused,
+there would be none: both verdicts would list that defect under "Follow-ups
+(defects, not filed: issue budget)". Had the dedupe matched an open
+follow-up issue for `src/cli/tasks-prune.ts`, the checklist would have gone
+there as a comment. If review 2 had found a new non-critical finding on a line
+the fix did not change, it would be a follow-up, not a block. A critical
+finding anywhere in the PR blocks in every round, and from review 3 on only
+critical findings block.
 
 ### 5. Latency budget — never turn timeout into quality
 
@@ -629,7 +710,9 @@ Before declaring the merge review done, report:
 - verdict comment posted: yes (URL) / no
 - for a hard-gate block that was resolved: fixed (new head SHA) / rebutted + re-reviewed
 - review round (count of BLOCK comments before this verdict), whether it was the full review or a fix check, and its minutes
-- the single follow-up issue for the PR under the §4a round rules, if any
+- follow-ups under §4a rule 4: the PR's one follow-up issue for defects, if
+  any (or the matching issue it went to, or "not filed: issue budget"), and how
+  many nits stayed in the verdict comment
 - timeout label applied: no / yes (with reason)
 - on advisory: whether merge proceeded after local gates despite missing/BLOCK/timeout
 
