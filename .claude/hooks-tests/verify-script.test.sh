@@ -190,11 +190,11 @@ if grep -Fxq 'test:integration' "$TMPDIR/train-failure.log"; then
   printf 'FAIL: train-mode verify went on to later lanes after a concurrent lane failed\n' >&2
   exit 1
 fi
-if ! printf '%s\n' "$out" | grep -Fxq '[hooks_lane] lane-output-of-test:hooks'; then
+if ! grep -Fxq '[hooks_lane] lane-output-of-test:hooks' <<<"$out"; then
   printf 'FAIL: train-mode verify did not stream the lane output with its lane prefix\n' >&2
   exit 1
 fi
-if ! printf '%s\n' "$out" | tail -n 3 | grep -Fxq 'lane-output-of-test:hooks'; then
+if ! grep -Fxq 'lane-output-of-test:hooks' <<<"$(tail -n 3 <<<"$out")"; then
   printf 'FAIL: train-mode verify did not print the failing lane output last\n' >&2
   printf '%s\n' "$out" | tail -n 10 >&2
   exit 1

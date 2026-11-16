@@ -56,7 +56,7 @@ assert_case() {
     ok=0
     printf 'FAIL: %s — expected exit %s, got %s\n' "$name" "$expected_exit" "$actual_exit" >&2
     printf '      output:\n%s\n' "$out" | sed 's/^/        /' >&2
-  elif [ -n "$expected_grep" ] && ! printf '%s' "$out" | grep -qE "$expected_grep"; then
+  elif [ -n "$expected_grep" ] && ! grep -qE "$expected_grep" <<<"$out"; then
     ok=0
     printf 'FAIL: %s — output did not match /%s/\n' "$name" "$expected_grep" >&2
     printf '      output:\n%s\n' "$out" | sed 's/^/        /' >&2
@@ -198,7 +198,7 @@ case_missing_base() {
   )
   local out actual_exit
   out=$(cd "$repo" && bash check-portability.sh nonexistent-base-ref 2>&1) && actual_exit=0 || actual_exit=$?
-  if [ "$actual_exit" = 0 ] && printf '%s' "$out" | grep -q 'not found'; then
+  if [ "$actual_exit" = 0 ] && grep -q 'not found' <<<"$out"; then
     PASS=$((PASS + 1))
     printf 'PASS: missing base ref skips with exit 0\n'
   else

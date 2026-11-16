@@ -46,8 +46,8 @@ check "test command without a pipe is silent" silent 'pnpm test'
 # never blocks / fails open
 check "non-Bash tool is silent" silent 'while pgrep -f x; do :; done' Edit
 check "empty command is silent" silent ''
-check "malformed JSON exits 0, no output" bash -c "printf 'not json' | '$HOOK' | wc -c | grep -qx 0"
-check "SKIP env silences the hook" bash -c "jq -n '{tool_name:\"Bash\",tool_input:{command:\"pnpm test | tail\"}}' | KOOKR_BASH_WAIT_NUDGE_SKIP=1 '$HOOK' | wc -c | grep -qx 0"
+check "malformed JSON exits 0, no output" bash -c "[ \"\$(printf 'not json' | '$HOOK' | wc -c)\" -eq 0 ]"
+check "SKIP env silences the hook" bash -c "[ \"\$(jq -n '{tool_name:\"Bash\",tool_input:{command:\"pnpm test | tail\"}}' | KOOKR_BASH_WAIT_NUDGE_SKIP=1 '$HOOK' | wc -c)\" -eq 0 ]"
 check "registered for Bash in hooks.json" jq -e '.hooks.PreToolUse[]|select(.matcher=="Bash")|.hooks[]|select(.command|endswith("bash-wait-nudge.sh"))' "$HOOKS_JSON"
 
 # kookr-wait.sh

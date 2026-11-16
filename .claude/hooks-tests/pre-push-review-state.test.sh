@@ -44,7 +44,7 @@ if [ "$STATUS" -eq 0 ]; then
   exit 1
 fi
 
-if ! printf '%s' "$OUT" | grep -q '.review-state files must stay local-only'; then
+if ! grep -q '.review-state files must stay local-only' <<<"$OUT"; then
   printf 'FAIL: rejection did not mention local-only .review-state files\n' >&2
   printf '%s\n' "$OUT" >&2
   exit 1

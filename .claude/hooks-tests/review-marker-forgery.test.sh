@@ -155,7 +155,7 @@ OUT=$(
 )
 STATUS=$?
 set -e
-if [ "$STATUS" -ne 0 ] && printf '%s' "$OUT" | grep -qi 'producer token'; then
+if [ "$STATUS" -ne 0 ] && grep -qi 'producer token' <<<"$OUT"; then
   record 1 "pre-push rejects forged approved marker"
 else
   record 0 "pre-push rejects forged approved marker" \
@@ -174,7 +174,7 @@ OUT2=$(
 )
 STATUS2=$?
 set -e
-if printf '%s' "$OUT2" | grep -q 'review-gate: APPROVED'; then
+if grep -q 'review-gate: APPROVED' <<<"$OUT2"; then
   record 1 "pre-push accepts producer-token approved marker"
 else
   record 0 "pre-push accepts producer-token approved marker" \

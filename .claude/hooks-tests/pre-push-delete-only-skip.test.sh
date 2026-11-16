@@ -115,7 +115,7 @@ setup_repo "$delete_repo"
 delete_out=$(run_hook_with_stdin "$delete_repo" \
   "(delete) $ZERO_SHA refs/heads/feature $UPDATE_SHA")
 assert_gate_skipped "$delete_repo"
-if ! printf '%s\n' "$delete_out" | grep -q "delete-only push — skipping quality gate"; then
+if ! grep -q "delete-only push — skipping quality gate" <<<"$delete_out"; then
   printf 'FAIL: delete-only notice not printed\n' >&2
   printf '%s\n' "$delete_out" >&2
   exit 1

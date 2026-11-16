@@ -69,7 +69,7 @@ assert_case() {
     ok=0
     printf 'FAIL: %s — expected exit %s, got %s\n' "$name" "$expected_exit" "$actual_exit" >&2
     printf '      output:\n%s\n' "$out" | sed 's/^/        /' >&2
-  elif [ -n "$expected_grep" ] && ! printf '%s' "$out" | grep -qE "$expected_grep"; then
+  elif [ -n "$expected_grep" ] && ! grep -qE "$expected_grep" <<<"$out"; then
     ok=0
     printf 'FAIL: %s — output did not match /%s/\n' "$name" "$expected_grep" >&2
     printf '      output:\n%s\n' "$out" | sed 's/^/        /' >&2
@@ -167,8 +167,8 @@ case_multi_hit() {
   local out actual_exit
   out=$(cd "$repo" && bash check-shell-portability.sh main 2>&1) && actual_exit=0 || actual_exit=$?
   if [ "$actual_exit" = 1 ] \
-    && printf '%s' "$out" | grep -q 'grep -P' \
-    && printf '%s' "$out" | grep -q 'date -d'; then
+    && grep -q 'grep -P' <<<"$out" \
+    && grep -q 'date -d' <<<"$out"; then
     PASS=$((PASS + 1)); printf 'PASS: multi-hit reports all violations\n'
   else
     FAIL=$((FAIL + 1)); FAILED_CASES+=("multi-hit")
@@ -197,7 +197,7 @@ case_explicit_bad_base() {
   commit_line "$repo" 'grep -P "x" file'
   local out actual_exit
   out=$(cd "$repo" && bash check-shell-portability.sh nonexistent-base-ref 2>&1) && actual_exit=0 || actual_exit=$?
-  if [ "$actual_exit" = 2 ] && printf '%s' "$out" | grep -q 'unresolvable'; then
+  if [ "$actual_exit" = 2 ] && grep -q 'unresolvable' <<<"$out"; then
     PASS=$((PASS + 1)); printf 'PASS: explicit unresolvable base ref errors (exit 2)\n'
   else
     FAIL=$((FAIL + 1)); FAILED_CASES+=("explicit bad base")
@@ -214,7 +214,7 @@ case_default_base_missing() {
   commit_line "$repo" 'grep -P "x" file'
   local out actual_exit
   out=$(cd "$repo" && bash check-shell-portability.sh 2>&1) && actual_exit=0 || actual_exit=$?
-  if [ "$actual_exit" = 0 ] && printf '%s' "$out" | grep -q 'skipping'; then
+  if [ "$actual_exit" = 0 ] && grep -q 'skipping' <<<"$out"; then
     PASS=$((PASS + 1)); printf 'PASS: missing default base skips with exit 0\n'
   else
     FAIL=$((FAIL + 1)); FAILED_CASES+=("default base missing")
@@ -241,7 +241,7 @@ case_caller_paths_restrict_scan() {
   )
   local out actual_exit
   out=$(cd "$repo" && SHELL_PORTABILITY_PATHS_FILE=paths.txt bash check-shell-portability.sh 2>&1) && actual_exit=0 || actual_exit=$?
-  if [ "$actual_exit" = 0 ] && printf '%s' "$out" | grep -q 'no GNU-only'; then
+  if [ "$actual_exit" = 0 ] && grep -q 'no GNU-only' <<<"$out"; then
     PASS=$((PASS + 1)); printf 'PASS: caller-selected paths restrict scan\n'
   else
     FAIL=$((FAIL + 1)); FAILED_CASES+=("caller paths restrict scan")
@@ -267,7 +267,7 @@ case_caller_paths_still_scan_selected_violation() {
   )
   local out actual_exit
   out=$(cd "$repo" && SHELL_PORTABILITY_PATHS_FILE=paths.txt bash check-shell-portability.sh 2>&1) && actual_exit=0 || actual_exit=$?
-  if [ "$actual_exit" = 1 ] && printf '%s' "$out" | grep -q 'grep -P'; then
+  if [ "$actual_exit" = 1 ] && grep -q 'grep -P' <<<"$out"; then
     PASS=$((PASS + 1)); printf 'PASS: caller-selected paths still scan violations\n'
   else
     FAIL=$((FAIL + 1)); FAILED_CASES+=("caller paths scan selected violation")
@@ -284,7 +284,7 @@ case_empty_caller_paths_file() {
   : > "$repo/paths.txt"
   local out actual_exit
   out=$(cd "$repo" && SHELL_PORTABILITY_PATHS_FILE=paths.txt bash check-shell-portability.sh main 2>&1) && actual_exit=0 || actual_exit=$?
-  if [ "$actual_exit" = 0 ] && printf '%s' "$out" | grep -q 'no caller-selected paths'; then
+  if [ "$actual_exit" = 0 ] && grep -q 'no caller-selected paths' <<<"$out"; then
     PASS=$((PASS + 1)); printf 'PASS: empty caller paths file skips cleanly\n'
   else
     FAIL=$((FAIL + 1)); FAILED_CASES+=("empty caller paths file")
@@ -309,7 +309,7 @@ case_scan_all_without_base() {
   )
   local out actual_exit
   out=$(cd "$repo" && SHELL_PORTABILITY_PATHS_FILE=paths.txt SHELL_PORTABILITY_SCAN_ALL=1 bash check-shell-portability.sh 2>&1) && actual_exit=0 || actual_exit=$?
-  if [ "$actual_exit" = 1 ] && printf '%s' "$out" | grep -q 'readlink -f'; then
+  if [ "$actual_exit" = 1 ] && grep -q 'readlink -f' <<<"$out"; then
     PASS=$((PASS + 1)); printf 'PASS: full-tree scan works without origin/main\n'
   else
     FAIL=$((FAIL + 1)); FAILED_CASES+=("scan all without base")

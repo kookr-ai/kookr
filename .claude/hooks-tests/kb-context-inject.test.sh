@@ -106,10 +106,10 @@ case_2() {
   ) || true
   args=$(cat "$tmp/kb-args.log" 2>/dev/null || true)
   rm -rf "$tmp"
-  if printf '%s' "$out" | grep -q '<system-reminder>' \
-     && printf '%s' "$out" | grep -q 'FAISS saves swap a symlink' \
-     && printf '%s' "$args" | grep -q -- '--gate' \
-     && printf '%s' "$args" | grep -q -- '--format=json'; then
+  if grep -q '<system-reminder>' <<<"$out" \
+     && grep -q 'FAISS saves swap a symlink' <<<"$out" \
+     && grep -q -- '--gate' <<<"$args" \
+     && grep -q -- '--format=json' <<<"$args"; then
     record_pass "2: enabled + injected → context injected via gated kb search"
   else
     record_fail "2: enabled + injected → context injected via gated kb search" \
@@ -160,7 +160,7 @@ fi
 
 # 8. Enabled + low_confidence → injected snippet carries the [low-confidence] flag.
 out=$(run_hook "$(ups_event)" "1" "$(gate_payload injected true)")
-if printf '%s' "$out" | grep -q '\[low-confidence\]'; then
+if grep -q '\[low-confidence\]' <<<"$out"; then
   record_pass "8: enabled + low_confidence → snippet flagged"
 else
   record_fail "8: enabled + low_confidence → snippet flagged" "got: $(printf '%s' "$out" | head -c 200)"
@@ -184,9 +184,9 @@ case_9() {
   ) || true
   args=$(cat "$tmp/kb-args.log" 2>/dev/null || true)
   rm -rf "$tmp"
-  if printf '%s' "$out" | grep -q '\[kb-nudge\]' \
-     && printf '%s' "$out" | grep -q 'agent-task-lessons' \
-     && ! printf '%s' "$args" | grep -q -- '--gate'; then
+  if grep -q '\[kb-nudge\]' <<<"$out" \
+     && grep -q 'agent-task-lessons' <<<"$out" \
+     && ! grep -q -- '--gate' <<<"$args"; then
     record_pass "9: nudge mode → [kb-nudge] via ungated kb search"
   else
     record_fail "9: nudge mode → [kb-nudge] via ungated kb search" \
