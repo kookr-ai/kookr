@@ -669,7 +669,7 @@ If `{{mergeAfterImplementation}}` is `true`:
    kookr check-verification <PR_NUMBER> --repo "$REPO"   # exit 0 green/none, 10 never-executed, 20 executed-red, 30 pending
    ```
 
-   When one check has several runs on the head (re-runs), the latest run decides it, except that a re-run that never executed does not hide an earlier run that failed on the code. Act on the classification:
+   When a check was re-run on the head, an earlier failure stops counting only once a later run of it succeeded after the failure finished; a re-run that never executed or was skipped does not hide it. Act on the classification:
    - **`executed-red`** — a required check ran and failed on the code. **Never merge.** Post the failing findings on the PR (`gh pr comment <PR_NUMBER> --repo "$REPO" --body "…"` with the failing check names + `gh run view` links) and treat it as a real blocker regardless of `{{ignoreBudgetCiFailures}}`. Fix the code, or record the blocker.
    - **`never-executed`** — the checks never ran (billing/quota). This is non-blocking only when `{{ignoreBudgetCiFailures}}` is `true` (the default — see the CLAUDE.md CI policy). Before merging you MUST run the repo's local gate and record the evidence on the PR as the audit trail that replaces CI:
 
@@ -692,6 +692,7 @@ If `{{mergeAfterImplementation}}` is `true`:
      Only merge after that comment and the `local-verified` label are posted. On `kookr-ai/kookr`, `kookr merge` enforces this deterministically: for a `never-executed` block it proceeds only when the PR carries the `local-verified` label AND a local-gate comment whose `local-gate-head-sha:` equals the current head (a comment from an earlier push does not carry forward); otherwise it exits 3. A check that RAN and failed is never waived. If `{{ignoreBudgetCiFailures}}` is `false`, `never-executed` blocks like any failing check.
    - **`executed-green` / `none-required`** — no check-run objection; proceed to merge.
    - **`pending`** — checks are still running; wait (subject to the CI-rerun bound below) rather than merging.
+   - **Exit `1`** (the classifier could not run: no Kookr source checkout behind `kookr`, or a `gh` error) — the CI state is unknown. Do not merge on an assumption; retry once, then record a blocker with the error.
 
    Do not otherwise bypass branch protection, required reviews, or maintainer policy.
 

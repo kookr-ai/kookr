@@ -24,9 +24,10 @@
 // `gh` to fetch the head SHA's check runs plus the annotations of any failing
 // run, then prints the classification.
 //
-// When a check has several attempts on the head SHA (re-runs), the latest
-// attempt decides it, except that a never-executed re-run does not erase an
-// earlier attempt that ran and failed (see `selectDecidingRuns`).
+// When a check has several attempts on the head SHA (re-runs), an attempt that
+// did not pass stops counting once a later attempt succeeded after it finished
+// (see `selectDecidingRuns`); anything else, such as a re-run that never
+// executed or was skipped, leaves the earlier failure in place.
 //
 // Usage (also `kookr check-verification`, which runs this file from any repo):
 //   node scripts/check-verification.mjs <pr-number> [--repo owner/name]
@@ -206,11 +207,32 @@ function isLaterAttempt(candidate, current) {
 }
 
 /**
- * Collapse the attempts of each check to the one that decides it: the latest
- * attempt, so a stale failure followed by a successful re-run is green. One
- * exception keeps the merge gate safe: a latest attempt that never executed
- * (billing/quota) does not erase an earlier attempt that RAN and failed on this
- * head — that check stays executed-red.
+ * True when `later` is a re-run that replaces `earlier`: it succeeded or is
+ * still running (so the check stays pending until it settles), was created
+ * after `earlier` (higher id), and started only once `earlier` had finished.
+ * Two jobs of one workflow run that share a name overlap in time, so neither
+ * replaces the other; a re-run of a finished job starts after it.
+ */
+function replacesAttempt(later, earlier) {
+  if (!later.run) return false;
+  const running = later.run.status !== 'completed';
+  if (!running && later.run.conclusion !== 'success') return false;
+  const a = Number(later.run.id);
+  const b = Number(earlier.run && earlier.run.id);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a <= b) return false;
+  const started = Date.parse(later.run.started_at || '');
+  const finished = Date.parse((earlier.run && earlier.run.completed_at) || '');
+  return !Number.isNaN(started) && !Number.isNaN(finished) && started >= finished;
+}
+
+/**
+ * Pick the attempts that decide each check, so a stale failure followed by a
+ * successful re-run is green. The latest attempt always counts. An earlier
+ * attempt that did not pass (ran and failed, never executed, cancelled, still
+ * running) is dropped only when a later attempt that started after it finished
+ * succeeded or is still running (then the check is pending); otherwise it
+ * still counts. So a re-run that never executed, was skipped, or
+ * is a same-named sibling job never hides a run that failed on the code.
  * @returns {{runs: Array<object>, superseded: number}} the deciding verdicts
  *   (in input order) and how many earlier attempts were dropped.
  */
@@ -234,23 +256,25 @@ export function selectDecidingRuns(checkRuns) {
   });
 
   let superseded = 0;
-  const deciding = order.map((group) => {
-    superseded += group.length - 1;
+  const deciding = [];
+  for (const group of order) {
     let latest = group[0];
     for (const entry of group) if (isLaterAttempt(entry, latest)) latest = entry;
-    if (latest.verdict.verdict === 'never-executed') {
-      const ranRed = group.find((e) => e.verdict.verdict === 'executed-red');
-      if (ranRed) return ranRed;
+    for (const entry of group) {
+      const keep =
+        entry === latest ||
+        (entry.verdict.verdict !== 'passed' && !group.some((other) => replacesAttempt(other, entry)));
+      if (keep) deciding.push(entry);
+      else superseded += 1;
     }
-    return latest;
-  });
+  }
   deciding.sort((x, y) => x.index - y.index);
   return { runs: deciding.map((e) => e.verdict), superseded };
 }
 
 /**
  * Classify the whole set of check runs for a head SHA. When one check has
- * several attempts (re-runs), the latest decides; see `selectDecidingRuns`.
+ * several attempts (re-runs), see `selectDecidingRuns` for which count.
  * @param {Array<object>|{check_runs: Array<object>}} input raw check-runs
  *   (the `gh api .../check-runs` response, or just its array), with each failing
  *   run optionally carrying an `annotations` array.
@@ -359,10 +383,9 @@ function fetchCheckRunPages(repo, sha) {
     // `filter=all` (not the API default `latest`): a rerun keeps the same commit
     // SHA, so a check that RAN and failed and was then re-run into a billing block
     // would, under `latest`, show only the never-executed rerun and hide the real
-    // failure. We fetch every attempt and let `selectDecidingRuns` pick the one
-    // that decides each check (the latest, except that a never-executed rerun
-    // never erases an earlier executed-red). Attempts have distinct ids, so the
-    // dedup-by-id below keeps them all.
+    // failure. We fetch every attempt and let `selectDecidingRuns` decide which
+    // still count (only a later success can retire an earlier failure).
+    // Attempts have distinct ids, so the dedup-by-id below keeps them all.
     const parsed = JSON.parse(
       gh(['api', `repos/${repo}/commits/${sha}/check-runs?filter=all&per_page=${CHECK_RUNS_PER_PAGE}&page=${page}`]),
     );

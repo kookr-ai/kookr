@@ -788,6 +788,12 @@ directory, as with `gh`. The verb runs the wrapper from the checkout that the
 `kookr` on `PATH` belongs to, so it needs a source checkout: the npm package
 does not ship `scripts/`.
 
+Exit codes are the wrapper's: `0` merged (a failed branch delete or a
+still-open closing issue is a warning and does not change it); `1` pre-flight or
+merge failed; `2` usage error; `3` checks failed, the PR conflicts with its base
+branch (rebase on `origin/<base>` and push), or never-executed checks without
+the recorded local gate; `4` blocked by the independent-review gate.
+
 ## `kookr check-verification`
 
 Classify the GitHub check runs on a pull request's head commit, from any
@@ -810,20 +816,17 @@ kookr check-verification --from-file <check-runs.json> [--json]
 | `1` | — | Usage or runtime error. |
 
 When one check has several runs on the head (re-runs of the same job in the
-same workflow run), the latest run decides it: a failed run followed by a
-successful re-run is green. One exception: a re-run that never executed does not
-hide an earlier run that failed on the code, so that check stays
-`executed-red`. Checks with the same name in different workflows are classified
-separately.
+same workflow run), a run that did not pass stops counting once a later run of
+that check succeeded after it finished: a failed run followed by a successful
+re-run is green. A later run that never executed, was skipped, or overlapped the
+failure in time (a different job with the same name) does not hide it, so that
+check stays `executed-red`. A re-run still in progress makes the check
+`pending`. Checks with the same name in different workflow runs are classified
+separately, so a failure in an earlier workflow run stays red even when a later
+run of that workflow passed.
 
 Without `--repo`, the PR is resolved from the git remote of the current
 directory. Like `kookr merge`, the verb needs a source checkout.
-
-Exit codes are the wrapper's: `0` merged (a failed branch delete or a
-still-open closing issue is a warning and does not change it); `1` pre-flight or
-merge failed; `2` usage error; `3` checks failed, the PR conflicts with its base
-branch (rebase on `origin/<base>` and push), or never-executed checks without
-the recorded local gate; `4` blocked by the independent-review gate.
 
 ## Server Discovery
 

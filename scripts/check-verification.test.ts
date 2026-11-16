@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -312,8 +312,35 @@ describe('classifyCheckRuns — re-runs of the same check', () => {
   });
 
   it('classifies a never-executed attempt followed by a successful re-run as green', () => {
-    const blockedFirst = { ...billingBlockedRerun, id: 101 };
+    const blockedFirst = { ...billingBlockedRerun, id: 101, completed_at: '2026-11-10T10:00:04Z' };
     expect(classifyCheckRuns([blockedFirst, passedRerun]).classification).toBe(CLASSIFICATIONS.EXECUTED_GREEN);
+  });
+
+  it('keeps a failure red when a later same-named job overlapped it (sibling, not a re-run)', () => {
+    // Two jobs of one workflow run sharing a name: the pass started before the
+    // failure finished, so it cannot be a re-run of it.
+    const sibling = { ...passedRerun, started_at: '2026-11-10T10:00:00Z', completed_at: '2026-11-10T10:01:00Z' };
+    const result = classifyCheckRuns([failedOnCode, sibling]);
+    expect(result.classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    expect(result.counts.superseded).toBe(0);
+    // And the hidden red is not turned into a waivable never-executed either.
+    const billingElsewhere = { ...billingBlockedRerun, id: 300, name: 'lint', completed_at: '2026-11-10T10:00:04Z' };
+    expect(classifyCheckRuns([failedOnCode, sibling, billingElsewhere]).classification).toBe(
+      CLASSIFICATIONS.EXECUTED_RED,
+    );
+  });
+
+  it('keeps a failure red when its re-run was skipped or neutral', () => {
+    for (const conclusion of ['skipped', 'neutral']) {
+      const rerun = { ...passedRerun, conclusion };
+      expect(classifyCheckRuns([failedOnCode, rerun]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    }
+  });
+
+  it('does not let a later pass hide a same-named job that is still running', () => {
+    const stillRunning = { ...runningRerun, id: 101 };
+    const laterPass = { ...passedRerun, id: 102 };
+    expect(classifyCheckRuns([stillRunning, laterPass]).classification).toBe(CLASSIFICATIONS.PENDING);
   });
 
   it('does not let a green in one workflow hide a red of the same name in another', () => {
@@ -370,7 +397,7 @@ describe('kookr check-verification', () => {
       const runs = {
         total_count: 2,
         check_runs: [
-          { id: 2, name: 'unit', status: 'completed', conclusion: 'success', output: { annotations_count: 0 } },
+          { id: 2, name: 'unit', status: 'completed', conclusion: 'success', started_at: '2026-11-10T11:00:00Z', completed_at: '2026-11-10T11:03:00Z', output: { annotations_count: 0 } },
           { id: 1, name: 'unit', status: 'completed', conclusion: 'failure', started_at: '2026-11-10T10:00:00Z', completed_at: '2026-11-10T10:03:00Z', output: { annotations_count: 0 } },
         ],
       };
@@ -397,7 +424,7 @@ esac
       expect(result.stdout).toContain('caller/repo #7');
       expect(result.stdout).toContain('EXECUTED-GREEN');
       const cwds = new Set(readFileSync(join(elsewhere, 'cwd.log'), 'utf8').trim().split('\n'));
-      expect([...cwds]).toEqual([elsewhere]);
+      expect([...cwds]).toEqual([realpathSync(elsewhere)]);
     } finally {
       rmSync(elsewhere, { recursive: true, force: true });
     }
