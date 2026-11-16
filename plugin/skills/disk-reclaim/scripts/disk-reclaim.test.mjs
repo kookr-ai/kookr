@@ -605,6 +605,35 @@ describe('pnpm patch edits and fsmonitor hooks', () => {
     for (const a of res.actions) expect(a.error).toMatch(/skipped: no longer SAFE.*uncommitted pnpm patch edits/);
   });
 
+  test('pnpm patch edits started after the apply-time re-check still stop the removal', async () => {
+    const wt = addWorktree('patch-after-recheck');
+    addNodeModules(wt);
+    const nm = join(wt, 'node_modules');
+    // A `find` wrapper that, once armed, starts a `pnpm patch` in node_modules just after the
+    // re-check's nested-.git search: after its patch check, before the removal.
+    const bin = join(tmp, 'bin');
+    const arm = join(tmp, 'armed');
+    const realFind = execFileSync('sh', ['-c', 'command -v find'], { encoding: 'utf8' }).trim();
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'find'), `#!/bin/sh\n"${realFind}" "$@"; rc=$?\nif [ -e "${arm}" ] && [ "$1" = "${nm}" ]; then mkdir -p "$1/.pnpm_patches/left-pad@1.3.0" && echo '{}' > "$1/.pnpm_patches/state.json"; fi\nexit $rc\n`, { mode: 0o755 });
+    setExecEnvForTests({ ...GIT_ENV, PATH: `${bin}:${GIT_ENV.PATH}` });
+    try {
+      const d = deps();
+      const o = opts();
+      const report = await buildReport(o, d);
+      expect(report.safe.map((i) => i.path)).toEqual([nm]);
+      writeFileSync(arm, '');
+      const res = await applySafe(report, o, d);
+      expect(existsSync(join(nm, '.pnpm_patches', 'state.json'))).toBe(true);
+      expect(existsSync(join(nm, 'pkg.js'))).toBe(true);
+      expect(res.actions).toHaveLength(1);
+      expect(res.actions[0]).toMatchObject({ ok: false });
+      expect(res.actions[0].error).toMatch(/^refusing: uncommitted pnpm patch edits appeared/);
+    } finally {
+      setExecEnvForTests(GIT_ENV);
+    }
+  });
+
   test('an fsmonitor hook that hides an edit does not make the worktree SAFE', async () => {
     const wt = addWorktree('fsmonitor-scan', { merge: true });
     hideEditBehindFsmonitor(wt, 'fsmonitor-scan.txt');
