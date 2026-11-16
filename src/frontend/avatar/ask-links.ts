@@ -13,7 +13,21 @@ export type TextSegment = { kind: 'text'; text: string } | { kind: 'url'; url: s
 // Up to the first space or a character that rarely belongs to a URL in prose.
 const URL_PATTERN = /https?:\/\/[^\s<>"'`]+/g;
 // Punctuation that usually ends the sentence around a URL rather than the URL itself.
-const TRAILING_PUNCTUATION = /[.,;:!?)\]}]+$/;
+const TRAILING_PUNCTUATION = /[.,;:!?)\]}]$/;
+
+/** Drop sentence punctuation from the end of a URL, keeping a ")" whose "(" is inside it (Wikipedia-style paths). */
+function trimTrailing(raw: string): string {
+  let url = raw;
+  while (TRAILING_PUNCTUATION.test(url)) {
+    if (url.endsWith(')') && count(url, '(') >= count(url, ')')) break;
+    url = url.slice(0, -1);
+  }
+  return url;
+}
+
+function count(text: string, char: string): number {
+  return text.split(char).length - 1;
+}
 
 /** Split `text` into plain-text and URL segments, in order. Only http and https URLs are recognised. */
 export function splitLinks(text: string): TextSegment[] {
@@ -21,11 +35,7 @@ export function splitLinks(text: string): TextSegment[] {
   let last = 0;
   for (const match of text.matchAll(URL_PATTERN)) {
     const start = match.index ?? 0;
-    let url = match[0];
-    const trailing = TRAILING_PUNCTUATION.exec(url)?.[0] ?? '';
-    // Keep a closing parenthesis that has its opening one inside the URL (Wikipedia-style paths).
-    const keepParen = trailing.startsWith(')') && url.slice(0, -trailing.length).includes('(');
-    if (trailing && !keepParen) url = url.slice(0, -trailing.length);
+    const url = trimTrailing(match[0]);
     if (!isOpenableUrl(url)) continue;
     if (start > last) out.push({ kind: 'text', text: text.slice(last, start) });
     out.push({ kind: 'url', url });
