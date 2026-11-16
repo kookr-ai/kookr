@@ -36,11 +36,13 @@ function checkout(name, { config = true } = {}) {
 }
 
 /** Runs the hook; returns the note, or null when it printed nothing. */
-function hook(command, cwd, stdout = `${URL}\n`, extra = {}) {
+function hook(command, cwd, stdout = `${URL}\n`, extra = {}, env = {}) {
+  // An ambient GH_REPO would change which repository every case targets.
+  const { GH_REPO: _ambient, ...base } = process.env;
   const r = spawnSync('bash', [HOOK], {
     input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout, stderr: '' }, cwd, ...extra }),
     encoding: 'utf-8',
-    env: { ...process.env, HOME: root },
+    env: { ...base, HOME: root, ...env },
   });
   expect(r.status).toBe(0);
   if (r.stdout.trim() === '') return null;
@@ -102,6 +104,30 @@ describe('pr-create-delivery-note', () => {
   it('says nothing when --repo names another repository, and notes it when --repo names this one', () => {
     expect(hook('gh pr create --repo other/thing --title t --body b', gated, 'https://github.com/other/thing/pull/9\n')).toBeNull();
     expect(hook('gh pr create --repo owner/name --title t --body b', gated)).toContain('#42');
+  });
+
+  it('takes the PR number from a URL of the target repository, never from one of another repository', () => {
+    const create = 'gh pr create --title t --body b';
+    expect(hook(create, gated, `${URL}\nsee also https://github.com/other/thing/pull/9\n`)).toContain('pull request #42 is open');
+    expect(hook(create, gated, 'https://github.com/other/thing/pull/9\n')).toBeNull();
+    // Owner and name compare without case, as GitHub does.
+    expect(hook(create, gated, 'https://github.com/Owner/Name/pull/43\n')).toContain('pull request #43 is open');
+  });
+
+  it('treats GH_REPO like --repo, on the command or in the environment', () => {
+    const create = 'gh pr create --title t --body b';
+    const foreign = 'https://github.com/other/thing/pull/9\n';
+    expect(hook(`GH_REPO=other/thing ${create}`, gated, foreign)).toBeNull();
+    expect(hook(`env GH_REPO=other/thing ${create}`, gated, foreign)).toBeNull();
+    expect(hook(`GH_REPO=owner/name ${create}`, gated)).toContain('#42');
+    expect(hook(create, gated, foreign, {}, { GH_REPO: 'other/thing' })).toBeNull();
+    // The output names this repository's pull request, so only GH_REPO itself
+    // can stop the note here.
+    expect(hook(create, gated, `${URL}\n`, {}, { GH_REPO: 'other/thing' })).toBeNull();
+    expect(hook(create, gated, `${URL}\n`, {}, { GH_REPO: 'github.com/owner/name' })).toContain('#42');
+    // The flag wins over the variable, and an inline prefix over the environment.
+    expect(hook(`${create} --repo owner/name`, gated, `${URL}\n`, {}, { GH_REPO: 'other/thing' })).toContain('#42');
+    expect(hook(`GH_REPO=owner/name ${create}`, gated, `${URL}\n`, {}, { GH_REPO: 'other/thing' })).toContain('#42');
   });
 
   it('takes the PR number from a multi-line create output that also carries a body heredoc', () => {

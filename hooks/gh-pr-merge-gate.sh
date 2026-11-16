@@ -119,6 +119,8 @@ if ! jq -n --arg r "$REASON" '{
     permissionDecisionReason: $r
   }
 }' 2>/dev/null; then
-  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Directly merging a PR is blocked in Kookr sessions. Use kookr merge <PR> instead."}}'
+  # Fallback when jq cannot build the JSON: a fixed string, so it must stay
+  # valid JSON with no apostrophes. It still says what, why and what instead.
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Directly merging a PR is blocked in Kookr sessions because a direct merge skips the independent-review verdict check. Use kookr merge <PR> --repo <owner/name> instead, from your own worktree: it enforces that verdict."}}'
 fi
 exit 0

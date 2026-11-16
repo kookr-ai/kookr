@@ -17,7 +17,12 @@
 //   - its output contains the URL of a pull request, so the pull request
 //     exists (`--web`, `--dry-run` and a failed create print none);
 //   - the repository of its working directory configures an integration
-//     branch, and `--repo`, when given, names that same repository;
+//     branch, and the repository gh targets names that same repository: the
+//     `--repo` flag, else a `GH_REPO=...` prefix on the command, else the
+//     GH_REPO environment variable (gh reads it like `--repo`);
+//   - the output holds a pull-request URL of that repository; the number comes
+//     from the last such URL, so a URL of another repository (in a warning, say)
+//     is never named;
 //   - its base is `main` (given or defaulted) or the integration branch. A
 //     stacked pull request (any other base) gets no note.
 //
@@ -48,25 +53,38 @@ export function prCreates(command, cwd) {
     }
     if (w[0] === 'gh' && w[1] === 'pr' && w[2] === 'create') {
       const rest = w.slice(3);
-      found.push({ dir, base: flagValue(rest, ['--base', '-B']), repo: flagValue(rest, ['--repo', '-R']) });
+      // A `GH_REPO=owner/name gh pr create` prefix; stripPrefixes drops it.
+      const inline = words.slice(0, words.length - w.length).filter((x) => x.startsWith('GH_REPO=')).pop();
+      const repo = flagValue(rest, ['--repo', '-R']) ?? (inline === undefined ? envRepo() : inline.slice('GH_REPO='.length));
+      found.push({ dir, base: flagValue(rest, ['--base', '-B']), repo: repo || null });
     }
   }
   return found;
 }
 
-const sameRepo = (a, b) => a.toLowerCase().replace(/\.git$/, '') === b.toLowerCase().replace(/\.git$/, '');
+/** GH_REPO from the hook's environment, which the Bash tool's commands share. */
+const envRepo = () => process.env.GH_REPO || null;
+
+/** OWNER/NAME of a gh repository argument: OWNER/NAME, HOST/OWNER/NAME or a URL. */
+const repoSlug = (value) => value.replace(/^https?:\/\//, '').replace(/\/+$/, '').replace(/\.git$/, '').split('/').slice(-2).join('/');
+
+const sameRepo = (a, b) => repoSlug(a).toLowerCase() === repoSlug(b).toLowerCase();
 
 /** The note for one Bash call, or null. */
 export function noteFor(command, cwd, output) {
   const urls = [...String(output).matchAll(/https:\/\/[^\s/]+\/([^\s/]+\/[^\s/]+)\/pull\/(\d+)/g)];
   if (urls.length === 0) return null;
-  const pr = urls[urls.length - 1][2];
   for (const create of prCreates(command, cwd)) {
     const integration = integrationBranchAt(create.dir);
     if (!integration) continue;
     const origin = originRepo(create.dir);
-    if (create.repo && !(origin && sameRepo(create.repo.replace(/^https?:\/\/[^/]+\//, ''), origin))) continue;
-    const slug = origin ?? urls[urls.length - 1][1];
+    if (create.repo && !(origin && sameRepo(create.repo, origin))) continue;
+    // The pull request this command opened: the last URL of the target
+    // repository. With no origin to compare against, the last URL.
+    const url = origin ? urls.filter((u) => sameRepo(u[1], origin)).pop() : urls[urls.length - 1];
+    if (!url) continue;
+    const pr = url[2];
+    const slug = origin ?? url[1];
     const merge = `\`kookr merge ${pr} --repo ${slug}\``;
     const after =
       `The integration train then runs the full test suite on \`${integration}\` and moves \`main\` to it; ` +

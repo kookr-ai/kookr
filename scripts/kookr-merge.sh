@@ -620,6 +620,12 @@ pr_conflicts() {
   printf '%s' "$1" | jq -e '((.mergeable // "") | ascii_upcase) == "CONFLICTING" or ((.mergeStateStatus // "") | ascii_upcase) == "DIRTY"' >/dev/null
 }
 
+# pr_mergeable — true when GitHub has computed mergeability and found no
+# conflict (mergeable=MERGEABLE). UNKNOWN or a missing field is not enough.
+pr_mergeable() {
+  printf '%s' "$1" | jq -e '((.mergeable // "") | ascii_upcase) == "MERGEABLE" and ((.mergeStateStatus // "") | ascii_upcase) != "DIRTY"' >/dev/null
+}
+
 # report_conflict — the one message for a PR that conflicts with its base.
 report_conflict() {
   local checks="$1" base=""
@@ -678,28 +684,39 @@ watch_checks() {
     return 0
   fi
 
+  local timeout="${KOOKR_MERGE_CHECK_TIMEOUT_SECONDS:-3600}"
+  local interval="${KOOKR_MERGE_CHECK_INTERVAL_SECONDS:-15}"
+
   # With real checks present, prefer gh's built-in --watch when available.
   # Zero-check-but-not-yet-clean PRs must NOT use --watch (it exits 1 on "no
   # checks", issue #2102) — they fall through to the poll loop below.
-  # A PR that already reports a conflict skips --watch too: --watch would wait
-  # for every check and never notice the conflict (issue #3813).
-  if [[ "$total" != "0" ]] && ! pr_conflicts "$checks" && gh pr checks --help 2>/dev/null | grep -q -- '--watch'; then
-    if gh pr checks "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --watch; then
-      return 0
+  # --watch waits for every check and never looks at mergeability, so it is
+  # used only when GitHub already reports the PR as MERGEABLE. A conflict, or
+  # an UNKNOWN state (common right after a retarget or a push), goes to the poll
+  # loop, which stops as soon as a conflict is confirmed (issues #3813, #3817).
+  if [[ "$total" != "0" ]] && pr_mergeable "$checks" && gh pr checks --help 2>/dev/null | grep -q -- '--watch'; then
+    local watch_rc=0 after=""
+    gh pr checks "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --watch || watch_rc=$?
+    # The base can move while the checks run. Read the merge state again before
+    # deciding: a conflict now goes to the poll loop, which confirms it on two
+    # polls and prints the rebase step, instead of a merge that fails with exit 1.
+    if after="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup,mergeStateStatus,mergeable)" \
+        && pr_conflicts "$after"; then
+      echo "kookr-merge: GitHub now reports a conflict with the base branch; confirming it before giving up"
+    else
+      (( watch_rc != 0 )) || return 0
+      # A non-zero --watch means at least one check settled as "not passing". That
+      # is a real red UNLESS the checks never executed (external billing/quota) and
+      # the local gate is recorded on the current head (issue #3396).
+      if never_executed_merge_allowed; then
+        return 0
+      fi
+      checks_refusal "the checks" "gh pr checks --watch reported a check that did not pass (listed above)" \
+        "fix the failing check, push, post a new review verdict for the new head, then run: $(rerun_command)"
+      return 3
     fi
-    # A non-zero --watch means at least one check settled as "not passing". That
-    # is a real red UNLESS the checks never executed (external billing/quota) and
-    # the local gate is recorded on the current head (issue #3396).
-    if never_executed_merge_allowed; then
-      return 0
-    fi
-    checks_refusal "the checks" "gh pr checks --watch reported a check that did not pass (listed above)" \
-      "fix the failing check, push, post a new review verdict for the new head, then run: $(rerun_command)"
-    return 3
   fi
 
-  local timeout="${KOOKR_MERGE_CHECK_TIMEOUT_SECONDS:-3600}"
-  local interval="${KOOKR_MERGE_CHECK_INTERVAL_SECONDS:-15}"
   local start now elapsed failed pending conflicts=0
   local WAIT_LAST_REASON="" WAIT_LAST_PRINT=0
   start=$(date +%s)
@@ -719,6 +736,14 @@ watch_checks() {
         report_conflict "$checks"
         return 3
       fi
+      # One reading is not proof. Decide nothing else on it: not a merge, not a
+      # check failure, not the never-executed waiver (a merge tried now would
+      # fail with exit 1 and hide the rebase step). The next poll either
+      # confirms the conflict or clears it (issue #3817).
+      elapsed=$(( $(date +%s) - start ))
+      wait_note "GitHub reports a conflict with the base branch; checking again to confirm" "$elapsed"
+      sleep "$interval"
+      continue
     else
       conflicts=0
     fi
@@ -764,9 +789,7 @@ watch_checks() {
       return 3
     fi
 
-    # Green checks do not make a conflicting PR mergeable: take one more poll
-    # to confirm the conflict, so the rebase message is shown, not a failed merge.
-    if [[ "$pending" == "0" ]] && (( conflicts == 0 )); then
+    if [[ "$pending" == "0" ]]; then
       printf '%s\n' "$checks" | jq -r '(.statusCheckRollup // [])[] | "  \(.name): \(.conclusion)"'
       return 0
     fi

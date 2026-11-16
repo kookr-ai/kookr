@@ -36,7 +36,11 @@
  * Conflict fail-fast (#3813): a PR GitHub reports as conflicting with its base
  * (mergeable=CONFLICTING / DIRTY) on two consecutive polls exits 3 at once with
  * a rebase instruction instead of polling for up to an hour; UNKNOWN and a
- * single stale CONFLICTING are still polled through.
+ * single stale CONFLICTING are still polled through. Follow-ups (#3817): the
+ * `gh pr checks --watch` fast path is used only once GitHub reports the PR as
+ * MERGEABLE, and a conflict read after --watch goes to the poll loop; a single
+ * conflict reading defers every other decision (merge, red check, the
+ * never-executed waiver) to the next poll.
  *
  * Acceptance (#3222):
  * - CLI and REST paths both pin the exact reviewed commit
@@ -132,6 +136,15 @@ function makeStubDir(opts: {
   baseRef?: string;
   defaultBranch?: string;
   editExit?: number;
+  // Read failures for the summary-block refusal rows (#3935). Each makes one
+  // read exit 1; all default to 0. `checksReadExit` fails every
+  // statusCheckRollup read, `mergeCommitExit` only the best-effort merge-commit
+  // read after a confirmed merge.
+  baseHeadReadExit?: number;
+  defaultBranchReadExit?: number;
+  reviewReadExit?: number;
+  checksReadExit?: number;
+  mergeCommitExit?: number;
 }): string {
   const dir = mkdtempSync(join(tmpdir(), 'kookr-merge-stub-'));
   writeFileSync(
@@ -195,6 +208,7 @@ case "$args" in
     cat "$DIR/verification.json"; exit 0 ;;
   *"--json mergeCommit"*)
     # The summary's best-effort merge-commit read (#3913).
+    [ ${opts.mergeCommitExit ?? 0} -eq 0 ] || { echo 'Unknown JSON field: "mergeCommit"' >&2; exit ${opts.mergeCommitExit ?? 0}; }
     jq -r '.mergeCommit.oid // ""' "$DIR/verification.json"; exit 0 ;;
   *"--json merged "*|*"--json merged,"*|*"--json merged")
     # Real gh (including current 2.x) has no \`merged\` field on \`pr view\`.
@@ -203,6 +217,7 @@ case "$args" in
     echo 'Available fields: mergedAt, mergeCommit, state, mergedBy' >&2
     exit 1 ;;
   *"--json comments,labels,commits"*)
+    [ ${opts.reviewReadExit ?? 0} -eq 0 ] || { echo 'HTTP 502: Bad Gateway' >&2; exit ${opts.reviewReadExit ?? 0}; }
     cat "$DIR/review.json"; exit 0 ;;
   *"--json headRefName,headRepository,headRepositoryOwner"*)
     echo '{"headRefName":"${opts.headRef ?? 'paired/change'}","headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"${opts.headOwner ?? 'owner'}"}}'; exit 0 ;;
@@ -212,10 +227,12 @@ case "$args" in
     printf 'edited\\n' > "$DIR/edited.marker"
     exit 0 ;;
   *"--json baseRefName,headRefName"*)
+    [ ${opts.baseHeadReadExit ?? 0} -eq 0 ] || { echo 'HTTP 502: Bad Gateway' >&2; exit ${opts.baseHeadReadExit ?? 0}; }
     printf '{"baseRefName":"%s","headRefName":"%s"}\\n' "$(cat "$DIR/base.txt")" '${opts.headRef ?? 'paired/change'}'; exit 0 ;;
   *"--json baseRefName"*)
     cat "$DIR/base.txt"; echo; exit 0 ;;
   "repo view "*"defaultBranchRef"*)
+    [ ${opts.defaultBranchReadExit ?? 0} -eq 0 ] || { echo 'HTTP 502: Bad Gateway' >&2; exit ${opts.defaultBranchReadExit ?? 0}; }
     cat "$DIR/default.txt"; echo; exit 0 ;;
   "repo view "*)
     echo 'owner/repo'; exit 0 ;;
@@ -268,6 +285,7 @@ case "$args" in
   *"--json state,isDraft,reviewDecision"*)
     cat "$DIR/state.json"; exit 0 ;;
   *"--json statusCheckRollup,mergeStateStatus,mergeable"*)
+    [ ${opts.checksReadExit ?? 0} -eq 0 ] || { echo 'HTTP 502: Bad Gateway' >&2; exit ${opts.checksReadExit ?? 0}; }
     n=0
     [ -f "$DIR/poll.count" ] && n=$(cat "$DIR/poll.count")
     n=$((n + 1)); printf '%s' "$n" > "$DIR/poll.count"
@@ -1265,6 +1283,177 @@ describe('never-executed check waiver (#3396)', () => {
   });
 });
 
+describe('a conflict seen after the first read still fails fast (#3817)', () => {
+  const rollup = (checks: string, state: string, mergeable: string) =>
+    `{"statusCheckRollup":[${checks}],"mergeStateStatus":"${state}","mergeable":"${mergeable}"}`;
+  const GREEN = '{"name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}';
+  const RUNNING = '{"name":"ci","status":"IN_PROGRESS","conclusion":""}';
+  const RED = '{"name":"unittest","status":"COMPLETED","conclusion":"FAILURE"}';
+  const mergeCalls = (calls: string[]) => calls.filter((c) => c.startsWith('pr merge') && !c.includes('--help'));
+  const watchCalls = (calls: string[]) => calls.filter((c) => c.includes('--watch') && !c.includes('--help'));
+
+  it('merges when --watch passes and the merge state read after it is clean', () => {
+    const dir = makeStubDir({
+      checksResponses: [rollup(RUNNING, 'BLOCKED', 'MERGEABLE'), rollup(GREEN, 'CLEAN', 'MERGEABLE')],
+      watchExit: 0,
+    });
+    try {
+      const { status, merged, calls, pollCount } = runMerge(dir, { GH_HAS_WATCH: '1' });
+      expect(status).toBe(0);
+      expect(merged).toBe(true);
+      expect(watchCalls(calls)).toHaveLength(1);
+      // Pre-flight, then the one read after --watch: no poll loop.
+      expect(pollCount).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses with exit 3 when --watch fails, the state after it has no conflict, and no waiver applies', () => {
+    const dir = makeStubDir({
+      checksResponses: [rollup(RED, 'BLOCKED', 'MERGEABLE')],
+      watchExit: 1,
+    });
+    try {
+      const { status, stderr, merged, calls } = runMerge(dir, { GH_HAS_WATCH: '1' });
+      expect(status).toBe(3);
+      expect(merged).toBe(false);
+      expect(watchCalls(calls)).toHaveLength(1);
+      expect(mergeCalls(calls)).toHaveLength(0);
+      expect(stderr).toContain('gh pr checks --watch reported a check that did not pass');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('polls instead of using --watch when GitHub has not computed mergeability yet', () => {
+    // --watch ignores mergeability, and the stub's --watch exits 0: reaching it
+    // would merge a PR that turns out to conflict.
+    const dir = makeStubDir({
+      checksResponses: [rollup(RUNNING, 'UNKNOWN', 'UNKNOWN'), rollup(RUNNING, 'DIRTY', 'CONFLICTING')],
+      baseRef: 'staging',
+    });
+    try {
+      const { status, stderr, merged, calls } = runMerge(dir, { GH_HAS_WATCH: '1' });
+      expect(status).toBe(3);
+      expect(merged).toBe(false);
+      expect(watchCalls(calls)).toHaveLength(0);
+      expect(mergeCalls(calls)).toHaveLength(0);
+      expect(stderr).toContain('conflicts with staging');
+      expect(stderr).toContain('rebase on origin/staging');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a conflict that appears while --watch waits, instead of a failed merge', () => {
+    // Read 1: pre-flight, mergeable. --watch passes. Then the base moves: every
+    // later read is DIRTY.
+    const dir = makeStubDir({
+      checksResponses: [rollup(RUNNING, 'BLOCKED', 'MERGEABLE'), rollup(GREEN, 'DIRTY', 'CONFLICTING')],
+      baseRef: 'staging',
+    });
+    try {
+      const { status, stdout, stderr, merged, calls } = runMerge(dir, { GH_HAS_WATCH: '1' });
+      expect(watchCalls(calls)).toHaveLength(1);
+      expect(status).toBe(3);
+      expect(merged).toBe(false);
+      expect(mergeCalls(calls)).toHaveLength(0);
+      expect(stdout).toContain('GitHub now reports a conflict with the base branch');
+      expect(stderr).toContain('conflicts with staging');
+      expect(stderr).toContain('rebase on origin/staging');
+      expect(stderr).not.toContain('checks did not pass');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still merges after --watch when the conflict reading was stale', () => {
+    const dir = makeStubDir({
+      checksResponses: [
+        rollup(RUNNING, 'BLOCKED', 'MERGEABLE'),
+        rollup(GREEN, 'DIRTY', 'CONFLICTING'),
+        rollup(GREEN, 'DIRTY', 'CONFLICTING'),
+        rollup(GREEN, 'CLEAN', 'MERGEABLE'),
+      ],
+    });
+    try {
+      const { status, merged, calls } = runMerge(dir, { GH_HAS_WATCH: '1' });
+      expect(status).toBe(0);
+      expect(merged).toBe(true);
+      expect(watchCalls(calls)).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not apply the never-executed waiver on a single conflict reading', () => {
+    // Every check "failed" by a billing block and the local gate is recorded, so
+    // the waiver would allow the merge, which then fails with exit 1. The
+    // conflict is confirmed first instead.
+    const dir = makeStubDir({
+      checksResponses: [rollup(RED, 'DIRTY', 'CONFLICTING')],
+      baseRef: 'staging',
+      headSha: NE_HEAD,
+      checkRunsJson: BILLING_CHECK_RUNS,
+      annotationsJson: BILLING_ANNOTATIONS,
+      reviewJson: localGateReview(),
+    });
+    try {
+      const { status, stdout, stderr, merged, calls } = runMerge(dir, {}, ['123', '--repo', 'owner/repo']);
+      expect(status).toBe(3);
+      expect(merged).toBe(false);
+      expect(mergeCalls(calls)).toHaveLength(0);
+      expect(stdout).not.toContain('proceeding on the local verification gate');
+      expect(stderr).toContain('conflicts with staging');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies the waiver once a single conflict reading clears', () => {
+    const dir = makeStubDir({
+      checksResponses: [
+        rollup(RED, 'UNKNOWN', 'UNKNOWN'),
+        rollup(RED, 'DIRTY', 'CONFLICTING'),
+        rollup(RED, 'BLOCKED', 'MERGEABLE'),
+      ],
+      headSha: NE_HEAD,
+      checkRunsJson: BILLING_CHECK_RUNS,
+      annotationsJson: BILLING_ANNOTATIONS,
+      reviewJson: localGateReview(),
+    });
+    try {
+      const { status, stdout, merged, pollCount } = runMerge(dir, {}, ['123', '--repo', 'owner/repo']);
+      expect(status).toBe(0);
+      expect(merged).toBe(true);
+      expect(pollCount).toBe(3);
+      expect(stdout).toContain('proceeding on the local verification gate');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('says it is confirming a conflict, not that checks are pending, when every check is green', () => {
+    const dir = makeStubDir({
+      checksResponses: [
+        rollup(GREEN, 'UNKNOWN', 'UNKNOWN'),
+        rollup(GREEN, 'DIRTY', 'CONFLICTING'),
+        rollup(GREEN, 'CLEAN', 'MERGEABLE'),
+      ],
+    });
+    try {
+      const { status, stdout, merged } = runMerge(dir);
+      expect(status).toBe(0);
+      expect(merged).toBe(true);
+      expect(stdout).toContain('GitHub reports a conflict with the base branch; checking again to confirm');
+      expect(stdout).not.toContain('checks pending');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('branch option validation before any GitHub request', () => {
   it.each([
     { args: ['123', '--unknown-option'], errors: ['--unknown-option'] },
@@ -2223,6 +2412,16 @@ describe('summary block: what happened, why, what comes next (#3913)', () => {
     expect(none.stdout).toContain('  what:  squash-merged (GitHub did not report the merge commit).');
   });
 
+  it('still exits 0 and says GitHub did not report the merge commit when that read fails', () => {
+    const result = run({ verificationJson: MERGED_WITH_SHA, mergeCommitExit: 1 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.merged).toBe(true);
+    expect(result.calls.some((c) => c.includes('--json mergeCommit'))).toBe(true);
+    expect(result.stdout).toContain('  what:  squash-merged (GitHub did not report the merge commit).');
+    expect(result.stdout).not.toContain(MERGE_SHA.slice(0, 12));
+    expect(result.stderr).not.toContain('kookr-merge: summary:');
+  });
+
   const REFUSALS: Array<{
     name: string;
     opts: Partial<Parameters<typeof makeStubDir>[0]>;
@@ -2321,6 +2520,51 @@ describe('summary block: what happened, why, what comes next (#3913)', () => {
     {
       name: 'a failed merge call', opts: { mergeExit: 1 },
       code: 1, gate: 'the merge call', evidence: 'gh pr merge 123 --squash failed', next: 'if the head moved, get a new review verdict',
+    },
+    {
+      name: 'an unreadable pull request during the retarget', opts: { baseHeadReadExit: 1 }, config: INTEGRATION,
+      code: 1, gate: 'the retarget step (integration branch staging)', evidence: 'gh pr view 123 failed, so its base branch is unknown',
+      next: 'Never merge it with gh pr merge',
+    },
+    {
+      name: 'an unreadable default branch during the retarget', opts: { defaultBranchReadExit: 1 }, config: INTEGRATION,
+      code: 1, gate: 'the retarget step (integration branch staging)', evidence: 'gh repo view could not read the default branch',
+      next: 'Never merge it with gh pr merge',
+    },
+    {
+      name: 'unreadable review comments', opts: { reviewReadExit: 1 }, env: { KOOKR_MERGE_REQUIRE_REVIEW: '1' },
+      code: 4, gate: 'the independent-review gate', evidence: 'gh pr view 123 could not read the comments',
+      next: 'check `gh auth status`',
+    },
+    {
+      name: 'a block on this head followed by a pass on it',
+      opts: {
+        reviewJson: {
+          ...NO_VERDICT,
+          comments: [
+            { createdAt: '2026-11-01T10:00:00Z', body: `<!-- kookr-independent-review -->\nkookr-review-verdict: block\nreview-head-sha: ${REVIEWED_SHA}` },
+            { createdAt: '2026-11-01T11:00:00Z', body: `<!-- kookr-independent-review -->\nkookr-review-verdict: pass\nreview-head-sha: ${REVIEWED_SHA}` },
+          ],
+        },
+      },
+      env: { KOOKR_MERGE_REQUIRE_REVIEW: '1' },
+      code: 4, gate: 'the independent-review gate (sticky-block)', evidence: "a 'block' on this same head or diff",
+      next: `get a fresh verdict bound to head ${REVIEWED_SHA}`,
+    },
+    {
+      name: 'unreadable checks', opts: { checksReadExit: 1 },
+      code: 3, gate: 'the check wait', evidence: 'gh pr view 123 could not read the checks', next: 'check `gh auth status`',
+    },
+    {
+      name: 'no checks and a merge state that never clears', opts: { checksResponses: [BLOCKED] },
+      env: { KOOKR_MERGE_CHECK_TIMEOUT_SECONDS: '1' },
+      code: 3, gate: 'the check wait (timeout)', evidence: 'no checks reported and mergeStateStatus=BLOCKED',
+      next: 'gh pr view 123 --repo owner/repo --json mergeStateStatus,mergeable',
+    },
+    {
+      name: 'an unreadable merge confirmation', opts: { verificationExit: 1 },
+      code: 1, gate: 'the merge confirmation', evidence: 'could not read state/mergedAt after the merge call',
+      next: 'gh pr view 123 --repo owner/repo --json state,mergedAt', mergeCalled: true,
     },
     {
       name: 'a merge GitHub does not confirm', opts: { verificationJson: '{"state":"OPEN","mergedAt":null}' },
