@@ -1173,9 +1173,24 @@ function describeCommand(item) {
   return Array.isArray(item.command) ? item.command.join(' ') : String(item.kind);
 }
 
+/**
+ * The `node_modules` directories of a worktree, at any depth, that hold uncommitted `pnpm patch`
+ * edits. Listed as the scan lists them (git's ignored entries), so a `node_modules` created after
+ * the re-check is covered too. Throws when git cannot list them.
+ */
+async function worktreePnpmPatches(dir, timeoutMs) {
+  const r = await exec('git', ['-C', dir, 'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory'], { timeoutMs });
+  if (r.code !== 0) throw new Error(`refusing: cannot list ignored files to look for pnpm patch edits (${r.timedOut ? 'timed out' : r.stderr.trim() || 'git ls-files failed'})`);
+  return r.stdout.split('\0').filter((entry) => entry && classifyIgnoredEntry(entry) === 'node_modules' && hasPnpmPatches(join(dir, entry)));
+}
+
 async function execute(item, log, opts, deps) {
   if (item.kind === 'worktree') {
     if (!item.mainRepo) throw new Error("refusing: main repository unknown");
+    // Without --force git still deletes ignored files, `node_modules/.pnpm_patches/` included, and the
+    // re-check looked for pnpm patch edits before its nested-.git searches and the intent write: look again.
+    const patched = await worktreePnpmPatches(item.path, opts.timeoutS * 1000);
+    if (patched.length) throw new Error(`refusing: uncommitted pnpm patch edits appeared in ${patched.map((p) => `${p}${PNPM_PATCHES}/`).join(', ')} after the re-check`);
     // No --force: git refuses dirty or locked trees. Force untracked files to be shown so a
     // repo with status.showUntrackedFiles=no cannot switch that refusal off, and bypass
     // core.fsmonitor so a hook that wrongly reports "no changes" cannot either.
