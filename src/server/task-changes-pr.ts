@@ -45,7 +45,9 @@ export type PullRequestFilesPage = (pr: PullRequestRef, page: number) => Promise
 export const PR_FILES_PER_PAGE = 100;
 /** A list is reused this long, so opening its files does not ask GitHub again. */
 const CACHE_TTL_MS = 60_000;
-const SAFE_NAME = /^[A-Za-z0-9._-]{1,100}$/;
+/** Lists kept at once; the oldest is dropped first. */
+const CACHE_MAX_ENTRIES = 20;
+const SAFE_NAME = /^(?!\.+$)[A-Za-z0-9._-]{1,100}$/;
 
 export const ghPullRequestFilesPage: PullRequestFilesPage = async (pr, page) => {
   if (!SAFE_NAME.test(pr.owner) || !SAFE_NAME.test(pr.repo) || !Number.isInteger(pr.number) || pr.number <= 0) return null;
@@ -88,9 +90,15 @@ interface CachedList {
   truncated: boolean;
 }
 
+interface CacheEntry {
+  at: number;
+  /** Shared by every request that arrives while GitHub is being asked. */
+  pending: Promise<CachedList | null>;
+}
+
 /** Reads and caches pull request file lists. One per route registration. */
 export class PullRequestChanges {
-  private readonly cache = new Map<string, CachedList>();
+  private readonly cache = new Map<string, CacheEntry>();
 
   constructor(
     private readonly fetchPage: PullRequestFilesPage = ghPullRequestFilesPage,
@@ -102,7 +110,8 @@ export class PullRequestChanges {
     const cached = await this.files(pr, opts.fresh === true);
     if (!cached) return null;
     const files: TaskChangedFile[] = cached.files.map((f) => {
-      const binary = f.patch === undefined && f.additions === 0 && f.deletions === 0;
+      // GitHub sends no patch for a binary file, and none for a pure rename either.
+      const binary = f.patch === undefined && f.additions === 0 && f.deletions === 0 && f.status !== 'renamed';
       return {
         path: f.filename,
         ...(f.status === 'renamed' && f.previous_filename ? { oldPath: f.previous_filename } : {}),
@@ -132,15 +141,39 @@ export class PullRequestChanges {
     if (!cached) return undefined;
     const entry = cached.files.find((f) => f.filename === filePath);
     if (!entry) return null;
-    if (entry.patch === undefined) return { kind: 'no_patch', path: entry.filename };
+    if (entry.patch === undefined) {
+      return entry.status === 'renamed' && entry.additions === 0 && entry.deletions === 0
+        ? { kind: 'patch', path: entry.filename, hunks: [] }
+        : { kind: 'no_patch', path: entry.filename };
+    }
     return { kind: 'patch', path: entry.filename, hunks: parseUnifiedDiff(entry.patch) };
   }
 
-  private async files(pr: PullRequestRef, fresh: boolean): Promise<CachedList | null> {
+  private files(pr: PullRequestRef, fresh: boolean): Promise<CachedList | null> {
     const key = `${pr.owner}/${pr.repo}#${pr.number}`;
+    const now = this.now();
     const hit = this.cache.get(key);
-    if (hit && !fresh && this.now() - hit.at < CACHE_TTL_MS) return hit;
+    if (hit && !fresh && now - hit.at < CACHE_TTL_MS) return hit.pending;
 
+    for (const [k, entry] of this.cache) {
+      if (now - entry.at >= CACHE_TTL_MS) this.cache.delete(k);
+    }
+    this.cache.delete(key);
+    while (this.cache.size >= CACHE_MAX_ENTRIES) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      this.cache.delete(oldest);
+    }
+    const entry: CacheEntry = { at: now, pending: this.fetchAll(pr) };
+    this.cache.set(key, entry);
+    // A failed ask is not kept, so the next request tries again.
+    void entry.pending.then((list) => {
+      if (list === null && this.cache.get(key) === entry) this.cache.delete(key);
+    });
+    return entry.pending;
+  }
+
+  private async fetchAll(pr: PullRequestRef): Promise<CachedList | null> {
     const files: PullRequestFile[] = [];
     let truncated = false;
     const maxPages = Math.ceil(MAX_CHANGED_FILES / PR_FILES_PER_PAGE);
@@ -155,8 +188,6 @@ export class PullRequestChanges {
         break;
       }
     }
-    const entry = { at: this.now(), files: files.slice(0, MAX_CHANGED_FILES), truncated };
-    this.cache.set(key, entry);
-    return entry;
+    return { at: this.now(), files: files.slice(0, MAX_CHANGED_FILES), truncated };
   }
 }
