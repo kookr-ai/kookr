@@ -321,9 +321,10 @@ async function adviseOnAdd(argv) {
     if ((argv[0] ?? '').trim() !== 'add') return;
     const shelf = firstOperand(argv);
     if (!shelf) return;
-    // nb keeps the case of a shelf name, so `Fleet-Global` is a separate file on Linux,
-    // but on a case-insensitive filesystem (macOS, Windows) it is the same file as
-    // fleet-global. Either way it is a write to the global layer, so it gets the advisory.
+    // nb keeps the case of a shelf name and refuses only to create a case variant of a
+    // shelf that already exists, so `nb add Fleet-Global` succeeds while no fleet-global
+    // shelf exists. On a case-insensitive filesystem (macOS, Windows) that file is
+    // fleet-global's, so any casing gets the advisory.
     if (shelf.toLowerCase() === GLOBAL_SHELF) {
       if (!process.env.KOOKR_NB_CURATOR) {
         console.error(

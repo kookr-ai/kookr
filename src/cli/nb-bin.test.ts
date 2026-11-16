@@ -565,7 +565,8 @@ describe('bin/nb.js — placement advisories on `add` (stderr only, never a refu
 
   test('the fleet-global check ignores case: Fleet-Global warns too, and is silent for the curator', () => {
     // Issue #3596 item 2: nb keeps the case of a shelf name, and on a case-insensitive
-    // filesystem Fleet-Global.md is the same file as fleet-global.md.
+    // filesystem Fleet-Global.md is the same file as fleet-global.md. The curator's add
+    // reuses the exact name: nb refuses a new case variant of an existing shelf.
     const r = nbErr(['add', 'Fleet-Global', 'host fact'], {});
     expect(r.code).toBe(0);
     expect(r.err).toMatch(/advisory: fleet-global is written only by promotion/);
