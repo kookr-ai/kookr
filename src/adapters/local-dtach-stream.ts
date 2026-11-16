@@ -18,7 +18,7 @@ import {
   SessionGoneError,
   WriteTimeoutError,
 } from './terminal-backend.js';
-import type { DtachManifestStore } from './dtach-manifest-store.js';
+import { type DtachManifestStore, readPersistedSize } from './dtach-manifest-store.js';
 import {
   type DtachRingStore,
   RING_BUFFER_BYTES,
@@ -33,6 +33,12 @@ import {
   REATTACH_CAP,
   REATTACH_WINDOW_MS,
 } from './local-dtach-shared.js';
+
+/**
+ * The `dtach -a` client clears its own terminal before it connects to the
+ * master (`ESC[H ESC[J`, from dtach's attach.c). It is not agent output.
+ */
+const DTACH_ATTACH_CLEAR = Buffer.from('\x1b[H\x1b[J', 'latin1');
 
 /** Host state the stream collaborator reads/mutates. */
 export interface LocalDtachStreamHost {
@@ -80,7 +86,9 @@ export class LocalDtachStream {
     if (!entry) throw new SessionGoneError(id);
     if (!existsSync(entry.sock)) return new Uint8Array(0);
 
-    const remembered = this.host.attached.get(id)?.currentSize;
+    // This secondary attach also forwards its size to the agent's PTY, so
+    // before the session is in memory use the size saved in the manifest.
+    const remembered = this.host.attached.get(id)?.currentSize ?? readPersistedSize(entry);
     const cols = options.cols && options.cols > 0
       ? options.cols
       : (remembered?.cols ?? 80);
@@ -295,7 +303,13 @@ export class LocalDtachStream {
     // A newly created session has no historical screen to discount. Keep its
     // first response in the ring; replay suppression is only for recovered
     // attach generations that explicitly opt into it.
-    this.attachPtyInto(sess, sock, initialSize, false, false);
+    //
+    // Without `originComplete` this is the first attach to a session that a
+    // previous server generation launched (the cold paths of ensureReadable /
+    // ensureWritable after a restart). Drop dtach's attach clear there: it
+    // would land in the persisted ring and, when no repaint follows (the size
+    // did not change), wipe the screen on every later replay (issue #3565).
+    this.attachPtyInto(sess, sock, initialSize, false, false, !originComplete);
   }
 
   /**
@@ -321,14 +335,22 @@ export class LocalDtachStream {
       pendingWriters: 0,
       reattachWindow: [],
       reattachCount: 0,
-      // `currentSize` is seeded by `attachPtyInto`.
+      // Seeded below from the manifest when a previous server generation
+      // recorded it; otherwise `attachPtyInto` seeds it.
       currentSize: null,
       lastAttachAt: null,
       attachReplayUntil: 0,
       attachReplayPending: false,
       disposePtyListeners: null,
       attachGeneration: 0,
+      dropAttachClearPending: false,
     };
+    // A session that survived a restart re-attaches at the size it last had
+    // instead of the 80x24 default (issue #3565).
+    const persistedSize = readPersistedSize(
+      this.host.manifestStore.read().entries.find((entry) => entry.sessionId === id),
+    );
+    if (persistedSize) sess.currentSize = persistedSize;
     // Seed from disk BEFORE wiring up the attach child so the very first
     // `captureBytes` after restart replays the persisted scrollback instead
     // of returning an empty ring. Fail-open if the file is missing or
@@ -350,6 +372,7 @@ export class LocalDtachStream {
     initialSize?: { cols: number; rows: number },
     suppressAttachReplay = false,
     classifyFirstChunkAsReplay = true,
+    dropAttachClear = false,
   ): void {
     if (this.host.isClosed()) return;
     // Re-attaches after a crash pass `initialSize=undefined`; falling back to
@@ -363,6 +386,7 @@ export class LocalDtachStream {
     // is immediately followed by a user write, so its first chunk remains live
     // to preserve genuine response bytes in the ring.
     sess.attachReplayPending = classifyFirstChunkAsReplay;
+    sess.dropAttachClearPending = dropAttachClear;
     // `dtach -a <sock> -E` — socket first, no detach escape char.
     const pty = spawn(this.host.dtachBinary, ['-a', sock, '-E'], {
       name: 'xterm-256color',
@@ -379,7 +403,17 @@ export class LocalDtachStream {
       // default UTF-8 decode — re-encode with UTF-8 to invert it. (A 'binary'
       // i.e. Latin-1 re-encode here corrupted multi-byte UTF-8: "—" became
       // "â" in the activity stream.)
-      const buf = typeof data === 'string' ? Buffer.from(data, 'utf-8') : Buffer.from(data);
+      let buf = typeof data === 'string' ? Buffer.from(data, 'utf-8') : Buffer.from(data);
+      if (sess.dropAttachClearPending && buf.length > 0) {
+        sess.dropAttachClearPending = false;
+        // Strip only the exact clear prefix: anything after it in the same
+        // chunk (an agent repaint the event loop coalesced) is real output.
+        // The clear is not fanned out either: a browser that received it
+        // would blank its pane with no repaint to follow.
+        if (buf.subarray(0, DTACH_ATTACH_CLEAR.length).equals(DTACH_ATTACH_CLEAR)) {
+          buf = buf.subarray(DTACH_ATTACH_CLEAR.length);
+        }
+      }
       const bytes = new Uint8Array(buf);
       const isAttachReplay = sess.attachReplayPending || Date.now() < sess.attachReplayUntil;
       if (sess.attachReplayPending && bytes.length > 0) sess.attachReplayPending = false;
@@ -582,6 +616,9 @@ export class LocalDtachStream {
     if (sess.currentSize?.cols === size.cols && sess.currentSize.rows === size.rows) return;
     sess.currentSize = { ...size };
     sess.geometryRevision++;
+    // Persist so a restarted server re-attaches at this size (issue #3565).
+    // Best-effort: a failed manifest write must not fail a resize or attach.
+    this.host.manifestStore.setSize(sess.id, size).catch(() => {});
   }
 
   private sourceRange(sess: AttachedSession, start: number): TerminalSourceRange {
