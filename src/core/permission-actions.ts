@@ -132,10 +132,32 @@ export function isConsecutiveFrom1(options: MenuOption[]): boolean {
 /** @internal Exported for testing only — not part of the public API. */
 export function classifyOption(text: string): OptionClass {
   const lower = text.toLowerCase();
-  if (lower === 'no') return 'deny';
+  // Claude Code's own wording is "No, and tell Claude what to do differently (esc)"
+  // (Codex: "... tell Codex ..."); a bare "No" is the older and generic form.
+  if (lower === 'no' || /^no, and tell \S+ what to do differently\b/.test(lower)) return 'deny';
   if (lower === 'yes') return 'allow-once';
   if (lower.startsWith('yes,') && /allow/i.test(lower)) return 'allow-persistent';
   return 'unknown';
+}
+
+/**
+ * Keystroke of the permission-menu option of class `wanted` on the pane, read
+ * with the same anchor-scoped parsing as {@link extractPermissionActions}.
+ * `undefined` when no permission menu is on the pane; `null` when a menu is
+ * there but no option has that class (issue #3925: the Telegram card leaves
+ * its Deny button out, and Approve refuses rather than guessing).
+ */
+export function findPermissionOptionKey(
+  paneContent: string | undefined,
+  wanted: 'allow-once' | 'deny',
+): string | null | undefined {
+  if (!paneContent) return undefined;
+  const menuRegion = extractMenuRegion(paneContent);
+  if (!menuRegion) return undefined;
+  const options = parseNumberedMenuOptions(menuRegion);
+  if (options.length < 2 || !isConsecutiveFrom1(options)) return undefined;
+  const match = options.find((opt) => classifyOption(opt.text) === wanted);
+  return match ? String(match.number) : null;
 }
 
 function formatToolSummary(toolName: string, toolInput?: unknown): string {

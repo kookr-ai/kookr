@@ -44,8 +44,11 @@ export type AuditEvent =
   // into the running task (rfc-telegram-attention-notifications reply loop).
   | { kind: 'reply_routed'; taskId: string; sender: number; via: 'text' | 'button' }
   | { kind: 'reply_route_failed'; taskId: string; sender: number; via: 'text' | 'button'; reason: string }
-  | { kind: 'permission_decision_sent'; taskId: string; sender: number }
-  | { kind: 'permission_decision_failed'; taskId: string; sender: number; reason: string }
+  | { kind: 'permission_decision_sent'; taskId: string; sender: number; decision?: 'approve' | 'deny' }
+  | { kind: 'permission_decision_failed'; taskId: string; sender: number; decision?: 'approve' | 'deny'; reason: string }
+  | { kind: 'permission_card_sent'; taskId: string; chatId: number; deny: boolean }
+  | { kind: 'permission_card_failed'; taskId: string; reason: string }
+  | { kind: 'permission_card_closed'; taskId: string; reason: 'answered' | 'task_ended' }
   | { kind: 'task_outcome_sent'; taskId: string; chatId: number; outcome: 'completion_ready' | 'completed' | 'failed' | 'cancelled' }
   // `kookr ask` (docs/rfc/rfc-kookr-ask.md). These events never carry question
   // text, answer text or callback data (which holds the button MAC). A typed

@@ -25,7 +25,7 @@ import {
 import type { ResourceWatchdogConfig } from '../core/resource-watchdog-types.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage, SnapshotMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
-import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
+import type { PermissionPromptCardPort, TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { Scope } from './viewer-data-policy.js';
 import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
@@ -2469,8 +2469,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Permission-prompt page (issue #3872): pages the operator when a task's
   // agent has waited on a permission prompt for 3+ minutes. Page-only.
+  // Issue #3925: with Telegram on, the threshold sends the operator a card
+  // with Approve once / Deny instead of the plain page. The holder is filled
+  // once the Telegram integration has started (further down).
+  let permissionCardHolder: PermissionPromptCardPort | undefined;
   const permissionPromptWaitAlerter = new PermissionPromptWaitAlerter({
     broadcast: detectorBroadcast,
+    card: {
+      offer: (taskId, waitedMs) => permissionCardHolder?.offer(taskId, waitedMs) ?? Promise.resolve(false),
+      close: (taskId) => permissionCardHolder?.close(taskId),
+    },
   });
 
   // finishedAwaitingAck residual page after TTL reclaim (issue #2077). Page-only;
@@ -4493,6 +4501,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     queue,
     adapter,
     submitMessage: (sessionId, text, source) => userInputDeliveries.submitMessage(sessionId, text, source),
+    capturePane: (sessionId) => adapter.captureDisplay(sessionId),
     watchdog,
     interactionLog,
   });
@@ -4518,6 +4527,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     await askService.start();
   }
   onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;
+  permissionCardHolder = telegramHandle?.permissionCard;
   // Compose remote-chat notify with pipeline-starvation terminal hooks:
   // - PR2 R6: product blocked-empty outcomes that never POSTed handle
   // - PR4 R5: idea-scout complete → capacity-gated batch kick when episode open

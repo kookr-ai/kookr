@@ -5,6 +5,7 @@ import {
   parseNumberedMenuOptions,
   isConsecutiveFrom1,
   classifyOption,
+  findPermissionOptionKey,
 } from './permission-actions.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -320,6 +321,16 @@ describe('classifyOption', () => {
     expect(classifyOption('No')).toBe('deny');
   });
 
+  test('classifies Claude Code\'s "No, and tell Claude what to do differently" as deny (#3925)', () => {
+    expect(classifyOption('No, and tell Claude what to do differently (esc)')).toBe('deny');
+    expect(classifyOption('No, and tell Codex what to do differently (esc)')).toBe('deny');
+  });
+
+  test('does not classify other "No, ..." text as deny', () => {
+    expect(classifyOption('No, the rate limiter still has the race condition')).toBe('unknown');
+    expect(classifyOption('No, quit')).toBe('unknown');
+  });
+
   test('classifies persistent allow', () => {
     expect(classifyOption('Yes, allow reading from kookr-shortcuts-help/ from this project')).toBe('allow-persistent');
   });
@@ -463,5 +474,32 @@ Here is the implementation:
       expect(actions[0].keystroke).toBe('1');
       expect(actions[1].keystroke).toBe('2');
     });
+  });
+});
+
+describe('findPermissionOptionKey (#3925)', () => {
+  const claudeBashPrompt = [
+    'Bash command',
+    '  rm -rf build',
+    'Do you want to proceed?',
+    '❯ 1. Yes',
+    "  2. Yes, and don't ask again for rm commands in /repo",
+    '  3. No, and tell Claude what to do differently (esc)',
+  ].join('\n');
+
+  test('finds the deny and allow-once keys on a Claude Code Bash prompt', () => {
+    expect(findPermissionOptionKey(claudeBashPrompt, 'deny')).toBe('3');
+    expect(findPermissionOptionKey(claudeBashPrompt, 'allow-once')).toBe('1');
+  });
+
+  test('returns null when the menu has no option of that class', () => {
+    const pane = 'Do you want to proceed?\n❯ 1. Yes\n  2. Maybe later';
+    expect(findPermissionOptionKey(pane, 'deny')).toBeNull();
+  });
+
+  test('returns undefined when no permission menu is on the pane', () => {
+    expect(findPermissionOptionKey('1. Yes\n2. No', 'deny')).toBeUndefined();
+    expect(findPermissionOptionKey('', 'deny')).toBeUndefined();
+    expect(findPermissionOptionKey(undefined, 'deny')).toBeUndefined();
   });
 });

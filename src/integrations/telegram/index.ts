@@ -12,7 +12,14 @@ import { DEFAULT_AGENT_TYPE, type AgentType } from '../../core/agent-types.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchOpts, LaunchResult } from '../../shared/contracts/launch.js';
 import { dashboardTaskUrl } from '../../shared/dashboard-task-url.js';
-import type { TelegramHandle, TelegramTaskOutcome, TelegramReplyResult } from '../../shared/contracts/telegram.js';
+import type {
+  PermissionPromptCardInfo,
+  PermissionPromptCardPort,
+  PermissionPromptClosedReason,
+  TelegramHandle,
+  TelegramTaskOutcome,
+  TelegramReplyResult,
+} from '../../shared/contracts/telegram.js';
 import {
   TelegramApiClient,
   TelegramApiError,
@@ -103,9 +110,18 @@ export interface StartTelegramTriggerDeps {
    * bot behaves exactly as before (notifications are read-only).
    */
   replyToTask?: (taskId: string, text: string) => Promise<TelegramReplyResult>;
-  approveTaskPermission?: (taskId: string, expectedPromptId?: string) => Promise<TelegramReplyResult>;
+  approveTaskPermission?: (taskId: string, expectedPromptId?: string, senderId?: number) => Promise<TelegramReplyResult>;
   /** Short identity of a task's current permission prompt (for the Approve button). */
   permissionPromptId?: (taskId: string) => string | null;
+  /**
+   * Permission-prompt card (issue #3925): deny the prompt the button was shown
+   * for, describe the open prompt, and say why a carded prompt went away. The
+   * card is offered only when `approveTaskPermission` and
+   * `describePermissionPrompt` are both set.
+   */
+  denyTaskPermission?: (taskId: string, expectedPromptId: string, senderId: number) => Promise<TelegramReplyResult>;
+  describePermissionPrompt?: (taskId: string) => Promise<PermissionPromptCardInfo | null>;
+  permissionPromptClosedReason?: (taskId: string) => PermissionPromptClosedReason;
   /**
    * `kookr ask` (docs/rfc/rfc-kookr-ask.md). When set, the handle exposes an
    * `ask` notifier AND the callback/reply handlers below are active — the two
@@ -119,6 +135,42 @@ export interface StartTelegramTriggerDeps {
  */
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+/** A command longer than this is shown as its head and tail (issue #3925). */
+export const PERMISSION_CARD_COMMAND_MAX_CHARS = 3000;
+const PERMISSION_CARD_COMMAND_EDGE_CHARS = PERMISSION_CARD_COMMAND_MAX_CHARS / 2;
+
+/**
+ * The command as the permission card shows it: whole up to
+ * {@link PERMISSION_CARD_COMMAND_MAX_CHARS}, otherwise the first and last 1500
+ * characters with the number left out between them. The dangerous part of a
+ * long command line is often at its end, so the tail is kept.
+ */
+export function formatPermissionCardCommand(command: string): string {
+  if (command.length <= PERMISSION_CARD_COMMAND_MAX_CHARS) return command;
+  const omitted = command.length - 2 * PERMISSION_CARD_COMMAND_EDGE_CHARS;
+  return `${command.slice(0, PERMISSION_CARD_COMMAND_EDGE_CHARS)}\n`
+    + `… [${omitted} characters left out] …\n`
+    + command.slice(-PERMISSION_CARD_COMMAND_EDGE_CHARS);
+}
+
+/** Body of the permission card, before the answer line is added (issue #3925). */
+export function formatPermissionCard(
+  taskId: string,
+  info: PermissionPromptCardInfo,
+  waitedMs: number,
+  dashboardUrl: string,
+): string {
+  const waitedMin = Math.max(1, Math.floor(waitedMs / 60_000));
+  const name = info.taskName ? `"${truncate(info.taskName, 200)}"` : taskId;
+  const project = info.project ? ` in ${truncate(info.project, 100)}` : '';
+  const lines = [
+    `🔐 Task ${name}${project} has waited ${waitedMin} min for permission to use ${info.toolName}.`,
+  ];
+  if (info.command) lines.push('', formatPermissionCardCommand(info.command));
+  lines.push('', `Dashboard: ${dashboardUrl}`);
+  return lines.join('\n');
 }
 
 /**
@@ -291,9 +343,26 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
   const SENT_NOTIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
   /** callback_data namespaces (kept distinct from the spawn `hash:y|n` shape). */
   const CB_APPROVE = 'approve:'; // approve:<taskId>[:<promptId>]
+  const CB_DENY = 'deny:'; // deny:<taskId>:<promptId> (permission card, issue #3925)
   const CB_REPLY = 'reply:'; // reply:<taskId>:continue
   const CB_ASK = 'ask:'; // ask:<askId 12 hex>:<option index>:<mac 16 hex> (kookr ask)
   const ASK_CALLBACK = /^ask:([0-9a-f]{12}):([0-3]):([0-9a-f]{16})$/;
+
+  // Permission-prompt cards (issue #3925), declared before polling starts.
+  interface PermissionCard {
+    promptId: string;
+    chatId: number;
+    messageId?: number;
+    body: string;
+    /** sending → open → (deciding →) done (tapped or closed). */
+    state: 'sending' | 'open' | 'deciding' | 'done';
+    /** close() arrived while the card was being sent or a tap was being decided. */
+    closeRequested: boolean;
+  }
+  const permissionCards = new Map<string, PermissionCard>();
+  /** Prompt id carried by the immediate block notice sent to a Telegram-launched task. */
+  const blockNoticePromptIds = new Map<string, string | null>();
+
 
   // Initial GC pass; schedule periodic GC.
   const pruneSentNotificationState = async (): Promise<void> => {
@@ -775,7 +844,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     // Quick-reply buttons on notifications (approve a block / continue a task).
     // These drive a LIVE agent, so they are allowlist-checked and rate-limited
     // (the spawn-confirmation path below has its own cap instead).
-    if (data.startsWith(CB_APPROVE) || data.startsWith(CB_REPLY)) {
+    if (data.startsWith(CB_APPROVE) || data.startsWith(CB_DENY) || data.startsWith(CB_REPLY)) {
       if (!deps.allowedUserIds.has(cb.from.id)) {
         audit({ kind: 'dropped_unauthorized' });
         await api.answerCallbackQuery(cb.id).catch(() => undefined);
@@ -787,25 +856,60 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         return;
       }
 
-      if (data.startsWith(CB_APPROVE)) {
-        // `approve:<taskId>[:<promptId>]` — taskId is a uuid (no colon), so the
-        // first ':' separates the optional prompt-identity token.
-        const payload = data.slice(CB_APPROVE.length);
+      if (data.startsWith(CB_APPROVE) || data.startsWith(CB_DENY)) {
+        // `approve:<taskId>[:<promptId>]` / `deny:<taskId>:<promptId>` — taskId
+        // is a uuid (no colon), so the first ':' separates the prompt identity.
+        const decision = data.startsWith(CB_APPROVE) ? 'approve' : 'deny';
+        const payload = data.slice(decision === 'approve' ? CB_APPROVE.length : CB_DENY.length);
         const ci = payload.indexOf(':');
         const taskId = ci >= 0 ? payload.slice(0, ci) : payload;
         const expectedPromptId = ci >= 0 ? payload.slice(ci + 1) : undefined;
-        const result = deps.approveTaskPermission
-          ? await deps.approveTaskPermission(taskId, expectedPromptId)
-          : { ok: false, reason: 'approval not available' };
-        if (result.ok) {
-          audit({ kind: 'permission_decision_sent', taskId, sender: cb.from.id });
-          if (cb.message) {
-            await api.editMessageText(cb.message.chat.id, cb.message.message_id, `✅ Approved task ${taskId}.`).catch(() => undefined);
+        const card = permissionCards.get(taskId);
+        const onCard = card !== undefined && cb.message !== undefined
+          && card.chatId === cb.message.chat.id && card.messageId === cb.message.message_id;
+        // While a tap on the card is decided, a close from the next tick waits,
+        // so it cannot label the card "answered outside Telegram" first.
+        const deciding = card !== undefined && onCard && card.state === 'open';
+        if (deciding) card.state = 'deciding';
+        let result: TelegramReplyResult;
+        try {
+          if (card && cb.message && card.messageId === cb.message.message_id && card.chatId !== cb.message.chat.id) {
+            // A card is answered only from the chat it was sent to.
+            result = { ok: false, reason: 'this prompt can only be answered from the chat it was sent to' };
+          } else if (decision === 'approve') {
+            result = deps.approveTaskPermission
+              ? await deps.approveTaskPermission(taskId, expectedPromptId, cb.from.id)
+              : { ok: false, reason: 'approval not available' };
+          } else if (!expectedPromptId) {
+            result = { ok: false, reason: 'this button does not name a prompt' };
+          } else {
+            result = deps.denyTaskPermission
+              ? await deps.denyTaskPermission(taskId, expectedPromptId, cb.from.id)
+              : { ok: false, reason: 'deny not available' };
           }
-          await api.answerCallbackQuery(cb.id, 'Approved').catch(() => undefined);
+        } catch (err) {
+          // Never leave the card stuck in `deciding`: treat a throw as a refusal.
+          result = { ok: false, reason: err instanceof Error ? err.message : String(err) };
+        }
+        if (result.ok) {
+          audit({ kind: 'permission_decision_sent', taskId, sender: cb.from.id, decision });
+          if (card && onCard) {
+            card.state = 'done';
+            if (permissionCards.get(taskId) === card) permissionCards.delete(taskId);
+            const outcome = decision === 'approve' ? '✅ Approved once from Telegram.' : '🚫 Denied from Telegram.';
+            await api.editMessageText(card.chatId, card.messageId as number, `${card.body}\n\n${outcome}`).catch(() => undefined);
+          } else if (cb.message) {
+            const text = decision === 'approve' ? `✅ Approved task ${taskId}.` : `🚫 Denied task ${taskId}.`;
+            await api.editMessageText(cb.message.chat.id, cb.message.message_id, text).catch(() => undefined);
+          }
+          await api.answerCallbackQuery(cb.id, decision === 'approve' ? 'Approved' : 'Denied').catch(() => undefined);
         } else {
-          audit({ kind: 'permission_decision_failed', taskId, sender: cb.from.id, reason: result.reason ?? 'unknown' });
-          await api.answerCallbackQuery(cb.id, result.reason ?? 'Could not approve').catch(() => undefined);
+          audit({ kind: 'permission_decision_failed', taskId, sender: cb.from.id, decision, reason: result.reason ?? 'unknown' });
+          if (card && deciding && card.state === 'deciding') {
+            card.state = 'open';
+            if (card.closeRequested) await finalizePermissionCard(taskId, card);
+          }
+          await api.answerCallbackQuery(cb.id, result.reason ?? (decision === 'approve' ? 'Could not approve' : 'Could not deny')).catch(() => undefined);
         }
         return;
       }
@@ -959,6 +1063,88 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     });
   }
 
+  /**
+   * The operator's chat for a task: the chat it was launched from while that
+   * user is still allowlisted, otherwise the first allowlisted user's chat
+   * (a private chat's id is the user's id).
+   */
+  function operatorChatFor(taskId: string): number | undefined {
+    const origin = state.get().origin[taskId];
+    return origin !== undefined && deps.allowedUserIds.has(origin)
+      ? origin
+      : deps.allowedUserIds.values().next().value;
+  }
+
+  // -------------------------------------------------------------------------
+  // Permission-prompt card (issue #3925). One per waiting prompt, kept in
+  // memory: after a restart the buttons of an old card still work (they are
+  // bound to the prompt, not to this map), only the closing edit is lost.
+  // -------------------------------------------------------------------------
+
+  async function finalizePermissionCard(taskId: string, card: PermissionCard): Promise<void> {
+    card.state = 'done';
+    if (permissionCards.get(taskId) === card) permissionCards.delete(taskId);
+    if (card.messageId === undefined) return;
+    const reason = deps.permissionPromptClosedReason?.(taskId) ?? 'answered';
+    const outcome = reason === 'task_ended'
+      ? '⏹ The task ended before this prompt was answered.'
+      : '☑️ Answered outside Telegram (dashboard or terminal).';
+    audit({ kind: 'permission_card_closed', taskId, reason });
+    await api.editMessageText(card.chatId, card.messageId, `${card.body}\n\n${outcome}`).catch(() => undefined);
+  }
+
+  const permissionCard: PermissionPromptCardPort | undefined =
+    deps.approveTaskPermission && deps.describePermissionPrompt
+      ? {
+        async offer(taskId, waitedMs) {
+          try {
+            const info = await deps.describePermissionPrompt!(taskId);
+            if (!info) return false;
+            // A Telegram-launched task already got a notice with an Approve
+            // button bound to this prompt: no second message.
+            if (blockNoticePromptIds.get(taskId) === info.promptId) return true;
+            const existing = permissionCards.get(taskId);
+            if (existing && existing.promptId === info.promptId && existing.state !== 'done') return true;
+            const chatId = operatorChatFor(taskId);
+            if (chatId === undefined) return false;
+            const body = formatPermissionCard(taskId, info, waitedMs, dashboardTaskUrl(deps.dashboardBaseUrl, taskId));
+            const buttons = [{ text: '✅ Approve once', callback_data: `${CB_APPROVE}${taskId}:${info.promptId}` }];
+            if (info.canDeny && deps.denyTaskPermission) {
+              buttons.push({ text: '🚫 Deny', callback_data: `${CB_DENY}${taskId}:${info.promptId}` });
+            }
+            const card: PermissionCard = { promptId: info.promptId, chatId, body, state: 'sending', closeRequested: false };
+            permissionCards.set(taskId, card);
+            let sent: TelegramMessage;
+            try {
+              sent = await api.sendMessage(chatId, body, { inline_keyboard: [buttons] });
+            } catch (err) {
+              if (permissionCards.get(taskId) === card) permissionCards.delete(taskId);
+              audit({ kind: 'permission_card_failed', taskId, reason: String(err) });
+              return false;
+            }
+            card.messageId = sent.message_id;
+            audit({ kind: 'permission_card_sent', taskId, chatId, deny: buttons.length > 1 });
+            if (card.closeRequested) await finalizePermissionCard(taskId, card);
+            else if (card.state === 'sending') card.state = 'open';
+            return true;
+          } catch (err) {
+            audit({ kind: 'permission_card_failed', taskId, reason: String(err) });
+            return false;
+          }
+        },
+        close(taskId) {
+          blockNoticePromptIds.delete(taskId);
+          const card = permissionCards.get(taskId);
+          if (!card) return;
+          if (card.state === 'sending' || card.state === 'deciding') {
+            card.closeRequested = true;
+            return;
+          }
+          void finalizePermissionCard(taskId, card);
+        },
+      }
+      : undefined;
+
   // -------------------------------------------------------------------------
   // R16 callback exposed to wireEventPipeline.
   // -------------------------------------------------------------------------
@@ -992,6 +1178,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       .then(async (sent) => {
         if (sent) {
           audit({ kind: 'block_alert_sent', taskId, chatId });
+          if (markup) blockNoticePromptIds.set(taskId, promptId);
           await recordSentNotification(sent.message_id, taskId, chatId);
         }
       })
@@ -1024,6 +1211,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
 
     try {
       await state.update((s) => { delete s.origin[taskId]; });
+      blockNoticePromptIds.delete(taskId);
       // `completion_ready` means the agent declared done and is still live,
       // awaiting the operator. Offer a one-tap "Continue" (keep working) and
       // let a plain reply reach the agent. Fully terminal outcomes get no
@@ -1057,10 +1245,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       async sendAsk(ask, callbackData) {
         // Use the spawning chat only while that user is still allowlisted: a
         // chat that was removed from the allowlist can no longer answer.
-        const origin = state.get().origin[ask.taskId];
-        const chatId = origin !== undefined && deps.allowedUserIds.has(origin)
-          ? origin
-          : deps.allowedUserIds.values().next().value;
+        const chatId = operatorChatFor(ask.taskId);
         if (chatId === undefined) throw new Error('no Telegram chat to send the question to');
         const lines = [`❓ Task ${ask.taskId} asks:`, '', ask.question];
         if (ask.context) lines.push('', ask.context);
@@ -1079,5 +1264,11 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     }
     : undefined;
 
-  return { stop, onPermissionBlocked, onTaskOutcome, ...(askNotifier ? { ask: askNotifier } : {}) };
+  return {
+    stop,
+    onPermissionBlocked,
+    onTaskOutcome,
+    ...(askNotifier ? { ask: askNotifier } : {}),
+    ...(permissionCard ? { permissionCard } : {}),
+  };
 }

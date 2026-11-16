@@ -504,6 +504,22 @@ The `event-pipeline.ts` patch is small: when the existing logic detects a `permi
 
 **No reverse routing from chat:** the user cannot approve from chat. Cancel-from-chat remains deferred.
 
+**Later change — approve or deny any task's waiting prompt (issue #3925).** Since the reply bridge landed, the immediate notice above carries an Approve button bound to the prompt. Issue #3925 widens what a tap on the phone can do: it is no longer limited to tasks launched from Telegram.
+
+- **When.** A permission prompt on *any* live task (launched by `kookr spawn`, the dashboard, a schedule or another task) waits past the page threshold of #3872 (3 minutes). The bot then sends one message to the operator's chat: the task's launch chat while that user is still allowlisted, otherwise the first allowlisted user.
+- **What it shows.** The task name and project, the tool, and the whole command with secrets replaced (`redactSecrets`). A command over 3000 characters shows its first and last 1500 characters and how many were left out, so an `rm -rf` at the end of a long line stays visible. It also links to the task in the dashboard.
+- **Buttons.** There are two: **Approve once** and **Deny**. There is never an "always allow" button.
+  - Approve presses the option the pane's option reader classes as a one-time "Yes". If the menu on screen has none, it refuses.
+  - Deny presses the option it classes as "deny". Claude Code's "No, and tell Claude what to do differently" now counts as deny. If no such option is on screen, the Deny button is left out.
+  - Both buttons carry the prompt's identity. A tap after the prompt changed does nothing, and the bot says why.
+  - Taps are taken only from allowlisted users and are rate-limited. A tapped card is answered only from the chat it was sent to. Each prompt can be answered once, whichever button is used.
+- **Time limit.** A button bound to a prompt is not subject to the 5-minute binding limit the dashboard uses: the card is sent at 3 minutes and may be tapped much later. The identity check is what keeps it from answering another prompt.
+- **Who answered, logged.** Each decision is written to the interaction log with `actor: telegram:<user id>`.
+- **Answered elsewhere.** When the prompt is answered elsewhere, or the task ends, the message is edited to say so and loses its buttons.
+- **Telegram-launched tasks.** They keep their immediate notice and get no second message.
+- **The plain-text page.** The #3872 page for the same prompt, and its "Recovered" clear, are not sent when the card is in place. That also drops the Discord copy of the page. The page is still sent when the card cannot be: Telegram off, no prompt the buttons can be bound to, or a send failure.
+- **Not affected.** Typed replies to a choice dialog are still refused (#3513).
+
 ---
 
 ## Architecture After Changes

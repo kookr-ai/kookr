@@ -292,3 +292,93 @@ describe('approvePermission', () => {
     expect(respondAndAdvance).not.toHaveBeenCalled();
   });
 });
+
+describe('Telegram permission card decisions (issue #3925)', () => {
+  const CLAUDE_PANE = 'Do you want to proceed?\n❯ 1. Yes\n  2. Yes, and don\'t ask again for git commands\n  3. No, and tell Claude what to do differently (esc)';
+
+  test('deny presses the option the reader classes as deny', async () => {
+    const { deps, sendKeystroke } = makeDeps({ over: { capturePane: vi.fn(async () => CLAUDE_PANE) } });
+    const bridge = createTelegramTaskBridge(deps);
+    const res = await bridge.denyPermission('task-1', bridge.permissionPromptId('task-1')!);
+    expect(res).toEqual({ ok: true });
+    expect(sendKeystroke).toHaveBeenCalledWith(SESSION, '3');
+  });
+
+  test('deny refuses when no deny option is on screen, and a later approve still works', async () => {
+    const { deps, sendKeystroke } = makeDeps({ over: { capturePane: vi.fn(async () => 'Do you want to proceed?\n❯ 1. Yes\n  2. Later') } });
+    const bridge = createTelegramTaskBridge(deps);
+    const pid = bridge.permissionPromptId('task-1')!;
+    const res = await bridge.denyPermission('task-1', pid);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/no Deny option/);
+    expect(sendKeystroke).not.toHaveBeenCalled();
+    expect((await bridge.approvePermission('task-1', pid)).ok).toBe(true);
+    expect(sendKeystroke).toHaveBeenCalledWith(SESSION, '1');
+  });
+
+  test('deny without a prompt id is refused', async () => {
+    const { deps, sendKeystroke } = makeDeps({ over: { capturePane: vi.fn(async () => CLAUDE_PANE) } });
+    const res = await createTelegramTaskBridge(deps).denyPermission('task-1', '');
+    expect(res.ok).toBe(false);
+    expect(sendKeystroke).not.toHaveBeenCalled();
+  });
+
+  test('approve refuses a menu with no one-time Yes instead of pressing 1', async () => {
+    const pane = 'Do you want to proceed?\n❯ 1. Yes, allow all edits during this session\n  2. No';
+    const { deps, sendKeystroke } = makeDeps({ over: { capturePane: vi.fn(async () => pane) } });
+    const bridge = createTelegramTaskBridge(deps);
+    const res = await bridge.approvePermission('task-1', bridge.permissionPromptId('task-1')!);
+    expect(res.ok).toBe(false);
+    expect(sendKeystroke).not.toHaveBeenCalled();
+  });
+
+  test('approve then deny on the same prompt sends one key', async () => {
+    const { deps, sendKeystroke } = makeDeps({ over: { capturePane: vi.fn(async () => CLAUDE_PANE) } });
+    const bridge = createTelegramTaskBridge(deps);
+    const pid = bridge.permissionPromptId('task-1')!;
+    const [a, b] = await Promise.all([bridge.approvePermission('task-1', pid), bridge.denyPermission('task-1', pid)]);
+    expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+    expect(sendKeystroke).toHaveBeenCalledTimes(1);
+  });
+
+  test('a bound button is not refused by the 5-minute binding limit; an unbound one still is', async () => {
+    const old = { ...permissionAnomaly(), detectedAt: new Date(Date.now() - 40 * 60 * 1000) } as Anomaly;
+    const { deps, sendKeystroke } = makeDeps({ anomaly: old });
+    const bridge = createTelegramTaskBridge(deps);
+    expect((await bridge.approvePermission('task-1')).reason).toMatch(/stale/i);
+    expect((await bridge.approvePermission('task-1', bridge.permissionPromptId('task-1')!)).ok).toBe(true);
+    expect(sendKeystroke).toHaveBeenCalledTimes(1);
+  });
+
+  test('describePermissionPrompt returns the whole command with secrets hidden, and deny availability', async () => {
+    const long = `git push https://x-access-token:ghp_${'a'.repeat(36)}@github.com/o/r ${'z'.repeat(600)}`;
+    const { deps } = makeDeps({
+      over: {
+        capturePane: vi.fn(async () => CLAUDE_PANE),
+        monitor: {
+          isPermissionBlocked: vi.fn(() => true),
+          markInputReceived: vi.fn(() => true),
+          getAgentEvents: vi.fn(() => [{ ...permissionRequestEvent(), toolInput: { command: long } } as AgentEvent]),
+        } as unknown as TelegramTaskBridgeDeps['monitor'],
+      },
+    });
+    const info = await createTelegramTaskBridge(deps).describePermissionPrompt('task-1');
+    expect(info?.toolName).toBe('Bash');
+    expect(info?.canDeny).toBe(true);
+    expect(info?.command).not.toContain('ghp_');
+    expect(info?.command).toContain('z'.repeat(600));
+  });
+
+  test('describePermissionPrompt is null when the task is not blocked', async () => {
+    const { deps } = makeDeps({
+      over: {
+        monitor: {
+          isPermissionBlocked: vi.fn(() => false),
+          markInputReceived: vi.fn(() => true),
+          getAgentEvents: vi.fn(() => []),
+        } as unknown as TelegramTaskBridgeDeps['monitor'],
+      },
+    });
+    expect(await createTelegramTaskBridge(deps).describePermissionPrompt('task-1')).toBeNull();
+  });
+});

@@ -322,3 +322,65 @@ describe('collectPermissionPromptWaits', () => {
     ]);
   });
 });
+
+describe('PermissionPromptWaitAlerter with a Telegram card (issue #3925)', () => {
+  function cardHarness(offerResult: () => Promise<boolean>) {
+    let nowMs = T0;
+    const sent: AlertMessage[] = [];
+    const offer = vi.fn((_taskId: string, _waitedMs: number) => offerResult());
+    const close = vi.fn((_taskId: string) => undefined);
+    const alerter = new PermissionPromptWaitAlerter({
+      broadcast: (msg) => { sent.push(msg as AlertMessage); },
+      now: () => nowMs,
+      card: { offer, close },
+    });
+    return { alerter, sent, offer, close, at(ms: number) { nowMs = T0 + ms; } };
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  test('a card in place replaces the page and its clear; the card is closed when the prompt goes', async () => {
+    const h = cardHarness(async () => true);
+    for (let ms = 0; ms <= 6 * MIN; ms += 30_000) { h.at(ms); h.alerter.evaluate([wait()]); }
+    await flush();
+    expect(h.offer).toHaveBeenCalledTimes(1);
+    expect(h.offer).toHaveBeenCalledWith('task-1', 3 * MIN);
+    expect(h.sent).toHaveLength(0);
+    h.alerter.evaluate([]);
+    expect(h.close).toHaveBeenCalledTimes(1);
+    expect(h.close).toHaveBeenCalledWith('task-1');
+    expect(h.sent).toHaveLength(0);
+  });
+
+  test('the page still fires, and clears, when the card is not in place', async () => {
+    const h = cardHarness(async () => false);
+    h.at(3 * MIN);
+    h.alerter.evaluate([wait()]);
+    await flush();
+    expect(states(h.sent)).toEqual([`fired:${permissionPromptAlertKey('task-1')}`]);
+    h.alerter.evaluate([]);
+    expect(states(h.sent)).toEqual([
+      `fired:${permissionPromptAlertKey('task-1')}`,
+      `recovered:${permissionPromptAlertKey('task-1')}`,
+    ]);
+  });
+
+  test('a rejected offer falls back to the page', async () => {
+    const h = cardHarness(async () => { throw new Error('boom'); });
+    h.at(3 * MIN);
+    h.alerter.evaluate([wait()]);
+    await flush();
+    expect(states(h.sent)).toEqual([`fired:${permissionPromptAlertKey('task-1')}`]);
+  });
+
+  test('a prompt answered while its card was being sent gets no late page', async () => {
+    let resolveOffer: (v: boolean) => void = () => undefined;
+    const h = cardHarness(() => new Promise<boolean>((r) => { resolveOffer = r; }));
+    h.at(3 * MIN);
+    h.alerter.evaluate([wait()]);
+    h.alerter.evaluate([]);
+    expect(h.close).toHaveBeenCalledTimes(1);
+    resolveOffer(false);
+    await flush();
+    expect(h.sent).toHaveLength(0);
+  });
+});
