@@ -9,7 +9,7 @@
  * resumed launch runs `opencode --session <ses_id> <cwd>`.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SendInputOptions } from '../core/ports/agent-interaction-port.js';
@@ -18,6 +18,7 @@ import {
   type TerminalInputWriterPort,
 } from '../core/ports/terminal-input-writer-port.js';
 import type { TaskStore } from '../core/tasks.js';
+import type { TokenUsage } from '../core/usage-types.js';
 import type {
   AgentEvent,
   EventMeta,
@@ -199,6 +200,61 @@ function resolveModelConfig(base: OpenCodeModelConfig, override?: string): OpenC
   if (!override) return base;
   const prefix = `${base.providerId}/`;
   return { ...base, modelId: override.startsWith(prefix) ? override.slice(prefix.length) : override };
+}
+
+/**
+ * Usage the task had already spent when its current opencode DB was created. A fresh launch wipes the DB, so
+ * the DB alone only knows the current conversation; the recorded total is this baseline plus the DB total.
+ * It lives in the task dir beside the DB, so a resume of the same DB (also after a Kookr restart) reuses it.
+ */
+const USAGE_BASELINE_FILE = 'usage-baseline.json';
+
+const usageCount = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0);
+
+function addTokenUsage(base: TokenUsage | undefined, current: TokenUsage): TokenUsage {
+  if (!base) return current;
+  return {
+    ...base,
+    ...current,
+    inputTokens: usageCount(base.inputTokens) + usageCount(current.inputTokens),
+    outputTokens: usageCount(base.outputTokens) + usageCount(current.outputTokens),
+    cacheReadTokens: usageCount(base.cacheReadTokens) + usageCount(current.cacheReadTokens),
+    cacheWriteTokens: usageCount(base.cacheWriteTokens) + usageCount(current.cacheWriteTokens),
+    costUsd: usageCount(base.costUsd) + usageCount(current.costUsd),
+  };
+}
+
+const USAGE_COUNTERS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'costUsd'] as const;
+
+/** True when `a` is at least `b` on every counter (it lost nothing `b` had). */
+function usageCovers(a: TokenUsage, b: TokenUsage): boolean {
+  return USAGE_COUNTERS.every((k) => usageCount(a[k]) >= usageCount(b[k]));
+}
+
+async function readUsageBaseline(taskDir: string): Promise<TokenUsage | undefined> {
+  try {
+    const raw: unknown = JSON.parse(await readFile(join(taskDir, USAGE_BASELINE_FILE), 'utf8'));
+    if (!raw || typeof raw !== 'object') return undefined;
+    const r = raw as Record<string, unknown>;
+    return {
+      inputTokens: usageCount(r.inputTokens),
+      outputTokens: usageCount(r.outputTokens),
+      cacheReadTokens: usageCount(r.cacheReadTokens),
+      cacheWriteTokens: usageCount(r.cacheWriteTokens),
+      costUsd: usageCount(r.costUsd),
+      ...(typeof r.model === 'string' ? { model: r.model } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeUsageBaseline(taskDir: string, usage: TokenUsage): Promise<void> {
+  try {
+    await writeFile(join(taskDir, USAGE_BASELINE_FILE), `${JSON.stringify(usage)}\n`, { mode: 0o600 });
+  } catch {
+    /* best-effort: without it the next record counts only the current DB (the pre-#3527 behaviour) */
+  }
 }
 
 /** A resume was requested but the task's opencode DB exists and cannot be read; launching fresh would wipe the conversation. */
@@ -467,6 +523,8 @@ export class OpenCodeAdapter implements AgentAdapter {
     const taskDir = openCodeTaskDir(this.dataRoot, taskId);
     // Read before a fresh launch wipes the dir: the ORIGINAL gate base must survive a crash-recovery relaunch.
     const priorGateBase = !resuming && (await isMarkedTaskDir(taskDir, taskId)) ? await readGateBase(taskDir) : undefined;
+    // Also before the wipe: the usage this task already spent, carried as the new DB's baseline (#3527).
+    const carriedUsage = resuming ? undefined : await this.usageBeforeFreshLaunch(taskId, taskDir);
     if (!resuming) {
       // Only a dir Kookr created (ownership marker) may be reset; anything else in the way is refused, never deleted.
       if (!(await removeMarkedTaskDir(taskDir, taskId)) && !(await isAbsentOrEmptyDir(taskDir))) {
@@ -478,6 +536,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     // Marker first: a crash between the two steps must not leave an unmarked (and thus never reclaimed) dir.
     await mkdir(taskDir, { recursive: true, mode: 0o700 });
     await markTaskDir(taskDir, taskId, this.launchTokens.get(tmuxName));
+    if (carriedUsage) await writeUsageBaseline(taskDir, carriedUsage);
     await mkdir(dataHome, { recursive: true, mode: 0o700 });
     await touchTaskDir(taskDir);
     this.dataHomes.set(tmuxName, dataHome);
@@ -555,6 +614,24 @@ export class OpenCodeAdapter implements AgentAdapter {
       warn: (m) => console.warn(m),
     }).catch(() => undefined);
     return this.seedPromise;
+  }
+
+  /**
+   * The usage a fresh launch must carry over before it wipes the task's DB: the outgoing DB on top of its own
+   * baseline when that DB is readable, else the task's recorded usage. When the outgoing DB holds usage that was
+   * never recorded (its stop was lost, e.g. to a Kookr restart), it is recorded now, before the wipe destroys it.
+   */
+  private async usageBeforeFreshLaunch(taskId: string, taskDir: string): Promise<TokenUsage | undefined> {
+    const recorded = this.taskStore.getTask(taskId)?.tokenUsage;
+    try {
+      if (!(await isMarkedTaskDir(taskDir, taskId))) return recorded;
+      const outgoing = await readOpenCodeDataHomeUsage(openCodeTaskDataHome(taskDir));
+      if (outgoing.kind !== 'ok') return recorded;
+      const total = addTokenUsage(await readUsageBaseline(taskDir), mapOpenCodeUsageToTokenUsage(outgoing.usage));
+      return this.recordTaskUsage(taskId, total) ? total : recorded;
+    } catch {
+      return recorded;
+    }
   }
 
   /** The opencode session id to continue for `taskId`, or undefined (with a warning) => launch fresh. */
@@ -746,8 +823,9 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 
   /**
-   * Sum the session's opencode DB into the task's token usage (mirrors the grok adapter).
-   * Best-effort: a missing/unreadable DB leaves usage unset and never blocks teardown.
+   * Record the task's token usage: the usage baseline carried into this DB by its fresh launch plus the DB total,
+   * so a fresh relaunch (a Ralph iteration, which wipes the DB) adds to the task's usage instead of replacing it.
+   * Best-effort: a missing/unreadable DB leaves usage unchanged and never blocks teardown.
    */
   private async recordSessionTokenUsage(tmuxName: string): Promise<void> {
     const dataHome = this.dataHomes.get(tmuxName);
@@ -758,11 +836,25 @@ export class OpenCodeAdapter implements AgentAdapter {
       const result = await readOpenCodeDataHomeUsage(dataHome);
       if (result.kind !== 'ok') return;
       if (!this.taskStore.getTask(taskId)) return;
-      this.taskStore.updateTokenUsage(taskId, mapOpenCodeUsageToTokenUsage(result.usage));
-      for (const handler of this.refreshHandlers) handler();
+      const baseline = await readUsageBaseline(dirname(dataHome));
+      this.recordTaskUsage(taskId, addTokenUsage(baseline, mapOpenCodeUsageToTokenUsage(result.usage)));
     } catch {
       /* telemetry is best-effort — never block teardown on a scan failure */
     }
+  }
+
+  /**
+   * Store `total` as the task's usage unless it would lower a counter already recorded: baseline + DB only grows,
+   * so a smaller total means the baseline file was lost, and recording it would undercount (and lower lifetime
+   * spend). Returns false when refused; an unchanged total is accepted without a write.
+   */
+  private recordTaskUsage(taskId: string, total: TokenUsage): boolean {
+    const recorded = this.taskStore.getTask(taskId)?.tokenUsage;
+    if (recorded && !usageCovers(total, recorded)) return false;
+    if (recorded && usageCovers(recorded, total)) return true;
+    this.taskStore.updateTokenUsage(taskId, total);
+    for (const handler of this.refreshHandlers) handler();
+    return true;
   }
 
   async captureDisplay(tmuxName: string): Promise<string> {
