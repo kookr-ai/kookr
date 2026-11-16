@@ -111,7 +111,11 @@ directory. They are under `/tmp/kookr-dtach/<uid>/port-<port>/`, with
 `manifest.json` and `rings/<session>.ring` (a combined single-file snapshot
 committed with one atomic rename since #2829; pre-#2829 `rings/<session>.bin` /
 `rings/<session>.meta.json` pairs are still read for recovery but no longer
-written). They are runtime crash-recovery state for surviving dtach masters, not
+written). A ring shrunk under the fleet budget also has
+`rings/<session>.pre-shrink.ring`, the full scrollback saved at the shrink,
+which recovery joins with the smaller `.ring` written after it (#3565). The
+snapshot is deleted once the shrunk ring has taken in more new output than it
+can hold, because the two would no longer join without a gap. They are runtime crash-recovery state for surviving dtach masters, not
 long-term backup state. If Kookr is stopped cleanly and the dtach masters are gone, restoring the
 data directory alone restores task records but not live terminal processes.
 

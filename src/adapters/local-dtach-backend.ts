@@ -268,7 +268,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
 
     const flushInterval = options.ringFlushIntervalMs ?? DEFAULT_RING_FLUSH_INTERVAL_MS;
     this.flushTimer = setInterval(() => {
-      this.stream.flushAllRings();
+      void this.stream.flushAllRings();
       // Re-check budget on the flush cadence so idle rings that aged out of
       // recent activity can be reclaimed even when no new sessions attach.
       this.enforceRingFleetBudget();
@@ -279,8 +279,10 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
 
   /**
    * When fleet capacity exceeds {@link ringFleetBudgetBytes}, shrink
-   * least-recently-active rings to {@link RING_IDLE_CAPACITY_BYTES}. Persists
-   * each shrink candidate first so full scrollback remains on disk for restart.
+   * least-recently-active rings to {@link RING_IDLE_CAPACITY_BYTES}. Each
+   * shrink first saves the full ring to a pre-shrink snapshot that the
+   * periodic flush never overwrites, so a restart still restores the full
+   * scrollback (issue #3565).
    */
   private enforceRingFleetBudget(): void {
     if (!(this.ringFleetBudgetBytes > 0) || this.closed) {
@@ -292,21 +294,11 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       this.ringFleetOverBudgetBytes = 0;
       return;
     }
-    // Snapshot full content for shrink candidates before truncating memory.
-    // Only rings still above the idle floor can shrink; flush dirty ones so
-    // restart can restore the pre-shrink scrollback from disk.
-    for (const sess of this.attached.values()) {
-      if (
-        sess.ringBuffer.length > RING_IDLE_CAPACITY_BYTES
-        && sess.ringHead !== sess.lastFlushedHead
-      ) {
-        this.ringStore.persist(sess);
-      }
-    }
     const result = enforceRingFleetBudget(
       this.attached.values(),
       this.ringFleetBudgetBytes,
       RING_IDLE_CAPACITY_BYTES,
+      (sess, capacity) => this.ringStore.shrink(sess, capacity),
     );
     this.ringShrinkCount += result.shrunk;
     this.ringFleetOverBudgetBytes = result.overBudgetBytes;
@@ -338,23 +330,27 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     if (this.asyncRingPersistence) { void this.closeAndDrain(); return; }
     if (this.closed) return;
     this.closed = true;
-    this.stopTimerAndFlush();
+    void this.stopTimerAndFlush();
   }
 
-  /** Stop the periodic flush, persist every dirty ring, and dispose attaches. */
-  private stopTimerAndFlush(): void {
+  /**
+   * Stop the periodic flush, persist every dirty ring, and dispose attaches.
+   * Resolves once the final manifest size write has landed.
+   */
+  private stopTimerAndFlush(): Promise<void> {
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
     }
     // Final flush first so disposal can't race the last snapshot.
-    this.stream.flushAllRings();
+    const sizesSaved = this.stream.flushAllRings();
     for (const resolve of this.closeWaiters) resolve();
     this.closeWaiters.clear();
     this.recoveryInProgress.clear();
     for (const id of [...this.attached.keys()]) {
       this.stream.disposeAttach(id);
     }
+    return sizesSaved;
   }
 
   /** Freeze ring producers, drain older writes, then persist the final snapshot. */
@@ -371,8 +367,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     for (const session of this.attached.values()) this.stream.disposeAttachChildOnly(session);
     this.closePromise = (async () => {
       await this.ringStore.drain();
-      this.stopTimerAndFlush();
-      await this.ringStore.drain();
+      await Promise.all([this.stopTimerAndFlush(), this.ringStore.drain()]);
     })();
     return this.closePromise;
   }

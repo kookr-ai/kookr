@@ -109,19 +109,24 @@ export class DtachManifestStore {
   }
 
   /**
-   * Record `size` on the session's existing entry. Never creates an entry and
-   * never rewrites a missing or unparseable manifest (startup recovery owns
-   * those), and skips the write when the stored size already matches.
+   * Record each size on its session's existing entry, in one manifest write.
+   * Never creates an entry and never rewrites a missing or unparseable
+   * manifest (startup recovery owns those), and skips the write when every
+   * stored size already matches.
    */
-  async setSize(id: SessionId, size: DtachTerminalSize): Promise<void> {
+  async setSizes(sizes: ReadonlyMap<SessionId, DtachTerminalSize>): Promise<void> {
+    if (sizes.size === 0) return;
     await this.withLock(() => {
       const recovery = this.readForRecovery();
       if (recovery.kind !== 'valid') return;
-      const entry = recovery.manifest.entries.find((candidate) => candidate.sessionId === id);
-      if (!entry) return;
-      if (entry.size?.cols === size.cols && entry.size.rows === size.rows) return;
-      entry.size = { cols: size.cols, rows: size.rows };
-      this.writeAtomic(recovery.manifest);
+      let changed = false;
+      for (const entry of recovery.manifest.entries) {
+        const size = sizes.get(entry.sessionId);
+        if (!size || (entry.size?.cols === size.cols && entry.size.rows === size.rows)) continue;
+        entry.size = { cols: size.cols, rows: size.rows };
+        changed = true;
+      }
+      if (changed) this.writeAtomic(recovery.manifest);
     });
   }
 
@@ -152,7 +157,12 @@ export class DtachManifestStore {
     }
   }
 
-  async withLock<T>(fn: () => T): Promise<T> {
+  /**
+   * Run `fn` with the manifest to itself. An async `fn` keeps the lock until
+   * its promise settles, so no other manifest write can land in its awaits.
+   * `fn` must not take the lock again: that would wait on itself forever.
+   */
+  async withLock<T>(fn: () => T | Promise<T>): Promise<T> {
     const prev = this.lock;
     let release!: () => void;
     this.lock = new Promise<void>((res) => {
@@ -160,7 +170,7 @@ export class DtachManifestStore {
     });
     try {
       await prev;
-      return fn();
+      return await fn();
     } finally {
       release();
     }
