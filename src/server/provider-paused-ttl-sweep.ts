@@ -11,6 +11,7 @@ import {
   PROVIDER_RESET_HOLD_GRACE_MS,
   emptyProviderPausedTtlSkipCounts,
   effectiveProviderPausedTtlMs,
+  isAccountLevelProviderPauseDetail,
   providerPausedOpenPrFailsafeSkipTotal,
   selectExpiredProviderPausedTasks,
   summarizeOpenPrFailsafeHoldAge,
@@ -51,6 +52,14 @@ export class ProviderPausedStartTracker {
    * pause start.
    */
   private readonly knownResetAt = new Map<string, number>();
+  /**
+   * Tasks whose current pause showed account-level evidence (billing, auth or
+   * quota stop_failure) at least once (issue #4050). Latched because the
+   * pause detail is read from a recent-events window: a later error event or
+   * tool result can become the newest match and hide the stop_failure, which
+   * would bring the healthy-quota hold back. Cleared with the pause start.
+   */
+  private readonly accountLevelEvidence = new Set<string>();
 
   /**
    * Observe one task: latch start if paused+inProgress, else clear.
@@ -95,10 +104,25 @@ export class ProviderPausedStartTracker {
     return this.knownResetAt.get(taskId);
   }
 
+  /**
+   * Record that the current pause showed account-level evidence (issue
+   * #4050). Ignored when the task has no latched pause start.
+   */
+  latchAccountLevelEvidence(taskId: string): void {
+    if (!this.pauseStartedAt.has(taskId)) return;
+    this.accountLevelEvidence.add(taskId);
+  }
+
+  /** Whether the current pause showed account-level evidence (issue #4050). */
+  hasAccountLevelEvidence(taskId: string): boolean {
+    return this.accountLevelEvidence.has(taskId);
+  }
+
   /** Drop a task (after reclaim / terminal). */
   clear(taskId: string): void {
     this.pauseStartedAt.delete(taskId);
     this.knownResetAt.delete(taskId);
+    this.accountLevelEvidence.delete(taskId);
   }
 
   /**
@@ -154,7 +178,8 @@ export interface ProviderResetSource {
  * - otherwise (fresh, healthy, no binding window) → `quota_healthy` (issue
  *   #3574): the quota contradicts the pause. The sweep downgrades it to `none`
  *   when a reset was latched earlier in this pause — then the window rolled
- *   over and the pause was real.
+ *   over and the pause was real — and when the pause showed account-level
+ *   evidence (issue #4050), which the usage windows cannot contradict.
  */
 export function classifyProviderResetState(input: {
   source: ProviderResetSource;
@@ -441,6 +466,14 @@ export interface ReclaimProviderPausedTasksDeps {
    */
   getProviderResetSource?: () => ProviderResetSource;
   /**
+   * Which evidence classified the task as paused — the `detail` of
+   * `classifyProviderPause` (issue #4050). A billing, auth or quota
+   * stop_failure seen during a pause turns the healthy-quota hold (#3574)
+   * off for that pause, so it is reclaimed at the soft or hard TTL like
+   * before #3574. Omitted, or undefined for a task → the hold still applies.
+   */
+  getProviderPauseDetail?: (task: Task) => string | undefined;
+  /**
    * Delivery attribution for the disposition label only (issue #3578) — the
    * same in-memory probe the hungSuspect TTL reclaim uses. A merged PR turns
    * the label into `delivered_then_hung` / ledger `obsolete`; the task is
@@ -608,6 +641,9 @@ export async function reclaimAgedProviderPausedTasks(
     for (const task of tasks) {
       const latchedStartMs = getPauseStartedAtMs(task);
       if (latchedStartMs === undefined || !taskUsesClaudeQuota(task)) continue;
+      if (isAccountLevelProviderPauseDetail(readProviderPauseDetail(deps, task))) {
+        deps.pauseStartTracker.latchAccountLevelEvidence(task.id);
+      }
       const fresh = classifyProviderResetState({
         source: resetSource,
         nowMs,
@@ -630,6 +666,16 @@ export async function reclaimAgedProviderPausedTasks(
           // Past the grace the normal soft/hard TTL applies again (#3562).
           state = { kind: 'none' };
         }
+      }
+      if (
+        state.kind === 'quota_healthy'
+        && deps.pauseStartTracker.hasAccountLevelEvidence(task.id)
+      ) {
+        // Issue #4050: a billing, auth or quota stop_failure is the CLI's own
+        // report that the account is blocked. The 5-hour and 7-day windows do
+        // not show that, so a healthy snapshot does not contradict it: apply
+        // the normal soft/hard TTL instead of holding up to 6h.
+        state = { kind: 'none' };
       }
       resetStates.set(task.id, state);
     }
@@ -802,6 +848,23 @@ export async function reclaimAgedProviderPausedTasks(
       outcomes: selection.outcomes,
     },
   };
+}
+
+function readProviderPauseDetail(
+  deps: ReclaimProviderPausedTasksDeps,
+  task: Task,
+): string | undefined {
+  if (!deps.getProviderPauseDetail) return undefined;
+  try {
+    return deps.getProviderPauseDetail(task);
+  } catch (err) {
+    // Fail toward today's behavior (#3574 hold) rather than abort the sweep.
+    console.error(
+      `[provider-paused-ttl] getProviderPauseDetail failed for task ${task.id}:`,
+      err,
+    );
+    return undefined;
+  }
 }
 
 function readProviderResetSource(

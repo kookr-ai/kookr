@@ -67,7 +67,11 @@ import {
 } from './delivered-task-completion-sweep.js';
 import { autoCompleteTerminalVerdictTasks } from './terminal-verdict-completion-sweep.js';
 import type { MergedPrAttribution } from '../core/completion/index.js';
-import { classifyProviderPause, isProviderPaused } from '../core/provider-pause.js';
+import {
+  classifyProviderPause,
+  isProviderPaused,
+  type ProviderPauseEvidence,
+} from '../core/provider-pause.js';
 // Domain job bodies extracted from this scheduler (issue #1822). Each lives
 // next to its domain owner; this module only registers/clears the timers that
 // drive them.
@@ -1816,16 +1820,25 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       }
       // Issue #1667: shared provider-pause check for auto-close + delivered
       // sweeps. Reads recent agent events for the task's live session.
-      const isTaskProviderPaused = (task: Task): boolean => {
+      const providerPauseEvidence = (task: Task): ProviderPauseEvidence | null => {
         const agentId = task.sessions[task.sessions.length - 1]?.tmuxSession;
-        if (!agentId) return false;
-        const events = monitor.getAgentEvents(agentId);
+        if (!agentId) return null;
         const anomaly = queue.peek(agentId);
-        return isProviderPaused({
-          events,
+        return {
+          events: monitor.getAgentEvents(agentId),
           anomalyType: anomaly?.type ?? null,
           anomalyExplanation: anomaly?.explanation ?? null,
-        });
+        };
+      };
+      const isTaskProviderPaused = (task: Task): boolean => {
+        const evidence = providerPauseEvidence(task);
+        return evidence !== null && isProviderPaused(evidence);
+      };
+      // Issue #4050: which evidence fired, so the provider-paused reclaim can
+      // keep the healthy-quota hold off billing / auth / quota stop_failures.
+      const getTaskProviderPauseDetail = (task: Task): string | undefined => {
+        const evidence = providerPauseEvidence(task);
+        return evidence === null ? undefined : classifyProviderPause(evidence).detail;
       };
 
       const autoCloseResult = await autoCloseStaleCompletionReadyTasks(
@@ -2283,6 +2296,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
                     }),
                   }
                 : {}),
+              getProviderPauseDetail: getTaskProviderPauseDetail,
               isHoldingOpenPr: deps.isTaskHoldingOpenPr,
               // Disposition label only (issue #3578): a task whose PR already
               // merged is recorded delivered_then_hung, still terminated.
