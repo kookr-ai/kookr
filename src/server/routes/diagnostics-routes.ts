@@ -736,6 +736,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // refilled). Informational — not part of top-level health / GET /api/ready.
     const postResumeRefillBlock =
       deps.postResumeRefillService?.getRefillHealthSnapshot();
+    // Issue #3933: ready-queue length and the head's wait reason, from the
+    // service's in-memory state (no file read on the request path).
+    const readyQueueBlock = deps.readyQueue?.getHealthSnapshot();
     // Issue #2896: project the latest resource sampler's data-directory byte
     // capacity onto health without re-sampling the filesystem. Keep this
     // path-free because health and its last-good mirror are operator-visible.
@@ -1030,6 +1033,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(postResumeRefillBlock
         ? { postResumeRefill: postResumeRefillBlock }
         : {}),
+      ...(readyQueueBlock ? { readyQueue: readyQueueBlock } : {}),
       dataDirectory: dataDirectoryBlock,
       // Issue #2791: full latest resource sample (RSS/heap/event-loop/memory/
       // data-directory) + freshness age, reused from the WS sampler.

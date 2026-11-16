@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve as pathResolve } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   classifyRestartIntent,
   firstRestartIntentAcrossPorts,
@@ -272,6 +272,11 @@ Options:
                            KOOKR_SPAWN_AUTO_IDEMPOTENCY=1. No effect under
                            --dedupe=skip (intentional duplicate).
       --no-auto-idempotency  Force it off, overriding the env default.
+      --queue              Do not launch now: add the launch to the server's
+                           ready queue. Kookr starts it by itself, oldest
+                           first, once a slot for ordinary launches is free
+                           and the host is not overloaded. See
+                           \`kookr queue list\`. Cannot be combined with --wait.
       --wait[=<seconds>]   After creating the task, poll until it raises
                            completion-ready or reaches a terminal state.
       --restart-wait <seconds>
@@ -405,6 +410,7 @@ function parseArgs(argv) {
     claimRepo: null,
     dryRun: false,
     json: false,
+    queue: false,
     wait: false,
     waitTimeoutSeconds: null,
     restartWaitSeconds: null,
@@ -425,6 +431,8 @@ function parseArgs(argv) {
       out.json = true;
     } else if (tok === '--dry-run') {
       out.dryRun = true;
+    } else if (tok === '--queue') {
+      out.queue = true;
     } else if (tok === '-C' || tok === '--cwd') {
       out.cwd = eat();
     } else if (tok === '-a' || tok === '--agent') {
@@ -568,6 +576,9 @@ function parseArgs(argv) {
   }
   if (out.modelTier !== null && (out.model !== null || out.effort !== null)) {
     throw new UsageError('--model-tier cannot be combined with --model or --effort');
+  }
+  if (out.queue && out.wait) {
+    throw new UsageError('--queue cannot be combined with --wait: a queued launch starts later');
   }
   if (out.idempotencyKey !== null) {
     const trimmed = out.idempotencyKey.trim();
@@ -1359,6 +1370,64 @@ function apiAuthHeaders(env = process.env) {
 }
 
 // ---------- HTTP POST ----------
+
+/**
+ * `kookr spawn --queue` (issue #3933): store the POST /api/tasks body in the
+ * server's ready queue instead of launching it. One POST; the entry key is the
+ * body's idempotency key, so the server answers a repeat with the same entry.
+ */
+async function enqueueReadyLaunch({ args, baseUrl, body, out, err, exit }) {
+  const fail = (exitCode, code, message, details) => {
+    if (args.json) return exitJson({ out, exit, exitCode, ok: false, code, message, details });
+    err.error(`kookr-spawn: ${message}`);
+    return exit(exitCode);
+  };
+  let res;
+  let json = null;
+  try {
+    res = await fetch(`${baseUrl}/api/ready-queue`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Kookr-Launch-Source': 'cli',
+        'User-Agent': `kookr-spawn/${CLI_VERSION} node/${process.versions.node}`,
+        ...apiAuthHeaders(),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(POST_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return fail(
+      EXIT_SERVER_ERROR,
+      'SERVER_ERROR',
+      `request failed: ${msg}. Re-running the same command is safe: the server keeps one entry per idempotency key (${body.idempotencyKey}).`,
+      { baseUrl, idempotencyKey: body.idempotencyKey },
+    );
+  }
+  if (res.status === 404 && !json?.code) {
+    return fail(EXIT_SERVER_ERROR, 'SERVER_ERROR', 'this Kookr server has no ready queue; update Kookr or launch without --queue', { status: 404, baseUrl });
+  }
+  if (res.status !== 200 && res.status !== 201) {
+    return fail(EXIT_SERVER_ERROR, 'SERVER_ERROR', json?.error ?? `HTTP ${res.status}`, { status: res.status, baseUrl, body: json });
+  }
+  const entry = json?.entry ?? {};
+  const position = typeof json?.position === 'number' ? json.position : null;
+  const message = json?.created === false
+    ? `Already queued as ${entry.id} (state ${entry.state})`
+    : `Queued ${entry.id}${position !== null ? ` at position ${position}` : ''}; Kookr starts it when a slot is free`;
+  if (args.json) {
+    return exitJson({ out, exit, exitCode: EXIT_OK, ok: true, code: 'QUEUED', message, details: { entry, position, created: json?.created !== false } });
+  }
+  out.log(`${message}. See: kookr queue list`);
+  return exit(EXIT_OK);
+}
 
 /**
  * A 5xx leaves the task's existence ambiguous (the server may have created it
@@ -2711,6 +2780,12 @@ async function main({
     });
   }
 
+  // #3933: a queued launch always carries a key, so a restart between the
+  // server starting it and recording that never starts it twice.
+  if (args.queue && effectiveIdempotencyKey === null) {
+    effectiveIdempotencyKey = `queue-${randomUUID()}`;
+  }
+
   if (args.playbook && effectiveIdempotencyKey === null) {
     const message = '--playbook requires --idempotency-key or --auto-idempotency so an ambiguous launch can be reconciled safely';
     if (args.json) {
@@ -2765,6 +2840,31 @@ async function main({
       exit,
       stdin,
     });
+  }
+
+  if (args.queue) {
+    const body = buildTaskPostBody({
+      prompt,
+      cwd: cwdAbs,
+      agent: args.agent,
+      effort: args.effort,
+      model: args.model,
+      modelTier: args.modelTier,
+      profile: args.profile,
+      criteria: args.criteria,
+      disableDedup: args.dedupe === 'skip',
+      metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
+      parentTaskId,
+      claimIssue: args.claimIssue,
+      claimRepo: args.claimRepo,
+      autoCloseOnSignal: args.autoCloseOnSignal,
+      unattended: args.unattended,
+      idempotencyKey: effectiveIdempotencyKey,
+      playbook: args.playbook,
+      playbookScope: args.playbookScope,
+      playbookParams: args.playbookParams,
+    });
+    return enqueueReadyLaunch({ args, baseUrl, body, out, err, exit });
   }
 
   let result;

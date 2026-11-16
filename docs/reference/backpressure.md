@@ -345,6 +345,63 @@ Interaction summary:
 | Schedule agent rotation on unavailability | #1895 / #1921 (WS1.3) | Substitute when a pinned agent is unregistered / deprioritized |
 | Spawn plan-quota rotation + binding cache | #1936 | On WS1.2 deny, apply WS1.3 order before reject; cache binding window; surface `admission`/`reason` |
 
+## 8. Ready queue (`kookr spawn --queue`, issue #3933)
+
+The sections above make the server refuse or hold work it cannot run now. The
+ready queue is the other half: a backlog that Kookr feeds into free slots by
+itself, so slots do not sit idle while launches are waiting for a human or a
+script to retry them.
+
+| | Overflow queue (`pending` tasks) | Ready queue |
+| --- | --- | --- |
+| What an entry is | A task record, created by a launch that found no slot | A stored `POST /api/tasks` request; no task exists yet |
+| Added by | Any launch at capacity | `kookr spawn --queue` / `POST /api/ready-queue` |
+| Size | `maxPendingTasks` (24) | 500 queued entries |
+| Expiry | `pendingTaskTtlMinutes` (240 min), then cancelled | None while queued; started or failed entries are listed 24 h |
+| Started by | Promotion when any slot frees | A 30 s tick, one entry per tick |
+| Survives a restart | Yes (task store) | Yes (`~/.kookr/ready-queue.json`) |
+
+The tick starts the oldest queued entry only when **all** of these hold, so the
+ready queue never pushes work into the overflow queue or the reserved slots:
+
+- `min(free, freeForGeneralSources)` ≥ 1: a slot for ordinary launches is free
+  (the [reserved slots](#3a-reserved-self-maintenance-slots-reservedactiveslots-issue-1564)
+  stay reserved);
+- the overflow queue is empty (`pendingQueueDepth` = 0);
+- host load per CPU is at or under `KOOKR_READY_QUEUE_MAX_LOAD_PER_CPU` (default
+  `1.5`, `0` disables; fails open on an unreadable sample). This is separate
+  from `KOOKR_MAX_HOST_LOAD_PER_CPU` (section 6), which is off by default and
+  refuses every launch; when that one is set, it still applies at launch time;
+- the server is accepting launches (not draining for a deploy) and SAFE MODE is off.
+
+The start replays the stored request through the real `POST /api/tasks` handler,
+in process, so every section above still applies to it. The answer decides what
+happens to the entry:
+
+- **2xx** (created, deduplicated to an existing task, or an idempotent replay):
+  `started`, with the task id.
+- **429 / 503** ("retry later": event-loop or disk admission, drain, host load,
+  spawn budget, quota): stays queued at the head; waits for `Retry-After` when
+  the answer gives one. Not counted as a failure.
+- **Anything else** (validation error, claim held, launch failure): one failed
+  attempt. The entry stays at the head and is tried on the next tick; at 3
+  failed attempts it is marked `failed` and one operational alert
+  (`ready_queue_launch_failed`) is sent. The alert is recorded on the entry, so
+  a restart does not send it again.
+
+**No double start.** Every entry carries an idempotency key (the caller's, or
+one minted at enqueue). The entry is written as `launching` before the start and
+as `started` after it. If the server stops in between, the boot puts the entry
+back to `queued` and the next tick re-sends the same key, so the idempotency
+ledger returns the task already created instead of starting a second one.
+
+**Visibility.** `GET /api/health` carries a `readyQueue` block: `queued`,
+`launching`, `failed`, `head` (`id`, `enqueuedAt`, `waitingForMs`, `attempts`,
+`waitReason`, `waiting` such as `"waiting: host load"`), `stalled` (the head
+has waited 15 minutes or more) and `lastTickAt`. `kookr status` prints the
+length, and the wait reason once `stalled`. `kookr queue list` shows every
+entry (see [cli.md](./cli.md#kookr-queue)).
+
 ## Error shape summary
 
 ```jsonc

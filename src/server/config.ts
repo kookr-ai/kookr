@@ -166,6 +166,23 @@ export function readMaxHostLoadPerCpuFromEnv(
 }
 
 /**
+ * Host load limit for the ready queue (issue #3933), as 1-minute load average
+ * per logical CPU. The ready queue starts its next entry only while the host is
+ * at or under this value. Separate from `KOOKR_MAX_HOST_LOAD_PER_CPU`, which is
+ * off by default and refuses every launch: this one applies only to launches
+ * Kookr starts by itself from the queue. 1.5 lets a busy host keep filling
+ * slots but stops once load is half again the core count. `0` disables it.
+ */
+export const DEFAULT_READY_QUEUE_MAX_LOAD_PER_CPU = 1.5;
+
+/** Read the ready-queue host load limit (load-per-core) from the environment. */
+export function readReadyQueueMaxLoadPerCpuFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  return readNonNegativeNumber(env.KOOKR_READY_QUEUE_MAX_LOAD_PER_CPU, DEFAULT_READY_QUEUE_MAX_LOAD_PER_CPU);
+}
+
+/**
  * Default minimum age (ms) an UNOWNED dtach session must reach before the
  * orphan/terminal-task session reaper (issue #1720) terminates it — 24h, so
  * the sweep never races a mid-launch session (#1537 item 2).

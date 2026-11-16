@@ -74,6 +74,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--playbook-scope',
       '--param',
       '--dry-run',
+      '--queue',
       '--json',
       '-h',
       '--help',
@@ -95,6 +96,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     // `abort` is a documented alias of `stop` (dispatched together in bin/kookr.js).
     name: 'abort',
     flags: ['--reason', '--json', '-h', '--help'],
+  },
+  {
+    // Ready queue (#3933); keep in sync with src/cli/kookr-queue.ts.
+    name: 'queue',
+    subcommands: ['list', 'remove'],
+    flags: ['--json', '-h', '--help'],
   },
   {
     // On-demand dashboard open (#3102). Optional positional is a task id to
@@ -492,6 +499,8 @@ function renderBashCompletion(): string {
   const spawnFlags = flagsFor('spawn');
   const stopFlags = flagsFor('stop');
   const abortFlags = flagsFor('abort');
+  const queueSubcommands = subcommandsFor('queue');
+  const queueFlags = flagsFor('queue');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
   const reopenFlags = flagsFor('reopen');
@@ -639,6 +648,13 @@ _kookr()
       ;;
     abort)
       COMPREPLY=( $(compgen -W "${abortFlags}" -- "\${cur}") )
+      ;;
+    queue)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${queueSubcommands} ${queueFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${queueFlags}" -- "\${cur}") )
+      fi
       ;;
     open)
       COMPREPLY=( $(compgen -W "${openFlags}" -- "\${cur}") )
@@ -898,6 +914,8 @@ function renderZshCompletion(): string {
   const spawnFlags = flagsFor('spawn');
   const stopFlags = flagsFor('stop');
   const abortFlags = flagsFor('abort');
+  const queueSubcommands = subcommandsFor('queue');
+  const queueFlags = flagsFor('queue');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
   const reopenFlags = flagsFor('reopen');
@@ -1001,6 +1019,13 @@ _kookr()
       ;;
     abort)
       compadd -- ${abortFlags}
+      ;;
+    queue)
+      if (( CURRENT == 3 )); then
+        compadd -- ${queueSubcommands} ${queueFlags}
+      else
+        compadd -- ${queueFlags}
+      fi
       ;;
     open)
       compadd -- ${openFlags}

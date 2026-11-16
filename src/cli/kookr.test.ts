@@ -8,6 +8,7 @@ import { HELP_TEXT as RALPH_HELP_TEXT } from '../../bin/kookr-ralph.js';
 import { HELP_TEXT as SPAWN_HELP_TEXT } from '../../bin/kookr-spawn.js';
 import { HELP_TEXT as STATUS_HELP_TEXT } from '../../bin/kookr-status.js';
 import { REOPEN_HELP_TEXT } from './kookr-reopen.js';
+import { QUEUE_HELP_TEXT } from './kookr-queue.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -85,6 +86,29 @@ describe('kookr dispatcher', () => {
       expect(deps.codes).toEqual([0]);
       expect(deps.logs).toEqual([REOPEN_HELP_TEXT]);
       expect(deps.errors).toEqual([]);
+    } finally {
+      process.exitCode = undefined;
+    }
+  });
+
+  it('dispatches queue help through the main binary (#3933)', async () => {
+    const deps = makeDeps();
+    try {
+      await main({ argv: ['queue', '--help'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
+      expect(deps.codes).toEqual([0]);
+      expect(deps.logs).toEqual([QUEUE_HELP_TEXT]);
+      expect(deps.errors).toEqual([]);
+    } finally {
+      process.exitCode = undefined;
+    }
+  });
+
+  it('dispatches `queue` to the ready-queue CLI, not to queue-feeder (#3933)', async () => {
+    const deps = makeDeps();
+    try {
+      await main({ argv: ['queue', 'wat'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
+      expect(deps.codes).toEqual([2]);
+      expect(deps.errors.join('\n')).toContain('kookr queue: unknown subcommand: wat');
     } finally {
       process.exitCode = undefined;
     }

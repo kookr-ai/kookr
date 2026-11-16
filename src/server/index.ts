@@ -211,7 +211,7 @@ import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
 import { bindOperationalAlertSink } from './operational-alert-sink.js';
 import { ProviderHealthTracker } from '../core/provider-health.js';
 import { loadavg, cpus, homedir } from 'node:os';
-import { readMaxHostLoadPerCpuFromEnv } from './config.js';
+import { readMaxHostLoadPerCpuFromEnv, readReadyQueueMaxLoadPerCpuFromEnv } from './config.js';
 import { LessonSpoolService } from './lesson-spool-service.js';
 import { defaultSpoolDir } from '../core/lesson-write-spool.js';
 import { SignalOutboxService } from './signal-outbox-service.js';
@@ -286,6 +286,8 @@ import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { IdleRefineryRunner } from './idle-refinery-runner.js';
 import { PostRecoveryService } from './post-recovery-service.js';
 import { PostResumeRefillService, readPostResumeRefillEnabledFromEnv } from './post-resume-refill-service.js';
+import { ReadyQueueService } from './ready-queue-service.js';
+import { READY_QUEUE_FILE_NAME } from '../core/ready-queue.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
@@ -2754,6 +2756,37 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     log: (line) => console.log(line),
   });
 
+  // Ready queue (issue #3933): `kookr spawn --queue` stores a launch request in
+  // ~/.kookr/ready-queue.json; a 30s tick starts the oldest one when a slot for
+  // ordinary launches is free (reserved slots stay reserved), the overflow queue
+  // is empty, host load is under KOOKR_READY_QUEUE_MAX_LOAD_PER_CPU, the server
+  // is not draining and SAFE MODE is off. The launch path itself is wired by
+  // task-routes (the POST /api/tasks handler), when routes are registered.
+  const readyQueueMaxLoadPerCpu = readReadyQueueMaxLoadPerCpuFromEnv();
+  const readyQueue = new ReadyQueueService({
+    filePath: join(kookrDir, READY_QUEUE_FILE_NAME),
+    getGateInputs: () => {
+      const ledger = launchServiceDeps.getCapacityLedger!();
+      const cpuCount = cpus().length;
+      return {
+        accepting: drainController.isAccepting(),
+        automationEnabled: !currentSettings.automationKillSwitch && !settingsLoadError,
+        free: ledger.free,
+        ...(ledger.freeForGeneralSources !== undefined
+          ? { freeForGeneralSources: ledger.freeForGeneralSources }
+          : {}),
+        pendingQueueDepth: ledger.pendingQueueDepth,
+        loadPerCpu: cpuCount > 0 ? loadavg()[0] / cpuCount : null,
+        maxLoadPerCpu: readyQueueMaxLoadPerCpu,
+      };
+    },
+    emitAlert: bindOperationalAlertSink(operationalAlertSink, (alert) => {
+      detectorBroadcast(alert);
+      noteOpsStatusAlert(alert);
+    }),
+  });
+  await readyQueue.load();
+
   const persistenceHealth = new PersistenceHealthTracker();
   // Lifecycle-timer health (issue #1771): per-loop last-fired stamps for
   // GET /api/diagnostics/timer-health — optional on TimerDeps, always wired
@@ -3165,6 +3198,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     umbrellaChainAdvancer: umbrellaChainHealth,
     postRecoveryService,
     postResumeRefillService,
+    readyQueue,
     remoteShare: remoteRelayRuntime.remoteShare,
     getCleanupWorktreeOnComplete,
     relayConnection: remoteRelayRuntime.relayConnection,
@@ -4076,6 +4110,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubPollingEnabled: currentSettings.githubPollingEnabled,
     scheduleRunner,
     idleRefineryRunner,
+    readyQueue,
     postRecoveryService,
     resourceStatusService,
     resourceWatchdogService,

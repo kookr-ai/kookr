@@ -4629,3 +4629,128 @@ describe('main --json --wait on the created path (#3580)', () => {
     }
   });
 });
+
+// ---------- #3933: --queue stores the launch in the ready queue ----------
+
+describe('main --queue (#3933)', () => {
+  let tmpCwd: string;
+  beforeEach(async () => {
+    tmpCwd = await mkdtemp(join(tmpdir(), 'kookr-spawn-3933-'));
+  });
+  afterEach(async () => {
+    await rm(tmpCwd, { recursive: true, force: true });
+  });
+
+  async function startQueueApi(answer: { status: number; body: unknown }) {
+    const requests: Array<{ method?: string; url?: string; headers: import('node:http').IncomingHttpHeaders; body: any }> = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf-8');
+        requests.push({ method: req.method, url: req.url, headers: req.headers, body: raw ? JSON.parse(raw) : null });
+        res.writeHead(req.url === '/api/ready-queue' ? answer.status : 404, { 'Content-Type': 'application/json' });
+        res.end(req.url === '/api/ready-queue' ? JSON.stringify(answer.body) : '');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    if (!addr || typeof addr !== 'object') throw new Error('no address');
+    return { server, baseUrl: `http://127.0.0.1:${addr.port}`, requests };
+  }
+
+  it('parses --queue and refuses it with --wait', () => {
+    expect(parseArgs(['--queue', 'p']).queue).toBe(true);
+    expect(parseArgs(['p']).queue).toBe(false);
+    expect(() => parseArgs(['--queue', '--wait', 'p'])).toThrow(/--queue cannot be combined with --wait/);
+  });
+
+  it('POSTs the launch body to /api/ready-queue, never to /api/tasks, with a minted idempotency key', async () => {
+    const { server, baseUrl, requests } = await startQueueApi({
+      status: 201,
+      body: { created: true, position: 3, entry: { id: 'ab12cd34', state: 'queued' } },
+    });
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--queue', '-a', 'codex-cli', '--criteria', 'tests pass', 'queued work'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      const posts = requests.filter((r) => r.method === 'POST');
+      expect(posts.map((r) => r.url)).toEqual(['/api/ready-queue']);
+      expect(posts[0].headers['x-kookr-launch-source']).toBe('cli');
+      expect(posts[0].body).toMatchObject({
+        prompt: 'queued work',
+        cwd: tmpCwd,
+        agentType: 'codex-cli',
+        criteria: 'tests pass',
+      });
+      expect(posts[0].body.idempotencyKey).toMatch(/^queue-[0-9a-f-]{36}$/);
+      expect(logs.join('\n')).toContain('Queued ab12cd34 at position 3');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('keeps an explicit --idempotency-key and reports QUEUED in --json mode', async () => {
+    const { server, baseUrl, requests } = await startQueueApi({
+      status: 200,
+      body: { created: false, entry: { id: 'ab12cd34', state: 'started' } },
+    });
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--queue', '--json', '--idempotency-key', 'my-key', 'queued work'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: makeConsoleCapture().io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(requests.find((r) => r.method === 'POST')?.body.idempotencyKey).toBe('my-key');
+      expect(parseSingleJsonLog(logs)).toMatchObject({
+        ok: true,
+        code: 'QUEUED',
+        message: 'Already queued as ab12cd34 (state started)',
+        details: { created: false, entry: { id: 'ab12cd34' } },
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('exits SERVER_ERROR when the server answers with an error', async () => {
+    const { server, baseUrl } = await startQueueApi({ status: 429, body: { error: 'ready queue is full (500 queued entries)', code: 'ready_queue_full' } });
+    try {
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--queue', 'queued work'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: makeConsoleCapture().io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      expect(errBucket.errors.join('\n')).toContain('ready queue is full');
+    } finally {
+      await closeServer(server);
+    }
+  });
+});

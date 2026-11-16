@@ -78,6 +78,7 @@ Options:
 | `--dedupe` | `warn`, `block`, or `skip` | `warn` | Active duplicate-prompt handling. `warn` prompts interactively and blocks in non-interactive shells, `block` exits with code 5, and `skip` creates the task intentionally while suppressing duplicate-cluster findings. |
 | `--idempotency-key` | opaque string, ≤200 chars | unset | Retry key (issue #1526). Re-running `kookr spawn` with the SAME key replays the earlier launch outcome instead of launching a second task. A replayed active-prompt duplicate repeats the warning and confirmation flow. |
 | `--auto-idempotency` / `--no-auto-idempotency` | none | off (env-controlled) | When no `--idempotency-key` is given, derive one (`auto-<hash>`) from prompt, cwd, criteria, agent, effort, model, model tier, playbook path, playbook scope, and `--param` values (in any order). A client-timeout retry replays only when all inputs are unchanged (bounded by the server's configured rolling idempotency TTL, 24h by default — no calendar component). If any input can change between retries, pass an explicit `--idempotency-key` that encodes the logical intent instead. Also enabled by `KOOKR_SPAWN_AUTO_IDEMPOTENCY=1`; `--no-auto-idempotency` forces it off. No effect under `--dedupe=skip`; an explicit `--idempotency-key` always wins. |
+| `--queue` | none | false | Do not launch now: store the launch in the server's ready queue (issue #3933). Kookr starts it by itself, oldest first, when a slot for ordinary launches is free and the host is not overloaded; see [`kookr queue`](#kookr-queue). The launch always carries an idempotency key (yours, or a minted `queue-<uuid>`), so re-running the same command after a timeout does not queue it twice. Prints `Queued <id> at position N`; `--json` uses `code: "QUEUED"`. Cannot be combined with `--wait`. |
 | `--wait` | optional seconds via `--wait=<seconds>` | false | Poll until the spawned task raises `completion-ready` or reaches a terminal state. |
 | `--restart-wait` | seconds, `0` through `3600` | until the restart note goes stale | Upper limit on waiting through a planned Kookr restart (issue #3928). When no server answers but the deploy's restart note (`~/.kookr/restart-intent.json`) says a restart is in progress, spawn keeps probing every 3 seconds, prints `Kookr is restarting, prod:update started 2m ago, waiting...` every 30 seconds on stderr, and launches as usual once the server is back. If the note goes stale (the deploy looks failed) or the limit passes, spawn exits 3 and writes one operator alert naming the lost launch. `0` means no waiting beyond the short retry. Also `KOOKR_SPAWN_RESTART_WAIT_SECONDS`; the flag wins. With no note, nothing changes. See [the spawn contract](./spawn-contract.md#planned-restart-wait). |
 | `--parent-task-id` | task id | `KOOKR_TASK_ID` when set | Explicit parent task to link in the dashboard. Mutually exclusive with `--no-parent-task`. |
@@ -1503,6 +1504,48 @@ including a per-task `failed` outcome, an unexpected response body, or a request
 timeout (the server was reachable but did not answer in time; the abort may still
 be completing, so re-run to confirm), `5` ambiguous port (two instances reachable;
 set `KOOKR_PORT` to choose one).
+
+## `kookr queue`
+
+Show and edit the ready queue (issue #3933): launches stored with
+`kookr spawn --queue` that Kookr starts by itself when a slot frees.
+
+```bash
+kookr spawn --queue --prompt-file /tmp/issue-41.md   # add a launch
+kookr queue list                                     # what is queued and why it waits
+kookr queue list --json                              # each entry's state, attempts and wait reason
+kookr queue remove ab12cd34                          # drop one entry
+```
+
+Every 30 seconds the server starts **at most one** entry, the oldest one still
+queued, when all of these hold: a slot for ordinary launches is free (the
+reserved self-maintenance slots, `reservedActiveSlots`, stay reserved), no launch
+is waiting in the overflow queue, host load is at or under
+`KOOKR_READY_QUEUE_MAX_LOAD_PER_CPU` (default `1.5` per CPU), the server is not
+draining for a deploy, and SAFE MODE is off. The start goes through the normal
+`POST /api/tasks` path, so every launch check still applies. A refusal that
+means "retry later" (HTTP 429 or 503, for example `Retry-After`) waits and does
+not count as a failure; any other failure is retried, three attempts in all,
+after which the entry is marked `failed` and one operational alert is sent.
+
+`list` prints one line per entry: id, state (`queued`, `launching`, `started`,
+`failed`), failed attempts, age, what it launches, and the task id or the wait
+reason (`waiting: no free slot`, `waiting: host load`, `waiting: server
+draining for a deploy`, `waiting: automation paused (SAFE MODE)`, `waiting:
+server asked to retry later`). Started and failed entries stay listed for 24
+hours. `--json` gives `details.entries` (the full entries) and
+`details.health` (the same block as `GET /api/health` `readyQueue`).
+
+`remove` refuses an entry that is being started at that moment (exit `4`, code
+`LAUNCHING`); retry a few seconds later.
+
+How it differs from the overflow queue: see
+[backpressure §8](./backpressure.md#8-ready-queue-kookr-spawn---queue-issue-3933).
+`kookr status` prints `Ready queue: N queued` while the queue is not empty, and
+adds the wait reason once the oldest entry has waited 15 minutes.
+
+Exit codes: `0` success, `2` usage error, `3` no server reachable, `4`
+server/HTTP error (including an unknown entry id), `5` ambiguous port.
 
 ## `kookr reopen`
 

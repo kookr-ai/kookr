@@ -306,6 +306,18 @@ export interface CapacityByClassSummary {
   launching: number;
 }
 
+/** Ready-queue projection of `/api/health.readyQueue` (issue #3933). */
+export interface ReadyQueueSummary {
+  queued: number;
+  failed: number;
+  stalled: boolean;
+  headWaitingForMs: number | null;
+  waiting: string | null;
+}
+export function summarizeReadyQueue(
+  health: HealthLike,
+): ReadyQueueSummary | null;
+
 export interface CapacitySummary {
   maxActiveTasks: number;
   active: number;

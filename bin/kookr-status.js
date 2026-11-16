@@ -426,6 +426,28 @@ function summarizeFirstHookMiss(health) {
   return { firstHookMissTotal: Math.floor(total) };
 }
 
+// Ready-queue projection (issue #3933). /api/health publishes `readyQueue`
+// (queue length, failed entries, the head and its wait reason). Quiet while the
+// queue is empty; the wait reason is printed only once the head has waited 15
+// minutes (`stalled`), so a short normal wait for a slot is not noise.
+function summarizeReadyQueue(health) {
+  const block = health?.readyQueue;
+  if (!block || typeof block !== 'object') return null;
+  const queued = Number(block.queued);
+  const failed = Number(block.failed);
+  if (!Number.isFinite(queued) || !Number.isFinite(failed)) return null;
+  if (queued <= 0 && failed <= 0) return null;
+  const head = block.head && typeof block.head === 'object' ? block.head : null;
+  const waitingForMs = Number(head?.waitingForMs);
+  return {
+    queued: Math.floor(queued),
+    failed: Math.floor(failed),
+    stalled: block.stalled === true,
+    headWaitingForMs: Number.isFinite(waitingForMs) ? waitingForMs : null,
+    waiting: typeof head?.waiting === 'string' ? head.waiting : null,
+  };
+}
+
 // Capacity projection (issue #2234). /api/health already publishes the full
 // capacity ledger (`effectiveWorking`, `phantomActive`, `utilizationPct`,
 // `byClass`, free slots…). Remote operators and Lucy/Discord digests only saw
@@ -1403,6 +1425,16 @@ function renderReport({ port, health, agents, readiness, degraded }) {
     );
   }
 
+  // Ready queue (issue #3933): length always, the wait reason once stalled.
+  const readyQueue = summarizeReadyQueue(health);
+  if (readyQueue) {
+    const failedPart = readyQueue.failed > 0 ? `, ${readyQueue.failed} failed (kookr queue list)` : '';
+    const stallPart = readyQueue.stalled && readyQueue.headWaitingForMs !== null
+      ? `  head waited ${formatUptime(readyQueue.headWaitingForMs)}: ${readyQueue.waiting ?? 'waiting'}`
+      : '';
+    lines.push(`Ready queue: ${readyQueue.queued} queued${failedPart}${stallPart}`);
+  }
+
   // Capacity (issue #2234) — phantom / high-util pressure from the ledger
   // already on /api/health. Quiet by default; one line with byClass + free
   // slots when phantoms, a large util gap, or high nominal utilization
@@ -1797,6 +1829,7 @@ function buildHealthDetailProjections(health) {
   const hookReplayCheckpointsSummary = summarizeHookReplayCheckpoints(health);
   const firstHookMissSummary = summarizeFirstHookMiss(health);
   const capacitySummary = summarizeCapacity(health);
+  const readyQueueSummary = summarizeReadyQueue(health);
   const providerPausedSummary = summarizeProviderPausedOccupancy(health);
   const nonCriticalTimerPauseSummary = summarizeNonCriticalTimerPause(health);
   const snapshotShedSummary = summarizeSnapshotShed(health);
@@ -1841,6 +1874,7 @@ function buildHealthDetailProjections(health) {
       : {}),
     ...(alertDestinationSummary ? { alertDestination: alertDestinationSummary } : {}),
     ...(capacitySummary ? { capacity: capacitySummary } : {}),
+    ...(readyQueueSummary ? { readyQueue: readyQueueSummary } : {}),
     ...(providerPausedSummary
       ? { providerPausedOccupancy: providerPausedSummary }
       : {}),
@@ -2211,6 +2245,7 @@ export {
   summarizeHookReplayCheckpoints,
   summarizeFirstHookMiss,
   summarizeCapacity,
+  summarizeReadyQueue,
   formatUtilPct,
   summarizeProviderPausedOccupancy,
   summarizeNonCriticalTimerPause,
