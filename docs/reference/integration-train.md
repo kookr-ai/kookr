@@ -96,12 +96,30 @@ copy pinned to it by a test) and behave as before when it is absent:
    revert is pushed (a rejected push, a restart, a crash) does not bisect again:
    the next cycle checks that the culprit is still on the integration branch,
    not on `main` and not reverted, and goes straight to the revert. It verifies
-   the revert only if no revert of that culprit passed yet. A halt forgets it,
+   the revert only if no revert of that culprit passed yet. The integration
+   head last seen red is saved with the culprit (`redHead`). When the head has
+   moved since (or the saved state does not say), the train first verifies the
+   new head once (issue #4031): a fix pushed by hand meanwhile may have made the
+   revert unnecessary. Green: the head is promoted (`promoted`) and the culprit
+   is forgotten, so nothing is reverted, no issue is reopened and no fix task
+   starts. Red: the train records that head and goes on to the revert. A halt forgets it,
    so the cycle after a person cleared the halt starts from the head again,
    except the halts that say nothing about the culprit: `verify-infra`,
    `push-rejected`, `train-error` and `reconcile-conflict`.
    The train's revert commits carry the trailer `Kookr-Integration-Train: revert`,
    which is how a later cycle tells them from a revert a person made.
+   Such a revert that is not on `main` yet bounds the bisect of a later cycle:
+   every commit between the reverted change and its revert still contains that
+   change, so the bisect starts above the revert. When the revert is itself red
+   (typically because a broken change merged while the revert was verified and
+   the revert was re-applied on top of it), the train looks for that second
+   change among the commits between the two (issue #4031). It bisects them
+   with the first change reverted on top of each, in its own worktree and
+   without pushing, runs the commit it finds once more to confirm, then
+   reverts it like any culprit: the revert must pass the full suite on the
+   real head before it is pushed, otherwise the train halts
+   `revert-not-sufficient`. It halts `multiple-failures` only when there is no
+   commit between the two, or when one of those trial reverts conflicts.
 10. After a pushed revert, the linked issues of the reverted PR are reopened with
    the failure output and one fix task is spawned. The budget is three automatic
    re-lands per linked issue (keys `train-fix-issue-<n>-1` to `-3`). With no
@@ -112,7 +130,14 @@ copy pinned to it by a test) and behave as before when it is absent:
    to check whether their pull requests were reverted, and to read their
    failing output first. The budget is used up only by a task that
    was really spawned: if the spawn fails, the train notifies `fix-spawn-failed`
-   and tries again the next time that PR fails. When a change fails after its
+   and tries again the next time that PR fails. The train runs `kookr spawn
+   --json` and reads `idempotentReplay` (issue #3986). If `state.json` lost its
+   counts, an attempt number can come round again, and within 24 hours the
+   server returns the earlier task for that key instead of starting a new one.
+   The train then counts that key as used and tries the next attempt number,
+   within the same budget; the `reverted` event names the keys it skipped. When
+   every remaining key replays, the budget is spent: `fix-budget-exhausted`. A
+   spawn that exits 0 without naming a task counts as `fix-spawn-failed`. When a change fails after its
    third fix task, the train still reverts it but spawns nothing; it notifies
    `fix-budget-exhausted` and a human takes over.
 
@@ -191,7 +216,7 @@ guess in these cases:
 | `culprit-is-merge` | The first bad commit is the merge that folded `main` into the integration branch. Only commits that contain `main` are bisected, because an older commit can fail for a reason `main` already fixed. |
 | `history-shape` | The head is red and the integration branch is not a first-parent line from `main`, which happens after a non-squash merge. The commits cannot be bisected. |
 | `revert-not-sufficient` | The suspected culprit was reverted locally but the result still fails verify: another change is failing too, or the culprit was already fixed. The revert is discarded and nothing is pushed. The detail names the suspected culprit. |
-| `multiple-failures` | Rare. A revert the train pushed earlier was not promoted yet (its promotion push was rejected) and now fails verify itself, or is the red head. |
+| `multiple-failures` | Rare. A revert the train pushed earlier was not promoted yet and now fails verify itself, or is the red head, and the train could not find the second failing change below it: there is no commit between the reverted change and its revert, or reverting the first change on one of them conflicts (see step 9). |
 | `revert-conflict` | Reverting the culprit conflicts with later commits. |
 | `reconcile-conflict` | Merging `main` into the integration branch conflicts (the merge left unmerged paths). |
 | `push-rejected` | A push to `main` or to the integration branch was rejected three cycles in a row (branch protection, credentials). The detail has git's message. |
@@ -290,15 +315,27 @@ verify would restart almost every run from zero. Instead:
   `HEAD` of the checkout it was launched from is no longer the one it started
   on. A lost request therefore leaves old code running for at most one cycle.
 - The old process exits only once the new one's run loop has started (it
-  writes `run-info.json`, within 60 seconds). A new process that fails to start
-  (bad options, or a deploy that is still installing dependencies) is killed,
-  and the old one keeps running. When the checkout's `HEAD` moved, it tries
-  again after its next cycle.
+  writes `run-info.json`, within 60 seconds). The new process then waits, up
+  to 60 seconds, for the old one to exit before it starts its first cycle, so
+  a stop that reaches the old process first never interrupts a cycle. A stop
+  that reaches the old process after the hand-over is confirmed is passed on
+  to the new one; before that, the new process is killed with it.
+- A new process that fails to start (bad options, or a deploy that is still
+  installing dependencies) is killed, and the old one keeps running. A failed
+  restart request is put back and tried again after the next cycle, up to three
+  attempts in all; then it is dropped, and each failure is written to
+  `events.jsonl` as a `restart-failed` event. When the checkout's `HEAD` moved,
+  the old process also tries again after its next cycle.
 - While a request waits, `pnpm train:status` and `/api/health` show
   `restartPending` (with `requestedAt`), and `kookr status` adds
   `restart pending` to its `Integration train:` line.
 - `restart --now` keeps the old behaviour: stop the train at once (killing a
   verify in flight) and start a new one. `stop` still stops at once.
+- During a hand-over `train.pid` still names the old process while
+  `run-info.json` already names the new one. `stop` and `restart` therefore
+  act on both: `stop` signals each live train either file names (and one
+  recorded while it waits), and `restart` files its request for the train
+  `run-info.json` names.
 
 Only a train that honours requests gets one. Its run loop writes
 `run-info.json` (pid, checkout `HEAD`) when it starts. A train started by
@@ -355,8 +392,13 @@ SHAs, flaky heads, fix-task counts, whether an alert awaits its recovery signal,
 consecutive rejected pushes, a confirmed culprit whose revert is not pushed yet),
 `train.log`, `train.pid`, `train.lock`
 (one instance only; a second `cycle` or `run` exits quietly), `events.jsonl`
-(notifications), `verify-<sha>.log` (20 newest kept) with its
-`verify-<sha>.report.json`, and
+(the notifications above, plus two records that are not sent to the operator:
+`red-then-green`, a SHA that was red then green on its re-run with the failing
+test files of the red run, and `restart-failed`, a hand-over that did not
+happen), `verify-<sha>.log` (20 newest kept) with its
+`verify-<sha>.report.json`, `verify-<sha>.run<n>.log` (the log of a red run
+that was followed by a re-run of the same SHA, with its
+`verify-<sha>.run<n>.report.json`), and
 `<idempotency key>.prompt.md` (the prompt handed to a spawned fix task),
 `last-cycle.json` (outcome of the newest cycle), `start-args.json` (options of
 the last `start`), `run-info.json` (pid and checkout `HEAD` of the running loop)

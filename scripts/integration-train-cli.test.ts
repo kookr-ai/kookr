@@ -49,8 +49,8 @@ interface Sandbox {
   commit(branch: string, files: Record<string, string>, subject: string): string;
   ref(branch: string): string;
   cycle(extra?: string[]): { status: number | null; stderr: string };
-  /** Runs any CLI command from the launching checkout. */
-  cli(args: string[]): { status: number | null; stdout: string; stderr: string };
+  /** Runs any CLI command from the launching checkout, with `extraEnv` added to its environment. */
+  cli(args: string[], extraEnv?: NodeJS.ProcessEnv): { status: number | null; stdout: string; stderr: string };
   env: NodeJS.ProcessEnv;
   calls(): string[];
   /** Operator signals in the outbox, oldest first. */
@@ -108,11 +108,19 @@ function makeSandbox(): Sandbox {
     'exit 0',
     '',
   ].join('\n'));
-  // `kookr spawn` fails while ghData/spawn-fails exists.
+  // `kookr spawn` fails while ghData/spawn-fails exists. Otherwise it answers
+  // like `kookr spawn --json`: an earlier task is replayed for a key that has
+  // a ghData/replay-<key> file (#3986), else a new task is created.
   writeFileSync(join(bin, 'kookr'), [
     '#!/usr/bin/env bash',
     `printf 'kookr %s\\n' "$*" >> "${callLog}"`,
     `if [ "$1" = spawn ] && [ -e "${ghData}/spawn-fails" ]; then echo 'server unreachable' >&2; exit 3; fi`,
+    'if [ "$1" = spawn ]; then',
+    '  key=""; prev=""',
+    '  for a in "$@"; do [ "$prev" = --idempotency-key ] && key="$a"; prev="$a"; done',
+    `  replay=false; [ -e "${ghData}/replay-$key" ] && replay=true`,
+    '  printf \'{"ok":true,"code":"OK","message":"done","details":{"taskId":"task-%s","idempotentReplay":%s}}\\n\' "$key" "$replay"',
+    'fi',
     'exit 0',
     '',
   ].join('\n'));
@@ -124,9 +132,9 @@ function makeSandbox(): Sandbox {
     ...gitExecEnv(), ...IDENTITY, KOOKR_DIR: kookrDir, KOOKR_OPERATOR_SIGNAL_DIR: signalDir,
     PATH: `${bin}:${process.env.PATH ?? ''}`,
   };
-  const cli = (args: string[]) => {
+  const cli = (args: string[], extraEnv: NodeJS.ProcessEnv = {}) => {
     const r = spawnSync(process.execPath, ['--import', TSX_LOADER, CLI, ...args], {
-      cwd: launch, encoding: 'utf8', env, timeout: 60_000,
+      cwd: launch, encoding: 'utf8', env: { ...env, ...extraEnv }, timeout: 60_000,
     });
     return { status: r.status, stdout: r.stdout, stderr: r.stderr };
   };
@@ -243,6 +251,7 @@ describe('integration train CLI', () => {
     const spawns = s.calls().filter((c) => c.startsWith('kookr spawn '));
     expect(spawns).toHaveLength(1);
     expect(spawns[0]).toContain('--idempotency-key train-fix-issue-42-1');
+    expect(spawns[0]).toContain('--json');
     // the operator is alerted once, with no "recovered" in front of it
     expect(s.signals().map((x) => [x.kind, x.title])).toEqual([['alert', 'integration train: reverted']]);
     expect(s.signals()[0].detail).toContain(`reverted ${bad} as ${head}`);
@@ -259,6 +268,28 @@ describe('integration train CLI', () => {
     const byFileName = readdirSync(s.signalDir).filter((f) => f.endsWith('.json') && !f.startsWith('.')).sort()
       .map((f) => (JSON.parse(readFileSync(join(s.signalDir, f), 'utf8')) as { kind: string }).kind);
     expect(byFileName).toEqual(['alert', 'clear']);
+  }, 120_000);
+
+  it('starts the next fix task when kookr spawn replays an earlier task for the key (#3986)', () => {
+    const s = makeSandbox();
+    // state.json was lost, but the server still holds attempt 1's key
+    writeFileSync(join(s.ghData, 'replay-train-fix-issue-42-1'), '');
+    s.commit('staging', { 'bad.txt': 'x' }, 'broken (#7)');
+
+    expect(s.cycle().status).toBe(0);
+    const keys = s.calls().filter((c) => c.startsWith('kookr spawn '))
+      .map((c) => /--idempotency-key (\S+)/.exec(c)?.[1]);
+    expect(keys).toEqual(['train-fix-issue-42-1', 'train-fix-issue-42-2']);
+    const state = JSON.parse(readFileSync(join(s.stateDir, 'state.json'), 'utf8')) as { fixTasks: Record<string, number> };
+    expect(state.fixTasks).toEqual({ 'issue-42': 2 });
+    expect(s.signals().map((x) => x.title)).toEqual(['integration train: reverted']);
+    expect(s.signals()[0].detail).toContain('fix task train-fix-issue-42-2 spawned (automatic re-land 2 of 3)');
+    // the pull request is told about the task that was really started
+    // (the call log holds the multi-line comment body as it was passed)
+    const log = readFileSync(s.callLog, 'utf8');
+    expect(log).toContain('gh pr comment 7 ');
+    expect(log).toContain('the train started fix task `train-fix-issue-42-2` (automatic re-land 2 of 3)');
+    expect(log).not.toContain('`train-fix-issue-42-1`');
   }, 120_000);
 
   it('writes every event of one cycle to the outbox with its own detail', () => {
@@ -748,6 +779,58 @@ describe('integration train CLI', () => {
       expect(r.status).toBe(0);
       expect(r.stdout).toContain(`stopped integration train (pid ${old})`);
       expect(await until(() => !alive(old) && !alive(successor), 10_000)).toBe(true);
+    }, 180_000);
+
+    it('a stop that reaches the old train after the hand-over is confirmed is passed on to its successor (#3847)', async () => {
+      const s = makeSandbox();
+      // Holds the old train between recording its successor and exiting: its
+      // run loop has returned and nothing else keeps it alive.
+      const held = join(s.root, 'old-train.held');
+      const hold = join(s.root, 'hold-before-exit.mjs');
+      writeFileSync(hold, [
+        "import { writeFileSync } from 'node:fs';",
+        'let held = false;',
+        "process.on('beforeExit', () => {",
+        "  if (held || process.argv[2] !== 'run') return;",
+        '  held = true;',
+        `  writeFileSync(${JSON.stringify(held)}, String(process.pid));`,
+        '  setTimeout(() => {}, 60_000);',
+        '});',
+        '',
+      ].join('\n'));
+      const startArgs = ['start', '--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '1'];
+      expect(s.cli(startArgs, { NODE_OPTIONS: `--import ${pathToFileURL(hold).href}` }).status).toBe(0);
+      const old = trainPid(s) as number;
+      pidsToKill.push(old);
+      expect(await until(() => {
+        try { return JSON.parse(readFileSync(join(s.stateDir, 'run-info.json'), 'utf8')).pid === old; } catch { return false; }
+      }, 30_000)).toBe(true);
+
+      // a successor that starts its run loop at once and records a SIGTERM
+      const successorScript = join(s.root, 'next', 'integration-train.mjs');
+      mkdirSync(dirname(successorScript), { recursive: true });
+      const terminated = join(s.root, 'successor.sigterm');
+      writeFileSync(successorScript, [
+        "import { writeFileSync } from 'node:fs';",
+        `writeFileSync(${JSON.stringify(join(s.stateDir, 'run-info.json'))}, JSON.stringify({ pid: process.pid, head: null, restartRequests: true }));`,
+        `process.on('SIGTERM', () => { writeFileSync(${JSON.stringify(terminated)}, 'SIGTERM'); process.exit(0); });`,
+        'setInterval(() => {}, 1000);',
+        '',
+      ].join('\n'));
+      writeFileSync(join(s.stateDir, 'restart-request.json'), JSON.stringify({
+        requestedAt: new Date().toISOString(), args: [], cwd: s.launch, script: successorScript,
+      }));
+      const successor = await successorOf(s, old);
+      expect(await until(() => existsSync(held), 30_000)).toBe(true);
+      // confirmed: train.pid names the successor, and the old train has not exited yet
+      expect(trainPid(s)).toBe(successor);
+      expect(alive(old)).toBe(true);
+      expect(alive(successor)).toBe(true);
+
+      // a stop that read train.pid before the hand-over signals the old train
+      process.kill(old, 'SIGTERM');
+      expect(await until(() => existsSync(terminated) && !alive(old) && !alive(successor), 15_000)).toBe(true);
+      expect(readFileSync(terminated, 'utf8')).toBe('SIGTERM');
     }, 180_000);
 
     it('restart files a request for the train run-info.json names while train.pid still names its predecessor (#3849)', async () => {
