@@ -33,12 +33,15 @@ afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
 });
 
-/** Run the backup script (optionally under a wrapper command) with NB_DIR=~/store and the private lock. */
-function runBackup(wrapper: string[] = []) {
+/**
+ * Run the backup script (optionally under a wrapper command) with NB_DIR=~/store and the
+ * private lock; `env` overrides those defaults.
+ */
+function runBackup(wrapper: string[] = [], env: Record<string, string> = {}) {
   const [cmd, ...args] = [...wrapper, 'bash', SCRIPT];
   return spawnSync(cmd, args, {
     cwd,
-    env: cleanEnv({ HOME: home, NB_DIR: '~/store', NB_BACKUP_LOCK: lock }),
+    env: cleanEnv({ HOME: home, NB_DIR: '~/store', NB_BACKUP_LOCK: lock, ...env }),
     encoding: 'utf-8',
   });
 }
@@ -51,6 +54,16 @@ describe('nb-backup.sh — NB_DIR resolution', () => {
     expect(r.stderr).not.toContain('not a git repo');
     expect(r.status).toBe(0); // no remote: the commits stay local and the job succeeds
     // The log is written in the store itself, and the private lock means no other run can make this one skip.
+    expect(readLog()).toContain('committed straggler changes');
+    expect(git(store, 'log', '--format=%s')).toMatch(/^nb-backup \d{4}-\d{2}-\d{2}$/);
+    expect(existsSync(join(cwd, '~'))).toBe(false);
+  });
+
+  test('NB_DIR=~ (bare) is the home directory itself (issue #3838)', () => {
+    // The store is the home directory here; the lock stays outside it, in the other fake home.
+    const r = runBackup([], { HOME: store, NB_DIR: '~' });
+    expect(r.stderr).not.toContain('not a git repo');
+    expect(r.status).toBe(0);
     expect(readLog()).toContain('committed straggler changes');
     expect(git(store, 'log', '--format=%s')).toMatch(/^nb-backup \d{4}-\d{2}-\d{2}$/);
     expect(existsSync(join(cwd, '~'))).toBe(false);

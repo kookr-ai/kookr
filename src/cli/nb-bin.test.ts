@@ -329,6 +329,65 @@ describe('bin/nb.js — per-change git auto-commit (Objective C)', () => {
     }
   });
 
+  test('NB_DIR=~ (bare) is the home directory, and the mutation is committed there', () => {
+    // Issue #3838: only `~/…` was covered. The package expands a bare `~` too, so the
+    // lesson lands in HOME either way; the commit is what shows the shim resolved it.
+    // A cwd of its own means a literal `./~` would show up there, not in this checkout.
+    const home = dir; // the fake home directory is itself the store
+    const cwd = mkdtempSync(join(tmpdir(), 'kookr-nb-bin-cwd-'));
+    try {
+      initRepo();
+      const before = Number(git(['rev-list', '--count', 'HEAD']));
+      execFileSync('node', [BIN, 'add', 'patcher', 'bare tilde lesson'], {
+        cwd,
+        env: { ...cleanGitEnv(), HOME: home, NB_DIR: '~' },
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      expect(existsSync(join(home, 'patcher.md'))).toBe(true);
+      expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before + 1);
+      expect(git(['log', '-1', '--format=%s'])).toBe('nb add patcher');
+      expect(git(['status', '--porcelain'])).toBe('');
+      expect(existsSync(join(cwd, '~'))).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('when the store cannot be snapshotted, the mutation commits everything uncommitted (fallback)', () => {
+    // Issue #3838: workingTreeId() returns null when it cannot build its throwaway index
+    // (here: TMPDIR does not exist, so mkdtemp fails). autoCommit then cannot tell which
+    // files the call changed and falls back to committing every uncommitted file.
+    initRepo();
+    const before = Number(git(['rev-list', '--count', 'HEAD']));
+    writeFileSync(join(dir, 'stray.md'), '+1\ta hand edit nobody committed\n');
+
+    // The user's and the system's git config stay out: a commit signer or a hook set
+    // there may write its own temp file under TMPDIR and make every commit fail here.
+    const r = nb(['add', 'patcher', 'a lesson'], {
+      TMPDIR: join(dir, 'no-such-tmp'),
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+    });
+    expect(r.code).toBe(0);
+    expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before + 1);
+    expect(git(['log', '-1', '--format=%s'])).toBe('nb add patcher');
+    expect(git(['show', '--name-only', '--format=', 'HEAD']).split('\n').sort()).toEqual(['patcher.md', 'stray.md']);
+    expect(git(['status', '--porcelain'])).toBe('');
+  });
+
+  test('the commit subject names the first operand, never a flag', () => {
+    // Issue #3596 item 3: `nb move --json a b x` used to commit as `nb move --json`.
+    initRepo();
+    expect(nb(['add', '--json', 'patcher', 'a lesson about widgets']).code).toBe(0);
+    expect(git(['log', '-1', '--format=%s'])).toBe('nb add patcher');
+    expect(nb(['move', '--json', 'patcher', 'other', 'widgets']).code).toBe(0);
+    expect(git(['log', '-1', '--format=%s'])).toBe('nb move patcher');
+    expect(nb(['rm', '--reason', 'wrong', 'other', 'widgets']).code).toBe(0); // the flag's value is skipped too
+    expect(git(['log', '-1', '--format=%s'])).toBe('nb rm other');
+    expect(nb(['add', '--', 'third', 'a lesson after the end of the options']).code).toBe(0);
+    expect(git(['log', '-1', '--format=%s'])).toBe('nb add third');
+  });
+
   test('NB_GIT_AUTOCOMMIT=0 disables the auto-commit', () => {
     initRepo();
     const before = Number(git(['rev-list', '--count', 'HEAD']));
@@ -502,6 +561,15 @@ describe('bin/nb.js — placement advisories on `add` (stderr only, never a refu
     expect(r.code).toBe(0);
     expect(r.err).toMatch(/advisory: fleet-global is written only by promotion/);
     expect(nb(['show', 'fleet-global']).out).toContain('host fact');
+  });
+
+  test('the fleet-global check ignores case: Fleet-Global warns too, and is silent for the curator', () => {
+    // Issue #3596 item 2: nb keeps the case of a shelf name, and on a case-insensitive
+    // filesystem Fleet-Global.md is the same file as fleet-global.md.
+    const r = nbErr(['add', 'Fleet-Global', 'host fact'], {});
+    expect(r.code).toBe(0);
+    expect(r.err).toMatch(/advisory: fleet-global is written only by promotion/);
+    expect(nbErr(['add', 'Fleet-Global', 'another host fact'], { KOOKR_NB_CURATOR: '1' }).err).toBe('');
   });
 
   test('asking for help on add writes nothing, so it gets no advisory', () => {

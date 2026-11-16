@@ -207,8 +207,8 @@ function autoCommit(dir, argv, before) {
       }
     }
     const cmd = (argv[0] ?? '').trim();
-    const role = (argv[1] ?? '').trim();
-    const msg = `nb ${cmd}${role ? ` ${role}` : ''}`.slice(0, 72);
+    const shelf = (firstOperand(argv) ?? '').trim();
+    const msg = `nb ${cmd}${shelf ? ` ${shelf}` : ''}`.slice(0, 72);
     // With a pathspec, `git commit` records only those paths, whatever else is staged.
     // During a merge git refuses a pathspec, so the commit concludes the merge instead.
     run(['commit', '--quiet', '-m', msg, ...(merging ? [] : pathspec)]);
@@ -279,6 +279,23 @@ async function foreignProjectShelf(shelf, slug) {
 const NB_VALUE_FLAGS = new Set(['--reason', '--note', '--limit', '--since']);
 
 /**
+ * The first operand after the command word (for most commands, the shelf), or
+ * undefined when there is none. Skips options (`--json`, `--reason <value>`),
+ * the way the package's own parser reads them: a token starting with `--` is an
+ * option, and a value flag also consumes the token after it. Short tokens such
+ * as `-1` are operands, as they are for the package. A `--` terminator is
+ * skipped like an option; the operand after it is never flag-shaped in a call
+ * that succeeds, because a shelf name cannot start with `-`.
+ */
+function firstOperand(argv) {
+  for (let i = 1; i < argv.length; i++) {
+    if (NB_VALUE_FLAGS.has(argv[i])) i++;
+    else if (!argv[i].startsWith('--')) return argv[i];
+  }
+  return undefined;
+}
+
+/**
  * True when the call is a help request for a subcommand (`nb add <shelf> --help`
  * or `-h`). Since agent-notebook 0.8.0 such a call prints usage, exits 0 and
  * writes nothing, so nothing after it should treat it as a notebook change.
@@ -302,17 +319,12 @@ function isHelpRequest(argv) {
 async function adviseOnAdd(argv) {
   try {
     if ((argv[0] ?? '').trim() !== 'add') return;
-    // First positional after `add`; `--reason`/`--note` take a value that is not the shelf.
-    let shelf;
-    for (let i = 1; i < argv.length; i++) {
-      if (argv[i] === '--reason' || argv[i] === '--note') i++;
-      else if (!argv[i].startsWith('--')) {
-        shelf = argv[i];
-        break;
-      }
-    }
+    const shelf = firstOperand(argv);
     if (!shelf) return;
-    if (shelf === GLOBAL_SHELF) {
+    // nb keeps the case of a shelf name, so `Fleet-Global` is a separate file on Linux,
+    // but on a case-insensitive filesystem (macOS, Windows) it is the same file as
+    // fleet-global. Either way it is a write to the global layer, so it gets the advisory.
+    if (shelf.toLowerCase() === GLOBAL_SHELF) {
       if (!process.env.KOOKR_NB_CURATOR) {
         console.error(
           `[nb] advisory: ${GLOBAL_SHELF} is written only by promotion (the curator run); ` +
