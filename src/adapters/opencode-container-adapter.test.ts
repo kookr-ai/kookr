@@ -264,6 +264,19 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
     expect(store.getTask(task.id)!.tokenUsage).toMatchObject({ inputTokens: 5545 * 2, outputTokens: 4, cacheReadTokens: 1792 * 2 });
   });
 
+  test('stop never lowers the usage already recorded when the baseline file is lost', async () => {
+    const task = newTask();
+    store.updateTokenUsage(task.id, { inputTokens: 1_000_000, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 5 });
+    const a = make();
+    const h = await a.launch(task.id, 'first', src);
+    rmSync(join(root, 'data', task.id, 'usage-baseline.json'), { force: true });
+    const dir = join(root, 'data', task.id, 'data', 'opencode');
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(resolve(__dirname, '__fixtures__', 'opencode-session.db'), join(dir, 'opencode.db'));
+    await a.stop(h);
+    expect(store.getTask(task.id)!.tokenUsage).toMatchObject({ inputTokens: 1_000_000, costUsd: 5 });
+  });
+
   test('stop still stops the container when the A2A cancel fails (A2A is advisory)', async () => {
     const a = make();
     const h = await a.launch(newTask().id, 'x', src);

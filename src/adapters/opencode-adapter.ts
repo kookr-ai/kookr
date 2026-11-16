@@ -602,8 +602,10 @@ export class OpenCodeAdapter implements AgentAdapter {
         root: this.dataRoot,
         statusOf: (id) => this.taskStore.getTask(id)?.status,
         activeTaskIds: active,
+        // The backend probe is awaited FIRST: the in-memory checks must be read after it, right before the removal,
+        // or a resume launch that registers while the probe runs would have its data deleted under it.
         isActive: async (id) =>
-          id === launchingTaskId || [...this.tmuxToTaskId.values()].includes(id) || (await this.hasLiveSession(id)),
+          (await this.hasLiveSession(id)) || id === launchingTaskId || [...this.tmuxToTaskId.values()].includes(id),
         maxAgeMs: this.dataMaxAgeMs,
         doneTtlMs: this.dataDoneTtlMs,
         maxBytes: this.dataMaxBytes,

@@ -683,6 +683,7 @@ describe('OpenCodeAdapter', () => {
   describe('a session adopted after a Kookr restart', () => {
     const FIXTURE_DB = fileURLToPath(new URL('./__fixtures__/opencode-session.db', import.meta.url));
     const DAY = 86_400_000;
+    const FIXTURE_SESSION = 'ses_e40a99e51ffeNDXOMdLPpnyMew';
     const taskDirOf = (taskId: string) => join(sessionRoot, 'opencode-data', taskId);
     /** Launch with one adapter, stage its DB and age its task dir, then hand back a "restarted" adapter. */
     async function launchThenRestart(ageDays: number, overrides: Partial<OpenCodeAdapterOptions> = {}) {
@@ -747,6 +748,51 @@ describe('OpenCodeAdapter', () => {
       taskStore.terminateTask(task.id, { reason: 'unknown' } as never);
       await makeAdapter({ dataMaxAgeDays: 14 }).sweepTaskData();
       expect(existsSync(taskDirOf(task.id))).toBe(true);
+    });
+
+    test('hook events refresh the last-use time at most every 5 minutes', async () => {
+      const { task, id, restarted } = await launchThenRestart(3);
+      const dir = taskDirOf(task.id);
+      const realNow = Date.now();
+      const refreshed = () => statSync(dir).mtimeMs > realNow - DAY;
+      const event = () => restarted.injectHookEvent(id, hook('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' } }));
+      event();
+      await vi.waitFor(() => expect(refreshed()).toBe(true));
+      const past = new Date(realNow - 3 * DAY);
+      utimesSync(dir, past, past);
+      event(); // within the interval: no refresh
+      await new Promise((r) => setTimeout(r, 200));
+      expect(refreshed()).toBe(false);
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(realNow + 5 * 60_000 + 1);
+      try {
+        event(); // past the interval: refreshed again
+        await vi.waitFor(() => expect(refreshed()).toBe(true));
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    test('a resume launch that starts while the sweep probes the backend keeps its data', async () => {
+      const { task, id, restarted } = await launchThenRestart(15, { dataMaxAgeDays: 14 });
+      await backend.killSession(id);
+      taskStore.terminateTask(task.id, { reason: 'unknown' } as never);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const probe = vi.spyOn(backend, 'isAlive').mockImplementation(async () => { await gate; return false; });
+      try {
+        const sweep = restarted.sweepTaskData();
+        await vi.waitFor(() => expect(probe).toHaveBeenCalled());
+        // The operator reopens the task while the sweep waits on the backend (it has already read the status).
+        taskStore.reopenTask(task.id);
+        const resumed = restarted.launch(task.id, 'x', '/workspace', { sessionId: FIXTURE_SESSION }, { tmuxName: 'kookr-oc2' });
+        release();
+        await sweep;
+        const id2 = await resumed;
+        expect(backend.sessions.get(id2)!.spec.args).toEqual(['--session', FIXTURE_SESSION, '/workspace']);
+        expect(existsSync(join(taskDirOf(task.id), 'data', 'opencode', 'opencode.db'))).toBe(true);
+      } finally {
+        probe.mockRestore();
+      }
     });
   });
 
