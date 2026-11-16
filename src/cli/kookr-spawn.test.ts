@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { createServer, type Server } from 'node:http';
 import {
   EXIT_NO_SERVER,
@@ -46,15 +46,23 @@ import {
   resolveCwd,
   resolveParentTaskId,
   resolvePrompt,
+  resolvePromptSource,
   waitForTaskReady,
 } from '../../bin/kookr-spawn.js';
 
 type StdinLike = NodeJS.ReadableStream & { isTTY?: boolean };
 
+/**
+ * A pipe carrying `text`. `isTTY` stays unset, as Node leaves it on a real
+ * pipe (#3959: it is never `false`).
+ */
 function pipedStdin(text: string): StdinLike {
-  const stream = Readable.from(Buffer.from(text, 'utf-8')) as StdinLike;
-  stream.isTTY = false;
-  return stream;
+  return Readable.from(Buffer.from(text, 'utf-8')) as StdinLike;
+}
+
+/** A pipe that stays open: nothing is written until the test does. */
+function openPipeStdin(): PassThrough & { isTTY?: boolean } {
+  return new PassThrough() as PassThrough & { isTTY?: boolean };
 }
 
 function ttyStdin(): StdinLike {
@@ -623,6 +631,12 @@ describe('resolvePrompt', () => {
     expect(prompt).toBe('from stdin');
   });
 
+  it('names stdin as the prompt source for a pipe and nothing for a terminal', () => {
+    const args = parseArgs([]);
+    expect(resolvePromptSource(args, pipedStdin('x'))).toBe('stdin');
+    expect(resolvePromptSource(args, ttyStdin())).toBeNull();
+  });
+
   it('reads --prompt-file', async () => {
     const path = join(tmpRoot, 'p.md');
     await writeFile(path, 'from file\n');
@@ -658,6 +672,43 @@ describe('resolvePrompt', () => {
     await expect(resolvePrompt({ args, stdin: pipedStdin('wrapped'), env: {} })).resolves.toBe('wrapped');
   });
 
+  // #3861: a parent that keeps stdin open as a silent pipe must not hang a
+  // playbook launch forever.
+  it('gives up on a silent open stdin for a playbook launch and warns once', async () => {
+    const args = parseArgs(['--playbook', 'implement-github-issue.md', '--param', 'issueSelector=1']);
+    const stdin = openPipeStdin();
+    const warn = vi.fn();
+    await expect(
+      resolvePrompt({ args, stdin, env: {}, warn, stdinFirstByteTimeoutMs: 20 }),
+    ).resolves.toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/no data on stdin after 20ms.*<\/dev\/null/);
+    // The abandoned pipe is destroyed so it cannot keep the process alive.
+    expect(stdin.destroyed).toBe(true);
+  });
+
+  it('keeps reading to EOF once the first stdin byte arrives in time', async () => {
+    const args = parseArgs(['--playbook', 'phase.md', '--param', 'k=v']);
+    const stdin = openPipeStdin();
+    const warn = vi.fn();
+    const pending = resolvePrompt({ args, stdin, env: {}, warn, stdinFirstByteTimeoutMs: 50 });
+    stdin.write('slow ');
+    // The rest and EOF arrive well after the first-byte window has passed.
+    setTimeout(() => { stdin.end('producer'); }, 150);
+    await expect(pending).resolves.toBe('slow producer');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not time out stdin when there is no playbook (stdin is the only prompt source)', async () => {
+    const args = parseArgs([]);
+    const stdin = openPipeStdin();
+    const warn = vi.fn();
+    const pending = resolvePrompt({ args, stdin, env: {}, warn, stdinFirstByteTimeoutMs: 10 });
+    setTimeout(() => { stdin.end('late prompt'); }, 100);
+    await expect(pending).resolves.toBe('late prompt');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('still rejects an empty --prompt-file for a playbook launch', async () => {
     const path = join(tmpRoot, 'empty.md');
     await writeFile(path, '  \n');
@@ -666,10 +717,18 @@ describe('resolvePrompt', () => {
   });
 
   it('rejects empty prompt', async () => {
-    const args = parseArgs([]);
+    const args = parseArgs(['   ']);
     await expect(
-      resolvePrompt({ args, stdin: pipedStdin('   \n\n'), env: {} }),
+      resolvePrompt({ args, stdin: ttyStdin(), env: {} }),
     ).rejects.toThrow(/empty/);
+  });
+
+  // #3959: `</dev/null` (or a pipe closed with nothing written) is no prompt,
+  // reported as such rather than as an empty prompt.
+  it('reports an empty or blank stdin as no prompt when there is no playbook', async () => {
+    const args = parseArgs([]);
+    await expect(resolvePrompt({ args, stdin: pipedStdin(''), env: {} })).rejects.toThrow(/no prompt provided/);
+    await expect(resolvePrompt({ args, stdin: pipedStdin('   \n\n'), env: {} })).rejects.toThrow(/no prompt provided/);
   });
 
   it('rejects NUL byte in prompt', async () => {
