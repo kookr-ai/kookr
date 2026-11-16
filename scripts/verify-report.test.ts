@@ -82,6 +82,20 @@ describe('buildVerifyReport', () => {
       testFiles: ['src/a.test.ts', 'src/b.test.ts', 'src/c.test.ts', 'src/d.test.ts', 'src/e.test.ts', 'src/z.test.ts'],
     }]);
   });
+
+  it('never gives the unit run\'s files to another lane, as when a flaky unit lane passed on re-run', () => {
+    const report = buildVerifyReport({
+      exitCode: 1,
+      cwd: '/repo',
+      steps: steps([
+        ['start', 'unit_lane', 'Running tests', 'unit_tests'],
+        ['pass', 'unit_lane', 'Running tests', 'unit_tests'],
+        ['start', 'smoke_lane', 'Running local-only smoke gates', 'pnpm test:smoke'],
+      ]),
+      unitSummary: summaryOf('/repo', ['src/flaky.test.ts']),
+    });
+    expect(report.failures).toEqual([{ lane: 'smoke_lane', step: 'Running local-only smoke gates', command: 'pnpm test:smoke' }]);
+  });
 });
 
 describe('failedTestFiles', () => {
@@ -179,8 +193,9 @@ describe('verify.sh report file (KOOKR_VERIFY_REPORT_FILE)', () => {
     expect(r.status).not.toBe(0);
     const lanes = (r.report.failures as Array<{ lane: string }>).map((f) => f.lane).sort();
     expect(lanes).toEqual(['hooks_lane', 'unit_lane']);
-    const unit = (r.report.failures as Array<{ lane: string; testFiles?: string[] }>).find((f) => f.lane === 'unit_lane');
-    expect(unit?.testFiles).toEqual(files);
+    const failures = r.report.failures as Array<{ lane: string; testFiles?: string[] }>;
+    expect(failures.find((f) => f.lane === 'unit_lane')?.testFiles).toEqual(files);
+    expect(failures.find((f) => f.lane === 'hooks_lane')).not.toHaveProperty('testFiles');
   });
 
   it('leaves out the test files when the run reported an unhandled error', () => {

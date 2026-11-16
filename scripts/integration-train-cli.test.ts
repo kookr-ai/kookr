@@ -6,7 +6,7 @@
 // instance lock, and the refusal to reset a directory the train does not own.
 // `gh` and `kookr` are stubbed on PATH; git runs only in mkdtemp directories.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -372,6 +372,30 @@ describe('integration train CLI', () => {
     const read = (name: string) => JSON.parse(readFileSync(join(s.stateDir, name), 'utf8')) as { status: string };
     expect(read(`verify-${short}.run1.report.json`)).toEqual({ status: 'failed', failures: [{ lane: 'smoke_lane' }] });
     expect(read(`verify-${short}.report.json`)).toEqual({ status: 'passed' });
+  }, 120_000);
+
+  it('prunes each old verify log together with its report, and keeps the reports of the logs it keeps', () => {
+    const s = makeSandbox();
+    s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    mkdirSync(s.stateDir, { recursive: true });
+    // 25 old log/report pairs, oldest first; the cycle's own verify adds one more.
+    for (let i = 0; i < 25; i += 1) {
+      const name = `verify-old${String(i).padStart(2, '0')}`;
+      for (const ext of ['.log', '.report.json']) {
+        const f = join(s.stateDir, `${name}${ext}`);
+        writeFileSync(f, '{}');
+        const t = new Date(Date.UTC(2026, 0, 1, 0, i));
+        utimesSync(f, t, t);
+      }
+    }
+    expect(s.cycle(['--verify-cmd', 'true']).status).toBe(0);
+    // 20 logs kept: the cycle's and old06..old24; old00..old05 pruned with their reports.
+    for (let i = 0; i < 6; i += 1) {
+      expect(existsSync(join(s.stateDir, `verify-old0${i}.log`))).toBe(false);
+      expect(existsSync(join(s.stateDir, `verify-old0${i}.report.json`))).toBe(false);
+    }
+    expect(existsSync(join(s.stateDir, 'verify-old06.log'))).toBe(true);
+    expect(existsSync(join(s.stateDir, 'verify-old06.report.json'))).toBe(true);
   }, 120_000);
 
   it('removes a stale report before verifying a SHA again', () => {

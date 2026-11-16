@@ -42,7 +42,8 @@ record_step() {
   [ -n "$VERIFY_REPORT_DIR" ] || return 0
   local event=$1 lane=$2 label=$3
   shift 3
-  printf '%s\t%s\t%s\t%s\n' "$event" "$lane" "$label" "$*" >> "$VERIFY_REPORT_DIR/steps"
+  # Bookkeeping only: a failed write must never turn a green step red.
+  printf '%s\t%s\t%s\t%s\n' "$event" "$lane" "$label" "$*" >> "$VERIFY_REPORT_DIR/steps" 2>/dev/null || true
 }
 
 # The lane is the function that called run_lane (static_checks, unit_lane, ...).
