@@ -57,6 +57,48 @@ describe('hasOffDefault', () => {
     expect(hasOffDefault(row('KOOKR_X_ENABLED', 'unset', '`true`, `1`, or `yes`'))).toBe(true);
   });
 
+  // Issue #3942: phrasings that used to pass unflagged.
+  it.each([
+    ['unset', '`1`'],
+    ['`0`', '`true`'],
+    ['unset', '`1` / `true` / `yes` / `on`'],
+    ['unset', '`true`, `1`, or `yes`'],
+    ['not set', '`1` to enable'],
+    ['Not set (off)', 'x'],
+    ['**unset**', '`1`'],
+  ])('default %s with only truthy accepted values %s is off', (def, accepted) => {
+    expect(hasOffDefault(row('KOOKR_X', def, accepted))).toBe(true);
+  });
+
+  it.each(['unset', 'not set'])('treats a KOOKR_ENABLE_* switch with default %s as off', (def) => {
+    expect(hasOffDefault(row('KOOKR_ENABLE_THING', def, 'Any non-empty value'))).toBe(true);
+  });
+
+  it.each(['unset', 'not set', '`0`'])('treats a default %s as off when the Effect cell starts with Opt-in', (def) => {
+    expect(hasOffDefault(row('KOOKR_X', def, 'Any non-empty value', 'Opt-in. Turns the thing on.'))).toBe(true);
+  });
+
+  // Calling itself opt-in is the row's own word that it is a switch, so it
+  // counts even for a value-carrying row (the audit-archive pruning caps).
+  it('treats a numeric row whose Effect cell starts with Opt-in as off', () => {
+    expect(hasOffDefault(row('KOOKR_X_MAX_COUNT', 'unset', 'Non-negative integer', 'Opt-in cap for archives.'))).toBe(true);
+  });
+
+  it('does not read a later mention of opt-in, or one with a real default, as off', () => {
+    expect(hasOffDefault(row('KOOKR_X', 'unset', 'Any non-empty value', 'Now redundant; existing opt-in configs keep working.'))).toBe(false);
+    expect(hasOffDefault(row('KOOKR_X', '`86400000`', 'Positive integer ms', 'Opt-in ceiling for links.'))).toBe(false);
+  });
+
+  // The guard reaches switches only: a row that carries a value (credential,
+  // URL, ID, number) is configuration, even when its Effect says "Enables".
+  it.each([
+    ['KOOKR_OPENROUTER_API_KEY', 'OpenRouter API key', 'Enables the OpenRouter provider.'],
+    ['KOOKR_WEBHOOK_URL', 'Public HTTP or HTTPS URL', 'Enables outbound notifications.'],
+    ['KOOKR_SIGNAL_CHAT_ID', 'Numeric Telegram chat ID', 'Enables Telegram delivery.'],
+  ])('does not read the value-carrying row %s as an off switch', (name, accepted, effect) => {
+    expect(hasOffDefault(row(name, 'unset', accepted, effect))).toBe(false);
+  });
+
   it.each([
     ['on (interactive loopback)', '`0` to disable'],
     ['on for port 4800, off otherwise', '`1` to enable'],
@@ -66,6 +108,10 @@ describe('hasOffDefault', () => {
     ['unset', '`true` to assert'],
     ['`0`', 'Non-negative integer cents'],
     ['`0`', '`0` disables, a positive number sets the limit'],
+    ['unset', '`1` or a path'],
+    ['`1`', '`1` / `true`'],
+    ['`0.5`', '`1`'],
+    ['`00`', '`1` to enable'],
   ])('default %s with accepted %s is not off', (def, accepted) => {
     expect(hasOffDefault(row('KOOKR_X', def, accepted))).toBe(false);
   });
@@ -81,6 +127,11 @@ describe('isKillSwitch', () => {
 
   it('is a kill switch when the only accepted value turns something off', () => {
     expect(isKillSwitch(row('KOOKR_GROK_HALT', 'unset', '`true` to halt'))).toBe(true);
+  });
+
+  it('keeps a kill switch with a bare truthy accepted value out of the check', () => {
+    const md = doc('| `KOOKR_THING_DISABLED` | unset | `1` | Turns the thing off. |');
+    expect(checkDefaultOn(md, NONE).issues).toEqual([]);
   });
 
   it('is not a kill switch when the value enables the feature', () => {
@@ -150,6 +201,21 @@ describe('checkDefaultOn', () => {
     expect(flagged.every((name) => GRANDFATHERED_DEFAULT_OFF.has(name))).toBe(true);
     // The ones issue #3937 turned on no longer read as off by default.
     for (const name of ['KOOKR_LUCY_OPERATOR', 'KOOKR_LUCY_LAUNCH', 'KOOKR_POST_RESUME_REFILL', 'KOOKR_RESOURCE_WATCHDOG']) {
+      expect(flagged).not.toContain(name);
+    }
+    // Rows only the wider check of issue #3942 recognises.
+    expect(flagged).toEqual(
+      expect.arrayContaining([
+        'KOOKR_OPENCODE_ALLOW_ANY_VERSION',
+        'KOOKR_WEBHOOK_ALLOW_PRIVATE',
+        'KOOKR_HOSTED_RELAY_OPS_GATES_MET',
+        'KOOKR_RELAY_ALLOW_INSECURE_BIND',
+        'KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT',
+        'KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS',
+      ]),
+    );
+    // Credential, token and URL rows are configuration, not switches.
+    for (const name of ['KOOKR_OPENROUTER_API_KEY', 'KOOKR_TELEGRAM_BOT_TOKEN', 'KOOKR_WEBHOOK_URL']) {
       expect(flagged).not.toContain(name);
     }
   });

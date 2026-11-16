@@ -12,7 +12,9 @@
  *   Off by default: needs a credential or service …
  *
  * The guard reads every four-column table row of that document, decides
- * whether the row documents a feature switch whose default is off, and fails
+ * whether the row documents a feature switch whose default is off (see
+ * `hasOffDefault` for how far that reaches: switches, not rows that carry a
+ * key, URL or number), and fails
  * on such a row unless it carries the phrase or is one of the switches that
  * were already off when the rule was written (`GRANDFATHERED_DEFAULT_OFF`).
  * Kill switches (settings that turn something off, or dry-run knobs) are
@@ -28,8 +30,10 @@ export const OFF_BY_DEFAULT_REASON =
 /**
  * Feature switches that were already off by default when the rule landed
  * (16 Nov 2026). Issue #3937 turned the finished ones on; those left here stay
- * off for a reason recorded in its pull request (#3945).
- * Do not add names here: a new switch ships on, or its row says why not.
+ * off for a reason recorded in its pull request (#3945). The last group was
+ * already off too; the wider check of issue #3942 is what first recognised
+ * them as switches. Do not add names here for a new switch: it ships on, or
+ * its row says why not.
  * Removing a name once its switch is on (or has its reason) is welcome; a name
  * whose row is no longer off by default is reported as stale, not as a failure.
  */
@@ -63,6 +67,14 @@ export const GRANDFATHERED_DEFAULT_OFF: ReadonlySet<string> = new Set([
   'KOOKR_MAX_HOST_LOAD_PER_CPU',
   'KOOKR_FINDING_REVIEW_ENABLED',
   'KOOKR_FINDING_REVIEW_SAMPLER_ENABLED',
+  // Recognised by the wider check of issue #3942: safety overrides and
+  // acknowledgements, and audit-archive pruning caps (pruning deletes data).
+  'KOOKR_OPENCODE_ALLOW_ANY_VERSION',
+  'KOOKR_WEBHOOK_ALLOW_PRIVATE',
+  'KOOKR_HOSTED_RELAY_OPS_GATES_MET',
+  'KOOKR_RELAY_ALLOW_INSECURE_BIND',
+  'KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT',
+  'KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS',
 ]);
 
 export interface EnvVarRow {
@@ -134,7 +146,7 @@ export function parseEnvVarRows(markdown: string): EnvVarRow[] {
 }
 
 function normalize(cell: string): string {
-  return cell.replace(/`/g, '').trim().toLowerCase();
+  return cell.replace(/[`*]/g, '').trim().toLowerCase();
 }
 
 /**
@@ -147,18 +159,49 @@ export function isKillSwitch(row: EnvVarRow): boolean {
   return /\bto (disable|halt|suppress)\b/.test(accepted) && !/\bto enable\b/.test(accepted);
 }
 
-/** True when the row's default leaves the switch off. */
+/**
+ * A default cell that leaves the variable unset: `unset`, `not set` or `0`
+ * (but not a number such as `0.5` or `00`).
+ */
+const UNSET_DEFAULT = /^(unset|not set|0(?![\d.]))\b/;
+
+/** Values that turn a boolean switch on. */
+const TRUTHY_VALUES: ReadonlySet<string> = new Set(['1', 'true', 'yes', 'on']);
+
+/**
+ * True when the accepted-values cell lists only values that turn a switch on,
+ * such as `` `1` `` or `` `1` / `true` / `yes` ``, with no other words.
+ */
+function acceptsOnlyTruthyValues(accepted: string): boolean {
+  const tokens = normalize(accepted)
+    .split(/\s*(?:[/,|]|\bor\b)\s*/)
+    .filter((token) => token !== '');
+  return tokens.length > 0 && tokens.every((token) => TRUTHY_VALUES.has(token));
+}
+
+/**
+ * True when the row's default leaves the switch off.
+ *
+ * How far the check reaches (issue #3942): it reads only what a row says
+ * about itself as a switch. With an unset, `not set` or `0` default, a row is
+ * off when it is named as a switch (`*_ENABLED`, `KOOKR_ENABLE_*`), when its
+ * accepted values only turn something on (`` `1` / `true` ``) or say how to
+ * enable it ("`1` to enable"), or when its Effect cell starts by calling it
+ * opt-in. Any other wording in the Effect cell is not read. A row that only
+ * carries a value (an API key, token, URL, ID or number) is configuration,
+ * so its Effect cell saying "Enables the OpenRouter provider" does not flag it.
+ */
 export function hasOffDefault(row: EnvVarRow): boolean {
   const def = normalize(row.defaultValue);
   if (/^(off|disabled|false)\b/.test(def)) return true;
-  if (/^(unset|0)\s*\([^)]*\b(off|disabled)\b[^)]*\)/.test(def)) return true;
-  if (/^unset\b/.test(def) && /_ENABLED$/.test(row.name)) return true;
-  // A bare `unset` or `0` default is off when the accepted values turn it on.
-  if (/^(unset|0)\b/.test(def)) {
-    const accepted = normalize(row.accepted);
-    return /\b(to enable|enables?|to opt in)\b|=\s*on\b/.test(accepted);
-  }
-  return false;
+  if (/^(unset|not set|0(?![\d.]))\s*\([^)]*\b(off|disabled)\b[^)]*\)/.test(def)) return true;
+  if (!UNSET_DEFAULT.test(def)) return false;
+  if (/^unset\b|^not set\b/.test(def) && /(^KOOKR_ENABLE_|_ENABLED$)/.test(row.name)) return true;
+  if (/^opt[- ]in\b/.test(normalize(row.effect))) return true;
+  if (acceptsOnlyTruthyValues(row.accepted)) return true;
+  // A bare unset or `0` default is off when the accepted values turn it on.
+  const accepted = normalize(row.accepted);
+  return /\b(to enable|enables?|to opt in)\b|=\s*on\b/.test(accepted);
 }
 
 /** A documented feature switch whose default is off. */
