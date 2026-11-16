@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
@@ -241,6 +241,27 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
     const sessions = store.getTask(task.id)!.sessions;
     expect(sessions.find((s) => s.tmuxSession === resumed)?.resumedConversationId).toBe('ses_abc123');
     expect(sessions.find((s) => s.tmuxSession === fresh)?.resumedConversationId).toBeUndefined();
+  });
+
+  // #3527: a fresh relaunch (a Ralph iteration) wipes the task's DB, so its usage must add up, not be replaced.
+  test('a fresh relaunch adds its usage to the task, and a restarted adapter stop does not count it twice', async () => {
+    const fixtureDb = resolve(__dirname, '__fixtures__', 'opencode-session.db');
+    const stageDb = (taskId: string) => {
+      const dir = join(root, 'data', taskId, 'data', 'opencode');
+      mkdirSync(dir, { recursive: true });
+      copyFileSync(fixtureDb, join(dir, 'opencode.db'));
+    };
+    const task = newTask();
+    const a = make();
+    const first = await a.launch(task.id, 'first', src);
+    stageDb(task.id);
+    await a.stop(first);
+    expect(store.getTask(task.id)!.tokenUsage).toMatchObject({ inputTokens: 5545, outputTokens: 2, cacheReadTokens: 1792 });
+
+    const second = await a.launch(task.id, 'again', src);
+    stageDb(task.id);
+    await make().stop(second);
+    expect(store.getTask(task.id)!.tokenUsage).toMatchObject({ inputTokens: 5545 * 2, outputTokens: 4, cacheReadTokens: 1792 * 2 });
   });
 
   test('stop still stops the container when the A2A cancel fails (A2A is advisory)', async () => {
