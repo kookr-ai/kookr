@@ -42,8 +42,8 @@ async function openRelationshipsMenu(page: Page) {
 }
 
 // The facts column (Share, dependencies) docks beside the conversation only
-// when the reading pane is 820 px or wider; from #3561 slice 5a the labelled
-// navigation leaves less than that between 1280 and about 1440 px.
+// when the reading pane is 760 px or wider; from #3561 slice 5a the labelled
+// navigation leaves less than that between 1280 and about 1350 px.
 test.use({ viewport: { width: 1600, height: 950 } });
 
 test.beforeEach(async ({ request, page }) => {

@@ -129,7 +129,7 @@ test.describe('Accessibility smoke scans', () => {
   });
 
   test('share dialog has no axe violations and closes with Escape', async ({ page, request }) => {
-    // Share lives in the facts column, docked only on a pane of 820 px or more
+    // Share lives in the facts column, docked only on a pane of 760 px or more
     // (#3561 slice 5a: the labelled navigation narrows the pane at 1280 px).
     await page.setViewportSize({ width: 1600, height: 950 });
     await openSelectedTask(page, request);
