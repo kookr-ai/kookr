@@ -96,6 +96,10 @@ function makeSandbox(): Sandbox {
     `printf 'gh %s\\n' "$*" >> "${callLog}"`,
     'case "$*" in',
     `  *closingIssuesReferences*) cat "${ghData}/pr.json" ;;`,
+    // The pull request's existing comment bodies (#3913): ghData/comments-<n>.txt, none by default.
+    '  "api --paginate repos/{owner}/{repo}/issues/"*"/comments"*)',
+    '    n="${3%/comments}"; n="${n##*/}"',
+    `    if [ -f "${ghData}/comments-$n.txt" ]; then cat "${ghData}/comments-$n.txt"; fi ;;`,
     '  *nameWithOwner*) echo \'{"nameWithOwner":"acme/kookr"}\' ;;',
     '  "api repos/{owner}/{repo}/issues/"*)',
     '    n="${2##*/}"',
@@ -204,6 +208,27 @@ describe('integration train CLI', () => {
     expect(s.calls().filter((c) => c.startsWith('gh issue close 42 '))).toHaveLength(1);
     // nothing was wrong, so nothing is signalled (no alert, no "recovered")
     expect(s.signals()).toEqual([]);
+  }, 120_000);
+
+  it('comments once on the promoted pull request, and not when GitHub already holds that comment (#3913)', () => {
+    const s = makeSandbox();
+    const head = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    expect(s.cycle().status).toBe(0);
+    expect(s.ref('main')).toBe(head);
+    const reads = s.calls().filter((c) => c.startsWith('gh api --paginate repos/{owner}/{repo}/issues/1/comments'));
+    expect(reads).toHaveLength(1);
+    const posts = s.calls().filter((c) => c.startsWith('gh pr comment 1 --body '));
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toContain('Integration train: promoted.');
+
+    // A restarted train whose comment already reached GitHub posts nothing.
+    const t = makeSandbox();
+    const again = t.commit('staging', { 'a.txt': '1' }, 'one (#2)');
+    writeFileSync(join(t.ghData, 'comments-2.txt'), `an earlier report\n<!-- kookr-integration-train:promoted:${again} -->\n`);
+    expect(t.cycle().status).toBe(0);
+    expect(t.ref('main')).toBe(again);
+    expect(t.calls().filter((c) => c.startsWith('gh api --paginate repos/{owner}/{repo}/issues/2/comments'))).toHaveLength(1);
+    expect(t.calls().filter((c) => c.startsWith('gh pr comment '))).toEqual([]);
   }, 120_000);
 
   it('reverts the commit whose tree fails the verify command', () => {

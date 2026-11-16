@@ -100,6 +100,14 @@ integration branch is configured.
 If it exits 3 with `PR #<n> conflicts with <base>`, rebase on `origin/<base>`,
 push, get a new review verdict if the diff changed, and run `kookr merge` again.
 
+Read the `kookr-merge: summary:` block at the end of the output (#3913). On
+success it gives the merge commit and what the integration train does next; the
+task is done then and does not wait for `main`. On a refusal it names the gate,
+its evidence and the exact next command: run that command. Later, the train
+comments on the pull request when the change is promoted to `main` or reverted
+(see `docs/reference/integration-train.md`, "Where to read what happened to a
+pull request").
+
 The wrapper first retargets a PR aimed at `main` to `staging` (the integration
 branch named in `.kookr/delivery-gate.json`), then waits for checks and
 squash-merges into `staging` and deletes the head branch. It refuses to merge a

@@ -134,6 +134,28 @@ quotes and heredocs are not commands, so a commit message that mentions
 `kookr merge <PR> --repo <owner/name>`, which always runs the merge wrapper of
 the deployed production checkout. `kookr merge` itself is always allowed.
 
+## Pull-Request Delivery Note
+
+`pr-create-delivery-note.sh` is a `PostToolUse` hook on `Bash` (issue #3913).
+`gh pr create` prints only the new pull request's URL, so an agent opening a
+pull request against `main` in a repository that merges through an integration
+branch is not told that this is expected, and may change the base or merge with
+`gh`. After such a `gh pr create`, the hook adds one note to the agent's
+context: the pull request is open against `main`, which is expected;
+`kookr merge <PR> --repo <owner/name>` will retarget it to the integration
+branch and merge it there; the train then runs the full suite and moves `main`,
+and comments on the pull request; do not change the base and do not merge with
+`gh`. A pull request opened against the integration branch directly gets a note
+that this works but is not needed.
+
+It says nothing when the repository has no integration branch
+(`.kookr/delivery-gate.json` on `origin/main`), when `--repo` names another
+repository, when the base is any other branch (a stacked pull request), or when
+the output holds no pull-request URL (a failed create, `--web`). It reuses the
+word splitter of `merge-retarget-guard.mjs`, so a commit message that mentions
+`gh pr create` is not a pull request. It never blocks: it always exits 0, and a
+crash or a missing `node` prints nothing.
+
 ## Rm Dynamic Path Guard
 
 `rm-dynamic-path-guard.sh` is a `PreToolUse` hook on `Bash` that denies a

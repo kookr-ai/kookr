@@ -25,6 +25,7 @@ import {
   withPluginVersion,
   prNumberFromSubject,
   runTrainCycle,
+  trainPrCommentMarker,
 } from './lib/integration-train-core.js';
 
 // Every git call runs against mkdtemp directories with the repo's sanitized env
@@ -69,6 +70,8 @@ interface Harness {
   rejectPushesTo: Set<string>;
   issues: Map<number, ClosingIssue[]>;
   ghLog: string[];
+  /** Comments on each pull request, as GitHub would hold them across cycles and restarts. */
+  prComments: Map<number, string[]>;
   spawns: Array<{ idempotencyKey: string; prompt: string }>;
   notes: Array<{ kind: TrainEventKind; detail: string }>;
   healthyCalls: number;
@@ -120,6 +123,7 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
     rejectPushesTo: new Set<string>(),
     issues: new Map<number, ClosingIssue[]>(),
     ghLog: [] as string[],
+    prComments: new Map<number, string[]>(),
     spawns: [] as Array<{ idempotencyKey: string; prompt: string }>,
     notes: [] as Array<{ kind: TrainEventKind; detail: string }>,
     healthyCalls: 0,
@@ -170,6 +174,13 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
       },
       async commentIssue(n, body) {
         h.ghLog.push(`comment ${n}: ${body}`);
+      },
+      async commentPullRequest(pr, marker, body) {
+        // The contract of the real implementation: skip when a comment already carries the marker.
+        const list = h.prComments.get(pr) ?? [];
+        if (list.some((c) => c.includes(marker))) return;
+        list.push(body);
+        h.prComments.set(pr, list);
       },
     },
     spawner: { async spawn(req) { h.spawns.push(req); } },
@@ -871,6 +882,113 @@ describe('integration train cycle', () => {
     expect(h.ghLog.some((l) => l.startsWith('close 511'))).toBe(false);
     expect(h.state.verifiedGreen).toContain(head);
   });
+  describe('pull-request comments: what happened, why, what comes next (#3913)', () => {
+    it('comments once on each promoted pull request with the commit, the verified head and the time, and never again', async () => {
+      h = makeHarness();
+      h.issues.set(61, [{ number: 610, state: 'open' }]);
+      const first = h.commit('staging', { 'a.txt': '1' }, 'first (#61)');
+      const head = h.commit('staging', { 'b.txt': '2' }, 'second (#62)');
+      expect((await h.cycle()).outcome).toBe('promoted');
+
+      const [c61, ...more61] = h.prComments.get(61) ?? [];
+      expect(more61).toEqual([]);
+      expect(c61).toContain('**Integration train: promoted.**');
+      expect(c61).toContain(`reached \`main\` as ${first}`);
+      // A batch: the first PR was verified as part of the later head.
+      expect(c61).toContain(`passed on \`staging\` at ${head}, which contains this commit at 2026-01-01T00:00:00.000Z`);
+      expect(c61).toContain('Next: nothing. Issue(s) #610 closed.');
+      expect(c61).toContain(trainPrCommentMarker('promoted', first));
+      const [c62, ...more62] = h.prComments.get(62) ?? [];
+      expect(more62).toEqual([]);
+      expect(c62).toContain('passed on this commit at 2026-01-01T00:00:00.000Z');
+      expect(c62).toContain('Next: nothing.');
+
+      // Later cycles, idle or promoting something else, add nothing to these.
+      expect((await h.cycle()).outcome).toBe('idle');
+      h.commit('staging', { 'c.txt': '3' }, 'third (#63)');
+      expect((await h.cycle()).outcome).toBe('promoted');
+      expect(h.prComments.get(61)).toHaveLength(1);
+      expect(h.prComments.get(62)).toHaveLength(1);
+      expect(h.prComments.get(63)).toHaveLength(1);
+    });
+
+    it('does not comment when the promotion push is rejected, and comments once when the retry goes through', async () => {
+      h = makeHarness();
+      h.commit('staging', { 'a.txt': '1' }, 'one (#64)');
+      h.rejectMainPush = true;
+      expect((await h.cycle()).outcome).toBe('retry');
+      expect(h.prComments.get(64)).toBeUndefined();
+      expect((await h.cycle()).outcome).toBe('promoted');
+      expect(h.prComments.get(64)).toHaveLength(1);
+    });
+
+    it('comments once on a reverted pull request with the revert, a short failing tail and the fix task; never "promoted"', async () => {
+      h = makeHarness();
+      h.issues.set(72, [{ number: 720, state: 'open' }]);
+      h.commit('staging', { 'a.txt': '1' }, 'good (#71)');
+      const bad = h.commit('staging', { 'bad.txt': 'x' }, 'broken (#72)');
+      const after = h.commit('staging', { 'c.txt': '3' }, 'after (#73)');
+      expect((await h.cycle()).outcome).toBe('reverted');
+      const revertSha = h.originRef('staging');
+
+      const comments = h.prComments.get(72) ?? [];
+      expect(comments).toHaveLength(1);
+      const [c] = comments;
+      expect(c).toContain('**Integration train: reverted.**');
+      expect(c).toContain(`commit ${bad} failed the full test suite on \`staging\``);
+      expect(c).toContain(`reverted it with ${revertSha}`);
+      expect(c).toContain('AssertionError: bad.txt exists');
+      expect(c).toContain('Next: the train started fix task `train-fix-issue-720-1` (automatic re-land 1 of 3)');
+      expect(c).toContain('Issue(s) #720 stay open until then.');
+      expect(c).toContain(trainPrCommentMarker('reverted', bad));
+      expect(c).not.toContain('promoted');
+      // The PRs around it reached main and say so; the reverted one does not.
+      expect(h.prComments.get(71)?.[0]).toContain('promoted');
+      expect(h.prComments.get(73)?.[0]).toContain(`as ${after}`);
+
+      expect((await h.cycle()).outcome).toBe('idle');
+      expect(h.prComments.get(72)).toHaveLength(1);
+      expect(h.prComments.get(71)).toHaveLength(1);
+      expect(h.prComments.get(73)).toHaveLength(1);
+    });
+
+    it('says "needs a human" on the pull request once the fix budget is spent', async () => {
+      h = makeHarness();
+      h.issues.set(81, [{ number: 810, state: 'open' }]);
+      h.state.fixTasks['issue-810'] = MAX_AUTOMATIC_RELANDS;
+      h.commit('staging', { 'bad.txt': 'x' }, 'broken (#81)');
+      expect((await h.cycle()).outcome).toBe('reverted');
+      const [c] = h.prComments.get(81) ?? [];
+      expect(c).toContain(`Next: needs a human: ${MAX_AUTOMATIC_RELANDS} automatic fix task(s), the limit of ${MAX_AUTOMATIC_RELANDS}`);
+      expect(h.spawns).toEqual([]);
+    });
+
+    it('keeps the failing tail in the pull-request comment short', async () => {
+      h = makeHarness();
+      const bad = h.commit('staging', { 'bad.txt': 'x' }, 'broken (#82)');
+      const long = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join('\n');
+      const verify = h.deps.verify;
+      h.deps.verify = async (sha) => {
+        const r = await verify(sha);
+        return r.ok ? r : { ...r, tail: long };
+      };
+      expect((await h.cycle()).outcome).toBe('reverted');
+      const [c] = h.prComments.get(82) ?? [];
+      expect(c).toContain(bad);
+      expect(c).toContain('line 50');
+      expect(c).toContain('line 31');
+      expect(c).not.toContain('line 30\n');
+    });
+
+    it('a comment that fails to post does not stop the cycle', async () => {
+      h = makeHarness();
+      h.deps.github.commentPullRequest = async () => { throw new Error('gh: HTTP 502'); };
+      const head = h.commit('staging', { 'a.txt': '1' }, 'one (#91)');
+      expect((await h.cycle()).outcome).toBe('promoted');
+      expect(h.originRef('main')).toBe(head);
+    });
+  });
+
   describe('commits that reach main without the train (#3803)', () => {
     it('notices a direct merge, then verifies main once even though the integration branch equals it', async () => {
       h = makeHarness();

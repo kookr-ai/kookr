@@ -217,9 +217,10 @@ the `scripts/kookr-merge.sh` of the checkout you are in; a checkout whose branch
 predates the integration-branch support skips the retarget and merges straight
 into `main`, bypassing the train (that is how #3802 landed on `main`
 unverified). The plugin's `merge-retarget-guard` hook denies that case (#3803).
-Afterwards confirm the PR's base is `staging` (the output only prints
-`retargeted PR #<n> from main to staging` when it retargeted, so check the base
-itself). If the PR landed on `main` anyway, report it on the PR and its issue.
+Afterwards confirm the PR's base is `staging`: the `kookr-merge: summary:`
+block at the end of the output names the branch it merged into (#3913). If the
+PR landed on `main` anyway, report it on the PR and its issue. Whether the train
+later promoted or reverted the change is written as a comment on the PR.
 
 ```bash
 kookr merge <PR_NUMBER> --repo kookr-ai/kookr   # from the PR's own worktree:
