@@ -14422,6 +14422,25 @@ button.act-tool-entry:focus-visible {
 }
 .changes-head .changes-note { padding: 0; }
 .changes-row .changes-note { padding: 0; }
+/* #4024 slice 2: an edit opened from the conversation, above the list. */
+.changes-edit {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  max-height: 60%;
+  min-height: 0;
+  border-bottom: 2px solid var(--teal);
+}
+.changes-edit .diff-pane-body { max-height: 100%; }
+.changes-row.is-edit-target {
+  background: var(--bg-card);
+  box-shadow: inset 2px 0 0 var(--teal);
+}
+.changes-edit-mark {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--teal);
+}
 .changes-list {
   list-style: none;
   margin: 0;

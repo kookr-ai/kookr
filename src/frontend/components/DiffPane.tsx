@@ -25,7 +25,7 @@ interface Props {
   /** Server start time captured at the moment the user opened this diff.
    *  If the response's serverStartedAt is later, a restart happened. */
   openedAt: string | null;
-  /** User hit Escape or the Terminal toggle. */
+  /** The operator pressed Escape or the close button. */
   onClose: () => void;
 }
 

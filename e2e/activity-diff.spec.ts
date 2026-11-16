@@ -1,7 +1,8 @@
 /**
- * E2E for the activity-panel diff pane — clicking an edited file in an
- * expanded tool group opens a diff view in place of the terminal.
- * See docs/rfc/rfc-activity-panel-ux.md §3.
+ * E2E for per-edit diffs — clicking an edited file in an expanded tool group
+ * opens that edit's patch at the top of the Changes tab (#4024 item 4 slice 2;
+ * docs/rfc/rfc-reading-pane-changes-tab.md). It used to open in the terminal
+ * pane, behind a Terminal / Diff switch (docs/rfc/rfc-activity-panel-ux.md §3).
  */
 import { test, expect } from './fixtures.js';
 import {
@@ -15,14 +16,14 @@ import {
   testSessionIdForTmux,
 } from './battle-helpers.js';
 
-test.describe('Activity panel → diff pane', () => {
+test.describe('Activity panel → edit diff in the Changes tab', () => {
   test.beforeEach(async ({ page, request }) => {
     await resetServer(request);
     await page.goto('/');
     await expect(page.locator('.logo')).toHaveText('KOOKR');
   });
 
-  test('click edited file opens diff pane, Terminal toggle restores terminal', async ({ page, request }) => {
+  test('click edited file opens its diff in the Changes tab, and the close button returns to the conversation', async ({ page, request }) => {
     await launchViaUI(page, 'Diff test', '/test/project');
     const tmux = await getLatestTmuxName(request);
     await injectSessionStart(request, tmux);
@@ -41,33 +42,27 @@ test.describe('Activity panel → diff pane', () => {
     const editEntry = page.locator('button.act-tool-entry.is-clickable', { hasText: 'foo.ts' });
     await expect(editEntry).toBeVisible();
 
-    // #3561 4a: the tabbed layout opens on the conversation, so the terminal
-    // is off screen and no Diff exists yet.
-    await expect(page.locator('.right-pane-slot-terminal')).toBeHidden();
-    await expect(page.locator('.right-pane-slot-diff')).toHaveCount(0);
+    await expect(page.locator('.diff-pane')).toHaveCount(0);
 
-    // Click the edit entry — diff pane opens
+    // Click the edit entry — the Changes tab opens with the edit on top
     await editEntry.click();
-
-    // Diff pane header shows the file path
-    await expect(page.locator('.diff-pane-path')).toContainText('foo.ts');
+    await expect(page.locator('.detail-tab', { hasText: 'Changes' })).toHaveAttribute('aria-pressed', 'true');
+    const card = page.getByTestId('changes-edit');
+    await expect(card.locator('.diff-pane-path')).toContainText('foo.ts');
     // Wait for fetch to resolve — diff hunks should render
-    await expect(page.locator('.diff-line.diff-add')).toContainText('+after');
-    await expect(page.locator('.diff-line.diff-del')).toContainText('-before');
+    await expect(card.locator('.diff-line.diff-add')).toContainText('+after');
+    await expect(card.locator('.diff-line.diff-del')).toContainText('-before');
 
-    // Terminal slot exists but is hidden
-    const terminalSlot = page.locator('.right-pane-slot-terminal');
-    await expect(terminalSlot).toHaveCSS('display', 'none');
-    const diffSlot = page.locator('.right-pane-slot-diff');
-    await expect(diffSlot).toBeVisible();
+    // The terminal pane has no Terminal / Diff switch any more
+    await expect(page.locator('.right-pane-slot-diff')).toHaveCount(0);
+    await expect(page.locator('button.pane-tab', { hasText: 'Diff' })).toHaveCount(0);
 
-    // Terminal mode toggle button — click to restore
-    await page.locator('button.pane-tab', { hasText: 'Terminal' }).click();
-    await expect(terminalSlot).toBeVisible();
-    await expect(diffSlot).toHaveCSS('display', 'none');
+    await card.locator('.diff-pane-close').click();
+    await expect(page.locator('.diff-pane')).toHaveCount(0);
+    await expect(page.locator('.detail-tab', { hasText: 'Conversation' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  test('Escape in diff pane returns to terminal', async ({ page, request }) => {
+  test('Escape closes the edit and returns to the conversation', async ({ page, request }) => {
     await launchViaUI(page, 'Escape test', '/test/project');
     const tmux = await getLatestTmuxName(request);
     await injectSessionStart(request, tmux);
@@ -84,11 +79,9 @@ test.describe('Activity panel → diff pane', () => {
     await page.locator('.diff-pane').click(); // ensure focus is inside the pane
     await page.keyboard.press('Escape');
 
-    // Terminal slot becomes active again; diff slot hides via inline display.
-    await expect(page.locator('.right-pane-slot-diff')).toHaveCSS('display', 'none');
-    await expect(page.locator('.right-pane-slot-terminal')).toHaveCSS('display', 'flex');
-    // #3561 4a: the conversation tab comes back and focus returns to the entry
-    // that opened the diff (it was hidden until the tab re-rendered).
+    await expect(page.locator('.diff-pane')).toHaveCount(0);
+    // The conversation tab comes back and focus returns to the entry that
+    // opened the diff (it was hidden until the tab re-rendered).
     await expect(page.locator('.detail-tab', { hasText: 'Conversation' })).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('button.act-tool-entry.is-clickable').first()).toBeFocused();
   });

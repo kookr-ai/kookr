@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Hono } from 'hono';
@@ -66,6 +66,7 @@ describe('GET /api/tasks/:id/changes', () => {
       kind: 'ok',
       baseRef: 'origin/staging',
       branch: 'feat',
+      repoRoot: realpathSync(repo),
       files: [{ path: 'feature.txt', status: 'added', added: 1, removed: 0 }],
       truncated: false,
     });

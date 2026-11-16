@@ -183,6 +183,7 @@ async function computeTaskChanges(
       kind: 'ok',
       baseRef: base.ref,
       branch,
+      repoRoot,
       files: files.slice(0, MAX_CHANGED_FILES),
       truncated: total > MAX_CHANGED_FILES || untrackedIncomplete,
     },

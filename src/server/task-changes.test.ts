@@ -64,6 +64,7 @@ describe('listTaskChanges', () => {
       kind: 'ok',
       baseRef: 'origin/staging',
       branch: 'feat',
+      repoRoot: git('rev-parse', '--show-toplevel').trim(),
       files: [{ path: 'feature.txt', status: 'added', added: 2, removed: 0 }],
       truncated: false,
     });

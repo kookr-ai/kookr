@@ -34,6 +34,11 @@ export type TaskChangesResponse =
       baseRef: string;
       /** The worktree's branch, or `null` on a detached HEAD. */
       branch: string | null;
+      /**
+       * Absolute path of the repository root the paths are relative to, so
+       * the dashboard can match an edit's absolute file path to its row.
+       */
+      repoRoot: string;
       files: TaskChangedFile[];
       /** True when the list was cut at the server's file cap. */
       truncated: boolean;

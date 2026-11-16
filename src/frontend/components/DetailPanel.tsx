@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, Suspense, type ComponentType, type LazyExoticComponent } from 'react';
 import type { ChangesPanel as ChangesPanelComponent } from './ChangesPanel.js';
+import type { ChangesEdit } from './ChangesPanel.js';
 import { lazyWithReload } from '../lazy-with-reload.js';
 import { useShallow } from 'zustand/react/shallow';
 import { useKookrStore } from '../store/useStore.js';
@@ -26,7 +27,7 @@ import {
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
 import { OverviewEmptyState } from './OverviewEmptyState.js';
-import type { DetailPaneMode, NarrowTab } from '../store/store-types.js';
+import type { DetailPaneMode, LeftPane, NarrowTab } from '../store/store-types.js';
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { DetailHeaderActions } from './DetailPanel/DetailHeaderActions.js';
 import { DetailMetaLine } from './DetailPanel/DetailMetaLine.js';
@@ -56,7 +57,6 @@ const ChangesPanel = lazyWithReload(() => import('./ChangesPanel.js').then((m) =
   default: pickLazyExport<ComponentType<unknown>>(m, 'ChangesPanel'),
 }))) as unknown as LazyExoticComponent<typeof ChangesPanelComponent>;
 const ActivityPanel = lazyWithReload(() => import('./ActivityPanel.js').then((m) => ({ default: pickLazyExport<typeof m.ActivityPanel>(m, 'ActivityPanel') })));
-const DiffPane = lazyWithReload(() => import('./DiffPane.js').then((m) => ({ default: pickLazyExport<typeof m.DiffPane>(m, 'DiffPane') })));
 const EvolutionPanel = lazyWithReload(() => import('./EvolutionPanel.js').then((m) => ({ default: pickLazyExport<typeof m.EvolutionPanel>(m, 'EvolutionPanel') })));
 const FileViewerPane = lazyWithReload(() => import('./FileViewerPane.js').then((m) => ({ default: pickLazyExport<typeof m.FileViewerPane>(m, 'FileViewerPane') })));
 const EffectiveHookSettingsModal = lazyWithReload(() => import('./EffectiveHookSettingsModal.js').then((m) => ({ default: pickLazyExport<typeof m.EffectiveHookSettingsModal>(m, 'EffectiveHookSettingsModal') })));
@@ -336,21 +336,24 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
   const replyDraftScope = { taskId: agent?.taskId, agentId: agent?.agentId };
 
-  // Right-pane mode for the Activity+Terminal|Diff|File split.
-  const [rightPane, setRightPane] = useState<'terminal' | 'diff' | 'file'>('terminal');
-  const [activeDiff, setActiveDiff] = useState<
-    { agentId: string; toolUseId: string; filePath: string; openedAt: string | null } | null
-  >(null);
+  // Right-pane mode: the terminal, or a file opened from a terminal link.
+  const [rightPane, setRightPane] = useState<'terminal' | 'file'>('terminal');
+  // #4024 item 4 slice 2: an Edit or Write row clicked in the conversation
+  // opens that edit's patch at the top of the Changes tab.
+  const [changesEdit, setChangesEdit] = useState<ChangesEdit | null>(null);
   const [activeFile, setActiveFile] = useState<
     { filePath: string; openedAt: string | null } | null
   >(null);
-  // Element that had focus when the diff opened — restored on close for a11y.
-  const diffTriggerRef = useRef<HTMLElement | null>(null);
+  // Element that had focus when the edit opened — restored on close for a11y.
+  const editTriggerRef = useRef<HTMLElement | null>(null);
   // Same for the file viewer pane.
   const fileTriggerRef = useRef<HTMLElement | null>(null);
-  // #3561 4a: in the tabbed layout a diff or file opened from the conversation
+  // #3561 4a: in the tabbed layout a file opened from a terminal link
   // switches to the Terminal tab so it is visible; closing it returns here.
   const tabBeforeRightPaneRef = useRef<NarrowTab | null>(null);
+  // #4024: the tab an opened edit switched away from, so closing the edit
+  // returns there. Split view keeps its own left-pane choice, hence the layout.
+  const tabBeforeEditRef = useRef<{ layout: 'tabs'; tab: NarrowTab } | { layout: 'split'; tab: LeftPane } | null>(null);
   // #2754: highest palette share-request nonce already acted on. Seeded from
   // the incoming nonce rather than 0 so a remount (App keeps DetailPanel in
   // two layout subtrees and behind the mobile findings/task tabs, and the
@@ -450,7 +453,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     };
   }, [agent?.taskId]);
 
-  // Bring the right pane (terminal, diff or file) on screen in the tabbed
+  // Bring the right pane (terminal or file) on screen in the tabbed
   // layout, remembering the tab to return to. Reads the tab from the store
   // directly so the callbacks below keep a stable identity (FR-TERM-005).
   const revealRightPane = useCallback(() => {
@@ -467,50 +470,93 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     if (previousTab && useKookrStore.getState().narrowTab === 'terminal') setNarrowTab(previousTab);
   }, [setNarrowTab]);
 
-  // Leaving the Terminal tab ends the diff's claim on it: if the operator
-  // comes back to Terminal later, that is their own pick, so closing the diff
-  // must then stay on Terminal rather than jump to the tab the diff was opened
-  // from (#3618).
+  // Bring the Changes tab on screen for an opened edit, remembering the tab
+  // to return to. In split view the left pane switches; in the tabbed layout
+  // the one visible tab does (#4024).
+  const revealChangesTab = useCallback(() => {
+    const currentLayout = layoutRef.current;
+    if (currentLayout !== 'tabs' && currentLayout !== 'split') return;
+    const state = useKookrStore.getState();
+    if (currentLayout === 'split') {
+      if (state.leftPane === 'changes') return;
+      tabBeforeEditRef.current = { layout: 'split', tab: state.leftPane };
+      setLeftPane('changes');
+    } else {
+      if (state.narrowTab === 'changes') return;
+      tabBeforeEditRef.current = { layout: 'tabs', tab: state.narrowTab };
+      setNarrowTab('changes');
+    }
+  }, [setLeftPane, setNarrowTab]);
+
+  const restoreTabAfterEdit = useCallback(() => {
+    const previous = tabBeforeEditRef.current;
+    tabBeforeEditRef.current = null;
+    if (!previous) return;
+    const state = useKookrStore.getState();
+    if (previous.layout === 'split') {
+      if (state.leftPane === 'changes') setLeftPane(previous.tab);
+    } else if (state.narrowTab === 'changes') {
+      setNarrowTab(previous.tab);
+    }
+  }, [setLeftPane, setNarrowTab]);
+
+  // Leaving the Terminal tab ends the file viewer's claim on it, and leaving
+  // the Changes tab ends an opened edit's claim on it: if the operator comes
+  // back later, that is their own pick, so closing must then stay put rather
+  // than jump to the tab it was opened from (#3618).
   useEffect(() => {
     if (narrowTab !== 'terminal') tabBeforeRightPaneRef.current = null;
   }, [narrowTab]);
-
-  // The diff and the memory of the tab it came from both live in this
-  // component, but the tab lives in the store. If the pane unmounts while a
-  // diff holds the Terminal tab (on mobile, picking another task goes through
-  // the Findings view, which unmounts it), hand the tab back now, or the next
-  // task would open on Terminal by accident (#3618).
-  useEffect(() => () => restoreTabAfterRightPane(), [restoreTabAfterRightPane]);
-
-  // Clear diff/file state when the selected agent changes. Avoids showing stale
-  // content bound to a different agent's toolUseId or worktree. If only the
-  // diff put the pane on the Terminal tab, the next task opens on Conversation,
-  // as any task switch does when the operator did not pick Terminal themselves
-  // (`tabAfterTaskSwitch`), instead of keeping Terminal by accident (#3618).
+  const shownLeftTab = layout === 'split' ? leftPane : narrowTab;
   useEffect(() => {
-    setActiveDiff(null);
+    if (shownLeftTab !== 'changes') tabBeforeEditRef.current = null;
+  }, [shownLeftTab]);
+
+  // The opened view and the memory of the tab it came from both live in this
+  // component, but the tab lives in the store. If the pane unmounts while a
+  // file holds the Terminal tab or an edit holds the Changes tab (on mobile,
+  // picking another task goes through the Findings view, which unmounts it),
+  // hand the tab back now, or the next task would open on it by accident
+  // (#3618).
+  useEffect(() => () => {
+    restoreTabAfterRightPane();
+    restoreTabAfterEdit();
+  }, [restoreTabAfterRightPane, restoreTabAfterEdit]);
+
+  // Clear edit/file state when the selected agent changes. Avoids showing stale
+  // content bound to a different agent's toolUseId or worktree. If only the
+  // file viewer put the pane on the Terminal tab, the next task opens on
+  // Conversation, as any task switch does when the operator did not pick
+  // Terminal themselves (`tabAfterTaskSwitch`), instead of keeping Terminal by
+  // accident (#3618). Likewise an edit that put the pane on Changes.
+  useEffect(() => {
+    setChangesEdit(null);
     setActiveFile(null);
     setRightPane('terminal');
-    diffTriggerRef.current = null;
+    editTriggerRef.current = null;
     fileTriggerRef.current = null;
-    const diffHeldTerminal = tabBeforeRightPaneRef.current !== null;
+    const editHeldChanges = tabBeforeEditRef.current !== null;
+    tabBeforeEditRef.current = null;
+    const fileHeldTerminal = tabBeforeRightPaneRef.current !== null;
     tabBeforeRightPaneRef.current = null;
-    if (diffHeldTerminal && useKookrStore.getState().narrowTab === 'terminal') setNarrowTab('activity');
-  }, [agent?.agentId, setNarrowTab]);
+    const state = useKookrStore.getState();
+    if (fileHeldTerminal && state.narrowTab === 'terminal') setNarrowTab('activity');
+    if (editHeldChanges && state.narrowTab === 'changes') setNarrowTab('activity');
+    if (editHeldChanges && state.leftPane === 'changes') setLeftPane('activity');
+  }, [agent?.agentId, setNarrowTab, setLeftPane]);
 
   function handleOpenDiff(target: DiffClickTarget) {
     if (!agent) return;
-    // Capture the trigger so we can restore focus when the diff closes.
+    // Capture the trigger so we can restore focus when the edit closes.
     const active = document.activeElement;
-    diffTriggerRef.current = active instanceof HTMLElement ? active : null;
-    setActiveDiff({
+    editTriggerRef.current = active instanceof HTMLElement ? active : null;
+    setChangesEdit({
       agentId: agent.agentId,
       toolUseId: target.toolUseId,
       filePath: target.filePath,
       openedAt: serverStartedAt,
     });
-    setRightPane('diff');
-    revealRightPane();
+    revealChangesTab();
   }
 
   const handleOpenFile = useCallback((filePath: string) => {
@@ -522,7 +568,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     revealRightPane();
   }, [hasAgent, serverStartedAt, revealRightPane]);
 
-  // Return focus to the element that opened the diff or file. In the tabbed
+  // Return focus to the element that opened the edit or file. In the tabbed
   // layout that element sits in the conversation pane, which is still hidden
   // until React re-renders the restored tab, and a browser ignores focus() on
   // a hidden element; so focus on the next frame (#3561 4a).
@@ -538,40 +584,40 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     restoreFocusAfterRightPane(fileTriggerRef.current);
   }
 
-  function handleCloseDiff() {
-    setRightPane('terminal');
-    restoreTabAfterRightPane();
-    restoreFocusAfterRightPane(diffTriggerRef.current);
+  function handleCloseEdit() {
+    setChangesEdit(null);
+    restoreTabAfterEdit();
+    restoreFocusAfterRightPane(editTriggerRef.current);
   }
 
-  // While the Diff or File pane is active, intercept Escape at capture phase so
-  // it closes that pane (our intent) instead of reaching the window-level
-  // handler in App.tsx that would deselect the agent. When neither is shown,
-  // Escape reverts to its normal global behavior.
+  // While an opened edit or the File pane is on screen, intercept Escape at
+  // capture phase so it closes that view (our intent) instead of reaching the
+  // window-level handler in App.tsx that would deselect the agent. When
+  // neither is shown, Escape reverts to its normal global behavior.
   //
   // Route through the matching close handler so focus restoration runs for
   // keyboard dismissals the same way it does for the close button.
-  const handleCloseDiffRef = useRef(handleCloseDiff);
-  handleCloseDiffRef.current = handleCloseDiff;
+  const handleCloseEditRef = useRef(handleCloseEdit);
+  handleCloseEditRef.current = handleCloseEdit;
   const handleCloseFileRef = useRef(handleCloseFile);
   handleCloseFileRef.current = handleCloseFile;
-  // In the tabbed layout an open diff can sit behind another tab; Escape then
-  // keeps its global meaning instead of closing something off screen.
-  const rightPaneOnScreen = layout !== 'tabs' || narrowTab === 'terminal';
+  // An open view can sit behind another tab; Escape then keeps its global
+  // meaning instead of closing something off screen.
+  const fileOnScreen = rightPane === 'file' && (layout !== 'tabs' || narrowTab === 'terminal');
+  const editOnScreen = changesEdit !== null && (layout === 'tabs' || layout === 'split') && shownLeftTab === 'changes';
   useEffect(() => {
-    if (rightPane !== 'diff' && rightPane !== 'file') return;
-    if (!rightPaneOnScreen) return;
+    if (!fileOnScreen && !editOnScreen) return;
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         e.stopPropagation();
-        if (rightPane === 'file') handleCloseFileRef.current();
-        else handleCloseDiffRef.current();
+        if (fileOnScreen) handleCloseFileRef.current();
+        else handleCloseEditRef.current();
       }
     }
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [rightPane, rightPaneOnScreen]);
+  }, [fileOnScreen, editOnScreen]);
 
   // Auto-focus the reply input only on a real anomaly *transition* (null→type,
   // type-change, or agent-switch), and never while the user has an active text
@@ -1127,14 +1173,16 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
         // A remembered GitHub tab outlives the task's GitHub references: when
         // they go away the tab disappears and the pane already falls back to the
         // conversation, so highlight Conversation too instead of no tab (#3618).
-        // The Changes tab needs a task to diff; an agent without one falls back the same way.
+        // The Changes tab needs a task to diff, or an opened edit to show; an
+        // agent with neither falls back the same way.
+        const changesAvailable = Boolean(agent.taskId) || changesEdit !== null;
         const selectedTab: NarrowTab =
-          (requestedTab === 'github' && ghCount === 0) || (requestedTab === 'changes' && !agent.taskId)
+          (requestedTab === 'github' && ghCount === 0) || (requestedTab === 'changes' && !changesAvailable)
             ? 'activity'
             : requestedTab;
         const leftPaneHidden = tabbedLayout && narrowTab === 'terminal';
         const rightPaneHidden = tabbedLayout && narrowTab !== 'terminal';
-        const showRightPaneHeader = !tabbedLayout || activeDiff !== null;
+        const showRightPaneHeader = !tabbedLayout;
 
         // Completion digest replaces both panes. Pane selection stays here;
         // the digest's rendering + verification hydration lives in the
@@ -1172,8 +1220,8 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                   Terminal
                 </button>
               )}
-              {/* #4024 item 4: what the task changed in its worktree */}
-              {agent.taskId && (
+              {/* #4024 item 4: what the task changed, and an opened edit */}
+              {changesAvailable && (
                 <button
                   type="button"
                   className={`detail-tab ${selectedTab === 'changes' ? 'active' : ''}`}
@@ -1222,9 +1270,14 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                   <Suspense fallback={null}>
                     <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} />
                   </Suspense>
-                ) : selectedTab === 'changes' && agent.taskId ? (
+                ) : selectedTab === 'changes' && changesAvailable ? (
                   <Suspense fallback={null}>
-                    <ChangesPanel key={agent.taskId} taskId={agent.taskId} />
+                    <ChangesPanel
+                      key={agent.taskId ?? agent.agentId}
+                      taskId={agent.taskId}
+                      edit={changesEdit}
+                      onCloseEdit={handleCloseEdit}
+                    />
                   </Suspense>
                 ) : (
                   <>
@@ -1253,7 +1306,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                 )}
               </div>}
 
-              {/* Right pane: Terminal or Diff (terminal stays mounted for UI
+              {/* Right pane: Terminal or File (terminal stays mounted for UI
                   state, but byte-stream subscription follows visibility) */}
               <div className={`detail-split-right${rightPaneHidden ? ' pane-hidden-tab' : ''}`}>
                 {showRightPaneHeader && <div className="detail-pane-header">
@@ -1263,24 +1316,14 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                     aria-pressed={rightPane === 'terminal'}
                     onClick={() => {
                       // Choosing the terminal here makes the Terminal tab the
-                      // operator's own pick, so closing the diff later must not
-                      // jump back to the tab the diff was opened from (#3618).
+                      // operator's own pick, so closing the file later must not
+                      // jump back to the tab the file was opened from (#3618).
                       tabBeforeRightPaneRef.current = null;
                       setRightPane('terminal');
                     }}
                   >
                     Terminal
                   </button>
-                  {activeDiff && (
-                    <button
-                      type="button"
-                      className={`pane-tab ${rightPane === 'diff' ? 'active' : ''}`}
-                      aria-pressed={rightPane === 'diff'}
-                      onClick={() => setRightPane('diff')}
-                    >
-                      Diff
-                    </button>
-                  )}
                   {rightOnlyMode && (
                     <button
                       type="button"
@@ -1313,22 +1356,6 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                       </Suspense>
                     )}
                   </div>
-                  {activeDiff && (
-                    <div
-                      className="right-pane-slot right-pane-slot-diff"
-                      style={{ display: rightPane === 'diff' ? 'flex' : 'none' }}
-                    >
-                      <Suspense fallback={null}>
-                        <DiffPane
-                          agentId={activeDiff.agentId}
-                          toolUseId={activeDiff.toolUseId}
-                          filePath={activeDiff.filePath}
-                          openedAt={activeDiff.openedAt}
-                          onClose={handleCloseDiff}
-                        />
-                      </Suspense>
-                    </div>
-                  )}
                   {activeFile && (
                     <div
                       className="right-pane-slot right-pane-slot-file"
