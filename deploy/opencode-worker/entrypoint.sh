@@ -8,6 +8,8 @@
 #             The container exits when EITHER child dies. Secret charset: [A-Za-z0-9._~+-].
 set -u
 log() { echo "[entrypoint] $*" >&2; }
+# A stop request before any child exists is a clean stop (replaced below once the log prefixers run).
+trap 'log "stopped by signal during startup"; exit 0' TERM INT
 SECRETS_DIR="${SECRETS_DIR:-/run/secrets}"
 for s in opencode_password a2a_token; do
   [ -r "$SECRETS_DIR/$s" ] || { log "missing secret file $SECRETS_DIR/$s"; exit 13; }

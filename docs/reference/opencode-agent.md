@@ -370,15 +370,16 @@ exists as code but is not wired into the adapter yet (#3584); `sendInput` goes t
 task state is advisory and never reaches "completed" in this mode; hook records and the container state are the truth.
 Runtime state lives under `<data dir>/opencode-containers/` (per-task `tasks/<id>/` with the clone, secrets and control
 record; `spool/<id>/` with the hook ledgers). After each reconcile pass the server removes the secrets of a task with no
-running, starting, restarting or paused container, the spool of a task that ended more than 24 h ago or no longer exists once none of its containers
-remain, and the whole task dir of a task that no longer exists. The clone of an ended task is kept (it holds the
+running, starting, restarting or paused container, the spool of a task that ended more than 24 h ago once none of its containers
+remain, and both the spool and the whole task dir of a task that no longer exists once none of its containers remain
+and its control record is more than 24 h old. The clone of an ended task is kept (it holds the
 worker's commits). Operator-run checks: `scripts/opencode-containers-live.ts`.
 
 ### Worker container housekeeping (`kookr containers`)
 
 Worker containers are labelled `kookr.instance=<this install's id>` (the id lives in `<data dir>/instance-id`,
 created on first container launch and never regenerated), `kookr.task` and `kookr.launch`, and named `kookr-oc-*`.
-While container mode is configured (`KOOKR_OPENCODE_CONTAINERS` and `KOOKR_OPENCODE_CONTAINER_IMAGE` set), the server reconciles these containers every 60 s (adopt live ones, remove ended ones after retention, quarantine unknown ones); with the flag off nothing reconciles them, so use this command. It shows and prunes the same set.
+While container mode is on (`KOOKR_OPENCODE_ENABLED`, `KOOKR_OPENCODE_CONTAINERS` and `KOOKR_OPENCODE_CONTAINER_IMAGE` set, and the opencode preflight passed), the server reconciles these containers every 60 s (adopt live ones, remove ended ones after retention, quarantine unknown ones); with the flag off nothing reconciles them, so use this command. It shows and prunes the same set.
 
 ```
 kookr containers ls [--json] [--dir PATH]

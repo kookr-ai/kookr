@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
@@ -314,6 +314,21 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
       expect(existsSync(join(rtDir(task.id), 'secrets'))).toBe(true);
       expect(existsSync(spoolDir(task.id))).toBe(true);
     });
+    test('a launch in flight (secrets written, no container yet) is never swept', async () => {
+      const task = newTask();
+      let swept: string[] | undefined;
+      let secretsDuringSweep = false;
+      const a: OpenCodeContainerAdapter = make({
+        composeSession: async (o) => {
+          swept = await a.sweepRuntime(() => ({ state: 'unknown' }), 0);
+          secretsDuringSweep = existsSync(join(rtDir(task.id), 'secrets', 'a2a_token'));
+          return composeOpenCodeSession(o);
+        },
+      });
+      await a.launch(task.id, 'x', src);
+      expect(swept).toEqual([]);
+      expect(secretsDuringSweep).toBe(true);
+    });
     test('a running container keeps everything (its healthcheck reads the secrets)', async () => {
       const { a, task } = await launched();
       expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 0)).toEqual([]);
@@ -338,12 +353,16 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
       expect(existsSync(spoolDir(task.id))).toBe(false);
       expect(existsSync(join(rtDir(task.id), 'work', '.git'))).toBe(true);
     });
-    test('a task that no longer exists: everything goes, but only once no container of it remains (quarantine evidence)', async () => {
+    test('a task that no longer exists: everything goes once no container of it remains and its record is a day old', async () => {
       const { a, task } = await launched();
       docker.containers[0]!.state = 'exited'; // stopped by quarantine, kept
       expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 24 * H)).toEqual([`${task.id}:secrets`]);
       expect(existsSync(spoolDir(task.id))).toBe(true);
       docker.containers = []; // quarantine elapsed, the reconciler removed it
+      // A record written in the last 24 h keeps the clone (the store may only briefly miss the task).
+      expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 24 * H)).toEqual([]);
+      const dayAgo = new Date(Date.now() - 25 * H);
+      utimesSync(join(rtDir(task.id), 'runtime.json'), dayAgo, dayAgo);
       expect((await a.sweepRuntime(() => ({ state: 'unknown' }), 24 * H)).sort()).toEqual([`${task.id}:runtime`, `${task.id}:spool`]);
       expect(existsSync(rtDir(task.id))).toBe(false);
       expect(existsSync(spoolDir(task.id))).toBe(false);

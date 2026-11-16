@@ -494,9 +494,12 @@ export class OpenCodeContainerAdapter {
    * removed (`<taskId>:secrets|spool|runtime`).
    *  - `secrets/` of a task with no live container: covers a container that exited without `stop()`. (While one runs,
    *    its healthcheck reads the password file, so secrets are never removed under it.)
-   *  - the spool of a task that ended more than `retentionMs` ago or no longer exists, once no container of it remains
-   *    in any state (a quarantined, stopped container keeps its ledger as evidence until the reconciler removes it);
-   *  - the whole runtime dir, clone included, of a task that no longer exists, under the same condition.
+   *  - the spool of a task that ended more than `retentionMs` ago, or that no longer exists and whose control record
+   *    was last written more than `retentionMs` ago, once no container of it remains in any state (a quarantined,
+   *    stopped container keeps its ledger as evidence until the reconciler removes it);
+   *  - the whole runtime dir, clone included, of such a task that no longer exists (the same 24 h the reconciler
+   *    gives an unknown container, so a task store that briefly misses a task does not cost the clone).
+   * A task with a launch in flight is never touched: between writing its secrets and `docker run` no container exists.
    * The clone of an ended task is kept: until deliverable extraction is wired it is the only copy of the worker's commits.
    * A failed Docker listing or an unreadable task store skips the pass: neither proves a container or a task is gone.
    */
@@ -534,7 +537,7 @@ export class OpenCodeContainerAdapter {
         await rm(join(rt, 'secrets'), { recursive: true, force: true }).then(() => removed.push(`${taskId}:secrets`), () => undefined);
       }
       if (anyContainer.has(taskId)) continue;
-      const gone = st.state === 'unknown';
+      const gone = st.state === 'unknown' && now - (await this.lastUsedMs(taskId)) >= retentionMs;
       const expired = st.state === 'terminal' && now - st.endedAt.getTime() >= retentionMs;
       if (!gone && !expired) continue;
       if (!(await noContainerNow(taskId, false))) continue;
@@ -546,6 +549,15 @@ export class OpenCodeContainerAdapter {
       }
     }
     return removed;
+  }
+
+  /** Last write of the task's control record (else of its runtime dir); 0 when neither exists. */
+  private async lastUsedMs(taskId: string): Promise<number> {
+    for (const p of [this.recordPath(taskId), this.taskRuntimeDir(taskId)]) {
+      const st = await stat(p).catch(() => undefined);
+      if (st) return st.mtimeMs;
+    }
+    return 0;
   }
 
   // ---- adopt / records ---------------------------------------------------------------------------------------

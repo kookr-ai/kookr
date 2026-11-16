@@ -68,6 +68,7 @@ describe('ContainerReconciler', () => {
     docker.containers = [container()];
     await make().reconcile();
     expect(docker.calls).toEqual(['stop kookr-oc-aaaaaaaa-tok1']);
+    expect(docker.ids).toEqual(['id']); // the quarantine stop targets the listed id, not just the name (#3557)
     expect(docker.containers).toHaveLength(1);
     clock = new Date(clock.getTime() + 23 * H);
     expect((await make().reconcile()).actions[0]!.kind).toBe('quarantine_keep');
