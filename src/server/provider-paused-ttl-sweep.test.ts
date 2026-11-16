@@ -1335,6 +1335,39 @@ describe('healthy-quota hold vs. pause evidence kind (issue #4050)', () => {
     expect(result.selection?.outcomes[0]?.outcome).toBe('skipped_provider_quota_healthy');
   });
 
+  it('keeps the known-reset hold for account-level evidence: only quota_healthy is downgraded', async () => {
+    const { task, tracker } = pausedFor(TTL_MS + 10 * MIN);
+    const { result, metrics } = await sweep({
+      task,
+      tracker,
+      getProviderPauseDetail: () => 'stop_failure:billing_error',
+      source: {
+        quota: {
+          fiveHour: { utilization: 100, resetsAt: new Date(nowMs + 30 * MIN).toISOString() },
+          sevenDay: null,
+          updatedAt: nowMs,
+        },
+        pollerState: 'healthy',
+      },
+    });
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.selection?.outcomes[0]?.outcome).toBe('skipped_awaiting_provider_reset');
+    expect(metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+  });
+
+  it('keeps the unresolved-reset soft hold for account-level evidence while the poller backs off', async () => {
+    const { task, tracker } = pausedFor(SOFT + MIN);
+    const { result, metrics } = await sweep({
+      task,
+      tracker,
+      getProviderPauseDetail: () => 'stop_failure:billing_error',
+      source: { quota: null, pollerState: 'backoff' },
+    });
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.selection?.outcomes[0]?.outcome).toBe('skipped_provider_reset_unresolved');
+    expect(metrics.getSnapshot().skippedProviderResetUnresolved).toBe(1);
+  });
+
   it('does not latch evidence for a task with no pause start', () => {
     const tracker = new ProviderPausedStartTracker();
     tracker.latchAccountLevelEvidence('task-1');
