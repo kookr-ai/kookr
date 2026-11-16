@@ -59,7 +59,7 @@ import {
   type AnswerMatch, type VoiceAskChoice,
 } from '../../core/lucy-live/voice-answer.js';
 import {
-  OPEN_NOTHING_WAITING, OPEN_NO_LINK, matchOpenRequest, sayOpenOutcome,
+  OPEN_NOTHING_WAITING, OPEN_NO_LINK, matchOpenRequest, namesAChoice, sayOpenOutcome,
   type OpenOutcome, type VoiceOpenableAsk,
 } from '../../core/lucy-live/open-intent.js';
 import { makeSpeakable } from '../../core/speakable-text.js';
@@ -773,6 +773,8 @@ export class LucyLiveSession {
     const asks = openable();
     const request = matchOpenRequest(transcript, asks[0]?.links.map((l) => l.label) ?? []);
     if (!request) return undefined;
+    // A choice that happens to start with "open" or "show" is an answer, not a request to open something.
+    if (namesAChoice(transcript, (this.ports.pendingAsks?.() ?? []).flatMap((a) => a.options))) return undefined;
     const ask = asks[0];
     if (!ask) return OPEN_NOTHING_WAITING;
     if (request.target === 'task') return sayOpenOutcome('task', await this.openInBrowser(turn, { kind: 'task', taskId: ask.taskId }));

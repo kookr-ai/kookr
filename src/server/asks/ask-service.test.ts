@@ -128,6 +128,7 @@ describe('AskService.create', () => {
     [[{ url: 'https://a.example' }, { url: 'https://b.example' }, { url: 'https://c.example' }], /at most 2/],
     [[{ url: 'https://a.example', label: '' }], /label/],
     [[{ url: 'https://example.com/?access_token=abc' }], /credential/],
+    [[{ url: 'https://example.com/a\u0000b' }], /control characters/],
   ])('refuses links %j', async (links, message) => {
     const r = await h.service.create({ ...base, links });
     expect(r).toMatchObject({ ok: false, error: { code: 'invalid', message: expect.stringMatching(message) } });

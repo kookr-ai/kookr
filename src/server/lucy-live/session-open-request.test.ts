@@ -25,7 +25,7 @@ class FakeEars implements EarsTurnPort {
 const MOCKUPS = 'https://claude.ai/artifact/abc-123';
 const WITH_LINK: VoiceOpenableAsk = { askId: 'a1', taskId: 't1', links: [{ url: MOCKUPS, label: 'Open mockups' }, { url: 'https://github.com/o/r/pull/7', label: 'Open the PR draft' }] };
 const NO_LINK: VoiceOpenableAsk = { askId: 'a2', taskId: 't2', links: [] };
-const CHOICE: VoiceAskChoice = { askId: 'a1', question: 'Which variant?', options: ['A', 'B'] };
+const CHOICE: VoiceAskChoice = { askId: 'a1', question: 'Which variant?', options: ['A', 'B', 'Open a PR'] };
 
 interface H {
   session: LucyLiveSession;
@@ -195,6 +195,13 @@ describe('"show me" by voice while a question is waiting', () => {
       await vi.advanceTimersByTimeAsync(OPEN_REPLY_TIMEOUT_MS);
     });
     expect(h.said().join(' ')).toBe(OPEN_NO_REPLY);
+  });
+
+  it('a choice that starts with "open" goes to the answer matcher, not to "show me"', async () => {
+    const h = harness();
+    await operatorSays(h, 'Open a PR.', 't1');
+    expect(h.opens()).toEqual([]);
+    expect(h.matchCalls).toEqual(['Open a PR.']);
   });
 
   it('leaves ordinary words to the model and the answer matcher', async () => {

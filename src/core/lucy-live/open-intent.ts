@@ -84,6 +84,15 @@ export function matchOpenRequest(transcript: string, labels: readonly (string | 
   return null;
 }
 
+/**
+ * Whether the words are one of the waiting questions' choices ("Open a PR" can be a choice). Those go
+ * to the answer flow, never to "show me".
+ */
+export function namesAChoice(transcript: string, options: readonly string[]): boolean {
+  const n = normalize(transcript);
+  return n.length > 0 && options.some((option) => normalize(option) === n);
+}
+
 /** The newest waiting question, as the "show me" flow sees it. `asks` is the dashboard list (newest first). */
 export function openableVoiceAsks(asks: readonly OperatorAskView[]): VoiceOpenableAsk[] {
   return asks

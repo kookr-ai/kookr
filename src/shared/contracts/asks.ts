@@ -126,7 +126,8 @@ export function askLinkProblem(link: AskLink): string | undefined {
   }
   if (parsed.protocol !== 'https:' || parsed.hostname === '') return `a link must be an https:// URL (got: ${url.slice(0, 80)})`;
   if (parsed.username !== '' || parsed.password !== '') return 'a link must not carry a user name or password';
-  if (/\s/.test(url)) return 'a link must not contain spaces';
+  // eslint-disable-next-line no-control-regex -- control characters are exactly what is refused
+  if (/[\s\u0000-\u001f\u007f]/.test(url)) return 'a link must not contain spaces or control characters';
   if (label !== undefined) {
     const trimmed = label.trim();
     if (trimmed.length === 0 || trimmed.length > ASK_LIMITS.maxLinkLabelChars || /[\r\n]/.test(label)) {
