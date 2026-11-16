@@ -49,6 +49,7 @@ function pickLazyExport<T>(module: unknown, exportName: string): T {
 const VoiceInputButton = lazyWithReload(() => import('./VoiceInputButton.js').then(m => ({ default: pickLazyExport<typeof m.VoiceInputButton>(m, 'VoiceInputButton') })));
 const TerminalPanel = lazyWithReload(() => import('./TerminalPanel.js').then((m) => ({ default: pickLazyExport<typeof m.TerminalPanel>(m, 'TerminalPanel') })));
 const GitHubPanel = lazyWithReload(() => import('./GitHubPanel.js').then((m) => ({ default: pickLazyExport<typeof m.GitHubPanel>(m, 'GitHubPanel') })));
+const ChangesPanel = lazyWithReload(() => import('./ChangesPanel.js').then((m) => ({ default: pickLazyExport<typeof m.ChangesPanel>(m, 'ChangesPanel') })));
 const ActivityPanel = lazyWithReload(() => import('./ActivityPanel.js').then((m) => ({ default: pickLazyExport<typeof m.ActivityPanel>(m, 'ActivityPanel') })));
 const DiffPane = lazyWithReload(() => import('./DiffPane.js').then((m) => ({ default: pickLazyExport<typeof m.DiffPane>(m, 'DiffPane') })));
 const EvolutionPanel = lazyWithReload(() => import('./EvolutionPanel.js').then((m) => ({ default: pickLazyExport<typeof m.EvolutionPanel>(m, 'EvolutionPanel') })));
@@ -1121,7 +1122,11 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
         // A remembered GitHub tab outlives the task's GitHub references: when
         // they go away the tab disappears and the pane already falls back to the
         // conversation, so highlight Conversation too instead of no tab (#3618).
-        const selectedTab: NarrowTab = requestedTab === 'github' && ghCount === 0 ? 'activity' : requestedTab;
+        // The Changes tab needs a task to diff; an agent without one falls back the same way.
+        const selectedTab: NarrowTab =
+          (requestedTab === 'github' && ghCount === 0) || (requestedTab === 'changes' && !agent.taskId)
+            ? 'activity'
+            : requestedTab;
         const leftPaneHidden = tabbedLayout && narrowTab === 'terminal';
         const rightPaneHidden = tabbedLayout && narrowTab !== 'terminal';
         const showRightPaneHeader = !tabbedLayout || activeDiff !== null;
@@ -1162,6 +1167,18 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                   Terminal
                 </button>
               )}
+              {/* #4024 item 4: what the task changed in its worktree */}
+              {agent.taskId && (
+                <button
+                  type="button"
+                  className={`detail-tab ${selectedTab === 'changes' ? 'active' : ''}`}
+                  aria-pressed={selectedTab === 'changes'}
+                  data-testid="detail-tab-changes"
+                  onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'changes' }); setNarrowTab('changes'); setLeftPane('changes'); }}
+                >
+                  Changes
+                </button>
+              )}
               {ghCount > 0 && (
                 <button
                   type="button"
@@ -1194,11 +1211,15 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
 
             {/* Pane container: one pane in the tabbed layout, two in split view */}
             <div className={`detail-split${rightOnlyMode ? ' detail-split-terminal-focus' : ''}${tabbedLayout ? ' detail-split-tabbed' : ''}`}>
-              {/* Left pane: Conversation or GitHub */}
+              {/* Left pane: Conversation, Changes or GitHub */}
               {!rightOnlyMode && <div className={`detail-split-left${leftPaneHidden ? ' pane-hidden-tab' : ''}`}>
                 {selectedTab === 'github' ? (
                   <Suspense fallback={null}>
                     <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} />
+                  </Suspense>
+                ) : selectedTab === 'changes' && agent.taskId ? (
+                  <Suspense fallback={null}>
+                    <ChangesPanel key={agent.taskId} taskId={agent.taskId} />
                   </Suspense>
                 ) : (
                   <>

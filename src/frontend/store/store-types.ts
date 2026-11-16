@@ -102,8 +102,8 @@ export interface TaskGitHub {
   changes: GitHubStateChange[];
 }
 
-export type LeftPane = 'activity' | 'github';
-export type NarrowTab = 'activity' | 'terminal' | 'github';
+export type LeftPane = 'activity' | 'github' | 'changes';
+export type NarrowTab = 'activity' | 'terminal' | 'github' | 'changes';
 export type FocusZone = 'terminal' | 'response-input' | 'none';
 
 export interface AchievementToast {

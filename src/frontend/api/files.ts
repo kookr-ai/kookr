@@ -23,3 +23,19 @@ export function getEditEvent<T>(
     { signal },
   );
 }
+
+/**
+ * GET what a task changed in its working directory, for the Changes tab
+ * (#4024). `body` is `null` on an unparseable response.
+ */
+export function getTaskChanges<T>(taskId: string, signal: AbortSignal): Promise<ApiResult<T | null>> {
+  return fetchResult<T>(`/api/tasks/${encodeURIComponent(taskId)}/changes`, { signal });
+}
+
+/** GET one file's patch from a task's change list (#4024). */
+export function getTaskChangeFile<T>(taskId: string, filePath: string, signal: AbortSignal): Promise<ApiResult<T | null>> {
+  return fetchResult<T>(
+    `/api/tasks/${encodeURIComponent(taskId)}/changes/file?path=${encodeURIComponent(filePath)}`,
+    { signal },
+  );
+}

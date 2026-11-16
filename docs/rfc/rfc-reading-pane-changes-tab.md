@@ -1,0 +1,142 @@
+# Design note: the reading pane's Changes and Pull request tabs
+
+Status: Slice 1 implemented
+Date: 2026-11-16
+Issue: #4024 (item 4), from #3561 variant B ("terminal, changes and pull request become tabs")
+
+## Problem
+
+The reading pane has three tabs today: Conversation, Terminal and "GitHub (n)".
+Two things from variant B are missing:
+
+- **There is no list of what a task changed.** The only diff view is the
+  per-edit diff: clicking an Edit or Write row in the conversation opens one
+  tool call's patch in the terminal pane, behind a Terminal / Diff switch. To
+  see everything a task changed, the operator opens a terminal and runs
+  `git diff`, or waits for the pull request.
+- **The GitHub tab is named after the service, not the thing.** It lists every
+  PR and issue the task mentioned, under a count that does not say what it
+  counts.
+
+## Where the per-task change list comes from
+
+Two sources exist, and they answer different questions:
+
+| Source | What it shows | When it exists |
+|---|---|---|
+| The task's worktree (`git diff` against the base) | Everything the task changed so far, committed or not, including new files | While the worktree exists: the whole time the task runs, and after it ends until the worktree is removed |
+| The task's pull request (`gh api …/pulls/N/files`) | What was pushed and is under review | From the first push; outlives the worktree |
+
+**The Changes tab reads the worktree.** It is the only source that shows work
+in progress, which is when the operator most wants to look. The pull request's
+file list is the fallback once the worktree is gone (slice 3).
+
+### Choosing the base
+
+The diff is `git diff <merge-base>` against the working tree, plus untracked
+files that `.gitignore` does not exclude. The merge base has to be the branch
+the task forked from, or the list fills with other people's commits. Branches
+in this repository are cut from `origin/staging` or from `origin/main`, and
+`staging` is often far ahead of `main`. A diff against the wrong one lists
+dozens of files the task never touched. The server picks the base in this
+order:
+
+1. **The task's pull request base**, when the task has a pull request whose
+   head branch is the worktree's current branch (`baseBranch` from the GitHub
+   state store, as `origin/<baseBranch>`). A PR that the task only mentioned
+   does not count.
+2. **Otherwise the nearest candidate** among `origin/staging`, `origin/main`
+   and `origin/master`: the one with the fewest commits between its merge base
+   and `HEAD`.
+
+The tab names the base it used ("against origin/staging"), so a wrong guess is
+visible instead of silent.
+
+### What the server returns
+
+- `GET /api/tasks/:id/changes` returns the list: the base ref, the branch, and
+  per file the path, the status (added, modified, deleted, renamed) and the
+  added and removed line counts. Binary files are marked and carry no counts.
+- `GET /api/tasks/:id/changes/file?path=<path>` returns one file's patch, as
+  hunks in the shape the existing diff view already renders.
+
+Both read the task's directory from the task store, never from the request.
+The file route only answers for a path that is in the computed list, so it
+cannot be used to read other files. Git runs with array arguments (no shell),
+`--no-ext-diff --no-textconv`, `GIT_OPTIONAL_LOCKS=0`, a timeout and an output
+cap; a patch over the cap comes back as "too large" instead of a truncated
+diff.
+
+Git runs only when the operator opens the tab or presses Refresh, never on a
+timer: the host already runs many workers, and a diff is cheap only when
+nobody runs it in a loop. For the same reason the tab is labelled "Changes"
+without a count: a count would mean running git for every task the operator
+selects, not only for the tab they open. The file count and the line totals
+are in the tab's header line instead.
+
+### When there is nothing to show
+
+The tab shows one plain line instead of an empty list:
+
+| Case | What the tab says |
+|---|---|
+| The task has no working directory recorded | No working directory for this task. |
+| The directory is gone (worktree removed) | This task's worktree was removed. Its pull request shows what was pushed. |
+| The directory is not a git repository | This task does not run in a git repository. |
+| No base branch can be found | No base branch to compare against (no origin/staging, origin/main or origin/master). |
+| The branch has no changes yet | No changes against origin/staging yet. |
+
+A task that runs in a shared checkout instead of its own worktree gets the
+checkout's diff, which can include other work; the header shows the branch so
+this is visible.
+
+## What each tab shows
+
+**Changes** (new, slice 1). A header line with the base, the branch, the file
+count and the total `+added −removed`, and a Refresh button. Below it, one row
+per file: status letter, path (directory dimmed, file name bright) and line
+counts. Clicking a row opens that file's diff in place, under the row; clicking
+again closes it (variant A below). The tab shows for every task, in the tabbed
+layout and in Split view's left pane; an agent with no task has none.
+
+**Pull request** (renamed from "GitHub (n)", slice 3). The task's own pull
+request first, as a summary: title, state, checks, review decision, unresolved
+threads and the branch → base line. Other PRs and issues the task mentioned
+follow under a "Mentioned" heading. A task with no PR of its own gets a tab
+titled "Mentioned (n)" with only that list. When the worktree is gone, the
+Changes tab falls back to the PR's file list.
+
+**Per-edit diffs** (slice 2). Clicking an Edit or Write row in the conversation
+opens the Changes tab on that file instead of opening a diff in the terminal
+pane, so the terminal pane's Terminal / Diff switch goes away. The single-edit
+patch stays reachable from the file's row.
+
+A completed task with a completion digest shows the digest instead of the
+tabs; that does not change here.
+
+## Variants
+
+Three layouts for the two tabs were mocked from the dashboard's real colour
+tokens and published for the operator (linked from #4024):
+
+- **A · Inline accordion:** the file list is the tab; a file's diff opens under
+  its row. Works at every pane width and in Split view.
+- **B · List and diff side by side:** file list on the left, diff on the
+  right. Best on a wide pane; at 500–700 px the diff gets about 350 px.
+- **C · Drill-in:** the list fills the tab; a file opens full width with a back
+  arrow and previous / next buttons. Best on a narrow pane, one more click per
+  file.
+
+Recommended: **A**. The reading pane is 500–970 px wide (the #4024 width
+table), which leaves B's diff column too narrow on most windows, and A keeps
+the list in view while reading a diff, which C does not. The operator chose
+**A** (answered on Telegram, relayed on #4024).
+
+## Slices
+
+1. **Change list and Changes tab** (this PR): the two routes, the tab in the
+   tabbed layout and in Split view's left pane, Refresh, the empty states.
+2. **Per-edit diffs open in the Changes tab:** route conversation diff clicks
+   there and remove the terminal pane's Terminal / Diff switch.
+3. **Pull request tab:** rename "GitHub (n)", put the task's own PR first, and
+   fall back to the PR's file list in Changes when the worktree is gone.
