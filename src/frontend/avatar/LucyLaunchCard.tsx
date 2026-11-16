@@ -10,6 +10,10 @@
  * something else). When the proposal ends, the card turns into a one-line result; a result that started a
  * task links to it. The card also goes by itself at `expiresAt`.
  *
+ * The card sits right above the composer and is never taller than 40% of the column: when the description is
+ * long it scrolls inside the card, and the buttons row, the countdown and the result lines below it always stay
+ * whole and on screen.
+ *
  * Purely the browser half of a server rule: no level is decided or sent from here.
  */
 import { useEffect, useState } from 'react';
@@ -106,10 +110,13 @@ export function LucyLaunchCard({ nowFn = Date.now }: { nowFn?: () => number } = 
             <span className="avatar-launch-kind" data-testid="avatar-launch-kind">{KIND_LABEL[proposal.kind]}</span>
             <span className="avatar-launch-level" data-testid="avatar-launch-level">{LEVEL_LABEL[proposal.level]}</span>
           </div>
-          <p className="avatar-launch-description" data-testid="avatar-launch-description">{proposal.description}</p>
-          <p className="avatar-launch-asked" data-testid="avatar-launch-asked">
-            <span className="avatar-live-who">You asked</span> {proposal.asked}
-          </p>
+          {/* A long description scrolls inside the card (a region the keyboard can reach); the buttons below never do. */}
+          <div className="avatar-launch-body" role="region" aria-label="Proposed task" tabIndex={0}>
+            <p className="avatar-launch-description" data-testid="avatar-launch-description">{proposal.description}</p>
+            <p className="avatar-launch-asked" data-testid="avatar-launch-asked">
+              <span className="avatar-live-who">You asked</span> {proposal.asked}
+            </p>
+          </div>
           {handsOff && proposal.launchesAt !== undefined && (
             <p className="avatar-launch-countdown" role="timer" data-testid="avatar-launch-countdown">
               Starts in {secondsLeft(proposal.launchesAt, now)} s unless you cancel.

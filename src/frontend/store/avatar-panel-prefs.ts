@@ -1,6 +1,6 @@
 /**
- * Preferences for the optional avatar panel — a floating window that shows a
- * 3D character who lip-syncs Kookr's spoken summaries.
+ * Preferences for the optional avatar panel: Lucy's column, docked to the right edge of the
+ * dashboard, with a 3D character who lip-syncs Kookr's spoken summaries.
  *
  * The panel is OFF by default. Nothing about it (the 3D renderer chunk, the
  * avatar file) is requested by the browser until `enabled` is true, so an
@@ -10,36 +10,40 @@
  * by device), so they live in localStorage next to the other layout prefs
  * rather than in the server's settings file. Every read is fail-soft: a
  * missing, malformed or out-of-range value falls back to the default.
+ *
+ * Older versions also saved `position`, the corner of a floating window that could be dragged.
+ * The panel is a docked column now, so that field is read past and never written again.
  */
 import { useSyncExternalStore } from 'react';
 import { track } from '../telemetry.js';
 
 export const AVATAR_PANEL_KEY = 'kookr:avatarPanel';
 
-/** Size of the open panel, in CSS pixels. The dock is fixed-size in this version. */
-export const AVATAR_PANEL_WIDTH = 264;
-export const AVATAR_PANEL_HEIGHT = 348;
+/** Width of the open column, in CSS pixels, before the operator drags its left edge. */
+export const AVATAR_COLUMN_DEFAULT_WIDTH = 380;
+/** The narrowest and the widest the operator can make the column. */
+export const AVATAR_COLUMN_MIN_WIDTH = 320;
+export const AVATAR_COLUMN_MAX_WIDTH = 560;
+/**
+ * At or below this viewport width the column is a full-width sheet over the page instead of a column
+ * beside it. The same breakpoint the dashboard uses for its phone layout (`MOBILE_BREAKPOINT_PX` in App.tsx).
+ */
+export const AVATAR_SHEET_MAX_VIEWPORT_PX = 768;
 /** Diameter of the minimised bubble. */
 export const AVATAR_BUBBLE_SIZE = 58;
-/** Gap kept between the panel and the viewport edge. */
-export const AVATAR_PANEL_MARGIN = 12;
 
 export interface AvatarPanelPrefs {
   /** Master switch. False means the panel is never mounted or downloaded. */
   enabled: boolean;
   /** True when collapsed to the bubble. */
   minimized: boolean;
-  /**
-   * Top-left corner of the panel, in CSS pixels from the viewport's top-left.
-   * `null` means "never dragged": the panel sits in the bottom-right corner.
-   */
-  position: { x: number; y: number } | null;
+  /** Width of the open column in CSS pixels, when the operator has dragged it; absent means the default. */
+  width?: number;
 }
 
 export const DEFAULT_AVATAR_PANEL_PREFS: AvatarPanelPrefs = {
   enabled: false,
   minimized: false,
-  position: null,
 };
 
 type ReadStorage = Pick<Storage, 'getItem'>;
@@ -53,36 +57,10 @@ function getStorage(): Storage | null {
   }
 }
 
-/**
- * Keep a panel of `width` x `height` fully inside a viewport. Used for both the
- * open panel and the bubble, on drag and on window resize, so a position saved
- * on a large monitor can never strand the panel off-screen on a small one.
- */
-export function clampAvatarPanelPosition(
-  position: { x: number; y: number },
-  viewport: { width: number; height: number },
-  size: { width: number; height: number } = { width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT },
-): { x: number; y: number } {
-  const maxX = Math.max(AVATAR_PANEL_MARGIN, viewport.width - size.width - AVATAR_PANEL_MARGIN);
-  const maxY = Math.max(AVATAR_PANEL_MARGIN, viewport.height - size.height - AVATAR_PANEL_MARGIN);
-  const x = Number.isFinite(position.x) ? position.x : maxX;
-  const y = Number.isFinite(position.y) ? position.y : maxY;
-  return {
-    x: Math.round(Math.min(Math.max(x, AVATAR_PANEL_MARGIN), maxX)),
-    y: Math.round(Math.min(Math.max(y, AVATAR_PANEL_MARGIN), maxY)),
-  };
-}
-
-/** Where the panel sits before the operator has ever dragged it: bottom-right. */
-export function defaultAvatarPanelPosition(
-  viewport: { width: number; height: number },
-  size: { width: number; height: number } = { width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT },
-): { x: number; y: number } {
-  return clampAvatarPanelPosition(
-    { x: viewport.width - size.width - 16, y: viewport.height - size.height - 44 },
-    viewport,
-    size,
-  );
+/** Keep a column width inside its limits; anything that is not a number is the default. */
+export function clampAvatarColumnWidth(width: unknown): number {
+  if (typeof width !== 'number' || !Number.isFinite(width)) return AVATAR_COLUMN_DEFAULT_WIDTH;
+  return Math.round(Math.min(Math.max(width, AVATAR_COLUMN_MIN_WIDTH), AVATAR_COLUMN_MAX_WIDTH));
 }
 
 function parsePrefs(raw: string | null): AvatarPanelPrefs {
@@ -90,15 +68,11 @@ function parsePrefs(raw: string | null): AvatarPanelPrefs {
   try {
     const value = JSON.parse(raw) as Partial<AvatarPanelPrefs> | null;
     if (typeof value !== 'object' || value === null) return DEFAULT_AVATAR_PANEL_PREFS;
-    const pos = value.position;
-    const position =
-      pos && typeof pos === 'object' && Number.isFinite(pos.x) && Number.isFinite(pos.y)
-        ? { x: Math.round(pos.x), y: Math.round(pos.y) }
-        : null;
     return {
       enabled: value.enabled === true,
       minimized: value.minimized === true,
-      position,
+      // A saved `position` from the floating-window days is ignored on purpose.
+      ...(typeof value.width === 'number' && Number.isFinite(value.width) ? { width: clampAvatarColumnWidth(value.width) } : {}),
     };
   } catch {
     return DEFAULT_AVATAR_PANEL_PREFS;

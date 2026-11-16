@@ -59,6 +59,8 @@ code, kbd { font-family: var(--font-mono); }
   display: flex;
   flex-direction: column;
   height: 100vh;
+  /* Room taken by Lucy's column when it is open (see styles.css). */
+  padding-right: var(--lucy-column-width, 0px);
 }
 
 /* Skip link: visually hidden until focused so mouse users see no layout shift. */

@@ -1297,10 +1297,12 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                       <div className="settings-row-info">
                         <span className="settings-label">Avatar panel</span>
                         <span className="settings-desc">
-                          Show a floating window with a 3D character who lip-syncs spoken summaries.
-                          Off by default. Turning it on downloads the 3D renderer and a 3.6 MB avatar
-                          file, and uses your graphics card while the window is open. It can be dragged,
-                          and minimised to a small bubble. This choice is saved for this browser only.
+                          Show Lucy in a column on the right of the dashboard, with a 3D character who
+                          lip-syncs spoken summaries. The dashboard shrinks to make room for it. Off by
+                          default. Turning it on downloads the 3D renderer and a 3.6 MB avatar file, and
+                          uses your graphics card while the column is open. Drag its left edge to change
+                          its width, and minimise it to a small bubble. This choice is saved for this
+                          browser only.
                         </span>
                       </div>
                       <button

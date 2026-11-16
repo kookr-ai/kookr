@@ -35,6 +35,8 @@ import { __resetLastClipForTests } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
+import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
+import { __resetLucyTypedForTests } from './LucyTypedInput.js';
 import { __resetOperatorAsksForTests, handleOperatorAskResult, handleOperatorAsks } from '../store/operator-asks.js';
 
 const ASK = 'a1b2c3d4e5f6';
@@ -71,6 +73,8 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
   };
 
   beforeEach(() => {
+    __resetLucyConversationForTests();
+    __resetLucyTypedForTests();
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     document.body.innerHTML = '';
     localStorage.clear();
@@ -303,13 +307,18 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
 
   test('the answers form one group named by its question, so two cards cannot be confused', () => {
     render();
-    push([ask(), ask({ id: 'bbbbbbbbbbbb', question: 'Second?' })]);
-    const groups = [...container.querySelectorAll('[role="group"]')];
-    expect(groups).toHaveLength(2);
-    const names = groups.map((group) => document.getElementById(group.getAttribute('aria-labelledby')!)!.textContent);
-    expect(names).toEqual(['Ship the migration now?', 'Second?']);
-    expect(groups[0].querySelector('[data-testid="avatar-ask-input"]')).not.toBeNull();
+    push([ask(), ask({ id: 'bbbbbbbbbbbb', question: 'Second?', expiresAt: Date.now() + 40 * 60_000 })]);
+    const groupName = () => {
+      const groups = [...container.querySelectorAll('[role="group"]')];
+      expect(groups).toHaveLength(1); // one card is open at a time
+      return { group: groups[0], name: document.getElementById(groups[0].getAttribute('aria-labelledby')!)!.textContent };
+    };
+    expect(groupName().name).toBe('Ship the migration now?');
+    expect(groupName().group.querySelector('[data-testid="avatar-ask-input"]')).not.toBeNull();
     expect(q('avatar-asks')!.getAttribute('role')).toBe('list');
+
+    click(all('avatar-ask-row')[0]);
+    expect(groupName().name).toBe('Second?');
   });
 
   test('keyboard focus stays on the card when it closes under the pressed button', () => {

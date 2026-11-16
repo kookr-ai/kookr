@@ -36,6 +36,7 @@ import { __resetLastClipForTests } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
+import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
 import { __resetLucyLaunchForTests, handleLucyLaunch } from '../store/lucy-launch.js';
 import { useKookrStore } from '../store/useStore.js';
 import type { LucyLaunchProposalView } from '../../shared/contracts/lucy-launch.js';
@@ -69,6 +70,8 @@ describe('AvatarDock: Lucy launch card and typed input', () => {
   }
 
   beforeEach(() => {
+    __resetLucyConversationForTests();
+    __resetLucyTypedForTests();
     localStorage.clear();
     __resetLastClipForTests(); __resetSoundPreferenceForTests(); __resetSpeechBusForTests();
     __resetLucyLaunchForTests(); __resetLucyTypedForTests();
@@ -91,6 +94,26 @@ describe('AvatarDock: Lucy launch card and typed input', () => {
     expect(q('avatar-launch-kind')!.textContent).toBe('Investigation');
     expect(q('avatar-launch-level')!.textContent).toBe('Balanced');
     expect(q('avatar-launch-go')).not.toBeNull();
+  });
+
+  test('a long description scrolls inside its own keyboard-reachable region; Go and Cancel are outside it', async () => {
+    mount();
+    await showCard({ description: 'Line of a very long task description.\n'.repeat(60) });
+    const body = container.querySelector<HTMLElement>('.avatar-launch-body')!;
+    expect(body.getAttribute('role')).toBe('region');
+    expect(body.getAttribute('aria-label')).toBe('Proposed task');
+    expect(body.tabIndex).toBe(0);
+    expect(body.contains(q('avatar-launch-description'))).toBe(true);
+    expect(body.contains(q('avatar-launch-go'))).toBe(false);
+    expect(body.contains(q('avatar-launch-cancel'))).toBe(false);
+  });
+
+  test('the launch card sits right above the composer, below the conversation thread', async () => {
+    mount();
+    await showCard();
+    const dock = q('avatar-dock')!;
+    const order = [...dock.children].map((el) => (el as HTMLElement).dataset.testid ?? el.className);
+    expect(order.slice(-3)).toEqual(['avatar-thread-wrap', 'avatar-launch', 'avatar-typed']);
   });
 
   test('Go posts a confirm with via click and no level', async () => {
@@ -248,7 +271,13 @@ describe('AvatarDock: Lucy launch card and typed input', () => {
     expect(bodies[0]).toMatchObject({ text: 'investigate why the issue tasks stop chaining', input: 'typed' });
     expect(bodies[0].conversationId).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
     expect(bodies[1].conversationId).toBe(bodies[0].conversationId);
-    expect(q('avatar-typed-reply')!.textContent).toBe('On it.');
+    // Both requests and both replies are in the thread, oldest first (the full thread behaviour is in AvatarDock.thread.test.tsx).
+    expect([...container.querySelectorAll('[data-testid="avatar-typed-you"], [data-testid="avatar-typed-reply"]')].map((e) => e.textContent)).toEqual([
+      'You investigate why the issue tasks stop chaining',
+      'Lucy On it.',
+      'You and again',
+      'Lucy On it.',
+    ]);
   });
 
   test('typed input hides itself when the first request answers 404', async () => {

@@ -1,12 +1,17 @@
 /**
- * A small text box for typing a request to Lucy (issue #3676): "investigate why the issue tasks stop chaining".
+ * The composer at the foot of Lucy's column (issue #3676): a text box for typing a request to her,
+ * "investigate why the issue tasks stop chaining", with the level of autonomy she is working at.
  *
- * Each send is one turn of `POST /api/lucy/turn` (input 'typed') in a conversation id made once per tab.
- * Her reply text is shown under the box. A proposal she makes arrives as the usual card through the dashboard
- * socket, never from this stream (the `proposal` and `launch` events here are informational and ignored).
- * When the first request answers 404 the operator feature is off, and the box removes itself for good.
+ * Each send is one turn of `POST /api/lucy/turn` (input 'typed') in a conversation id made once per tab
+ * and kept in `sessionStorage`, so after a page reload she still remembers the earlier turns (the server
+ * keeps the last 20 messages of a conversation). The sentence and her reply are entries in the thread
+ * (`store/lucy-conversation.ts`); this component only writes them, the thread shows them. Her reply is
+ * written into its entry as it streams in. A proposal she makes arrives as the usual card through the
+ * dashboard socket, never from this stream (the `proposal` and `launch` events here are informational
+ * and ignored). When the first request answers 404 the operator feature is off, and the box removes
+ * itself for good.
  */
-import { useEffect, useId, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import type { FormEvent } from 'react';
 import {
   LUCY_CONVERSATION_ID_RE,
@@ -17,6 +22,12 @@ import {
 import { openLucyTask } from './LucyLaunchCard.js';
 import { getSettings } from '../api/settings.js';
 import { DEFAULT_LUCY_AUTONOMY, isLucyAutonomy, type LucyAutonomy } from '../../shared/contracts/lucy-launch.js';
+import {
+  appendConversationEntry,
+  removeConversationEntries,
+  updateConversationEntry,
+  useLucyConversation,
+} from '../store/lucy-conversation.js';
 
 const AUTONOMY_LABEL: Record<LucyAutonomy, string> = { careful: 'Careful', balanced: 'Balanced', 'hands-off': 'Hands-off' };
 
@@ -41,15 +52,34 @@ function useLucyAutonomyLabel(): LucyAutonomy | null {
   return level;
 }
 
+/** Where the tab's conversation id is kept, so a reload continues the same conversation. */
+export const LUCY_CONVERSATION_ID_KEY = 'kookr:lucyTypedConversationId';
+
 let conversationId: string | null = null;
-/** One stable id for this tab, made on first use. */
+
+function sessionStore(): Storage | null {
+  try {
+    return typeof sessionStorage === 'undefined' ? null : sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** One stable id for this tab, made on first use and kept in `sessionStorage` (a new tab is a new conversation). */
 export function typedConversationId(): string {
   if (conversationId === null) {
-    const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID().replace(/-/g, '')
-      : Math.random().toString(36).slice(2) + Date.now().toString(36);
-    conversationId = `typed-${random}`.slice(0, 64);
-    if (!LUCY_CONVERSATION_ID_RE.test(conversationId)) conversationId = `typed-${Date.now().toString(36)}`;
+    let saved: string | null = null;
+    try { saved = sessionStore()?.getItem(LUCY_CONVERSATION_ID_KEY) ?? null; } catch { /* unreadable: make a new one */ }
+    if (saved !== null && LUCY_CONVERSATION_ID_RE.test(saved)) {
+      conversationId = saved;
+    } else {
+      const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID().replace(/-/g, '')
+        : Math.random().toString(36).slice(2) + Date.now().toString(36);
+      conversationId = `typed-${random}`.slice(0, 64);
+      if (!LUCY_CONVERSATION_ID_RE.test(conversationId)) conversationId = `typed-${Date.now().toString(36)}`;
+      try { sessionStore()?.setItem(LUCY_CONVERSATION_ID_KEY, conversationId); } catch { /* the id then lasts for this page only */ }
+    }
   }
   return conversationId;
 }
@@ -64,6 +94,12 @@ export function __resetLucyTypedForTests(): void {
   featureOff = false;
   conversationId = null;
   listeners.clear();
+  try { sessionStore()?.removeItem(LUCY_CONVERSATION_ID_KEY); } catch { /* nothing to remove */ }
+}
+
+/** Forget the id held in memory, as a page reload does; the id saved in `sessionStorage` stays (tests only). */
+export function __forgetLucyTypedIdInMemoryForTests(): void {
+  conversationId = null;
 }
 
 export type TypedTurnResult =
@@ -132,26 +168,45 @@ export function LucyTypedInput({ fetcher }: { fetcher?: typeof fetch } = {}) {
     () => featureOff,
   );
   const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [reply, setReply] = useState('');
-  const [error, setError] = useState('');
+  // What a screen reader is told: the thread is a silent log, so a typed reply (which nobody speaks) is read from
+  // here. A new element each time, so the same text is read again. An error is told like a reply.
+  const [announce, setAnnounce] = useState<{ seq: number; text: string } | null>(null);
   const inputId = useId();
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const level = useLucyAutonomyLabel();
+  // Busy while a reply is still arriving. Read from the thread, not from this component, so minimising the panel
+  // while Lucy is answering does not make the box look free.
+  const entries = useLucyConversation();
+  const busy = entries.some((entry) => entry.kind === 'typed-lucy' && entry.status === 'pending');
   if (off) return null;
+
+  const say = (words: string): void => setAnnounce((previous) => ({ seq: (previous?.seq ?? 0) + 1, text: words }));
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
     const sentence = text.trim();
     if (!sentence || busy) return;
-    setBusy(true);
-    setError('');
-    setReply('');
     setText('');
-    const result = await sendTypedTurn(sentence, fetcher ?? ((input, init) => fetch(input, init)), setReply);
-    setBusy(false);
-    if (result.ok) setReply(result.reply);
-    else if (result.reason === 'feature_off') markFeatureOff();
-    else setError(result.message);
+    // The next request is typed in the same place: a press on Send must not take the cursor away from the box.
+    inputRef.current?.focus();
+    const youId = appendConversationEntry({ kind: 'typed-you', text: sentence });
+    const lucyId = appendConversationEntry({ kind: 'typed-lucy', text: '', status: 'pending' });
+    say('Thinking\u2026');
+    const result = await sendTypedTurn(
+      sentence,
+      fetcher ?? ((input, init) => fetch(input, init)),
+      (replySoFar) => updateConversationEntry(lucyId, { text: replySoFar }),
+    );
+    if (result.ok) {
+      updateConversationEntry(lucyId, { text: result.reply, status: 'done' });
+      say(result.reply);
+    } else if (result.reason === 'feature_off') {
+      removeConversationEntries([youId, lucyId]);
+      markFeatureOff();
+    } else {
+      updateConversationEntry(lucyId, { text: result.message, status: 'error' });
+      say(result.message);
+    }
   }
 
   return (
@@ -160,6 +215,7 @@ export function LucyTypedInput({ fetcher }: { fetcher?: typeof fetch } = {}) {
       <div className="avatar-typed-row">
         <input
           id={inputId}
+          ref={inputRef}
           type="text"
           value={text}
           maxLength={MAX_LUCY_TURN_TEXT_CHARS}
@@ -172,10 +228,10 @@ export function LucyTypedInput({ fetcher }: { fetcher?: typeof fetch } = {}) {
         </button>
       </div>
       {level !== null && <p className="avatar-typed-level" data-testid="avatar-autonomy-level">Lucy autonomy: {AUTONOMY_LABEL[level]}</p>}
-      {(reply || busy) && (
-        <p className="avatar-typed-reply" role="status" data-testid="avatar-typed-reply">{reply || 'Thinking…'}</p>
-      )}
-      {error && <p className="avatar-launch-error" role="alert" data-testid="avatar-typed-error">{error}</p>}
+      {/* Always present, only emptied, so what is added to it is announced. */}
+      <div className="sr-only" role="status" data-testid="avatar-typed-announce">
+        {announce && <span key={announce.seq}>{announce.text}</span>}
+      </div>
     </form>
   );
 }

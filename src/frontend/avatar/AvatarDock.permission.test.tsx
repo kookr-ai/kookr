@@ -39,6 +39,7 @@ import { __resetLastClipForTests } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
+import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
 import { __resetLucyLaunchForTests } from '../store/lucy-launch.js';
 import { __resetLucyPermissionForTests, buildPermissionChoice, handleLucyPermissionCards } from '../store/lucy-permission.js';
 import type { LucyPermissionAnnouncement, LucyPermissionCardView } from '../../shared/contracts/lucy-permission.js';
@@ -75,6 +76,8 @@ describe('AvatarDock: permission cards (issue #3932)', () => {
   }
 
   beforeEach(() => {
+    __resetLucyConversationForTests();
+    __resetLucyTypedForTests();
     localStorage.clear();
     choice.mockClear();
     for (const fn of Object.values(speech)) fn.mockClear();
