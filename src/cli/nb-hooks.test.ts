@@ -226,6 +226,29 @@ describe('nb-retro Stop/SubagentStop hook', () => {
     }
   });
 
+  test('NB_DIR=~ (bare) puts the sentinel in the home directory itself', () => {
+    // Issue #3838: only `~/…` was covered; a bare `~` is expanded to the home directory too.
+    const cwd = mkdtempSync(join(tmpdir(), 'kookr-nb-hooks-cwd-'));
+    try {
+      let code = 0;
+      try {
+        execFileSync('node', [hook], {
+          cwd,
+          input: JSON.stringify({ session_id: 'bare-tilde' }),
+          env: retroEnv({ HOME: dir, NB_DIR: '~' }),
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch (e) {
+        code = (e as { status?: number }).status ?? -1;
+      }
+      expect(code).toBe(2); // the first stop is nudged
+      expect(existsSync(join(dir, '.retro-bare-tilde'))).toBe(true);
+      expect(existsSync(join(cwd, '~'))).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test('an existing sentinel (another agent already nudged) exits silently', () => {
     writeFileSync(join(dir, '.retro-sess-taken'), 'x');
     const r = runRetro({ NB_DIR: dir }, { session_id: 'sess-taken' });
