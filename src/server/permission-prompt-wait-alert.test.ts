@@ -286,7 +286,7 @@ describe('collectPermissionPromptWaits', () => {
     // A watchdog-detected block with no permission_request event still pages,
     // with the tool taken from the watchdog's explanation.
     expect(collectPermissionPromptWaits(tasks, monitor)).toEqual([
-      { taskId: 'live', toolName: 'Write', command: '', sinceMs: T0 },
+      { taskId: 'live', sessionId: 's1', toolName: 'Write', command: '', sinceMs: T0 },
     ]);
   });
 
@@ -301,7 +301,7 @@ describe('collectPermissionPromptWaits', () => {
     };
     const task: PermissionPromptTaskView = { id: 't', status: 'inProgress', sessions: [{ tmuxSession: 's1' }] };
     expect(collectPermissionPromptWaits([task], monitor)).toEqual([
-      { taskId: 't', toolName: 'unknown tool', command: '', sinceMs: T0 },
+      { taskId: 't', sessionId: 's1', toolName: 'unknown tool', command: '', sinceMs: T0 },
     ]);
   });
 
@@ -319,7 +319,7 @@ describe('collectPermissionPromptWaits', () => {
     };
     const task: PermissionPromptTaskView = { id: 't', status: 'inProgress', sessions: [{ tmuxSession: 's1' }] };
     expect(collectPermissionPromptWaits([task], monitor)).toEqual([
-      { taskId: 't', toolName: 'Write', command: '/repo/new.ts', sinceMs: T0 },
+      { taskId: 't', sessionId: 's1', toolName: 'Write', command: '/repo/new.ts', sinceMs: T0 },
     ]);
   });
 
@@ -345,6 +345,7 @@ describe('collectPermissionPromptWaits', () => {
     expect(collectPermissionPromptWaits([incidentTask], monitor)).toEqual([{
       taskId: incidentTask.id,
       taskName: incidentTask.name,
+      sessionId: 'kookr-28245f61',
       toolName: 'Bash',
       command: COMMAND,
       sinceMs: T0 + 1_000,
@@ -363,14 +364,14 @@ describe('collectPermissionPromptWaits', () => {
       { type: 'subagent_start', sessionId: 's', agentId: 'b1', agentType: 'Explore' },
     ]);
     expect(collectPermissionPromptWaits([task], answered)).toEqual([
-      { taskId: 't', toolName: 'Bash', command: '', sinceMs: T0 },
+      { taskId: 't', sessionId: 's1', toolName: 'Bash', command: '', sinceMs: T0 },
     ]);
     const otherTool = withEvents('Permission request pending for tool: Write', [
       { type: 'permission_request', sessionId: 's', toolName: 'Bash', toolInput: { command: 'cmdA' } },
       { type: 'subagent_start', sessionId: 's', agentId: 'b1', agentType: 'Explore' },
     ]);
     expect(collectPermissionPromptWaits([task], otherTool)).toEqual([
-      { taskId: 't', toolName: 'Write', command: '', sinceMs: T0 },
+      { taskId: 't', sessionId: 's1', toolName: 'Write', command: '', sinceMs: T0 },
     ]);
   });
 });

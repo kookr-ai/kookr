@@ -82,6 +82,8 @@ export interface PermissionPromptWait {
   taskId: string;
   /** Task display name; the page falls back to the id. */
   taskName?: string;
+  /** The blocked agent session (Lucy's card names it in its buttons, issue #3932). */
+  sessionId?: string;
   /** Tool the agent asked permission for, e.g. `Bash`. */
   toolName: string;
   /** Command, file path or URL from the tool input; empty when unknown. */
@@ -219,6 +221,7 @@ export function collectPermissionPromptWaits(
     waits.push({
       taskId: task.id,
       ...(task.name ? { taskName: task.name } : {}),
+      sessionId: sessionName,
       toolName,
       command: request ? describePermissionToolInput(request.toolInput) : '',
       sinceMs,

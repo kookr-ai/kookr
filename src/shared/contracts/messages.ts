@@ -22,6 +22,7 @@ import type { TaskCompletionFeedback, TaskMetadataIntent, TaskPriorityUpdate } f
 import type { TaskRelation } from './task-relations.js';
 import type { TelemetryEvent } from './telemetry.js';
 import type { LucyLaunchOutcome, LucyLaunchProposalView, LucyLaunchReport } from './lucy-launch.js';
+import type { LucyPermissionAnnouncement, LucyPermissionCardView } from './lucy-permission.js';
 import type {
   EmptyEnterIntentRequest,
   EmptyEnterDecision,
@@ -594,6 +595,18 @@ export type ServerMessage =
       serverNow?: number;
     }
   | {
+      /**
+       * Lucy's permission cards (issue #3932): every task whose agent has waited on a permission
+       * prompt past the notice delay. Always the whole list, owner connections only, on connect and
+       * on every change. `announce` is set only on the message that should make her speak.
+       */
+      type: 'lucyPermissionCards';
+      cards: LucyPermissionCardView[];
+      announce?: LucyPermissionAnnouncement;
+      /** The server's clock (ms since epoch), so the panel times the buttons without trusting the browser's clock. */
+      serverNow?: number;
+    }
+  | {
       /** Reply to the sender of an `answerAsk`: whether the answer was recorded, and if not, why. */
       type: 'operatorAskResult';
       askId: string;
@@ -781,6 +794,7 @@ export const SERVER_MESSAGE_TYPES = [
   'deployLifecycle',
   'operatorAsks',
   'operatorAskResult',
+  'lucyPermissionCards',
 ] as const satisfies readonly ServerMessage['type'][];
 
 /** Upper bound on task IDs accepted by one batch-abort request (issue #1325). */

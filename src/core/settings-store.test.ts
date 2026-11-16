@@ -558,6 +558,25 @@ describe('validateSettings', () => {
     });
   });
 
+  describe('lucyPermissionNoticeAfterSeconds', () => {
+    it('is absent by default, which means 60 seconds', () => {
+      expect('lucyPermissionNoticeAfterSeconds' in validateSettings({})).toBe(false);
+      expect('lucyPermissionNoticeAfterSeconds' in DEFAULT_SETTINGS).toBe(false);
+    });
+
+    it.each([0, 30, 3600])('accepts %j without a warning', (value) => {
+      const result = validateSettingsWithWarnings({ lucyPermissionNoticeAfterSeconds: value });
+      expect(result.settings.lucyPermissionNoticeAfterSeconds).toBe(value);
+      expect(result.warnings).toEqual([]);
+    });
+
+    it.each([-1, 3601, 1.5, '60', true])('drops %j with a warning', (value) => {
+      const result = validateSettingsWithWarnings({ lucyPermissionNoticeAfterSeconds: value });
+      expect('lucyPermissionNoticeAfterSeconds' in result.settings).toBe(false);
+      expect(result.warnings.join('\n')).toContain('Invalid lucyPermissionNoticeAfterSeconds');
+    });
+  });
+
   describe('speakVoice', () => {
     it('is absent by default (install default applies)', () => {
       expect('speakVoice' in validateSettings({})).toBe(false);

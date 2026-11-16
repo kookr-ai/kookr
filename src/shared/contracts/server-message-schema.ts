@@ -491,6 +491,13 @@ const operatorAsksMessage = z.object({
   serverNow: z.number().optional(),
 });
 
+const lucyPermissionCardsMessage = z.object({
+  type: z.literal('lucyPermissionCards'),
+  cards: z.array(jsonObject),
+  announce: z.object({ noticeId: z.string(), promptIds: z.array(z.string()) }).optional(),
+  serverNow: z.number().optional(),
+});
+
 const operatorAskResultMessage = z.object({
   type: z.literal('operatorAskResult'),
   askId: z.string(),
@@ -535,6 +542,7 @@ const ServerMessageSchemaImpl = z.union([
   deployLifecycleMessage,
   operatorAsksMessage,
   operatorAskResultMessage,
+  lucyPermissionCardsMessage,
 ]);
 
 export const ServerMessageSchema = ServerMessageSchemaImpl;

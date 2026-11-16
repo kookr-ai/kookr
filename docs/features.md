@@ -466,6 +466,17 @@ background the task gave, and a box for a typed answer when the task accepts one
 
 Details: [Lucy live](reference/lucy-live.md#questions-from-tasks).
 
+#### Lucy tells you when a task waits for your permission
+
+When a task's agent has waited a minute on a permission prompt and the avatar panel is on, Lucy says
+so ("The task "Fix the login page" is waiting for your permission to use Bash. The command is on my
+card.") and her panel shows a card with the whole command and the finding card's **Approve once** and
+**Deny**. She never reads the command out, speaks at most once every 2 minutes (several tasks in that
+time are said together: "Two more tasks are waiting for you."), and follows the same rules as for
+questions: one tab, nothing aloud with sound off, Do Not Disturb or quiet hours. The card goes as soon
+as the prompt is answered anywhere. The delay is the `lucyPermissionNoticeAfterSeconds` setting
+(default 60; 0 turns it off). Needs no Telegram; her voice needs the speech service.
+
 #### Talk to Lucy hands-free (optional, off by default)
 
 The **Talk** button in the panel's title bar starts a spoken conversation: you speak, she answers out

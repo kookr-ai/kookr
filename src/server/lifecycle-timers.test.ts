@@ -17,6 +17,7 @@ import {
   runReapWarningMaintenance,
   REAP_WARNING_STUCK_CLEAR_MS,
   startLifecycleTimers,
+  evaluatePermissionPromptWaits,
   orderWatchdogAgentsFromCursor,
   raceWatchdogProbe,
   WatchdogProbeTimeoutError,
@@ -1992,6 +1993,25 @@ describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', 
     }
   });
 
+  test('a failed collection of blocked tasks is not passed to Lucy as an empty list (issue #3932)', () => {
+    const alerter = { evaluate: vi.fn() };
+    const notifier = { evaluate: vi.fn() };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      evaluatePermissionPromptWaits(() => { throw new Error('monitor unreadable'); }, alerter, notifier);
+      expect(alerter.evaluate).not.toHaveBeenCalled();
+      expect(notifier.evaluate).not.toHaveBeenCalled();
+      // A page that throws does not keep Lucy from her list, and the other way round.
+      alerter.evaluate.mockImplementationOnce(() => { throw new Error('page failed'); });
+      evaluatePermissionPromptWaits(() => [], alerter, notifier);
+      expect(notifier.evaluate).toHaveBeenCalledWith([]);
+      notifier.evaluate.mockImplementationOnce(() => { throw new Error('lucy failed'); });
+      expect(() => evaluatePermissionPromptWaits(() => [], alerter, notifier)).not.toThrow();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test('omits evaluate when getStatusSnapshot is unwired', async () => {
     vi.useFakeTimers();
     const evaluate = vi.fn();
@@ -2145,6 +2165,7 @@ describe('startLifecycleTimers permission-prompt page wiring (issue #3872)', () 
   test('liveness tick passes permission-blocked live tasks to the permission-prompt alerter (issue #3872)', async () => {
     vi.useFakeTimers();
     const evaluate = vi.fn();
+    const lucyEvaluate = vi.fn();
     const taskStore = new TaskStore();
     const task = taskStore.createTask({ prompt: 'blocked worker', cwd: '/repo', name: 'Blocked worker' });
     taskStore.addSession(task.id, {
@@ -2182,6 +2203,8 @@ describe('startLifecycleTimers permission-prompt page wiring (issue #3872)', () 
         unregisterAgent: vi.fn(),
       } as unknown as TimerDeps['monitor'],
       permissionPromptWaitAlerter: { evaluate },
+      // Lucy's card (issue #3932) reads the same list on the same tick.
+      lucyPermissionNotifier: { evaluate: lucyEvaluate },
     }));
     try {
       // The live-session reconcile path awaits real I/O before the alerter
@@ -2189,9 +2212,11 @@ describe('startLifecycleTimers permission-prompt page wiring (issue #3872)', () 
       await vi.waitFor(() => expect(evaluate).toHaveBeenCalled(), { timeout: 10_000, interval: 50 });
       expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
       const last = evaluate.mock.calls[evaluate.mock.calls.length - 1]?.[0];
+      expect(lucyEvaluate).toHaveBeenCalledWith(last);
       expect(last).toEqual([{
         taskId: task.id,
         taskName: 'Blocked worker',
+        sessionId: 'kookr-perm-blocked',
         toolName: 'Bash',
         command: 'rm -rf /tmp/x',
         sinceMs: detectedAt.getTime(),

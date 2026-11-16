@@ -234,7 +234,8 @@ can still read the answer from Kookr. If Kookr does not confirm an answer within
 connection dropped as you pressed), the card says so and you can press again.
 
 **When she speaks.** Everything else Lucy says follows a press on a speaker button or something you
-said to her. A question is the one thing she says unprompted, under these rules:
+said to her. A question, and a task that has waited on a permission prompt (next paragraph), are what
+she says unprompted, under these rules:
 
 - once, when the question arrives. A reload or a reconnect lists the question again but does not make
   her ask again;
@@ -246,6 +247,31 @@ said to her. A question is the one thing she says unprompted, under these rules:
 - after anything she is already saying, one question at a time; she waits up to 45 seconds, then
   leaves it as unheard;
 - she stops if the question is answered, withdrawn or expires while she is reading it.
+
+**A task waiting for your permission** (issue #3932). When a task's agent has waited on a permission
+prompt ("Claude needs your permission") for 60 seconds, her panel shows a card with the task, the tool
+and the whole command (secrets hidden), and the same Approve once and Deny buttons as the finding card.
+They send the same checked message, so a press meant for a prompt that is no longer on screen does
+nothing. A button is shown only when its option is on the task's screen; the dashboard keeps a press
+valid for 5 minutes after the prompt appeared, after which the card says to answer in the task's
+terminal. The card goes as soon as the prompt is answered anywhere (here, on the finding card, on
+Telegram or in the terminal), or the task stops. She also says one sentence, written by the server from
+a fixed pattern and never from text an agent wrote:
+
+> The task "Fix the login page" is waiting for your permission to use Bash. The command is on my card.
+
+The command is never spoken. A task name that cannot be read aloud (too long, an id or a path in it)
+becomes "A task", and a tool that is not a plain word becomes "an MCP tool" or "a tool". At most one such
+sentence every 2 minutes: cards that arrive in the meantime are said together once the gap is over
+("Two more tasks are waiting for you."), leaving out the ones answered by then. The rules above apply
+(sound off, Do Not Disturb or quiet hours, or no click in the page yet: the card and an unheard clip,
+no sound; one tab; a reload does not repeat it), and she stops if every prompt the sentence is about
+is answered while she says it. Each spoken notice is one `said` line (`source: "permission_notice"`)
+in `lucy-interactions.jsonl`. The delay is the `lucyPermissionNoticeAfterSeconds` setting in
+`~/.kookr/settings.json` (whole seconds, 0 to 3600; 0 turns these cards and sentences off; at 300 or
+more the card arrives after the 5-minute button limit, so it never has buttons). With no dashboard open
+the sentence waits: she says it once one is. The
+3-minute page to your phone and the Telegram card (issue #3925) are separate and unchanged.
 
 **Hands-free talk.** With Talk on, the status Lucy answers from also lists the questions that are
 waiting and the ones closed in the last 10 minutes, with where the answer came from. Ask her "does

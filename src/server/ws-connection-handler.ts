@@ -41,6 +41,8 @@ import type { SocketRegistrar } from './viewer-connection-registry.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 import { isLucyTelemetryType, MAX_LUCY_EVENTS_PER_TELEMETRY_MESSAGE, type LucyInteractionLog } from './lucy-interaction-log.js';
 import type { TerminalInputCoordinatorPort } from './terminal-input-coordinator.js';
+import { lucyPermissionMessage } from './lucy-permission-notice.js';
+import type { LucyPermissionCardView } from '../shared/contracts/lucy-permission.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 import {
   serializeServerMessageWithSnapshotPayloadPolicy,
@@ -215,6 +217,8 @@ export interface WsConnectionDeps {
    * chose in her panel. Absent when asks are unavailable (Telegram not configured).
    */
   operatorAsks?: OperatorAsksPort;
+  /** Lucy's permission cards (issue #3932), sent to an owner on connect, without a sentence to say. */
+  lucyPermissionCards?: () => LucyPermissionCardView[];
 }
 
 
@@ -400,6 +404,15 @@ export function handleWsConnection(
       ws.send(JSON.stringify({ type: 'operatorAsks', asks: deps.operatorAsks.list(), serverNow: Date.now() } satisfies ServerMessage));
     } catch (err) {
       console.warn('[asks] could not send the question list on connect:', err);
+    }
+  }
+
+  // Lucy's permission cards, so a reload shows them again. No `announce`: what she said is not said again.
+  if (deps.lucyPermissionCards && ws.readyState === 1) {
+    try {
+      ws.send(JSON.stringify(lucyPermissionMessage(deps.lucyPermissionCards()) satisfies ServerMessage));
+    } catch (err) {
+      console.warn('[lucy-permission] could not send the card list on connect:', err);
     }
   }
 

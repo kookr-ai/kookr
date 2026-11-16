@@ -309,7 +309,9 @@ with whole turns between 0.6 and 3.1 s.
 - She answers questions only. Launching, replying, closing and the rest come with the confirmation
   ladder described in issue #3632.
 - No screen uses the endpoint yet, and nothing speaks her replies.
-- She does not speak first. A turn starts only when the operator asks.
+- In conversation she does not speak first: a turn starts only when the operator asks. Outside a
+  turn, she reads out a task's question, the report of a task she launched, and a task
+  that has waited a minute on a permission prompt (see [Lucy live](lucy-live.md)).
 - She answers in English.
 - Conversations are kept in memory: the last ten exchanges, for two hours, and not across a restart.
 - She reads a task's terminal only as a rendered screen: the last 40 lines, not its full history.

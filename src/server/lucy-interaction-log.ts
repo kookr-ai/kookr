@@ -130,7 +130,7 @@ export interface LucyLaunchRecordInput {
 }
 
 /** `operator_ask`: Lucy read out a `kookr ask` question (see routes/ask-routes.ts). */
-export type LucySaidSource = 'task_summary' | 'agent_speak' | 'operator_ask';
+export type LucySaidSource = 'task_summary' | 'agent_speak' | 'operator_ask' | 'permission_notice';
 
 export interface LucySaidRecordInput {
   clipId: string;
