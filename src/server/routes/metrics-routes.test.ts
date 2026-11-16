@@ -20,6 +20,7 @@ import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
 import { LESSON_YIELD_SCHEMA_VERSION } from '../../core/lesson-decision.js';
 import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
 import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
+import { ProviderPausedOccupancyMetrics } from '../provider-paused-ttl-sweep.js';
 import { buildAuditRecord, JsonlResourceWatchdogAuditSink } from '../../core/resource-watchdog-audit.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => ({
@@ -43,6 +44,29 @@ function makeAnomaly(agentId: string): Anomaly {
 }
 
 describe('metrics routes', () => {
+  test('scrapes each provider_paused reclaim skip reason under its own label (issue #3574)', async () => {
+    const providerPausedOccupancyMetrics = new ProviderPausedOccupancyMetrics();
+    providerPausedOccupancyMetrics.recordSelection({
+      candidatesConsidered: 6,
+      skips: {
+        skipped_under_ttl: 0,
+        skipped_open_pr_confirmed: 0,
+        skipped_open_pr_unknown: 0,
+        skipped_no_pause_start: 0,
+        skipped_awaiting_provider_reset: 1,
+        skipped_provider_reset_unresolved: 2,
+        skipped_provider_quota_healthy: 3,
+      },
+    });
+    const res = await mkApp({ providerPausedOccupancyMetrics }).request('/metrics');
+    expect(res.status).toBe(200);
+    const lines = (await res.text()).split('\n');
+    const metric = 'kookr_provider_paused_ttl_reclaim_skipped_total';
+    expect(lines).toContain(`${metric}{reason="provider_quota_healthy"} 3`);
+    expect(lines).toContain(`${metric}{reason="provider_reset_unresolved"} 2`);
+    expect(lines).toContain(`${metric}{reason="awaiting_provider_reset"} 1`);
+  });
+
   test('scrapes the boot-deprioritized launch counter without recording attempts', async () => {
     const { AgentBootLatencyMonitor } = await import('../../core/agent-boot-latency.js');
     const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 1 });
