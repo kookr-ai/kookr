@@ -1482,7 +1482,7 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // GET /api/health — timerHealth summary (issue #2636)
+  // GET /api/health — taskNamer block (issue #3616)
   // ---------------------------------------------------------------------------
   describe('GET /api/health taskNamer block (issue #3616)', () => {
     test('publishes the namer tracker snapshot when wired, and omits the block otherwise', async () => {
@@ -1512,6 +1512,9 @@ describe('diagnostics routes', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // GET /api/health — timerHealth summary (issue #2636)
+  // ---------------------------------------------------------------------------
   describe('GET /api/health timerHealth block (issue #2636)', () => {
     test('always publishes the four-field summary, zeros when no tracker is wired', async () => {
       const res = await mkApp({

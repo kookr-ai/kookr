@@ -215,6 +215,57 @@ describe('useOpsHealthPoll', () => {
     expect(JSON.stringify(useKookrStore.getState().timerHealth)).not.toContain('schemaVersion');
   });
 
+  async function pollOnce(health: Record<string, unknown>): Promise<void> {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => health });
+    await act(async () => {
+      root.render(React.createElement(PollHarness, { intervalMs: 0 }));
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  test('a silent task namer on /api/health reaches the store (issue #3616)', async () => {
+    await pollOnce({
+      status: 'ok',
+      taskNamer: {
+        enabled: true,
+        silent: true,
+        thresholdMs: 21_600_000,
+        lastSuccessAt: '2026-11-15T00:00:00.000Z',
+        failingSince: '2026-11-15T01:00:00.000Z',
+        lastFailureAt: '2026-11-15T08:00:00.000Z',
+        failedAttempts: 12,
+      },
+    });
+    expect(useKookrStore.getState().taskNamer).toEqual({
+      silent: true,
+      thresholdMs: 21_600_000,
+      lastSuccessAtMs: Date.parse('2026-11-15T00:00:00.000Z'),
+      failingSinceMs: Date.parse('2026-11-15T01:00:00.000Z'),
+      lastFailureAtMs: Date.parse('2026-11-15T08:00:00.000Z'),
+      failedAttempts: 12,
+    });
+  });
+
+  test('a disabled or absent task namer block clears the store (issue #3616)', async () => {
+    const stale = {
+      silent: true, thresholdMs: 1, failingSinceMs: 0, lastFailureAtMs: 1, lastSuccessAtMs: null, failedAttempts: 2,
+    };
+    useKookrStore.setState({ taskNamer: stale });
+    await pollOnce({ status: 'ok', taskNamer: { enabled: false, silent: false, thresholdMs: 0, failedAttempts: 0 } });
+    expect(useKookrStore.getState().taskNamer).toBeNull();
+
+    useKookrStore.setState({ taskNamer: stale });
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await pollOnce({ status: 'ok' });
+    expect(useKookrStore.getState().taskNamer).toBeNull();
+  });
+
   test('soft-fails on network error without throwing', async () => {
     fetchMock.mockRejectedValue(new Error('offline'));
 
@@ -234,6 +285,7 @@ describe('useOpsHealthPoll', () => {
     expect(useKookrStore.getState().pausedSchedules).toBeNull();
     expect(useKookrStore.getState().lessonYield).toBeNull();
     expect(useKookrStore.getState().timerHealth).toBeNull();
+    expect(useKookrStore.getState().taskNamer).toBeNull();
   });
 });
 
