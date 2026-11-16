@@ -230,6 +230,10 @@ describe('independent-merge-review follow-up classes and budget (issue #3903)', 
     expect(quotedBriefs).toHaveLength(2);
     for (const quoted of quotedBriefs) expect(quoted).toMatch(/small `defect`,\s+larger\s+`defect`\s+or\s+`nit`/);
     expect(brief).toMatch(/BLOCK on critical findings and\s+small defects/);
+    // Round 2 blocks on a new small defect on a changed line (the §4a table); the
+    // round-2 brief and the BLOCK rule must say so, or the reviewer passes it.
+    expect(brief).toMatch(/A new small defect on a line the fix diff changes blocks\./);
+    expect(brief).toMatch(/small `defect` \(classes below\) in round 1, or in round 2\s+on a line the fix diff changes/);
   });
 
   test('round 1 blocks on small defects; nits never block', () => {
@@ -256,13 +260,19 @@ describe('independent-merge-review follow-up classes and budget (issue #3903)', 
     expect(roundRules).toContain('kookr emission defer --repo "$REPO" --title "$TITLE"');
     expect(roundRules).toMatch(/Never fall back to a bare `gh issue create`/);
     expect(roundRules).toMatch(/Follow-ups \(defects, not filed: issue\s+budget\)/);
+    // The two lines that decide whether to file must read the fields the CLI really emits.
+    expect(roundRules).toContain("jq -r '.plan.allowedBudget // 0'");
+    expect(roundRules).toContain("jq -r 'select(.isDuplicate == true) | .match.number'");
+    // Findings quote code in backticks: the checklist heredoc must be quoted.
+    expect(roundRules).toContain("cat <<'BODY'");
+    expect(roundRules).not.toMatch(/<<BODY\b/);
   });
 
   test('follow-up issues carry the review-followup label and name their files first', () => {
     const roundRules = rules();
     expect(roundRules).toContain('gh label create review-followup --repo "$REPO"');
     expect(roundRules).toContain('--label review-followup');
-    expect(roundRules).toContain('Files: $FILES');
+    expect(roundRules).toContain("printf 'Files: %s\\n");
     expect(read('plugin', 'skills', 'github-labels', 'SKILL.md')).toContain('| `review-followup` |');
   });
 

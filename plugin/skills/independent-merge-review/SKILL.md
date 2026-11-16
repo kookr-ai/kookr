@@ -321,7 +321,8 @@ Instruct the reviewer to return a verdict:
 
 - **BLOCK** if it finds any **confirmed** correctness or safety defect (a bug it
   can point at with a concrete failure scenario, not a style nit or a
-  speculation), or, in round 1, a small `defect` (classes below).
+  speculation), or a small `defect` (classes below) in round 1, or in round 2
+  on a line the fix diff changes.
 - **PASS** otherwise. Nits never block — note them, verdict stays PASS.
 
 **Finding classes (put this list in every reviewer brief, issue #3903).** The
@@ -333,7 +334,8 @@ reviewer, not the implementer, puts each finding in one class:
   or a doc that is now false, whose fix stays within the files the PR already
   touches (plus their tests), needs no design choice, and takes a few minutes.
   Examples: a missing test for a new branch, a doc line that is now false, a
-  wrong message. It blocks in round 1, so it is fixed inside the PR before merge.
+  wrong message. It blocks in round 1, and in round 2 on a line the fix diff
+  changes, so it is fixed inside the PR before merge.
 - **`defect`, larger:** a `defect` that is not small: its fix touches other
   files, needs a design choice, or is a separate piece of work. It does not
   block; it goes into the PR's one follow-up issue (§4a rule 4).
@@ -389,7 +391,8 @@ the reviewer gets (§4a):
   outside those lines. Tag each new finding critical, small `defect`, larger
   `defect` or `nit` (the finding classes in this brief). A new non-critical
   finding on a line the fix diff does not change goes under `Follow-ups` and
-  does not block. A new nit never blocks. A new critical finding
+  does not block. A new small defect on a line the fix diff changes blocks.
+  A new nit never blocks. A new critical finding
   blocks wherever it is."
 
   Paste the finding-class list above into both briefs; the reviewer sees
@@ -539,13 +542,12 @@ backlog and sends defects through the issue budget. The rules:
    ```bash
    FILES="<file>, <file>"   # the files the defect items touch
    TITLE="Review follow-ups: $FILES (#$PR)"
-   cat > /tmp/kookr-followups-$PR.md <<BODY
-   Files: $FILES
-
-   Defects from the independent review of #$PR that were not fixed in it. Nits stay in the verdict comment.
-
+   # Quoted heredoc: findings quote code in backticks, which an unquoted one would run.
+   { printf 'Files: %s\n\nDefects from the independent review of #%s that were not fixed in it. Nits stay in the verdict comment.\n\n' "$FILES" "$PR"
+     cat <<'BODY'
    - [ ] <file>:<line> <what is wrong> (round <n>)
    BODY
+   } > /tmp/kookr-followups-$PR.md
    # Budget and logged dedupe first (github-issue-workflow §1). A failed check opens nothing.
    PLAN=$(kookr emission plan --repo "$REPO" --requested 1 --json) || PLAN=""
    ALLOWED=$(printf '%s' "$PLAN" | jq -r '.plan.allowedBudget // 0' 2>/dev/null)
