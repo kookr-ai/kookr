@@ -948,7 +948,7 @@ describe('worktree reclaim when a chain ends (issue #3908)', () => {
       launchImpl: async (o, s) => {
         calls++;
         const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, parentTaskId: o.parentTaskId, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
-        if (calls > 1) {
+        if (calls > 2) {
           h.taskStore.terminateTask(task.id, { reason: 'unknown' });
           throw new Error('agent failed to boot');
         }
@@ -959,13 +959,17 @@ describe('worktree reclaim when a chain ends (issue #3908)', () => {
     });
     const first = await startResearchChain(h, { maxIterations: 10 });
     h.finish(first);
+    await h.service.sweep();
+    h.finish(h.service.findTip(first.chain!.chainId)!);
     for (let i = 0; i < 6; i++) await h.service.sweep();
 
     const members = h.chainTasks(first.chain!.chainId);
-    expect(members[3].chain!.ended?.reason).toBe('launch_failed');
-    // Iterations 2-4 never had a session, so only iteration 1's sessions name
-    // the worktree.
-    expect(reclaimWorktree.mock.calls.map(([task]) => task.id)).toEqual([first.id]);
+    expect(members.map((t) => t.sessions.length)).toEqual([1, 1, 0, 0, 0]);
+    expect(members[4].chain!.ended?.reason).toBe('launch_failed');
+    // Iterations 3-5 never had a session. Iteration 2 is the newest that did:
+    // its session carries the worktree's current commit, which removal checks
+    // HEAD against, while iteration 1's recorded commit is stale.
+    expect(reclaimWorktree.mock.calls.map(([task]) => task.id)).toEqual([members[1].id]);
   });
 
   it('logs a failed reclaim without breaking the sweep', async () => {

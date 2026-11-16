@@ -272,7 +272,7 @@ import { SupervisorFeedbackCaseStore } from './supervisor-feedback-case-store.js
 import { UserInputDeliveryService } from './user-input-delivery-service.js';
 import { type OssSourceWatcherFs } from './oss-source-watcher.js';
 import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
-import { cleanupReconciledTaskWorktrees, cleanupTaskWorktrees } from '../adapters/git-worktree.js';
+import { cleanupReconciledTaskWorktrees } from '../adapters/git-worktree.js';
 import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
 import { createAgentRuntime, type AgentRuntimeDeps } from './bootstrap/create-agent-runtime.js';
 import type { CodexRolloutScanner } from '../adapters/codex-rollout-scanner.js';
@@ -2240,13 +2240,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // broadcaster wired below exists.
     onChanged: () => requestSnapshotBroadcast(),
     flushTasks: flushLaunchTaskState,
-    // Same rule as the terminal transition: a completed iteration's worktree
-    // goes only when completion cleanup is enabled; a cancelled or terminated
-    // one always does. Every safety gate (dirty, unmerged, shared) still holds.
+    // The reconcile sweep's rule: a completed iteration's worktree goes only
+    // while completion cleanup is enabled in settings, a cancelled or
+    // terminated one always does, and a task that is no longer terminal is
+    // skipped. Every safety gate (dirty, unmerged, shared) still holds. A
+    // one-off "keep worktree" choice made when completing the task by hand is
+    // not stored, so it is not consulted here.
     reclaimWorktree: async (task) => {
-      if (!isTerminalStatus(task.status)) return;
-      if (task.status === 'completed' && getCleanupWorktreeOnComplete() === false) return;
-      await cleanupTaskWorktrees(taskStore, task.id, interactionLog);
+      await cleanupReconciledTaskWorktrees(
+        taskStore,
+        task.status === 'completed'
+          ? { tasksCompleted: [task.id], tasksTerminated: [] }
+          : { tasksCompleted: [], tasksTerminated: [task.id] },
+        interactionLog,
+        { cleanupCompleted: getCleanupWorktreeOnComplete() ?? true },
+      );
     },
     logger: console,
   });
