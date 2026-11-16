@@ -84,6 +84,50 @@ describe('GitHubScannerService', () => {
     });
   });
 
+  describe('onStarted and trackReferences() (issue #3915)', () => {
+    const finishedRef: GitHubReference = {
+      type: 'pr', owner: 'test', repo: 'repo', number: 7,
+      url: 'https://github.com/test/repo/pull/7',
+      taskId: 'task-done', detectedAt: new Date(), detectedFrom: 'completion-digest',
+    };
+
+    it('calls onStarted only when gh is available', async () => {
+      const onStarted = vi.fn();
+      scanner = new GitHubScannerService({
+        taskStore, stateStore, fetcher: createMockFetcher(false), config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges, onStarted,
+      });
+      await scanner.start();
+      expect(onStarted).not.toHaveBeenCalled();
+
+      scanner = new GitHubScannerService({
+        taskStore, stateStore, fetcher: createMockFetcher(true), config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges, onStarted,
+      });
+      await scanner.start();
+      expect(onStarted).toHaveBeenCalledTimes(1);
+    });
+
+    it('tracks a finished task\'s PR and fetches it once, and does not refetch a known reference', async () => {
+      const fetcher = createMockFetcher(true);
+      scanner = new GitHubScannerService({ taskStore, stateStore, fetcher, config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges });
+      await scanner.start();
+
+      await scanner.trackReferences([finishedRef]);
+      expect(stateStore.getReferences('task-done')).toHaveLength(1);
+      expect(fetcher.fetchPRState).toHaveBeenCalledTimes(1);
+
+      await scanner.trackReferences([finishedRef]);
+      expect(fetcher.fetchPRState).toHaveBeenCalledTimes(1);
+    });
+
+    it('does nothing before start (gh availability unknown)', async () => {
+      const fetcher = createMockFetcher(true);
+      scanner = new GitHubScannerService({ taskStore, stateStore, fetcher, config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges });
+      await scanner.trackReferences([finishedRef]);
+      expect(stateStore.getReferences('task-done')).toHaveLength(0);
+      expect(fetcher.fetchPRState).not.toHaveBeenCalled();
+    });
+  });
+
   describe('stop()', () => {
     it('marks scanner as inactive', async () => {
       scanner = new GitHubScannerService({

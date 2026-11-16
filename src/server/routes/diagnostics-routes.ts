@@ -21,6 +21,7 @@ import {
   type ShadowReport,
 } from '../../core/shadow-report.js';
 import { getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
+import { withSnapshotPrDelivery } from '../pr-delivery-tracker.js';
 import { buildReflectionRecommendationResponse } from '../reflection-task.js';
 import {
   FindingEvidenceReviewService,
@@ -1424,7 +1425,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
   // Debug endpoint: full fidelity (not projected). Operators need the raw
   // toolResponse / toolInput / lastMessage for incident investigation.
-  app.get('/api/snapshot', (c) => c.json(getSnapshotAgentsRaw({ monitor: deps.monitor })));
+  app.get('/api/snapshot', (c) => c.json(withSnapshotPrDelivery(
+    getSnapshotAgentsRaw({ monitor: deps.monitor }),
+    (taskId) => githubStateStore.getTaskState(taskId).prs,
+  )));
 
   app.get('/api/queue', (c) => c.json(queue.getAll()));
 

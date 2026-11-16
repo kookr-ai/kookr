@@ -85,7 +85,7 @@ export async function fetchPRState(ref: GitHubReference): Promise<GitHubPRState 
     const { stdout: json } = await execGh([
       'pr', 'view', String(ref.number),
       '--repo', `${ref.owner}/${ref.repo}`,
-      '--json', 'title,state,author,headRefName,baseRefName,reviewDecision,isDraft,comments,mergeable,mergedAt',
+      '--json', 'title,state,author,headRefName,baseRefName,reviewDecision,isDraft,comments,mergeable,mergedAt,createdAt,mergeCommit',
     ], {
       timeout: 15000,
     });
@@ -121,6 +121,7 @@ export async function fetchPRState(ref: GitHubReference): Promise<GitHubPRState 
       totalComments: Array.isArray(data.comments) ? data.comments.length : 0,
       checks,
       ...parseMergedAt(data.mergedAt),
+      ...parseDeliveryFields(data.createdAt, data.mergeCommit),
       lastFetchedAt: new Date(),
     };
   } catch (err) {
@@ -171,6 +172,8 @@ interface GraphQLPRNode {
   title?: unknown;
   state?: unknown;
   mergedAt?: unknown;
+  createdAt?: unknown;
+  mergeCommit?: { oid?: unknown } | null;
   mergeable?: unknown;
   isDraft?: unknown;
   author?: GraphQLAuthor | null;
@@ -434,6 +437,8 @@ function uniqueGitHubObjects(refs: GitHubReference[]): GitHubReference[] {
 const PR_STATE_SELECTION = `      title
       state
       mergedAt
+      createdAt
+      mergeCommit { oid }
       mergeable
       isDraft
       author { login }
@@ -569,6 +574,22 @@ function parseMergedAt(raw: unknown): Pick<GitHubPRState, 'mergedAt'> {
   return Number.isFinite(ms) ? { mergedAt: new Date(ms) } : {};
 }
 
+/**
+ * The PR's `createdAt` and merge commit, read for its delivery state (issue
+ * #3915). Each is omitted unless well formed, so a missing value never reads
+ * as a real one.
+ */
+function parseDeliveryFields(createdAt: unknown, mergeCommit: unknown): Pick<GitHubPRState, 'createdAt' | 'mergeCommit'> {
+  const out: Pick<GitHubPRState, 'createdAt' | 'mergeCommit'> = {};
+  if (typeof createdAt === 'string') {
+    const ms = Date.parse(createdAt);
+    if (Number.isFinite(ms)) out.createdAt = new Date(ms);
+  }
+  const oid = mergeCommit && typeof mergeCommit === 'object' ? (mergeCommit as { oid?: unknown }).oid : undefined;
+  if (typeof oid === 'string' && /^[0-9a-f]{40}$/.test(oid)) out.mergeCommit = oid;
+  return out;
+}
+
 function parsePRNode(ref: GitHubReference, node: GraphQLPRNode): GitHubPRState {
   const status = node.isDraft === true ? 'draft'
     : stringValue(node.state) === 'MERGED' ? 'merged'
@@ -617,6 +638,7 @@ function parsePRNode(ref: GitHubReference, node: GraphQLPRNode): GitHubPRState {
     totalComments: numberValue(node.comments?.totalCount),
     checks: parseChecks(node),
     ...parseMergedAt(node.mergedAt),
+    ...parseDeliveryFields(node.createdAt, node.mergeCommit),
     lastFetchedAt: new Date(),
   };
 }

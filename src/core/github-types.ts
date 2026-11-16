@@ -1,3 +1,5 @@
+import type { PrDeliveryState } from '../shared/contracts/pr-delivery.js';
+
 // --- GitHub Reference Types ---
 
 export interface GitHubReference {
@@ -56,6 +58,15 @@ export interface GitHubPRState {
    * merged before the task existed (issue #3746).
    */
   mergedAt?: Date;
+  /** When the PR was opened (GitHub `createdAt`), when the fetch reported it (issue #3915). */
+  createdAt?: Date;
+  /** The commit the merge created on the base branch (GitHub `mergeCommit.oid`), once merged (issue #3915). */
+  mergeCommit?: string;
+  /**
+   * Where the change is relative to the integration train (issue #3915). Set by
+   * the server's delivery tracker, never by the fetcher.
+   */
+  delivery?: PrDeliveryState;
   lastFetchedAt: Date;
 }
 

@@ -66,12 +66,42 @@ export class GitHubStateStore {
     return Array.from(this.references.values()).filter((r) => r.type === 'issue');
   }
 
-  /** Update PR state. Returns the previous state (for diffing). */
+  /**
+   * Update PR state. Returns the previous state (for diffing). A fetch never
+   * carries `delivery` (the delivery tracker sets it, issue #3915), so the
+   * previous one is kept while the PR's status and base branch are unchanged;
+   * when either changes it is dropped until the tracker derives a new one.
+   */
   updatePRState(state: GitHubPRState): GitHubPRState | null {
     const key = this.refKey(state.ref);
     const prev = this.prStates.get(key) ?? null;
-    this.prStates.set(key, state);
+    const keepDelivery = state.delivery === undefined
+      && prev?.delivery !== undefined
+      && prev.status === state.status
+      && prev.baseBranch === state.baseBranch;
+    this.prStates.set(key, keepDelivery ? { ...state, delivery: prev.delivery } : state);
     return prev;
+  }
+
+  /** Every fetched PR state, across tasks (each carries its task in `ref.taskId`). */
+  getAllPRStates(): GitHubPRState[] {
+    return Array.from(this.prStates.values());
+  }
+
+  /**
+   * Set or clear the delivery state of one tracked PR (issue #3915). Returns
+   * true when it changed, so the caller knows to broadcast.
+   */
+  setPRDelivery(ref: GitHubReference, delivery: GitHubPRState['delivery']): boolean {
+    const key = this.refKey(ref);
+    const state = this.prStates.get(key);
+    if (!state) return false;
+    if (JSON.stringify(state.delivery ?? null) === JSON.stringify(delivery ?? null)) return false;
+    const next = { ...state };
+    if (delivery) next.delivery = delivery;
+    else delete next.delivery;
+    this.prStates.set(key, next);
+    return true;
   }
 
   /** Update issue state. Returns the previous state (for diffing). */

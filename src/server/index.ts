@@ -1,5 +1,5 @@
 import { dirname, join } from 'node:path';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
 import {
@@ -184,6 +184,7 @@ import { hasCompleteSnapshot } from './use-cases/transcript-store.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
 import { createIntegrationTrainMonitorFromEnv } from './integration-train-monitor.js';
+import { createRepoPathResolver } from './pr-delivery-tracker.js';
 import { createDeployConvergenceControllerFromEnv } from './deploy-convergence-controller.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { GhUmbrellaChainClient } from '../adapters/github-umbrella-chain-client.js';
@@ -1153,6 +1154,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       broadcastProjectSummariesRef?.();
     },
     nonCriticalTickPause: nonCriticalTimerPauseGate,
+    // Where each task's change is: PR open, in staging, on main, reverted (issue #3915).
+    prDelivery: {
+      kookrDir,
+      resolveRepoPath: createRepoPathResolver({
+        serverCwd,
+        getTaskCwd: (taskId) => taskStore.getTask(taskId)?.cwd,
+        exists: existsSync,
+      }),
+    },
   });
   realtime.setProjectSummaryGitHubDeps({
     getRepoHealthSnapshot: () => githubScanner.getRepoHealthSnapshot(),

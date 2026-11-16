@@ -18,6 +18,7 @@ import { agentProjectLabel, agentProjectColor, type QueueDeleteTaskHandler } fro
 import { RailRowSelectionTarget } from './RailRowSelectionTarget.js';
 import { AgentProviderMark } from './AgentProviderMark.js';
 import { PriorityBadge } from './PriorityBadge.js';
+import { FindingPrChip } from './FindingPrChip.js';
 import { SpeakTaskSummaryControl } from './SpeakTaskSummaryControl.js';
 import { SchedulePlaybookButton } from './SchedulePlaybookButton.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
@@ -299,6 +300,10 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
     && agent.taskStatus === 'completed',
   );
 
+  const taskGithub = useKookrStore((s) => (
+    agent.taskId ? s.githubState[agent.taskId] : undefined
+  ));
+
   function selectCompletedAgent() {
     if (pendingDeletion) return;
     track({ type: 'agent_clicked', agentId: agent.agentId, source: 'completed_row', anomalyType: null });
@@ -329,6 +334,9 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
           </span>
           <PriorityBadge agent={agent} />
           <ChildRollupPill agent={agent} />
+          {/* A delivered task usually lands here, so this is where "in staging",
+              "on main" or "reverted" shows (issue #3915). */}
+          <FindingPrChip prs={taskGithub?.prs} onSelect={selectCompletedAgent} />
           <TaskIdCopyButton taskId={agent.taskId} compact />
           <SpeakTaskSummaryControl agent={agent} selected={selected} />
           <span className="completed-row-meta">

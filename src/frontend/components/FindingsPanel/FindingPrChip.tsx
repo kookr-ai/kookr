@@ -2,6 +2,9 @@ import React from 'react';
 import type { GitHubPRState } from '../../../shared/protocol.js';
 import { useKookrStore } from '../../store/useStore.js';
 import {
+  deliveryGlyph,
+  deliverySentence,
+  deliveryTone,
   findingPrChipAriaLabel,
   findingPrChipLabel,
   selectFindingPrChip,
@@ -21,8 +24,13 @@ export function FindingPrChip({
   if (!model) return null;
 
   const attention = model.ciFailed || model.changesRequested || model.conflicting;
+  const delivery = model.delivery;
+  const tone = delivery ? deliveryTone(delivery) : null;
+  const sentence = delivery ? deliverySentence(delivery) : null;
   const className = [
     'finding-pr-chip',
+    // The delivery tone colours a quiet chip; CI, conflict and review problems keep their own colour.
+    tone && !attention ? `finding-pr-chip--delivery-${tone}` : '',
     model.conflicting ? 'finding-pr-chip--conflict' : '',
     model.ciFailed ? 'finding-pr-chip--failed' : '',
     !model.conflicting && !model.ciFailed && model.changesRequested ? 'finding-pr-chip--attention' : '',
@@ -46,9 +54,12 @@ export function FindingPrChip({
       className={className}
       data-testid="finding-pr-chip"
       data-attention={attention ? 'true' : 'false'}
-      aria-label={findingPrChipAriaLabel(model)}
+      {...(delivery ? { 'data-delivery-stage': delivery.stage } : {})}
+      aria-label={sentence ? `${findingPrChipAriaLabel(model)}. ${sentence}` : findingPrChipAriaLabel(model)}
+      {...(sentence ? { title: sentence } : {})}
       onClick={handleClick}
     >
+      {delivery && <span className="finding-pr-chip-glyph" aria-hidden="true">{deliveryGlyph(delivery)}</span>}
       {findingPrChipLabel(model)}
     </button>
   );

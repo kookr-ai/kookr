@@ -79,6 +79,11 @@ export interface GitHubScannerDeps {
    * repo-health tick (issue #1785). Fail-open when omitted.
    */
   nonCriticalTickPause?: NonCriticalTickPauseHook;
+  /**
+   * Called once each time start() succeeds (gh available, intervals armed).
+   * The server uses it to re-track finished tasks' PRs after a restart (#3915).
+   */
+  onStarted?: () => void;
 }
 
 /**
@@ -97,6 +102,7 @@ export class GitHubScannerService {
   private ghUserLogin: string | null = null;
   private onRepoHealthChanged?: () => void;
   private nonCriticalTickPause?: NonCriticalTickPauseHook;
+  private onStarted?: () => void;
 
   private scanInterval: ReturnType<typeof setInterval> | null = null;
   private fetchInterval: ReturnType<typeof setInterval> | null = null;
@@ -131,6 +137,7 @@ export class GitHubScannerService {
     this.ghUserLoginResolver = deps.ghUserLoginResolver;
     this.onRepoHealthChanged = deps.onRepoHealthChanged;
     this.nonCriticalTickPause = deps.nonCriticalTickPause;
+    this.onStarted = deps.onStarted;
   }
 
   /**
@@ -190,7 +197,20 @@ export class GitHubScannerService {
       void this.repoHealthTick();
     }
 
+    this.onStarted?.();
     return true;
+  }
+
+  /**
+   * Track references found outside the event stream and fetch the new ones
+   * once. Used for finished tasks' PRs read back from their persisted
+   * completion digest (issue #3915): this store is in memory, so a restart
+   * empties it, and a finished task emits no event that would refill it.
+   */
+  async trackReferences(refs: GitHubReference[]): Promise<void> {
+    if (!this.ghAvailable) return;
+    const added = refs.filter((ref) => this.stateStore.addReference(ref));
+    if (added.length > 0) await this.fetchReferences(added);
   }
 
   /** Stop all periodic scanning. Increments generation to cancel in-flight fetches. */
