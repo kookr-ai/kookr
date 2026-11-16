@@ -2,7 +2,7 @@ import { gitExecEnv } from '../core/git-helpers.js';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -676,6 +676,123 @@ describe('OpenCodeAdapter', () => {
       taskStore.terminateTask(t2.id, { reason: 'unknown' } as never);
       await adapter.stop(id2);
       expect(existsSync(dir2)).toBe(true);
+    });
+  });
+
+  // #3527: a dtach session survives a Kookr restart, but the restarted adapter has none of it in memory.
+  describe('a session adopted after a Kookr restart', () => {
+    const FIXTURE_DB = fileURLToPath(new URL('./__fixtures__/opencode-session.db', import.meta.url));
+    const DAY = 86_400_000;
+    const FIXTURE_SESSION = 'ses_e40a99e51ffeNDXOMdLPpnyMew';
+    const taskDirOf = (taskId: string) => join(sessionRoot, 'opencode-data', taskId);
+    /** Launch with one adapter, stage its DB and age its task dir, then hand back a "restarted" adapter. */
+    async function launchThenRestart(ageDays: number, overrides: Partial<OpenCodeAdapterOptions> = {}) {
+      const { task, id } = await launch(makeAdapter(overrides));
+      const dbDir = join(backend.sessions.get(id)!.spec.env!.XDG_DATA_HOME!, 'opencode');
+      mkdirSync(dbDir, { recursive: true });
+      copyFileSync(FIXTURE_DB, join(dbDir, 'opencode.db'));
+      const past = new Date(Date.now() - ageDays * DAY);
+      utimesSync(taskDirOf(task.id), past, past);
+      return { task, id, restarted: makeAdapter(overrides) };
+    }
+
+    test('stop records the token usage', async () => {
+      const { task, id, restarted } = await launchThenRestart(0);
+      await restarted.stop(id);
+      expect(backend.sessions.get(id)!.alive).toBe(false);
+      expect(taskStore.getTask(task.id)!.tokenUsage).toMatchObject({ inputTokens: 5545, outputTokens: 2, cacheReadTokens: 1792 });
+    });
+
+    test('stop records the opencode session id', async () => {
+      const { task, id } = await launch(makeAdapter());
+      const dbDir = join(backend.sessions.get(id)!.spec.env!.XDG_DATA_HOME!, 'opencode');
+      mkdirSync(dbDir, { recursive: true });
+      const db = new Database(join(dbDir, 'opencode.db'));
+      db.exec('CREATE TABLE session (id text PRIMARY KEY, parent_id text, time_updated integer NOT NULL)');
+      db.prepare('INSERT INTO session VALUES (?, ?, ?)').run('ses_adopted1', null, 5);
+      db.close();
+      await makeAdapter().stop(id);
+      expect(taskStore.getTask(task.id)!.metadata?.opencodeSessionId).toBe('ses_adopted1');
+    });
+
+    test('stop of a completed task keeps its data for the done grace, even when the dir was last used long ago', async () => {
+      const { task, id, restarted } = await launchThenRestart(2, { dataDoneTtlHours: 24 });
+      taskStore.completeTask(task.id);
+      await restarted.stop(id);
+      expect(existsSync(taskDirOf(task.id))).toBe(true);
+      expect(Date.now() - statSync(taskDirOf(task.id)).mtimeMs).toBeLessThan(60_000);
+    });
+
+    test('stop of a terminated session that ran past the age cap keeps its data resumable', async () => {
+      const { task, id, restarted } = await launchThenRestart(15, { dataMaxAgeDays: 14 });
+      taskStore.terminateTask(task.id, { reason: 'unknown' } as never);
+      await restarted.stop(id);
+      expect(existsSync(taskDirOf(task.id))).toBe(true);
+    });
+
+    test('a sweep before its stop keeps the data of a still-live session, and removes it once the session is gone', async () => {
+      const { task, id, restarted } = await launchThenRestart(2, { dataDoneTtlHours: 24 });
+      taskStore.completeTask(task.id);
+      await restarted.sweepTaskData();
+      expect(existsSync(taskDirOf(task.id))).toBe(true);
+      await backend.killSession(id); // the session ends without a stop of this adapter
+      await restarted.sweepTaskData();
+      expect(existsSync(taskDirOf(task.id))).toBe(false);
+    });
+
+    test('a hook event marks the task data as used, so a session that later dies without a stop is not expired', async () => {
+      const { task, id, restarted } = await launchThenRestart(15, { dataMaxAgeDays: 14 });
+      restarted.injectHookEvent(id, hook('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' } }));
+      await vi.waitFor(() => expect(Date.now() - statSync(taskDirOf(task.id)).mtimeMs).toBeLessThan(60_000));
+      await backend.killSession(id); // crashed: reconcile terminates the task without calling stop
+      taskStore.terminateTask(task.id, { reason: 'unknown' } as never);
+      await makeAdapter({ dataMaxAgeDays: 14 }).sweepTaskData();
+      expect(existsSync(taskDirOf(task.id))).toBe(true);
+    });
+
+    test('hook events refresh the last-use time at most every 5 minutes', async () => {
+      const { task, id, restarted } = await launchThenRestart(3);
+      const dir = taskDirOf(task.id);
+      const realNow = Date.now();
+      const refreshed = () => statSync(dir).mtimeMs > realNow - DAY;
+      const event = () => restarted.injectHookEvent(id, hook('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' } }));
+      event();
+      await vi.waitFor(() => expect(refreshed()).toBe(true));
+      const past = new Date(realNow - 3 * DAY);
+      utimesSync(dir, past, past);
+      event(); // within the interval: no refresh
+      await new Promise((r) => setTimeout(r, 200));
+      expect(refreshed()).toBe(false);
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(realNow + 5 * 60_000 + 1);
+      try {
+        event(); // past the interval: refreshed again
+        await vi.waitFor(() => expect(refreshed()).toBe(true));
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    test('a resume launch that starts while the sweep probes the backend keeps its data', async () => {
+      const { task, id, restarted } = await launchThenRestart(15, { dataMaxAgeDays: 14 });
+      await backend.killSession(id);
+      taskStore.terminateTask(task.id, { reason: 'unknown' } as never);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const probe = vi.spyOn(backend, 'isAlive').mockImplementation(async () => { await gate; return false; });
+      try {
+        const sweep = restarted.sweepTaskData();
+        await vi.waitFor(() => expect(probe).toHaveBeenCalled());
+        // The operator reopens the task while the sweep waits on the backend (it has already read the status).
+        taskStore.reopenTask(task.id);
+        const resumed = restarted.launch(task.id, 'x', '/workspace', { sessionId: FIXTURE_SESSION }, { tmuxName: 'kookr-oc2' });
+        release();
+        await sweep;
+        const id2 = await resumed;
+        expect(backend.sessions.get(id2)!.spec.args).toEqual(['--session', FIXTURE_SESSION, '/workspace']);
+        expect(existsSync(join(taskDirOf(task.id), 'data', 'opencode', 'opencode.db'))).toBe(true);
+      } finally {
+        probe.mockRestore();
+      }
     });
   });
 

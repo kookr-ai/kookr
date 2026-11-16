@@ -9,7 +9,7 @@
  * resumed launch runs `opencode --session <ses_id> <cwd>`.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SendInputOptions } from '../core/ports/agent-interaction-port.js';
@@ -18,7 +18,6 @@ import {
   type TerminalInputWriterPort,
 } from '../core/ports/terminal-input-writer-port.js';
 import type { TaskStore } from '../core/tasks.js';
-import type { TokenUsage } from '../core/usage-types.js';
 import type {
   AgentEvent,
   EventMeta,
@@ -74,7 +73,6 @@ import {
   isOpenCodeBusyOrResponding,
   isOpenCodeComposerReady,
 } from './opencode-readiness.js';
-import { mapOpenCodeUsageToTokenUsage, readOpenCodeDataHomeUsage } from './opencode-usage-scanner.js';
 import {
   DEFAULT_OPENCODE_DATA_DONE_TTL_HOURS,
   DEFAULT_OPENCODE_DATA_MAX_AGE_DAYS,
@@ -95,6 +93,7 @@ import {
   sweepOpenCodeTaskData,
   touchTaskDir,
 } from './opencode-task-data.js';
+import { readTaskDirUsage, recordTaskUsage, usageBeforeFreshLaunch, writeUsageBaseline } from './opencode-task-usage.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
 import type { TerminalBackend } from './terminal-backend.js';
 
@@ -202,61 +201,6 @@ function resolveModelConfig(base: OpenCodeModelConfig, override?: string): OpenC
   return { ...base, modelId: override.startsWith(prefix) ? override.slice(prefix.length) : override };
 }
 
-/**
- * Usage the task had already spent when its current opencode DB was created. A fresh launch wipes the DB, so
- * the DB alone only knows the current conversation; the recorded total is this baseline plus the DB total.
- * It lives in the task dir beside the DB, so a resume of the same DB (also after a Kookr restart) reuses it.
- */
-const USAGE_BASELINE_FILE = 'usage-baseline.json';
-
-const usageCount = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0);
-
-function addTokenUsage(base: TokenUsage | undefined, current: TokenUsage): TokenUsage {
-  if (!base) return current;
-  return {
-    ...base,
-    ...current,
-    inputTokens: usageCount(base.inputTokens) + usageCount(current.inputTokens),
-    outputTokens: usageCount(base.outputTokens) + usageCount(current.outputTokens),
-    cacheReadTokens: usageCount(base.cacheReadTokens) + usageCount(current.cacheReadTokens),
-    cacheWriteTokens: usageCount(base.cacheWriteTokens) + usageCount(current.cacheWriteTokens),
-    costUsd: usageCount(base.costUsd) + usageCount(current.costUsd),
-  };
-}
-
-const USAGE_COUNTERS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'costUsd'] as const;
-
-/** True when `a` is at least `b` on every counter (it lost nothing `b` had). */
-function usageCovers(a: TokenUsage, b: TokenUsage): boolean {
-  return USAGE_COUNTERS.every((k) => usageCount(a[k]) >= usageCount(b[k]));
-}
-
-async function readUsageBaseline(taskDir: string): Promise<TokenUsage | undefined> {
-  try {
-    const raw: unknown = JSON.parse(await readFile(join(taskDir, USAGE_BASELINE_FILE), 'utf8'));
-    if (!raw || typeof raw !== 'object') return undefined;
-    const r = raw as Record<string, unknown>;
-    return {
-      inputTokens: usageCount(r.inputTokens),
-      outputTokens: usageCount(r.outputTokens),
-      cacheReadTokens: usageCount(r.cacheReadTokens),
-      cacheWriteTokens: usageCount(r.cacheWriteTokens),
-      costUsd: usageCount(r.costUsd),
-      ...(typeof r.model === 'string' ? { model: r.model } : {}),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-async function writeUsageBaseline(taskDir: string, usage: TokenUsage): Promise<void> {
-  try {
-    await writeFile(join(taskDir, USAGE_BASELINE_FILE), `${JSON.stringify(usage)}\n`, { mode: 0o600 });
-  } catch {
-    /* best-effort: without it the next record counts only the current DB (the pre-#3527 behaviour) */
-  }
-}
-
 /** A resume was requested but the task's opencode DB exists and cannot be read; launching fresh would wipe the conversation. */
 export class OpenCodeSessionUnreadableError extends Error {
   readonly code = 'opencode_session_unreadable';
@@ -271,6 +215,9 @@ export class OpenCodeSessionUnreadableError extends Error {
     this.name = 'OpenCodeSessionUnreadableError';
   }
 }
+
+/** Minimum spacing between two hook-driven refreshes of a session's task dir last-use time. */
+const SESSION_USE_TOUCH_INTERVAL_MS = 5 * 60_000;
 
 export class OpenCodeAdapter implements AgentAdapter {
   readonly agentType = 'opencode';
@@ -287,6 +234,8 @@ export class OpenCodeAdapter implements AgentAdapter {
   private freshTaskDirs = new Map<string, string>();
   /** Per-launch generation token written into the task dir marker, so a late failed-launch cleanup only removes its own dir. */
   private launchTokens = new Map<string, string>();
+  /** tmuxName -> when a hook event last refreshed its task dir's last-use time. */
+  private lastUseTouch = new Map<string, number>();
   private dataRoot: string;
   private dataMaxAgeMs: number;
   private dataMaxBytes: number;
@@ -524,7 +473,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     // Read before a fresh launch wipes the dir: the ORIGINAL gate base must survive a crash-recovery relaunch.
     const priorGateBase = !resuming && (await isMarkedTaskDir(taskDir, taskId)) ? await readGateBase(taskDir) : undefined;
     // Also before the wipe: the usage this task already spent, carried as the new DB's baseline (#3527).
-    const carriedUsage = resuming ? undefined : await this.usageBeforeFreshLaunch(taskId, taskDir);
+    const carriedUsage = resuming ? undefined : await usageBeforeFreshLaunch(this.taskStore, taskId, taskDir, () => this.notifyRefresh());
     if (!resuming) {
       // Only a dir Kookr created (ownership marker) may be reset; anything else in the way is refused, never deleted.
       if (!(await removeMarkedTaskDir(taskDir, taskId)) && !(await isAbsentOrEmptyDir(taskDir))) {
@@ -616,24 +565,6 @@ export class OpenCodeAdapter implements AgentAdapter {
     return this.seedPromise;
   }
 
-  /**
-   * The usage a fresh launch must carry over before it wipes the task's DB: the outgoing DB on top of its own
-   * baseline when that DB is readable, else the task's recorded usage. When the outgoing DB holds usage that was
-   * never recorded (its stop was lost, e.g. to a Kookr restart), it is recorded now, before the wipe destroys it.
-   */
-  private async usageBeforeFreshLaunch(taskId: string, taskDir: string): Promise<TokenUsage | undefined> {
-    const recorded = this.taskStore.getTask(taskId)?.tokenUsage;
-    try {
-      if (!(await isMarkedTaskDir(taskDir, taskId))) return recorded;
-      const outgoing = await readOpenCodeDataHomeUsage(openCodeTaskDataHome(taskDir));
-      if (outgoing.kind !== 'ok') return recorded;
-      const total = addTokenUsage(await readUsageBaseline(taskDir), mapOpenCodeUsageToTokenUsage(outgoing.usage));
-      return this.recordTaskUsage(taskId, total) ? total : recorded;
-    } catch {
-      return recorded;
-    }
-  }
-
   /** The opencode session id to continue for `taskId`, or undefined (with a warning) => launch fresh. */
   private async findResumableSession(taskId: string, resume: ResumeContext): Promise<string | undefined> {
     const preferred = resume.sessionId.startsWith('ses_')
@@ -671,7 +602,10 @@ export class OpenCodeAdapter implements AgentAdapter {
         root: this.dataRoot,
         statusOf: (id) => this.taskStore.getTask(id)?.status,
         activeTaskIds: active,
-        isActive: (id) => id === launchingTaskId || [...this.tmuxToTaskId.values()].includes(id),
+        // The backend probe is awaited FIRST: the in-memory checks must be read after it, right before the removal,
+        // or a resume launch that registers while the probe runs would have its data deleted under it.
+        isActive: async (id) =>
+          (await this.hasLiveSession(id)) || id === launchingTaskId || [...this.tmuxToTaskId.values()].includes(id),
         maxAgeMs: this.dataMaxAgeMs,
         doneTtlMs: this.dataDoneTtlMs,
         maxBytes: this.dataMaxBytes,
@@ -683,6 +617,18 @@ export class OpenCodeAdapter implements AgentAdapter {
     } catch {
       /* retention is best-effort */
     }
+  }
+
+  /**
+   * True when one of the task's sessions is still alive in the terminal backend. Asked only right before a removal:
+   * a session that survived a Kookr restart is in no in-memory map until it sends a hook event or is stopped, and its
+   * data must not go while it runs, even once its task is completed or terminated (#3527).
+   */
+  private async hasLiveSession(taskId: string): Promise<boolean> {
+    for (const session of this.taskStore.getTask(taskId)?.sessions ?? []) {
+      if (await this.backend.isAlive(session.tmuxSession).catch(() => false)) return true;
+    }
+    return false;
   }
 
   /** Poll until the composer chrome is painted. Fail-open on timeout (confirmation still guards delivery). */
@@ -745,6 +691,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     this.earlyParentStarts.delete(tmuxName);
     this.hookSettings.delete(tmuxName);
     this.tmuxToTaskId.delete(tmuxName);
+    this.lastUseTouch.delete(tmuxName);
   }
 
   private async cleanupFailedLaunch(tmuxName: string): Promise<void> {
@@ -788,6 +735,7 @@ export class OpenCodeAdapter implements AgentAdapter {
   /** Kill the terminal session (the backend drains the owned process tree) and remove the session dir. */
   async stop(tmuxName: string): Promise<void> {
     this.initialPromptSubmitResolvers.get(tmuxName)?.();
+    await this.adoptSession(tmuxName);
     await this.backend.killSession(tmuxName);
     // After the kill (opencode has flushed its DB) and BEFORE the session dir is deleted.
     await this.recordSessionTokenUsage(tmuxName);
@@ -804,6 +752,24 @@ export class OpenCodeAdapter implements AgentAdapter {
     // A task delete/complete that caused this stop may land just after it: sweep once more shortly.
     if (this.postStopSweepDelayMs > 0) {
       setTimeout(() => { void this.sweepTaskData(); }, this.postStopSweepDelayMs).unref();
+    }
+  }
+
+  /**
+   * Re-hydrate a session this process did not launch: one that survived a Kookr restart under dtach (#3527). Its
+   * task comes from the task store and its data home from the per-task dir (only one Kookr created, by its
+   * ownership marker), so its stop records usage and the session id and touches the dir like any other stop.
+   */
+  private async adoptSession(tmuxName: string): Promise<void> {
+    const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;
+    if (!taskId) return;
+    this.tmuxToTaskId.set(tmuxName, taskId);
+    if (this.dataHomes.has(tmuxName)) return;
+    try {
+      const taskDir = openCodeTaskDir(this.dataRoot, taskId);
+      if (await isMarkedTaskDir(taskDir, taskId)) this.dataHomes.set(tmuxName, openCodeTaskDataHome(taskDir));
+    } catch {
+      /* an id unsafe as a dir name has no data dir to adopt */
     }
   }
 
@@ -833,28 +799,16 @@ export class OpenCodeAdapter implements AgentAdapter {
     const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;
     if (!taskId) return;
     try {
-      const result = await readOpenCodeDataHomeUsage(dataHome);
-      if (result.kind !== 'ok') return;
-      if (!this.taskStore.getTask(taskId)) return;
-      const baseline = await readUsageBaseline(dirname(dataHome));
-      this.recordTaskUsage(taskId, addTokenUsage(baseline, mapOpenCodeUsageToTokenUsage(result.usage)));
+      const total = await readTaskDirUsage(dirname(dataHome));
+      if (!total || !this.taskStore.getTask(taskId)) return;
+      recordTaskUsage(this.taskStore, taskId, total, () => this.notifyRefresh());
     } catch {
       /* telemetry is best-effort — never block teardown on a scan failure */
     }
   }
 
-  /**
-   * Store `total` as the task's usage unless it would lower a counter already recorded: baseline + DB only grows,
-   * so a smaller total means the baseline file was lost, and recording it would undercount (and lower lifetime
-   * spend). Returns false when refused; an unchanged total is accepted without a write.
-   */
-  private recordTaskUsage(taskId: string, total: TokenUsage): boolean {
-    const recorded = this.taskStore.getTask(taskId)?.tokenUsage;
-    if (recorded && !usageCovers(total, recorded)) return false;
-    if (recorded && usageCovers(recorded, total)) return true;
-    this.taskStore.updateTokenUsage(taskId, total);
+  private notifyRefresh(): void {
     for (const handler of this.refreshHandlers) handler();
-    return true;
   }
 
   async captureDisplay(tmuxName: string): Promise<string> {
@@ -904,6 +858,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 
     const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;
     if (taskId && !this.tmuxToTaskId.has(tmuxName)) this.tmuxToTaskId.set(tmuxName, taskId);
+    if (taskId) void this.markSessionUsed(tmuxName);
     const rawSessionId = 'sessionId' in event ? event.sessionId : header.rawSessionId;
     const identity = this.getOrHydrateIdentity(tmuxName, taskId);
     const parentage = this.classifyAndRecord(tmuxName, taskId, event, header, identity, rawSessionId, observedAt);
@@ -927,6 +882,21 @@ export class OpenCodeAdapter implements AgentAdapter {
     };
     for (const handler of this.eventHandlers) handler(tmuxName, event, meta);
     return { parseStatus: 'ok', ...diag, parentage, sequence };
+  }
+
+  /**
+   * A live session's activity is use of its task data: refresh the task dir's mtime (at most every few minutes), so
+   * the age cap and the done grace count from the last activity, not from the launch. Reconcile terminates a session
+   * that died on its own without calling stop, so without this a session that ran past the 14-day age cap lost its
+   * data at the next sweep (#3527). Best-effort, never throws.
+   */
+  private async markSessionUsed(tmuxName: string): Promise<void> {
+    const now = Date.now();
+    if (now - (this.lastUseTouch.get(tmuxName) ?? 0) < SESSION_USE_TOUCH_INTERVAL_MS) return;
+    this.lastUseTouch.set(tmuxName, now);
+    await this.adoptSession(tmuxName);
+    const dataHome = this.dataHomes.get(tmuxName);
+    if (dataHome) await touchTaskDir(dirname(dataHome));
   }
 
   /** Classify parentage, record the parent/child session on SessionStart, and refresh git info on a cwd change. */

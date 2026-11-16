@@ -160,7 +160,11 @@ stop-hook re-entry, so the later hooks still run.
 When the session is stopped, Kookr sums the tokens and cost from the task's
 opencode database into the task's token usage (best effort; a missing database
 leaves usage unset). After a resume the database holds the whole conversation,
-so the usage is the cumulative total, not just the resumed part.
+so the usage is the cumulative total, not just the resumed part. A fresh
+relaunch wipes the database, so the usage spent before it is kept as a baseline
+in the task's data dir and added to the new database's total; this holds for
+both the TUI and the container mode. A session that survived a Kookr restart is
+stopped and accounted the same way as one launched by the running server.
 
 ## Resume
 
@@ -227,7 +231,7 @@ conversation instead of starting over.
   unused for `KOOKR_OPENCODE_DATA_MAX_AGE_DAYS` (14), and least-recently-used
   first while the total exceeds `KOOKR_OPENCODE_DATA_MAX_MB` (1024). A
   `terminated` task (crash, abort the operator may reopen) is kept until
-  those caps. Dirs of live sessions are never swept: a session of this process, a launch in flight, and any task that is still `open`/`pending`/`inProgress` in the task store (a terminal session can outlive a Kookr restart) are exempt from every cap. There is no task-status
+  those caps. Dirs of live sessions are never swept: a session of this process, a launch in flight, any task that is still `open`/`pending`/`inProgress` in the task store, and any task with a session still alive in the terminal backend (a terminal session can outlive a Kookr restart) are exempt from every cap. "Unused" counts from the last launch or stop of the task's session, and in the TUI mode also from its last hook event (refreshed at most every 5 minutes), so a long-running session that dies without a stop keeps its data for the full age cap. There is no task-status
   event to hook, so cleanup is lazy: deleting an idle task with no live
   session leaves its data until the next sweep (any opencode launch or stop).
   To purge by hand, delete `<data dir>/opencode-data/<taskId>`.

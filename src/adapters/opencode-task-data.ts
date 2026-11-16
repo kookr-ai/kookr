@@ -221,7 +221,7 @@ export interface SweepOptions {
    * Re-evaluated immediately before every removal (a resume-launch can start while a long sweep is walking the
    * tree, and a session adopted after a server restart is not in `activeTaskIds`). Returning true skips the removal.
    */
-  isActive?: (taskId: string) => boolean;
+  isActive?: (taskId: string) => boolean | Promise<boolean>;
   maxAgeMs: number;
   /** Grace after last use before a completed/cancelled task's data is removed (0 = immediately). */
   doneTtlMs: number;
@@ -250,7 +250,7 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
   let protectedBytes = 0;
   const remove = async (taskId: string, dir: string, reason: SweepResult['removed'][number]['reason']) => {
     try {
-      if (opts.isActive?.(taskId)) return;
+      if (await opts.isActive?.(taskId)) return;
       if (await removeMarkedTaskDir(dir, taskId)) result.removed.push({ taskId, reason });
     } catch (err) {
       opts.warn?.(`[opencode-task-data] could not remove ${dir}: ${(err as Error).message}`);

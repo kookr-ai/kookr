@@ -31,7 +31,7 @@ import {
   inspectOpenCodeSession, isAbsentOrEmptyDir, isMarkedTaskDir, markTaskDir, openCodeTaskDataHome, openCodeTaskDir,
   readGateBase, readOpenCodeSessionId, removeMarkedTaskDir, touchTaskDir,
 } from './opencode-task-data.js';
-import { mapOpenCodeUsageToTokenUsage, readOpenCodeDataHomeUsage } from './opencode-usage-scanner.js';
+import { readTaskDirUsage, recordTaskUsage, usageBeforeFreshLaunch, writeUsageBaseline } from './opencode-task-usage.js';
 import type { TerminalBackend } from './terminal-backend.js';
 
 type ModelConfig = ComposeOpenCodeSessionOptions['model'];
@@ -172,6 +172,8 @@ export class OpenCodeContainerAdapter {
       const taskDir = openCodeTaskDir(this.cfg.dataRoot, taskId);
       const priorGateBase = !resuming && (await isMarkedTaskDir(taskDir, taskId)) ? await readGateBase(taskDir) : undefined;
       const priorRecord = await this.readRecord(taskId);
+      // Before the wipe: the usage this task already spent, carried as the new DB's baseline (#3527).
+      const carriedUsage = resuming ? undefined : await usageBeforeFreshLaunch(this.d.taskStore, taskId, taskDir);
       if (!resuming) {
         if (!(await removeMarkedTaskDir(taskDir, taskId)) && !(await isAbsentOrEmptyDir(taskDir))) {
           throw new Error(`refusing to use ${taskDir} as opencode task data: it exists and was not created by Kookr`);
@@ -179,6 +181,7 @@ export class OpenCodeContainerAdapter {
       }
       await mkdir(taskDir, { recursive: true, mode: 0o700 });
       await markTaskDir(taskDir, taskId, token);
+      if (carriedUsage) await writeUsageBaseline(taskDir, carriedUsage);
       const dataHome = openCodeTaskDataHome(taskDir);
       await mkdir(dataHome, { recursive: true, mode: 0o700 });
       await touchTaskDir(taskDir);
@@ -451,10 +454,12 @@ export class OpenCodeContainerAdapter {
 
   /** Usage and opencode session id come from the host-readable bind-mounted DB (same readers as the TUI adapter). */
   private async recordUsageAndSession(taskId: string): Promise<void> {
-    const dataHome = openCodeTaskDataHome(openCodeTaskDir(this.cfg.dataRoot, taskId));
+    const taskDir = openCodeTaskDir(this.cfg.dataRoot, taskId);
+    const dataHome = openCodeTaskDataHome(taskDir);
     try {
-      const usage = await readOpenCodeDataHomeUsage(dataHome);
-      if (usage.kind === 'ok' && this.d.taskStore.getTask(taskId)) this.d.taskStore.updateTokenUsage(taskId, mapOpenCodeUsageToTokenUsage(usage.usage));
+      // Baseline + DB, never lower than what is recorded: a fresh relaunch wiped the earlier DB (#3527).
+      const usage = await readTaskDirUsage(taskDir);
+      if (usage && this.d.taskStore.getTask(taskId)) recordTaskUsage(this.d.taskStore, taskId, usage);
       const id = await readOpenCodeSessionId(dataHome, this.d.taskStore.getTask(taskId)?.metadata?.opencodeSessionId);
       if (id && this.d.taskStore.getTask(taskId)?.metadata?.opencodeSessionId !== id) this.d.taskStore.recordOpenCodeSessionId(taskId, id);
     } catch { /* telemetry is best-effort */ }
