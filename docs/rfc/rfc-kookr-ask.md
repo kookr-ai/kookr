@@ -341,7 +341,9 @@ Rejected / accepted as limits (stated in the RFC rather than engineered away):
 * **Double delivery with `--wait`** (typed notice + stdout) was accepted here and
   has since been removed (issue #3824): while a `--wait` poll is attached the
   answer is only printed, and typed as a fallback when no poll reads it. What
-  remains: a CLI killed after its last poll received the answer but before it
+  remains: the server learns of a waiter only from its first poll, 2 s after
+  the ask is created (or after a deduped re-run, or after a server restart), so
+  an answer given before that is still typed and printed (issue #4040); a CLI killed after its last poll received the answer but before it
   printed it gets neither, and an answer left for a waiter when the server
   restarts more than 5 minutes later is never typed (it is still recorded). The
   expiry notice is still typed while a `--wait` is attached; it carries no

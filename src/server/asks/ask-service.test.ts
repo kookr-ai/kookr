@@ -704,14 +704,19 @@ describe('an attached kookr ask --wait poll (#3824)', () => {
     expect(h.notifier.finalizeAsk).toHaveBeenLastCalledWith(expect.anything(), expect.stringContaining('Could not type it into the task (no live session)'));
   });
 
-  it('after a restart, types a recent answer that was left for a waiter, but not an old one', async () => {
+  it('after a restart, types a recent answer that was left for a waiter, but not an old one or one already typed', async () => {
     const recent = await createOk({ question: 'Recent?' });
     const old = await createOk({ question: 'Old?' });
+    const typed = await createOk({ question: 'Typed?' });
     for (const ask of [recent, old]) await h.service.pollForWaiter(ask.id);
     await tap(old, 0);
     h.clock.now += 10 * 60 * 1000;
     await h.service.pollForWaiter(recent.id);
     await tap(recent, 0);
+    // No waiter: typed at once, a few seconds before the restart.
+    await tap(typed, 1);
+    expect(h.store.get(typed.id)?.taskDelivery).toBe('delivered');
+    h.deliver.mockClear();
     await h.service.stop();
     await h.store.flush();
 

@@ -114,9 +114,11 @@ Operator answered ask 3fa9c1e0b2d4: (free text) rotate, but only for admin token
 
 Use `--wait` (or `--wait=<seconds>`) **only when you have nothing else to do**:
 it blocks and prints the chosen label on stdout. While it waits, the answer is
-**not** typed into your session as well, so you get it once. It is typed as a
-fallback only if `--wait` stopped before reading it (its window ran out, or the
-command was killed); act on whichever one reaches you.
+normally **not** typed into your session as well. It is typed as a fallback if
+`--wait` stopped before reading it (its window ran out, or the command was
+killed). An answer given in the first seconds, before `--wait` first checks for
+it, can still arrive both ways: if both reach you, they are the same answer;
+act once.
 
 The answer is typed only into the session that asked, or into a session that
 resumed its conversation (crash recovery, Reopen). An answer given after your

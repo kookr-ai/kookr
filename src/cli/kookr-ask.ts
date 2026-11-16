@@ -54,8 +54,10 @@ Options:
 Without --wait the command returns at once and prints the ask id, and the operator's
 answer is typed into this task's session as "Operator answered ask <id>: <label>".
 With --wait the answer is printed instead and not typed; it is typed only if this
-command stops waiting before it reads the answer. An answer given after the task
-ended (or was relaunched in a new session) is still recorded, but nothing is typed.
+command stops waiting before it reads the answer. An answer given in the first
+seconds, before the first check, is both typed and printed: act on it once.
+An answer given after the task ended (or was relaunched in a new session) is
+still recorded, but nothing is typed.
 Check an ask later with: GET /api/asks/<id>.
 
 Exit codes:
