@@ -51,6 +51,7 @@ import {
   WATCHDOG_SWEEP_BUDGET_MS,
 } from './lifecycle-timers.js';
 import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
+import { PermissionPromptWaitAlerter } from './permission-prompt-wait-alert.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import { FinishedAwaitingAckAckReaperMetrics } from './finished-awaiting-ack-ack-reaper.js';
@@ -2456,6 +2457,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcast: detectorBroadcast,
   });
 
+  // Permission-prompt page (issue #3872): pages the operator when a task's
+  // agent has waited on a permission prompt for 3+ minutes. Page-only.
+  const permissionPromptWaitAlerter = new PermissionPromptWaitAlerter({
+    broadcast: detectorBroadcast,
+  });
+
   // finishedAwaitingAck residual page after TTL reclaim (issue #2077). Page-only;
   // uses detectorBroadcast so fire/clear edges spool to Discord.
   const finishedAwaitingAckResidualAlerter = new FinishedAwaitingAckResidualAlerter({
@@ -4152,6 +4159,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       watchdogSweepMetrics,
       // issue #1993: Discord page when residual hungSuspect stays high after TTL
       hungSuspectResidualAlerter,
+      // issue #3872: phone page when a permission prompt waits 3+ minutes
+      permissionPromptWaitAlerter,
       // issue #2077: Discord page when residual finishedAwaitingAck stays high after TTL
       finishedAwaitingAckResidualAlerter,
       // issue #2426: Discord page when ≥3 schedules are fail-closed paused

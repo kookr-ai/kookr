@@ -95,6 +95,10 @@ import {
   type FirstHookMissMetrics,
 } from './first-hook-deadline-sweep.js';
 import type { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
+import {
+  collectPermissionPromptWaits,
+  type PermissionPromptWaitAlerter,
+} from './permission-prompt-wait-alert.js';
 import type { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import type { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import {
@@ -369,6 +373,12 @@ export interface TimerDeps {
    * `detectorBroadcast` path so fire/clear edges spool to Discord.
    */
   hungSuspectResidualAlerter?: Pick<HungSuspectResidualAlerter, 'evaluate'>;
+  /**
+   * Operator page when a task's agent has waited on a permission prompt for
+   * more than 3 minutes (issue #3872). Page-only. Prefer a `detectorBroadcast`
+   * path so fire/clear edges spool to the operator's phone.
+   */
+  permissionPromptWaitAlerter?: Pick<PermissionPromptWaitAlerter, 'evaluate'>;
   /**
    * Operator page when fail-closed schedule pauses stay ≥ bound (issue #2426).
    * Page-only — never re-enables a schedule. Prefer a `detectorBroadcast`
@@ -2161,6 +2171,23 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         } catch (err) {
           console.warn(
             '[liveness] hungSuspect residual alerter threw:',
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+
+      // Permission-prompt page (issue #3872): one operator signal per prompt
+      // that has waited past the threshold, cleared when it is answered or
+      // the task ends. Own try/catch so a failed reclaim sweep above never
+      // silences it.
+      if (deps.permissionPromptWaitAlerter) {
+        try {
+          deps.permissionPromptWaitAlerter.evaluate(
+            collectPermissionPromptWaits(taskStore.viewLiveTasks(), deps.monitor),
+          );
+        } catch (err) {
+          console.warn(
+            '[liveness] permission-prompt wait alerter threw:',
             err instanceof Error ? err.message : err,
           );
         }
