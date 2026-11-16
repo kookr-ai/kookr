@@ -10,6 +10,8 @@ import {
 import { makeSpeakable } from './speakable-text.js';
 import type { LlmClient } from './llm-client.js';
 import { FallbackLlmClient, resetHelperLlmDiagnosticsForTest } from './llm-factory.js';
+import { CircuitBreakerLlmClient } from './circuit-breaker-llm-client.js';
+import { CircuitBreaker } from './circuit-breaker.js';
 import type { AgentEvent } from './agent-events.js';
 
 function mockClient(response: string | null): LlmClient {
@@ -62,6 +64,9 @@ describe('summarizeTaskForSpeech', () => {
       ['the reply is null', mockClient(null), 'empty'],
       ['the reply is an empty string', mockClient(''), 'empty'],
       ['the summary is blank', mockClient('{"summary":"  \'\'  "}'), 'empty'],
+      // Not blank, but no words once made speakable: a lone "~~~" fence or a "|-|" table rule.
+      ['the summary is only a code fence', mockClient('{"summary":"~~~"}'), 'empty'],
+      ['the summary is only a table rule', mockClient('{"summary":"|-|"}'), 'empty'],
       ['the reply is not JSON', mockClient('Fix auth completed.'), 'schema-violation'],
       ['the reply has no summary field', mockClient('{"text":"Fix auth completed."}'), 'schema-violation'],
       ['the summary is too long', mockClient(JSON.stringify({ summary: 'The agent checked one more file. '.repeat(12) })), 'validator-reject'],
@@ -75,10 +80,15 @@ describe('summarizeTaskForSpeech', () => {
       expect(result.text).toContain('Fix auth is completed');
     });
 
-    // The server's client never throws for a failed call: FallbackLlmClient (and the
-    // circuit breaker around it) returns null, with the failure category on the side.
-    describe('through the FallbackLlmClient the server uses', () => {
-      afterEach(() => resetHelperLlmDiagnosticsForTest());
+    // The server's client never throws for a failed call: the circuit breaker around
+    // the FallbackLlmClient chain (src/server/bootstrap/create-core-stores.ts) returns
+    // null, with the failure category on the side.
+    describe('through the client stack the server uses', () => {
+      const breakers: CircuitBreaker[] = [];
+      afterEach(() => {
+        resetHelperLlmDiagnosticsForTest();
+        for (const breaker of breakers.splice(0)) breaker.dispose();
+      });
       const provider = (result: string | null | Error): LlmClient => ({
         provider: 'p',
         model: 'p-model',
@@ -87,14 +97,34 @@ describe('summarizeTaskForSpeech', () => {
           return result;
         }),
       });
+      const serverClient = (inner: LlmClient, breaker = new CircuitBreaker({ name: 'test', failureThreshold: 100 })): LlmClient => {
+        breakers.push(breaker);
+        return new CircuitBreakerLlmClient(new FallbackLlmClient([inner]), breaker);
+      };
 
       test.each<[string, string | null | Error, string]>([
         ['the provider times out', Object.assign(new Error('timed out'), { name: 'TimeoutError' }), 'timeout'],
         ['the provider is down', Object.assign(new Error('Service Unavailable'), { status: 503 }), 'timeout'],
         ['the provider replies with nothing', null, 'empty'],
       ])('reports the reason when %s', async (_label, result, reason) => {
-        const summary = await summarizeTaskForSpeech(new FallbackLlmClient([provider(result)]), baseInput);
+        const summary = await summarizeTaskForSpeech(serverClient(provider(result)), baseInput);
         expect(summary).toMatchObject({ usedFallback: true, fallbackReason: reason });
+      });
+
+      test('an open breaker skips the provider and reports a failed call', async () => {
+        const breaker = new CircuitBreaker({ name: 'test', failureThreshold: 1 });
+        breaker.recordFailure();
+        expect(breaker.getState()).toBe('open');
+        const inner = provider('{"summary":"Fix auth completed."}');
+        const summary = await summarizeTaskForSpeech(serverClient(inner, breaker), baseInput);
+        expect(inner.complete).not.toHaveBeenCalled();
+        expect(summary).toMatchObject({ usedFallback: true, fallbackReason: 'timeout' });
+        expect(summary.text).toContain('Fix auth is completed');
+      });
+
+      test('a reply through the closed breaker is spoken as written', async () => {
+        const summary = await summarizeTaskForSpeech(serverClient(provider('{"summary":"Fix auth completed."}')), baseInput);
+        expect(summary).toEqual({ text: 'Fix auth completed.', usedFallback: false, fallbackReason: null });
       });
     });
 

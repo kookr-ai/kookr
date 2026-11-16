@@ -691,6 +691,7 @@ export async function summarizeTaskForSpeech(
   if (!summary) return fallbackSummary(input, 'empty');
   if (!withinSummaryLimits(summary)) return fallbackSummary(input, rejectionReason(givesInstruction(summary)));
   const speakable = toSpeakableSummary(summary);
+  // A summary of markup alone ("~~~", "|-|") has no words left once made speakable.
   if (!speakable) return fallbackSummary(input, 'empty');
   const spoken = speakable.text.replace(/[.!?]+$/, '');
   if (!spokenWithinLimits(spoken)) return fallbackSummary(input, rejectionReason(spokenGivesInstruction(spoken)));
