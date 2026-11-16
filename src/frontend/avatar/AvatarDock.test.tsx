@@ -1016,7 +1016,10 @@ describe('AvatarDock', () => {
         captureLastClip({ clipId: 'template', text: 'This task stopped unexpectedly.', usedFallback: true, audio: new ArrayBuffer(4), durationMs: 1000 });
       });
       const [templateItem, modelItem] = messages();
-      expect(templateItem.querySelector('[data-testid="avatar-msg-template"]')!.textContent!.trim()).toBe('template');
+      const marker = templateItem.querySelector('[data-testid="avatar-msg-template"]')!;
+      // Sighted users see the short word; a screen reader hears what it means, since the tooltip is mouse-only (issue #3859).
+      expect(marker.querySelector('[aria-hidden="true"]')!.textContent).toBe('template');
+      expect(marker.querySelector('.sr-only')!.textContent).toBe('template wording, not a model summary');
       expect(modelItem.querySelector('[data-testid="avatar-msg-template"]')).toBeNull();
     });
 
