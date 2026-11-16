@@ -657,3 +657,6 @@ Use them only for controlled local sessions.
 | `KOOKR_CONTEXT_ADVISORY_DISABLED=1` | Suppresses context-window advisories even if the feature is enabled. |
 | `KOOKR_AUTO_REFLECT_DISABLE=1` | Suppresses feedback-reflection tasks that would otherwise analyze completed work. |
 | `KOOKR_DELIVERY_STOP_SKIP=1` | Disables the plugin Stop hook that blocks ending a turn while the task owns an actionable delivery step (red test, pending review, authorized merge). See `plugin/hooks/README.md`. |
+| `KOOKR_GIT_ADD_ALL_GUARD_SKIP=1` | Disables the plugin PreToolUse hook that denies `git add -A`, `git add --all` and `git add .` in Kookr tasks, so stray test output and scratch files can be staged again. See `plugin/hooks/README.md`. |
+| `KOOKR_WORKTREE_DEPS_HINT_SKIP=1` | Disables the plugin PostToolUse note that prints the dependency install command after `git worktree add` creates a worktree with a lockfile but no `node_modules`. See `plugin/hooks/README.md`. |
+| `KOOKR_UPSTREAM_LAG_SKIP=1` | Disables the plugin SessionStart note that warns when the session's checkout is behind its remote default branch (it fetches that branch with a 1.5-second timeout, `KOOKR_UPSTREAM_LAG_FETCH_TIMEOUT_MS`). See `plugin/hooks/README.md`. |

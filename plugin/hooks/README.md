@@ -207,3 +207,71 @@ when the Stop event reports `background_tasks` / `session_crons` (the agent is
 parked on its own work, as in `needs_input:stop`), outside a Kookr task
 (`KOOKR_TASK_ID` unset), and on the re-run after a block (`stop_hook_active`).
 Every error path allows the stop. Opt out with `KOOKR_DELIVERY_STOP_SKIP=1`.
+
+## Git Add All Guard
+
+`git-add-all-guard.sh` is a `PreToolUse` hook on `Bash` that, in a Kookr task
+(`KOOKR_TASK_ID` set), denies a `git add` that stages the whole tree (issue
+#3654): `git add -A`, `git add --all` and `git add .`. These stage every
+untracked file, so output a test run or a script left in the worktree lands in
+the commit; it happened with end-to-end run output, a scratch PR-body file and
+pytest fixture output. The denial tells the agent to stage the paths it changed
+by name (`git add path/a path/b`), or `git add -u` for tracked files.
+
+It also denies the same forms spelled differently: `-A` inside a flag cluster
+(`-fA`), `git add -- .`, `./`, `:/`, `git -C dir add -A`, and an `-A` whose only
+paths are exclusions (`git add -A ':!data'`). Allowed: named paths, `-A` with a
+named directory (`git add -A src/new-dir/`), `-u`, `-p`, `-i` and dry runs
+(`-n`), and text that only mentions the command (a commit message, a quoted
+string). It reuses the word splitter of `merge-retarget-guard.mjs` and does not
+look inside `bash -c` or `eval`. Off outside a Kookr task and with
+`KOOKR_GIT_ADD_ALL_GUARD_SKIP=1`. It fails open: a crash or a missing `node`
+allows the command, and a crash is logged to `~/.kookr/hook-errors.log`.
+
+## Worktree Dependency Hint
+
+`worktree-deps-hint.sh` is a `PostToolUse` hook on `Bash` (issue #3652). After
+`git worktree add`, when the new worktree has a JavaScript lockfile but no
+`node_modules`, it adds one note to the agent's context with the exact install
+command for that worktree, for example
+`cd /path/to/repo-feat && npm ci`. Lockfiles: `pnpm-lock.yaml` gives
+`pnpm install --frozen-lockfile`; `yarn.lock` gives `yarn install --immutable`
+(Yarn 2+, `.yarnrc.yml` present) or `yarn install --frozen-lockfile`;
+`package-lock.json` and `npm-shrinkwrap.json` give `npm ci`. Other ecosystems
+are out of scope.
+
+It only prints the command and never runs the install: an install can take
+minutes, would hold the tool call in the foreground, and could race an install
+the agent starts itself. The worktree path is read from the command (following
+`cd`, `git -C` and the options of `git worktree add`), and the result is
+checked on disk: no note unless the directory exists with a `.git` file, a
+lockfile and no `node_modules`, so a failed add says nothing. It never blocks:
+it always exits 0, and a crash or a missing `node` prints nothing. Off with
+`KOOKR_WORKTREE_DEPS_HINT_SKIP=1`.
+
+## Upstream Lag Notice
+
+`upstream-lag-notice.sh` is a `SessionStart` hook (issue #3653). Agents branch
+from `origin/main`, but they read code in the checkout they start in, and a
+local `main` that lags or has diverged has ended up quoted as evidence in
+issues, reviews and subagent briefs. When the session's checkout is behind its
+remote default branch, the hook adds one line to the agent's context with the
+count and the advice to read code from the remote ref
+(`git show origin/main:<path>`) or from a fresh worktree.
+
+The default branch is `origin/HEAD`, else `origin/main`, else `origin/master`.
+The hook fetches it first, with a timeout of 1.5 seconds
+(`KOOKR_UPSTREAM_LAG_FETCH_TIMEOUT_MS`), so with the network down it adds
+under two seconds to the session start; hooks.json also gives it a hard
+5-second timeout. When the fetch fails or times out, it still compares against
+the remote-tracking ref from the last fetch and says "at least N commits
+behind ... as of the last fetch". That ref can only be older than the remote,
+so the count can only be too low, never a false warning. (Issue #3653 asked
+for silence when the network is down; on a loaded host a fetch often takes
+longer than the timeout, and silence there would hide most real lags.)
+
+It is silent outside a git checkout, without an `origin` remote or its
+remote-tracking ref, when `HEAD` already contains the branch, and on a
+compaction (`source: compact`), since the session was already told. It never
+blocks: it always exits 0, and a crash or a missing `node` or `git` prints
+nothing. Off with `KOOKR_UPSTREAM_LAG_SKIP=1`.
