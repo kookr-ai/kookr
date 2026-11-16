@@ -25,6 +25,7 @@ import type {
   PausedSchedulesStatus,
   ProdSmokeTickStatus,
   ResourceWatchdogStatus,
+  TaskNamerStatus,
   TimerHealthStatus,
 } from '../store/store-types.js';
 import type { SystemResourceStatus } from '../../shared/protocol.js';
@@ -56,6 +57,11 @@ import {
   formatTimerOverdueTitle,
   shouldShowTimerOverduePill,
 } from './timer-overdue-pill.js';
+import {
+  formatTaskNamerLabel,
+  formatTaskNamerTitle,
+  shouldShowTaskNamerPill,
+} from './task-namer-pill.js';
 
 /*
  * System detail (issue #3561 slice 2, "quiet chrome"). The readouts that used
@@ -77,6 +83,7 @@ export interface SystemAttentionInput {
   launchDependencies?: LaunchDependenciesStatus | null;
   pausedSchedules?: PausedSchedulesStatus | null;
   timerHealth?: TimerHealthStatus | null;
+  taskNamer?: TaskNamerStatus | null;
   resourceStatus?: SystemResourceStatus | null;
   /** True when the resource sample is too old to trust (then it raises nothing). */
   resourceStale?: boolean;
@@ -103,6 +110,7 @@ export function systemAttentionReasons(input: SystemAttentionInput): string[] {
   if (shouldShowLaunchDepsPill(input.launchDependencies ?? null)) reasons.push('launch dependencies degraded');
   if (shouldShowPausedSchedulesPill(input.pausedSchedules ?? null)) reasons.push('schedules paused');
   if (shouldShowTimerOverduePill(input.timerHealth ?? null)) reasons.push('lifecycle timers overdue');
+  if (shouldShowTaskNamerPill(input.taskNamer)) reasons.push('task namer failing');
   const resources = input.resourceStatus;
   if (resources && !input.resourceStale) {
     const hot = (severity: string) => severity === 'high' || severity === 'critical';
@@ -150,6 +158,7 @@ export function useSystemAttentionReasons(): string[] {
   const launchDependencies = useKookrStore((s) => s.launchDependencies);
   const pausedSchedules = useKookrStore((s) => s.pausedSchedules);
   const timerHealth = useKookrStore((s) => s.timerHealth);
+  const taskNamer = useKookrStore((s) => s.taskNamer);
   const resourceStatus = useKookrStore((s) => s.resourceStatus);
   const resourceStale = useResourceStatusStale();
   return useMemo(() => systemAttentionReasons({
@@ -159,6 +168,7 @@ export function useSystemAttentionReasons(): string[] {
     launchDependencies,
     pausedSchedules,
     timerHealth,
+    taskNamer,
     resourceStatus,
     resourceStale,
   }), [
@@ -168,6 +178,7 @@ export function useSystemAttentionReasons(): string[] {
     launchDependencies,
     pausedSchedules,
     timerHealth,
+    taskNamer,
     resourceStatus,
     resourceStale,
   ]);
@@ -321,6 +332,7 @@ function OpsHealthPills({
   const launchDependencies = useKookrStore((s) => s.launchDependencies);
   const pausedSchedules = useKookrStore((s) => s.pausedSchedules);
   const timerHealth = useKookrStore((s) => s.timerHealth);
+  const taskNamer = useKookrStore((s) => s.taskNamer);
 
   const smokeFailures = prodSmokeTick?.consecutiveFailures ?? 0;
   const showSmoke = smokeFailures >= 1;
@@ -331,6 +343,7 @@ function OpsHealthPills({
   const showLaunchDeps = shouldShowLaunchDepsPill(launchDependencies);
   const showPausedSchedules = shouldShowPausedSchedulesPill(pausedSchedules);
   const showTimerOverdue = shouldShowTimerOverduePill(timerHealth);
+  const showTaskNamer = shouldShowTaskNamerPill(taskNamer);
 
   if (
     !showSmoke
@@ -339,6 +352,7 @@ function OpsHealthPills({
     && !showLaunchDeps
     && !showPausedSchedules
     && !showTimerOverdue
+    && !showTaskNamer
   ) return null;
 
   const smokeTitle = showSmoke
@@ -503,6 +517,17 @@ function OpsHealthPills({
             {timerOverdueLabel}
           </span>
         )
+      )}
+      {showTaskNamer && taskNamer && (
+        <span
+          className="ops-health-pill ops-health-task-namer"
+          data-testid="ops-health-task-namer-pill"
+          title={formatTaskNamerTitle(taskNamer)}
+          aria-label={formatTaskNamerTitle(taskNamer)}
+          role="status"
+        >
+          {formatTaskNamerLabel(taskNamer)}
+        </span>
       )}
     </span>
   );

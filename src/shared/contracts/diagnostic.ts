@@ -81,6 +81,24 @@ export interface HelperLlmHealthPausedEntry {
   pausedUntil: string;
 }
 
+/**
+ * LLM task-namer health on GET `/api/health.taskNamer` (issue #3616). `silent`
+ * is true once every naming attempt has failed across at least `thresholdMs`
+ * (the first and latest failure since the last success that far apart).
+ * Times are ISO-8601. `enabled` is false when no LLM provider is configured
+ * or the threshold is `0`.
+ */
+export interface TaskNamerHealthSnapshot {
+  enabled: boolean;
+  silent: boolean;
+  thresholdMs: number;
+  lastSuccessAt: string | null;
+  failingSince: string | null;
+  lastFailureAt: string | null;
+  /** Failed naming attempts since the last success. */
+  failedAttempts: number;
+}
+
 /** Slim helper-LLM pause / storm view published on GET `/api/health`. */
 export interface HelperLlmHealthSnapshot {
   paused: HelperLlmHealthPausedEntry[];

@@ -688,6 +688,21 @@ export interface TimerHealthStatus {
   oldestName: string | null;
 }
 
+/**
+ * Slim projection of `GET /api/health.taskNamer` (issue #3616). `silent` is the
+ * server's verdict: every LLM naming attempt has failed across at least
+ * `thresholdMs`. Null when the block is absent (old server), so nothing shows.
+ */
+export interface TaskNamerStatus {
+  silent: boolean;
+  thresholdMs: number;
+  /** Epoch ms of the first and latest failure since the last success. */
+  failingSinceMs: number | null;
+  lastFailureAtMs: number | null;
+  lastSuccessAtMs: number | null;
+  failedAttempts: number;
+}
+
 /** Decision-bucket counts from `GET /api/health.lessonYield` (lesson-yield.v2). */
 export interface LessonYieldBucketCounts {
   wroteLesson: number;
@@ -719,6 +734,7 @@ export interface OpsHealthPayload {
   pausedSchedules?: PausedSchedulesStatus | null;
   lessonYield?: LessonYieldStatus | null;
   timerHealth?: TimerHealthStatus | null;
+  taskNamer?: TaskNamerStatus | null;
 }
 
 export interface SystemStatusSlice {
@@ -747,9 +763,11 @@ export interface SystemStatusSlice {
    * Null when the health block is absent (old server) so the pill stays hidden.
    */
   timerHealth: TimerHealthStatus | null;
+  /** LLM task-namer health from `/api/health.taskNamer` (issue #3616). */
+  taskNamer: TaskNamerStatus | null;
 
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
-  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps / paused-schedules / lesson-yield / timer-health projections. */
+  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps / paused-schedules / lesson-yield / timer-health / task-namer projections. */
   handleOpsHealth: (payload: OpsHealthPayload) => void;
 }
 

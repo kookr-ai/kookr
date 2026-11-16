@@ -1482,6 +1482,37 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — taskNamer block (issue #3616)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health taskNamer block (issue #3616)', () => {
+    test('publishes the namer tracker snapshot when wired, and omits the block otherwise', async () => {
+      const snapshot = {
+        enabled: true,
+        silent: true,
+        thresholdMs: 6 * 3_600_000,
+        lastSuccessAt: '2026-11-15T00:00:00.000Z',
+        failingSince: '2026-11-15T01:00:00.000Z',
+        lastFailureAt: '2026-11-15T08:00:00.000Z',
+        failedAttempts: 12,
+      };
+      const wired = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        taskNamerHealth: { snapshot: () => snapshot },
+      }).request('/api/health');
+      expect(((await wired.json()) as { taskNamer?: unknown }).taskNamer).toEqual(snapshot);
+
+      const unwired = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(await unwired.json()).not.toHaveProperty('taskNamer');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — timerHealth summary (issue #2636)
   // ---------------------------------------------------------------------------
   describe('GET /api/health timerHealth block (issue #2636)', () => {

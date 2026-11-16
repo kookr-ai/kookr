@@ -4,7 +4,7 @@
  * from task creation through naming without requiring a real API key.
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WebSocket } from 'ws';
@@ -379,6 +379,57 @@ describe('AI task naming integration', () => {
     expect(name).toBe('Fix bug');
     const healthRes = await fetch(`${baseUrl}/api/health`);
     expect(healthRes.status).toBe(200);
+  });
+
+  describe('task namer health (issue #3616)', () => {
+    async function launchAndAwaitNaming(prompt: string): Promise<void> {
+      const res = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, cwd: PROJECT_DIR }),
+      });
+      expect(res.status).toBe(201);
+      await vi.waitFor(() => {
+        expect(mockGenerateTaskName).toHaveBeenCalled();
+      }, { timeout: 3000 });
+    }
+
+    async function taskNamerHealth(): Promise<Record<string, unknown>> {
+      const body = (await (await fetch(`${baseUrl}/api/health`)).json()) as { taskNamer?: Record<string, unknown> };
+      expect(body.taskNamer).toBeDefined();
+      return body.taskNamer!;
+    }
+
+    test('a successful name is recorded on /api/health and persisted', async () => {
+      await launchAndAwaitNaming('Fix the auth bug');
+      await vi.waitFor(() => {
+        expect(existsSync(join(tempDir, 'task-namer-health.json'))).toBe(true);
+      }, { timeout: 3000 });
+      const health = await taskNamerHealth();
+      expect(health).toMatchObject({ enabled: true, silent: false, failedAttempts: 0, failingSince: null });
+      expect(typeof health.lastSuccessAt).toBe('string');
+    });
+
+    test('an empty name and a rejected call each count as a failed attempt', async () => {
+      mockGenerateTaskName.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('HTTP 410 Gone'));
+      await launchAndAwaitNaming('Fix bug one');
+      await launchAndAwaitNaming('Fix bug two');
+      await vi.waitFor(() => {
+        expect(mockGenerateTaskName).toHaveBeenCalledTimes(2);
+        const saved = JSON.parse(readFileSync(join(tempDir, 'task-namer-health.json'), 'utf-8')) as { failedAttempts: number };
+        expect(saved.failedAttempts).toBe(2);
+      }, { timeout: 3000 });
+      expect(await taskNamerHealth()).toMatchObject({ enabled: true, failedAttempts: 2, lastSuccessAt: null });
+    });
+
+    test('an aborted naming call is not counted', async () => {
+      const abort = new Error('aborted');
+      abort.name = 'AbortError';
+      mockGenerateTaskName.mockRejectedValueOnce(abort);
+      await launchAndAwaitNaming('Fix bug');
+      await new Promise((r) => setTimeout(r, 50));
+      expect(await taskNamerHealth()).toMatchObject({ failedAttempts: 0, lastFailureAt: null });
+    });
   });
 
   test('manual rename is not overwritten by auto-naming', async () => {
