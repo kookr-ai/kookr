@@ -133,7 +133,7 @@ test('a truncated terminal keeps streaming and accepting input after repeated ta
   for (let i = 0; i < 5; i++) {
     await expect.poll(() => connections).toBe(i + 1);
     await expect(page.getByTestId('terminal-attach-pending')).toHaveCount(0);
-    await expect(page.getByText('Some earlier terminal output is unavailable.', { exact: true })).toBeVisible();
+    await expect(page.getByText('Earlier terminal output is not loaded.', { exact: true })).toBeVisible();
     await expect(page.locator('.xterm-rows')).toContainText('Recovered live output');
     await page.locator('.xterm-helper-textarea').press('x');
     await expect.poll(async () => {
@@ -152,4 +152,9 @@ test('a truncated terminal keeps streaming and accepting input after repeated ta
       document.dispatchEvent(new Event('visibilitychange'));
     });
   }
+  // One click sends one request: the action goes away and the notice falls back
+  // to saying the older output is not shown, until a new seed says otherwise.
+  await page.getByRole('button', { name: 'Load earlier output' }).click();
+  await expect(page.getByText('Some earlier terminal output is unavailable.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Load earlier output' })).toHaveCount(0);
 });

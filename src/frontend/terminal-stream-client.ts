@@ -26,6 +26,12 @@ export interface TerminalStreamState {
     | 'access-denied' | 'ended' | 'unavailable' | 'continuity-unavailable';
   reason?: string;
   approximate?: boolean;
+  /**
+   * The seed left older ring output on the server (a screen snapshot or byte
+   * tail). `requestHistory()` replaces the view with the full ring. Cleared
+   * once requested, so one click sends one request.
+   */
+  historyAvailable?: boolean;
   inputDeliveryUncertain?: boolean;
 }
 export interface TerminalRetryBudget { attempts: number[]; }
@@ -113,6 +119,12 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
     if (key === previousState) return;
     previousState = key;
     options.onState(next);
+  }
+  function withoutHistoryAction() {
+    if (!currentState?.historyAvailable) return;
+    const next = { ...currentState };
+    delete next.historyAvailable;
+    state(next);
   }
   function send(attempt: Attempt, control: TerminalClientControl): boolean {
     if (active !== attempt || attempt.socket.readyState !== 1) return false;
@@ -253,7 +265,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
           attempt.ready = !control.screenUnavailable;
           state(control.screenUnavailable
             ? { kind: 'unavailable', reason: 'current terminal screen unavailable' }
-            : { kind: 'live', approximate: control.approximate });
+            : { kind: 'live', approximate: control.approximate, ...(control.historyAvailable ? { historyAvailable: true } : {}) });
           // A resize during seeding was dropped (resize() no-ops until ready) and
           // the fit scheduler will not re-emit it because xterm already matches the
           // new geometry. Reconcile the server PTY to the live geometry now, or it
@@ -284,7 +296,11 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
         attempt.ready = false;
         state({ kind: 'continuity-unavailable', reason: control.reason });
         break;
-      case 'history-unavailable': break;
+      case 'history-unavailable':
+        // The server refused (absolute-TUI ring, seeding, or nothing older):
+        // drop the action so the notice stops offering it.
+        withoutHistoryAction();
+        break;
       case 'attach_timing':
         Object.assign(attempt.metadata, {
           serverStrategy: control.strategy, seedCacheHit: control.seedCacheHit,
@@ -446,7 +462,10 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
       return !!active?.ready && !!active.generation && send(active, { type: 'resize', generation: active.generation, cols, rows });
     },
     requestHistory(): boolean {
-      return !!active?.ready && !!active.generation && send(active, { type: 'request-history', generation: active.generation });
+      if (!active?.ready || !active.generation || !currentState?.historyAvailable) return false;
+      if (!send(active, { type: 'request-history', generation: active.generation })) return false;
+      withoutHistoryAction();
+      return true;
     },
   };
 }

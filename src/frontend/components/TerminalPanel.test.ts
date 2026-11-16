@@ -505,6 +505,30 @@ describe('TerminalPanel', () => {
     expect(container.querySelector('[data-testid="terminal-attach-pending"]')).toBeNull();
   });
 
+  test('FR-TERM-004: the notice offers older output when the server holds it, and asks once (#3564)', () => {
+    act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'history-action', visible: true })));
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onopen?.();
+      negotiateTerminal(ws);
+      ws.onmessage?.({ data: terminalFrame(ws, { type: 'seed-begin', transaction: 't', mode: 'replace' }) });
+      ws.onmessage?.({ data: arrayBufferFrom(new TextEncoder().encode('snapshot')) });
+      ws.onmessage?.({ data: terminalFrame(ws, { type: 'seed-end', transaction: 't', cursor: null, approximate: true, historyAvailable: true }) });
+    });
+    const load = () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Load earlier output');
+    expect(container.textContent).toContain('Earlier terminal output is not loaded.');
+    expect(container.textContent).not.toContain('Some earlier terminal output is unavailable.');
+    const terminal = mocks.terminalInstances[0];
+    terminal.focus.mockClear();
+    act(() => load()!.click());
+    const requests = ws.send.mock.calls.map(([frame]) => JSON.parse(String(frame))).filter((frame) => frame.type === 'request-history');
+    expect(requests).toEqual([{ type: 'request-history', generation: ws.generation }]);
+    expect(terminal.focus).toHaveBeenCalled();
+    // Until the server re-seeds, the pane is still the partial view: say so, without the action.
+    expect(load()).toBeUndefined();
+    expect(container.textContent).toContain('Some earlier terminal output is unavailable.');
+  });
+
   test('FR-TERM-001: accumulates captured trackpad events once per frame without sending agent input', () => {
     const frames = new Map<number, FrameRequestCallback>();
     let frameId = 0;

@@ -1163,7 +1163,20 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
           </div>
         )}
       </div>
-      {!attachPending && streamState.approximate && <div className="terminal-attach-pending terminal-attach-notice" role="status">Some earlier terminal output is unavailable.</div>}
+      {!attachPending && streamState.historyAvailable && (
+        // The seed was a screen snapshot or byte tail; the server still holds
+        // the older output. Without this action the full ring is unreachable.
+        <div className="terminal-attach-pending terminal-attach-notice" role="status" data-testid="terminal-history-available">
+          <span>Earlier terminal output is not loaded.</span>
+          <button type="button" onClick={() => {
+            controllerRef.current?.requestHistory();
+            terminalRef.current?.focus();
+          }}>
+            Load earlier output
+          </button>
+        </div>
+      )}
+      {!attachPending && streamState.approximate && !streamState.historyAvailable && <div className="terminal-attach-pending terminal-attach-notice" role="status">Some earlier terminal output is unavailable.</div>}
       {jumpLatest.visible && (
         <button
           type="button"
