@@ -1,18 +1,18 @@
 #!/bin/bash
 # Operator-run live checks for the opencode-worker image (needs docker; not part of the PR gate).
 #   deploy/opencode-worker/test-container.sh <image>
-# Verifies: healthy (HEALTHCHECK), read-only root, missing-secret exit 13, hook self-test exit 14,
-# and that the container exits (11 / 12) when EITHER child is killed. Only touches containers it
-# names `ocw-test-*` and a temp dir it creates.
+# Verifies: healthy (HEALTHCHECK), read-only root, missing-secret and group-readable-secret exit 13, hook
+# self-test exit 14, missing workspace exit 15, a stop during startup exits 0, and that the container exits
+# (11 / 12) when EITHER child is killed. Only touches containers it names `ocw-test-*` and a temp dir it creates.
 set -u
 IMG="${1:?usage: test-container.sh <image>}"
-T=$(mktemp -d /tmp/ocw-test.XXXXXX)
-NAMES="ocw-test-main ocw-test-nosecret ocw-test-hook"
+T=$(mktemp -d /tmp/ocw-test.XXXXXX) || { echo "FAIL cannot create a temp dir"; exit 1; }
+NAMES="ocw-test-main ocw-test-nosecret ocw-test-hook ocw-test-nowork ocw-test-badmode"
 finish() { for n in $NAMES; do docker rm -f "$n" >/dev/null 2>&1; done; rm -rf "$T"; }
 trap finish EXIT
 for n in $NAMES; do docker rm -f "$n" >/dev/null 2>&1; done   # leftovers of an aborted run (explicit names only)
 mkdir -p "$T/secrets" "$T/work" "$T/data"; chmod 777 "$T/data" "$T/work"
-echo "pw$RANDOM$RANDOM" > "$T/secrets/opencode_password"; echo "tok$RANDOM$RANDOM" > "$T/secrets/a2a_token"; chmod 0644 "$T/secrets/"*
+echo "pw$RANDOM$RANDOM" > "$T/secrets/opencode_password"; echo "tok$RANDOM$RANDOM" > "$T/secrets/a2a_token"; chmod 0600 "$T/secrets/"*
 git -C "$T/work" init -q; echo x > "$T/work/f"
 fail=0; ok() { echo "ok   $*"; }; bad() { echo "FAIL $*"; fail=1; }
 run() { # name [extra docker args...]
@@ -43,6 +43,18 @@ docker run --rm --name ocw-test-nosecret --read-only --user "$(id -u):$(id -g)" 
 mkdir -p "$T/hooks"; echo /kookr-hooks/does-not-exist.js > "$T/hooks/MANIFEST"
 docker run --rm --name ocw-test-hook --read-only --user "$(id -u):$(id -g)" --tmpfs /home/worker:uid="$(id -u)" -v "$T/data":/data -v "$T/work":/work -v "$T/secrets":/run/secrets:ro -v "$T/hooks":/kookr-hooks:ro "$IMG" >/dev/null 2>&1; c=$?
 [ "$c" = 14 ] && ok "hook self-test fail -> exit 14" || bad "hook self-test exit=$c (want 14)"
+docker run --rm --name ocw-test-nowork --read-only --user "$(id -u):$(id -g)" --tmpfs /home/worker:uid="$(id -u)" -v "$T/data":/data -v "$T/secrets":/run/secrets:ro -e WORKSPACE=/nonexistent "$IMG" >/dev/null 2>&1; c=$?
+[ "$c" = 15 ] && ok "missing workspace -> exit 15" || bad "missing workspace exit=$c (want 15)"
+mkdir -p "$T/badsecrets"; cp "$T/secrets/"* "$T/badsecrets/"; chmod 0644 "$T/badsecrets/opencode_password"
+docker run --rm --name ocw-test-badmode --read-only --user "$(id -u):$(id -g)" --tmpfs /home/worker:uid="$(id -u)" -v "$T/data":/data -v "$T/work":/work -v "$T/badsecrets":/run/secrets:ro "$IMG" >/dev/null 2>&1; c=$?
+[ "$c" = 13 ] && ok "group-readable secret -> exit 13" || bad "group-readable secret exit=$c (want 13)"
+# stop during startup (before healthy): a clean stop, exit 0, not 10/11/143
+run $N -e HOME=/home/worker
+for _ in $(seq 1 50); do docker logs $N 2>&1 | grep -q '^\[entrypoint\] starting' && break; sleep 0.1; done
+[ "$(docker inspect -f '{{.State.Health.Status}}' $N)" = healthy ] && bad "already healthy; startup stop not exercised"
+docker stop -t 10 $N >/dev/null; c=$(docker inspect -f '{{.State.ExitCode}}' $N); [ "$c" = 0 ] && ok "SIGTERM during startup -> exit 0" || bad "SIGTERM during startup exit=$c (want 0)"
+docker logs $N 2>&1 | grep -q 'stopped by signal during startup' && ok "startup stop logged" || bad "startup stop not logged"
+cleanup $N
 # clean stop: SIGTERM must exit 0, not report a child death
 run $N -e HOME=/home/worker; wait_status $N healthy 90 || bad "third start never healthy"
 docker stop -t 10 $N >/dev/null; c=$(docker inspect -f '{{.State.ExitCode}}' $N); [ "$c" = 0 ] && ok "SIGTERM stop -> exit 0" || bad "SIGTERM stop exit=$c (want 0)"

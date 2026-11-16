@@ -353,7 +353,7 @@ export class OpenCodeContainerAdapter {
       const st = await this.d.docker.healthStatus(name);
       if (st === 'healthy') return;
       if (st === 'unhealthy') throw new ContainerLaunchError('health_timeout', 'the worker healthcheck reported unhealthy');
-      // Fail fast when the entrypoint already exited (13 secret/workspace, 14 hook self-test, 10-12 child death).
+      // Fail fast when the entrypoint already exited (13 secret, 14 hook self-test, 15 workspace, 10-12 child death).
       const info = (await this.d.docker.listContainers({ key: LABEL_INSTANCE, value: this.d.instanceId }).catch(() => [])).find((c) => c.name === name);
       if (info && (info.state === 'exited' || info.state === 'dead')) {
         const code = info.exitCode;
