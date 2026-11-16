@@ -4575,7 +4575,7 @@ describe('GET /api/tasks/:id/transcript (RFC transcript-capture phase 1)', () =>
     expect(body).toEqual({ taskId: task.id, sessionId: 'sess-f', meta: null });
   });
 
-  test('serves an opencode task\'s last assistant text from its per-task opencode DB (and falls back to unavailable without one)', async () => {
+  test('serves an opencode task\'s text and tool calls from its per-task opencode DB, redacted (and falls back to unavailable without one)', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'kookr-oc-data-'));
     const saved = process.env.KOOKR_OPENCODE_DATA_DIR;
     process.env.KOOKR_OPENCODE_DATA_DIR = dataRoot;
@@ -4592,10 +4592,20 @@ describe('GET /api/tasks/:id/transcript (RFC transcript-capture phase 1)', () =>
                CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);`);
       db.prepare('INSERT INTO message VALUES (?,?,?,?,?)').run('m1', 'ses_abc', 5, 5, JSON.stringify({ role: 'assistant' }));
       db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('p1', 'm1', 'ses_abc', 5, 5, JSON.stringify({ type: 'text', text: 'all done here' }));
+      // Tool calls and results are served too, through the same redaction as the other providers.
+      db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('p2', 'm1', 'ses_abc', 6, 6, JSON.stringify({
+        type: 'tool', tool: 'bash',
+        state: { status: 'completed', input: { command: 'echo ghp_0123456789abcdefghij0123456789abcdef' }, output: 'token ghp_0123456789abcdefghij0123456789abcdef' },
+      }));
       db.close();
       const body = await (await app.request(`/api/tasks/${task.id}/transcript`)).json();
       expect(body.source).toBe('vendor');
-      expect(body.messages).toMatchObject([{ kind: 'text', role: 'assistant', text: 'all done here' }]);
+      expect(body.messages).toMatchObject([
+        { kind: 'text', role: 'assistant', text: 'all done here' },
+        { kind: 'tool_call', name: 'bash' },
+        { kind: 'tool_result', name: 'bash' },
+      ]);
+      expect(JSON.stringify(body.messages)).not.toContain('ghp_0123456789abcdefghij');
     } finally {
       if (saved === undefined) delete process.env.KOOKR_OPENCODE_DATA_DIR; else process.env.KOOKR_OPENCODE_DATA_DIR = saved;
       rmSync(dataRoot, { recursive: true, force: true });
