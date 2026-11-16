@@ -153,6 +153,43 @@ Use the KB.
     }
   });
 
+  it('carries frontmatter model/effort as defaults apart from the launch pins (#3582)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'cheap.md'), `---
+name: Cheap
+model: claude-sonnet-5-5
+effort: medium
+---
+
+Orchestrate.
+`);
+
+      const unpinned = await preparePlaybookLaunch({ cwd, playbookPath: 'cheap.md', parameterValues: {} });
+      expect(unpinned.playbookDefaults).toEqual({ model: 'claude-sonnet-5-5', effort: 'medium' });
+      expect(unpinned.model).toBeUndefined();
+      expect(unpinned.effort).toBeUndefined();
+
+      const pinned = await preparePlaybookLaunch({
+        cwd, playbookPath: 'cheap.md', parameterValues: {}, model: 'claude-fable-5',
+      });
+      expect(pinned.model).toBe('claude-fable-5');
+      expect(pinned.playbookDefaults).toEqual({ model: 'claude-sonnet-5-5', effort: 'medium' });
+
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'plain.md'), `---
+name: Plain
+---
+
+Do it.
+`);
+      const plain = await preparePlaybookLaunch({ cwd, playbookPath: 'plain.md', parameterValues: {} });
+      expect(plain).not.toHaveProperty('playbookDefaults');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('validates autonomous evolution config before launch', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
     try {

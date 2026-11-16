@@ -21,7 +21,7 @@ import {
   type AgentSelection,
 } from '../core/agent-types.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
-import { withBlankOptionalParameters } from './use-cases/playbook-launch.js';
+import { playbookDefaultsLaunchOpt, withBlankOptionalParameters } from './use-cases/playbook-launch.js';
 import { isModelTier } from '../shared/contracts/model-tier.js';
 
 export interface ResolvedScheduleLaunch {
@@ -35,6 +35,8 @@ export interface ResolvedScheduleLaunch {
   projectId?: string;
   dependencies?: LaunchDependency[];
   autoCloseOnSignal?: boolean;
+  /** Frontmatter model/effort defaults (#3582), merged by `launchTask`. */
+  playbookDefaults?: { model?: string; effort?: string };
 }
 
 const INVALID_PLAYBOOK_PATH_MESSAGE = 'Playbook path must stay inside the selected playbooks directory';
@@ -207,6 +209,7 @@ export class ScheduleValidator {
         projectId,
         ...(playbook.dependencies ? { dependencies: [...playbook.dependencies] } : {}),
         ...(playbook.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: playbook.autoCloseOnSignal }),
+        ...playbookDefaultsLaunchOpt(playbook),
       };
     } catch (err) {
       if (err instanceof ScheduleValidationError) throw err;

@@ -184,12 +184,31 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       agentType: input.agentType,
       ...(input.effort ? { effort: input.effort } : {}),
       ...(input.model ? { model: input.model } : {}),
+      ...playbookDefaultsLaunchOpt(playbook),
       projectId,
       dependencies: playbook.dependencies,
       ...(input.parentTaskId !== undefined ? { disableDedup: true } : {}),
       parentTaskId: input.parentTaskId,
       ...(input.parentTaskId !== undefined ? { userInitiatedRelaunch: true } : {}),
       ...(playbook.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: playbook.autoCloseOnSignal }),
+    },
+  };
+}
+
+/**
+ * Carry the playbook's frontmatter `model`/`effort` (#3582) as defaults, kept
+ * apart from the `model`/`effort` pins so every caller that rebuilds or
+ * overrides the pins (POST /api/tasks, chains, a `modelTier`) cannot erase them
+ * or turn them into a conflict. `launchTask` merges them once the agent is known.
+ */
+export function playbookDefaultsLaunchOpt(
+  playbook: Pick<Playbook, 'model' | 'effort'>,
+): Pick<LaunchOpts, 'playbookDefaults'> {
+  if (playbook.model === undefined && playbook.effort === undefined) return {};
+  return {
+    playbookDefaults: {
+      ...(playbook.model !== undefined ? { model: playbook.model } : {}),
+      ...(playbook.effort !== undefined ? { effort: playbook.effort } : {}),
     },
   };
 }

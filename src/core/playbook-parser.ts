@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Playbook, EffectivePlaybookLoop, LaunchDependency, PlaybookParameter, PlaybookParameterOption, PlaybookProbe, PlaybookScope } from './playbook.js';
 import { LAUNCH_DEPENDENCIES } from './playbook.js';
+import { ALL_EFFORT_LEVELS } from '../shared/contracts/agent-types.js';
 import {
   DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP,
   MAX_AUTONOMOUS_REVIEW_ITERATION_CAP,
@@ -40,6 +41,8 @@ export const KNOWN_PLAYBOOK_FRONTMATTER_KEYS = [
   'deliveryPreAuthorized',
   'deliveryMode',
   'autoCloseOnSignal',
+  'model',
+  'effort',
   'parameters',
   'checklist',
   'cwd',
@@ -92,6 +95,8 @@ export function parsePlaybook(
     : parseOptionalBoolean(meta.deliveryPreAuthorized) ?? false;
   const deliveryMode = parseDeliveryMode(meta.deliveryMode);
   const autoCloseOnSignal = parseOptionalBoolean(meta.autoCloseOnSignal);
+  const model = parseOptionalNonEmptyString(meta.model);
+  const effort = parseEffort(meta.effort);
 
   return {
     id: relativePath,
@@ -106,6 +111,8 @@ export function parsePlaybook(
     ...(deliveryPreAuthorized === undefined ? {} : { deliveryPreAuthorized }),
     ...(deliveryMode === undefined ? {} : { deliveryMode }),
     ...(autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
     ...(effectiveLoop ? { effectiveLoop } : {}),
     ...(loop.error ? { loopValidationError: loop.error } : {}),
     body: body.trim(),
@@ -540,6 +547,27 @@ function parseOptionalBoolean(raw: unknown): boolean | undefined {
   if (raw === true || raw === 'true') return true;
   if (raw === false || raw === 'false') return false;
   return undefined;
+}
+
+function parseOptionalNonEmptyString(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const value = raw.trim();
+  return value === '' ? undefined : value;
+}
+
+/**
+ * Parse the optional `effort` frontmatter field (#3582). Which levels apply
+ * depends on the agent the launch resolves to, so the agent-specific check runs
+ * in `launchTask`. A value no agent accepts at all can only be a typo, so it
+ * throws here, like `deliveryMode`, instead of being dropped at every launch.
+ */
+function parseEffort(raw: unknown): string | undefined {
+  const value = parseOptionalNonEmptyString(raw);
+  if (value === undefined) return undefined;
+  if (!ALL_EFFORT_LEVELS.includes(value)) {
+    throw new PlaybookParseError(`Unsupported effort: ${value} (expected one of: ${ALL_EFFORT_LEVELS.join(', ')})`);
+  }
+  return value;
 }
 
 /**

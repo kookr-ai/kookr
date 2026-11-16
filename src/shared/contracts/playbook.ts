@@ -137,6 +137,16 @@ export interface Playbook {
    * See docs/reference/auto-close-on-signal.md.
    */
   autoCloseOnSignal?: boolean;
+  /**
+   * Frontmatter `model`: the model this playbook's task should run on when the
+   * launch carries no model pin of its own (#3582). Precedence, per field:
+   * launch pin (or a `modelTier`, which replaces both fields) > this value >
+   * the operator's per-agent default. Dropped with a warning when the resolved
+   * agent does not accept it, so a shared playbook stays launchable everywhere.
+   */
+  model?: string;
+  /** Frontmatter `effort`: reasoning-effort default, same precedence as {@link model}. */
+  effort?: string;
   /** Server-normalized bounded loop config for loopable playbooks. */
   effectiveLoop?: EffectivePlaybookLoop;
   /** Non-fatal loop metadata error. Standard launch remains available. */

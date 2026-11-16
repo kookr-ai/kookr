@@ -1577,6 +1577,13 @@ async function launchTaskCore(
     effectiveEffort = target.effort;
     effectiveModel = target.model;
   }
+  if (opts.modelTier === undefined && opts.playbookDefaults !== undefined) {
+    ({ model: effectiveModel, effort: effectiveEffort } = applyPlaybookDefaults(
+      agentType,
+      { model: effectiveModel, effort: effectiveEffort },
+      opts.playbookDefaults,
+    ));
+  }
   // Populated when plan-quota admission rotates claude-code onto an alternate.
   let planQuotaRotation: {
     fromAgent: AgentType;
@@ -3036,6 +3043,41 @@ function formatParkedLaunchNote(
     `[Kookr launch parked] Required launch dependency is ${decision.reason === 'dependency_degraded' ? 'degraded' : 'awaiting a bounded recovery probe'} (${dependencies}). No worker slot was consumed; Kookr will retry this pending intent when recovery evidence is available.`,
     ...lines,
   ].join('\n');
+}
+
+/**
+ * Merge a playbook's frontmatter `model`/`effort` (#3582) under the launch's
+ * own pins, once the agent is resolved. Per field: an explicit pin wins, then
+ * the playbook value, then the agent's default (left to the adapter). A
+ * playbook value the agent cannot accept is dropped with a warning rather than
+ * failing the launch, so a playbook that names a Claude model still launches
+ * on Codex or round-robin. The model is settled first because it can narrow
+ * the effort vocabulary.
+ */
+export function applyPlaybookDefaults(
+  agentType: AgentType,
+  pins: { model?: string; effort?: string },
+  defaults: { model?: string; effort?: string },
+): { model?: string; effort?: string } {
+  let { model, effort } = pins;
+  if (model === undefined && defaults.model !== undefined) {
+    if (isValidModelForAgent(agentType, defaults.model)) {
+      model = defaults.model;
+    } else {
+      console.warn(`[launch] Ignoring playbook model "${defaults.model}": agent ${agentType} does not accept it; using the agent default.`);
+    }
+  }
+  if (effort === undefined && defaults.effort !== undefined) {
+    if (isValidEffortForAgent(agentType, defaults.effort, model)) {
+      effort = defaults.effort;
+    } else {
+      console.warn(`[launch] Ignoring playbook effort "${defaults.effort}": agent ${agentType} does not accept it; using the agent default.`);
+    }
+  }
+  return {
+    ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
+  };
 }
 
 function buildLaunchIntent(
