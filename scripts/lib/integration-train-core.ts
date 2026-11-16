@@ -62,6 +62,8 @@ export type TrainEventKind =
   | 'reverted'
   | 'fix-budget-exhausted'
   | 'fix-spawn-failed'
+  /** A verified revert's push was rejected twice in a row; the train keeps re-applying it. */
+  | 'revert-push-rejected'
   /** Commits reached main without the train (informational; nothing halts). */
   | 'main-bypassed';
 
@@ -77,6 +79,24 @@ export interface TrainHalt {
   main: string;
   integration: string;
   at: string;
+}
+
+/**
+ * A culprit the train confirmed (red twice) but whose revert is not on the
+ * integration branch yet (issue #4014). Saved as soon as it is confirmed, so a
+ * rejected push, a restart or a crash resumes at the revert instead of
+ * bisecting again.
+ */
+export interface PendingRevert {
+  culprit: string;
+  /** True once a revert of the culprit passed the full suite. */
+  verified: boolean;
+  /** Failing output of the culprit, quoted in the issue and fix-task texts. */
+  failTail: string;
+  /** Revert pushes rejected in a row for this culprit. */
+  rejections: number;
+  /** The `revert-push-rejected` alert was sent for this culprit. */
+  alerted: boolean;
 }
 
 export interface TrainState {
@@ -103,6 +123,8 @@ export interface TrainState {
   alerting: boolean;
   /** Consecutive cycles that ended on a rejected push; reset by a successful push. */
   pushRejections: number;
+  /** A confirmed culprit whose revert still has to be pushed, or null. */
+  pendingRevert: PendingRevert | null;
 }
 
 export interface TrainStateStore {
@@ -157,9 +179,38 @@ const UNVERIFIED_SCAN = 50;
 const LISTED_SUBJECTS = 20;
 /** Cycles in a row that may end on a rejected push before the train halts. */
 export const PUSH_REJECT_LIMIT = 3;
+/**
+ * Times one cycle re-applies a rejected revert on the moved integration head
+ * and pushes it again, before it leaves the revert to the next cycle.
+ */
+export const REVERT_REAPPLY_ATTEMPTS = 3;
+/** Revert pushes rejected in a row before the operator is alerted (once per culprit). */
+const REVERT_REJECT_ALERT = 2;
+/**
+ * Halts that keep a remembered culprit: they say nothing about it (the suite
+ * or git could not run, a push was refused, a merge of main conflicted). Every
+ * other halt drops it, so the cycle after a person clears the halt starts over.
+ */
+const HALTS_KEEPING_PENDING_REVERT = new Set(['verify-infra', 'push-rejected', 'train-error', 'reconcile-conflict']);
 
 export function emptyTrainState(): TrainState {
-  return { halted: null, verifiedGreen: [], flakyHeads: [], fixTasks: {}, alerting: false, pushRejections: 0 };
+  return {
+    halted: null, verifiedGreen: [], flakyHeads: [], fixTasks: {}, alerting: false, pushRejections: 0,
+    pendingRevert: null,
+  };
+}
+
+function normalizePendingRevert(raw: unknown): PendingRevert | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as Partial<PendingRevert>;
+  if (typeof p.culprit !== 'string' || !/^[0-9a-f]{40}$/.test(p.culprit)) return null;
+  return {
+    culprit: p.culprit,
+    verified: p.verified === true,
+    failTail: typeof p.failTail === 'string' ? p.failTail : '',
+    rejections: Number.isInteger(p.rejections) && (p.rejections as number) > 0 ? p.rejections as number : 0,
+    alerted: p.alerted === true,
+  };
 }
 
 export function normalizeTrainState(raw: Partial<TrainState> | null | undefined): TrainState {
@@ -174,6 +225,7 @@ export function normalizeTrainState(raw: Partial<TrainState> | null | undefined)
     pushRejections: Number.isInteger(raw.pushRejections) && (raw.pushRejections as number) > 0
       ? raw.pushRejections as number
       : 0,
+    pendingRevert: normalizePendingRevert(raw.pendingRevert),
   };
 }
 
@@ -447,6 +499,7 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   const halt = async (reason: string, main: string, int: string, detail: string): Promise<CycleResult> => {
     state.halted = { reason, main, integration: int, at: deps.now().toISOString() };
     state.pushRejections = 0;
+    if (!HALTS_KEEPING_PENDING_REVERT.has(reason)) state.pendingRevert = null;
     log(`HALT ${reason}: ${detail}`);
     await raise(deps, state, 'halted', `${reason}: ${detail}`);
     return { outcome: 'halted', reason, detail };
@@ -499,6 +552,8 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   // nothing is promoted on top of an unverified red main.
   if (mainSha === headSha) {
     state.pushRejections = 0;
+    // Nothing is left on the integration branch to revert.
+    state.pendingRevert = null;
     if (!mainUnverified) return { outcome: 'idle' };
     try {
       const r = await deps.verify(mainSha);
@@ -681,6 +736,21 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   if (!Array.isArray(listed)) return listed;
   const candidates = listed;
 
+  // 5b. A culprit confirmed by an earlier cycle whose revert was never pushed
+  // (#4014): go straight to the revert, with no bisect, unless the culprit has
+  // left the branch, reached main or was reverted meanwhile.
+  if (state.pendingRevert) {
+    const gone = await culpritGone(state.pendingRevert.culprit);
+    if (gone !== null) {
+      log(`remembered culprit ${state.pendingRevert.culprit.slice(0, 10)} dropped: ${gone}`);
+      state.pendingRevert = null;
+    } else {
+      log(`resuming the revert of confirmed culprit ${state.pendingRevert.culprit.slice(0, 10)}; no bisect`);
+      const resumed = await revertCulprit(state.pendingRevert, true);
+      if (resumed) return resumed;
+    }
+  }
+
   // 6. Verify the head.
   if (await verify(headSha)) {
     const promoted = await promote(headSha);
@@ -769,6 +839,15 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     return { outcome: 'retry', detail: 'culprit passed on re-run' };
   }
 
+  // Remember the confirmed culprit now, and save it at once (#4014): a cycle
+  // that ends before the revert is pushed (a rejected push, a restart, a crash)
+  // must not pay for the bisect again. The next cycle resumes at step 5b.
+  state.pendingRevert = {
+    culprit, verified: false, rejections: 0, alerted: false,
+    failTail: tailForComment(redTails.get(culprit) ?? redTails.get(headSha) ?? ''),
+  };
+  deps.state.save(state);
+
   // Promote the last good commit so main keeps moving while the culprit is
   // dealt with. Candidates are limited to commits that contain main, so this is
   // always a fast-forward.
@@ -777,68 +856,180 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     if (!promoted.ok) return rejected('promotion of last good', promoted);
   }
 
+  return (await revertCulprit(state.pendingRevert, false)) as CycleResult;
+  };
+
+  /**
+   * Why a remembered culprit no longer needs reverting on the current head, or
+   * null when it still does.
+   */
+  const culpritGone = async (culprit: string): Promise<string | null> => {
+    if (!(await git(['merge-base', '--is-ancestor', culprit, headSha])).ok) {
+      return `it is no longer on ${integration}`;
+    }
+    if ((await git(['merge-base', '--is-ancestor', culprit, mainSha])).ok) return 'it is already on main';
+    const reverts = await out(['rev-list', '-n', '1', `--grep=^This reverts commit ${culprit}`, `${culprit}..${headSha}`]);
+    return reverts !== '' ? `${reverts.slice(0, 10)} already reverts it` : null;
+  };
+
+  /**
+   * Commits a revert of `culprit` on top of `base` (detached, in the train's
+   * worktree) with the train's trailer. Returns its SHA, 'conflict' (aborted),
+   * or 'empty' when the revert changes nothing (the culprit was already undone
+   * or fixed forward; the worktree is reset to `base`).
+   */
+  const buildRevert = async (base: string, culprit: string, subject: string): Promise<string> => {
+    await out(['checkout', '--detach', '-q', base]);
+    const revert = await git(['revert', '--no-commit', culprit]);
+    if (!revert.ok) {
+      await git(['revert', '--abort']);
+      return 'conflict';
+    }
+    // `--allow-empty` because a culprit that was already fixed forward reverts
+    // to nothing; that case is reported as 'empty' rather than failing here as
+    // an unexpected git error. Step 9a recognises only the trailer: a revert a
+    // person made of some unrelated change says nothing about which commits in
+    // the range are known-bad.
+    await out([
+      'commit', '-q', '--allow-empty', '-m', `Revert "${subject}"`,
+      '-m', `This reverts commit ${culprit}.`,
+      '-m', TRAIN_REVERT_TRAILER,
+    ]);
+    const sha = await out(['rev-parse', 'HEAD']);
+    if ((await out(['rev-parse', `${sha}^{tree}`])) === (await out(['rev-parse', `${base}^{tree}`]))) {
+      await git(['reset', '--hard', '-q', base]);
+      return 'empty';
+    }
+    return sha;
+  };
+
+  /**
+   * Step 9c: revert the confirmed culprit on the integration head, verify the
+   * revert with the full suite unless a revert of it already passed, push it,
+   * then report it. Used right after the bisect and by a resumed cycle
+   * (`resumed`), which returns null when the revert turns out to change nothing
+   * so the caller carries on with an ordinary cycle.
+   */
+  const revertCulprit = async (pending: PendingRevert, resumed: boolean): Promise<CycleResult | null> => {
+  const { culprit } = pending;
   const parents = (await out(['rev-list', '--parents', '-n', '1', culprit])).split(/\s+/).filter(Boolean);
   if (parents.length > 2) {
     return halt('culprit-is-merge', mainSha, headSha, `culprit ${culprit.slice(0, 10)} is a merge commit`);
   }
 
-  await out(['checkout', '--detach', '-q', headSha]);
-  const revert = await git(['revert', '--no-commit', culprit]);
-  if (!revert.ok) {
-    await git(['revert', '--abort']);
+  const subject = await out(['log', '-1', '--format=%s', culprit]);
+  const built = await buildRevert(headSha, culprit, subject);
+  if (built === 'conflict') {
     return halt('revert-conflict', mainSha, headSha, `reverting ${culprit.slice(0, 10)} conflicts`);
   }
-  // Commit with the train's trailer. `--allow-empty` because a culprit that was
-  // already fixed forward reverts to nothing; that case is rejected just below
-  // rather than failing here as an unexpected git error. Step 9a recognises only
-  // it: a revert a person made of some unrelated change says nothing about
-  // which commits in the range are known-bad.
-  const culpritSubject = await out(['log', '-1', '--format=%s', culprit]);
-  await out([
-    'commit', '-q', '--allow-empty', '-m', `Revert "${culpritSubject}"`,
-    '-m', `This reverts commit ${culprit}.`,
-    '-m', TRAIN_REVERT_TRAILER,
-  ]);
-  const revertSha = await out(['rev-parse', 'HEAD']);
-  const subject = culpritSubject;
-
   // A revert that changes nothing (the culprit was already undone or fixed
   // forward) cannot be what makes the head pass. Do not even verify it: the
   // tree is the head's, which failed twice, and a flaky green run here would
   // push an empty revert and reopen an issue for nothing.
-  if ((await out(['rev-parse', `${revertSha}^{tree}`])) === (await out(['rev-parse', `${headSha}^{tree}`]))) {
-    await git(['reset', '--hard', '-q', headSha]);
+  if (built === 'empty') {
+    if (resumed) {
+      log(`remembered culprit ${culprit.slice(0, 10)} dropped: reverting it changes nothing on ${headSha.slice(0, 10)}`);
+      state.pendingRevert = null;
+      return null;
+    }
     return halt(
       'revert-not-sufficient', mainSha, headSha,
       `reverting suspected culprit ${culprit.slice(0, 10)} (${subject}) changes nothing; nothing pushed`,
     );
   }
+  let revertSha = built;
 
   // The bisect assumes one good-to-bad transition. When the head is red for a
   // reason that is not the culprit (the culprit was fixed forward, then something
   // else broke), the revert would not help and the culprit's issue would be
-  // reopened for nothing. So the revert itself must pass before it is pushed.
-  if (!(await verify(revertSha))) {
-    await git(['reset', '--hard', '-q', headSha]);
-    return halt(
-      'revert-not-sufficient', mainSha, headSha,
-      `reverting suspected culprit ${culprit.slice(0, 10)} (${subject}) does not make the head pass; nothing pushed`,
-    );
+  // reopened for nothing. So the revert itself must pass before it is pushed,
+  // once: a revert re-applied on a moved head is pushed without a second run.
+  let promotable = false;
+  if (!pending.verified) {
+    if (!(await verify(revertSha))) {
+      await git(['reset', '--hard', '-q', headSha]);
+      return halt(
+        'revert-not-sufficient', mainSha, headSha,
+        `reverting suspected culprit ${culprit.slice(0, 10)} (${subject}) does not make the head pass; nothing pushed`,
+      );
+    }
+    pending.verified = true;
+    promotable = true;
+    deps.state.save(state);
   }
-  const revertPush = await push(`${revertSha}:refs/heads/${integration}`);
-  if (!revertPush.ok) return rejected('revert push', revertPush);
-  // The revert is verified green and contains main: promote it right away. A
-  // rejected push is not an error; the next cycle promotes it (and counts it
-  // towards PUSH_REJECT_LIMIT).
-  const revertPromotion = await promote(revertSha);
-  const revertPromoted = revertPromotion.ok;
-  if (!revertPromoted) {
-    log(`promotion of the revert rejected: ${revertPromotion.stderr.trim()}`);
-    state.pushRejections += 1;
+
+  // A merge into the integration branch during the verify rejects the push
+  // (#4014). Throwing the verified revert away would restart the whole search,
+  // and at the usual merge rate that can repeat without end. Instead re-apply
+  // the same revert on the new head and push it at once. It is not verified
+  // again, so it is not promoted: the next cycle verifies the new head before
+  // anything reaches main.
+  let pushed = await push(`${revertSha}:refs/heads/${integration}`);
+  for (let attempt = 1; !pushed.ok; attempt++) {
+    pending.rejections += 1;
+    log(`revert push rejected (${pending.rejections} in a row): ${pushed.stderr.trim()}`);
+    if (pending.rejections >= REVERT_REJECT_ALERT && !pending.alerted) {
+      pending.alerted = true;
+      await raise(
+        deps, state, 'revert-push-rejected',
+        `the push of the verified revert of ${culprit.slice(0, 10)} (${subject}) to ${integration} was rejected ` +
+          `${pending.rejections} times in a row (last: ${pushed.stderr.trim().slice(-200)}). The train keeps the revert ` +
+          `and pushes it again, re-applied on the new ${integration} head when the branch moved, without another full ` +
+          'verify; the next cycle verifies the head before anything is promoted.',
+      );
+    }
+    if (attempt > REVERT_REAPPLY_ATTEMPTS) break;
+    const fetched = await git([
+      'fetch', '--no-tags', 'origin', `+refs/heads/${integration}:refs/remotes/origin/${integration}`,
+    ]);
+    if (!fetched.ok) break;
+    const newHead = await out(['rev-parse', intRef]);
+    // The head did not move: the push was refused for another reason (branch
+    // protection, credentials), which re-applying cannot fix.
+    if (newHead === headSha) break;
+    headSha = newHead;
+    const gone = await culpritGone(culprit);
+    if (gone !== null) {
+      log(`remembered culprit ${culprit.slice(0, 10)} dropped: ${gone}`);
+      state.pendingRevert = null;
+      return { outcome: 'retry', detail: `revert of ${culprit.slice(0, 10)} not needed: ${gone}` };
+    }
+    const again = await buildRevert(headSha, culprit, subject);
+    if (again === 'conflict') {
+      return halt(
+        'revert-conflict', mainSha, headSha,
+        `re-applying the verified revert of ${culprit.slice(0, 10)} on the new ${integration} head ${headSha.slice(0, 10)} conflicts`,
+      );
+    }
+    if (again === 'empty') {
+      log(`remembered culprit ${culprit.slice(0, 10)} dropped: reverting it changes nothing on ${headSha.slice(0, 10)}`);
+      state.pendingRevert = null;
+      return { outcome: 'retry', detail: `revert of ${culprit.slice(0, 10)} not needed: it changes nothing on the new head` };
+    }
+    revertSha = again;
+    promotable = false;
+    log(`re-applied the revert of ${culprit.slice(0, 10)} on ${headSha.slice(0, 10)} as ${revertSha.slice(0, 10)}`);
+    pushed = await push(`${revertSha}:refs/heads/${integration}`);
+  }
+  // The culprit stays remembered: the next cycle resumes here, without a bisect.
+  if (!pushed.ok) return rejected('revert push', pushed);
+  state.pendingRevert = null;
+
+  // A revert verified green contains main: promote it right away. A rejected
+  // push is not an error; the next cycle promotes it (and counts it towards
+  // PUSH_REJECT_LIMIT).
+  let revertPromoted = false;
+  if (promotable) {
+    const revertPromotion = await promote(revertSha);
+    revertPromoted = revertPromotion.ok;
+    if (!revertPromoted) {
+      log(`promotion of the revert rejected: ${revertPromotion.stderr.trim()}`);
+      state.pushRejections += 1;
+    }
   }
 
   const pr = prNumberFromSubject(subject);
-  const failTail = tailForComment(redTails.get(culprit) ?? redTails.get(headSha) ?? '');
+  const failTail = pending.failTail;
   let fixNote = '';
   // What happens next, in the words of the pull-request comment.
   let prNextStep = '';
@@ -915,7 +1106,11 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
       `Next: ${prNextStep}`,
     ]);
   }
-  if (!revertPromoted) fixNote += '; promotion of the revert rejected, the next cycle retries';
+  if (!promotable) {
+    fixNote += '; the revert was re-applied after a rejected push and is not verified on this head yet, the next cycle verifies it before promoting';
+  } else if (!revertPromoted) {
+    fixNote += '; promotion of the revert rejected, the next cycle retries';
+  }
   await raise(deps, state, 'reverted', `reverted ${culprit} as ${revertSha} on ${integration}; ${fixNote}`);
   return { outcome: 'reverted', detail: fixNote };
   };
