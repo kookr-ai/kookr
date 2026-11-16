@@ -169,7 +169,7 @@ Cause: a git command in a test ran with a `cwd` that resolved into the real repo
 
 ### A test passes alone but fails in the full run, under `src/core`, `src/shared`, `src/cli` or `scripts/lib`
 
-These directories run in the `shared` Vitest project (`vitest.config.mts`, issue #3811). A worker runs one file after another without restarting, which uses about 40% less CPU than a fresh worker per file. Before each file, `test/shared-worker-reset.setup.ts` resets the module registry (so `vi.mock` and module-level state start fresh), the timer globals and `Date`, `process.env` and the working directory. Anything else a file changes in the process stays for the next file in that worker: an event listener, a monkey-patched module export, a global the file assigns by hand.
+These directories run in the `shared` Vitest project (`vitest.config.mts`, issue #3811). A worker runs one file after another without restarting, which uses about 40% less CPU than a fresh worker per file. Before each file, `test/shared-worker-reset.setup.ts` resets the module registry (so `vi.mock` and module-level state start fresh), the timer globals and `Date`; after each file, it restores `process.env` and the working directory. Anything else a file changes in the process stays for the next file in that worker: an event listener, a monkey-patched module export, a global the file assigns by hand.
 
 To reproduce, run the project shuffled with the seed from the failing run, or with a few seeds:
 
@@ -177,4 +177,4 @@ To reproduce, run the project shuffled with the seed from the failing run, or wi
 npx vitest run --project shared --sequence.shuffle.files --sequence.seed=11 src/core
 ```
 
-Then fix the file that leaks, the one that ran before the failing file in the same worker, not the victim. One known trap: `vi.spyOn(globalThis, 'setTimeout')` under fake timers records the fake as the original, and Vitest's end-of-file `restoreAllMocks` puts the fake back after `useRealTimers()`. Swap the global by hand instead (see `src/core/with-timeout.test.ts`). As a last resort, move a file that cannot be fixed out of the shared project by excluding it in `vitest.config.mts`.
+Then fix the file that leaks, the one that ran before the failing file in the same worker, not the victim. One known trap: `vi.spyOn(globalThis, 'setTimeout')` under fake timers records the fake as the original, and Vitest's end-of-file `restoreAllMocks` puts the fake back after `useRealTimers()`. Swap the global by hand instead (see `src/core/with-timeout.test.ts`). As a last resort, add a file that cannot be fixed to `SERIAL_TEST_FILES` in `scripts/lib/vitest-serial-files.mjs`: the `serial` project runs it in a fresh worker. Do not only add it to the `shared` project's `exclude`: the `unit` project excludes the shared directories too, so the file would run in no project at all.

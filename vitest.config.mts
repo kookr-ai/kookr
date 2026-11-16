@@ -45,9 +45,10 @@ export default defineConfig({
     //   shared  the files in SHARED_WORKER_INCLUDE, in parallel with `unit`,
     //           but a worker runs file after file without restarting
     //           (isolate: false). That uses about 40% less CPU for them.
-    //           test/shared-worker-reset.setup.ts resets the module registry,
-    //           timer globals, process.env and the working directory before
-    //           each file, so one file cannot change what the next one sees;
+    //           test/shared-worker-reset.setup.ts resets the module registry
+    //           and timer globals before each file, and restores process.env
+    //           and the working directory after it, so one file cannot change
+    //           what the next one sees;
     //   serial  files that spawn real processes or race timers against I/O
     //           (scripts/lib/vitest-serial-files.mjs). They run after `unit`
     //           finishes (groupOrder), one at a time, and a failed test is
