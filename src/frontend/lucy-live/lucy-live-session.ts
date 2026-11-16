@@ -147,6 +147,18 @@ function base64ToBytes(base64: string): ArrayBuffer {
   return bytes.buffer as ArrayBuffer;
 }
 
+/** When a possible interruption was noticed and, once the operator stopped, when it ended. */
+interface CandidateTiming {
+  turnId: string;
+  detectedAt: number;
+  endedAt: number | null;
+}
+
+/** A possible interruption awaiting the server's verdict; Lucy is ducked meanwhile. */
+interface Duck extends CandidateTiming {
+  timer: ReturnType<typeof setTimeout>;
+}
+
 /** A sentence that has been handed to the audio engine. */
 interface ScheduledSentence {
   turnId: string;
@@ -178,7 +190,18 @@ export class LucyLiveSession {
   /** Id of the microphone turn being sent (differs from `currentTurnId` while a possible interruption is being checked). */
   private micTurnId: string | null = null;
   /** A possible interruption awaiting the server's verdict; Lucy is ducked meanwhile. */
-  private duck: { turnId: string; detectedAt: number; timer: ReturnType<typeof setTimeout>; endedAt: number | null } | null = null;
+  private duck: Duck | null = null;
+  /**
+   * A candidate that had already ended when a newer candidate's duck replaced it. Its verdict
+   * is still on the way (the server always answers a `speech_end`), and a confirmation means
+   * the server is now transcribing it as the operator's question.
+   */
+  private replacedCandidate: CandidateTiming | null = null;
+  /**
+   * A candidate stopped by the confirmation timeout after its `speech_end`. It is assumed to be
+   * the question being answered until its late verdict says otherwise.
+   */
+  private timedOutCandidate: string | null = null;
   private gainNode: GainNode | null = null;
   /** True between `speech_start` and `speech_end`/`speech_cancel`: microphone audio is being sent. */
   private sending = false;
@@ -250,6 +273,7 @@ export class LucyLiveSession {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.clearDuck();
+    this.forgetLateCandidates();
     this.cutPlayback();
     emitSpeechIdle(this.busOwner);
     this.captureNode?.disconnect();
@@ -324,6 +348,8 @@ export class LucyLiveSession {
     this.detector.reset();
     this.leftover = new Float32Array(0);
     this.clearDuck();
+    this.forgetLateCandidates();
+    this.setGain(1); // the volume control outlives the socket: do not leave Lucy turned down
     this.cutPlayback();
     this.settleBus();
     this.ws = null;
@@ -490,6 +516,7 @@ export class LucyLiveSession {
       this.clearDuck();
       this.setGain(1);
     }
+    this.forgetLateCandidates();
     if (this.lucyBusy()) {
       // No server check available: everything audible stops in this same call stack.
       const cut = this.cutPlayback();
@@ -552,6 +579,16 @@ export class LucyLiveSession {
   // -------------------------------------------------------------------------
 
   private startDuck(turnId: string, detectedAt: number): void {
+    const previous = this.duck;
+    if (previous) {
+      // An earlier candidate is still undecided. If it already ended, its verdict is in flight
+      // and a confirmation must still make it the turn; one withdrawn with `speech_cancel` can
+      // only be rejected, so it is simply forgotten.
+      if (previous.endedAt !== null) {
+        this.replacedCandidate = { turnId: previous.turnId, detectedAt: previous.detectedAt, endedAt: previous.endedAt };
+      }
+      this.clearDuck();
+    }
     this.rampGain(DUCK_GAIN);
     const duckMs = performance.now() - detectedAt;
     track({ type: 'lucy_live_timing', kind: 'barge_in_duck', ms: Math.round(duckMs * 10) / 10 });
@@ -569,24 +606,55 @@ export class LucyLiveSession {
     return this.duck?.turnId === turnId && this.micTurnId === turnId;
   }
 
+  private forgetLateCandidates(): void {
+    this.replacedCandidate = null;
+    this.timedOutCandidate = null;
+  }
+
   /** The server heard real speech: stop Lucy for good and treat that audio as the new turn. */
   private onConfirmed(turnId: string): void {
+    if (turnId === this.timedOutCandidate) {
+      // Already the turn and already awaiting its answer since the timeout: the server agrees.
+      this.timedOutCandidate = null;
+      return;
+    }
+    const replaced = this.replacedCandidate;
+    if (replaced?.turnId === turnId) {
+      // The server confirmed this ended candidate before a newer sound replaced its duck, and is
+      // transcribing it now. It is the operator's question: stop the old answer and wait for the
+      // new one. The newer candidate stays pending, so its own verdict still decides.
+      this.replacedCandidate = null;
+      this.stopForInterruption(replaced);
+      this.awaitingAnswer = replaced.turnId;
+      return;
+    }
     const duck = this.duck;
     if (!duck || !this.isPendingCandidate(turnId)) return;
     this.clearDuck();
+    this.forgetLateCandidates(); // the server folds an earlier candidate into this one
     this.stopForInterruption(duck);
     // The operator already stopped talking (their speech_end crossed this verdict), and the
     // server has made the candidate a real turn: it now waits for its answer, as after any
-    // other speech_end. Not done on a timeout: there the server has usually dropped the
-    // candidate on that speech_end, so no answer, and no turn_done, would ever come.
+    // other speech_end.
     if (duck.endedAt !== null) this.awaitingAnswer = duck.turnId;
   }
 
   /** The server found no speech: turn Lucy back up and carry on; whatever was queued keeps playing in order. */
   private onRejected(turnId: string): void {
+    if (turnId === this.timedOutCandidate) {
+      // The server had dropped it on its speech_end: no answer will come, so stop waiting for one.
+      this.timedOutCandidate = null;
+      if (this.awaitingAnswer === turnId) this.awaitingAnswer = null;
+      return;
+    }
+    if (turnId === this.replacedCandidate?.turnId) {
+      this.replacedCandidate = null; // the newer candidate keeps Lucy ducked until its own verdict
+      return;
+    }
     const duck = this.duck;
     if (!duck || !this.isPendingCandidate(turnId)) return;
     this.clearDuck();
+    this.replacedCandidate = null;
     this.rampGain(1);
     // A rejection can arrive while the detector still thinks the sound is going on. Stop
     // sending it, and let the detector treat that sound as background noise so a steady
@@ -608,14 +676,24 @@ export class LucyLiveSession {
     const duck = this.duck;
     if (!duck || !this.isPendingCandidate(turnId) || this.stopped) return;
     this.clearDuck();
+    this.forgetLateCandidates(); // the server folds an earlier candidate into this one
     this.send({ type: 'barge_in' });
     this.stopForInterruption(duck);
+    if (duck.endedAt !== null) {
+      // Its speech_end is already out, so the server has either made it a turn (a confirmation
+      // is on the way, then the answer) or dropped it (a rejection is on the way). Until that
+      // verdict arrives, treat it as the question being answered, so a new sound cannot start a
+      // normal turn over it; a late rejection releases it.
+      this.awaitingAnswer = duck.turnId;
+      this.timedOutCandidate = duck.turnId;
+    }
   }
 
   /** Stop every sound and make the interrupting audio the current turn. */
-  private stopForInterruption(duck: { turnId: string; detectedAt: number; endedAt: number | null }): void {
+  private stopForInterruption(duck: CandidateTiming): void {
     const cut = this.cutPlayback();
-    this.setGain(1); // the next answer plays at full volume
+    // The next answer plays at full volume, unless a newer candidate is still being checked.
+    this.setGain(this.duck ? DUCK_GAIN : 1);
     emitSpeechIdle(this.busOwner);
     const stopMs = performance.now() - duck.detectedAt;
     for (const sentence of cut) {
