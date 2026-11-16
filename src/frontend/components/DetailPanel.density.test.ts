@@ -472,6 +472,25 @@ describe('DetailPanel dense metadata', () => {
     expect(editCard()).toBeNull();
   });
 
+  test('#4024: closing an edit gives focus back to the row that opened it, which stayed mounted', async () => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => { cb(0); return 0; });
+    root = renderDetailPanel(container, makeAgent());
+    const trigger = container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!;
+
+    act(() => { trigger.focus(); trigger.click(); });
+    await flush();
+    // The conversation is hidden behind Changes, not unmounted.
+    expect(trigger.isConnected).toBe(true);
+    expect(container.querySelector<HTMLElement>('[data-testid="detail-conversation-slot"]')?.style.display).toBe('none');
+
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    await flush();
+
+    expect(container.querySelector('[data-testid="activity-panel"] button')).toBe(trigger);
+    expect(document.activeElement).toBe(trigger);
+    expect(container.querySelector<HTMLElement>('[data-testid="detail-conversation-slot"]')?.style.display).toBe('contents');
+  });
+
   test('#4024: the edit card close button returns to the tab the edit was opened from', async () => {
     root = renderDetailPanel(container, makeAgent());
 
@@ -592,6 +611,21 @@ describe('DetailPanel dense metadata', () => {
 
     expect(useKookrStore.getState().leftPane).toBe('activity');
     expect(editCard()).toBeNull();
+  });
+
+  test('#3618: in split view, moving to another task after an edit opened Changes puts the left pane back on Conversation', async () => {
+    useKookrStore.getState().setDetailPaneMode('split');
+    root = renderDetailPanel(container, makeAgent());
+
+    act(openEdit);
+    await flush();
+    expect(useKookrStore.getState().leftPane).toBe('changes');
+
+    rerenderWith(makeAgent({ agentId: 'other-agent', taskId: 'other-task' }));
+    await flush();
+
+    expect(useKookrStore.getState().leftPane).toBe('activity');
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
   });
 
   test('#4024: an agent with no task gets a Changes tab only for an opened edit', async () => {

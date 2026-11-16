@@ -178,6 +178,21 @@ describe('the pull request fallback once the worktree is gone (#4024 slice 3)', 
     expect(fetchPage).toHaveBeenCalledTimes(2);
   });
 
+  it('also stands in for a task whose directory was never recorded', async () => {
+    const fetchPage = vi.fn<PullRequestFilesPage>(async () => FILES);
+    const tasks: Record<string, unknown> = { t1: { cwd: undefined, createdAt: new Date('2026-11-16T12:00:00Z'), sessions: [] } };
+    const deps = {
+      taskStore: { getTask: (id: string) => tasks[id] },
+      githubStateStore: { getTaskState: () => ({ prs: [OWN_PR], issues: [] }) },
+    } as unknown as TaskChangesRouteDeps;
+    const app = new Hono();
+    registerTaskChangesRoutes(app, deps, undefined, new PullRequestChanges(fetchPage));
+
+    const body = await (await app.request('/api/tasks/t1/changes')).json();
+    expect(body).toMatchObject({ kind: 'ok', source: 'pull_request', pullRequest: { number: 4070 } });
+    expect(await (await app.request('/api/tasks/t1/changes/file?path=src%2Fa.ts')).json()).toMatchObject({ kind: 'patch', path: 'src/a.ts' });
+  });
+
   it('pages through a long list and marks it cut at the file cap', async () => {
     const page = (n: number) => Array.from({ length: PR_FILES_PER_PAGE }, (_, i) => ({ filename: `f${n}-${i}`, status: 'added', additions: 1, deletions: 0, patch: '@@ -0,0 +1 @@\n+x' }));
     const fetchPage = vi.fn<PullRequestFilesPage>(async (_pr, n) => page(n));

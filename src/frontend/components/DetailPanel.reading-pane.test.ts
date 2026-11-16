@@ -143,7 +143,8 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(changesTab.getAttribute('aria-pressed')).toBe('true');
     expect(q('changes-panel-stub')?.textContent).toBe('task-1');
-    expect(q('activity-panel')).toBeNull();
+    // The conversation stays mounted behind Changes, hidden, so closing an opened edit can refocus its row.
+    expect(q('detail-conversation-slot')?.style.display).toBe('none');
     expect(container.querySelectorAll('.detail-tab.active:not(.detail-split-toggle)')).toHaveLength(1);
     // Split view keeps the terminal beside it; the tabbed layout hides the terminal pane.
     expect(container.querySelector('.detail-split-right')?.classList.contains('pane-hidden-tab')).toBe(detailPaneMode === 'tabs');

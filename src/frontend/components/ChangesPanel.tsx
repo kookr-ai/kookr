@@ -165,7 +165,7 @@ function TaskChangeList({ taskId, edit, editCard }: { taskId: string; edit: Chan
             <>
               {', from pull request '}
               <a href={pullRequest.url} target="_blank" rel="noopener noreferrer">#{pullRequest.number}</a>
-              {' (the worktree was removed)'}
+              {' (no worktree to read)'}
             </>
           )}
         </span>

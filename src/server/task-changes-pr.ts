@@ -110,8 +110,10 @@ export class PullRequestChanges {
     const cached = await this.files(pr, opts.fresh === true);
     if (!cached) return null;
     const files: TaskChangedFile[] = cached.files.map((f) => {
-      // GitHub sends no patch for a binary file, and none for a pure rename either.
-      const binary = f.patch === undefined && f.additions === 0 && f.deletions === 0 && f.status !== 'renamed';
+      // GitHub sends no patch for a binary file, and none for a pure rename or
+      // a mode-only change ('changed') either.
+      const binary = f.patch === undefined && f.additions === 0 && f.deletions === 0
+        && f.status !== 'renamed' && f.status !== 'changed';
       return {
         path: f.filename,
         ...(f.status === 'renamed' && f.previous_filename ? { oldPath: f.previous_filename } : {}),

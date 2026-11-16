@@ -250,7 +250,7 @@ describe('ChangesPanel (#4024)', () => {
     routes['/api/agents/agent-1/edit-events/tu-1'] = { status: 200, body: EDIT_PATCH };
     await render('task-1', editOf('/work/widget/big.json'));
 
-    expect(q('changes-summary')?.textContent).toBe('1 file against main on feat-widget-export, from pull request #4070 (the worktree was removed)');
+    expect(q('changes-summary')?.textContent).toBe('1 file against main on feat-widget-export, from pull request #4070 (no worktree to read)');
     expect(q('changes-summary')?.querySelector('a')?.getAttribute('href')).toBe('https://github.com/o/r/pull/4070');
     // No repository root to match against, so no row claims the edit.
     expect(rows()[0].hasAttribute('data-edit-target')).toBe(false);

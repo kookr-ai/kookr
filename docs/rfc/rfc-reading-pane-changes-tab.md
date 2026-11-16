@@ -104,7 +104,7 @@ count and the total `+added −removed`, and a Refresh button. Below it, one row
 per file: status letter, path (directory dimmed, file name bright) and line
 counts. Clicking a row opens that file's diff in place, under the row; clicking
 again closes it (variant A below). The tab shows for every task, in the tabbed
-layout and in Split view's left pane; an agent with no task has none.
+layout and in Split view's left pane; an agent with no task has one only while an opened edit shows (slice 2).
 
 **Pull request** (renamed from "GitHub (n)", slice 3). The task's own pull
 request first, as a summary: title, state, checks, review decision, unresolved
@@ -127,8 +127,8 @@ shared by the dashboard and the server (`src/shared/task-own-pull-requests.ts`):
 directory was recorded) and the task has an own pull request that is not
 closed, the Changes tab lists that PR's files from
 `gh api repos/O/R/pulls/N/files` instead (the most recently opened PR when
-there are several). The header says "from pull request #N (the worktree was
-removed)", and a file GitHub gives no patch for (binary, or a very large
+there are several). The header says "from pull request #N (no worktree to
+read)", and a file GitHub gives no patch for (binary, or a very large
 diff) says so. GitHub is asked only on tab open, Refresh or opening a file;
 the list is kept for 60 seconds so opening several files asks once, and
 Refresh asks again. The file route still answers only for a path in that

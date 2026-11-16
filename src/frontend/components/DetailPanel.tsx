@@ -1275,23 +1275,32 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
 
             {/* Pane container: one pane in the tabbed layout, two in split view */}
             <div className={`detail-split${rightOnlyMode ? ' detail-split-terminal-focus' : ''}${tabbedLayout ? ' detail-split-tabbed' : ''}`}>
-              {/* Left pane: Conversation, Changes or GitHub */}
+              {/* Left pane: Conversation, Changes or Pull request */}
               {!rightOnlyMode && <div className={`detail-split-left${leftPaneHidden ? ' pane-hidden-tab' : ''}`}>
                 {selectedTab === 'github' ? (
                   <Suspense fallback={null}>
                     <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} ownPrs={ownPrs} />
                   </Suspense>
-                ) : selectedTab === 'changes' && changesAvailable ? (
-                  <Suspense fallback={null}>
-                    <ChangesPanel
-                      key={agent.taskId ?? agent.agentId}
-                      taskId={agent.taskId}
-                      edit={changesEdit}
-                      onCloseEdit={handleCloseEdit}
-                    />
-                  </Suspense>
                 ) : (
                   <>
+                    {selectedTab === 'changes' && changesAvailable && (
+                      <Suspense fallback={null}>
+                        <ChangesPanel
+                          key={agent.taskId ?? agent.agentId}
+                          taskId={agent.taskId}
+                          edit={changesEdit}
+                          onCloseEdit={handleCloseEdit}
+                        />
+                      </Suspense>
+                    )}
+                    {/* The conversation stays mounted behind Changes, so closing an
+                        opened edit finds the row that opened it (focus, expanded
+                        tool group and scroll position survive) (#4024). */}
+                    <div
+                      className="detail-conversation-slot"
+                      data-testid="detail-conversation-slot"
+                      style={{ display: selectedTab === 'changes' && changesAvailable ? 'none' : 'contents' }}
+                    >
                     <Suspense fallback={null}>
                       <ActivityPanel
                         agentId={agent.agentId}
@@ -1305,6 +1314,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                         userInputDeliveries={agent.userInputDeliveries}
                       />
                     </Suspense>
+                    </div>
                   </>
                 )}
                 {decisionCardVisible && (
