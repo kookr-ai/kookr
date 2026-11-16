@@ -794,6 +794,40 @@ merge failed; `2` usage error; `3` checks failed, the PR conflicts with its base
 branch (rebase on `origin/<base>` and push), or never-executed checks without
 the recorded local gate; `4` blocked by the independent-review gate.
 
+## `kookr check-verification`
+
+Classify the GitHub check runs on a pull request's head commit, from any
+repository (issue #3643). It runs `scripts/check-verification.mjs`, the
+classifier `kookr merge` uses, so the delivery playbooks can find out the CI
+state before acting on it instead of assuming it.
+
+```bash
+kookr check-verification <PR> [--repo OWNER/NAME] [--json]
+kookr check-verification --sha <SHA> --repo OWNER/NAME [--json]
+kookr check-verification --from-file <check-runs.json> [--json]
+```
+
+| Exit | Classification | Meaning |
+|---|---|---|
+| `0` | `executed-green` / `none-required` | Every check ran and passed, or the head has no checks. |
+| `10` | `never-executed` | A check "failed" without running (a billing or quota block). Merge only with recorded local-gate evidence. |
+| `20` | `executed-red` | A check ran and failed on the code. Never merge. |
+| `30` | `pending` | A check is still running, or was cancelled. Wait. |
+| `1` | — | Usage or runtime error. |
+
+When one check has several runs on the head (re-runs of the same job in the
+same workflow run), a run that did not pass stops counting once a later run of
+that check succeeded after it finished: a failed run followed by a successful
+re-run is green. A later run that never executed, was skipped, or overlapped the
+failure in time (a different job with the same name) does not hide it, so that
+check stays `executed-red`. A re-run still in progress makes the check
+`pending`. Checks with the same name in different workflow runs are classified
+separately, so a failure in an earlier workflow run stays red even when a later
+run of that workflow passed.
+
+Without `--repo`, the PR is resolved from the git remote of the current
+directory. Like `kookr merge`, the verb needs a source checkout.
+
 ## Server Discovery
 
 `kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr reopen`, `kookr ask`, `kookr peek`, `kookr signal`, `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
