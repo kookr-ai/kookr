@@ -154,6 +154,47 @@ test.describe('avatar panel (optional)', () => {
     await expect(dock).toBeVisible();
     expect((await dock.boundingBox())!.x).toBeLessThan(viewport!.width / 2);
   });
+
+  test('a long live notice and a typed reply both fit: the typed form is not clipped (#4012)', async ({ page }) => {
+    await withoutWebGL(page);
+    await page.addInitScript((key) => {
+      window.localStorage.setItem(key, JSON.stringify({ enabled: true, minimized: false, position: null }));
+      // Sound on, so the Talk button gives the server's reason rather than "Sound is off".
+      window.localStorage.setItem('kookr-sound-enabled', 'true');
+    }, AVATAR_PANEL_KEY);
+    // The server says hands-free talk is unavailable, with a reason long enough to fill the live text area.
+    const reason = 'Hands-free talk is not available on this server: the speech recogniser, the helper model and the '
+      + 'speech service must all be configured. Ask the operator to set them up in Settings, then try again.';
+    await page.route('**/api/lucy-live/status', (route) => route.fulfill({ json: { available: false, reason } }));
+    // A typed request gets a reply long enough to reach the reply's height cap.
+    const reply = Array.from({ length: 8 }, (_, n) => `Line ${n + 1} of a long answer from Lucy.`).join('\n');
+    await page.route('**/api/lucy/turn', (route) => route.fulfill({
+      contentType: 'application/x-ndjson',
+      body: [
+        { type: 'text', delta: reply },
+        { type: 'done', end: 'answered', firstTextMs: 1, totalMs: 2, steps: 1, inputTokens: 1, outputTokens: 1, costUsd: null },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n',
+    }));
+
+    await page.goto('/');
+    const dock = page.getByTestId('avatar-dock');
+    await expect(dock).toBeVisible();
+
+    // The unavailable Talk button is aria-disabled but still answers a press with the reason, so force the click.
+    await page.getByRole('button', { name: 'Talk to Lucy hands-free' }).click({ force: true });
+    await expect(page.getByTestId('avatar-live-notice')).toHaveText(reason);
+    await page.getByLabel('Type a request to Lucy').fill('What is running?');
+    await page.getByTestId('avatar-typed-send').click();
+    await expect(page.getByTestId('avatar-typed-reply')).toContainText('Line 8 of a long answer');
+
+    // The dock clips what overflows it: the whole typed form must lie inside its border.
+    const dockBox = (await dock.boundingBox())!;
+    const typed = (await page.getByTestId('avatar-typed').boundingBox())!;
+    expect(Math.round(typed.y + typed.height)).toBeLessThanOrEqual(Math.round(dockBox.y + dockBox.height - 1));
+    // The live text gave way, not the 3D view: the view keeps its floor and the notice keeps at least one line.
+    expect((await page.locator('.avatar-dock-view').boundingBox())!.height).toBeGreaterThanOrEqual(112);
+    expect((await page.getByTestId('avatar-live').boundingBox())!.height).toBeGreaterThanOrEqual(30);
+  });
 });
 
 test.describe('avatar panel: hearing a message again', () => {

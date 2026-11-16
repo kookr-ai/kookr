@@ -44,6 +44,42 @@ async function seedDetailTask(page: Page, request: APIRequestContext) {
   await broadcastProjectSummaries(request);
 }
 
+// One open PR for the task, so the GitHub tab appears (same shape as e2e/supervisor-flow.spec.ts).
+async function broadcastOnePr(request: APIRequestContext, taskId: string) {
+  const now = new Date().toISOString();
+  const response = await request.post('/api/test/broadcast-github', {
+    data: {
+      taskId,
+      prs: [{
+        ref: {
+          type: 'pr',
+          owner: 'org',
+          repo: 'detail-pane-visibility',
+          number: 7,
+          url: 'https://github.com/org/detail-pane-visibility/pull/7',
+          detectedAt: now,
+          detectedFrom: 'detail-pane-visibility',
+          taskId,
+        },
+        title: 'feat: split view band',
+        status: 'open',
+        author: 'operator',
+        branch: 'feature/split-band',
+        baseBranch: 'main',
+        reviewDecision: null,
+        reviewers: [],
+        unresolvedThreads: [],
+        totalComments: 0,
+        checks: [],
+        lastFetchedAt: now,
+      }],
+      issues: [],
+      changes: [],
+    },
+  });
+  expect(response.ok()).toBe(true);
+}
+
 async function selectDetailTask(page: Page) {
   await expect(page.locator('[data-testid="project-sidebar"]')).toBeVisible();
   await page.locator(`[data-testid="project-icon-${PROJECT_ID}"]`).click();
@@ -118,6 +154,19 @@ test.describe('Detail pane visibility controls', () => {
     const rightHeaderBottom = await bandBottom('.detail-split-right .detail-pane-header');
     expect(rightHeaderBottom).not.toBeNull();
     expect(await bandBottom('.detail-split-left .act-role-filters')).toBe(rightHeaderBottom);
+
+    // The GitHub list gets the same band (#4026): its content starts where the
+    // right pane's Terminal header ends.
+    await broadcastOnePr(request, await latestTaskId(request));
+    const githubTab = tabs.getByRole('button', { name: 'GitHub (1)', exact: true });
+    await githubTab.click();
+    await expect(githubTab).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.detail-split-left .gh-pr-card')).toBeVisible();
+    const ghPanel = await page.locator('.detail-split-left > .gh-panel').boundingBox();
+    expect(ghPanel).not.toBeNull();
+    expect(Math.round(ghPanel!.y)).toBe(rightHeaderBottom);
+    await conversationTab.click();
+    await expect(page.locator('.detail-split-left .act-role-filters')).toBeVisible();
 
     // Terminal focus hides the tab bar and the conversation.
     await page.getByRole('button', { name: /terminal focus/i }).click();
