@@ -60,14 +60,24 @@ function defaultBranch(dir) {
  * Fetches origin/<branch> within the timeout. True on success. stdio is
  * ignored so a leftover ssh or credential helper holds no pipe of ours open,
  * and SIGTERM lets git remove its lock files.
+ *
+ * Nothing may prompt: GIT_TERMINAL_PROMPT=0 stops HTTPS credential prompts,
+ * and ssh runs with BatchMode=yes, so a passphrase or host-key question fails
+ * the fetch instead of reaching the terminal (an ssh left running after the
+ * timeout would otherwise keep reading it). A user's own ssh command
+ * (GIT_SSH_COMMAND, GIT_SSH, core.sshCommand) is left as it is.
  */
 function fetchBranch(dir, branch) {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  if (!env.GIT_SSH_COMMAND && !env.GIT_SSH && git(dir, ['config', 'core.sshCommand']) === null) {
+    env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes';
+  }
   const r = spawnSync('git', ['-C', dir, 'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', 'origin',
     `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
     stdio: 'ignore',
     timeout: fetchTimeoutMs(),
     killSignal: 'SIGTERM',
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    env,
   });
   return r.status === 0 && !r.error;
 }

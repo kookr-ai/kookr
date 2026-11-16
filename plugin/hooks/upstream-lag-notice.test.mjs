@@ -110,6 +110,19 @@ describe('upstream-lag-notice', () => {
     expect(note).toContain('is at least 10 commits behind `origin/main` as of the last fetch');
   });
 
+  it('runs ssh in batch mode so the fetch can never prompt on the terminal', () => {
+    const repo = join(ROOT, 'batch');
+    git(ROOT, 'clone', '-q', ORIGIN, repo);
+    git(repo, 'remote', 'set-url', 'origin', 'ssh://git@unreachable.invalid/repo.git');
+    // A fake `ssh` first on PATH records how git calls it, then fails.
+    const bin = join(ROOT, 'fake-bin');
+    const record = join(ROOT, 'ssh-args.txt');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'ssh'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${record}'\nexit 255\n`, { mode: 0o755 });
+    hook(repo, { env: { PATH: `${bin}:${process.env.PATH}` } });
+    expect(readFileSync(record, 'utf-8').split('\n')).toContain('BatchMode=yes');
+  });
+
   it('falls back to origin/main when origin/HEAD is unset, and follows origin/HEAD when set', () => {
     const noHead = join(ROOT, 'no-head');
     git(ROOT, 'clone', '-q', ORIGIN, noHead);

@@ -264,7 +264,10 @@ The default branch is `origin/HEAD`, else `origin/main`, else `origin/master`.
 The hook fetches it first, with a timeout of 1.5 seconds
 (`KOOKR_UPSTREAM_LAG_FETCH_TIMEOUT_MS`), so with the network down it adds
 under two seconds to the session start; hooks.json also gives it a hard
-5-second timeout. When the fetch fails or times out, it still compares against
+5-second timeout. The fetch never prompts: HTTPS prompts are off and ssh runs
+with `BatchMode=yes` (unless you set your own ssh command), so a passphrase or
+host-key question fails the fetch instead of reaching the terminal. When the
+fetch fails or times out, it still compares against
 the remote-tracking ref from the last fetch and says "at least N commits
 behind ... as of the last fetch". That ref can only be older than the remote,
 so the count can only be too low, never a false warning. (Issue #3653 asked
