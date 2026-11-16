@@ -1,0 +1,93 @@
+{
+  "src/frontend/App.tsx": {
+    "TS2322": 27,
+    "TS7006": 2
+  },
+  "src/frontend/audio/sound-preference.ts": {
+    "TS2322": 2
+  },
+  "src/frontend/components/CleanupWorktreeOption.tsx": {
+    "TS2503": 1
+  },
+  "src/frontend/components/CompleteDialogFooter.tsx": {
+    "TS2503": 1
+  },
+  "src/frontend/components/CoordinatorSurfaces.tsx": {
+    "TS18047": 5,
+    "TS2345": 2
+  },
+  "src/frontend/components/DetailPanel.tsx": {
+    "TS18047": 1,
+    "TS2322": 16,
+    "TS2345": 2,
+    "TS7006": 1
+  },
+  "src/frontend/components/FindingsPanel/CompletedRow.tsx": {
+    "TS2503": 1
+  },
+  "src/frontend/components/FindingsPanel/HealthyRow.tsx": {
+    "TS2322": 1
+  },
+  "src/frontend/components/FindingsPanel/RalphLoopControls.tsx": {
+    "TS2345": 1
+  },
+  "src/frontend/components/FindingsPanel/shared.ts": {
+    "TS2345": 1
+  },
+  "src/frontend/components/LaunchTaskDialog.tsx": {
+    "TS2322": 3,
+    "TS2345": 2
+  },
+  "src/frontend/components/PathCopyButton.tsx": {
+    "TS2345": 1
+  },
+  "src/frontend/components/PlaybookBrowser.tsx": {
+    "TS2345": 2
+  },
+  "src/frontend/components/ProjectSidebar.tsx": {
+    "TS2339": 1
+  },
+  "src/frontend/components/QuickLaunch.tsx": {
+    "TS2322": 2
+  },
+  "src/frontend/components/SchedulesDialog.tsx": {
+    "TS2345": 1,
+    "TS2366": 1
+  },
+  "src/frontend/components/SessionHealthPanel.tsx": {
+    "TS2345": 1
+  },
+  "src/frontend/components/SettingsDialog.tsx": {
+    "TS2322": 1,
+    "TS2769": 1
+  },
+  "src/frontend/components/TaskIdCopyButton.tsx": {
+    "TS2345": 1
+  },
+  "src/frontend/components/WorktreeCleanupVerdictRow.tsx": {
+    "TS2503": 1
+  },
+  "src/frontend/components/cleanup-row-format.ts": {
+    "TS2305": 1,
+    "TS2724": 1
+  },
+  "src/frontend/hooks/useWebSocket.ts": {
+    "TS2344": 1,
+    "TS2345": 3,
+    "TS2739": 2,
+    "TS2740": 1
+  },
+  "src/frontend/selection-transition-recorder.ts": {
+    "TS2741": 1
+  },
+  "src/frontend/store/slices/oss-attempts-slice.ts": {
+    "TS2304": 1
+  },
+  "src/frontend/store/slices/transport-session-slice.ts": {
+    "TS2459": 1,
+    "TS7053": 2
+  },
+  "src/frontend/store/slices/triage-navigation-slice.ts": {
+    "TS2741": 1
+  }
+}

@@ -398,7 +398,7 @@ if [ -d plugin ]; then
 fi
 
 if [ "$DOCS_ONLY_SKIP" -eq 1 ]; then
-  echo "Docs-only prose diff detected; skipping server and E2E type-check lanes."
+  echo "Docs-only prose diff detected; skipping server, E2E and frontend type-check lanes."
 else
   if [ -n "${SKIP_PORTABILITY_CHECK:-}" ]; then
     echo "[pre-push] shell-portability: skipped via SKIP_PORTABILITY_CHECK."
@@ -461,6 +461,16 @@ else
   if ! pnpm check:e2e; then
     echo ""
     echo "Push rejected: E2E type-check failed."
+    exit 1
+  fi
+
+  # src/frontend is outside the root tsconfig and Vite does not type-check, so
+  # this is the only lane that catches frontend type errors (issue #3648). It
+  # fails only on errors beyond scripts/frontend-type-baseline.json.
+  echo "Type-checking frontend..."
+  if ! pnpm check:frontend; then
+    echo ""
+    echo "Push rejected: frontend type-check failed."
     exit 1
   fi
 fi

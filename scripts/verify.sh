@@ -79,6 +79,7 @@ train_mode() {
 build_server_lane() { run_lane "Type-checking server" pnpm build:server; }
 static_checks() {
   run_lane "Type-checking E2E tests" pnpm check:e2e
+  run_lane "Type-checking frontend" pnpm check:frontend
   run_lane "Checking for import cycles" pnpm check:cycles
   run_lane "Validating skill frontmatter" pnpm validate:skills
   run_lane "Validating bundled playbooks parse" pnpm validate:playbooks

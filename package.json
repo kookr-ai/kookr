@@ -62,6 +62,7 @@
     "build:server": "tsc",
     "build:relay": "tsc -p tsconfig.relay.json",
     "check:e2e": "tsc -p tsconfig.e2e.json",
+    "check:frontend": "node --import tsx scripts/check-frontend-types.ts",
     "build:frontend": "vite build",
     "start": "pnpm build:dtach && node dist/server/start.js",
     "start:dev": "pnpm build:dtach && KOOKR_PORT=4801 node dist/server/start.js",
