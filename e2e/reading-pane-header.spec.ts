@@ -78,7 +78,7 @@ test('the facts column docks on a wide pane and opens over a narrow one from Det
   await expect(toggle).toBeFocused();
 });
 
-test('a finding docks the decision card above the reply box; the Terminal tab folds it away', async ({ page, request }) => {
+test('a finding docks the decision card above the reply box; the Terminal tab keeps a compact one', async ({ page, request }) => {
   await launchTask(page, request, 'Reading pane finding task', true);
   await page.locator('.finding-card').first().click();
 
@@ -89,8 +89,16 @@ test('a finding docks the decision card above the reply box; the Terminal tab fo
   const replyBox = await page.locator('.response-row textarea').boundingBox();
   expect(cardBox && replyBox && cardBox.y + cardBox.height <= replyBox.y).toBe(true);
 
+  // #4024: the Terminal tab keeps the ask in a compact card above the reply box.
   await openTerminalTab(page);
-  await expect(card).toHaveCount(0);
+  await expect(card).toHaveCount(1);
+  await expect(card).toBeVisible();
+  await expect(card).toHaveClass(/decision-card--compact/);
+  await expect(card).toContainText('Signaled Complete');
+  const compactBox = await card.boundingBox();
+  const terminalReplyBox = await page.locator('.response-row textarea').boundingBox();
+  expect(compactBox && terminalReplyBox && compactBox.y + compactBox.height <= terminalReplyBox.y).toBe(true);
   await page.locator('.detail-tabs').getByRole('button', { name: 'Conversation' }).click();
   await expect(card).toBeVisible();
+  await expect(card).not.toHaveClass(/decision-card--compact/);
 });

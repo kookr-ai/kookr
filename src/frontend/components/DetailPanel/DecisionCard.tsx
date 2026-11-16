@@ -6,19 +6,26 @@ import { findingKindClass, findingTypeLabel, formatDuration } from '../../presen
  * The decision card docked above the reply box (issue #3561 slice 4b): what
  * the agent is waiting on, the agent's last message, and the buttons that
  * answer it, plus Skip and Snooze. DetailPanel docks it at the foot of the
- * conversation pane, right above the reply box. A leaf component owns the
- * minute clock for "waiting 4m", so the tick does not re-render the terminal.
+ * conversation pane, right above the reply box. On the Terminal tab it sits in
+ * the reply area instead, in a compact form (issue #4024): the ask stays in
+ * full, and the last agent message folds behind a disclosure, because every
+ * line the card takes comes out of the terminal's height. A leaf component
+ * owns the minute clock for "waiting 4m", so the tick does not re-render the
+ * terminal.
  */
 export function DecisionCard({
   agent,
   actions,
   triage,
+  compact = false,
 }: {
   agent: AgentState;
   /** The finding's quick-action buttons (the existing `.quick-actions` block). */
   actions: React.ReactNode;
   /** Skip and Snooze for the finding. */
   triage: React.ReactNode;
+  /** The Terminal tab's form: last agent message folded, height capped tighter. */
+  compact?: boolean;
 }) {
   const [, setClock] = useState(0);
   useEffect(() => {
@@ -36,7 +43,7 @@ export function DecisionCard({
 
   return (
     <section
-      className={`decision-card decision-card--${tone}`}
+      className={`decision-card decision-card--${tone}${compact ? ' decision-card--compact' : ''}`}
       data-testid="decision-card"
       aria-label="What the agent needs"
     >
@@ -46,7 +53,15 @@ export function DecisionCard({
         {waiting && <span className="decision-card-wait">waiting {waiting}</span>}
       </div>
       {anomaly.explanation && <p className="decision-card-ask">{anomaly.explanation}</p>}
-      {lastMessage && (
+      {lastMessage && (compact ? (
+        <details className="detail-transcript-context decision-card-last" data-testid="detail-transcript-context">
+          <summary className="detail-transcript-context-label">Last agent message</summary>
+          <div className="detail-transcript-context-text">
+            {lastMessage.excerpt}
+            {lastMessage.truncated ? '...' : ''}
+          </div>
+        </details>
+      ) : (
         <div className="detail-transcript-context" data-testid="detail-transcript-context">
           <div className="detail-transcript-context-label">Last agent message</div>
           <div className="detail-transcript-context-text">
@@ -54,7 +69,7 @@ export function DecisionCard({
             {lastMessage.truncated ? '...' : ''}
           </div>
         </div>
-      )}
+      ))}
       {actions}
       <div className="decision-card-acts">
         {triage}

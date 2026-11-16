@@ -909,12 +909,16 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   }
   // #3561 4b: a finding docks its decision card at the foot of the
   // conversation pane, right above the reply box. In split view that keeps the
-  // terminal's full height. With the terminal filling the pane (Terminal tab,
-  // terminal focus) or a completion digest, only the answer buttons stay, in
-  // the reply area, as before.
+  // terminal's full height. On the Terminal tab the conversation pane is
+  // hidden, so a compact card sits in the reply area instead (#4024). Terminal
+  // focus and a completion digest keep only the answer buttons, in the reply
+  // area, as before: focus is the operator asking for every line of terminal.
   const completionDigestShown = isTerminalTaskStatus(agent.taskStatus) && !!agent.completionDigest;
-  const decisionCardVisible = !!agent.anomaly && !completionDigestShown && !rightOnlyMode
-    && !(tabbedLayout && narrowTab === 'terminal');
+  const findingCardAllowed = !!agent.anomaly && !completionDigestShown && !rightOnlyMode;
+  const terminalTabShown = tabbedLayout && narrowTab === 'terminal';
+  const decisionCardVisible = findingCardAllowed && !terminalTabShown;
+  const terminalDecisionCardVisible = findingCardAllowed && terminalTabShown;
+  const anyDecisionCardVisible = decisionCardVisible || terminalDecisionCardVisible;
   const showEvolutionPanel = Boolean(agent.taskId && agent.playbookId === 'autonomous-evolution.md');
   // Skip and Snooze decide what happens to the finding, so they sit in the
   // decision card when it shows; the reply row keeps input, voice and Send.
@@ -1331,7 +1335,15 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
           </div>
         )}
         {/* #3561 4b: while the decision card shows, the answer buttons live in it */}
-        {!decisionCardVisible && quickActionButtons}
+        {terminalDecisionCardVisible && (
+          <DecisionCard
+            agent={agent}
+            actions={quickActionButtons}
+            triage={findingTriageButtons}
+            compact
+          />
+        )}
+        {!anyDecisionCardVisible && quickActionButtons}
         {replySnippets.length > 0 && (
           <div className="reply-snippet-picker">
             <span className="reply-snippet-picker-label" id="reply-snippet-chips-label">
@@ -1428,7 +1440,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
               Send & Next
             </button>
           )}
-          {!isDirectReply && !decisionCardVisible && findingTriageButtons}
+          {!isDirectReply && !anyDecisionCardVisible && findingTriageButtons}
         </div>
         {showSnooze && agent && (
           <SnoozeDialog
