@@ -340,10 +340,15 @@ Rejected / accepted as limits (stated in the RFC rather than engineered away):
   see "Liveness on answer" above).
 * **Double delivery with `--wait`** (typed notice + stdout) was accepted here and
   has since been removed (issue #3824): while a `--wait` poll is attached the
-  answer is only printed, and typed as a fallback when no poll reads it. What
-  remains: the server learns of a waiter only from its first poll, 2 s after
-  the ask is created (or after a deduped re-run, or after a server restart), so
-  an answer given before that is still typed and printed (issue #4040); a CLI killed after its last poll received the answer but before it
+  answer is only printed, and typed as a fallback when no poll reads it. The
+  server learns of a waiter from its first poll, which the CLI sends as soon
+  as the ask is created or deduped; after a server restart every pending ask
+  counts as waited on for one attach window, so an answer to an ask nobody
+  waits on is typed up to 15 s late in the first seconds after a restart
+  (issue #4040). What remains: an answer given within the one request round
+  trip between the Telegram message being sent and that first poll is still
+  typed and printed (marking the waiter at `POST /api/asks` would close it, at
+  the cost of an API change); a CLI killed after its last poll received the answer but before it
   printed it gets neither, and an answer left for a waiter when the server
   restarts more than 5 minutes later is never typed (it is still recorded). The
   expiry notice is still typed while a `--wait` is attached; it carries no

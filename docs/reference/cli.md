@@ -1784,10 +1784,12 @@ operator's answer is typed into the task's session as
 Telegram or in the dashboard). With `--wait` it prints the chosen label (or
 the free text) on stdout instead, and the answer is not typed as well; it is
 typed only if the command stops waiting before it reads the answer (its
-`--wait=<seconds>` window ran out, or it was killed). The server knows a
-command is waiting only from its first status check, about 2 seconds after the
-question is sent, so an answer given before that is both typed and printed
-(issue #4040). Re-running the same question with the same
+`--wait=<seconds>` window ran out, or it was killed). The command checks the
+question's status as soon as it is sent, then every 2 seconds; after a server
+restart the server counts every open question as waited on for a few seconds,
+until a waiting command checks again (issue #4040). Only an answer given in the
+instant between the question being sent and that first check is both typed and
+printed. Re-running the same question with the same
 options from the same task while it is still pending returns the existing ask
 instead of sending a second Telegram message. Question and context text that
 looks like a credential is replaced by a placeholder, with a warning on stderr;

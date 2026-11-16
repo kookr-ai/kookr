@@ -234,7 +234,20 @@ describe('runAskCli --wait', () => {
   it('exits 8 when --wait=<s> elapses first, without polling forever', async () => {
     const r = await wait([pollWith({})], ['--wait=5']);
     expect(r.code).toBe(EXIT_STILL_PENDING);
-    expect(r.f.reqs.filter((q) => q.method === 'GET').length).toBeLessThanOrEqual(3);
+    expect(r.f.reqs.filter((q) => q.method === 'GET').length).toBeLessThanOrEqual(4);
+  });
+  it('polls once right after the ask is created, before its first sleep, so the server knows it waits (#4040)', async () => {
+    for (const deduped of [false, true]) {
+      const c = clock(); const events: string[] = [];
+      const f = fake({ status: deduped ? 200 : 201, body: { ask: ASK, deduped, redacted: [] } }, [pollWith({}), pollWith({ state: 'answered', answer: { kind: 'option', index: 0, label: 'Yes' } })]);
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+        events.push(init?.method ?? 'GET');
+        return f.impl(input, init);
+      }) as unknown as typeof fetch;
+      const sleep = async (ms: number) => { events.push(`sleep ${ms}`); await c.sleep(ms); };
+      expect(await runAskCli([...ARGS, '--wait'], { env: ENV, ...capture(), fetchImpl, sleep, now: c.now })).toBe(EXIT_OK);
+      expect(events).toEqual(['POST', 'GET', 'sleep 2000', 'GET']);
+    }
   });
   it('survives transient poll failures (server restart) and non-OK polls', async () => {
     const r = await wait(['throw', { status: 500, body: {} }, pollWith({ state: 'answered', answer: { kind: 'option', index: 0, label: 'Yes' } })]);

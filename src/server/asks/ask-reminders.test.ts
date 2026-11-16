@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ASK_REMINDER_LIMITS,
   askReminderDue,
   DEFAULT_ASK_REMINDERS,
   validateAskReminders,
@@ -169,7 +170,30 @@ describe('ask reminders', () => {
     const a = await ask();
     await runUntil(30 * MIN);
     expect(h.notifier.sendAskReminder).toHaveBeenCalledTimes(1);
-    expect(h.store.get(a.id)?.reminders).toEqual([{ at: START + 10 * MIN }]);
+    expect(h.store.get(a.id)?.reminders).toEqual([{ at: START + 10 * MIN, failed: true }]);
+    // Reminded at the next point of the schedule.
+    await runUntil(61 * MIN);
+    expect(h.notifier.sendAskReminder).toHaveBeenCalledTimes(2);
+    expect(h.store.get(a.id)?.reminders?.[1]).toMatchObject({ at: START + 60 * MIN, messageId: expect.any(Number) });
+  });
+
+  it('reminders Telegram refused do not use up the hour: the other questions are still reminded (#4040)', async () => {
+    for (const taskId of ['t1', 't2', 't3', 't4']) {
+      await ask({ taskId });
+      await ask({ taskId, question: 'And this?' });
+    }
+    for (let i = 0; i < ASK_REMINDER_LIMITS.maxPerHour; i++) h.notifier.sendAskReminder.mockRejectedValueOnce(new Error('network down'));
+    // One sweep at 10 minutes: six refused, then the two left are sent in that same sweep.
+    await runUntil(10 * MIN, 10 * MIN);
+    expect(h.notifier.sendAskReminder).toHaveBeenCalledTimes(8);
+    const reminders = h.store.all().map((a) => a.reminders ?? []);
+    expect(reminders.filter((r) => r.length === 1 && r[0].failed === true)).toHaveLength(6);
+    expect(reminders.filter((r) => r.length === 1 && r[0].messageId !== undefined && r[0].failed === undefined)).toHaveLength(2);
+
+    // One sweep at 60 minutes, all eight due again: only the two sent at 10 minutes count against
+    // the hour, so four more go out now. Counting the six refused ones would hold every one back.
+    await runUntil(60 * MIN, 50 * MIN);
+    expect(h.notifier.sendAskReminder).toHaveBeenCalledTimes(12);
   });
 
   it('deletes a reminder whose question closed while it was being sent', async () => {
@@ -232,6 +256,19 @@ describe('askReminderDue', () => {
       if (due) a.reminders!.push({ at: t, ...(due === 'before_close' ? { kind: 'before_close' as const } : {}) });
     }
     expect(a.reminders!.map((r) => Math.round((r.at - created) / MIN))).toEqual([10, 60, 300, 540, 780, 1020, week / MIN - 10]);
+  });
+
+  it('does not count failed sends against the six reminders of the schedule, but counts one never confirmed (#4040)', () => {
+    const at = (i: number) => created + (10 + i * 240) * MIN;
+    const failed = Array.from({ length: ASK_REMINDER_LIMITS.maxPerQuestion }, (_, i) => ({ at: at(i), failed: true as const }));
+    const sent = Array.from({ length: ASK_REMINDER_LIMITS.maxPerQuestion }, (_, i) => ({ at: at(i), messageId: i + 1 }));
+    // No `messageId` and no `failed`: a send cut short by a restart. It may have reached the phone, so it counts.
+    const unconfirmed = Array.from({ length: ASK_REMINDER_LIMITS.maxPerQuestion }, (_, i) => ({ at: at(i) }));
+    const now = created + 2 * 24 * HOUR;
+    const owed = (reminders: AskRecord['reminders']) => askReminderDue({ createdAt: created, expiresAt: created + week, reminders }, DEFAULT_ASK_REMINDERS, now);
+    expect(owed(failed)).toBe('schedule');
+    expect(owed(sent)).toBeUndefined();
+    expect(owed(unconfirmed)).toBeUndefined();
   });
 
   it('keeps two reminders of the same question at least ten minutes apart', () => {
