@@ -102,8 +102,9 @@ copy pinned to it by a test) and behave as before when it is absent:
    new head once (issue #4031): a fix pushed by hand meanwhile may have made the
    revert unnecessary. Green: the head is promoted (`promoted`) and the culprit
    is forgotten, so nothing is reverted, no issue is reopened and no fix task
-   starts. Red: the train records that head and goes on to the revert. A halt forgets it,
-   so the cycle after a person cleared the halt starts from the head again,
+   starts. Red: the train records that head and goes on to the revert.
+   A halt forgets the remembered culprit, so the cycle after a person cleared
+   the halt starts from the head again,
    except the halts that say nothing about the culprit: `verify-infra`,
    `push-rejected`, `train-error` and `reconcile-conflict`.
    The train's revert commits carry the trailer `Kookr-Integration-Train: revert`,

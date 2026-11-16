@@ -1596,6 +1596,26 @@ describe('a revert the train verified survives a moving integration branch (#401
     expect(h.state.pendingRevert).toMatchObject({ culprit, redHead: moved });
   });
 
+  it('keeps nothing remembered when the promotion of a moved green head is rejected, and promotes it next cycle (#4031)', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'bad.txt': 'x', 'feature.txt': 'f' }, 'culprit (#99)');
+    h.rejectPushesTo.add('staging');
+    expect((await h.cycle()).outcome).toBe('retry');
+    h.rejectPushesTo.clear();
+    const fix = h.commit('staging', { 'bad.txt': '' }, 'fix by hand (#100)');
+    const main = h.originRef('main');
+    h.rejectMainPush = true;
+    expect(await h.cycle()).toMatchObject({ outcome: 'retry', detail: 'promotion push rejected' });
+    expect(h.originRef('main')).toBe(main);
+    expect(h.originRef('staging')).toBe(fix);
+    expect(h.state.pendingRevert).toBeNull();
+    // counted, after the rejected revert push of the first cycle
+    expect(h.state.pushRejections).toBe(2);
+    expect((await h.cycle()).outcome).toBe('promoted');
+    expect(h.originRef('main')).toBe(fix);
+    expect(h.spawns).toEqual([]);
+  });
+
   it('verifies the head before a remembered revert from a state file that does not say which head was red (#4031)', async () => {
     h = makeHarness();
     const culprit = h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#89)');
@@ -1662,6 +1682,23 @@ describe('a revert the train verified survives a moving integration branch (#401
     expect(h.state.pendingRevert).toBeNull();
     expect(fine).not.toBe('');
     expect((await h.cycle()).outcome).toBe('idle');
+  }, 30_000);
+
+  it('remembers a second culprit with the head it saw red, and pushes its verified revert next cycle without another run (#4031)', async () => {
+    h = makeHarness();
+    const { second, revert } = await reappliedOverASecondCulprit();
+    h.rejectPushesTo.add('staging');
+    expect(await h.cycle()).toMatchObject({ outcome: 'retry', detail: 'revert push rejected' });
+    expect(h.state.pendingRevert).toMatchObject({ culprit: second, verified: true, redHead: revert });
+    expect(h.originRef('staging')).toBe(revert);
+
+    h.rejectPushesTo.clear();
+    const verifies = h.verifyCalls.length;
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.verifyCalls.length).toBe(verifies);
+    const head = h.originRef('staging');
+    expect(git(h.origin, 'log', '-1', '--format=%B', head)).toContain(`This reverts commit ${second}`);
+    expect(h.state.pendingRevert).toBeNull();
   }, 30_000);
 
   it('reverts nothing when the second culprit passes its confirming re-run (#4031)', async () => {
