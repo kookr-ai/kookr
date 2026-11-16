@@ -1003,6 +1003,20 @@ describe('integration train cycle', () => {
       expect(h.spawns).toEqual([]);
     });
 
+    it('speaks of the change, not an issue, when a budget with no linked issue is spent', async () => {
+      h = makeHarness();
+      h.state.fixTasks['ref-83'] = 3;
+      h.commit('staging', { 'bad.txt': 'x' }, 'broken, no linked issue (#83)');
+      expect((await h.cycle()).outcome).toBe('reverted');
+      const [c] = h.prComments.get(83) ?? [];
+      expect(c).toContain('Next: needs a human: 3 automatic fix task(s), the limit of 3, were already started for this change');
+      expect(c).not.toContain('this issue');
+      const exhausted = h.notes.find((n) => n.kind === 'fix-budget-exhausted');
+      expect(exhausted?.detail).toContain('3 automatic fix task(s), the limit, were already started for this change');
+      expect(exhausted?.detail).not.toContain('this issue');
+      expect(h.spawns).toEqual([]);
+    });
+
     it('keeps the failing tail in the pull-request comment short', async () => {
       h = makeHarness();
       const bad = h.commit('staging', { 'bad.txt': 'x' }, 'broken (#82)');
