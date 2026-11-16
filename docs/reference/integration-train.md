@@ -86,7 +86,9 @@ copy pinned to it by a test) and behave as before when it is absent:
    halts `revert-conflict`. If the culprit was meanwhile reverted, or the revert
    now changes nothing, the train drops it and the next cycle starts afresh
    (`retry`). When the integration head did not move, the refusal is not a race
-   (branch protection, credentials) and counts towards `push-rejected` as usual.
+   (branch protection, credentials), so the train does not re-apply. The cycle
+   then ends `retry` and counts towards `push-rejected` as usual, as it does when
+   the fetch fails or the three re-applies are used up.
    When revert pushes for the same culprit are rejected twice in a row, the
    train alerts once (`revert-push-rejected`) and keeps going.
    The confirmed culprit is saved in `state.json` (`pendingRevert`) as soon as

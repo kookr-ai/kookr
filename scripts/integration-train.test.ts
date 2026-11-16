@@ -1333,7 +1333,7 @@ describe('a revert the train verified survives a moving integration branch (#401
     expect(h.spawns[0].prompt).toContain('AssertionError');
   });
 
-  it('keeps the verified revert across cycles while its push is refused, alerts once at the second refusal, then pushes it without another verify', async () => {
+  it('keeps the verified revert across cycles while its push is refused, alerts once, keeps it through a push-rejected halt, then pushes it without another verify', async () => {
     h = makeHarness();
     const culprit = h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#71)');
     h.rejectPushesTo.add('staging');
@@ -1348,7 +1348,14 @@ describe('a revert the train verified survives a moving integration branch (#401
     expect(h.notes[0].detail).toContain('rejected 2 times in a row');
     expect(h.notes[0].detail).toContain(culprit.slice(0, 10));
 
+    // a third refusal: no second alert; the train halts push-rejected and still remembers the culprit
+    expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'push-rejected' });
+    expect(h.notes.map((n) => n.kind)).toEqual(['revert-push-rejected', 'halted']);
+    expect(h.state.pendingRevert).toMatchObject({ culprit, verified: true, rejections: 3, alerted: true });
+
+    // the operator fixes the branch protection; a merge moves the head and clears the halt
     h.rejectPushesTo.clear();
+    h.commit('staging', { 'other.txt': '1' }, 'unrelated (#72)');
     const r = await h.cycle();
     expect(r.outcome).toBe('reverted');
     expect(h.verifyCalls.length).toBe(verifies);
@@ -1359,6 +1366,99 @@ describe('a revert the train verified survives a moving integration branch (#401
     expect(h.state.pendingRevert).toBeNull();
     expect((await h.cycle()).outcome).toBe('promoted');
     expect(h.originRef('main')).toBe(staging);
+  });
+
+  it('re-applies at most three times in one cycle, then leaves the remembered culprit to the next cycle', async () => {
+    h = makeHarness();
+    const culprit = h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#75)');
+    // every push to staging loses the race: a merge lands just before it
+    const realGit = h.deps.git;
+    let stagingPushes = 0;
+    h.deps.git = async (args) => {
+      if (args[0] === 'push' && /:refs\/heads\/staging$/.test(args[args.length - 1])) {
+        stagingPushes++;
+        h.commit('staging', { [`race-${stagingPushes}.txt`]: '1' }, `race ${stagingPushes} (#7${stagingPushes + 5})`);
+      }
+      return realGit(args);
+    };
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'retry', detail: 'revert push rejected' });
+    expect(stagingPushes).toBe(1 + 3);
+    expect(h.state.pendingRevert).toMatchObject({ culprit, verified: true, rejections: 4 });
+    expect(h.state.pushRejections).toBe(1);
+    expect(h.notes.map((n) => n.kind)).toEqual(['revert-push-rejected']);
+    expect(h.spawns).toEqual([]);
+  });
+
+  it('forgets the culprit when a person reverts it while the train verifies its own revert', async () => {
+    h = makeHarness();
+    const culprit = h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#76)');
+    const known = knownShas();
+    onRevertVerify(known, () => {
+      git(h.seed, 'fetch', '-q', 'origin');
+      git(h.seed, 'checkout', '-q', '-B', 'staging', 'origin/staging');
+      git(h.seed, 'revert', '--no-edit', culprit);
+      git(h.seed, 'push', '-q', 'origin', 'staging');
+    });
+    const r = await h.cycle();
+    expect(r.outcome).toBe('retry');
+    expect(r.detail).toContain('already reverts it');
+    expect(h.state.pendingRevert).toBeNull();
+    expect(git(h.origin, 'log', '-1', '--format=%an', 'refs/heads/staging')).toBe('Train Test');
+    expect(git(h.origin, 'log', '-1', '--format=%B', 'refs/heads/staging')).not.toContain('Kookr-Integration-Train');
+    expect(h.spawns).toEqual([]);
+    expect(h.notes.map((n) => n.kind)).not.toContain('reverted');
+  });
+
+  it('forgets the culprit when a fix that lands during the check makes its revert empty', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#77)');
+    const known = knownShas();
+    let fix = '';
+    onRevertVerify(known, () => { fix = h.commit('staging', { 'bad.txt': '' }, 'remove the bad file (#78)'); });
+    const r = await h.cycle();
+    expect(r.outcome).toBe('retry');
+    expect(r.detail).toContain('changes nothing');
+    expect(h.state.pendingRevert).toBeNull();
+    expect(h.originRef('staging')).toBe(fix);
+    expect(h.spawns).toEqual([]);
+  });
+
+  it('forgets a remembered culprit that left the integration branch, and bisects the branch as it is now', async () => {
+    h = makeHarness();
+    const base = h.originRef('main');
+    const culprit = h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#79)');
+    h.rejectPushesTo.add('staging');
+    expect((await h.cycle()).outcome).toBe('retry');
+    expect(h.state.pendingRevert).toMatchObject({ culprit });
+    h.rejectPushesTo.clear();
+    // someone rewrites staging without the culprit, then the same change lands again as a new commit
+    git(h.seed, 'fetch', '-q', 'origin');
+    git(h.seed, 'checkout', '-q', '-B', 'staging', base);
+    git(h.seed, 'push', '-q', '-f', 'origin', 'staging');
+    const reland = h.commit('staging', { 'bad.txt': 'x' }, 're-land (#80)');
+    const verifies = h.verifyCalls.length;
+    expect((await h.cycle()).outcome).toBe('reverted');
+    // the head was verified and bisected again, and the commit on the branch is the one reverted
+    expect(h.verifyCalls.slice(verifies)).toContain(reland);
+    const msg = git(h.origin, 'log', '-1', '--format=%B', 'refs/heads/staging');
+    expect(msg).toContain(`This reverts commit ${reland}`);
+    expect(msg).not.toContain(culprit);
+  });
+
+  it('does not revert a remembered culprit that already reached main', async () => {
+    h = makeHarness();
+    const culprit = h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#85)');
+    h.rejectPushesTo.add('staging');
+    expect((await h.cycle()).outcome).toBe('retry');
+    h.rejectPushesTo.clear();
+    // a person pushes the culprit straight to main, then a merge lands on staging
+    git(h.seed, 'push', '-q', 'origin', `${culprit}:refs/heads/main`);
+    const head = h.commit('staging', { 'n.txt': '1' }, 'next (#86)');
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'main-unverified-red' });
+    expect(h.originRef('staging')).toBe(head);
+    expect(h.spawns).toEqual([]);
   });
 
   it('drops a remembered culprit that a person already reverted, and runs an ordinary cycle', async () => {
