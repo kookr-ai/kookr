@@ -542,11 +542,30 @@ if [ -n "$_GATE_LIB" ] && [ -n "$_FAST_GATE_RUNNER" ]; then
 fi
 
 _FAST_GATE_BASE=$(git merge-base origin/main HEAD 2>/dev/null || true)
+_FAST_GATE_BASE_REF=origin/main
+# A branch cut from the integration branch (needed when the code it changes has
+# not reached main yet) holds every commit waiting there. Against origin/main the
+# fast gate would test all of them: a 5-line change took 562 s (issue #3995).
+# When the branch's merge base with the integration branch is newer than its
+# merge base with main, compare against the integration branch instead; the
+# train verifies the commits already on it.
+if [ "$_GATE_MODE" = "fast" ] && [ -n "$_FAST_GATE_BASE" ]; then
+  _INTEGRATION_BRANCH=$(delivery_gate_integration_branch 2>/dev/null || true)
+  if [ -n "$_INTEGRATION_BRANCH" ]; then
+    _INTEGRATION_BASE=$(git merge-base "origin/$_INTEGRATION_BRANCH" HEAD 2>/dev/null || true)
+    if [ -n "$_INTEGRATION_BASE" ] && [ "$_INTEGRATION_BASE" != "$_FAST_GATE_BASE" ] \
+      && git merge-base --is-ancestor "$_FAST_GATE_BASE" "$_INTEGRATION_BASE" 2>/dev/null; then
+      _FAST_GATE_BASE=$_INTEGRATION_BASE
+      _FAST_GATE_BASE_REF="origin/$_INTEGRATION_BRANCH"
+    fi
+  fi
+fi
 
 if [ "$DOCS_ONLY_SKIP" -eq 1 ]; then
   echo "Docs-only prose diff detected; skipping Vitest lanes."
 elif [ "$_GATE_MODE" = "fast" ] && [ -n "$_FAST_GATE_BASE" ]; then
   echo "Running fast gate (related tests only; the integration train runs the full suite)..."
+  echo "[pre-push] fast gate compares HEAD against $_FAST_GATE_BASE_REF (merge base $(git rev-parse --short "$_FAST_GATE_BASE" 2>/dev/null || echo "$_FAST_GATE_BASE"))"
   if ! bash "$_FAST_GATE_RUNNER" "$_FAST_GATE_BASE"; then
     echo ""
     echo "Push rejected: fast-gate tests failed. Fix failing tests before pushing."

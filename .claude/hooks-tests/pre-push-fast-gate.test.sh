@@ -32,8 +32,10 @@ trap cleanup EXIT
 #   the pushed branch, not on origin/main).
 # hooktest: when set, the base commit holds .claude/hooks-tests/x.test.sh, which
 #   appends "ran" to $HOOKTEST_LOG and exits with that status.
+# fromstaging: origin/staging holds one more commit (src/staged.ts) than
+#   origin/main, and the feature branch is cut from it (issue #3995).
 setup_repo() {
-  local repo="$1" mode="$2" hookfile="${3:-}" noorigin="${4:-}" hooktest="${5:-}" cfg=""
+  local repo="$1" mode="$2" hookfile="${3:-}" noorigin="${4:-}" hooktest="${5:-}" fromstaging="${6:-}" cfg=""
   git init -q -b main "$repo"
   git -C "$repo" config user.email "test@example.com"
   git -C "$repo" config user.name "test"
@@ -72,6 +74,13 @@ PNPM
   fi
   git -C "$repo" commit -q -m "base"
   git -C "$repo" update-ref refs/remotes/origin/main HEAD
+  if [ -n "$fromstaging" ]; then
+    mkdir -p "$repo/src"
+    printf 'staged\n' > "$repo/src/staged.ts"
+    git -C "$repo" add src/staged.ts
+    git -C "$repo" commit -q -m "waiting on staging"
+    git -C "$repo" update-ref refs/remotes/origin/staging HEAD
+  fi
   git -C "$repo" checkout -q -b feature
   mkdir -p "$repo/src"
   printf 'code\n' > "$repo/src/index.ts"
@@ -98,7 +107,7 @@ PNPM
 #          hooktest=<exit status of .claude/hooks-tests/x.test.sh>
 run_case() {
   local repo="$TMPDIR/$1" mode="$2" related="$3" opt
-  local hookfile="" noorigin="" killswitch="" hooks_exit=0 summary_fail=0 rerun_exit=0 hooktest=""
+  local hookfile="" noorigin="" killswitch="" hooks_exit=0 summary_fail=0 rerun_exit=0 hooktest="" fromstaging=""
   shift 3
   for opt in "$@"; do
     case "$opt" in
@@ -109,10 +118,11 @@ run_case() {
       summaryfail) summary_fail=1 ;;
       rerunfail) rerun_exit=1 ;;
       hooktest=*) hooktest="${opt#hooktest=}" ;;
+      fromstaging) fromstaging=1 ;;
     esac
   done
   mkdir -p "$repo"
-  setup_repo "$repo" "$mode" "$hookfile" "$noorigin" "$hooktest"
+  setup_repo "$repo" "$mode" "$hookfile" "$noorigin" "$hooktest" "$fromstaging"
   [ -n "$killswitch" ] && : > "$repo/.git/kookr-full-gate"
   : > "$repo/pnpm.log"
   : > "$repo/hooktest.log"
@@ -140,7 +150,17 @@ grep -Fxq "exec vitest related --run --passWithNoTests src/index.ts" "$REPO/pnpm
 grep -Fxq "test" "$REPO/pnpm.log" && fail "fast mode must skip the full suite"
 grep -Fxq "test:integration" "$REPO/pnpm.log" && fail "fast mode must skip the integration lane"
 grep -Fq "Running fast gate" "$REPO/hook.out" || fail "expected the fast-gate banner"
+grep -Fq "fast gate compares HEAD against origin/main" "$REPO/hook.out" || fail "expected origin/main as the base"
 printf 'PASS: fast mode runs related tests only\n'
+
+# 1b. A branch cut from origin/staging is compared against staging, not main:
+# the commit waiting on staging is not part of its diff (issue #3995).
+run_case from-staging fast 0 fromstaging
+[ "$STATUS" -eq 0 ] || fail "fast gate from staging should pass (status $STATUS)"
+grep -Fxq "exec vitest related --run --passWithNoTests src/index.ts" "$REPO/pnpm.log" \
+  || fail "expected only the branch's own change, not src/staged.ts, in the related run"
+grep -Fq "fast gate compares HEAD against origin/staging" "$REPO/hook.out" || fail "expected origin/staging as the base"
+printf 'PASS: a branch cut from staging is compared against staging\n'
 
 # 2. Fast mode with failing related tests: rejected.
 run_case fast-fail fast 1
