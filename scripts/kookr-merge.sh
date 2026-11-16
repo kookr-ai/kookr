@@ -1111,7 +1111,7 @@ if [[ "$cli_merge" -eq 1 ]]; then
   # (issue #3403). Asking for `merged` made a successful squash-merge look like
   # a failure. `state=MERGED` or a non-null `mergedAt` is the same postcondition
   # on fields gh already supports.
-  if ! merged_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json state,mergedAt,mergeCommit)"; then
+  if ! merged_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json state,mergedAt)"; then
     echo "kookr-merge: could not verify whether PR #$PR merged" >&2
     refuse 1 "the merge confirmation" "gh pr view $PR could not read state/mergedAt after the merge call" "run gh pr view $PR${REPO_SLUG:+ --repo $REPO_SLUG} --json state,mergedAt: if it says MERGED, the merge landed; if not, run: $(rerun_command)"
   fi
@@ -1121,7 +1121,10 @@ if [[ "$cli_merge" -eq 1 ]]; then
     echo "kookr-merge: PR #$PR did not merge according to GitHub" >&2
     refuse 1 "the merge confirmation" "GitHub reports $(printf '%s' "$merged_json" | jq -r '"state=\(.state // "?") mergedAt=\(.mergedAt // "null")"' 2>/dev/null || echo 'the pull request as not merged')" "$merge_refused_next"
   fi
-  MERGED_SHA="$(printf '%s' "$merged_json" | jq -r '.mergeCommit.oid // ""' 2>/dev/null)" || MERGED_SHA=""
+  # The merge commit, for the summary only. A separate, best-effort read: the
+  # confirmation above asks only for fields every gh has (issue #3403), so a gh
+  # that rejects this one can never turn a landed merge into a refusal.
+  MERGED_SHA="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json mergeCommit --jq '.mergeCommit.oid // ""' 2>/dev/null)" || MERGED_SHA=""
 fi
 
 # The merge is confirmed. Nothing below may change the exit code.

@@ -193,6 +193,9 @@ case "$args" in
   *"--json state,mergedAt"*|*"--json mergedAt,state"*|*"--json mergedAt"*)
     [ ${opts.verificationExit ?? 0} -eq 0 ] || exit ${opts.verificationExit ?? 0}
     cat "$DIR/verification.json"; exit 0 ;;
+  *"--json mergeCommit"*)
+    # The summary's best-effort merge-commit read (#3913).
+    jq -r '.mergeCommit.oid // ""' "$DIR/verification.json"; exit 0 ;;
   *"--json merged "*|*"--json merged,"*|*"--json merged")
     # Real gh (including current 2.x) has no \`merged\` field on \`pr view\`.
     # Match a field boundary so \`mergedAt\` is not treated as \`merged\`.
@@ -2278,6 +2281,42 @@ describe('summary block: what happened, why, what comes next (#3913)', () => {
       opts: { checksResponses: ['{"statusCheckRollup":[{"name":"ci","status":"IN_PROGRESS","conclusion":""}],"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE"}'] },
       env: { KOOKR_MERGE_CHECK_TIMEOUT_SECONDS: '1' },
       code: 3, gate: 'the check wait (timeout)', evidence: '1 of 1 checks still pending', next: 'gh pr checks 123 --repo owner/repo',
+    },
+    {
+      name: 'never-executed checks without a local-gate record',
+      opts: {
+        checksResponses: [FAILED_ROLLUP], headSha: NE_HEAD, checkRunsJson: BILLING_CHECK_RUNS,
+        annotationsJson: BILLING_ANNOTATIONS, reviewJson: localGateReview({ labels: [], comments: [] }),
+      },
+      code: 3, gate: 'the never-executed check waiver', evidence: 'the checks never ran',
+      next: `local-gate-head-sha: ${NE_HEAD}`,
+    },
+    {
+      name: 'a blocking review verdict',
+      opts: { reviewJson: { ...NO_VERDICT, comments: [{ body: `<!-- kookr-independent-review -->\nkookr-review-verdict: block\nreview-head-sha: ${REVIEWED_SHA}` }] } },
+      env: { KOOKR_MERGE_REQUIRE_REVIEW: '1' },
+      code: 4, gate: 'the independent-review gate (blocked-finding)', evidence: "the latest verdict is 'block'",
+      next: 'fix the findings first after a block',
+    },
+    {
+      name: 'a pass verdict bound to no head',
+      opts: { reviewJson: { ...NO_VERDICT, comments: [{ body: '<!-- kookr-independent-review -->\nkookr-review-verdict: pass' }] } },
+      env: { KOOKR_MERGE_REQUIRE_REVIEW: '1' },
+      code: 4, gate: 'the independent-review gate (unbound-verdict)', evidence: 'names no review-head-sha',
+      next: `get a fresh verdict bound to head ${REVIEWED_SHA}`,
+    },
+    {
+      name: 'only the timeout label', opts: { reviewJson: { ...NO_VERDICT, labels: [{ name: 'review-skipped-timeout' }] } },
+      env: { KOOKR_MERGE_REQUIRE_REVIEW: '1' },
+      code: 4, gate: 'the independent-review gate (timeout-label)', evidence: 'telemetry and not a verdict',
+      next: `get a fresh verdict bound to head ${REVIEWED_SHA}`,
+    },
+    {
+      name: 'a refused REST merge on an old gh',
+      opts: { modernGh: false, reviewJson: REVIEW_VIEW, mergeResponse: '{"merged":false,"message":"Head branch was modified"}' },
+      env: { KOOKR_MERGE_REQUIRE_REVIEW: '1' },
+      code: 1, gate: `the merge call (REST, pinned to ${REVIEWED_SHA.slice(0, 12)})`, evidence: 'the head may have moved since the review',
+      next: 'if the head moved, get a new review verdict', mergeCalled: true,
     },
     {
       name: 'a failed merge call', opts: { mergeExit: 1 },
