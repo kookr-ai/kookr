@@ -34,6 +34,16 @@ describe('isLucyLiveClientMessage', () => {
     expect(isLucyLiveClientMessage({ type: 'speech_confirmed', turnId: 't1' })).toBe(false);
     expect(isLucyLiveClientMessage({ type: 'speech_rejected', turnId: 't1' })).toBe(false);
   });
+  it('validates say_ask and drop_ask (#3711)', () => {
+    for (const type of ['say_ask', 'drop_ask']) {
+      expect(isLucyLiveClientMessage({ type, askId: 'ask-1' })).toBe(true);
+      expect(isLucyLiveClientMessage({ type, askId: '' })).toBe(false);
+      expect(isLucyLiveClientMessage({ type, askId: 'x'.repeat(65) })).toBe(false);
+      expect(isLucyLiveClientMessage({ type })).toBe(false);
+    }
+    // turn_start is the server's; a client cannot send it.
+    expect(isLucyLiveClientMessage({ type: 'turn_start', turnId: 't1', askId: 'ask-1' })).toBe(false);
+  });
   it('validates open_result strictly (#3929)', () => {
     expect(isLucyLiveClientMessage({ type: 'open_result', requestId: 'open-1', outcome: 'opened' })).toBe(true);
     expect(isLucyLiveClientMessage({ type: 'open_result', requestId: 'open-1', outcome: 'blocked' })).toBe(true);

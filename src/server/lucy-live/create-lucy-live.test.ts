@@ -23,6 +23,7 @@ import type { LucyInteractionLog, LucyLiveTurnRecordInput } from '../lucy-intera
 import type { SileroVad } from '../../adapters/lucy-live/silero-vad.js';
 import type { LucyOperatorService } from '../lucy-operator/service.js';
 import type { LucyTurnEvent, LucyTurnRequest } from '../../shared/contracts/lucy-turn.js';
+import type { OperatorAskView } from '../../shared/contracts/asks.js';
 
 const SECRET = 'sk-1234567890abcdefghijklmnop';
 const CONFIG: LucyLiveConfig = {
@@ -303,6 +304,27 @@ describe('createLucyLive', () => {
       const { ws } = setup({ getOperator: () => service });
       await runTurn(ws);
       expect(ws.sent.find((m) => m.type === 'turn_done')).toMatchObject({ end: 'error' });
+    });
+
+    it('a task question she reads out is remembered in the same operator conversation; a closed one is not read (#3711)', async () => {
+      const { service, requests } = operator([{ type: 'text', delta: 'Okay. ' }, done('answered')]);
+      const remembered: Array<[string, string, string]> = [];
+      (service as unknown as Record<string, unknown>).rememberSaid = (id: string, note: string, said: string) => { remembered.push([id, note, said]); };
+      const ask = (id: string, state: string) => ({ id, state, taskName: 'Cleanup', question: 'When should I run it?', options: ['now', 'tonight'], allowText: false }) as unknown as OperatorAskView;
+      const { ws } = setup({ getOperator: () => service, extraDeps: { getAsks: () => [ask('a1', 'pending'), ask('a2', 'answered')] } });
+      ws.json({ type: 'hello', language: 'en' });
+      ws.json({ type: 'say_ask', askId: 'a2' });
+      await tick(); await tick();
+      expect(ws.sent.some((m) => m.type === 'turn_start')).toBe(false);
+      ws.json({ type: 'say_ask', askId: 'a1' });
+      await tick(); await tick(); await tick();
+      expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
+      const said = ws.sent.filter((m) => m.type === 'sentence').map((m) => m.text).join(' ');
+      expect(said).toContain('The task Cleanup needs your input.');
+      expect(remembered).toHaveLength(1);
+      expect(remembered[0]![2]).toBe(said);
+      await runTurn(ws, 't2');
+      expect(requests[0]!.request.conversationId).toBe(remembered[0]![0]);
     });
 
     it('with an operator service that cannot launch, the helper model still answers', async () => {

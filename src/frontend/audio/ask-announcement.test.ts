@@ -12,6 +12,7 @@ import {
   announceAsk,
   announceLaunchReport,
   announcePermissionNotice,
+  setLiveAskSpeaker,
   stopPermissionNotice,
   stopAllAskAnnouncements,
   stopAskAnnouncement,
@@ -382,6 +383,61 @@ describe('announceAsk', () => {
     localStorage.clear();
     expect(await announceAsk(ASK, { fetcher: vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch })).toBe('error');
     expect(getClipHistory()).toHaveLength(0);
+  });
+
+  describe('with Talk on in this tab (issue #3711)', () => {
+    const speaker = (accepts = true) => ({ say: vi.fn((_askId: string) => accepts), drop: vi.fn((_askId: string) => undefined) });
+
+    test('the question is handed to the conversation: no clip is fetched and nothing joins her message list', async () => {
+      const live = speaker();
+      setLiveAskSpeaker(live);
+      const fetcher = fetcherOk();
+      expect(await announceAsk(ASK, { fetcher })).toBe('live');
+      expect(live.say).toHaveBeenCalledWith(ASK);
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(getClipHistory()).toHaveLength(0);
+      // Still claimed, so another tab does not read it out as a clip.
+      expect(JSON.parse(localStorage.getItem(SPOKEN_ASKS_STORAGE_KEY) ?? '[]')).toEqual([ASK]);
+    });
+
+    test('closing the question tells the conversation; a question it never took is not passed on', async () => {
+      const live = speaker();
+      setLiveAskSpeaker(live);
+      await announceAsk(ASK, { fetcher: fetcherOk() });
+      stopAskAnnouncement(ASK);
+      expect(live.drop).toHaveBeenCalledWith(ASK);
+      stopAskAnnouncement('never-handed-over');
+      expect(live.drop).toHaveBeenCalledTimes(1);
+    });
+
+    test('a conversation that is not connected refuses it, and the clip plays as before', async () => {
+      setLiveAskSpeaker(speaker(false));
+      expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('started');
+      expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1' });
+    });
+
+    test('Do Not Disturb keeps the silent clip path: she does not say it in the conversation', async () => {
+      const live = speaker();
+      setLiveAskSpeaker(live);
+      enableDnd(null);
+      expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('dnd');
+      expect(live.say).not.toHaveBeenCalled();
+    });
+
+    test('launch reports and permission notices are still clips', async () => {
+      const live = speaker();
+      setLiveAskSpeaker(live);
+      expect(await announceLaunchReport('t9', 'finished', { fetcher: fetcherOk() })).toBe('started');
+      expect(live.say).not.toHaveBeenCalled();
+    });
+
+    test('once unregistered (Talk off), questions are clips again', async () => {
+      const live = speaker();
+      const release = setLiveAskSpeaker(live);
+      release();
+      expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('started');
+      expect(live.say).not.toHaveBeenCalled();
+    });
   });
 
   describe('the report of a task Lucy launched', () => {

@@ -12,6 +12,7 @@ import { CONFIRMATION_TIMEOUT_MS, DUCK_GAIN } from './lucy-live-session.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests, emitSpeechIdle, emitSpeechPlaying, subscribeSpeechBus, type SpeechBusEvent } from '../audio/speech-bus.js';
 import { __resetPlayingClipsForTests, clipStarted } from '../audio/playing-clips.js';
+import { __resetAskAnnouncementForTests, announceAsk, stopAskAnnouncement } from '../audio/ask-announcement.js';
 import { STT_LANGUAGE_KEY } from '../store/stt-language.js';
 
 // --- Fakes -----------------------------------------------------------------
@@ -1295,6 +1296,198 @@ describe('useLucyLive', () => {
       const { clip } = playClip();
       expect(sent).toEqual([]);
       expect(clip.setVolume).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("a task's question with Talk on (#3711)", () => {
+    const ASK = 'ask-3711';
+    const fetcher = vi.fn(async () => { throw new Error('the clip route must not be called'); }) as unknown as typeof fetch;
+    beforeEach(() => {
+      __resetAskAnnouncementForTests();
+      (fetcher as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    async function talkOn(): Promise<FakeWebSocket> {
+      statusResponse = { ok: true, body: { available: true, bargeInConfirmation: 'silero' } };
+      const ws = await turnOn();
+      wire.length = 0;
+      sent.length = 0;
+      return ws;
+    }
+    /** The server starts the question's turn and sends its two sentences. */
+    async function serverReadsIt(ws: FakeWebSocket, turnId = 'lucy-ask-1'): Promise<void> {
+      await act(async () => {
+        ws.receive({ type: 'turn_start', turnId, askId: ASK });
+        ws.receive({ type: 'state', state: 'thinking' });
+        ws.receive(sentence(turnId, 0, 'The task Cleanup needs your input.'));
+        ws.receive(sentence(turnId, 1, 'When should I run it?'));
+        ws.receive({ type: 'state', state: 'speaking' });
+      });
+      await settle();
+    }
+
+    test('is handed to the conversation (say_ask), with no clip fetched', async () => {
+      await talkOn();
+      let result: string | undefined;
+      await act(async () => { result = await announceAsk(ASK, { fetcher }); });
+      expect(result).toBe('live');
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(sent).toEqual([{ type: 'say_ask', askId: ASK }]);
+    });
+
+    test('its sentences play as the current turn and their text is shown', async () => {
+      const ws = await talkOn();
+      await serverReadsIt(ws);
+      expect(sources.map((s) => s.buffer!.tag)).toEqual(['lucy-ask-1:0', 'lucy-ask-1:1']);
+      expect(latest.lucyText).toBe('The task Cleanup needs your input. When should I run it?');
+      await act(async () => { sources[0].onended!(); });
+      expect(sent.filter((m) => m.type === 'played')).toEqual([{ type: 'played', turnId: 'lucy-ask-1', seq: 0, complete: true }]);
+    });
+
+    test('talking over it ducks her, and speech_confirmed stops her and reports what was cut, as for an answer', async () => {
+      const ws = await talkOn();
+      await serverReadsIt(ws);
+      const processor = processors[processors.length - 1];
+      for (let i = 0; i < 40 && !sent.some((m) => m.type === 'speech_start'); i++) {
+        act(() => { processor.onaudioprocess?.({ inputBuffer: { getChannelData: () => frame(-15) } }); });
+      }
+      expect(sent.find((m) => m.type === 'speech_start')).toMatchObject({ lucyAudible: true });
+      expect(gains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(DUCK_GAIN, expect.any(Number));
+      expect(sources[0].stop).not.toHaveBeenCalled();
+      await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: lastTurnId() }); });
+      expect(sources[0].stop).toHaveBeenCalledTimes(1);
+      expect(sources[1].stop).toHaveBeenCalledTimes(1);
+      expect(sent.filter((m) => m.type === 'played')).toEqual([{ type: 'played', turnId: 'lucy-ask-1', seq: 0, complete: false }]);
+    });
+
+    test('a turn_start that arrives while the operator has just begun to speak does not take over their turn', async () => {
+      const ws = await talkOn();
+      mic(QUIET, 500);
+      mic(SPEECH, 400); // the operator is speaking: their turn is being sent
+      const operatorTurn = lastTurnId();
+      await serverReadsIt(ws);
+      expect(sources).toHaveLength(0);
+      mic(QUIET, 800);
+      // The server held the question back; the operator's own transcript and answer are what she shows and plays.
+      await act(async () => {
+        ws.receive({ type: 'turn_done', turnId: 'lucy-ask-1', end: 'interrupted' });
+        ws.receive({ type: 'transcript', turnId: operatorTurn, text: 'what is new', final: true });
+        ws.receive(sentence(operatorTurn, 0, 'Nothing new.'));
+      });
+      await settle();
+      expect(latest.operatorText).toBe('what is new');
+      expect(sources.map((s) => s.buffer!.tag)).toEqual([`${operatorTurn}:0`]);
+    });
+
+    test('a question closed while she reads it stops her at once and tells the server', async () => {
+      const ws = await talkOn();
+      await act(async () => { await announceAsk(ASK, { fetcher }); });
+      await serverReadsIt(ws);
+      sent.length = 0;
+      act(() => { stopAskAnnouncement(ASK); });
+      expect(sources[0].stop).toHaveBeenCalledTimes(1);
+      expect(sources[1].stop).toHaveBeenCalledTimes(1);
+      expect(sent).toEqual([
+        { type: 'played', turnId: 'lucy-ask-1', seq: 0, complete: false },
+        { type: 'drop_ask', askId: ASK },
+      ]);
+      expect(latest.lucyText).toBe('');
+      // A sentence of the question that was already on its way is not played.
+      const before = sources.length;
+      await act(async () => { ws.receive(sentence('lucy-ask-1', 2, 'You can answer: now or tonight.')); });
+      await settle();
+      expect(sources).toHaveLength(before);
+      expect(latest.lucyText).toBe('');
+    });
+
+    test('an answer waiting behind a clip is not lost when a question starts: it plays first, then the question', async () => {
+      const ws = await talkOn();
+      speakTurn();
+      const id = lastTurnId();
+      let releaseClip: () => void = () => undefined;
+      act(() => { releaseClip = clipStarted({ setVolume: () => undefined, stop: () => { releaseClip(); } }); });
+      await act(async () => {
+        ws.receive(sentence(id, 0));
+        ws.receive(sentence(id, 1));
+        ws.receive({ type: 'turn_done', turnId: id, end: 'answered' });
+      });
+      await settle();
+      expect(sources).toHaveLength(0); // waiting for the clip
+      // The server cannot see the clip, so it starts a question, then a second one.
+      await serverReadsIt(ws, 'lucy-ask-1');
+      await act(async () => {
+        ws.receive({ type: 'turn_done', turnId: 'lucy-ask-1', end: 'answered' });
+        ws.receive({ type: 'turn_start', turnId: 'lucy-ask-2', askId: 'ask-2' });
+        ws.receive(sentence('lucy-ask-2', 0, 'Another task asks.'));
+      });
+      await settle();
+      expect(sources).toHaveLength(0);
+      act(() => { releaseClip(); });
+      await settle();
+      expect(sources.map((s) => s.buffer!.tag)).toEqual([`${id}:0`, `${id}:1`, 'lucy-ask-1:0', 'lucy-ask-1:1', 'lucy-ask-2:0']);
+      for (const source of [...sources]) await act(async () => { source.onended!(); });
+      expect(sent.filter((m) => m.type === 'played').map((m) => `${m.turnId as string}:${m.seq as number}`))
+        .toEqual([`${id}:0`, `${id}:1`, 'lucy-ask-1:0', 'lucy-ask-1:1', 'lucy-ask-2:0']);
+    });
+
+    test('a question held behind waiting audio and then closed is never played', async () => {
+      const ws = await talkOn();
+      speakTurn();
+      const id = lastTurnId();
+      let releaseClip: () => void = () => undefined;
+      act(() => { releaseClip = clipStarted({ setVolume: () => undefined, stop: () => { releaseClip(); } }); });
+      await act(async () => { ws.receive(sentence(id, 0)); ws.receive({ type: 'turn_done', turnId: id, end: 'answered' }); });
+      await settle();
+      await act(async () => { await announceAsk(ASK, { fetcher }); });
+      await serverReadsIt(ws);
+      act(() => { stopAskAnnouncement(ASK); });
+      expect(sent.at(-1)).toEqual({ type: 'drop_ask', askId: ASK });
+      act(() => { releaseClip(); });
+      await settle();
+      expect(sources.map((s) => s.buffer!.tag)).toEqual([`${id}:0`]);
+    });
+
+    test('before the server says it is ready, the conversation refuses the question, which is played as a clip', async () => {
+      statusResponse = { ok: true, body: { available: true, bargeInConfirmation: 'silero' } };
+      await act(async () => { latest.setEnabled(true); });
+      await settle();
+      const ws = sockets[sockets.length - 1];
+      await act(async () => { ws.open(); }); // connected, but no `ready` yet (also the state while reconnecting)
+      const clipFetcher = vi.fn(async () => new Response('{}', { status: 503 })) as unknown as typeof fetch;
+      let result: string | undefined;
+      await act(async () => { result = await announceAsk(ASK, { fetcher: clipFetcher }); });
+      expect(result).toBe('error');
+      expect(clipFetcher).toHaveBeenCalledOnce();
+      expect(sent.some((m) => m.type === 'say_ask')).toBe(false);
+    });
+
+    test('once the operator has started a new turn, closing the question she read earlier does not cut her answer', async () => {
+      const ws = await talkOn();
+      await act(async () => { await announceAsk(ASK, { fetcher }); });
+      await serverReadsIt(ws);
+      for (const source of [...sources]) await act(async () => { source.onended!(); });
+      await act(async () => { ws.receive({ type: 'turn_done', turnId: 'lucy-ask-1', end: 'answered' }); ws.receive({ type: 'state', state: 'idle' }); });
+      speakTurn();
+      const id = lastTurnId();
+      await act(async () => { ws.receive(sentence(id, 0, 'You want: tonight. Shall I send that?')); });
+      await settle();
+      const answer = sources.at(-1)!;
+      expect(answer.buffer!.tag).toBe(`${id}:0`);
+      act(() => { stopAskAnnouncement(ASK); });
+      expect(answer.stop).not.toHaveBeenCalled();
+      expect(sent.at(-1)).toEqual({ type: 'drop_ask', askId: ASK });
+    });
+
+    test('with Talk off again the question goes back to the clip path', async () => {
+      await talkOn();
+      await act(async () => { latest.setEnabled(false); });
+      await settle();
+      const clipFetcher = vi.fn(async () => new Response('{}', { status: 503 })) as unknown as typeof fetch;
+      let result: string | undefined;
+      await act(async () => { result = await announceAsk('ask-after-off', { fetcher: clipFetcher }); });
+      expect(result).toBe('error');
+      expect(clipFetcher).toHaveBeenCalledOnce();
+      expect(sent.some((m) => m.type === 'say_ask')).toBe(false);
     });
   });
 });

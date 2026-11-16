@@ -58,6 +58,11 @@ export interface LucyOperatorService {
    * reading first; either way the conversation is released and the turn is recorded.
    */
   runTurn(request: LucyTurnRequest, signal?: AbortSignal, context?: LucyTurnContext): AsyncGenerator<LucyTurnEvent, void, void>;
+  /**
+   * Add an exchange that was not a turn, so later turns of the conversation can refer to it: Talk reads
+   * out a task's question unprompted (issue #3711) and stores it with a note in place of the operator's words.
+   */
+  rememberSaid?(conversationId: string, note: string, said: string): void;
 }
 
 interface Conversation {
@@ -126,6 +131,9 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
     launch: deps.launch,
     isBusy: (conversationId) => running.has(conversationId),
     atCapacity: () => running.size >= MAX_CONCURRENT_TURNS,
+    rememberSaid: (conversationId, note, said) => {
+      if (said.trim()) remember(conversationId, note, said, now());
+    },
 
     async *runTurn(request, signal, context) {
       const startedAt = now();

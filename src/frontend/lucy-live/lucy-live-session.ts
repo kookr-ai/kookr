@@ -23,6 +23,9 @@
  *    stopped or turned back up with her answer, and are logged `endedBy: 'barge_in'` when
  *    the operator's voice stops them. A clip that starts stops the answer she is saying; an
  *    answer that is ready while a clip plays waits for the clip to end (issue #3672).
+ * 6. Reads out a task's question in the conversation when the dashboard hands it over
+ *    ({@link LucyLiveSession.sayAsk}): the server starts that turn itself (`turn_start`) when she
+ *    is free, and from then on it plays, ducks and stops exactly like an answer.
  */
 import {
   LUCY_LIVE_SAMPLE_RATE,
@@ -165,6 +168,8 @@ interface Duck extends CandidateTiming {
   timer: ReturnType<typeof setTimeout>;
 }
 
+type SentenceMessage = Extract<LucyLiveServerMessage, { type: 'sentence' }>;
+
 /** A sentence that has been handed to the audio engine. */
 interface ScheduledSentence {
   turnId: string;
@@ -193,6 +198,14 @@ export class LucyLiveSession {
   private lucyState: LucyLiveState = 'idle';
   /** Turn whose sentences are played, and whose transcript is shown. */
   private currentTurnId: string | null = null;
+  /** The question being read out, when the current turn is one the server started for it. */
+  private currentAskId: string | null = null;
+  /**
+   * Questions the server started while audio of hers was still waiting to be scheduled (an answer held
+   * behind a clip, or still being decoded). The server cannot see clips, so it may start one too early:
+   * each waits here, with its sentences, until everything queued before it has been scheduled.
+   */
+  private heldTurns: Array<{ turnId: string; askId: string; sentences: SentenceMessage[] }> = [];
   /** Id of the microphone turn being sent (differs from `currentTurnId` while a possible interruption is being checked). */
   private micTurnId: string | null = null;
   /** A possible interruption awaiting the server's verdict; Lucy is ducked meanwhile. */
@@ -304,6 +317,35 @@ export class LucyLiveSession {
     this.detachSocket();
   }
 
+  /**
+   * Hand the waiting question `askId` to the conversation, to be said when she is free. False when the
+   * conversation is not connected: the caller then plays it as a clip.
+   */
+  sayAsk(askId: string): boolean {
+    if (this.stopped || !this.ready || this.ws?.readyState !== WS_OPEN) return false;
+    this.send({ type: 'say_ask', askId });
+    return true;
+  }
+
+  /** The question `askId` closed: stop reading it out now if she is, and tell the server not to say it. */
+  dropAsk(askId: string): void {
+    if (this.stopped) return;
+    if (this.currentAskId === askId) {
+      this.currentAskId = null;
+      const cut = this.cutPlayback();
+      emitSpeechIdle(this.busOwner);
+      for (const sentence of cut) {
+        this.send({ type: 'played', turnId: sentence.turnId, seq: sentence.seq, complete: false });
+      }
+      // Sentences of the question still on their way from the server are not played.
+      this.currentTurnId = null;
+      this.lucyText = '';
+      this.options.onView({ lucyText: '' });
+    }
+    this.heldTurns = this.heldTurns.filter((held) => held.askId !== askId);
+    this.send({ type: 'drop_ask', askId });
+  }
+
   // -------------------------------------------------------------------------
   // Socket
   // -------------------------------------------------------------------------
@@ -401,13 +443,26 @@ export class LucyLiveSession {
           this.settleBus();
         }
         break;
+      case 'turn_start':
+        // The operator has just begun to speak in a turn of their own: the server sees that and holds
+        // the question back, so its sentences are not played here.
+        if (this.sending && !this.duck) break;
+        if (this.heldTurns.length > 0 || this.pending.size > 0 || this.decoding.size > 0) {
+          this.heldTurns.push({ turnId: message.turnId, askId: message.askId, sentences: [] });
+          break;
+        }
+        this.beginServerTurn(message.turnId, message.askId);
+        break;
       case 'transcript':
         if (message.turnId !== this.currentTurnId) break;
         this.options.onView({ operatorText: message.text, operatorFinal: message.final });
         break;
-      case 'sentence':
-        this.onSentence(message);
+      case 'sentence': {
+        const held = this.heldTurns.find((turn) => turn.turnId === message.turnId);
+        if (held) held.sentences.push(message);
+        else this.onSentence(message);
         break;
+      }
       case 'turn_done':
         if (message.turnId === this.awaitingAnswer) this.awaitingAnswer = null;
         if (message.turnId !== this.currentTurnId) break;
@@ -481,7 +536,7 @@ export class LucyLiveSession {
     return this.awaitingAnswer !== null
       || this.lucyState === 'transcribing' || this.lucyState === 'thinking' || this.lucyState === 'speaking'
       || this.active.length > 0 || this.pending.size > 0 || this.decoding.size > 0
-      || playingClips().length > 0;
+      || this.heldTurns.length > 0 || playingClips().length > 0;
   }
 
   private onFrame(frame: Float32Array): void {
@@ -557,9 +612,32 @@ export class LucyLiveSession {
     for (const frame of preRoll) this.sendPcm(frame);
   }
 
+  /**
+   * Lucy begins a turn the operator did not open (a task's question). Whatever of her last answer is
+   * still audible plays to its end; the question's sentences are scheduled after it. Audio of hers still
+   * waiting to be scheduled never reaches here: such a question is held first ({@link heldTurns}).
+   */
+  private beginServerTurn(turnId: string, askId: string): void {
+    this.currentTurnId = turnId;
+    this.currentAskId = askId;
+    this.endedAt = null;
+    this.firstAudioSeen = true; // no "end of speech to first audio" timing: nobody spoke
+    this.playGeneration += 1;
+    this.pending.clear();
+    this.decoding.clear();
+    this.nextSeq = 0;
+    this.lucyText = '';
+    this.options.onView({ lucyText: '', operatorText: '', operatorFinal: false, lastTurnEnd: null });
+    if (this.errorShown) {
+      this.errorShown = false;
+      this.options.onView({ errorMessage: null });
+    }
+  }
+
   /** The operator's turn `turnId` is now the current one: a fresh answer will follow it. */
   private beginOperatorTurn(turnId: string): void {
     this.currentTurnId = turnId;
+    this.currentAskId = null;
     this.awaitingAnswer = null;
     this.endedAt = null;
     this.firstAudioSeen = false;
@@ -818,7 +896,7 @@ export class LucyLiveSession {
     gain.value = value;
   }
 
-  private onSentence(message: Extract<LucyLiveServerMessage, { type: 'sentence' }>): void {
+  private onSentence(message: SentenceMessage): void {
     // Sentences of an earlier turn (still in flight when the operator interrupted) are not played.
     // While a possible interruption is being checked the answer keeps arriving and is queued (ducked).
     if (message.turnId !== this.currentTurnId || (this.sending && !this.duck)) return;
@@ -861,6 +939,16 @@ export class LucyLiveSession {
       this.nextSeq += 1;
       if (buffer && this.currentTurnId) this.schedule(this.currentTurnId, seq, buffer);
     }
+    this.releaseHeldTurn();
+  }
+
+  /** Everything queued before the next held question is scheduled: start it, after what still plays. */
+  private releaseHeldTurn(): void {
+    if (this.pending.size > 0 || this.decoding.size > 0) return;
+    const next = this.heldTurns.shift();
+    if (!next) return;
+    this.beginServerTurn(next.turnId, next.askId);
+    for (const sentence of next.sentences) this.onSentence(sentence);
   }
 
   private schedule(turnId: string, seq: number, buffer: AudioBuffer): void {
@@ -925,6 +1013,8 @@ export class LucyLiveSession {
     this.active = [];
     this.pending.clear();
     this.decoding.clear();
+    // A question held behind what was cut goes too; the server ends it on the barge-in or the operator's turn.
+    this.heldTurns = [];
     this.playHead = 0;
     this.playGeneration += 1;
     return heard;

@@ -27,6 +27,11 @@
  *    already answered would only mislead.
  *  - The question is answered, cancelled or expired while she is reading it:
  *    she stops ({@link stopAskAnnouncement}).
+ *  - Hands-free Talk is on in the tab that speaks the question (and sound is on, Do Not Disturb
+ *    off): she says it in the conversation instead of as a clip ({@link setLiveAskSpeaker}), so
+ *    talking over it stops her and she remembers having said it. No clip is fetched and nothing is
+ *    added to her message list; the card carries the question. Launch reports and permission
+ *    notices still go through the clip path.
  *
  * The audio goes through the remembered-clip path (`last-clip.ts` and
  * `clip-playback.ts`), so the avatar lip-syncs it, it appears in her message
@@ -51,7 +56,9 @@ export type AskAnnouncementResult =
   /** The question was closed before she could say it. */
   | 'cancelled'
   /** The clip could not be fetched or played. */
-  | 'error';
+  | 'error'
+  /** Handed to the hands-free conversation, which says it when she is free (no clip). */
+  | 'live';
 
 export const SPOKEN_ASKS_STORAGE_KEY = 'kookr.lucy.spokenAsks';
 /** How many ask ids the cross-tab list remembers. */
@@ -64,6 +71,26 @@ const SPEAK_FETCH_TIMEOUT_MS = 75_000;
 const RETRY_PAUSE_MS = 400;
 /** How long a question waits for Lucy to stop talking before it is left as an unheard clip. */
 const BUSY_WAIT_MS = 45_000;
+
+/** Says a question in the hands-free conversation; registered while Talk is on in this tab. */
+export interface LiveAskSpeaker {
+  /** Take the question; false when the conversation cannot (not connected), and the clip is played instead. */
+  say(askId: string): boolean;
+  /** The question closed: do not say it, or stop saying it. */
+  drop(askId: string): void;
+}
+
+let liveSpeaker: LiveAskSpeaker | null = null;
+/** Questions handed to the conversation, so closing one reaches it. */
+const liveAsks = new Set<string>();
+
+/** Register the hands-free conversation as the voice for questions. Returns the call that unregisters it. */
+export function setLiveAskSpeaker(speaker: LiveAskSpeaker): () => void {
+  liveSpeaker = speaker;
+  return () => {
+    if (liveSpeaker === speaker) liveSpeaker = null;
+  };
+}
 
 /** ask id -> clip id, for the questions this tab fetched a clip for. */
 const clipByAsk = new Map<string, string>();
@@ -173,13 +200,15 @@ let playLine: Promise<unknown> = Promise.resolve();
  * subject to the rules in this file's header. Never throws.
  */
 export function announceAsk(askId: string, options: AnnounceAskOptions = {}): Promise<AskAnnouncementResult> {
-  return announceKeyed(askId, { url: `/api/asks/${encodeURIComponent(askId)}/speak` }, options);
+  return announceKeyed(askId, { url: `/api/asks/${encodeURIComponent(askId)}/speak`, live: true }, options);
 }
 
 /** Where a clip comes from: the route to POST, and a JSON body when it needs one. */
 interface ClipRequest {
   url: string;
   body?: Record<string, unknown>;
+  /** A task's question: with Talk on it is said in the conversation instead. */
+  live?: boolean;
 }
 
 /**
@@ -253,6 +282,12 @@ async function prepareClip(askId: string, options: AnnounceAskOptions, request: 
   if (hidden || !pageMayStartAudio()) await wait(HIDDEN_TAB_DELAY_MS);
   if (closedAsks.has(askId)) return 'cancelled';
   if (!(await claim(askId))) return 'other-tab';
+  // Talk is on here: the conversation says it. Sound off or Do Not Disturb keep the clip path, which leaves it unheard.
+  if (request.live && liveSpeaker && getSoundPreferenceState().enabled && !getDndState().enabled && liveSpeaker.say(askId)) {
+    liveAsks.add(askId);
+    if (liveAsks.size > 200) liveAsks.delete(liveAsks.values().next().value as string);
+    return 'live';
+  }
 
   let payload: SpeakAudioResponse | null = null;
   let status = 0;
@@ -345,6 +380,7 @@ export function stopAskAnnouncement(askId: string): void {
   closedAsks.add(askId);
   if (closedAsks.size > 200) closedAsks.delete(closedAsks.values().next().value as string);
   retireClip(askId);
+  if (liveAsks.delete(askId)) liveSpeaker?.drop(askId);
 }
 
 /**
@@ -360,5 +396,7 @@ export function __resetAskAnnouncementForTests(): void {
   inFlight.clear();
   clipByAsk.clear();
   closedAsks.clear();
+  liveAsks.clear();
+  liveSpeaker = null;
   playLine = Promise.resolve();
 }

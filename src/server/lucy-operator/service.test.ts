@@ -55,6 +55,18 @@ describe('createLucyOperator', () => {
     expect(model.requests[2]!.messages.slice(1)).toEqual([{ role: 'user', content: 'Hi' }]);
   });
 
+  test('a question Talk read out unprompted is remembered for the next turn of that conversation (#3711)', async () => {
+    const { service, model } = setup([{ text: 'It was Cleanup.' }]);
+    service.rememberSaid!('c1', '[Nobody spoke.]', 'The task Cleanup needs your input.');
+    service.rememberSaid!('c1', '[Nobody spoke.]', '   ');
+    await drain(service.runTurn({ text: 'Which task was that?', conversationId: 'c1' }));
+    expect(model.requests[0]!.messages.slice(1)).toEqual([
+      { role: 'user', content: '[Nobody spoke.]' },
+      { role: 'assistant', content: 'The task Cleanup needs your input.' },
+      { role: 'user', content: 'Which task was that?' },
+    ]);
+  });
+
   test('what a look-up returned is never remembered', async () => {
     const { service, model } = setup([{ calls: [{ name: 'read_board' }] }, { text: 'One task.' }, { text: 'Still one.' }]);
     await drain(service.runTurn({ text: 'How many?', conversationId: 'c1' }));

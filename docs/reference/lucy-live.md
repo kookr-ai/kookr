@@ -99,7 +99,7 @@ duck her again every moment. Speech clearly louder than the noise is still heard
 back by itself once the room is quiet.
 
 **Her other clips.** Everything else she says out loud is a *clip*: a speaker button's summary, a
-Replay, or a question a task asks, read aloud. Clips have their own players
+Replay, the report of a task she launched, or a permission notice. Clips have their own players
 (`src/frontend/hooks/useSpeakAgent.ts`, `src/frontend/audio/clip-playback.ts`). While one is audible it
 is listed in `src/frontend/audio/playing-clips.ts` together with its volume control and a stop, and with
 Talk on the conversation treats it as her talking:
@@ -115,11 +115,36 @@ Talk on the conversation treats it as her talking:
 - She never says two things at once. A clip that starts while she is saying an answer stops the answer
   (the browser reports the cut sentences as `played` with `complete: false`, sends `barge_in`, and drops
   the rest of that answer), because the operator asked for the clip last. An answer that is ready while
-  a clip plays waits, and starts the moment the clip ends. A question from a task was already held back
-  until she has finished speaking.
+  a clip plays waits, and starts the moment the clip ends.
 
 With Talk off there is no conversation, so nothing reads that list: no microphone is opened and clips
 play exactly as before.
+
+**A task's question.** With Talk on, a new [question from a task](#questions-from-tasks) is not a clip:
+she says it in the conversation itself (issue #3711). The tab that won the question sends `say_ask`,
+and the server reads it as a turn it starts on its own (`turn_start`, then sentences and `turn_done` as
+for an answer):
+
+- She waits her turn: not while you are speaking, while she is answering, while a sound is being
+  checked, or while a read-back waits for your "yes", and not until 0.8 s after her voice ends.
+  Several questions are said one at a time, in the order they came.
+- If you begin to speak before her first sentence of it is sent (or while Silero is still checking a
+  sound that began before it), she holds it back and says it once your turn and her answer are over. Words that began before the question reached the browser are
+  never taken as part of it.
+- Once she has begun, it is her talking, exactly like an answer: sound over it ducks her and Silero
+  decides, a confirmed interruption stops her (the server ends it `interrupted`), and her voice counts
+  as audible for the interruption check and for the "yes" of a read-back.
+- It enters the conversation history as something she said unprompted (the operator's side of that
+  exchange is a note saying nobody spoke), so "say that again" or "which task was that?" work. In the
+  history the helper model gets, only what the browser reported playing is kept, and a question nobody
+  heard is left out. When launching is on, the operator conversation answers instead, and it keeps every
+  sentence of the question that was sent, marked "(interrupted)" if she was cut off.
+- If her earlier audio is still waiting to play when the question starts (an answer held behind a
+  clip), the browser holds the question until that audio has been scheduled, so it is never lost.
+- It is answered, withdrawn or expires while she reads it: she stops (`drop_ask`).
+- No clip is fetched for it, so it does not appear in her message list and has no Replay button; the
+  card carries it. If Talk is switched off or the connection drops before she says it, she does not
+  say it at all; the card and Telegram still have it.
 
 Because Silero filters the noise, the browser's own bar for a candidate while she talks is 0.15 s of
 loud sound, down from 0.3 s. Silero also guards ordinary turns: if a whole turn never contains a
@@ -267,6 +292,8 @@ she says unprompted, under these rules:
 - not with sound off in Settings or Do Not Disturb on. The clip is then kept in her message list,
   marked unheard, and the Replay button plays it;
 - the same when the browser refuses to start audio because you have not clicked in the page yet;
+- with Talk on, in the conversation rather than as a clip, when nothing else is going on (see
+  [A task's question](#how-a-turn-works) under How a turn works);
 - after anything she is already saying, one question at a time; she waits up to 45 seconds, then
   leaves it as unheard;
 - she stops if the question is answered, withdrawn or expires while she is reading it.
@@ -405,10 +432,6 @@ as long as it does by default, so her answers may start later.
   [question from a task](#questions-from-tasks): she can tell you about it, and you can answer one of its
   listed choices by voice after her read-back (see "Answering by voice" under [Questions from tasks](#questions-from-tasks)); a typed answer
   or one that is not a listed choice is not taken by voice.
-- With Talk on, a question from a task is read through the ordinary clip player, not the conversation's
-  own audio. Talking over it ducks and stops it like any clip ([Her other clips](#how-a-turn-works)),
-  but it does not enter the conversation history, so "say that again" has nothing to refer to
-  ([#3711](https://github.com/kookr-ai/kookr/issues/3711)).
 - On loudspeakers, a clip or an answer that reaches the open microphone despite echo cancellation is
   speech to Silero: it would stop her clip, and could be taken for something you said. A clip now
   counts as her being busy, so the detector uses its stricter bar while it plays, but this was not

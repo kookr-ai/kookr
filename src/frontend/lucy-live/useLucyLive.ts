@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LUCY_LIVE_STATUS_PATH, type LucyLiveLanguage, type LucyLiveOpenTarget, type LucyLiveStatus } from '../../shared/contracts/lucy-live.js';
+import { setLiveAskSpeaker } from '../audio/ask-announcement.js';
 import { useSoundPreference } from '../audio/sound-preference.js';
 import { loadSTTLanguage } from '../store/stt-language.js';
 import { INITIAL_VIEW, LucyLiveSession, type LucyLiveView } from './lucy-live-session.js';
@@ -113,6 +114,7 @@ export function useLucyLive(options: UseLucyLiveOptions = {}): UseLucyLiveResult
     if (!enabled) return undefined;
     let cancelled = false;
     let session: LucyLiveSession | null = null;
+    let releaseSpeaker: () => void = () => {};
 
     // A failed start leaves the switch off, so the operator can simply press it again.
     const fail = (status: 'unavailable' | 'error', message: string): void => {
@@ -146,11 +148,15 @@ export function useLucyLive(options: UseLucyLiveOptions = {}): UseLucyLiveResult
         onFatal: fail,
         onOpen: (target) => onOpenRef.current?.(target) ?? 'unavailable',
       });
+      // While Talk is on, a task's question that this tab is to speak is said in the conversation (issue #3711).
+      const live = session;
+      releaseSpeaker = setLiveAskSpeaker({ say: (askId) => live.sayAsk(askId), drop: (askId) => live.dropAsk(askId) });
       await session.start();
     })();
 
     return () => {
       cancelled = true;
+      releaseSpeaker();
       session?.stop();
     };
   }, [enabled, sound.enabled]);
