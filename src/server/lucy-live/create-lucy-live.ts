@@ -13,7 +13,7 @@ import { BasetenStreamError, streamBasetenChat, type BasetenStreamConfig, type S
 import { synthesize } from '../../adapters/tts-client.js';
 import { randomUUID } from 'node:crypto';
 import type { LucyOperatorService } from '../lucy-operator/service.js';
-import { buildLucyLiveBriefing, type BriefingTask } from '../../core/lucy-live/briefing.js';
+import { buildLucyLiveBriefing, type BriefingNeed, type BriefingTask, type BriefingTrainHealth } from '../../core/lucy-live/briefing.js';
 import { createBasetenLlmClientFromEnv } from '../../adapters/llm/baseten-client.js';
 import { buildAnswerMatchPrompt, parseAnswerMatch, pendingVoiceAsks, type AnswerMatch, type VoiceAskChoice } from '../../core/lucy-live/voice-answer.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
@@ -31,6 +31,10 @@ export interface LucyLiveDeps {
   getTasks: () => readonly BriefingTask[];
   /** Questions tasks asked the operator (`kookr ask`): pending and recently closed. Read fresh for every turn. */
   getAsks?: () => readonly OperatorAskView[];
+  /** The live tasks waiting on the operator and why (issue #3927), built like the board's. Read fresh for every turn. */
+  getNeedsOperator?: () => readonly BriefingNeed[];
+  /** The integration train's state; null when this server does not watch a train. Read fresh for every turn. */
+  getTrainHealth?: () => BriefingTrainHealth | null;
   /**
    * Record an answer to a question (the audited dashboard entry point). Without it, and without
    * `getAsks`, a question can be read and discussed by voice but not answered.
@@ -97,7 +101,10 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
             matchAnswer: deps.matchAnswer ?? matchWithHelperModel,
             answerAsk: (askId: string, optionIndex: number) => deps.answerAsk!({ askId, optionIndex }),
           } : {}),
-          buildBriefing: () => buildLucyLiveBriefing(deps.getTasks(), now(), deps.getAsks?.() ?? []),
+          buildBriefing: () => buildLucyLiveBriefing(deps.getTasks(), now(), deps.getAsks?.() ?? [], {
+            ...(deps.getNeedsOperator ? { needs: deps.getNeedsOperator() } : {}),
+            ...(deps.getTrainHealth ? { train: deps.getTrainHealth() } : {}),
+          }),
           now,
           warn,
           recordTurn: (r) => {

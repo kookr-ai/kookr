@@ -16,7 +16,7 @@ vi.mock('../../adapters/llm/baseten-stream.js', async (importOriginal) => ({
 }));
 vi.mock('../../adapters/tts-client.js', () => ({ synthesize: mocks.synthesize }));
 
-import { createLucyLive } from './create-lucy-live.js';
+import { createLucyLive, type LucyLiveDeps } from './create-lucy-live.js';
 import { BasetenStreamError } from '../../adapters/llm/baseten-stream.js';
 import type { LucyLiveConfig } from './config.js';
 import type { LucyInteractionLog, LucyLiveTurnRecordInput } from '../lucy-interaction-log.js';
@@ -41,7 +41,7 @@ class FakeSocket extends EventEmitter {
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
 
-function setup(opts: { vad?: SileroVad | null; getOperator?: () => LucyOperatorService | undefined } = {}) {
+function setup(opts: { vad?: SileroVad | null; getOperator?: () => LucyOperatorService | undefined; extraDeps?: Partial<LucyLiveDeps> } = {}) {
   const records: LucyLiveTurnRecordInput[] = [];
   const log: LucyInteractionLog = {
     recordSaid: () => {}, recordUi: () => {}, flush: async () => {},
@@ -62,6 +62,7 @@ function setup(opts: { vad?: SileroVad | null; getOperator?: () => LucyOperatorS
     log,
     warn: (m) => { warnings.push(m); },
     now: () => 1000,
+    ...opts.extraDeps,
   });
   const connect = (): FakeSocket => {
     const socket = new FakeSocket();
@@ -160,6 +161,21 @@ describe('createLucyLive', () => {
     await tick(); await tick(); await tick();
     const second = mocks.streamBasetenChat.mock.calls[1][1] as { messages: Array<{ role: string }> };
     expect(second.messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+  });
+
+  it('puts what waits on the operator and the train state at the top of the status the helper model reads (#3927)', async () => {
+    const { ws } = setup({
+      extraDeps: {
+        getNeedsOperator: () => [{ name: 'Fix login', project: 'kookr', attention: { kind: 'permission_blocked', tool: 'Bash', sinceMs: 1000 - 12 * 60_000 } }],
+        getTrainHealth: () => ({ running: true, halted: { reason: 'base-red', at: new Date(1000 - 20 * 60_000).toISOString() }, pendingSince: null, alerting: false }),
+      },
+    });
+    await runTurn(ws);
+    const request = mocks.streamBasetenChat.mock.calls[0][1] as { messages: Array<{ role: string; content: string }> };
+    const status = request.messages[0].content.split('Task status (current):\n')[1]!;
+    expect(status.split('\n')[0]).toMatch(/^Needs the operator: 1 task/);
+    expect(status).toContain('- "Fix login" in project kookr: waiting for permission to use Bash, for 12 minutes');
+    expect(status).toContain('Integration train: halted for 20 minutes because main itself fails the full test suite');
   });
 
   it('maps the speech service audioBase64 to the sentence wavBase64 and passes the chosen voice', async () => {

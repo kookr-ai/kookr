@@ -9,12 +9,13 @@
  */
 
 import { basename } from 'node:path';
-import type { AnomalyType } from '../../shared/contracts/anomalies.js';
 import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TerminalScreenTextOptions, TerminalScreenTextResult } from '../terminal-screen-text.js';
 import { projectDisplayName } from '../../core/project-identity.js';
+import { operatorAttention, type AttentionFinding, type OperatorAttentionKind } from '../../core/lucy-operator/attention.js';
+import type { BriefingNeed } from '../../core/lucy-live/briefing.js';
 import type { LucyBoardInput, LucyBoardTask } from '../../core/lucy-operator/board.js';
 import { TASK_OUTPUT_LINES } from '../../core/lucy-operator/tools.js';
 import type { LucyLookSource, LucyProjectLine, LucyTaskDetail, LucyTaskOutput } from '../../core/lucy-operator/tools.js';
@@ -36,7 +37,7 @@ export interface LookTask {
   terminationReason?: string;
   tokenUsage?: { costUsd?: number };
   sessions: ReadonlyArray<{ tmuxSession: string; lastStatus?: string }>;
-  pendingSignal?: { kind: string; note?: string };
+  pendingSignal?: { kind: string; note?: string; raisedAt?: string };
   completionDigest?: { bullets?: readonly string[]; testSummary?: string };
 }
 
@@ -44,7 +45,7 @@ export interface LucyLookSourceDeps {
   /** Live task list, read fresh on every call. */
   getTasks: () => readonly LookTask[];
   /** Findings waiting on the operator, keyed by the session that raised them. */
-  getFindings: () => ReadonlyArray<{ agentId: string; anomaly: { type: AnomalyType; subType?: string } }>;
+  getFindings: () => readonly AttentionFinding[];
   getLifetimeSpendUsd?: () => number;
   /** Questions tasks asked the operator (`kookr ask`): the pending ones and the recently closed. */
   getAsks?: () => readonly OperatorAskView[];
@@ -61,8 +62,10 @@ export interface LucyLookSourceDeps {
 }
 
 /** Why a task waits on the operator, in words she can repeat. The finding's own text is not used: an agent may have shaped it. */
-const ATTENTION_WORDS: Record<AnomalyType, string> = {
+const ATTENTION_WORDS: Record<OperatorAttentionKind, string> = {
   needs_input: 'it stopped and needs your input',
+  asked_question: 'it asked you a question',
+  wants_review: 'it says it is finished and wants your review',
   permission_blocked: 'it is blocked on a permission',
   repeated_error: 'it keeps hitting the same error',
   merge_conflict: 'it has a merge conflict',
@@ -76,14 +79,8 @@ const ATTENTION_WORDS: Record<AnomalyType, string> = {
 };
 
 function attentionFor(task: LookTask, findings: ReturnType<LucyLookSourceDeps['getFindings']>): string | undefined {
-  const sessions = new Set(task.sessions.map((session) => session.tmuxSession));
-  const finding = findings.find((entry) => sessions.has(entry.agentId));
-  if (finding) {
-    if (finding.anomaly.type === 'needs_input' && finding.anomaly.subType === 'ask_user_question') return 'it asked you a question';
-    return ATTENTION_WORDS[finding.anomaly.type] ?? 'it needs you';
-  }
-  if (task.pendingSignal?.kind === 'completion_ready' && !isTerminalStatus(task.status)) return 'it says it is finished and wants your review';
-  return undefined;
+  const attention = operatorAttention(task, findings);
+  return attention ? ATTENTION_WORDS[attention.kind] ?? 'it needs you' : undefined;
 }
 
 function projectOf(task: LookTask): string | undefined {
@@ -106,6 +103,23 @@ function toBoardTask(task: LookTask, findings: ReturnType<LucyLookSourceDeps['ge
     ...(typeof costUsd === 'number' && Number.isFinite(costUsd) ? { costUsd } : {}),
     ...(attention ? { attention } : {}),
   };
+}
+
+/**
+ * The live tasks waiting on the operator, for the hands-free status (issue #3927). Built from
+ * the same findings and signals as the board's "Needs the operator" section. The name and the
+ * project are cleaned and cut by the status builder before anything is sent.
+ */
+export function operatorNeeds(tasks: readonly LookTask[], findings: readonly AttentionFinding[]): BriefingNeed[] {
+  const needs: BriefingNeed[] = [];
+  for (const task of tasks) {
+    if (isTerminalStatus(task.status)) continue;
+    const attention = operatorAttention(task, findings);
+    if (!attention) continue;
+    const project = projectOf(task);
+    needs.push({ ...(task.name !== undefined ? { name: task.name } : {}), ...(project ? { project } : {}), attention });
+  }
+  return needs;
 }
 
 /**

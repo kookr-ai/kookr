@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLucyLiveBriefing, MAX_BRIEFING_CHARS, type BriefingTask } from './briefing.js';
+import { buildLucyLiveBriefing, MAX_BRIEFING_CHARS, MAX_LISTED_NEEDS, type BriefingNeed, type BriefingTask, type BriefingTrainHealth } from './briefing.js';
 import { buildLucyLivePersona } from './persona.js';
 
 const NOW = Date.parse('2026-01-01T12:00:00Z');
@@ -50,8 +50,121 @@ describe('buildLucyLiveBriefing', () => {
       name: `Task number ${i}`, status: 'completed' as const, updatedAt: ago(i), finishedAt: ago(i),
     })).concat(Array.from({ length: 100 }, (_, i) => ({ name: `Live ${i}`, status: 'inProgress' as const, updatedAt: ago(i) })));
     const text = buildLucyLiveBriefing(tasks, NOW);
-    expect(text.length).toBeLessThanOrEqual(MAX_BRIEFING_CHARS + 20);
+    expect(text.length).toBeLessThanOrEqual(MAX_BRIEFING_CHARS);
     expect(text).toContain('and 85 more not listed');
+  });
+});
+
+describe('buildLucyLiveBriefing: what needs the operator (#3927)', () => {
+  const need = (name: string, attention: BriefingNeed['attention'], project = 'kookr'): BriefingNeed => ({ name, project, attention });
+  const healthy: BriefingTrainHealth = { running: true, halted: null, pendingSince: null, alerting: false };
+
+  it('names the task, the project, the tool of the permission prompt and how long it has waited', () => {
+    const text = buildLucyLiveBriefing(
+      [{ name: 'Fix login', status: 'inProgress', updatedAt: ago(1) }],
+      NOW,
+      [],
+      { needs: [need('Fix login', { kind: 'permission_blocked', tool: 'Bash', sinceMs: ago(12).getTime() })] },
+    );
+    expect(text.split('\n')[0]).toBe('Needs the operator: 1 task is waiting on the operator (longest first; the operator answers in the dashboard, you cannot):');
+    expect(text).toContain('- "Fix login" in project kookr: waiting for permission to use Bash, for 12 minutes');
+  });
+
+  it('says why in Kookr\'s words for each kind of wait, longest first', () => {
+    const text = buildLucyLiveBriefing([], NOW, [], {
+      needs: [
+        need('Review me', { kind: 'wants_review', sinceMs: ago(3).getTime() }),
+        need('Quiet one', { kind: 'stale_agent', sinceMs: ago(40).getTime() }),
+        need('Curious', { kind: 'asked_question', sinceMs: ago(1).getTime() }),
+        need('No tool', { kind: 'permission_blocked' }),
+      ],
+    });
+    expect(text).toContain('"Quiet one" in project kookr: it has stalled and gone quiet, for 40 minutes');
+    expect(text).toContain('"Review me" in project kookr: it says it is finished and wants review, for 3 minutes');
+    expect(text).toContain('"Curious" in project kookr: it asked a question in its session, for 1 minute');
+    expect(text).toContain('"No tool" in project kookr: waiting for permission to use a tool, for an unknown time');
+    const order = ['Quiet one', 'Review me', 'Curious', 'No tool'].map((n) => text.indexOf(n));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it('states "none" when the source is wired and nothing waits, and says nothing when it is not wired', () => {
+    expect(buildLucyLiveBriefing([], NOW, [], { needs: [] })).toContain('Needs the operator: no task is waiting on the operator.');
+    expect(buildLucyLiveBriefing([], NOW)).not.toContain('Needs the operator');
+  });
+
+  it('comes before the questions from tasks and the task list', () => {
+    const text = buildLucyLiveBriefing(
+      [{ name: 'Fix login', status: 'inProgress', updatedAt: ago(1) }],
+      NOW,
+      [{ id: 'q', taskId: 't', taskName: 'Deploy', question: 'Which region?', options: ['EU', 'US'], allowText: false, state: 'pending', createdAt: ago(2).getTime(), expiresAt: NOW + 60_000 }],
+      { needs: [need('Fix login', { kind: 'needs_input', sinceMs: ago(5).getTime() })], train: healthy },
+    );
+    const at = (s: string): number => text.indexOf(s);
+    expect(at('Needs the operator')).toBe(0);
+    expect(at('Needs the operator')).toBeLessThan(at('Integration train'));
+    expect(at('Integration train')).toBeLessThan(at('Questions from tasks'));
+    expect(at('Questions from tasks')).toBeLessThan(at('Task counts'));
+  });
+
+  it('cleans and cuts the name and the project, which a task can shape', () => {
+    const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+    const text = buildLucyLiveBriefing([], NOW, [], {
+      needs: [need(`Use ${secret}`, { kind: 'needs_input' }, `proj ${secret} \u001b[31mred\u001b[0m`)],
+    });
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain('\u001b');
+  });
+
+  it('lists at most a few tasks and says how many more wait', () => {
+    const needs = Array.from({ length: MAX_LISTED_NEEDS + 3 }, (_, i) => need(`Wait ${i}`, { kind: 'needs_input', sinceMs: ago(100 - i).getTime() }));
+    const text = buildLucyLiveBriefing([], NOW, [], { needs });
+    expect(text).toContain(`Needs the operator: ${MAX_LISTED_NEEDS + 3} tasks are waiting`);
+    expect(text).toContain('- and 3 more not listed');
+    expect(text).not.toContain(`Wait ${MAX_LISTED_NEEDS}"`);
+  });
+
+  it('stays within the limit with everything full, and the "Needs the operator" section is cut last', () => {
+    const tasks: BriefingTask[] = Array.from({ length: 300 }, (_, i) => ({ name: `Live task ${i}`, status: 'inProgress' as const, updatedAt: ago(i) }));
+    const asks = Array.from({ length: 10 }, (_, i) => ({
+      id: `q${i}`, taskId: `t${i}`, taskName: `Asker ${i}`, question: `Question ${i} ${'x'.repeat(200)}`, options: ['Yes', 'No'], allowText: false,
+      state: 'pending' as const, createdAt: ago(i).getTime(), expiresAt: NOW + 60_000,
+    }));
+    const needs = Array.from({ length: 30 }, (_, i) => need(`Waiting task ${i}`, { kind: 'permission_blocked', tool: 'mcp__github__create_pull_request', sinceMs: ago(60 - i).getTime() }, 'a-rather-long-project-name-here'));
+    const text = buildLucyLiveBriefing(tasks, NOW, asks, { needs, train: { running: false, halted: null, pendingSince: ago(45).toISOString(), alerting: true } });
+    expect(text.length).toBeLessThanOrEqual(MAX_BRIEFING_CHARS);
+    expect(text.startsWith('Needs the operator: 30 tasks are waiting')).toBe(true);
+    // The section is exactly what it is on its own: the task list and the questions gave way, not it.
+    const alone = buildLucyLiveBriefing([], NOW, [], { needs }).split('\n\nThere are no tasks at all.')[0]!;
+    expect(text.startsWith(alone)).toBe(true);
+    expect(alone).toContain('"Waiting task 0"');
+    expect(text).toContain('(list cut short)');
+  });
+});
+
+describe('buildLucyLiveBriefing: the integration train (#3927)', () => {
+  const brief = (train: BriefingTrainHealth | null | undefined): string => buildLucyLiveBriefing([], NOW, [], train === undefined ? {} : { train });
+
+  it('says it is halted, since when, and why in plain words', () => {
+    expect(brief({ running: true, halted: { reason: 'base-red', at: ago(20).toISOString() }, pendingSince: ago(25).toISOString(), alerting: false }))
+      .toContain('Integration train: halted for 20 minutes because main itself fails the full test suite; merged changes do not reach main until someone fixes it.');
+  });
+
+  it('never repeats an unknown halt reason as it was written', () => {
+    const text = brief({ running: true, halted: { reason: 'weird /home/jean/secret-path', at: ago(5).toISOString() }, pendingSince: null, alerting: false });
+    expect(text).toContain('because of a problem it reported');
+    expect(text).not.toContain('secret-path');
+  });
+
+  it('says it is stalled when the monitor raised the alarm', () => {
+    expect(brief({ running: false, halted: null, pendingSince: ago(45).toISOString(), alerting: true }))
+      .toContain('Integration train: stalled, not running; merged changes have waited for 45 minutes to reach main.');
+  });
+
+  it('gives a short all-clear otherwise, and nothing when no train is watched', () => {
+    expect(brief({ running: true, halted: null, pendingSince: null, alerting: false })).toContain('Integration train: running, no problem reported.');
+    expect(brief({ running: false, halted: null, pendingSince: null, alerting: false })).toContain('Integration train: not running, and no merged change is waiting for it.');
+    expect(brief(null)).not.toContain('Integration train');
+    expect(brief(undefined)).not.toContain('Integration train');
   });
 });
 
@@ -103,7 +216,7 @@ describe('buildLucyLiveBriefing: questions from tasks (kookr ask)', () => {
   it('keeps the questions when a long task list is cut, and still works with no tasks', () => {
     const many: BriefingTask[] = Array.from({ length: 200 }, (_, i) => ({ name: `Task number ${i} with a fairly long name`, status: 'inProgress' as const, updatedAt: ago(i) }));
     const text = buildLucyLiveBriefing(many, NOW, [ask()]);
-    expect(text.length).toBeLessThanOrEqual(MAX_BRIEFING_CHARS + 20);
+    expect(text.length).toBeLessThanOrEqual(MAX_BRIEFING_CHARS);
     expect(text).toContain('Ship the migration now?');
     expect(buildLucyLiveBriefing([], NOW, [ask()])).toMatch(/Ship the migration now\?[\s\S]*There are no tasks at all\./);
   });
