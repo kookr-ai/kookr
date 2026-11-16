@@ -129,6 +129,10 @@ describe('runAskCli usage errors (no network)', () => {
     const long = await run([...ARGS, '--link', 'https://a.example', '--link-label', 'x'.repeat(41)]);
     expect(long.code).toBe(EXIT_USER_ERROR);
     expect(long.io.errors[0]).toMatch(/label/);
+    const twoLines = await run([...ARGS, '--link', 'https://a.example', '--link-label', 'Open\nmockups']);
+    expect(twoLines.code).toBe(EXIT_USER_ERROR);
+    expect(twoLines.reqs).toEqual([]);
+    expect(twoLines.io.errors[0]).toMatch(/single line/);
   });
   it('prints help with exit 0', async () => {
     const r = await run(['--help']); expect(r.code).toBe(EXIT_OK); expect(r.io.logs.join()).toMatch(/Exit codes/);
