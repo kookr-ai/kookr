@@ -131,6 +131,8 @@ function setup() {
   const summaryFile = join(root, 'summary.json');
   writeFileSync(join(bin, 'pnpm'), [
     '#!/usr/bin/env bash',
+    // PNPM_LOG: one line per call, with its arguments.
+    '[ -z "${PNPM_LOG:-}" ] || printf "%s\\n" "$*" >> "$PNPM_LOG"',
     // HANG_MARK: `pnpm test` says it started, then hangs until killed.
     'if [ "$1" = test ] && [ -n "${HANG_MARK:-}" ]; then : > "$HANG_MARK"; exec sleep 60; fi',
     'if [ "$1" = test ] && [ -n "${VITEST_RERUN_SUMMARY_FILE:-}" ] && [ -f "$SUMMARY_SRC" ]; then',
@@ -178,7 +180,9 @@ function setup() {
     const report = existsSync(reportFile) ? JSON.parse(readFileSync(reportFile, 'utf8')) : null;
     return { status, report };
   };
-  return { run, runKilled, head, reportFile };
+  const pnpmLog = join(root, 'pnpm.log');
+  const pnpmCalls = () => (existsSync(pnpmLog) ? readFileSync(pnpmLog, 'utf8').split('\n').filter(Boolean) : []);
+  return { run, runKilled, head, reportFile, pnpmLog, pnpmCalls };
 }
 
 describe('verify.sh report file (KOOKR_VERIFY_REPORT_FILE)', () => {
@@ -253,5 +257,59 @@ describe('verify.sh report file (KOOKR_VERIFY_REPORT_FILE)', () => {
     const r = s.run({ KOOKR_VERIFY_REPORT_FILE: '', FAIL_check_cycles: '1' });
     expect(r.status).toBe(1);
     expect(r.report).toBeNull();
+  });
+});
+
+describe('verify.sh narrow run (KOOKR_VERIFY_ONLY_STEPS, KOOKR_VERIFY_UNIT_FILES)', () => {
+  const modes: Array<[string, Record<string, string>]> = [['sequential', {}], ['train mode', { KOOKR_VERIFY_FLAKY_RERUN: '1' }]];
+
+  it.each(modes)('runs only the listed step, after the server build (%s)', (_mode, env) => {
+    const s = setup();
+    const r = s.run({
+      ...env, PNPM_LOG: s.pnpmLog, KOOKR_VERIFY_ONLY_STEPS: 'pnpm validate:docs-env-vars',
+      FAIL_validate_docs_env_vars: '1',
+      // a step that is not listed does not run, so it cannot fail the run
+      FAIL_check_cycles: '1', FAIL_test_smoke: '1',
+    });
+    expect(r.status).toBe(1);
+    expect(s.pnpmCalls()).toEqual(['build:server', 'validate:docs-env-vars']);
+    expect(r.out).toContain('==> Checking for import cycles (skipped: not in KOOKR_VERIFY_ONLY_STEPS)');
+    // the report names the step that failed, and no skipped step
+    expect(r.report.failures).toEqual([{
+      lane: 'static_checks', step: 'Validating documented environment variables', command: 'pnpm validate:docs-env-vars',
+    }]);
+  });
+
+  it.each(modes)('runs only the listed unit test files, and passes when none of them exists yet (%s)', (_mode, env) => {
+    const s = setup();
+    const r = s.run({
+      ...env, PNPM_LOG: s.pnpmLog, KOOKR_VERIFY_ONLY_STEPS: 'unit_tests',
+      KOOKR_VERIFY_UNIT_FILES: 'src/a.test.ts\nsrc/b.test.ts\n',
+    });
+    expect(r.status, r.out).toBe(0);
+    expect(s.pnpmCalls()).toEqual(['build:server', 'test --passWithNoTests src/a.test.ts src/b.test.ts']);
+    expect(r.report).toMatchObject({ status: 'passed', failures: [] });
+  });
+
+  it('lists the failing files of a narrow unit run like a full one', () => {
+    const s = setup();
+    const r = s.run({
+      KOOKR_VERIFY_ONLY_STEPS: 'unit_tests', KOOKR_VERIFY_UNIT_FILES: 'src/core/broken.test.ts', FAIL_test: '1',
+    }, ['src/core/broken.test.ts']);
+    expect(r.status).toBe(1);
+    expect(r.report.failures).toEqual([{
+      lane: 'unit_lane', step: 'Running tests', command: 'unit_tests', testFiles: ['src/core/broken.test.ts'],
+    }]);
+  });
+
+  it('runs every step when the variables are empty', () => {
+    const s = setup();
+    const r = s.run({ PNPM_LOG: s.pnpmLog, KOOKR_VERIFY_ONLY_STEPS: '', KOOKR_VERIFY_UNIT_FILES: '' });
+    expect(r.status, r.out).toBe(0);
+    const calls = s.pnpmCalls();
+    expect(calls).toContain('test');
+    expect(calls).toContain('test:smoke');
+    expect(calls).toContain('validate:docs-env-vars');
+    expect(calls.some((c) => c.includes('--passWithNoTests'))).toBe(false);
   });
 });

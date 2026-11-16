@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { gitExecEnv } from '../src/core/git-helpers.js';
+import { parseOpinionReply } from '../src/core/opinion-requests.js';
 import { CLOSING_KEYWORD_CASES } from './closing-keyword-cases.js';
 import { vitestMaxWorkers } from './lib/vitest-max-workers.mjs';
 import {
@@ -13,10 +14,14 @@ import {
   type TrainDeps,
   type TrainEventKind,
   type TrainState,
+  type VerifyReport,
+  type VerifyScope,
   closingIssueNumbersFromText,
   emptyTrainState,
   isOutdatedLockfileFailure,
   MAX_AUTOMATIC_RELANDS,
+  narrowScope,
+  parseVerifyReport,
   nextPluginVersion,
   parseIntegrationBranch,
   parseSpawnOutput,
@@ -28,6 +33,7 @@ import {
   prNumberFromSubject,
   runTrainCycle,
   trainPrCommentMarker,
+  verifiedOnMainComment,
 } from './lib/integration-train-core.js';
 
 // Every git call runs against mkdtemp directories with the repo's sanitized env
@@ -60,8 +66,18 @@ interface Harness {
   seed: string;
   train: string;
   state: TrainState;
+  /** SHAs a full verify run saw green (a narrow green is no verification). */
   greens: string[];
   verifyCalls: string[];
+  /** Every verify run in order, with its scope (null for a full run). */
+  runs: Array<{ sha: string; scope: VerifyScope | null }>;
+  /**
+   * The report a red full run returns; the default names the step that
+   * `bad.txt` breaks and the unit file `bad2.txt` breaks. Unset: no report.
+   */
+  reportFor: ((sha: string, failures: VerifyReport['failures']) => VerifyReport | undefined) | null;
+  /** Scripted results of narrow runs, per SHA, like `scripted` for full runs. */
+  scriptedNarrow: Map<string, boolean[]>;
   mainPushes: string[];
   scripted: Map<string, boolean[]>;
   /** SHAs whose verify cannot run at all (checkout or install failure). */
@@ -120,6 +136,9 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
     state: emptyTrainState(),
     greens: [] as string[],
     verifyCalls: [] as string[],
+    runs: [] as Array<{ sha: string; scope: VerifyScope | null }>,
+    reportFor: null,
+    scriptedNarrow: new Map<string, boolean[]>(),
     mainPushes: [] as string[],
     scripted: new Map<string, boolean[]>(),
     infra: new Set<string>(),
@@ -152,18 +171,26 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
       if (args[0] === 'push' && push && r.ok) h.mainPushes.push(push.split(':')[0]);
       return r;
     },
-    async verify(sha) {
+    async verify(sha, scope) {
       h.verifyCalls.push(sha);
-      const script = h.scripted.get(sha);
+      h.runs.push({ sha, scope: scope ?? null });
+      const has = (f: string): boolean => gitSoft(train, ['cat-file', '-e', `${sha}:${f}`]).ok;
+      // bad.txt breaks the step `pnpm check:a`; bad2.txt breaks the unit file src/b.test.ts.
+      const failures: VerifyReport['failures'] = [];
+      if (has('bad.txt')) failures.push({ lane: 'static_checks', step: 'Check A', command: 'pnpm check:a' });
+      if (has('bad2.txt')) failures.push({ lane: 'unit_lane', step: 'Running tests', command: 'unit_tests', testFiles: ['src/b.test.ts'] });
+      const script = (scope ? h.scriptedNarrow : h.scripted).get(sha);
       let ok: boolean;
       if (script && script.length > 0) ok = script.shift() as boolean;
-      else {
-        ok = !gitSoft(train, ['cat-file', '-e', `${sha}:bad.txt`]).ok &&
-          !gitSoft(train, ['cat-file', '-e', `${sha}:bad2.txt`]).ok;
-      }
+      else if (scope) {
+        ok = !failures.some((f) => scope.steps.includes(f.command)
+          && (f.command !== 'unit_tests' || (f.testFiles ?? []).some((t) => scope.testFiles.includes(t))));
+      } else ok = failures.length === 0;
       if (h.infra.has(sha)) return { ok: false, infra: true, tail: 'pnpm install failed: registry unreachable' };
-      if (ok) h.greens.push(sha);
-      return { ok, tail: ok ? '' : `FAIL at ${sha.slice(0, 7)}\nAssertionError: bad.txt exists` };
+      if (ok && !scope) h.greens.push(sha);
+      const tail = ok ? '' : `FAIL at ${sha.slice(0, 7)}${scope ? ' (narrow)' : ''}\nAssertionError: bad.txt exists`;
+      const report = !ok && !scope && h.reportFor ? h.reportFor(sha, failures) : undefined;
+      return { ok, tail, ...(report ? { report } : {}) };
     },
     github: {
       async closingIssues(pr) {
@@ -371,6 +398,7 @@ describe('integration train cycle', () => {
   });
 
   it('promotes the commit before the culprit, reverts the culprit, reopens the issue, spawns one fix task', async () => {
+    // No verify report (an older verify.sh, a killed run): the full-suite bisect of before #3995.
     h = makeHarness();
     h.issues.set(13, [{ number: 130, state: 'closed' }]);
     h.issues.set(12, [{ number: 120, state: 'open' }]);
@@ -387,7 +415,7 @@ describe('integration train cycle', () => {
     expect(h.originRef('main')).toBe(stagingHead);
     expect(h.mainPushes).toEqual([c2, stagingHead]);
     // promotion of c2 closed the open issue of PR #12
-    expect(h.ghLog.some((l) => l.startsWith('close 120: Verified on main in '))).toBe(true);
+    expect(h.ghLog.some((l) => l.startsWith('close 120: ') && l.includes('Verified on main in '))).toBe(true);
 
     expect(git(h.origin, 'log', '-1', '--format=%s', stagingHead)).toContain('Revert');
     expect(git(h.origin, 'show', `${stagingHead}:4.txt`)).toBe('4');
@@ -993,8 +1021,8 @@ describe('integration train cycle', () => {
     const head = h.commit('staging', { 'b.txt': '2' }, 'second (#52)');
     expect((await h.cycle()).outcome).toBe('promoted');
     const short = head.slice(0, 10);
-    expect(h.ghLog).toContain(`close 510: Verified on main in ${short}.`);
-    expect(h.ghLog).toContain(`close 520: Verified on main in ${short}.`);
+    expect(h.ghLog).toContain(`close 510: <!-- kookr:automation -->\nVerified on main in ${short}.`);
+    expect(h.ghLog).toContain(`close 520: <!-- kookr:automation -->\nVerified on main in ${short}.`);
     expect(h.ghLog.some((l) => l.startsWith('close 511'))).toBe(false);
     expect(h.state.verifiedGreen).toContain(head);
   });
@@ -1791,5 +1819,285 @@ describe('a revert the train verified survives a moving integration branch (#401
     expect(normalizeTrainState({ pendingRevert: { culprit: sha, redHead: 'b'.repeat(40) } } as never).pendingRevert?.redHead)
       .toBe('b'.repeat(40));
     expect(normalizeTrainState({ pendingRevert: { culprit: sha, redHead: 'HEAD' } } as never).pendingRevert?.redHead).toBeNull();
+  });
+});
+
+describe('bisect with the failing part only (#3995)', () => {
+  // The two red runs of head 531c5664b9 on 16 Nov, as the train kept them
+  // (verify-531c5664b9.run1.report.json and verify-531c5664b9.report.json).
+  const REAL_HEAD = '531c5664b9680df629281d160d21f616509fa3e2';
+  const REAL_REPORT_TEXT = `{
+  "version": 1,
+  "head": "${REAL_HEAD}",
+  "status": "failed",
+  "exitCode": 1,
+  "failures": [
+    {
+      "lane": "unit_lane",
+      "step": "Running tests",
+      "command": "unit_tests",
+      "testFiles": [
+        "src/core/documented-env-var-verifier.test.ts"
+      ]
+    },
+    {
+      "lane": "static_checks",
+      "step": "Validating documented environment variables",
+      "command": "pnpm validate:docs-env-vars"
+    }
+  ]
+}
+`;
+  const real = (): VerifyReport => parseVerifyReport(REAL_REPORT_TEXT) as VerifyReport;
+  const failed = (head: string, failures: VerifyReport['failures']): VerifyReport => ({ head, status: 'failed', failures });
+  const unit = (...testFiles: string[]) => ({ lane: 'unit_lane', step: 'Running tests', command: 'unit_tests', testFiles });
+  const step = (command: string) => ({ lane: 'static_checks', step: command, command });
+
+  describe('parseVerifyReport', () => {
+    it('reads the report scripts/verify.sh wrote on 16 Nov', () => {
+      expect(real()).toEqual({
+        head: REAL_HEAD,
+        status: 'failed',
+        failures: [
+          { lane: 'unit_lane', step: 'Running tests', command: 'unit_tests', testFiles: ['src/core/documented-env-var-verifier.test.ts'] },
+          { lane: 'static_checks', step: 'Validating documented environment variables', command: 'pnpm validate:docs-env-vars' },
+        ],
+      });
+    });
+
+    it.each([
+      ['not JSON', '{'],
+      ['another version', JSON.stringify({ version: 2, head: 'a', status: 'failed', failures: [] })],
+      ['an unknown status', JSON.stringify({ version: 1, head: 'a', status: 'red', failures: [] })],
+      ['no failures list', JSON.stringify({ version: 1, head: 'a', status: 'failed' })],
+      ['a failure without its command', JSON.stringify({ version: 1, head: 'a', status: 'failed', failures: [{ lane: 'x', step: 'y' }] })],
+      ['test files that are not a list of paths', JSON.stringify({
+        version: 1, head: 'a', status: 'failed', failures: [{ lane: 'unit_lane', step: 's', command: 'unit_tests', testFiles: [''] }],
+      })],
+    ])('rejects %s', (_what, text) => {
+      expect(parseVerifyReport(text)).toBeNull();
+    });
+  });
+
+  describe('narrowScope', () => {
+    it('keeps the steps and unit test files of the real 16 Nov red runs', () => {
+      expect(narrowScope([real(), real()], REAL_HEAD)).toEqual({
+        steps: ['pnpm validate:docs-env-vars', 'unit_tests'],
+        testFiles: ['src/core/documented-env-var-verifier.test.ts'],
+      });
+    });
+
+    it('keeps only what failed in every red run', () => {
+      const scope = narrowScope([
+        failed('h', [step('pnpm check:a'), step('pnpm check:b'), unit('src/a.test.ts', 'src/b.test.ts')]),
+        failed('h', [step('pnpm check:a'), unit('src/b.test.ts', 'src/c.test.ts')]),
+      ], 'h');
+      expect(scope).toEqual({ steps: ['pnpm check:a', 'unit_tests'], testFiles: ['src/b.test.ts'] });
+    });
+
+    it('names no test files when the unit lane is not among the steps', () => {
+      expect(narrowScope([failed('h', [step('pnpm check:a')])], 'h')).toEqual({ steps: ['pnpm check:a'], testFiles: [] });
+    });
+
+    it.each<[string, Array<VerifyReport | undefined>]>([
+      ['no red run', []],
+      ['a red run without a report', [real(), undefined]],
+      ['a run stopped by a signal (its unfinished steps did not fail)', [real(), { head: REAL_HEAD, status: 'interrupted', failures: [] }]],
+      ['a report of another commit', [real(), { ...real(), head: 'f'.repeat(40) }]],
+      ['a red run that names no failing step', [real(), failed(REAL_HEAD, [])]],
+      ['a passed report', [real(), { head: REAL_HEAD, status: 'passed', failures: [] }]],
+      ['a unit-lane failure without its test files', [real(), failed(REAL_HEAD, [{ lane: 'unit_lane', step: 'Running tests', command: 'unit_tests' }])]],
+      ['two runs that share no failing step', [failed(REAL_HEAD, [step('pnpm check:a')]), failed(REAL_HEAD, [step('pnpm check:b')])]],
+      ['two runs whose unit lanes share no failing file', [failed(REAL_HEAD, [unit('src/a.test.ts')]), failed(REAL_HEAD, [unit('src/b.test.ts')])]],
+      ['a step command with a line break', [failed(REAL_HEAD, [step('pnpm a\npnpm b')])]],
+    ])('is null (full-suite bisect) for %s', (_what, reports) => {
+      expect(narrowScope(reports, REAL_HEAD)).toBeNull();
+    });
+  });
+
+  describe('cycle', () => {
+    beforeEach(() => { h = undefined as unknown as Harness; });
+    const kinds = () => h.runs.map((r) => `${r.scope ? 'narrow' : 'full'} ${r.sha.slice(0, 7)}`);
+    const fullRunsAfterHead = () => h.runs.slice(2).filter((r) => r.scope === null).length;
+
+    /** main <- 1 <- 2 <- 3 (culprit, adds bad.txt) <- 4 <- 5 (head), with verify reports. */
+    function brokenStaging(): { c2: string; c3: string; head: string } {
+      h = makeHarness();
+      h.reportFor = (sha, failures) => ({ head: sha, status: 'failed', failures });
+      h.issues.set(13, [{ number: 130, state: 'closed' }]);
+      h.issues.set(12, [{ number: 120, state: 'open' }]);
+      h.commit('staging', { '1.txt': '1' }, 'one (#11)');
+      const c2 = h.commit('staging', { '2.txt': '2' }, 'two (#12)');
+      const c3 = h.commit('staging', { 'bad.txt': 'x' }, 'three (#13)');
+      h.commit('staging', { '4.txt': '4' }, 'four (#14)');
+      const head = h.commit('staging', { '5.txt': '5' }, 'five (#15)');
+      return { c2, c3, head };
+    }
+
+    it('bisects a head that fails in one step with that step only; one full run, for the revert', async () => {
+      const { c2, c3, head } = brokenStaging();
+      const mainBefore = h.originRef('main');
+      const r = await h.cycle();
+      expect(r.outcome).toBe('reverted');
+
+      const revert = h.originRef('staging');
+      expect(git(h.origin, 'log', '-1', '--format=%B', revert)).toContain(`This reverts commit ${c3}`);
+      const short = (s: string) => s.slice(0, 7);
+      // 2 full red runs of the head, then: the step alone on the head and on
+      // main, two bisect steps, the culprit's confirmation, and the revert in full.
+      expect(kinds()).toEqual([
+        `full ${short(head)}`, `full ${short(head)}`,
+        `narrow ${short(head)}`, `narrow ${short(mainBefore)}`,
+        `narrow ${short(c2)}`, `narrow ${short(h.runs[5].sha)}`, `narrow ${short(c3)}`,
+        `full ${short(revert)}`,
+      ]);
+      expect(h.runs[5].sha).toBe(c3);
+      expect(fullRunsAfterHead()).toBe(1);
+      for (const run of h.runs.filter((x) => x.scope !== null)) {
+        expect(run.scope).toEqual({ steps: ['pnpm check:a'], testFiles: [] });
+      }
+
+      // The last good commit passed only the narrow run: it is not promoted on
+      // its own. Main moves with the revert, verified with the full suite.
+      expect(h.mainPushes).toEqual([revert]);
+      expect(h.state.verifiedGreen).not.toContain(c2);
+      expect(h.originRef('main')).toBe(revert);
+      // the commits before the culprit reached main with the revert: their issues close
+      expect(h.ghLog.some((l) => l.startsWith('close 120: '))).toBe(true);
+      expect(h.ghLog).toContain('reopen 130');
+      expect(h.ghLog.find((l) => l.startsWith('comment 130:'))).toContain('(narrow)');
+      expect(h.spawns).toHaveLength(1);
+    });
+
+    it('bisects a unit-lane failure with its test files only', async () => {
+      h = makeHarness();
+      h.reportFor = (sha, failures) => ({ head: sha, status: 'failed', failures });
+      h.commit('staging', { '1.txt': '1' }, 'one (#11)');
+      const culprit = h.commit('staging', { 'bad2.txt': 'x' }, 'two (#12)');
+      h.commit('staging', { '3.txt': '3' }, 'three (#13)');
+      expect((await h.cycle()).outcome).toBe('reverted');
+      expect(git(h.origin, 'log', '-1', '--format=%B', h.originRef('staging'))).toContain(`This reverts commit ${culprit}`);
+      expect(h.runs.find((x) => x.scope !== null)?.scope).toEqual({ steps: ['unit_tests'], testFiles: ['src/b.test.ts'] });
+      expect(fullRunsAfterHead()).toBe(1);
+    });
+
+    it.each<[string, (sha: string, failures: VerifyReport['failures']) => VerifyReport | undefined]>([
+      ['the red runs wrote no report', () => undefined],
+      ['a signal stopped the run', (sha) => ({ head: sha, status: 'interrupted', failures: [] })],
+      ['the report names no failing step', (sha) => ({ head: sha, status: 'failed', failures: [] })],
+      ['the report describes another commit', (_sha, failures) => ({ head: 'f'.repeat(40), status: 'failed', failures })],
+      ['the unit lane failed without naming its files', (sha) => ({
+        head: sha, status: 'failed', failures: [{ lane: 'unit_lane', step: 'Running tests', command: 'unit_tests' }],
+      })],
+    ])('bisects with the full suite when %s', async (_what, reportFor) => {
+      const { c2, c3 } = brokenStaging();
+      h.reportFor = reportFor;
+      expect((await h.cycle()).outcome).toBe('reverted');
+      expect(h.runs.every((x) => x.scope === null)).toBe(true);
+      expect(git(h.origin, 'log', '-1', '--format=%B', h.originRef('staging'))).toContain(`This reverts commit ${c3}`);
+      // the full bisect verified the last good commit: it is promoted first, as before
+      expect(h.mainPushes[0]).toBe(c2);
+    });
+
+    it('bisects with the full suite when the failing step passes alone on the head', async () => {
+      const { c2, c3, head } = brokenStaging();
+      h.scriptedNarrow.set(head, [true]);
+      expect((await h.cycle()).outcome).toBe('reverted');
+      expect(h.runs.filter((x) => x.scope !== null).map((x) => x.sha)).toEqual([head]);
+      expect(git(h.origin, 'log', '-1', '--format=%B', h.originRef('staging'))).toContain(`This reverts commit ${c3}`);
+      expect(h.mainPushes[0]).toBe(c2);
+    });
+
+    it('checks main with the full suite when it fails the narrow run, and bisects in full when main passes', async () => {
+      const { c3 } = brokenStaging();
+      const main = h.originRef('main');
+      h.scriptedNarrow.set(main, [false]);
+      expect((await h.cycle()).outcome).toBe('reverted');
+      expect(kinds().slice(2, 5)).toEqual([
+        `narrow ${h.runs[0].sha.slice(0, 7)}`, `narrow ${main.slice(0, 7)}`, `full ${main.slice(0, 7)}`,
+      ]);
+      expect(h.runs.slice(5).every((x) => x.scope === null)).toBe(true);
+      expect(git(h.origin, 'log', '-1', '--format=%B', h.originRef('staging'))).toContain(`This reverts commit ${c3}`);
+    });
+
+    it('halts base-red only when main also fails the full suite', async () => {
+      brokenStaging();
+      const main = h.originRef('main');
+      h.scriptedNarrow.set(main, [false]);
+      h.scripted.set(main, [false]);
+      const stagingBefore = h.originRef('staging');
+      expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'base-red' });
+      expect(h.runs.filter((x) => x.sha === main).map((x) => x.scope === null)).toEqual([false, true]);
+      expect(h.originRef('staging')).toBe(stagingBefore);
+      expect(h.mainPushes).toEqual([]);
+    });
+
+    it('checks a main the train never verified with the full suite, then bisects narrowly', async () => {
+      h = makeHarness({ seedVerified: false });
+      h.reportFor = (sha, failures) => ({ head: sha, status: 'failed', failures });
+      const main = h.originRef('main');
+      h.commit('staging', { '1.txt': '1' }, 'one (#11)');
+      const culprit = h.commit('staging', { 'bad.txt': 'x' }, 'two (#12)');
+      h.commit('staging', { '3.txt': '3' }, 'three (#13)');
+      expect((await h.cycle()).outcome).toBe('reverted');
+      expect(h.runs.filter((x) => x.sha === main).map((x) => x.scope)).toEqual([null]);
+      expect(h.runs.some((x) => x.sha !== h.runs[0].sha && x.scope !== null)).toBe(true);
+      expect(git(h.origin, 'log', '-1', '--format=%B', h.originRef('staging'))).toContain(`This reverts commit ${culprit}`);
+    });
+
+    it('reverts nothing and promotes nothing when the culprit passes its narrow re-run', async () => {
+      const { c3 } = brokenStaging();
+      h.scriptedNarrow.set(c3, [false, true]);
+      const stagingBefore = h.originRef('staging');
+      expect(await h.cycle()).toMatchObject({ outcome: 'retry', detail: 'culprit passed on re-run' });
+      expect(h.originRef('staging')).toBe(stagingBefore);
+      expect(h.mainPushes).toEqual([]);
+      expect(h.state.pendingRevert).toBeNull();
+    });
+
+    it('halts without pushing when a narrow bisect blames a commit whose revert fails the full suite', async () => {
+      const { c3 } = brokenStaging();
+      // The head is also broken by bad2.txt, which the red runs did not name.
+      h.commit('staging', { 'bad2.txt': 'x' }, 'six (#16)');
+      h.reportFor = (sha, failures) => ({ head: sha, status: 'failed', failures: failures.filter((f) => f.command !== 'unit_tests') });
+      const stagingBefore = h.originRef('staging');
+      expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'revert-not-sufficient' });
+      expect(h.state.halted?.reason).toBe('revert-not-sufficient');
+      expect(h.originRef('staging')).toBe(stagingBefore);
+      expect(h.mainPushes).toEqual([]);
+      expect(h.notes.some((n) => n.detail.includes(c3.slice(0, 10)))).toBe(true);
+    });
+  });
+});
+
+describe('the train\'s issue comments are automation, not operator replies (#4033)', () => {
+  const asComment = (body: string) => ({ id: 1, body, createdAt: '2026-11-16T00:00:00Z', url: 'https://x/1', authorAssociation: 'OWNER' });
+
+  it('marks the close comment, so the opinion sweep does not read it as a reply', () => {
+    const body = verifiedOnMainComment('0123456789');
+    expect(body.split('\n')[0]).toBe('<!-- kookr:automation -->');
+    expect(body).toContain('Verified on main in 0123456789.');
+    expect(parseOpinionReply(asComment(body))).toBeUndefined();
+    // without the marker, the same words are a reply: the marker is what keeps it out
+    expect(parseOpinionReply(asComment('Verified on main in 0123456789.'))).toBeDefined();
+  });
+
+  it('marks every comment a cycle posts on an issue: the close and the revert', async () => {
+    h = makeHarness();
+    h.issues.set(12, [{ number: 120, state: 'open' }]);
+    h.issues.set(13, [{ number: 130, state: 'closed' }]);
+    h.commit('staging', { '2.txt': '2' }, 'two (#12)');
+    h.commit('staging', { 'bad.txt': 'x' }, 'three (#13)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    const bodies = h.ghLog
+      .filter((l) => /^(close|comment) \d+: /.test(l))
+      .map((l) => l.replace(/^(close|comment) \d+: /, ''));
+    expect(bodies.length).toBe(2);
+    for (const body of bodies) {
+      expect(body.startsWith('<!-- kookr:automation -->\n')).toBe(true);
+      expect(parseOpinionReply(asComment(body))).toBeUndefined();
+    }
+    // the train's pull-request comments carry their own marker
+    for (const body of [...h.prComments.values()].flat()) expect(parseOpinionReply(asComment(body))).toBeUndefined();
   });
 });
