@@ -24,6 +24,7 @@ import { registerIssueClaimRoutes } from './routes/issue-claim-routes.js';
 import { registerAskRoutes } from './routes/ask-routes.js';
 import { registerEnvironmentBlockerRoutes } from './routes/environment-blocker-routes.js';
 import { registerSelfReportRoutes } from './routes/self-report-routes.js';
+import { registerReadyQueueRoutes } from './routes/ready-queue-routes.js';
 import { registerCoordinatorRoutes } from './routes/coordinator-routes.js';
 import { registerAgentRoutes } from './routes/agent-routes.js';
 import { registerGrokAuthRoutes } from './routes/grok-auth-routes.js';
@@ -171,6 +172,9 @@ export function createRoutes(deps: RouteDeps): Hono {
     applyDefaultAgentUpdate: (agent, actorHeader) =>
       applyDefaultAgentUpdate(sharedDeps, agent, actorHeader),
   });
+  // Ready queue (issue #3933). Registered after task routes, which wire the
+  // queue's launch path to the POST /api/tasks handler.
+  registerReadyQueueRoutes(app, sharedDeps);
   registerSessionTransportRoutes(app, sharedDeps);
   registerCoordinatorRoutes(app, sharedDeps);
   registerAgentRoutes(app, sharedDeps);

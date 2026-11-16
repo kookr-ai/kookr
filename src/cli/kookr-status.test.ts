@@ -17,6 +17,7 @@ import {
   summarizeHookReplayCheckpoints,
   summarizeFirstHookMiss,
   summarizeCapacity,
+  summarizeReadyQueue,
   formatUtilPct,
   summarizeProviderPausedOccupancy,
   summarizeNonCriticalTimerPause,
@@ -4921,5 +4922,43 @@ describe('kookr-status summarizeIntegrationTrain (issue #3796)', () => {
       restartPending: false,
       alerting: true,
     });
+  });
+});
+
+describe('kookr-status ready queue (issue #3933)', () => {
+  const block = (over: Record<string, unknown> = {}) => ({
+    schema: 'ready-queue.v1',
+    queued: 3,
+    launching: 0,
+    failed: 0,
+    head: {
+      id: 'e1',
+      enqueuedAt: '2026-11-16T10:00:00.000Z',
+      waitingForMs: 17 * 60_000,
+      attempts: 0,
+      waitReason: 'host_load',
+      waiting: 'waiting: host load',
+    },
+    stalled: true,
+    lastTickAt: null,
+    ...over,
+  });
+
+  it('is quiet when the block is absent or the queue is empty', () => {
+    expect(summarizeReadyQueue({ status: 'ok' })).toBeNull();
+    expect(summarizeReadyQueue({ readyQueue: block({ queued: 0, head: null, stalled: false }) })).toBeNull();
+  });
+
+  it('prints the length, and the wait reason once the head has waited 15 minutes', () => {
+    const stalled = renderReport({ port: 4800, health: { status: 'ok', readyQueue: block() }, agents: [] });
+    expect(stalled).toContain('Ready queue: 3 queued  head waited 17m 0s: waiting: host load');
+
+    const fresh = renderReport({
+      port: 4800,
+      health: { status: 'ok', readyQueue: block({ stalled: false, failed: 1 }) },
+      agents: [],
+    });
+    expect(fresh).toContain('Ready queue: 3 queued, 1 failed (kookr queue list)');
+    expect(fresh).not.toContain('waiting: host load');
   });
 });

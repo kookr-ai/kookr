@@ -323,6 +323,28 @@ describe('createKookrServer', () => {
       });
     });
 
+    // Issue #3933: the ready queue is wired end to end at boot: routes, the
+    // durable file under the data dir, and the /api/health block.
+    test('the ready queue stores an entry under the data dir and reports it on /api/health', async () => {
+      const empty = await (await fetch(`${baseUrl}/api/ready-queue`)).json();
+      expect(empty).toMatchObject({ entries: [], health: { queued: 0, head: null } });
+
+      const res = await fetch(`${baseUrl}/api/ready-queue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
+        body: JSON.stringify({ prompt: 'queued from the boot test', cwd: tempDir }),
+      });
+      expect(res.status).toBe(201);
+      const { entry } = await res.json() as { entry: { id: string } };
+
+      const onDisk = JSON.parse(readFileSync(join(tempDir, 'ready-queue.json'), 'utf-8'));
+      expect(onDisk.entries).toEqual([expect.objectContaining({ id: entry.id, state: 'queued', launchSource: 'cli' })]);
+      const health = await (await fetch(`${baseUrl}/api/health`)).json() as { readyQueue?: { queued: number; head: { id: string } } };
+      expect(health.readyQueue).toMatchObject({ queued: 1, head: { id: entry.id } });
+
+      expect((await fetch(`${baseUrl}/api/ready-queue/${entry.id}`, { method: 'DELETE' })).status).toBe(200);
+    });
+
     // Issue #2813: activity-ledger appends are fire-and-forget so a graceful
     // close must await activityLedger.flush() before releasing the writer lock,
     // or startup recovery hydrates from a ledger missing the last records.

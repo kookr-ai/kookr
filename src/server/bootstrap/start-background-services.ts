@@ -6,6 +6,7 @@ import { clearAllTimers, startLifecycleTimers, type TimerDeps, type TimerHandles
 import { startLedgerWatcher } from '../ledger-watcher.js';
 import type { ScheduleRunner } from '../schedule-runner.js';
 import type { IdleRefineryRunner } from '../idle-refinery-runner.js';
+import type { ReadyQueueService } from '../ready-queue-service.js';
 import type { PostRecoveryService } from '../post-recovery-service.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { ResourceStatusService } from '../resource-status-service.js';
@@ -31,6 +32,8 @@ export interface BackgroundServicesDeps {
    * for older wiring/tests that don't construct one.
    */
   idleRefineryRunner?: Pick<IdleRefineryRunner, 'start' | 'stop'>;
+  /** Ready-queue tick (issue #3933). Started after listen, stopped on shutdown. */
+  readyQueue?: Pick<ReadyQueueService, 'start' | 'stop'>;
   /**
    * Post-recovery critical-schedule re-arm + queue-fill kick (issue #2196).
    * Optional for older wiring/tests.
@@ -79,6 +82,7 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
     startAfterListen(): void {
       deps.scheduleRunner.start();
       deps.idleRefineryRunner?.start();
+      deps.readyQueue?.start();
       deps.postRecoveryService?.start();
       deps.findingEvidenceReviewSampler?.start();
       deps.scheduledWorktreeReclaimRunner?.start();
@@ -88,6 +92,7 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
       clearAllTimers(timerHandles);
       await deps.scheduleRunner.stop();
       await deps.idleRefineryRunner?.stop();
+      await deps.readyQueue?.stop();
       await deps.postRecoveryService?.stop();
       deps.githubScanner.stop();
       deps.resourceStatusService?.stop();

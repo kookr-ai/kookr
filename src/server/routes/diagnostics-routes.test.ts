@@ -4691,6 +4691,44 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — ready queue (issue #3933)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health readyQueue block (issue #3933)', () => {
+    test('carries the queue length and the head wait reason, and is absent when unwired', async () => {
+      const snapshot = {
+        schema: 'ready-queue.v1' as const,
+        queued: 2,
+        launching: 0,
+        failed: 0,
+        head: {
+          id: 'e1',
+          enqueuedAt: '2026-11-16T10:00:00.000Z',
+          waitingForMs: 60_000,
+          attempts: 0,
+          waitReason: 'host_load' as const,
+          waiting: 'waiting: host load',
+        },
+        stalled: false,
+        lastTickAt: '2026-11-16T10:01:00.000Z',
+      };
+      const wired = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        readyQueue: { getHealthSnapshot: () => snapshot } as never,
+      }).request('/api/health');
+      expect(await wired.json()).toMatchObject({ status: 'ok', readyQueue: snapshot });
+
+      const unwired = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(await unwired.json()).not.toHaveProperty('readyQueue');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — post-recovery queue-fill decision (issue #2895)
   // ---------------------------------------------------------------------------
   describe('GET /api/health postRecoveryQueueFill block (issue #2895)', () => {

@@ -1,4 +1,4 @@
-import type { Context, Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { join } from 'node:path';
 import { extractEmbeddedTaskName } from '../../core/task-naming.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
@@ -686,7 +686,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     return c.json({ ok: true, task: updated });
   });
 
-  app.post('/api/tasks', async (c) => {
+  // Named so the ready queue (issue #3933) can run the very same handler
+  // in-process; see `readyQueueDispatcher` below.
+  const createTaskHandler = async (c: Context) => {
     // Load-based admission (issue #1590 / #1992): shed the request BEFORE
     // parsing the body or touching the launch path, so a saturated event loop
     // or critical data-directory filesystem capacity fast-fails with 503 +
@@ -1158,7 +1160,42 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
     }
-  });
+  };
+  app.post('/api/tasks', createTaskHandler);
+
+  // Ready queue (issue #3933): a queued launch is started by replaying its
+  // stored request through `createTaskHandler` on a private app with no
+  // middleware (no auth, CSRF or body-limit layer: the request was already
+  // accepted once, by POST /api/ready-queue). Same validation, admission gates,
+  // idempotency and error answers as a direct POST /api/tasks.
+  if (deps.readyQueue) {
+    const internalApp = new Hono();
+    internalApp.post('/api/tasks', createTaskHandler);
+    deps.readyQueue.setDispatcher(async ({ body, launchSource, actor }) => {
+      const response = await internalApp.request('/api/tasks', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Kookr-Launch-Source': launchSource,
+          ...(actor ? { [ACTOR_HEADER]: actor } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      const retryAfter = Number(response.headers.get('Retry-After'));
+      const text = await response.text();
+      let parsed: unknown = null;
+      try {
+        parsed = text.length > 0 ? JSON.parse(text) : null;
+      } catch {
+        parsed = { error: text.slice(0, 500) };
+      }
+      return {
+        status: response.status,
+        ...(Number.isFinite(retryAfter) && retryAfter > 0 ? { retryAfterSeconds: retryAfter } : {}),
+        body: parsed,
+      };
+    });
+  }
 
   app.delete('/api/tasks/:id', async (c) => {
     const id = c.req.param('id');

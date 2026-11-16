@@ -21,6 +21,7 @@ Usage:
   kookr supervision status|end [id] [--json]  Show attached supervisions (health, next wake), or end one.
   kookr peek <taskId|name> [--max-chars N] [--json]  Show a task's run-state and its FULL last assistant message.
   kookr stop|abort <taskId>... [--reason <text>]  Abort (terminate) running task(s).
+  kookr queue list|remove <id> [--json]  Show or edit the ready queue that \`kookr spawn --queue\` fills.
   kookr doctor [--json]         Run launch preflight checks (human table or JSON).
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
@@ -60,7 +61,7 @@ Options:
   -v, --version                 Print the installed Kookr version.
   -h, --help                    Show this help.
 
-Use --json for one machine-readable output envelope with: spawn, stop, open, reply, reopen, ask, supervise, supervision status, peek, status, doctor,
+Use --json for one machine-readable output envelope with: spawn, stop, queue, open, reply, reopen, ask, supervise, supervision status, peek, status, doctor,
 signal, ralph, issue, schedule, playbook, chain, drain, resume, ops digest, ops timers, github, opinion, logs, containers,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
@@ -189,6 +190,13 @@ async function main({
   if (command === 'status') {
     const { main: runStatusCli } = await import('./kookr-status.js');
     return runStatusCli({ argv: rest, env, out, exit });
+  }
+
+  // Ready queue (issue #3933): list or remove entries added by
+  // `kookr spawn --queue`. Thin HTTP client against /api/ready-queue.
+  if (command === 'queue') {
+    const { runQueueCommand } = await import('./kookr-queue.js');
+    return exit(await runQueueCommand(rest, { env, out, err }));
   }
 
   // Abort (terminate) running task(s) from the terminal (issue #3069). Thin

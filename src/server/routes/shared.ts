@@ -82,6 +82,11 @@ export interface TaskRouteDeps {
   taskStore: TaskStore;
   monitor: Monitor;
   /**
+   * Ready queue (issue #3933). task-routes hands it the POST /api/tasks
+   * handler as its launch path; absent in minimal harnesses.
+   */
+  readyQueue?: Pick<import('../ready-queue-service.js').ReadyQueueService, 'setDispatcher'>;
+  /**
    * Releases issue-ownership claims on REST-driven terminal transitions
    * (RFC rfc-issue-ownership-lock R8). Regression: the field-by-field
    * getLifecycleDeps() below silently dropped claim release on
@@ -344,6 +349,11 @@ export interface DeployRouteDeps {
 }
 
 export interface RouteDeps {
+  /**
+   * Ready queue (issue #3933): GET/POST /api/ready-queue, DELETE
+   * /api/ready-queue/:id, and the `readyQueue` block of /api/health.
+   */
+  readyQueue?: import('../ready-queue-service.js').ReadyQueueService;
   /** Attached-task-supervision status (RFC attachable-task-supervisor, P2a). Absent in minimal harnesses. */
   supervisionService?: import('../supervision-service.js').SupervisionService;
   /**
