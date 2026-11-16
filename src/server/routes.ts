@@ -34,6 +34,7 @@ import { registerTerminalImageRoutes } from './routes/terminal-image-routes.js';
 import { registerCostComparisonRoutes } from './routes/cost-comparison-routes.js';
 import { registerOutcomeLedgerRoutes } from './routes/outcome-ledger-routes.js';
 import { registerTaskRelationsRoutes } from './routes/task-relations-routes.js';
+import { registerTaskChangesRoutes } from './routes/task-changes-routes.js';
 import { registerSupervisionRoutes } from './routes/supervision-routes.js';
 import { registerRalphRoutes } from './ralph/routes.js';
 import { registerPlaybookChainRoutes } from './routes/playbook-chain-routes.js';
@@ -192,6 +193,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerFileRoutes(app, sharedDeps);
   registerTerminalImageRoutes(app, sharedDeps);
   registerTaskRelationsRoutes(app, sharedDeps);
+  registerTaskChangesRoutes(app, sharedDeps);
   registerSupervisionRoutes(app, sharedDeps);
   if (sharedDeps.issueClaims) registerIssueClaimRoutes(app, sharedDeps.issueClaims);
   registerAskRoutes(app, sharedDeps.asks ?? {});

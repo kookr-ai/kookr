@@ -14374,6 +14374,124 @@ button.act-tool-entry:focus-visible {
   color: var(--text-secondary);
 }
 
+/* Changes tab (#4024 item 4, variant A: inline accordion) */
+.changes-panel {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.changes-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-dim);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.changes-head code {
+  color: var(--text-bright);
+}
+.changes-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.changes-refresh {
+  margin-left: auto;
+  padding: 2px 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.changes-refresh:hover { background: var(--bg-card-hover); }
+.changes-refresh:focus-visible,
+.changes-row:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+}
+.changes-note {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.changes-head .changes-note { padding: 0; }
+.changes-row .changes-note { padding: 0; }
+.changes-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.changes-item {
+  border-bottom: 1px solid var(--border-dim);
+}
+.changes-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+.changes-row:hover { background: var(--bg-card-hover); }
+.changes-row.is-open { background: var(--bg-card); }
+.changes-chevron {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+.changes-status {
+  width: 12px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+.changes-status-added { color: var(--green); }
+.changes-status-modified { color: var(--amber); }
+.changes-status-deleted { color: var(--red); }
+.changes-status-renamed { color: var(--blue); }
+.changes-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.changes-dir { color: var(--text-secondary); }
+.changes-name { color: var(--text-bright); }
+.changes-counts {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.changes-add { color: var(--green); }
+.changes-del { color: var(--red); }
+.changes-diff {
+  padding: 4px 0 8px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.changes-diff .diff-hunk {
+  width: max-content;
+  min-width: 100%;
+}
+.changes-diff .diff-line,
+.changes-diff .diff-hunk-header {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
 /* Hook inventory section inside SettingsDialog */
 .hook-inventory-list {
   list-style: none;

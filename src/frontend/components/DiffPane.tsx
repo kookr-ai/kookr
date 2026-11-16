@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getEditEvent } from '../api/index.js';
 
-interface PatchHunk {
+export interface PatchHunk {
   oldStart: number;
   oldLines: number;
   newStart: number;
@@ -182,6 +182,15 @@ function DiffContent({ body }: { body: Extract<EditEventResponse, { kind: 'edit'
   return (
     <>
       {isNewFile && <div className="diff-pane-badge diff-pane-badge-new">New file</div>}
+      <DiffHunks hunks={hunks} />
+    </>
+  );
+}
+
+/** The hunks of one file's patch. Shared with the Changes tab (#4024). */
+export function DiffHunks({ hunks }: { hunks: PatchHunk[] }) {
+  return (
+    <>
       {hunks.map((hunk, i) => (
         <div className="diff-hunk" key={i}>
           <div className="diff-hunk-header">

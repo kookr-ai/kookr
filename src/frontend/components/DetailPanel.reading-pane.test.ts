@@ -13,6 +13,7 @@ import { DetailPanel } from './DetailPanel.js';
 vi.mock('../telemetry.js', () => ({ track: vi.fn(), trackClick: vi.fn() }));
 vi.mock('./ActivityPanel.js', () => ({ ActivityPanel: () => React.createElement('div', { 'data-testid': 'activity-panel' }) }));
 vi.mock('./GitHubPanel.js', () => ({ GitHubPanel: () => React.createElement('div', { 'data-testid': 'github-panel' }) }));
+vi.mock('./ChangesPanel.js', () => ({ ChangesPanel: ({ taskId }: { taskId: string }) => React.createElement('div', { 'data-testid': 'changes-panel-stub' }, taskId) }));
 vi.mock('./TerminalPanel.js', () => ({ TerminalPanel: () => React.createElement('div', { 'data-testid': 'terminal-panel' }) }));
 vi.mock('./EffectiveHookSettingsModal.js', () => ({
   EffectiveHookSettingsModal: ({ onClose }: { onClose: () => void }) => React.createElement(
@@ -105,6 +106,41 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelectorAll('.detail-tab.active:not(.detail-split-toggle)')).toHaveLength(1);
     expect(q('activity-panel')).not.toBeNull();
+  });
+
+  test.each(['split', 'tabs'] as const)('in the %s layout, the Changes tab shows the task\'s change list in the conversation pane (#4024)', async (detailPaneMode) => {
+    useKookrStore.setState({ detailPaneMode });
+    render(makeAgent());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const changesTab = q('detail-tab-changes')!;
+    expect(changesTab.textContent).toBe('Changes');
+    expect(changesTab.getAttribute('aria-pressed')).toBe('false');
+
+    act(() => changesTab.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(changesTab.getAttribute('aria-pressed')).toBe('true');
+    expect(q('changes-panel-stub')?.textContent).toBe('task-1');
+    expect(q('activity-panel')).toBeNull();
+    expect(container.querySelectorAll('.detail-tab.active:not(.detail-split-toggle)')).toHaveLength(1);
+    // Split view keeps the terminal beside it; the tabbed layout hides the terminal pane.
+    expect(container.querySelector('.detail-split-right')?.classList.contains('pane-hidden-tab')).toBe(detailPaneMode === 'tabs');
+
+    const conversation = [...container.querySelectorAll<HTMLButtonElement>('.detail-tab')].find((b) => b.textContent === 'Conversation')!;
+    act(() => conversation.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(q('changes-panel-stub')).toBeNull();
+    expect(q('activity-panel')).not.toBeNull();
+  });
+
+  test('an agent with no task has no Changes tab, and a remembered Changes tab falls back to Conversation (#4024)', async () => {
+    useKookrStore.setState({ narrowTab: 'changes', leftPane: 'changes', detailPaneMode: 'tabs' });
+    render(makeAgent({ taskId: undefined }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(q('detail-tab-changes')).toBeNull();
+    expect(q('changes-panel-stub')).toBeNull();
+    expect(q('activity-panel')).not.toBeNull();
+    const conversation = [...container.querySelectorAll<HTMLButtonElement>('.detail-tab')].find((b) => b.textContent === 'Conversation');
+    expect(conversation?.getAttribute('aria-pressed')).toBe('true');
   });
 
   test.each([
