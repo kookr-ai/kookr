@@ -102,7 +102,10 @@ export class AskService {
   private readonly log: (message: string) => void;
   private timer: NodeJS.Timeout | null = null;
   private readonly listeners = new Set<(change: AskChange) => void>();
-  /** Pending ask id → when a `kookr ask --wait` poll last read it. In memory only: after a restart the answer is typed. */
+  /**
+   * Pending ask id → when a `kookr ask --wait` poll last read it. In memory only: an answer given
+   * after a restart is typed at once, until the waiter's next poll marks it attached again.
+   */
   private readonly waitPolls = new Map<string, number>();
   /** Answered ask id → the timer that types the answer if the attached `--wait` poll does not read it first. */
   private readonly typeFallbacks = new Map<string, NodeJS.Timeout>();
@@ -155,7 +158,8 @@ export class AskService {
       // the usual time to read it, then type it. Older ones are left alone, like stale expiry notices.
       if (ask.state === 'answered' && ask.taskDelivery === undefined && ask.answeredAt !== undefined
         && this.now() - ask.answeredAt <= STALE_EXPIRY_NOTICE_MS) {
-        this.armTypeFallback(ask.id);
+        // Not known whether the Telegram message was closed before the stop, so the fallback closes it.
+        this.armTypeFallback(ask.id, false);
       }
     }
     await this.tick();
@@ -504,7 +508,7 @@ export class AskService {
     if (lastWaitPoll !== undefined && this.now() - lastWaitPoll <= ASK_WAIT_ATTACHED_MS) {
       // A `kookr ask --wait` poll is attached and will print the answer: typing it too would hand the
       // agent the same answer twice. It is typed only if that poll does not read it in time.
-      this.armTypeFallback(ask.id);
+      this.armTypeFallback(ask.id, true);
       await this.finalize(done, answerHeadline(done));
       return { ok: true, ask: done };
     }
@@ -514,8 +518,10 @@ export class AskService {
   /**
    * Type a recorded answer into the asking task and close the Telegram message with the outcome.
    * Runs at once when no `--wait` poll is attached, or later as the fallback for one that is.
+   * `closed`: the message already shows the answer, so it is edited again only to add a warning
+   * (Telegram refuses an edit that changes nothing).
    */
-  private async typeAnswer(id: string): Promise<AskRecord> {
+  private async typeAnswer(id: string, closed = false): Promise<AskRecord> {
     const ask = this.deps.store.get(id) as AskRecord;
     const answer = ask.answer as NonNullable<AskRecord['answer']>;
     const headline = answerHeadline(ask);
@@ -538,6 +544,7 @@ export class AskService {
     this.emit('updated', id);
 
     const done = this.deps.store.get(id) as AskRecord;
+    if (closed && delivered.ok) return done;
     await this.finalize(
       done,
       delivered.ok
@@ -548,10 +555,10 @@ export class AskService {
   }
 
   /** Type the answer after `ASK_WAIT_FALLBACK_MS` unless a `--wait` poll reads it first (`pollForWaiter`). */
-  private armTypeFallback(id: string): void {
+  private armTypeFallback(id: string, closed: boolean): void {
     const timer = setTimeout(() => {
       this.typeFallbacks.delete(id);
-      this.typeAnswer(id).catch((err) => this.log(`[asks] fallback typing failed ask=${id}: ${String(err)}`));
+      this.typeAnswer(id, closed).catch((err) => this.log(`[asks] fallback typing failed ask=${id}: ${String(err)}`));
     }, ASK_WAIT_FALLBACK_MS);
     timer.unref();
     this.typeFallbacks.set(id, timer);

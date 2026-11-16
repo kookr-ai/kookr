@@ -639,6 +639,7 @@ describe('an attached kookr ask --wait poll (#3824)', () => {
     const ask = await createOk();
     await h.service.pollForWaiter(ask.id);
     await tap(ask, 0);
+    const closings = h.notifier.finalizeAsk.mock.calls.length;
     await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS - 1);
     expect(h.deliver).not.toHaveBeenCalled();
 
@@ -647,6 +648,8 @@ describe('an attached kookr ask --wait poll (#3824)', () => {
     expect(h.deliver).toHaveBeenCalledTimes(1);
     expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${ask.id}: Yes`);
     expect(h.store.get(ask.id)?.taskDelivery).toBe('delivered');
+    // The Telegram message already shows the answer: no second, identical edit.
+    expect(h.notifier.finalizeAsk).toHaveBeenCalledTimes(closings);
     // A poll arriving after the fallback typed it changes nothing.
     await h.service.pollForWaiter(ask.id);
     expect(h.deliver).toHaveBeenCalledTimes(1);
@@ -726,6 +729,29 @@ describe('an attached kookr ask --wait poll (#3824)', () => {
     expect(h.deliver).toHaveBeenCalledTimes(1);
     expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${recent.id}: Yes`);
     expect(store.get(old.id)?.taskDelivery).toBeUndefined();
+    await restarted.stop();
+  });
+
+  it('after a restart, leaves the answer for a --wait poll that reads it before the fallback fires', async () => {
+    const ask = await createOk();
+    await h.service.pollForWaiter(ask.id);
+    await tap(ask, 0);
+    await h.service.stop();
+    await h.store.flush();
+
+    const store = await AskStore.open(h.dir);
+    const restarted = new AskService({
+      store,
+      getNotifier: () => h.notifier as unknown as AskNotifier,
+      taskStatus: (id) => h.statuses.get(id),
+      deliverToTask: h.deliver,
+      now: () => h.clock.now,
+    });
+    await restarted.start();
+    expect(await restarted.pollForWaiter(ask.id)).toMatchObject({ state: 'answered', taskDelivery: 'delivered' });
+    await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS * 2);
+    await settled();
+    expect(h.deliver).not.toHaveBeenCalled();
     await restarted.stop();
   });
 });
