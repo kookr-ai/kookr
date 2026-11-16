@@ -126,19 +126,24 @@ describe('buildLucyLiveBriefing: what needs the operator (#3927)', () => {
   it('stays within the limit with everything full, and the "Needs the operator" section is cut last', () => {
     const tasks: BriefingTask[] = Array.from({ length: 300 }, (_, i) => ({ name: `Live task ${i}`, status: 'inProgress' as const, updatedAt: ago(i) }));
     const asks = Array.from({ length: 10 }, (_, i) => ({
-      id: `q${i}`, taskId: `t${i}`, taskName: `Asker ${i}`, question: `Question ${i} ${'x'.repeat(200)}`, options: ['Yes', 'No'], allowText: false,
+      id: `q${i}`, taskId: `t${i}`, taskName: `Asker ${i}`, question: `Question ${i} ${'word '.repeat(40)}`, options: ['Yes', 'No'], allowText: false,
       state: 'pending' as const, createdAt: ago(i).getTime(), expiresAt: NOW + 60_000,
     }));
-    const needs = Array.from({ length: 30 }, (_, i) => need(`Waiting task ${i}`, { kind: 'permission_blocked', tool: 'mcp__github__create_pull_request', sinceMs: ago(60 - i).getTime() }, 'a-rather-long-project-name-here'));
+    // Lines as long as they can be: a 48-character name, a 40-character project, a 64-character tool.
+    const tool = 'mcp__a_very_long_server_name__and_a_long_tool_name_too_xxxxxxxx';
+    const needs = Array.from({ length: 30 }, (_, i) => need(`Waiting task number ${i} here`, { kind: 'permission_blocked', tool, sinceMs: ago(60 - i).getTime() }, 'the-long-project-name-for-this-test-xyz1'));
     const text = buildLucyLiveBriefing(tasks, NOW, asks, { needs, train: { running: false, halted: null, pendingSince: ago(45).toISOString(), alerting: true } });
     expect(text.length).toBeLessThanOrEqual(MAX_BRIEFING_CHARS);
     expect(text.startsWith('Needs the operator: 30 tasks are waiting')).toBe(true);
     // The whole section survives, every listed task and the count of the rest: the questions and the task list gave way.
-    for (let i = 0; i < MAX_LISTED_NEEDS; i++) expect(text).toContain(`"Waiting task ${i}" in project a-rather-long-project-name-here: waiting for permission to use mcp__github__create_pull_request`);
+    for (let i = 0; i < MAX_LISTED_NEEDS; i++) expect(text).toContain(`"Waiting task number ${i} here" in project ${'the-long-project-name-for-this-test-xyz1'}: waiting for permission to use ${tool}`);
     expect(text).toContain('- and 22 more not listed');
     expect(text.indexOf('- and 22 more not listed')).toBeLessThan(text.indexOf('Integration train'));
-    // Questions are cut from their end, not dropped all at once.
+    // Questions are cut from their end, not dropped all at once: the first ones stay, later ones and the task list go.
     expect(text).toContain('Questions from tasks waiting for the operator: 10');
+    expect(text).toContain('The task "Asker 0" asked just now: Question 0 word');
+    expect(text).not.toContain('"Asker 3"');
+    expect(text).not.toContain('Task counts');
     expect(text).toContain('(list cut short)');
   });
 });
@@ -160,6 +165,11 @@ describe('buildLucyLiveBriefing: the integration train (#3927)', () => {
   it('says it is stalled when the monitor raised the alarm', () => {
     expect(brief({ running: false, halted: null, pendingSince: ago(45).toISOString(), alerting: true }))
       .toContain('Integration train: stalled, not running; merged changes have waited for 45 minutes to reach main.');
+  });
+
+  it('says it is stalled when the alarm is out even if the waiting time is unknown', () => {
+    expect(brief({ running: false, halted: null, pendingSince: null, alerting: true }))
+      .toContain('Integration train: stalled, not running; merged changes have waited for an unknown time to reach main.');
   });
 
   it('says it is not running when a merged change waits and no alarm is out yet', () => {
