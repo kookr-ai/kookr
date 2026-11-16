@@ -226,6 +226,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
     playbooksLastFetchedAt: 0,
     playbooksLastFetchedCwd: '',
     hostCapabilities: {},
+    playbooksCheckoutMissing: null,
     sttUrl: '',
     ttsUrl: '',
     speechCapabilities: null,
@@ -382,10 +383,12 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
       });
     },
 
-    handlePlaybooks: (playbooks, cwd, capabilities) => {
+    handlePlaybooks: (playbooks, cwd, capabilities, checkoutMissing) => {
       set({
         playbooks,
         hostCapabilities: capabilities ?? {},
+        // Reset on every list so a notice never leaks across projects.
+        playbooksCheckoutMissing: checkoutMissing ?? null,
         playbooksLoading: false,
         playbooksLastFetchedAt: Date.now(),
         playbooksLastFetchedCwd: cwd,

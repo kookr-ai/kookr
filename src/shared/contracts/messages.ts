@@ -7,7 +7,7 @@ import type { CircuitBreakerSnapshot } from './circuit-breaker.js';
 import type { DiagnosticReport } from './diagnostic.js';
 import type { GitHubPRState, GitHubIssueState, GitHubStateChange } from './github.js';
 import type { AttemptState, ContributionAttempt, IssueCheckError } from './oss-attempts.js';
-import type { Playbook, PlaybookScope, LaunchDependency } from './playbook.js';
+import type { CheckoutMissingPlaybooks, Playbook, PlaybookScope, LaunchDependency } from './playbook.js';
 import type { ProjectSummary } from './project-summary.js';
 import type { ProjectConfig } from './project-config.js';
 import type { QuickAction } from './quick-action.js';
@@ -446,6 +446,12 @@ export type ServerMessage =
        * (fail-open). See `docs/rfc/rfc-capability-gated-playbook-params.md`.
        */
       capabilities?: Partial<Record<LaunchDependency, HostCapability>>;
+      /**
+       * Project playbooks on the remote default branch that the `cwd`
+       * checkout lacks (#3764). Omitted when none are missing or the check
+       * failed open.
+       */
+      checkoutMissingPlaybooks?: CheckoutMissingPlaybooks;
     }
   | { type: 'suggestion'; agentId: string; suggestionId?: string; suggestions: string[]; quickActions: QuickAction[] }
   | { type: 'projectSummaries'; projects: ProjectSummary[] }

@@ -55,6 +55,22 @@ describe('PlaybookHandler.listPlaybooks', () => {
     });
   });
 
+  test('#3764 forwards checkoutMissingPlaybooks, and leaves the key off when absent', async () => {
+    const sent: ServerMessage[] = [];
+    const playbooks = [fakePlaybook()];
+    const missing = { defaultBranchRef: 'origin/main', missing: ['nb-janitor.md'] };
+    mockPreparePlaybookList.mockResolvedValueOnce({ playbooks, checkoutMissingPlaybooks: missing });
+    mockPreparePlaybookList.mockResolvedValueOnce({ playbooks });
+
+    const handler = new PlaybookHandler({ send: (msg) => sent.push(msg) });
+    await handler.handle({ type: 'listPlaybooks', cwd: '/cwd' });
+    await handler.handle({ type: 'listPlaybooks', cwd: '/cwd' });
+
+    const [withMissing, without] = sent as Extract<ServerMessage, { type: 'playbooks' }>[];
+    expect(withMissing.checkoutMissingPlaybooks).toEqual(missing);
+    expect('checkoutMissingPlaybooks' in without).toBe(false);
+  });
+
   test('omits capabilities when preparePlaybookList does not supply them', async () => {
     const sent: ServerMessage[] = [];
     const playbooks = [fakePlaybook()];

@@ -31,8 +31,14 @@ export class PlaybookHandler {
   async handle(msg: PlaybookMessage): Promise<{ duplicate: boolean }> {
     switch (msg.type) {
       case 'listPlaybooks': {
-        const { playbooks, capabilities } = await preparePlaybookList(msg.cwd);
-        this.deps.send({ type: 'playbooks', cwd: msg.cwd, playbooks, capabilities });
+        const { playbooks, capabilities, checkoutMissingPlaybooks } = await preparePlaybookList(msg.cwd);
+        this.deps.send({
+          type: 'playbooks',
+          cwd: msg.cwd,
+          playbooks,
+          capabilities,
+          ...(checkoutMissingPlaybooks ? { checkoutMissingPlaybooks } : {}),
+        });
         return { duplicate: false };
       }
 

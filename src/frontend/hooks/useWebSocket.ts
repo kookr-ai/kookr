@@ -330,7 +330,7 @@ export function useWebSocket() {
               store.handleGitHubUpdate(msg.taskId, msg.prs, msg.issues, msg.changes);
               break;
             case 'playbooks':
-              store.handlePlaybooks(msg.playbooks, msg.cwd, msg.capabilities);
+              store.handlePlaybooks(msg.playbooks, msg.cwd, msg.capabilities, msg.checkoutMissingPlaybooks);
               break;
             case 'suggestion':
               store.handleSuggestion(msg.agentId, msg.suggestions, msg.quickActions);

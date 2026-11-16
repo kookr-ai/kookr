@@ -8,7 +8,13 @@ import {
   type AgentSelection,
   type GrokAuthStatusResponse,
 } from '../../shared/protocol.js';
-import type { LaunchDependency, PlaybookParameterOption, PlaybookScope, PlaybookSourceIdentity } from '../../shared/contracts/playbook.js';
+import type {
+  CheckoutMissingPlaybooks,
+  LaunchDependency,
+  PlaybookParameterOption,
+  PlaybookScope,
+  PlaybookSourceIdentity,
+} from '../../shared/contracts/playbook.js';
 import { isSamePlaybookResource } from '../playbook-source-identity.js';
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
@@ -217,6 +223,43 @@ interface Props {
   grokAuth?: GrokAuthStatusResponse | null;
 }
 
+/** At most this many missing names are listed; the rest collapse into "and N more". */
+const MAX_LISTED_MISSING_PLAYBOOKS = 5;
+
+/**
+ * Issue #3764: the project tier is read from the checkout on disk, so a
+ * checkout parked on an old branch silently lacks playbooks already merged to
+ * the default branch, and a search for one returns "No playbooks match". This
+ * notice names them and says why. Exported for tests.
+ */
+export function CheckoutMissingPlaybooksNotice({
+  missing,
+}: {
+  missing: CheckoutMissingPlaybooks | null;
+}): React.ReactElement | null {
+  if (!missing || missing.missing.length === 0) return null;
+  const count = missing.missing.length;
+  const listed = missing.missing.slice(0, MAX_LISTED_MISSING_PLAYBOOKS);
+  const more = count - listed.length;
+  return (
+    <div className="playbook-relaunch-note playbook-checkout-missing" role="status">
+      {count === 1 ? '1 playbook' : `${count} playbooks`} on <code>{missing.defaultBranchRef}</code>{' '}
+      {count === 1 ? 'is' : 'are'} not in this checkout
+      {missing.checkoutBranch ? (
+        <>, which is on <code>{missing.checkoutBranch}</code></>
+      ) : null}
+      :
+      <ul className="playbook-checkout-missing-names">
+        {listed.map((name) => (
+          <li key={name}><code>{name}</code></li>
+        ))}
+        {more > 0 && <li>and {more} more</li>}
+      </ul>
+      <div className="playbook-checkout-missing-hint">Update this checkout to list them.</div>
+    </div>
+  );
+}
+
 function ResolvedCwdLabel({
   cwd,
   overrideCwd,
@@ -297,7 +340,16 @@ export function PlaybookBrowser({
   onRequestEditCwd,
   grokAuth = null,
 }: Props) {
-  const { playbooks, playbooksLoading, availableAgentTypes, defaultAgentType, projectSummaries, hostCapabilities, roundRobinIndex } = useKookrStore();
+  const {
+    playbooks,
+    playbooksLoading,
+    playbooksCheckoutMissing,
+    availableAgentTypes,
+    defaultAgentType,
+    projectSummaries,
+    hostCapabilities,
+    roundRobinIndex,
+  } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const [selected, setSelected] = useState<Playbook | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
@@ -1164,6 +1216,7 @@ export function PlaybookBrowser({
           playbookSourceCwd={usesSplitLaunchFields ? effectivePlaybookSourceCwd : undefined}
           onRequestEdit={onRequestEditCwd}
         />
+        <CheckoutMissingPlaybooksNotice missing={playbooksCheckoutMissing} />
         <div className="playbook-empty">
           No playbooks found.
           <br />
@@ -1203,6 +1256,7 @@ export function PlaybookBrowser({
         playbookSourceCwd={usesSplitLaunchFields ? effectivePlaybookSourceCwd : undefined}
         onRequestEdit={onRequestEditCwd}
       />
+      <CheckoutMissingPlaybooksNotice missing={playbooksCheckoutMissing} />
       {relaunchUnavailable && (
         <div className="playbook-relaunch-note" role="status">
           {relaunchUnavailable === 'missing-identity' ? (

@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Playbook, PlaybookParameter } from '../../core/playbook.js';
 
-const { mockDiscoverPlaybooks, mockGetProjectId, mockKbProbe, mockEvolutionConfigProbe } = vi.hoisted(() => ({
+const {
+  mockDiscoverPlaybooks,
+  mockGetProjectId,
+  mockKbProbe,
+  mockEvolutionConfigProbe,
+  mockFindMissing,
+} = vi.hoisted(() => ({
+  mockFindMissing: vi.fn(),
   mockDiscoverPlaybooks: vi.fn(),
   mockGetProjectId: vi.fn(),
   mockKbProbe: vi.fn(),
@@ -20,6 +27,10 @@ vi.mock('../../core/project-identity.js', () => ({
 // module so the table dispatches to the controlled fake.
 vi.mock('../launch-capability-probe.js', () => ({
   CAPABILITY_PROBES: { kb: mockKbProbe, 'evolution-config': mockEvolutionConfigProbe },
+}));
+
+vi.mock('../checkout-auto-sync.js', () => ({
+  findPlaybooksMissingFromCheckout: mockFindMissing,
 }));
 
 import { discoverApplicablePlaybooks, preparePlaybookList } from './playbook-list.js';
@@ -51,6 +62,35 @@ function playbook(parameters: PlaybookParameter[], overrides: Partial<Playbook> 
 describe('preparePlaybookList', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFindMissing.mockResolvedValue(null);
+  });
+
+  test('#3764 attaches the checkout-missing playbooks for the listed cwd, with or without gated params', async () => {
+    const missing = { defaultBranchRef: 'origin/main', checkoutBranch: 'feat', missing: ['nb-janitor.md'] };
+    mockFindMissing.mockResolvedValue(missing);
+    mockDiscoverPlaybooks.mockResolvedValueOnce([playbook([])]);
+    expect(await preparePlaybookList('/work/repo')).toEqual({
+      playbooks: [playbook([])],
+      checkoutMissingPlaybooks: missing,
+    });
+    expect(mockFindMissing).toHaveBeenCalledWith('/work/repo');
+
+    mockDiscoverPlaybooks.mockResolvedValueOnce([playbook([param({ gatedBy: 'kb' })])]);
+    mockKbProbe.mockResolvedValueOnce('available');
+    const gated = await preparePlaybookList('/work/repo');
+    expect(gated.capabilities).toEqual({ kb: 'available' });
+    expect(gated.checkoutMissingPlaybooks).toEqual(missing);
+  });
+
+  test('#3764 omits the field when nothing is missing, and a rejecting check never fails the list', async () => {
+    mockDiscoverPlaybooks.mockResolvedValueOnce([playbook([])]);
+    const current = await preparePlaybookList('/work/repo');
+    expect(current).toEqual({ playbooks: [playbook([])] });
+    expect('checkoutMissingPlaybooks' in current).toBe(false);
+
+    mockFindMissing.mockRejectedValueOnce(new Error('git exploded'));
+    mockDiscoverPlaybooks.mockResolvedValueOnce([playbook([])]);
+    expect(await preparePlaybookList('/work/repo')).toEqual({ playbooks: [playbook([])] });
   });
 
   test('R4b.8 hides playbooks pinned to a different repository from the browsed project', async () => {

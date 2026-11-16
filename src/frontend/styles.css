@@ -3994,6 +3994,14 @@ a.overview-tour-link:visited:hover {
   border-radius: 4px;
   color: var(--blue);
 }
+.playbook-checkout-missing-names {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+.playbook-checkout-missing-hint {
+  margin-top: 4px;
+  color: var(--text-secondary);
+}
 .playbook-empty code {
   background: var(--bg-terminal);
   padding: 0 3px;
