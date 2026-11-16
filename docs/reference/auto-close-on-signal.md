@@ -33,14 +33,24 @@ path, the auto-close delay and the TTL escalation share one live-work veto:
 they defer while a turn is running, the pane shows a human prompt, a viewer has
 the task open, or the task holds a confirmed-open PR.
 
-**"Signal still pending" rarely lasts for claude-code tasks.** The agent raises
-the signal from inside a Bash call, and the hook event of that same call
-(PostToolUse) counts as the turn resuming, which clears the pending signal
-within a second (`src/server/event-pipeline.ts`). The rows that need a pending
-signal therefore mostly see claude-code tasks only when the signal arrived late
-through the outbox spool. The settle path does not depend on the pending
-signal: it reads `finishedSignalAt`, which records the latest "finished" raise
-and is kept until a new user prompt.
+**What clears a pending signal (issue #3954).** The agent raises the signal
+from inside a Bash call (`kookr signal completion-ready`), so the hook events
+of that same call arrive around the signal and look like a live turn. For
+claude-code and opencode tasks they no longer clear it
+(`src/server/event-pipeline.ts`):
+
+- claude-code: the signal is cleared by a new user prompt, or by a tool call
+  that starts after the signal (a PreToolUse other than the `kookr signal` call
+  itself). The closing PostToolUse, tool errors, permission requests and the
+  Stop leave it pending, so the rows above act on claude-code tasks too. An
+  agent that keeps working after signalling loses the signal at its next tool
+  call.
+- opencode: only a new user prompt clears it.
+- Other agent types: any live turn event clears it, as before.
+
+The settle path does not depend on the pending signal: it reads
+`finishedSignalAt`, which records the latest "finished" raise and is kept until
+a new user prompt.
 
 ## TTL escalation for non-opted-in tasks (issue #1526)
 
