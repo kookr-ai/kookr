@@ -61,29 +61,37 @@ function run(cmd, args, cwd, timeout = 5_000) {
 /**
  * Splits a shell command into simple commands, each a list of words. Quotes are
  * honoured (a quoted `;` or `gh pr merge` stays inside one word), heredoc bodies
- * are dropped, a `<<<` here-string is not taken for a heredoc, and `;`, `&&`,
+ * are dropped, a `<<<` here-string is not taken for a heredoc and its word is
+ * dropped (it is the command's input, not an argument), and `;`, `&&`,
  * `||`, `|`, `&`, newlines and parentheses end a command. Not a full shell
  * parser; enough to find what runs at command position.
  *
- * With `comments: true`, a `#` that starts a word after a blank or an operator
- * also skips the rest of the line, so an apostrophe in a comment opens no
- * quote. That rule is approximate (bash does not start a comment inside `${…}`
- * or backticks), so a guard must not trust that split alone: check both splits
- * with `bothSplits` and deny if either one denies.
+ * With `comments: true`, a `#` that starts a word after a blank, an operator or
+ * `(` also skips the rest of the line, so an apostrophe in a comment opens no
+ * quote. That rule is approximate (bash does not start a comment inside `${…}`,
+ * backticks or a `[[ =~ ^(#|$) ]]` regex), so a guard must not trust that
+ * split alone: check both splits with `bothSplits` and deny if either one
+ * denies.
  */
 export function splitCommands(src, { comments = false } = {}) {
   const commands = [];
   let words = [];
   let word = '';
   let inWord = false;
+  // Set after `<<<`: the next word is the here-string, not an argument.
+  let hereString = false;
   const heredocs = [];
   const endWord = () => {
-    if (inWord) words.push(word);
+    if (inWord) {
+      if (hereString) hereString = false;
+      else words.push(word);
+    }
     word = '';
     inWord = false;
   };
   const endCommand = () => {
     endWord();
+    hereString = false;
     if (words.length > 0) commands.push(words);
     words = [];
   };
@@ -113,9 +121,9 @@ export function splitCommands(src, { comments = false } = {}) {
       i = j;
       continue;
     }
-    if (comments && c === '#' && !inWord && (i === 0 || /[\s;&|]/.test(src[i - 1]))) {
-      // Comment: skip to the end of the line. In `$(date)#x` or `^(#|$)` the
-      // `#` follows no blank, so it stays part of a word.
+    if (comments && c === '#' && !inWord && (i === 0 || /[\s;&|(]/.test(src[i - 1]))) {
+      // Comment: skip to the end of the line. In `$(date)#x` the `#` follows
+      // `)`, so it stays part of a word.
       const eol = src.indexOf('\n', i);
       i = (eol === -1 ? src.length : eol) - 1;
       continue;
@@ -123,6 +131,7 @@ export function splitCommands(src, { comments = false } = {}) {
     if (c === '<' && src[i + 1] === '<' && src[i + 2] === '<') {
       // Here-string `<<<`: a redirect, not a heredoc; its word follows.
       endWord();
+      hereString = true;
       i += 2;
       continue;
     }
@@ -346,16 +355,20 @@ function examine(words, state) {
   return null;
 }
 
-/** Denial reason for the whole command, or null to allow. */
 /**
  * The command split without and with comment handling. A guard that denies
  * when either split denies sees at least what the plain split sees, so the
- * approximate comment rule can add a denial but never hide a command.
+ * approximate comment rule can add a denial but never hide a command. When
+ * the two splits are the same (no comment), only one is returned, so a guard
+ * does not repeat its git and gh lookups.
  */
 export function bothSplits(src) {
-  return [splitCommands(src), splitCommands(src, { comments: true })];
+  const plain = splitCommands(src);
+  const withComments = splitCommands(src, { comments: true });
+  return JSON.stringify(plain) === JSON.stringify(withComments) ? [plain] : [plain, withComments];
 }
 
+/** Denial reason for the whole command, or null to allow. */
 export function decide(command, cwd) {
   for (const commands of bothSplits(command)) {
     const state = { dir: cwd || process.cwd() };

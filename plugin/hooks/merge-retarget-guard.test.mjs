@@ -2,7 +2,7 @@
 // real git checkouts in a temp directory, with a fake `gh` on PATH.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { splitCommands } from './merge-retarget-guard.mjs';
@@ -112,6 +112,12 @@ describe('merge-retarget-guard', () => {
     expect(hook(`cd ${stale} && kookr merge 3802 --repo kookr-ai/kookr`, fresh)).toBeNull();
   });
 
+  it('starts each split from the event cwd, not where the previous split left off (#3895)', () => {
+    // The comment makes the two splits differ, so both run. If the second one
+    // started in the stale checkout the first one moved to, it would deny.
+    expect(hook(`pnpm merge 1; cd ${stale} # back`, fresh)).toBeNull();
+  });
+
   it('allows everything when the repository configures no integration branch', () => {
     expect(hook('pnpm -s merge 3802', plain)).toBeNull();
     expect(hook('bash scripts/kookr-merge.sh 3802', plain)).toBeNull();
@@ -132,6 +138,22 @@ describe('merge-retarget-guard', () => {
     expect(hook('gh pr merge 3802', fresh, { base: 'feature-x' })).toBeNull();
   });
 
+  it('looks up the pull request once when the command has no comment (#3898)', () => {
+    const lookups = () => {
+      const log = existsSync(ghLog) ? readFileSync(ghLog, 'utf-8') : '';
+      return log.split('\n').filter((l) => l.startsWith('pr view')).length;
+    };
+    const before = lookups();
+    expect(hook('gh pr merge 3802 --squash', fresh, { base: 'staging' })).toBeNull();
+    expect(lookups() - before).toBe(1);
+  });
+
+  it('reads the word after a <<< here-string as its input, not as the pull request (#3894)', () => {
+    writeFileSync(ghLog, '');
+    expect(hook('gh pr merge <<< 7', fresh, { base: 'main' })).toMatch(/into main directly/);
+    expect(readFileSync(ghLog, 'utf-8')).toBe('pr view --json baseRefName --jq .baseRefName\n');
+  });
+
   it('denies a gh merge whose base cannot be read in a configured repository (fails closed)', () => {
     expect(hook('gh pr merge 3802', fresh, { base: '' })).toMatch(/could not be read/);
   });
@@ -150,8 +172,12 @@ describe('merge-retarget-guard', () => {
       expect(hook(`${prefix}; pnpm merge 1`, stale), prefix).toMatch(/predates/);
     }
     expect(hook('[[ $l =~ ^( #|$) ]] && pnpm merge 1', stale)).toMatch(/predates/);
-    // A real comment with an apostrophe does not hide the next line either.
+    // The comment split takes this `(#` for a comment; the plain split still sees the merge.
+    expect(hook('[[ $l =~ ^(#|$) ]] && pnpm merge 1', stale)).toMatch(/predates/);
+    // A real comment with an apostrophe does not hide the next line either,
+    // also right after `(` (#3899).
     expect(hook("# don't skip it\npnpm merge 1", stale)).toMatch(/predates/);
+    expect(hook("(# don't skip it\npnpm merge 1)", stale)).toMatch(/predates/);
   });
 });
 
@@ -163,9 +189,17 @@ describe('splitCommands', () => {
     expect(splitCommands("cat <<'EOF'\npnpm merge 1\nEOF\nls")).toEqual([['cat'], ['ls']]);
     expect(splitCommands("# don't merge yet\npnpm merge 1", { comments: true })).toEqual([['pnpm', 'merge', '1']]);
     expect(splitCommands('echo a # b; c\nls', { comments: true })).toEqual([['echo', 'a'], ['ls']]);
-    expect(splitCommands('jq . <<< "$x"\npnpm merge 1')).toEqual([['jq', '.', '$x'], ['pnpm', 'merge', '1']]);
-    // A `#` inside a word, or right after `(` or `)`, does not start a comment.
-    for (const src of ['echo $#', 'echo ${#x}', 'echo a#b', 'echo "x"#y', 'f=out-$(date +%s)#1', '[[ $l =~ ^(#|$) ]]', 'echo $((16#ff))#y']) {
+    // The here-string word is input, not an argument; only that one word is dropped (#3894).
+    expect(splitCommands('jq . <<< "$x"\npnpm merge 1')).toEqual([['jq', '.'], ['pnpm', 'merge', '1']]);
+    expect(splitCommands('gh pr merge <<< 7 8')).toEqual([['gh', 'pr', 'merge', '8']]);
+    expect(splitCommands('gh pr merge <<<7')).toEqual([['gh', 'pr', 'merge']]);
+    expect(splitCommands('cat <<<\ngh pr merge 7')).toEqual([['cat'], ['gh', 'pr', 'merge', '7']]);
+    expect(splitCommands('cat <<< ; gh pr merge 7')).toEqual([['cat'], ['gh', 'pr', 'merge', '7']]);
+    // Right after `(`, a `#` starts a comment, as in bash (#3899).
+    expect(splitCommands("(# don't merge\nls)", { comments: true })).toEqual([['ls']]);
+    expect(splitCommands("echo $(# don't\nls)", { comments: true })).toEqual([['echo', '$'], ['ls']]);
+    // A `#` inside a word, or right after `)`, does not start a comment.
+    for (const src of ['echo $#', 'echo ${#x}', 'echo a#b', 'echo "x"#y', 'f=out-$(date +%s)#1', 'echo $((16#ff))#y']) {
       expect(splitCommands(`${src}; pnpm merge 1`, { comments: true }).at(-1), src).toEqual(['pnpm', 'merge', '1']);
     }
     expect(splitCommands('(cd /y && bash scripts/kookr-merge.sh 2)')).toEqual([

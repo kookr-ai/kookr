@@ -175,14 +175,18 @@ by its literal path, or to empty a directory with
 `find /literal/dir -mindepth 1 -delete`.
 
 Allowed: literal targets (`rm -rf /tmp/x/scratchpad/mutdir`), non-recursive
-`rm "$f"`, `git rm -r dir`, a variable in a redirect (`2>>"$LOG"`), and text
-that only mentions such a command (inside quotes, a commit message, a grep
-pattern, a heredoc body or a `#` comment). It reuses the word splitter of
+`rm "$f"`, `git rm -r dir`, a variable in a redirect (`2>>"$LOG"`) or a
+here-string (`<<< "$x"`), and text that only mentions such a command (inside
+quotes, a commit message, a grep pattern, a heredoc body, or a `#` comment with
+no `;`, `&`, `|`, `(` or `)` before the `rm`). It reuses the word splitter of
 `merge-retarget-guard.mjs`.
 
 Known limits: it does not look inside `bash -c`, `eval`, `xargs rm` or
-`find -exec rm`. The splitter drops quoting, so a single-quoted or escaped `$`
-(`rm -rf '$DIR'`) counts as a variable and is denied. It never runs a
+`find -exec rm`. The command is always also split without comment handling,
+so a comment with an operator before the `rm` is read as a command and denied:
+`# cleanup; rm -rf "$D"`, `x=1 # a | rm -r $D`. The splitter drops quoting, so
+a single-quoted or escaped `$` (`rm -rf '$DIR'`) counts as a variable and is
+denied. It never runs a
 subprocess, and it fails open: a crash allows the command and is logged to
 `~/.kookr/hook-errors.log`.
 
