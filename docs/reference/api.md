@@ -731,11 +731,14 @@ response is still `200` with `"mode": "resume"`, but the later retry starts
 fresh from the original prompt. This happens, for example, when a failed
 dependency-recovery probe puts the task back in the pending queue.
 
-Every call, refused or not, is recorded as a `task.reopen` row in
-`audit.jsonl`, attributed through `X-Kookr-Actor` (see
+Each call that reaches the reopen command (past the token and `shared:`
+checks) is recorded as a `task.reopen` row in `audit.jsonl`, whether it
+reopens the task or is refused, attributed through `X-Kookr-Actor` (see
 [Actor attribution](#actor-attribution-and-the-supervisor-token)). The row
-carries `outcome`, the task's `status`, `resumeMode` when the task was
-reopened, and `code` and `error` when it was refused.
+always carries `outcome`. A reopened task's row adds `status` and
+`resumeMode`. A refused call's row adds `error`, plus `code` when the refusal
+is a 409 (for example `task_not_terminal`). An unexpected server error
+(HTTP 500) writes no row.
 
 Error responses:
 
