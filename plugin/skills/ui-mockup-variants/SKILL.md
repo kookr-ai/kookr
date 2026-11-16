@@ -60,8 +60,8 @@ Instead:
    each variant committed to the pull request branch (for example under
    `docs/mockups/<feature>/`) and embedded in the comment. A `localhost` URL or
    a host path is not enough.
-3. Post the opinion request on the issue, add the `needs-operator-opinion`
-   label, and send one `kookr ask` without `--wait`, as described in the
+3. Post the opinion request on the issue (and later on the pull request), add
+   the `needs-operator-opinion` label to each, and send one `kookr ask` without `--wait`, as described in the
    `asking-the-operator` skill ("Unattended tasks"). Variant letters are the
    options.
 4. Implement the recommended variant (Step 5) and deliver the pull request with

@@ -131,6 +131,8 @@ export function parseOpinionRequest(comment: OpinionComment): OpinionRequest | u
 export function handledReplyIds(comments: readonly OpinionComment[]): Set<number> {
   const ids = new Set<number>();
   for (const c of comments) {
+    // An outsider must not be able to hide a reply by posting a fake record.
+    if (!isTrustedComment(c)) continue;
     for (const m of c.body.matchAll(HANDLED_RE)) ids.add(Number(m[1]));
   }
   return ids;
@@ -235,7 +237,7 @@ export function followUpPrompt(input: {
     `Start every comment you post on that ${kind} with \`<!-- ${AUTOMATION_MARKER} -->\` on its own line, so it is not read as the operator's next reply.`,
     `If the request says the asking task stopped before a hard-to-undo choice, the reply is the go-ahead: remove the \`automation-blocked\` label and deliver the rest of the ${kind} with the chosen option.`,
     `Treat the reply as the operator's decision for this question only; keep the change limited to it.`,
-    `If the reply is unclear, do not guess: post one comment on the ${kind} that asks what to change, starting with your question, and stop.`,
+    `If the reply is unclear, do not guess: post one comment on the ${kind} that asks what to change (after the automation marker line) and stop.`,
     `When your change is merged, remove the \`${OPINION_LABEL}\` label unless the change itself needs another opinion request.`,
   ].join('\n');
 }

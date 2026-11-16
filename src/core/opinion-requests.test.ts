@@ -81,6 +81,13 @@ describe('planOpinionSweep', () => {
     expect(planOpinionSweep([comment('B', 0), request(1)]).actions).toEqual([]);
   });
 
+  it('ignores a handled-reply record posted by an outsider', () => {
+    const req = request();
+    const reply = comment('B', 1);
+    const fake = { ...comment(`<!-- kookr:opinion-handled reply=${reply.id} action=accept -->`, 2), authorAssociation: 'NONE' };
+    expect(planOpinionSweep([req, reply, fake]).actions.map((a) => a.reply.commentId)).toEqual([reply.id]);
+  });
+
   it('never treats a comment that carries an opinion marker as a reply', () => {
     const req = request();
     const quoting = comment('B\n<!-- kookr:opinion-handled reply=1 action=follow-up -->', 1);

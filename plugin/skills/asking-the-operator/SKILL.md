@@ -146,8 +146,11 @@ phone, with a comment.
    tool is available in the session. Otherwise commit screenshots (PNG) to the
    pull request branch and embed them in the comment. Never only a path or a
    `localhost` URL on the host.
-3. **Link it on the issue** (and on the pull request once it exists) with one
-   comment. Its first line is the marker, with the recommended letter:
+3. **Link it on the issue** with one comment, and label the issue. Its first
+   line is the marker, with the recommended letter. When you open the pull
+   request, post the same request comment on it and label it too, so the
+   operator can answer on whichever page they opened (the sweep reads only
+   labelled items):
 
    ```bash
    gh label create needs-operator-opinion --repo "$REPO" --color FBCA04 \
@@ -168,6 +171,8 @@ phone, with a comment.
    <full URL of the artifact or pull request, on its own line>
    MD
    gh issue edit "$N" --repo "$REPO" --add-label needs-operator-opinion
+   # Later, on the pull request: the same comment, then
+   #   gh pr edit "$PR" --repo "$REPO" --add-label needs-operator-opinion
    ```
 
    The operator answers in plain language, with no prefix or format. Workers
