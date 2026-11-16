@@ -786,7 +786,7 @@ reviewed head. Then:
 Without `--repo`, the PR is resolved from the git remote of the current
 directory, as with `gh`. The verb runs the wrapper from the checkout that the
 `kookr` on `PATH` belongs to, so it needs a source checkout: the npm package
-does not ship `scripts/`.
+does not ship `scripts/kookr-merge.sh`.
 
 Exit codes are the wrapper's: `0` merged (a failed branch delete or a
 still-open closing issue is a warning and does not change it); `1` pre-flight or

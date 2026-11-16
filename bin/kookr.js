@@ -414,7 +414,7 @@ function runMergeCommand(argv, { env = process.env, err = console } = {}) {
   const here = dirname(fileURLToPath(import.meta.url));
   const script = join(here, '..', 'scripts', 'kookr-merge.sh');
   if (!existsSync(script)) {
-    // The npm package ships bin/ and dist/ but not scripts/, so this verb needs
+    // The npm package does not ship scripts/kookr-merge.sh, so this verb needs
     // a source checkout (the one `kookr` on PATH points at).
     err.error(`[kookr] merge wrapper not found at ${script}`);
     err.error('[kookr] `kookr merge` needs a Kookr source checkout; run it from that checkout\'s bin/kookr.');

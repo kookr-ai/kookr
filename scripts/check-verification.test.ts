@@ -409,7 +409,8 @@ describe('classifyCheckRuns — re-runs of a GitHub Actions job', () => {
   });
 
   it('needs attempts when only one of the two runs is an Actions job', () => {
-    const plain = (run: ReturnType<typeof job>) => ({ ...run, app: { id: 9426 }, details_url: undefined, run_attempt: undefined });
+    // Same app and suite as the Actions job, so both land in one group; only the job markers are missing.
+    const plain = (run: ReturnType<typeof job>) => ({ ...run, app: { id: 15368 }, details_url: undefined, run_attempt: undefined });
     const rerun = job(102, undefined, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
     expect(classifyCheckRuns([plain(failed), rerun]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
     const plainRerun = plain(job(102, undefined, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z'));
