@@ -73,6 +73,7 @@ describe('Telegram permission card (issue #3925)', () => {
   let anomaly: Anomaly;
   let pane: string;
   let paneGate: Promise<void> | null;
+  let paneGateReached: () => void = () => undefined;
   let taskStatus: string;
   let nowMs: number;
   const T0 = Date.parse('2026-11-16T09:00:00.000Z');
@@ -131,7 +132,10 @@ describe('Telegram permission card (issue #3925)', () => {
         respondAndAdvance: () => null,
       } as unknown as TelegramTaskBridgeDeps['queue'],
       adapter: { sendKeystroke },
-      capturePane: async () => { if (paneGate) await paneGate; return pane; },
+      capturePane: async () => {
+        if (paneGate) { paneGateReached(); await paneGate; }
+        return pane;
+      },
       submitMessage: async () => ({}),
       interactionLog: { append: logAppend } as unknown as TelegramTaskBridgeDeps['interactionLog'],
       now: () => new Date(nowMs),
@@ -333,9 +337,11 @@ describe('Telegram permission card (issue #3925)', () => {
     const alerter = await start(buildWorld());
     const { message, messageId } = await cardAfterThreshold(alerter);
     let release: () => void = () => undefined;
+    const reached = new Promise<void>((r) => { paneGateReached = r; });
     paneGate = new Promise<void>((r) => { release = r; });
     tap(keyboardOf(message).flat()[0]!.callback_data, { messageId, updateId: 1 });
-    await new Promise((r) => setTimeout(r, 150));
+    // The tap is now being decided: it is waiting on its pane read.
+    await reached;
     // Answered in the terminal while the tap waits on the pane read.
     answerElsewhere();
     tick(alerter);

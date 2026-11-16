@@ -308,13 +308,21 @@ export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): Telegram
       deps.watchdog?.recordInputReceived(sessionId);
     }
     deps.queue.respondAndAdvance(sessionId);
-    await deps.interactionLog?.append({
-      type: 'user_input',
-      agentId: sessionId,
-      content: decision === 'approve' ? `[telegram approve once: ${key}]` : `[telegram deny: ${key}]`,
-      timestamp: now().toISOString(),
-      ...(actor ? { actor: `telegram:${actor.telegramUserId}` } : {}),
-    });
+    try {
+      await deps.interactionLog?.append({
+        type: 'user_input',
+        agentId: sessionId,
+        content: decision === 'approve' ? `[telegram approve once: ${key}]` : `[telegram deny: ${key}]`,
+        timestamp: now().toISOString(),
+        ...(actor ? { actor: `telegram:${actor.telegramUserId}` } : {}),
+      });
+    } catch (err) {
+      // The key was already sent: report success, but say the log write failed.
+      console.warn(
+        '[telegram-task-bridge] interaction log append failed after a permission decision:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
     return { ok: true };
   }
 

@@ -872,19 +872,24 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         const deciding = card !== undefined && onCard && card.state === 'open';
         if (deciding) card.state = 'deciding';
         let result: TelegramReplyResult;
-        if (card && cb.message && card.messageId === cb.message.message_id && card.chatId !== cb.message.chat.id) {
-          // A card is answered only from the chat it was sent to.
-          result = { ok: false, reason: 'this prompt can only be answered from the chat it was sent to' };
-        } else if (decision === 'approve') {
-          result = deps.approveTaskPermission
-            ? await deps.approveTaskPermission(taskId, expectedPromptId, cb.from.id)
-            : { ok: false, reason: 'approval not available' };
-        } else if (!expectedPromptId) {
-          result = { ok: false, reason: 'this button does not name a prompt' };
-        } else {
-          result = deps.denyTaskPermission
-            ? await deps.denyTaskPermission(taskId, expectedPromptId, cb.from.id)
-            : { ok: false, reason: 'deny not available' };
+        try {
+          if (card && cb.message && card.messageId === cb.message.message_id && card.chatId !== cb.message.chat.id) {
+            // A card is answered only from the chat it was sent to.
+            result = { ok: false, reason: 'this prompt can only be answered from the chat it was sent to' };
+          } else if (decision === 'approve') {
+            result = deps.approveTaskPermission
+              ? await deps.approveTaskPermission(taskId, expectedPromptId, cb.from.id)
+              : { ok: false, reason: 'approval not available' };
+          } else if (!expectedPromptId) {
+            result = { ok: false, reason: 'this button does not name a prompt' };
+          } else {
+            result = deps.denyTaskPermission
+              ? await deps.denyTaskPermission(taskId, expectedPromptId, cb.from.id)
+              : { ok: false, reason: 'deny not available' };
+          }
+        } catch (err) {
+          // Never leave the card stuck in `deciding`: treat a throw as a refusal.
+          result = { ok: false, reason: err instanceof Error ? err.message : String(err) };
         }
         if (result.ok) {
           audit({ kind: 'permission_decision_sent', taskId, sender: cb.from.id, decision });
