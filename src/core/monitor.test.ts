@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from './types.js';
-import { Monitor, UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS, MONITOR_STOPPED_AGENTS_MAX } from './monitor.js';
+import { Monitor, UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS, MONITOR_STOPPED_AGENTS_MAX, findingTranscriptContextEnabled } from './monitor.js';
 import { TaskStore } from './tasks.js';
 import { AttentionQueue } from './attention-queue.js';
 import { getDetectionStats, resetDetectionStats } from './detection-stats.js';
@@ -52,7 +52,9 @@ describe('Monitor', () => {
 
   beforeEach(() => {
     originalFindingTranscriptContext = process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT;
-    delete process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT;
+    // On by default (issue #3937): the suite starts from the kill switch so a
+    // finding carries transcript context only where a test turns it on.
+    process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT = '0';
     resetDetectionStats();
     taskStore = new TaskStore();
     queue = new AttentionQueue();
@@ -171,6 +173,14 @@ describe('Monitor', () => {
     expect(next).not.toBeNull();
     expect(next!.agentId).toBe('agent-1');
     expect(next!.anomaly.type).toBe('needs_input');
+  });
+
+  test('findingTranscriptContextEnabled is on when unset and off for the kill switch (issue #3937)', () => {
+    expect(findingTranscriptContextEnabled({})).toBe(true);
+    expect(findingTranscriptContextEnabled({ KOOKR_FINDING_TRANSCRIPT_CONTEXT: 'true' })).toBe(true);
+    for (const off of ['0', 'false', 'off', 'no']) {
+      expect(findingTranscriptContextEnabled({ KOOKR_FINDING_TRANSCRIPT_CONTEXT: off })).toBe(false);
+    }
   });
 
   test('flag-off needs_input finding does not include transcript context', () => {

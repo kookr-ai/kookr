@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { TEST_FEATURE_KILL_SWITCHES } from './test/scrub-agent-env.ts';
 import { vitestMaxWorkers } from './scripts/lib/vitest-max-workers.mjs';
 import { DEFAULT_TEST_TIMEOUT_MS, SERIAL_TEST_FILES, vitestTestTimeoutMs } from './scripts/lib/vitest-serial-files.mjs';
 
@@ -86,6 +87,9 @@ export default defineConfig({
     // happy-dom-offline: happy-dom files get no real network (see the file).
     setupFiles: ['./test/setup-env.ts', './test/happy-dom-offline.setup.ts'],
     env: {
+      // Features that are on by default start switched off in test servers
+      // (issue #3937); see test/scrub-agent-env.ts.
+      ...TEST_FEATURE_KILL_SWITCHES,
       // Claude Code launches submit the prompt via bracketed paste so the
       // trailing Enter is parsed as a keystroke (see
       // resolveBracketedPasteSubmit). The unit suite opts out so launch

@@ -1,3 +1,5 @@
+import { isDefaultOnFlagEnabled } from '../core/default-on-flag.js';
+
 /** Maximum number of concurrently running (inProgress) tasks. */
 export const MAX_ACTIVE_TASKS = 10;
 
@@ -365,8 +367,8 @@ export function readHermesDelegationConfigPathFromEnv(
  * Read the resource-watchdog configuration (issue #1724 / #2354) from the
  * environment.
  *
- * **Master switch disabled by default.** Set `KOOKR_RESOURCE_WATCHDOG=1` (or
- * true/yes/on) for continuous sampling. When the master is off,
+ * **Master switch on by default** (issue #3937): continuous sampling runs unless
+ * `KOOKR_RESOURCE_WATCHDOG` is `0` / `false` / `off` / `no`. When the master is off,
  * `KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE` defaults to on so soft-bound pressure
  * still gets one rate-limited investigation spawn. Thresholds of `0` disable
  * the individual rule (same convention as operational alerts).
@@ -375,7 +377,7 @@ export function readResourceWatchdogConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): ResourceWatchdogEnvConfig {
   return {
-    enabled: readTruthyEnvFlag(env.KOOKR_RESOURCE_WATCHDOG),
+    enabled: isDefaultOnFlagEnabled(env.KOOKR_RESOURCE_WATCHDOG),
     autoEnableOnPressure: readTruthyEnvFlagDefaultTrue(
       env.KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE,
     ),

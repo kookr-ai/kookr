@@ -14,9 +14,10 @@
  * freed heap to the OS); a climbing heap points at a retained-object leak, and
  * the subsystem counts say which subsystem holds it.
  *
- * Disabled by default. Enable with `KOOKR_MEMORY_LEDGER=1`; tune the cadence
+ * On by default (issue #3937); `KOOKR_MEMORY_LEDGER=0` turns it off. Tune the cadence
  * with `KOOKR_MEMORY_LEDGER_INTERVAL_MS` (default 60s).
  */
+import { isDefaultOnFlagEnabled } from '../core/default-on-flag.js';
 
 /** A single provider contributes one named group of integer retention counts. */
 export type MemoryLedgerSubsystems = Record<string, Record<string, number>>;
@@ -127,13 +128,12 @@ export function createMemoryLedger(deps?: MemoryLedgerDeps): MemoryLedger {
 }
 
 /**
- * Read the ledger's enablement + cadence from the environment. Enabled only for
- * an explicit truthy opt-in (`1`/`true`/`yes`/`on`); an invalid or blank
+ * Read the ledger's enablement + cadence from the environment. On unless the
+ * kill switch is set (`0`/`false`/`off`/`no`, issue #3937); an invalid or blank
  * interval falls back to {@link DEFAULT_MEMORY_LEDGER_INTERVAL_MS}.
  */
 export function readMemoryLedgerConfigFromEnv(env: NodeJS.ProcessEnv = process.env): MemoryLedgerConfig {
-  const raw = (env.KOOKR_MEMORY_LEDGER ?? '').trim().toLowerCase();
-  const enabled = raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+  const enabled = isDefaultOnFlagEnabled(env.KOOKR_MEMORY_LEDGER);
   const parsedInterval = Number(env.KOOKR_MEMORY_LEDGER_INTERVAL_MS);
   const intervalMs =
     Number.isFinite(parsedInterval) && parsedInterval >= MIN_MEMORY_LEDGER_INTERVAL_MS

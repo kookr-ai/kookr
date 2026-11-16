@@ -353,7 +353,7 @@ describe('evaluatePressureWhileDisabled (issue #2039 / #2354)', () => {
     });
     expect(hit.pressureWhileDisabled).toBe(true);
     expect(hit.pressureWhileDisabledReason).toContain('soft bound 40');
-    expect(hit.pressureWhileDisabledReason).toContain('KOOKR_RESOURCE_WATCHDOG=1');
+    expect(hit.pressureWhileDisabledReason).toContain('KOOKR_RESOURCE_WATCHDOG=0 kill switch');
     expect(hit.pressureWhileDisabledReason).toContain('auto-enable');
   });
 

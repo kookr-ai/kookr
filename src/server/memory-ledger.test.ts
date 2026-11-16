@@ -111,18 +111,18 @@ describe('MemoryLedger.start/stop', () => {
 });
 
 describe('readMemoryLedgerConfigFromEnv', () => {
-  test('disabled by default', () => {
+  test('enabled by default (issue #3937)', () => {
     expect(readMemoryLedgerConfigFromEnv({})).toEqual({
-      enabled: false,
+      enabled: true,
       intervalMs: DEFAULT_MEMORY_LEDGER_INTERVAL_MS,
     });
   });
 
-  test.each(['1', 'true', 'TRUE', 'yes', 'on'])('enables on truthy opt-in %s', (raw) => {
+  test.each(['1', 'true', 'TRUE', 'yes', 'on', ''])('stays enabled for %j', (raw) => {
     expect(readMemoryLedgerConfigFromEnv({ KOOKR_MEMORY_LEDGER: raw }).enabled).toBe(true);
   });
 
-  test.each(['0', 'false', '', 'off', 'nope'])('stays disabled for %s', (raw) => {
+  test.each(['0', 'false', 'off', 'no', 'OFF'])('the kill switch %s disables it', (raw) => {
     expect(readMemoryLedgerConfigFromEnv({ KOOKR_MEMORY_LEDGER: raw }).enabled).toBe(false);
   });
 

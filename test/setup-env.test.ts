@@ -4,6 +4,7 @@ import {
   scrubAmbientAgentEnv,
   shouldScrubEnvKey,
 } from './setup-env.js';
+import { TEST_FEATURE_KILL_SWITCHES } from './scrub-agent-env.js';
 
 describe('shouldScrubEnvKey', () => {
   it('scrubs non-allowlisted KOOKR_/CLAUDE_/ANTHROPIC_ keys', () => {
@@ -85,6 +86,13 @@ describe('setupFiles live worker scrub (#1372)', () => {
     expect(process.env.KOOKR_DEPLOY_CONVERGENCE).toBe('0');
     expect(process.env.KOOKR_RELAY_DIE_WITH_PARENT).toBe('1');
     expect(process.env.KOOKR_RELAY_DIE_WITH_PARENT_INTERVAL_MS).toBe('250');
+  });
+
+  it('keeps the kill switches of the features that are on by default (issue #3937)', () => {
+    // vitest.config.mts sets them in test.env; the scrub must not delete them.
+    for (const [key, value] of Object.entries(TEST_FEATURE_KILL_SWITCHES)) {
+      expect(process.env[key], key).toBe(value);
+    }
   });
 
   it('still allows vi.stubEnv after the scrub', () => {

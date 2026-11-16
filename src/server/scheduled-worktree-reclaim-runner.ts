@@ -7,12 +7,14 @@
  * (`src/core/cron.ts`) to decide when a run is due and calls
  * {@link runScheduledWorktreeReclaim}.
  *
- * Disabled by default: unless `KOOKR_WORKTREE_RECLAIM_CRON` is set to a valid
- * cron expression, {@link ScheduledWorktreeReclaimRunner.start} is a no-op, so
- * existing servers see zero behavior change.
+ * On by default (issue #3937): with `KOOKR_WORKTREE_RECLAIM_CRON` unset it runs
+ * daily at {@link DEFAULT_WORKTREE_RECLAIM_CRON}. `0` / `false` / `off` / `no`, or
+ * an invalid expression, turns it off and {@link ScheduledWorktreeReclaimRunner.start}
+ * is then a no-op.
  */
 
 import { nextRun, isValidCron, describeCron } from '../core/cron.js';
+import { isKillSwitchValue } from '../core/default-on-flag.js';
 import {
   runScheduledWorktreeReclaim,
   type ScheduledReclaimDeps,
@@ -28,9 +30,13 @@ export interface ReclaimScheduleConfig {
   dryRun: boolean;
 }
 
+/** Schedule used when `KOOKR_WORKTREE_RECLAIM_CRON` is unset or empty: daily at 04:30. */
+export const DEFAULT_WORKTREE_RECLAIM_CRON = '30 4 * * *';
+
 /**
- * Resolve the reclaim schedule from the environment. Enabled only when
- * `KOOKR_WORKTREE_RECLAIM_CRON` holds a valid 5-field cron expression.
+ * Resolve the reclaim schedule from the environment. Unset or empty means
+ * {@link DEFAULT_WORKTREE_RECLAIM_CRON}; a kill-switch value (`0` / `false` /
+ * `off` / `no`) or an invalid expression disables it.
  *
  * `KOOKR_WORKTREE_RECLAIM_DRY_RUN` forces dry-run when set to a truthy value
  * (`1`/`true`/`yes`, case-insensitive). Default is a LIVE run so the schedule
@@ -39,9 +45,10 @@ export interface ReclaimScheduleConfig {
 export function resolveReclaimScheduleConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): ReclaimScheduleConfig {
-  const cron = env.KOOKR_WORKTREE_RECLAIM_CRON?.trim();
-  if (!cron || !isValidCron(cron)) {
-    return { enabled: false, cron: cron ?? '', dryRun: false };
+  const raw = env.KOOKR_WORKTREE_RECLAIM_CRON?.trim();
+  const cron = raw ? raw : DEFAULT_WORKTREE_RECLAIM_CRON;
+  if (isKillSwitchValue(cron) || !isValidCron(cron)) {
+    return { enabled: false, cron, dryRun: false };
   }
   return { enabled: true, cron, dryRun: isTruthyEnv(env.KOOKR_WORKTREE_RECLAIM_DRY_RUN) };
 }

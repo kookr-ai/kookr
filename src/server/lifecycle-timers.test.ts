@@ -2200,9 +2200,14 @@ describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', 
 });
 
 describe('resolveMaintenancePruneIntervalHours', () => {
-  test('is off (0) by default and for invalid values', () => {
-    expect(resolveMaintenancePruneIntervalHours({})).toBe(0);
-    expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '' })).toBe(0);
+  test('is every 24h when unset or empty (issue #3937)', () => {
+    expect(resolveMaintenancePruneIntervalHours({})).toBe(24);
+    expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '' })).toBe(24);
+  });
+  test('is off (0) for the kill switch and for invalid values', () => {
+    for (const off of ['0', 'false', 'off', 'no', 'OFF']) {
+      expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: off })).toBe(0);
+    }
     expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: 'nope' })).toBe(0);
     expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '0' })).toBe(0);
     expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '-4' })).toBe(0);

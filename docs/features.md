@@ -489,9 +489,10 @@ know something. She cannot act on tasks yet.
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
   `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
 
-#### Ask Lucy a question (optional, off by default, no screen yet)
+#### Ask Lucy a question (on by default with an OpenRouter key, no screen yet)
 
-With `KOOKR_LUCY_OPERATOR=true`, Kookr answers questions about your tasks at `POST /api/lucy/turn`:
+When an OpenRouter key is set, Kookr answers questions about your tasks at `POST /api/lucy/turn`
+(on by default; `KOOKR_LUCY_OPERATOR=0` switches it off):
 you send one sentence, and Lucy's reply comes back as it is written. This is the first step toward
 running Kookr through her. The avatar panel has a small typed input for it when it is on, and hands-free
 talk uses it too when launching is on (next section).
@@ -508,13 +509,14 @@ talk uses it too when launching is on (next section).
   turn, her last sentence says so.
 - **What leaves the machine.** Her model runs at OpenRouter. Each turn sends your question, the board
   (task names, projects, states, costs) and whatever she looks up, with secret-looking tokens replaced
-  first. Leave it off if task names or task requests must not leave the machine.
+  first. Switch it off (`KOOKR_LUCY_OPERATOR=0`) if task names or task requests must not leave the machine.
 - **What it needs.** An OpenRouter key (`KOOKR_OPENROUTER_API_KEY`). The model, the providers allowed
   to serve it and how much it thinks are settings. Details: [Lucy operator](reference/lucy-operator.md).
 
-#### Ask Lucy to start a task (optional, off by default)
+#### Ask Lucy to start a task (on by default)
 
-With `KOOKR_LUCY_LAUNCH=true` as well, say or type "Lucy, investigate why the issue tasks stop
+Launching is on whenever the question conversation above is on (`KOOKR_LUCY_LAUNCH=0` switches
+launching off on its own). Say or type "Lucy, investigate why the issue tasks stop
 chaining" and she starts a task for you. She repeats back what she is about to launch, the avatar
 panel shows it as a card with the whole description, and the task starts when you say "go", press
 Enter or click Go. Anything else you say drops it, and a proposal expires after two minutes. An unclear

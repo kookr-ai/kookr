@@ -8,6 +8,7 @@ import {
   UmbrellaChainAdvancer,
   phaseClaimKey,
   legacyPhaseClaimKey,
+  umbrellaChainAdvancerModeFromEnv,
   type UmbrellaChainAdvancerLogger,
 } from './umbrella-chain-advancer.js';
 import type { UmbrellaChainRemote, UmbrellaIssue } from '../../adapters/github-umbrella-chain-client.js';
@@ -1050,5 +1051,21 @@ describe('UmbrellaChainAdvancer', () => {
     expect(fresh.chains[0]?.status).toBe('eligible');
     const stale = harness.advancer.getHealthSnapshot(base.getTime() + fresh.staleThresholdMs + 1);
     expect(stale.chains[0]?.status).toBe('stale');
+  });
+});
+
+describe('umbrellaChainAdvancerModeFromEnv (issue #3937)', () => {
+  test('is spawn when KOOKR_UMBRELLA_CHAIN_ADVANCER is unset or empty', () => {
+    expect(umbrellaChainAdvancerModeFromEnv({})).toBe('spawn');
+    expect(umbrellaChainAdvancerModeFromEnv({ KOOKR_UMBRELLA_CHAIN_ADVANCER: ' ' })).toBe('spawn');
+  });
+
+  test.each(['off', '0', 'false', 'no', 'typo'])('is off for %j', (value) => {
+    expect(umbrellaChainAdvancerModeFromEnv({ KOOKR_UMBRELLA_CHAIN_ADVANCER: value })).toBe('off');
+  });
+
+  test('keeps observe and spawn when asked for', () => {
+    expect(umbrellaChainAdvancerModeFromEnv({ KOOKR_UMBRELLA_CHAIN_ADVANCER: 'Observe' })).toBe('observe');
+    expect(umbrellaChainAdvancerModeFromEnv({ KOOKR_UMBRELLA_CHAIN_ADVANCER: 'spawn' })).toBe('spawn');
   });
 });

@@ -2,24 +2,26 @@
 
 Lucy's operator conversation lets the operator ask a question about their tasks and get an answer
 that Lucy looked up herself. It is one HTTP endpoint, `POST /api/lucy/turn`. It is the first step of
-making Lucy the main way to run Kookr (issue #3632): she can look, and, when `KOOKR_LUCY_LAUNCH=true`,
+making Lucy the main way to run Kookr (issue #3632): she can look, and, unless `KOOKR_LUCY_LAUNCH=0`,
 she can start a task for the operator after they confirm it (see
 [Launching a task by voice or text](#launching-a-task-by-voice-or-text)). Nothing else she does changes
 a task. This page covers setup, how a turn works, what she is allowed to do, what leaves the
 machine, the measurements taken when it was built, and its limits.
 
 The avatar panel's hands-free talk ([Lucy live](lucy-live.md)) answers through the helper model, and
-switches to this conversation only when `KOOKR_LUCY_LAUNCH=true`.
+switches to this conversation whenever launching is on (the default; `KOOKR_LUCY_LAUNCH=0` turns it off).
 
 ## Setup
 
 1. Set an OpenRouter key, the same one the helper model can use: `KOOKR_OPENROUTER_API_KEY` (or
    `OPENROUTER_API_KEY`).
-2. Add `KOOKR_LUCY_OPERATOR=true` to Kookr's `.env` and restart Kookr.
+2. Restart Kookr. The conversation is on by default whenever a key is set; to switch it off, set
+   `KOOKR_LUCY_OPERATOR=0` (or `false`, `off`, `no`) in Kookr's `.env`.
 
 At start-up Kookr logs which model, providers and reasoning level are in use, or why the conversation
-is unavailable. With the setting off, the route answers `404` and no model is ever called. With the
-setting on and no key, it answers `503` and says a key is needed.
+is unavailable. With the setting switched off, or left unset with no key, the route answers `404` and no model is
+ever called. With `KOOKR_LUCY_OPERATOR=true` set explicitly and no key, it answers `503` and says a key
+is needed.
 
 Three more settings choose the model. Their defaults are the ones picked in the model trial recorded
 on issue #3632.
@@ -101,7 +103,8 @@ please ask me something narrower."), and the `done` event carries `step_cap`, `t
 
 ## Launching a task by voice or text
 
-Issue #3676. Off unless `KOOKR_LUCY_LAUNCH=true` (and `KOOKR_LUCY_OPERATOR=true`). The operator says or
+Issue #3676. On by default whenever the operator conversation is on; `KOOKR_LUCY_LAUNCH=0` (or
+`false`, `off`, `no`) turns launching off. The operator says or
 types "Lucy, investigate why the issue tasks stop chaining". She repeats back what she is about to
 launch, the dashboard shows it as a card, and the task starts when the operator says "go", presses
 Enter or clicks Go. When the task finishes or needs the operator, she says so in the conversation that

@@ -191,7 +191,7 @@ export function buildWatchdogDisabledPressureAlert(args: {
     details:
       `Issue #2078: pressureWhileDisabled stayed true for ≥ ${staleMin}m. `
       + `${reasonLine}.${countNote} `
-      + 'Master switch remains an operator decision (set KOOKR_RESOURCE_WATCHDOG=1 '
+      + 'Master switch remains an operator decision (remove the KOOKR_RESOURCE_WATCHDOG=0 kill switch '
       + 'for continuous sampling). Default auto-enable may still spawn a rate-limited '
       + 'investigation under soft-bound pressure (issue #2354; set '
       + 'KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0 for page-only). '

@@ -14,7 +14,7 @@
  *
  * PR4 (overnight-throughput R5): capacity-gated parallel-issue-batch re-entry
  * on `batch_kick_only` handle path and on idea-scout terminal, behind
- * `KOOKR_PIPELINE_BATCH_KICK` (default off).
+ * `KOOKR_PIPELINE_BATCH_KICK` (on by default; `0` turns it off).
  *
  * Issue #2043: when recent ideation left free≥3 + pendingQueueDepth==0, do not
  * honor the 4h successful-ideation suppress (re-scout; audit

@@ -291,7 +291,7 @@ import { createRealtimeServices, DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS } from './
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { IdleRefineryRunner } from './idle-refinery-runner.js';
 import { PostRecoveryService } from './post-recovery-service.js';
-import { PostResumeRefillService } from './post-resume-refill-service.js';
+import { PostResumeRefillService, readPostResumeRefillEnabledFromEnv } from './post-resume-refill-service.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
@@ -2053,8 +2053,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
 
   // Resource watchdog (issue #1724): host-pressure actuator that spawns a
-  // briefed, throttled investigation task. OFF by default
-  // (`KOOKR_RESOURCE_WATCHDOG=1` to enable). Spawns go through launchTask so
+  // briefed, throttled investigation task. On by default (issue #3937;
+  // `KOOKR_RESOURCE_WATCHDOG=0` turns it off). Spawns go through launchTask so
   // capacity/backpressure and reserved-slot posture apply unchanged.
   //
   // Issue #2078: when the actuator stays off under pressure, page Discord via
@@ -2737,12 +2737,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // refill pass so the fleet does not silently sit idle with free slots after a
   // pause. Consumes only existing vetted, ownerless leaves — never invents
   // backlog — and reuses the SAME capacity ledger + SAFE-MODE / drain gates as
-  // the schedule runner and launch path. A new autonomous auto-spawn path, so
-  // actuation is OFF by default (env KOOKR_POST_RESUME_REFILL=1), mirroring the
-  // idle-refinery convention; with it off the pass still classifies the
-  // post-resume posture (intentional_idle / refill_blocked / would-refill) into
-  // the diagnostics capacity report for operator visibility.
-  const postResumeRefillEnabled = process.env.KOOKR_POST_RESUME_REFILL?.trim() === '1';
+  // the schedule runner and launch path. Actuation is on by default (issue
+  // #3937); KOOKR_POST_RESUME_REFILL=0 turns it off, and with it off the pass
+  // still classifies the post-resume posture (intentional_idle / refill_blocked
+  // / would-refill) into the diagnostics capacity report for operator visibility.
+  const postResumeRefillEnabled = readPostResumeRefillEnabledFromEnv(process.env);
   const postResumeRefillService = new PostResumeRefillService({
     getCapacityLedger: () => launchServiceDeps.getCapacityLedger!(),
     // No-invent default: absent an in-process vetted-leaf source the pass finds
@@ -3053,7 +3052,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const initialLucyLiveStatus = lucyLiveRuntime.status();
   if (!initialLucyLiveStatus.available) console.log(`[lucy-live] ${initialLucyLiveStatus.starting ? 'waiting for the speech recogniser' : 'disabled'}: ${initialLucyLiveStatus.reason}`);
 
-  // Lucy's operator conversation (issue #3660): off unless KOOKR_LUCY_OPERATOR=true.
+  // Lucy's operator conversation (issue #3660): on by default where an OpenRouter key is present (issue #3937).
   const lucyOperatorConfig = config.lucyOperatorConfig ?? resolveLucyOperatorConfig(process.env);
   if (lucyOperatorConfig.enabled) {
     for (const warning of lucyOperatorConfig.warnings) console.warn(`[lucy-operator] ${warning}`);
@@ -3649,8 +3648,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   maintenancePruneHealth = new MaintenancePruneHealth(maintenancePruneIntervalHours);
 
   // Durable task-conversation transcript capture (RFC rfc-durable-transcript-capture,
-  // Phase 2). Opt-in: default scope 'off', so this whole block is inert unless
-  // the operator sets KOOKR_TRANSCRIPT_CAPTURE=own-repos|all. The read-only
+  // Phase 2). Default scope 'own-repos' (issue #3937); KOOKR_TRANSCRIPT_CAPTURE=off
+  // makes this whole block inert, and 'all' must be asked for. The read-only
   // viewer (Phase 1) works regardless of this.
   const transcriptCaptureConfig = readTranscriptCaptureConfig(process.env);
   const transcriptsDir = join(kookrDir, 'transcripts');
@@ -3831,8 +3830,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     return latest.server.eventLoopDelayP95Ms ?? null;
   };
 
-  // Periodic memory ledger (issue #1612). Opt-in (KOOKR_MEMORY_LEDGER=1) so it
-  // costs nothing by default; when enabled it logs a structured `[mem-ledger]`
+  // Periodic memory ledger (issue #1612). On by default (issue #3937;
+  // KOOKR_MEMORY_LEDGER=0 turns it off); it logs a structured `[mem-ledger]`
   // line with process memory plus per-subsystem retention counts, letting a
   // soak bisect the dominant RSS retainer with evidence rather than a guess.
   const memoryLedgerConfig = readMemoryLedgerConfigFromEnv();
@@ -4044,9 +4043,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getStreamPosition: realtime.getStreamPosition,
   };
 
-  // Unattended worktree-reclaim scheduler (issue #1578). Disabled unless
-  // KOOKR_WORKTREE_RECLAIM_CRON is a valid cron expression, so unconfigured
-  // servers see no behavior change. Reuses the same workspace deps the
+  // Unattended worktree-reclaim scheduler (issue #1578). On by default, daily
+  // (issue #3937); KOOKR_WORKTREE_RECLAIM_CRON=0 or an invalid expression turns
+  // it off. Reuses the same workspace deps the
   // interactive sweep uses and the shared audit log.
   const reclaimScheduleConfig = resolveReclaimScheduleConfig(process.env);
   const scheduledWorktreeReclaimRunner = new ScheduledWorktreeReclaimRunner({

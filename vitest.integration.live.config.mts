@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { TEST_FEATURE_KILL_SWITCHES } from './test/scrub-agent-env.ts';
 
 import { CREDENTIAL_GATED_INTEGRATION_FILES } from './scripts/integration-lane-inventory.mts';
 
@@ -26,6 +27,8 @@ export default defineConfig({
       './test/dtach-master-reaper.global.ts',
     ],
     env: {
+      // Features that are on by default start switched off (issue #3937).
+      ...TEST_FEATURE_KILL_SWITCHES,
       // Pin provider selection: this lane skips test/setup-env.ts, so ambient
       // KOOKR_LLM_PROVIDER from a developer shell would otherwise leak in and
       // can desync hasApiKey vs createLlmClient() (e.g. ANTHROPIC key present

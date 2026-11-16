@@ -253,7 +253,7 @@ export const DEFAULT_DTACH_PRESSURE_SOFT_BOUND = 20;
 /**
  * Pressure signal when the actuator master switch is off (issue #2039 / #2354).
  *
- * When `KOOKR_RESOURCE_WATCHDOG` is unset the full sampler stays off, so host
+ * When `KOOKR_RESOURCE_WATCHDOG=0` switches the full sampler off, host
  * pressure can sit on `/api/health` without continuous monitoring. This pure
  * helper folds an already-cached external gauge (`staleProcesses.dtach`) into
  * the resourceWatchdog health block so operators/sentinel see
@@ -293,10 +293,10 @@ export function evaluatePressureWhileDisabled(input: {
   const autoEnable = input.autoEnableOnPressure !== false;
   const actionHint = autoEnable
     ? 'auto-enable will attempt a rate-limited investigation spawn '
-      + '(set KOOKR_RESOURCE_WATCHDOG=1 for continuous monitoring, or '
+      + '(remove the KOOKR_RESOURCE_WATCHDOG=0 kill switch for continuous monitoring, or '
       + 'KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0 for page-only)'
     : 'host-pressure auto-investigation will not spawn '
-      + '(set KOOKR_RESOURCE_WATCHDOG=1 to enable, or leave '
+      + '(remove the KOOKR_RESOURCE_WATCHDOG=0 kill switch to enable, or leave '
       + 'KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0 for page-only)';
   return {
     pressureWhileDisabled: true,

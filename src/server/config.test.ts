@@ -189,20 +189,20 @@ describe('readMaxHostLoadPerCpuFromEnv', () => {
 });
 
 describe('readResourceWatchdogConfigFromEnv (issue #1724 / #2354)', () => {
-  test('defaults OFF master with auto-enable-on-pressure ON', () => {
+  test('defaults ON master (issue #3937) with auto-enable-on-pressure ON', () => {
     const cfg = readResourceWatchdogConfigFromEnv({});
-    expect(cfg.enabled).toBe(false);
+    expect(cfg.enabled).toBe(true);
     expect(cfg.autoEnableOnPressure).toBe(true);
     expect(cfg.intervalMs).toBe(DEFAULT_RESOURCE_WATCHDOG_INTERVAL_MS);
     expect(cfg.swapUsedPercentThreshold).toBe(DEFAULT_RESOURCE_WATCHDOG_SWAP_PERCENT);
     expect(cfg.spawnBudget24h).toBe(DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H);
   });
 
-  test('enables on 1/true/yes/on', () => {
-    for (const raw of ['1', 'true', 'yes', 'on', 'TRUE', ' Yes ']) {
+  test('stays on for 1/true/yes/on and when empty; 0/false/no/off is the kill switch', () => {
+    for (const raw of ['1', 'true', 'yes', 'on', 'TRUE', ' Yes ', '', '  ']) {
       expect(readResourceWatchdogConfigFromEnv({ KOOKR_RESOURCE_WATCHDOG: raw }).enabled).toBe(true);
     }
-    for (const raw of ['0', 'false', 'no', 'off', '', '  ']) {
+    for (const raw of ['0', 'false', 'no', 'off', ' OFF ']) {
       expect(readResourceWatchdogConfigFromEnv({ KOOKR_RESOURCE_WATCHDOG: raw }).enabled).toBe(false);
     }
   });

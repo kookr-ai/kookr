@@ -4,9 +4,11 @@ import { PluginMutationService } from './mutation-service.js';
 
 describe('spawnGateActive', () => {
   test('active only when loadouts OR auto-update apply is enabled', () => {
-    expect(spawnGateActive({})).toBe(false);
+    // Loadouts are on by default (issue #3937), so an empty env arms the gate.
+    expect(spawnGateActive({})).toBe(true);
+    expect(spawnGateActive({ KOOKR_PLUGIN_LOADOUTS: '0' })).toBe(false);
     expect(spawnGateActive({ KOOKR_PLUGIN_LOADOUTS: '1' })).toBe(true);
-    expect(spawnGateActive({ KOOKR_PLUGIN_AUTO_UPDATE: 'true' })).toBe(true);
+    expect(spawnGateActive({ KOOKR_PLUGIN_LOADOUTS: '0', KOOKR_PLUGIN_AUTO_UPDATE: 'true' })).toBe(true);
   });
 });
 

@@ -291,7 +291,7 @@ export interface ResourceWatchdogHealthSnapshot {
    * host-pressure gauge (currently `staleProcesses.dtach`) exceeds its soft
    * bound. When `autoEnableOnPressure` is true the service may still spawn a
    * rate-limited investigation; this flag stays true so operators see the
-   * opt-in gap until they set `KOOKR_RESOURCE_WATCHDOG=1`.
+   * gap until they remove the `KOOKR_RESOURCE_WATCHDOG=0` kill switch.
    */
   pressureWhileDisabled: boolean;
   /** Human-readable detail when `pressureWhileDisabled` is true; else null. */

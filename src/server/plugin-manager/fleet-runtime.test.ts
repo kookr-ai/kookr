@@ -111,8 +111,10 @@ describe('PluginFleetRuntime — external changes (R10), with KOOKR_PLUGIN_AUTO_
         autoUpdateStore, mutation, homeDir: dir, liveTasks: () => [], env,
       });
     expect(make({ KOOKR_PLUGIN_LOADOUTS: '1' }).observeActive()).toBe(true);
-    expect(make({}).observeActive()).toBe(false);
-    expect(make({ KOOKR_PLUGIN_AUTO_UPDATE: '1' }).observeActive()).toBe(false);
+    // On by default (issue #3937); the kill switch stops it, whatever auto-update says.
+    expect(make({}).observeActive()).toBe(true);
+    expect(make({ KOOKR_PLUGIN_LOADOUTS: '0' }).observeActive()).toBe(false);
+    expect(make({ KOOKR_PLUGIN_LOADOUTS: '0', KOOKR_PLUGIN_AUTO_UPDATE: '1' }).observeActive()).toBe(false);
   });
 
   test('a change to a plugin outside the fleet set is logged but triggers nothing', async () => {

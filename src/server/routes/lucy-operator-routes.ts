@@ -24,8 +24,8 @@ import type { LucyOperatorService } from '../lucy-operator/service.js';
 
 export interface LucyOperatorRouteDeps {
   /**
-   * Absent when the setting `KOOKR_LUCY_OPERATOR` is off: the route then answers 404
-   * and no model is ever called. Present without a `service` when the setting is on
+   * Absent when Lucy's conversation is off (`KOOKR_LUCY_OPERATOR=0`, or left unset on a
+   * host with no OpenRouter key): the route then answers 404 and no model is ever called. Present without a `service` when the setting is on
    * but something is missing (for example the OpenRouter key): the route answers 503
    * with `unavailableReason`.
    */
@@ -48,7 +48,7 @@ function refuse(code: LucyTurnErrorCode, message: string): { error: LucyTurnErro
 export function registerLucyOperatorRoutes(app: Hono, deps: LucyOperatorRouteDeps): void {
   app.post(LUCY_TURN_PATH, async (c) => {
     if (!deps.lucyOperator) {
-      return c.json(refuse('lucy_operator_disabled', 'Lucy\'s conversation is switched off on this server (set KOOKR_LUCY_OPERATOR=true to enable it).'), 404);
+      return c.json(refuse('lucy_operator_disabled', 'Lucy\'s conversation is off on this server: it needs an OpenRouter key (KOOKR_OPENROUTER_API_KEY or OPENROUTER_API_KEY), and KOOKR_LUCY_OPERATOR must not be set to 0.'), 404);
     }
     const service = deps.lucyOperator.service;
     if (!service) {
@@ -116,7 +116,7 @@ export function registerLucyOperatorRoutes(app: Hono, deps: LucyOperatorRouteDep
     async (c: Context) => {
       const controller = deps.lucyOperator?.service?.launch;
       if (!controller) {
-        return c.json(refuse('lucy_operator_disabled', 'Launching tasks by voice or text is switched off on this server (set KOOKR_LUCY_LAUNCH=true to enable it).'), 404);
+        return c.json(refuse('lucy_operator_disabled', 'Launching tasks by voice or text is off on this server: Lucy\'s conversation is off, or KOOKR_LUCY_LAUNCH is set to 0.'), 404);
       }
       let body: unknown;
       try {
@@ -140,7 +140,7 @@ export function registerLucyOperatorRoutes(app: Hono, deps: LucyOperatorRouteDep
   app.post(LUCY_LAUNCH_REPORT_SPEAK_PATH, async (c) => {
     const controller = deps.lucyOperator?.service?.launch;
     if (!controller) {
-      return c.json(refuse('lucy_operator_disabled', 'Launching tasks by voice or text is switched off on this server (set KOOKR_LUCY_LAUNCH=true to enable it).'), 404);
+      return c.json(refuse('lucy_operator_disabled', 'Launching tasks by voice or text is off on this server: Lucy\'s conversation is off, or KOOKR_LUCY_LAUNCH is set to 0.'), 404);
     }
     const body = (await c.req.json().catch(() => null)) as { taskId?: unknown } | null;
     const taskId = typeof body?.taskId === 'string' ? body.taskId : '';

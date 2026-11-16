@@ -7,9 +7,21 @@ import type { CapacityLedger } from '../core/capacity-ledger.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import {
   PostResumeRefillService,
+  readPostResumeRefillEnabledFromEnv,
   type EligibleLeaf,
   type PostResumeRefillServiceDeps,
 } from './post-resume-refill-service.js';
+
+describe('readPostResumeRefillEnabledFromEnv (issue #3937)', () => {
+  it('is on when KOOKR_POST_RESUME_REFILL is unset', () => {
+    expect(readPostResumeRefillEnabledFromEnv({})).toBe(true);
+    expect(readPostResumeRefillEnabledFromEnv({ KOOKR_POST_RESUME_REFILL: '1' })).toBe(true);
+  });
+
+  it.each(['0', 'false', 'off', 'no'])('is off when KOOKR_POST_RESUME_REFILL=%s', (value) => {
+    expect(readPostResumeRefillEnabledFromEnv({ KOOKR_POST_RESUME_REFILL: value })).toBe(false);
+  });
+});
 
 function ledger(overrides: Partial<CapacityLedger> = {}): CapacityLedger {
   // Only freeForGeneralSources / free / pendingQueueDepth are read by the service.

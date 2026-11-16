@@ -363,7 +363,7 @@ function OpsHealthPills({
         resourceWatchdog?.pressureWhileDisabled && resourceWatchdog.pressureWhileDisabledReason
           ? resourceWatchdog.pressureWhileDisabledReason
           : null,
-        'Set KOOKR_RESOURCE_WATCHDOG=1 for continuous sampling · GET /api/health.resourceWatchdog',
+        'Remove the KOOKR_RESOURCE_WATCHDOG=0 kill switch for continuous sampling · GET /api/health.resourceWatchdog',
       ].filter(Boolean).join(' · ')
     : '';
 

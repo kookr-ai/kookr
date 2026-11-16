@@ -3,6 +3,7 @@ import type { CompletionDigest } from './completion-digest.js';
 import type { TaskDependencyEdge, TaskLaunchPermissionPosture } from '../shared/contracts/task.js';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from './tasks.js';
 import { isAgedTerminalTask } from './tasks.js';
+import { isDefaultOnFlagEnabled } from './default-on-flag.js';
 import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 import type { SessionHealthSnapshot } from '../shared/contracts/session-health.js';
 import type { AttentionQueue } from './attention-queue.js';
@@ -178,9 +179,11 @@ function isWatchdogOwnedType(type: string | undefined): boolean {
   return type !== undefined && WATCHDOG_OWNED_TYPES.has(type);
 }
 
-function findingTranscriptContextEnabled(): boolean {
-  const raw = process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT;
-  return raw === 'true' || raw === '1';
+/** On by default (issue #3937); `KOOKR_FINDING_TRANSCRIPT_CONTEXT=0` turns it off. */
+export function findingTranscriptContextEnabled(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
+  return isDefaultOnFlagEnabled(env.KOOKR_FINDING_TRANSCRIPT_CONTEXT);
 }
 
 /**

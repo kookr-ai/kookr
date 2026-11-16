@@ -10,7 +10,7 @@
  * see `scripts/measure-lucy-voice-answer.ts`.
  *
  * These words are used while the helper model answers, where she genuinely cannot act. When
- * `KOOKR_LUCY_LAUNCH=true`, spoken turns are answered by the operator conversation instead, whose
+ * launching is on (`KOOKR_LUCY_LAUNCH`, on by default), spoken turns are answered by the operator conversation instead, whose
  * instructions (`core/lucy-operator/prompt.ts`) say she can propose a launch that the operator
  * confirms. That prompt was re-checked for invented facts on 2026-11-13 (issue #3676): 10 of 10
  * questions, including ones the board cannot answer, were answered without inventing anything.

@@ -151,7 +151,8 @@ export interface LoadoutGivenPlugin {
 /**
  * How the `KOOKR_PLUGIN_LOADOUTS` flag reads. `on` is exactly `1`/`true`;
  * `killed` is an explicit `0`/`false`/`off`/`no` (the kill switch); anything
- * else, including unset and empty, is `unset`.
+ * else, including unset and empty, is `unset`, which behaves like `on`
+ * (loadouts are on by default, issue #3937).
  */
 export type LoadoutActivationState = 'on' | 'killed' | 'unset';
 

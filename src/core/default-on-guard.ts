@@ -27,7 +27,8 @@ export const OFF_BY_DEFAULT_REASON =
 
 /**
  * Feature switches that were already off by default when the rule landed
- * (16 Nov 2026). Flipping them on, or giving each its reason, is issue #3937.
+ * (16 Nov 2026). Issue #3937 turned the finished ones on; those left here stay
+ * off for a reason recorded in its pull request (#3945).
  * Do not add names here: a new switch ships on, or its row says why not.
  * Removing a name once its switch is on (or has its reason) is welcome; a name
  * whose row is no longer off by default is reported as stale, not as a failure.
@@ -36,10 +37,7 @@ export const GRANDFATHERED_DEFAULT_OFF: ReadonlySet<string> = new Set([
   'KOOKR_ALLOW_NON_LOOPBACK',
   'KOOKR_ALLOW_WEAK_API_TOKEN',
   'KOOKR_EMISSION_OVERRIDE_SECRET',
-  'KOOKR_TRANSCRIPT_CAPTURE',
   'KOOKR_LOG_TASK_SAVE_METRICS',
-  'KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS',
-  'KOOKR_RESOURCE_WATCHDOG',
   'KOOKR_TERMINAL_ATTACH_FULL_RING',
   'KOOKR_TERMINAL_ATTACH_ALWAYS_HISTORY',
   'KOOKR_OPENCODE_ENABLED',
@@ -47,17 +45,11 @@ export const GRANDFATHERED_DEFAULT_OFF: ReadonlySet<string> = new Set([
   'KOOKR_OPENCODE_CONTAINERS',
   'KOOKR_HERMES_FLEET',
   'KOOKR_HERMES_DELEGATION',
-  'KOOKR_UMBRELLA_CHAIN_ADVANCER',
-  'KOOKR_PLUGIN_LOADOUTS',
   'KOOKR_PLUGIN_AUTO_UPDATE',
   'KOOKR_BYPASS_ALL_PERMISSIONS',
-  'KOOKR_PIPELINE_BATCH_KICK',
-  'KOOKR_ISSUE_CLAIMS',
   'KOOKR_SPAWN_AUTO_IDEMPOTENCY',
   'KOOKR_VERIFY_FLAKY_RERUN',
   'KOOKR_TERMINAL_HOST',
-  'KOOKR_WORKTREE_RECLAIM_CRON',
-  'KOOKR_POST_RESUME_REFILL',
   'KOOKR_CONTEXT_ADVISORY_ENABLED',
   'KOOKR_REMOTE_CHAT_ALLOW_CODEX',
   'KOOKR_HOSTED_RELAY_ENABLED',
@@ -65,15 +57,11 @@ export const GRANDFATHERED_DEFAULT_OFF: ReadonlySet<string> = new Set([
   'KOOKR_STT_CORPUS',
   'KOOKR_TTS',
   'KOOKR_LUCY_EARS',
-  'KOOKR_LUCY_LAUNCH',
-  'KOOKR_LUCY_OPERATOR',
   'KOOKR_ALERT_CPU_PERCENT',
   'KOOKR_ALERT_MEMORY_PERCENT',
   'KOOKR_ALERT_EVENT_LOOP_DELAY_MS',
   'KOOKR_MAX_HOST_LOAD_PER_CPU',
-  'KOOKR_MEMORY_LEDGER',
   'KOOKR_FINDING_REVIEW_ENABLED',
-  'KOOKR_FINDING_TRANSCRIPT_CONTEXT',
   'KOOKR_FINDING_REVIEW_SAMPLER_ENABLED',
 ]);
 

@@ -871,7 +871,16 @@ export function isUmbrellaChainAdvancerMode(value: string | undefined): value is
   return value === 'off' || value === 'observe' || value === 'spawn';
 }
 
+/** Mode used when `KOOKR_UMBRELLA_CHAIN_ADVANCER` is unset or empty (issue #3937). */
+export const DEFAULT_UMBRELLA_CHAIN_ADVANCER_MODE: UmbrellaChainAdvancerMode = 'spawn';
+
+/**
+ * On by default (`spawn`, issue #3937). `off` (or `0` / `false` / `no`) stops the
+ * sweep, `observe` records health without launching, and any unrecognised value
+ * fails closed to `off`.
+ */
 export function umbrellaChainAdvancerModeFromEnv(env: NodeJS.ProcessEnv = process.env): UmbrellaChainAdvancerMode {
   const value = env.KOOKR_UMBRELLA_CHAIN_ADVANCER?.trim().toLowerCase();
+  if (!value) return DEFAULT_UMBRELLA_CHAIN_ADVANCER_MODE;
   return isUmbrellaChainAdvancerMode(value) ? value : 'off';
 }
