@@ -1806,7 +1806,8 @@ the link or the task (see [Lucy live](lucy-live.md#questions-from-tasks)).
 
 While a question waits, Kookr reminds the operator on Telegram with a short
 reply to the question's message, so one tap on the quote goes back to its
-buttons; a text reply to the reminder answers the question too. A reminder says
+buttons; unless the question was asked with `--no-other`, a text reply to the
+reminder answers it too. A reminder says
 how long the question has waited and when it closes. By default one comes after
 10 minutes, after 1 hour, then every 4 hours, and once 10 minutes before the
 question closes. Hard bounds keep a phone quiet whatever the setting says: at

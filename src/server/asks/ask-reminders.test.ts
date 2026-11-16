@@ -184,6 +184,19 @@ describe('ask reminders', () => {
     expect(deleteAskReminder).toHaveBeenCalledWith(expect.objectContaining({ id: a.id, state: 'cancelled' }), 555);
   });
 
+  it('sends no reminder for a question closed while another question was being reminded in the same sweep', async () => {
+    const first = await ask({ taskId: 't1' });
+    const second = await ask({ taskId: 't2' });
+    h.notifier.sendAskReminder.mockImplementationOnce(async () => {
+      await h.service.cancel(second.id);
+      return { messageId: 556 };
+    });
+    await runUntil(11 * MIN);
+    expect(h.notifier.sendAskReminder).toHaveBeenCalledTimes(1);
+    expect((h.notifier.sendAskReminder.mock.calls[0] as [AskRecord, string])[0].id).toBe(first.id);
+    expect(h.store.get(second.id)?.reminders).toBeUndefined();
+  });
+
   it('a text reply to a reminder answers the question', async () => {
     const a = await ask();
     await runUntil(11 * MIN);
@@ -226,6 +239,17 @@ describe('askReminderDue', () => {
     const a = { createdAt: created, expiresAt: created + 15 * MIN, reminders: [{ at: created + 5 * MIN, kind: 'before_close' as const }] };
     expect(askReminderDue(a, DEFAULT_ASK_REMINDERS, created + 10 * MIN)).toBeUndefined();
     expect(askReminderDue(a, DEFAULT_ASK_REMINDERS, created + 14 * MIN)).toBeUndefined();
+  });
+
+  it('owes a question shorter than the reminder before closing nothing at any time', () => {
+    const a = { createdAt: created, expiresAt: created + 5 * MIN };
+    for (let t = created; t < a.expiresAt; t += 15_000) expect(askReminderDue(a, DEFAULT_ASK_REMINDERS, t)).toBeUndefined();
+  });
+
+  it('owes no reminder before closing when one was sent after that point (the schedule was changed)', () => {
+    const a = { createdAt: created, expiresAt: created + 2 * HOUR, reminders: [{ at: created + 115 * MIN }] };
+    // The point before closing (110 min) passed before the last reminder: nothing is owed at 2 h - 1 min.
+    expect(askReminderDue(a, { afterMinutes: [115], thenEveryMinutes: 0, beforeCloseMinutes: 10 }, created + 119 * MIN)).toBeUndefined();
   });
 
   it('owes nothing once the question has expired', () => {

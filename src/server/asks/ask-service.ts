@@ -713,7 +713,9 @@ export function formatWaitDuration(ms: number): string {
 
 /** The reminder text: how long the question has waited, when it closes, and how to answer it. */
 export function reminderText(ask: AskRecord, now: number): string {
-  const short = ask.question.length > 120 ? `${ask.question.slice(0, 119)}…` : ask.question;
+  // By code point, so an emoji is never cut in half.
+  const chars = Array.from(ask.question);
+  const short = chars.length > 120 ? `${chars.slice(0, 119).join('')}…` : ask.question;
   return [
     `⏰ Still waiting for your answer: asked ${formatWaitDuration(now - ask.createdAt)} ago, closes in ${formatWaitDuration(ask.expiresAt - now)}.`,
     '',
