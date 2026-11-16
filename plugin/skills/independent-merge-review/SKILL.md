@@ -391,8 +391,11 @@ the reviewer gets (§4a):
   outside those lines. Tag each new finding critical, small `defect`, larger
   `defect` or `nit` (the finding classes in this brief). A new non-critical
   finding on a line the fix diff does not change goes under `Follow-ups` and
-  does not block. A new small defect on a line the fix diff changes blocks.
-  A new nit never blocks. A new critical finding
+  does not block. In round 2, a new small defect on a line the fix diff
+  changes blocks. From round 3 on (the PR carries two or more BLOCKs), only
+  critical findings block: a new small defect is a follow-up, and an unfixed
+  non-critical finding of the latest BLOCK no longer blocks. A new nit never
+  blocks. A new critical finding
   blocks wherever it is."
 
   Paste the finding-class list above into both briefs; the reviewer sees

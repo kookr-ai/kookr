@@ -232,7 +232,9 @@ describe('independent-merge-review follow-up classes and budget (issue #3903)', 
     expect(brief).toMatch(/BLOCK on critical findings and\s+small defects/);
     // Round 2 blocks on a new small defect on a changed line (the §4a table); the
     // round-2 brief and the BLOCK rule must say so, or the reviewer passes it.
-    expect(brief).toMatch(/A new small defect on a line the fix diff changes blocks\./);
+    expect(brief).toMatch(/In round 2, a new small defect on a line the fix diff\s+changes blocks\./);
+    // The same brief serves round 3 and later, so it must carry the round cap too.
+    expect(brief).toMatch(/From round 3 on \(the PR carries two or more BLOCKs\), only\s+critical findings block: a new small defect is a follow-up, and an unfixed\s+non-critical finding of the latest BLOCK no longer blocks/);
     expect(brief).toMatch(/small `defect` \(classes below\) in round 1, or in round 2\s+on a line the fix diff changes/);
   });
 
