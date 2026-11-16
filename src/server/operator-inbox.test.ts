@@ -144,9 +144,32 @@ describe('GET /api/operator/inbox', () => {
     expect(body.items).toEqual([expect.objectContaining({ kind: 'review', taskId, taskName: 'Fix login redirect', project: 'kookr' })]);
   });
 
-  test('a read-only viewer is refused', async () => {
+  test('a read-only viewer is refused and gets no inbox data; no credential is 401', async () => {
     const res = await app().hono.request('http://lan.example/api/operator/inbox', { headers: { authorization: `Bearer ${VIEWER}` } });
     expect(res.status).toBe(403);
+    expect(await res.json()).not.toHaveProperty('items');
+    const anonymous = await app().hono.request('http://lan.example/api/operator/inbox');
+    expect(anonymous.status).toBe(401);
+  });
+
+  test('serves the five-item fixture from its task store, monitor, asks and train, oldest first', async () => {
+    const sources = fixtureSources();
+    const byId = new Map(sources.liveTasks.map((task) => [task.id, task]));
+    const hono = new Hono();
+    hono.use('*', createApiAuthMiddleware(auth));
+    registerOperatorInboxRoutes(hono, {
+      taskStore: { viewLiveTasks: () => sources.liveTasks, getTask: (id) => byId.get(id) },
+      monitor: sources.monitor,
+      asks: { all: () => [...sources.asks] },
+      train: { getHealthSnapshot: () => sources.train },
+      now: () => NOW,
+    });
+    const res = await hono.request('http://lan.example/api/operator/inbox', { headers: { authorization: 'Bearer owner-tok' } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.summary).toBe('5 waiting: 1 permission prompt, 1 question, 1 flagged task, 1 review, train halted');
+    expect(body.items.map((item: { kind: string }) => item.kind)).toEqual(['permission', 'question', 'flagged', 'review', 'train']);
+    expect(body.items[0].command).toBe(PLANTED_COMMAND);
   });
 
   test('readOperatorInbox survives a failing train read', () => {

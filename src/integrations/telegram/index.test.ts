@@ -22,7 +22,7 @@ import { startTelegramTrigger, type StartTelegramTriggerDeps } from './index.js'
 import { startFakeTelegram, type FakeTelegramServer } from './fake-telegram-server.js';
 import type { TelegramUpdate } from './api-client.js';
 import { TranscriptionError, type TranscribeOpts } from './transcribe.js';
-import { fixtureInbox, KOOKR_CWD, PLANTED_COMMAND } from '../../../test/fixtures/operator-inbox.js';
+import { fixtureInbox, KOOKR_CWD, PLANTED_COMMAND, PLANTED_ERROR, PLANTED_TOKEN } from '../../../test/fixtures/operator-inbox.js';
 
 function readAuditEvents(dataDir: string): Array<Record<string, unknown>> {
   try {
@@ -447,10 +447,21 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     expect(sent.text).not.toContain('Redesign settings page');
     expect(sent.text).toContain('And 2 in projects not enabled here.');
     expect(sent.text).not.toContain(PLANTED_COMMAND);
+    expect(sent.text).not.toContain(PLANTED_ERROR);
+    expect(sent.text).not.toContain(PLANTED_TOKEN);
     expect(launchTaskMock).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(readAuditEvents(tmp).some((e) => e.kind === 'brief_replied' && e.named === 3 && e.hidden === 2)).toBe(true),
     );
+  });
+
+  it('/brief from a sender not on the allowlist gets nothing', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: 999, text: '/brief' })]);
+    const getOperatorInbox = vi.fn(() => fixtureInbox());
+    handle = await startTelegramTrigger(makeDeps({ getOperatorInbox }));
+    await sleep(150);
+    expect(getOperatorInbox).not.toHaveBeenCalled();
+    expect(fake.outbound.sendMessage.some((m) => m.text.includes('waiting'))).toBe(false);
   });
 
   it('/brief says so when the inbox cannot be read', async () => {

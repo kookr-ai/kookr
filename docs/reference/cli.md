@@ -913,7 +913,7 @@ same list is sent by `/brief` on Telegram. It holds five kinds of item:
 
 | Kind | What it is |
 | --- | --- |
-| `permission` | A task stopped on a permission prompt. Shows the tool and the command, path or URL, with secrets hidden. |
+| `permission` | A task stopped on a permission prompt. Shows the tool and the command, path or URL, with secrets hidden. Listed even when the finding is snoozed, because the task cannot move until someone answers. |
 | `question` | A pending `kookr ask` question, with its answer options. |
 | `flagged` | Any other task the dashboard flags as needing you: a finding that is not snoozed or suppressed (waiting for a reply, repeated errors, looks stuck, and so on), or an unattended task stopped from an interactive tool. |
 | `review` | A task that said it is finished (`kookr signal completion-ready`) and that Kookr will not close by itself, because it did not opt into auto-close. A task that closes by itself is not listed. |

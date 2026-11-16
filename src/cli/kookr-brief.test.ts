@@ -90,5 +90,6 @@ describe('kookr brief', () => {
   test('a server without the route (404) exits 4 with a hint', async () => {
     const t = io(respond(404, 'not found'));
     expect(await runBriefCli([], t.io)).toBe(EXIT_SERVER_ERROR);
+    expect(t.errors.join('\n')).toContain('older than kookr brief');
   });
 });

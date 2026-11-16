@@ -169,6 +169,9 @@ export async function runBriefCli(argv: string[], io: BriefCliIo = {}): Promise<
     return fail('NO_SERVER', `no Kookr server reachable: ${e instanceof Error ? e.message : String(e)}`, EXIT_NO_SERVER);
   }
 
+  if (status === 404) {
+    return fail('SERVER_ERROR', `the server has no ${API_PATH} route; it is older than kookr brief, so update it`, EXIT_SERVER_ERROR, { status });
+  }
   if (status !== 200) {
     const detail = body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : 'unknown error';
     return fail('SERVER_ERROR', `server rejected the request (HTTP ${status}): ${detail}`, EXIT_SERVER_ERROR, { status });

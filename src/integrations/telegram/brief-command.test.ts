@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import type { OperatorInbox } from '../../shared/contracts/operator-inbox.js';
 import {
   fixtureInbox,
+  fixtureSources,
   KOOKR_CWD,
   NOW,
   PLANTED_COMMAND,
@@ -75,17 +76,30 @@ describe('formatBriefReply', () => {
   });
 
   test('an empty inbox is the summary alone', () => {
-    const empty: OperatorInbox = { ...fixtureInbox(), items: [], summary: 'Nothing is waiting on you. 3 tasks are working in 1 project.' };
-    expect(formatBriefReply(empty, { allowedCwds: [KOOKR_CWD], dashboardBaseUrl: BASE, now: NOW }).text)
-      .toBe('Nothing is waiting on you. 3 tasks are working in 1 project.');
+    const quiet = fixtureInbox({
+      liveTasks: fixtureSources().liveTasks.map((task) => ({ ...task, pendingSignal: undefined })),
+      monitor: { getCurrentAnomaly: () => null, getAgentEvents: () => [], getAgentState: () => ({ anomaly: null }) },
+      asks: [],
+      train: null,
+    });
+    expect(formatBriefReply(quiet, { allowedCwds: [KOOKR_CWD], dashboardBaseUrl: BASE, now: NOW }).text)
+      .toBe('Nothing is waiting on you. 5 tasks are working in 2 projects.');
   });
 
-  test('a long inbox stays under the limit and keeps both footers', () => {
+  test('a long inbox fills up to the limit and keeps both footers with the right counts', () => {
     const raw = fixtureInbox();
     const many = Array.from({ length: 60 }, (_, i) => ({ ...raw.items[3], taskId: `review-${i}`, taskName: `Review task number ${i} with a fairly long descriptive name` }));
     const inbox: OperatorInbox = { ...raw, items: [...many, { ...raw.items[1], cwd: '/elsewhere' }] };
     const reply = formatBriefReply(inbox, { allowedCwds: [KOOKR_CWD], dashboardBaseUrl: BASE, now: NOW });
     expect(reply.text.length).toBeLessThanOrEqual(BRIEF_REPLY_MAX_CHARS);
-    expect(reply.text).toMatch(/…and \d+ more here: kookr brief lists them all\.\nAnd 1 in projects not enabled here\.$/);
+    expect(reply.text.length).toBeGreaterThan(BRIEF_REPLY_MAX_CHARS - 400);
+    const shown = (reply.text.match(/Review task number \d+/g) ?? []).length;
+    expect(shown).toBeGreaterThan(0);
+    expect(reply.text.endsWith(`…and ${60 - shown} more here: kookr brief lists them all.\nAnd 1 in projects not enabled here.`)).toBe(true);
+  });
+
+  test('a partly hidden inbox leaks nothing either', () => {
+    const text = formatBriefReply(fixtureInbox(), { allowedCwds: [KOOKR_CWD], dashboardBaseUrl: BASE, now: NOW }).text;
+    for (const planted of [PLANTED_COMMAND, PLANTED_ERROR, PLANTED_TOKEN]) expect(text).not.toContain(planted);
   });
 });

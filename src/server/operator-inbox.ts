@@ -10,7 +10,9 @@
  *
  * 1. `permission`: a task stopped on a permission prompt. Same reader as the
  *    3-minute permission page (`collectPermissionPromptWaits`), so the tool
- *    and the command (secrets hidden) are the ones the page quotes.
+ *    and the command (secrets hidden) are the ones the page quotes. A
+ *    snoozed prompt is still listed: the task cannot move until someone
+ *    answers it.
  * 2. `question`: a pending `kookr ask` question.
  * 3. `flagged`: any other active finding, by the dashboard's own rule (not
  *    snoozed, not suppressed), or an unattended task blocked from an
