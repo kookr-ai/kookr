@@ -40,6 +40,11 @@ export function RailActionsMenu({
   useEffect(() => {
     if (!hasItems) setMenuOpen(false);
   }, [hasItems]);
+  // Nothing left to abort: drop a pending confirmation, so it cannot come
+  // back by itself (and abort other tasks) when new tasks become active.
+  useEffect(() => {
+    if (!canAbort) setConfirmAbortOpen(false);
+  }, [canAbort]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -94,6 +99,9 @@ export function RailActionsMenu({
   const choose = (action: () => void) => (e: React.MouseEvent) => {
     e.stopPropagation();
     setMenuOpen(false);
+    // The chosen item unmounts with the popup; keep focus on the trigger so a
+    // dialog opened by the item hands focus back there when it closes.
+    triggerRef.current?.focus();
     action();
   };
 
