@@ -59,8 +59,9 @@ Do **not** ask:
   would answer;
 - the same question again after it expired or was answered (see below);
 - in a loop, or several questions at once. Keep **one** open question at a
-  time. The server rate-limits you (3 open, 6 per hour per task), and a
-  rate-limit error means you are asking too much.
+  time. The server rate-limits you (per task: 3 open with a timeout of 2 hours
+  or less, 10 open with a longer timeout, 6 per hour), and a rate-limit error
+  means you are asking too much.
 
 ## How to write the question
 

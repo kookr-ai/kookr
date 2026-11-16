@@ -72,8 +72,10 @@ interface AskRecord {
   section, so concurrent taps yield exactly one winner; losers get
   `already_answered`.
 * Limits (constants, not env vars): ≤4 options (Telegram rows stay legible),
-  label ≤48 chars, question ≤600, context ≤1500, ≤3 pending per task, ≤6 asks
-  per task per hour, ≤20 asks/hour globally, timeout default 30 min, max 7 days (24 h before issue #3926).
+  label ≤48 chars, question ≤600, context ≤1500, ≤3 pending per task with a
+  timeout of 2 h or less and ≤10 with a longer one (counted separately since
+  issue #3966, so opinion requests left open for days never block a short
+  question), ≤6 asks per task per hour, ≤20 asks/hour globally, timeout default 30 min, max 7 days (24 h before issue #3926).
 * Idempotency: `(taskId, idempotencyKey)` returns the existing **pending** ask
   (HTTP 200, `deduped: true`) instead of creating a second Telegram message; an
   answered/expired ask with the same key does not block a new one.
