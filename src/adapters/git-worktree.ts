@@ -15,7 +15,7 @@ import type {
   WorktreeDirtySummary,
 } from '../shared/contracts/worktree-cleanup-verdict.js';
 import { isLiveChainTip } from '../shared/contracts/playbook-chain.js';
-import { decideChainStep } from '../core/playbook-chain.js';
+import { chainTipView, decideChainStep } from '../core/playbook-chain.js';
 import { isProtectedWorktreePath } from './worktree-marker.js';
 import { getWorktreeRemovalGuardReason, removeRegisteredWorktree, samePath } from './worktree-safety.js';
 
@@ -171,7 +171,8 @@ export async function inspectWorktreeCleanup(
   const guardReason = await getWorktreeRemovalGuardReason(worktreePath, { branch });
   if (guardReason) return blocked(guardReason);
   if (isProtectedWorktreePath(worktreePath)) return blocked('protected-marker');
-  if (isSharedWorktree(taskStore, taskId, worktreePath)) return blocked('shared-with-active-task');
+  const holder = findWorktreeHolder(taskStore, taskId, worktreePath);
+  if (holder) return blocked(holder);
 
   const { blocker, evidence, mergeStatus } = await inspectCleanliness(
     worktreePath,
@@ -203,6 +204,7 @@ function skippedReasonForBlocker(blocker: WorktreeCleanupBlocker): WorktreeSkipp
     case 'protected-marker':
       return 'protected';
     case 'shared-with-active-task':
+    case 'reserved-for-chain':
       return 'shared';
     case 'primary-working-tree':
     case 'not-a-linked-worktree':
@@ -397,55 +399,55 @@ function getWorktreePaths(task: Task): string[] {
 }
 
 /**
- * Check whether a live user other than this cleanup still needs the worktree:
- * another open/inProgress task with a session in it, or a playbook-chain tip
- * with a session in it (this task included) whose chain will run another
- * iteration.
+ * Find a live user, other than this cleanup, that still needs the worktree:
+ * another open/inProgress task with a session in it
+ * (`shared-with-active-task`), or a playbook chain that will run another
+ * iteration in it (`reserved-for-chain`). Another active task wins when both
+ * hold the path, since it is the more immediate user.
  *
  * A chain tip counts even once it is terminal, and even when it is the task
  * being cleaned up: a finished iteration stays the tip until the chain service's
  * next sweep launches its successor in the same cwd. Removing the worktree in
  * that window makes the successor fail with "working directory does not exist"
- * and the chain end `launch_failed` (issue #3743, item 4).
+ * and the chain end `launch_failed` (issue #3743, item 4). A tip that has no
+ * session yet (a successor still queued as `pending`, or one whose launch
+ * failed before a session started and will be retried) is matched by its task
+ * cwd, which is where its session will run.
  */
-function isSharedWorktree(taskStore: TaskStore, taskId: string, worktreePath: string): boolean {
+function findWorktreeHolder(
+  taskStore: TaskStore,
+  taskId: string,
+  worktreePath: string,
+): 'shared-with-active-task' | 'reserved-for-chain' | undefined {
   const allTasks = taskStore.viewTasks();
+  let holder: 'reserved-for-chain' | undefined;
   for (const task of allTasks) {
     const otherActiveTask = task.id !== taskId && (task.status === 'open' || task.status === 'inProgress');
-    if (!otherActiveTask && !chainNeedsCwd(task, allTasks)) continue;
-    for (const s of task.sessions) {
-      if (s.gitIsWorktree && s.cwd && samePath(s.cwd, worktreePath)) {
-        return true;
-      }
-    }
+    if (otherActiveTask && hasWorktreeSessionAt(task, worktreePath)) return 'shared-with-active-task';
+    if (holder || !chainNeedsCwd(task, allTasks)) continue;
+    const sessionless = task.sessions.length === 0 && samePath(task.cwd, worktreePath);
+    if (sessionless || hasWorktreeSessionAt(task, worktreePath)) holder = 'reserved-for-chain';
   }
-  return false;
+  return holder;
+}
+
+function hasWorktreeSessionAt(task: Task, worktreePath: string): boolean {
+  return task.sessions.some((s) => s.gitIsWorktree && s.cwd && samePath(s.cwd, worktreePath));
 }
 
 /**
  * True when the task is its chain's live tip and the chain is not about to end:
- * the iteration is still running, or it finished and the next sweep will launch
- * a successor in the same cwd. Asks the chain's own policy, so a final
- * iteration (count or deadline reached, stop requested, cancelled, runaway)
- * releases its worktree here instead of keeping it forever: cleanup runs only
- * at the terminal transition and never revisits the task after the chain ends.
+ * the iteration is still running (or queued), or it finished and the next
+ * sweep will launch a successor in the same cwd. Asks the chain's own policy,
+ * through the same tip view the chain service uses, so a final iteration
+ * (count or deadline reached, stop requested, cancelled, runaway) releases its
+ * worktree here. A chain that only decides to end later (a stop sent after the
+ * tip finished, the deadline passing before the next sweep, the successor's
+ * launch failing) is reclaimed by the chain service when it ends the chain.
  */
 function chainNeedsCwd(task: Task, allTasks: readonly Task[]): boolean {
   if (!task.chain || !isLiveChainTip(task, allTasks)) return false;
-  let firstSessionAt: Date | undefined;
-  for (const session of task.sessions) {
-    const at = new Date(session.createdAt);
-    if (Number.isFinite(at.getTime()) && (!firstSessionAt || at < firstSessionAt)) firstSessionAt = at;
-  }
-  const decision = decideChainStep({
-    status: task.status,
-    chain: task.chain,
-    createdAt: task.createdAt,
-    finishedAt: task.finishedAt,
-    firstSessionAt,
-    sessionCount: task.sessions.length,
-    terminalReceipt: task.terminalReceipt,
-  }, new Date());
+  const decision = decideChainStep(chainTipView({ ...task, chain: task.chain }), new Date());
   return decision.kind !== 'end';
 }
 

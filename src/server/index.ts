@@ -272,7 +272,7 @@ import { SupervisorFeedbackCaseStore } from './supervisor-feedback-case-store.js
 import { UserInputDeliveryService } from './user-input-delivery-service.js';
 import { type OssSourceWatcherFs } from './oss-source-watcher.js';
 import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
-import { cleanupReconciledTaskWorktrees } from '../adapters/git-worktree.js';
+import { cleanupReconciledTaskWorktrees, cleanupTaskWorktrees } from '../adapters/git-worktree.js';
 import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
 import { createAgentRuntime, type AgentRuntimeDeps } from './bootstrap/create-agent-runtime.js';
 import type { CodexRolloutScanner } from '../adapters/codex-rollout-scanner.js';
@@ -2240,6 +2240,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // broadcaster wired below exists.
     onChanged: () => requestSnapshotBroadcast(),
     flushTasks: flushLaunchTaskState,
+    // Same rule as the terminal transition: a completed iteration's worktree
+    // goes only when completion cleanup is enabled; a cancelled or terminated
+    // one always does. Every safety gate (dirty, unmerged, shared) still holds.
+    reclaimWorktree: async (task) => {
+      if (!isTerminalStatus(task.status)) return;
+      if (task.status === 'completed' && getCleanupWorktreeOnComplete() === false) return;
+      await cleanupTaskWorktrees(taskStore, task.id, interactionLog);
+    },
     logger: console,
   });
   lifecycleDeps.onPendingTaskPromoted = async (task) => {

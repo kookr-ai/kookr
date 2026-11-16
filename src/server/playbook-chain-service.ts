@@ -33,7 +33,9 @@ import { deriveTurnStateDetails } from '../core/turn-state.js';
 import { isBackgroundParked } from '../core/background-parked.js';
 import {
   CHAIN_MAX_LAUNCH_FAILURES,
+  chainTipView,
   decideChainStep,
+  earliestSessionStart,
   initialChainState,
   renderChainPreamble,
 } from '../core/playbook-chain.js';
@@ -107,6 +109,16 @@ export interface PlaybookChainServiceDeps {
    * caller was told about survives a crash before the periodic save.
    */
   flushTasks?: () => Promise<void>;
+  /**
+   * Reclaim the worktree a chain ran in, once the chain has ended. Worktree
+   * cleanup runs only at a task's terminal transition, and it keeps a chain
+   * tip's worktree while the chain will run another iteration there. When the
+   * chain ends later instead (a stop arrives, the deadline passes, or the
+   * successor fails to launch), nothing would revisit the worktree, so the
+   * service hands over the newest member that ran a session. Fire-and-forget:
+   * the callback must not throw, and a rejection is only logged.
+   */
+  reclaimWorktree?: (task: Task) => Promise<void>;
   now?: () => Date;
   intervalMs?: number;
   logger?: PlaybookChainLogger;
@@ -319,15 +331,7 @@ export class PlaybookChainService {
   private async advance(tipRef: Task): Promise<void> {
     const tip = this.deps.taskStore.getTask(tipRef.id);
     if (!tip?.chain || isChainSettled(tip.chain)) return;
-    const decision = decideChainStep({
-      status: tip.status,
-      chain: tip.chain,
-      createdAt: tip.createdAt,
-      finishedAt: tip.finishedAt,
-      firstSessionAt: firstSessionAt(tip),
-      sessionCount: tip.sessions.length,
-      terminalReceipt: tip.terminalReceipt,
-    }, this.now());
+    const decision = decideChainStep(chainTipView({ ...tip, chain: tip.chain }), this.now());
 
     if (decision.kind === 'wait') {
       if (tip.status !== 'inProgress') return;
@@ -425,7 +429,7 @@ export class PlaybookChainService {
     );
     const completed = await this.deps.completeIteration(tip, 'idle', () => this.isIdle(tip.id));
     if (!completed) return;
-    const startedMs = firstSessionAt(tip)?.getTime() ?? since;
+    const startedMs = earliestSessionStart(tip.sessions)?.getTime() ?? since;
     const activeMs = Math.max(0, since - startedMs);
     this.deps.taskStore.updateChain(tip.id, (chain) => ({ ...chain, idleClosedAfterActiveMs: activeMs }));
     this.deps.onChanged?.(tip.id);
@@ -532,6 +536,30 @@ export class PlaybookChainService {
       `[playbook-chain] chain ${tip.chain?.chainId} ended after iteration ${tip.chain?.iteration}: ${reason}${detail ? ` — ${detail}` : ''}`,
     );
     this.deps.onChanged?.(tip.id);
+    if (tip.chain) this.reclaimWorktree(tip.chain.chainId);
+  }
+
+  /**
+   * Hand the chain's worktree to {@link PlaybookChainServiceDeps.reclaimWorktree}.
+   * Every iteration runs in the same cwd, but the tip may be an iteration that
+   * never started (its launch failed), so the newest member with a session is
+   * the one whose sessions name the worktree.
+   */
+  private reclaimWorktree(chainId: string): void {
+    const reclaim = this.deps.reclaimWorktree;
+    if (!reclaim) return;
+    let newest: Task | undefined;
+    for (const task of this.deps.taskStore.viewTasks()) {
+      if (task.chain?.chainId !== chainId || task.sessions.length === 0) continue;
+      if (!newest || task.chain.iteration > newest.chain!.iteration) newest = task;
+    }
+    const member = newest ? this.deps.taskStore.getTask(newest.id) : undefined;
+    if (!member) return;
+    reclaim(member).catch((err: unknown) => {
+      this.deps.logger?.warn?.(
+        `[playbook-chain] chain ${chainId}: reclaiming the worktree of task ${member.id} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   }
 }
 
@@ -583,16 +611,6 @@ function turnIsRunning(monitor: PlaybookChainServiceDeps['monitor'], task: Task)
   const session = live[live.length - 1];
   if (!session) return false;
   return deriveTurnStateDetails(monitor.getAgentEvents(session.tmuxSession)).turnState === 'running';
-}
-
-function firstSessionAt(task: Task): Date | undefined {
-  let earliest: Date | undefined;
-  for (const session of task.sessions) {
-    const at = session.createdAt instanceof Date ? session.createdAt : new Date(session.createdAt);
-    if (!Number.isFinite(at.getTime())) continue;
-    if (!earliest || at < earliest) earliest = at;
-  }
-  return earliest;
 }
 
 function describeBounds(chain: TaskChainState): string {

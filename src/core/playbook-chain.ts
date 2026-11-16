@@ -93,6 +93,46 @@ export interface ChainTipView {
   terminalReceipt?: { source?: string; reason?: string };
 }
 
+/** The fields of a task {@link chainTipView} reads. */
+export interface ChainTipSource {
+  status: TaskStatus;
+  chain: TaskChainState;
+  createdAt: Date | string;
+  finishedAt?: Date | string;
+  sessions: readonly { createdAt: Date | string }[];
+  terminalReceipt?: { source?: string; reason?: string };
+}
+
+/**
+ * Project a chain task onto the view the chain policy reads. Shared by the
+ * chain service (which advances the chain) and worktree cleanup (which asks
+ * whether the chain will run another iteration in a worktree), so both read
+ * the same facts and reach the same decision.
+ */
+export function chainTipView(task: ChainTipSource): ChainTipView {
+  const firstSessionAt = earliestSessionStart(task.sessions);
+  return {
+    status: task.status,
+    chain: task.chain,
+    createdAt: task.createdAt,
+    finishedAt: task.finishedAt,
+    ...(firstSessionAt ? { firstSessionAt } : {}),
+    sessionCount: task.sessions.length,
+    terminalReceipt: task.terminalReceipt,
+  };
+}
+
+/** Earliest valid session start, or undefined when no session ever started. */
+export function earliestSessionStart(sessions: readonly { createdAt: Date | string }[]): Date | undefined {
+  let earliest: Date | undefined;
+  for (const session of sessions) {
+    const at = session.createdAt instanceof Date ? session.createdAt : new Date(session.createdAt);
+    if (!Number.isFinite(at.getTime())) continue;
+    if (!earliest || at < earliest) earliest = at;
+  }
+  return earliest;
+}
+
 export type IterationOutcome =
   /** Not terminal yet. */
   | { kind: 'running' }

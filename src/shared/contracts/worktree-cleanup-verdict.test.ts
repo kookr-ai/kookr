@@ -19,6 +19,7 @@ const ALL_BLOCKERS: WorktreeCleanupBlocker[] = [
   'repository-context-mismatch',
   'protected-marker',
   'shared-with-active-task',
+  'reserved-for-chain',
   'detached-head',
   'no-branch',
   'uncommitted-changes',
@@ -39,6 +40,15 @@ describe('describeBlocker', () => {
     for (const blocker of ALL_BLOCKERS) {
       expect(describeBlocker(blocker), blocker).not.toContain('-');
     }
+  });
+});
+
+describe('describeVerdictOutcome — chain reservation', () => {
+  test('a worktree held for a chain names the chain, not another task', () => {
+    // Issue #3908: a chain tip's own worktree used to read "shared with
+    // another active task", although no other task was involved.
+    const text = describeVerdictOutcome({ removable: false, blocker: 'reserved-for-chain' });
+    expect(text).toBe('kept — a playbook chain will run its next iteration here');
   });
 });
 
@@ -102,6 +112,8 @@ describe('isPermanentBlocker', () => {
     expect(isPermanentBlocker('uncommitted-changes')).toBe(false);
     expect(isPermanentBlocker('unmerged-commits')).toBe(false);
     expect(isPermanentBlocker('shared-with-active-task')).toBe(false);
+    // The chain can be stopped, or end, while the dialog is open.
+    expect(isPermanentBlocker('reserved-for-chain')).toBe(false);
     expect(isPermanentBlocker('ralph-loop-active')).toBe(false);
     expect(isPermanentBlocker('detached-head')).toBe(false);
   });

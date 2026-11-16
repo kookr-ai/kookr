@@ -30,6 +30,7 @@ function harness(opts: {
   launchImpl?: (o: LaunchOpts, s?: LaunchTaskServerOptions) => Promise<LaunchResult>;
   flushTasks?: () => Promise<void>;
   logger?: { info: (msg: string) => void; warn: (msg: string) => void };
+  reclaimWorktree?: (task: Task) => Promise<void>;
 } = {}) {
   // One clock for everything: TaskStore stamps createdAt/finishedAt with
   // `new Date()`, the service reads `now()`; both must agree.
@@ -105,6 +106,7 @@ function harness(opts: {
     now: () => new Date(nowMs),
     ...(opts.flushTasks ? { flushTasks: opts.flushTasks } : {}),
     ...(opts.logger ? { logger: opts.logger } : {}),
+    ...(opts.reclaimWorktree ? { reclaimWorktree: opts.reclaimWorktree } : {}),
   });
 
   return {
@@ -899,3 +901,83 @@ describe('first launch failure', () => {
   });
 });
 
+
+describe('worktree reclaim when a chain ends (issue #3908)', () => {
+  it('hands the ended tip to the reclaim hook after the chain is marked ended', async () => {
+    const seen: Array<{ id: string; ended: boolean }> = [];
+    const h = harness({
+      reclaimWorktree: async (task) => {
+        seen.push({ id: task.id, ended: Boolean(h.taskStore.getTask(task.id)?.chain?.ended) });
+      },
+    });
+    const first = await startResearchChain(h, { maxIterations: 5 });
+    // The stop arrives after the tip finished: its own cleanup, run at the
+    // terminal transition, saw a chain about to launch and kept the worktree.
+    h.finish(first);
+    await h.service.stopChain(first.id, 'operator');
+    await h.service.sweep();
+
+    expect(h.launches).toHaveLength(1);
+    // The reclaim must see the chain already ended, or worktree cleanup would
+    // still count the tip as a user of its cwd.
+    expect(seen).toEqual([{ id: first.id, ended: true }]);
+  });
+
+  it('never reclaims while the chain goes on', async () => {
+    const reclaimWorktree = vi.fn(async () => {});
+    const h = harness({ reclaimWorktree });
+    const first = await startResearchChain(h, { maxIterations: 3 });
+    h.finish(first);
+    await h.service.sweep();
+    h.finish(h.service.findTip(first.chain!.chainId)!);
+    await h.service.sweep();
+    expect(reclaimWorktree).not.toHaveBeenCalled();
+
+    h.finish(h.service.findTip(first.chain!.chainId)!);
+    await h.service.sweep();
+    expect(reclaimWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  it('reclaims through the newest iteration that ran a session when the tip never started', async () => {
+    const reclaimWorktree = vi.fn(async (_task: Task) => {});
+    let calls = 0;
+    // eslint-disable-next-line prefer-const
+    let h: ReturnType<typeof harness>;
+    h = harness({
+      reclaimWorktree,
+      launchImpl: async (o, s) => {
+        calls++;
+        const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, parentTaskId: o.parentTaskId, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
+        if (calls > 1) {
+          h.taskStore.terminateTask(task.id, { reason: 'unknown' });
+          throw new Error('agent failed to boot');
+        }
+        h.taskStore.startTask(task.id);
+        h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
+        return { task: h.taskStore.getTask(task.id)!, queued: false } as LaunchResult;
+      },
+    });
+    const first = await startResearchChain(h, { maxIterations: 10 });
+    h.finish(first);
+    for (let i = 0; i < 6; i++) await h.service.sweep();
+
+    const members = h.chainTasks(first.chain!.chainId);
+    expect(members[3].chain!.ended?.reason).toBe('launch_failed');
+    // Iterations 2-4 never had a session, so only iteration 1's sessions name
+    // the worktree.
+    expect(reclaimWorktree.mock.calls.map(([task]) => task.id)).toEqual([first.id]);
+  });
+
+  it('logs a failed reclaim without breaking the sweep', async () => {
+    const warn = vi.fn();
+    const h = harness({
+      logger: { info: () => {}, warn },
+      reclaimWorktree: async () => { throw new Error('disk on fire'); },
+    });
+    const first = await startResearchChain(h, { maxIterations: 1 });
+    h.finish(first);
+    await h.service.sweep();
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringContaining('disk on fire')));
+    expect(h.service.findTip(first.chain!.chainId)!.chain!.ended?.reason).toBe('iterations_reached');
+  });
+});
