@@ -139,7 +139,10 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
 
   app.get('/api/asks/:id', async (c) => {
     if (!service) return c.json({ error: 'ask not found', code: 'not_found' }, 404);
-    const ask = await service.get(c.req.param('id'));
+    // `?wait=1` marks a `kookr ask --wait` poll: the answer is then left for it to print, not also typed.
+    const ask = c.req.query('wait') === '1'
+      ? await service.pollForWaiter(c.req.param('id'))
+      : await service.get(c.req.param('id'));
     if (!ask) return c.json({ error: 'ask not found', code: 'not_found' }, 404);
     return c.json({ ask: toAskView(ask) });
   });

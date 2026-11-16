@@ -1775,8 +1775,13 @@ kookr ask --question "<text>" --option "<label>" --option "<label>" [--option "<
 Without `--wait` the command returns immediately and prints the ask id; the
 operator's answer is typed into the task's session as
 `Operator answered ask <id>: <label>` (the same text whether it was given on
-Telegram or in the dashboard). With `--wait` it also prints the chosen
-label (or the free text) on stdout. Re-running the same question with the same
+Telegram or in the dashboard). With `--wait` it prints the chosen label (or
+the free text) on stdout instead, and the answer is not typed as well; it is
+typed only if the command stops waiting before it reads the answer (its
+`--wait=<seconds>` window ran out, or it was killed). The server knows a
+command is waiting only from its first status check, about 2 seconds after the
+question is sent, so an answer given before that is both typed and printed
+(issue #4040). Re-running the same question with the same
 options from the same task while it is still pending returns the existing ask
 instead of sending a second Telegram message. Question and context text that
 looks like a credential is replaced by a placeholder, with a warning on stderr;

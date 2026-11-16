@@ -18,6 +18,10 @@
  * Every state transition is a synchronous compare-and-set on
  * `state === 'pending'` against the in-memory store, so two concurrent taps
  * produce exactly one winner.
+ *
+ * An answer reaches the agent in one place. While a `kookr ask --wait` poll is
+ * attached (`pollForWaiter`), the answer is left for it to print and is typed
+ * into the session only as a fallback, if that poll does not read it in time.
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -32,6 +36,7 @@ import {
   type AskChannel,
   type AskNotifier,
   type AskRecord,
+  ASK_WAIT_POLL_INTERVAL_MS,
   type AskState,
   type AskView,
   type CreateAskInput,
@@ -45,6 +50,13 @@ const SWEEP_INTERVAL_MS = 30_000;
 const MAC_HEX_CHARS = 16;
 const STALE_EXPIRY_NOTICE_MS = 5 * 60 * 1000;
 const MAX_ANSWER_TEXT_CHARS = ASK_LIMITS.maxAnswerTextChars;
+/** A `kookr ask --wait` poll counts as attached for this long after it: five of its polls, room for a slow one on a busy host. */
+export const ASK_WAIT_ATTACHED_MS = 5 * ASK_WAIT_POLL_INTERVAL_MS;
+/**
+ * How long an answer left for an attached `--wait` poll waits to be read before it is typed into
+ * the task after all (the CLI was killed, or its `--wait=<s>` window ran out just before the answer).
+ */
+export const ASK_WAIT_FALLBACK_MS = 15_000;
 /** Stands in for a question/context that looked like a credential (the detector's own sentinel points at a dashboard view asks do not have). */
 const REDACTED_PLACEHOLDER = '[redacted — looked like a credential]';
 
@@ -90,6 +102,13 @@ export class AskService {
   private readonly log: (message: string) => void;
   private timer: NodeJS.Timeout | null = null;
   private readonly listeners = new Set<(change: AskChange) => void>();
+  /**
+   * Pending ask id → when a `kookr ask --wait` poll last read it. In memory only: an answer given
+   * after a restart is typed at once, until the waiter's next poll marks it attached again.
+   */
+  private readonly waitPolls = new Map<string, number>();
+  /** Answered ask id → the timer that types the answer if the attached `--wait` poll does not read it first. */
+  private readonly typeFallbacks = new Map<string, NodeJS.Timeout>();
 
   constructor(private readonly deps: AskServiceDeps) {
     this.now = deps.now ?? Date.now;
@@ -135,6 +154,13 @@ export class AskService {
       if (ask.state === 'pending' && !ask.delivery) {
         this.transition(ask.id, 'cancelled', 'delivery_failed');
       }
+      // An answer left for a `--wait` poll when the server stopped: give a poll that is still running
+      // the usual time to read it, then type it. Older ones are left alone, like stale expiry notices.
+      if (ask.state === 'answered' && ask.taskDelivery === undefined && ask.answeredAt !== undefined
+        && this.now() - ask.answeredAt <= STALE_EXPIRY_NOTICE_MS) {
+        // Not known whether the Telegram message was closed before the stop, so the fallback closes it.
+        this.armTypeFallback(ask.id, false);
+      }
     }
     await this.tick();
     this.timer = setInterval(() => {
@@ -152,6 +178,8 @@ export class AskService {
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    for (const fallback of this.typeFallbacks.values()) clearTimeout(fallback);
+    this.typeFallbacks.clear();
     await this.deps.store.flush();
   }
 
@@ -314,6 +342,26 @@ export class AskService {
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  /**
+   * One poll from `kookr ask --wait` (`GET /api/asks/:id?wait=1`). While such polls keep coming, an
+   * answer is left for the CLI to print instead of also being typed into the session; the poll that
+   * reads the answer cancels the typing (`taskDelivery: 'delivered'`). Any other read does not count.
+   */
+  async pollForWaiter(id: string): Promise<AskRecord | undefined> {
+    await this.sweepExpired();
+    const ask = this.deps.store.get(id);
+    if (!ask) return undefined;
+    if (ask.state === 'pending') this.waitPolls.set(id, this.now());
+    const fallback = this.typeFallbacks.get(id);
+    if (fallback !== undefined && ask.state === 'answered') {
+      clearTimeout(fallback);
+      this.typeFallbacks.delete(id);
+      this.deps.store.update(id, (a) => { a.taskDelivery = 'delivered'; });
+      this.emit('updated', id);
+    }
+    return this.deps.store.get(id);
+  }
+
   /** Every stored ask, without the expiry sweep `list` runs first. For synchronous callers (the dashboard push). */
   all(): AskRecord[] {
     return this.deps.store.all();
@@ -430,12 +478,7 @@ export class AskService {
     // The answer is always recorded. It is typed into the task only while the session that asked (or
     // one that resumed its conversation) can still read it: not once the task has ended, and not into
     // a fresh session that replaced the asker after a relaunch, because that session never saw the question.
-    const status = this.deps.taskStatus(ask.taskId);
-    const skipReason = status === undefined || isTerminalStatus(status)
-      ? 'The task has ended, so nothing was typed into it.'
-      : this.replacedByFreshSession(ask)
-        ? 'The task was relaunched in a new session since it asked, so nothing was typed into it.'
-        : undefined;
+    const skipReason = this.notTypedReason(ask);
 
     // One-time answer. There is no `await` between the state checks above and this write, so a
     // concurrent answer (a second tap, or the other channel) is refused by those checks; this
@@ -453,35 +496,72 @@ export class AskService {
       if (source.senderId !== undefined) a.answeredBy = source.senderId;
       if (skipReason !== undefined) a.taskDelivery = 'skipped';
     });
+    const lastWaitPoll = this.waitPolls.get(ask.id);
+    this.waitPolls.delete(ask.id);
     this.emit('resolved', ask.id);
 
-    const chosen = answer.kind === 'option' ? answer.label : answer.text;
-    const headline = source.via === 'dashboard'
-      ? `✅ Already answered in Kookr: ${chosen}\nNothing more is needed here.`
-      : `✅ Answered: ${chosen}`;
-
+    const done = this.deps.store.get(ask.id) as AskRecord;
     if (skipReason !== undefined) {
-      const done = this.deps.store.get(ask.id) as AskRecord;
-      await this.finalize(done, `${headline}\nRecorded. ${skipReason}`);
+      await this.finalize(done, `${answerHeadline(done)}\nRecorded. ${skipReason}`);
       return { ok: true, ask: done, notTyped: skipReason };
+    }
+    if (lastWaitPoll !== undefined && this.now() - lastWaitPoll <= ASK_WAIT_ATTACHED_MS) {
+      // A `kookr ask --wait` poll is attached and will print the answer: typing it too would hand the
+      // agent the same answer twice. It is typed only if that poll does not read it in time.
+      this.armTypeFallback(ask.id, true);
+      await this.finalize(done, answerHeadline(done));
+      return { ok: true, ask: done };
+    }
+    return { ok: true, ask: await this.typeAnswer(ask.id) };
+  }
+
+  /**
+   * Type a recorded answer into the asking task and close the Telegram message with the outcome.
+   * Runs at once when no `--wait` poll is attached, or later as the fallback for one that is.
+   * `closed`: the message already shows the answer, so it is edited again only to add a warning
+   * (Telegram refuses an edit that changes nothing).
+   */
+  private async typeAnswer(id: string, closed = false): Promise<AskRecord> {
+    const ask = this.deps.store.get(id) as AskRecord;
+    const answer = ask.answer as NonNullable<AskRecord['answer']>;
+    const headline = answerHeadline(ask);
+    // Checked again here because a fallback runs seconds after the answer: the task may have ended or been relaunched since.
+    const skipReason = this.notTypedReason(ask);
+    if (skipReason !== undefined) {
+      this.deps.store.update(id, (a) => { a.taskDelivery = 'skipped'; });
+      this.emit('updated', id);
+      const done = this.deps.store.get(id) as AskRecord;
+      await this.finalize(done, `${headline}\nRecorded. ${skipReason}`);
+      return done;
     }
 
     // The text typed into the task is the same on both channels, so agents need not care which one answered.
     const label = answer.kind === 'option' ? answer.label : `(free text) ${oneLine(answer.text)}`;
     const delivered = await this.deliver(ask, `Operator answered ask ${ask.id}: ${label}`)
       .catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
-    this.deps.store.update(ask.id, (a) => { a.taskDelivery = delivered.ok ? 'delivered' : 'failed'; });
+    this.deps.store.update(id, (a) => { a.taskDelivery = delivered.ok ? 'delivered' : 'failed'; });
     // The dashboard closed its card on `resolved`; tell it now whether the answer reached the task.
-    this.emit('updated', ask.id);
+    this.emit('updated', id);
 
-    const done = this.deps.store.get(ask.id) as AskRecord;
+    const done = this.deps.store.get(id) as AskRecord;
+    if (closed && delivered.ok) return done;
     await this.finalize(
       done,
       delivered.ok
         ? headline
         : `${headline}\n⚠️ Could not type it into the task (${delivered.reason ?? 'unknown'}). It can still read the answer via kookr ask --wait.`,
     );
-    return { ok: true, ask: done };
+    return done;
+  }
+
+  /** Type the answer after `ASK_WAIT_FALLBACK_MS` unless a `--wait` poll reads it first (`pollForWaiter`). */
+  private armTypeFallback(id: string, closed: boolean): void {
+    const timer = setTimeout(() => {
+      this.typeFallbacks.delete(id);
+      this.typeAnswer(id, closed).catch((err) => this.log(`[asks] fallback typing failed ask=${id}: ${String(err)}`));
+    }, ASK_WAIT_FALLBACK_MS);
+    timer.unref();
+    this.typeFallbacks.set(id, timer);
   }
 
   // ------------------------------------------------------------------- expiry
@@ -525,10 +605,19 @@ export class AskService {
     return !this.deps.sessionContinues(ask.taskId, ask.sessionId);
   }
 
+  /** Why an answer must not be typed into the asking task now, or undefined when it may be. */
+  private notTypedReason(ask: AskRecord): string | undefined {
+    const status = this.deps.taskStatus(ask.taskId);
+    if (status === undefined || isTerminalStatus(status)) return 'The task has ended, so nothing was typed into it.';
+    if (this.replacedByFreshSession(ask)) return 'The task was relaunched in a new session since it asked, so nothing was typed into it.';
+    return undefined;
+  }
+
   /** CAS pending → `state`. Returns false when the ask was not pending. */
   private transition(id: string, state: AskState, resolution: NonNullable<AskRecord['resolution']>): boolean {
     const ask = this.deps.store.get(id);
     if (!ask || ask.state !== 'pending') return false;
+    this.waitPolls.delete(id);
     this.deps.store.update(id, (a) => { a.state = state; a.resolution = resolution; a.resolvedAt = this.now(); });
     this.emit('resolved', id);
     return true;
@@ -544,6 +633,14 @@ export class AskService {
       this.log(`[asks] finalize failed ask=${ask.id}: ${String(err)}`);
     }
   }
+}
+
+/** The first line of the closed Telegram message for an answered ask. */
+function answerHeadline(ask: AskRecord): string {
+  const chosen = ask.answer?.kind === 'text' ? ask.answer.text : ask.answer?.label ?? '';
+  return ask.answeredVia === 'dashboard'
+    ? `✅ Already answered in Kookr: ${chosen}\nNothing more is needed here.`
+    : `✅ Answered: ${chosen}`;
 }
 
 function invalid(message: string): CreateAskResult {

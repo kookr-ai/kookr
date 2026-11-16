@@ -163,8 +163,10 @@ kookr ask --question "<text>" --option "<label>" [--option …] [--context "<tex
 Default task is `KOOKR_TASK_ID`. The idempotency key is derived from a hash of
 (task, question, options, context), so one network retry — or the agent re-running
 the command after a tool timeout — is a no-op while the ask is pending. Without `--wait`: prints the ask id,
-exit 0. With `--wait`: polls `GET /api/asks/:id` (2 s) until terminal and
-prints the label. Exit codes: 0 answered/created, 2 user error, 3 no server,
+exit 0. With `--wait`: polls `GET /api/asks/:id?wait=1` (2 s) until terminal and
+prints the label. The `wait=1` marker tells the server a waiter is attached: an
+answer arriving within 10 s of such a poll is not typed into the session, and is
+typed only as a fallback if no marked poll reads it within 15 s (issue #3824). Exit codes: 0 answered/created, 2 user error, 3 no server,
 4 server rejected, 5 expired, 6 cancelled, 7 not configured, 8 the
 `--wait=<s>` window elapsed with the ask still pending. `--wait` with no
 value waits until the ask's own expiry.
@@ -336,8 +338,16 @@ Rejected / accepted as limits (stated in the RFC rather than engineered away):
   is loopback/bearer protected like the rest of `/api/*`.
 * **Session pinning** was deferred here and has since shipped (issue #3548,
   see "Liveness on answer" above).
-* **Double delivery with `--wait`** (typed notice + stdout): accepted, both
-  carry the same label; the skill says to treat them as one answer.
+* **Double delivery with `--wait`** (typed notice + stdout) was accepted here and
+  has since been removed (issue #3824): while a `--wait` poll is attached the
+  answer is only printed, and typed as a fallback when no poll reads it. What
+  remains: the server learns of a waiter only from its first poll, 2 s after
+  the ask is created (or after a deduped re-run, or after a server restart), so
+  an answer given before that is still typed and printed (issue #4040); a CLI killed after its last poll received the answer but before it
+  printed it gets neither, and an answer left for a waiter when the server
+  restarts more than 5 minutes later is never typed (it is still recorded). The
+  expiry notice is still typed while a `--wait` is attached; it carries no
+  answer to act on twice.
 * HMAC + nonce kept despite the minimalist's note: the operator asked for
   per-install-signed callbacks, and the stored message binding alone would not
   stop a forged callback replayed from another chat of the same user.

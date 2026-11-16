@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import Database from 'better-sqlite3';
 import { join, resolve } from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { FakeDocker } from '../containers/fake-docker.js';
 import { IntentStore } from '../containers/intent-store.js';

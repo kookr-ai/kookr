@@ -1331,8 +1331,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // `kookr ask` (rfc-kookr-ask). Only constructed when Telegram is configured, so
   // with the integration off nothing is created on disk and POST /api/asks 503s.
-  // The notifier and the task-delivery function are filled in below once the
-  // Telegram handle and reply bridge exist (the routes are built before them).
+  // The notifier and the reply bridge (`askBridgeHolder`) are filled in below once
+  // the Telegram handle and the bridge exist (the routes are built before them).
   let askNotifierHolder: AskNotifier | undefined;
   let askBridgeHolder: TelegramTaskBridge | undefined;
   let askService: AskService | undefined;
