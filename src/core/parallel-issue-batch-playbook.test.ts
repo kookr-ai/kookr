@@ -555,3 +555,33 @@ describe('parallel-issue-batch playbook: Idea Scout provenance labels (#3638)', 
     expect(fallback.slice(0, 1500)).toMatch(/Idea Scout\s+provenance-label step \(#3638\)/);
   });
 });
+
+/**
+ * Issue #3920: needing a mockup or a decision is not a reason to skip an
+ * issue, and the operator's later replies come back as work through
+ * the opinion sweep at the start of candidate gathering.
+ */
+describe('parallel-issue-batch playbook: asynchronous opinion requests (#3920)', () => {
+  const content = readFileSync(join(import.meta.dirname, '..', '..', 'plugin', 'playbooks', 'parallel-issue-batch.md'), 'utf-8');
+  const pb = parsePlaybook(content, 'parallel-issue-batch.md', '/');
+  const phase2 = pb.body.slice(pb.body.indexOf('## Phase 2: Gather Candidate Issues'), pb.body.indexOf('## Phase 3:'));
+
+  test('Phase 2 runs the opinion sweep once, and a failure never blocks the batch', () => {
+    expect(phase2).toContain('kookr opinion sweep --repo "$REPO" || echo');
+    expect(phase2.indexOf('kookr opinion sweep')).toBeLessThan(phase2.indexOf('CURRENT_USER=$(gh api user -q .login)'));
+  });
+
+  test('UI/design is no longer human work, and a reversible mockup or decision stays a candidate', () => {
+    const skipRule = phase2.split('\n').find((l) => l.startsWith('3. Skip labels'));
+    expect(skipRule).toBeDefined();
+    expect(skipRule).not.toMatch(/UI\/design/);
+    expect(skipRule).toContain('Needing a mockup or a decision is **not** a reason to skip when the change is reversible');
+    expect(skipRule).toContain('`needs-operator-opinion` alone is not a skip label');
+  });
+
+  test('both the parent and the child contract route operator-visible choices to the opinion request flow', () => {
+    const mentions = pb.body.split('use the opinion request flow (`asking-the-operator` skill').length - 1;
+    expect(mentions).toBe(2);
+    expect(pb.body).toContain('send one `kookr ask` without `--wait`, and carry on with the recommended option');
+  });
+});

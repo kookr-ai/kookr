@@ -8,13 +8,17 @@ description: >
   element (panel, button, badge, layout, dashboard, indicator, color, spacing,
   look-and-feel). Ask once (do mockups? how many? what fidelity?), build a
   self-contained HTML gallery from the app's REAL CSS tokens, let the user choose
-  a variant, then implement it. Don't jump straight to component code.
+  a variant, then implement it. Don't jump straight to component code. In an
+  unattended task, build the variants without asking, publish them where a
+  phone can open them, request the operator's opinion without waiting, and
+  implement the recommended variant.
 keywords: >
   ui change, ui improvement, ui modification, redesign, restyle, mockup, mockups,
   design variant, design variants, design exploration, visual change, look and feel,
   layout, panel, button, badge, icon, dashboard, indicator, animation, css, styling,
-  frontend, ux, choose a design, which design, show me variants, pick a design
-related: playwright-e2e-patterns, rfc-iterative-review, requirements-engineering
+  frontend, ux, choose a design, which design, show me variants, pick a design,
+  unattended, opinion request, needs a mockup
+related: playwright-e2e-patterns, rfc-iterative-review, requirements-engineering, asking-the-operator
 ---
 
 # UI Mockup Variants — design exploration before implementation
@@ -38,6 +42,33 @@ already specified, reverting to a known prior look, or the user explicitly says
 directly — want variants instead?" is cheap insurance.
 
 If you're unsure whether the work is "UI enough", it is. Offer.
+
+## Live session or unattended task
+
+Steps 1 to 5 below are for a **live session**: the operator is at the terminal,
+so you ask first and wait for the pick.
+
+In an **unattended task** (launched by a schedule or a parent task,
+`KOOKR_UNATTENDED=1`, or a prompt that says nobody is watching), needing a
+mockup is not a reason to block, and `AskUserQuestion` would strand the task.
+Instead:
+
+1. Skip Step 1. Build **3 variants** as an HTML gallery (Steps 2 and 3), with the
+   real CSS tokens, and pick the one you recommend.
+2. Publish the gallery where the operator can open it from a phone: a Claude
+   artifact when the Artifact tool is available, otherwise PNG screenshots of
+   each variant committed to the pull request branch (for example under
+   `docs/mockups/<feature>/`) and embedded in the comment. A `localhost` URL or
+   a host path is not enough.
+3. Post the opinion request on the issue (and later on the pull request), add
+   the `needs-operator-opinion` label to each, and send one `kookr ask` without `--wait`, as described in the
+   `asking-the-operator` skill ("Unattended tasks"). Variant letters are the
+   options.
+4. Implement the recommended variant (Step 5) and deliver the pull request with
+   before/after screenshots and a link to the request. The operator answers
+   later with a comment in their own words; a different pick becomes a
+   follow-up task. Start every comment you post on that item with
+   `<!-- kookr:automation -->` so it is not read as their answer.
 
 ## Step 1 — Offer the menu (one AskUserQuestion call)
 
@@ -86,8 +117,9 @@ Write **one** self-contained HTML file at the repo root, e.g.
 - Give each variant a short name and a one-line characterization (e.g. *"most
   informative"*, *"most minimal"*, *"closest to current"*).
 
-This file is a **throwaway preview artifact** — leave it untracked; do not commit
-it. **Serve it, don't just hand back a `file://` path.** Start a lightweight local
+In a live session this file is a **throwaway preview artifact** — leave it
+untracked; do not commit it (an unattended task publishes it instead, see above).
+**Serve it, don't just hand back a `file://` path.** Start a lightweight local
 static server at the repo root (e.g. `python3 -m http.server <port>`, or the
 project's dev server) and give the user a `http://localhost:<port>/<feature>-mockups.html`
 URL — because the browser often runs on a *different host than the repo* (WSL2, SSH,

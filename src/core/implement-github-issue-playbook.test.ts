@@ -334,3 +334,18 @@ describe('implement-github-issue playbook', () => {
     expect(pb.body).toMatch(/no-op for issues that were not scouted/i);
   });
 });
+
+describe('implement-github-issue playbook: asynchronous opinion requests (#3920)', () => {
+  const content = readFileSync(join(import.meta.dirname, '..', '..', 'plugin', 'playbooks', 'implement-github-issue.md'), 'utf-8');
+  const pb = parsePlaybook(content, 'implement-github-issue.md', '/');
+
+  test('an operator-visible design choice uses the opinion request flow and carries on', () => {
+    expect(pb.body).toContain('use the opinion request flow (`asking-the-operator` skill');
+    expect(pb.body).toContain('carry on with the recommended option; from then on, start every comment you post on that item with `<!-- kookr:automation -->`. Only a hard-to-undo choice');
+  });
+
+  test('Phase 2.6 does not quarantine an issue that only needs a mockup or a reversible decision', () => {
+    const phase26 = pb.body.slice(pb.body.indexOf('### Phase 2.6:'), pb.body.indexOf('```bash', pb.body.indexOf('### Phase 2.6:')));
+    expect(phase26).toContain('Do not use this for an issue that only needs a UI mockup or a choice between options when the change is reversible');
+  });
+});
