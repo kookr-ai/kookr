@@ -1191,6 +1191,8 @@ async function execute(item, log, opts, deps) {
     }
   } else if (item.kind === 'dependencies') {
     if (basename(item.path) !== 'node_modules' || lstatSync(item.path).isSymbolicLink()) throw new Error('refusing: not a plain node_modules directory');
+    // The re-check looked for pnpm patch edits before its nested-.git search and the intent write; look again right before deleting.
+    if (hasPnpmPatches(item.path)) throw new Error(`refusing: uncommitted pnpm patch edits appeared in ${PNPM_PATCHES}/ after the re-check`);
     log.command = `rm -rf ${item.path}`;
     deps.removeDir(item.path);
   } else if (item.kind === 'tool-cache' || item.kind === 'kookr-data') {
