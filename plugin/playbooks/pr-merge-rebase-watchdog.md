@@ -207,6 +207,11 @@ failing required check, or a requested change. Use the repo merge wrapper:
 kookr merge "$N" --repo "$REPO"   # kookr-ai/kookr wrapper; elsewhere: gh pr merge "$N" -R "$REPO" --squash --delete-branch
 ```
 
+If `kookr merge` exits 3 and says the PR conflicts with its base branch, the
+base moved after this sweep read `CLEAN`: the PR is now `DIRTY`. Do not retry
+the merge in this tick. Handle it as a `DIRTY` PR under 2c, following
+`{{dirtyPolicy}}`.
+
 Classify checks before merging: a check that failed solely because CI
 budget/quota was unavailable (the job never executed) is infra-red, not a real
 failure — it does not block, but a genuine test/lint/type/build failure does.

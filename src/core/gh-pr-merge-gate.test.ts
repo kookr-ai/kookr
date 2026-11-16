@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -103,5 +103,24 @@ describe('gh-pr-merge-gate.sh advisory-repo split (issue #3027)', () => {
     const cwd = makeRepo('git@github.com:kookr-ai/kookr.git', '# kookr\n');
     const out = runHook(cwd, {}, MERGE);
     expect(out.trim()).toBe('');
+  });
+});
+
+describe('gh-pr-merge-gate.sh fallback denial (issue #3935)', () => {
+  test('when jq cannot build the reply, the fixed denial is valid JSON and says what, why and what instead', () => {
+    const cwd = makeRepo('git@github.com:kookr-ai/kookr.git', '# kookr\n');
+    // A jq that reads the input as usual but fails to build JSON with -n.
+    const bin = mkdtempSync(join(tmpdir(), 'gh-pr-merge-gate-jq-'));
+    temps.push(bin);
+    const realJq = execFileSync('bash', ['-c', 'command -v jq'], { encoding: 'utf8' }).trim();
+    writeFileSync(join(bin, 'jq'), `#!/usr/bin/env bash\n[ "\${1:-}" = "-n" ] && exit 1\nexec ${JSON.stringify(realJq)} "$@"\n`);
+    chmodSync(join(bin, 'jq'), 0o755);
+    const out = runHook(cwd, { KOOKR_TASK_ID: 'task-1', PATH: `${bin}:${process.env.PATH ?? ''}` }, MERGE);
+    const reply = JSON.parse(out) as { hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string } };
+    expect(reply.hookSpecificOutput.permissionDecision).toBe('deny');
+    const reason = reply.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain('Directly merging a PR is blocked');
+    expect(reason).toContain('because a direct merge skips the independent-review verdict check');
+    expect(reason).toContain('kookr merge <PR> --repo <owner/name>');
   });
 });
