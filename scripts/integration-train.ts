@@ -450,8 +450,9 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
       for (const n of [...numbers].sort((a, b) => a - b)) {
         try {
           // The REST issue endpoint answers for pull requests too and marks
-          // them with a `pull_request` field. The train must never close,
-          // reopen or comment on a pull request, so those are dropped.
+          // them with a `pull_request` field. The issue calls below must never
+          // close, reopen or comment on a pull request, so those are dropped
+          // (the train reports on pull requests only through commentPullRequest).
           const view = JSON.parse(await gh(['api', `repos/{owner}/{repo}/issues/${n}`])) as {
             state?: string; pull_request?: unknown;
           };
@@ -465,6 +466,13 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     async reopenIssue(n) { await gh(['issue', 'reopen', String(n)]); },
     async closeIssue(n, comment) { await gh(['issue', 'close', String(n), '--comment', comment]); },
     async commentIssue(n, body) { await gh(['issue', 'comment', String(n), '--body', body]); },
+    async commentPullRequest(pr, marker, body) {
+      // Read the existing comments first: a report already posted (before a
+      // crash or a restart) is not posted again. A failed read posts nothing.
+      const bodies = await gh(['api', '--paginate', `repos/{owner}/{repo}/issues/${pr}/comments`, '--jq', '.[].body']);
+      if (bodies.includes(marker)) return;
+      await gh(['pr', 'comment', String(pr), '--body', body]);
+    },
   };
 
   const spawner: TrainDeps['spawner'] = {

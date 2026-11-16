@@ -45,6 +45,12 @@ export interface TrainGithub {
   reopenIssue(issue: number): Promise<void>;
   closeIssue(issue: number, comment: string): Promise<void>;
   commentIssue(issue: number, body: string): Promise<void>;
+  /**
+   * Comments on pull request `pr`, unless one of its comments already contains
+   * `marker`. The marker names the event and the commit, so a retried or
+   * restarted cycle never posts the same report twice.
+   */
+  commentPullRequest(pr: number, marker: string, body: string): Promise<void>;
 }
 
 export interface TrainSpawner {
@@ -343,6 +349,22 @@ export const TRAIN_REVERT_TRAILER = 'Kookr-Integration-Train: revert';
  * it stops and asks for a human (`fix-budget-exhausted`).
  */
 export const MAX_AUTOMATIC_RELANDS = 3;
+
+/** Lines of failing output quoted in a pull-request comment (the issue comment quotes more). */
+const PR_COMMENT_TAIL_LINES = 20;
+
+/** Hidden marker of the train's pull-request comment about `event` for commit `sha`. */
+export function trainPrCommentMarker(event: 'promoted' | 'reverted', sha: string): string {
+  return `<!-- kookr-integration-train:${event}:${sha} -->`;
+}
+
+/** Posts one train report on a pull request, once per event and commit. Best effort. */
+async function commentPullRequestOnce(
+  deps: TrainDeps, pr: number, event: 'promoted' | 'reverted', sha: string, lines: string[],
+): Promise<void> {
+  const marker = trainPrCommentMarker(event, sha);
+  await safe(deps, () => deps.github.commentPullRequest(pr, marker, [...lines, '', marker].join('\n')));
+}
 
 export function tailForComment(output: string): string {
   const lines = output.split('\n').slice(-COMMENT_TAIL_LINES).join('\n');
@@ -645,7 +667,7 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     mainSha = sha;
     pushCapped(state.verifiedGreen, sha, VERIFIED_GREEN_CAP);
     log(`promoted ${sha.slice(0, 10)} to main`);
-    await closeIssuesFor(deps, fresh, sha);
+    await reportPromoted(deps, fresh, sha, integration);
     return pushed;
   };
 
@@ -814,6 +836,8 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   const pr = prNumberFromSubject(subject);
   const failTail = tailForComment(redTails.get(culprit) ?? redTails.get(headSha) ?? '');
   let fixNote = '';
+  // What happens next, in the words of the pull-request comment.
+  let prNextStep = '';
   if (pr === null) {
     fixNote = 'no PR number in the subject; no issue handling and no fix task';
   } else {
@@ -850,8 +874,12 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
         // The budget is consumed only by a task that exists.
         state.fixTasks[budgetKey] = attempt;
         fixNote = `fix task ${key} spawned (automatic re-land ${attempt} of ${MAX_AUTOMATIC_RELANDS})`;
+        prNextStep = `the train started fix task \`${key}\` (automatic re-land ${attempt} of ${MAX_AUTOMATIC_RELANDS}). ` +
+          'It re-applies this change, fixes the failure and delivers it in a new pull request. ' +
+          (issueNumbers.length > 0 ? `Issue(s) ${issueNumbers.map((n) => `#${n}`).join(', ')} stay open until then.` : '');
       } else {
         fixNote = `fix task ${key} could not be spawned`;
+        prNextStep = `needs a human: the train could not start fix task \`${key}\`. The operator has been alerted.`;
         await raise(
           deps, state, 'fix-spawn-failed',
           `PR #${pr} reverted as ${revertSha}; fix task ${key} could not be spawned. Needs a human.`,
@@ -859,11 +887,28 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
       }
     } else {
       fixNote = `fix budget exhausted for ${budgetKey} (PR #${pr})`;
+      prNextStep = `needs a human: ${spawned} automatic fix task(s), the limit of ${MAX_AUTOMATIC_RELANDS}, were already reverted for this change, ` +
+        'so the train starts no more. The operator has been alerted.';
       await raise(
         deps, state, 'fix-budget-exhausted',
         `PR #${pr} failed again after ${spawned} automatic fix task(s), the limit; reverted ${culprit} (${revertSha}). Needs a human.`,
       );
     }
+  }
+  if (pr !== null) {
+    const shortTail = failTail.split('\n').slice(-PR_COMMENT_TAIL_LINES).join('\n');
+    await commentPullRequestOnce(deps, pr, 'reverted', culprit, [
+      `**Integration train: reverted.** This pull request's commit ${culprit} failed the full test suite on \`${integration}\`, ` +
+        `so the train reverted it with ${revertSha}. \`main\` does not contain this change.`,
+      '',
+      'Last lines of the failing output:',
+      '',
+      '```',
+      shortTail,
+      '```',
+      '',
+      `Next: ${prNextStep}`,
+    ]);
   }
   if (!revertPromoted) fixNote += '; promotion of the revert rejected, the next cycle retries';
   await raise(deps, state, 'reverted', `reverted ${culprit} as ${revertSha} on ${integration}; ${fixNote}`);
@@ -935,9 +980,14 @@ async function pushRef(deps: TrainDeps, refspec: string): Promise<GitResult> {
   return deps.git(['push', '--no-verify', 'origin', refspec]);
 }
 
-/** On promotion, close the still-open issues of every PR commit that reached main. */
-async function closeIssuesFor(deps: TrainDeps, shas: string[], promoted: string): Promise<void> {
+/**
+ * On promotion, for every PR commit that reached main: close its still-open
+ * issues, and say on the pull request that it reached main and when it was
+ * verified.
+ */
+async function reportPromoted(deps: TrainDeps, shas: string[], promoted: string, integration: string): Promise<void> {
   const short = promoted.slice(0, 10);
+  const at = deps.now().toISOString();
   // A commit the train reverted reaches main together with its revert. Its
   // issue was reopened at revert time and must stay open, so skip every commit
   // that a later commit in the same range reverts, and the reverts themselves.
@@ -957,10 +1007,21 @@ async function closeIssuesFor(deps: TrainDeps, shas: string[], promoted: string)
     const pr = subj.ok ? prNumberFromSubject(subj.stdout) : null;
     if (pr === null) continue;
     const issues = await safe(deps, () => deps.github.closingIssues(pr)) ?? [];
+    const closed: number[] = [];
     for (const issue of issues) {
-      if (issue.state !== 'open') continue;
-      await safe(deps, () => deps.github.closeIssue(issue.number, `Verified on main in ${short}.`));
+      if (issue.state !== 'open') { closed.push(issue.number); continue; }
+      const ok = await safe(deps, async () => { await deps.github.closeIssue(issue.number, `Verified on main in ${short}.`); return true; });
+      if (ok === true) closed.push(issue.number);
     }
+    const verified = sha === promoted ? 'this commit' : `\`${integration}\` at ${promoted}, which contains this commit`;
+    await commentPullRequestOnce(deps, pr, 'promoted', sha, [
+      `**Integration train: promoted.** This pull request reached \`main\` as ${sha}. ` +
+        `The full test suite passed on ${verified} at ${at}.`,
+      '',
+      closed.length > 0
+        ? `Next: nothing. Issue(s) ${closed.map((n) => `#${n}`).join(', ')} closed.`
+        : 'Next: nothing.',
+    ]);
   }
 }
 
