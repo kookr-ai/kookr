@@ -94,12 +94,17 @@ Follow the issue's implementation plan:
 2. Implement the feature
 3. Write tests
 4. Run [[pre-push]]
-5. Create PR into `staging`, then run [[post-push]]
+5. Open the PR against the base the [Branch Strategy](#branch-strategy) section gives, then run [[post-push]]
 
-### 5. Create PR into staging
+### 5. Create the PR
+
+Pick the base from the [Branch Strategy](#branch-strategy) section first. In a
+repository whose `.kookr/delivery-gate.json` names an `integrationBranch`,
+leave `--base` out: the PR targets `main`. Otherwise add
+`--base staging` for a feature or fix.
 
 ```bash
-gh pr create --base staging --title "feat: short description" --body "$(cat <<'EOF'
+gh pr create --title "feat: short description" --body "$(cat <<'EOF'
 ## Summary
 - What was done
 
@@ -130,13 +135,32 @@ gh api repos/{owner}/{repo}/pulls/{number} -X PATCH -f title="new title"
 
 ## Branch Strategy
 
+Check whether the repository routes merges through an integration branch:
+
+```bash
+git show origin/main:.kookr/delivery-gate.json 2>/dev/null | jq -r '.integrationBranch // empty' 2>/dev/null
+```
+
+**It prints a branch name (for example `staging`):** cut the worktree from
+`origin/main` and open every PR against `main`; do not pass `--base` with the
+integration branch.
+The merge wrapper (`kookr merge`) retargets the PR to the integration branch
+and squash-merges it there; the repository's integration train then runs the
+full suite on that branch and promotes it to `main`. There is no manual
+"Staging → Main" PR; never open one. "Merged" means merged into the
+integration branch, and the linked issue closes when the train promotes the
+change to `main`.
+
+**It prints nothing (no such file, or no `integrationBranch`):**
+
 | Change type | Target branch | Example |
 |-------------|---------------|---------|
 | Feature / fix | `staging` | `gh pr create --base staging` |
 | Hotfix (production broken) | `main` | Direct to main, then backport to staging |
 | Docs-only | `main` | No staging needed for docs |
 
-After a staging PR is merged and validated, create a "Staging → Main" merge PR (see [[pr-lifecycle]]).
+In such a repository nothing promotes `staging` for you: after a staging PR is
+merged and validated, open a "Staging → Main" PR yourself.
 
 ## Worktree Conventions
 
@@ -160,5 +184,5 @@ After a staging PR is merged and validated, create a "Staging → Main" merge PR
 - [ ] Implementation follows the plan
 - [ ] Tests written and passing
 - [ ] [[pre-push]] run before push / PR creation
-- [ ] PR created into staging, referencing the issue
+- [ ] PR created against the base from Branch Strategy, referencing the issue
 - [ ] [[post-push]] run after PR creation
