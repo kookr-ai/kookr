@@ -406,6 +406,25 @@ describe('ReadyQueueService', () => {
       expect((alerts[0] as { summary: string }).summary).toContain('(quota_exceeded)');
     });
 
+    it('any other answer in between ends the run', async () => {
+      const fleet = makeFleet(4);
+      const alerts: unknown[] = [];
+      const service = await makeService(fleet, { emitAlert: (alert) => alerts.push(alert) });
+      const refusal = refuseWith(fleet, authPreflight);
+      await enqueue(service, 1);
+      await tickEvery30s(service, 28);
+      // One ordinary failed attempt (1 of 3), then the same refusal again.
+      refusal.current = { status: 400, body: { error: 'cwd does not exist', code: 'cwd_not_found' } };
+      await tickEvery30s(service, 1);
+      refusal.current = authPreflight;
+      // The refusal after the failure starts a new run: 14.5 minutes into it, still silent.
+      await tickEvery30s(service, 30);
+      expect(refusedAlerts(alerts)).toHaveLength(0);
+      await tickEvery30s(service, 1);
+      expect(refusedAlerts(alerts)).toHaveLength(1);
+      expect(service.list()[0]).toMatchObject({ state: 'queued', attempts: 1 });
+    });
+
     it('alerts on a 429 with no code and no Retry-After', async () => {
       const fleet = makeFleet(4);
       const alerts: unknown[] = [];
