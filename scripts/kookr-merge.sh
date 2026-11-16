@@ -62,6 +62,10 @@
 # id only when the new base did not touch the files the PR changes; otherwise the
 # reviewer must re-review.
 #
+# Every run that reaches GitHub ends with a `kookr-merge: summary:` block
+# (issue #3913): on success, what merged where, why, and what the integration
+# train does next; on a refusal, the gate, its evidence and the next command.
+#
 # Also reachable from any repository as `kookr merge <PR> [--repo OWNER/NAME]`.
 #
 # Usage: kookr-merge <pr-number> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]
