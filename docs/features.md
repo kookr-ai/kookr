@@ -455,6 +455,11 @@ background the task gave, and a box for a typed answer when the task accepts one
   buttons such as "Open mockups" on the card and on Telegram, and the card has an **Open task** button
   that selects the asking task. With hands-free talk on, "show me", "open it" or "show me the task"
   does the same, and she says if the browser blocked the new tab.
+- **A reminder until you answer.** While a question waits, Telegram brings it back with a short
+  reply to the question: by default after 10 minutes, after 1 hour, then every 4 hours (at most 6
+  times), and once 10 minutes before it closes. None come during your quiet hours, and one comes
+  when they end. The reminders disappear once the question is answered. The `askReminders` setting
+  changes the schedule; an empty one turns them off.
 - **Minimised**, the bubble's badge counts the questions still waiting, with the findings.
 - **Needs** Telegram remote chat (that is what makes `kookr ask` available) and, for her voice, the
   speech service. With the avatar panel off nothing changes: the question is on Telegram only.
