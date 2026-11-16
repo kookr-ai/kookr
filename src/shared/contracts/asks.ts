@@ -68,7 +68,10 @@ export interface AskRecord {
    * session at ask time; those are delivered to whatever session is live.
    */
   sessionId?: string;
-  /** Outcome of typing the answer into the asking task's session. */
+  /**
+   * Outcome of typing the answer into the asking task's session. `skipped`: the answer is recorded
+   * but nothing was typed, because the task had ended or was relaunched in a fresh session by then.
+   */
   taskDelivery?: 'delivered' | 'failed' | 'skipped';
 }
 
@@ -86,7 +89,8 @@ export const ASK_LIMITS = {
   maxGlobalPerHour: 20,
   defaultTimeoutSec: 30 * 60,
   minTimeoutSec: 30,
-  maxTimeoutSec: 24 * 60 * 60,
+  /** Seven days: a task that asks for an opinion carries on, and the operator may answer days later. */
+  maxTimeoutSec: 7 * 24 * 60 * 60,
   maxIdempotencyKeyChars: 128,
   /** Links per question (`--link`). */
   maxLinks: 2,
@@ -158,10 +162,12 @@ export type AnswerRejection =
   | 'wrong_chat'
   | 'bad_option'
   | 'text_not_allowed'
+  /** No longer produced: an answer after the task ended is recorded (`taskDelivery: 'skipped'`). Kept for older servers. */
   | 'task_gone';
 
 export type AnswerResult =
-  | { ok: true; ask: AskRecord }
+  /** `notTyped`: set when the answer was recorded but not typed into the task (`taskDelivery: 'skipped'`), saying why in one sentence. */
+  | { ok: true; ask: AskRecord; notTyped?: string }
   | { ok: false; reason: AnswerRejection; ask?: AskRecord };
 
 /** Input for recording an operator answer that arrived over Telegram. */

@@ -1619,7 +1619,7 @@ kookr ask --question "<text>" --option "<label>" --option "<label>" [--option "<
 | `--context` | Background shown under the question, at most 1500 characters. |
 | `--link` | A page the question is about (a mockup, a write-up, a pull request): an `https://` URL of at most 500 characters. Give at most 2. Lucy's card shows it as a button that opens a new tab, Telegram as a URL button; Lucy does not read it aloud. Use it instead of pasting the URL into the question. |
 | `--link-label` | Button text for the `--link` just before it, at most 40 characters on one line, for example `"Open mockups"`. Default: `Open link`. |
-| `--timeout` | How long the question stays open: `30s`, `10m`, `2h` or plain seconds. Default 30 minutes, minimum 30 seconds, maximum 24 hours. |
+| `--timeout` | How long the question stays open: `30s`, `10m`, `2h`, `2d` or plain seconds. Default 30 minutes, minimum 30 seconds, maximum 7 days (`8d` exits `2` and names the limit). With a long timeout, prefer no `--wait` or a bounded `--wait=<seconds>`: a bare `--wait` blocks until the question expires. |
 | `--task-id` | The asking task. Defaults to `KOOKR_TASK_ID`, which Kookr sets in every managed task. |
 | `--no-other` | Do not accept a free-text reply to the Telegram message as an answer. |
 | `--wait[=<seconds>]` | Block until the ask is answered or expires and print the answer. Without a value, wait until the question's own expiry. |
@@ -1649,8 +1649,15 @@ The ask is tied to the session that asked it. The answer, and the notice that
 the ask expired, are typed only into that session or into a session that
 resumed its conversation (crash recovery, or the operator reopening the task).
 If the task was relaunched into a fresh session, that session never saw the
-question, so nothing is typed into it: an answer that arrives while it is live
-is refused, the ask is cancelled, and the Telegram message says so. If no
+question, so nothing is typed into it.
+
+An answer is always recorded. When it arrives after the task has ended (or the
+task is unknown), or while a fresh relaunched session is live, the ask ends as
+`answered` with `taskDelivery: "skipped"`, `GET /api/asks/<id>` returns the
+answer, nothing is typed into any session, and the operator is told so: the
+Telegram message and toast read "Recorded. The task has ended, so nothing was
+typed into it." (or "...was relaunched in a new session since it asked..."),
+and Lucy's card shows the answer with a note that nothing was typed. If no
 session is live yet when the answer arrives (for example a Reopen still waiting
 for a worker slot), the answer is recorded but not typed in. If the fresh
 session asks the same pending question again (same question, options and
@@ -1664,7 +1671,7 @@ into whatever session is live when the answer arrives.
 | `3` | No Kookr server reachable. |
 | `4` | The server rejected the request (unknown or finished task, rate limit, delivery to Telegram failed). |
 | `5` | Expired with no answer. |
-| `6` | Cancelled, including when the task is gone before the operator answered, or was relaunched into a fresh session that did not ask the question. |
+| `6` | Cancelled: the task withdrew the question, or it never reached Telegram. (An answer given after the task ended is recorded, not cancelled.) |
 | `7` | Telegram is not configured on this server. |
 | `8` | The `--wait=<seconds>` window elapsed and the ask is still pending. |
 

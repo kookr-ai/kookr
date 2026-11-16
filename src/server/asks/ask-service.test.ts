@@ -96,6 +96,7 @@ describe('AskService.create', () => {
     ['overlong context', { context: 'c'.repeat(1501) }],
     ['timeout too small', { timeoutSec: 1 }],
     ['timeout too large', { timeoutSec: 999_999 }],
+    ['timeout just over 7 days', { timeoutSec: 7 * 24 * 60 * 60 + 1 }],
   ])('rejects %s', async (_name, over) => {
     expect(await h.service.create({ ...base, ...over })).toMatchObject({ ok: false, error: { code: 'invalid' } });
     expect(h.notifier.sendAsk).not.toHaveBeenCalled();
@@ -259,13 +260,45 @@ describe('AskService.answer', () => {
     expect(s).toMatchObject({ ok: false, reason: 'text_not_allowed' });
   });
 
-  it('does not deliver when the task is gone and says so', async () => {
-    const ask = await createOk();
+  it('accepts a 7-day question', async () => {
+    const ask = await createOk({ timeoutSec: 7 * 24 * 60 * 60 });
+    expect(ask.expiresAt - ask.createdAt).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it('records an answer given after the task ended, types nothing, and says so', async () => {
+    const ask = await createOk({ timeoutSec: 2 * 24 * 60 * 60 });
     h.statuses.set('t1', 'completed' as TaskStatus);
+    h.clock.now += 36 * 60 * 60 * 1000;
     const r = await tap(ask, 0);
-    expect(r).toMatchObject({ ok: false, reason: 'task_gone', ask: { state: 'cancelled', resolution: 'task_gone' } });
+    expect(r).toMatchObject({
+      ok: true,
+      notTyped: 'The task has ended, so nothing was typed into it.',
+      ask: { state: 'answered', resolution: 'answered', answer: { kind: 'option', index: 0, label: 'Yes' }, taskDelivery: 'skipped' },
+    });
     expect(h.deliver).not.toHaveBeenCalled();
-    expect(h.notifier.finalizeAsk).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('no longer running'));
+    expect(h.notifier.finalizeAsk).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('✅ Answered: Yes\nRecorded. The task has ended, so nothing was typed into it.'),
+    );
+    // Read back later (GET /api/asks/:id goes through get()).
+    expect(await h.service.get(ask.id)).toMatchObject({ state: 'answered', answer: { label: 'Yes' }, taskDelivery: 'skipped' });
+    // One answer only.
+    expect(await tap(ask, 1)).toMatchObject({ ok: false, reason: 'already_answered' });
+  });
+
+  it('records an answer for a task that no longer exists at all', async () => {
+    const ask = await createOk();
+    h.statuses.delete('t1');
+    expect(await tap(ask, 1)).toMatchObject({ ok: true, ask: { state: 'answered', answer: { label: 'No' }, taskDelivery: 'skipped' } });
+    expect(h.deliver).not.toHaveBeenCalled();
+  });
+
+  it('still refuses an answer after expiry even when the task has ended', async () => {
+    const ask = await createOk({ timeoutSec: 60 });
+    h.statuses.set('t1', 'completed' as TaskStatus);
+    h.clock.now += 61_000;
+    expect(await tap(ask, 0)).toMatchObject({ ok: false, reason: 'expired' });
+    expect(h.store.get(ask.id)?.answer).toBeUndefined();
   });
 
   it('records the answer but flags delivery failure when typing into the task fails', async () => {
@@ -434,14 +467,17 @@ describe('session pinning (#3548)', () => {
     expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${ask.id}: No`, 'sess-a');
   });
 
-  it('does not type the answer into a fresh session after a relaunch, and tells the operator', async () => {
+  it('records but does not type the answer into a fresh session after a relaunch, and tells the operator', async () => {
     const ask = await createPinned();
     live.set('t1', 'sess-relaunched'); // the task is still running, in a session that never saw the question
     const r = await tapPinned(ask, 0);
-    expect(r).toMatchObject({ ok: false, reason: 'task_gone', ask: { state: 'cancelled', resolution: 'task_gone' } });
-    expect(h.store.get(ask.id)?.answer).toBeUndefined();
+    expect(r).toMatchObject({
+      ok: true,
+      notTyped: 'The task was relaunched in a new session since it asked, so nothing was typed into it.',
+      ask: { state: 'answered', answer: { label: 'Yes' }, taskDelivery: 'skipped' },
+    });
     expect(h.deliver).not.toHaveBeenCalled();
-    expect(h.notifier.finalizeAsk).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('relaunched'));
+    expect(h.notifier.finalizeAsk).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('Recorded. The task was relaunched'));
   });
 
   it('types the answer into a session that resumed the asking conversation (crash recovery, Reopen)', async () => {
@@ -453,11 +489,11 @@ describe('session pinning (#3548)', () => {
     expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${ask.id}: No`, 'sess-a');
   });
 
-  it('refuses a dashboard answer after a relaunch the same way', async () => {
+  it('records a dashboard answer after a relaunch the same way, without typing it', async () => {
     const ask = await createPinned();
     live.set('t1', 'sess-relaunched');
     const r = await pinned.answerFromDashboard({ askId: ask.id, optionIndex: 0 });
-    expect(r).toMatchObject({ ok: false, reason: 'task_gone' });
+    expect(r).toMatchObject({ ok: true, ask: { state: 'answered', answeredVia: 'dashboard', taskDelivery: 'skipped' } });
     expect(h.deliver).not.toHaveBeenCalled();
   });
 
@@ -763,7 +799,7 @@ describe('AskService.answerFromDashboard (Lucy) and channel sync', () => {
     expect(await h.service.answerFromDashboard({ askId: closed.id, text: 'hello' })).toMatchObject({ ok: false, reason: 'text_not_allowed' });
   });
 
-  it('refuses unknown, expired and task-gone asks the same way Telegram does', async () => {
+  it('refuses unknown and expired asks, and records task-gone ones, the same way Telegram does', async () => {
     expect(await h.service.answerFromDashboard({ askId: 'ffffffffffff', optionIndex: 0 })).toEqual({ ok: false, reason: 'not_found' });
 
     const late = await createOk({ timeoutSec: 30 });
@@ -772,7 +808,7 @@ describe('AskService.answerFromDashboard (Lucy) and channel sync', () => {
 
     const gone = await createOk({ taskId: 't2' });
     h.statuses.delete('t2');
-    expect(await h.service.answerFromDashboard({ askId: gone.id, optionIndex: 0 })).toMatchObject({ ok: false, reason: 'task_gone' });
+    expect(await h.service.answerFromDashboard({ askId: gone.id, optionIndex: 0 })).toMatchObject({ ok: true, ask: { state: 'answered', taskDelivery: 'skipped' } });
     expect(h.deliver).not.toHaveBeenCalledWith('t2', expect.stringContaining('Operator answered'));
   });
 
@@ -837,7 +873,7 @@ describe('AskService.answerFromDashboard (Lucy) and channel sync', () => {
     h.clock.now += 11_000;
     h.statuses.delete('t2');
     await h.service.answerFromDashboard({ askId: gone.id, optionIndex: 0 });
-    expect(h.store.get(gone.id)).toMatchObject({ resolution: 'task_gone', resolvedAt: h.clock.now });
+    expect(h.store.get(gone.id)).toMatchObject({ resolution: 'answered', taskDelivery: 'skipped', resolvedAt: h.clock.now });
   });
 
   it('tells Telegram both that it was answered in Kookr and that the task could not be reached', async () => {

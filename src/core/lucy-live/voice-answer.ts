@@ -105,8 +105,12 @@ export const ANSWER_TIMED_OUT = 'That timed out, so I did not send it. Tell me t
 export const ANSWER_HEARD_OVER_HER = 'I may have heard myself, so I did not send it. Say the answer again if you want it.';
 export const ANSWER_NO_LONGER_WAITING = 'That question is not waiting any more, so I did not send anything.';
 
-/** What she says after trying to send the answer. `reason` is the ask service's refusal, when there is one. */
-export function sayAnswerOutcome(result: { ok: true } | { ok: false; reason?: string }, label: string): string {
+/**
+ * What she says after trying to send the answer. `reason` is the ask service's refusal, when there is one;
+ * `notTyped` says why a recorded answer was not typed into the task (it had ended).
+ */
+export function sayAnswerOutcome(result: { ok: true; notTyped?: string } | { ok: false; reason?: string }, label: string): string {
+  if (result.ok && result.notTyped !== undefined) return `Recorded: ${clip(label, MAX_OPTION_CHARS)}. ${result.notTyped}`;
   if (result.ok) return `Sent: ${clip(label, MAX_OPTION_CHARS)}.`;
   switch (result.reason) {
     case 'already_answered': return 'That question was already answered, so I did not send anything.';

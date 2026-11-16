@@ -73,7 +73,7 @@ interface AskRecord {
   `already_answered`.
 * Limits (constants, not env vars): ≤4 options (Telegram rows stay legible),
   label ≤48 chars, question ≤600, context ≤1500, ≤3 pending per task, ≤6 asks
-  per task per hour, ≤20 asks/hour globally, timeout default 30 min, max 24 h.
+  per task per hour, ≤20 asks/hour globally, timeout default 30 min, max 7 days (24 h before issue #3926).
 * Idempotency: `(taskId, idempotencyKey)` returns the existing **pending** ask
   (HTTP 200, `deduped: true`) instead of creating a second Telegram message; an
   answered/expired ask with the same key does not block a new one.
@@ -86,8 +86,9 @@ interface AskRecord {
   have) and the response lists `redacted: [...]` so the agent can rephrase. An
   option label that would be redacted is rejected (422).
 * Liveness on answer: the service asks `taskLiveness`; if the task is gone or
-  terminal the ask becomes `cancelled/task_gone`, **nothing is typed into any
-  session**, and the Telegram message is edited to say so.
+  terminal the answer is still recorded (`answered`, `taskDelivery: skipped`,
+  issue #3926), **nothing is typed into any session**, and the Telegram message
+  is edited to say so. Records from before #3926 may hold `cancelled/task_gone`.
 * Session pinning (issue #3548): the ask records `sessionId`, the task's live
   session when the question was asked. The answer is typed only while the live
   session is that one or continues its conversation: crash recovery and an
@@ -95,7 +96,7 @@ interface AskRecord {
   `--resume <id> --fork-session`, opencode `--session <id>`), the adapter records
   the conversation it resumed (`resumedConversationId`), and the chain is
   followed back. A fresh relaunch, which never saw the question, gets nothing:
-  the ask becomes `cancelled/task_gone` and the operator is told. While no
+  the answer is recorded with `taskDelivery: skipped` and the operator is told. While no
   session is live at all, the answer is recorded as before and its delivery,
   still bound to the pin, fails. The expiry notice follows the same rule. An
   idempotent re-ask from the new session re-pins the pending ask to it. Asks

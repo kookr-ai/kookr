@@ -82,13 +82,13 @@ describe('runAskCli usage errors (no network)', () => {
     expect(r.io.errors[0]).toMatch(/empty/);
     expect(r.io.errors[1]).toMatch(/--help/);
   });
-  it.each(['29', '29s', '86401', '25h', '2d'])('rejects --timeout %s outside 30s..24h with exit 2 and no request', async (raw) => {
+  it.each(['29', '29s', '604801', '169h', '8d'])('rejects --timeout %s outside 30s..7d with exit 2 and no request', async (raw) => {
     const r = await run([...ARGS, '--timeout', raw]);
     expect(r.code).toBe(EXIT_USER_ERROR);
     expect(r.reqs).toEqual([]);
-    expect(r.io.errors[0]).toMatch(/--timeout must be between 30s and 24h/);
+    expect(r.io.errors[0]).toMatch(/--timeout must be between 30s and 7d/);
   });
-  it.each([['30', 30], ['24h', 86400], ['1d', 86400]])('accepts the inclusive --timeout bound %s', async (raw, sec) => {
+  it.each([['30', 30], ['24h', 86400], ['48h', 172800], ['7d', 604800], ['168h', 604800]])('accepts the --timeout %s (inclusive bounds)', async (raw, sec) => {
     const r = await run([...ARGS, '--timeout', raw]);
     expect(r.code).toBe(EXIT_OK);
     expect(r.reqs[0]).toMatchObject({ body: { timeoutSec: sec } });

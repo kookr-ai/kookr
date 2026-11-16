@@ -371,6 +371,14 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     expect(q('avatar-ask-undelivered')).toBeNull();
   });
 
+  test('says the answer is kept but nothing was typed when the session that asked had ended', () => {
+    render();
+    push([answered('telegram', { taskDelivery: 'skipped' })]);
+    expect(q('avatar-ask-outcome')!.textContent).toBe('Answered on Telegram: Yes, ship it');
+    expect(q('avatar-ask-not-typed')!.textContent).toBe('Recorded. The session that asked has ended, so nothing was typed into it.');
+    expect(q('avatar-ask-undelivered')).toBeNull();
+  });
+
   test('keyboard focus moves to the panel, not the top of the page, when the focused card is dismissed', () => {
     render();
     push([answered('telegram')]);

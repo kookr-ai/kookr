@@ -808,7 +808,10 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     });
     if (result.ok) {
       audit({ kind: 'ask_answered', askId, taskId: result.ask.taskId, sender: cb.from.id, via: 'button', taskDelivery: result.ask.taskDelivery });
-      await api.answerCallbackQuery(cb.id, result.ask.taskDelivery === 'failed' ? 'Recorded, but could not reach the task' : 'Sent').catch(() => undefined);
+      const toast = result.notTyped !== undefined
+        ? `Recorded. ${result.notTyped}`
+        : result.ask.taskDelivery === 'failed' ? 'Recorded, but could not reach the task' : 'Sent';
+      await api.answerCallbackQuery(cb.id, toast).catch(() => undefined);
     } else {
       audit({ kind: 'ask_rejected', askId, sender: cb.from.id, via: 'button', reason: result.reason });
       await api.answerCallbackQuery(cb.id, askRejectionText(result.reason, result.ask)).catch(() => undefined);
@@ -832,6 +835,8 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     const result = await deps.asks.answer({ askId: hit.id, senderId: userId, chatId, messageId: replyToId, text });
     if (result.ok) {
       audit({ kind: 'ask_answered', askId: hit.id, taskId: result.ask.taskId, sender: userId, via: 'text', taskDelivery: result.ask.taskDelivery });
+      // The question message, edited to say so, may be days up the chat: say it next to the reply too.
+      if (result.notTyped !== undefined) await sendMessageSafe(chatId, `Recorded. ${result.notTyped}`);
     } else {
       audit({ kind: 'ask_rejected', askId: hit.id, sender: userId, via: 'text', reason: result.reason });
       await sendMessageSafe(chatId, askRejectionText(result.reason, result.ask));

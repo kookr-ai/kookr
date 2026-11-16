@@ -72,6 +72,11 @@ describe('sentences she says', () => {
   ])('refusal %s is said in words', (reason, re) => {
     expect(sayAnswerOutcome({ ok: false, reason }, 'x')).toMatch(re);
   });
+  it('says the answer was recorded, not sent, when nothing was typed into the task', () => {
+    expect(sayAnswerOutcome({ ok: true, notTyped: 'The task has ended, so nothing was typed into it.' }, 'yes'))
+      .toBe('Recorded: yes. The task has ended, so nothing was typed into it.');
+    expect(sayAnswerOutcome({ ok: true }, 'yes')).toBe('Sent: yes.');
+  });
   it('names the tasks when asking which question, and copes with none', () => {
     expect(buildWhichQuestion([A, B])).toBe('2 questions are waiting. They are from Cleanup. Which one do you mean?');
     expect(buildWhichQuestion([B, B])).not.toContain('They are from');

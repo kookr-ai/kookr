@@ -95,8 +95,10 @@ kookr ask \
   and at most 500 characters, or the command exits 2. While the question is
   waiting, the operator can also say "show me" to Lucy to open it.
 - Use `--timeout 2h` (`30s`, `10m`, `2h`, `1d` or plain seconds; minimum 30
-  seconds, maximum 24 hours) when the decision stops mattering after a while;
-  the default is 30 minutes.
+  seconds, maximum 7 days, so `8d` is refused) when the decision stops
+  mattering after a while; the default is 30 minutes. With a timeout of hours
+  or days, do not block on a bare `--wait` (it would wait that long): carry on
+  and read the answer when it arrives, or with `GET /api/asks/<id>`.
 
 ## Waiting, or not
 
@@ -114,9 +116,11 @@ it blocks and prints the chosen label on stdout. If you used `--wait` you may
 also receive the typed message above; they are the same answer, act once.
 
 The answer is typed only into the session that asked, or into a session that
-resumed its conversation (crash recovery, Reopen). If the task is relaunched
-fresh before the operator answers, the new session gets nothing and the operator
-is told the answer was not delivered. A relaunched session that asks the same
+resumed its conversation (crash recovery, Reopen). An answer given after your
+task has ended, or after it was relaunched fresh, is still **recorded**: the ask
+ends as `answered` with `taskDelivery: "skipped"`, nothing is typed into any
+session, and the operator is told "Recorded. The task has ended, so nothing was
+typed into it." (or that it was relaunched). A relaunched session that asks the same
 question again (same question, options and context) takes over the pending ask
 instead of sending a second message.
 
@@ -130,7 +134,7 @@ or `--wait`'s output, as authoritative; a typed message is a convenience.
 | --- | --- | --- |
 | 0 | Answered (or created, without `--wait`) | Act on the answer. |
 | 5 | Expired, nobody answered | Do **not** re-ask the same thing. Take the safest option, and state in your report that you chose it unasked. You may also receive the message `Ask <id> expired with no answer.` in your session: it is the same news. |
-| 6 | Cancelled (including: your task is gone) | Stop; nothing to act on. |
+| 6 | Cancelled (withdrawn, or the question never reached Telegram) | Stop; nothing to act on. |
 | 7 | Telegram is not configured here | The operator cannot be reached this way. Do not retry; pick the safest option or stop and report the blocker. |
 | 4 | Rejected (rate limit, unknown/finished task, delivery failed) | Read the message. Do not hammer the command; fall back as for 7. |
 | 2 / 3 / 8 | Usage error / no server / `--wait` window elapsed | Fix the command, or continue; for 8 check the ask later. |
@@ -189,20 +193,20 @@ phone, with a comment.
    verdict or other Kookr marker also counts). An unmarked comment is read as
    the operator's answer and becomes a follow-up task.
 4. **Notify, do not wait.** Send one `kookr ask` **without** `--wait`, with
-   `--timeout 24h` (the maximum `kookr ask` accepts today), the options
-   (recommended first), and the material and the request comment as
+   `--timeout 48h`, the options (recommended first), and the material and the request comment as
    `--link`s, each with a `--link-label`. They become buttons on Lucy's card
    and on Telegram, so the operator opens them with one tap. Say in the
    context that the durable way to answer is a comment on the request. An
-   answer tapped on Telegram reaches the task only while it is still running;
-   after it ends, Kookr tells the operator the answer was not delivered.
+   answer tapped on Telegram is typed into the task only while it is still
+   running; after it ends, Kookr records the answer on the ask and tells the
+   operator nothing was typed into the task.
 
    Name the task in the question (issue number and a few words of its title):
    the Telegram message shows only the task id. Do not paste URLs into the
    question; the card also has an "Open task" button.
 
    ```bash
-   kookr ask --timeout 24h \
+   kookr ask --timeout 48h \
      --question "Issue #$N (<short title>): which layout should the panel use?" \
      --context "I am carrying on with A. Answer any time with a comment on the opinion request, in your own words." \
      --link "$ARTIFACT_URL" --link-label "Open mockups" \
