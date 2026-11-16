@@ -718,7 +718,13 @@ function simpleHash(str: string): string {
   return hash.toString(36);
 }
 
-function closesPendingPermission(event: AgentEvent): boolean {
+/**
+ * True when `event` answers (or abandons) the pending `PermissionRequest`.
+ * Other events, such as a notification or a subagent starting, leave the
+ * request pending. Also used by the permission-prompt page (#3911) to find
+ * the request a watchdog finding refers to.
+ */
+export function closesPendingPermission(event: AgentEvent): boolean {
   return event.type === 'tool_use'
     || event.type === 'tool_result'
     || event.type === 'tool_error'

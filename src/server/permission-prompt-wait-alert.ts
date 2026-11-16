@@ -24,14 +24,22 @@
  * Per task it:
  *
  * - fires one operational alert (key `permission_prompt:<taskId>`) once the
- *   current prompt has waited at least the threshold (default 3 minutes);
+ *   current prompt has waited 3 minutes;
  * - never re-pages the same prompt;
  * - emits the matching `recovered` clear when the prompt is answered or the
  *   task stops being a live, in-progress task.
  *
  * Episode state lives in process memory, like the hungSuspect residual
  * alerter (#1993): a server restart resets the wait clock, so a prompt that
- * outlives a restart pages again one threshold after the restart.
+ * outlives a restart pages again 3 minutes after the restart.
+ *
+ * Known limit (issue #3911): the recovered clear can arrive while the prompt
+ * is still open. It follows the `permission_blocked` finding, which ends on
+ * later activity from the session, such as a sibling subagent's tool call.
+ * Ending the episode only on the prompt's own answer would need the
+ * `permission_request` event to carry the tool-use id of the call it is
+ * about, and the events Kookr records carry none. See
+ * docs/reference/offline-recovery-card.md §3b.
  *
  * Wire via detectorBroadcast (index.ts) so fire/clear edges spool to the
  * operator-signal outbox (Telegram/Discord).
@@ -51,6 +59,7 @@ import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { AgentEvent } from '../core/agent-events.js';
 import { redactSecrets } from '../core/redact-secrets.js';
 import type { PermissionPromptCardPort } from '../shared/contracts/telegram.js';
+import { closesPendingPermission } from '../core/watchdog.js';
 import { OPERATIONAL_ALERT_AGENT_ID } from './operational-alert-rules.js';
 
 /** Operational-alert key prefix; the task id follows the colon. */
@@ -59,7 +68,7 @@ export const PERMISSION_PROMPT_ALERT_KEY_PREFIX = 'permission_prompt' as const;
 export const PERMISSION_PROMPT_METRIC = 'permission_prompt_wait' as const;
 
 /** How long a prompt must wait before the page fires (issue #3872). */
-export const DEFAULT_PERMISSION_PROMPT_WAIT_THRESHOLD_MS = 3 * 60_000;
+export const PERMISSION_PROMPT_WAIT_THRESHOLD_MS = 3 * 60_000;
 
 /** Longest command text quoted in the page. */
 export const PERMISSION_PROMPT_COMMAND_MAX_CHARS = 200;
@@ -91,8 +100,6 @@ export interface PermissionPromptWaitAlerterDeps {
    * the operator-signal outbox. Must not throw.
    */
   broadcast: (msg: ServerMessage) => void;
-  /** Live threshold (ms). Falls back to {@link DEFAULT_PERMISSION_PROMPT_WAIT_THRESHOLD_MS}. */
-  getThresholdMs?: () => number;
   /** Injectable clock (tests). */
   now?: () => number;
   /** Telegram permission card (issue #3925); the page is the fallback. */
@@ -151,18 +158,35 @@ export function describePermissionToolInput(
 }
 
 /**
- * The `permission_request` event that is still waiting for an answer: the
- * last event of the window once trailing notifications and subagent stops
- * are skipped (the same trim the anomaly detector applies). Any other later
- * event means that request was already answered, so it must not be quoted.
+ * The `permission_request` event that is still waiting for an answer, so its
+ * command can be quoted. Quoting a request that was already answered would
+ * send the operator the wrong command, so each rule below gives up rather
+ * than guess.
+ *
+ * - The finding names a tool (the hook finding "Agent is blocked on
+ *   permission for tool: X", or the watchdog's "Permission request pending
+ *   for tool: X"): the latest request, when no later event answers it under
+ *   the watchdog's rule ({@link closesPendingPermission}) and it is for that
+ *   tool. Events such as a sibling subagent starting do not answer it
+ *   (issue #3911).
+ * - The finding names no tool (seen on the pane): the last event of the
+ *   window once trailing notifications and subagent stops are skipped, the
+ *   same trim the anomaly detector applies.
  */
 function openPermissionRequest(
   events: ReadonlyArray<AgentEvent>,
+  findingToolName: string | undefined,
 ): Extract<AgentEvent, { type: 'permission_request' }> | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
-    if (event.type === 'notification' || event.type === 'subagent_stop') continue;
-    return event.type === 'permission_request' ? event : undefined;
+    if (event.type === 'permission_request') {
+      return findingToolName === undefined || event.toolName === findingToolName ? event : undefined;
+    }
+    if (findingToolName !== undefined) {
+      if (closesPendingPermission(event)) return undefined;
+    } else if (event.type !== 'notification' && event.type !== 'subagent_stop') {
+      return undefined;
+    }
   }
   return undefined;
 }
@@ -171,9 +195,9 @@ function openPermissionRequest(
  * Build the alerter input from the task store and the monitor: every live,
  * in-progress task whose latest session currently has a `permission_blocked`
  * finding. The tool and command come from the open `permission_request`
- * event. A block seen only on the pane or by the watchdog has no open event;
- * it still pages, with the tool named from the finding when the finding
- * names one, and no command.
+ * event. When no open event can be found (for example a block seen only on
+ * the pane), the task still pages, with the tool named from the finding when
+ * the finding names one, and no command.
  */
 export function collectPermissionPromptWaits(
   tasks: Iterable<PermissionPromptTaskView>,
@@ -189,10 +213,9 @@ export function collectPermissionPromptWaits(
     const sinceMs = new Date(anomaly.detectedAt).getTime();
     if (!Number.isFinite(sinceMs)) continue;
 
-    const request = openPermissionRequest(monitor.getAgentEvents(sessionName));
-    const toolName = request?.toolName
-      ?? /for tool: (\S+)/.exec(anomaly.explanation)?.[1]
-      ?? 'unknown tool';
+    const findingToolName = /for tool: (\S+)/.exec(anomaly.explanation)?.[1];
+    const request = openPermissionRequest(monitor.getAgentEvents(sessionName), findingToolName);
+    const toolName = request?.toolName ?? findingToolName ?? 'unknown tool';
     waits.push({
       taskId: task.id,
       ...(task.name ? { taskName: task.name } : {}),
@@ -222,7 +245,6 @@ export class PermissionPromptWaitAlerter {
    */
   evaluate(waits: ReadonlyArray<PermissionPromptWait>): void {
     const nowMs = this.deps.now?.() ?? Date.now();
-    const thresholdMs = this.resolveThresholdMs();
     const present = new Set<string>();
 
     for (const wait of waits) {
@@ -241,7 +263,7 @@ export class PermissionPromptWaitAlerter {
       if (wait.taskName) episode.taskName = wait.taskName;
 
       const waitedMs = nowMs - wait.sinceMs;
-      if (!episode.notified && waitedMs >= thresholdMs) {
+      if (!episode.notified && waitedMs >= PERMISSION_PROMPT_WAIT_THRESHOLD_MS) {
         episode.notified = true;
         this.notify(wait, episode, waitedMs);
       }
@@ -313,14 +335,6 @@ export class PermissionPromptWaitAlerter {
         err instanceof Error ? err.message : String(err),
       );
     }
-  }
-
-  private resolveThresholdMs(): number {
-    const value = this.deps.getThresholdMs?.();
-    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
-      return Math.floor(value);
-    }
-    return DEFAULT_PERMISSION_PROMPT_WAIT_THRESHOLD_MS;
   }
 }
 

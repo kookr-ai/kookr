@@ -6,9 +6,10 @@ import { AttentionQueue } from '../core/attention-queue.js';
 import { parseHookEvent } from '../core/hook-parser.js';
 import { Monitor } from '../core/monitor.js';
 import { TaskStore } from '../core/tasks.js';
+import { Watchdog } from '../core/watchdog.js';
 import { operationalAlertToSignal } from '../observability/signal-delivery/operational-alert-bridge.js';
 import {
-  DEFAULT_PERMISSION_PROMPT_WAIT_THRESHOLD_MS,
+  PERMISSION_PROMPT_WAIT_THRESHOLD_MS,
   PermissionPromptWaitAlerter,
   collectPermissionPromptWaits,
   describePermissionToolInput,
@@ -87,11 +88,11 @@ describe('PermissionPromptWaitAlerter (issue #3872)', () => {
 
   test('a prompt answered within 3 minutes emits nothing', () => {
     const h = harness();
-    for (let ms = 0; ms < DEFAULT_PERMISSION_PROMPT_WAIT_THRESHOLD_MS; ms += 5_000) {
+    for (let ms = 0; ms < PERMISSION_PROMPT_WAIT_THRESHOLD_MS; ms += 5_000) {
       h.at(ms);
       h.alerter.evaluate([wait()]);
     }
-    h.at(DEFAULT_PERMISSION_PROMPT_WAIT_THRESHOLD_MS);
+    h.at(PERMISSION_PROMPT_WAIT_THRESHOLD_MS);
     h.alerter.evaluate([]);
     h.at(20 * MIN);
     h.alerter.evaluate([]);
@@ -319,6 +320,57 @@ describe('collectPermissionPromptWaits', () => {
     const task: PermissionPromptTaskView = { id: 't', status: 'inProgress', sessions: [{ tmuxSession: 's1' }] };
     expect(collectPermissionPromptWaits([task], monitor)).toEqual([
       { taskId: 't', toolName: 'Write', command: '/repo/new.ts', sinceMs: T0 },
+    ]);
+  });
+
+  // Issue #3911: a sibling subagent starting after the request ends the hook
+  // finding, but the watchdog still holds the request as pending. The page
+  // must still quote the command.
+  test('a watchdog-held block quotes the command when a sibling subagent starts after the request', () => {
+    const SIBLING = { agent_id: 'b29bc302160265062', agent_type: 'Explore' };
+    const events = parse([
+      ...incidentHookLines,
+      JSON.stringify({ session_id: SESSION_ID, cwd: '/tmp', hook_event_name: 'SubagentStart', ...SIBLING }),
+    ]);
+    const monitor = new Monitor(new TaskStore(), new AttentionQueue());
+    const watchdog = new Watchdog();
+    watchdog.registerAgent('kookr-28245f61', T0, T0);
+    monitor.processEvents('kookr-28245f61', events);
+    watchdog.recordEvents('kookr-28245f61', events, T0 + 1_000);
+    const verdict = watchdog.tick('kookr-28245f61', '', [], T0 + 5 * MIN);
+    monitor.applyWatchdogVerdict('kookr-28245f61', verdict, { paneCaptureSucceeded: true, paneText: '' });
+    expect(monitor.getCurrentAnomaly('kookr-28245f61')?.explanation)
+      .toBe('Permission request pending for tool: Bash');
+
+    expect(collectPermissionPromptWaits([incidentTask], monitor)).toEqual([{
+      taskId: incidentTask.id,
+      taskName: incidentTask.name,
+      toolName: 'Bash',
+      command: COMMAND,
+      sinceMs: T0 + 1_000,
+    }]);
+  });
+
+  test('a finding that names a tool does not quote a request that was answered, or one for another tool', () => {
+    const task: PermissionPromptTaskView = { id: 't', status: 'inProgress', sessions: [{ tmuxSession: 's1' }] };
+    const withEvents = (explanation: string, events: AgentEvent[]) => ({
+      getCurrentAnomaly: (agentId: string) => anomaly(agentId, 'permission_blocked', explanation),
+      getAgentEvents: () => events,
+    });
+    const answered = withEvents('Permission request pending for tool: Bash', [
+      { type: 'permission_request', sessionId: 's', toolName: 'Bash', toolInput: { command: 'cmdA' } },
+      { type: 'tool_result', sessionId: 's', toolName: 'Bash' },
+      { type: 'subagent_start', sessionId: 's', agentId: 'b1', agentType: 'Explore' },
+    ]);
+    expect(collectPermissionPromptWaits([task], answered)).toEqual([
+      { taskId: 't', toolName: 'Bash', command: '', sinceMs: T0 },
+    ]);
+    const otherTool = withEvents('Permission request pending for tool: Write', [
+      { type: 'permission_request', sessionId: 's', toolName: 'Bash', toolInput: { command: 'cmdA' } },
+      { type: 'subagent_start', sessionId: 's', agentId: 'b1', agentType: 'Explore' },
+    ]);
+    expect(collectPermissionPromptWaits([task], otherTool)).toEqual([
+      { taskId: 't', toolName: 'Write', command: '', sinceMs: T0 },
     ]);
   });
 });
