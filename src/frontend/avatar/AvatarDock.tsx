@@ -805,12 +805,14 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
                       <span className="avatar-msg-time">{time}</span>
                       {clip.usedFallback && (
                         // Template wording, not a model summary (issue #3631): say so, or it reads as Lucy's own words.
+                        // The tooltip reaches only mouse users, so a screen reader hears the full phrase instead of the bare word (issue #3859).
                         <span
                           className="avatar-msg-template"
                           data-testid="avatar-msg-template"
                           title="Template wording: the summary model was not used for this message"
                         >
-                          template
+                          <span aria-hidden="true">template</span>
+                          <span className="sr-only">template wording, not a model summary</span>
                         </span>
                       )}
                       {!clip.heard && (

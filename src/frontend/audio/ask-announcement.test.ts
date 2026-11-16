@@ -105,6 +105,16 @@ describe('announceAsk', () => {
     expect(tracked.find((e) => e.type === 'lucy_clip_started')).toMatchObject({ clipId: 'clip-ask-1', trigger: 'ask' });
   });
 
+  test('a question spoken from template wording is listed with the template mark (issue #3858)', async () => {
+    expect(await announceAsk(ASK, { fetcher: vi.fn(async () => speakResponse({ usedFallback: true })) as unknown as typeof fetch })).toBe('started');
+    expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1', usedFallback: true });
+  });
+
+  test('a question spoken from model wording is listed without the template mark', async () => {
+    expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('started');
+    expect(getClipHistory()[0].usedFallback).toBeUndefined();
+  });
+
   test('only one of several tabs speaks the same question', async () => {
     expect(await announceAsk(ASK, { fetcher: fetcherOk() })).toBe('started');
     // A second tab shares localStorage; simulated here by a second call for the same ask.
