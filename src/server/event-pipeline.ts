@@ -274,6 +274,46 @@ function readLiveAgentCount(monitor: Monitor): number {
   return 0;
 }
 
+/** A shell command that runs the `kookr signal` CLI (`kookr signal …` or `bin/kookr-signal.js`). */
+const KOOKR_SIGNAL_COMMAND_RE = /\bkookr(?:\s+signal\b|-signal\b)/;
+
+function isKookrSignalToolUse(event: AgentEvent): boolean {
+  if (event.type !== 'tool_use' || event.toolName !== 'Bash') return false;
+  const input = event.toolInput;
+  const command = input && typeof input === 'object' ? (input as { command?: unknown }).command : undefined;
+  return typeof command === 'string' && KOOKR_SIGNAL_COMMAND_RE.test(command);
+}
+
+/**
+ * Whether this live-turn event means the agent went back to work after it
+ * raised `completion_ready`, so the signal is stale (issue #3954).
+ *
+ * The agent raises the signal from inside a tool call (`kookr signal
+ * completion-ready` via Bash), so that call's own hook events arrive around the
+ * signal POST and also derive to a live turn. Clearing on them dropped every
+ * agent-raised signal before the closing Stop arrived.
+ *
+ * - opencode: only a new prompt ends the signal.
+ * - claude-code: a new prompt, or a tool call that starts after the signal
+ *   (a PreToolUse other than the `kookr signal` call itself). The closing
+ *   PostToolUse, tool errors, permission requests and a background-parked Stop
+ *   do not. An agent that keeps working loses the signal at its next tool call,
+ *   so it is never counted as finished while it works. The signal call's own
+ *   PreToolUse is recognised by its command, so a late delivery of it (the
+ *   hook's HTTP push failed and the file tail caught up) does not clear it.
+ * - other agent types keep the original rule (any live turn clears it) until it
+ *   is verified for them.
+ */
+function eventEndsPendingCompletionSignal(event: AgentEvent, agentType: Task['agentType'] | undefined): boolean {
+  if (event.type === 'user_prompt') return true;
+  if (agentType === 'opencode') return false;
+  // A task with no recorded agentType is a legacy Claude Code task.
+  if (agentType === undefined || agentType === 'claude-code') {
+    return event.type === 'tool_use' && !isKookrSignalToolUse(event);
+  }
+  return true;
+}
+
 /**
  * Anomalies that warrant interrupting the operator — these bypass broadcast
  * coalescing so the dashboard reflects "needs attention" without the
@@ -674,19 +714,12 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
         // programmatic resumes are covered. Skip replay hydration
         // (meta.origin === 'replay'): it re-feeds historical user_prompts and
         // must not wipe a signal that was legitimately pending at restart.
-        // opencode workers: only a new prompt (`user_prompt`) counts as work resuming. The agent raises
-        // `completion_ready` from inside a tool call (`kookr signal ...` via Bash), so that
-        // very call's PreToolUse/PostToolUse events — ingested around the signal POST — also
-        // derive to a live turn; clearing on them dropped every agent-raised signal before the
-        // closing Stop arrived (observed with opencode workers). A turn that keeps working
-        // after signalling is still covered by the reapers' live-work veto. Other agent types
-        // keep the original behaviour (clear on any live turn state) until it is verified there:
-        // a preemptive manual `kookr signal completion-ready` raised while the agent is still
-        // mid-turn is intentionally dropped, since the signal means "finished" and an in-flight
-        // live turn contradicts it.
+        // Which live events count as work resuming depends on the agent type:
+        // see eventEndsPendingCompletionSignal (opencode, and claude-code since
+        // issue #3954, ignore the tool events of the signal call itself).
         if (
           meta.origin !== 'replay'
-          && (pipelineEvent.type === 'user_prompt' || ownerTask.agentType !== 'opencode')
+          && eventEndsPendingCompletionSignal(pipelineEvent, ownerTask.agentType)
           && (turnState === 'running' || turnState === 'waiting_for_input' || turnState === 'blocked')
           && taskStore.getPendingSignal(ownerTask.id)?.kind === 'completion_ready'
           && taskStore.clearPendingSignal(ownerTask.id)
@@ -696,9 +729,10 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
           );
         }
         // Issue #3930: the "said finished" record (`finishedSignalAt`) is kept
-        // across the tool-event clear above, because for claude-code that clear
-        // fires on the PostToolUse of the `kookr signal` call itself. A new user
-        // prompt is real new work, so it does end the record.
+        // across the tool-event clear above: an agent may run one more tool
+        // call after signalling (and agent types still on the original rule
+        // clear on any live event). A new user prompt is real new work, so it
+        // does end the record.
         if (meta.origin !== 'replay' && pipelineEvent.type === 'user_prompt') {
           taskStore.clearFinishedSignal(ownerTask.id);
         }

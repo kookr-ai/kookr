@@ -367,6 +367,29 @@ function makeToolUseHook(toolName = 'Read', sessionId = 's1') {
   });
 }
 
+function makeBashPreToolUseHook(command: string, sessionId = 's1') {
+  return JSON.stringify({
+    session_id: sessionId,
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_input: { command },
+    tool_use_id: 'toolu_signal',
+    cwd: '/cwd',
+  });
+}
+
+function makeBashPostToolUseHook(command: string, sessionId = 's1') {
+  return JSON.stringify({
+    session_id: sessionId,
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Bash',
+    tool_input: { command },
+    tool_response: { stdout: 'signal recorded', stderr: '', interrupted: false },
+    tool_use_id: 'toolu_signal',
+    cwd: '/cwd',
+  });
+}
+
 function makeUserPromptHook(sessionId = 's1') {
   return JSON.stringify({
     session_id: sessionId,
@@ -567,15 +590,85 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
   });
 
-  test('non-opencode agents keep clearing completion_ready on in-flight tool events (original behaviour)', async () => {
+  test('issue #3954 claude-code: a completion_ready raised from a Bash call survives that call\'s own hooks and the Stop', async () => {
     setup();
     const tmuxName = await launchAgent();
     const task = taskStore.findTaskBySession(tmuxName)!;
+    taskStore.getTaskForMutation(task.id)!.agentType = 'claude-code';
+    const signalCommand = 'kookr signal completion-ready --note "PR merged"';
+
+    // Real hook order: PreToolUse(Bash) → signal POST → PostToolUse(Bash) → Stop.
+    adapter.injectHookEvent(tmuxName, makeBashPreToolUseHook(signalCommand));
     taskStore.setPendingSignal(task.id, {
       kind: 'completion_ready',
       raisedAt: new Date('2026-06-21T00:00:00.000Z').toISOString(),
     });
-    adapter.injectHookEvent(tmuxName, makeToolUseHook());
+    adapter.injectHookEvent(tmuxName, makeBashPostToolUseHook(signalCommand));
+    expect(taskStore.findTaskBySession(tmuxName)!.sessions.find(s => s.tmuxSession === tmuxName)!.lastTurnState)
+      .toBe('running');
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
+  test('issue #3954 claude-code: a late-delivered PreToolUse of the signal call itself does not clear the signal', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+    const task = taskStore.findTaskBySession(tmuxName)!;
+    taskStore.getTaskForMutation(task.id)!.agentType = 'claude-code';
+    taskStore.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date('2026-06-21T00:00:00.000Z').toISOString(),
+    });
+
+    adapter.injectHookEvent(tmuxName, makeBashPreToolUseHook('cd /wt && node bin/kookr-signal.js completion-ready'));
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
+  test('issue #3954 claude-code: a tool call that starts after the signal clears it (the agent kept working)', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+    const task = taskStore.findTaskBySession(tmuxName)!;
+    taskStore.getTaskForMutation(task.id)!.agentType = 'claude-code';
+    const signalCommand = 'kookr signal completion-ready';
+    adapter.injectHookEvent(tmuxName, makeBashPreToolUseHook(signalCommand));
+    taskStore.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date('2026-06-21T00:00:00.000Z').toISOString(),
+    });
+    adapter.injectHookEvent(tmuxName, makeBashPostToolUseHook(signalCommand));
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+
+    // A Bash call that only mentions "signal" elsewhere is still new work.
+    adapter.injectHookEvent(tmuxName, makeBashPreToolUseHook('git log --grep signal'));
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+  });
+
+  test('issue #3954: a legacy task with no recorded agentType follows the claude-code rule', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+    const task = taskStore.findTaskBySession(tmuxName)!;
+    delete (taskStore.getTaskForMutation(task.id) as { agentType?: string }).agentType;
+    taskStore.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date('2026-06-21T00:00:00.000Z').toISOString(),
+    });
+    adapter.injectHookEvent(tmuxName, makeBashPostToolUseHook('kookr signal completion-ready'));
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
+  test('agent types still on the original rule (codex-cli) clear completion_ready on any live tool event', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+    const task = taskStore.findTaskBySession(tmuxName)!;
+    taskStore.getTaskForMutation(task.id)!.agentType = 'codex-cli';
+    const signalCommand = 'kookr signal completion-ready';
+    taskStore.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date('2026-06-21T00:00:00.000Z').toISOString(),
+    });
+    adapter.injectHookEvent(tmuxName, makeBashPostToolUseHook(signalCommand));
     expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
   });
 
@@ -586,7 +679,7 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     const raisedAt = new Date('2026-06-21T00:00:00.000Z').toISOString();
     taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt });
 
-    // The PostToolUse of the `kookr signal` call clears the pending signal...
+    // A tool call after the signal (the agent kept working) clears the pending signal...
     adapter.injectHookEvent(tmuxName, makeToolUseHook());
     expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
     // ...but the task still said "finished".
