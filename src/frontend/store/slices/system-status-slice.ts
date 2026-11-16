@@ -12,6 +12,7 @@ export function createSystemStatusSlice(set: StoreSet): SystemStatusSlice {
     pausedSchedules: null,
     lessonYield: null,
     timerHealth: null,
+    taskNamer: null,
 
     handleResourceStatus: (status, receivedAtMs = Date.now()) => {
       set({
@@ -45,6 +46,9 @@ export function createSystemStatusSlice(set: StoreSet): SystemStatusSlice {
       }
       if ('timerHealth' in payload) {
         next.timerHealth = payload.timerHealth ?? null;
+      }
+      if ('taskNamer' in payload) {
+        next.taskNamer = payload.taskNamer ?? null;
       }
       if (Object.keys(next).length > 0) set(next);
     },

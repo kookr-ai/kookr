@@ -9629,6 +9629,12 @@ button.oldest-finding-wait-pill:focus-visible {
   color: var(--amber);
 }
 
+/* Task namer failing (#3616): amber advisory (tasks still get prompt-derived names). */
+.ops-health-pill.ops-health-task-namer {
+  background: rgba(251, 191, 36, 0.14);
+  color: var(--amber);
+}
+
 /* Overdue lifecycle timer: red like smoke — a safety net stopped ticking. */
 .ops-health-pill.ops-health-timer-overdue {
   background: rgba(248, 113, 113, 0.15);

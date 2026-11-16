@@ -30,6 +30,7 @@ import type { Scope } from './viewer-data-policy.js';
 import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
 import { deterministicTaskName, generateTaskName } from '../core/task-naming.js';
+import { readTaskNamerAlertThresholdMs, TaskNamerHealthTracker } from '../core/task-namer-health.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
 import type { TerminalSessionDiagnosticsSource } from '../adapters/terminal-session-diagnostics.js';
 import {
@@ -1734,6 +1735,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // --- Auto-naming helper ---
 
+  // Issue #3616: remembers whether LLM naming calls succeed, so a dead namer
+  // provider shows on the dashboard instead of silently degrading every name.
+  const taskNamerHealth = new TaskNamerHealthTracker({
+    path: join(kookrDir, 'task-namer-health.json'),
+    enabled: llmClient != null,
+    thresholdMs: readTaskNamerAlertThresholdMs(),
+  });
+
   /**
    * Fire-and-forget: generate a short AI name for a task. NEVER leaves a task
    * unnamed (issue #1526 Phase C4): when the LLM is unavailable, returns an
@@ -1779,6 +1788,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       return;
     }
     generateTaskName(llmClient, prompt, cwd, criteria)
+      // Record only the naming call's own outcome (issue #3616), before the
+      // name is applied, so a later rename error is not counted as a failure.
+      // An aborted call says nothing about the provider.
+      .then(
+        (name) => {
+          taskNamerHealth.record(name ? 'success' : 'failure');
+          return name;
+        },
+        (err: unknown) => {
+          if ((err as { name?: string } | null)?.name !== 'AbortError') taskNamerHealth.record('failure');
+          throw err;
+        },
+      )
       .then((name) => {
         if (!name) {
           console.warn(`[task-naming] LLM returned empty name for task ${taskId}; keeping the deterministic name`);
@@ -3316,6 +3338,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     openPrFailsafeReasonMetrics,
     firstHookMissMetrics,
     watchdogSweepMetrics,
+    taskNamerHealth,
     providerPausedOccupancyMetrics,
     resourceWatchdog: resourceWatchdogService,
     staleProcessSummaryCache,

@@ -219,6 +219,44 @@ describe('TopBar: System indicator and About', () => {
     expect(popover.querySelector('[data-testid="ops-health-smoke-pill"]')?.textContent).toBe('Smoke: fail×2');
   });
 
+  test('a silent task namer turns the indicator amber with its pill (issue #3616)', async () => {
+    useKookrStore.setState({
+      taskNamer: {
+        silent: true,
+        thresholdMs: 6 * 3_600_000,
+        failingSinceMs: Date.parse('2026-11-15T01:00:00.000Z'),
+        lastFailureAtMs: Date.parse('2026-11-15T08:30:00.000Z'),
+        lastSuccessAtMs: Date.parse('2026-11-15T00:00:00.000Z'),
+        failedAttempts: 12,
+      },
+    });
+    await renderTopBar();
+    expect(systemButton().classList.contains('needs-attention')).toBe(true);
+    expect(systemButton().getAttribute('aria-label')).toContain('task namer failing');
+
+    const popover = await openSystem();
+    const pill = popover.querySelector('[data-testid="ops-health-task-namer-pill"]');
+    expect(pill?.textContent).toBe('Task namer failing 7h');
+    expect(pill?.getAttribute('title')).toContain('12 attempts');
+  });
+
+  test('a namer that is failing but not yet past the threshold stays quiet', async () => {
+    useKookrStore.setState({
+      taskNamer: {
+        silent: false,
+        thresholdMs: 6 * 3_600_000,
+        failingSinceMs: Date.parse('2026-11-15T01:00:00.000Z'),
+        lastFailureAtMs: Date.parse('2026-11-15T02:00:00.000Z'),
+        lastSuccessAtMs: null,
+        failedAttempts: 3,
+      },
+    });
+    await renderTopBar();
+    expect(systemButton().classList.contains('needs-attention')).toBe(false);
+    const popover = await openSystem();
+    expect(popover.querySelector('[data-testid="ops-health-task-namer-pill"]')).toBeNull();
+  });
+
   test('the default watchdog-off state stays a passive readout, not an amber dot', async () => {
     useKookrStore.setState({ resourceWatchdog: { enabled: false, pressureWhileDisabled: false } as never });
     await renderTopBar();
@@ -286,6 +324,7 @@ describe('systemAttentionReasons', () => {
     ['host pressure while the resource watchdog is off', { resourceWatchdog: { enabled: false, pressureWhileDisabled: true } }],
     ['finished tasks holding capacity', { capacityResidual: { finishedAwaitingAck: 3, oldestFinishedAwaitingAckAgeMs: null } }],
     ['schedules paused', { pausedSchedules: { schedulesPausedByFailure: [{ name: 'nightly' }] } }],
+    ['task namer failing', { taskNamer: { silent: true, thresholdMs: 21_600_000, failingSinceMs: 0, lastFailureAtMs: 25_200_000, lastSuccessAtMs: null, failedAttempts: 9 } }],
     ['CPU high', { resourceStatus: resources({ cpu: 90 }) }],
     ['server event loop slow', { resourceStatus: resources({ loopMs: 200 }) }],
   ])('raises "%s"', (reason, input) => {

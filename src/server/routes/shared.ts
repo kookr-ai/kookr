@@ -617,6 +617,12 @@ export interface RouteDeps {
    */
   getHelperLlmHealthSnapshot?: () => import('../../shared/contracts/diagnostic.js').HelperLlmHealthSnapshot;
   /**
+   * LLM task-namer health for GET `/api/health.taskNamer` (issue #3616):
+   * last success, current failing streak, and whether it has lasted past the
+   * `KOOKR_TASK_NAMER_ALERT_HOURS` threshold. Absent ⇒ health omits the block.
+   */
+  taskNamerHealth?: Pick<import('../../core/task-namer-health.js').TaskNamerHealthTracker, 'snapshot'>;
+  /**
    * Delivery-bridge health snapshot (issue #3046). `/api/health` reads only the
    * sync in-memory `status()` — configured / consecutiveFailures / pending /
    * last send + last failure — so a silently-failing Discord/Telegram bridge is

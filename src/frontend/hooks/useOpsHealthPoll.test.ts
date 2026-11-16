@@ -10,6 +10,7 @@ import {
   parseLessonYield,
   parsePipelineStarvation,
   parseSchedules,
+  parseTaskNamer,
   parseTimerHealth,
   useOpsHealthPoll,
 } from './useOpsHealthPoll.js';
@@ -624,5 +625,40 @@ describe('parseTimerHealth (issue #2643)', () => {
       overdue: 0,
       oldestName: null,
     });
+  });
+});
+
+describe('parseTaskNamer (issue #3616)', () => {
+  const block = {
+    enabled: true,
+    silent: true,
+    thresholdMs: 21_600_000,
+    lastSuccessAt: '2026-11-15T00:00:00.000Z',
+    failingSince: '2026-11-15T01:00:00.000Z',
+    lastFailureAt: '2026-11-15T08:00:00.000Z',
+    failedAttempts: 12,
+  };
+
+  test('projects the health block into epoch milliseconds', () => {
+    expect(parseTaskNamer(block)).toEqual({
+      silent: true,
+      thresholdMs: 21_600_000,
+      lastSuccessAtMs: Date.parse('2026-11-15T00:00:00.000Z'),
+      failingSinceMs: Date.parse('2026-11-15T01:00:00.000Z'),
+      lastFailureAtMs: Date.parse('2026-11-15T08:00:00.000Z'),
+      failedAttempts: 12,
+    });
+  });
+
+  test('a missing, malformed or disabled block shows nothing', () => {
+    expect(parseTaskNamer(undefined)).toBeNull();
+    expect(parseTaskNamer('silent')).toBeNull();
+    expect(parseTaskNamer({ ...block, silent: 'yes' })).toBeNull();
+    expect(parseTaskNamer({ ...block, enabled: false })).toBeNull();
+  });
+
+  test('null times stay null', () => {
+    expect(parseTaskNamer({ ...block, silent: false, lastSuccessAt: null, failingSince: null, lastFailureAt: null, failedAttempts: 0 }))
+      .toMatchObject({ silent: false, lastSuccessAtMs: null, failingSinceMs: null, lastFailureAtMs: null, failedAttempts: 0 });
   });
 });

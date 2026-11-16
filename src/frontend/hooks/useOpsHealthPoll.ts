@@ -12,6 +12,7 @@ import type {
   ProdSmokeTickStatus,
   ResourceWatchdogStatus,
   PausedSchedulesStatus,
+  TaskNamerStatus,
   TimerHealthStatus,
 } from '../store/store-types.js';
 
@@ -374,6 +375,34 @@ export function parseTimerHealth(value: unknown): TimerHealthStatus | null {
   return { overdue, oldestName };
 }
 
+function parseIsoMs(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Parse `GET /api/health.taskNamer` (issue #3616). Returns null when the block
+ * is missing or malformed, or when the namer is disabled (no LLM provider, or
+ * `KOOKR_TASK_NAMER_ALERT_HOURS=0`), so nothing shows.
+ */
+export function parseTaskNamer(value: unknown): TaskNamerStatus | null {
+  const rec = asRecord(value);
+  if (!rec || rec.enabled !== true || typeof rec.silent !== 'boolean') return null;
+  const thresholdMs = typeof rec.thresholdMs === 'number' && Number.isFinite(rec.thresholdMs) ? rec.thresholdMs : 0;
+  const failedAttempts = typeof rec.failedAttempts === 'number' && Number.isFinite(rec.failedAttempts)
+    ? Math.max(0, Math.floor(rec.failedAttempts))
+    : 0;
+  return {
+    silent: rec.silent,
+    thresholdMs,
+    failingSinceMs: parseIsoMs(rec.failingSince),
+    lastFailureAtMs: parseIsoMs(rec.lastFailureAt),
+    lastSuccessAtMs: parseIsoMs(rec.lastSuccessAt),
+    failedAttempts,
+  };
+}
+
 /**
  * Poll `GET /api/health` for smoke-tick failing streak, resourceWatchdog
  * enablement, capacity FAA residual, pipeline-starvation drought state,
@@ -407,6 +436,7 @@ export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_M
           pausedSchedules: parseSchedules(rec.schedules),
           lessonYield: parseLessonYield(rec.lessonYield),
           timerHealth: parseTimerHealth(rec.timerHealth),
+          taskNamer: parseTaskNamer(rec.taskNamer),
         });
       } catch {
         // Soft: pills stay at last known state; dashboard remains usable.

@@ -1137,6 +1137,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // in-memory auth-pause map. Always present so last-good health and
       // `kookr ops digest` can name a paused provider without grepping logs.
       helperLlm: (deps.getHelperLlmHealthSnapshot ?? getHelperLlmHealthSnapshot)(),
+      // Issue #3616: has the LLM task namer gone silent? Every naming attempt
+      // failing for KOOKR_TASK_NAMER_ALERT_HOURS turns the dashboard System
+      // indicator amber. In-memory read of a tiny record.
+      ...(deps.taskNamerHealth ? { taskNamer: deps.taskNamerHealth.snapshot() } : {}),
       // Delivery-bridge health (issue #3046): configured / consecutiveFailures /
       // pending / last send + last failure from the in-memory status() read.
       // Makes a silently-failing (revoked webhook / bad token / 429) Discord or
