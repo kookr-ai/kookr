@@ -98,6 +98,29 @@ that sound as background noise: its noise floor rises to the sound's level, so t
 duck her again every moment. Speech clearly louder than the noise is still heard, and the floor falls
 back by itself once the room is quiet.
 
+**Her other clips.** Everything else she says out loud is a *clip*: a speaker button's summary, a
+Replay, or a question a task asks, read aloud. Clips have their own players
+(`src/frontend/hooks/useSpeakAgent.ts`, `src/frontend/audio/clip-playback.ts`). While one is audible it
+is listed in `src/frontend/audio/playing-clips.ts` together with its volume control and a stop, and with
+Talk on the conversation treats it as her talking:
+
+- A playing clip makes her busy, so sound over it is a candidate interruption, exactly as over an answer.
+  The clip is turned down to a quarter with her answer, stopped on `speech_confirmed` (or when no
+  verdict arrives within 1.5 s), and turned back up on `speech_rejected`. The server needs no change
+  for this: a `speech_start` with `lucyAudible: true` is a candidate even when it has no answer in
+  progress, and a confirmed one becomes a fresh turn. Without Silero, the clip stops at once.
+- A clip stopped this way is logged as `lucy_clip_ended` with `endedBy: "barge_in"` in
+  `~/.kookr/lucy-interactions.jsonl`. It does not count as an early stop in the summary, which counts
+  only presses of the stop button (`user_stop`).
+- She never says two things at once. A clip that starts while she is saying an answer stops the answer
+  (the browser reports the cut sentences as `played` with `complete: false`, sends `barge_in`, and drops
+  the rest of that answer), because the operator asked for the clip last. An answer that is ready while
+  a clip plays waits, and starts the moment the clip ends. A question from a task was already held back
+  until she has finished speaking.
+
+With Talk off there is no conversation, so nothing reads that list: no microphone is opened and clips
+play exactly as before.
+
 Because Silero filters the noise, the browser's own bar for a candidate while she talks is 0.15 s of
 loud sound, down from 0.3 s. Silero also guards ordinary turns: if a whole turn never contains a
 slice it calls speech, the turn ends as empty without asking the recogniser, which stops invented
@@ -355,11 +378,13 @@ as long as it does by default, so her answers may start later.
   listed choices by voice after her read-back (see "Answering by voice" under [Questions from tasks](#questions-from-tasks)); a typed answer
   or one that is not a listed choice is not taken by voice.
 - With Talk on, a question from a task is read through the ordinary clip player, not the conversation's
-  own audio. Talking over it does not stop it, and her volume is not lowered while you speak. The
-  conversation also does not know that this voice is hers: on loudspeakers, if the browser's echo
-  cancellation lets her reading reach the open microphone, she can take it for something you said and
-  answer it. This was not tested. Use headphones, or answer the question before talking to her
+  own audio. Talking over it ducks and stops it like any clip ([Her other clips](#how-a-turn-works)),
+  but it does not enter the conversation history, so "say that again" has nothing to refer to
   ([#3711](https://github.com/kookr-ai/kookr/issues/3711)).
+- On loudspeakers, a clip or an answer that reaches the open microphone despite echo cancellation is
+  speech to Silero: it would stop her clip, and could be taken for something you said. A clip now
+  counts as her being busy, so the detector uses its stricter bar while it plays, but this was not
+  tested on speakers. Use headphones.
 - She always answers in English: her voices are English voices.
 - Headphones work best. Echo cancellation is on and a candidate interruption must be loud for 0.15 s
   and then pass Silero, but speaker-to-microphone echo was not tested: her own voice leaking into the

@@ -20,10 +20,12 @@ import { getAvatarPanelPrefs } from '../store/avatar-panel-prefs.js';
 import { getSoundPreferenceState } from './sound-preference.js';
 import { emitSpeechIdle, emitSpeechPlaying } from './speech-bus.js';
 import { getClip, getLastClip, markClipHeard } from './last-clip.js';
+import { clipStarted, rampClipVolume } from './playing-clips.js';
 
 /** `ask`: played unprompted, because a task asked the operator a question. */
 export type ClipTrigger = 'click' | 'replay' | 'ask';
-export type ClipEndedBy = 'finished' | 'user_stop' | 'superseded';
+/** `barge_in`: the operator started talking over it with Talk on (issue #3672). */
+export type ClipEndedBy = 'finished' | 'user_stop' | 'superseded' | 'barge_in';
 export type ClipUnheardReason = 'muted' | 'dnd' | 'audio_suspended' | 'error';
 
 /**
@@ -134,6 +136,8 @@ interface ActiveReplay {
   ctx: AudioContext;
   source: AudioBufferSourceNode;
   playback: ClipPlayback;
+  /** Takes the replay off the list of playing clips (see playing-clips.ts). */
+  releaseFloor: () => void;
 }
 
 /** Identifies replay on the speech bus, so only replay can announce its own end (see speech-bus.ts). */
@@ -167,6 +171,7 @@ function release(replay: ActiveReplay): void {
 function finishReplay(replay: ActiveReplay, endedBy: ClipEndedBy): void {
   if (active !== replay) return;
   active = null;
+  replay.releaseFloor();
   replay.playback.end(endedBy);
   release(replay);
   emitSpeechIdle(replayOwner);
@@ -241,13 +246,17 @@ export async function replayClip(clipId: string, trigger: Extract<ClipTrigger, '
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    source.connect(ctx.destination);
+    // Through a volume control, so the hands-free conversation can turn the replay down while it checks a sound.
+    const volume = ctx.createGain();
+    volume.connect(ctx.destination);
+    source.connect(volume);
     const durationMs = clip.durationMs > 0 ? clip.durationMs : buffer.duration * 1000;
     const replay: ActiveReplay = {
       clipId: clip.clipId,
       ctx,
       source,
       playback: { end() {} },
+      releaseFloor: () => undefined,
     };
     source.onended = () => finishReplay(replay, 'finished');
     source.start();
@@ -261,6 +270,12 @@ export async function replayClip(clipId: string, trigger: Extract<ClipTrigger, '
     replay.playback = beginClipPlayback({ clipId: clip.clipId, totalMs: durationMs, trigger });
     active = replay;
     emitSpeechPlaying(replayOwner, ctx, source);
+    // After the bus announcement, so a hands-free answer this stops cannot flash the bus to idle in between.
+    const playContext = ctx;
+    replay.releaseFloor = clipStarted({
+      setVolume: (gain) => rampClipVolume(volume, playContext, gain),
+      stop: (reason) => finishReplay(replay, reason),
+    });
     return 'started';
   } catch {
     if (ctx && ctx.state !== 'closed') void ctx.close();

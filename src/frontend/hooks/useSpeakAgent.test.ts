@@ -18,6 +18,7 @@ import {
   getAudioAlertSnapshot,
 } from '../audio/audio-alert-log.js';
 import { __resetSpeechBusForTests, subscribeSpeechBus } from '../audio/speech-bus.js';
+import { __resetPlayingClipsForTests, playingClips } from '../audio/playing-clips.js';
 import { __resetLastClipForTests, captureLastClip, getLastClip, getLastClipSnapshot } from '../audio/last-clip.js';
 import { __resetDndForTests, disableDnd, enableDnd } from './useDnd.js';
 import { __resetClipPlaybackForTests, replayLastClip } from '../audio/clip-playback.js';
@@ -69,6 +70,18 @@ class FakeAudioContext {
   static instances: FakeAudioContext[] = [];
   state: AudioContextState = 'running';
   destination = {};
+  currentTime = 0;
+  /** Volume controls handed out; the clip players route their source through one (issue #3672). */
+  gains: Array<{ gain: { value: number; cancelScheduledValues: ReturnType<typeof vi.fn>; setValueAtTime: ReturnType<typeof vi.fn>; linearRampToValueAtTime: ReturnType<typeof vi.fn> }; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = [];
+  createGain = vi.fn(() => {
+    const node = {
+      gain: { value: 1, cancelScheduledValues: vi.fn(), setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    this.gains.push(node);
+    return node as unknown as GainNode;
+  });
   analyser = { fftSize: 0, smoothingTimeConstant: 0 };
 
   constructor() {
@@ -152,6 +165,7 @@ describe('useSpeakAgent request shape', () => {
     __resetSpeechBusForTests();
     __resetLastClipForTests();
     __resetClipPlaybackForTests();
+    __resetPlayingClipsForTests();
     setSoundEnabled(true);
     __resetSoundPreferenceForTests();
     tracked.length = 0;
@@ -334,8 +348,9 @@ describe('useSpeakAgent request shape', () => {
       expect(events[2]).toEqual({ type: 'playing', analyser: ctx.analyser });
 
       const source = ctx.createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
-      // The tap is an extra connection: the clip still goes to the speakers exactly as before.
-      expect(source.connect).toHaveBeenCalledWith(ctx.destination);
+      // The tap is an extra connection: the clip still goes to the speakers, through one volume control.
+      expect(source.connect).toHaveBeenCalledWith(ctx.gains[0]);
+      expect(ctx.gains[0].connect).toHaveBeenCalledWith(ctx.destination);
       expect(source.connect).toHaveBeenCalledWith(ctx.analyser);
 
       act(() => {
@@ -692,6 +707,39 @@ describe('useSpeakAgent request shape', () => {
       root = null;
       expect(ofType('lucy_clip_ended')).toHaveLength(1);
       expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'clip-srv-1', endedBy: 'superseded' });
+    });
+
+    describe('with Talk on, the hands-free conversation can control the clip (#3672)', () => {
+      test('the playing clip is listed, ramps its own volume, and is taken off the list when it finishes', async () => {
+        mount(async () => clipResponse());
+        await speakAndSettle();
+        const ctx = FakeAudioContext.instances[0];
+        expect(playingClips()).toHaveLength(1);
+        playingClips()[0].setVolume(0.25);
+        expect(ctx.gains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.25, expect.any(Number));
+        const source = ctx.createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
+        act(() => { source.onended?.(); });
+        expect(playingClips()).toHaveLength(0);
+      });
+
+      test('stopped by the operator\'s voice: logged once as barge_in, the button goes idle and the list empties', async () => {
+        mount(async () => clipResponse());
+        await speakAndSettle();
+        const ctx = FakeAudioContext.instances[0];
+        const source = ctx.createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
+        act(() => { playingClips()[0].stop('barge_in'); });
+        expect(ofType('lucy_clip_ended')).toEqual([expect.objectContaining({ clipId: 'clip-srv-1', endedBy: 'barge_in' })]);
+        expect(probeHandle!.state.status).toBe('idle');
+        expect(source.stop).toHaveBeenCalled();
+        expect(playingClips()).toHaveLength(0);
+      });
+
+      test('stopping it with the button takes it off the list too', async () => {
+        mount(async () => clipResponse());
+        await speakAndSettle();
+        act(() => { probeHandle!.stop(); });
+        expect(playingClips()).toHaveLength(0);
+      });
     });
 
     test('selecting another agent mid-clip records superseded, not user_stop', async () => {

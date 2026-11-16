@@ -482,6 +482,11 @@ know something. She cannot act on tasks yet.
   door, her volume comes back and she carries on. If the check is not available (the model failed to
   load), she stops as soon as the browser hears a loud enough sound, as before. Headphones work best;
   on speakers her own voice may be picked up.
+- **Her other clips.** While Talk is on, the same holds for everything else she says out loud: a
+  speaker button's summary, a Replay, a question a task asks. Talk over it and it turns down, then
+  stops if it was your voice or comes back if it was not. She never says two things at once: pressing a
+  speaker button or Replay while she is answering stops her answer and plays the clip, and an answer
+  that is ready while a clip plays starts when the clip ends. With Talk off, clips play as before.
 - **What you see.** Her state (listening, thinking, speaking), what you said as a draft that improves
   while you talk, then the final text, and her answer as she speaks it.
 - **Language.** You can speak English or French (it follows the dictation language). She always answers

@@ -11,6 +11,7 @@ import { useLucyLive, type UseLucyLiveResult } from './useLucyLive.js';
 import { CONFIRMATION_TIMEOUT_MS, DUCK_GAIN } from './lucy-live-session.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests, subscribeSpeechBus, type SpeechBusEvent } from '../audio/speech-bus.js';
+import { __resetPlayingClipsForTests, clipStarted } from '../audio/playing-clips.js';
 import { STT_LANGUAGE_KEY } from '../store/stt-language.js';
 
 // --- Fakes -----------------------------------------------------------------
@@ -176,6 +177,7 @@ describe('useLucyLive', () => {
     localStorage.clear();
     __resetSoundPreferenceForTests();
     __resetSpeechBusForTests();
+    __resetPlayingClipsForTests();
     statusResponse = { ok: true, body: { available: true } };
     getUserMedia = vi.fn(async () => ({
       getTracks: () => [{ stop: trackStop }],
@@ -1020,5 +1022,183 @@ describe('useLucyLive', () => {
     await act(async () => { ws.receive({ type: 'error', code: 'unavailable', message: 'Lucy live is not available' }); });
     expect(latest.status).toBe('unavailable');
     expect(latest.enabled).toBe(false);
+  });
+
+  describe('her other clips (speaker button, Replay) with Talk on (#3672)', () => {
+    /** A clip as `useSpeakAgent` or Replay registers it: its volume and its stop are recorded. */
+    function playClip() {
+      let release: () => void = () => undefined;
+      const clip = {
+        setVolume: vi.fn((_gain: number) => undefined),
+        stop: vi.fn((_reason: string) => { release(); }),
+      };
+      act(() => { release = clipStarted(clip); });
+      return { clip, end: () => act(() => { release(); }) };
+    }
+    async function talkOn(confirmation: 'silero' | 'off' = 'silero'): Promise<FakeWebSocket> {
+      statusResponse = { ok: true, body: { available: true, bargeInConfirmation: confirmation } };
+      const ws = await turnOn();
+      wire.length = 0;
+      sent.length = 0;
+      return ws;
+    }
+    /** Talk over her until the detector fires. */
+    function talkOver(): void {
+      const processor = processors[processors.length - 1];
+      for (let i = 0; i < 40 && !sent.some((m) => m.type === 'speech_start'); i++) {
+        act(() => { processor.onaudioprocess?.({ inputBuffer: { getChannelData: () => frame(-15) } }); });
+      }
+    }
+    const speechStart = () => sent.find((m) => m.type === 'speech_start');
+
+    test('a playing clip makes her busy: talking over it is a candidate and turns the clip down at once', async () => {
+      await talkOn();
+      const { clip } = playClip();
+      talkOver();
+      expect(speechStart()).toMatchObject({ lucyAudible: true });
+      expect(clip.setVolume).toHaveBeenCalledWith(DUCK_GAIN);
+      expect(clip.stop).not.toHaveBeenCalled();
+      expect(wire).not.toContain('barge_in');
+    });
+
+    test('once the clip has ended, the same sound is an ordinary turn again', async () => {
+      await talkOn();
+      const { end } = playClip();
+      end();
+      talkOver();
+      expect(speechStart()).not.toHaveProperty('lucyAudible');
+    });
+
+    test('confirmed speech stops the clip as a barge-in and the operator\'s words become the next turn', async () => {
+      const ws = await talkOn();
+      const { clip } = playClip();
+      talkOver();
+      const candidate = lastTurnId();
+      await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: candidate }); });
+      expect(clip.stop).toHaveBeenCalledWith('barge_in');
+      expect(latest.lastTurnEnd).toBe('interrupted');
+      await act(async () => { ws.receive({ type: 'transcript', turnId: candidate, text: 'which tasks', final: false }); });
+      expect(latest.operatorText).toBe('which tasks');
+    });
+
+    test('a rejected sound turns the clip back up and it plays on', async () => {
+      const ws = await talkOn();
+      const { clip } = playClip();
+      talkOver();
+      await act(async () => { ws.receive({ type: 'speech_rejected', turnId: lastTurnId() }); });
+      expect(clip.setVolume.mock.calls.map((c) => c[0])).toEqual([DUCK_GAIN, 1]);
+      expect(clip.stop).not.toHaveBeenCalled();
+    });
+
+    test('no verdict in time stops the clip too', async () => {
+      await talkOn();
+      const { clip } = playClip();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); // before the candidate arms its timeout
+      try {
+        talkOver();
+        act(() => { vi.advanceTimersByTime(CONFIRMATION_TIMEOUT_MS + 10); });
+        expect(clip.stop).toHaveBeenCalledWith('barge_in');
+        expect(wire).toContain('barge_in');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('without a server check, talking over a clip stops it at once', async () => {
+      await talkOn('off');
+      const { clip } = playClip();
+      for (let i = 0; i < 40 && clip.stop.mock.calls.length === 0; i++) {
+        mic(-15, 32);
+      }
+      expect(clip.stop).toHaveBeenCalledWith('barge_in');
+      expect(clip.setVolume).not.toHaveBeenCalled();
+    });
+
+    test('a clip that starts while she is answering stops her answer and tells the server', async () => {
+      const ws = await talkOn();
+      speakTurn();
+      const id = lastTurnId();
+      await act(async () => {
+        ws.receive({ type: 'state', state: 'thinking' });
+        ws.receive(sentence(id, 0));
+        ws.receive(sentence(id, 1));
+        ws.receive({ type: 'state', state: 'speaking' });
+      });
+      await settle();
+      expect(sources).toHaveLength(2);
+      sent.length = 0;
+      const { clip } = playClip();
+      expect(sources[0].stop).toHaveBeenCalledTimes(1);
+      expect(sources[1].stop).toHaveBeenCalledTimes(1);
+      expect(sent).toEqual([{ type: 'played', turnId: id, seq: 0, complete: false }, { type: 'barge_in' }]);
+      expect(latest.lastTurnEnd).toBe('interrupted');
+      // The rest of that answer, still on its way, is not played, even after the clip ends.
+      await act(async () => { ws.receive(sentence(id, 2)); });
+      await settle();
+      act(() => { clip.stop('barge_in'); });
+      await settle();
+      expect(sources).toHaveLength(2);
+    });
+
+    test('an answer that is ready while a clip plays waits for the clip, then plays', async () => {
+      const ws = await talkOn();
+      speakTurn();
+      const id = lastTurnId();
+      await act(async () => { ws.receive({ type: 'state', state: 'thinking' }); });
+      const { clip, end } = playClip(); // pressed while she was still thinking
+      expect(wire).not.toContain('barge_in');
+      await act(async () => {
+        ws.receive(sentence(id, 0));
+        ws.receive(sentence(id, 1));
+        ws.receive({ type: 'state', state: 'speaking' });
+      });
+      await settle();
+      expect(sources).toHaveLength(0);
+      expect(clip.stop).not.toHaveBeenCalled();
+      end();
+      await settle();
+      expect(sources).toHaveLength(2);
+      expect(sources[0].start).toHaveBeenCalled();
+      expect(sources[1].start.mock.calls[0][0]).toBeGreaterThan(sources[0].start.mock.calls[0][0] as number);
+    });
+
+    test('a clip that starts while a sound is being checked is turned down with the rest', async () => {
+      await talkOn();
+      playClip();
+      talkOver();
+      const { clip: second } = playClip();
+      expect(second.setVolume).toHaveBeenCalledWith(DUCK_GAIN);
+    });
+
+    test('switching Talk off while a clip is turned down brings it back to full volume and leaves it playing', async () => {
+      await talkOn();
+      const { clip } = playClip();
+      talkOver();
+      await act(async () => { latest.setEnabled(false); });
+      expect(clip.setVolume.mock.calls.at(-1)?.[0]).toBe(1);
+      expect(clip.stop).not.toHaveBeenCalled();
+    });
+
+    test('with Talk off a clip opens no microphone and nothing touches it', async () => {
+      const { clip, end } = playClip();
+      await settle();
+      end();
+      expect(getUserMedia).not.toHaveBeenCalled();
+      expect(sockets).toHaveLength(0);
+      expect(clip.setVolume).not.toHaveBeenCalled();
+      expect(clip.stop).not.toHaveBeenCalled();
+    });
+
+    test('after Talk is switched off, a new clip leaves nothing behind for the old session to act on', async () => {
+      const ws = await talkOn();
+      speakTurn();
+      await act(async () => { ws.receive(sentence(lastTurnId(), 0)); });
+      await settle();
+      await act(async () => { latest.setEnabled(false); });
+      sent.length = 0;
+      const { clip } = playClip();
+      expect(sent).toEqual([]);
+      expect(clip.setVolume).not.toHaveBeenCalled();
+    });
   });
 });

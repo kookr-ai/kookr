@@ -496,6 +496,33 @@ describe('LucyLiveSession', () => {
       expect(h.ears).toHaveLength(2);
     });
 
+    describe('a candidate over one of her clips, with no hands-free turn on the server (#3672)', () => {
+      it('confirmed speech becomes a fresh listening turn, with nothing to interrupt', async () => {
+        const h = harness({ vad: true });
+        h.session.handleMessage({ type: 'speech_start', turnId: 'q1', lucyAudible: true });
+        expect(h.sent).toEqual([]); // undecided
+        h.vads[0].script.push(SPEECH);
+        h.session.handleAudio(Buffer.alloc(3200));
+        await tick();
+        expect(types(h)).toEqual(['speech_confirmed', 'state:listening']);
+        h.session.handleMessage({ type: 'speech_end', turnId: 'q1' });
+        h.ears[0].result.resolve('Which tasks need me?');
+        await tick();
+        expect(h.sent.some((m) => m.type === 'transcript' && m.turnId === 'q1' && m.final)).toBe(true);
+      });
+
+      it('a rejected noise is dropped and the server stays idle', async () => {
+        const h = harness({ vad: true });
+        h.session.handleMessage({ type: 'speech_start', turnId: 'cough', lucyAudible: true });
+        h.vads[0].script.push(NOISE);
+        h.session.handleAudio(Buffer.alloc(3200));
+        await tick();
+        h.session.handleMessage({ type: 'speech_end', turnId: 'cough' });
+        expect(h.sent).toEqual([{ type: 'speech_rejected', turnId: 'cough' }]);
+        expect(h.ears).toHaveLength(0);
+      });
+    });
+
     it('an explicit barge_in promotes a pending candidate: the answer stops and the operator\'s words are kept', async () => {
       const h = await answeringHarness();
       h.sent.length = 0;
