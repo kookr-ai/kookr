@@ -1363,8 +1363,8 @@ kookr chain stop [<taskId>] [--reason TEXT] [--json]
   `agentic-capability-research.md`). Give `--iterations`, a time limit, or
   both; the first limit reached ends the chain. `DIR` (default: the current
   directory) is both the playbook source checkout and the task's working
-  directory. Unlike `kookr spawn --playbook`, this works for playbooks without a
-  `prompt` parameter.
+  directory. Unlike `kookr spawn --playbook`, which makes a single launch, a
+  chain launches the playbook once per iteration, one after the other.
 - `stop` ends the chain after its current iteration. `<taskId>` may be any task
   of the chain and defaults to `$KOOKR_TASK_ID`, so an agent inside an iteration
   can run `kookr chain stop --reason "no work left"`.
@@ -1632,6 +1632,16 @@ options from the same task while it is still pending returns the existing ask
 instead of sending a second Telegram message. Question and context text that
 looks like a credential is replaced by a placeholder, with a warning on stderr.
 
+The ask is tied to the session that asked it. The answer, and the notice that
+the ask expired, are typed only into that session or into a session that
+resumed its conversation (crash recovery, or the operator reopening the task).
+If the task was relaunched into a fresh session, that session never saw the
+question, so nothing is typed into it: an answer that arrives then is refused,
+the ask is cancelled, and the Telegram message says so. If the fresh session
+asks the same pending question again, the ask moves to that session and the
+answer goes there. An ask created while the task had no live session is typed
+into whatever session is live when the answer arrives.
+
 | Exit | Meaning |
 | --- | --- |
 | `0` | Answered (with `--wait`), or created (without). |
@@ -1639,7 +1649,7 @@ looks like a credential is replaced by a placeholder, with a warning on stderr.
 | `3` | No Kookr server reachable. |
 | `4` | The server rejected the request (unknown or finished task, rate limit, delivery to Telegram failed). |
 | `5` | Expired with no answer. |
-| `6` | Cancelled, including when the task is gone before the operator answered. |
+| `6` | Cancelled, including when the task is gone before the operator answered, or was relaunched into a fresh session that did not ask the question. |
 | `7` | Telegram is not configured on this server. |
 | `8` | The `--wait=<seconds>` window elapsed and the ask is still pending. |
 
