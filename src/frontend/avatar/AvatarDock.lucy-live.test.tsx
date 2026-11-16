@@ -334,6 +334,8 @@ describe('AvatarDock Talk shortcut and the bubble\u2019s off control (#4010)', (
     press();
     expect(live.setEnabled).toHaveBeenLastCalledWith(false);
     expect(live.setEnabled).toHaveBeenCalledTimes(2);
+    // A toggle that works leaves the panel minimised.
+    expect(bubble()).not.toBeNull();
   });
 
   test('works while a text box has focus, and leaves Alt+M to dictation', () => {
@@ -379,6 +381,26 @@ describe('AvatarDock Talk shortcut and the bubble\u2019s off control (#4010)', (
     expect(live.setEnabled).not.toHaveBeenCalled();
     expect(bubble()).toBeNull();
     expect(container.querySelector('[data-testid="avatar-live-notice"]')!.textContent).toBe('No speech recogniser configured');
+  });
+
+  test('opening the panel for the reason leaves focus in the text box the operator is typing in', () => {
+    render(base({ serverStatus: { available: false, reason: 'No speech recogniser configured' } }));
+    minimise();
+    const input = document.createElement('textarea');
+    document.body.appendChild(input);
+    input.focus();
+    press({}, input);
+    expect(bubble()).toBeNull();
+    expect(document.activeElement).toBe(input);
+  });
+
+  test('opening the panel for the reason moves focus from the bubble to the panel', () => {
+    render(base({ serverStatus: { available: false, reason: 'No speech recogniser configured' } }));
+    minimise();
+    act(() => bubble()!.focus());
+    press({}, bubble()!);
+    expect(bubble()).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector('button[aria-label="Minimise Lucy"]'));
   });
 
   test('names the shortcut in the Talk button\u2019s tooltip', () => {
