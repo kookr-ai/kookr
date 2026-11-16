@@ -193,13 +193,23 @@ At the end of the current unit:
    - local state file updated atomically if one is used.
 2. Re-read the queue/source of truth and decide whether another eligible unit
    exists.
-3. If none exists, release this task's slot (see below) and do not spawn.
+3. If none exists, record the stop reason
+   (`kookr signal completion-ready --note "chain end: <reason>"`), release this
+   task's slot (see below) and do not spawn.
 4. If another unit exists, write a complete successor prompt to a temp file
    outside the repo, then launch the next Kookr task using the installation's
    supported task-creation path **with this task's id as `parentTaskId`**.
+   With `kookr spawn`, always pass `-C <repository checkout>`: the directory
+   the spawn runs from (or `-C`) becomes the child's working directory and
+   Kookr project, so a spawn run from the scratchpad without `-C` starts the
+   child in the scratchpad, under a `local/...` project.
 5. **Immediately release this task's slot** after a confirmed successor spawn
    (or after a no-successor stop). Do not leave the parent `inProgress` while
    the child runs — that is how chains burn through `MAX_ACTIVE_TASKS`.
+
+The Kookr plugin's `chain-handoff-stop` Stop hook enforces steps 3 and 4: a
+self-continuation task that tries to end its turn with no child task and no
+completion signal is blocked with these instructions (at most 3 times per task).
 
 Use a prompt-file or stdin-based launch path when available. Create the prompt
 file with the agent's file-write tool, not with a Bash heredoc or inline shell
