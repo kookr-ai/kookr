@@ -53,6 +53,18 @@ interface Options {
   now: boolean;
 }
 
+/**
+ * The options that take a value, and how each one sets it. `parseArgs` and
+ * `withoutNowFlag` both read this one table, so a new option cannot be added
+ * to one and missed in the other (issue #3851).
+ */
+const VALUE_OPTIONS: ReadonlyMap<string, (opts: Options, value: string) => void> = new Map([
+  ['--interval', (o: Options, v: string) => { o.intervalSec = Math.max(1, Number(v) || 60); }],
+  ['--worktree', (o: Options, v: string) => { o.worktree = resolve(v); }],
+  ['--verify-cmd', (o: Options, v: string) => { o.verifyCmd = v; }],
+  ['--workers', (o: Options, v: string) => { o.workers = Math.max(1, Number(v) || o.workers); }],
+]);
+
 function parseArgs(argv: string[]): Options {
   const opts: Options = {
     command: argv[0] ?? 'status',
@@ -67,16 +79,12 @@ function parseArgs(argv: string[]): Options {
   };
   for (let i = 1; i < argv.length; i++) {
     const flag = argv[i];
-    const next = (): string => {
+    const set = VALUE_OPTIONS.get(flag);
+    if (set) {
       const v = argv[++i];
       if (v === undefined) throw new Error(`${flag} needs a value`);
-      return v;
-    };
-    if (flag === '--interval') opts.intervalSec = Math.max(1, Number(next()) || 60);
-    else if (flag === '--worktree') opts.worktree = resolve(next());
-    else if (flag === '--verify-cmd') opts.verifyCmd = next();
-    else if (flag === '--workers') opts.workers = Math.max(1, Number(next()) || opts.workers);
-    else if (flag === '--now' && opts.command === 'restart') opts.now = true;
+      set(opts, v);
+    } else if (flag === '--now' && opts.command === 'restart') opts.now = true;
     else throw new Error(`unknown option ${flag}`);
   }
   return opts;
@@ -291,8 +299,10 @@ let activeChildPid: number | null = null;
 let activeRelease: (() => void) | null = null;
 let inCycle = false;
 let stopRequested = false;
-// The successor started by `reexec`, while it is not yet confirmed (issue #3841).
+// The successor started by `reexec` (issue #3841), from its spawn until this
+// process exits; `handoverConfirmed` once it has been recorded in `train.pid`.
 let handoverChildPid: number | null = null;
+let handoverConfirmed = false;
 
 /**
  * Stop cleanly. Three moments, three behaviours:
@@ -306,10 +316,17 @@ let handoverChildPid: number | null = null;
 function installSignalHandlers(): void {
   const onSignal = (signal: NodeJS.Signals): void => {
     const code = signal === 'SIGINT' ? 130 : 143;
-    // A stop during a hand-over stops both processes: `train.pid` still names
-    // this one, so it is the one `stop` signals.
+    // A stop during a hand-over stops both processes: until the successor is
+    // confirmed, `train.pid` names this one, so it is the one `stop` signals.
+    // An unconfirmed successor has not started a cycle (it waits for this
+    // process to exit first, issue #3848), so killing it outright loses
+    // nothing. A confirmed one is the train now: it gets the same SIGTERM, and
+    // stops the way any train does.
     if (handoverChildPid !== null) {
-      try { process.kill(-handoverChildPid, 'SIGKILL'); } catch { /* already gone */ }
+      try {
+        if (handoverConfirmed) process.kill(handoverChildPid, 'SIGTERM');
+        else process.kill(-handoverChildPid, 'SIGKILL');
+      } catch { /* already gone */ }
       process.exit(code);
     }
     if (activeChildPid !== null) {
@@ -356,14 +373,68 @@ function runLogged(cmd: string, cwd: string, env: NodeJS.ProcessEnv, logFile: st
   });
 }
 
+/** Most failing test files reported for one red run (the log is the full record). */
+const MAX_FAILING_FILES = 20;
+
+/**
+ * Test files a verify log reports as failed: vitest's `FAIL  <file> > <test>`
+ * lines, which `scripts/verify.sh` may prefix with the lane (`[unit_lane] `)
+ * and vitest with the project (`|serial| `). Sorted, without duplicates (a
+ * failed lane's output is printed twice).
+ */
+function failingTestFiles(text: string): string[] {
+  const files = new Set<string>();
+  const plain = text.replace(/\x1b\[[0-9;]*m/g, '');
+  for (const m of plain.matchAll(/\bFAIL\s+(?:\|[^|\s]+\|\s+)?(\S+\.(?:test|spec)\.[cm]?[jt]sx?)(?=\s|$)/gm)) {
+    files.add(m[1]);
+  }
+  return [...files].sort().slice(0, MAX_FAILING_FILES);
+}
+
 function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainDeps {
   const p = paths(dir);
   const log = makeLogger(p.log);
   const git = (args: string[]): Promise<GitResult> => run('git', args, wt);
   const state = { load: () => loadState(p.state), save: (s: TrainState) => saveState(p.state, s) };
 
+  // Runs of each SHA in this cycle: how many, and whether the last one was red.
+  const runs = new Map<string, { count: number; red: boolean }>();
+
+  /**
+   * A SHA is verified again after a red run (the head's flake re-run, or a
+   * culprit's re-run). That run must not overwrite the red run's output: the
+   * red log is kept as `verify-<sha>.run<n>.log`. When the re-run is green, the
+   * failing test files of the red run go to the train log and the events file,
+   * so load-sensitive tests can be found and fixed.
+   */
   const verify = async (sha: string): Promise<VerifyResult> => {
-    const logFile = join(dir, `verify-${sha.slice(0, 10)}.log`);
+    const short = sha.slice(0, 10);
+    const logFile = join(dir, `verify-${short}.log`);
+    const prev = runs.get(sha);
+    let redLog: string | null = null;
+    if (prev?.red) {
+      redLog = join(dir, `verify-${short}.run${prev.count}.log`);
+      try { renameSync(logFile, redLog); } catch { redLog = null; }
+    }
+    const result = await runVerify(sha, logFile);
+    runs.set(sha, { count: (prev?.count ?? 0) + 1, red: !result.ok });
+    if (result.ok && prev?.red) {
+      let text = '';
+      try { if (redLog) text = readFileSync(redLog, 'utf8'); } catch { /* unreadable */ }
+      const files = failingTestFiles(text);
+      const detail = `${short} was red, then green on re-run; failing test files of the red run: `
+        + `${files.length > 0 ? files.join(', ') : 'none found in its log'} (log: ${redLog ?? 'not kept'})`;
+      log(detail);
+      try {
+        appendFileSync(p.events, `${JSON.stringify({
+          at: new Date().toISOString(), kind: 'red-then-green', detail, sha, files, log: redLog,
+        })}\n`);
+      } catch { /* the train log has it */ }
+    }
+    return result;
+  };
+
+  const runVerify = async (sha: string, logFile: string): Promise<VerifyResult> => {
     writeFileSync(logFile, '');
     const checkout = await git(['checkout', '--detach', '--force', '-q', sha]);
     // A failed checkout or install means the suite never ran. Report it as an
@@ -576,7 +647,13 @@ interface RestartRequest {
   /** The checkout `restart` ran from, and its copy of this script: the new code. */
   cwd: string;
   script: string;
+  /** Hand-overs already tried for this request that failed (issue #3850). */
+  attempts: number;
+  lastError?: string;
 }
+
+/** Hand-overs tried for one restart request before it is dropped (issue #3850). */
+const RESTART_ATTEMPTS = 3;
 
 function readRestartRequest(file: string): RestartRequest | null {
   try {
@@ -587,6 +664,8 @@ function readRestartRequest(file: string): RestartRequest | null {
       args: Array.isArray(raw.args) && raw.args.every((a) => typeof a === 'string') ? raw.args : [],
       cwd: typeof raw.cwd === 'string' ? raw.cwd : process.cwd(),
       script: typeof raw.script === 'string' ? raw.script : fileURLToPath(import.meta.url),
+      attempts: typeof raw.attempts === 'number' && raw.attempts > 0 ? Math.floor(raw.attempts) : 0,
+      ...(typeof raw.lastError === 'string' ? { lastError: raw.lastError } : {}),
     };
   } catch {
     return null;
@@ -628,18 +707,22 @@ function recordTrain(p: ReturnType<typeof paths>, pid: number, args: string[]): 
 /**
  * Wait out the interval between two cycles. Returns why the train must
  * re-execute itself instead of running another cycle, or null: a `restart`
- * request (checked every second, so an idle or halted train restarts at once),
- * or a launching checkout whose `HEAD` is no longer the one this process
- * started on (a deploy whose restart request never arrived).
+ * request (checked every second, so an idle or halted train restarts at once;
+ * a request whose hand-over already failed is retried once the interval is
+ * over, after the next cycle), or a launching checkout whose `HEAD` is no
+ * longer the one this process started on (a deploy whose restart request
+ * never arrived).
  */
 async function waitBetweenCycles(intervalSec: number, requestFile: string, startHead: string | null): Promise<string | null> {
   const deadline = Date.now() + intervalSec * 1000;
   for (;;) {
-    if (existsSync(requestFile)) return 'restart requested';
+    if (existsSync(requestFile) && (readRestartRequest(requestFile)?.attempts ?? 0) === 0) return 'restart requested';
     const left = deadline - Date.now();
     if (left <= 0) break;
     await new Promise((r) => setTimeout(r, Math.min(1000, left)));
   }
+  const retry = readRestartRequest(requestFile);
+  if (retry !== null) return `restart requested, attempt ${retry.attempts + 1} of ${RESTART_ATTEMPTS}`;
   const head = await checkoutHead();
   if (startHead !== null && head !== null && head !== startHead) {
     return `checkout HEAD moved from ${startHead.slice(0, 10)} to ${head.slice(0, 10)}`;
@@ -656,8 +739,9 @@ const HANDOVER_TIMEOUT_MS = 60_000;
  * This process exits only once the successor's run loop has recorded itself.
  * A successor that fails to start (bad options, or a deploy still installing
  * its dependencies) is killed and false is returned: the caller keeps running
- * the old code rather than leaving no train at all, and a moved `HEAD` makes
- * it try again after the next cycle.
+ * the old code rather than leaving no train at all. A moved `HEAD` makes it
+ * try again after the next cycle, and so does a restart request, which is put
+ * back with its failed attempts counted, up to RESTART_ATTEMPTS (issue #3850).
  */
 async function reexec(reason: string, runArgs: string[], log: (m: string) => void): Promise<boolean> {
   const p = paths(stateDir());
@@ -681,7 +765,9 @@ async function reexec(reason: string, runArgs: string[], log: (m: string) => voi
     }
     if (runInfoPid(p.runInfo) !== pid) throw new Error(`pid ${pid} did not start its run loop`);
     recordTrain(p, pid, args);
-    handoverChildPid = null;
+    // Kept set: a stop that reaches this process before it exits is passed on
+    // to the successor (issue #3847).
+    handoverConfirmed = true;
     log(`handed over to pid ${pid}; pid ${process.pid} exits`);
     return true;
   } catch (err) {
@@ -689,9 +775,62 @@ async function reexec(reason: string, runArgs: string[], log: (m: string) => voi
       try { process.kill(-pid, 'SIGKILL'); } catch { /* already gone */ }
     }
     handoverChildPid = null;
-    log(`re-execution failed, this process keeps running: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    // `run-info.json` may name the killed successor: point it back at this
+    // process, which keeps running and still honours restart requests.
+    writeRunInfo(p.runInfo, runInfoHead);
+    log(`re-execution failed, this process keeps running: ${message}`);
+    if (request) keepFailedRequest(p, request, message, log);
     return false;
   }
+}
+
+/**
+ * Put back a restart request whose hand-over failed, so it is tried again
+ * after the next cycle, unless it has failed RESTART_ATTEMPTS times. Then it
+ * is dropped, and the events file records it. A newer request written by
+ * `restart` in the meantime is never overwritten.
+ */
+function keepFailedRequest(p: ReturnType<typeof paths>, request: RestartRequest, error: string, log: (m: string) => void): void {
+  const attempts = request.attempts + 1;
+  const event = (detail: string): void => {
+    try {
+      appendFileSync(p.events, `${JSON.stringify({ at: new Date().toISOString(), kind: 'restart-failed', detail })}\n`);
+    } catch { /* the train log has it */ }
+  };
+  if (attempts >= RESTART_ATTEMPTS) {
+    const detail = `restart requested at ${request.requestedAt} failed ${attempts} times, giving up: ${error}`;
+    log(detail);
+    event(detail);
+    return;
+  }
+  const tmp = `${p.restartRequest}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify({ ...request, attempts, lastError: error }, null, 2));
+    linkSync(tmp, p.restartRequest); // atomic, and fails when a newer request is there
+    const detail = `restart requested at ${request.requestedAt} failed (attempt ${attempts} of ${RESTART_ATTEMPTS}); `
+      + `trying again after the next cycle: ${error}`;
+    log(detail);
+    event(detail);
+  } catch (err) {
+    log((err as NodeJS.ErrnoException).code === 'EEXIST'
+      ? 'a newer restart request arrived meanwhile; it replaces the failed one'
+      : `could not put the failed restart request back: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    try { unlinkSync(tmp); } catch { /* already gone */ }
+  }
+}
+
+/** Head of the checkout this run loop started from, as written in `run-info.json`. */
+let runInfoHead: string | null = null;
+
+/** Tells `restart` that this train honours restart requests (old code does not). */
+function writeRunInfo(file: string, head: string | null): void {
+  try {
+    writeFileSync(file, JSON.stringify({
+      pid: process.pid, head, startedAt: new Date().toISOString(), restartRequests: true,
+    }));
+  } catch { /* status only */ }
 }
 
 async function runForever(opts: Options, runArgs: string[]): Promise<void> {
@@ -700,12 +839,21 @@ async function runForever(opts: Options, runArgs: string[]): Promise<void> {
   mkdirSync(dir, { recursive: true });
   const p = paths(dir);
   const log = makeLogger(p.log);
+  // Read first: once a predecessor that handed over exits, this becomes 1.
+  const parent = process.ppid;
   const startHead = await checkoutHead();
-  // Tells `restart` that this train honours restart requests (old code does not).
-  writeFileSync(p.runInfo, JSON.stringify({
-    pid: process.pid, head: startHead, startedAt: new Date().toISOString(), restartRequests: true,
-  }));
+  runInfoHead = startHead;
+  writeRunInfo(p.runInfo, startHead);
   log(`run loop started, interval ${opts.intervalSec}s, checkout HEAD ${startHead?.slice(0, 10) ?? 'unknown'}`);
+  // Started by a train handing over (issue #3848): no cycle until it has
+  // exited. Until then a stop reaches it first and may kill this process
+  // outright, which must never happen mid-cycle. `run-info.json` is written
+  // before this wait, because the predecessor exits only once it has seen it.
+  if (parent > 1 && isIntegrationTrainProcess(parent)) {
+    log(`waiting for pid ${parent} to finish handing over`);
+    const exited = await waitForExit(parent, HANDOVER_TIMEOUT_MS);
+    log(exited ? `pid ${parent} has exited; first cycle starts` : `pid ${parent} is still running; starting anyway`);
+  }
   for (;;) {
     try {
       await cycleOnce(opts);
@@ -721,10 +869,20 @@ async function runForever(opts: Options, runArgs: string[]): Promise<void> {
   }
 }
 
-/** The pid of this repository's train, or null. A pid file whose process is not the train does not count. */
-function runningTrainPid(dir: string): number | null {
-  const pid = readPid(paths(dir).pid);
-  return pid !== null && isIntegrationTrainProcess(pid) ? pid : null;
+/**
+ * Live trains of this repository: the pid in `train.pid`, and the one in
+ * `run-info.json`. They differ for a moment during a hand-over, when the
+ * successor's run loop has recorded itself in `run-info.json` and `train.pid`
+ * still names its predecessor (issues #3847, #3849). A pid whose process is
+ * not the train's run loop does not count.
+ */
+function runningTrainPids(dir: string): number[] {
+  const p = paths(dir);
+  const pids: number[] = [];
+  for (const pid of [readPid(p.pid), runInfoPid(p.runInfo)]) {
+    if (pid !== null && !pids.includes(pid) && isIntegrationTrainProcess(pid)) pids.push(pid);
+  }
+  return pids;
 }
 
 function startDetached(args: string[], stopping: ReadonlySet<number> = new Set()): void {
@@ -734,7 +892,7 @@ function startDetached(args: string[], stopping: ReadonlySet<number> = new Set()
   // A train that was just told to stop may still be finishing its cycle. The
   // new one starts anyway: it waits for the lock (or for the old shared
   // directory to be released) before its first cycle.
-  const existing = [runningTrainPid(dir), legacyTrainPid()].find((x) => x !== null && !stopping.has(x)) ?? null;
+  const existing = [...runningTrainPids(dir), legacyTrainPid()].find((x) => x !== null && !stopping.has(x)) ?? null;
   if (existing !== null) {
     console.log(`integration train already running (pid ${existing})`);
     return;
@@ -763,13 +921,31 @@ async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
  * is signalled: a stale pid file may name a pid the system has reused.
  * Waits up to `waitMs` for it to exit (a train between two verifies finishes
  * its cycle first, normally within seconds).
+ *
+ * A hand-over can complete while this waits: the old train records its
+ * successor and exits. The pid files are therefore read again after each
+ * round, a successor found there is stopped too, and `train.pid` is removed
+ * only when it names a process this stop signalled, or none at all (issue #3847).
  */
 async function stop(waitMs = 30_000): Promise<Set<number>> {
   const dir = stateDir();
   const p = paths(dir);
-  const targets = [runningTrainPid(dir), legacyTrainPid()].filter((x): x is number => x !== null);
+  const signalled = new Set<number>();
+  for (let round = 0; round < 5; round++) {
+    const targets = [...runningTrainPids(dir), legacyTrainPid()]
+      .filter((x): x is number => x !== null && !signalled.has(x));
+    if (targets.length === 0) break;
+    for (const pid of targets) {
+      signalled.add(pid);
+      try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ }
+      const exited = await waitForExit(pid, waitMs);
+      console.log(exited
+        ? `stopped integration train (pid ${pid})`
+        : `integration train (pid ${pid}) is finishing its cycle; it exits when the cycle ends`);
+    }
+  }
   const filed = readPid(p.pid);
-  if (targets.length === 0) {
+  if (signalled.size === 0) {
     if (filed !== null && isAlive(filed)) {
       console.log(`pid ${filed} in ${p.pid} is not the integration train; not signalling it`);
     } else {
@@ -779,15 +955,10 @@ async function stop(waitMs = 30_000): Promise<Set<number>> {
     rmSync(p.restartRequest, { force: true });
     return new Set();
   }
-  const signalled = new Set(targets);
-  for (const pid of signalled) {
-    try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ }
-    const exited = await waitForExit(pid, waitMs);
-    console.log(exited
-      ? `stopped integration train (pid ${pid})`
-      : `integration train (pid ${pid}) is finishing its cycle; it exits when the cycle ends`);
-  }
-  rmSync(p.pid, { force: true });
+  if (filed === null || signalled.has(filed) || !isIntegrationTrainProcess(filed)) rmSync(p.pid, { force: true });
+  // A stale `run-info.json` would make a later `start` or `restart` treat a reused pid as the train.
+  const info = runInfoPid(p.runInfo);
+  if (info !== null && signalled.has(info)) rmSync(p.runInfo, { force: true });
   rmSync(p.restartRequest, { force: true });
   rmSync(paths(legacyDir()).pid, { force: true });
   return signalled;
@@ -800,7 +971,7 @@ function restartArgs(given: string[], dir: string): string[] {
     const saved = JSON.parse(readFileSync(paths(dir).startArgs, 'utf8')) as unknown;
     if (Array.isArray(saved) && saved.every((a) => typeof a === 'string')) return saved;
   } catch { /* none saved */ }
-  const pid = runningTrainPid(dir) ?? legacyTrainPid();
+  const pid = runningTrainPids(dir)[0] ?? legacyTrainPid();
   const argv = pid === null ? null : readProcessArgv(pid);
   const at = argv?.indexOf('run') ?? -1;
   return argv && at >= 0 ? argv.slice(at + 1) : [];
@@ -819,7 +990,9 @@ function runInfoPid(file: string): number | null {
 /**
  * Make the train run this checkout's code. `scripts/prod-restart.sh` calls it
  * after every deploy (issue #3841):
- * - a train that honours restart requests gets one and this returns at once.
+ * - a train that honours restart requests (its run loop is the one named in
+ *   `run-info.json`, even while `train.pid` still names its predecessor during
+ *   a hand-over, issue #3849) gets one and this returns at once.
  *   It finishes its current cycle (verify, promote or revert), then
  *   re-executes itself from this checkout with the same options;
  * - no train running: start one;
@@ -829,11 +1002,12 @@ function runInfoPid(file: string): number | null {
 async function restart(given: string[], now: boolean): Promise<void> {
   const dir = stateDir();
   const p = paths(dir);
-  const pid = runningTrainPid(dir);
-  if (!now && pid !== null && legacyTrainPid() === null && runInfoPid(p.runInfo) === pid) {
+  const pid = runInfoPid(p.runInfo);
+  if (!now && pid !== null && legacyTrainPid() === null && isIntegrationTrainProcess(pid)) {
     if (given.length > 0) parseArgs(['run', ...given]); // reject bad options now, not in the train
     const request: RestartRequest = {
       requestedAt: new Date().toISOString(), args: given, cwd: process.cwd(), script: fileURLToPath(import.meta.url),
+      attempts: 0,
     };
     const tmp = `${p.restartRequest}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(request, null, 2));
@@ -882,10 +1056,9 @@ function resume(): void {
 
 /** The options without `--now`, keeping an option value that happens to read `--now`. */
 function withoutNowFlag(args: string[]): string[] {
-  const valued = new Set(['--interval', '--worktree', '--verify-cmd', '--workers']);
   const out: string[] = [];
   for (let i = 0; i < args.length; i++) {
-    if (valued.has(args[i]) && i + 1 < args.length) out.push(args[i], args[++i]);
+    if (VALUE_OPTIONS.has(args[i]) && i + 1 < args.length) out.push(args[i], args[++i]);
     else if (args[i] !== '--now') out.push(args[i]);
   }
   return out;

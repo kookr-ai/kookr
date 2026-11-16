@@ -167,13 +167,13 @@ afterEach(() => {
 });
 
 /**
- * A long-lived process whose command line reads `node -e ... <argv...>`. It is
+ * A long-lived process whose command line reads `node -e <body> <argv...>`. It is
  * started through a shell that exits at once, so it is not this test's child:
  * like a real detached train, it is reaped by the system when it dies instead
  * of lingering as a zombie while this process is blocked in spawnSync.
  */
-function fakeProcess(argv: string[]): { pid: number } {
-  const quoted = [process.execPath, '-e', 'setInterval(() => {}, 1000)', ...argv]
+function fakeProcess(argv: string[], body = 'setInterval(() => {}, 1000)'): { pid: number } {
+  const quoted = [process.execPath, '-e', body, ...argv]
     .map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
   const r = spawnSync('sh', ['-c', `${quoted} >/dev/null 2>&1 & echo $!`], { encoding: 'utf8' });
   const pid = Number(r.stdout.trim());
@@ -318,6 +318,42 @@ describe('integration train CLI', () => {
     expect(s.ref('main')).toBe(head);
   }, 120_000);
 
+  it('keeps the red run\'s log when the head is re-run green, and records its failing test files', () => {
+    const s = makeSandbox();
+    const head = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    const marker = join(s.root, 'ran-once');
+    // Red the first time, with failure lines shaped like scripts/verify.sh's
+    // concurrent train mode (lane prefix, vitest project name); green after.
+    const redOnce = [
+      `if [ -e '${marker}' ]; then echo all green; exit 0; fi`,
+      `touch '${marker}'`,
+      "echo '[unit_lane]  FAIL  |serial| src/server/slow.test.ts > suite > times out under load'",
+      "echo '[unit_lane]  FAIL  src/core/other.test.ts > races'",
+      "echo '[unit_lane]  FAIL  |serial| src/server/slow.test.ts > suite > second case'",
+      'exit 1',
+    ].join('; ');
+
+    expect(s.cycle(['--verify-cmd', redOnce]).status).toBe(0);
+    expect(s.ref('main')).toBe(head); // the flake re-run was green: promoted
+    const short = head.slice(0, 10);
+    const red = readFileSync(join(s.stateDir, `verify-${short}.run1.log`), 'utf8');
+    expect(red).toContain('FAIL  |serial| src/server/slow.test.ts');
+    const green = readFileSync(join(s.stateDir, `verify-${short}.log`), 'utf8');
+    expect(green).toContain('all green');
+    expect(green).not.toContain('FAIL');
+
+    const files = ['src/core/other.test.ts', 'src/server/slow.test.ts'];
+    const trainLog = readFileSync(join(s.stateDir, 'train.log'), 'utf8');
+    expect(trainLog).toContain(`${short} was red, then green on re-run; failing test files of the red run: ${files.join(', ')}`);
+    const events = readFileSync(join(s.stateDir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean)
+      .map((l) => JSON.parse(l) as { kind: string; sha?: string; files?: string[]; log?: string });
+    expect(events).toEqual([expect.objectContaining({
+      kind: 'red-then-green', sha: head, files, log: join(s.stateDir, `verify-${short}.run1.log`),
+    })]);
+    // a record for fixing tests, not an alert
+    expect(s.signals()).toEqual([]);
+  }, 120_000);
+
   it('does nothing while another live process holds the lock', () => {
     const s = makeSandbox();
     const base = s.ref('main');
@@ -382,6 +418,50 @@ describe('integration train CLI', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain(`stopped integration train (pid ${train.pid})`);
     expect(await until(() => !alive(train.pid), 5_000)).toBe(true);
+  }, 120_000);
+
+  // Issue #3847: during a hand-over `run-info.json` names the successor while
+  // `train.pid` still names its predecessor.
+  it('stop also stops the train that run-info.json names when train.pid names another one', async () => {
+    const s = makeSandbox();
+    const old = fakeProcess([CLI, 'run', '--worktree', s.worktree]);
+    const successor = fakeProcess([CLI, 'run', '--worktree', s.worktree]);
+    mkdirSync(s.stateDir, { recursive: true });
+    writeFileSync(join(s.stateDir, 'train.pid'), String(old.pid));
+    writeFileSync(join(s.stateDir, 'run-info.json'), JSON.stringify({ pid: successor.pid, restartRequests: true }));
+
+    const r = s.cli(['stop']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(`stopped integration train (pid ${old.pid})`);
+    expect(r.stdout).toContain(`stopped integration train (pid ${successor.pid})`);
+    expect(await until(() => !alive(old.pid) && !alive(successor.pid), 5_000)).toBe(true);
+    expect(existsSync(join(s.stateDir, 'train.pid'))).toBe(false);
+    expect(existsSync(join(s.stateDir, 'run-info.json'))).toBe(false);
+  }, 120_000);
+
+  it('stop also stops a successor the old train records while the stop waits for it to exit', async () => {
+    const s = makeSandbox();
+    mkdirSync(s.stateDir, { recursive: true });
+    const pidFile = join(s.stateDir, 'train.pid');
+    const successor = fakeProcess([CLI, 'run', '--worktree', s.worktree]);
+    // The old train confirms its successor just as the SIGTERM lands, then exits alone.
+    const ready = join(s.root, 'old-ready');
+    const old = fakeProcess([CLI, 'run', '--worktree', s.worktree], [
+      "const fs = require('node:fs');",
+      `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(pidFile)}, '${successor.pid}'); process.exit(0); });`,
+      `fs.writeFileSync(${JSON.stringify(ready)}, '');`,
+      'setInterval(() => {}, 1000);',
+    ].join(' '));
+    expect(await until(() => existsSync(ready), 10_000)).toBe(true);
+    writeFileSync(pidFile, String(old.pid));
+
+    const r = s.cli(['stop']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(`stopped integration train (pid ${old.pid})`);
+    expect(r.stdout).toContain(`stopped integration train (pid ${successor.pid})`);
+    // no train is left running that train.pid does not name
+    expect(await until(() => !alive(successor.pid), 5_000)).toBe(true);
+    expect(existsSync(pidFile)).toBe(false);
   }, 120_000);
 
   it('restart replaces a train of the old shared layout, keeps its options and carries its state over', async () => {
@@ -480,6 +560,17 @@ describe('integration train CLI', () => {
       expect(log.indexOf('cycle: promoted')).toBeGreaterThan(-1);
       expect(log.indexOf('re-executing after the cycle (restart requested)')).toBeGreaterThan(log.indexOf('cycle: promoted'));
       expect(log).toContain(`handed over to pid ${next}`);
+      // the successor runs no cycle before the old train has exited (#3848)
+      const exitedLine = `pid ${old} has exited; first cycle starts`;
+      expect(await until(() => {
+        const l = trainLog(s);
+        return l.includes(exitedLine) && l.indexOf('cycle: ', l.indexOf(exitedLine)) > -1;
+      }, 30_000)).toBe(true);
+      const after = trainLog(s);
+      const handedOver = after.indexOf(`handed over to pid ${next}`);
+      const waited = after.indexOf(exitedLine);
+      expect(waited).toBeGreaterThan(handedOver);
+      expect(after.slice(handedOver, waited)).not.toContain('cycle: ');
       expect(existsSync(join(s.stateDir, 'restart-request.json'))).toBe(false);
       expect(JSON.parse(s.cli(['status']).stdout)).toMatchObject({ running: true, pid: next, restartPending: null });
 
@@ -540,16 +631,34 @@ describe('integration train CLI', () => {
       expect(s.cli(['stop']).status).toBe(0);
     }, 180_000);
 
-    it('keeps running the old train when its successor fails to start', async () => {
+    it('keeps running the old train when its successor fails to start, and retries the request after a cycle, up to three times', async () => {
       const s = makeSandbox();
       const args = ['--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '1'];
       const old = await startTrain(s, args);
+      // run-info.json names a dead pid, as when a late successor was killed:
+      // a failed hand-over must point it back at the old train
+      writeFileSync(join(s.stateDir, 'run-info.json'), JSON.stringify({ pid: 2 ** 22 + 1, restartRequests: true }));
       // options the successor rejects: it exits before its run loop starts
+      const requestedAt = new Date().toISOString();
       writeFileSync(join(s.stateDir, 'restart-request.json'), JSON.stringify({
-        requestedAt: new Date().toISOString(), args: ['--bogus'], cwd: s.launch, script: CLI,
+        requestedAt, args: ['--bogus'], cwd: s.launch, script: CLI,
       }));
 
-      expect(await until(() => trainLog(s).includes('re-execution failed, this process keeps running'), 60_000)).toBe(true);
+      // #3850: the request is not dropped on the first failure; it is tried
+      // again after the next cycle, and given up after the third failure
+      expect(await until(() => trainLog(s).includes('failed 3 times, giving up'), 120_000)).toBe(true);
+      const log = trainLog(s);
+      expect(log.split('re-execution failed, this process keeps running').length - 1).toBe(3);
+      const retry = log.indexOf('re-executing after the cycle (restart requested, attempt 2 of 3)');
+      expect(retry).toBeGreaterThan(log.indexOf('failed (attempt 1 of 3); trying again after the next cycle'));
+      expect(log.lastIndexOf('cycle: ', retry)).toBeGreaterThan(log.indexOf('failed (attempt 1 of 3)'));
+      expect(log).toContain('re-executing after the cycle (restart requested, attempt 3 of 3)');
+      const events = readFileSync(join(s.stateDir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean)
+        .map((l) => JSON.parse(l) as { kind: string; detail: string });
+      expect(events.map((e) => e.kind)).toEqual(['restart-failed', 'restart-failed', 'restart-failed']);
+      expect(events[2].detail).toContain(`restart requested at ${requestedAt} failed 3 times, giving up`);
+      // the old train still honours the next restart request
+      expect(JSON.parse(readFileSync(join(s.stateDir, 'run-info.json'), 'utf8')).pid).toBe(old);
       expect(alive(old)).toBe(true);
       expect(trainPid(s)).toBe(old);
       expect(JSON.parse(readFileSync(join(s.stateDir, 'start-args.json'), 'utf8'))).toEqual(args);
@@ -586,6 +695,37 @@ describe('integration train CLI', () => {
       expect(r.stdout).toContain(`stopped integration train (pid ${old})`);
       expect(await until(() => !alive(old) && !alive(successor), 10_000)).toBe(true);
     }, 180_000);
+
+    it('restart files a request for the train run-info.json names while train.pid still names its predecessor (#3849)', async () => {
+      const s = makeSandbox();
+      const old = fakeProcess([CLI, 'run', '--worktree', s.worktree]);
+      const successor = fakeProcess([CLI, 'run', '--worktree', s.worktree]);
+      mkdirSync(s.stateDir, { recursive: true });
+      writeFileSync(join(s.stateDir, 'train.pid'), String(old.pid));
+      writeFileSync(join(s.stateDir, 'run-info.json'), JSON.stringify({ pid: successor.pid, restartRequests: true }));
+
+      const r = s.cli(['restart']);
+      const now = trainPid(s);
+      if (now !== null && now !== old.pid) pidsToKill.push(now); // a wrongly started train
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain(`restart requested: integration train (pid ${successor.pid})`);
+      expect(r.stdout).not.toContain('stopped integration train');
+      expect(alive(old.pid) && alive(successor.pid)).toBe(true);
+      expect(now).toBe(old.pid);
+      expect(existsSync(join(s.stateDir, 'restart-request.json'))).toBe(true);
+    }, 120_000);
+
+    it('restart keeps an option value that reads --now (#3851)', async () => {
+      const s = makeSandbox();
+      const args = ['--worktree', s.worktree, '--verify-cmd', '--now', '--interval', '600'];
+      const r = s.cli(['restart', ...args]);
+      const pid = trainPid(s);
+      if (pid !== null) pidsToKill.push(pid);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain(`integration train started (pid ${pid})`);
+      expect(JSON.parse(readFileSync(join(s.stateDir, 'start-args.json'), 'utf8'))).toEqual(args);
+      expect(s.cli(['stop']).status).toBe(0);
+    }, 120_000);
 
     it('restart rejects bad options at once instead of filing them for a running train', async () => {
       const s = makeSandbox();
