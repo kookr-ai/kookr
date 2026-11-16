@@ -1636,10 +1636,12 @@ The ask is tied to the session that asked it. The answer, and the notice that
 the ask expired, are typed only into that session or into a session that
 resumed its conversation (crash recovery, or the operator reopening the task).
 If the task was relaunched into a fresh session, that session never saw the
-question, so nothing is typed into it: an answer that arrives then is refused,
-the ask is cancelled, and the Telegram message says so. If the fresh session
-asks the same pending question again, the ask moves to that session and the
-answer goes there. An ask created while the task had no live session is typed
+question, so nothing is typed into it: an answer that arrives while it is live
+is refused, the ask is cancelled, and the Telegram message says so. If no
+session is live yet when the answer arrives (for example a Reopen still waiting
+for a worker slot), the answer is recorded but not typed in. If the fresh
+session asks the same pending question again (same question, options and
+context), the ask moves to that session and the answer goes there. An ask created while the task had no live session is typed
 into whatever session is live when the answer arrives.
 
 | Exit | Meaning |
