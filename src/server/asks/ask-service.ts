@@ -112,8 +112,9 @@ export class AskService {
   private timer: NodeJS.Timeout | null = null;
   private readonly listeners = new Set<(change: AskChange) => void>();
   /**
-   * Pending ask id → when a `kookr ask --wait` poll last read it. In memory only: an answer given
-   * after a restart is typed at once, until the waiter's next poll marks it attached again.
+   * Pending ask id → when a `kookr ask --wait` poll last read it. In memory only, so `start()` marks
+   * every pending question as polled: a `--wait` still running across a restart polls again within
+   * one interval, and an answer given before that poll is left for it instead of typed at once.
    */
   private readonly waitPolls = new Map<string, number>();
   /** Answered ask id → the timer that types the answer if the attached `--wait` poll does not read it first. */
@@ -163,6 +164,10 @@ export class AskService {
       if (ask.state === 'pending' && !ask.delivery) {
         this.transition(ask.id, 'cancelled', 'delivery_failed');
       }
+      // Whether a `--wait` is still polling this question was lost with the restart (issue #4040).
+      // Counting one as attached costs a question nobody waits on at most `ASK_WAIT_FALLBACK_MS` of
+      // delay if answered in the next few seconds; not counting it would type and print the answer.
+      if (ask.state === 'pending' && ask.delivery) this.waitPolls.set(ask.id, this.now());
       // An answer left for a `--wait` poll when the server stopped: give a poll that is still running
       // the usual time to read it, then type it. Older ones are left alone, like stale expiry notices.
       if (ask.state === 'answered' && ask.taskDelivery === undefined && ask.answeredAt !== undefined
@@ -199,8 +204,9 @@ export class AskService {
     if (isWithinQuietHours(settings.quietHours, new Date(now))) return;
 
     const all = this.deps.store.all();
+    // A reminder Telegram refused does not count: an outage must not use up the hour's reminders.
     let sentLastHour = 0;
-    for (const a of all) for (const r of a.reminders ?? []) if (now - r.at < HOUR_MS) sentLastHour++;
+    for (const a of all) for (const r of a.reminders ?? []) if (!r.failed && now - r.at < HOUR_MS) sentLastHour++;
     // Least recently reminded first, so when the hourly bound holds some back, the same questions
     // do not take the whole budget again on the next sweep.
     const lastReminded = (a: AskRecord): number => a.reminders?.at(-1)?.at ?? a.createdAt;
@@ -213,7 +219,9 @@ export class AskService {
       // Held back, not dropped: it is still owed on the next sweep with room in the hour.
       if (sentLastHour >= ASK_REMINDER_LIMITS.maxPerHour) return;
       // Recorded before the send: a sweep that overlaps a slow send, or a restart in the middle of
-      // it, must not send the same reminder twice. A send that fails is not retried.
+      // it, must not send the same reminder twice. A send that fails is marked `failed` (issue #4040):
+      // it no longer counts against the bounds, but it still sets the time of the last reminder, so
+      // it is not retried until the next point of the schedule, ten minutes later at the earliest.
       const index = ask.reminders?.length ?? 0;
       this.deps.store.update(ask.id, (a) => {
         a.reminders = [...(a.reminders ?? []), { at: now, ...(due === 'before_close' ? { kind: 'before_close' as const } : {}) }];
@@ -230,6 +238,11 @@ export class AskService {
         const current = this.deps.store.get(ask.id);
         if (current && current.state !== 'pending') await notifier.deleteAskReminder?.(current, messageId);
       } catch (err) {
+        this.deps.store.update(ask.id, (a) => {
+          const entry = a.reminders?.[index];
+          if (entry) entry.failed = true;
+        });
+        sentLastHour--;
         this.log(`[asks] reminder failed ask=${ask.id}: ${String(err)}`);
       }
     }

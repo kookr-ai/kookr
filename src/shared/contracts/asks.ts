@@ -78,7 +78,8 @@ export interface AskRecord {
   /**
    * Reminders sent while the question waited (issue #3929), oldest first. Stored with the question so
    * a restart never repeats one. `at` is written before the message is sent; `messageId` is added once
-   * Telegram accepted it, so a text reply to the reminder answers the question too.
+   * Telegram accepted it, so a text reply to the reminder answers the question too, and `failed` once
+   * Telegram refused it.
    */
   reminders?: AskReminderSent[];
 }
@@ -88,6 +89,11 @@ export interface AskReminderSent {
   /** `before_close`: the one reminder shortly before the question closes. Absent: a reminder of the schedule. */
   kind?: 'before_close';
   messageId?: number;
+  /**
+   * The send failed (issue #4040). Kept for the ten-minute gap and the "one reminder for the points
+   * missed" rule, so it is not retried at once, but not counted against `ASK_REMINDER_LIMITS`.
+   */
+  failed?: true;
 }
 
 /**
@@ -187,7 +193,7 @@ export function askReminderDue(
     if (now >= point && point > last) return 'before_close';
   }
 
-  if (sent.filter((r) => r.kind === undefined).length >= ASK_REMINDER_LIMITS.maxPerQuestion) return undefined;
+  if (sent.filter((r) => r.kind === undefined && !r.failed).length >= ASK_REMINDER_LIMITS.maxPerQuestion) return undefined;
   const points = schedule.afterMinutes.map((m) => ask.createdAt + m * MINUTE_MS);
   let latest: number | undefined;
   for (const p of points) if (p <= now) latest = p;

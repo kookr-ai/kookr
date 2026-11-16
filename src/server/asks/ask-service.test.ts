@@ -759,6 +759,59 @@ describe('an attached kookr ask --wait poll (#3824)', () => {
     expect(h.deliver).not.toHaveBeenCalled();
     await restarted.stop();
   });
+
+  /** Stop the service and start a new one over the same directory, as a server restart does. */
+  async function restart(): Promise<void> {
+    await h.service.stop();
+    await h.store.flush();
+    const store = await AskStore.open(h.dir);
+    const service = new AskService({
+      store,
+      getNotifier: () => h.notifier as unknown as AskNotifier,
+      taskStatus: (id) => h.statuses.get(id),
+      deliverToTask: h.deliver,
+      now: () => h.clock.now,
+    });
+    await service.start();
+    h = { ...h, store, service };
+  }
+
+  it('after a restart, leaves an answer given before the --wait polls again for that poll, not typed as well (#4040)', async () => {
+    const ask = await createOk();
+    await h.service.pollForWaiter(ask.id);
+    await restart();
+    // Answered one second after the restart, before the still-running `kookr ask --wait` polls the new server.
+    h.clock.now += 1_000;
+    const r = await tap(ask, 0);
+    expect(r).toMatchObject({ ok: true, ask: { state: 'answered' } });
+    expect(r.ok && r.ask.taskDelivery).toBeUndefined();
+    expect(h.deliver).not.toHaveBeenCalled();
+
+    expect(await h.service.pollForWaiter(ask.id)).toMatchObject({ state: 'answered', taskDelivery: 'delivered' });
+    await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS * 2);
+    await settled();
+    expect(h.deliver).not.toHaveBeenCalled();
+  });
+
+  it('after a restart, types the answer to a question nobody waits on: after the fallback delay at first, at once later', async () => {
+    const early = await createOk({ question: 'Early?' });
+    const later = await createOk({ question: 'Later?' });
+    await restart();
+    h.clock.now += 1_000;
+    await tap(early, 0);
+    expect(h.deliver).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS);
+    await settled();
+    expect(h.deliver).toHaveBeenCalledTimes(1);
+    expect(h.deliver).toHaveBeenLastCalledWith('t1', `Operator answered ask ${early.id}: Yes`);
+
+    // Past the grace no `--wait` claimed it: typed at once, as before the restart.
+    h.clock.now += ASK_WAIT_ATTACHED_MS;
+    const r = await tap(later, 1);
+    expect(r).toMatchObject({ ok: true, ask: { taskDelivery: 'delivered' } });
+    expect(h.deliver).toHaveBeenCalledTimes(2);
+    expect(h.deliver).toHaveBeenLastCalledWith('t1', `Operator answered ask ${later.id}: No`);
+  });
 });
 
 describe('AskStore', () => {
