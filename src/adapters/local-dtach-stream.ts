@@ -5,6 +5,7 @@
  * dispose*, ensureReadable/Writable, write mutex, ring flush, and
  * captureCurrentFrame. Split from local-dtach-backend.ts (kookr-ai/kookr#1465).
  */
+import type { TerminalRingObserver } from './terminal-ring-observer.js';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { spawn, type IPty } from 'node-pty';
@@ -65,6 +66,8 @@ export interface LocalDtachStreamHost {
    * (issue #1779). Returns true when the buffer grew.
    */
   tryExpandRing(sess: AttachedSession): boolean;
+  /** Sees every byte retained in a ring (issue #3564 step 2). */
+  readonly ringObserver?: TerminalRingObserver;
 }
 
 export class LocalDtachStream {
@@ -431,6 +434,7 @@ export class LocalDtachStream {
       const start = sess.sourcePosition;
       if (source === 'live') {
         this.copyIntoRing(sess, bytes);
+        this.observeRingAppend(sess, bytes, start);
       } else {
         // dtach's redraw has no provable position in the previous live stream.
         // Preserve useful history but invalidate every old resume cursor.
@@ -514,6 +518,18 @@ export class LocalDtachStream {
     sess.dataSubscribers.clear();
     this.host.attached.delete(id);
     this.unsavedSizes.delete(id);
+    try { this.host.ringObserver?.onSessionDisposed(id); } catch { /* the observer's problem, not the session's */ }
+  }
+
+  /** Tell the ring observer about bytes `copyIntoRing` just retained. */
+  private observeRingAppend(sess: AttachedSession, bytes: Uint8Array, start: number): void {
+    const observer = this.host.ringObserver;
+    if (!observer) return;
+    try {
+      observer.onRingAppend(sess.id, bytes, this.sourceRange(sess, start), this);
+    } catch {
+      // Never let an observer break the PTY data path.
+    }
   }
 
   /**

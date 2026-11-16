@@ -239,6 +239,12 @@ async function main(): Promise<void> {
   mkdirSync(kookrDir, { recursive: true });
   mkdirSync(cwd, { recursive: true });
   writeFileSync(join(kookrDir, 'tasks.json'), '[]\n');
+  // The launch admission polls the plan quota with the real ~/.claude
+  // credentials (only Vitest skips it), so a smoke run on a host whose plan is
+  // near its limit was refused with 429 and failed every server-side push. The
+  // smoke checks the local-only contract, not the operator's quota: 0 turns the
+  // gate off for this throwaway server only.
+  writeFileSync(join(kookrDir, 'settings.json'), `${JSON.stringify({ quotaHeadroomThreshold: 0 })}\n`);
 
   const agentBin = join(tempRoot, 'smoke-agent.js');
   writeScriptedAgent(agentBin);

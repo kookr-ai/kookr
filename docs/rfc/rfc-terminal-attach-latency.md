@@ -305,6 +305,17 @@ host; a continuous D1-vte model would cut that to the few milliseconds
 serialization takes and would also survive a ring that has wrapped past its base
 screen, which the attach-time replay cannot.
 
+**Amendment (2026-11-16, issue #3564 step 2):** that continuous model now exists,
+in a narrow form. Each session's ring bytes are also fed, as they are retained,
+to a headless emulator in a dedicated worker thread (`terminal-live-screen.ts`,
+`terminal-live-screen-models.ts`). An attach seeds from it whenever the ring is
+larger than the viewport budget or no longer the complete stream; a small
+complete ring is still sent whole, because only that seed earns a resume
+cursor. It is not a full D1-vte: the ring remains the stored truth, models are
+never persisted, and a session whose model is missing, evicted or desynced
+falls back to the attach-time replay. Its memory is budgeted fleet-wide, and
+ADR-014's rejected-alternative entry carries the measurements.
+
 Optional **1a:** A3 prepare-on-select via #1927/`getSeed` owner if cold still
 misses.
 

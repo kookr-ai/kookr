@@ -11,6 +11,7 @@ import { accessSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { LocalDtachBackend } from '../adapters/local-dtach-backend.js';
+import { installLiveScreenModelsFromEnv } from './terminal-live-screen-models.js';
 import { TerminalHostBackend } from './terminal-host.js';
 import { createKookrServer } from './index.js';
 import { createSystemdNotifier } from './systemd-notify.js';
@@ -245,7 +246,12 @@ async function main(): Promise<void> {
   };
   const terminalHost = process.env.KOOKR_TERMINAL_HOST === 'true'
     ? await TerminalHostBackend.create(terminalOptions) : undefined;
-  const terminalBackend = terminalHost ?? new LocalDtachBackend(terminalOptions);
+  // Live screen models (issue #3564 step 2) live with the backend: here when
+  // it runs in process, in the terminal host child otherwise.
+  const terminalBackend = terminalHost ?? new LocalDtachBackend({
+    ...terminalOptions,
+    ringObserver: installLiveScreenModelsFromEnv() ?? undefined,
+  });
   console.log(
     `[terminal] backend=dtach instanceId=${INSTANCE_ID} dtach=${dtachBinary}`
     + ` ringFleetBudgetBytes=${ringFleetBudgetBytes}`,

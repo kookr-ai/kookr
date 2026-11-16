@@ -232,6 +232,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       observeWriteQueueDepth: () => this.observeWriteQueueDepth(),
       onRingStateChanged: () => this.enforceRingFleetBudget(),
       tryExpandRing: (sess) => this.tryExpandRing(sess),
+      ringObserver: options.ringObserver,
     });
     this.recovery = new LocalDtachRecovery({
       attached: this.attached,

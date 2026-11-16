@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { DtachRingStore, shrinkRing } from './dtach-ring-store.js';
 import { DtachManifestStore } from './dtach-manifest-store.js';
 import { LocalDtachStream, type LocalDtachStreamHost } from './local-dtach-stream.js';
+import type { TerminalRingObserver } from './terminal-ring-observer.js';
 
 const ptyMock = vi.hoisted(() => ({
   data: undefined as ((data: string) => void) | undefined,
@@ -20,7 +21,7 @@ vi.mock('node-pty', () => ({
 }));
 
 const directories: string[] = [];
-function setup() {
+function setup(ringObserver?: TerminalRingObserver) {
   const dir = mkdtempSync(join(tmpdir(), 'terminal-source-'));
   directories.push(dir);
   const host: LocalDtachStreamHost = {
@@ -28,13 +29,61 @@ function setup() {
     manifestStore: new DtachManifestStore(join(dir, 'manifest.json'), 'test'),
     dtachBinary: 'mock-dtach', writeTimeoutMs: 100, reattachCounts: {},
     isClosed: () => false, emitError: vi.fn(), observeWriteQueueDepth: vi.fn(),
-    onRingStateChanged: vi.fn(), tryExpandRing: () => false,
+    onRingStateChanged: vi.fn(), tryExpandRing: () => false, ringObserver,
   };
   const stream = new LocalDtachStream(host);
   const session = stream.createAttachedState('test', join(dir, 'test.sock'), true);
   stream.attachPtyInto(session, session.sock, { cols: 80, rows: 24 }, false, false);
   return { stream, session, host, emit: (data: string) => ptyMock.data?.(data) };
 }
+
+describe('ring observer (issue #3564, step 2: live screen models)', () => {
+  afterEach(() => {
+    for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  const observer = () => ({ onRingAppend: vi.fn(), onSessionDisposed: vi.fn() });
+
+  test('sees each live chunk after the ring retains it, with its source range and a ring reader', () => {
+    const o = observer();
+    const h = setup(o);
+    o.onRingAppend.mockImplementation((_id, _bytes, _range, ring) => {
+      // The reader already includes the chunk being reported.
+      expect(ring.captureStreamSnapshot('test').end).toBe(5);
+    });
+    h.emit('hello');
+    expect(o.onRingAppend).toHaveBeenCalledTimes(1);
+    const [id, bytes, range, ring] = o.onRingAppend.mock.calls[0]!;
+    expect(id).toBe('test');
+    expect(Buffer.from(bytes).toString()).toBe('hello');
+    expect(range).toEqual(expect.objectContaining({ start: 0, end: 5, cols: 80, rows: 24, epoch: expect.any(String) }));
+    expect(ring).toBe(h.stream);
+    h.emit('!');
+    expect(o.onRingAppend.mock.calls[1]?.[2]).toEqual(expect.objectContaining({ start: 5, end: 6 }));
+  });
+
+  test('does not see an attach replay, which the ring does not retain either', () => {
+    const o = observer();
+    const h = setup(o);
+    h.session.attachReplayPending = true;
+    h.emit('redraw');
+    expect(o.onRingAppend).not.toHaveBeenCalled();
+    h.emit('live');
+    expect(o.onRingAppend).toHaveBeenCalledTimes(1);
+  });
+
+  test('is told when the session is disposed, and a throwing observer cannot break the data path', () => {
+    const o = observer();
+    const h = setup(o);
+    o.onRingAppend.mockImplementation(() => { throw new Error('observer bug'); });
+    const subscriber = vi.fn();
+    h.session.dataSubscribers.add(subscriber);
+    h.emit('x');
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    expect(h.stream.captureStreamSnapshot('test').end).toBe(1);
+    h.stream.disposeAttach('test');
+    expect(o.onSessionDisposed).toHaveBeenCalledWith('test');
+  });
+});
 
 describe('FR-TERM-004: terminal source positions', () => {
   afterEach(() => {

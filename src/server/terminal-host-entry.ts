@@ -9,6 +9,7 @@ import { SessionBridge } from './session-bridge.js';
 import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { TerminalReconstructionWorker } from './terminal-reconstruction-worker.js';
 import { closeSharedTerminalSnapshotWorker } from './terminal-snapshot-worker.js';
+import { closeInstalledLiveScreenModels, installLiveScreenModelsFromEnv } from './terminal-live-screen-models.js';
 import { setAbsoluteTuiReconstructionExecutor } from './absolute-position-tui-screen.js';
 import { TerminalHostChannel } from './terminal-host-channel.js';
 import { getTerminalOutputBytes } from './terminal-output-queue.js';
@@ -260,7 +261,8 @@ async function stop() {
   // A hard deadline lets main confirm exit before replacing this owner. The
   // dtach masters are detached and deliberately survive either shutdown path.
   const deadline = setTimeout(() => process.exit(1), 3000);
-  await Promise.all([backend?.closeAndDrain(), reconstruction.close(), closeSharedTerminalSnapshotWorker()]);
+  await Promise.all([backend?.closeAndDrain(), reconstruction.close(), closeSharedTerminalSnapshotWorker(),
+    closeInstalledLiveScreenModels()]);
   clearTimeout(deadline); channel.close(); process.exit(0);
 }
 process.on('disconnect', () => void stop());
@@ -271,7 +273,11 @@ process.on('message', (message: TerminalHostParentMessage, handle) => {
   if (message.kind === 'init' && !generation && typeof message.generation === 'string') {
     generation = message.generation;
     try {
-      backend = new LocalDtachBackend({ ...message.options, asyncRingPersistence: true });
+      backend = new LocalDtachBackend({
+        ...message.options, asyncRingPersistence: true,
+        // Not in the init options: an observer cannot cross the process boundary.
+        ringObserver: installLiveScreenModelsFromEnv() ?? undefined,
+      });
       input = new TerminalInputCoordinator(backend, undefined, inputRtt);
       backend.onBackendError((error) => send({ kind: 'backend-error', generation, error }));
       send({ kind: 'ready', generation, instanceDir: backend.getInstanceDir(), stats: backend.getStats() });
