@@ -2127,3 +2127,196 @@ describe('diff-bound review verdicts (#3788)', () => {
     }
   });
 });
+
+describe('summary block: what happened, why, what comes next (#3913)', () => {
+  const MERGE_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+  const MERGED_WITH_SHA = JSON.stringify({ state: 'MERGED', mergedAt: '2026-10-01T00:00:00Z', mergeCommit: { oid: MERGE_SHA } });
+  const NO_VERDICT = { commits: [{ oid: REVIEWED_SHA }], labels: [], comments: [] };
+  const STALE_VERDICT = {
+    commits: [{ oid: REVIEWED_SHA }],
+    labels: [],
+    comments: [{ body: '<!-- kookr-independent-review -->\nkookr-review-verdict: pass\nreview-head-sha: 0000000000000000000000000000000000000000' }],
+  };
+  const REFUSED = 'kookr-merge: summary: PR #123 was NOT merged';
+
+  function run(
+    opts: Partial<Parameters<typeof makeStubDir>[0]>,
+    { config, env = {}, args = ['123', '--repo', 'owner/repo'] }: { config?: object; env?: Record<string, string>; args?: string[] } = {},
+  ) {
+    const repo = makeCheckout(config);
+    const dir = makeStubDir({ checksResponses: [CLEAN], modernGh: true, headRef: 'feat/x', ...opts });
+    try {
+      return runMerge(dir, env, args, repo);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  /** The lines of the summary block (header plus its indented lines) in `text`. */
+  function block(text: string, header: string): string[] {
+    const lines = text.split('\n');
+    const at = lines.indexOf(header);
+    if (at < 0) return [];
+    const out = [header];
+    for (const line of lines.slice(at + 1)) {
+      if (!line.startsWith('  ')) break;
+      out.push(line);
+    }
+    return out;
+  }
+
+  it('after a merge into the integration branch, names the commit, the reason, and what the train does next', () => {
+    const result = run(
+      { verificationJson: MERGED_WITH_SHA, prBody: 'Closes #7' },
+      { config: INTEGRATION },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    const lines = block(result.stdout, 'kookr-merge: summary: PR #123 merged');
+    expect(lines).toHaveLength(4);
+    expect(lines[1]).toBe(`  what:  squash-merged into staging as ${MERGE_SHA.slice(0, 12)} (retargeted from main).`);
+    expect(lines[2]).toContain('runs the full test suite once on staging');
+    expect(lines[3]).toContain('the integration train verifies staging and moves main to it');
+    expect(lines[3]).toContain('issue(s) #7 close then');
+    expect(lines[3]).toContain('reverts this commit, reopens the issue(s) and starts a fix task');
+    expect(lines[3]).toContain('it comments on this pull request');
+    expect(lines[3]).toContain('Your task is done: do not wait for main.');
+    // The block is the last thing printed, and there is one.
+    expect(result.stdout.trimEnd().endsWith(lines[3])).toBe(true);
+    expect(result.stdout.split('kookr-merge: summary:').length).toBe(2);
+    expect(result.stderr).not.toContain('kookr-merge: summary:');
+  });
+
+  it('does not claim a retarget for a pull request that already targeted the integration branch', () => {
+    const result = run({ verificationJson: MERGED_WITH_SHA, baseRef: 'staging' }, { config: INTEGRATION });
+    expect(result.status, result.stderr).toBe(0);
+    const lines = block(result.stdout, 'kookr-merge: summary: PR #123 merged');
+    expect(lines[1]).toBe(`  what:  squash-merged into staging as ${MERGE_SHA.slice(0, 12)}.`);
+    expect(lines[3]).toContain('the linked issues close then');
+  });
+
+  it('without an integration branch, says the merge is final and mentions no train', () => {
+    const result = run({ verificationJson: MERGED_WITH_SHA });
+    expect(result.status, result.stderr).toBe(0);
+    const lines = block(result.stdout, 'kookr-merge: summary: PR #123 merged');
+    expect(lines).toEqual([
+      'kookr-merge: summary: PR #123 merged',
+      `  what:  squash-merged as ${MERGE_SHA.slice(0, 12)}.`,
+      '  why:   the review verdict and the checks passed.',
+      '  next:  nothing; GitHub closes the linked issues (any that stayed open is listed above).',
+    ]);
+    expect(result.stdout).not.toContain('integration train');
+  });
+
+  it('reads the merge commit from the REST response on an old gh, and says so when GitHub reports none', () => {
+    const rest = run(
+      { modernGh: false, mergeResponse: JSON.stringify({ merged: true, sha: MERGE_SHA }), reviewJson: REVIEW_VIEW },
+      { env: { KOOKR_MERGE_REQUIRE_REVIEW: '1' } },
+    );
+    expect(rest.status, rest.stderr).toBe(0);
+    expect(rest.stdout).toContain(`  what:  squash-merged as ${MERGE_SHA.slice(0, 12)}.`);
+
+    const none = run({});
+    expect(none.status, none.stderr).toBe(0);
+    expect(none.stdout).toContain('  what:  squash-merged (GitHub did not report the merge commit).');
+  });
+
+  const REFUSALS: Array<{
+    name: string;
+    opts: Partial<Parameters<typeof makeStubDir>[0]>;
+    config?: object;
+    env?: Record<string, string>;
+    code: number;
+    gate: string;
+    evidence: string;
+    next: string;
+    /** The stub's merge call ran (GitHub then reported the PR as not merged). */
+    mergeCalled?: boolean;
+  }> = [
+    {
+      name: 'a closed pull request', opts: { stateJson: '{"state":"CLOSED","isDraft":false,"reviewDecision":""}' },
+      code: 1, gate: 'the pre-flight state check', evidence: 'state=CLOSED', next: 'gh pr reopen 123 --repo owner/repo',
+    },
+    {
+      name: 'an already merged pull request', opts: { stateJson: '{"state":"MERGED","isDraft":false,"reviewDecision":""}' },
+      code: 1, gate: 'the pre-flight state check', evidence: 'state=MERGED', next: 'nothing: this pull request is already merged',
+    },
+    {
+      name: 'a draft', opts: { stateJson: '{"state":"OPEN","isDraft":true,"reviewDecision":""}' },
+      code: 1, gate: 'the pre-flight draft check', evidence: 'isDraft=true', next: 'gh pr ready 123 --repo owner/repo',
+    },
+    {
+      name: 'changes requested', opts: { stateJson: '{"state":"OPEN","isDraft":false,"reviewDecision":"CHANGES_REQUESTED"}' },
+      code: 1, gate: 'the pre-flight review-decision check', evidence: 'reviewDecision=CHANGES_REQUESTED', next: 'address the requested changes',
+    },
+    {
+      name: 'a failed retarget', opts: { editExit: 1 }, config: INTEGRATION,
+      code: 1, gate: 'the retarget step (integration branch staging)', evidence: 'gh pr edit 123 --base staging failed',
+      next: 'Never merge it with gh pr merge',
+    },
+    {
+      name: 'no review verdict', opts: { reviewJson: NO_VERDICT }, env: { KOOKR_MERGE_REQUIRE_REVIEW: '1' },
+      code: 4, gate: 'the independent-review gate (no-verdict)', evidence: 'no reviewer verdict comment',
+      next: `get a fresh verdict bound to head ${REVIEWED_SHA}`,
+    },
+    {
+      name: 'a stale review verdict', opts: { reviewJson: STALE_VERDICT }, env: { KOOKR_MERGE_REQUIRE_REVIEW: '1' },
+      code: 4, gate: 'the independent-review gate (stale-verdict)', evidence: `not the current head ${REVIEWED_SHA.slice(0, 12)}`,
+      next: `get a fresh verdict bound to head ${REVIEWED_SHA}`,
+    },
+    {
+      name: 'a conflict', opts: { checksResponses: [CONFLICTING], baseRef: 'staging' },
+      code: 3, gate: 'the mergeability check (conflict with staging)', evidence: 'mergeStateStatus=DIRTY mergeable=CONFLICTING',
+      next: 'git fetch origin staging && git rebase origin/staging',
+    },
+    {
+      name: 'a red check',
+      opts: { checksResponses: ['{"statusCheckRollup":[{"name":"ci","status":"COMPLETED","conclusion":"FAILURE"}],"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE"}'] },
+      code: 3, gate: 'the checks', evidence: 'failed: ci (FAILURE)', next: 'fix the failing check, push',
+    },
+    {
+      name: 'checks that stay pending',
+      opts: { checksResponses: ['{"statusCheckRollup":[{"name":"ci","status":"IN_PROGRESS","conclusion":""}],"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE"}'] },
+      env: { KOOKR_MERGE_CHECK_TIMEOUT_SECONDS: '1' },
+      code: 3, gate: 'the check wait (timeout)', evidence: '1 of 1 checks still pending', next: 'gh pr checks 123 --repo owner/repo',
+    },
+    {
+      name: 'a failed merge call', opts: { mergeExit: 1 },
+      code: 1, gate: 'the merge call', evidence: 'gh pr merge 123 --squash failed', next: 'if the head moved, get a new review verdict',
+    },
+    {
+      name: 'a merge GitHub does not confirm', opts: { verificationJson: '{"state":"OPEN","mergedAt":null}' },
+      code: 1, gate: 'the merge confirmation', evidence: 'state=OPEN mergedAt=null', next: 'if the head moved, get a new review verdict',
+      mergeCalled: true,
+    },
+  ];
+
+  it.each(REFUSALS)('on $name, names the gate, its evidence and the exact next command', ({ opts, config, env, code, gate, evidence, next, mergeCalled }) => {
+    const result = run(opts, { config, env });
+    expect(result.status, result.stderr).toBe(code);
+    expect(result.merged).toBe(mergeCalled === true);
+    const lines = block(result.stderr, REFUSED);
+    expect(lines, result.stderr).toHaveLength(4);
+    expect(lines[1]).toBe(`  refused by: ${gate}`);
+    expect(lines[2]).toContain(evidence);
+    expect(lines[3]).toContain(next);
+    if (!next.startsWith('nothing')) expect(lines[3]).toContain('kookr merge 123 --repo owner/repo');
+    expect(result.stderr.split('kookr-merge: summary:').length).toBe(2);
+    expect(result.stdout).not.toContain('kookr-merge: summary:');
+  });
+
+  it('still ends with a refusal block when a step fails unexpectedly', () => {
+    const result = run({ stateJson: 'not json' });
+    expect(result.status).not.toBe(0);
+    const lines = block(result.stderr, REFUSED);
+    expect(lines[1]).toMatch(/^ {2}refused by: an unexpected error \(exit \d+\)$/);
+    expect(lines[3]).toContain('kookr merge 123 --repo owner/repo');
+  });
+
+  it('prints no block for a usage error or --help', () => {
+    const repo = makeCheckout();
+    for (const args of [['--bogus'], ['--help'], []]) {
+      const r = spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', cwd: repo, env: gitExecEnv() });
+      expect(`${r.stdout}${r.stderr}`).not.toContain('kookr-merge: summary:');
+    }
+  });
+});

@@ -152,6 +152,74 @@ checkout_matches_repo() {
   [[ -n "$want" && -n "$have" && "$want" == "$have" ]]
 }
 
+# --- summary block (issue #3913) ---
+# Every run that reaches GitHub ends with a short block that says, in plain
+# words, what happened, why, and what comes next: on success the merge commit
+# and what the integration train does with it; on a refusal the gate that
+# refused, the evidence it used, and the exact command to run next. Usage
+# errors (exit 2) and --help print no block.
+SUMMARY_PRINTED=0
+MERGED_SHA=""
+CLOSING_NUMS=""
+RETARGETED_FROM=""
+INTEGRATION_BRANCH=""
+CHECKS_GATE=""
+CHECKS_EVIDENCE=""
+CHECKS_NEXT=""
+
+# rerun_command — the exact command that runs this merge again.
+rerun_command() {
+  printf 'kookr merge %s%s' "$PR" "${REPO_SLUG:+ --repo $REPO_SLUG}"
+}
+
+# refuse <exit-code> <gate> <evidence> <next> — print the refusal block on
+# stderr and exit with the given code.
+refuse() {
+  SUMMARY_PRINTED=1
+  {
+    echo "kookr-merge: summary: PR #$PR was NOT merged"
+    echo "  refused by: $2"
+    echo "  evidence:   $3"
+    echo "  next:       $4"
+  } >&2
+  exit "$1"
+}
+
+# summary_merged — the success block, printed once the merge is confirmed.
+summary_merged() {
+  SUMMARY_PRINTED=1
+  local as="as ${MERGED_SHA:0:12}"
+  [[ -n "$MERGED_SHA" ]] || as="(GitHub did not report the merge commit)"
+  echo "kookr-merge: summary: PR #$PR merged"
+  if [[ -n "$MERGE_INTO_INTEGRATION" ]]; then
+    local from="" issues="the linked issues close"
+    [[ -z "$RETARGETED_FROM" ]] || from=" (retargeted from $RETARGETED_FROM)"
+    [[ -z "$CLOSING_NUMS" ]] || issues="issue(s) $CLOSING_NUMS close"
+    echo "  what:  squash-merged into $INTEGRATION_BRANCH $as$from."
+    echo "  why:   this repository runs the full test suite once on $INTEGRATION_BRANCH, for all merged pull requests together, instead of on each pull request."
+    echo "  next:  the integration train verifies $INTEGRATION_BRANCH and moves $MERGE_INTO_INTEGRATION to it, usually within about 15 minutes; $issues then. If the suite fails, the train reverts this commit, reopens the issue(s) and starts a fix task. Either way it comments on this pull request. Your task is done: do not wait for $MERGE_INTO_INTEGRATION."
+  else
+    echo "  what:  squash-merged $as."
+    echo "  why:   the review verdict and the checks passed."
+    echo "  next:  nothing; GitHub closes the linked issues (any that stayed open is listed above)."
+  fi
+}
+
+# summary_on_exit — EXIT trap: a run that stopped on an unexpected error (a gh
+# or jq call that failed under set -e) still ends with a refusal block. It is
+# installed only after the arguments are parsed, so usage errors print none.
+summary_on_exit() {
+  local rc=$?
+  if (( rc != 0 )) && [[ "$SUMMARY_PRINTED" == "0" ]]; then
+    {
+      echo "kookr-merge: summary: PR #$PR was NOT merged"
+      echo "  refused by: an unexpected error (exit $rc)"
+      echo "  evidence:   the error printed above"
+      echo "  next:       fix that cause, then run: $(rerun_command)"
+    } >&2
+  fi
+}
+
 # MERGE_INTO_INTEGRATION — set to the default branch name when this PR's base is
 # the configured integration branch (after any retarget), else empty.
 MERGE_INTO_INTEGRATION=""
@@ -170,15 +238,17 @@ retarget_to_integration_branch() {
   checkout_matches_repo || return 0
 
   local pr_json base head default
+  INTEGRATION_BRANCH="$integration"
+  local retry_next="check \`gh auth status\` and that PR #$PR exists, then run: $(rerun_command). Never merge it with gh pr merge: that would skip $integration."
   if ! pr_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json baseRefName,headRefName)"; then
     echo "kookr-merge: an integration branch ($integration) is configured but PR #$PR could not be read; refusing to merge" >&2
-    exit 1
+    refuse 1 "the retarget step (integration branch $integration)" "gh pr view $PR failed, so its base branch is unknown" "$retry_next"
   fi
   base="$(printf '%s' "$pr_json" | jq -r '.baseRefName // ""')"
   head="$(printf '%s' "$pr_json" | jq -r '.headRefName // ""')"
   if ! default="$(gh repo view ${REPO_SLUG:+"$REPO_SLUG"} --json defaultBranchRef --jq .defaultBranchRef.name)" || [[ -z "$default" ]]; then
     echo "kookr-merge: an integration branch ($integration) is configured but the default branch could not be read; refusing to merge" >&2
-    exit 1
+    refuse 1 "the retarget step (integration branch $integration)" "gh repo view could not read the default branch" "$retry_next"
   fi
 
   if [[ "$base" == "$integration" ]]; then
@@ -189,10 +259,11 @@ retarget_to_integration_branch() {
 
   if ! gh pr edit "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --base "$integration"; then
     echo "kookr-merge: could not retarget PR #$PR from $default to $integration; refusing to merge into $default while an integration branch is configured" >&2
-    exit 1
+    refuse 1 "the retarget step (integration branch $integration)" "gh pr edit $PR --base $integration failed (error above); the pull request still targets $default" "$retry_next"
   fi
   echo "kookr-merge: retargeted PR #$PR from $default to $integration (integration branch configured in .kookr/delivery-gate.json)"
   MERGE_INTO_INTEGRATION="$default"
+  RETARGETED_FROM="$default"
 }
 
 # require_review_verdict — enforce the independent merge-review gate (#1717).
@@ -213,7 +284,7 @@ require_review_verdict() {
   # contract, not an optional enhancement.
   if ! view="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json comments,labels,commits)"; then
     echo "kookr-merge: could not read PR comments/labels for the review gate" >&2
-    return 4
+    refuse 4 "the independent-review gate" "gh pr view $PR could not read the comments, so no verdict could be checked" "check \`gh auth status\`, then run: $(rerun_command)"
   fi
   head_sha="$(printf '%s' "$view" | jq -r '((.commits // []) | last | .oid // "") | ascii_downcase')"
   # Export the reviewed head so the final merge can pin to it (--match-head-commit),
@@ -322,7 +393,17 @@ require_review_verdict() {
       echo "kookr-merge: the latest reviewer verdict must be 'pass' with review-head-sha equal to the current head ($head_sha), or with review-patch-id equal to the id of the exact file versions the PR currently changes (it survives a rebase only when the base did not touch those files)." >&2
       echo "kookr-merge: '$KOOKR_REVIEW_TIMEOUT_LABEL' is telemetry only and cannot bypass review." >&2
       echo "kookr-merge: run the independent-merge-review skill, or set KOOKR_MERGE_REQUIRE_REVIEW=0 for a manual merge." >&2
-      return 4
+      local why
+      case "${decision#block:}" in
+        no-verdict) why="no reviewer verdict comment on the pull request" ;;
+        timeout-label) why="only the '$KOOKR_REVIEW_TIMEOUT_LABEL' label, which is telemetry and not a verdict" ;;
+        blocked-finding) why="the latest verdict is 'block'" ;;
+        unbound-verdict) why="the latest 'pass' names no review-head-sha or review-patch-id" ;;
+        stale-verdict) why="the latest 'pass' reviewed another head and another diff, not the current head ${head_sha:0:12}" ;;
+        sticky-block) why="a 'block' on this same head or diff, which a later 'pass' on it cannot clear" ;;
+        *) why="${decision#block:}" ;;
+      esac
+      refuse 4 "the independent-review gate (${decision#block:})" "$why" "get a fresh verdict bound to head ${head_sha:-<unknown>} (independent-merge-review skill; fix the findings first after a block), then run: $(rerun_command)"
       ;;
   esac
 }
@@ -510,9 +591,22 @@ never_executed_merge_allowed() {
     echo "kookr-merge: checks never executed (external GitHub Actions billing/quota block, not a code failure); the PR carries the '$KOOKR_LOCAL_VERIFIED_LABEL' label and a local-gate comment bound to the current head — proceeding on the local verification gate (issue #3396)"
     return 0
   fi
+  checks_refusal "the never-executed check waiver" \
+    "the checks never ran (GitHub Actions billing/quota block) and no local-gate record is bound to head ${head_sha:0:12}" \
+    "add the '$KOOKR_LOCAL_VERIFIED_LABEL' label and a local-gate comment with 'local-gate-head-sha: $head_sha', then run: $(rerun_command)"
   echo "kookr-merge: checks never executed (billing/quota), but the local gate is not recorded on the current head." >&2
   echo "kookr-merge: to merge, record local verification on this PR — add the '$KOOKR_LOCAL_VERIFIED_LABEL' label AND comment the local-gate result with a 'local-gate-head-sha: <current head>' line — then retry." >&2
   return 1
+}
+
+# checks_refusal <gate> <evidence> <next> — record why the check wait failed,
+# for the refusal block. The first record wins: a later generic one must not
+# hide a specific one (the never-executed waiver runs before the red-check one).
+checks_refusal() {
+  [[ -z "$CHECKS_GATE" ]] || return 0
+  CHECKS_GATE="$1"
+  CHECKS_EVIDENCE="$2"
+  CHECKS_NEXT="$3"
 }
 
 # pr_conflicts — true when GitHub reports that the PR conflicts with its base
@@ -528,6 +622,9 @@ report_conflict() {
   base="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json baseRefName --jq .baseRefName 2>/dev/null)" || base=""
   [[ -n "$base" ]] || base="<base>"
   CONFLICT_REPORTED=1
+  checks_refusal "the mergeability check (conflict with $base)" \
+    "$(printf '%s' "$checks" | jq -r '"GitHub reports mergeStateStatus=\(.mergeStateStatus // "?") mergeable=\(.mergeable // "?") on two polls in a row"')" \
+    "git fetch origin $base && git rebase origin/$base, push, post a new review verdict if the diff changed, then run: $(rerun_command)"
   echo "kookr-merge: PR #$PR conflicts with $base and cannot merge until it is rebased: rebase on origin/$base, push, and get a new review verdict if the diff changed; then run kookr merge again" >&2
   printf '%s\n' "$checks" | jq -r '"  mergeStateStatus=\(.mergeStateStatus // "?") mergeable=\(.mergeable // "?")"' >&2
 }
@@ -567,7 +664,10 @@ watch_checks() {
   # we fall through to the poll loop and wait for the merge state to settle
   # rather than merging prematurely (issue #2148).
   local checks total
-  checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup,mergeStateStatus,mergeable)" || return 3
+  checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup,mergeStateStatus,mergeable)" || {
+    checks_refusal "the check wait" "gh pr view $PR could not read the checks" "check \`gh auth status\`, then run: $(rerun_command)"
+    return 3
+  }
   total="$(printf '%s' "$checks" | jq '(.statusCheckRollup // []) | length')"
   if [[ "$total" == "0" ]] && zero_check_merge_eligible "$checks"; then
     echo "kookr-merge: no status checks reported and merge state is clean — nothing to wait on"
@@ -589,6 +689,8 @@ watch_checks() {
     if never_executed_merge_allowed; then
       return 0
     fi
+    checks_refusal "the checks" "gh pr checks --watch reported a check that did not pass (listed above)" \
+      "fix the failing check, push, post a new review verdict for the new head, then run: $(rerun_command)"
     return 3
   fi
 
@@ -600,7 +702,10 @@ watch_checks() {
   echo "kookr-merge: polling statusCheckRollup + mergeStateStatus"
 
   while true; do
-    checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup,mergeStateStatus,mergeable)" || return 3
+    checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup,mergeStateStatus,mergeable)" || {
+      checks_refusal "the check wait" "gh pr view $PR could not read the checks" "check \`gh auth status\`, then run: $(rerun_command)"
+      return 3
+    }
     # A conflict never clears by itself, so stop instead of polling to the
     # timeout. Require it on two consecutive polls, one interval apart: right
     # after a retarget or a push GitHub can still serve a stale value.
@@ -629,6 +734,9 @@ watch_checks() {
       if (( elapsed >= timeout )); then
         echo "kookr-merge: timed out after ${elapsed}s waiting for merge state to clear (no checks reported)" >&2
         printf '%s\n' "$checks" | jq -r '"  mergeStateStatus=\(.mergeStateStatus // "?") mergeable=\(.mergeable // "?")"' >&2
+        checks_refusal "the check wait (timeout)" \
+          "$(printf '%s' "$checks" | jq -r '"no checks reported and mergeStateStatus=\(.mergeStateStatus // "?") after '"${elapsed}"'s"')" \
+          "run gh pr view $PR${REPO_SLUG:+ --repo $REPO_SLUG} --json mergeStateStatus,mergeable to see what blocks it, then run: $(rerun_command)"
         return 3
       fi
       wait_note "no checks yet and merge state not clean" "$elapsed"
@@ -646,6 +754,9 @@ watch_checks() {
       if never_executed_merge_allowed; then
         return 0
       fi
+      checks_refusal "the checks" \
+        "failed: $(printf '%s' "$checks" | jq -r '[(.statusCheckRollup // [])[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL")) | "\(.name) (\(.conclusion))"] | join(", ")')" \
+        "fix the failing check, push, post a new review verdict for the new head, then run: $(rerun_command)"
       return 3
     fi
 
@@ -660,6 +771,8 @@ watch_checks() {
     elapsed=$((now - start))
     if (( elapsed >= timeout )); then
       echo "kookr-merge: timed out waiting for checks after ${elapsed}s" >&2
+      checks_refusal "the check wait (timeout)" "${pending} of ${total} checks still pending after ${elapsed}s" \
+        "wait for the checks (gh pr checks $PR${REPO_SLUG:+ --repo $REPO_SLUG}), then run: $(rerun_command)"
       printf '%s\n' "$checks" | jq -r '(.statusCheckRollup // [])[] | "  \(.name): \(.status) \(.conclusion // "")"' >&2
       return 3
     fi
@@ -721,6 +834,7 @@ merge_pinned_via_api() {
     echo "kookr-merge: REST merge call succeeded but PR #$PR did not merge: $(printf '%s' "$resp" | jq -r '.message // "no message in response"')" >&2
     return 1
   fi
+  MERGED_SHA="$(printf '%s' "$resp" | jq -r '.sha // ""' 2>/dev/null)" || MERGED_SHA=""
   echo "kookr-merge: merged PR #$PR (squash), pinned to $head_sha"
   return 0
 }
@@ -879,6 +993,7 @@ report_open_closing_issues() {
     body_nums="$(printf '%s' "$refs" | body_closing_numbers)" || body_nums=""
     nums="$({ printf '%s\n' "$list" | awk 'NF { print $2 }'; printf '%s\n' "$body_nums"; } \
       | awk 'NF && !seen[$1]++ { printf "%s%s", (n++ ? ", " : ""), "#" $1 }')"
+    CLOSING_NUMS="$nums"
     [[ -n "$nums" ]] || return 0
     echo "kookr-merge: closing issue(s) $nums stay open until the integration train promotes this change to $MERGE_INTO_INTEGRATION"
     return 0
@@ -905,7 +1020,11 @@ report_open_closing_issues() {
   return 0
 }
 
-state_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json state,isDraft,reviewDecision)"
+trap summary_on_exit EXIT
+
+if ! state_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json state,isDraft,reviewDecision)"; then
+  refuse 1 "the pre-flight read" "gh pr view $PR failed (error above)" "check the PR number, --repo and \`gh auth status\`, then run: $(rerun_command)"
+fi
 state=$(printf '%s' "$state_json" | jq -r '.state')
 is_draft=$(printf '%s' "$state_json" | jq -r '.isDraft')
 review_decision=$(printf '%s' "$state_json" | jq -r '.reviewDecision // ""')
@@ -914,18 +1033,21 @@ case "$state" in
   OPEN) ;;
   *)
     echo "kookr-merge: PR #$PR state=$state — not mergeable" >&2
-    exit 1
+    if [[ "$state" == "MERGED" ]]; then
+      refuse 1 "the pre-flight state check" "GitHub reports state=MERGED" "nothing: this pull request is already merged"
+    fi
+    refuse 1 "the pre-flight state check" "GitHub reports state=$state" "reopen it if that was a mistake (gh pr reopen $PR${REPO_SLUG:+ --repo $REPO_SLUG}), then run: $(rerun_command)"
     ;;
 esac
 
 if [[ "$is_draft" == "true" ]]; then
   echo "kookr-merge: PR #$PR is a draft — mark ready before merging" >&2
-  exit 1
+  refuse 1 "the pre-flight draft check" "GitHub reports isDraft=true" "gh pr ready $PR${REPO_SLUG:+ --repo $REPO_SLUG}, then run: $(rerun_command)"
 fi
 
 if [[ "$review_decision" == "CHANGES_REQUESTED" ]]; then
   echo "kookr-merge: PR #$PR has changes requested — address feedback before merging" >&2
-  exit 1
+  refuse 1 "the pre-flight review-decision check" "GitHub reports reviewDecision=CHANGES_REQUESTED" "address the requested changes, push, get the review re-approved and a new verdict, then run: $(rerun_command)"
 fi
 
 retarget_to_integration_branch
@@ -939,7 +1061,8 @@ CONFLICT_REPORTED=0
 if ! watch_checks; then
   # A conflict already printed its own message (issue #3813).
   [[ "$CONFLICT_REPORTED" == "1" ]] || echo "kookr-merge: checks did not pass for PR #$PR" >&2
-  exit 3
+  refuse 3 "${CHECKS_GATE:-the checks}" "${CHECKS_EVIDENCE:-see the lines above}" \
+    "${CHECKS_NEXT:-fix the cause shown above, then run: $(rerun_command)}"
 fi
 
 echo "kookr-merge: checks passed, squash-merging PR #$PR"
@@ -961,14 +1084,18 @@ fi
 # resulting history is identical whichever path runs. Neither passes
 # --delete-branch: the branch is deleted through the API below (issue #3641).
 cli_merge=1
+merge_refused_next="run gh pr view $PR${REPO_SLUG:+ --repo $REPO_SLUG} --json state,mergeStateStatus,commits; if the head moved, get a new review verdict for it; then run: $(rerun_command)"
 if [[ -z "${REVIEW_HEAD_SHA:-}" ]]; then
-  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash
+  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash \
+    || refuse 1 "the merge call" "gh pr merge $PR --squash failed (error above)" "$merge_refused_next"
 elif gh pr merge --help 2>&1 | grep -q -- '--match-head-commit'; then
   gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash \
-    --match-head-commit "$REVIEW_HEAD_SHA"
+    --match-head-commit "$REVIEW_HEAD_SHA" \
+    || refuse 1 "the merge call" "gh pr merge $PR --squash --match-head-commit ${REVIEW_HEAD_SHA:0:12} failed (error above); the head may have moved since the review" "$merge_refused_next"
 else
   echo "kookr-merge: installed gh lacks --match-head-commit; pinning the head via the REST API instead"
-  merge_pinned_via_api "$REVIEW_HEAD_SHA" || exit 1
+  merge_pinned_via_api "$REVIEW_HEAD_SHA" \
+    || refuse 1 "the merge call (REST, pinned to ${REVIEW_HEAD_SHA:0:12})" "GitHub refused the merge (error above); the head may have moved since the review" "$merge_refused_next"
   cli_merge=0
 fi
 
@@ -980,19 +1107,21 @@ if [[ "$cli_merge" -eq 1 ]]; then
   # (issue #3403). Asking for `merged` made a successful squash-merge look like
   # a failure. `state=MERGED` or a non-null `mergedAt` is the same postcondition
   # on fields gh already supports.
-  if ! merged_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json state,mergedAt)"; then
+  if ! merged_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json state,mergedAt,mergeCommit)"; then
     echo "kookr-merge: could not verify whether PR #$PR merged" >&2
-    exit 1
+    refuse 1 "the merge confirmation" "gh pr view $PR could not read state/mergedAt after the merge call" "run gh pr view $PR${REPO_SLUG:+ --repo $REPO_SLUG} --json state,mergedAt: if it says MERGED, the merge landed; if not, run: $(rerun_command)"
   fi
   if ! printf '%s' "$merged_json" | jq -e \
       '((.state // "") | ascii_upcase) == "MERGED" or ((.mergedAt // null) != null)' \
       >/dev/null 2>&1; then
     echo "kookr-merge: PR #$PR did not merge according to GitHub" >&2
-    exit 1
+    refuse 1 "the merge confirmation" "GitHub reports $(printf '%s' "$merged_json" | jq -r '"state=\(.state // "?") mergedAt=\(.mergedAt // "null")"' 2>/dev/null || echo 'the pull request as not merged')" "$merge_refused_next"
   fi
+  MERGED_SHA="$(printf '%s' "$merged_json" | jq -r '.mergeCommit.oid // ""' 2>/dev/null)" || MERGED_SHA=""
 fi
 
 # The merge is confirmed. Nothing below may change the exit code.
 delete_head_branch || true
 report_open_closing_issues || true
+summary_merged || true
 exit 0
