@@ -69,6 +69,20 @@ test.describe('Accessibility smoke scans', () => {
     await expect(page.locator(':focus')).toBeVisible();
   });
 
+  test('labelled navigation has no axe violations (#3617)', async ({ page, request }) => {
+    // At 1280 px and wider the icon rail becomes the labelled navigation:
+    // queues with counts, then projects by name.
+    await page.setViewportSize({ width: 1600, height: 950 });
+    await seedTask(request);
+    await expect(page.getByTestId('task-counts')).toContainText('1 task');
+    const nav = page.getByRole('navigation', { name: 'Queues and projects' });
+    await expect(nav).toBeVisible();
+    await expect(nav.getByTestId('nav-queue-working')).toBeVisible();
+    await expect(nav.locator('.project-nav-name').first()).toBeVisible();
+
+    await expectNoA11yViolations(page, 'labelled navigation', '[data-testid="project-sidebar"]');
+  });
+
   test('launch dialog has no axe violations and closes with Escape', async ({ page }) => {
     await page.getByRole('button', { name: '+ Launch' }).click();
 

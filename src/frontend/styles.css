@@ -814,32 +814,9 @@ kbd {
   outline: 2px solid var(--teal);
   outline-offset: 2px;
 }
-.findings-collapse-all-button {
-  border: 1px solid var(--border-dim);
-  background: transparent;
-  color: var(--text-muted);
-  border-radius: 4px;
-  padding: 2px 6px;
-  font: inherit;
-  letter-spacing: 0;
-  text-transform: none;
-  cursor: pointer;
-}
-.findings-collapse-all-button:hover {
-  color: var(--text-secondary);
-  border-color: var(--border);
-  background: rgba(255, 255, 255, 0.03);
-}
-.findings-collapse-all-button:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
-.findings-collapse-all-button:focus-visible {
-  outline: 2px solid var(--teal);
-  outline-offset: 2px;
-}
 /* Rail "More actions" menu (issue #3561 slice 2): destructive bulk actions
-   never sit on screen at rest. */
+   never sit on screen at rest. Collapse all and Migrate interrupted… live in
+   it too, so the header leaves room for the "Tasks" title (#3617). */
 .rail-actions-menu { position: relative; display: inline-flex; }
 .rail-actions-trigger {
   border: 1px solid var(--border-dim);
@@ -913,25 +890,6 @@ kbd {
   outline: 2px solid var(--amber);
   outline-offset: 2px;
 }
-.btn-migrate-interrupted {
-  border: 1px solid var(--blue);
-  background: transparent;
-  color: var(--blue);
-  border-radius: 4px;
-  padding: 2px 6px;
-  font: inherit;
-  letter-spacing: 0;
-  text-transform: none;
-  cursor: pointer;
-}
-.btn-migrate-interrupted:hover {
-  background: rgba(96, 165, 250, 0.15);
-}
-.btn-migrate-interrupted:focus-visible {
-  outline: 2px solid var(--blue);
-  outline-offset: 2px;
-}
-
 .findings-count { color: var(--amber); }
 .findings-count-empty { color: var(--text-muted); }
 
@@ -1960,7 +1918,7 @@ button.section-header.detection-stats-header:focus-visible {
   font-size: 12px;
   line-height: 15px;
 }
-.healthy-row-controls .ralph-loop-badge {
+.healthy-row-meta .ralph-loop-badge {
   font-size: 12px;
   color: var(--text-muted);
 }
@@ -2010,9 +1968,10 @@ button.section-header.detection-stats-header:focus-visible {
 .healthy-row-controls .btn-reply { opacity: 1; }
 
 /* Compact rows (#3561 slice 3). A working row is two lines, title then meta.
-   Its action buttons no longer take a third line: they sit over the right end
-   of the meta line and appear on hover, on keyboard focus and on the selected
-   row. Opacity 0 (not display:none) keeps them focusable and measurable. On
+   Its action buttons no longer take a third line: at rest they sit, unseen,
+   over the right end of the meta line, and they appear on hover, on keyboard
+   focus and on the selected row. Opacity 0 (not display:none) keeps them
+   focusable and measurable. On
    touch screens and phone widths they stay in the flow and always visible. */
 .healthy-row > .healthy-row-info { flex-wrap: nowrap; }
 .healthy-row .healthy-row-controls {
@@ -16897,10 +16856,13 @@ button.coordinator-chain-member:focus-visible {
 .dep-rail-node:hover { color: var(--text-bright); border-color: var(--border); background: var(--bg-card-hover); }
 .dep-rail-node--inferred { border-style: dashed; }
 .dep-rail-node-label { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
-.dep-rail-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.dep-rail-dot.done { background: var(--green); }
-.dep-rail-dot.run { background: var(--teal); }
-.dep-rail-dot.wait { background: var(--text-muted); }
+.dep-rail-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; box-sizing: border-box; }
+/* The four state roles of .task-status-dot (#3561, #3617): ring = working,
+   diamond = failed, dash = neutral (done, cancelled, queued). */
+.dep-rail-dot.run { background: transparent; border: 2px solid var(--state-work); }
+.dep-rail-dot.failed { background: var(--state-bad); border-radius: 0; transform: rotate(45deg) scale(0.86); }
+.dep-rail-dot.done,
+.dep-rail-dot.wait { background: var(--state-neutral); border-radius: 0; height: 2px; }
 .dep-rail-arrow { color: var(--text-muted); flex-shrink: 0; font-size: 12px; }
 
 /* Stored transcript viewer (terminal tasks) */
@@ -17474,3 +17436,21 @@ button.coordinator-chain-member:focus-visible {
 .avatar-typed-row input:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
 .avatar-typed-reply { margin: 6px 0 0; max-height: 72px; overflow-y: auto; color: var(--text-bright); line-height: 17px; overflow-wrap: anywhere; white-space: pre-wrap; }
 .avatar-typed-level { margin: 4px 0 0; color: var(--text-muted); }
+
+/* UI overhaul follow-ups (#3617).
+   1. Working rows: shown controls join the flow, so the meta line ends where
+      they start instead of running under them. The negative margin keeps the
+      22 px buttons from making the row taller.
+   2. Top bar from 769 to 900 px: tighter spacing on the right, so System no
+      longer runs into "N findings waiting". Every label stays. */
+@media (hover: hover) and (min-width: 769px) {
+  .healthy-row:hover .healthy-row-controls,
+  .healthy-row.selected .healthy-row-controls,
+  .healthy-row .healthy-row-controls:focus-within { position: static; margin-block: -2px; }
+}
+@media (min-width: 769px) and (max-width: 900px) {
+  .topbar-right .metric-group { gap: 6px; }
+  .topbar-right .system-indicator,
+  .topbar-right .follow-pill,
+  .topbar-right .dnd-pill { padding-left: 6px; padding-right: 6px; }
+}

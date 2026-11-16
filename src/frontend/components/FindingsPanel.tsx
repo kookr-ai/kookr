@@ -45,10 +45,9 @@ import { PendingRow } from './FindingsPanel/PendingRow.js';
 import { SnoozedRow } from './FindingsPanel/SnoozedRow.js';
 import { CompletedRow } from './FindingsPanel/CompletedRow.js';
 import { ClearCompletedButton } from './FindingsPanel/ClearCompletedButton.js';
-import { AbortActiveMenu } from './FindingsPanel/AbortActiveMenu.js';
+import { RailActionsMenu } from './FindingsPanel/RailActionsMenu.js';
 import { SnoozeAllButton } from './FindingsPanel/SnoozeAllButton.js';
 import { ResumeAllButton } from './FindingsPanel/ResumeAllButton.js';
-import { MigrateInterruptedButton } from './FindingsPanel/MigrateInterruptedButton.js';
 import { SectionToggleButton } from './FindingsPanel/SectionToggleButton.js';
 import { OldestFindingWaitChip } from './OldestFindingWaitChip.js';
 
@@ -438,17 +437,13 @@ export function FindingsPanel({
           </span>
           <span className="findings-header-actions">
             <SnoozeAllButton findings={visibleFindings} send={send} />
-            <AbortActiveMenu taskIds={abortActiveTaskIds} send={send} />
-            <MigrateInterruptedButton />
-            <button
-              type="button"
-              className="findings-collapse-all-button"
-              onClick={toggleAllSections}
-              disabled={!hasStateSections}
-              aria-label={allRenderedSectionsCollapsed ? 'Expand all findings sections' : 'Collapse all findings sections'}
-            >
-              {allRenderedSectionsCollapsed ? 'Expand all' : 'Collapse all'}
-            </button>
+            {/* Collapse all, Migrate interrupted… and Abort all sit in this
+                one menu so the header leaves room for the title (#3617). */}
+            <RailActionsMenu
+              taskIds={abortActiveTaskIds}
+              send={send}
+              sections={hasStateSections ? { allCollapsed: allRenderedSectionsCollapsed, onToggle: toggleAllSections } : null}
+            />
             {severitySummary.length > 0 && (
               <span
                 className="findings-severity-summary"

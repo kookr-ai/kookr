@@ -247,6 +247,11 @@ describe('FindingsPanel Ralph controls', () => {
     const info = row?.querySelector(':scope > .healthy-row-info');
     expect(info?.querySelector('[data-testid="reply-button"]')).toBeTruthy();
     expect(info?.querySelector('.healthy-row-controls .ralph-loop-controls')).toBeTruthy();
+    // The iteration badge sits in the always-visible meta line, not in the
+    // hover-revealed controls, and is drawn once (#3617).
+    expect(info?.querySelector('.healthy-row-meta .ralph-loop-badge')?.textContent).toContain('2/5');
+    expect(info?.querySelector('.healthy-row-controls .ralph-loop-badge')).toBeNull();
+    expect(info?.querySelectorAll('.ralph-loop-badge')).toHaveLength(1);
   });
 
   test('Ralph tasks appear in their normal section without a dedicated overview', () => {

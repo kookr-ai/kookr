@@ -490,6 +490,17 @@ describe('state colours: four roles, one shape each', () => {
     }
   });
 
+  test('dependency-rail dots use the state roles and shapes of the task status dot (#3617)', () => {
+    expect(css.lookup('.dep-rail-dot.run', 'border')).toBe(`2px solid ${ROLE_COLOR.work}`);
+    expect(css.lookup('.dep-rail-dot.run', 'background')).toBe('transparent');
+    expect(css.lookup('.dep-rail-dot.failed', 'background')).toBe(ROLE_COLOR.bad);
+    expect(css.lookup('.dep-rail-dot.failed', 'transform')).toMatch(/^rotate\(45deg\)/);
+    for (const status of ['done', 'wait']) {
+      expect(css.lookup(`.dep-rail-dot.${status}`, 'background'), status).toBe(ROLE_COLOR.neutral);
+      expect(css.lookup(`.dep-rail-dot.${status}`, 'height'), status).toBe('2px');
+    }
+  });
+
   test('running and active markers are teal, not green', () => {
     expect(css.lookup('.project-icon-dot.active', 'background')).toBe(ROLE_COLOR.work);
     expect(css.lookup('.agent-provider-mark--running::after', 'border-top-color')).toBe(ROLE_COLOR.work);
@@ -539,5 +550,46 @@ describe('quiet chrome (issue #3561 slice 2)', () => {
 
   test('the System attention dot uses the "waiting on you" role, not red', () => {
     expect(styles.lookup('.system-attention-dot', 'background')).toBe('var(--state-need)');
+  });
+});
+
+describe('labelled navigation first paint (#3617)', () => {
+  // critical.css loads before styles.css. Its 1280 px block must set up the
+  // labelled navigation's geometry, with the values styles.css uses, so the
+  // first frame is not a wide column of centred icons.
+  const critical = stripComments(STYLESHEETS['critical.css']);
+  const start = critical.indexOf('{', critical.indexOf('@media (min-width: 1280px)')) + 1;
+  let end = start;
+  for (let depth = 1; depth > 0; end++) {
+    if (critical[end] === '{') depth++;
+    if (critical[end] === '}') depth--;
+  }
+  const block = critical.slice(start, end - 1);
+  const firstPaint = [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+  const styles = rules(STYLESHEETS['styles.css']);
+
+  test('names, rows and queues are laid out from the first paint', () => {
+    const css = rules(block);
+    expect(css.lookup('.project-sidebar.labelled', 'align-items')).toBe('stretch');
+    expect(css.lookup('.project-sidebar.labelled .project-icon', 'justify-content')).toBe('flex-start');
+    expect(css.lookup('.project-sidebar.labelled .project-nav-name', 'display')).toBe('block');
+    expect(css.lookup('.project-sidebar.labelled .project-nav-queues', 'display')).toBe('flex');
+    expect(css.lookup('.project-sidebar.labelled .project-icon-letter', 'display')).toBe('none');
+    expect(css.lookup('.project-sidebar.labelled .project-nav-idle', 'display')).toBe('none');
+  });
+
+  test('every first-paint value matches styles.css', () => {
+    expect(firstPaint.length).toBeGreaterThan(5);
+    const css = rules(block);
+    for (const [, selectors, body] of firstPaint) {
+      for (const [, prop] of body.matchAll(/([\w-]+)\s*:\s*([^;]+)/g)) {
+        for (const selector of selectors.split(',').map((s) => s.trim().replace(/\s+/g, ' '))) {
+          // styles.css draws the width from --nav-width-used (it also covers the
+          // coordinator pane); critical.css reads --nav-width directly.
+          if (selector === '.project-sidebar.labelled' && /width$/.test(prop)) continue;
+          expect(styles.lookup(selector, prop), `${selector} ${prop}`).toBe(css.lookup(selector, prop));
+        }
+      }
+    }
   });
 });

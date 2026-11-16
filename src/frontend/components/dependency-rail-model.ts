@@ -75,7 +75,7 @@ const RELATION_PHRASE: Record<TaskRelationType, string> = {
   related_to: 'related to',
 };
 
-/** Terminal task statuses render with a "done" dot regardless of which terminal state. */
+/** Finished tasks (any terminal state) sort after live ones. */
 function isTerminalStatus(status: AgentState['taskStatus'] | undefined): boolean {
   return status === 'completed' || status === 'cancelled' || status === 'terminated';
 }

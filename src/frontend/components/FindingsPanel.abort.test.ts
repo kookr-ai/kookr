@@ -35,12 +35,13 @@ function renderPanel(
   abortActiveTaskIds: string[],
   findings: AgentState[],
   send: (msg: ClientMessage) => void,
+  healthy: AgentState[] = [],
 ): Root {
   const root = createRoot(container);
   act(() => {
     root.render(React.createElement(FindingsPanel, {
       findings,
-      healthy: [],
+      healthy,
       pending: [],
       snoozed: [],
       completed: [],
@@ -157,5 +158,76 @@ describe('FindingsPanel — control-room batch abort (issue #1325)', () => {
 
     expect(send).not.toHaveBeenCalled();
     expect(document.querySelector('.confirm-dialog')).toBeNull();
+  });
+
+  test('one menu holds Collapse all, Migrate interrupted… and Abort all; arrow keys move between them (#3617)', () => {
+    useKookrStore.setState({
+      availableAgentTypes: [
+        { type: 'claude-code', label: 'Claude Code' },
+        { type: 'codex-cli', label: 'Codex CLI' },
+      ],
+    } as never);
+    root = renderPanel(container, ['task-1'], [], send, [makeAgent({ taskId: 'task-1' })]);
+
+    // None of the three sits in the header at rest.
+    for (const label of ['Collapse all', 'Migrate interrupted…', 'Abort all active tasks…']) {
+      expect(queryButtonByText(label)).toBeUndefined();
+    }
+
+    openMoreActions();
+    const items = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]'));
+    // The destructive item comes last.
+    expect(items.map((b) => b.textContent?.trim())).toEqual(['Collapse all', 'Migrate interrupted…', 'Abort all active tasks…']);
+    expect(document.activeElement).toBe(items[0]);
+
+    const press = (key: string) => act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })));
+    press('ArrowDown');
+    expect(document.activeElement).toBe(items[1]);
+    press('ArrowDown');
+    expect(document.activeElement).toBe(items[2]);
+    press('ArrowDown');
+    expect(document.activeElement).toBe(items[0]);
+    press('ArrowUp');
+    expect(document.activeElement).toBe(items[2]);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test('a pending Abort confirmation is dropped when nothing is active, and never comes back for new tasks (#3617)', () => {
+    root = renderPanel(container, ['task-1'], [makeAgent({ taskId: 'task-1' })], send);
+    openMoreActions();
+    act(() => queryButtonByText('Abort all active tasks…')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(document.querySelector('.confirm-dialog')).not.toBeNull();
+
+    // Every active task finished while the dialog was open.
+    act(() => root!.render(React.createElement(FindingsPanel, {
+      findings: [], healthy: [], pending: [], snoozed: [], completed: [],
+      selectedAgentId: null, selectedTaskId: null, send,
+      clearCompletedFinishedCount: 0, clearCompletedTerminatedCount: 0, abortActiveTaskIds: [],
+    })));
+    expect(document.querySelector('.confirm-dialog')).toBeNull();
+
+    // A new task starts: the old confirmation must not reappear.
+    act(() => root!.render(React.createElement(FindingsPanel, {
+      findings: [makeAgent({ agentId: 'a2', taskId: 'task-2' })], healthy: [], pending: [], snoozed: [], completed: [],
+      selectedAgentId: null, selectedTaskId: null, send,
+      clearCompletedFinishedCount: 0, clearCompletedTerminatedCount: 0, abortActiveTaskIds: ['task-2'],
+    })));
+    expect(document.querySelector('.confirm-dialog')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test('choosing a menu item leaves focus on the More actions trigger, and Escape returns it there (#3617)', () => {
+    root = renderPanel(container, ['task-1'], [], send, [makeAgent({ taskId: 'task-1' })]);
+    const trigger = document.querySelector<HTMLButtonElement>('[data-testid="rail-actions-trigger"]');
+
+    openMoreActions();
+    act(() => queryButtonByText('Collapse all')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    openMoreActions();
+    expect(document.activeElement).not.toBe(trigger);
+    act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(document.activeElement).toBe(trigger);
   });
 });

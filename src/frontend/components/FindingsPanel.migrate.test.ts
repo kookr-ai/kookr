@@ -36,6 +36,14 @@ function renderPanel(container: HTMLElement, send: (msg: ClientMessage) => void)
   return root;
 }
 
+/** Collapse all / Expand all and Migrate interrupted… live in the rail's
+ *  "More actions" menu (#3617); open it before looking for them. */
+function openMoreActions(): void {
+  const trigger = document.querySelector<HTMLButtonElement>('[data-testid="rail-actions-trigger"]');
+  expect(trigger).not.toBeNull();
+  act(() => trigger!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+}
+
 function queryButtonByText(text: string): HTMLButtonElement | undefined {
   return Array.from(document.querySelectorAll('button')).find(
     (b) => b.textContent?.trim() === text,
@@ -64,7 +72,20 @@ describe('FindingsPanel — batch migrate (RFC: rfc-cross-agent-task-migration)'
   test('hides the Migrate interrupted action when fewer than two agent types are available', () => {
     syncGlobalStore([{ type: 'claude-code', label: 'Claude Code' }]);
     root = renderPanel(container, vi.fn());
+    // With nothing else in it either, the More actions menu is absent.
+    expect(document.querySelector('[data-testid="rail-actions-trigger"]')).toBeNull();
     expect(queryButtonByText('Migrate interrupted…')).toBeUndefined();
+  });
+
+  test('Migrate interrupted… is a More actions menu item, not a header button (#3617)', () => {
+    syncGlobalStore([
+      { type: 'claude-code', label: 'Claude Code' },
+      { type: 'codex-cli', label: 'Codex CLI' },
+    ]);
+    root = renderPanel(container, vi.fn());
+    expect(queryButtonByText('Migrate interrupted…')).toBeUndefined();
+    openMoreActions();
+    expect(queryButtonByText('Migrate interrupted…')?.getAttribute('role')).toBe('menuitem');
   });
 
   test('survives availableAgentTypes toggling across the <2 threshold while mounted (no hook-count crash)', () => {
@@ -78,9 +99,10 @@ describe('FindingsPanel — batch migrate (RFC: rfc-cross-agent-task-migration)'
       { type: 'grok-build', label: 'Grok Build' },
     ]);
     root = renderPanel(container, vi.fn());
+    openMoreActions();
     expect(queryButtonByText('Migrate interrupted…')).toBeDefined();
 
-    // 2 → 1: the button and its useEffect drop out; must not throw.
+    // 2 → 1: the item drops out (and with it the whole menu); must not throw.
     act(() => syncGlobalStore([{ type: 'claude-code', label: 'Claude Code' }]));
     expect(queryButtonByText('Migrate interrupted…')).toBeUndefined();
 
@@ -91,6 +113,7 @@ describe('FindingsPanel — batch migrate (RFC: rfc-cross-agent-task-migration)'
         { type: 'grok-build', label: 'Grok Build' },
       ]),
     );
+    openMoreActions();
     expect(queryButtonByText('Migrate interrupted…')).toBeDefined();
   });
 
@@ -127,6 +150,7 @@ describe('FindingsPanel — batch migrate (RFC: rfc-cross-agent-task-migration)'
 
     root = renderPanel(container, vi.fn());
 
+    openMoreActions();
     const openButton = queryButtonByText('Migrate interrupted…');
     expect(openButton).toBeDefined();
     act(() => openButton!.dispatchEvent(new MouseEvent('click', { bubbles: true })));

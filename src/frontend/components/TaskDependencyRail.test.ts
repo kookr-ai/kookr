@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import type { AgentState, TaskRelation } from '../../shared/protocol.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
-import { TaskDependencyRail } from './TaskDependencyRail.js';
+import { TaskDependencyRail, dotClass } from './TaskDependencyRail.js';
 
 function syncGlobalStore(): void {
   const freshState = createKookrStore().getState();
@@ -95,5 +95,17 @@ describe('TaskDependencyRail', () => {
     const node = container.querySelector<HTMLButtonElement>('[data-task-id="blocker"]')!;
     act(() => node.click());
     expect(useKookrStore.getState().selectedAgentId).toBe('a-blk');
+  });
+});
+
+describe('dotClass (#3617)', () => {
+  test('maps task statuses onto the four state roles', () => {
+    expect(dotClass('inProgress')).toBe('run');
+    // A terminated task failed: it is not drawn as "done".
+    expect(dotClass('terminated')).toBe('failed');
+    expect(dotClass('completed')).toBe('done');
+    expect(dotClass('cancelled')).toBe('done');
+    expect(dotClass('pending')).toBe('wait');
+    expect(dotClass(undefined)).toBe('wait');
   });
 });
