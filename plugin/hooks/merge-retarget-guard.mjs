@@ -175,7 +175,7 @@ const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const PREFIX_COMMANDS = new Set(['env', 'command', 'exec', 'time', 'nohup', 'builtin']);
 
 /** Drops `FOO=1`, `env`, `command`, ... in front of the real command. */
-function stripPrefixes(words) {
+export function stripPrefixes(words) {
   let i = 0;
   while (i < words.length) {
     if (ENV_ASSIGN.test(words[i]) || PREFIX_COMMANDS.has(words[i])) { i++; continue; }
@@ -222,7 +222,7 @@ export function scriptCanRetarget(path) {
 }
 
 /** Value of `--name value`, `--name=value` or `-n value` in a word list, or null. */
-function flagValue(words, names) {
+export function flagValue(words, names) {
   for (let i = 0; i < words.length; i++) {
     for (const n of names) {
       if (words[i] === n && i + 1 < words.length) return words[i + 1];
@@ -373,7 +373,7 @@ function correction(repo) {
     '`pnpm merge` runs the wrapper of the current checkout, which may be old. Never change directory to the main checkout to merge.';
 }
 
-function originRepo(dir) {
+export function originRepo(dir) {
   const url = run('git', ['-C', dir, 'remote', 'get-url', 'origin'], dir);
   if (!url) return null;
   const m = /[:/]([^/:]+\/[^/]+?)(?:\.git)?\/?$/.exec(url);
