@@ -18,7 +18,7 @@
  *
  * It also keeps the three rules that stop a wrong answer being sent, which moved here with the cards:
  *  - a press on an answer is ignored for a moment after the cards change (a card closing, a row opening or
- *    folding moves buttons under the pointer);
+ *    folding, a permission card arriving moves buttons under the pointer);
  *  - when the control that had keyboard focus goes away with its card, focus is put on what replaced it;
  *  - a card that is folded away keeps the answer being typed in it.
  */
@@ -55,7 +55,8 @@ export interface WaitingTrayProps {
 }
 
 export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPermissionChoice, dockRef }: WaitingTrayProps) {
-  const permissionCount = useLucyPermission().cards.length;
+  const permissionCards = useLucyPermission().cards;
+  const permissionCount = permissionCards.length;
   const pending = useMemo(() => asks.filter((ask) => ask.state === 'pending'), [asks]);
   const waiting = useMemo(() => pending.filter((ask) => ask.taskEnded !== true).sort(byExpiry), [pending]);
   const opinions = useMemo(() => pending.filter((ask) => ask.taskEnded === true).sort(byExpiry), [pending]);
@@ -84,7 +85,8 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
   // After the cards change: a press that lands in the next moment may have been aimed at a card that is no
   // longer under the pointer, so it is ignored (the operator presses again).
   const cardsChangedAtRef = useRef(0);
-  const signature = `${asks.map((ask) => `${ask.id}:${ask.state}`).join(',')}|${expandedId ?? ''}|${opinionsOpen ? 'o' : ''}`;
+  // Permission cards sit above the questions in the same scroll box: one arriving or leaving moves the buttons too.
+  const signature = `${asks.map((ask) => `${ask.id}:${ask.state}`).join(',')}|${expandedId ?? ''}|${opinionsOpen ? 'o' : ''}|${permissionCards.map((card) => card.promptId).join(',')}`;
   useLayoutEffect(() => {
     cardsChangedAtRef.current = Date.now();
   }, [signature]);

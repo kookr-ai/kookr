@@ -724,7 +724,7 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
       const card = page.locator('[data-testid="avatar-ask"][data-ask-state="pending"]');
       await expect(card).toHaveCount(1);
       const controls = card.locator('a, button, input');
-      // The plan link, Open task is absent (no onOpenTask in this build? it is present), 3 options, the text box, Send, the fold button.
+      // The plan link, Open task, three options, the text box, Send and the button that folds the card: at least six.
       expect(await controls.count()).toBeGreaterThanOrEqual(6);
       for (let i = 0; i < await controls.count(); i += 1) {
         const control = controls.nth(i);

@@ -336,6 +336,25 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
       expect(onAnswerAsk).toHaveBeenCalledWith('b', { optionIndex: 0 });
     });
 
+    test('a permission card arriving above the questions also counts: an answer pressed in the next 400 ms is ignored', () => {
+      render();
+      push([ask('a')]);
+      later(500);
+      act(() => {
+        handleLucyPermissionCards({ type: 'lucyPermissionCards', serverNow: Date.now(), cards: [{
+          promptId: 'req-9', taskId: 'tp', agentId: 'ap', taskName: 'Push task', toolName: 'Bash', command: 'git push', since: Date.now() - MIN,
+          approveKey: '1', denyKey: '3',
+          permissionRequest: { requestId: 'req-9', toolName: 'Bash', toolInputHash: 'h', detectedAt: new Date(Date.now() - MIN).toISOString(), ttlMs: 5 * MIN },
+        }] });
+      });
+      later(100);
+      act(() => { all('avatar-ask-option')[0].dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+      expect(onAnswerAsk).not.toHaveBeenCalled();
+      later(400);
+      act(() => { all('avatar-ask-option')[0].dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+      expect(onAnswerAsk).toHaveBeenCalledOnce();
+    });
+
     test('keyboard focus follows a row that was pressed to its card\'s top line, never to an answer button', () => {
       render();
       push([ask('a', { expiresAt: NOW + 5 * MIN }), ask('b', { expiresAt: NOW + 10 * MIN })]);
