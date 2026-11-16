@@ -11,8 +11,9 @@ phrases: `Off by default: deletes or migrates data`, `Off by default: spends
 money`, `Off by default: sends data to a third party`, or `Off by default: needs
 a credential or service`. `pnpm validate:default-on` enforces this. The switches
 that were already off when the rule landed are listed in
-`src/core/default-on-guard.ts`; issue #3937 turned on the finished ones, and
-each one still on that list says why it stays off.
+`src/core/default-on-guard.ts`; issue #3937 turned on the finished ones. Why
+each switch left on that list stays off is recorded in the inventory of pull
+request #3945.
 
 ## Server And Data
 
