@@ -206,7 +206,8 @@ describe('useLucyLive', () => {
       const target = { kind: 'link', url: 'https://claude.ai/artifact/abc' };
       await act(async () => { ws.receive({ type: 'open', requestId: 'open-1', target }); });
       expect(onOpen).toHaveBeenCalledWith(target);
-      expect(sent).toContainEqual({ type: 'open_result', requestId: 'open-1', outcome: 'blocked' });
+      expect(onOpen).toHaveBeenCalledTimes(1);
+      expect(sent.filter((m) => m.type === 'open_result')).toEqual([{ type: 'open_result', requestId: 'open-1', outcome: 'blocked' }]);
     } finally {
       delete probeOptions.onOpen;
     }

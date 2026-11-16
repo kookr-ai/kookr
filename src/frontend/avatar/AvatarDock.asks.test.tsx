@@ -149,6 +149,13 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
       expect(q('avatar-ask-open-task')).toBeNull();
     });
 
+    test('a link that is not http(s) is never rendered as a clickable href', () => {
+      render();
+      push([ask({ links: [{ url: 'javascript:alert(1)', label: 'Evil' }, { url: MOCKUPS, label: 'Open mockups' }] })]);
+      expect(all('avatar-ask-link').map((a) => a.textContent)).toEqual(['Open mockups']);
+      expect(container.innerHTML).not.toContain('javascript:');
+    });
+
     test('"Open task" says so when the task cannot be shown, instead of doing nothing', () => {
       render({ onOpenTask: () => false });
       push([ask()]);

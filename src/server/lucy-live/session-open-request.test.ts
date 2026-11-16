@@ -35,11 +35,13 @@ interface H {
   modelCalls: string[];
   matchCalls: string[];
   ears: FakeEars[];
+  /** The server clock; move it on between turns so the next one does not start over her voice. */
+  clock: { t: number };
 }
 
 /** `browser`: what the browser answers to an `open` request; null: it never answers. */
 function harness(opts: { asks?: VoiceOpenableAsk[]; browser?: OpenOutcome | null; openable?: boolean } = {}): H {
-  const h = { sent: [], modelCalls: [], matchCalls: [], ears: [] } as unknown as H;
+  const h = { sent: [], modelCalls: [], matchCalls: [], ears: [], clock: { t: 1000 } } as unknown as H;
   const browser = opts.browser === undefined ? 'opened' : opts.browser;
   const ports: LucyLivePorts = {
     send: (m) => {
@@ -60,7 +62,7 @@ function harness(opts: { asks?: VoiceOpenableAsk[]; browser?: OpenOutcome | null
     matchAnswer: async (req) => { h.matchCalls.push(req.transcript); return { kind: 'none' } as AnswerMatch; },
     answerAsk: async () => ({ ok: true }),
     ...(opts.openable === false ? {} : { openableAsks: () => opts.asks ?? [WITH_LINK] }),
-    now: () => 1000,
+    now: () => h.clock.t,
     warn: () => {},
     recordTurn: () => {},
   };
@@ -105,6 +107,56 @@ describe('"show me" by voice while a question is waiting', () => {
     await operatorSays(h, 'show me the task', 't1');
     expect(h.opens()[0]?.target).toEqual({ kind: 'task', taskId: 't1' });
     expect(h.said().join(' ')).toBe(OPEN_TASK_OPENED);
+  });
+
+  it('acts on the newest waiting question, which comes first', async () => {
+    const newest: VoiceOpenableAsk = { askId: 'a9', taskId: 't9', links: [{ url: 'https://example.com/newest' }] };
+    const h = harness({ asks: [newest, WITH_LINK] });
+    await operatorSays(h, 'show me', 't1');
+    expect(h.opens()[0]?.target).toEqual({ kind: 'link', url: 'https://example.com/newest' });
+    h.clock.t += 5000; // her voice has ended
+    await operatorSays(h, 'show me the task', 't2');
+    expect(h.opens()[1]?.target).toEqual({ kind: 'task', taskId: 't9' });
+  });
+
+  it('"show me the task" works for a question without links', async () => {
+    const h = harness({ asks: [NO_LINK] });
+    await operatorSays(h, 'show me the task', 't1');
+    expect(h.opens()[0]?.target).toEqual({ kind: 'task', taskId: 't2' });
+    expect(h.said().join(' ')).toBe(OPEN_TASK_OPENED);
+  });
+
+  it('a late or unknown open_result changes nothing, and does not settle a later request', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const h = harness({ browser: null });
+    await operatorSays(h, 'show me', 't1', async () => { await vi.advanceTimersByTimeAsync(OPEN_REPLY_TIMEOUT_MS + 10); });
+    expect(h.said().join(' ')).toBe(OPEN_NO_REPLY);
+    const first = h.opens()[0]!.requestId;
+    const before = h.sent.length;
+    h.session.handleMessage({ type: 'open_result', requestId: first, outcome: 'opened' });
+    h.session.handleMessage({ type: 'open_result', requestId: 'open-999', outcome: 'opened' });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(h.sent).toHaveLength(before);
+    // The stale id is not reused: a reply carrying it cannot answer the next request.
+    h.clock.t += 5000; // her voice has ended
+    await operatorSays(h, 'open it', 't2', async () => {
+      await vi.advanceTimersByTimeAsync(10);
+      h.session.handleMessage({ type: 'open_result', requestId: first, outcome: 'opened' });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(h.said().join(' ')).toBe(OPEN_NO_REPLY);
+      await vi.advanceTimersByTimeAsync(OPEN_REPLY_TIMEOUT_MS);
+    });
+    expect(h.opens()[1]!.requestId).not.toBe(first);
+    expect(h.said().join(' ')).toBe(`${OPEN_NO_REPLY} ${OPEN_NO_REPLY}`);
+  });
+
+  it('stops waiting when the operator talks over her, and opens nothing more', async () => {
+    const h = harness({ browser: null });
+    await operatorSays(h, 'show me', 't1', async () => { for (let i = 0; i < 10; i += 1) await tick(); });
+    expect(h.opens()).toHaveLength(1);
+    h.session.handleMessage({ type: 'barge_in' });
+    for (let i = 0; i < 10; i += 1) await tick();
+    expect(h.said()).toEqual([]);
   });
 
   it('says the browser blocked the tab when it did, instead of claiming it opened', async () => {

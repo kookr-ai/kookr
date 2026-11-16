@@ -19,7 +19,7 @@ import { useId, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { ASK_LIMITS, DEFAULT_ASK_LINK_LABEL, type OperatorAskView } from '../../shared/contracts/asks.js';
 import type { AskAnswerChoice, AskSubmitState } from '../store/operator-asks.js';
-import { splitLinks } from './ask-links.js';
+import { isOpenableUrl, splitLinks } from './ask-links.js';
 
 export type { AskAnswerChoice };
 
@@ -91,6 +91,8 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask }:
   const [openTaskFailed, setOpenTaskFailed] = useState(false);
   const questionId = useId();
   const who = ask.taskName ? `${ask.taskName} asks` : 'A task asks';
+  // The server only accepts https links; this guards against an old or hand-edited record all the same.
+  const links = (ask.links ?? []).filter((link) => isOpenableUrl(link.url));
 
   if (ask.state !== 'pending') {
     const outcome = askOutcome(ask);
@@ -148,10 +150,10 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask }:
           <p><TextWithLinks text={ask.context} /></p>
         </details>
       )}
-      {((ask.links?.length ?? 0) > 0 || onOpenTask) && (
+      {(links.length > 0 || onOpenTask) && (
         // What the question is about, one click away: the pages it links to, and the task that asked.
         <div className="avatar-ask-links">
-          {(ask.links ?? []).map((link, index) => (
+          {links.map((link, index) => (
             <a
               key={`${index}-${link.url}`}
               className="avatar-ask-link"
