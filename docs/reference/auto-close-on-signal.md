@@ -118,10 +118,23 @@ when its opening time (GitHub `createdAt`) is unknown (issue #3678): a chain
 successor that mentions its predecessor's PR, still waiting on auto-merge, is
 not completed when that PR merges. A task started to finish an existing PR is
 therefore not completed by this path; it completes through its own
-`completion_ready` signal. A PR another task opened after this one started can
-still be attributed when the agent mentions it; the opening-time bound does not
-cover that case. The hung-task, hung-suspect and provider-paused reapers share
-this attribution.
+`completion_ready` signal. A merged PR is excluded too when **another task
+pushed or opened it** and this task did neither (issue #3678): the GitHub scanner
+records, per task, the branches its own `git push` reported updating and the PRs
+its own `gh pr create` printed. A task that only reviewed, commented on or merged
+another task's PR is therefore not completed when that PR merges. This evidence
+is kept in memory: when no task left any (for example after a server restart),
+the PR is judged by the other rules alone. Finally, a merged PR is excluded when
+it merged into a branch that is **neither the repository's default branch nor
+its integration branch** (`.kookr/delivery-gate.json`, issue #3983), such as a
+PR stacked on another feature branch. The server reads both branches per
+repository from a local checkout (the default branch from `origin/HEAD`, or once
+from `git ls-remote --symref origin HEAD` when the clone has no `origin/HEAD`);
+while it does not know the default branch, the base branch is not checked. The
+hung-task, hung-suspect and provider-paused reapers share this attribution for
+their "delivered" label. The hung-suspect and provider-paused sweeps also have a
+label-only fallback that asks GitHub for a merged PR by the task's session branch
+(#3578); that fallback does not check the base branch yet (#4077).
 
 **Only opted-in tasks.** This path fires only for tasks with
 `autoCloseOnSignal` — the same population the signal path serves. An ask-first /
@@ -137,6 +150,21 @@ slack) — well before the hung-task reaper's hours-long threshold, which stays
 the backstop. The sweep drains gently (≤2 completions per batch, ≥60 s between
 batches), matching the completion-ready auto-close sweep.
 
+## Chain ended without a handoff (issue #3678)
+
+A self-continuation chain task (playbook parameter `selfContinuation=true`, or
+the prompt markers the `chain-handoff-stop` hook reads) should end its unit by
+spawning its successor or by recording why the chain stops. When such a task is
+completed while it is still running and has neither, by this sweep, by an
+operator or by any other completion path, the server records it (completing a
+task that already ended, for example one the reaper terminated, is not marked): the task gets
+`chainEndedWithoutHandoff: true`, its completion digest starts with the bullet
+"Chain ended without successor or stop reason", and `audit.jsonl` gets a
+`task.chainEndedWithoutHandoff` row naming the actor. A child task, or any
+signal the task itself recorded, counts as a handoff, as in the hook. The sweep
+checks the task as it was before it raised its own `completion_ready`.
+Playbook-chain iterations and active Ralph loops are never marked.
+
 ## Finished and merged (issues #3930, #3983)
 
 When a task launched with `autoCloseOnSignal` says it is finished and its own
@@ -147,9 +175,9 @@ and the merge (`mergedFinishedSettleMinutes`, default **2 minutes**, range 1–6
 each tick), instead of waiting the 10-minute cleanup budget.
 
 - **The pull request.** The same attribution as the cleanup budget: a PR from the
-  task's own activity, merged after the task was created. The base branch does
-  not matter, so a PR merged into an integration branch such as `staging`
-  counts like one merged into `main`.
+  task's own activity, opened and merged after the task was created, into the
+  repository's default branch or its integration branch: a PR merged into
+  `staging` counts like one merged into `main`.
 - **The signal.** It can come before or after the PR's GitHub `mergedAt`. A
   "finished" raised before the merge (for example when GitHub auto-merge merges
   the PR later) starts the settle time at the merge. A new user prompt ends the

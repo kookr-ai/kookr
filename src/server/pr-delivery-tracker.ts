@@ -70,12 +70,41 @@ export interface PrDeliveryTrackerDeps {
   trainStateDir?: (repoPath: string) => string;
 }
 
+/**
+ * The branches a merge into counts as delivery for one repository (issue
+ * #3983): its default branch (`origin/HEAD`) and its integration branch
+ * (`.kookr/delivery-gate.json`), each null when the checkout does not say.
+ */
+export interface DeliveryBranches {
+  defaultBranch: string | null;
+  integrationBranch: string | null;
+}
+
+/**
+ * The branches to pass as `deliveryBranches` to `selectDeliveredMergedPr`, or
+ * undefined when the default branch is unknown: without it the server cannot
+ * tell a feature-branch merge from a merge into the default branch.
+ */
+export function deliveryBranchList(branches: DeliveryBranches | undefined): string[] | undefined {
+  if (!branches?.defaultBranch) return undefined;
+  return branches.integrationBranch && branches.integrationBranch !== branches.defaultBranch
+    ? [branches.defaultBranch, branches.integrationBranch]
+    : [branches.defaultBranch];
+}
+
+function repoCacheKey(owner: string, repo: string): string {
+  return `${owner}/${repo}`.toLowerCase();
+}
+
 interface RepoFacts {
   integrationBranch: string | null;
   integrationSince?: string;
   trainDir: string;
   events?: TrainEventLine[];
 }
+
+/** Wait before asking the remote for its default branch again after a failure. */
+export const REMOTE_DEFAULT_BRANCH_RETRY_MS = 10 * 60_000;
 
 /** How many of `origin/main`'s reflog entries are searched for the promotion time. */
 const REFLOG_DEPTH = 500;
@@ -88,6 +117,12 @@ export class PrDeliveryTracker {
   private readonly settled = new Map<string, PrDeliveryState>();
   /** Train state directory per checkout (resolving it runs git). */
   private readonly trainDirs = new Map<string, string>();
+  /** Delivery branches by `owner/repo` (lower case), refreshed with each pass (issue #3983). */
+  private readonly deliveryBranches = new Map<string, DeliveryBranches>();
+  /** Default branch per checkout as the remote reported it (`ls-remote`), when `origin/HEAD` is not set. */
+  private readonly remoteDefaultBranches = new Map<string, string>();
+  /** When a failed `ls-remote` may be retried, per checkout (an offline host must not pay its timeout every pass). */
+  private readonly remoteDefaultBranchRetryAt = new Map<string, number>();
   private running: Promise<void> | null = null;
   private again = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -136,14 +171,39 @@ export class PrDeliveryTracker {
     return this.running;
   }
 
+  /**
+   * The delivery branches last read for `owner/repo`, or undefined when no
+   * refresh has seen a tracked PR of that repository in a local checkout yet.
+   * Synchronous, for the delivered-PR resolver (issue #3983).
+   */
+  getDeliveryBranches(owner: string, repo: string): DeliveryBranches | undefined {
+    return this.deliveryBranches.get(repoCacheKey(owner, repo));
+  }
+
   private async refreshOnce(): Promise<void> {
     const repos = new Map<string, RepoFacts | null>();
+    const branchesByPath = new Map<string, DeliveryBranches>();
     const changed = new Set<string>();
     for (const pr of this.deps.store.getAllPRStates()) {
       const repoPath = this.deps.resolveRepoPath(pr.ref.owner, pr.ref.repo, pr.ref.taskId);
       let delivery: PrDeliveryState | null = null;
       if (repoPath) {
-        if (!repos.has(repoPath)) repos.set(repoPath, await this.readRepoFacts(repoPath));
+        if (!branchesByPath.has(repoPath)) {
+          const integrationBranch = await this.readIntegrationBranchOf(repoPath);
+          const defaultBranch = await this.readDefaultBranch(repoPath);
+          branchesByPath.set(repoPath, { defaultBranch, integrationBranch });
+          repos.set(repoPath, integrationBranch ? await this.readRepoFacts(repoPath, integrationBranch) : null);
+        }
+        const key = repoCacheKey(pr.ref.owner, pr.ref.repo);
+        const read = branchesByPath.get(repoPath)!;
+        // A null integration branch can also be a failed read. Keep the last
+        // known one, so a transient git failure never makes a PR merged into
+        // it look like a merge into some other branch (fail open).
+        const known = this.deliveryBranches.get(key);
+        this.deliveryBranches.set(key, {
+          defaultBranch: read.defaultBranch ?? known?.defaultBranch ?? null,
+          integrationBranch: read.integrationBranch ?? known?.integrationBranch ?? null,
+        });
         const repo = repos.get(repoPath) ?? null;
         if (repo) delivery = await this.deliveryOf(pr, repoPath, repo);
       }
@@ -152,12 +212,39 @@ export class PrDeliveryTracker {
     for (const taskId of changed) this.deps.onDeliveryChanged(taskId);
   }
 
-  private async readRepoFacts(repoPath: string): Promise<RepoFacts | null> {
-    const integrationBranch = await readIntegrationBranch(repoPath, async (args, cwd) => {
+  private readIntegrationBranchOf(repoPath: string): Promise<string | null> {
+    return readIntegrationBranch(repoPath, async (args, cwd) => {
       const r = await this.git(args, cwd);
       return { ok: r.code === 0, stdout: r.stdout };
     });
-    if (!integrationBranch) return null;
+  }
+
+  /**
+   * The repository's default branch, or null. Read from the local
+   * `origin/HEAD` when the clone has it, otherwise asked of the remote once
+   * (`git ls-remote --symref origin HEAD`: many clones, this host's included,
+   * have no `origin/HEAD`). A remote answer is kept for the life of the
+   * process; a failed one is retried after {@link REMOTE_DEFAULT_BRANCH_RETRY_MS}.
+   */
+  private async readDefaultBranch(repoPath: string): Promise<string | null> {
+    const local = await this.git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoPath);
+    const ref = local.code === 0 ? local.stdout.trim() : '';
+    if (ref.startsWith('origin/') && ref.length > 'origin/'.length) return ref.slice('origin/'.length);
+    const cached = this.remoteDefaultBranches.get(repoPath);
+    if (cached !== undefined) return cached;
+    const retryAt = this.remoteDefaultBranchRetryAt.get(repoPath);
+    if (retryAt !== undefined && Date.now() < retryAt) return null;
+    const remote = await this.git(['ls-remote', '--symref', 'origin', 'HEAD'], repoPath);
+    const name = remote.code === 0 ? /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(remote.stdout)?.[1] : undefined;
+    if (!name) {
+      this.remoteDefaultBranchRetryAt.set(repoPath, Date.now() + REMOTE_DEFAULT_BRANCH_RETRY_MS);
+      return null;
+    }
+    this.remoteDefaultBranches.set(repoPath, name);
+    return name;
+  }
+
+  private async readRepoFacts(repoPath: string, integrationBranch: string): Promise<RepoFacts> {
     // When the train was turned on: the oldest commit on main whose change to
     // the config touches an `integrationBranch` line (the file may predate it).
     const added = await this.git(

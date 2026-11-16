@@ -4,6 +4,7 @@ import {
   extractRefsFromText,
   extractRefsFromPrompt,
   extractRefsFromEvents,
+  extractAuthorshipFromEvents,
   parseGitRemoteUrl,
   toGitHubReferences,
 } from './github-reference-scanner.js';
@@ -695,5 +696,69 @@ describe('toGitHubReferences', () => {
 
     const refs = toGitHubReferences(extracted, 'agent-1', 'task-1');
     expect(refs).toHaveLength(0);
+  });
+});
+
+describe('extractAuthorshipFromEvents (issue #3678)', () => {
+  function shell(command: string, toolResponse: unknown, id = 't1'): AgentEvent[] {
+    return [
+      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolUseId: id, toolInput: { command } },
+      { type: 'tool_result', sessionId: 's1', toolName: 'Bash', toolUseId: id, toolResponse },
+    ] as AgentEvent[];
+  }
+
+  test('records the branches a successful git push updated, with the repository from the To line', () => {
+    const stderr = [
+      'To github.com:kookr-ai/kookr.git',
+      ' * [new branch]          fix/new -> fix/new',
+      '   1a2b3c4..5d6e7f8  fix/old -> fix/old',
+      ' + 1a2b3c4...5d6e7f8 fix/forced -> fix/forced (forced update)',
+      ' ! [rejected]        fix/rejected -> fix/rejected (fetch first)',
+      ' - [deleted]         fix/gone',
+      ' * [new tag]         v1.0 -> v1.0',
+    ].join('\n');
+    const evidence = extractAuthorshipFromEvents(shell('git push -u origin fix/new </dev/null', { stdout: '', stderr }));
+    expect(evidence.pushedBranches).toEqual([
+      { owner: 'kookr-ai', repo: 'kookr', branch: 'fix/new' },
+      { owner: 'kookr-ai', repo: 'kookr', branch: 'fix/old' },
+      { owner: 'kookr-ai', repo: 'kookr', branch: 'fix/forced' },
+    ]);
+    expect(evidence.createdPrs).toEqual([]);
+  });
+
+  test('falls back to the task repository when the remote is not a GitHub URL; skips without one', () => {
+    const out = 'To /srv/mirror.git\n * [new branch]      feat -> feat\n';
+    expect(extractAuthorshipFromEvents(shell('git -C /w push origin feat', out), 'o', 'r').pushedBranches)
+      .toEqual([{ owner: 'o', repo: 'r', branch: 'feat' }]);
+    expect(extractAuthorshipFromEvents(shell('git push origin feat', out)).pushedBranches).toEqual([]);
+  });
+
+  test('records the PRs gh pr create printed', () => {
+    const evidence = extractAuthorshipFromEvents(shell('gh pr create --fill', 'https://github.com/kookr-ai/kookr/pull/42\n'));
+    expect(evidence.createdPrs).toEqual([{ owner: 'kookr-ai', repo: 'kookr', number: 42 }]);
+  });
+
+  test('a dry-run push and a gh pr create that found an existing PR are not authorship; git -c k=v push is', () => {
+    const out = 'To github.com:kookr-ai/kookr.git\n * [new branch]   feat -> feat\n';
+    expect(extractAuthorshipFromEvents(shell('git push --dry-run origin feat', out)).pushedBranches).toEqual([]);
+    expect(extractAuthorshipFromEvents(shell('git push -n origin feat', out)).pushedBranches).toEqual([]);
+    expect(extractAuthorshipFromEvents(shell('git -c core.sshCommand=ssh push origin feat', out)).pushedBranches)
+      .toEqual([{ owner: 'kookr-ai', repo: 'kookr', branch: 'feat' }]);
+    const exists = 'a pull request for branch "feat" into branch "main" already exists:\nhttps://github.com/kookr-ai/kookr/pull/41\n';
+    expect(extractAuthorshipFromEvents(shell('gh pr create --fill', { stdout: '', stderr: exists })).createdPrs).toEqual([]);
+  });
+
+  test('reading or acting on a PR is not authorship', () => {
+    const pushLike = 'To github.com:kookr-ai/kookr.git\n * [new branch]   other -> other\n';
+    for (const command of ['gh pr view 42', 'gh pr merge 42 --squash', 'gh pr review 42 --approve', 'git log --oneline']) {
+      const evidence = extractAuthorshipFromEvents(shell(command, `https://github.com/kookr-ai/kookr/pull/42\n${pushLike}`));
+      expect(evidence).toEqual({ pushedBranches: [], createdPrs: [] });
+    }
+    // A non-shell tool (a file read) never counts either.
+    const read = [
+      { type: 'tool_use', sessionId: 's1', toolName: 'Read', toolUseId: 'r', toolInput: { file_path: '/x' } },
+      { type: 'tool_result', sessionId: 's1', toolName: 'Read', toolUseId: 'r', toolResponse: pushLike },
+    ] as AgentEvent[];
+    expect(extractAuthorshipFromEvents(read, 'o', 'r')).toEqual({ pushedBranches: [], createdPrs: [] });
   });
 });

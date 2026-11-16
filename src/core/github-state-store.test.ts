@@ -253,3 +253,32 @@ describe('GitHubStateStore.isRefOpen', () => {
     expect(store.isRefOpen({ type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 42 })).toBe(false);
   });
 });
+
+describe('GitHubStateStore authorship (issue #3678)', () => {
+  const pr = { owner: 'Kookr-AI', repo: 'kookr', number: 7, branch: 'fix/x' };
+
+  test('none until a task records evidence; self for the pusher, other for everyone else', () => {
+    const store = new GitHubStateStore();
+    expect(store.authorshipOf('a', pr)).toBe('none');
+    store.recordAuthorship('a', { pushedBranches: [{ owner: 'kookr-ai', repo: 'kookr', branch: 'fix/x' }], createdPrs: [] });
+    expect(store.authorshipOf('a', pr)).toBe('self');
+    expect(store.authorshipOf('b', pr)).toBe('other');
+    // Same branch name in another repository is not the same branch.
+    expect(store.authorshipOf('b', { ...pr, repo: 'other' })).toBe('none');
+  });
+
+  test('a PR printed by the task\'s own gh pr create counts, even when another task pushed the branch', () => {
+    const store = new GitHubStateStore();
+    store.recordAuthorship('a', { pushedBranches: [{ owner: 'kookr-ai', repo: 'kookr', branch: 'fix/x' }], createdPrs: [] });
+    store.recordAuthorship('b', { pushedBranches: [], createdPrs: [{ owner: 'kookr-ai', repo: 'kookr', number: 7 }] });
+    expect(store.authorshipOf('b', pr)).toBe('self');
+    expect(store.authorshipOf('c', { ...pr, branch: undefined })).toBe('other');
+  });
+
+  test('removeTask drops the task\'s evidence', () => {
+    const store = new GitHubStateStore();
+    store.recordAuthorship('a', { pushedBranches: [], createdPrs: [{ owner: 'kookr-ai', repo: 'kookr', number: 7 }] });
+    store.removeTask('a');
+    expect(store.authorshipOf('b', pr)).toBe('none');
+  });
+});

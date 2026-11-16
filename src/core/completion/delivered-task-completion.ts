@@ -76,6 +76,21 @@ export interface TrackedPrRef {
   mergedAt?: Date;
   /** GitHub `createdAt`: when the PR was opened, when known (issue #3678). */
   openedAt?: Date;
+  /** The branch the PR targets (GitHub `baseRefName`); empty or absent when unknown. */
+  baseBranch?: string;
+  /**
+   * The branches a merge into counts as delivery for this PR's repository: its
+   * default branch, plus its integration branch when `.kookr/delivery-gate.json`
+   * configures one (issue #3983). Absent when the default branch is not known;
+   * the base branch is then not checked.
+   */
+  deliveryBranches?: readonly string[];
+  /**
+   * Who pushed or opened this PR, as far as the server saw (issue #3678):
+   * `'self'` when this task did, `'other'` when only another task did,
+   * `'none'` (or absent) when no task left such evidence.
+   */
+  authorship?: 'self' | 'other' | 'none';
 }
 
 /** Options for {@link selectDeliveredMergedPr}. */
@@ -109,8 +124,17 @@ export interface SelectDeliveredMergedPrOptions {
  * prompt-referenced merged PRs are excluded, so a live task whose prompt cites
  * an already-merged PR is never force-completed (correctness review, #1560).
  * With `opts.notBefore`, PRs opened or merged before the task existed are
- * excluded too (issues #3678, #3746). Returns the first qualifying merged PR, so a stale PR listed
- * first never masks a real delivery listed after it.
+ * excluded too (issues #3678, #3746). Also excluded:
+ * - a PR merged into a branch that is positively known not to be a delivery
+ *   branch of its repository (`deliveryBranches`, issue #3983), such as a PR
+ *   stacked on another feature branch. An unknown base or unknown delivery
+ *   branches never exclude: failing closed there would switch the sweep off
+ *   for every repository whose branches the server could not read;
+ * - a PR that another task pushed or opened while this task left no such
+ *   evidence (`authorship === 'other'`, issue #3678), for example one this
+ *   task only reviewed, commented on or merged.
+ * Returns the first qualifying merged PR, so a stale PR listed first never
+ * masks a real delivery listed after it.
  */
 export function selectDeliveredMergedPr(
   prs: readonly TrackedPrRef[],
@@ -121,7 +145,9 @@ export function selectDeliveredMergedPr(
     (pr) => pr.status === 'merged'
       && pr.detectedFrom !== PROMPT_DETECTED_FROM
       && (notBeforeMs === undefined
-        || (atOrAfter(pr.mergedAt, notBeforeMs) && atOrAfter(pr.openedAt, notBeforeMs))),
+        || (atOrAfter(pr.mergedAt, notBeforeMs) && atOrAfter(pr.openedAt, notBeforeMs)))
+      && mergedIntoDeliveryBranch(pr)
+      && pr.authorship !== 'other',
   );
   if (!merged) return null;
   return {
@@ -131,6 +157,16 @@ export function selectDeliveredMergedPr(
     ...(merged.repo ? { repo: merged.repo } : {}),
     ...(merged.mergedAt instanceof Date ? { mergedAt: merged.mergedAt } : {}),
   };
+}
+
+/**
+ * False only when both the PR's base branch and its repository's delivery
+ * branches are known and the base is not one of them (issue #3983).
+ */
+function mergedIntoDeliveryBranch(pr: Pick<TrackedPrRef, 'baseBranch' | 'deliveryBranches'>): boolean {
+  if (typeof pr.baseBranch !== 'string' || pr.baseBranch === '') return true;
+  if (!pr.deliveryBranches || pr.deliveryBranches.length === 0) return true;
+  return pr.deliveryBranches.includes(pr.baseBranch);
 }
 
 function toEpochMs(value: Date | string): number {

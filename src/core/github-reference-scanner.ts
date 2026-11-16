@@ -1,5 +1,6 @@
 import type { AgentEvent } from './types.js';
 import type { GitHubReference } from './github-types.js';
+import type { AuthorshipEvidence } from './github-state-store.js';
 
 /**
  * Extract GitHub PR and issue references from agent events using regex patterns.
@@ -228,16 +229,109 @@ function shouldScanToolResult(
     return false;
   }
 
-  const pairedUse = event.toolUseId ? toolUsesById.get(event.toolUseId) : undefined;
-  const shellUse =
-    pairedUse && isShellToolName(pairedUse.toolName) ? pairedUse : lastShellToolUse;
-  const command = extractCommand(shellUse?.toolInput);
+  const command = pairedShellCommand(event, toolUsesById, lastShellToolUse);
 
   if (!command) {
     return false;
   }
 
   return MUTATING_GH_COMMAND_RE.test(command) || MUTATING_API_COMMAND_RE.test(command);
+}
+
+/** The shell command a tool_result answers: its paired tool_use, else the last shell tool_use. */
+function pairedShellCommand(
+  event: Extract<AgentEvent, { type: 'tool_result' }>,
+  toolUsesById: ReadonlyMap<string, Extract<AgentEvent, { type: 'tool_use' }>>,
+  lastShellToolUse: Extract<AgentEvent, { type: 'tool_use' }> | null,
+): string | null {
+  const pairedUse = event.toolUseId ? toolUsesById.get(event.toolUseId) : undefined;
+  const shellUse =
+    pairedUse && isShellToolName(pairedUse.toolName) ? pairedUse : lastShellToolUse;
+  return extractCommand(shellUse?.toolInput);
+}
+
+const GIT_PUSH_COMMAND_RE = /\bgit\b(?:\s+-[Cc]\s+\S+)*\s+push\b/;
+/** `git push --dry-run` / `-n` prints the same ref lines without pushing anything. */
+const GIT_PUSH_DRY_RUN_RE = /\bpush\b[^|;&]*\s(?:--dry-run|-n)\b/;
+/** `gh pr create` on a branch that already has a PR prints that PR's URL; the task did not open it. */
+const PR_ALREADY_EXISTS_RE = /already exists/i;
+const GH_PR_CREATE_COMMAND_RE = /\bgh\s+pr\s+create\b/;
+/**
+ * A ref line `git push` prints for an update that went through:
+ * ` * [new branch]   feat -> feat`, `   1a2b3c4..5d6e7f8  feat -> feat`, or a
+ * forced ` + 1a2b3c4...5d6e7f8 feat -> feat (forced update)`. Rejected
+ * (` ! [rejected]`), deleted and tag lines do not match.
+ */
+const PUSHED_REF_LINE_RE = /^\s*(?:\*\s+\[new branch\]|\+?\s*[0-9a-f]{7,40}\.{2,3}[0-9a-f]{7,40})\s+\S+\s+->\s+(\S+)/gm;
+/** The `To <remote>` line of `git push` output, naming the repository pushed to. */
+const PUSH_REMOTE_LINE_RE = /^To\s+(\S+)/m;
+const GITHUB_REMOTE_RE = /github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/;
+const PULL_URL_RE = /https?:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)/g;
+
+/**
+ * The text of a tool response: the string itself, or the string fields of a
+ * response object (Claude Code's Bash result is `{ stdout, stderr, ... }`;
+ * `git push` reports on stderr).
+ */
+function responseText(response: unknown): string {
+  if (typeof response === 'string') return response;
+  if (!response || typeof response !== 'object') return '';
+  return Object.values(response as Record<string, unknown>)
+    .filter((v): v is string => typeof v === 'string')
+    .join('\n');
+}
+
+/**
+ * Authorship evidence in a task's own shell activity (issue #3678): the
+ * branches a successful `git push` reported updating, and the PRs a
+ * `gh pr create` printed. Only shell tool results paired with those commands
+ * count, so reading a PR (`gh pr view`, `git log`) never claims it. The
+ * repository comes from the push's `To <remote>` line or the PR URL, falling
+ * back to the task's own repository for a push whose remote is not on GitHub's
+ * URL form; with neither, the branch is skipped.
+ */
+export function extractAuthorshipFromEvents(
+  events: AgentEvent[],
+  defaultOwner?: string,
+  defaultRepo?: string,
+): AuthorshipEvidence {
+  const pushedBranches: Array<{ owner: string; repo: string; branch: string }> = [];
+  const createdPrs: Array<{ owner: string; repo: string; number: number }> = [];
+  const toolUsesById = new Map<string, Extract<AgentEvent, { type: 'tool_use' }>>();
+  let lastShellToolUse: Extract<AgentEvent, { type: 'tool_use' }> | null = null;
+
+  for (const event of events) {
+    if (event.type === 'tool_use') {
+      if (isShellToolName(event.toolName)) lastShellToolUse = event;
+      if (event.toolUseId) toolUsesById.set(event.toolUseId, event);
+      continue;
+    }
+    if (event.type !== 'tool_result' || !isShellToolName(event.toolName)) continue;
+    const command = pairedShellCommand(event, toolUsesById, lastShellToolUse);
+    if (!command) continue;
+    const text = responseText(event.toolResponse);
+    if (text === '') continue;
+
+    if (GIT_PUSH_COMMAND_RE.test(command) && !GIT_PUSH_DRY_RUN_RE.test(command)) {
+      const remote = PUSH_REMOTE_LINE_RE.exec(text)?.[1];
+      const parsed = remote ? GITHUB_REMOTE_RE.exec(remote) : null;
+      const owner = parsed?.[1] ?? defaultOwner;
+      const repo = parsed?.[2] ?? defaultRepo;
+      if (owner && repo) {
+        for (const m of text.matchAll(PUSHED_REF_LINE_RE)) {
+          const branch = m[1].replace(/^refs\/heads\//, '');
+          if (branch !== '') pushedBranches.push({ owner, repo, branch });
+        }
+      }
+    }
+    if (GH_PR_CREATE_COMMAND_RE.test(command) && !PR_ALREADY_EXISTS_RE.test(text)) {
+      for (const m of text.matchAll(PULL_URL_RE)) {
+        createdPrs.push({ owner: m[1], repo: m[2], number: Number.parseInt(m[3], 10) });
+      }
+    }
+  }
+
+  return { pushedBranches, createdPrs };
 }
 
 function extractCommand(toolInput: unknown): string | null {

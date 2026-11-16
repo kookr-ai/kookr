@@ -17,6 +17,7 @@ import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import * as dispositionLedger from '../core/disposition-ledger.js';
 import * as auditLog from '../core/audit-log.js';
 import { reapHungTask } from './hung-task-reaper.js';
+import { storeResolverWithMergedPr, type MergedPrFixture } from './__fixtures__/delivered-pr-resolver.js';
 
 // Mock cleanupTaskWorktrees (fire-and-forget in terminateTask)
 const mockCleanupTaskWorktrees = vi.fn().mockResolvedValue(undefined);
@@ -260,6 +261,47 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
       reclaimAttempted: 1,
       reclaimSucceeded: 1,
       lastCandidatesConsidered: 1,
+    });
+  });
+
+  // Issues #3678 / #3983: the sweep shares the production delivered-PR
+  // resolver, so its label follows the same attribution rules.
+  describe('with the production resolver', () => {
+    async function reclaimWith(fx: Omit<MergedPrFixture, 'task' | 'prNumber'>) {
+      const task = makeHungTask({ id: 'delivered' });
+      const taskStore = makeMockTaskStore([task]);
+      const { resolveMergedPr } = storeResolverWithMergedPr({ task, prNumber: 77, ...fx });
+      await reclaimAgedHungSuspectTasks(
+        {
+          taskStore,
+          lifecycleDeps: makeLifecycleDeps(taskStore),
+          auditLogPath,
+          dispositionLedgerPath,
+          isHungSuspect: () => true,
+          getLiveness: () => silentFor(TTL_MS + 60_000),
+          isHoldingOpenPr: () => false,
+          resolveMergedPr,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      );
+      return taskStore.setDisposition.mock.calls[0]?.[1];
+    }
+
+    it('labels a PR merged into the integration branch delivered', async () => {
+      const d = await reclaimWith({ baseBranch: 'staging', branches: { defaultBranch: 'main', integrationBranch: 'staging' } });
+      expect(d).toMatchObject({ outcome: 'delivered_then_hung', deliveredPr: { number: 77 } });
+    });
+
+    it('does not label a PR merged into a feature branch delivered (issue #3983)', async () => {
+      const d = await reclaimWith({ baseBranch: 'feat/parent', branches: { defaultBranch: 'main', integrationBranch: 'staging' } });
+      expect(d.outcome).not.toBe('delivered_then_hung');
+      expect(d.deliveredPr).toBeUndefined();
+    });
+
+    it('does not label a PR another task pushed delivered (issue #3678)', async () => {
+      const d = await reclaimWith({ pushedBy: ['another-task'] });
+      expect(d.outcome).not.toBe('delivered_then_hung');
+      expect(d.deliveredPr).toBeUndefined();
     });
   });
 

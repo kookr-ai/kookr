@@ -13,6 +13,7 @@ import {
   type ProviderResetSource,
 } from './provider-paused-ttl-sweep.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
+import { storeResolverWithMergedPr, type MergedPrFixture } from './__fixtures__/delivered-pr-resolver.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
   DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
@@ -404,6 +405,50 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
 
   // Issue #3578 (tasks e5427450 / 16dec794): the reap labelled already-merged
   // work "billing/quota hold, not delivered".
+  // Issues #3678 / #3983: the sweep shares the production delivered-PR
+  // resolver, so its label follows the same attribution rules.
+  describe('with the production resolver', () => {
+    async function reclaimWith(fx: Omit<MergedPrFixture, 'task' | 'prNumber'>) {
+      const task = makePausedTask();
+      const taskStore = makeMockTaskStore([task]);
+      const tracker = new ProviderPausedStartTracker();
+      tracker.observe(task, true, NOW.getTime() - (TTL_MS + 60_000));
+      const { resolveMergedPr } = storeResolverWithMergedPr({ task, prNumber: 3577, ...fx });
+      await reclaimAgedProviderPausedTasks(
+        {
+          taskStore,
+          lifecycleDeps: makeLifecycleDeps(taskStore),
+          auditLogPath,
+          dispositionLedgerPath,
+          broadcastToAll: vi.fn(),
+          isProviderPaused: () => true,
+          pauseStartTracker: tracker,
+          isHoldingOpenPr: () => false,
+          resolveMergedPr,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      );
+      return taskStore.setDisposition.mock.calls[0]?.[1];
+    }
+
+    it('labels a PR merged into the default branch delivered', async () => {
+      const d = await reclaimWith({ baseBranch: 'main', branches: { defaultBranch: 'main', integrationBranch: null } });
+      expect(d).toMatchObject({ outcome: 'delivered_then_hung', deliveredPr: { number: 3577 } });
+    });
+
+    it('does not label a PR merged into a feature branch delivered (issue #3983)', async () => {
+      const d = await reclaimWith({ baseBranch: 'feat/parent', branches: { defaultBranch: 'main', integrationBranch: null } });
+      expect(d.outcome).not.toBe('delivered_then_hung');
+      expect(d.deliveredPr).toBeUndefined();
+    });
+
+    it('does not label a PR another task pushed delivered (issue #3678)', async () => {
+      const d = await reclaimWith({ pushedBy: ['another-task'] });
+      expect(d.outcome).not.toBe('delivered_then_hung');
+      expect(d.deliveredPr).toBeUndefined();
+    });
+  });
+
   it('issue #3578: already-merged task is still terminated but recorded delivered (ledger obsolete)', async () => {
     const task = makePausedTask();
     const taskStore = makeMockTaskStore([task]);
