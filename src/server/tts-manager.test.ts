@@ -227,13 +227,15 @@ describe('startTTS', () => {
     const ttsDir = await createTTSFixture();
 
     try {
-      let fetchCount = 0;
+      // The first health check of each startTTS call (the reuse check) fails.
+      let down = true;
       vi.stubGlobal(
         'fetch',
         vi.fn(async (url: string | URL | Request) => {
-          fetchCount += 1;
-          // Fail first reuse attempt each startTTS call.
-          if (fetchCount === 1 || fetchCount === 4) throw new Error('down');
+          if (down && String(url).includes('/health')) {
+            down = false;
+            throw new Error('down');
+          }
           if (String(url).includes('/synthesize')) {
             return new Response('ok', { status: 200 });
           }
@@ -263,6 +265,7 @@ describe('startTTS', () => {
       );
 
       execFileMock.mockClear();
+      down = true;
 
       await startTTS({
         ttsDir,
@@ -292,8 +295,11 @@ describe('startTTS', () => {
     const ttsDir = await createTTSFixture();
     const upArgs = ['compose', '-f', join(ttsDir, 'docker-compose.yml'), 'up', '-d', '--build'];
     const start = () => startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
+    // Probes of the configured voice; the background warm-up of the other engine is not one.
     const synthesisProbes = () =>
-      vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).includes('/synthesize')).length;
+      vi.mocked(fetch).mock.calls.filter(
+        (c) => String(c[0]).includes('/synthesize') && String(c[1]?.body).includes('matilda'),
+      ).length;
 
     try {
       // First start: nothing is running, so the image is built and its inputs are stamped.
@@ -384,6 +390,227 @@ describe('startTTS', () => {
     } finally {
       await rm(ttsDir, { recursive: true, force: true });
     }
+  });
+
+  describe('rollback when a rebuilt image fails (#3656)', () => {
+    const OLD_IMAGE = 'sha256:0123456789abcdef';
+    const IMAGE_NAME = 'tts-kookr-tts';
+    const dockerVerbs = () => execFileMock.mock.calls.map((c) => (c[1] as string[]).join(' '));
+
+    /**
+     * A healthy service runs from an image built from older files. docker inspect reports
+     * OLD_IMAGE; the rebuilt image fails in the way `newImage` says, and once `docker tag`
+     * has pointed the name back at OLD_IMAGE the restarted service passes its checks.
+     */
+    function stubStaleService(newImage: 'probe-fails' | 'never-healthy', opts: { tagFails?: boolean } = {}) {
+      let current: 'old' | 'new' = 'old';
+      execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === 'inspect') return cb(null, { stdout: `${OLD_IMAGE} ${IMAGE_NAME}\n`, stderr: '' });
+        if (args[0] === 'tag') {
+          if (opts.tagFails) return cb(new Error('No such image'), '', '');
+          current = 'old';
+        }
+        if (args.includes('up') && args.includes('--build')) current = 'new';
+        cb(null, '', '');
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string | URL | Request) => {
+          const href = String(url);
+          if (current === 'new' && newImage === 'never-healthy') throw new Error('connection refused');
+          if (href.includes('/synthesize') && current === 'new') {
+            return new Response('model failed to load', { status: 500 });
+          }
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        }),
+      );
+    }
+
+    it('restarts the previous image when the rebuilt one fails its voice probe, and does not retry the same files', async () => {
+      const ttsDir = await createTTSFixture();
+      const stampPath = join(ttsDir, '.kookr-tts-build.hash');
+      const failedPath = join(ttsDir, '.kookr-tts-failed.hash');
+      const start = () => startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
+
+      try {
+        await writeFile(stampPath, 'hash-of-older-files\n');
+        stubStaleService('probe-fails');
+
+        const manager = await start();
+
+        expect(manager.url).toBe('http://localhost:8004');
+        const verbs = dockerVerbs();
+        const tagAt = verbs.indexOf(`tag ${OLD_IMAGE} ${IMAGE_NAME}`);
+        expect(tagAt).toBeGreaterThan(verbs.findIndex((v) => v.endsWith('up -d --build')));
+        expect(verbs.slice(tagAt + 1).some((v) => v.endsWith('up -d --no-build'))).toBe(true);
+        // The restarted service is the old one: its stamp still says so.
+        expect((await readFile(stampPath, 'utf-8')).trim()).toBe('hash-of-older-files');
+        const failedHash = (await readFile(failedPath, 'utf-8')).trim();
+        expect(failedHash).toMatch(/^[0-9a-f]{64}$/);
+
+        // Next start, same files: the healthy old service is kept and nothing is rebuilt.
+        execFileMock.mockClear();
+        await start();
+        expect(execFileMock).not.toHaveBeenCalled();
+
+        // The files change (a fix lands): the rebuild is tried again, passes, and is stamped.
+        await writeFile(join(ttsDir, 'src', 'server.py'), 'print("fixed")\n');
+        execFileMock.mockReset();
+        execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+          cb(null, '', '');
+        });
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 })));
+        await start();
+        expect(dockerVerbs().some((v) => v.endsWith('up -d --build'))).toBe(true);
+        const newStamp = (await readFile(stampPath, 'utf-8')).trim();
+        expect(newStamp).not.toBe('hash-of-older-files');
+        expect(newStamp).not.toBe(failedHash);
+        await expect(readFile(failedPath, 'utf-8')).rejects.toThrow(/ENOENT/);
+      } finally {
+        await rm(ttsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('restarts the previous image when the rebuilt one never becomes healthy', async () => {
+      const ttsDir = await createTTSFixture();
+      try {
+        await writeFile(join(ttsDir, '.kookr-tts-build.hash'), 'hash-of-older-files\n');
+        stubStaleService('never-healthy');
+
+        const manager = await startTTS({
+          ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1, startupTimeoutMs: 50,
+        });
+
+        expect(manager.url).toBe('http://localhost:8004');
+        expect(dockerVerbs()).toContain(`tag ${OLD_IMAGE} ${IMAGE_NAME}`);
+        expect(dockerVerbs().at(-1)).toMatch(/up -d --no-build$/);
+      } finally {
+        await rm(ttsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('takes the service down and reports both failures when the previous image cannot be restarted', async () => {
+      const ttsDir = await createTTSFixture();
+      try {
+        await writeFile(join(ttsDir, '.kookr-tts-build.hash'), 'hash-of-older-files\n');
+        stubStaleService('probe-fails', { tagFails: true });
+
+        await expect(startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 })).rejects.toThrow(
+          /synthesis probe failed: HTTP 500: model failed to load; restarting the previous TTS image also failed: No such image/,
+        );
+        expect(dockerVerbs().some((v) => v.endsWith(' down'))).toBe(true);
+        expect(dockerVerbs().some((v) => v.includes('--no-build'))).toBe(false);
+        // Nothing was rolled back, so the failure is not remembered: the next start retries.
+        await expect(readFile(join(ttsDir, '.kookr-tts-failed.hash'), 'utf-8')).rejects.toThrow(/ENOENT/);
+      } finally {
+        await rm(ttsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps the former teardown when the running image cannot be read', async () => {
+      const ttsDir = await createTTSFixture();
+      try {
+        await writeFile(join(ttsDir, '.kookr-tts-build.hash'), 'hash-of-older-files\n');
+        stubStaleService('probe-fails');
+        const withImage = execFileMock.getMockImplementation()!;
+        execFileMock.mockImplementation((cmd: string, args: string[], o: unknown, cb: Function) =>
+          args[0] === 'inspect' ? cb(new Error('No such object: kookr-tts'), '', '') : withImage(cmd, args, o, cb),
+        );
+
+        await expect(startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 })).rejects.toThrow(
+          '[tts] TTS service health passed but synthesis probe failed: HTTP 500: model failed to load',
+        );
+        expect(dockerVerbs().at(-1)).toMatch(/ down$/);
+        expect(dockerVerbs().some((v) => v.startsWith('tag '))).toBe(false);
+      } finally {
+        await rm(ttsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not stamp a freshly built image that fails its voice probe', async () => {
+      const ttsDir = await createTTSFixture();
+      try {
+        let down = true;
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async (url: string | URL | Request) => {
+            if (down && String(url).includes('/health')) {
+              down = false;
+              throw new Error('down');
+            }
+            if (String(url).includes('/synthesize')) return new Response('boom', { status: 500 });
+            return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+          }),
+        );
+
+        await expect(startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 })).rejects.toThrow(
+          /synthesis probe failed/,
+        );
+        // Unstamped, so the next start builds again instead of reusing the failed image.
+        await expect(readFile(join(ttsDir, '.kookr-tts-build.hash'), 'utf-8')).rejects.toThrow(/ENOENT/);
+      } finally {
+        await rm(ttsDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('second voice engine warm-up (#3656)', () => {
+    const synthesizedVoices = () =>
+      vi.mocked(fetch).mock.calls
+        .filter((c) => String(c[0]).includes('/synthesize'))
+        .map((c) => JSON.parse(String(c[1]?.body)).voice as string);
+
+    function stubColdStart(synthesize: (voice: string) => Response | Promise<Response>) {
+      let down = true;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+          const href = String(url);
+          if (down && href.includes('/health')) {
+            down = false;
+            throw new Error('down');
+          }
+          if (href.includes('/synthesize')) return synthesize(JSON.parse(String(init?.body)).voice);
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        }),
+      );
+    }
+
+    it('loads Kokoro after a fresh start whose default voice is Matilda', async () => {
+      stubColdStart(() => new Response('ok', { status: 200 }));
+      await startTTS({ ttsDir: '/repo/tts', port: 8004, device: 'cpu', reuseAttempts: 1 });
+      expect(synthesizedVoices()).toEqual(['/app/voices/matilda.mp3', 'af_heart']);
+    });
+
+    it('loads Pocket TTS (Matilda) after a fresh start whose default voice is a Kokoro voice', async () => {
+      stubColdStart(() => new Response('ok', { status: 200 }));
+      await startTTS({ ttsDir: '/repo/tts', port: 8004, voice: 'af_sky', device: 'cpu', reuseAttempts: 1 });
+      expect(synthesizedVoices()).toEqual(['af_sky', '/app/voices/matilda.mp3']);
+    });
+
+    it('does not wait for the warm-up, and a failed warm-up neither fails the start nor tears down', async () => {
+      let rejectWarmUp: (err: Error) => void = () => {};
+      stubColdStart((voice) =>
+        voice === 'af_heart'
+          ? new Promise<Response>((_resolve, reject) => { rejectWarmUp = reject; })
+          : new Response('ok', { status: 200 }),
+      );
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        // Resolves although the warm-up request is still pending.
+        const manager = await startTTS({ ttsDir: '/repo/tts', port: 8004, device: 'cpu', reuseAttempts: 1 });
+        expect(manager.url).toBe('http://localhost:8004');
+
+        rejectWarmUp(new Error('Kokoro weights missing'));
+        await vi.waitFor(() =>
+          expect(warn).toHaveBeenCalledWith(expect.stringContaining('Kokoro weights missing')),
+        );
+        const verbs = execFileMock.mock.calls.map((c) => (c[1] as string[]).join(' '));
+        expect(verbs.some((v) => v.endsWith(' down'))).toBe(false);
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   it('rebuilds when the TTS web server file changes', async () => {
