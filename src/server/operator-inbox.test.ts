@@ -4,7 +4,7 @@ import { TaskStore } from '../core/tasks.js';
 import { createApiAuthMiddleware, type ApiAuthConfig } from './auth.js';
 import { buildOperatorInbox, readOperatorInbox, type OperatorInboxMonitorView } from './operator-inbox.js';
 import { registerOperatorInboxRoutes } from './routes/operator-inbox-routes.js';
-import { fixtureInbox, fixtureSources, KOOKR_CWD, NOW, PLANTED_COMMAND, PLANTED_TOKEN } from '../../test/fixtures/operator-inbox.js';
+import { fixtureInbox, fixtureSources, KOOKR_CWD, NOW, PLANTED_COMMAND, PLANTED_TOKEN, WEBSITE_CWD } from '../../test/fixtures/operator-inbox.js';
 import type { Anomaly } from '../shared/contracts/anomalies.js';
 
 describe('buildOperatorInbox', () => {
@@ -111,6 +111,68 @@ describe('buildOperatorInbox', () => {
       train: null,
     });
     expect(inbox.items).toEqual([expect.objectContaining({ kind: 'flagged', findingType: 'operator_needed', summary: expect.stringContaining('AskUserQuestion') })]);
+  });
+
+  test('only pending questions are listed, and their options are redacted', () => {
+    const base = fixtureSources();
+    const [pending] = base.asks;
+    const inbox = buildOperatorInbox({
+      ...base,
+      asks: [
+        { ...pending, options: ['Compact list', `Cards ${PLANTED_TOKEN}`] },
+        { ...pending, id: 'answered1', state: 'answered' },
+        { ...pending, id: 'expired1', state: 'expired' },
+        { ...pending, id: 'cancelled1', state: 'cancelled' },
+      ],
+    });
+    const questions = inbox.items.filter((item) => item.kind === 'question');
+    expect(questions.map((item) => item.askId)).toEqual(['a1b2c3d4e5f6']);
+    expect(questions[0].options).toHaveLength(2);
+    expect(questions[0].options!.join(' ')).not.toContain(PLANTED_TOKEN);
+    expect(inbox.totals.question).toBe(1);
+  });
+
+  test('a suppressed finding is not listed', () => {
+    const base = fixtureSources();
+    const inbox = buildOperatorInbox({
+      ...base,
+      monitor: {
+        ...base.monitor,
+        getAgentState: (id) => ({ anomaly: base.monitor.getAgentState(id)?.anomaly ?? null, ...(id === 's-flag' ? { suppressed: true } : {}) }),
+      },
+    });
+    expect(inbox.items.some((item) => item.kind === 'flagged')).toBe(false);
+    expect(inbox.items.map((item) => item.kind)).toEqual(['permission', 'question', 'review', 'train']);
+  });
+
+  test('a question whose task is no longer live still names its task through getTask', () => {
+    const base = fixtureSources();
+    const asker = base.liveTasks.find((task) => task.id === 'ask')!;
+    const inbox = buildOperatorInbox({
+      ...base,
+      liveTasks: base.liveTasks.filter((task) => task.id !== 'ask'),
+      getTask: (taskId) => (taskId === 'ask' ? { ...asker, status: 'completed' } : undefined),
+    });
+    expect(inbox.items.find((item) => item.kind === 'question')).toMatchObject({
+      taskId: 'ask',
+      taskName: 'Redesign settings page',
+      project: 'website',
+      cwd: WEBSITE_CWD,
+      link: '/?task=ask',
+    });
+  });
+
+  test('a task is labelled with its project id before its directory name', () => {
+    const base = fixtureSources();
+    const inbox = buildOperatorInbox({
+      ...base,
+      liveTasks: base.liveTasks.map((task) => (task.id === 'perm' || task.id === 'work'
+        ? { ...task, cwd: '/home/op/git/kookr-worktree-x', projectId: 'kookr-ai/kookr' }
+        : task)),
+    });
+    expect(inbox.items.find((item) => item.kind === 'permission')).toMatchObject({ project: 'kookr-ai/kookr', cwd: '/home/op/git/kookr-worktree-x' });
+    // perm and work share the project id; review is still labelled by its folder "kookr"; ask and flag are "website".
+    expect(inbox.working).toEqual({ tasks: 5, projects: 3 });
   });
 });
 
