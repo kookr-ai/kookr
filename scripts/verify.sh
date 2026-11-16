@@ -21,12 +21,13 @@ set -euo pipefail
 # documents the format). Unset, nothing is recorded or written.
 VERIFY_REPORT_FILE=${KOOKR_VERIFY_REPORT_FILE:-}
 VERIFY_REPORT_DIR=""
+VERIFY_SIGNAL=""
 write_verify_report() {
   local code=$1 head
   head=$(git rev-parse HEAD 2>/dev/null || true)
   node "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/verify-report.mjs" \
     --steps "$VERIFY_REPORT_DIR/steps" --unit-summary "$VERIFY_REPORT_DIR/unit-summary.json" \
-    --exit-code "$code" --head "$head" --out "$VERIFY_REPORT_FILE" \
+    --exit-code "$code" --head "$head" --signal "$VERIFY_SIGNAL" --out "$VERIFY_REPORT_FILE" \
     || echo "[verify] could not write the report file $VERIFY_REPORT_FILE" >&2
   rm -rf "$VERIFY_REPORT_DIR"
 }
@@ -35,6 +36,12 @@ if [ -n "$VERIFY_REPORT_FILE" ]; then
   rm -f "$VERIFY_REPORT_FILE"
   VERIFY_REPORT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/kookr-verify-report.XXXXXX")
   trap 'write_verify_report "$?"' EXIT
+  # bash runs the EXIT trap after a signal too. A run stopped by a signal (the
+  # train's timeout or stop) did not fail where it stopped: the report says
+  # "interrupted" and names no failing step.
+  trap 'VERIFY_SIGNAL=TERM; exit 143' TERM
+  trap 'VERIFY_SIGNAL=INT; exit 130' INT
+  trap 'VERIFY_SIGNAL=HUP; exit 129' HUP
 fi
 
 # record_step start|pass <lane> <label> <command...>: one line in the steps file.

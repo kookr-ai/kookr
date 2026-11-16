@@ -10,7 +10,7 @@
 //   {
 //     "version": 1,
 //     "head": "<sha the run checked>",
-//     "status": "passed" | "failed",
+//     "status": "passed" | "failed" | "interrupted",
 //     "exitCode": <exit status of verify.sh>,
 //     "failures": [
 //       { "lane": "unit_lane", "step": "Running tests", "command": "unit_tests",
@@ -29,11 +29,14 @@
 //   summary names every failing file: no unhandled error, no crashed worker,
 //   at least one file marked failed. Otherwise it is left out, because a
 //   partial list would send a narrow re-run after the wrong files.
-// - A failed run with an empty `failures` list failed outside any step (or
-//   was killed): the failing part is unknown.
+// - A failed run with an empty `failures` list failed outside any step: the
+//   failing part is unknown.
+// - `interrupted`: verify.sh was stopped by a signal (`--signal TERM|INT|HUP`),
+//   such as the train's timeout. The steps in flight did not fail, so
+//   `failures` is empty. A run killed with SIGKILL writes no report at all.
 //
 // Usage: node scripts/verify-report.mjs --steps <file> --exit-code <n> --out <file>
-//          [--head <sha>] [--unit-summary <file>]
+//          [--head <sha>] [--unit-summary <file>] [--signal <name>]
 // The steps file has one line per event: `start|pass <TAB> lane <TAB> step <TAB> command`.
 // The unit summary is the one test/rerun-gate.reporter.mjs writes.
 
@@ -68,8 +71,10 @@ export function failedTestFiles(summary, cwd) {
  * @param {string} [input.head]
  * @param {unknown} [input.unitSummary] parsed unit-lane run summary, if any
  * @param {string} [input.cwd] directory test file paths are made relative to
+ * @param {string} [input.signal] the signal that stopped verify.sh, if any
  */
-export function buildVerifyReport({ steps, exitCode, head = '', unitSummary = null, cwd = process.cwd() }) {
+export function buildVerifyReport({ steps, exitCode, head = '', unitSummary = null, cwd = process.cwd(), signal = '' }) {
+  if (signal) return { version: 1, head, status: 'interrupted', exitCode, signal, failures: [] };
   const started = new Map();
   const passed = new Set();
   for (const line of steps.split('\n')) {
@@ -111,7 +116,7 @@ function main(argv) {
   if (opts['unit-summary']) {
     try { unitSummary = JSON.parse(readFileSync(opts['unit-summary'], 'utf8')); } catch { /* no usable summary */ }
   }
-  const report = buildVerifyReport({ steps, exitCode, head: opts.head ?? '', unitSummary });
+  const report = buildVerifyReport({ steps, exitCode, head: opts.head ?? '', unitSummary, signal: opts.signal ?? '' });
   // Write then rename, so a reader never sees half a file.
   const tmp = `${opts.out}.tmp-${process.pid}`;
   writeFileSync(tmp, `${JSON.stringify(report, null, 2)}\n`);

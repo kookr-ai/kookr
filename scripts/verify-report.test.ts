@@ -4,7 +4,7 @@
 // status FAIL_<script> asks for (default 0), and `pnpm test` copies a prepared
 // Vitest run summary where test/rerun-gate.reporter.mjs would write it. git runs
 // only in a mkdtemp repository.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -68,6 +68,13 @@ describe('buildVerifyReport', () => {
     expect(report).toMatchObject({ status: 'failed', failures: [] });
   });
 
+  it('names no failing step when a signal stopped the run', () => {
+    const report = buildVerifyReport({
+      exitCode: 143, signal: 'TERM', steps: 'start\tunit_lane\tRunning tests\tunit_tests\n',
+    });
+    expect(report).toMatchObject({ status: 'interrupted', signal: 'TERM', failures: [] });
+  });
+
   it('adds every failing test file to the unit lane, relative to the repository', () => {
     const report = buildVerifyReport({
       exitCode: 1,
@@ -124,6 +131,8 @@ function setup() {
   const summaryFile = join(root, 'summary.json');
   writeFileSync(join(bin, 'pnpm'), [
     '#!/usr/bin/env bash',
+    // HANG_MARK: `pnpm test` says it started, then hangs until killed.
+    'if [ "$1" = test ] && [ -n "${HANG_MARK:-}" ]; then : > "$HANG_MARK"; exec sleep 60; fi',
     'if [ "$1" = test ] && [ -n "${VITEST_RERUN_SUMMARY_FILE:-}" ] && [ -f "$SUMMARY_SRC" ]; then',
     '  cp "$SUMMARY_SRC" "$VITEST_RERUN_SUMMARY_FILE"',
     'fi',
@@ -148,7 +157,28 @@ function setup() {
     const report = existsSync(reportFile) ? JSON.parse(readFileSync(reportFile, 'utf8')) : null;
     return { status: r.status, out: `${r.stdout}${r.stderr}`, report };
   };
-  return { run, head, reportFile };
+  // Like the train on a timeout: SIGTERM to verify.sh's whole process group
+  // once the unit lane is running.
+  const runKilled = async () => {
+    writeFileSync(summaryFile, JSON.stringify(summaryOf(repo, [])));
+    const mark = join(root, 'hang.mark');
+    const child = spawn('bash', [VERIFY], {
+      cwd: repo, detached: true, stdio: 'ignore',
+      env: {
+        ...ENV_BASE, KOOKR_VERIFY_FLAKY_RERUN: '', VITEST_RERUN_SUMMARY_FILE: '',
+        KOOKR_VERIFY_REPORT_FILE: reportFile, SUMMARY_SRC: summaryFile, HANG_MARK: mark,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+      },
+    });
+    const exited = new Promise<number | null>((res) => child.on('exit', (code) => res(code)));
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(mark) && Date.now() < deadline) await new Promise((res) => setTimeout(res, 50));
+    process.kill(-(child.pid as number), 'SIGTERM');
+    const status = await exited;
+    const report = existsSync(reportFile) ? JSON.parse(readFileSync(reportFile, 'utf8')) : null;
+    return { status, report };
+  };
+  return { run, runKilled, head, reportFile };
 }
 
 describe('verify.sh report file (KOOKR_VERIFY_REPORT_FILE)', () => {
@@ -210,6 +240,12 @@ describe('verify.sh report file (KOOKR_VERIFY_REPORT_FILE)', () => {
     writeFileSync(s.reportFile, JSON.stringify({ status: 'failed', failures: [{ lane: 'old' }] }));
     const r = s.run({});
     expect(r.report.status).toBe('passed');
+  });
+
+  it('reports a run stopped by SIGTERM as interrupted, with no failing step', async () => {
+    const s = setup();
+    const r = await s.runKilled();
+    expect(r.report).toMatchObject({ status: 'interrupted', signal: 'TERM', exitCode: 143, failures: [] });
   });
 
   it('writes nothing when the variable is unset', () => {
