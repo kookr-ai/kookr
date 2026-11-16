@@ -598,6 +598,41 @@ describe('startTTS', () => {
       }
     });
 
+    it('does not roll back, or remember anything, when the build fails and the existing image then fails its probe', async () => {
+      const ttsDir = await createTTSFixture();
+      try {
+        await writeFile(join(ttsDir, '.kookr-tts-build.hash'), 'hash-of-older-files\n');
+        execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+          if (args[0] === 'inspect') return cb(null, { stdout: `${OLD_IMAGE} ${IMAGE_NAME}\n`, stderr: '' });
+          if (args.at(-1) === 'build') return cb(new Error('failed to solve: index unreachable'), '', '');
+          cb(null, '', '');
+        });
+        let booting = true;
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async (url: string | URL | Request) => {
+            const href = String(url);
+            if (booting && href.includes('/health')) {
+              booting = false;
+              throw new Error('connection refused');
+            }
+            if (href.includes('/synthesize')) return new Response('still loading', { status: 503 });
+            return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+          }),
+        );
+
+        await expect(startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 })).rejects.toThrow(
+          /synthesis probe failed: HTTP 503: still loading$/,
+        );
+        // Nothing was rebuilt, so there is nothing to roll back and no failed image to remember.
+        expect(dockerVerbs().some((v) => v.startsWith('tag '))).toBe(false);
+        await expect(readFile(join(ttsDir, '.kookr-tts-failed.hash'), 'utf-8')).rejects.toThrow(/ENOENT/);
+        expect((await readFile(join(ttsDir, '.kookr-tts-build.hash'), 'utf-8')).trim()).toBe('hash-of-older-files');
+      } finally {
+        await rm(ttsDir, { recursive: true, force: true });
+      }
+    });
+
     it('does not remember the failed files when the restarted previous image fails its probe too', async () => {
       const ttsDir = await createTTSFixture();
       try {
