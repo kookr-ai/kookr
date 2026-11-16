@@ -13,17 +13,33 @@
  */
 import { existsSync } from 'node:fs';
 import type { TranscriptMessage } from '../shared/contracts/transcript.js';
+import { TRANSCRIPT_MAX_MESSAGE_BYTES } from '../core/transcript-normalizer.js';
 import { openCodeDbPathForDataHome } from './opencode-usage-scanner.js';
 import { openCodeTaskDataHome, openCodeTaskDir } from './opencode-task-data.js';
 
-/** Only the tail of a long conversation is returned; peek only needs the last turn. */
-const MAX_MESSAGES = 400;
+/**
+ * Row bound: only the newest MAX_MESSAGE_ROWS user/assistant message rows are read (picked in SQL, so a large DB
+ * is never read whole; reading it all used to block the event loop for about a second), and only their text parts are joined.
+ * Tool-only messages count toward the bound, so a long tool-only tail can leave fewer text messages; peek only
+ * needs the last turn, and the transcript route caps the response bytes afterwards.
+ */
+const MAX_MESSAGE_ROWS = 1000;
 
 interface Row {
   mid: string;
-  mdata: string;
+  role: unknown;
   mtime: number;
-  pdata: string | null;
+  ptext: unknown;
+  pignored: unknown;
+}
+
+/**
+ * Size guard: the same per-message cap as the other providers' transcripts. SQL cuts each text part one character
+ * past the cap, so a huge part never reaches JS in full; the joined text is then cut to the cap in bytes.
+ */
+function clipToBytes(text: string, maxBytes: number): { text: string; cut: boolean } {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return { text, cut: false };
+  return { text: Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8'), cut: true };
 }
 
 /** Text messages (user + assistant, oldest first) of the opencode DB at `dbPath`; undefined when none/unreadable. */
@@ -39,50 +55,56 @@ export async function readOpenCodeDbTranscript(dbPath: string, sessionId?: strin
     const pc = cols('part');
     if (!mc.has('data') || !mc.has('id') || !pc.has('data') || !pc.has('message_id')) return undefined;
     const filterSession = Boolean(sessionId && /^ses_[A-Za-z0-9]+$/.test(sessionId) && mc.has('session_id'));
+    const mTime = mc.has('time_created');
+    // The inner query walks opencode's (session_id, time_created, id) index newest-first and stops at the limit.
     const rows = db
       .prepare(
-        `SELECT m.id AS mid, m.data AS mdata, ${mc.has('time_created') ? 'm.time_created' : '0'} AS mtime, p.data AS pdata
-           FROM message m LEFT JOIN part p ON p.message_id = m.id AND CASE WHEN json_valid(p.data) THEN json_extract(p.data, '$.type') END = 'text'
-          ${filterSession ? 'WHERE m.session_id = @sid' : ''}
-          ORDER BY ${mc.has('time_created') ? 'm.time_created,' : ''} m.id, ${pc.has('time_created') ? 'p.time_created,' : ''} p.id`,
+        `WITH recent AS (
+           SELECT m.id AS mid, json_extract(m.data, '$.role') AS role, ${mTime ? 'm.time_created' : '0'} AS mtime
+             FROM message m
+            WHERE CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.role') END IN ('user', 'assistant')
+              ${filterSession ? 'AND m.session_id = @sid' : ''}
+            ORDER BY ${mTime ? 'm.time_created DESC,' : ''} m.id DESC
+            LIMIT @limit
+         )
+         SELECT r.mid AS mid, r.role AS role, r.mtime AS mtime,
+                substr(json_extract(p.data, '$.text'), 1, @maxChars) AS ptext, json_extract(p.data, '$.ignored') AS pignored
+           FROM recent r JOIN part p ON p.message_id = r.mid
+          WHERE CASE WHEN json_valid(p.data)
+                     THEN json_extract(p.data, '$.type') = 'text' AND json_type(p.data, '$.text') = 'text' END
+          ORDER BY r.mtime, r.mid, ${pc.has('time_created') ? 'p.time_created,' : ''} p.id`,
       )
-      .all(filterSession ? { sid: sessionId } : {}) as Row[];
+      .all({
+        limit: MAX_MESSAGE_ROWS,
+        maxChars: TRANSCRIPT_MAX_MESSAGE_BYTES + 1,
+        ...(filterSession ? { sid: sessionId } : {}),
+      }) as Row[];
 
     const byMessage = new Map<string, { role: 'user' | 'assistant'; time: number; texts: string[] }>();
     for (const r of rows) {
+      if (r.role !== 'user' && r.role !== 'assistant') continue;
+      if (typeof r.ptext !== 'string' || r.ptext.trim() === '' || r.pignored) continue;
       let entry = byMessage.get(r.mid);
       if (!entry) {
-        let role: unknown;
-        try {
-          role = (JSON.parse(r.mdata) as { role?: unknown }).role;
-        } catch {
-          continue;
-        }
-        if (role !== 'user' && role !== 'assistant') continue;
-        entry = { role, time: r.mtime, texts: [] };
+        entry = { role: r.role, time: r.mtime, texts: [] };
         byMessage.set(r.mid, entry);
       }
-      if (!r.pdata) continue;
-      try {
-        const part = JSON.parse(r.pdata) as { type?: unknown; text?: unknown; synthetic?: unknown; ignored?: unknown };
-        if (part.type === 'text' && typeof part.text === 'string' && part.text.trim() !== '' && !part.ignored) {
-          entry.texts.push(part.text);
-        }
-      } catch {
-        /* skip an unparseable part */
-      }
+      entry.texts.push(r.ptext);
     }
     const messages: TranscriptMessage[] = [];
     for (const e of byMessage.values()) {
-      if (e.texts.length === 0) continue;
+      const { text, cut } = clipToBytes(e.texts.join('\n'), TRANSCRIPT_MAX_MESSAGE_BYTES);
       messages.push({
         kind: 'text',
         role: e.role,
-        text: e.texts.join('\n'),
+        text,
         ...(e.time > 0 ? { timestamp: new Date(e.time).toISOString() } : {}),
       });
+      if (cut) {
+        messages.push({ kind: 'truncation_marker', note: `A message exceeded ${TRANSCRIPT_MAX_MESSAGE_BYTES} bytes and was truncated.` });
+      }
     }
-    return messages.length > 0 ? messages.slice(-MAX_MESSAGES) : undefined;
+    return messages.length > 0 ? messages : undefined;
   } catch {
     return undefined;
   } finally {

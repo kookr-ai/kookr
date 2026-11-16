@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readOpenCodeDbTranscript, readOpenCodeTaskTranscript } from './opencode-transcript.js';
+import { TRANSCRIPT_MAX_MESSAGE_BYTES } from '../core/transcript-normalizer.js';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'oc-transcript-')); });
@@ -13,7 +14,9 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 function makeDb(path: string) {
   const db = new Database(path);
   db.exec(`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
-           CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);`);
+           CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+           CREATE INDEX message_session_time_created_id_idx ON message (session_id, time_created, id);
+           CREATE INDEX part_message_id_id_idx ON part (message_id, id);`);
   const msg = (id: string, ses: string, t: number, role: string) =>
     db.prepare('INSERT INTO message VALUES (?,?,?,?,?)').run(id, ses, t, t, JSON.stringify({ role, time: { created: t } }));
   const part = (id: string, mid: string, ses: string, t: number, data: unknown) =>
@@ -69,6 +72,41 @@ describe('readOpenCodeDbTranscript', () => {
     db.prepare('INSERT INTO message VALUES (?,?,?,?,?)').run('m0', 'ses_a', 0, 0, '{not json');
     db.close();
     expect((await readOpenCodeDbTranscript(p))?.map((m) => m.kind === 'text' && m.text)).toEqual(['ok']);
+  });
+
+  it('reads only the newest 1000 message rows, still returned oldest first', async () => {
+    const p = join(dir, 'oc.db');
+    const { db, msg, part } = makeDb(p);
+    db.transaction(() => {
+      for (let i = 1; i <= 1005; i++) {
+        const id = `m${String(i).padStart(4, '0')}`;
+        msg(id, 'ses_a', i, 'assistant');
+        part(`p${id}`, id, 'ses_a', i, { type: 'text', text: `t${i}` });
+      }
+    })();
+    db.close();
+    for (const sid of ['ses_a', undefined]) {
+      const out = await readOpenCodeDbTranscript(p, sid);
+      expect(out).toHaveLength(1000);
+      expect(out?.[0]).toMatchObject({ kind: 'text', text: 't6' });
+      expect(out?.[999]).toMatchObject({ kind: 'text', text: 't1005' });
+    }
+  });
+
+  it('cuts an oversized message to the per-message byte cap and flags it with a truncation marker', async () => {
+    const p = join(dir, 'oc.db');
+    const { db, msg, part } = makeDb(p);
+    msg('m1', 'ses_a', 1, 'assistant');
+    part('p1', 'm1', 'ses_a', 1, { type: 'text', text: 'é'.repeat(TRANSCRIPT_MAX_MESSAGE_BYTES) }); // 2 bytes per char
+    msg('m2', 'ses_a', 2, 'assistant');
+    part('p2', 'm2', 'ses_a', 2, { type: 'text', text: 'a'.repeat(TRANSCRIPT_MAX_MESSAGE_BYTES) }); // exactly at the cap
+    db.close();
+    const out = await readOpenCodeDbTranscript(p);
+    expect(out?.map((m) => m.kind)).toEqual(['text', 'truncation_marker', 'text']);
+    const first = out?.[0];
+    expect(first?.kind === 'text' && first.text).toBe('é'.repeat(TRANSCRIPT_MAX_MESSAGE_BYTES / 2));
+    const last = out?.[2];
+    expect(last?.kind === 'text' && last.text.length).toBe(TRANSCRIPT_MAX_MESSAGE_BYTES);
   });
 
   it('readOpenCodeTaskTranscript resolves the per-task DB path and rejects unsafe task ids quietly', async () => {
