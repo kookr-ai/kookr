@@ -593,6 +593,49 @@ describe('fleet shrink keeps the scrollback it drops (issue #3565)', () => {
     expect(restored(dir)).toBe('0123456789ABCDEFGHIJabcdefghijkl!');
   });
 
+  it('keeps post-shrink output when the shrunk ring wrapped before it was expanded', () => {
+    const { dir, store } = newStore();
+    const state = createDtachRingState('s', 32);
+    write(store, state, '0123456789ABCDEFGHIJ');
+    store.shrink(state, 8);
+    write(store, state, 'abcde'); // wraps the 8-byte ring: it now holds 'HIJabcde'
+    expect(expandRing(state, 32)).toBe(true);
+    write(store, state, '!');
+    store.persist(state);
+    expect(restored(dir)).toBe('0123456789ABCDEFGHIJabcde!');
+  });
+
+  it('keeps the join point right when snapshot plus newer output exceeds a full ring', () => {
+    const { dir, store } = newStore();
+    const state = createDtachRingState('s');
+    write(store, state, 'x'.repeat(RING_BUFFER_BYTES - 4) + 'TAIL');
+    store.shrink(state, RING_IDLE_CAPACITY_BYTES);
+    write(store, state, 'new1');
+    store.persist(state);
+    // Restart: snapshot + 'new1' is 4 bytes over capacity, so the load drops
+    // the 4 oldest bytes. The next generation's flush must still join correctly.
+    const next = new DtachRingStore(dir);
+    const reloaded = createDtachRingState('s');
+    next.load(reloaded);
+    next.copyInto(reloaded, Buffer.from('new2'));
+    next.persist(reloaded);
+    expect(restored(dir).endsWith('TAILnew1new2')).toBe(true);
+  });
+
+  it('caps the carried-forward snapshot at one full ring', () => {
+    const { dir, store } = newStore();
+    const state = createDtachRingState('s');
+    write(store, state, 'a'.repeat(RING_BUFFER_BYTES));
+    store.shrink(state, RING_IDLE_CAPACITY_BYTES);
+    expandRing(state, RING_BUFFER_BYTES);
+    write(store, state, 'b'.repeat(RING_BUFFER_BYTES / 2));
+    store.shrink(state, RING_IDLE_CAPACITY_BYTES);
+    const file = readFileSync(join(dir, 's.pre-shrink.ring'));
+    const payload = file.subarray(file.indexOf(0x0a) + 1);
+    expect(payload.length).toBe(RING_BUFFER_BYTES);
+    expect(payload.subarray(-4).toString()).toBe('bbbb');
+  });
+
   it('ignores and deletes a snapshot the ring file does not name', () => {
     const { dir, store } = newStore();
     const state = createDtachRingState('s', 32);

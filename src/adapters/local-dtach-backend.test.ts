@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { LocalDtachBackend, buildDtachSpawn } from './local-dtach-backend.js';
+import { DtachRingStore, RING_IDLE_CAPACITY_BYTES, createDtachRingState } from './dtach-ring-store.js';
 import { findDtachMasterPidSync, verifyMasterIdentity } from './local-dtach-process-identity.js';
 import { type BackendError, SessionGoneError, WriteTimeoutError } from './terminal-backend.js';
 import { isTestSuiteDtachCmdline, reapDtachReferencing } from '../test-utils/reap-dtach.js';
@@ -44,6 +45,41 @@ import { isTestSuiteDtachCmdline, reapDtachReferencing } from '../test-utils/rea
  * socket paths do not change.
  */
 const LDB_TMP_PREFIX = 'ldb-case-';
+
+describe('LocalDtachBackend fleet budget (issue #3565)', () => {
+  it('saves a shrunk ring to its pre-shrink snapshot so the next flush cannot overwrite it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ldb-fleet-budget-'));
+    const backend = new LocalDtachBackend({
+      socketDir: dir, instanceId: 'test', dtachBinary: 'dtach-not-spawned',
+      ringFleetBudgetBytes: RING_IDLE_CAPACITY_BYTES,
+    });
+    try {
+      const internals = backend as unknown as {
+        attached: Map<string, ReturnType<typeof createDtachRingState>>;
+        enforceRingFleetBudget(): void;
+      };
+      const ring = createDtachRingState('s');
+      const history = 'h'.repeat(RING_IDLE_CAPACITY_BYTES) + 'tail';
+      const store = new DtachRingStore(join(dir, 'test', 'rings'));
+      store.copyInto(ring, Buffer.from(history));
+      internals.attached.set('s', ring);
+      internals.enforceRingFleetBudget();
+      expect(ring.ringBuffer.length).toBe(RING_IDLE_CAPACITY_BYTES);
+      // The flush after the shrink writes only the small ring to `s.ring`.
+      store.persist(ring);
+      const restored = createDtachRingState('s');
+      store.load(restored);
+      const out = Buffer.alloc(restored.ringHead);
+      store.copyFrom(restored, restored.ringHead, out.length, out);
+      expect(out.toString()).toBe(history);
+    } finally {
+      // The ring was injected without an attach; keep close() from disposing it.
+      (backend as unknown as { attached: Map<string, unknown> }).attached.clear();
+      backend.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('local-dtach-backend test tmpdir prefix', () => {
   it('is outside the scope of the host-wide test dtach reaper', () => {
