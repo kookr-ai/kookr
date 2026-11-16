@@ -17406,6 +17406,14 @@ button.coordinator-chain-member:focus-visible {
 .decision-card-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .decision-card-acts .btn-secondary { padding: 6px 12px; }
 .decision-card-hint { color: var(--text-secondary); font-size: 12px; }
+/* #4024: the Terminal tab's compact card in the reply area. Its height comes
+   out of the terminal, so it caps lower and folds the last agent message. */
+.decision-card--compact { margin: 0 0 8px; padding: 8px 12px; gap: 4px; max-height: min(200px, 30vh); }
+.decision-card--compact .decision-card-ask { font-size: 13px; }
+.decision-card-last { padding: 4px 8px; }
+.decision-card-last > summary { cursor: pointer; margin-bottom: 0; }
+.decision-card-last[open] > summary { margin-bottom: 4px; }
+.decision-card-last > summary:hover { color: var(--text-bright); }
 
 /* Lucy's launch card and the typed box (issue #3676). */
 .avatar-launch { flex: 0 1 auto; min-height: 0; max-height: 232px; overflow-y: auto; border-top: 1px solid var(--border-dim); font-size: 12px; color: var(--text-secondary); }

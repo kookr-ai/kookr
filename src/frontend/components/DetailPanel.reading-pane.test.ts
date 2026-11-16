@@ -313,19 +313,49 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     expect(container.querySelector('.detail-split-right [data-testid="decision-card"], .response-area [data-testid="decision-card"]')).toBeNull();
   });
 
-  test('with the terminal filling the pane the card folds away and only the answer buttons stay', () => {
+  test('the Terminal tab moves a compact card into the reply area, with the ask in full and the last message folded (#4024)', () => {
+    useKookrStore.getState().handleSuggestion('agent-1', [], [{ label: 'Allow once', value: 'allow', keystroke: '1' }]);
+    const anomaly = {
+      type: 'permission_blocked',
+      severity: 'warning',
+      explanation: 'Bash wants to run pnpm db:migrate --env staging',
+      detectedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+      transcriptContext: { lastAssistantMessage: { excerpt: 'I need to migrate the database.', truncated: false } },
+    };
+    render(makeAgent({ anomaly } as unknown as Partial<AgentState>));
+    act(() => q('detail-tab-terminal')!.click());
+    // One card only: the hidden conversation pane does not keep a second one.
+    expect(container.querySelectorAll('[data-testid="decision-card"]')).toHaveLength(1);
+    const card = q('decision-card')!;
+    expect(card.closest('.response-area')).not.toBeNull();
+    expect(card.className).toContain('decision-card--compact');
+    expect(card.compareDocumentPosition(container.querySelector('.response-row')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.querySelector('.decision-card-ask')?.textContent).toBe('Bash wants to run pnpm db:migrate --env staging');
+    expect(card.textContent).toContain('waiting 4m');
+    const last = card.querySelector('[data-testid="detail-transcript-context"]') as HTMLDetailsElement;
+    expect(last.tagName).toBe('DETAILS');
+    expect(last.open).toBe(false);
+    expect(last.textContent).toContain('I need to migrate the database.');
+    // The answers and Skip/Snooze live in the card, nowhere else.
+    expect([...card.querySelectorAll('.btn-quick-action')].map((b) => b.textContent)).toEqual(['Allow once']);
+    expect(container.querySelectorAll('.quick-actions')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="finding-skip"]')).toHaveLength(1);
+    expect(card.querySelector('[data-testid="finding-skip"]')).not.toBeNull();
+    expect(card.querySelector('[data-testid="finding-snooze"]')).not.toBeNull();
+    // Back on Conversation, the full card returns to the conversation pane.
+    act(() => (container.querySelector('.detail-tabs button') as HTMLButtonElement).click());
+    expect(container.querySelectorAll('[data-testid="decision-card"]')).toHaveLength(1);
+    expect(q('decision-card')?.closest('.detail-split-left')).not.toBeNull();
+    expect(q('decision-card')?.className).not.toContain('decision-card--compact');
+  });
+
+  test('terminal focus keeps only the answer buttons and Skip/Snooze in the reply area', () => {
     useKookrStore.getState().handleSuggestion('agent-1', [], [{ label: 'Allow once', value: 'allow', keystroke: '1' }]);
     const anomaly = { type: 'permission_blocked', severity: 'warning', explanation: 'Bash wants to run ls', detectedAt: new Date().toISOString() };
-    render(makeAgent({ anomaly } as unknown as Partial<AgentState>));
-    expect(q('decision-card')).not.toBeNull();
-    act(() => q('detail-tab-terminal')!.click());
+    render(makeAgent({ anomaly } as unknown as Partial<AgentState>), { terminalFocusMode: true });
     expect(q('decision-card')).toBeNull();
     expect([...container.querySelectorAll('.response-area .btn-quick-action')].map((b) => b.textContent)).toEqual(['Allow once']);
     expect(container.querySelector('.response-row [data-testid="finding-skip"]')).not.toBeNull();
-    act(() => root!.unmount());
-    render(makeAgent({ anomaly } as unknown as Partial<AgentState>), { terminalFocusMode: true });
-    expect(q('decision-card')).toBeNull();
-    expect(container.querySelectorAll('.response-area .btn-quick-action')).toHaveLength(1);
   });
 
   test('Snooze in the decision card opens the snooze dialog', () => {
