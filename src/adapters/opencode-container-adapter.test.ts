@@ -304,6 +304,16 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
       expect(existsSync(join(rtDir(task.id), 'secrets'))).toBe(false);
       for (const p of [join(rtDir(task.id), 'work', '.git'), join(rtDir(task.id), 'runtime.json'), spoolDir(task.id)]) expect(existsSync(p), p).toBe(true);
     });
+    test('a container started after the sweep listed Docker keeps its secrets (Docker is re-asked before each removal)', async () => {
+      const { a, task } = await launched();
+      const list = docker.listContainers.bind(docker);
+      let calls = 0;
+      // First listing: taken before the launch registered its container; every later listing sees it running.
+      docker.listContainers = async (l) => (++calls === 1 ? [] : list(l));
+      expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 0)).toEqual([]);
+      expect(existsSync(join(rtDir(task.id), 'secrets'))).toBe(true);
+      expect(existsSync(spoolDir(task.id))).toBe(true);
+    });
     test('a running container keeps everything (its healthcheck reads the secrets)', async () => {
       const { a, task } = await launched();
       expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 0)).toEqual([]);

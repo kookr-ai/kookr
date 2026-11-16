@@ -312,7 +312,10 @@ plugin, workspace and data are mounted at launch.
 
 - Pins: base images by digest, opencode 1.19.5 from a lockfile with sha512 integrity, `opencode-a2a` with
   `--require-hashes`, plugin dependencies pre-seeded at build time (first message 1.7 s instead of 12.7 s).
-- Secrets: read from 0600 files in `/run/secrets` (`opencode_password`, `a2a_token`), never from the container environment (`docker inspect` shows none); the entrypoint passes them to its two child processes through their process env. The files must be 0600: the entrypoint refuses group- or other-readable ones (exit 13). The healthchecks pass the password to `curl` on stdin, not in its arguments. The `kookr.Dockerfile` toolchain layer installs pnpm from its registry tarball, checked against a pinned sha512.
+- Secrets: read from 0600 files in `/run/secrets` (`opencode_password`, `a2a_token`), never from the container environment (`docker inspect` shows none); the entrypoint passes them to its two child processes through their process env. The files must be 0600: the entrypoint refuses group- or other-readable ones (exit 13), so the Kookr data dir must be
+on a filesystem with POSIX modes (not, for example, a Windows drive under `/mnt/c` in WSL, which shows 0777).
+Kookr's data and runtime paths are bind-mounted with `--mount`, so they may contain `:` but not `,` or `"` (the launch
+is refused). The healthchecks pass the password to `curl` on stdin, not in its arguments. The `kookr.Dockerfile` toolchain layer installs pnpm from its registry tarball, checked against a pinned sha512.
 - The entrypoint exits when either child dies, with a distinct code: 10 opencode never healthy, 11 opencode
   exited, 12 A2A wrapper exited, 13 missing, empty or group-readable secret, 14 hook self-test failed (a hook executable listed in
   `/kookr-hooks/MANIFEST` is missing or not executable), 15 workspace missing. A stop request (SIGTERM) exits 0,
@@ -367,7 +370,7 @@ exists as code but is not wired into the adapter yet (#3584); `sendInput` goes t
 task state is advisory and never reaches "completed" in this mode; hook records and the container state are the truth.
 Runtime state lives under `<data dir>/opencode-containers/` (per-task `tasks/<id>/` with the clone, secrets and control
 record; `spool/<id>/` with the hook ledgers). After each reconcile pass the server removes the secrets of a task with no
-running container, the spool of a task that ended more than 24 h ago or no longer exists once none of its containers
+running, starting, restarting or paused container, the spool of a task that ended more than 24 h ago or no longer exists once none of its containers
 remain, and the whole task dir of a task that no longer exists. The clone of an ended task is kept (it holds the
 worker's commits). Operator-run checks: `scripts/opencode-containers-live.ts`.
 

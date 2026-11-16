@@ -514,20 +514,30 @@ export class OpenCodeContainerAdapter {
     const runtimeIds = safe(await readdir(join(this.cfg.runtimeRoot, 'tasks')).catch(() => [] as string[]));
     const spoolIds = safe(await readdir(this.spoolRoot).catch(() => [] as string[]));
     const now = this.now;
+    // Docker is asked again right before each removal: a launch may have started (and even finished) after the listing
+    // above, and its new container must not lose its secrets. Any doubt (a failed listing) counts as "has a container".
+    const noContainerNow = async (taskId: string, liveOnly: boolean): Promise<boolean> => {
+      try {
+        const now = await this.d.docker.listContainers({ key: LABEL_INSTANCE, value: this.d.instanceId });
+        return !now.some((c) => c.labels[LABEL_TASK] === taskId && (!liveOnly || LIVE_STATES.has(c.state)));
+      } catch {
+        return false;
+      }
+    };
     for (const taskId of new Set([...runtimeIds, ...spoolIds])) {
-      // Re-checked right before every removal: a launch of this task may have started while the pass was running.
       const idle = () => !this.launching.has(taskId) && !liveContainer.has(taskId);
       if (!idle()) continue;
       const st = tasks(taskId);
       if (st.state === 'store_unreadable') continue;
       const rt = this.taskRuntimeDir(taskId);
-      if (runtimeIds.includes(taskId) && (await exists(join(rt, 'secrets'))) && idle()) {
+      if (runtimeIds.includes(taskId) && (await exists(join(rt, 'secrets'))) && (await noContainerNow(taskId, true)) && idle()) {
         await rm(join(rt, 'secrets'), { recursive: true, force: true }).then(() => removed.push(`${taskId}:secrets`), () => undefined);
       }
       if (anyContainer.has(taskId)) continue;
       const gone = st.state === 'unknown';
       const expired = st.state === 'terminal' && now - st.endedAt.getTime() >= retentionMs;
       if (!gone && !expired) continue;
+      if (!(await noContainerNow(taskId, false))) continue;
       if (spoolIds.includes(taskId) && idle()) {
         await rm(join(this.spoolRoot, taskId), { recursive: true, force: true }).then(() => removed.push(`${taskId}:spool`), () => undefined);
       }
