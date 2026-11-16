@@ -17137,9 +17137,10 @@ button.coordinator-chain-member:focus-visible {
 }
 /* The message list under the 3D view: the last few spoken messages, newest first, each in full. It takes what it
    needs up to a cap and scrolls beyond that (keyboard-focusable). The 3D view keeps a 112px floor (#3662), so
-   when the window is short of room (the typed-input row, the live text) the list gives way first and scrolls. */
+   when the window is short of room (the typed-input row, the live text) the list gives way first and scrolls.
+   Its large shrink factor makes it give way before the live text, which may shrink too (#4012). */
 .avatar-dock-transcript {
-  flex: 0 1 auto;
+  flex: 0 1000 auto;
   min-height: 0;
   max-height: 176px;
   overflow-y: auto;
@@ -17236,8 +17237,12 @@ button.coordinator-chain-member:focus-visible {
 .avatar-dock-talk-on { color: var(--teal); }
 .avatar-dock-live .avatar-dock-state { color: var(--teal); }
 .avatar-dock-live .avatar-dock-state::before { animation: avatar-dock-pulse 2.4s ease-in-out infinite; }
+/* The live text gives way after the message list (#4012): with a long notice or exchange and a typed reply both
+   showing, the rows that cannot shrink would overflow the window and clip the bottom of the typed form. It keeps
+   one line and scrolls. */
 .avatar-live {
-  flex: none;
+  flex: 0 1 auto;
+  min-height: 30px;
   max-height: 84px;
   overflow-y: auto;
   padding: 6px 11px;
