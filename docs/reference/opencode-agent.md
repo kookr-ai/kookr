@@ -283,12 +283,19 @@ failure: `kb search` needs an embedding provider and an initialised index).
 
 opencode has no JSONL transcript file; the whole conversation lives in the
 task's per-task opencode DB (see [Resume](#resume)). `GET
-/api/tasks/:id/transcript` (and therefore `kookr peek <task>`) reads the user
-and assistant text messages from that DB, read-only, for opencode sessions
-(`source: "vendor"`), filtered by the session's opencode session id. Tool calls
-and results are not included. If the DB is missing, swept, locked or of an
-unknown schema the route falls back to its previous behaviour (hook ledger,
-then `unsupported_provider`).
+/api/tasks/:id/transcript` (and therefore `kookr peek <task>`) reads the
+conversation from that DB, read-only, for opencode sessions (`source:
+"vendor"`), filtered by the session's opencode session id. It returns the user
+and assistant text and, in the order they happened, each tool call
+(`tool_call`, with its input as JSON) and, once the tool has finished, its
+output or error (`tool_result`). Tool inputs and outputs are cut to 4 KB each
+(a cut output is marked `truncated`), text messages to 20 KB, and secrets are
+redacted as for the other providers. The read goes newest message first and
+stops after about 2.5 MB, so a large DB is never loaded whole; the route then
+keeps the newest 2 MB. `kookr peek` itself still prints only the last
+assistant text, as for every provider. If the DB is missing, swept, locked or
+of an unknown schema the route falls back to its previous behaviour (hook
+ledger, then `unsupported_provider`).
 
 ## Container image and container launch mode (experimental)
 
