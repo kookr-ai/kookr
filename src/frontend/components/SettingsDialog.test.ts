@@ -580,6 +580,75 @@ describe('SettingsDialog tabs', () => {
     expect(lastBody.replySnippets).toEqual([{ label: 'New reply', text: 'continue' }]);
   });
 
+  test('opened at quotaHeadroomThreshold, General is active and the headroom field is focused (#3408)', async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    // jsdom has no layout, so no scrollIntoView; the deep link calls it.
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView });
+    try {
+      root = createRoot(container);
+      act(() => {
+        root.render(React.createElement(SettingsDialog, { onClose: vi.fn(), focusField: 'quotaHeadroomThreshold' }));
+      });
+      await flush();
+    } finally {
+      delete (Element.prototype as Element & { scrollIntoView?: unknown }).scrollIntoView;
+    }
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+    const generalTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'General');
+    expect(generalTab?.getAttribute('aria-selected')).toBe('true');
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Claude quota headroom"]');
+    expect(input).not.toBeNull();
+    expect(document.activeElement).toBe(input);
+    // The server omitted the field, so the box shows today's default.
+    expect(input!.value).toBe('90');
+    expect(input!.min).toBe('0');
+    expect(input!.max).toBe('100');
+  });
+
+  test('saving quota headroom 0 turns the check off and 90 restores the default (#3408)', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings' && !init) {
+        return { ok: true, json: async () => ({ ...DEFAULT_SETTINGS, quotaHeadroomThreshold: 75 }) } as Response;
+      }
+      if (url === '/api/settings' && init?.method === 'PUT') {
+        return { ok: true, json: async () => JSON.parse(String(init.body)) } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    await act(async () => {
+      root.unmount();
+    });
+    root = renderDialog(container);
+    await flush();
+
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Claude quota headroom"]');
+    expect(input?.value).toBe('75');
+    const lastPutBody = () => {
+      const puts = fetchMock.mock.calls.filter(([url, init]) => url === '/api/settings' && init?.method === 'PUT');
+      return JSON.parse(String(puts.at(-1)![1]!.body));
+    };
+
+    for (const [typed, saved] of [['0', 0], ['90', 90], ['250', 100]] as const) {
+      await act(async () => {
+        changeInput(input!, typed);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+        await Promise.resolve();
+      });
+      await flush();
+      expect(lastPutBody().quotaHeadroomThreshold).toBe(saved);
+      expect(useKookrStore.getState().quotaHeadroomThreshold).toBe(saved);
+    }
+  });
+
   test('connects relay credentials from the Sharing tab with the share CSRF token', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url, init) => {

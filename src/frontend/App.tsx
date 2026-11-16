@@ -1571,6 +1571,10 @@ export function App() {
     setSettingsFocus('maxActiveTasks');
     openModal('settings');
   };
+  const openSettingsAtQuotaHeadroom = () => {
+    setSettingsFocus('quotaHeadroomThreshold');
+    openModal('settings');
+  };
   // Spend and quota (#3561 slice 5b): one poll, two homes. The navigation
   // footer shows them at rest; the System detail's Usage section keeps them
   // reachable wherever the navigation is not shown.
@@ -1583,6 +1587,7 @@ export function App() {
       onOpenCostComparison={() => openModal('costComparison')}
       onOpenDiagnostics={openDiagnostics}
       onExpandCompleted={expandCompletedRail}
+      onOpenQuotaSettings={openSettingsAtQuotaHeadroom}
     />
   );
   const projectSidebar = !terminalFocusActive && (

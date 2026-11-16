@@ -147,6 +147,48 @@ describe('navigation footer: spend and quota (#3561 slice 5b)', () => {
     expect(onOpenCostComparison).toHaveBeenCalledTimes(2);
   });
 
+  test('the quota rows are one button that opens Settings on quota headroom (#3408)', () => {
+    const onOpenQuotaSettings = vi.fn();
+    useKookrStore.setState({ quotaStatus: quota(42, 83.4), totalSpendUsd: 0 });
+    render(<UsageSummary placement="nav" onOpenQuotaSettings={onOpenQuotaSettings} />);
+
+    const buttons = container.querySelectorAll<HTMLButtonElement>('button');
+    expect(buttons).toHaveLength(1);
+    const opener = buttons[0]!;
+    expect(opener.dataset.testid).toBe('usage-quota-settings');
+    expect(opener.getAttribute('aria-label'))
+      .toBe('5-hour quota 42%, 7-day quota 83%. Open Settings to change quota headroom');
+    // Same rows inside, still readable by the existing selectors, as spans
+    // (a button may only hold phrasing content).
+    const fiveHour = opener.querySelector<HTMLElement>('[data-testid="usage-quota-5h"]');
+    expect(fiveHour?.tagName).toBe('SPAN');
+    expect(fiveHour?.querySelector('.usage-value')?.textContent).toBe('42% (1h 30m)');
+    expect(fiveHour?.getAttribute('title')).toContain('Click to change quota headroom in Settings');
+    expect(opener.querySelector('div')).toBeNull();
+
+    act(() => opener.click());
+    expect(onOpenQuotaSettings).toHaveBeenCalledTimes(1);
+  });
+
+  test('with only one plan window the button names only that window', () => {
+    useKookrStore.setState({
+      quotaStatus: { fiveHour: null, sevenDay: quota(0, 55).sevenDay, updatedAt: NOW },
+    });
+    render(<UsageSummary placement="system" onOpenQuotaSettings={vi.fn()} />);
+    expect(container.querySelector('[data-testid="usage-quota-settings"]')?.getAttribute('aria-label'))
+      .toBe('7-day quota 55%. Open Settings to change quota headroom');
+  });
+
+  test('without an opener the quota rows stay a non-interactive readout', () => {
+    useKookrStore.setState({ quotaStatus: quota(42, 83), totalSpendUsd: 0 });
+    render(<UsageSummary placement="nav" />);
+    expect(container.querySelector('button')).toBeNull();
+    expect(container.querySelector('[data-testid="usage-quota-settings"]')).toBeNull();
+    const fiveHour = container.querySelector<HTMLElement>('[data-testid="usage-quota-5h"]');
+    expect(fiveHour?.tagName).toBe('DIV');
+    expect(fiveHour?.getAttribute('title')).not.toContain('Settings');
+  });
+
   test('a critical quota reads red and a stale sample says how old it is', () => {
     useKookrStore.setState({
       quotaStatus: { ...quota(97, 10), updatedAt: NOW - 12 * 60_000 },

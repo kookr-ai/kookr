@@ -35,6 +35,7 @@ import { updateAvatarPanelPrefs, useAvatarPanelPrefs } from '../store/avatar-pan
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { HookInventorySection } from './HookInventorySection.js';
 import { DictationCorpusPanel } from './DictationCorpusPanel.js';
+import { QUOTA_NO_HEADROOM_UTILIZATION } from '../../shared/quota-headroom-admission.js';
 import type {
   RelayConnectionStatus,
 } from '../../shared/contracts/relay-connection.js';
@@ -62,7 +63,7 @@ interface ServerSettings {
   /** Agents that must never spawn (issue #3025). */
   blacklistedAgentTypes?: AgentType[];
   roundRobinIndex?: number;
-  /** Live Claude plan-quota gate; Launch dialog reuses this without changing it. */
+  /** Claude plan-quota gate (0–100, 0 = off), edited on the General tab (#3408). */
   quotaHeadroomThreshold?: number;
   agentEffort?: AgentEffortMap;
   shortcutBindings: PlatformShortcutBindingOverrides;
@@ -134,7 +135,7 @@ const LUCY_AUTONOMY_CHOICES: ReadonlyArray<{ value: LucyAutonomy; label: string;
 const HANDS_OFF_WARNING =
   'Hands-off removes agent permission prompts for every task Lucy starts: Claude Code runs with --dangerously-skip-permissions and Codex CLI with --dangerously-bypass-approvals-and-sandbox. It intentionally removes a safeguard, so use it only for controlled local sessions.';
 
-export type SettingsFocusField = 'maxActiveTasks' | 'relayConnection';
+export type SettingsFocusField = 'maxActiveTasks' | 'quotaHeadroomThreshold' | 'relayConnection';
 
 interface Props {
   onClose: () => void;
@@ -163,7 +164,8 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, readonly string[]> = {
     'notifications & alerts', 'sound alerts', 'alert volume', 'chime sound',
     'spoken summary length', 'quiet hours', 'detection sensitivity',
     'stale agent timeout', 'repeated error threshold', 'task management',
-    'default agent', 'blacklisted agents', 'blacklist', 'max concurrent tasks', 'auto-close delay',
+    'default agent', 'blacklisted agents', 'blacklist', 'max concurrent tasks',
+    'claude quota headroom', 'auto-close delay',
     'completion-ready ttl escalation', 'hung-task reaper', 'hung-task reap threshold',
     'clean worktrees on completion', 'effort', 'reply snippets', 'saved replies',
     'keyboard shortcuts', 'platform defaults', 'github polling', 'enable polling',
@@ -184,6 +186,7 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, readonly string[]> = {
 // gains a new value — the Record type makes the requirement exhaustive.
 const FOCUS_FIELD_TAB: Record<SettingsFocusField, SettingsTab> = {
   maxActiveTasks: 'general',
+  quotaHeadroomThreshold: 'general',
   relayConnection: 'sharing',
 };
 
@@ -659,6 +662,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     hooks: null,
   });
   const maxActiveTasksInputRef = useRef<HTMLInputElement>(null);
+  const quotaHeadroomInputRef = useRef<HTMLInputElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const didFocusRef = useRef(false);
   const saveQueueRef = useRef(Promise.resolve());
@@ -785,7 +789,11 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   useEffect(() => {
     if (!focusField || !settings || didFocusRef.current) return;
     setActiveTab(FOCUS_FIELD_TAB[focusField]);
-    const input = focusField === 'maxActiveTasks' ? maxActiveTasksInputRef.current : null;
+    const input = focusField === 'maxActiveTasks'
+      ? maxActiveTasksInputRef.current
+      : focusField === 'quotaHeadroomThreshold'
+        ? quotaHeadroomInputRef.current
+        : null;
     if (input) {
       input.scrollIntoView({ block: 'center' });
       input.focus({ preventScroll: true });
@@ -1633,6 +1641,30 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           max={25}
                           step={1}
                         />
+                      </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Claude quota headroom</span>
+                        <span className="settings-desc">
+                          When Claude&apos;s 5-hour or 7-day plan use reaches this level, Launch warns
+                          and new Claude Code launches switch to another agent. 0 turns the check
+                          off. Default: {QUOTA_NO_HEADROOM_UTILIZATION}%. Range: 0–100.
+                        </span>
+                      </div>
+                      <div className="settings-number-group">
+                        <input
+                          ref={quotaHeadroomInputRef}
+                          aria-label="Claude quota headroom"
+                          type="number"
+                          className="settings-number"
+                          value={settings.quotaHeadroomThreshold ?? QUOTA_NO_HEADROOM_UTILIZATION}
+                          onChange={(e) => handleNumberChange('quotaHeadroomThreshold', e.target.value, 0, 100)}
+                          min={0}
+                          max={100}
+                          step={1}
+                        />
+                        <span className="settings-unit">%</span>
                       </div>
                     </div>
                     <div className="settings-row">
