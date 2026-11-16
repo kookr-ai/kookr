@@ -8,15 +8,22 @@ import {
   type StreamingAttachSnapshotUnavailableReason,
 } from './streaming-attach-snapshot.js';
 import type { TerminalScreenTextOptions, TerminalScreenTextResult } from './terminal-screen-text.js';
+import type { LiveScreenJob, LiveScreenJobResult } from './terminal-live-screen.js';
 
 /** Options that survive a trip to the worker thread: the injected test clock, a function, does not. */
 export type TerminalSnapshotJobOptions = Omit<StreamingAttachSnapshotOptions, 'nowMs'>;
 
-/** What a worker job answers: an attach seed (#3564) or the screen's text (#3683). */
-type WorkerResult = StreamingAttachSnapshotResult | TerminalScreenTextResult;
+/** What a worker job answers: an attach seed (#3564), the screen's text (#3683), or a live-model job (#3564 step 2). */
+type WorkerResult = StreamingAttachSnapshotResult | TerminalScreenTextResult | LiveScreenJobResult;
 type WorkerJob =
   | { job: 'seed'; options: TerminalSnapshotJobOptions }
-  | { job: 'text'; options: TerminalScreenTextOptions };
+  | { job: 'text'; options: TerminalScreenTextOptions }
+  | { job: 'live'; options: LiveScreenJob };
+
+/** How a live-model job ends when the worker could not run it: refused here, or the thread was retired. */
+export type LiveScreenWorkerResult =
+  | LiveScreenJobResult
+  | { kind: 'unavailable'; reason: StreamingAttachSnapshotUnavailableReason; elapsedMs: number };
 
 interface Pending {
   bytes: number;
@@ -49,6 +56,16 @@ const MAX_BACKOFF_ENTRIES = 256;
 export interface TerminalSnapshotWorkerOptions {
   /** How long a session whose replay stalled the worker is skipped. */
   backoffMs?: number;
+  /** Jobs allowed in flight before new ones are refused as busy (default 8). */
+  maxPendingJobs?: number;
+  /** Bytes the jobs in flight may hold before new ones are refused as busy (default 8 MiB). */
+  maxRetainedBytes?: number;
+  /**
+   * Called when the thread is retired (stalled, crashed or exited) and every
+   * job in flight has been failed. `culprit` is the session blamed for a stall
+   * or crash, when one is known. State the thread held is gone with it.
+   */
+  onRetire?: (culprit: string | undefined) => void;
 }
 /**
  * Builds screen-snapshot attach seeds (issue #3564) in a worker thread.
@@ -77,13 +94,20 @@ export class TerminalSnapshotWorker {
   /** True once the current worker has answered a job, i.e. is past its cold start. */
   private served = false;
   private readonly backoffMs: number;
+  private readonly maxPendingJobs: number;
+  private readonly maxRetainedBytes: number;
+  private readonly onRetire: ((culprit: string | undefined) => void) | undefined;
   private readonly stalledSessions = new Map<string, number>();
 
   constructor(options: TerminalSnapshotWorkerOptions = {}) {
     this.backoffMs = options.backoffMs ?? DEFAULT_BACKOFF_MS;
+    this.maxPendingJobs = options.maxPendingJobs ?? MAX_PENDING_JOBS;
+    this.maxRetainedBytes = options.maxRetainedBytes ?? MAX_RETAINED_BYTES;
+    this.onRetire = options.onRetire;
   }
 
   get pendingBytes(): number { return this.retainedBytes; }
+  get pendingJobs(): number { return this.pending.size; }
 
   private start(): Worker | null {
     if (this.closed || this.stopping) return null;
@@ -111,7 +135,7 @@ export class TerminalSnapshotWorker {
       const crashed = this.oldestPending();
       console.error('[terminal-snapshot-worker] worker failed; attaches fall back to the byte-tail seed:', error);
       this.markStalled(crashed?.sessionKey);
-      void this.retire('failed');
+      void this.retire('failed', crashed?.sessionKey);
     });
     worker.on('exit', () => { if (this.worker === worker) void this.retire('failed'); });
     // After the listeners: adding a 'message' listener takes a reference on the
@@ -129,14 +153,23 @@ export class TerminalSnapshotWorker {
     return this.submit(bytes, { job: 'text', options }) as Promise<TerminalScreenTextResult>;
   }
 
-  private submit(bytes: Uint8Array, request: WorkerJob): Promise<WorkerResult> {
+  /**
+   * Run one live-screen model job (issue #3564, step 2). Same thread discipline
+   * as a snapshot: a job past `deadlineMs` retires the thread and backs its
+   * session off. Unlike a snapshot, an empty payload is a valid job.
+   */
+  live(job: LiveScreenJob, bytes: Uint8Array, deadlineMs: number): Promise<LiveScreenWorkerResult> {
+    return this.submit(bytes, { job: 'live', options: job }, deadlineMs) as Promise<LiveScreenWorkerResult>;
+  }
+
+  private submit(bytes: Uint8Array, request: WorkerJob, explicitDeadlineMs?: number): Promise<WorkerResult> {
     const { options } = request;
     const startedAt = performance.now();
     const unavailable = (reason: StreamingAttachSnapshotUnavailableReason): WorkerResult =>
       ({ kind: 'unavailable', reason, elapsedMs: performance.now() - startedAt });
-    if (bytes.length === 0) return Promise.resolve(unavailable('empty'));
+    if (bytes.length === 0 && request.job !== 'live') return Promise.resolve(unavailable('empty'));
     if (this.isBackingOff(options.sessionKey)) return Promise.resolve(unavailable('backoff'));
-    if (this.pending.size >= MAX_PENDING_JOBS || this.retainedBytes + bytes.length > MAX_RETAINED_BYTES) {
+    if (this.pending.size >= this.maxPendingJobs || this.retainedBytes + bytes.length > this.maxRetainedBytes) {
       return Promise.resolve(unavailable('busy'));
     }
     let worker: Worker | null;
@@ -149,7 +182,8 @@ export class TerminalSnapshotWorker {
 
     const id = ++this.nextId;
     const owned = Uint8Array.from(bytes); // the caller keeps its copy of the ring
-    const deadlineMs = snapshotDeadlineMs(options) + (this.served ? 0 : COLD_START_ALLOWANCE_MS);
+    const deadlineMs = (request.job === 'live' ? explicitDeadlineMs ?? snapshotDeadlineMs({}) : snapshotDeadlineMs(request.options))
+      + (this.served ? 0 : COLD_START_ALLOWANCE_MS);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         // If this thread was itself stalled past the deadline, the worker's reply may
@@ -161,7 +195,7 @@ export class TerminalSnapshotWorker {
           console.error(`[terminal-snapshot-worker] replay ran past ${deadlineMs} ms; terminating the worker`
             + (stuck?.sessionKey ? ` (session ${stuck.sessionKey} skipped for ${this.backoffMs} ms)` : ''));
           this.markStalled(stuck?.sessionKey);
-          void this.retire('budget-exceeded');
+          void this.retire('budget-exceeded', stuck?.sessionKey);
         });
       }, deadlineMs);
       timer.unref?.();
@@ -203,13 +237,15 @@ export class TerminalSnapshotWorker {
     pending.resolve(result);
   }
 
-  private async retire(reason: StreamingAttachSnapshotUnavailableReason): Promise<void> {
+  private async retire(reason: StreamingAttachSnapshotUnavailableReason, culprit?: string): Promise<void> {
     const worker = this.worker;
     this.worker = null;
     for (const [id, pending] of this.pending) {
       this.finish(id, { kind: 'unavailable', reason, elapsedMs: performance.now() - pending.startedAt });
     }
     if (!worker) { await this.stopping; return; }
+    try { this.onRetire?.(culprit); }
+    catch (error) { console.error('[terminal-snapshot-worker] retire listener threw:', error); }
     // A replacement cannot start until the old thread has positively exited.
     const stopping = worker.terminate();
     this.stopping = stopping;

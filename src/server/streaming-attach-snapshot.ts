@@ -34,7 +34,10 @@
  *
  * The snapshot is only as good as the bytes it is given. A ring that has
  * itself lost the base screen (wrapped during a very long quiet period, or
- * shrunk by the fleet budget) still replays to an incomplete screen.
+ * shrunk by the fleet budget) still replays to an incomplete screen. Step 2
+ * of the same issue covers that case with a live model per session
+ * (`terminal-live-screen.ts`); this replay is what an attach falls back to
+ * when a session has no usable model.
  *
  * **Run this off the main thread in production.** xterm parses one control
  * sequence synchronously, and the ring is untrusted program output: a single
@@ -67,7 +70,7 @@ import { DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES } from './streaming-attach-seed
  * held for a differentially rendering agent — and anything older stays
  * reachable through request-history.
  */
-const DEFAULT_SNAPSHOT_SCROLLBACK_ROWS = 200;
+export const DEFAULT_SNAPSHOT_SCROLLBACK_ROWS = 200;
 
 /**
  * xterm parses one `write()` call as a single synchronous block, and only
@@ -288,7 +291,7 @@ function incompleteUtf8TailLength(bytes: Uint8Array): number {
  * third pass rather than one per row. Returns null only when the visible
  * screen alone exceeds the hard ceiling.
  */
-async function serializeWithinBudget(
+export async function serializeWithinBudget(
   serializer: SerializeAddon,
   scrollbackRows: number,
   maxBytes: number,

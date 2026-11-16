@@ -36,6 +36,7 @@ import {
 } from './streaming-attach-seed.js';
 import type { snapshotStreamingAttachSeed, StreamingAttachSnapshotResult } from './streaming-attach-snapshot.js';
 import { snapshotStreamingAttachSeedIsolated } from './terminal-snapshot-worker.js';
+import { getInstalledLiveScreenModels, type LiveScreenSeedResult, type LiveScreenSeedSource } from './terminal-live-screen-models.js';
 
 /**
  * Server → browser text control frame for attach join keys (RFC Phase 0.0).
@@ -211,6 +212,7 @@ type AttachStrategy =
   | 'absolute-snapshot'
   | 'viewport-ring'
   | 'viewport-snapshot'
+  | 'live-screen'
   | 'full-ring'
   | 'empty';
 
@@ -343,6 +345,15 @@ export interface SessionBridgeOptions {
   streamingAttachSnapshot?: typeof snapshotStreamingAttachSeed;
 
   /**
+   * Live screen models (issue #3564, step 2): an emulator per session that has
+   * seen every byte, so it still knows the screen when the ring has lost it.
+   * Defaults to the models installed for this process
+   * (`installLiveScreenModelsFromEnv`), or none when the switch is off. Pass
+   * null to disable, or a stub in tests.
+   */
+  liveScreen?: LiveScreenSeedSource | null;
+
+  /**
    * Milliseconds to wait for the browser's first `resize` control frame before
    * deciding on ring replay. Defaults to
    * `KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS` or 50. Set to 0 in unit tests.
@@ -399,6 +410,7 @@ export class SessionBridge {
   private readonly forceFullRingAttach: boolean;
   private readonly streamingAttachViewportBytes: number;
   private readonly streamingAttachSnapshot: typeof snapshotStreamingAttachSeed;
+  private readonly liveScreen: LiveScreenSeedSource | null;
   private readonly initialResizeWaitMs: number;
   private readonly resizeDebounceMs: number;
   private readonly liveRedrawNudgeMs: number;
@@ -460,6 +472,7 @@ export class SessionBridge {
         DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES,
       );
     this.streamingAttachSnapshot = options?.streamingAttachSnapshot ?? snapshotStreamingAttachSeedIsolated;
+    this.liveScreen = options?.liveScreen !== undefined ? options.liveScreen : getInstalledLiveScreenModels();
     this.initialResizeWaitMs = options?.initialResizeWaitMs
       ?? readNonNegativeIntegerEnv(
         'KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS',
@@ -998,16 +1011,54 @@ export class SessionBridge {
       // A ring larger than the viewport budget cannot be sent whole, and its
       // byte tail is not a picture of the screen: agent TUIs redraw with
       // relative cursor moves, so a suffix replays as edits on a blank pane
-      // (issue #3564). Send a snapshot of the emulated screen instead. Any
-      // failure falls back to the byte-tail cut, the previous behavior.
+      // (issue #3564). Send a picture of the screen instead. The live screen
+      // model has seen every byte, so it is right even when the ring has lost
+      // the base screen (shrunk by the fleet budget, or wrapped): it is used
+      // for a large ring and for any ring that is not the complete stream. A
+      // small complete ring is still sent whole, since only that earns a
+      // resume cursor. Without a model, a large ring is replayed through an
+      // emulator (step 1), and if that fails too, cut to its byte tail.
       const wantsFullRing = history || this.forceFullRingAttach || this.ringReplayPolicy === 'full';
+      const ringLarger = this.streamingAttachViewportBytes > 0 && snapshot.bytes.byteLength > this.streamingAttachViewportBytes;
+      const ringComplete = snapshot.originComplete && snapshot.start === 0;
+      let liveScreenSeed: Uint8Array | null = null;
+      /** Source range the seed stands for: a model may already have seen bytes past the capture. */
+      let seedRange: TerminalStreamSnapshot = snapshot;
       let screenSnapshot: Uint8Array | null = null;
       let snapshotMs = 0;
       if (
-        !request.cursor && !absolute && !wantsFullRing
-        && this.streamingAttachViewportBytes > 0
-        && snapshot.bytes.byteLength > this.streamingAttachViewportBytes
+        this.liveScreen && !request.cursor && !absolute && !wantsFullRing
+        && this.streamingAttachViewportBytes > 0 && snapshot.bytes.byteLength > 0
+        && (ringLarger || !ringComplete)
       ) {
+        let result: LiveScreenSeedResult;
+        try {
+          result = await this.liveScreen.seed(this.sessionId, {
+            cols: snapshot.cols, rows: snapshot.rows, maxBytes: this.streamingAttachViewportBytes,
+          });
+        } catch (error) {
+          console.error('[session-bridge] live screen model threw:', error);
+          result = { kind: 'unavailable', reason: 'failed', elapsedMs: 0 };
+        }
+        if (this.closed) return;
+        snapshotMs = result.elapsedMs;
+        getHotPathSampler().record('terminal_attach_live_screen', snapshotMs);
+        if (result.kind === 'seed' && result.end >= snapshot.end) {
+          // Live bytes up to `end` are queued behind this seed; `output.seed`
+          // drops them by source position.
+          liveScreenSeed = result.bytes;
+          seedRange = { ...snapshot, end: result.end };
+        } else if (result.kind === 'seed' && result.end >= snapshot.start) {
+          // The model stopped short of the capture: the ring has the rest.
+          const rest = snapshot.bytes.subarray(result.end - snapshot.start);
+          liveScreenSeed = new Uint8Array(result.bytes.byteLength + rest.byteLength);
+          liveScreenSeed.set(result.bytes, 0);
+          liveScreenSeed.set(rest, result.bytes.byteLength);
+        } else if (result.kind === 'unavailable' && result.reason !== 'no-model') {
+          console.warn(`[session-bridge] live screen model unavailable for ${this.sessionId} (${result.reason}); replaying the ring`);
+        }
+      }
+      if (liveScreenSeed === null && !request.cursor && !absolute && !wantsFullRing && ringLarger) {
         let result: StreamingAttachSnapshotResult;
         try {
           result = await this.streamingAttachSnapshot(snapshot.bytes, {
@@ -1020,8 +1071,8 @@ export class SessionBridge {
           result = { kind: 'unavailable', reason: 'failed', elapsedMs: 0 };
         }
         if (this.closed) return;
-        snapshotMs = result.elapsedMs;
-        getHotPathSampler().record('terminal_attach_snapshot', snapshotMs);
+        snapshotMs += result.elapsedMs;
+        getHotPathSampler().record('terminal_attach_snapshot', result.elapsedMs);
         if (result.kind === 'snapshot') {
           screenSnapshot = result.bytes;
         } else {
@@ -1033,16 +1084,19 @@ export class SessionBridge {
       }
       const seed = request.cursor ? snapshot.bytes.subarray(request.cursor.position - snapshot.start)
         : absolute ? reconstruction?.bytes ?? new Uint8Array(0)
-          : screenSnapshot ?? (wantsFullRing ? snapshot.bytes
+          : liveScreenSeed ?? screenSnapshot ?? (wantsFullRing ? snapshot.bytes
             : cutStreamingAttachSeed(snapshot.bytes, this.streamingAttachViewportBytes));
       if (this.closed) return;
       const replayFallback = seed.byteLength === 0 && connection.output.hasUnpositionedOutput;
       // A snapshot stands in for a ring that was too large to send, so older
       // output is still only reachable through request-history. Its length says
-      // nothing about that: compare by what was done, not by byte counts.
-      const partialSeed = screenSnapshot !== null || seed.byteLength < snapshot.bytes.byteLength;
+      // nothing about that: compare by what was done, not by byte counts. A
+      // model seed of a small ring leaves nothing better behind: the full ring
+      // would replay to the very screen the model got right, or a blank one.
+      const partialSeed = liveScreenSeed !== null ? ringLarger
+        : screenSnapshot !== null || seed.byteLength < snapshot.bytes.byteLength;
 
-      this.lastAttachSeed = absolute ? 'absolute' : partialSeed ? 'viewport' : 'full';
+      this.lastAttachSeed = absolute ? 'absolute' : partialSeed || liveScreenSeed !== null ? 'viewport' : 'full';
       this.historyAvailable = !absolute && !request.cursor && partialSeed;
       const transaction = randomUUID();
       // A suffix can omit persistent modes or a partial control sequence.
@@ -1054,7 +1108,7 @@ export class SessionBridge {
       // will not, and must not claim exact recovery.
       // A serialized screen is not the byte stream: it cannot vouch for parser
       // state the serializer does not carry, so it never yields a cursor.
-      const resumable = !absolute && !replayFallback && screenSnapshot === null
+      const resumable = !absolute && !replayFallback && screenSnapshot === null && liveScreenSeed === null
         && snapshot.cols === seedCols && snapshot.rows === seedRows
         && (!!request.cursor
           || (snapshot.originComplete && snapshot.start === 0 && seed.byteLength === snapshot.bytes.byteLength));
@@ -1063,7 +1117,7 @@ export class SessionBridge {
         epoch: snapshot.epoch, position: snapshot.end, geometryRevision: snapshot.geometryRevision,
         cols: snapshot.cols, rows: snapshot.rows,
       } : null;
-      if ((this.v2ReplayEpoch && this.v2ReplayEpoch !== snapshot.epoch) || !connection.output.seed(snapshot, seed,
+      if ((this.v2ReplayEpoch && this.v2ReplayEpoch !== snapshot.epoch) || !connection.output.seed(seedRange, seed,
         { type: 'seed-begin', generation: connection.generation, transaction, mode: request.cursor ? 'resume' : 'replace' },
         { type: 'seed-end', generation: connection.generation, transaction, cursor,
           historyAvailable: this.historyAvailable,
@@ -1072,8 +1126,8 @@ export class SessionBridge {
         connection.close(TERMINAL_CLOSE.continuityLost, 'terminal changed during capture');
         return;
       }
-      this.v2LastRange = this.v2LastRange && this.v2LastRange.epoch === snapshot.epoch && this.v2LastRange.end > snapshot.end
-        ? this.v2LastRange : snapshot;
+      this.v2LastRange = this.v2LastRange && this.v2LastRange.epoch === seedRange.epoch && this.v2LastRange.end > seedRange.end
+        ? this.v2LastRange : seedRange;
       this.startupComplete = true;
       if (!screenUnavailable) connection.markReady();
       connection.output.setPaused(false);
@@ -1081,7 +1135,7 @@ export class SessionBridge {
       this.recordBridgeTiming({
         startedAt, resizeWaitMs, captureMs, reconstructMs: absolute ? performance.now() - seedStarted : 0,
         seedCacheHit: false, strategy: request.cursor ? 'source-resume' : absolute ? absoluteStrategy
-          : screenSnapshot ? 'viewport-snapshot' : partialSeed ? 'viewport-ring' : 'full-ring',
+          : liveScreenSeed ? 'live-screen' : screenSnapshot ? 'viewport-snapshot' : partialSeed ? 'viewport-ring' : 'full-ring',
         replayBytes: seed.byteLength, earlySeedBytes: 0, snapshotMs,
       });
     } catch (error) {

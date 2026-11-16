@@ -3,6 +3,7 @@
  *
  * Split from local-dtach-backend.ts (kookr-ai/kookr#1465).
  */
+import type { TerminalRingObserver } from './terminal-ring-observer.js';
 import type { IPty } from 'node-pty';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
 import type { TerminalSourceRange } from '../shared/terminal-stream.js';
@@ -186,6 +187,13 @@ export interface LocalDtachBackendOptions {
    * (default 32 MiB).
    */
   ringFleetBudgetBytes?: number;
+
+  /**
+   * Sees every byte retained in a ring, as it is retained (issue #3564 step 2:
+   * live screen models). Not serializable: the terminal host child adds it
+   * itself rather than receiving it in its init options.
+   */
+  ringObserver?: TerminalRingObserver;
 }
 
 /**
