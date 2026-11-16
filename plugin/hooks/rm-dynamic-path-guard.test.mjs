@@ -67,6 +67,14 @@ describe('rm-dynamic-path-guard', () => {
     expect(hook('echo $(date)#x; rm -rf "$D"')).not.toBeNull();
     expect(hook('l=${l%% #*}; rm -rf "$D"')).not.toBeNull();
     expect(hook('x=`ls #`; rm -rf "$D"')).not.toBeNull();
+    expect(hook("(# don't leave junk\nrm -rf \"$TMP\")")).not.toBeNull();
+    expect(hook('rm -rf <<< "$x" "$D"')).toContain('`$D`');
+  });
+
+  it('denies a comment that has an operator before the rm (documented limit, #3897)', () => {
+    // The plain split, always checked, reads the text after `;` or `|` as a command.
+    expect(hook('# cleanup; rm -rf "$D"')).not.toBeNull();
+    expect(hook('x=1 # a | rm -r $D')).not.toBeNull();
   });
 
   it('allows literal paths, non-recursive rm and git rm', () => {
@@ -77,6 +85,8 @@ describe('rm-dynamic-path-guard', () => {
     expect(hook('rm -f "$LOG"')).toBeNull();
     expect(hook('rm -rf /tmp/a/b 2>>"$LOG"')).toBeNull();
     expect(hook('rm -rf /tmp/a/b > "$LOG" 2>&1')).toBeNull();
+    // A here-string is the command's input, not a target (#3894).
+    expect(hook('rm -rf /tmp/a/b <<< "$x"')).toBeNull();
     expect(hook('echo "$HOME" && rm -rf /tmp/a')).toBeNull();
     // A computed command word is not known to be rm: allowed (fail open).
     expect(hook('"$BIN/rm" -rf "$D"')).toBeNull();
