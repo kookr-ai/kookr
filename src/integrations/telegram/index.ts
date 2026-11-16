@@ -151,6 +151,18 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+/**
+ * Telegram's wordings for a URL button it will not accept: `BUTTON_URL_INVALID`, and
+ * `inline keyboard button URL '…' is invalid: Wrong HTTP URL` (or `Unsupported URL protocol`).
+ * Both start the description, so they survive the 200-character cut of the error message.
+ */
+const URL_BUTTON_REFUSAL = /button[ _]url/i;
+
+/** Whether Telegram refused a message because of one of its URL buttons, and not for another reason. */
+export function isUrlButtonRefusal(err: unknown): err is TelegramApiError {
+  return err instanceof TelegramApiError && err.status === 400 && URL_BUTTON_REFUSAL.test(err.message);
+}
+
 /** A command longer than this is shown as its head and tail (issue #3925). */
 export const PERMISSION_CARD_COMMAND_MAX_CHARS = 3000;
 const PERMISSION_CARD_COMMAND_EDGE_CHARS = PERMISSION_CARD_COMMAND_MAX_CHARS / 2;
@@ -1289,6 +1301,12 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     await lock.release();
   };
 
+  /** `text` followed by the question's links as text lines, for when Telegram refuses them as buttons. */
+  function withLinkLines(text: string, ask: AskRecord): string {
+    const linkLines = (ask.links ?? []).map((l) => `🔗 ${l.label ?? DEFAULT_ASK_LINK_LABEL}: ${l.url}`);
+    return linkLines.length > 0 ? [text, '', ...linkLines].join('\n') : text;
+  }
+
   /** One URL button per link the question carries, then "Open task" when the dashboard has a URL a phone can open. */
   function askUrlRows(ask: AskRecord): InlineKeyboardButton[][] {
     const rows: InlineKeyboardButton[][] = (ask.links ?? []).map((l) => [{ text: l.label ?? DEFAULT_ASK_LINK_LABEL, url: l.url }]);
@@ -1315,10 +1333,11 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         } catch (err) {
           // Telegram refuses the whole message when it dislikes one URL button. The question matters
           // more than the buttons: send it again with the links as plain text.
-          if (urlRows.length === 0 || !(err instanceof TelegramApiError) || err.status !== 400) throw err;
+          // Any other refusal (chat not found, bot blocked...) would fail the same way without the
+          // buttons: let it fail the delivery instead of being recorded as a refused URL button.
+          if (urlRows.length === 0 || !isUrlButtonRefusal(err)) throw err;
           audit({ kind: 'ask_url_buttons_refused', askId: ask.id, taskId: ask.taskId, chatId, reason: err.message });
-          const linkLines = (ask.links ?? []).map((l) => `🔗 ${l.label ?? DEFAULT_ASK_LINK_LABEL}: ${l.url}`);
-          sent = await api.sendMessage(chatId, [...lines, '', ...linkLines].join('\n'), { inline_keyboard: choices });
+          sent = await api.sendMessage(chatId, withLinkLines(lines.join('\n'), ask), { inline_keyboard: choices });
         }
         audit({ kind: 'ask_sent', askId: ask.id, taskId: ask.taskId, chatId });
         return { chatId, messageId: sent.message_id };
@@ -1330,8 +1349,10 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         try {
           await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, text, urlRows.length > 0 ? { inline_keyboard: urlRows } : undefined);
         } catch (err) {
+          // Kept broad on purpose: whatever the 400, the closing edit must still remove the choices.
+          // The links then stay as text, as when the question was sent.
           if (urlRows.length === 0 || !(err instanceof TelegramApiError) || err.status !== 400) throw err;
-          await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, text);
+          await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, withLinkLines(text, ask));
         }
         audit({ kind: 'ask_finalized', askId: ask.id, taskId: ask.taskId, state: ask.state, resolution: ask.resolution, ...(ask.answeredVia ? { answeredVia: ask.answeredVia } : {}) });
       },

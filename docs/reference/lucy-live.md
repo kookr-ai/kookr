@@ -281,6 +281,8 @@ anything need me?" and she can tell you.
 mockups" (or the words of a link's label) to open its first link, or the named one, in a new tab, and
 "show me the task" to select the task that asked. This always concerns the newest waiting question,
 and the whole sentence must be the request: "show me the status of the build" is an ordinary question.
+A wording she does not recognise as such a request ("show me the artifact from the question") opens
+nothing: she says so and points you to the buttons on the question card.
 Lucy then says what happened: the tab is open; your browser blocked it (a tab opened by voice has no
 click behind it, so browsers usually block it until you allow pop-ups for the Kookr dashboard once;
 the button on the card always works); the question has no link; or no question is waiting. Words heard
