@@ -178,7 +178,7 @@ Allowed: literal targets (`rm -rf /tmp/x/scratchpad/mutdir`), non-recursive
 `rm "$f"`, `git rm -r dir`, a variable in a redirect (`2>>"$LOG"`) or a
 here-string (`<<< "$x"`), and text that only mentions such a command (inside
 quotes, a commit message, a grep pattern, a heredoc body, or a `#` comment with
-no `;`, `&` or `|` before the `rm`). It reuses the word splitter of
+no `;`, `&`, `|`, `(` or `)` before the `rm`). It reuses the word splitter of
 `merge-retarget-guard.mjs`.
 
 Known limits: it does not look inside `bash -c`, `eval`, `xargs rm` or

@@ -139,7 +139,10 @@ describe('merge-retarget-guard', () => {
   });
 
   it('looks up the pull request once when the command has no comment (#3898)', () => {
-    const lookups = () => (existsSync(ghLog) ? readFileSync(ghLog, 'utf-8') : '').split('\n').filter((l) => l.startsWith('pr view')).length;
+    const lookups = () => {
+      const log = existsSync(ghLog) ? readFileSync(ghLog, 'utf-8') : '';
+      return log.split('\n').filter((l) => l.startsWith('pr view')).length;
+    };
     const before = lookups();
     expect(hook('gh pr merge 3802 --squash', fresh, { base: 'staging' })).toBeNull();
     expect(lookups() - before).toBe(1);

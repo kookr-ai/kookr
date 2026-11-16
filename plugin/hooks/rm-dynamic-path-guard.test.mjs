@@ -75,6 +75,8 @@ describe('rm-dynamic-path-guard', () => {
     // The plain split, always checked, reads the text after `;` or `|` as a command.
     expect(hook('# cleanup; rm -rf "$D"')).not.toBeNull();
     expect(hook('x=1 # a | rm -r $D')).not.toBeNull();
+    expect(hook('# (rm -rf "$D")')).not.toBeNull();
+    expect(hook('# a ) rm -rf "$D"')).not.toBeNull();
   });
 
   it('allows literal paths, non-recursive rm and git rm', () => {
