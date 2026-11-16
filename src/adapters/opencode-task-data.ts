@@ -220,6 +220,15 @@ export async function touchTaskDir(taskDir: string): Promise<void> {
   }
 }
 
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+}
+
 async function dirBytes(dir: string): Promise<number> {
   let total = 0;
   let entries: import('node:fs').Dirent[];
@@ -279,23 +288,32 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
   const now = opts.now ?? Date.now();
   const survivors: Array<{ taskId: string; dir: string; mtimeMs: number; bytes: number }> = [];
   let protectedBytes = 0;
-  /** True only when the dir was actually removed (an active task, a lost marker or an error leave it in place). */
-  const remove = async (taskId: string, dir: string, reason: SweepResult['removed'][number]['reason']): Promise<boolean> => {
+  /**
+   * `removed` by this sweep, `gone` when the dir no longer exists (an overlapping sweep removed it first), `kept` when
+   * it is still on disk (its task became active, its marker changed, or the removal failed).
+   */
+  const remove = async (
+    taskId: string,
+    dir: string,
+    reason: SweepResult['removed'][number]['reason'],
+  ): Promise<'removed' | 'gone' | 'kept'> => {
     try {
       return await withTaskDirLock(dir, async () => {
-        if (await opts.isActive?.(taskId)) return false;
-        if (!(await removeMarkedTaskDir(dir, taskId))) return false;
-        result.removed.push({ taskId, reason });
-        return true;
+        if (await opts.isActive?.(taskId)) return 'kept';
+        if (await removeMarkedTaskDir(dir, taskId)) {
+          result.removed.push({ taskId, reason });
+          return 'removed';
+        }
+        return (await pathExists(dir)) ? 'kept' : 'gone';
       });
     } catch (err) {
       opts.warn?.(`[opencode-task-data] could not remove ${dir}: ${(err as Error).message}`);
-      return false;
+      return 'kept';
     }
   };
   /** A dir whose removal was skipped still occupies disk: count it towards the size cap. */
   const removeOrCount = async (taskId: string, dir: string, reason: SweepResult['removed'][number]['reason']) => {
-    if (!(await remove(taskId, dir, reason))) protectedBytes += await dirBytes(dir);
+    if ((await remove(taskId, dir, reason)) === 'kept') protectedBytes += await dirBytes(dir);
   };
   for (const taskId of names) {
     if (!TASK_ID_RE.test(taskId) || opts.activeTaskIds.has(taskId)) continue;
@@ -337,7 +355,7 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
       // Never evict a dir used in the last few minutes: its launch may be in flight.
       if (now - s.mtimeMs < SIZE_EVICTION_GRACE_MS) continue;
       // Only a dir that is really gone frees space; one skipped because its task became active still counts.
-      if (await remove(s.taskId, s.dir, 'size-cap')) total -= s.bytes;
+      if ((await remove(s.taskId, s.dir, 'size-cap')) !== 'kept') total -= s.bytes;
     }
   }
   result.remainingBytes = total;

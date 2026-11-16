@@ -217,6 +217,15 @@ describe('sweepOpenCodeTaskData', () => {
     expect(res.remainingBytes).toBeLessThanOrEqual(900);
   });
 
+  test('size cap: a dir an overlapping sweep already removed frees its bytes, so no extra dir is evicted', async () => {
+    const a = taskDir('a', 400, 3 * day);
+    const b = taskDir('b', 400, 2 * day);
+    const c = taskDir('c', 400, 1 * day);
+    const opts = base({ a: 'terminated', b: 'terminated', c: 'terminated' }, { maxBytes: 900 });
+    await Promise.all([sweepOpenCodeTaskData(opts), sweepOpenCodeTaskData(opts)]);
+    expect([a, b, c].map((d) => existsSync(d))).toEqual([false, true, true]);
+  });
+
   test('a dir whose task-done removal is skipped still counts towards the size cap', async () => {
     const done = taskDir('done', 400, 2 * day);
     const old = taskDir('old', 400, 3 * day);

@@ -91,8 +91,8 @@ import {
   removeTaskDirOwnedByLaunch,
   resolveOpenCodeDataRoot,
   sweepOpenCodeTaskData,
-  waitForTaskDirUnlocked,
   touchTaskDir,
+  waitForTaskDirUnlocked,
 } from './opencode-task-data.js';
 import { readTaskDirUsage, recordTaskUsage, usageBeforeFreshLaunch, writeUsageBaseline } from './opencode-task-usage.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
