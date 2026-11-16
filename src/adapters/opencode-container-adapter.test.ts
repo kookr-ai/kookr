@@ -12,6 +12,7 @@ import { TaskStore } from '../core/tasks.js';
 import { gitExecEnv } from '../core/git-helpers.js';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { ContainerUnsupportedError, OpenCodeContainerAdapter, type OpenCodeContainerAdapterConfig } from './opencode-container-adapter.js';
+import { composeOpenCodeSession, type ComposeOpenCodeSessionOptions } from './opencode-home-composer.js';
 
 const repo = resolve(__dirname, '..', '..');
 
@@ -241,6 +242,49 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
     const sessions = store.getTask(task.id)!.sessions;
     expect(sessions.find((s) => s.tmuxSession === resumed)?.resumedConversationId).toBe('ses_abc123');
     expect(sessions.find((s) => s.tmuxSession === fresh)?.resumedConversationId).toBeUndefined();
+  });
+
+  test('a resume takes the gate base from the host-private record and never runs host git in the worker clone (#3584)', async () => {
+    const composed: ComposeOpenCodeSessionOptions[] = [];
+    const a = make({ composeSession: async (o) => { composed.push(o); return composeOpenCodeSession(o); } });
+    const task = newTask();
+    const head = g(src, 'rev-parse', 'HEAD');
+    const fresh = await a.launch(task.id, 'first', src);
+    expect(composed[0]!.claudeHooks?.env?.KOOKR_OPENCODE_GATE_BASE).toBe(head);
+    await a.stop(fresh);
+    expect(JSON.parse(readFileSync(join(root, 'rt', 'tasks', task.id, 'runtime.json'), 'utf8')).gateBase).toBe(head);
+    // The worker owns the clone: make any host git run in it fail, and drop the worker-writable gate-base file.
+    writeFileSync(join(root, 'rt', 'tasks', task.id, 'work', '.git', 'HEAD'), 'garbage\n');
+    rmSync(join(root, 'data', task.id, 'gate-base'), { force: true });
+    const dataHome = join(root, 'data', task.id, 'data');
+    mkdirSync(join(dataHome, 'opencode'), { recursive: true });
+    const db = new Database(join(dataHome, 'opencode', 'opencode.db'));
+    db.exec('CREATE TABLE session (id text PRIMARY KEY, parent_id text, time_updated integer NOT NULL)');
+    db.prepare('INSERT INTO session VALUES (?, ?, ?)').run('ses_abc123', null, 5);
+    db.close();
+    await a.launch(task.id, 'first', src, { sessionId: 'ses_abc123' });
+    expect(composed[1]!.claudeHooks?.env?.KOOKR_OPENCODE_GATE_BASE).toBe(head);
+    expect(JSON.parse(readFileSync(join(root, 'rt', 'tasks', task.id, 'runtime.json'), 'utf8')).gateBase).toBe(head);
+  });
+
+  test('an aborted launch (the launch timeout fired) stops waiting for health and removes its container (#3584)', async () => {
+    docker.health = 'starting';
+    const ac = new AbortController();
+    let polls = 0;
+    let t = 0; // a fake clock bounds the wait, so code that ignores the abort fails as health_timeout instead of hanging
+    const a = make({ readyTimeoutMs: 100_000, now: () => (t += 10), sleep: async () => { if (++polls === 3) ac.abort(); } });
+    await expect(a.launch(newTask().id, 'x', src, undefined, { signal: ac.signal })).rejects.toThrow('aborted');
+    expect(polls).toBe(3);
+    expect(docker.containers).toHaveLength(0);
+    expect(docker.calls).toContain(`rm-f ${docker.runs[0]!.name}`);
+  });
+
+  test('an abort during the ledger canary wait also removes the container', async () => {
+    const ac = new AbortController();
+    let t = 0;
+    const a = make({ ledgerSize: async () => 0, canaryTimeoutMs: 100_000, now: () => (t += 10), sleep: async () => ac.abort() });
+    await expect(a.launch(newTask().id, 'x', src, undefined, { signal: ac.signal })).rejects.toThrow('aborted');
+    expect(docker.containers).toHaveLength(0);
   });
 
   // #3527: a fresh relaunch (a Ralph iteration) wipes the task's DB, so its usage must add up, not be replaced.

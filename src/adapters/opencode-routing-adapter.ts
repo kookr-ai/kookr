@@ -31,8 +31,10 @@ export class OpenCodeRoutingAdapter implements AgentAdapter {
 
   async launch(taskId: string, prompt: string, cwd: string, resume?: ResumeContext, opts?: AdapterLaunchOptions): Promise<string> {
     const task = this.taskStore.getTask(taskId);
-    // A task that already ran (has sessions) before any mode was recorded is a pre-flag host-TUI task: it must stay TUI.
-    const persisted = task?.metadata?.opencodeLaunchMode ?? (task && task.sessions.length > 0 ? 'tui' : undefined);
+    // A task that already ran opencode before any mode was recorded is a pre-flag host-TUI task: it must stay TUI. Only
+    // opencode sessions count: a task whose earlier sessions ran another agent has never had an opencode mode (#3584).
+    const ranOpenCode = task?.sessions.some((s) => s.agentType === 'opencode') ?? false;
+    const persisted = task?.metadata?.opencodeLaunchMode ?? (ranOpenCode ? 'tui' : undefined);
     const policy = resolveOpenCodeLaunchMode({ persisted, containersAvailable: true, containersRequested: true });
     if (!policy.ok) throw new Error(policy.message);
     if (policy.mode === 'tui') {

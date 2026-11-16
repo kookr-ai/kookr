@@ -66,12 +66,20 @@ describe('DockerCliRunner container launch', () => {
     expect(a.slice(a.indexOf('--cap-drop'), a.indexOf('--cap-drop') + 2)).toEqual(['--cap-drop', 'ALL']);
     expect(a).toContain('no-new-privileges');
     expect(a).toContain('127.0.0.1::8000');
-    expect(a).toContain('/h/secrets:/run/secrets:ro');
-    expect(a).toContain('/h/data:/data:rw');
+    expect(a).toContain('type=bind,source=/h/secrets,target=/run/secrets,readonly');
+    expect(a).toContain('type=bind,source=/h/data,target=/data');
+    expect(a).not.toContain('-v');
     expect(a).toContain('--user');
     expect(a[a.indexOf('--user') + 1]).toBe('1234:1234');
     expect(a.at(-1)).toBe('opencode-worker-kookr:s1');
     expect(a.join(' ')).not.toMatch(/--privileged|--network host|-v \/var\/run\/docker\.sock/);
+  });
+  test('mounts use --mount, so a host path with ":" is kept whole; "," and relative paths are refused (#3584)', () => {
+    const a = DockerCliRunner.runArgs({ ...spec, mounts: [{ source: '/h/a:b', target: '/work', readOnly: false }] });
+    expect(a[a.indexOf('--mount') + 1]).toBe('type=bind,source=/h/a:b,target=/work');
+    for (const source of ['/h/a,b', 'rel/dir', '/h/a"b']) {
+      expect(() => DockerCliRunner.runArgs({ ...spec, mounts: [{ source, target: '/work', readOnly: false }] })).toThrow('unsafe mount path');
+    }
   });
   test('refuses names outside the kookr-oc- prefix and unsafe images', () => {
     expect(() => DockerCliRunner.runArgs({ ...spec, name: 'other-1' })).toThrow('not a kookr-oc- container');

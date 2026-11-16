@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { CONTAINER_NAME_PREFIX, type ContainerInfo, type ContainerRunSpec, type DockerRunnerPort, type NetworkInfo } from './ports.js';
+import { CONTAINER_NAME_PREFIX, type ContainerInfo, type ContainerMount, type ContainerRunSpec, type DockerRunnerPort, type NetworkInfo } from './ports.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -54,6 +54,18 @@ export class DockerCliRunner implements DockerRunnerPort {
     return id;
   }
 
+  /**
+   * One `--mount` value. `-v src:dst:mode` splits on ':', so a host path containing ':' would be misread; `--mount` is
+   * comma-separated key=value instead, and a ',' or '"' in a path (which its CSV syntax would need quoting for) is refused.
+   * Unlike `-v`, `--mount` fails on a missing source instead of creating it as root, which is what Kookr wants.
+   */
+  static bindMount(m: ContainerMount): string {
+    for (const p of [m.source, m.target]) {
+      if (!p.startsWith('/') || /[,"\n\r]/.test(p)) throw new Error(`refusing unsafe mount path ${JSON.stringify(p)}`);
+    }
+    return `type=bind,source=${m.source},target=${m.target}${m.readOnly ? ',readonly' : ''}`;
+  }
+
   /** The argv for `docker run` (exported for tests). Values are single argv entries; nothing goes through a shell. */
   static runArgs(spec: ContainerRunSpec): string[] {
     DockerCliRunner.safeContainer(spec.name);
@@ -63,7 +75,7 @@ export class DockerCliRunner implements DockerRunnerPort {
       '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '-p', `127.0.0.1::${spec.publishPort}`];
     for (const [k, v] of Object.entries(spec.labels)) a.push('--label', `${k}=${v}`);
     for (const t of spec.tmpfs) a.push('--tmpfs', t);
-    for (const m of spec.mounts) a.push('-v', `${m.source}:${m.target}:${m.readOnly ? 'ro' : 'rw'}`);
+    for (const m of spec.mounts) a.push('--mount', DockerCliRunner.bindMount(m));
     for (const [k, v] of Object.entries(spec.env)) a.push('-e', `${k}=${v}`);
     a.push(spec.image);
     return a;
