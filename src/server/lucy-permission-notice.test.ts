@@ -41,6 +41,7 @@ interface Session {
 function harness(opts: { afterMs?: number } = {}) {
   let nowMs = T0;
   let dashboards = 1;
+  let afterMs = opts.afterMs;
   const sessions = new Map<string, Session>();
   const pushes: Array<{ cards: LucyPermissionCardView[]; announce?: LucyPermissionAnnouncement }> = [];
   const notifier = new LucyPermissionNotifier({
@@ -48,7 +49,7 @@ function harness(opts: { afterMs?: number } = {}) {
     getAnomaly: (id) => sessions.get(id)?.anomaly ?? null,
     getAgentEvents: (id) => sessions.get(id)?.events ?? [],
     capturePane: async (id) => sessions.get(id)?.pane ?? '',
-    ...(opts.afterMs !== undefined ? { getAfterMs: () => opts.afterMs as number } : {}),
+    getAfterMs: () => afterMs ?? 60 * SEC,
     now: () => nowMs,
   });
   /** A task whose session is blocked on a Bash prompt first seen at `sinceMs`. */
@@ -68,6 +69,7 @@ function harness(opts: { afterMs?: number } = {}) {
     block,
     at(ms: number) { nowMs = T0 + ms; },
     setDashboards(n: number) { dashboards = n; },
+    setAfterMs(ms: number) { afterMs = ms; },
     announcements: () => pushes.flatMap((p) => (p.announce ? [p.announce] : [])),
     lastCards: () => pushes[pushes.length - 1]?.cards ?? [],
     /** Let the async pane read settle. */
@@ -289,6 +291,11 @@ describe('LucyPermissionNotifier', () => {
     const card = h.lastCards()[0]!;
     expect(card.promptId).not.toBe(firstId);
     expect(card.command).toBe('ls -la');
+    // The new prompt is said too, once the gap since the first sentence is over.
+    expect(h.announcements()).toHaveLength(1);
+    h.at(MIN + LUCY_PERMISSION_NOTICE_GAP_MS); h.notifier.evaluate([w]); await h.settle();
+    expect(h.announcements()).toHaveLength(2);
+    expect(h.announcements()[1]!.promptIds).toEqual([card.promptId]);
   });
 
   test('with a hook event but no queue finding the card still has the whole command, and no buttons', async () => {
@@ -307,6 +314,21 @@ describe('LucyPermissionNotifier', () => {
     const w = h.block('a', T0);
     h.at(10 * MIN); h.notifier.evaluate([w]); await h.settle();
     expect(h.pushes).toEqual([]);
+  });
+
+  test('setting 0 while cards are shown takes them off the panel, and nothing more is said', async () => {
+    const h = harness();
+    const a = h.block('a', T0);
+    const b = h.block('b', T0 + 10 * SEC);
+    h.at(MIN); h.notifier.evaluate([a, b]); await h.settle();
+    h.at(MIN + 10 * SEC); h.notifier.evaluate([a, b]); await h.settle();
+    expect(h.lastCards()).toHaveLength(2);
+    const said = h.announcements().length;
+    h.setAfterMs(0);
+    h.at(MIN + 20 * SEC); h.notifier.evaluate([a, b]); await h.settle();
+    expect(h.pushes[h.pushes.length - 1]).toEqual({ cards: [] });
+    h.at(MIN + LUCY_PERMISSION_NOTICE_GAP_MS); h.notifier.evaluate([a, b]); await h.settle();
+    expect(h.announcements()).toHaveLength(said);
   });
 
   test('the delay follows the setting', async () => {
