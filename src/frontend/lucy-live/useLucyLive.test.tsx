@@ -731,6 +731,30 @@ describe('useLucyLive', () => {
         expect(latest.lucyText).toBe('Here is the answer.');
       });
 
+      test('the first candidate\'s late confirmation does not take over a normal turn started after Lucy went quiet', async () => {
+        const { ws, id, first } = await secondCandidateOverTheFirst();
+        mic(SPEECH, 300);
+        mic(QUIET, 800); // the second candidate ends too, still undecided
+        act(() => {
+          sources[0].onended!();
+          sources[1].onended!();
+          ws.receive({ type: 'turn_done', turnId: id, end: 'answered' });
+          ws.receive({ type: 'state', state: 'idle' });
+        });
+        sent.length = 0;
+        mic(SPEECH, 300);
+        expect(sent.find((m) => m.type === 'speech_start')).not.toHaveProperty('lucyAudible'); // a normal turn
+        const fresh = lastTurnId();
+        await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: first }); });
+        mic(QUIET, 800);
+        expect(sent.filter((m) => m.type === 'speech_end')).toEqual([{ type: 'speech_end', turnId: fresh }]);
+        const sourcesBefore = sources.length;
+        await act(async () => { ws.receive(sentence(fresh, 0, 'Here you go.')); });
+        await settle();
+        expect(sources).toHaveLength(sourcesBefore + 1);
+        expect(latest.lucyText).toBe('Here you go.');
+      });
+
       test('a late rejection of the first candidate leaves the second one in charge', async () => {
         const { ws, first, second } = await secondCandidateOverTheFirst();
         await act(async () => { ws.receive({ type: 'speech_rejected', turnId: first }); });
