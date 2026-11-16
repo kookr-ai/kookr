@@ -91,11 +91,17 @@ export function ChainBadge({ agent }: { agent: AgentState }): React.ReactElement
 /**
  * Confirmation shown after a stop is accepted. A tip whose iteration already
  * finished (it waits for the next sweep to launch its successor) has no
- * "this iteration" left to wait for: the chain ends at that sweep.
+ * "this iteration" left to wait for: the chain normally ends at that sweep.
+ * But if that sweep was already launching the next iteration when the stop
+ * arrived, the stop moves to the new task and that iteration runs. Neither
+ * the task status nor the stop route's reply can tell the two apart (the stop
+ * can land on the finished task just before its successor exists), so the
+ * text covers both.
  */
 function stopChainToast(taskStatus: AgentState['taskStatus']): string {
   return taskStatus === 'completed'
-    ? 'This iteration has already finished, so the chain will end within about 15 seconds without launching another.'
+    ? 'This iteration has already finished, so the chain will end within about 15 seconds. '
+      + 'If the next iteration was already launching, that one runs and the chain stops after it.'
     : 'The chain will stop after this iteration.';
 }
 
