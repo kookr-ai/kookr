@@ -8,6 +8,7 @@ import type { AgentState } from '../shared/protocol.js';
 import { App } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
 import { track } from './telemetry.js';
+import { setTerminalEmptyEnterAdvance } from './store/terminal-empty-enter-pref.js';
 
 vi.mock('./hooks/useWebSocket.js', () => ({
   useWebSocket: () => ({ send: () => true }),
@@ -499,5 +500,42 @@ describe('App terminal focus mode', () => {
       screen: 'not_checked',
       turnState: 'waiting_for_input',
     });
+  });
+  test('with the terminal empty-Enter advance turned off, the next-task and next-finding shortcuts still navigate', async () => {
+    const make = (id: string, anomaly: AgentState['anomaly']): AgentState => ({
+      agentId: id, taskId: `task-${id}`, taskName: id, events: [], anomaly, taskStatus: 'inProgress',
+    });
+    const finding = (id: string): AgentState['anomaly'] => ({
+      agentId: id, type: 'needs_input', severity: 'warning', explanation: 'waiting',
+      detectedAt: new Date('2026-05-24T16:00:00.000Z'),
+    });
+    const a = make('agent-a', null);
+    const b = make('agent-b', null);
+    const f = make('agent-f', finding('agent-f'));
+    useKookrStore.setState({ agents: [a, b, f], selectedAgentId: a.agentId });
+    setTerminalEmptyEnterAdvance(false);
+    try {
+      await act(async () => {
+        root.render(React.createElement(App));
+      });
+      await waitForElement(container, '[data-testid="detail-panel"]');
+      (document.activeElement as HTMLElement | null)?.blur();
+
+      const before = useKookrStore.getState().selectedAgentId;
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', code: 'KeyJ', altKey: true, bubbles: true, cancelable: true }));
+      });
+      await flush();
+      expect(useKookrStore.getState().selectedAgentId).not.toBe(before);
+
+      useKookrStore.setState({ selectedAgentId: a.agentId });
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', code: 'KeyN', altKey: true, bubbles: true, cancelable: true }));
+      });
+      await flush();
+      expect(useKookrStore.getState().selectedAgentId).toBe('agent-f');
+    } finally {
+      setTerminalEmptyEnterAdvance(true);
+    }
   });
 });

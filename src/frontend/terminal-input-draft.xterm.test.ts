@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Terminal } from '@xterm/xterm';
 import {
   classifyEmptyEnterScreen,
+  emptyEnterAdvances,
   looksLikeInteractiveMenu,
   terminalContentTail,
 } from './terminal-input-draft.js';
@@ -156,5 +157,53 @@ describe('menu detection on a screen the session has not filled yet', () => {
   it('reads the idle composer as empty, so Enter still advances', async () => {
     const tail = await tailOf(SCREENS.idleComposer);
     expect(classifyEmptyEnterScreen(tail)).toBe('input_box');
+  });
+});
+
+// After Esc dismisses a question, Claude Code erases the menu in place (cursor
+// up, erase to the end of the screen) and draws the idle input box where it was.
+// No hook event may mark the end of the wait, so the turn state can still read
+// `waiting_for_input` (#3568). These rows are reconstructed from the captured
+// screens above, not captured from a dismissal.
+const DISMISSED_QUESTION = [
+  '',
+  '● User declined to answer questions',
+  '  ⎿  Interrupted · What should Claude do instead?',
+  '',
+  RULE,
+  '❯ ',
+  RULE,
+  '  ⏵⏵ auto mode on (shift+tab to cycle)',
+];
+
+async function tailAfterInPlaceRedraw(
+  before: readonly string[],
+  erasedRows: number,
+  after: readonly string[],
+): Promise<string> {
+  const terminal = new Terminal({ cols: 120, rows: SCREEN_ROWS, scrollback: 1000 });
+  try {
+    const erase = `\x1b[${erasedRows - 1}A\r\x1b[J`;
+    await new Promise<void>((resolve) => {
+      terminal.write(before.join('\r\n') + erase + after.join('\r\n'), resolve);
+    });
+    const buffer = terminal.buffer.active;
+    return terminalContentTail(
+      buffer.length,
+      terminal.rows,
+      (index) => buffer.getLine(index)?.translateToString(true) ?? '',
+    );
+  } finally {
+    terminal.dispose();
+  }
+}
+
+describe('Enter after a question was dismissed with Esc', () => {
+  it('reads the redrawn input box, so Enter advances even while the turn state is stale', async () => {
+    const menuRows = SCREENS.singleQuestion.length - PROMPT_ECHO.length;
+    const tail = await tailAfterInPlaceRedraw(SCREENS.singleQuestion, menuRows, DISMISSED_QUESTION);
+    expect(tail).not.toContain('Enter to select');
+    expect(classifyEmptyEnterScreen(tail)).toBe('input_box');
+    expect(emptyEnterAdvances(classifyEmptyEnterScreen(tail), 'waiting_for_input')).toBe(true);
   });
 });
