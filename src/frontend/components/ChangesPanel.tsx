@@ -52,9 +52,10 @@ type FileState =
 
 const UNAVAILABLE_TEXT: Record<TaskChangesUnavailableReason, string> = {
   no_cwd: 'No working directory is recorded for this task.',
-  worktree_gone: "This task's worktree was removed. Its pull request shows what was pushed.",
+  worktree_gone: "This task's worktree was removed, and no pull request of its own is known.",
   not_git: 'This task does not run in a git repository.',
   no_base: 'No base branch to compare against (no origin/main, origin/staging or origin/master).',
+  pull_request_unreachable: "This task's worktree was removed, and GitHub did not answer for its pull request's files. Press Refresh to try again.",
 };
 
 const STATUS_LETTER: Record<TaskChangedFile['status'], string> = {
@@ -97,7 +98,7 @@ function TaskChangeList({ taskId, edit, editCard }: { taskId: string; edit: Chan
   useEffect(() => {
     const ac = new AbortController();
     setList((prev) => (prev.kind === 'ok' ? prev : { kind: 'loading' }));
-    getTaskChanges<TaskChangesResponse>(taskId, ac.signal)
+    getTaskChanges<TaskChangesResponse>(taskId, ac.signal, { fresh: refreshKey > 0 })
       .then(({ ok, body }) => {
         if (ac.signal.aborted) return;
         if (!ok || !body) setList({ kind: 'err' });
@@ -147,8 +148,8 @@ function TaskChangeList({ taskId, edit, editCard }: { taskId: string; edit: Chan
     );
   }
 
-  const { baseRef, branch, files, truncated, repoRoot } = list.body;
-  const editPath = edit ? editPathInRepo(edit.filePath, repoRoot) : null;
+  const { baseRef, branch, files, truncated, repoRoot, pullRequest } = list.body;
+  const editPath = edit && repoRoot ? editPathInRepo(edit.filePath, repoRoot) : null;
   const totalAdded = files.reduce((n, f) => n + (f.added ?? 0), 0);
   const totalRemoved = files.reduce((n, f) => n + (f.removed ?? 0), 0);
 
@@ -160,6 +161,13 @@ function TaskChangeList({ taskId, edit, editCard }: { taskId: string; edit: Chan
           {files.length === 0 ? 'No changes' : `${files.length} file${files.length === 1 ? '' : 's'}`}
           {' against '}<code>{baseRef}</code>
           {branch && <>{' on '}<code>{branch}</code></>}
+          {pullRequest && (
+            <>
+              {', from pull request '}
+              <a href={pullRequest.url} target="_blank" rel="noopener noreferrer">#{pullRequest.number}</a>
+              {' (the worktree was removed)'}
+            </>
+          )}
         </span>
         {files.length > 0 && (
           <span className="changes-counts">
@@ -237,6 +245,7 @@ function ChangeFileDiff({ taskId, filePath, refreshKey, renamed }: { taskId: str
   else if (state.kind === 'err') content = <div className="changes-note">{state.message}</div>;
   else if (state.body.kind === 'binary') content = <div className="changes-note">Binary file; no text diff.</div>;
   else if (state.body.kind === 'too_large') content = <div className="changes-note">This diff is over 1 MB; open it in the terminal.</div>;
+  else if (state.body.kind === 'no_patch') content = <div className="changes-note">GitHub shows no text diff for this file (binary, or too large).</div>;
   else if (state.body.kind === 'unavailable') content = <div className="changes-note">{UNAVAILABLE_TEXT[state.body.reason]}</div>;
   else if (state.body.hunks.length === 0) {
     content = <div className="changes-note">{renamed ? 'Renamed; the content is unchanged.' : 'No line changes.'}</div>;

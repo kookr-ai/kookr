@@ -28,8 +28,9 @@ export function getEditEvent<T>(
  * GET what a task changed in its working directory, for the Changes tab
  * (#4024). `body` is `null` on an unparseable response.
  */
-export function getTaskChanges<T>(taskId: string, signal: AbortSignal): Promise<ApiResult<T | null>> {
-  return fetchResult<T>(`/api/tasks/${encodeURIComponent(taskId)}/changes`, { signal });
+export function getTaskChanges<T>(taskId: string, signal: AbortSignal, opts: { fresh?: boolean } = {}): Promise<ApiResult<T | null>> {
+  // `fresh` asks the server not to reuse a cached pull request file list (Refresh).
+  return fetchResult<T>(`/api/tasks/${encodeURIComponent(taskId)}/changes${opts.fresh ? '?fresh=1' : ''}`, { signal });
 }
 
 /** GET one file's patch from a task's change list (#4024). */

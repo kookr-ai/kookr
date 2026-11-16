@@ -141,10 +141,8 @@ describe('ChangesPanel (#4024)', () => {
   });
 
   test('Refresh reloads the list and the open diffs, keeping them open', async () => {
-    routes['/api/tasks/task-1/changes'] = [
-      { status: 200, body: LIST },
-      { status: 200, body: { ...LIST, files: [LIST.files[0]] } },
-    ];
+    routes['/api/tasks/task-1/changes'] = { status: 200, body: LIST };
+    routes['/api/tasks/task-1/changes?fresh=1'] = { status: 200, body: { ...LIST, files: [LIST.files[0]] } };
     await render();
     act(() => rows()[0].click());
     await flush();
@@ -152,12 +150,17 @@ describe('ChangesPanel (#4024)', () => {
     await flush();
     expect(rows()).toHaveLength(1);
     expect(rows()[0].getAttribute('aria-expanded')).toBe('true');
-    expect(calls.filter((c) => c === '/api/tasks/task-1/changes')).toHaveLength(2);
+    // Refresh asks again past the server's cached pull request list.
+    expect(calls.filter((c) => c.startsWith('/api/tasks/task-1/changes') && !c.includes('/file'))).toEqual([
+      '/api/tasks/task-1/changes',
+      '/api/tasks/task-1/changes?fresh=1',
+    ]);
     expect(calls.filter((c) => c.includes('/changes/file'))).toHaveLength(2);
   });
 
   test.each([
-    ['worktree_gone', "This task's worktree was removed. Its pull request shows what was pushed."],
+    ['worktree_gone', "This task's worktree was removed, and no pull request of its own is known."],
+    ['pull_request_unreachable', "This task's worktree was removed, and GitHub did not answer for its pull request's files. Press Refresh to try again."],
     ['no_cwd', 'No working directory is recorded for this task.'],
     ['not_git', 'This task does not run in a git repository.'],
   ] as const)('explains a %s task instead of an empty list', async (reason, text) => {
@@ -232,6 +235,28 @@ describe('ChangesPanel (#4024)', () => {
     expect(calls).toEqual(['/api/agents/agent-1/edit-events/tu-1']);
     act(() => container.querySelector<HTMLButtonElement>('.diff-pane-close')!.click());
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('a list from the pull request names it, and a file without a patch says why', async () => {
+    routes['/api/tasks/task-1/changes'] = {
+      status: 200,
+      body: {
+        kind: 'ok', source: 'pull_request', pullRequest: { number: 4070, url: 'https://github.com/o/r/pull/4070' },
+        baseRef: 'main', branch: 'feat-widget-export', repoRoot: null,
+        files: [{ path: 'big.json', status: 'modified', added: 9000, removed: 0 }], truncated: false,
+      },
+    };
+    routes['/api/tasks/task-1/changes/file?path=big.json'] = { status: 200, body: { kind: 'no_patch', path: 'big.json' } };
+    routes['/api/agents/agent-1/edit-events/tu-1'] = { status: 200, body: EDIT_PATCH };
+    await render('task-1', editOf('/work/widget/big.json'));
+
+    expect(q('changes-summary')?.textContent).toBe('1 file against main on feat-widget-export, from pull request #4070 (the worktree was removed)');
+    expect(q('changes-summary')?.querySelector('a')?.getAttribute('href')).toBe('https://github.com/o/r/pull/4070');
+    // No repository root to match against, so no row claims the edit.
+    expect(rows()[0].hasAttribute('data-edit-target')).toBe(false);
+    act(() => rows()[0].click());
+    await flush();
+    expect(q('changes-diff')?.textContent).toBe('GitHub shows no text diff for this file (binary, or too large).');
   });
 });
 
