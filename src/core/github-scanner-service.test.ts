@@ -211,6 +211,58 @@ describe('GitHubScannerService', () => {
       expect(sizes).toEqual([25, 25, 10]);
     });
 
+    function stalledScanner(fetcher: GitHubFetcher) {
+      scanner = new GitHubScannerService({
+        taskStore, stateStore, fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000, referenceExtractionIntervalMs: 60 * 60 * 1000 },
+        onChanges,
+      });
+      return scanner;
+    }
+
+    it('a periodic tick carries at most 25 re-tracked refs next to the live ones', async () => {
+      const fetcher = createMockFetcher(true);
+      fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
+      const live: GitHubReference = { ...finishedRef, number: 1, taskId: 'task-live', detectedFrom: 'agent-1' };
+      stateStore.addReference(live);
+      const s = stalledScanner(fetcher);
+      await s.start();
+      // Their own fetch is skipped (another fetch in flight), so the tick must pick them up.
+      (s as unknown as { fetching: boolean }).fetching = true;
+      await s.trackReferences(Array.from({ length: 40 }, (_, i) => ({ ...finishedRef, number: 100 + i })));
+      (s as unknown as { fetching: boolean }).fetching = false;
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const batch = (fetcher.fetchStates as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as GitHubReference[];
+      expect(batch.filter((r) => r.taskId === 'task-done')).toHaveLength(25);
+      expect(batch).toContainEqual(live);
+    });
+
+    it('gives up on a re-tracked ref GitHub never answers for after an hour', async () => {
+      const fetcher = createMockFetcher(true);
+      fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
+      const task = taskStore.createTask({ prompt: 'p', cwd: '/tmp' });
+      taskStore.startTask(task.id);
+      taskStore.completeTask(task.id);
+      const ref: GitHubReference = { ...finishedRef, taskId: task.id };
+      const s = stalledScanner(fetcher);
+      await s.start();
+      await s.trackReferences([ref]);
+      const calls = () => (fetcher.fetchStates as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(1000);
+      const beforeExpiry = calls();
+      expect(beforeExpiry).toBeGreaterThan(1);
+
+      vi.setSystemTime(Date.now() + 61 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      // Past the hour the ref is no longer due; the store keeps no state for it.
+      expect(calls()).toBe(beforeExpiry);
+      expect(stateStore.getPRState(ref)).toBeNull();
+    });
+
     it('does nothing before start (gh availability unknown)', async () => {
       const fetcher = createMockFetcher(true);
       scanner = new GitHubScannerService({ taskStore, stateStore, fetcher, config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges });
