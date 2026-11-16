@@ -88,13 +88,14 @@ describe('ChainStopButton', () => {
     vi.unstubAllGlobals();
   });
 
-  it('confirms a stop on a running iteration as stopping after it, and on a finished one as ending shortly', async () => {
+  it('confirms a stop on a running iteration as stopping after it, and on a finished one as ending shortly unless the next one was already launching', async () => {
     const { useKookrStore } = await import('../../store/useStore.js');
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })));
     const handleAlert = vi.spyOn(useKookrStore.getState(), 'handleAlert').mockImplementation(() => {});
     for (const [taskStatus, expected] of [
       ['inProgress', 'The chain will stop after this iteration.'],
-      ['completed', 'This iteration has already finished, so the chain will end within about 15 seconds without launching another.'],
+      ['completed', 'This iteration has already finished, so the chain will end within about 15 seconds. '
+        + 'If the next iteration was already launching, that one runs and the chain stops after it.'],
     ] as const) {
       const { container, act, root } = await render({ ...base, maxIterations: 10 }, taskStatus);
       await act(async () => { container.querySelector('button')!.click(); });

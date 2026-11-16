@@ -661,6 +661,88 @@ describe('launch errors that only hold a chain', () => {
     expect(heldLines()[3]).not.toContain('more checks');
   });
 
+  it('logs the next hold at once after the chain adopts a successor that already exists', async () => {
+    // A sweep lists the tips first, then advances them one by one. For the
+    // adopt path to run, the successor must appear in between, so chain A's
+    // held launch creates chain B's iteration 2 just before B is advanced
+    // (the sweep visits chains in creation order; the launch assertion below
+    // fails if it does not).
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    let hold = false;
+    let createForChain: { chain: NonNullable<Task['chain']>; parentTaskId: string } | undefined;
+    // eslint-disable-next-line prefer-const
+    let h: ReturnType<typeof harness>;
+    const createRunning = (o: Pick<LaunchOpts, 'prompt' | 'cwd' | 'parentTaskId' | 'playbookSource'>, chain: NonNullable<Task['chain']>) => {
+      const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, parentTaskId: o.parentTaskId, playbookSource: o.playbookSource, chain });
+      h.taskStore.startTask(task.id);
+      h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
+      return h.taskStore.getTask(task.id)!;
+    };
+    h = harness({
+      logger,
+      launchImpl: async (o, s) => {
+        if (createForChain) {
+          createRunning({ ...o, parentTaskId: createForChain.parentTaskId }, createForChain.chain);
+          createForChain = undefined;
+        }
+        if (hold) throw new AutomationKillSwitchError('safe_mode');
+        return { task: createRunning(o, s!.chain!), queued: false } as LaunchResult;
+      },
+    });
+    const heldLinesFor = (chainId: string) => logger.info.mock.calls.map(([msg]) => String(msg))
+      .filter((msg) => msg.includes(`chain ${chainId}: next iteration held`));
+    const firstA = await startResearchChain(h, { maxIterations: 5 });
+    const firstB = await startResearchChain(h, { maxIterations: 5 });
+    h.finish(firstA);
+    h.finish(firstB, 0);
+
+    hold = true;
+    await h.service.sweep();
+    expect(heldLinesFor(firstB.chain!.chainId)).toHaveLength(1);
+
+    const launchesBefore = h.launches.length;
+    createForChain = { chain: { ...firstB.chain!, iteration: 2 }, parentTaskId: firstB.id };
+    await h.service.sweep();
+    const secondB = h.service.findTip(firstB.chain!.chainId)!;
+    expect(secondB.chain!.iteration).toBe(2);
+    expect(h.taskStore.getTask(firstB.id)!.chain!.successorTaskId).toBe(secondB.id);
+    expect(h.launches.slice(launchesBefore).map((l) => l.server?.chain?.chainId)).toEqual([firstA.chain!.chainId]);
+
+    // Shorter than the log interval, so only the reset on adoption makes this hold log at once.
+    h.finish(secondB, 3 * 60_000);
+    await h.service.sweep();
+    expect(heldLinesFor(firstB.chain!.chainId)).toHaveLength(2);
+    expect(heldLinesFor(firstB.chain!.chainId)[1]).not.toContain('more checks');
+  });
+
+  it('forgets a held chain once it ends', async () => {
+    // An ended chain is never held again, so the reset in endChain only frees
+    // memory; the private map is the one place that shows it.
+    let calls = 0;
+    // eslint-disable-next-line prefer-const
+    let h: ReturnType<typeof harness>;
+    h = harness({
+      launchImpl: async (o, s) => {
+        if (++calls > 1) throw new AutomationKillSwitchError('safe_mode');
+        const task = h.taskStore.createTask({ prompt: o.prompt, cwd: o.cwd, playbookSource: o.playbookSource, ...(s?.chain ? { chain: s.chain } : {}) });
+        h.taskStore.startTask(task.id);
+        h.taskStore.addSession(task.id, { tmuxSession: `kookr-${task.id}`, agentType: 'claude-code', cwd: o.cwd, createdAt: new Date(Date.now()) });
+        return { task: h.taskStore.getTask(task.id)!, queued: false } as LaunchResult;
+      },
+    });
+    const heldLog = (h.service as unknown as { heldLog: Map<string, unknown> }).heldLog;
+    const first = await startResearchChain(h, { maxIterations: 5 });
+    const chainId = first.chain!.chainId;
+    h.finish(first);
+    await h.service.sweep();
+    expect(heldLog.has(chainId)).toBe(true);
+
+    await h.service.stopChain(first.id, 'operator');
+    await h.service.sweep();
+    expect(h.service.findTip(chainId)!.chain!.ended?.reason).toBe('stopped');
+    expect(heldLog.has(chainId)).toBe(false);
+  });
+
   it('resets the failure count after a successful launch', async () => {
     const plan = ['ok', 'fail', 'fail', 'ok', 'fail', 'fail', 'ok'];
     let call = 0;
