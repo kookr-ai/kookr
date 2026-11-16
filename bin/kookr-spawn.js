@@ -14,7 +14,7 @@
 import { pathToFileURL } from 'node:url';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve as pathResolve } from 'node:path';
+import { dirname, join, resolve as pathResolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   classifyRestartIntent,
@@ -913,6 +913,35 @@ function resolveCwd(explicit, pwd) {
     throw new UsageError(`cwd is not a directory: ${abs}`);
   }
   return abs;
+}
+
+/**
+ * True when `dir` or one of its parents holds a `.git` entry (a directory in a
+ * main checkout, a file in a linked worktree). No subprocess: a plain walk up.
+ */
+function isInsideGitCheckout(dir) {
+  let current = dir;
+  for (;;) {
+    if (existsSync(join(current, '.git'))) return true;
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
+/**
+ * Issue #3678: the spawn directory becomes the child's working directory and
+ * Kookr project. A chain task that spawns its successor from its scratchpad
+ * without -C starts the child outside the repository. Returns the warning to
+ * print, or null when -C was given or the directory is inside a git checkout.
+ */
+function missingCwdWarning(explicitCwd, cwdAbs) {
+  if (explicitCwd !== null) return null;
+  if (isInsideGitCheckout(cwdAbs)) return null;
+  return (
+    `warning: no -C given and ${cwdAbs} is not inside a git checkout; the task will run there `
+    + 'and take it as its project. Pass -C <repository checkout> to launch it in a repository.'
+  );
 }
 
 // ---------- port / base-URL resolution ----------
@@ -2737,6 +2766,13 @@ async function main({
       return exit(EXIT_USER_ERROR);
     }
     throw e;
+  }
+  // Issue #3678: --json keeps stderr quiet, so the warning rides in the
+  // envelope's details (every exit point after this one) instead.
+  const cwdWarning = missingCwdWarning(args.cwd, cwdAbs);
+  if (cwdWarning !== null) {
+    if (args.json) out = withJsonDetails(out, { cwdWarning });
+    else err.error(`kookr-spawn: ${cwdWarning}`);
   }
 
   let resolved;

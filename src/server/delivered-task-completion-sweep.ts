@@ -105,7 +105,11 @@ export function createDeliveredCompletionTracker(): DeliveredCompletionTracker {
  * - PRs merged before the task was created (issue #3746). The scanner records
  *   any PR number the agent saw in its own activity (a doc, a test fixture,
  *   `gh` output), so an old merged PR could otherwise count as this task's
- *   delivery. A PR with no recorded `mergedAt` is not attributed either.
+ *   delivery;
+ * - PRs opened before the task was created (issue #3678): a chain successor
+ *   that mentions its predecessor's PR, still waiting on auto-merge, must not
+ *   be completed when that PR merges.
+ * A PR with no recorded `mergedAt` or `createdAt` is not attributed either.
  */
 export function createStoreDeliveredPrResolver(
   store: Pick<GitHubStateStore, 'getTaskState'>,
@@ -120,6 +124,7 @@ export function createStoreDeliveredPrResolver(
         repo: pr.ref.repo,
         detectedFrom: pr.ref.detectedFrom,
         ...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
+        ...(pr.createdAt ? { openedAt: pr.createdAt } : {}),
       })),
       { notBefore: task.createdAt },
     );

@@ -69,7 +69,7 @@ Options:
 
 | Option | Argument | Default | Description |
 | --- | --- | --- | --- |
-| `-C`, `--cwd` | path | Current shell directory | Working directory for the task. Relative paths are resolved from the invoking process's cwd. |
+| `-C`, `--cwd` | path | Current shell directory | Working directory for the task, which also sets its Kookr project. Relative paths are resolved from the invoking process's cwd. Without `-C`, spawn warns when the current directory is not inside a git checkout (on stderr, or in `details.cwdWarning` with `--json`; issue #3678): a chain task spawning from its scratchpad would otherwise start its successor outside the repository. |
 | `-a`, `--agent` | `claude-code`, `codex-cli`, or `grok-build` | Server default | Agent type to launch for this task. |
 | `--effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` | Kookr per-agent setting; Codex defaults to GPT-5.6 Sol with no effort override | Reasoning effort override for this task. `claude-code` accepts `low` through `max`; `codex-cli` generally accepts the full listed set, but `gpt-6-astra` accepts only `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. `grok-build` does not support effort. |
 | `--model` | known agent model id (e.g. `claude-fable-5` or `gpt-6-astra`) | Agent CLI / env default | Pin the model for this task (#1518). `claude-code` accepts known Claude ids and dated suffixes; `codex-cli` accepts `gpt-6-astra`; `grok-build` rejects raw pins. Server returns 400 for invalid values. |
