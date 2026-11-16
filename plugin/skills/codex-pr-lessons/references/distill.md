@@ -1,18 +1,12 @@
----
-name: codex-pr-distill
-group: codex-pr-lessons
-description: Distillation phase for codex-pr-lessons playbook — compress raw learnings into patterns and update skills
-keywords: codex, pr, distill, patterns, generalize, skill, synthesis
-related: [codex-pr-threshold, codex-pr-state, codex-pr-critic]
----
+# Codex PR lessons: Distill phase
 
-# Codex PR Distill
+Part of the [`codex-pr-lessons`](../SKILL.md) skill.
 
 > **Requires:** the `pr-contribution-excellence` skill at `~/.claude/skills/pr-contribution-excellence/SKILL.md` (bundled with the `kookr-toolkit` plugin since 0.5 — see `docs/hooks-setup.md`). If absent, the plugin is not installed; stop and report the missing dependency rather than fabricating distilled patterns.
 
 ## When to Use
 
-This skill is invoked when `codex-pr-threshold` returns `DISTILL`. It reads all accumulated raw learnings, identifies patterns, and writes them to the appropriate output files.
+This phase runs when the threshold phase ([threshold.md](threshold.md)) returns `DISTILL`. It reads all accumulated raw learnings, identifies patterns, and writes them to the appropriate output files.
 
 ## Non-Negotiable Rules
 

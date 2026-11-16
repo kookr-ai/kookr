@@ -10,7 +10,7 @@ related: [oss-pr-threshold, oss-pr-state, oss-pr-critic]
 
 > **Requires:** the `pr-contribution-excellence` skill at `~/.claude/skills/pr-contribution-excellence/SKILL.md` (bundled with the `kookr-toolkit` plugin since 0.5 — see `docs/hooks-setup.md`). If absent, the plugin is not installed; stop and report the missing dependency rather than fabricating distilled patterns.
 
-Read all accumulated raw learnings, identify patterns, and write them to repo-specific and general output files. Generalized version of `codex-pr-distill`.
+Read all accumulated raw learnings, identify patterns, and write them to repo-specific and general output files. Generalized version of the distill phase of `codex-pr-lessons`.
 
 ## When to Use
 

@@ -44,11 +44,11 @@ These rules MUST be respected by any contribution we produce:
 9. **CLA required**: Must sign Contributor License Agreement
 10. **Stale PR policy**: External PRs inactive >14 days get auto-closed
 
-## Phase 1: Plan (use skill `codex-pr-plan`)
+## Phase 1: Plan (use skill `codex-pr-lessons`, plan phase)
 
 Load state, determine which PRs to fetch next. Use cursor-based pagination to avoid re-fetching. Select 5 closed+merged PRs per batch.
 
-## Phase 2: Analyze (use skill `codex-pr-critic`)
+## Phase 2: Analyze (use skill `codex-pr-lessons`, critic phase)
 
 For each PR in the batch:
 1. Fetch PR metadata (title, body, labels, merge status, files changed, additions/deletions)
@@ -60,11 +60,11 @@ For each PR in the batch:
 
 Write observations to `learnings-raw.md` and update `state.json` with processed PR IDs.
 
-## Phase 4: Threshold check (use skill `codex-pr-threshold`)
+## Phase 4: Threshold check (use skill `codex-pr-lessons`, threshold phase)
 
 Count lines in `learnings-raw.md`. If > 200 lines, trigger distillation.
 
-## Phase 5: Distill (use skill `codex-pr-distill`, only if threshold met)
+## Phase 5: Distill (use skill `codex-pr-lessons`, distill phase, only if threshold met)
 
 Compress raw learnings into:
 1. Codex-specific patterns → `~/.claude/codex-pr-lessons/codex-patterns.md`

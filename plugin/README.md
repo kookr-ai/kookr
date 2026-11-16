@@ -51,7 +51,7 @@ sessions can also see it when the plugin is installed or synced locally.
 
 **Reviewer distillation experiment:** `reviewer-distillation-{judge,mutate,predict,prepare,select,meta}`.
 
-**Codex PR analysis:** `codex-pr-{critic,distill,plan,threshold}`.
+**Codex PR analysis:** `codex-pr-lessons` (one skill; its plan, critic, threshold and distill phases are reference files).
 
 **Review subagents (19):** `ambition-amplifier`, `api-surface-auditor`, `architecture-drift-detector`, `architecture-smell-scanner`, `assumption-archaeologist`, `boundary-critic`, `clear-writing-reviewer`, `delivery-pragmatist`, `dependency-graph-analyzer`, `design-experimenter`, `design-minimalist`, `failure-mode-analyst`, `macos-compat-reviewer`, `module-interface-auditor`, `operability-reviewer`, `socratic-challenger`, `state-machine-verifier`, `test-fixer`, `test-quality-reviewer`.
 
@@ -63,7 +63,7 @@ sessions can also see it when the plugin is installed or synced locally.
 
 ## One-time setup for the OSS extension
 
-A few skills (`oss-pr-distill`, `codex-pr-distill`, `reviewer-distillation-predict`) and the `oss-contribute` playbook read companion files from `~/.claude/skills/pr-contribution-excellence/` and `~/.claude/reviewer-specialists/`. These paths are not auto-populated by the marketplace install. From a Kookr checkout:
+A few skills (`oss-pr-distill`, `codex-pr-lessons`, `reviewer-distillation-predict`) and the `oss-contribute` playbook read companion files from `~/.claude/skills/pr-contribution-excellence/` and `~/.claude/reviewer-specialists/`. These paths are not auto-populated by the marketplace install. From a Kookr checkout:
 
 ```
 git clone https://github.com/kookr-ai/kookr.git

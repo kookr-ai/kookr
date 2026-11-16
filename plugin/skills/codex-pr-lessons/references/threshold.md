@@ -1,14 +1,10 @@
----
-name: codex-pr-threshold
-group: codex-pr-lessons
-description: Threshold verification for codex-pr-lessons playbook — determine if distillation should trigger
-keywords: codex, pr, threshold, distillation, trigger, line count
-related: [codex-pr-state, codex-pr-distill]
----
+# Codex PR lessons: Threshold phase
+
+Part of the [`codex-pr-lessons`](../SKILL.md) skill.
 
 ## When to Use
 
-This skill is invoked after each batch's state update to determine whether the accumulated raw learnings are sufficient for distillation.
+This phase runs after each batch's state update to determine whether the accumulated raw learnings are sufficient for distillation.
 
 ## Non-Negotiable Rules
 
@@ -49,5 +45,5 @@ fi
 ## Output
 
 Return one of:
-- `DISTILL` — proceed to codex-pr-distill skill
+- `DISTILL` — proceed to the distill phase ([distill.md](distill.md))
 - `SKIP — {N} lines, {M} PRs processed (need >200 lines and >=10 PRs)` — stop iteration here

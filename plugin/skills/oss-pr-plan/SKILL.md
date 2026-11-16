@@ -8,7 +8,7 @@ related: [oss-pr-critic, oss-pr-state, oss-pr-threshold, oss-pr-distill]
 
 # OSS PR Plan
 
-Load state and determine the next batch of PRs to analyze. Generalized version of `codex-pr-plan` that works for any repository.
+Load state and determine the next batch of PRs to analyze. Generalized version of the plan phase of `codex-pr-lessons` that works for any repository.
 
 ## When to Use
 
