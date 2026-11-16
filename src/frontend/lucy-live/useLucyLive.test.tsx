@@ -10,7 +10,7 @@ vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => {
 import { useLucyLive, type UseLucyLiveResult } from './useLucyLive.js';
 import { CONFIRMATION_TIMEOUT_MS, DUCK_GAIN } from './lucy-live-session.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
-import { __resetSpeechBusForTests, subscribeSpeechBus, type SpeechBusEvent } from '../audio/speech-bus.js';
+import { __resetSpeechBusForTests, emitSpeechIdle, emitSpeechPlaying, subscribeSpeechBus, type SpeechBusEvent } from '../audio/speech-bus.js';
 import { __resetPlayingClipsForTests, clipStarted } from '../audio/playing-clips.js';
 import { STT_LANGUAGE_KEY } from '../store/stt-language.js';
 
@@ -1160,6 +1160,102 @@ describe('useLucyLive', () => {
       expect(sources).toHaveLength(2);
       expect(sources[0].start).toHaveBeenCalled();
       expect(sources[1].start.mock.calls[0][0]).toBeGreaterThan(sources[0].start.mock.calls[0][0] as number);
+    });
+
+    /** Operator asked something; she is thinking and a clip is playing. */
+    async function thinkingBehindClip() {
+      const ws = await talkOn();
+      speakTurn();
+      const id = lastTurnId();
+      await act(async () => { ws.receive({ type: 'state', state: 'thinking' }); });
+      const first = playClip();
+      await act(async () => { ws.receive(sentence(id, 0)); ws.receive({ type: 'state', state: 'speaking' }); });
+      await settle();
+      expect(sources).toHaveLength(0); // waiting behind the clip
+      sent.length = 0;
+      tracked.length = 0;
+      return { ws, id, first };
+    }
+
+    test('talking over a clip with an answer waiting behind it never starts that answer', async () => {
+      const { ws, first } = await thinkingBehindClip();
+      talkOver();
+      await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: lastTurnId() }); });
+      await settle();
+      expect(first.clip.stop).toHaveBeenCalledWith('barge_in');
+      expect(sources).toHaveLength(0);
+      expect(sent.some((m) => m.type === 'played')).toBe(false);
+      expect(tracked.some((e) => e.kind === 'end_to_first_audio')).toBe(false);
+    });
+
+    test('without a server check, the same: the clip stops and the waiting answer is never started', async () => {
+      const ws = await talkOn('off');
+      speakTurn();
+      const id = lastTurnId();
+      await act(async () => { ws.receive({ type: 'state', state: 'thinking' }); });
+      const { clip } = playClip();
+      await act(async () => { ws.receive(sentence(id, 0)); });
+      await settle();
+      sent.length = 0;
+      for (let i = 0; i < 40 && clip.stop.mock.calls.length === 0; i++) mic(-15, 32);
+      expect(clip.stop).toHaveBeenCalledWith('barge_in');
+      expect(sources).toHaveLength(0);
+      expect(sent.some((m) => m.type === 'played')).toBe(false);
+    });
+
+    test('a second clip does not throw away an answer waiting behind the first; it plays after both', async () => {
+      const { first } = await thinkingBehindClip();
+      const second = playClip();
+      expect(wire).not.toContain('barge_in');
+      expect(latest.lastTurnEnd).not.toBe('interrupted');
+      first.end();
+      await settle();
+      expect(sources).toHaveLength(0);
+      second.end();
+      await settle();
+      expect(sources).toHaveLength(1);
+    });
+
+    test('a clip that starts while a sound is being checked over her answer does not send barge_in', async () => {
+      const ws = await talkOn();
+      speakTurn();
+      const id = lastTurnId();
+      await act(async () => { ws.receive(sentence(id, 0)); ws.receive({ type: 'state', state: 'speaking' }); });
+      await settle();
+      sent.length = 0;
+      talkOver(); // a candidate is now being checked
+      expect(speechStart()).toMatchObject({ lucyAudible: true });
+      sent.length = 0;
+      wire.length = 0;
+      playClip();
+      expect(sources[0].stop).toHaveBeenCalled();
+      expect(wire).not.toContain('barge_in'); // the server would take the sound as the operator's words
+    });
+
+    test('a connection lost while a clip is turned down brings it back to full volume', async () => {
+      const ws = await talkOn();
+      const { clip } = playClip();
+      talkOver();
+      act(() => { ws.drop(); });
+      expect(clip.setVolume.mock.calls.at(-1)?.[0]).toBe(1);
+      expect(clip.stop).not.toHaveBeenCalled();
+    });
+
+    test('while a clip is audible, her thinking does not take the speech bus; when it ends the bus shows her preparing', async () => {
+      const events: SpeechBusEvent[] = [];
+      subscribeSpeechBus((e) => events.push(e));
+      const ws = await talkOn();
+      speakTurn();
+      const owner = {};
+      // What a real clip player does: announce on the bus, then register as playing.
+      act(() => { emitSpeechPlaying(owner, { createAnalyser: () => ({}) as AnalyserNode }, { connect: () => undefined } as unknown as AudioNode); });
+      const { end } = playClip();
+      await act(async () => { ws.receive({ type: 'state', state: 'thinking' }); });
+      expect(events.at(-1)?.type).toBe('playing');
+      // And what it does at the end: leave the list, then announce idle.
+      end();
+      act(() => { emitSpeechIdle(owner); });
+      expect(events.at(-1)?.type).toBe('generating');
     });
 
     test('a clip that starts while a sound is being checked is turned down with the rest', async () => {

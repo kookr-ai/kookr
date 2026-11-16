@@ -537,9 +537,10 @@ export class LucyLiveSession {
     }
     this.forgetLateCandidates();
     if (this.lucyBusy()) {
-      // No server check available: everything audible stops in this same call stack.
-      this.stopClips('barge_in');
+      // No server check available: everything audible stops in this same call stack. Her queue
+      // is cleared first, so an answer waiting behind a clip is not started by the clip's end.
       const cut = this.cutPlayback();
+      this.stopClips('barge_in');
       emitSpeechIdle(this.busOwner);
       const stopMs = performance.now() - detectedAt;
       for (const sentence of cut) {
@@ -713,8 +714,9 @@ export class LucyLiveSession {
 
   /** Stop every sound and make the interrupting audio the current turn. */
   private stopForInterruption(duck: CandidateTiming): void {
-    this.stopClips('barge_in');
+    // Her queue first, so an answer waiting behind a clip is not started by the clip's end.
     const cut = this.cutPlayback();
+    this.stopClips('barge_in');
     // The next answer plays at full volume, unless a newer candidate is still being checked.
     this.setGain(this.duck ? DUCK_GAIN : 1);
     emitSpeechIdle(this.busOwner);
@@ -763,6 +765,8 @@ export class LucyLiveSession {
    */
   private yieldToClip(): void {
     if (this.stopped) return;
+    // Another clip is already playing, so nothing of hers is audible: an answer queued behind it keeps waiting.
+    if (playingClips().length > 0) return;
     if (this.active.length === 0 && this.pending.size === 0 && this.decoding.size === 0) return;
     const cut = this.cutPlayback();
     emitSpeechIdle(this.busOwner);
