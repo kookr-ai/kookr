@@ -73,8 +73,9 @@ reasoning is never sent on.
 | `read_board` | The board again, freshly built |
 | `read_task` | One task: what it was asked to do, where it runs, what it waits for, its closing summary |
 | `read_task_output` | What a task's terminal shows: the last 40 lines of the rendered screen (a running task), or of the tail saved when it ended |
+| `read_questions` | Every `kookr ask` question still waiting for the operator, not only the few the board shows: those whose task is still waiting first, then the one that closes soonest. Each line says who asked, how long ago, when it closes, whether its task has finished (then nothing is blocked on it, it only asks for an opinion), and the question and choices, which are task text and arrive marked as untrusted. At most 40 questions and about 8,000 characters; a cut is stated ("and N more questions not listed"). The board lists its few questions in the same order and ends with a line that points here |
 | `show_task` | A short confirmation; it asks the dashboard to open the task (a `screen` event in the stream) |
-| `list_projects` | The projects Kookr knows, with how many tasks are active in each |
+| `list_projects` | The projects Kookr knows, with how many tasks are active in each. With launching on, each line also says `can launch here` or `cannot launch here (not tracked)`, and the projects she may launch in come first so the 30-line cap never hides them. When she cannot place a launch request, she names the project she understood and up to five she can launch in |
 
 ### How she names a task
 
@@ -196,7 +197,7 @@ Balanced, and a spoken specific "yes" at Hands-off; never "go" alone.
 Agents write the text she reads, and agents can write anything, including text that looks like an
 instruction. Three things keep such text from having an effect.
 
-- **No tool changes anything.** The four tools above are the whole list. None launches, replies to,
+- **No tool changes anything.** The look-up tools above are the whole list. None launches, replies to,
   closes, snoozes, approves or stops a task, so there is nothing for a planted instruction to trigger.
 - **Kookr, not the model, decides what runs.** Every tool call goes through one dispatcher
   (`dispatchLucyTool` in `src/core/lucy-operator/tools.ts`). A tool name that is not on the list is

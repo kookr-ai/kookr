@@ -4,6 +4,7 @@ import {
   buildReadBack,
   buildSpecWriterPrompt,
   buildTaskPrompt,
+  buildUnknownProjectSay,
   classifyReply,
   parseSpecDraft,
   resolveProject,
@@ -65,6 +66,31 @@ describe('resolveProject', () => {
   });
   test('a name shared by two projects is ambiguous', () => {
     expect(resolveProject('kookr', [...PROJECTS, { name: 'kookr', cwd: '/other/kookr' }])).toBeNull();
+  });
+});
+
+describe('buildUnknownProjectSay', () => {
+  const many = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta'].map((name) => ({ name, cwd: `/work/${name}` }));
+
+  test('names what she understood and where she can launch', () => {
+    expect(buildUnknownProjectSay('secrets', PROJECTS)).toBe('I cannot launch in secrets. I can launch in kookr and Research Agent.');
+    expect(buildUnknownProjectSay('secrets', [PROJECTS[0]!])).toBe('I cannot launch in secrets. I can launch in kookr.');
+  });
+
+  test('names at most five projects and counts the rest', () => {
+    expect(buildUnknownProjectSay('x', many)).toBe('I cannot launch in x. I can launch in alpha, beta, gamma, delta and epsilon and 2 more.');
+  });
+
+  test('says only the refusal when there is no project to offer or no name was understood', () => {
+    expect(buildUnknownProjectSay('x', [])).toBe('I cannot launch in x.');
+    expect(buildUnknownProjectSay('  ', PROJECTS)).toBe('I cannot launch there. I can launch in kookr and Research Agent.');
+  });
+
+  test('hides secrets and cuts long text in what the model named and in the project names', () => {
+    const say = buildUnknownProjectSay(`ghp_abcdefghijklmnopqrstuvwxyz0123456789 ${'y'.repeat(100)}`, [{ name: 'key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789', cwd: '/w' }]);
+    expect(say).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789');
+    expect(say).not.toContain('sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789');
+    expect(say).not.toContain('y'.repeat(60));
   });
 });
 

@@ -12,6 +12,7 @@
  */
 
 import type { LucyLaunchKind } from '../../shared/contracts/lucy-launch.js';
+import { redactSpeechSecrets } from '../task-speech-summary.js';
 
 /** Longest task description, in characters. Matches the Telegram path's `TaskSpecSchema`. */
 export const MAX_LAUNCH_DESCRIPTION_CHARS = 2000;
@@ -100,6 +101,26 @@ export function resolveProject(name: string, projects: readonly LaunchableProjec
   if (!wanted) return null;
   const hits = projects.filter((p) => p.name.toLowerCase() === wanted);
   return hits.length === 1 ? hits[0]! : null;
+}
+
+/** How many launchable projects she names when she has to refuse one. */
+const MAX_NAMED_LAUNCHABLE = 5;
+
+/**
+ * What she says when the project the operator named is not one she may launch in: it says which
+ * name she understood and where she can launch, instead of only asking again. The understood name
+ * came from the model and the project names from the folders, so both are redacted and cut first.
+ */
+export function buildUnknownProjectSay(understood: string, projects: readonly LaunchableProject[]): string {
+  const clean = (text: string, max: number): string => redactSpeechSecrets(text.replace(/\s+/g, ' ').trim()).slice(0, max).trim();
+  const named = clean(understood, 40);
+  const refusal = named ? `I cannot launch in ${named}.` : 'I cannot launch there.';
+  const names = projects.map((p) => clean(p.name, 40)).filter((n) => n.length > 0);
+  if (names.length === 0) return refusal;
+  const shown = names.slice(0, MAX_NAMED_LAUNCHABLE);
+  const list = shown.length === 1 ? shown[0]! : `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
+  const more = names.length > shown.length ? ` and ${names.length - shown.length} more` : '';
+  return `${refusal} I can launch in ${list}${more}.`;
 }
 
 /**

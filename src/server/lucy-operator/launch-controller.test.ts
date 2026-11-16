@@ -98,6 +98,23 @@ describe('propose', () => {
     expect(t.controller.pending('c1')).toBeUndefined();
   });
 
+  test('a project she may not launch in is refused by name, naming where she can launch', async () => {
+    const t = setup({ reply: JSON.stringify({ kind: 'investigation', project: 'secrets', description: 'x' }) });
+    expect(await t.propose()).toEqual({ ok: false, say: 'I cannot launch in secrets. I can launch in kookr and research.', why: 'unknown project' });
+    expect(t.controller.pending('c1')).toBeUndefined();
+    expect(t.launches).toHaveLength(0);
+  });
+
+  test('the name she says back is redacted, and at most five launchable projects are named', async () => {
+    const projects = ['a1', 'b2', 'c3', 'd4', 'e5', 'f6'].map((name) => ({ name, cwd: `/work/${name}` }));
+    const t = setup({ projects, reply: JSON.stringify({ kind: 'investigation', project: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', description: 'x' }) });
+    const result = await t.propose();
+    expect(result).toMatchObject({ ok: false, why: 'unknown project' });
+    if (result.ok) return;
+    expect(result.say).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789');
+    expect(result.say).toMatch(/I can launch in a1, b2, c3, d4 and e5 and 1 more\.$/);
+  });
+
   test('no projects means no proposal', async () => {
     const t = setup({ projects: [] });
     expect(await t.propose()).toMatchObject({ ok: false, why: 'no projects' });

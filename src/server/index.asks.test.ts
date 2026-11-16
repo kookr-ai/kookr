@@ -91,7 +91,17 @@ describe('server boot with kookr ask enabled', () => {
     expect(announced).toMatchObject({
       announce: ask.id,
       serverNow: expect.any(Number),
-      asks: [{ id: ask.id, taskName: 'Fix login', question: 'Ship it?', state: 'pending' }],
+      asks: [{ id: ask.id, taskName: 'Fix login', taskEnded: false, question: 'Ship it?', state: 'pending' }],
     });
+
+    // The task finishes with the question still waiting: the list is sent again, now saying nothing waits on it.
+    const before = asksMessages().length;
+    server!.taskStore.startTask(task.id);
+    const done = await fetch(`http://127.0.0.1:${port}/api/tasks/${task.id}/complete`, { method: 'POST' });
+    expect(await done.text()).toContain('"ok":true');
+    await expect.poll(() => asksMessages().length).toBeGreaterThan(before);
+    const latest = asksMessages().at(-1)!;
+    expect(latest.announce).toBeUndefined();
+    expect(latest).toMatchObject({ asks: [{ id: ask.id, state: 'pending', taskEnded: true }] });
   });
 });

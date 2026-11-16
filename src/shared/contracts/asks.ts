@@ -338,6 +338,11 @@ export interface OperatorAskView {
   taskId: string;
   /** Short, redacted task title for display; absent when the task has no usable title. */
   taskName?: string;
+  /**
+   * True when the task that asked has ended (completed, terminated or cancelled) or no longer exists:
+   * nothing is waiting on the answer. Absent from older servers, which is read as "a task may be waiting".
+   */
+  taskEnded?: boolean;
   question: string;
   context?: string;
   options: string[];

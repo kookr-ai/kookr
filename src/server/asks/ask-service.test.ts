@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 import { ASK_LIMITS, type AskNotifier, type AskRecord } from '../../shared/contracts/asks.js';
 import { TTSClientError } from '../../adapters/tts-client.js';
 import type { TaskStatus } from '../../core/task-status.js';
+import type { TaskStatus as ContractTaskStatus } from '../../shared/contracts/task-status.js';
 import { registerAskRoutes } from '../routes/ask-routes.js';
 import { ASK_WAIT_ATTACHED_MS, ASK_WAIT_FALLBACK_MS, AskService } from './ask-service.js';
 import { AskStore } from './ask-store.js';
@@ -826,6 +827,30 @@ describe('ask routes', () => {
     expect((await app.request(`/api/asks/${body.ask.id}/cancel`, { method: 'POST' })).status).toBe(200);
     expect((await app.request(`/api/asks/${body.ask.id}/cancel`, { method: 'POST' })).status).toBe(409);
     expect((await app.request('/api/asks/zzz/cancel', { method: 'POST' })).status).toBe(404);
+  });
+
+  it('adds the task name and whether the task has ended to each listed or read ask, in the same order', async () => {
+    const statuses: Record<string, ContractTaskStatus> = { t1: 'inProgress' };
+    const app = new Hono();
+    registerAskRoutes(app, {
+      service: h.service,
+      taskName: (id) => (id === 't1' ? 'Fix login' : undefined),
+      taskStatus: (id) => statuses[id],
+    });
+    const first = await (await post(app, { ...base, question: 'first?', idempotencyKey: 'k-first' })).json();
+    const before = await (await app.request(`/api/asks/${first.ask.id}`)).json();
+    expect(before.ask).toMatchObject({ id: first.ask.id, taskName: 'Fix login', taskEnded: false, question: 'first?', state: 'pending' });
+    expect(JSON.stringify(before)).not.toContain('nonce');
+
+    statuses.t1 = 'completed';
+    const listed = await (await app.request('/api/asks?taskId=t1')).json();
+    expect(listed.asks).toHaveLength(1);
+    expect(listed.asks[0]).toMatchObject({ id: first.ask.id, taskName: 'Fix login', taskEnded: true });
+    expect((await (await app.request(`/api/asks/${first.ask.id}`)).json()).ask.taskEnded).toBe(true);
+
+    // A task that no longer exists counts as ended.
+    delete statuses.t1;
+    expect((await (await app.request('/api/asks')).json()).asks[0].taskEnded).toBe(true);
   });
 
   it('rejects a non-object JSON body with 400, not 500', async () => {
