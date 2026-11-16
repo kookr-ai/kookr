@@ -117,13 +117,15 @@ test.describe('avatar panel (optional)', () => {
     const dock = page.getByTestId('avatar-dock');
     await expect(dock).toBeVisible();
 
-    // The column is docked to the right edge and as tall as the window.
+    // In the default 1280 x 720 window there is no room to take from the page: the column floats over it, at the
+    // right edge, from below the 38 px top bar to the bottom of the window.
+    await expect(dock).toHaveAttribute('data-column-mode', 'overlay');
     const box = await dock.boundingBox();
     const viewport = page.viewportSize();
     expect(box && viewport).toBeTruthy();
     expect(Math.round(box!.x + box!.width)).toBe(viewport!.width);
-    expect(Math.round(box!.y)).toBe(0);
-    expect(Math.round(box!.height)).toBe(viewport!.height);
+    expect(Math.round(box!.y)).toBe(38);
+    expect(Math.round(box!.y + box!.height)).toBe(viewport!.height);
     expect(Math.round(box!.width)).toBe(380);
 
     await page.getByRole('button', { name: 'Minimise Lucy' }).click();
@@ -211,42 +213,6 @@ test.describe('avatar panel: hearing a message again', () => {
     header.write('data', 36);
     header.writeUInt32LE(data.length, 40);
     return Buffer.concat([header, data]).toString('base64');
-  }
-
-  async function launchTaskWithCard(page: Page, request: APIRequestContext): Promise<void> {
-    const prompt = 'Avatar replay task';
-    await expect(page.locator('.health-dot-connected')).toBeVisible();
-    await page.locator('.btn-launch').click();
-    await page.locator('.dialog textarea').fill(prompt);
-    const cwdInput = page.locator('.dialog input[type="text"]').first();
-    await cwdInput.clear();
-    await cwdInput.fill('/test/project');
-    await page.locator('.dialog .btn-primary').click();
-    await expect(page.locator('.dialog')).not.toBeVisible();
-
-    let tmuxName: string | undefined;
-    await expect
-      .poll(async () => {
-        const tasks = (await (await request.get('/api/tasks')).json()) as Array<{
-          prompt: string;
-          status: string;
-          sessions: Array<{ tmuxSession: string }>;
-        }>;
-        const task = [...tasks].reverse().find((t) => t.prompt === prompt && t.status === 'inProgress');
-        tmuxName = task?.sessions.at(-1)?.tmuxSession;
-        return tmuxName ?? null;
-      })
-      .not.toBeNull();
-    const inject = (event: Record<string, unknown>) =>
-      request.post('/api/test/inject-event', {
-        data: {
-          tmuxName,
-          event: { session_id: 'sess-avatar', transcript_path: '/tmp/transcript.jsonl', cwd: '/test/project', ...event },
-        },
-      });
-    await inject({ hook_event_name: 'SessionStart' });
-    await inject({ hook_event_name: 'Stop', stop_hook_active: true, last_assistant_message: 'I need your help.' });
-    await expect(page.locator('.finding-card')).toBeVisible();
   }
 
   type TelemetryEvent = Record<string, unknown> & { type: string; clipId?: string };
@@ -381,13 +347,17 @@ test.describe('avatar panel: hearing a message again', () => {
       await expect(bubble).toHaveAttribute('aria-label', 'Open Lucy. 1 finding needs your attention. 1 unheard message.');
       await expect(card).toHaveCount(0);
 
-      await bubble.hover();
-      await expect(card).toBeVisible();
-      await expect(card).toContainText('1 finding needs you');
-      await expect(card).toContainText('1 unheard message');
-      await expect(card).toContainText('Click to open Lucy');
-      // It is a visual duplicate of the label: hidden from assistive technology and never in the way of the pointer.
-      await expect(card).toHaveAttribute('aria-hidden', 'true');
+      // Hovering is retried: when two headed browsers share one X display, the other one's pointer movements reach this
+      // page as stray moves and end the hover (the card closes), which says nothing about the card.
+      await expect(async () => {
+        await bubble.hover();
+        await expect(card).toBeVisible({ timeout: 2000 });
+        await expect(card).toContainText('1 finding needs you', { timeout: 2000 });
+        await expect(card).toContainText('1 unheard message', { timeout: 2000 });
+        await expect(card).toContainText('Click to open Lucy', { timeout: 2000 });
+        // It is a visual duplicate of the label: hidden from assistive technology and never in the way of the pointer.
+        await expect(card).toHaveAttribute('aria-hidden', 'true', { timeout: 2000 });
+      }).toPass({ timeout: 10_000 });
       const box = (await card.boundingBox())!;
       const viewport = page.viewportSize()!;
       expect(box.x).toBeGreaterThanOrEqual(0);
@@ -558,6 +528,43 @@ test.describe('avatar panel: hearing a message again', () => {
     }, { timeout: 15_000 });
   });
 });
+
+/** Launches a task through the dashboard and makes it signal a finding, so a finding card is on screen. */
+async function launchTaskWithCard(page: Page, request: APIRequestContext): Promise<void> {
+  const prompt = 'Avatar replay task';
+  await expect(page.locator('.health-dot-connected')).toBeVisible();
+  await page.locator('.btn-launch').click();
+  await page.locator('.dialog textarea').fill(prompt);
+  const cwdInput = page.locator('.dialog input[type="text"]').first();
+  await cwdInput.clear();
+  await cwdInput.fill('/test/project');
+  await page.locator('.dialog .btn-primary').click();
+  await expect(page.locator('.dialog')).not.toBeVisible();
+
+  let tmuxName: string | undefined;
+  await expect
+    .poll(async () => {
+      const tasks = (await (await request.get('/api/tasks')).json()) as Array<{
+        prompt: string;
+        status: string;
+        sessions: Array<{ tmuxSession: string }>;
+      }>;
+      const task = [...tasks].reverse().find((t) => t.prompt === prompt && t.status === 'inProgress');
+      tmuxName = task?.sessions.at(-1)?.tmuxSession;
+      return tmuxName ?? null;
+    })
+    .not.toBeNull();
+  const inject = (event: Record<string, unknown>) =>
+    request.post('/api/test/inject-event', {
+      data: {
+        tmuxName,
+        event: { session_id: 'sess-avatar', transcript_path: '/tmp/transcript.jsonl', cwd: '/test/project', ...event },
+      },
+    });
+  await inject({ hook_event_name: 'SessionStart' });
+  await inject({ hook_event_name: 'Stop', stop_hook_active: true, last_assistant_message: 'I need your help.' });
+  await expect(page.locator('.finding-card')).toBeVisible();
+}
 
 const MIN = 60_000;
 
@@ -911,24 +918,34 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     const dock = page.getByTestId('avatar-dock');
     const handle = page.getByTestId('avatar-column-resizer');
     await expect(handle).toHaveAttribute('role', 'separator');
+    // A 1440 px window: the page keeps 1000 px, so the column is at most 440 px.
+    await expect(handle).toHaveAttribute('aria-valuemax', '440');
+
+    // The pointer drag is sent as page events (pointerdown on the separator, moves and release on the window), not
+    // through Playwright's mouse: when two headed browsers share one X display, the other one's pointer movements
+    // reach this page as stray `pointermove` events with no button held, which end a drag by design.
     const grip = (await handle.boundingBox())!;
-
-    // Drag 100 px to the left: 380 -> 480.
-    await handle.hover({ position: { x: 2, y: 400 } });
-    await page.mouse.down();
-    await page.mouse.move(grip.x - 98, 400, { steps: 8 });
-    await page.mouse.up();
-    await expect.poll(async () => Math.round((await dock.boundingBox())!.width)).toBe(480);
+    await page.evaluate(async ({ x, toX }) => {
+      const handleEl = document.querySelector('[data-testid="avatar-column-resizer"]')!;
+      const fire = (target: EventTarget, type: string, clientX: number, buttons: number): void => {
+        target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 7, isPrimary: true, button: 0, buttons, clientX, clientY: 400 }));
+      };
+      fire(handleEl, 'pointerdown', x, 1);
+      for (let step = 1; step <= 8; step += 1) fire(window, 'pointermove', x + ((toX - x) * step) / 8, 1);
+      fire(window, 'pointerup', toX, 0);
+    }, { x: grip.x + 2, toX: grip.x - 48 });
+    await expect.poll(async () => Math.round((await dock.boundingBox())!.width)).toBe(430);
     const main = (await page.locator('.main').boundingBox())!;
-    expect(Math.round(main.x + main.width)).toBe(1440 - 480);
-    expect(JSON.parse((await page.evaluate((key) => localStorage.getItem(key), AVATAR_PANEL_KEY))!)).toMatchObject({ enabled: true, width: 480 });
+    expect(Math.round(main.x + main.width)).toBe(1440 - 430);
+    expect(JSON.parse((await page.evaluate((key) => localStorage.getItem(key), AVATAR_PANEL_KEY))!)).toMatchObject({ enabled: true, width: 430 });
 
-    // The limits.
+    // The limits: End stops where the page would drop below 1000 px.
     await handle.focus();
     await page.keyboard.press('End');
-    await expect.poll(async () => Math.round((await dock.boundingBox())!.width)).toBe(560);
+    await expect.poll(async () => Math.round((await dock.boundingBox())!.width)).toBe(440);
     await page.keyboard.press('ArrowLeft'); // already the widest
-    await expect.poll(async () => Math.round((await dock.boundingBox())!.width)).toBe(560);
+    await expect.poll(async () => Math.round((await dock.boundingBox())!.width)).toBe(440);
+    expect(Math.round((await page.locator('.main').boundingBox())!.width)).toBe(1000);
     await page.keyboard.press('Home');
     await expect.poll(async () => Math.round((await dock.boundingBox())!.width)).toBe(320);
     await page.keyboard.press('ArrowLeft');
@@ -941,6 +958,86 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     const reloaded = (await page.locator('.main').boundingBox())!;
     expect(Math.round(reloaded.x + reloaded.width)).toBe(1440 - 336);
     await shot(page, 'resized-narrow');
+  });
+
+  test('in a wide window the column can reach the full 560 px', async ({ page }) => {
+    await page.setViewportSize({ width: 2000, height: 900 });
+    await openColumn(page, { asks: [] });
+    const handle = page.getByTestId('avatar-column-resizer');
+    await expect(handle).toHaveAttribute('aria-valuemax', '560');
+    await handle.focus();
+    await page.keyboard.press('End');
+    await expect.poll(async () => Math.round((await page.getByTestId('avatar-dock').boundingBox())!.width)).toBe(560);
+    expect(Math.round((await page.locator('.main').boundingBox())!.width)).toBe(2000 - 560);
+  });
+
+  test('a saved width of 560 in a 1440 px window is shown as 440, so the page keeps 1000 px, and the saved width is not overwritten', async ({ page }) => {
+    await openColumn(page, { asks: [] }, '{"enabled":true,"minimized":false,"width":560}');
+    const dock = page.getByTestId('avatar-dock');
+    await expect(dock).toHaveAttribute('data-column-mode', 'docked');
+    expect(Math.round((await dock.boundingBox())!.width)).toBe(440);
+    const main = (await page.locator('.main').boundingBox())!;
+    expect(Math.round(main.x + main.width)).toBe(1000);
+    expect(JSON.parse((await page.evaluate((key) => localStorage.getItem(key), AVATAR_PANEL_KEY))!)).toMatchObject({ width: 560 });
+    await page.setViewportSize({ width: 2000, height: 900 });
+    await expect.poll(async () => Math.round((await dock.boundingBox())!.width)).toBe(560);
+  });
+
+  test('in a 1280 x 720 window with a task selected the column floats over the page: the page keeps its width and the top bar does not collide', async ({ page, request }) => {
+    test.setTimeout(60_000);
+    await resetServer(request);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await openColumn(page, { asks: [] });
+    await launchTaskWithCard(page, request);
+    await page.locator('.finding-card').first().click();
+    // The reading pane opens beside the findings list.
+    await expect(page.getByRole('button', { name: 'Details' })).toBeVisible();
+
+    const dock = page.getByTestId('avatar-dock');
+    await expect(dock).toHaveAttribute('data-column-mode', 'overlay');
+    expect(Math.round((await dock.boundingBox())!.width)).toBe(380);
+    // It starts below the top bar, so + Launch and the search stay reachable.
+    expect(Math.round((await dock.boundingBox())!.y)).toBe(38);
+    await expectVisible(page.locator('.btn-launch'), '+ Launch');
+    expect(await page.evaluate(() => { const b = document.querySelector('.btn-launch')!.getBoundingClientRect(); return document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2)?.closest('.btn-launch') !== null; })).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--lucy-column-width'))).toBe('');
+    const main = (await page.locator('.main').boundingBox())!;
+    expect(Math.round(main.x + main.width)).toBe(1280);
+    expect(await page.locator('.app').evaluate((el) => getComputedStyle(el).paddingRight)).toBe('0px');
+
+    // No two things in the top bar overlap along x: compare every visible leaf element pairwise.
+    const boxes = await page.evaluate(() => {
+      const leaves = [...document.querySelectorAll('.topbar *')].filter((el) => el.children.length === 0 && !el.classList.contains('sr-only'));
+      return leaves.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { name: `${el.tagName.toLowerCase()}.${String(el.className)}`.slice(0, 50) + ` "${(el.textContent ?? '').trim().slice(0, 20)}"`, left: r.left, right: r.right, width: r.width, height: r.height };
+      }).filter((b) => b.width > 0 && b.height > 0);
+    });
+    expect(boxes.length).toBeGreaterThan(8);
+    for (let i = 0; i < boxes.length; i += 1) {
+      for (let j = i + 1; j < boxes.length; j += 1) {
+        const overlap = Math.min(boxes[i].right, boxes[j].right) - Math.max(boxes[i].left, boxes[j].left);
+        expect(overlap, `${boxes[i].name} and ${boxes[j].name} overlap by ${overlap}px`).toBeLessThanOrEqual(1);
+      }
+    }
+    await shot(page, 'task-selected-1280x720-overlay');
+
+    // Minimising brings the page back as it was, with the bubble in the corner.
+    await page.getByRole('button', { name: 'Minimise Lucy' }).click();
+    await expect(page.getByTestId('avatar-bubble')).toBeVisible();
+    const after = (await page.locator('.main').boundingBox())!;
+    expect(Math.round(after.x + after.width)).toBe(1280);
+  });
+
+  test('a task selected at 1440 x 900 with a 560 px saved width: the column is 440 px and the page keeps 1000', async ({ page, request }) => {
+    test.setTimeout(60_000);
+    await resetServer(request);
+    await openColumn(page, { asks: [] }, '{"enabled":true,"minimized":false,"width":560}');
+    await launchTaskWithCard(page, request);
+    await page.locator('.finding-card').first().click();
+    const main = (await page.locator('.main').boundingBox())!;
+    expect(Math.round(main.x + main.width)).toBe(1000);
+    await shot(page, 'task-selected-1440x900-col440');
   });
 
   test('the column has no structural accessibility violations with questions, opinions and a launch card showing', async ({ page }) => {

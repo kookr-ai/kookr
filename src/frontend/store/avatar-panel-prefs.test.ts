@@ -6,9 +6,11 @@ import {
   AVATAR_COLUMN_DEFAULT_WIDTH,
   AVATAR_COLUMN_MAX_WIDTH,
   AVATAR_COLUMN_MIN_WIDTH,
+  AVATAR_PAGE_MIN_WIDTH,
   AVATAR_PANEL_KEY,
   DEFAULT_AVATAR_PANEL_PREFS,
   __resetAvatarPanelPrefsForTests,
+  avatarColumnLayout,
   clampAvatarColumnWidth,
   loadAvatarPanelPrefs,
   saveAvatarPanelPrefs,
@@ -147,6 +149,41 @@ describe('avatar-panel-prefs', () => {
       expect(AVATAR_COLUMN_DEFAULT_WIDTH).toBe(380);
       expect(AVATAR_COLUMN_MIN_WIDTH).toBe(320);
       expect(AVATAR_COLUMN_MAX_WIDTH).toBe(560);
+    });
+  });
+
+  describe('avatarColumnLayout: the page keeps at least 1000 px', () => {
+    test('the page minimum is 1000 px', () => {
+      expect(AVATAR_PAGE_MIN_WIDTH).toBe(1000);
+    });
+
+    test('768 px and below is a sheet over the whole window', () => {
+      expect(avatarColumnLayout(768, 450)).toEqual({ mode: 'sheet', width: 768, maxWidth: 768 });
+      expect(avatarColumnLayout(375, undefined)).toEqual({ mode: 'sheet', width: 375, maxWidth: 375 });
+    });
+
+    test('769 to 1319 px floats over the page at the saved width, clamped 320..560 and never wider than the window', () => {
+      expect(avatarColumnLayout(769, undefined)).toEqual({ mode: 'overlay', width: 380, maxWidth: 560 });
+      expect(avatarColumnLayout(1280, undefined)).toEqual({ mode: 'overlay', width: 380, maxWidth: 560 });
+      expect(avatarColumnLayout(1319, 450)).toEqual({ mode: 'overlay', width: 450, maxWidth: 560 });
+      expect(avatarColumnLayout(1319, 9999)).toEqual({ mode: 'overlay', width: 560, maxWidth: 560 });
+      expect(avatarColumnLayout(1280, 100)).toEqual({ mode: 'overlay', width: 320, maxWidth: 560 });
+    });
+
+    test('from 1320 px it is docked, and the width is capped so the page keeps 1000 px', () => {
+      expect(avatarColumnLayout(1320, undefined)).toEqual({ mode: 'docked', width: 320, maxWidth: 320 });
+      expect(avatarColumnLayout(1320, 560)).toEqual({ mode: 'docked', width: 320, maxWidth: 320 });
+      expect(avatarColumnLayout(1440, undefined)).toEqual({ mode: 'docked', width: 380, maxWidth: 440 });
+      expect(avatarColumnLayout(1440, 560)).toEqual({ mode: 'docked', width: 440, maxWidth: 440 });
+      expect(avatarColumnLayout(2221, 560)).toEqual({ mode: 'docked', width: 560, maxWidth: 560 });
+      expect(avatarColumnLayout(1920, 450)).toEqual({ mode: 'docked', width: 450, maxWidth: 560 });
+    });
+
+    test('whenever it is docked the page is left at least 1000 px', () => {
+      for (let viewport = 769; viewport <= 2400; viewport += 7) {
+        const layout = avatarColumnLayout(viewport, 560);
+        if (layout.mode === 'docked') expect(viewport - layout.width).toBeGreaterThanOrEqual(AVATAR_PAGE_MIN_WIDTH);
+      }
     });
   });
 

@@ -1,6 +1,6 @@
 /**
  * The divider on the left edge of Lucy's column. Dragging it, or focusing it and pressing the arrow keys,
- * changes the column's width within its limits (320 to 560 px).
+ * changes the column's width within its limits (320 px up to 560 px, or less where the window cannot spare that much).
  *
  * The column is docked to the right edge of the window, so its left edge is the side that moves: dragging
  * the divider to the left, or pressing ArrowLeft, makes the column wider, and the other way makes it
@@ -13,7 +13,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { AVATAR_COLUMN_MAX_WIDTH, AVATAR_COLUMN_MIN_WIDTH, clampAvatarColumnWidth } from '../store/avatar-panel-prefs.js';
+import { AVATAR_COLUMN_MIN_WIDTH, clampAvatarColumnWidth } from '../store/avatar-panel-prefs.js';
 
 /** Pixels one arrow-key press moves the divider; the larger step applies with Shift held. */
 const KEY_STEP_PX = 16;
@@ -24,13 +24,15 @@ const DRAG_THRESHOLD_PX = 3;
 export interface ColumnResizerProps {
   /** The width the column is drawn at now. */
   width: number;
+  /** The widest the column may be in this window (the page keeps at least 1000 px); the drag and the End key stop here. */
+  maxWidth: number;
   /** The live width while dragging; not saved yet. */
   onResize: (width: number) => void;
   /** The final width: the drag ended, or a key moved the divider. */
   onCommit: (width: number) => void;
 }
 
-export function ColumnResizer({ width, onResize, onCommit }: ColumnResizerProps) {
+export function ColumnResizer({ width, maxWidth, onResize, onCommit }: ColumnResizerProps) {
   const [dragging, setDragging] = useState(false);
   // Ends a drag in progress; kept so the drag is also ended if the divider unmounts in the middle of it.
   const dragCleanup = useRef<(() => void) | null>(null);
@@ -44,7 +46,7 @@ export function ColumnResizer({ width, onResize, onCommit }: ColumnResizerProps)
     const startX = event.clientX;
     const startWidth = width;
     // The column grows as the pointer moves to the left.
-    const widthAt = (clientX: number): number => clampAvatarColumnWidth(startWidth + (startX - clientX));
+    const widthAt = (clientX: number): number => clampAvatarColumnWidth(startWidth + (startX - clientX), maxWidth);
     // Stays null until the pointer has travelled far enough to count as a drag.
     let liveWidth: number | null = null;
 
@@ -95,11 +97,11 @@ export function ColumnResizer({ width, onResize, onCommit }: ColumnResizerProps)
       case 'ArrowLeft': next = width + step; break;
       case 'ArrowRight': next = width - step; break;
       case 'Home': next = AVATAR_COLUMN_MIN_WIDTH; break;
-      case 'End': next = AVATAR_COLUMN_MAX_WIDTH; break;
+      case 'End': next = maxWidth; break;
       default: return;
     }
     event.preventDefault();
-    onCommit(clampAvatarColumnWidth(next));
+    onCommit(clampAvatarColumnWidth(next, maxWidth));
   };
 
   return (
@@ -110,7 +112,7 @@ export function ColumnResizer({ width, onResize, onCommit }: ColumnResizerProps)
       aria-orientation="vertical"
       aria-label="Resize Lucy's column"
       aria-valuemin={AVATAR_COLUMN_MIN_WIDTH}
-      aria-valuemax={AVATAR_COLUMN_MAX_WIDTH}
+      aria-valuemax={maxWidth}
       aria-valuenow={width}
       onPointerDown={beginDrag}
       onKeyDown={onKeyDown}

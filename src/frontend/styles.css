@@ -17187,6 +17187,9 @@ button.coordinator-chain-member:focus-visible {
   overflow: hidden;
 }
 .avatar-dock-sheet { left: 0; border-left: 0; box-shadow: none; }
+/* Floating over the page (a window too narrow to give the column room): it starts below the 38px top bar, so the
+   top bar's controls (+ Launch, search) stay reachable. It still covers the right side of the panes below. */
+.avatar-dock[data-column-mode="overlay"] { top: 38px; }
 /* The grip on the column's left edge. A thin line shows on hover and focus, like the other dividers. */
 .avatar-column-resizer {
   position: absolute;

@@ -405,8 +405,12 @@ loud, and a short tray above it holds what is waiting on you.
   avatar file.
 - **A column beside the dashboard, not on top of it.** While it is open, the column is as tall as the
   window and 380 px wide, docked to the right edge, and the dashboard (top bar, banners, panes) shrinks to
-  end where the column starts; the toasts and other overlays at the right edge move left with it. Drag
-  its left edge to change its width (320 to 560 px), or focus the edge and press the left and right arrow
+  end where the column starts; the toasts and other overlays at the right edge move left with it. The page
+  always keeps at least 1000 px: in a window of 1320 px or more the column is docked, and a wide width is
+  capped so the page keeps its 1000 px (a 560 px width in a 1440 px window shows as 440 px, and comes back
+  in a wider window). In a window of 769 to 1319 px there is no room to take, so the column floats over the
+  right side of the page, below the top bar, and the page keeps its full width. Drag
+  its left edge to change its width (320 to 560 px, or the cap), or focus the edge and press the left and right arrow
   keys (Shift for bigger steps, Home and End for the limits); the width is remembered. On a window 768 px
   wide or narrower it is a full-width sheet over the page instead. Minimising collapses it to a round
   bubble in the bottom-right corner, and the dashboard takes its full width back. The bubble shows an amber badge with the number of things waiting for you (findings needing your

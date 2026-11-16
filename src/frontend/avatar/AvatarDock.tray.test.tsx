@@ -297,14 +297,33 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
       expect(q('avatar-asks')!.getAttribute('aria-label')).toBe('Opinion requests (2)');
     });
 
-    test('the bubble\'s badge still counts every pending question, opinions included', () => {
+    test('the minimised bubble counts only questions a task may wait for; opinions get their own words and add nothing to the badge', () => {
       localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: true }));
       __resetAvatarPanelPrefsForTests();
       root = createRoot(container);
       act(() => { root!.render(<AvatarDock attentionCount={2} />); });
       push(fifteen());
-      expect(q('avatar-bubble')!.querySelector('.avatar-bubble-badge')!.textContent).toBe('17');
-      expect(q('avatar-bubble')!.getAttribute('aria-label')).toContain('15 questions are waiting for your answer');
+      // 2 findings + 1 live question = 3; the fourteen opinions are not in the number.
+      expect(q('avatar-bubble')!.querySelector('.avatar-bubble-badge')!.textContent).toBe('3');
+      const label = q('avatar-bubble')!.getAttribute('aria-label')!;
+      expect(label).toBe('Open Lucy. 1 question is waiting for your answer. 14 opinions wanted. 2 findings need your attention.');
+      expect(label).not.toContain('15 questions');
+      act(() => { q('avatar-bubble')!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body })); });
+      expect(q('avatar-bubble-card-asks')!.textContent).toBe('1 question for you');
+      expect(q('avatar-bubble-card-opinions')!.textContent).toBe('14 opinions wanted');
+    });
+
+    test('with only opinions the bubble has no badge number and no "questions for you" row, but still says what is there', () => {
+      localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: true }));
+      __resetAvatarPanelPrefsForTests();
+      root = createRoot(container);
+      act(() => { root!.render(<AvatarDock attentionCount={0} />); });
+      push([ask('op1', { taskEnded: true }), ask('op2', { taskEnded: true })]);
+      expect(q('avatar-bubble')!.querySelector('.avatar-bubble-badge')).toBeNull();
+      expect(q('avatar-bubble')!.getAttribute('aria-label')).toBe('Open Lucy. 2 opinions wanted.');
+      act(() => { q('avatar-bubble')!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body })); });
+      expect(q('avatar-bubble-card-asks')).toBeNull();
+      expect(q('avatar-bubble-card-opinions')!.textContent).toBe('2 opinions wanted');
     });
   });
 

@@ -5,8 +5,10 @@
  * tasks ask the operator (described below).
  *
  * The column is as tall as the window and 380 px wide by default; its left edge can be dragged
- * (`ColumnResizer.tsx`, 320 to 560 px) and the width is remembered. On a narrow window (768 px and
- * below) it is a full-width sheet over the page instead. It minimises to a round bubble in the bottom-right
+ * (`ColumnResizer.tsx`, 320 to 560 px) and the width is remembered. The page keeps at least 1000 px: in a
+ * window too narrow for that (769 to 1319 px) the column floats over the page instead of taking room from
+ * it, and a wide saved width is capped so the page keeps its 1000 px (the cap is not saved). On a window of
+ * 768 px and below it is a full-width sheet over the page (`avatarColumnLayout` decides). It minimises to a round bubble in the bottom-right
  * corner, which brings the page back to full width. While minimised the 3D view is shut down completely,
  * and the bubble shows a still image, so a minimised panel uses no GPU. Hovering or focusing the bubble
  * shows a small card that spells out what its badge and dot mean.
@@ -80,8 +82,7 @@ import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
 import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
 import { formatShortcutBinding, matchesShortcutBinding, type ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 import {
-  AVATAR_COLUMN_DEFAULT_WIDTH,
-  AVATAR_SHEET_MAX_VIEWPORT_PX,
+  avatarColumnLayout,
   clampAvatarColumnWidth,
   updateAvatarPanelPrefs,
   useAvatarPanelPrefs,
@@ -171,6 +172,7 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
 const findingsText = (n: number): string => `${plural(n, 'finding needs', 'findings need')} your attention`;
 const unheardText = (n: number): string => plural(n, 'unheard message', 'unheard messages');
 const questionsText = (n: number): string => `${plural(n, 'question is', 'questions are')} waiting for your answer`;
+const opinionsText = (n: number): string => `${plural(n, 'opinion', 'opinions')} wanted`;
 
 /**
  * What a screen reader hears after the header Replay button's name. That button replays only the newest
@@ -249,20 +251,23 @@ export function AvatarDock({
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
-  const sheet = viewportWidth <= AVATAR_SHEET_MAX_VIEWPORT_PX;
-  const columnWidth = dragWidth ?? clampAvatarColumnWidth(prefs.width ?? AVATAR_COLUMN_DEFAULT_WIDTH);
+  // Where it sits for this window: beside the page, floating over it, or a full-width sheet (see `avatarColumnLayout`).
+  const layout = avatarColumnLayout(viewportWidth, prefs.width);
+  const sheet = layout.mode === 'sheet';
+  const docked = layout.mode === 'docked';
+  const columnWidth = dragWidth === null ? layout.width : clampAvatarColumnWidth(dragWidth, layout.maxWidth);
 
-  // While the column is open beside the page, tell the page how much room it takes: the dashboard and the
+  // While the column is docked beside the page, tell the page how much room it takes: the dashboard and the
   // overlays at the right edge stop short of it (`--lucy-column-width` in styles.css). Gone again when the
-  // column is minimised, turned into a sheet, switched off or unmounted, so the page has its full width back.
+  // column is minimised, floats over the page or is a sheet, switched off or unmounted, so the page has its full width back.
   useLayoutEffect(() => {
-    if (prefs.minimized || sheet) return undefined;
+    if (prefs.minimized || !docked) return undefined;
     const root = document.documentElement;
     root.style.setProperty(COLUMN_WIDTH_PROPERTY, `${columnWidth}px`);
     return () => {
       root.style.removeProperty(COLUMN_WIDTH_PROPERTY);
     };
-  }, [prefs.minimized, sheet, columnWidth]);
+  }, [prefs.minimized, docked, columnWidth]);
 
   // Follow Kookr's speech playback.
   useEffect(() => {
@@ -329,7 +334,10 @@ export function AvatarDock({
   }, []);
 
   const asks = visibleOperatorAsks(operatorAsks.asks, now + askClockOffsetMs());
-  const pendingAskCount = asks.reduce((n, ask) => (ask.state === 'pending' ? n + 1 : n), 0);
+  // Questions a task may still be waiting for, and opinion requests from tasks that have ended (they block nothing,
+  // so they are not "questions for you" and add nothing to the badge).
+  const pendingAskCount = asks.reduce((n, ask) => (ask.state === 'pending' && ask.taskEnded !== true ? n + 1 : n), 0);
+  const opinionCount = asks.reduce((n, ask) => (ask.state === 'pending' && ask.taskEnded === true ? n + 1 : n), 0);
 
   // A replay must not keep talking after the panel is gone.
   useEffect(() => () => stopReplay('user_stop'), []);
@@ -497,7 +505,7 @@ export function AvatarDock({
 
   // The bubble's card: what the badge and the dot mean. It only repeats what the bubble's label says, so it is
   // hidden from assistive technology; keyboard users get it through focus, Escape closes it.
-  const cardHasContent = attentionCount > 0 || lastClip.unheardCount > 0 || pendingAskCount > 0;
+  const cardHasContent = attentionCount > 0 || lastClip.unheardCount > 0 || pendingAskCount > 0 || opinionCount > 0;
   const cardVisible = prefs.minimized && cardHasContent && (hovered || focused) && !cardDismissed;
   useEffect(() => {
     if (!cardVisible) return undefined;
@@ -527,12 +535,13 @@ export function AvatarDock({
     const label = [
       `Open ${NAME}${activity}`,
       pendingAskCount > 0 ? questionsText(pendingAskCount) : null,
+      opinionCount > 0 ? opinionsText(opinionCount) : null,
       attentionCount > 0 ? findingsText(attentionCount) : null,
       lastClip.unheardCount > 0 ? unheardText(lastClip.unheardCount) : null,
     ]
       .filter(Boolean)
       .join('. ') + (cardHasContent ? '.' : '');
-    // One number on the bubble: everything that is waiting for the operator.
+    // One number on the bubble: everything that is waiting for the operator (opinion requests block nothing and are not in it).
     const badgeCount = attentionCount + pendingAskCount;
     return (
       <>
@@ -586,6 +595,12 @@ export function AvatarDock({
                 {plural(pendingAskCount, 'question', 'questions')} for you
               </div>
             )}
+            {opinionCount > 0 && (
+              <div className="avatar-bubble-card-row" data-testid="avatar-bubble-card-opinions">
+                <span className="avatar-mark-ring" />
+                {opinionsText(opinionCount)}
+              </div>
+            )}
             {attentionCount > 0 && (
               <div className="avatar-bubble-card-row">
                 <span className="avatar-mark-diamond" />
@@ -614,6 +629,7 @@ export function AvatarDock({
       ref={dockRef}
       tabIndex={-1}
       data-testid="avatar-dock"
+      data-column-mode={layout.mode}
       data-avatar-state={state}
       data-lucy-live={live.status}
       data-avatar-loaded={loaded ? 'true' : 'false'}
@@ -621,6 +637,7 @@ export function AvatarDock({
       {!sheet && (
         <ColumnResizer
           width={columnWidth}
+          maxWidth={layout.maxWidth}
           onResize={setDragWidth}
           onCommit={(width) => {
             setDragWidth(null);

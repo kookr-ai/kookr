@@ -73,7 +73,8 @@ import { __resetLucyTypedForTests } from './LucyTypedInput.js';
 
 // Stands in for the speaker button that is talking.
 const SPEAKER = { name: 'a speaker button' };
-const VIEWPORT = { width: 1024, height: 768 };
+// Wide enough to stay docked beside the page (the page keeps 1000 px; the column may then be 320 to 440 px).
+const VIEWPORT = { width: 1440, height: 900 };
 const rootWidth = (): string => document.documentElement.style.getPropertyValue(COLUMN_WIDTH_PROPERTY);
 
 function savedPrefs(): { enabled: boolean; minimized: boolean; width?: number; position?: unknown } {
@@ -282,6 +283,12 @@ describe('AvatarDock', () => {
 
   describe('the column: room on the page, resizing, sheet', () => {
     const resizer = () => container.querySelector<HTMLElement>('[data-testid="avatar-column-resizer"]');
+    const setWindowWidth = (width: number): void => {
+      act(() => {
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+        window.dispatchEvent(new Event('resize'));
+      });
+    };
     const dragFrom = (fromX: number, toX: number): void => {
       act(() => { resizer()!.dispatchEvent(pointer('pointerdown', { clientX: fromX, clientY: 300 })); });
       act(() => { window.dispatchEvent(pointer('pointermove', { clientX: toX, clientY: 300, buttons: 1 })); });
@@ -312,6 +319,7 @@ describe('AvatarDock', () => {
     });
 
     test('a saved width is used, and kept inside the limits', () => {
+      setWindowWidth(2000);
       startWith({ width: 450 });
       render();
       expect(dock()!.style.width).toBe('450px');
@@ -324,7 +332,8 @@ describe('AvatarDock', () => {
       expect(resizer()!.getAttribute('role')).toBe('separator');
       expect(resizer()!.getAttribute('aria-valuenow')).toBe('380');
       expect(resizer()!.getAttribute('aria-valuemin')).toBe(String(AVATAR_COLUMN_MIN_WIDTH));
-      expect(resizer()!.getAttribute('aria-valuemax')).toBe(String(AVATAR_COLUMN_MAX_WIDTH));
+      // A 1440 px window: the page keeps 1000 px, so the column may be at most 440.
+      expect(resizer()!.getAttribute('aria-valuemax')).toBe('440');
 
       act(() => { resizer()!.dispatchEvent(pointer('pointerdown', { clientX: 644, clientY: 300 })); });
       act(() => { window.dispatchEvent(pointer('pointermove', { clientX: 594, clientY: 300, buttons: 1 })); });
@@ -338,14 +347,41 @@ describe('AvatarDock', () => {
       expect(dock()!.style.width).toBe('430px');
     });
 
-    test('dragging to the right makes it narrower, and the width stops at the limits', () => {
+    test('dragging to the right makes it narrower, and the width stops at the limits; the widest leaves the page 1000 px', () => {
       startWith({});
       render();
       dragFrom(644, 5000);
       expect(savedPrefs().width).toBe(AVATAR_COLUMN_MIN_WIDTH);
       dragFrom(644, -5000);
+      // A 1440 px window: the page keeps 1000 px, so 440 is as wide as the column goes.
+      expect(savedPrefs().width).toBe(440);
+      expect(rootWidth()).toBe('440px');
+      expect(resizer()!.getAttribute('aria-valuemax')).toBe('440');
+    });
+
+    test('in a wider window the same drag can reach the full 560 px', () => {
+      setWindowWidth(1920);
+      startWith({});
+      render();
+      dragFrom(1500, -5000);
       expect(savedPrefs().width).toBe(AVATAR_COLUMN_MAX_WIDTH);
       expect(rootWidth()).toBe(`${AVATAR_COLUMN_MAX_WIDTH}px`);
+      expect(resizer()!.getAttribute('aria-valuemax')).toBe('560');
+    });
+
+    test('a saved width too wide for this window is capped so the page keeps 1000 px, the cap is not saved, and the wide width comes back in a wider window', () => {
+      startWith({ width: 560 });
+      render();
+      expect(dock()!.style.width).toBe('440px');
+      expect(rootWidth()).toBe('440px');
+      expect(window.innerWidth - 440).toBe(1000);
+      expect(savedPrefs().width).toBe(560);
+      setWindowWidth(2000);
+      expect(dock()!.style.width).toBe('560px');
+      expect(rootWidth()).toBe('560px');
+      setWindowWidth(1320);
+      expect(dock()!.style.width).toBe('320px');
+      expect(savedPrefs().width).toBe(560);
     });
 
     test('a press on the edge without moving saves nothing, and the right mouse button does not drag', () => {
@@ -362,6 +398,7 @@ describe('AvatarDock', () => {
     });
 
     test('with the keyboard, ArrowLeft widens and ArrowRight narrows, Shift takes bigger steps, Home and End jump to the limits', () => {
+      setWindowWidth(2000);
       startWith({});
       render();
       const press = (key: string, shiftKey = false): void => {
@@ -384,6 +421,15 @@ describe('AvatarDock', () => {
       expect(resizer()!.getAttribute('aria-valuenow')).toBe(String(AVATAR_COLUMN_MAX_WIDTH));
     });
 
+    test('End stops where the page would drop below 1000 px', () => {
+      startWith({}); // a 1440 px window
+      render();
+      act(() => { resizer()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })); });
+      expect(savedPrefs().width).toBe(440);
+      act(() => { resizer()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true })); });
+      expect(savedPrefs().width).toBe(440);
+    });
+
     test('the header has no dragging and no "move to the next corner" button any more', () => {
       startWith({});
       render();
@@ -396,32 +442,66 @@ describe('AvatarDock', () => {
       expect(dock()!.style.left).toBe('');
     });
 
-    test('at 768 px and below it is a full-width sheet: no room taken from the page, no resizer; wider again, it is a column', () => {
-      const setWidth = (width: number): void => {
-        act(() => {
-          Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
-          window.dispatchEvent(new Event('resize'));
-        });
-      };
+    test('the mode follows the window: a sheet at 768 px and below, floating over the page from 769 to 1319 px, docked from 1320 px', () => {
       startWith({});
-      setWidth(768);
+      setWindowWidth(768);
       render();
+      expect(dock()!.getAttribute('data-column-mode')).toBe('sheet');
       expect(dock()!.classList.contains('avatar-dock-sheet')).toBe(true);
       expect(dock()!.style.width).toBe('');
       expect(rootWidth()).toBe('');
       expect(resizer()).toBeNull();
 
-      // Minimising still brings the page back (here: it was never covered) and the bubble appears.
+      // Minimising still brings the bubble, and the page was never narrowed.
       act(() => button('Minimise Lucy')!.click());
       expect(bubble()).not.toBeNull();
       expect(rootWidth()).toBe('');
-
       act(() => bubble()!.click());
-      setWidth(769);
-      expect(dock()!.classList.contains('avatar-dock-sheet')).toBe(false);
+
+      setWindowWidth(769);
+      expect(dock()!.getAttribute('data-column-mode')).toBe('overlay');
+      setWindowWidth(1319);
+      expect(dock()!.getAttribute('data-column-mode')).toBe('overlay');
+      setWindowWidth(1320);
+      expect(dock()!.getAttribute('data-column-mode')).toBe('docked');
+      expect(dock()!.style.width).toBe('320px');
+      expect(rootWidth()).toBe('320px');
+      setWindowWidth(1440);
       expect(dock()!.style.width).toBe('380px');
       expect(rootWidth()).toBe('380px');
       expect(resizer()).not.toBeNull();
+    });
+
+    test('floating over the page (a 1280 px window): the page keeps its full width, the column keeps its width and its resizer, minimise brings the bubble', () => {
+      startWith({ width: 500 });
+      setWindowWidth(1280);
+      render();
+      expect(dock()!.getAttribute('data-column-mode')).toBe('overlay');
+      expect(dock()!.classList.contains('avatar-dock-sheet')).toBe(false);
+      expect(dock()!.style.width).toBe('500px');
+      // Nothing is taken from the page.
+      expect(rootWidth()).toBe('');
+      expect(resizer()).not.toBeNull();
+      expect(resizer()!.getAttribute('aria-valuemax')).toBe('560');
+
+      // The resizer still works; a drag is saved, and the page still gets nothing taken.
+      act(() => { resizer()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', shiftKey: true, bubbles: true, cancelable: true })); });
+      expect(savedPrefs().width).toBe(548);
+      expect(dock()!.style.width).toBe('548px');
+      expect(rootWidth()).toBe('');
+
+      act(() => button('Minimise Lucy')!.click());
+      expect(dock()).toBeNull();
+      expect(bubble()).not.toBeNull();
+      expect(rootWidth()).toBe('');
+    });
+
+    test('floating over the page, the column is never wider than the window', () => {
+      startWith({ width: 560 });
+      setWindowWidth(800);
+      render();
+      expect(dock()!.getAttribute('data-column-mode')).toBe('overlay');
+      expect(dock()!.style.width).toBe('560px');
     });
 
     test('the bubble has no position of its own: the stylesheet puts it in the bottom-right corner', () => {

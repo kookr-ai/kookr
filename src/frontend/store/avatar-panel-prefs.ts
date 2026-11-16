@@ -29,6 +29,12 @@ export const AVATAR_COLUMN_MAX_WIDTH = 560;
  * beside it. The same breakpoint the dashboard uses for its phone layout (`MOBILE_BREAKPOINT_PX` in App.tsx).
  */
 export const AVATAR_SHEET_MAX_VIEWPORT_PX = 768;
+/**
+ * The dashboard's panes and top bar are laid out by the window's width (media queries), not by the width
+ * the page is left with, and they collide below about this much room. So the column only takes room from
+ * the page while the page keeps at least this many pixels.
+ */
+export const AVATAR_PAGE_MIN_WIDTH = 1000;
 /** Diameter of the minimised bubble. */
 export const AVATAR_BUBBLE_SIZE = 58;
 
@@ -57,10 +63,32 @@ function getStorage(): Storage | null {
   }
 }
 
-/** Keep a column width inside its limits; anything that is not a number is the default. */
-export function clampAvatarColumnWidth(width: unknown): number {
-  if (typeof width !== 'number' || !Number.isFinite(width)) return AVATAR_COLUMN_DEFAULT_WIDTH;
-  return Math.round(Math.min(Math.max(width, AVATAR_COLUMN_MIN_WIDTH), AVATAR_COLUMN_MAX_WIDTH));
+/** Keep a column width inside its limits (at most `max`, the widest this window allows); anything that is not a number is the default. */
+export function clampAvatarColumnWidth(width: unknown, max: number = AVATAR_COLUMN_MAX_WIDTH): number {
+  if (typeof width !== 'number' || !Number.isFinite(width)) return Math.min(AVATAR_COLUMN_DEFAULT_WIDTH, max);
+  return Math.round(Math.min(Math.max(width, AVATAR_COLUMN_MIN_WIDTH), max));
+}
+
+/**
+ * How the open column sits in a window of `viewportWidth`:
+ *  - `sheet`: a window of 768 px or less; the column covers the whole page.
+ *  - `overlay`: not enough room to take any from the page and leave it 1000 px (windows of 769 to 1319 px); the
+ *    column floats over the page at the saved width, and the page keeps its full width and layout.
+ *  - `docked`: the page makes room for the column. Its width is the saved one, capped so the page keeps 1000 px.
+ *    The cap is never saved, so a saved 560 comes back when the window is wide again.
+ * `maxWidth` is the widest the operator can drag the column to in this mode.
+ */
+export function avatarColumnLayout(
+  viewportWidth: number,
+  savedWidth?: number,
+): { mode: 'sheet' | 'overlay' | 'docked'; width: number; maxWidth: number } {
+  if (viewportWidth <= AVATAR_SHEET_MAX_VIEWPORT_PX) return { mode: 'sheet', width: viewportWidth, maxWidth: viewportWidth };
+  if (viewportWidth - AVATAR_PAGE_MIN_WIDTH < AVATAR_COLUMN_MIN_WIDTH) {
+    const maxWidth = Math.min(AVATAR_COLUMN_MAX_WIDTH, viewportWidth);
+    return { mode: 'overlay', width: clampAvatarColumnWidth(savedWidth, maxWidth), maxWidth };
+  }
+  const maxWidth = Math.min(AVATAR_COLUMN_MAX_WIDTH, viewportWidth - AVATAR_PAGE_MIN_WIDTH);
+  return { mode: 'docked', width: clampAvatarColumnWidth(savedWidth, maxWidth), maxWidth };
 }
 
 function parsePrefs(raw: string | null): AvatarPanelPrefs {
