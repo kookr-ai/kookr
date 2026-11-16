@@ -3,11 +3,11 @@
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { AgentState } from '../../shared/protocol.js';
 import type { CoordinatorChainMember, CoordinatorSnapshotState } from '../../shared/contracts/coordinator.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
-import { CoordinatorChainStripView, summarizeChainMembers } from './CoordinatorSurfaces.js';
+import { CHAIN_STRIP_COLLAPSE_THRESHOLD, CoordinatorChainStripView, summarizeChainMembers } from './CoordinatorSurfaces.js';
 
 const PARENT_TASK_ID = 'coordinator';
 
@@ -63,6 +63,7 @@ describe('CoordinatorChainStripView (#3939)', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.unstubAllGlobals();
     localStorage.clear();
   });
 
@@ -124,24 +125,85 @@ describe('CoordinatorChainStripView (#3939)', () => {
     render();
     expect(toggle().getAttribute('aria-expanded')).toBe('true');
     expect(chipIds()).toHaveLength(55);
+  });
 
-    // Another task with a long chain is not affected by that choice.
-    setChain('other', fiftyFiveChildren());
+  test('collapsing again is remembered too', () => {
+    setChain(PARENT_TASK_ID, fiftyFiveChildren());
+    render();
+    act(() => toggle().click());
+    act(() => toggle().click());
+    act(() => root.unmount());
+    root = createRoot(container);
+    render();
+    expect(toggle().getAttribute('aria-expanded')).toBe('false');
+    expect(chipIds()).toHaveLength(3);
+  });
+
+  test('selecting another task in the same panel does not carry the choice over', () => {
+    const coordinator: CoordinatorSnapshotState = {
+      outputs: [],
+      chips: [],
+      findings: [],
+      chains: {
+        [PARENT_TASK_ID]: { members: fiftyFiveChildren(), priorTaskIds: [], concurrencyToken: 'a' },
+        other: { members: fiftyFiveChildren(), priorTaskIds: [], concurrencyToken: 'b' },
+      },
+    };
+    useKookrStore.setState({ coordinator });
+    render();
+    act(() => toggle().click());
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+
+    // Same mounted component, new agent prop: the detail panel is reused across selections.
     render('other');
+    expect(toggle().getAttribute('aria-expanded')).toBe('false');
+    expect(chipIds()).toEqual(['child-10', 'child-20', 'child-30']);
+
+    render();
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+  });
+
+  test('still renders and toggles when browser storage throws', () => {
+    const blocked = (): never => { throw new Error('blocked'); };
+    vi.stubGlobal('localStorage', { getItem: blocked, setItem: blocked, removeItem: blocked, clear: () => {} });
+    setChain(PARENT_TASK_ID, fiftyFiveChildren());
+    render();
+    expect(toggle().getAttribute('aria-expanded')).toBe('false');
+    expect(chipIds()).toHaveLength(3);
+
+    act(() => toggle().click());
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+    expect(chipIds()).toHaveLength(55);
+    act(() => toggle().click());
     expect(toggle().getAttribute('aria-expanded')).toBe('false');
   });
 
-  test('still renders when browser storage throws', () => {
-    const original = Storage.prototype.getItem;
-    Storage.prototype.getItem = () => { throw new Error('blocked'); };
-    try {
-      setChain(PARENT_TASK_ID, fiftyFiveChildren());
-      render();
-      expect(toggle().getAttribute('aria-expanded')).toBe('false');
-      expect(chipIds()).toHaveLength(3);
-    } finally {
-      Storage.prototype.getItem = original;
-    }
+  test(`collapses above ${CHAIN_STRIP_COLLAPSE_THRESHOLD} related tasks, not at it`, () => {
+    const atThreshold = Array.from({ length: CHAIN_STRIP_COLLAPSE_THRESHOLD }, (_, i) => child(i, 'completed'));
+    setChain(PARENT_TASK_ID, atThreshold);
+    render();
+    expect(container.querySelector('[data-testid="coordinator-chain-toggle"]')).toBeNull();
+    expect(chipIds()).toHaveLength(CHAIN_STRIP_COLLAPSE_THRESHOLD);
+
+    setChain(PARENT_TASK_ID, [...atThreshold, child(99, 'completed')]);
+    render();
+    expect(toggle().getAttribute('aria-expanded')).toBe('false');
+    expect(chipIds()).toEqual([]);
+  });
+
+  test('collapsed, every task that is not finished stays visible, whatever its relation', () => {
+    setChain(PARENT_TASK_ID, [
+      { taskId: 'parent', label: 'Parent', status: 'inProgress', relation: 'parent' },
+      child(1, 'pending'),
+      child(2, 'open'),
+      child(3, 'completed'),
+      child(4, 'cancelled'),
+      child(5, 'terminated'),
+      { taskId: 'blocker', label: 'Blocker', status: 'paused', relation: 'blocked_by' },
+    ]);
+    render();
+    expect(toggle().getAttribute('aria-expanded')).toBe('false');
+    expect(chipIds()).toEqual(['parent', 'child-1', 'child-2', 'blocker']);
   });
 
   test('a short chain shows every chip with no toggle, in server order', () => {
