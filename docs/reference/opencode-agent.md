@@ -320,8 +320,8 @@ plugin, workspace and data are mounted at launch.
   `Notification(provider_progress)`, at most once every 10 s. Kookr handles it as
   it does for Codex: it refreshes the session's freshness without adding activity
   entries. Pings, empty deltas, SSE comments and `[DONE]` do not count, so a
-  provider that stops sending output still reads as `hung_suspect` once its last
-  output is more than 30 s old (issue #3534).
+  provider that stops sending output still reads as `hung_suspect`: 30 s after
+  the last report, which is 20 to 30 s after its last output (issue #3534).
 
 - The Settings dialog shows the opencode rows (effort, blacklist checkbox) and the
   launch pickers offer it only when the server registered it, that is when

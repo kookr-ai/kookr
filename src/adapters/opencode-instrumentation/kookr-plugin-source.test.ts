@@ -159,13 +159,13 @@ describe('provider output progress (issue #3534)', () => {
   });
 
   /** A stand-in provider: every request answers with `body` split into the given chunks. */
-  function fakeProvider(chunks: string[], contentType = 'text/event-stream'): void {
+  function fakeProvider(chunks: string[], contentType = 'text/event-stream', status = 200): void {
     globalThis.fetch = (async () => new Response(new ReadableStream({
       start(controller) {
         for (const c of chunks) controller.enqueue(new TextEncoder().encode(c));
         controller.close();
       },
-    }), { headers: { 'content-type': contentType } })) as typeof fetch;
+    }), { status, headers: { 'content-type': contentType } })) as typeof fetch;
   }
 
   async function call(method = 'POST'): Promise<string> {
@@ -212,6 +212,28 @@ describe('provider output progress (issue #3534)', () => {
     expect((await records(out, 2)).map((r) => r.observed_at_ms)).toEqual([T0, T0 + 10_000]);
   });
 
+  it('detects an output line that only exists split across two network chunks', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-progress-'));
+    const out = join(dir, 'out.jsonl');
+    const line = argumentDelta('{"content":"abc"}');
+    fakeProvider([line.slice(0, 20), line.slice(20)]);
+    await load(`cat >> '${out}'; echo >> '${out}'`, dir);
+    expect(await call()).toBe(line);
+    expect(await records(out, 1)).toHaveLength(1);
+  });
+
+  it('wraps fetch once even when the plugin is loaded twice in one process', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-progress-'));
+    const out = join(dir, 'out.jsonl');
+    fakeProvider([argumentDelta('x')]);
+    const provider = globalThis.fetch;
+    await load(`cat >> '${out}'; echo >> '${out}'`, dir);
+    const tapped = globalThis.fetch;
+    await load(`cat >> '${out}'; echo >> '${out}'`, mkdtempSync(join(tmpdir(), 'kookr-progress-')));
+    expect(tapped).not.toBe(provider);
+    expect(globalThis.fetch).toBe(tapped);
+  });
+
   it('passes a cancel of the tapped body through to the provider stream', async () => {
     let cancelled: unknown = 'not cancelled';
     globalThis.fetch = (async () => new Response(new ReadableStream({
@@ -234,11 +256,13 @@ describe('provider output progress (issue #3534)', () => {
       'data: {"choices":[{"delta":{"content":null}}]}\n\n', 'data: [DONE]\n\n',
     ]],
     ['a GET event stream (opencode\'s own bus)', 'GET', 'text/event-stream', [argumentDelta('x')]],
-    ['a non-streamed JSON reply', 'POST', 'application/json', ['{"choices":[{"message":{"content":"hi"}}]}']],
-  ])('does not count %s as provider output', async (_label, method, contentType, chunks) => {
+    // Holds a real output line, so only the content-type check can reject it.
+    ['a reply that is not text/event-stream', 'POST', 'application/json', [argumentDelta('x')]],
+    ['a streamed error reply (HTTP 500)', 'POST', 'text/event-stream', [argumentDelta('x')], 500],
+  ])('does not count %s as provider output', async (_label, method, contentType, chunks, status = 200) => {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-progress-'));
     const out = join(dir, 'out.jsonl');
-    fakeProvider(chunks, contentType);
+    fakeProvider(chunks, contentType, status);
     await load(`cat >> '${out}'; echo >> '${out}'`, dir);
     expect(await call(method)).toBe(chunks.join(''));
     expect(await records(out, 1)).toEqual([]);
