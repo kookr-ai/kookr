@@ -1923,49 +1923,50 @@ describe('startLifecycleTimers user input delivery retry sweep', () => {
   });
 });
 
-describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', () => {
-  function wiringDeps(overrides: Partial<TimerDeps> = {}): TimerDeps {
-    return {
-      monitor: {
-        getSnapshot: () => [],
-        getAgentEvents: () => [],
-        applyWatchdogVerdict: vi.fn(() => false),
-        sampleFindingEvidence: vi.fn(() => false),
-        getCurrentAnomaly: vi.fn(),
-        unregisterAgent: vi.fn(),
-      } as TimerDeps['monitor'],
-      taskStore: new TaskStore(),
-      queue: new AttentionQueue(),
-      adapter: {
-        captureDisplay: vi.fn(async () => ''),
-        stop: vi.fn(async () => undefined),
-      } as TimerDeps['adapter'],
-      adapterRegistry: {} as TimerDeps['adapterRegistry'],
-      tokenTracker: {
-        scanGrowth: vi.fn(async () => []),
-        scanAll: vi.fn(async () => undefined),
-        getTrackedTaskIds: vi.fn(() => []),
-        getUsage: vi.fn(() => undefined),
-        unregister: vi.fn(),
-      } as TimerDeps['tokenTracker'],
-      watchdog: new Watchdog(),
-      hookWatcher: {
-        drainNow: vi.fn(async () => undefined),
-        stop: vi.fn(),
-        isWatching: vi.fn(() => false),
-        watch: vi.fn(),
-      } as TimerDeps['hookWatcher'],
-      terminalBackend: { listSessions: vi.fn(async () => []) } as TimerDeps['terminalBackend'],
-      hooksDir: '/tmp/hooks',
-      tasksFile: '/tmp/tasks.json',
-      serverCwd: '/tmp/repo',
-      saveIntervalMs: 600_000,
-      livenessIntervalMs: 50,
-      broadcastToAll: vi.fn(),
-      ...overrides,
-    };
-  }
+/** Minimal timer deps for the liveness-tick wiring tests of the page-only alerters. */
+function wiringDeps(overrides: Partial<TimerDeps> = {}): TimerDeps {
+  return {
+    monitor: {
+      getSnapshot: () => [],
+      getAgentEvents: () => [],
+      applyWatchdogVerdict: vi.fn(() => false),
+      sampleFindingEvidence: vi.fn(() => false),
+      getCurrentAnomaly: vi.fn(),
+      unregisterAgent: vi.fn(),
+    } as TimerDeps['monitor'],
+    taskStore: new TaskStore(),
+    queue: new AttentionQueue(),
+    adapter: {
+      captureDisplay: vi.fn(async () => ''),
+      stop: vi.fn(async () => undefined),
+    } as TimerDeps['adapter'],
+    adapterRegistry: {} as TimerDeps['adapterRegistry'],
+    tokenTracker: {
+      scanGrowth: vi.fn(async () => []),
+      scanAll: vi.fn(async () => undefined),
+      getTrackedTaskIds: vi.fn(() => []),
+      getUsage: vi.fn(() => undefined),
+      unregister: vi.fn(),
+    } as TimerDeps['tokenTracker'],
+    watchdog: new Watchdog(),
+    hookWatcher: {
+      drainNow: vi.fn(async () => undefined),
+      stop: vi.fn(),
+      isWatching: vi.fn(() => false),
+      watch: vi.fn(),
+    } as TimerDeps['hookWatcher'],
+    terminalBackend: { listSessions: vi.fn(async () => []) } as TimerDeps['terminalBackend'],
+    hooksDir: '/tmp/hooks',
+    tasksFile: '/tmp/tasks.json',
+    serverCwd: '/tmp/repo',
+    saveIntervalMs: 600_000,
+    livenessIntervalMs: 50,
+    broadcastToAll: vi.fn(),
+    ...overrides,
+  };
+}
 
+describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', () => {
   test('liveness tick evaluates the snapshot and never calls setEnabled', async () => {
     vi.useFakeTimers();
     const evaluate = vi.fn();
@@ -1986,65 +1987,6 @@ describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', 
       expect(last).toEqual({
         paused: snapshot.schedulesPausedByFailure,
       });
-    } finally {
-      clearAllTimers(handles);
-    }
-  });
-
-  test('liveness tick passes permission-blocked live tasks to the permission-prompt alerter (issue #3872)', async () => {
-    vi.useFakeTimers();
-    const evaluate = vi.fn();
-    const taskStore = new TaskStore();
-    const task = taskStore.createTask({ prompt: 'blocked worker', cwd: '/repo', name: 'Blocked worker' });
-    taskStore.addSession(task.id, {
-      tmuxSession: 'kookr-perm-blocked',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date(),
-    });
-    const detectedAt = new Date('2026-11-15T21:12:35.000Z');
-    const handles = startLifecycleTimers(wiringDeps({
-      taskStore,
-      terminalBackend: {
-        listSessions: vi.fn(async () => ['kookr-perm-blocked']),
-        isAlive: vi.fn(async () => true),
-      } as TimerDeps['terminalBackend'],
-      monitor: {
-        getSnapshot: () => [],
-        getAgentEvents: () => [{
-          type: 'permission_request',
-          sessionId: 's',
-          toolName: 'Bash',
-          toolInput: { command: 'rm -rf /tmp/x' },
-        }],
-        applyWatchdogVerdict: vi.fn(() => false),
-        sampleFindingEvidence: vi.fn(() => false),
-        getCurrentAnomaly: vi.fn((agentId: string) => (agentId === 'kookr-perm-blocked'
-          ? {
-            agentId,
-            type: 'permission_blocked',
-            severity: 'warning',
-            explanation: 'Agent is blocked on permission for tool: Bash',
-            detectedAt,
-          }
-          : null)),
-        unregisterAgent: vi.fn(),
-      } as unknown as TimerDeps['monitor'],
-      permissionPromptWaitAlerter: { evaluate },
-    }));
-    try {
-      // The live-session reconcile path awaits real I/O before the alerter
-      // runs, so wait for the call instead of advancing a fixed amount.
-      await vi.waitFor(() => expect(evaluate).toHaveBeenCalled(), { timeout: 10_000, interval: 50 });
-      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
-      const last = evaluate.mock.calls[evaluate.mock.calls.length - 1]?.[0];
-      expect(last).toEqual([{
-        taskId: task.id,
-        taskName: 'Blocked worker',
-        toolName: 'Bash',
-        command: 'rm -rf /tmp/x',
-        sinceMs: detectedAt.getTime(),
-      }]);
     } finally {
       clearAllTimers(handles);
     }
@@ -2193,6 +2135,67 @@ describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', 
       // the rest of the tick (the schedules-paused pager sits well past the
       // sweep, alongside the provider-pause reclaim and cleanup legs).
       expect(schedulesEvaluate).toHaveBeenCalled();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});
+
+describe('startLifecycleTimers permission-prompt page wiring (issue #3872)', () => {
+  test('liveness tick passes permission-blocked live tasks to the permission-prompt alerter (issue #3872)', async () => {
+    vi.useFakeTimers();
+    const evaluate = vi.fn();
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'blocked worker', cwd: '/repo', name: 'Blocked worker' });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-perm-blocked',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    const detectedAt = new Date('2026-11-15T21:12:35.000Z');
+    const handles = startLifecycleTimers(wiringDeps({
+      taskStore,
+      terminalBackend: {
+        listSessions: vi.fn(async () => ['kookr-perm-blocked']),
+        isAlive: vi.fn(async () => true),
+      } as TimerDeps['terminalBackend'],
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [{
+          type: 'permission_request',
+          sessionId: 's',
+          toolName: 'Bash',
+          toolInput: { command: 'rm -rf /tmp/x' },
+        }],
+        applyWatchdogVerdict: vi.fn(() => false),
+        sampleFindingEvidence: vi.fn(() => false),
+        getCurrentAnomaly: vi.fn((agentId: string) => (agentId === 'kookr-perm-blocked'
+          ? {
+            agentId,
+            type: 'permission_blocked',
+            severity: 'warning',
+            explanation: 'Agent is blocked on permission for tool: Bash',
+            detectedAt,
+          }
+          : null)),
+        unregisterAgent: vi.fn(),
+      } as unknown as TimerDeps['monitor'],
+      permissionPromptWaitAlerter: { evaluate },
+    }));
+    try {
+      // The live-session reconcile path awaits real I/O before the alerter
+      // runs, so wait for the call instead of advancing a fixed amount.
+      await vi.waitFor(() => expect(evaluate).toHaveBeenCalled(), { timeout: 10_000, interval: 50 });
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+      const last = evaluate.mock.calls[evaluate.mock.calls.length - 1]?.[0];
+      expect(last).toEqual([{
+        taskId: task.id,
+        taskName: 'Blocked worker',
+        toolName: 'Bash',
+        command: 'rm -rf /tmp/x',
+        sinceMs: detectedAt.getTime(),
+      }]);
     } finally {
       clearAllTimers(handles);
     }

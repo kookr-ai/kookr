@@ -218,7 +218,8 @@ When a task's agent stops on a Claude Code permission prompt ("Claude needs your
 - Discord/operator key: `permission_prompt:<taskId>` (signal `op:permission_prompt:<taskId>:alert`). Covers every live, in-progress task, whether or not it was launched with `unattended`.
 - Answer the prompt from the dashboard, from Telegram, or in the task terminal. The recovered page (`op:permission_prompt:<taskId>:clear`) fires when the prompt is answered or the task ends.
 - One page per prompt: a prompt that stays open is not re-paged. A new prompt on the same task waits its own 3 minutes.
-- The clear follows the monitor's `permission_blocked` finding. Any later hook event from the session, such as another subagent's tool call or a `SessionStart`, ends that finding, so the clear can arrive while the prompt is still on screen.
+- The clear follows the monitor's `permission_blocked` finding. Any later hook event from the session, such as another subagent's tool call or a `SessionStart`, ends that finding, so the clear can arrive while the prompt is still on screen. This is a known limit (issue #3911): ending the page only on the prompt's own answer would need the recorded `PermissionRequest` event to carry the tool-use id of the call it is about, and it carries none.
+- The page quotes the command when it can tell which request is still open. A request followed by another subagent starting is still quoted. When the block is seen only on the pane, the page names no tool and quotes no command.
 - Episode state is process memory: after a restart, a prompt that is still open pages again 3 minutes later. A page sent before the restart gets no recovered message if its prompt is answered within those 3 minutes.
 - A prompt can page twice. If another event ends the hook finding while the prompt is still open, and the pane watchdog then sees the dialog again, that counts as a new prompt and pages 3 minutes later.
 
