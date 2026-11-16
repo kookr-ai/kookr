@@ -227,16 +227,9 @@ export class AskService {
         a.reminders = [...(a.reminders ?? []), { at: now, ...(due === 'before_close' ? { kind: 'before_close' as const } : {}) }];
       });
       sentLastHour++;
+      let messageId: number;
       try {
-        const { messageId } = await notifier.sendAskReminder(ask, reminderText(ask, now));
-        this.deps.store.update(ask.id, (a) => {
-          const entry = a.reminders?.[index];
-          if (entry) entry.messageId = messageId;
-        });
-        this.log(`[asks] reminder sent ask=${ask.id} kind=${due}`);
-        // Closed during the send: the closing step could not delete a reminder it did not know yet.
-        const current = this.deps.store.get(ask.id);
-        if (current && current.state !== 'pending') await notifier.deleteAskReminder?.(current, messageId);
+        ({ messageId } = await notifier.sendAskReminder(ask, reminderText(ask, now)));
       } catch (err) {
         this.deps.store.update(ask.id, (a) => {
           const entry = a.reminders?.[index];
@@ -244,6 +237,17 @@ export class AskService {
         });
         sentLastHour--;
         this.log(`[asks] reminder failed ask=${ask.id}: ${String(err)}`);
+        continue;
+      }
+      this.deps.store.update(ask.id, (a) => {
+        const entry = a.reminders?.[index];
+        if (entry) entry.messageId = messageId;
+      });
+      this.log(`[asks] reminder sent ask=${ask.id} kind=${due}`);
+      // Closed during the send: the closing step could not delete a reminder it did not know yet.
+      const current = this.deps.store.get(ask.id);
+      if (current && current.state !== 'pending') {
+        await notifier.deleteAskReminder?.(current, messageId)?.catch((err: unknown) => this.log(`[asks] reminder delete failed ask=${ask.id}: ${String(err)}`));
       }
     }
   }

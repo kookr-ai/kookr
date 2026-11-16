@@ -183,12 +183,17 @@ describe('ask reminders', () => {
       await ask({ taskId, question: 'And this?' });
     }
     for (let i = 0; i < ASK_REMINDER_LIMITS.maxPerHour; i++) h.notifier.sendAskReminder.mockRejectedValueOnce(new Error('network down'));
-    await runUntil(11 * MIN);
-    // Six refused, then the two left are sent in the same sweep; the refused ones wait for their next point.
+    // One sweep at 10 minutes: six refused, then the two left are sent in that same sweep.
+    await runUntil(10 * MIN, 10 * MIN);
     expect(h.notifier.sendAskReminder).toHaveBeenCalledTimes(8);
     const reminders = h.store.all().map((a) => a.reminders ?? []);
     expect(reminders.filter((r) => r.length === 1 && r[0].failed === true)).toHaveLength(6);
     expect(reminders.filter((r) => r.length === 1 && r[0].messageId !== undefined && r[0].failed === undefined)).toHaveLength(2);
+
+    // One sweep at 60 minutes, all eight due again: only the two sent at 10 minutes count against
+    // the hour, so four more go out now. Counting the six refused ones would hold every one back.
+    await runUntil(60 * MIN, 50 * MIN);
+    expect(h.notifier.sendAskReminder).toHaveBeenCalledTimes(12);
   });
 
   it('deletes a reminder whose question closed while it was being sent', async () => {

@@ -116,9 +116,8 @@ Use `--wait` (or `--wait=<seconds>`) **only when you have nothing else to do**:
 it blocks and prints the chosen label on stdout. While it waits, the answer is
 normally **not** typed into your session as well. It is typed as a fallback if
 `--wait` stopped before reading it (its window ran out, or the command was
-killed). An answer given in the first seconds, before `--wait` first checks for
-it, can still arrive both ways: if both reach you, they are the same answer;
-act once.
+killed). In the rare case that both reach you (an answer given in the instant
+before `--wait` first checks for it), they are the same answer: act once.
 
 The answer is typed only into the session that asked, or into a session that
 resumed its conversation (crash recovery, Reopen). An answer given after your
