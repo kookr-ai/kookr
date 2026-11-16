@@ -57,7 +57,7 @@ function stagesWholeTree(words) {
     if (!optionsEnded && a === '--') { optionsEnded = true; continue; }
     if (!optionsEnded && a.startsWith('--')) {
       if (a === '--all') all = true;
-      if (['--update', '--patch', '--interactive', '--dry-run', '--edit'].includes(a)) limited = true;
+      if (['--update', '--patch', '--interactive', '--dry-run', '--edit', '--renormalize'].includes(a)) limited = true;
       // The paths are named in a file.
       if (a === '--pathspec-from-file' || a.startsWith('--pathspec-from-file=')) named = true;
       continue;

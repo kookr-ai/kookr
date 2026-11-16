@@ -55,6 +55,12 @@ describe('git-add-all-guard', () => {
       'pnpm test | tail -3\ngit add --all',
       "git add -A ':!data'",
       'FOO=1 git add .',
+      'git add -A 2>&1',
+      'git add -A 2>&1 | tail -3',
+      'git add --all > /dev/null',
+      'git add --all 2>/dev/null',
+      'git add -A >log 2>&1',
+      'git add -A &>/dev/null',
       '/usr/bin/git add -A',
     ]) {
       expect(hook(cmd), cmd).not.toBeNull();
@@ -74,6 +80,8 @@ describe('git-add-all-guard', () => {
       'git add -n .',
       'git add --dry-run -A',
       'git add -p .',
+      'git add --renormalize .',
+      'git add src/a.ts 2>&1',
       'git status --short',
       'git commit -am "x"',
     ]) {

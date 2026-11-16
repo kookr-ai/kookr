@@ -220,8 +220,9 @@ by name (`git add path/a path/b`), or `git add -u` for tracked files.
 
 It also denies the same forms spelled differently: `-A` inside a flag cluster
 (`-fA`), `git add -- .`, `./`, `:/`, `git -C dir add -A`, and an `-A` whose only
-paths are exclusions (`git add -A ':!data'`). Allowed: named paths, `-A` with a
-named directory (`git add -A src/new-dir/`), `-u`, `-p`, `-i` and dry runs
+paths are exclusions (`git add -A ':!data'`). Redirections are not
+paths, so `git add -A 2>&1` and `git add --all >/dev/null` are denied too. Allowed: named paths, `-A` with a
+named directory (`git add -A src/new-dir/`), `-u`, `-p`, `-i`, `--renormalize` and dry runs
 (`-n`), and text that only mentions the command (a commit message, a quoted
 string). It reuses the word splitter of `merge-retarget-guard.mjs` and does not
 look inside `bash -c` or `eval`. Off outside a Kookr task and with

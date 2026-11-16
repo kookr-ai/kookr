@@ -99,10 +99,14 @@ describe('upstream-lag-notice', () => {
   it('returns well before a hung fetch, and counts from the last fetched ref ("at least")', () => {
     git(OFFLINE, 'fetch', '-q', 'origin');
     git(OFFLINE, 'remote', 'set-url', 'origin', 'ssh://git@unreachable.invalid/repo.git');
-    // The "network" never answers: the ssh transport sleeps far past the timeout.
-    git(OFFLINE, 'config', 'core.sshCommand', 'sleep 20');
+    // The "network" never answers: the ssh command sleeps far past the timeout.
+    // git appends the host and remote command to core.sshCommand; the `#` turns
+    // them into a comment, so `sleep` does not reject them and exit at once.
+    git(OFFLINE, 'config', 'core.sshCommand', 'sleep 20 #');
     const { note, ms } = hook(OFFLINE, { env: { KOOKR_UPSTREAM_LAG_FETCH_TIMEOUT_MS: '300' } });
-    expect(ms).toBeLessThan(10_000);
+    // The hook's own budget is 300 ms here; without the timeout it waits 20 s.
+    // The bound leaves room for a loaded host.
+    expect(ms).toBeLessThan(5_000);
     expect(note).toContain('is at least 10 commits behind `origin/main` as of the last fetch');
   });
 

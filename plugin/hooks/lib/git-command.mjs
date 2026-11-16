@@ -8,6 +8,25 @@ import { stripPrefixes } from '../merge-retarget-guard.mjs';
 // Global options that take their value as the next word (`git -C dir`).
 const GLOBAL_VALUED = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix']);
 
+// A redirect operator on its own (`>`, `2>>`, `&>`); its target is the next word.
+const REDIRECT_OP = /^[0-9]*(?:[<>]{1,2}|&>>?|>&|>\|)$/;
+// A redirect glued to its target: `2>/dev/null`, `>log`.
+const REDIRECT_WORD = /^[0-9]*(?:[<>]|&>)/;
+
+/**
+ * The arguments of a command without its redirections, which the splitter
+ * leaves among the words: `git add -A 2>/dev/null` has the one argument `-A`.
+ */
+export function withoutRedirects(args) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    if (REDIRECT_OP.test(args[i])) { i++; continue; }
+    if (REDIRECT_WORD.test(args[i])) continue;
+    out.push(args[i]);
+  }
+  return out;
+}
+
 export function expandHome(p) {
   if (p === '~') return homedir();
   if (p.startsWith('~/')) return join(homedir(), p.slice(2));
@@ -24,7 +43,7 @@ export function resolveFrom(dir, p) {
  * The git subcommand in `words`, or null when the command is not git.
  * Returns { dir, sub, args }: `dir` is `cwd` after every `-C <dir>` (each one
  * relative to the previous, as git does), `sub` the subcommand word and `args`
- * the words after it.
+ * the words after it, without redirections.
  */
 export function gitInvocation(words, cwd) {
   const w = stripPrefixes(words);
@@ -40,7 +59,7 @@ export function gitInvocation(words, cwd) {
     i++;
   }
   if (i >= w.length) return null;
-  return { dir, sub: w[i], args: w.slice(i + 1) };
+  return { dir, sub: w[i], args: withoutRedirects(w.slice(i + 1)) };
 }
 
 /**
