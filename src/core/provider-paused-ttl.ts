@@ -71,6 +71,9 @@ export const PROVIDER_RESET_HOLD_GRACE_MS = 15 * 60_000;
  *   no reset was seen during this pause (issue #3574). The quota contradicts
  *   the pause classification, which is then most likely a false positive (a
  *   working task that read rate-limit text), so the reclaim holds the task.
+ *   Never produced for a pause backed by account-level evidence
+ *   ({@link isAccountLevelProviderPauseDetail}, issue #4050): a billing,
+ *   auth or quota stop_failure is real whatever the windows show.
  * - `none` — nothing to go on, or nothing pending: no quota source at all (the
  *   poller is disabled), or a reset seen earlier in this pause has passed.
  */
@@ -79,6 +82,35 @@ export type ProviderResetState =
   | { kind: 'unresolved' }
   | { kind: 'quota_healthy' }
   | { kind: 'none' };
+
+/**
+ * `stop_failure.error` values the agent's own CLI reports when the account
+ * itself is blocked: no credit, no valid credentials, or a spent quota (issue
+ * #4050). Unlike rate-limit wording, these do not show up in the 5-hour or
+ * 7-day usage windows the quota poller reads, so a healthy snapshot does not
+ * contradict them.
+ */
+const ACCOUNT_LEVEL_STOP_ERRORS: ReadonlySet<string> = new Set([
+  'billing_error',
+  'authentication_failed',
+  'quota_exceeded',
+]);
+
+/**
+ * Whether a provider-pause detail (`classifyProviderPause().detail`) is
+ * first-party, account-level evidence that the healthy-quota hold must not
+ * override (issue #4050).
+ *
+ * Only an exact `stop_failure:<error>` with a billing, auth or quota error
+ * counts. `stop_failure_message:*`, `error_event`, `text_surface`,
+ * `tool_result` and `anomaly:api_error` come from free text, and
+ * `stop_failure:rate_limit*` is the kind of pause the windows do describe, so
+ * those keep the #3574 hold. An absent detail keeps it too.
+ */
+export function isAccountLevelProviderPauseDetail(detail: string | undefined): boolean {
+  if (detail === undefined || !detail.startsWith('stop_failure:')) return false;
+  return ACCOUNT_LEVEL_STOP_ERRORS.has(detail.slice('stop_failure:'.length));
+}
 
 /**
  * Whether a known provider reset still holds a paused task (issue #3562).
@@ -376,7 +408,9 @@ export interface SelectExpiredProviderPausedTasksOpts {
    *   `skipped_provider_reset_unresolved` (the soft bound never reclaims an
    *   unknown; the hard bound still does, #2423);
    * - `quota_healthy` and still under the 6h max → skip
-   *   `skipped_provider_quota_healthy`, on the soft AND hard path (issue #3574);
+   *   `skipped_provider_quota_healthy`, on the soft AND hard path (issue #3574).
+   *   The caller must not report it for a pause backed by account-level
+   *   evidence ({@link isAccountLevelProviderPauseDetail}, issue #4050);
    * - `none` / omitted → today's soft/hard behavior.
    */
   getProviderResetState?: (task: Task) => ProviderResetState | undefined;
@@ -492,7 +526,8 @@ export function effectiveProviderPausedStartMs(
  * - reset unresolved and still under hard TTL →
  *   `skipped_provider_reset_unresolved` (issue #3562);
  * - quota healthy (no exhausted window) and under the 6h max →
- *   `skipped_provider_quota_healthy` (issue #3574);
+ *   `skipped_provider_quota_healthy` (issue #3574; never for account-level
+ *   pause evidence, issue #4050);
  * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
  *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
  * - otherwise selected (oldest-paused first).

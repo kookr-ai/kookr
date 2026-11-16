@@ -173,6 +173,44 @@ describe('liveness tick wires the quota poller into the provider-paused reaper (
   });
 });
 
+describe('liveness tick wires the pause detail into the provider-paused reaper (issue #4050)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    providerPausedCalls.length = 0;
+  });
+
+  test('getProviderPauseDetail reports the classified evidence of the task\'s live session', async () => {
+    vi.useFakeTimers();
+    const events = new Map<string, unknown[]>([
+      ['sess-billing', [{ type: 'stop_failure', error: 'billing_error', timestamp: 1 }]],
+      ['sess-quiet', []],
+    ]);
+    const base = wiringDeps();
+    const handles = startLifecycleTimers(wiringDeps({
+      monitor: {
+        ...base.monitor,
+        getAgentEvents: (agentId: string) => events.get(agentId) ?? [],
+      } as TimerDeps['monitor'],
+      providerPausedStartTracker: new ProviderPausedStartTracker(),
+    }));
+    try {
+      await vi.advanceTimersByTimeAsync(60);
+      expect(providerPausedCalls.length).toBeGreaterThan(0);
+      const deps = providerPausedCalls[0] as {
+        getProviderPauseDetail?: (task: unknown) => string | undefined;
+      };
+      const taskOn = (tmuxSession?: string) => ({
+        sessions: tmuxSession ? [{ tmuxSession }] : [],
+      });
+      expect(deps.getProviderPauseDetail?.(taskOn('sess-billing'))).toBe('stop_failure:billing_error');
+      expect(deps.getProviderPauseDetail?.(taskOn('sess-quiet'))).toBeUndefined();
+      expect(deps.getProviderPauseDetail?.(taskOn())).toBeUndefined();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});
+
 describe('liveness tick wires the delivered-completion sweep (issue #3983)', () => {
   // Earlier tests in this file wire a resolver too, so their sweeps were captured.
   beforeEach(() => {

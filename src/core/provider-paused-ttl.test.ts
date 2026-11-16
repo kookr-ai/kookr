@@ -14,6 +14,7 @@ import {
   PROVIDER_RESET_HOLD_GRACE_MS,
   type ProviderPausedTtlCandidateOutcome,
   type ProviderResetState,
+  isAccountLevelProviderPauseDetail,
 } from './provider-paused-ttl.js';
 import { aSession, aTask } from './__fixtures__/task-builders.js';
 
@@ -686,5 +687,34 @@ describe('provider reset holds (issue #3562)', () => {
       nowMs,
       effectivePauseStartMs: start,
     })).toBe(false);
+  });
+});
+
+describe('isAccountLevelProviderPauseDetail (issue #4050)', () => {
+  it.each([
+    'stop_failure:billing_error',
+    'stop_failure:authentication_failed',
+    'stop_failure:quota_exceeded',
+  ])('is true for first-party %s', (detail) => {
+    expect(isAccountLevelProviderPauseDetail(detail)).toBe(true);
+  });
+
+  it.each([
+    'stop_failure:rate_limit',
+    'stop_failure:rate_limit_error',
+    // Text matched in the stop_failure message, not the error code.
+    'stop_failure_message:billing_error',
+    'stop_failure_message:quota_exceeded',
+    'error_event',
+    'text_surface',
+    'tool_result',
+    'anomaly:api_error',
+    'stop_failure:',
+    'stop_failure:billing_error_extra',
+    'xstop_failure:billing_error',
+    '',
+    undefined,
+  ])('is false for %s', (detail) => {
+    expect(isAccountLevelProviderPauseDetail(detail)).toBe(false);
   });
 });
