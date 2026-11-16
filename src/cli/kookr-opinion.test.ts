@@ -112,6 +112,28 @@ describe('kookr opinion sweep', () => {
     expect(run.errors.join('\n')).toContain('no server');
   });
 
+  it('stops on an item after a failed follow-up, so a later accept cannot hide the reply', async () => {
+    const host = fakeHost([{ number: 11, comments: [REQUEST, '/opinion B', '/opinion ok'] }]);
+    const failing: CommandRunner = async (cmd, args, input) =>
+      cmd === 'gh' ? host.run(cmd, args, input) : { code: 4, stdout: '', stderr: 'server error' };
+    expect(await runOpinionCli(['sweep', '--repo', 'o/r'], io(failing).io)).toBe(4);
+    expect(host.state[0].labelled).toBe(true);
+    expect(host.labelRemovals).toEqual([]);
+
+    expect(await runOpinionCli(['sweep', '--repo', 'o/r'], io(host.run).io)).toBe(0);
+    expect(host.spawns).toHaveLength(1);
+    expect(host.labelRemovals).toEqual([11]);
+  });
+
+  it('asks GitHub for each comment author association, so outsiders can be ignored', async () => {
+    const calls: string[][] = [];
+    const host = fakeHost([{ number: 12, comments: [REQUEST] }]);
+    const spy: CommandRunner = async (cmd, args, input) => { calls.push(args); return host.run(cmd, args, input); };
+    await runOpinionCli(['sweep', '--repo', 'o/r'], io(spy).io);
+    const commentFetch = calls.find((a) => a.some((x) => x.includes('/comments?')));
+    expect(commentFetch?.join(' ')).toContain('authorAssociation: .author_association');
+  });
+
   it('requires a valid --repo and the sweep verb', async () => {
     const run = io(fakeHost([]).run);
     expect(await runOpinionCli(['sweep'], run.io)).toBe(2);

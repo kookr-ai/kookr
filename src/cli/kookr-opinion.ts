@@ -50,6 +50,10 @@ Options:
   --json               Print one machine-readable JSON envelope to stdout.
   -h, --help           Show this help.
 
+Only comments by the repository owner, members and collaborators count.
+After an accept the item is no longer labelled, so later replies on it are not
+swept; ask for a change in a new issue instead.
+
 Exit codes:
   0  Swept (including: nothing to do).
   2  User error (bad flags).
@@ -174,7 +178,7 @@ export async function runOpinionCli(argv: string[], io: OpinionCliIo = {}): Prom
     const fetched = await run('gh', [
       'api', '--paginate',
       `repos/${repo}/issues/${item.number}/comments?per_page=100`,
-      '--jq', '.[] | {id, body, createdAt: .created_at, url: .html_url}',
+      '--jq', '.[] | {id, body, createdAt: .created_at, url: .html_url, authorAssociation: .author_association}',
     ]);
     if (fetched.code !== 0) {
       failures.push(`#${item.number}: reading comments failed: ${fetched.stderr.trim()}`);
@@ -198,7 +202,7 @@ export async function runOpinionCli(argv: string[], io: OpinionCliIo = {}): Prom
         if (removed.code !== 0 && !/404|Label does not exist/i.test(removed.stderr)) {
           record.error = `removing the label failed: ${removed.stderr.trim()}`;
           failures.push(`#${item.number}: ${record.error}`);
-          continue;
+          break;
         }
       } else {
         const prompt = followUpPrompt({ repo, number: item.number, itemUrl: item.url, isPullRequest: item.isPullRequest, reply: action.reply });
@@ -215,7 +219,8 @@ export async function runOpinionCli(argv: string[], io: OpinionCliIo = {}): Prom
         if (spawned.code !== 0 && spawned.code !== 5) {
           record.error = `starting the follow-up task failed (exit ${spawned.code}): ${(spawned.stderr || spawned.stdout).trim()}`;
           failures.push(`#${item.number}: ${record.error}`);
-          continue;
+          // Stop on this item: a later accept would remove the label and hide this reply from every later run.
+          break;
         }
         try {
           const env = JSON.parse(spawned.stdout.trim().split('\n').pop() ?? '{}') as { details?: { taskId?: string } };
@@ -234,6 +239,7 @@ export async function runOpinionCli(argv: string[], io: OpinionCliIo = {}): Prom
         // spawn idempotency key replays the same task for 24 hours.
         record.error = `recording the handled reply failed: ${marked.stderr.trim()}`;
         failures.push(`#${item.number}: ${record.error}`);
+        break;
       }
     }
   }

@@ -1106,7 +1106,7 @@ For every labelled item, open or closed, each new reply after the request is han
 | `/opinion <another option or a change>` | Starts one follow-up task (`kookr spawn`) that applies the reply. |
 | Any reply to a request marked `stopped` (the task stopped before a hard-to-undo choice) | Starts one follow-up task that carries out the chosen option. |
 
-After acting, the sweep posts a `kookr:opinion-handled` marker comment naming the reply, so a second run does nothing. If that marker cannot be posted, the next run sees the reply again; the follow-up's idempotency key (`opinion:<repo>#<n>:<reply id>`) replays the same task for 24 hours. The `Deliver GitHub Issues` playbook runs the sweep at the start of Phase 2.
+Only comments by the repository owner, members and collaborators (`author_association`) count, because on a public repository anyone can comment and a reply becomes a task prompt. After an accept the item is no longer labelled, so later replies on it are not swept. If an action fails, the sweep stops on that item and retries it on the next run. After acting, the sweep posts a `kookr:opinion-handled` marker comment naming the reply, so a second run does nothing. If that marker cannot be posted, the next run sees the reply again; the follow-up's idempotency key (`opinion:<repo>#<n>:<reply id>`) replays the same task for 24 hours. The `Deliver GitHub Issues` playbook runs the sweep at the start of Phase 2.
 
 Options: `--repo <owner/name>` (required), `--cwd <path>` (working directory for follow-up tasks; default: cwd), `--dry-run`, `--json`.
 

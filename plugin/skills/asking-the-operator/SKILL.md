@@ -202,15 +202,18 @@ phone, with a comment.
    the blocker. Every `/opinion` reply to a stopped request, `/opinion ok`
    included, starts the follow-up that carries out the chosen option.
 6. **If an answer arrives in your session** (`Operator answered ask …`), post
-   it on the issue as `/opinion <the answer> (answered on Telegram)` and keep
-   going. Do not change course yourself; the sweep below turns it into work.
+   it on the issue as `/opinion <letter>` (or `/opinion <free text>`) with
+   `(answered on Telegram)` on the next line, and keep going. Do not change
+   course yourself; the sweep below turns it into work.
 
 **How the answer comes back.** `kookr opinion sweep --repo <owner/name>` reads
 every item labelled `needs-operator-opinion`, open or closed. For each new
 `/opinion` reply after the request: `/opinion ok` (or the recommended letter
 alone) removes the label; any other reply, and every reply to a `stopped`
 request, starts one follow-up task that applies it. The sweep posts a `kookr:opinion-handled` marker for each reply it
-handled, so running it again does nothing. The `Deliver GitHub Issues`
+handled, so running it again does nothing. Only comments by the repository
+owner, members and collaborators count. After an accept the item is no longer
+labelled, so a later change of mind needs a new issue. The `Deliver GitHub Issues`
 playbook runs the sweep at the start of every run.
 
 In this flow the one-question rules above still hold: one `kookr ask` per

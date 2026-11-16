@@ -43,6 +43,19 @@ export interface OpinionComment {
   body: string;
   createdAt: string;
   url: string;
+  /**
+   * GitHub `author_association` of the comment's author. When present, only
+   * OWNER, MEMBER and COLLABORATOR comments count as requests or replies: on a
+   * public repository anyone can comment, and a reply becomes a task prompt.
+   */
+  authorAssociation?: string;
+}
+
+const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+/** Whether a comment may act as a request or a reply (see `authorAssociation`). */
+export function isTrustedComment(comment: OpinionComment): boolean {
+  return comment.authorAssociation === undefined || TRUSTED_ASSOCIATIONS.has(comment.authorAssociation.toUpperCase());
 }
 
 export interface OpinionRequest {
@@ -79,10 +92,13 @@ const REQUEST_RE = /<!--\s*kookr:opinion-request\b([^>]*)-->/i;
 const RECOMMENDED_RE = /\brecommended=([A-Za-z])\b/;
 const STOPPED_RE = /(?:^|\s)stopped(?:\s|$)/;
 const HANDLED_RE = /<!--\s*kookr:opinion-handled\b[^>]*\breply=(\d+)[^>]*-->/gi;
-const REPLY_RE = /^\s*\/opinion\b[ \t]*(.*)$/i;
+const REPLY_RE = /^\s*\/opinion(?=\s|$)[ \t]*(.*)$/i;
+/** Annotation a worker appends when it relays a Telegram answer (asking-the-operator skill). */
+const TELEGRAM_NOTE_RE = /\n?\s*\(answered on telegram[^)]*\)\s*$/i;
 const ACCEPT_WORDS = new Set(['ok', 'okay', 'accept', 'accepted', 'yes', 'lgtm', 'approve', 'approved', 'go', '👍', '+1']);
 
 export function parseOpinionRequest(comment: OpinionComment): OpinionRequest | undefined {
+  if (!isTrustedComment(comment)) return undefined;
   const m = REQUEST_RE.exec(comment.body);
   if (!m) return undefined;
   const attrs = m[1] ?? '';
@@ -109,6 +125,7 @@ export function handledReplyIds(comments: readonly OpinionComment[]): Set<number
  * are never replies, even if they quote the command.
  */
 export function parseOpinionReply(comment: OpinionComment): OpinionReply | undefined {
+  if (!isTrustedComment(comment)) return undefined;
   if (/<!--\s*kookr:opinion-/i.test(comment.body)) return undefined;
   const lines = comment.body.split(/\r?\n/);
   const first = lines.findIndex((l) => l.trim().length > 0);
@@ -122,10 +139,12 @@ export function parseOpinionReply(comment: OpinionComment): OpinionReply | undef
 /**
  * Whether a reply accepts the recommendation: an accept word alone, or the
  * recommended option's letter alone (`/opinion A`, `/opinion A.`). Anything
- * with more to say (`/opinion A but bigger`) is a requested change.
+ * with more to say (`/opinion A but bigger`) is a requested change. A trailing
+ * `(answered on Telegram…)` note, added when a worker relays a Telegram
+ * answer, is ignored.
  */
 export function isAcceptingReply(text: string, recommended: string | undefined): boolean {
-  const word = text.trim().toLowerCase().replace(/[.!]+$/, '');
+  const word = text.replace(TELEGRAM_NOTE_RE, '').trim().toLowerCase().replace(/[.!]+$/, '');
   if (ACCEPT_WORDS.has(word)) return true;
   return recommended !== undefined && word === recommended.toLowerCase();
 }
