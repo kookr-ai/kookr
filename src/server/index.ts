@@ -286,7 +286,7 @@ import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { IdleRefineryRunner } from './idle-refinery-runner.js';
 import { PostRecoveryService } from './post-recovery-service.js';
 import { PostResumeRefillService, readPostResumeRefillEnabledFromEnv } from './post-resume-refill-service.js';
-import { ReadyQueueService } from './ready-queue-service.js';
+import { ReadyQueueService, buildReadyQueueGateInputs } from './ready-queue-service.js';
 import { READY_QUEUE_FILE_NAME } from '../core/ready-queue.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
@@ -2765,21 +2765,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const readyQueueMaxLoadPerCpu = readReadyQueueMaxLoadPerCpuFromEnv();
   const readyQueue = new ReadyQueueService({
     filePath: join(kookrDir, READY_QUEUE_FILE_NAME),
-    getGateInputs: () => {
-      const ledger = launchServiceDeps.getCapacityLedger!();
-      const cpuCount = cpus().length;
-      return {
-        accepting: drainController.isAccepting(),
-        automationEnabled: !currentSettings.automationKillSwitch && !settingsLoadError,
-        free: ledger.free,
-        ...(ledger.freeForGeneralSources !== undefined
-          ? { freeForGeneralSources: ledger.freeForGeneralSources }
-          : {}),
-        pendingQueueDepth: ledger.pendingQueueDepth,
-        loadPerCpu: cpuCount > 0 ? loadavg()[0] / cpuCount : null,
-        maxLoadPerCpu: readyQueueMaxLoadPerCpu,
-      };
-    },
+    getGateInputs: () => buildReadyQueueGateInputs({
+      accepting: drainController.isAccepting(),
+      automationKillSwitch: currentSettings.automationKillSwitch,
+      settingsLoadError: Boolean(settingsLoadError),
+      ledger: launchServiceDeps.getCapacityLedger!(),
+      load1m: loadavg()[0],
+      cpuCount: cpus().length,
+      maxLoadPerCpu: readyQueueMaxLoadPerCpu,
+    }),
     emitAlert: bindOperationalAlertSink(operationalAlertSink, (alert) => {
       detectorBroadcast(alert);
       noteOpsStatusAlert(alert);

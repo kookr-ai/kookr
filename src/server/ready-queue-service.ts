@@ -96,6 +96,34 @@ export class ReadyQueueFullError extends Error {
 
 export type ReadyQueueRemoveResult = 'removed' | 'not_found' | 'launching';
 
+/**
+ * Build the tick's gate inputs from the live server state. Pure, so the
+ * production composition is tested: SAFE MODE also holds while the settings
+ * file failed to load (fail closed), and the reserved-slot view is passed
+ * through only when the ledger has one.
+ */
+export function buildReadyQueueGateInputs(input: {
+  accepting: boolean;
+  automationKillSwitch: boolean;
+  settingsLoadError: boolean;
+  ledger: { free: number; freeForGeneralSources?: number; pendingQueueDepth: number };
+  load1m: number;
+  cpuCount: number;
+  maxLoadPerCpu: number;
+}): ReadyQueueGateInputs {
+  return {
+    accepting: input.accepting,
+    automationEnabled: !input.automationKillSwitch && !input.settingsLoadError,
+    free: input.ledger.free,
+    ...(input.ledger.freeForGeneralSources !== undefined
+      ? { freeForGeneralSources: input.ledger.freeForGeneralSources }
+      : {}),
+    pendingQueueDepth: input.ledger.pendingQueueDepth,
+    loadPerCpu: input.cpuCount > 0 ? input.load1m / input.cpuCount : null,
+    maxLoadPerCpu: input.maxLoadPerCpu,
+  };
+}
+
 function readNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }

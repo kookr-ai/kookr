@@ -192,9 +192,6 @@ async function main({
     return runStatusCli({ argv: rest, env, out, exit });
   }
 
-  // Abort (terminate) running task(s) from the terminal (issue #3069). Thin
-  // HTTP client against POST /api/tasks/abort — dispatches here rather than
-  // booting a server. `abort` is an alias for the same verb.
   // Ready queue (issue #3933): list or remove entries added by
   // `kookr spawn --queue`. Thin HTTP client against /api/ready-queue.
   if (command === 'queue') {
@@ -202,6 +199,9 @@ async function main({
     return exit(await runQueueCommand(rest, { env, out, err }));
   }
 
+  // Abort (terminate) running task(s) from the terminal (issue #3069). Thin
+  // HTTP client against POST /api/tasks/abort — dispatches here rather than
+  // booting a server. `abort` is an alias for the same verb.
   if (command === 'stop' || command === 'abort') {
     const { runStopCommand } = await import('./kookr-stop.js');
     return exit(await runStopCommand(rest, { env, out, err }));

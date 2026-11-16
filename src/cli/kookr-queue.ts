@@ -9,6 +9,7 @@
  * from disk here.
  */
 
+import { READY_QUEUE_WAIT_REASON_TEXT } from '../core/ready-queue.js';
 import { resolveStopBaseUrl } from './kookr-stop.js';
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -104,14 +105,7 @@ interface ListedEntry {
   request?: { prompt?: unknown; playbook?: { path?: unknown } };
 }
 
-const WAIT_TEXT: Record<string, string> = {
-  no_free_slot: 'no free slot',
-  host_load: 'host load',
-  draining: 'server draining for a deploy',
-  automation_paused: 'automation paused (SAFE MODE)',
-  retry_after: 'server asked to retry later',
-  launch_failed: 'last launch attempt failed; retrying',
-};
+const WAIT_TEXT: Readonly<Record<string, string>> = READY_QUEUE_WAIT_REASON_TEXT;
 
 function formatAge(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '?';

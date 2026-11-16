@@ -1407,7 +1407,9 @@ async function enqueueReadyLaunch({ args, baseUrl, body, out, err, exit }) {
     return fail(
       EXIT_SERVER_ERROR,
       'SERVER_ERROR',
-      `request failed: ${msg}. Re-running the same command is safe: the server keeps one entry per idempotency key (${body.idempotencyKey}).`,
+      `request failed: ${msg}. ` + (args.dedupe === 'skip' && args.idempotencyKey === null
+        ? 'The entry may have been stored; check `kookr queue list` before re-running.'
+        : `Re-running the same command is safe: the server keeps one entry per idempotency key (${body.idempotencyKey}).`),
       { baseUrl, idempotencyKey: body.idempotencyKey },
     );
   }
@@ -2781,9 +2783,27 @@ async function main({
   }
 
   // #3933: a queued launch always carries a key, so a restart between the
-  // server starting it and recording that never starts it twice.
+  // server starting it and recording that never starts it twice. The key is
+  // derived from the spawn's inputs, so re-running the same command after a
+  // timeout finds the entry already queued instead of adding a second one.
+  // Under --dedupe=skip the caller asked for a deliberate duplicate, so each
+  // run gets a fresh random key.
   if (args.queue && effectiveIdempotencyKey === null) {
-    effectiveIdempotencyKey = `queue-${randomUUID()}`;
+    effectiveIdempotencyKey = args.dedupe === 'skip'
+      ? `queue-${randomUUID()}`
+      : deriveAutoIdempotencyKey({
+          prompt,
+          cwd: cwdAbs,
+          criteria: args.criteria,
+          agent: args.agent,
+          effort: args.effort,
+          model: args.model,
+          modelTier: args.modelTier,
+          profile: args.profile,
+          playbook: args.playbook,
+          playbookScope: args.playbookScope ?? (args.playbook ? 'project' : null),
+          playbookParams: args.playbookParams,
+        }).replace(/^auto-/, 'queue-');
   }
 
   if (args.playbook && effectiveIdempotencyKey === null) {

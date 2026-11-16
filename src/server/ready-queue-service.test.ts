@@ -9,6 +9,7 @@ import {
 } from '../core/ready-queue.js';
 import {
   ReadyQueueService,
+  buildReadyQueueGateInputs,
   classifyReadyQueueDispatch,
   type ReadyQueueDispatchRequest,
   type ReadyQueueDispatchResponse,
@@ -391,5 +392,41 @@ describe('classifyReadyQueueDispatch', () => {
     expect(classifyReadyQueueDispatch({ status: 409, body: { error: 'claim held', code: 'issue_claim_held' } }))
       .toEqual({ kind: 'failed', error: 'claim held', code: 'issue_claim_held' });
     expect(classifyReadyQueueDispatch({ status: 500, body: null })).toEqual({ kind: 'failed', error: 'HTTP 500' });
+  });
+});
+
+describe('buildReadyQueueGateInputs', () => {
+  const base = {
+    accepting: true,
+    automationKillSwitch: false,
+    settingsLoadError: false,
+    ledger: { free: 3, freeForGeneralSources: 1, pendingQueueDepth: 2 },
+    load1m: 24,
+    cpuCount: 16,
+    maxLoadPerCpu: 1.5,
+  };
+
+  it('maps the live state onto the gates', () => {
+    expect(buildReadyQueueGateInputs(base)).toEqual({
+      accepting: true,
+      automationEnabled: true,
+      free: 3,
+      freeForGeneralSources: 1,
+      pendingQueueDepth: 2,
+      loadPerCpu: 1.5,
+      maxLoadPerCpu: 1.5,
+    });
+  });
+
+  it('treats SAFE MODE and a settings load error as automation off', () => {
+    expect(buildReadyQueueGateInputs({ ...base, automationKillSwitch: true }).automationEnabled).toBe(false);
+    expect(buildReadyQueueGateInputs({ ...base, settingsLoadError: true }).automationEnabled).toBe(false);
+    expect(buildReadyQueueGateInputs({ ...base, accepting: false }).accepting).toBe(false);
+  });
+
+  it('omits the reserved-slot view when the ledger has none, and has no load sample without CPUs', () => {
+    const gates = buildReadyQueueGateInputs({ ...base, ledger: { free: 2, pendingQueueDepth: 0 }, cpuCount: 0 });
+    expect(gates).not.toHaveProperty('freeForGeneralSources');
+    expect(gates.loadPerCpu).toBeNull();
   });
 });

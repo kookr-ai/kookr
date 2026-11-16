@@ -4694,8 +4694,43 @@ describe('main --queue (#3933)', () => {
         agentType: 'codex-cli',
         criteria: 'tests pass',
       });
-      expect(posts[0].body.idempotencyKey).toMatch(/^queue-[0-9a-f-]{36}$/);
+      expect(posts[0].body.idempotencyKey).toMatch(/^queue-[0-9a-f]{16}$/);
       expect(logs.join('\n')).toContain('Queued ab12cd34 at position 3');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('re-running the same --queue command sends the same key; --dedupe=skip gets a fresh one each run', async () => {
+    const { server, baseUrl, requests } = await startQueueApi({
+      status: 201,
+      body: { created: true, position: 1, entry: { id: 'ab12cd34', state: 'queued' } },
+    });
+    try {
+      const run = async (argv: string[]) => {
+        const { exit } = makeExitCapture();
+        await main({
+          argv,
+          env: { KOOKR_API_BASE_URL: baseUrl },
+          stdin: ttyStdin(),
+          cwd: tmpCwd,
+          out: makeConsoleCapture().io,
+          err: makeConsoleCapture().io,
+          exit,
+          sleep: async () => {},
+        });
+      };
+      await run(['--queue', 'same work']);
+      await run(['--queue', 'same work']);
+      await run(['--queue', 'other work']);
+      await run(['--queue', '--dedupe=skip', 'same work']);
+      await run(['--queue', '--dedupe=skip', 'same work']);
+      const keys = requests.filter((r) => r.method === 'POST').map((r) => r.body.idempotencyKey as string);
+      expect(keys).toHaveLength(5);
+      expect(keys[0]).toBe(keys[1]);
+      expect(keys[2]).not.toBe(keys[0]);
+      expect(keys[3]).toMatch(/^queue-[0-9a-f-]{36}$/);
+      expect(keys[4]).not.toBe(keys[3]);
     } finally {
       await closeServer(server);
     }
