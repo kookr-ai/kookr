@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -39,6 +40,9 @@ describe('isSelfContinuationTask', () => {
     expect(isSelfContinuationTask({ prompt: RENDERED_PLAYBOOK_OFF })).toBe(false);
     expect(isSelfContinuationTask({ prompt: '- self-continuation: false' })).toBe(false);
     expect(isSelfContinuationTask({ prompt: ABOUT_CHAINS })).toBe(false);
+    // Quoting the envelope header mid-line (a task editing the skill) is not a chain task.
+    expect(isSelfContinuationTask({ prompt: 'Edit the line "You are continuing a sequential Kookr task chain (continuation envelope v1)."' })).toBe(false);
+    expect(isSelfContinuationTask({ prompt: 'You are continuing a sequential Kookr task chain' })).toBe(false);
     expect(isSelfContinuationTask(null)).toBe(false);
   });
 });
@@ -101,6 +105,62 @@ describe('main (process)', () => {
     expect(runHook({ KOOKR_TASK_ID: 'x', KOOKR_CHAIN_HANDOFF_STOP_SKIP: '1' })).toBe(0);
     expect(runHook({ KOOKR_TASK_ID: 'x', KOOKR_API_BASE_URL: 'http://127.0.0.1:9' })).toBe(0);
     expect(runHook({ KOOKR_TASK_ID: 'x' }, 'not json')).toBe(0);
+  });
+});
+
+describe('main (process) against a stub server', () => {
+  const script = path.join(import.meta.dirname, 'chain-handoff-stop.mjs');
+  const runAsync = (env) =>
+    new Promise((resolve) => {
+      const child = execFile('node', [script], { env: { PATH: process.env.PATH, ...env } }, (err, _out, stderr) => {
+        resolve({ code: err ? err.code : 0, stderr });
+      });
+      child.stdin.end('{"session_id":"s"}');
+    });
+  const withServer = async (taskJson, fn) => {
+    const server = createServer((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(taskJson()));
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      return await fn(`http://127.0.0.1:${server.address().port}`);
+    } finally {
+      server.close();
+    }
+  };
+  const counter = (id) => path.join(tmpdir(), 'kookr-chain-handoff-stop', `${id}.count`);
+
+  it('blocks with exit 2 and the reason, counts blocks, and stops blocking at the limit', async () => {
+    const id = `proc-${process.pid}-${Date.now()}`;
+    try {
+      await withServer(() => chainTask({ id }), async (base) => {
+        const env = { KOOKR_TASK_ID: id, KOOKR_API_BASE_URL: base };
+        const first = await runAsync(env);
+        expect(first.code).toBe(2);
+        expect(first.stderr).toMatch(/no successor task and no recorded stop reason/);
+        expect(readBlockCount(id)).toBe(1);
+        for (let i = 1; i < MAX_BLOCKS; i += 1) expect((await runAsync(env)).code).toBe(2);
+        expect((await runAsync(env)).code).toBe(0);
+      });
+    } finally {
+      rmSync(counter(id), { force: true });
+    }
+  });
+
+  it('after a hand-off, a later stop is allowed even when the signal was cleared', async () => {
+    const id = `latch-${process.pid}-${Date.now()}`;
+    let task = chainTask({ id, pendingSignal: { kind: 'completion_ready', note: 'chain end: none left' } });
+    try {
+      await withServer(() => ({ task }), async (base) => {
+        const env = { KOOKR_TASK_ID: id, KOOKR_API_BASE_URL: base };
+        expect((await runAsync(env)).code).toBe(0);
+        task = chainTask({ id }); // an operator message cleared the signal
+        expect((await runAsync(env)).code).toBe(0);
+      });
+    } finally {
+      rmSync(counter(id), { force: true });
+    }
   });
 });
 

@@ -217,7 +217,8 @@ task looked like a crash. The hook blocks, with an instruction, when the task:
 
 - is a self-continuation task: playbook parameter `selfContinuation=true`, or a
   prompt carrying `- self-continuation: true`, the rendered
-  ``**Self-continuation** — `true` `` toggle, or the continuation-envelope header;
+  ``**Self-continuation** — `true` `` toggle, or the continuation-envelope header
+  at the start of a line;
 - is not a playbook-chain iteration (Kookr launches the next one itself) and not
   an active Ralph loop;
 - has no child task and has raised no completion signal.
@@ -229,7 +230,11 @@ ending the turn, spawn the successor with `kookr spawn -C <repository checkout>
 
 It does not use `stop_hook_active`, because the stop that ends the unit often
 comes right after another Stop hook blocked. Instead it blocks at most 3 times
-per task (a counter file under the temp directory). It stays silent when the
+per task (a counter file under the temp directory). Once the task has handed
+off (a child task or a signal seen), later stops are allowed even if an operator
+message clears the signal. Known limits: any child task counts as the successor,
+and an attended chain task that ends turns to wait for the operator uses up the
+blocks. It stays silent when the
 agent is parked on background work and outside a Kookr task. Every error path
 allows the stop. Opt out with `KOOKR_CHAIN_HANDOFF_STOP_SKIP=1`.
 

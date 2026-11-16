@@ -24,6 +24,10 @@
 // delivery-step-stop) blocked first, the agent's next stop carries that flag,
 // and that next stop is often the end of the unit. Instead it blocks at most
 // MAX_BLOCKS times per task, counted in a small file under the temp directory.
+// Once the task has handed off (child or signal seen), the counter is set to the
+// limit, so a later stop is not blocked after an operator message clears the
+// signal. Known limits: any child task counts as the successor, and an attended
+// chain task that ends turns to wait for the operator uses up the blocks.
 // Opt out: KOOKR_CHAIN_HANDOFF_STOP_SKIP=1.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,7 +43,8 @@ export const MAX_BLOCKS = 3;
  * `selfContinuation` playbook parameter decides; otherwise the prompt markers:
  *   - `- self-continuation: true`  (parameter list in hand-written successor prompts)
  *   - `**Self-continuation** — \`true\``  (the rendered implement-github-issue playbook)
- *   - `You are continuing a sequential Kookr task chain`  (the continuation envelope header)
+ *   - `You are continuing a sequential Kookr task chain (continuation envelope vN)`
+ *     at the start of a line  (the continuation envelope header)
  */
 export function isSelfContinuationTask(task) {
   if (!task) return false;
@@ -49,8 +54,14 @@ export function isSelfContinuationTask(task) {
   return (
     /^\s*-\s*self-continuation:\s*`?true`?\s*$/im.test(text) ||
     /\*\*Self-continuation\*\*\s*[—–-]+\s*`true`/.test(text) ||
-    /You are continuing a sequential Kookr task chain/.test(text)
+    /^You are continuing a sequential Kookr task chain \(continuation envelope v\d+\)/m.test(text)
   );
+}
+
+/** True once the task spawned a child or raised a completion signal. */
+export function hasHandedOff(task) {
+  if (Array.isArray(task?.childTaskIds) && task.childTaskIds.length > 0) return true;
+  return Boolean(task?.pendingSignal || task?.finishedSignalAt);
 }
 
 /**
@@ -66,8 +77,7 @@ export function decide({ event, task, priorBlocks = 0 }) {
   if (!isSelfContinuationTask(task)) return null;
   if (task.chain) return null;
   if (task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused') return null;
-  if (Array.isArray(task.childTaskIds) && task.childTaskIds.length > 0) return null;
-  if (task.pendingSignal || task.finishedSignalAt) return null;
+  if (hasHandedOff(task)) return null;
   return [
     'This is a self-continuation chain task, and it is ending its turn with no successor task and no recorded stop reason.',
     'Nobody will resume this session: if it stops here, the chain breaks and the task looks like a crash.',
@@ -128,7 +138,14 @@ async function main() {
     if (isParked(event)) return 0;
     const priorBlocks = readBlockCount(taskId);
     if (priorBlocks >= MAX_BLOCKS) return 0;
-    const reason = decide({ event, task: await fetchTask(taskId), priorBlocks });
+    const task = await fetchTask(taskId);
+    // Latch: once the task handed off, later stops are allowed even if the
+    // signal is cleared (an operator follow-up message clears it).
+    if (hasHandedOff(task)) {
+      writeBlockCount(taskId, MAX_BLOCKS);
+      return 0;
+    }
+    const reason = decide({ event, task, priorBlocks });
     if (!reason) return 0;
     writeBlockCount(taskId, priorBlocks + 1);
     process.stderr.write(`${reason}\n(This hook blocks at most ${MAX_BLOCKS} times per task.)\n`);
