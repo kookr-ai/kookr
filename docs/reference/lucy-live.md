@@ -229,7 +229,7 @@ a bare "yes" with two questions waiting, a status question, "yes delete them" fo
 not waiting, "thank you", "the second one"): 16 of 16 as expected in each of three runs, and none of the
 nine mapped to a choice. The model only proposes; the read-back and the yes are what stop a wrong mapping from being sent.
 
-(With `KOOKR_LUCY_LAUNCH=true`, spoken turns are answered by the operator conversation, whose
+(With launching on, the default, spoken turns are answered by the operator conversation, whose
 board does not list `kookr ask` questions yet: she cannot tell you about a waiting question by voice, but the
 panel still shows and reads it aloud as before, and an answer you say is still handled by the flow above.
 Tracked in #3685.)
@@ -249,7 +249,7 @@ clicked in the page yet.
 
 ## Starting a task by voice
 
-With `KOOKR_LUCY_LAUNCH=true` (and `KOOKR_LUCY_OPERATOR=true`), a hands-free turn is answered by Lucy's
+With launching on (the default whenever Lucy's operator conversation is on; `KOOKR_LUCY_LAUNCH=0` turns it off), a hands-free turn is answered by Lucy's
 operator conversation instead of the helper model, so "Lucy, investigate why the issue tasks stop
 chaining" becomes a launch proposal: she reads back one sentence, the avatar panel shows a card, and a
 spoken "go", Enter or a click starts the task. Setup, the three permission levels and the safety rules
@@ -290,7 +290,7 @@ as long as it does by default, so her answers may start later.
 - Owner only. Lucy live answers from the status of every task and spends model credit, so the
   `/ws/lucy-live` upgrade is refused (403) for any viewer or other non-owner actor.
 
-- She answers questions only, unless `KOOKR_LUCY_LAUNCH=true`, when she can also start a task you confirm ([Starting a task by voice](#starting-a-task-by-voice)). She cannot stop or approve anything yet. That includes a
+- She answers questions only, unless launching is on (the default; `KOOKR_LUCY_LAUNCH=0` turns it off), when she can also start a task you confirm ([Starting a task by voice](#starting-a-task-by-voice)). She cannot stop or approve anything yet. That includes a
   [question from a task](#questions-from-tasks): she can tell you about it, and you can answer one of its
   listed choices by voice after her read-back (see "Answering by voice" under [Questions from tasks](#questions-from-tasks)); a typed answer
   or one that is not a listed choice is not taken by voice.

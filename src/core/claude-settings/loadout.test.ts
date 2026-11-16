@@ -112,8 +112,10 @@ describe('renderEnabledPlugins', () => {
 describe('pluginLoadoutsEnabled', () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  test('default off; on only for 1/true', () => {
-    expect(pluginLoadoutsEnabled({})).toBe(false);
+  test('default on (issue #3937); 0/false/off/no is the kill switch', () => {
+    expect(pluginLoadoutsEnabled({})).toBe(true);
+    expect(pluginLoadoutsEnabled({ KOOKR_PLUGIN_LOADOUTS: 'off' })).toBe(false);
+    expect(pluginLoadoutsEnabled({ KOOKR_PLUGIN_LOADOUTS: 'no' })).toBe(false);
     expect(pluginLoadoutsEnabled({ KOOKR_PLUGIN_LOADOUTS: '0' })).toBe(false);
     expect(pluginLoadoutsEnabled({ KOOKR_PLUGIN_LOADOUTS: 'false' })).toBe(false);
     expect(pluginLoadoutsEnabled({ KOOKR_PLUGIN_LOADOUTS: '1' })).toBe(true);
@@ -144,10 +146,10 @@ describe('resolveLoadout — four levels (task-type → playbook → project →
   });
 });
 
-describe('loadoutActivation — the activation table (slices 1 and 2)', () => {
+describe('loadoutActivation — the activation table (on by default, issue #3937)', () => {
   test.each([
-    [undefined, 'unset', false, false],
-    ['', 'unset', false, false],
+    [undefined, 'unset', true, true],
+    ['', 'unset', true, true],
     ['1', 'on', true, true],
     ['true', 'on', true, true],
     [' TRUE ', 'on', true, true],
@@ -155,8 +157,8 @@ describe('loadoutActivation — the activation table (slices 1 and 2)', () => {
     ['false', 'killed', false, false],
     ['off', 'killed', false, false],
     ['no', 'killed', false, false],
-    ['yes', 'unset', false, false],
-    ['on', 'unset', false, false],
+    ['yes', 'unset', true, true],
+    ['on', 'unset', true, true],
   ])('%j → %s (first spawn %s, replay %s)', (raw, state, firstSpawnResolves, resumeReplays) => {
     const env = raw === undefined ? {} : { KOOKR_PLUGIN_LOADOUTS: raw };
     const a = loadoutActivation(env);

@@ -145,8 +145,12 @@ describe('checkDefaultOn', () => {
   it('flags the real off-by-default rows once grandfathering is removed', () => {
     const md = readFileSync(join(process.cwd(), DEFAULT_ON_DOC_FILE), 'utf8');
     const flagged = checkDefaultOn(md, NONE).issues.map((issue) => issue.name);
-    // The switches issue #3936 names must be recognised as off-by-default features.
-    expect(flagged).toEqual(expect.arrayContaining(['KOOKR_LUCY_OPERATOR', 'KOOKR_LUCY_LAUNCH', 'KOOKR_POST_RESUME_REFILL']));
+    // Switches that stay off are recognised as off-by-default features.
+    expect(flagged).toEqual(expect.arrayContaining(['KOOKR_OPENCODE_ENABLED', 'KOOKR_HERMES_FLEET', 'KOOKR_STT_CORPUS']));
     expect(flagged.every((name) => GRANDFATHERED_DEFAULT_OFF.has(name))).toBe(true);
+    // The ones issue #3937 turned on no longer read as off by default.
+    for (const name of ['KOOKR_LUCY_OPERATOR', 'KOOKR_LUCY_LAUNCH', 'KOOKR_POST_RESUME_REFILL', 'KOOKR_RESOURCE_WATCHDOG']) {
+      expect(flagged).not.toContain(name);
+    }
   });
 });

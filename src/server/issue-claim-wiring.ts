@@ -5,20 +5,23 @@ import type { ClaimTaskPort, ClaimTaskView } from '../core/issue-claim-types.js'
 import { projectIdFromRepoSpecifier, projectIdToOwnerRepo } from '../core/project-identity.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import { IssueClaimsAuditLog, bindAuditSink } from './issue-claims-audit-log.js';
+import { isDefaultOnFlagEnabled } from '../core/default-on-flag.js';
 
 const execFileAsync = promisify(execFile);
 
 /**
  * Wiring glue for the issue-ownership claim registry (RFC:
  * rfc-issue-ownership-lock). Constructed only when KOOKR_ISSUE_CLAIMS is on
- * (R7): when off, no registry exists, so the lifecycle release calls no-op
- * via optional chaining and the routes return 404.
+ * (R7; on by default since issue #3937): when off, no registry exists, so the
+ * lifecycle release calls no-op via optional chaining and the routes return 404.
  */
 
-/** Resolve the feature flag once at startup (restart-gated by design, R7). */
+/**
+ * Resolve the feature flag once at startup (restart-gated by design, R7). On
+ * unless `KOOKR_ISSUE_CLAIMS` is `0` / `false` / `off` / `no` (issue #3937).
+ */
 export function isIssueClaimsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env.KOOKR_ISSUE_CLAIMS?.trim().toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'on';
+  return isDefaultOnFlagEnabled(env.KOOKR_ISSUE_CLAIMS);
 }
 
 function toClaimTaskView(task: Task): ClaimTaskView {

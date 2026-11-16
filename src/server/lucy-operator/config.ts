@@ -2,12 +2,16 @@
  * Decides, from the environment, whether Lucy's operator conversation is switched on
  * and which model answers (issue #3660).
  *
- * It is off unless `KOOKR_LUCY_OPERATOR=true`. When on it needs an OpenRouter key, the
- * same one the helper model uses. The model, the providers allowed to serve it and how
+ * It is on by default (issue #3937) and needs an OpenRouter key, the same one the helper
+ * model uses. With `KOOKR_LUCY_OPERATOR` unset it turns itself on when that key is
+ * present and stays quietly off when it is not. Setting it to `true` asks for it
+ * explicitly: a missing key then makes the route answer 503 and say why. `0`, `false`,
+ * `off` or `no` switches it off. The model, the providers allowed to serve it and how
  * much it thinks before answering are each a setting; their defaults are the ones
  * chosen from the model trial recorded on issue #3632.
  */
 
+import { isDefaultOnFlagEnabled, isKillSwitchValue } from '../../core/default-on-flag.js';
 import {
   LUCY_OPERATOR_REASONING_LEVELS,
   type LucyOperatorReasoning,
@@ -26,19 +30,17 @@ const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const PROVIDER_TAG_RE = /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/;
 
 export type LucyOperatorConfigResult =
-  /** The setting is off: the route answers 404. */
+  /** Switched off, or left unset with no OpenRouter key: the route answers 404. */
   | { enabled: false }
   /** Switched on and usable. `warnings` lists settings that were ignored, for the start-up log. */
-  | { enabled: true; ok: true; model: OpenRouterChatStreamConfig; /** `KOOKR_LUCY_LAUNCH=true`: she may propose launching a task. */ launch: boolean; warnings: string[] }
+  | { enabled: true; ok: true; model: OpenRouterChatStreamConfig; /** On unless `KOOKR_LUCY_LAUNCH` is a kill switch: she may propose launching a task. */ launch: boolean; warnings: string[] }
   /** Switched on but something is missing: the route answers 503 with `reason`. */
   | { enabled: true; ok: false; reason: string; warnings: string[] };
 
-function isTrue(value: string | undefined): boolean {
-  return ['true', '1', 'yes', 'on'].includes((value ?? '').trim().toLowerCase());
-}
-
 export function resolveLucyOperatorConfig(env: Record<string, string | undefined>): LucyOperatorConfigResult {
-  if (!isTrue(env.KOOKR_LUCY_OPERATOR)) return { enabled: false };
+  const rawSwitch = env.KOOKR_LUCY_OPERATOR;
+  if (isKillSwitchValue(rawSwitch)) return { enabled: false };
+  const askedFor = (rawSwitch ?? '').trim() !== '';
   const warnings: string[] = [];
 
   const rawReasoning = env.KOOKR_LUCY_OPERATOR_REASONING?.trim().toLowerCase();
@@ -65,6 +67,8 @@ export function resolveLucyOperatorConfig(env: Record<string, string | undefined
 
   const apiKey = env.KOOKR_OPENROUTER_API_KEY?.trim() || env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) {
+    // Unset: on only where the key is present, so a host without one sees no change.
+    if (!askedFor) return { enabled: false };
     return { enabled: true, ok: false, reason: 'Lucy\'s conversation needs an OpenRouter key (set KOOKR_OPENROUTER_API_KEY or OPENROUTER_API_KEY).', warnings };
   }
 
@@ -72,7 +76,7 @@ export function resolveLucyOperatorConfig(env: Record<string, string | undefined
     enabled: true,
     ok: true,
     warnings,
-    launch: isTrue(env.KOOKR_LUCY_LAUNCH),
+    launch: isDefaultOnFlagEnabled(env.KOOKR_LUCY_LAUNCH),
     model: {
       apiKey,
       model: env.KOOKR_LUCY_OPERATOR_MODEL?.trim() || DEFAULT_LUCY_OPERATOR_MODEL,

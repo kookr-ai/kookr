@@ -839,10 +839,13 @@ describe('classifyStarvationLight + waiting_on_open_prs (PR3)', () => {
 });
 
 describe('PR4 batch kick helpers', () => {
-  test('isPipelineBatchKickEnabled defaults off', () => {
-    expect(isPipelineBatchKickEnabled({})).toBe(false);
+  test('isPipelineBatchKickEnabled defaults on, 0/false/off/no is the kill switch (issue #3937)', () => {
+    expect(isPipelineBatchKickEnabled({})).toBe(true);
+    expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: '' })).toBe(true);
     expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: '0' })).toBe(false);
     expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: 'false' })).toBe(false);
+    expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: 'off' })).toBe(false);
+    expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: 'no' })).toBe(false);
     expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: '1' })).toBe(true);
     expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: 'true' })).toBe(true);
     expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: 'on' })).toBe(true);

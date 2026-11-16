@@ -1,4 +1,4 @@
-import { NO_ENV_ALLOWLIST, shouldScrubEnvKey } from '../test/scrub-agent-env.js';
+import { NO_ENV_ALLOWLIST, TEST_FEATURE_KILL_SWITCHES, shouldScrubEnvKey } from '../test/scrub-agent-env.js';
 
 /**
  * Provider credential variables the LLM factory reads *without* a `KOOKR_`
@@ -39,6 +39,9 @@ const PROVIDER_CREDENTIAL_ENV_KEYS: ReadonlySet<string> = new Set([
  *   - all other keys — PATH, HOME, TMPDIR/TEMP/TMP, NODE_*, CI, DISPLAY, port
  *     hints, and anything else the OS/CI runner relies on — are preserved so
  *     platform execution is unaffected;
+ *   - the kill switches of the features that are on by default
+ *     (`TEST_FEATURE_KILL_SWITCHES`, issue #3937) are set, so the server under
+ *     test does not sample the host, prune, reclaim or launch on its own;
  *   - `overrides` are applied last, so a fixture's explicit E2E_* and KOOKR_*
  *     variables are always present in the child (and win over any ambient key).
  *
@@ -54,5 +57,5 @@ export function sanitizedChildServerEnv(
     if (PROVIDER_CREDENTIAL_ENV_KEYS.has(key)) continue;
     env[key] = value;
   }
-  return { ...env, ...overrides };
+  return { ...env, ...TEST_FEATURE_KILL_SWITCHES, ...overrides };
 }

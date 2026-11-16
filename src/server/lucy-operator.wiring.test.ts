@@ -92,8 +92,10 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
   const turn = (baseUrl: string, text: string): Promise<Response> =>
     fetch(`${baseUrl}/api/lucy/turn`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, conversationId: 'wiring' }) });
 
-  test('off by default: with nothing set in the environment the route answers 404', async () => {
+  test('unset with no OpenRouter key: the route answers 404 and nothing is contacted', async () => {
     vi.stubEnv('KOOKR_LUCY_OPERATOR', '');
+    vi.stubEnv('KOOKR_OPENROUTER_API_KEY', '');
+    vi.stubEnv('OPENROUTER_API_KEY', '');
     const baseUrl = await start();
     const res = await turn(baseUrl, 'What is running?');
     expect(res.status).toBe(404);

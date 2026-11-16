@@ -8,8 +8,34 @@
 // and predicate; importing it never mutates any environment (unlike
 // test/setup-env.ts, whose load-time side effect scrubs the current process).
 
+/**
+ * Kill switches for features that are on by default in production (issue
+ * #3937). Test servers (the Vitest suites and the Playwright child servers)
+ * start with each of them switched off, so a booted test server never samples
+ * the host, schedules a worktree reclaim or a data-dir prune, captures
+ * transcripts, reads the host's plugin registry, launches a refill, batch or
+ * chain continuation, or turns on Lucy because the developer's shell has an
+ * OpenRouter key. A test that exercises one of these features sets it itself.
+ */
+export const TEST_FEATURE_KILL_SWITCHES: Readonly<Record<string, string>> = {
+  KOOKR_LUCY_OPERATOR: '0',
+  KOOKR_LUCY_LAUNCH: '0',
+  KOOKR_POST_RESUME_REFILL: '0',
+  KOOKR_PIPELINE_BATCH_KICK: '0',
+  KOOKR_RESOURCE_WATCHDOG: '0',
+  KOOKR_MEMORY_LEDGER: '0',
+  KOOKR_PLUGIN_LOADOUTS: '0',
+  KOOKR_TRANSCRIPT_CAPTURE: 'off',
+  KOOKR_WORKTREE_RECLAIM_CRON: 'off',
+  KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '0',
+  KOOKR_ISSUE_CLAIMS: '0',
+  KOOKR_UMBRELLA_CHAIN_ADVANCER: 'off',
+  KOOKR_FINDING_TRANSCRIPT_CONTEXT: '0',
+};
+
 /** Keys preserved across the Vitest scrub. Mirrors vitest.config.ts `test.env`. */
 export const ALLOWED_ENV_PREFIX_VARS: ReadonlySet<string> = new Set([
+  ...Object.keys(TEST_FEATURE_KILL_SWITCHES),
   'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE',
   'KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS',
   'KOOKR_SESSION_BRIDGE_RESIZE_DEBOUNCE_MS',

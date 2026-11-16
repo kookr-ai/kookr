@@ -844,7 +844,7 @@ describe('PipelineStarvationService (#1715)', () => {
     });
 
     test('flag off still audits batch_skipped_flag_off without launch', async () => {
-      delete process.env.KOOKR_PIPELINE_BATCH_KICK;
+      process.env.KOOKR_PIPELINE_BATCH_KICK = '0';
       await seedSuccessfulIdeation();
 
       const result = await service.handleBatchOutcome({

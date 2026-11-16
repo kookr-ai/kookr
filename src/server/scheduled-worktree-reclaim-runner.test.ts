@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   ScheduledWorktreeReclaimRunner,
   resolveReclaimScheduleConfig,
+  DEFAULT_WORKTREE_RECLAIM_CRON,
   type ScheduledWorktreeReclaimRunnerDeps,
 } from './scheduled-worktree-reclaim-runner.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
@@ -9,8 +10,13 @@ import type { TaskStore } from '../core/tasks.js';
 import type { WorkspaceCleanupDeps } from './use-cases/workspace-cleanup-service.js';
 
 describe('resolveReclaimScheduleConfig', () => {
-  it('is disabled when the cron env var is unset', () => {
-    expect(resolveReclaimScheduleConfig({})).toEqual({ enabled: false, cron: '', dryRun: false });
+  it('runs daily by default when the cron env var is unset or empty (issue #3937)', () => {
+    expect(resolveReclaimScheduleConfig({})).toEqual({ enabled: true, cron: DEFAULT_WORKTREE_RECLAIM_CRON, dryRun: false });
+    expect(resolveReclaimScheduleConfig({ KOOKR_WORKTREE_RECLAIM_CRON: ' ' })).toMatchObject({ enabled: true, cron: DEFAULT_WORKTREE_RECLAIM_CRON });
+  });
+
+  it.each(['0', 'false', 'off', 'no', 'OFF'])('is disabled by the kill switch %s', (value) => {
+    expect(resolveReclaimScheduleConfig({ KOOKR_WORKTREE_RECLAIM_CRON: value })).toMatchObject({ enabled: false });
   });
 
   it('is disabled when the cron expression is invalid', () => {

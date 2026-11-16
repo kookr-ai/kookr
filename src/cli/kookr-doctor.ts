@@ -28,6 +28,7 @@ import {
 } from '../server/prod-smoke.js';
 import { prodSmokeTickAlertPath } from '../server/prod-smoke-tick.js';
 import { resolveMaintenancePruneIntervalHours } from '../server/maintenance-prune-schedule.js';
+import { isDefaultOnFlagEnabled } from '../core/default-on-flag.js';
 import { autoPortAmbiguous, resolveKookrDataDir } from './kookr-maintenance.js';
 import {
   parseGithubStatusBody,
@@ -1093,7 +1094,7 @@ async function defaultProbeHttpLatency(env: NodeJS.ProcessEnv): Promise<HttpLate
 
 /**
  * Advisory ops check (issue #1988 / #2354): surface that continuous host-pressure
- * monitoring is off by default, and elevate when live health shows
+ * monitoring was switched off (it is on by default since issue #3937), and elevate when live health shows
  * pressureWhileDisabled / lastDecision under auto-enable. Prefer live
  * /api/health when reachable; otherwise env flag. Never fails required checks —
  * warn only.
@@ -1102,7 +1103,8 @@ async function checkResourceWatchdog(
   env: NodeJS.ProcessEnv,
   probe: ResourceWatchdogEnabledProbe | undefined,
 ): Promise<DoctorCheck> {
-  const envEnabled = isTruthyEnvFlag(env.KOOKR_RESOURCE_WATCHDOG);
+  // On by default (issue #3937): only an explicit 0/false/off/no switches it off.
+  const envEnabled = isDefaultOnFlagEnabled(env.KOOKR_RESOURCE_WATCHDOG);
   const probeFn = probe ?? defaultProbeResourceWatchdogEnabled;
   let live: ResourceWatchdogProbeSnapshot | null = null;
   try {
@@ -1140,7 +1142,7 @@ async function checkResourceWatchdog(
       'ops',
       live?.enabled === true
         ? 'enabled (GET /api/health resourceWatchdog.enabled=true)'
-        : 'enabled (KOOKR_RESOURCE_WATCHDOG is truthy)',
+        : 'enabled (on by default; KOOKR_RESOURCE_WATCHDOG is not set to 0)',
       false,
     );
   }
@@ -1173,7 +1175,7 @@ async function checkResourceWatchdog(
         decisionNote +
         autoNote,
       recommendedAction:
-        'Set KOOKR_RESOURCE_WATCHDOG=1 for continuous monitoring, or keep auto-enable ' +
+        'Remove the KOOKR_RESOURCE_WATCHDOG=0 kill switch for continuous monitoring, or keep auto-enable ' +
         '(default) for rate-limited investigation spawns under soft-bound pressure. ' +
         'Set KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0 only for deliberate page-only mode.',
     };
@@ -1188,10 +1190,10 @@ async function checkResourceWatchdog(
     summary: 'host-pressure continuous monitoring is disabled',
     detail: live?.enabled === false
       ? 'GET /api/health reports resourceWatchdog.enabled=false'
-      : 'KOOKR_RESOURCE_WATCHDOG is unset or not truthy (disabled by default; ' +
+      : 'KOOKR_RESOURCE_WATCHDOG is set to 0/false/off/no (switched off; ' +
         'auto-enable-on-pressure still arms rate-limited investigation under soft-bound pressure)',
     recommendedAction:
-      'Set KOOKR_RESOURCE_WATCHDOG=1 (or true/yes/on) and restart the server for continuous ' +
+      'Unset KOOKR_RESOURCE_WATCHDOG (it is on by default) and restart the server for continuous ' +
       'host-pressure monitoring. Soft-bound pressure still auto-enables a rate-limited ' +
       'investigation by default (KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE).',
   };
@@ -1431,7 +1433,7 @@ async function checkHostStaleDtach(
         'skippedUnderBound / killFailedTotal / lastKillFailurePid) and staleProcesses.dtach; the bounded host-stale reaper ' +
         '(#2356 / #2384) always reclaims missing-socket aged masters (rate-limited; ' +
         'set KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1 to observe). ' +
-        'Enable KOOKR_RESOURCE_WATCHDOG=1 for briefed auto-investigation. ' +
+        'Remove the KOOKR_RESOURCE_WATCHDOG=0 kill switch for briefed auto-investigation. ' +
         'Restart only as last resort — do not invent kill logic from doctor.',
     };
   }
@@ -1846,11 +1848,12 @@ function countLastPassOpenPrFailsafes(
 
 /**
  * Advisory ops check (issue #2080): surface that the scheduled maintenance prune
- * is off by default (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` unset/0). Disk/log
+ * was switched off (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` set to 0 or an invalid
+ * value; unset means every 24h since issue #3937). Disk/log
  * growth under unattended multi-day runs is a host-class failure operators
  * cannot discover without reading lifecycle code — doctor makes it visible.
  *
- * - intervalHours <= 0 → WARN with remediation to set interval=24
+ * - intervalHours <= 0 → WARN with remediation to unset it (24h default)
  * - intervalHours > 0 → OK; optional timer-health lastFiredAt enriches summary
  * - Never a required fail; use `kookr doctor --strict` to exit non-zero on WARN
  */
@@ -1891,10 +1894,11 @@ async function checkMaintenancePruneSchedule(
     required: false,
     summary: 'scheduled data-dir prune is disabled',
     detail:
-      'KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS is unset, 0, or non-positive (opt-in only). ' +
-      'Aged hooks/logs/playbook-state will not be reclaimed automatically.',
+      'KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS is set to 0, off, or a non-positive or invalid value ' +
+      '(unset means every 24h). Aged hooks/logs/playbook-state will not be reclaimed automatically.',
     recommendedAction:
-      'Set KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS=24 and restart the server so unattended multi-day runs reclaim aged data-dir artifacts.',
+      'Unset KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS (every 24h by default) or set it to a positive number of hours, ' +
+      'and restart the server so unattended multi-day runs reclaim aged data-dir artifacts.',
   };
 }
 
@@ -2216,13 +2220,6 @@ function resolveDoctorKookrDataDir(env: NodeJS.ProcessEnv): string {
   const explicit = env.KOOKR_DIR?.trim();
   if (explicit) return explicit;
   return resolveKookrDataDir(env);
-}
-
-/** Same truthy semantics as `readResourceWatchdogConfigFromEnv` (1/true/yes/on). */
-function isTruthyEnvFlag(raw: string | undefined): boolean {
-  if (raw == null) return false;
-  const v = raw.trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
 /**

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { TEST_FEATURE_KILL_SWITCHES } from './test/scrub-agent-env.ts';
 
 import { SELF_CONTAINED_INTEGRATION_FILES } from './scripts/integration-lane-inventory.mts';
 
@@ -27,6 +28,8 @@ export default defineConfig({
     ],
     setupFiles: ['./test/setup-env.ts'],
     env: {
+      // Features that are on by default start switched off (issue #3937).
+      ...TEST_FEATURE_KILL_SWITCHES,
       KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE: '0',
       KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS: '0',
       KOOKR_SESSION_BRIDGE_RESIZE_DEBOUNCE_MS: '0',

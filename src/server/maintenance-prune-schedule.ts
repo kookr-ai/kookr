@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { isKillSwitchValue } from '../core/default-on-flag.js';
 import {
   planAndPruneMaintenance,
   type MaintenancePruneResult,
@@ -539,14 +540,20 @@ export function formatPayloadDietLogLine(stats: PayloadDietStats): string {
   );
 }
 
+/** Scheduled-prune interval when `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` is unset (issue #3937). */
+export const DEFAULT_MAINTENANCE_PRUNE_INTERVAL_HOURS = 24;
+
 /** Resolve the scheduled-prune interval (hours) from the environment.
- *  Returns 0 (off) when unset, non-numeric, or non-positive — the safe default:
- *  scheduling is strictly opt-in. */
+ *  On by default (issue #3937): unset or empty means every
+ *  {@link DEFAULT_MAINTENANCE_PRUNE_INTERVAL_HOURS} hours. Returns 0 (off) for
+ *  the kill switch (`0` / `false` / `off` / `no`) and for a non-numeric or
+ *  non-positive value. */
 export function resolveMaintenancePruneIntervalHours(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
   const raw = env.KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS?.trim();
-  if (!raw) return 0;
+  if (!raw) return DEFAULT_MAINTENANCE_PRUNE_INTERVAL_HOURS;
+  if (isKillSwitchValue(raw)) return 0;
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) return 0;
   return value;

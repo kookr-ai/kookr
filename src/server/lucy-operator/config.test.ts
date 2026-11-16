@@ -4,15 +4,28 @@ import { DEFAULT_LUCY_OPERATOR_MODEL, resolveLucyOperatorConfig } from './config
 const KEY = { KOOKR_OPENROUTER_API_KEY: 'sk-or-key' };
 
 describe('resolveLucyOperatorConfig', () => {
-  test.each([[undefined], [''], ['false'], ['0'], ['maybe']])('is off when KOOKR_LUCY_OPERATOR is %j, even with a key', (value) => {
+  test.each([['false'], ['0'], ['off'], ['no'], [' OFF ']])('is off when KOOKR_LUCY_OPERATOR is the kill switch %j, even with a key', (value) => {
     expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: value })).toEqual({ enabled: false });
+  });
+
+  // Issue #3937: on by default, turning itself on where the OpenRouter key is present.
+  test.each([[undefined], ['']])('is on when KOOKR_LUCY_OPERATOR is %j and a key is present', (value) => {
+    expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: value })).toMatchObject({ enabled: true, ok: true, launch: true });
+  });
+
+  test.each([[undefined], ['']])('stays quietly off when KOOKR_LUCY_OPERATOR is %j and there is no key', (value) => {
+    expect(resolveLucyOperatorConfig({ KOOKR_LUCY_OPERATOR: value })).toEqual({ enabled: false });
+  });
+
+  test('asked for explicitly without a key, it is on but unavailable (the route answers 503)', () => {
+    expect(resolveLucyOperatorConfig({ KOOKR_LUCY_OPERATOR: 'true' })).toMatchObject({ enabled: true, ok: false });
   });
 
   test('defaults to the model, providers and reasoning level chosen in the trial', () => {
     expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: 'true' })).toEqual({
       enabled: true,
       ok: true,
-      launch: false,
+      launch: true,
       warnings: [],
       model: {
         apiKey: 'sk-or-key',
@@ -26,12 +39,14 @@ describe('resolveLucyOperatorConfig', () => {
     expect(DEFAULT_LUCY_OPERATOR_MODEL).toBe('deepseek/deepseek-v4.1-flash-1017');
   });
 
-  test('launching is a second switch, off unless KOOKR_LUCY_LAUNCH is true', () => {
-    const on = resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: 'true', KOOKR_LUCY_LAUNCH: 'true' });
-    expect(on).toMatchObject({ enabled: true, ok: true, launch: true });
-    expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: 'true', KOOKR_LUCY_LAUNCH: 'no' })).toMatchObject({ launch: false });
+  test('launching is a second switch, on by default and off when KOOKR_LUCY_LAUNCH is the kill switch', () => {
+    expect(resolveLucyOperatorConfig({ ...KEY })).toMatchObject({ enabled: true, ok: true, launch: true });
+    expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_LAUNCH: 'true' })).toMatchObject({ launch: true });
+    for (const off of ['0', 'false', 'off', 'no']) {
+      expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_LAUNCH: off })).toMatchObject({ launch: false });
+    }
     // Launching without the conversation is off: there is no loop to propose from.
-    expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_LAUNCH: 'true' })).toEqual({ enabled: false });
+    expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: '0', KOOKR_LUCY_LAUNCH: 'true' })).toEqual({ enabled: false });
   });
 
   test('each of the three is a setting', () => {

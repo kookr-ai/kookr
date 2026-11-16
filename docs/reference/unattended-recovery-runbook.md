@@ -44,7 +44,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Free capacity and an empty queue, but no visible recovery scout | `postRecoveryQueueFill` | Check lifecycle state, freshness, then the stable row reason — [post-recovery queue fill](#3c-post-recovery-queue-fill-issue-2895) |
 | Refill errors mention state parsing or reading; recovery history looks wrong | `kookr doctor` → `ops.pipeline-starvation-state` | Preserve the ledger and inspect the specific advisory — [pipeline recovery state](#3d-pipeline-recovery-state) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
-| Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
+| Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | `KOOKR_RESOURCE_WATCHDOG=0` is set (it is on by default): remove that setting and restart — [resource watchdog](#5-enable-resource-watchdog) |
 | `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `staleProcesses.dtach` vs `sessionReaper` (+ `hostStaleDtachReaper`) | Host-stale class — **not** a broken session reaper; prefer host-stale reaper + optional resource watchdog — [host-stale dtach](#6-host-stale-dtach-vs-taskstore--session-reaper) |
 | Ready or health slower than the doctor budget, or the probe times out | `kookr doctor` `ops.http-latency` | Treat the WARN as the hung-HTTP signal — ready budget 500ms, health 2s; do not trust sibling probes that skip on timeout — [HTTP latency](#0a-http-latency-doctor-warn) |
 | Ready fails after restart | `GET /api/ready` body `checks` | Fix named subsystem, then re-probe (offline card §1) |
@@ -559,8 +559,8 @@ show `resourceWatchdog.pressureWhileDisabled: true` (issue #2039). By default
 rate-limited investigation spawn without continuous sampling (issue #2354),
 after one bounded host-stale dtach + session reaper pass; the spawn is skipped
 if that pass clears the pressure (`resourceWatchdog.lastSyncReclaim`, issue #3247);
-set `KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0` for page-only, or
-`KOOKR_RESOURCE_WATCHDOG=1` for continuous monitoring.
+set `KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0` for page-only. Continuous monitoring is on by default;
+if it is off, `KOOKR_RESOURCE_WATCHDOG=0` is set somewhere.
 
 **Health field:**
 
@@ -575,14 +575,14 @@ PY
 Key fields: `enabled`, `lastDecision` (`disabled` when off), `pressureWhileDisabled`,
 `pressureWhileDisabledReason`, spawn/throttle counters.
 
-**Enable** (off by default — deliberate actuator):
+**Re-enable** (on by default; `enabled: false` means `KOOKR_RESOURCE_WATCHDOG=0` was set):
 
-1. Set in the **production** process environment (systemd unit, `../kookr-prod`
-   env, or shell wrapper — **not** a dashboard toggle):
+1. Remove `KOOKR_RESOURCE_WATCHDOG=0` from the **production** process environment (systemd unit,
+   `../kookr-prod` env, or shell wrapper — **not** a dashboard toggle):
 
    ```bash
-   # Example only — put this in the unit/env file that starts prod Kookr
-   export KOOKR_RESOURCE_WATCHDOG=1
+   # Example only — delete this line from the unit/env file that starts prod Kookr
+   export KOOKR_RESOURCE_WATCHDOG=0
    ```
 
 2. Restart the prod instance so the sampler starts:
@@ -711,7 +711,7 @@ Key counters: `lastHostStaleDtachReaped`, `lastReapedAlways`,
    and not dry-run. Watch `hostStaleDtachReaper.lastHostStaleDtachReaped` /
    `totalHostStaleDtachReaped` advance across sweeps.
 3. If continuous investigation is wanted and `resourceWatchdog.enabled` is
-   false, enable `KOOKR_RESOURCE_WATCHDOG=1` and restart (section 5) — that path
+   false, remove the `KOOKR_RESOURCE_WATCHDOG=0` setting and restart (section 5) — that path
    briefs an investigation task; it does not replace the host-stale reaper.
 4. `missing_socket_aged` always selects even under the soft bound (#2384).
    `skippedUnderBound` only rises for future pressure-gated classes; if
@@ -755,7 +755,7 @@ prune.
 | Loop (timer-health `name`) | Default cadence | Startup delay | Enabled when |
 | --- | --- | --- | --- |
 | smoke (`prodSmokeTick`) | 1 hour | ~60s | Prod port 4800 (or `KOOKR_PROD_SMOKE_TICK` on) |
-| prune (`maintenancePrune`) | env hours (no built-in default) | ~60s | `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` > 0 (off by default) |
+| prune (`maintenancePrune`) | 24 hours (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS`) | ~60s | Unless `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` is `0`/`off` (on by default) |
 | deploy-lag (`deployLagDetector`) | 1 hour | ~60s | Prod port 4800 (or `KOOKR_DEPLOY_LAG_DETECTOR` on) |
 | deploy-convergence (`deployConvergence`) | 5 minutes | ~60s | Prod port 4800 (or `KOOKR_DEPLOY_CONVERGENCE` on) |
 

@@ -10,6 +10,7 @@ import { createKookrServerInternal } from '../src/server/index.js';
 import type { SnapshotMessage } from '../src/shared/contracts/messages.js';
 import { firstReadyKookrSTTEndpoint } from '../src/shared/contracts/speech.js';
 import { assertKookrDiff, snapshotDir } from './local-only-smoke-files.js';
+import { TEST_FEATURE_KILL_SWITCHES } from '../test/scrub-agent-env.js';
 
 const textDecoder = new TextDecoder();
 
@@ -224,6 +225,10 @@ async function main(): Promise<void> {
   process.env.KOOKR_STT = 'false';
   process.env.KOOKR_TTS = 'false';
   process.env.KOOKR_REMOTE_CHAT_DISABLED = '1';
+  // Features that are on by default (issue #3937) would sample the host, write
+  // their own state files or reach GitHub from this server; the smoke checks the
+  // core local-only contract, so it starts them switched off like the test suites.
+  Object.assign(process.env, TEST_FEATURE_KILL_SWITCHES);
 
   const tempRoot = mkdtempSync(join(tmpdir(), 'kookr-local-only-smoke-'));
   const home = join(tempRoot, 'home');

@@ -3,11 +3,15 @@ import { readTranscriptCaptureConfig } from './transcript-capture-config.js';
 import { DEFAULT_TRANSCRIPT_RETENTION_DAYS } from './transcript-store.js';
 
 describe('readTranscriptCaptureConfig', () => {
-  it('is disabled by default', () => {
+  it('captures the operator\'s own repositories by default (issue #3937)', () => {
     expect(readTranscriptCaptureConfig({})).toEqual({
-      enabled: false, scope: 'off', graceMs: 15 * 60_000, maxTasksPerTick: 25,
+      enabled: true, scope: 'own-repos', graceMs: 15 * 60_000, maxTasksPerTick: 25,
       retentionDays: DEFAULT_TRANSCRIPT_RETENTION_DAYS,
     });
+    expect(readTranscriptCaptureConfig({ KOOKR_TRANSCRIPT_CAPTURE: '  ' })).toMatchObject({ enabled: true, scope: 'own-repos' });
+  });
+  it.each(['off', '0', 'false', 'no', 'OFF'])('is off when KOOKR_TRANSCRIPT_CAPTURE=%s', (value) => {
+    expect(readTranscriptCaptureConfig({ KOOKR_TRANSCRIPT_CAPTURE: value })).toMatchObject({ enabled: false, scope: 'off' });
   });
   it('enables for all and own-repos', () => {
     expect(readTranscriptCaptureConfig({ KOOKR_TRANSCRIPT_CAPTURE: 'all' })).toMatchObject({ enabled: true, scope: 'all' });

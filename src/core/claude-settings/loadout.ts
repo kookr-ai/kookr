@@ -124,7 +124,7 @@ export function renderEnabledPlugins(
   return Object.keys(out).length === 0 ? undefined : out;
 }
 
-/** Env flag gating loadout injection. Off unless set to exactly `1`/`true`. */
+/** Env flag gating loadout injection. On unless set to a kill switch (`0`/`false`/`off`/`no`), issue #3937. */
 export const PLUGIN_LOADOUTS_FLAG = 'KOOKR_PLUGIN_LOADOUTS';
 
 const FLAG_ON = new Set(['1', 'true']);
@@ -133,14 +133,15 @@ const FLAG_KILLED = new Set(['0', 'false', 'off', 'no']);
 
 /**
  * Decide, in one place, whether loadouts apply (RFC section 1, activation
- * table). Two separate questions, because from slice 3 they differ for an
- * unset flag: whether a FIRST spawn resolves a loadout, and whether a RESUME
- * replays the one recorded on the task. Up to slice 2 an unset flag means off
- * for both, exactly as before the fleet level.
+ * table). Two separate questions: whether a FIRST spawn resolves a loadout,
+ * and whether a RESUME replays the one recorded on the task.
  *
  * - `1` / `true` (case-insensitive, trimmed) → both yes.
  * - `0` / `false` / `off` / `no` → kill switch: both no, including replay.
- * - anything else (unset, empty, a typo) → `unset`: both no for now.
+ * - anything else (unset, empty, a typo) → `unset`: both yes, because loadouts
+ *   are on by default (issue #3937). With nothing configured a first spawn
+ *   still records nothing and writes byte-identical settings, so only hosts
+ *   that name a plugin in the fleet set or a loadout see a difference.
  *
  * The adapter does not read the flag; it renders whatever the launcher hands
  * it. Pure given `env`.
@@ -161,10 +162,10 @@ export function loadoutActivation(env: NodeJS.ProcessEnv = process.env): Loadout
     };
   }
   return {
-    state: 'unset', raw, firstSpawnResolves: false, resumeReplays: false,
+    state: 'unset', raw, firstSpawnResolves: true, resumeReplays: true,
     reason: raw === undefined
-      ? `${PLUGIN_LOADOUTS_FLAG} is unset: loadouts are off (opt-in)`
-      : `${PLUGIN_LOADOUTS_FLAG}=${JSON.stringify(raw)} is not a recognised value: treated as unset, loadouts are off`,
+      ? `${PLUGIN_LOADOUTS_FLAG} is unset: loadouts are on by default; new spawns resolve the fleet set and loadouts, resumes replay their record`
+      : `${PLUGIN_LOADOUTS_FLAG}=${JSON.stringify(raw)} is not a recognised value: treated as unset, loadouts are on by default`,
   };
 }
 

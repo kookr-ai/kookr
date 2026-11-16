@@ -165,9 +165,6 @@ function githubStatusSnap(partial: Partial<GithubStatusSnapshot> = {}): GithubSt
   };
 }
 
-/** Advisory ops check ids that are off-by-default and emit WARN with empty env. */
-const ADVISORY_OFF_BY_DEFAULT = new Set(['ops.resource-watchdog', 'ops.maintenance-prune']);
-
 function commandRunner(fixtures: Record<string, { stdout?: string; stderr?: string; exitCode?: number }>) {
   return vi.fn(async (file: string, args: readonly string[]) => {
     const key = JSON.stringify([file, args]);
@@ -268,7 +265,7 @@ describe('kookr doctor --json', () => {
     ]);
   });
 
-  it('emits a passing JSON report for required launch prerequisites (ops advisory when off)', async () => {
+  it('emits a passing JSON report for required launch prerequisites (watchdog and prune on by default)', async () => {
     const run = commandRunner(happyFixtures());
 
     const report = await buildDoctorJsonReport({
@@ -282,8 +279,8 @@ describe('kookr doctor --json', () => {
 
     expect(report).toMatchObject({
       ok: true,
-      // Resource watchdog + maintenance prune are off by default → advisory warn.
-      status: 'warn',
+      // Resource watchdog + maintenance prune are on by default (issue #3937) → ok.
+      status: 'ok',
       generatedAt: '2026-06-21T07:30:00.000Z',
     });
     expect(report.checks.map((check) => check.id)).toEqual(expect.arrayContaining([
@@ -310,11 +307,7 @@ describe('kookr doctor --json', () => {
       'ops.prod-smoke-tick',
       'ops.maintenance-prune',
     ]));
-    expect(
-      report.checks
-        .filter((c) => !ADVISORY_OFF_BY_DEFAULT.has(c.id))
-        .every((c) => c.status === 'ok'),
-    ).toBe(true);
+    expect(report.checks.every((c) => c.status === 'ok')).toBe(true);
     expect(report.checks.find((c) => c.id === 'github.scanner-backoff')).toMatchObject({
       status: 'ok',
       required: false,
@@ -365,14 +358,14 @@ describe('kookr doctor --json', () => {
       required: false,
     });
     expect(report.checks.find((c) => c.id === 'ops.resource-watchdog')).toMatchObject({
-      status: 'warn',
+      status: 'ok',
       required: false,
-      summary: 'host-pressure continuous monitoring is disabled',
+      summary: expect.stringContaining('on by default'),
     });
     expect(report.checks.find((c) => c.id === 'ops.maintenance-prune')).toMatchObject({
-      status: 'warn',
+      status: 'ok',
       required: false,
-      summary: 'scheduled data-dir prune is disabled',
+      summary: expect.stringContaining('scheduled every 24h'),
     });
   });
 
@@ -625,7 +618,7 @@ describe('kookr doctor --json', () => {
       required: false,
       summary: expect.stringContaining('pressureWhileDisabled=true'),
       detail: expect.stringContaining('lastDecision=spawn'),
-      recommendedAction: expect.stringContaining('KOOKR_RESOURCE_WATCHDOG=1'),
+      recommendedAction: expect.stringContaining('KOOKR_RESOURCE_WATCHDOG=0 kill switch'),
     });
   });
 
@@ -698,7 +691,7 @@ describe('kookr doctor --json', () => {
     const logs: string[] = [];
 
     const code = await runDoctorCli(['--json'], {
-      env: {},
+      env: { KOOKR_RESOURCE_WATCHDOG: '0' },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -1802,7 +1795,7 @@ describe('kookr doctor --json', () => {
     })).toBeNull();
   });
 
-  it('WARNs on ops.maintenance-prune when interval is 0/unset (issue #2080)', async () => {
+  it('WARNs on ops.maintenance-prune only when switched off (issue #2080; on by default since #3937)', async () => {
     const run = commandRunner(happyFixtures());
 
     const unset = await buildDoctorJsonReport({
@@ -1811,13 +1804,24 @@ describe('kookr doctor --json', () => {
       access: async () => {},
       ...hermeticOps,
     });
-    expect(unset.ok).toBe(true);
-    expect(unset.status).toBe('warn');
     expect(unset.checks.find((c) => c.id === 'ops.maintenance-prune')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('scheduled every 24h'),
+    });
+
+    const off = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1', KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: 'off' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+    });
+    expect(off.ok).toBe(true);
+    expect(off.status).toBe('warn');
+    expect(off.checks.find((c) => c.id === 'ops.maintenance-prune')).toMatchObject({
       status: 'warn',
       required: false,
       summary: 'scheduled data-dir prune is disabled',
-      recommendedAction: expect.stringContaining('KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS=24'),
+      recommendedAction: expect.stringContaining('Unset KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS'),
     });
 
     const zero = await buildDoctorJsonReport({

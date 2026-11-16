@@ -270,6 +270,14 @@ describe('prepareSpawnLoadout and replayRecordedLoadout', () => {
     expect(registryReads).toBe(0);
   });
 
+  test('nothing configured, flag unset (on by default, issue #3937) → no field, nothing recorded, no lock', async () => {
+    const fields = await prepareSpawnLoadout(deps({}), claudeTask());
+    expect(fields).toEqual({});
+    expect(setCalls).toHaveLength(0);
+    expect(lockSpy).not.toHaveBeenCalled();
+    expect(registryReads).toBe(0);
+  });
+
   test('fleet set configured, flag on → takes the lock, records plugins with version, stamps hash', async () => {
     await store.writeFleet({ 'a@m': true });
     const fields = await prepareSpawnLoadout(deps(ON), claudeTask());
@@ -364,8 +372,8 @@ describe('prepareSpawnLoadout and replayRecordedLoadout', () => {
     expect(setCalls).toHaveLength(0);
   });
 
-  // The activation table (RFC section 1), slices 1 and 2. Each row: flag value
-  // → does a first spawn resolve, does a resume replay.
+  // The activation table (RFC section 1); loadouts are on by default (issue
+  // #3937). Each row: flag value → does a first spawn resolve, does a resume replay.
   describe.each([
     ['0', false, false],
     ['false', false, false],
@@ -373,9 +381,9 @@ describe('prepareSpawnLoadout and replayRecordedLoadout', () => {
     ['NO', false, false],
     ['1', true, true],
     ['true', true, true],
-    [undefined, false, false],
-    ['', false, false],
-    ['yes', false, false], // not a recognised "on": stays off, never widens on
+    [undefined, true, true],
+    ['', true, true],
+    ['yes', true, true], // not a kill-switch spelling: reads as unset, which is on
   ])('KOOKR_PLUGIN_LOADOUTS=%s', (flag, resolves, replays) => {
     const env = (): NodeJS.ProcessEnv => (flag === undefined ? {} : { KOOKR_PLUGIN_LOADOUTS: flag });
 

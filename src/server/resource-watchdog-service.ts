@@ -201,13 +201,13 @@ export class ResourceWatchdogService {
     } else if (config.autoEnableOnPressure) {
       this.logger.info(
         '[resource-watchdog] disabled with auto-enable-on-pressure ' +
-          '(set KOOKR_RESOURCE_WATCHDOG=1 for continuous monitoring; ' +
+          '(remove the KOOKR_RESOURCE_WATCHDOG=0 kill switch for continuous monitoring; ' +
           'KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0 for page-only)',
       );
     } else {
       this.logger.info(
         '[resource-watchdog] disabled page-only ' +
-          '(set KOOKR_RESOURCE_WATCHDOG=1 to enable; auto-enable is off)',
+          '(remove the KOOKR_RESOURCE_WATCHDOG=0 kill switch to enable; auto-enable is off)',
       );
     }
     this.tick();

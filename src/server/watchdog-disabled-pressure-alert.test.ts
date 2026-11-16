@@ -35,7 +35,7 @@ describe('buildWatchdogDisabledPressureAlert / clear (issue #2078)', () => {
     });
     expect(alert.summary).toContain('resourceWatchdog master off under pressure');
     expect(alert.details).toContain('staleProcesses.dtach.count=32');
-    expect(alert.details).toContain('KOOKR_RESOURCE_WATCHDOG=1');
+    expect(alert.details).toContain('KOOKR_RESOURCE_WATCHDOG=0 kill switch');
     expect(alert.details).toContain('AUTO_ENABLE=0');
     // Alert pages the gap; spawn is owned by the service auto-enable path (#2354).
     expect(alert.details).toMatch(/auto-enable/i);

@@ -13,6 +13,7 @@
 
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { isDefaultOnFlagEnabled } from './default-on-flag.js';
 import { projectIdFromRepoSpecifier } from './project-identity.js';
 import { isTerminalStatus } from './task-status.js';
 
@@ -446,17 +447,13 @@ export function isIdeaScoutPlaybookId(playbookId: string | undefined): boolean {
 }
 
 /**
- * Feature flag for R5 batch re-entry. Default **off** (unset / `0` / `false`).
- * Enable with `KOOKR_PIPELINE_BATCH_KICK=1` (or `true` / `on` / `yes`).
+ * Feature flag for R5 batch re-entry. On by default (issue #3937);
+ * `KOOKR_PIPELINE_BATCH_KICK=0` (or `false` / `off` / `no`) turns it off.
  */
 export function isPipelineBatchKickEnabled(
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): boolean {
-  const raw = env.KOOKR_PIPELINE_BATCH_KICK;
-  if (raw === undefined || raw === null) return false;
-  const v = String(raw).trim().toLowerCase();
-  if (v === '' || v === '0' || v === 'false' || v === 'off' || v === 'no') return false;
-  return v === '1' || v === 'true' || v === 'on' || v === 'yes';
+  return isDefaultOnFlagEnabled(env.KOOKR_PIPELINE_BATCH_KICK);
 }
 
 /**

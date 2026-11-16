@@ -25,6 +25,7 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
 import { atomicWriteFile } from '../core/persistence-utils.js';
+import { isDefaultOnFlagEnabled } from '../core/default-on-flag.js';
 import type { CapacityLedger } from '../core/capacity-ledger.js';
 import {
   decidePostResumeRefill,
@@ -35,6 +36,17 @@ import {
   type PostResumeRefillSkipReason,
 } from '../core/post-resume-refill.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
+
+/**
+ * Master switch for the refill actuator: on by default (issue #3937);
+ * `KOOKR_POST_RESUME_REFILL=0` (or `false` / `off` / `no`) turns it off. With it off a
+ * resume still classifies the post-resume posture for the health report.
+ */
+export function readPostResumeRefillEnabledFromEnv(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
+  return isDefaultOnFlagEnabled(env.KOOKR_POST_RESUME_REFILL);
+}
 
 export const POST_RESUME_REFILL_HEALTH_SCHEMA = 'post-resume-refill.v1' as const;
 /** Latest-evaluation rows only; keeps health bounded regardless of leaf count. */

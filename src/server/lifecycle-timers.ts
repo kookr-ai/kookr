@@ -553,8 +553,8 @@ export interface TimerDeps {
   };
   /**
    * Optional server-side scheduled data-directory prune (idea-scout rank 4).
-   * Off unless `intervalHours > 0` (default resolved from
-   * `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS`). Runs {@link planAndPruneMaintenance}
+   * Runs when `intervalHours > 0` (resolved from
+   * `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS`, 24 by default since issue #3937). Runs {@link planAndPruneMaintenance}
    * on a timer so disk growth is not operator-manual-only; every sweep is
    * wrapped so an error is logged and never crashes the server.
    */
@@ -2508,8 +2508,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     void pollQuota();
   }
 
-  // --- Scheduled data-directory maintenance prune (optional, off by default) ---
-  // Opt-in via KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS. The first sweep is a
+  // --- Scheduled data-directory maintenance prune (on by default, every 24h) ---
+  // KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS=0 turns it off. The first sweep is a
   // deferred startup fire (issue #2635) — not delay 0, so boot I/O stays
   // light — then the interval continues. Each sweep is fully wrapped in
   // runScheduledMaintenancePrune so a failure is logged and never crashes

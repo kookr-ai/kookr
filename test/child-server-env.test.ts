@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sanitizedChildServerEnv } from '../e2e/child-server-env.js';
+import { TEST_FEATURE_KILL_SWITCHES } from './scrub-agent-env.js';
 
 describe('sanitizedChildServerEnv (#2814)', () => {
   afterEach(() => {
@@ -92,6 +93,19 @@ describe('sanitizedChildServerEnv (#2814)', () => {
     const env = sanitizedChildServerEnv({ E2E_PROMPT_SUBMIT_AUTO_HOOK: 'override' });
 
     expect(env.E2E_PROMPT_SUBMIT_AUTO_HOOK).toBe('override');
+  });
+
+  it('switches off the features that are on by default, unless a fixture asks for one (issue #3937)', () => {
+    vi.stubEnv('KOOKR_RESOURCE_WATCHDOG', '1');
+
+    const env = sanitizedChildServerEnv({ KOOKR_LUCY_OPERATOR: 'true' });
+
+    for (const [key, value] of Object.entries(TEST_FEATURE_KILL_SWITCHES)) {
+      if (key === 'KOOKR_LUCY_OPERATOR') continue;
+      expect(env[key]).toBe(value);
+    }
+    expect(env.KOOKR_RESOURCE_WATCHDOG).toBe('0');
+    expect(env.KOOKR_LUCY_OPERATOR).toBe('true');
   });
 
   it('does not mutate process.env', () => {
