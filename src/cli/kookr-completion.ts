@@ -168,6 +168,11 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     },
   },
   {
+    // Operator inbox (#3931); keep in sync with src/cli/kookr-brief.ts.
+    name: 'brief',
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     name: 'ops',
     subcommands: ['digest', 'timers'],
     // Keep the shared flag list for completion before a verb is selected.
@@ -506,6 +511,7 @@ function renderBashCompletion(): string {
   const reopenFlags = flagsFor('reopen');
   const askFlags = flagsFor('ask');
   const peekFlags = flagsFor('peek');
+  const briefFlags = flagsFor('brief');
   const superviseFlags = flagsFor('supervise');
   const supervisionSubcommands = subcommandsFor('supervision');
   const supervisionFlags = flagsFor('supervision');
@@ -670,6 +676,9 @@ _kookr()
       ;;
     peek)
       COMPREPLY=( $(compgen -W "${peekFlags}" -- "\${cur}") )
+      ;;
+    brief)
+      COMPREPLY=( $(compgen -W "${briefFlags}" -- "\${cur}") )
       ;;
     supervise)
       COMPREPLY=( $(compgen -W "${superviseFlags}" -- "\${cur}") )
@@ -921,6 +930,7 @@ function renderZshCompletion(): string {
   const reopenFlags = flagsFor('reopen');
   const askFlags = flagsFor('ask');
   const peekFlags = flagsFor('peek');
+  const briefFlags = flagsFor('brief');
   const superviseFlags = flagsFor('supervise');
   const supervisionSubcommands = subcommandsFor('supervision');
   const supervisionFlags = flagsFor('supervision');
@@ -1041,6 +1051,9 @@ _kookr()
       ;;
     peek)
       compadd -- ${peekFlags}
+      ;;
+    brief)
+      compadd -- ${briefFlags}
       ;;
     supervise)
       compadd -- ${superviseFlags}

@@ -10,6 +10,7 @@ import type {
 import type { TelegramTaskBridge } from '../telegram-task-bridge.js';
 import type { AskAnswerPort } from '../../shared/contracts/asks.js';
 import { parseAllowedUserIds } from '../../integrations/telegram/allowed-users.js';
+import type { OperatorInbox } from '../../shared/contracts/operator-inbox.js';
 
 type Env = Record<string, string | undefined>;
 
@@ -34,6 +35,7 @@ export interface TelegramTriggerModule {
     describePermissionPrompt?: (taskId: string) => Promise<PermissionPromptCardInfo | null>;
     permissionPromptClosedReason?: (taskId: string) => PermissionPromptClosedReason;
     asks?: AskAnswerPort;
+    getOperatorInbox?: () => OperatorInbox;
   }): Promise<TelegramHandle>;
   probeWhisperReachability(url: string): Promise<
     | { ok: true; modelCount: number | null }
@@ -53,6 +55,8 @@ export interface RemoteChatTriggerDeps {
   taskBridge?: TelegramTaskBridge;
   /** `kookr ask` answer port (the ask service). When set the handle carries the ask notifier. */
   asks?: AskAnswerPort;
+  /** The operator's inbox for `/brief` (issue #3931). */
+  getOperatorInbox?: () => OperatorInbox;
   env?: Env;
   loadTelegramModule?: () => Promise<TelegramTriggerModule>;
   log?: (message: string) => void;
@@ -171,6 +175,7 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
         ? deps.sttTranscription.model : undefined,
       lifecycleSignal: deps.lifecycleSignal,
       ...(deps.asks ? { asks: deps.asks } : {}),
+      ...(deps.getOperatorInbox ? { getOperatorInbox: deps.getOperatorInbox } : {}),
       ...(bridge
         ? {
           replyToTask: (taskId: string, text: string) => bridge.sendText(taskId, text),

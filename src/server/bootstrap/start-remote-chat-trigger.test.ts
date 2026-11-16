@@ -41,6 +41,21 @@ describe('startRemoteChatTrigger', () => {
     else expect('asks' in passed).toBe(false);
   });
 
+  test('passes the operator inbox reader through for /brief (#3931)', async () => {
+    const startTelegramTrigger = vi.fn(async () => ({ stop: vi.fn() }));
+    const getOperatorInbox = vi.fn();
+    await startRemoteChatTrigger({
+      host: 'localhost', port: 4801, kookrDir: '/tmp/kookr',
+      launchTask: vi.fn(), llmClient: null,
+      getOperatorInbox,
+      env: { KOOKR_TELEGRAM_BOT_TOKEN: 'test', KOOKR_TELEGRAM_ALLOWED_USERS: '1', KOOKR_REMOTE_CHAT_PROJECTS: '/repo' },
+      loadTelegramModule: async () => ({ startTelegramTrigger, probeWhisperReachability: async () => ({ ok: true, modelCount: 1 }) }),
+      log: vi.fn(), warn: vi.fn(),
+    });
+    const passed = (startTelegramTrigger.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+    expect(passed.getOperatorInbox).toBe(getOperatorInbox);
+  });
+
   test('returns no handle when Telegram is disabled', async () => {
     const logs: string[] = [];
     const loadTelegramModule = vi.fn<() => Promise<TelegramTriggerModule>>();

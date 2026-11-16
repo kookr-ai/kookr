@@ -28,6 +28,7 @@ Usage:
   kookr merge <PR> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]  Review-gated squash-merge from any repo; deletes the head branch via the API.
   kookr status [--json] [--require-ready] [--fail-on <critical|warning|info|none>]
                                                         Print a read-only server snapshot.
+  kookr brief [--json]          What is waiting on you, across all projects (permission prompts, questions, reviews, train).
   kookr ops digest [--json] [--offline]  One-pager of top unattended failure signals (ready + health); --offline reads the last-good snapshot when HTTP is dark.
   kookr ops timers [--json]              List lifecycle-timer lastFiredAt and overdue flags (GET /api/diagnostics/timer-health).
   kookr github status [--json]   Print GitHub scanner liveness, backoff, and tracked-ref count.
@@ -62,7 +63,7 @@ Options:
   -h, --help                    Show this help.
 
 Use --json for one machine-readable output envelope with: spawn, stop, queue, open, reply, reopen, ask, supervise, supervision status, peek, status, doctor,
-signal, ralph, issue, schedule, playbook, chain, drain, resume, ops digest, ops timers, github, opinion, logs, containers,
+signal, ralph, issue, schedule, playbook, chain, drain, resume, brief, ops digest, ops timers, github, opinion, logs, containers,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
 
@@ -216,6 +217,12 @@ async function main({
     // another process is fully flushed — same reason as `playbook` below.
     process.exitCode = process.exitCode ?? 0;
     return;
+  }
+
+  // Operator inbox (issue #3931). Thin HTTP client against /api/operator/inbox.
+  if (command === 'brief') {
+    await runBriefCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
   }
 
   // Ops digest one-pager (issue #2347). Thin HTTP client against
@@ -618,6 +625,21 @@ async function runContainersCommand(argv, { env = process.env, out = console, er
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runContainersCli(argv, { env, out, err });
+}
+
+async function runBriefCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-brief.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-brief.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] brief module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runBriefCli(argv, { env, out, err });
 }
 
 async function runOpsCommand(argv, { env = process.env, out = console, err = console } = {}) {

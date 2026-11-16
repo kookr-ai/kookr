@@ -22,6 +22,7 @@ import { startTelegramTrigger, type StartTelegramTriggerDeps } from './index.js'
 import { startFakeTelegram, type FakeTelegramServer } from './fake-telegram-server.js';
 import type { TelegramUpdate } from './api-client.js';
 import { TranscriptionError, type TranscribeOpts } from './transcribe.js';
+import { fixtureInbox, KOOKR_CWD, PLANTED_COMMAND, PLANTED_ERROR, PLANTED_TOKEN } from '../../../test/fixtures/operator-inbox.js';
 
 function readAuditEvents(dataDir: string): Array<Record<string, unknown>> {
   try {
@@ -430,6 +431,44 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     await waitFor(() =>
       expect(readAuditEvents(tmp).some((e) => e.kind === 'tasks_replied' && e.count === 2)).toBe(true),
     );
+  });
+
+  it('/brief replies with the operator inbox: enabled projects named, others counted, no command text', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/brief' })]);
+    // The fixture's kookr project is the one enabled here; website is not.
+    const inbox = fixtureInbox();
+    const scoped = { ...inbox, items: inbox.items.map((item) => (item.cwd === KOOKR_CWD ? { ...item, cwd: PROJECT.cwd } : item)) };
+    handle = await startTelegramTrigger(makeDeps({ llmClient: fakeLlm('not-json-at-all'), getOperatorInbox: () => scoped }));
+    await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+    const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1];
+    expect(sent.text.split('\n')[0]).toBe('5 waiting: 1 permission prompt, 1 question, 1 flagged task, 1 review, train halted');
+    expect(sent.text).toContain('Release the build');
+    expect(sent.text).toContain('Fix login redirect');
+    expect(sent.text).not.toContain('Redesign settings page');
+    expect(sent.text).toContain('And 2 in projects not enabled here.');
+    expect(sent.text).not.toContain(PLANTED_COMMAND);
+    expect(sent.text).not.toContain(PLANTED_ERROR);
+    expect(sent.text).not.toContain(PLANTED_TOKEN);
+    expect(launchTaskMock).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(readAuditEvents(tmp).some((e) => e.kind === 'brief_replied' && e.named === 3 && e.hidden === 2)).toBe(true),
+    );
+  });
+
+  it('/brief from a sender not on the allowlist gets nothing', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: 999, text: '/brief' })]);
+    const getOperatorInbox = vi.fn(() => fixtureInbox());
+    handle = await startTelegramTrigger(makeDeps({ getOperatorInbox }));
+    await sleep(150);
+    expect(getOperatorInbox).not.toHaveBeenCalled();
+    expect(fake.outbound.sendMessage.some((m) => m.text.includes('waiting'))).toBe(false);
+  });
+
+  it('/brief says so when the inbox cannot be read', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/brief' })]);
+    handle = await startTelegramTrigger(makeDeps({ getOperatorInbox: () => { throw new Error('boom'); } }));
+    await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+    expect(fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1].text).toMatch(/Could not read what is waiting/);
   });
 
   it('/tasks replies with an error message when the task query fails', async () => {
@@ -1180,6 +1219,7 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
         expect(sent[0].text).toMatch(/Kookr remote-chat trigger/);
         expect(sent[0].text).toMatch(/Available projects/);
         expect(sent[0].text).toMatch(new RegExp(PROJECT.name));
+        expect(sent[0].text).toContain('/brief');
         // No inline keyboard — this is a plain text reply, not a confirmation.
         expect((sent[0] as any).reply_markup).toBeUndefined();
 

@@ -791,13 +791,13 @@ the recorded local gate; `4` blocked by the independent-review gate.
 
 ## Server Discovery
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr ask`, `kookr peek`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr ask`, `kookr peek`, `kookr signal`, `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
 3. Probe local ports `4800` and `4801`
 
-Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr reply` / `kookr peek` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
+Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr reply` / `kookr peek` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
 
 ## JSON Output
 
@@ -896,6 +896,69 @@ Callers that wire `kookr pr-checklist verify` into CI must treat exit `2` as “
 | exit 2 | User error (unknown flag / unknown verb / missing verb / invalid `KOOKR_PORT`). |
 | exit 3 | No Kookr server reachable. |
 | exit 4 | Server rejected the request or returned an unexpected `/api/github/status` payload. |
+
+## `kookr brief`
+
+Print everything that is waiting on you, across every project, oldest first.
+It answers "what is waiting on me?" without opening the dashboard, whose
+"Needs you" list shows only the selected project.
+
+```bash
+kookr brief
+kookr brief --json
+```
+
+The command reads [`GET /api/operator/inbox`](./api.md#operator-inbox). The
+same list is sent by `/brief` on Telegram. It holds five kinds of item:
+
+| Kind | What it is |
+| --- | --- |
+| `permission` | A task stopped on a permission prompt. Shows the tool and the command, path or URL, with secrets hidden. Listed even when the finding is snoozed, because the task cannot move until someone answers. |
+| `question` | A pending `kookr ask` question, with its answer options. |
+| `flagged` | Any other task the dashboard flags as needing you: a finding that is not snoozed or suppressed (waiting for a reply, repeated errors, looks stuck, and so on), or an unattended task stopped from an interactive tool. |
+| `review` | A task that said it is finished (`kookr signal completion-ready`) and that Kookr will not close by itself, because it did not opt into auto-close. A task that closes by itself is not listed. |
+| `train` | The integration train is halted (with the reason in plain words), or its stall alert is out. |
+
+A task appears once. When it qualifies twice, a permission prompt wins over a
+review, and a review wins over a finding. A question is its own item, even
+when its task is listed too.
+
+The first line gives the totals, for example
+`5 waiting: 2 permission prompts, 1 question, 1 review, train halted`. Each
+item then shows its age, task name and project, what it is, how to answer it,
+and a dashboard link:
+
+```text
+5 waiting: 2 permission prompts, 1 question, 1 review, train halted
+
+  52 min     permission "Release the build" (kookr) wants permission to use Bash
+                        Bash: git push origin release-branch
+                        To answer: approve or deny it in the dashboard, or with the Telegram permission card
+                        http://127.0.0.1:4800/?task=6f1c…
+```
+
+When nothing is waiting, the one line is
+`Nothing is waiting on you. 8 tasks are working in 2 projects.`
+
+With `--json`, stdout is one envelope: `message` is the totals line, and
+`details` is the whole inbox (see the API reference). The `code` is `OK` on
+success, and `USER_ERROR`, `NO_SERVER` or `SERVER_ERROR` on failure.
+
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--json` | none | false | Print one machine-readable JSON envelope to stdout. |
+| `-h`, `--help` | none | false | Print command help and exit. |
+
+Environment: the [Server Discovery](#server-discovery) variables
+(`KOOKR_API_BASE_URL`, `KOOKR_PORT`) and `KOOKR_API_TOKEN`, the bearer token
+for a server that is not on loopback. A read-only viewer token is refused.
+
+Exit behavior: `0` success, including when nothing is waiting; `2` user error
+(an unknown flag or argument, or an invalid `KOOKR_PORT`); `3` no Kookr server
+reachable; `4` the server refused the request or returned something other
+than an inbox (an older server answers `404`).
 
 ## `kookr status`
 
