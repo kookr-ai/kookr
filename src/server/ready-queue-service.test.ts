@@ -323,6 +323,189 @@ describe('ReadyQueueService', () => {
     expect(service.list()[0]).toMatchObject({ state: 'started', attempts: 0 });
   });
 
+  describe('a head that keeps getting the same "retry later" refusal (#3968)', () => {
+    type Refusal = { status: number; retryAfterSeconds?: number; body: Record<string, unknown> } | null;
+
+    /** Answer every launch with `refusal.current`, or launch normally once it is null. */
+    function refuseWith(fleet: ReturnType<typeof makeFleet>, initial: Refusal) {
+      const refusal = { current: initial };
+      const original = fleet.dispatch.getMockImplementation()!;
+      fleet.dispatch.mockImplementation(async (request) => {
+        if (!refusal.current) return original(request);
+        fleet.launches.push(request);
+        return refusal.current;
+      });
+      return refusal;
+    }
+
+    const authPreflight: Refusal = {
+      status: 503,
+      body: { error: 'grok auth preflight failed', code: 'grok_auth_preflight' },
+    };
+
+    function refusedAlerts(alerts: unknown[]): unknown[] {
+      return alerts.filter((alert) => (alert as { operationalAlert?: { metric?: string } })
+        .operationalAlert?.metric === 'ready_queue_head_refused');
+    }
+
+    it('sends one alert once the head has been refused with the same code for 15 minutes', async () => {
+      const fleet = makeFleet(4);
+      const alerts: unknown[] = [];
+      const service = await makeService(fleet, { emitAlert: (alert) => alerts.push(alert) });
+      refuseWith(fleet, authPreflight);
+      await enqueue(service, 3);
+
+      // First refusal at tick 1; 29 ticks later the run has lasted 14.5 minutes.
+      await tickEvery30s(service, 30);
+      expect(alerts).toHaveLength(0);
+      await tickEvery30s(service, 1);
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]).toMatchObject({
+        type: 'alert',
+        severity: 'warning',
+        summary: 'Ready queue: launch e01 has been refused (grok_auth_preflight) for 15 minutes; 2 entries wait behind it',
+        operationalAlert: { key: 'ready-queue-refused:e01', metric: 'ready_queue_head_refused', state: 'fired' },
+      });
+      expect((alerts[0] as { details: string }).details).toContain('grok auth preflight failed');
+      expect((alerts[0] as { details: string }).details).toContain('kookr queue remove e01');
+
+      // An hour more of the same refusal: no second alert, and the head still holds the queue.
+      await tickEvery30s(service, 120);
+      expect(alerts).toHaveLength(1);
+      expect(new Set(fleet.launches.map((l) => l.body.prompt))).toEqual(new Set(['job 1']));
+      expect(service.list()[0]).toMatchObject({ state: 'queued', attempts: 0 });
+    });
+
+    it('stays silent when the refusal clears before 15 minutes', async () => {
+      const fleet = makeFleet(4);
+      const alerts: unknown[] = [];
+      const service = await makeService(fleet, { emitAlert: (alert) => alerts.push(alert) });
+      const refusal = refuseWith(fleet, authPreflight);
+      await enqueue(service, 1);
+      await tickEvery30s(service, 29);
+      refusal.current = null;
+      await tickEvery30s(service, 5);
+      expect(service.list()[0]).toMatchObject({ state: 'started' });
+      expect(alerts).toHaveLength(0);
+    });
+
+    it('a different refusal code starts a new run', async () => {
+      const fleet = makeFleet(4);
+      const alerts: unknown[] = [];
+      const service = await makeService(fleet, { emitAlert: (alert) => alerts.push(alert) });
+      const refusal = refuseWith(fleet, authPreflight);
+      await enqueue(service, 1);
+      await tickEvery30s(service, 29);
+      refusal.current = { status: 429, body: { error: 'quota exceeded', code: 'quota_exceeded' } };
+      // The new code's first refusal starts the run; 14.5 minutes later, still silent
+      // although the head has been refused for over 28 minutes in all.
+      await tickEvery30s(service, 30);
+      expect(alerts).toHaveLength(0);
+      await tickEvery30s(service, 1);
+      expect(refusedAlerts(alerts)).toHaveLength(1);
+      expect((alerts[0] as { summary: string }).summary).toContain('(quota_exceeded)');
+    });
+
+    it('any other answer in between ends the run', async () => {
+      const fleet = makeFleet(4);
+      const alerts: unknown[] = [];
+      const service = await makeService(fleet, { emitAlert: (alert) => alerts.push(alert) });
+      const refusal = refuseWith(fleet, authPreflight);
+      await enqueue(service, 1);
+      await tickEvery30s(service, 28);
+      // One ordinary failed attempt (1 of 3), then the same refusal again.
+      refusal.current = { status: 400, body: { error: 'cwd does not exist', code: 'cwd_not_found' } };
+      await tickEvery30s(service, 1);
+      refusal.current = authPreflight;
+      // The refusal after the failure starts a new run: 14.5 minutes into it, still silent.
+      await tickEvery30s(service, 30);
+      expect(refusedAlerts(alerts)).toHaveLength(0);
+      await tickEvery30s(service, 1);
+      expect(refusedAlerts(alerts)).toHaveLength(1);
+      expect(service.list()[0]).toMatchObject({ state: 'queued', attempts: 1 });
+    });
+
+    it('alerts on a 429 with no code and no Retry-After', async () => {
+      const fleet = makeFleet(4);
+      const alerts: unknown[] = [];
+      const service = await makeService(fleet, { emitAlert: (alert) => alerts.push(alert) });
+      refuseWith(fleet, { status: 429, body: {} });
+      await enqueue(service, 1);
+      await tickEvery30s(service, 31);
+      expect(refusedAlerts(alerts)).toHaveLength(1);
+      expect((alerts[0] as { summary: string }).summary)
+        .toBe('Ready queue: launch e01 has been refused (retry_after) for 15 minutes; 0 entries wait behind it');
+      expect((alerts[0] as { details: string }).details).toContain('HTTP 429');
+    });
+
+    it('a long Retry-After still alerts on the second refusal', async () => {
+      const fleet = makeFleet(4);
+      const alerts: unknown[] = [];
+      const service = await makeService(fleet, { emitAlert: (alert) => alerts.push(alert) });
+      refuseWith(fleet, { status: 503, retryAfterSeconds: 20 * 60, body: { error: 'quota', code: 'quota_exceeded' } });
+      await enqueue(service, 1);
+      await tickEvery30s(service, 1);
+      expect(fleet.launches).toHaveLength(1);
+      // The wait ticks during the 20-minute Retry-After neither alert nor end the run.
+      await tickEvery30s(service, 39);
+      expect(fleet.launches).toHaveLength(1);
+      expect(alerts).toHaveLength(0);
+      await tickEvery30s(service, 1);
+      expect(fleet.launches).toHaveLength(2);
+      expect(refusedAlerts(alerts)).toHaveLength(1);
+      expect((alerts[0] as { summary: string }).summary).toContain('for 20 minutes');
+    });
+
+    it('a failed alert channel does not break the tick', async () => {
+      const fleet = makeFleet(4);
+      const service = await makeService(fleet, {
+        emitAlert: () => {
+          throw new Error('alert sink down');
+        },
+      });
+      const refusal = refuseWith(fleet, authPreflight);
+      await enqueue(service, 1);
+      await tickEvery30s(service, 31);
+      refusal.current = null;
+      await tickEvery30s(service, 1);
+      expect(service.list()[0]).toMatchObject({ state: 'started' });
+    });
+
+    it('an entry that got the refused alert and then fails three times still gets the failed alert', async () => {
+      const fleet = makeFleet(4);
+      const alerts: unknown[] = [];
+      const service = await makeService(fleet, { emitAlert: (alert) => alerts.push(alert) });
+      const refusal = refuseWith(fleet, authPreflight);
+      await enqueue(service, 1);
+      await tickEvery30s(service, 31);
+      expect(refusedAlerts(alerts)).toHaveLength(1);
+      refusal.current = { status: 400, body: { error: 'cwd does not exist', code: 'cwd_not_found' } };
+      await tickEvery30s(service, 3);
+      expect(service.list()[0]).toMatchObject({ state: 'failed', attempts: 3 });
+      expect(alerts).toHaveLength(2);
+      expect(alerts[1]).toMatchObject({
+        operationalAlert: { key: 'ready-queue:e01', metric: 'ready_queue_launch_failed', state: 'fired' },
+      });
+    });
+
+    it('is not persisted: after a restart the alert can fire once more if the refusal persists', async () => {
+      const fleet = makeFleet(4);
+      const alerts: unknown[] = [];
+      const service = await makeService(fleet, { emitAlert: (alert) => alerts.push(alert) });
+      refuseWith(fleet, authPreflight);
+      await enqueue(service, 1);
+      await tickEvery30s(service, 31);
+      expect(refusedAlerts(alerts)).toHaveLength(1);
+      await service.stop();
+
+      const restarted = await makeService(fleet, { emitAlert: (alert) => alerts.push(alert) });
+      await tickEvery30s(restarted, 30);
+      expect(refusedAlerts(alerts)).toHaveLength(1);
+      await tickEvery30s(restarted, 1);
+      expect(refusedAlerts(alerts)).toHaveLength(2);
+    });
+  });
+
   it('enqueue is idempotent on the request key and remove refuses an entry being started', async () => {
     const fleet = makeFleet(4);
     const service = await makeService(fleet);
