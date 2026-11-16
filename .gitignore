@@ -182,4 +182,5 @@ graphify-out/
 # Speech build stamps (managers cache Docker build-input hashes; never committed).
 # TTS: #1579. STT: fast-prod-restart P1.
 tts/.kookr-tts-build.hash
+tts/.kookr-tts-failed.hash
 stt/.kookr-stt-build.hash
