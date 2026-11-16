@@ -50,6 +50,8 @@ export function assertKookrDiff(before: FileSnapshot, after: FileSnapshot): void
       || entry === 'timer-health.state.json'
       // The plugin auto-update store is written at server startup (auto-update-store.ts).
       || entry === 'plugin-auto-update.json'
+      // The task-namer health snapshot is written after the first naming call (task-namer-health.ts, #3616).
+      || entry === 'task-namer-health.json'
       || /^tasks\.json\.pre-sqlite-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/.test(entry)
     )) return true;
     return entry === 'tasks.json'
