@@ -31,6 +31,7 @@ import {
 } from './git-worktree.js';
 import { DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS } from '../core/git-helpers.js';
 import { TaskStore } from '../core/tasks.js';
+import { CHAIN_RUNAWAY_STREAK } from '../core/playbook-chain.js';
 import type { InteractionLogWriter } from '../core/interaction-log.js';
 import type { InteractionEvent } from '../core/interaction-log.js';
 
@@ -1645,7 +1646,108 @@ describe('cleanupTaskWorktrees — playbook chain tips (issue #3743)', () => {
     const verdict = await inspectWorktreeCleanup(taskStore, tip.id, CHAIN_CWD);
 
     expect(verdict.removable).toBe(false);
+    // Issue #3908: the chain holds it, not another task.
+    expect(verdict.blocker).toBe('reserved-for-chain');
+  });
+
+  test('another active task in the same worktree takes precedence over the chain', async () => {
+    const taskStore = new TaskStore();
+    const tip = completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    const other = taskStore.createTask({ prompt: 'Other work', cwd: CHAIN_CWD });
+    taskStore.addSession(other.id, {
+      tmuxSession: 's2', agentType: 'claude-code', cwd: CHAIN_CWD, createdAt: new Date(),
+      gitIsWorktree: true, gitBranch: 'feature',
+    });
+    setupCleanWorktree();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, tip.id, CHAIN_CWD);
+
     expect(verdict.blocker).toBe('shared-with-active-task');
+  });
+
+  test('a queued successor with no session yet keeps the worktree', async () => {
+    // Issue #3908: after linkSuccessor the predecessor is settled and the
+    // successor sits in the pending queue with no session, so neither was
+    // counted as a user of the cwd.
+    const taskStore = new TaskStore();
+    const first = completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    const successor = taskStore.createTask({
+      prompt: 'Chain iteration',
+      cwd: CHAIN_CWD,
+      chain: { chainId: first.id, iteration: 2, maxIterations: 5, startedAt: new Date().toISOString(), unhealthyStreak: 0 },
+    });
+    taskStore.pendTask(successor.id);
+    taskStore.updateChain(first.id, (chain) => ({ ...chain, chainId: first.id, successorTaskId: successor.id }));
+    const unrelated = completedTask(taskStore, 's2');
+    const { log, events } = makeFakeLog();
+    setupCleanWorktree();
+
+    expect(await cleanupTaskWorktrees(taskStore, unrelated.id, log)).toBe(0);
+    expect(await cleanupTaskWorktrees(taskStore, first.id, log)).toBe(0);
+
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({ type: 'worktree_skipped', reason: 'shared' }));
+    expect((await inspectWorktreeCleanup(taskStore, first.id, CHAIN_CWD)).blocker).toBe('reserved-for-chain');
+  });
+
+  test('a successor that never started but will be retried keeps the worktree', async () => {
+    const taskStore = new TaskStore();
+    const first = completedTask(taskStore, 's1', { chainId: '', iteration: 1 });
+    const failed = taskStore.createTask({
+      prompt: 'Chain iteration',
+      cwd: CHAIN_CWD,
+      chain: { chainId: first.id, iteration: 2, maxIterations: 5, startedAt: new Date().toISOString(), unhealthyStreak: 0 },
+    });
+    taskStore.terminateTask(failed.id);
+    taskStore.updateChain(first.id, (chain) => ({ ...chain, chainId: first.id, successorTaskId: failed.id }));
+    setupCleanWorktree();
+
+    expect(await cleanupTaskWorktrees(taskStore, first.id)).toBe(0);
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+  });
+
+  test('a session-less task outside any chain does not hold a worktree by its cwd', async () => {
+    const taskStore = new TaskStore();
+    const done = completedTask(taskStore, 's1');
+    const queued = taskStore.createTask({ prompt: 'Queued work', cwd: CHAIN_CWD });
+    taskStore.pendTask(queued.id);
+    setupCleanWorktree();
+
+    expect(await cleanupTaskWorktrees(taskStore, done.id)).toBe(1);
+  });
+
+  test('a tip whose short run trips the runaway breaker releases its worktree', async () => {
+    // The run is short only when measured from the first session start, not
+    // from task creation: this pins that worktree cleanup reads the same tip
+    // view (firstSessionAt included) as the chain service.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const t0 = new Date('2026-11-16T10:00:00.000Z');
+      vi.setSystemTime(t0);
+      const taskStore = new TaskStore();
+      const tip = taskStore.createTask({
+        prompt: 'Chain iteration',
+        cwd: CHAIN_CWD,
+        chain: {
+          chainId: '', iteration: 3, maxIterations: 10, startedAt: t0.toISOString(),
+          unhealthyStreak: CHAIN_RUNAWAY_STREAK - 1,
+        },
+      });
+      // The agent session starts 10 minutes after the task was created
+      // (queued), then the run ends 30 seconds later.
+      vi.setSystemTime(new Date(t0.getTime() + 10 * 60_000));
+      taskStore.addSession(tip.id, {
+        tmuxSession: 's1', agentType: 'claude-code', cwd: CHAIN_CWD, createdAt: new Date(),
+        gitIsWorktree: true, gitBranch: 'feature', gitCommit: 'abc123',
+      });
+      vi.setSystemTime(new Date(t0.getTime() + 10 * 60_000 + 30_000));
+      taskStore.completeTask(tip.id);
+      setupCleanWorktree();
+
+      expect(await cleanupTaskWorktrees(taskStore, tip.id)).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('another finished task cannot remove the cwd of a live chain tip', async () => {

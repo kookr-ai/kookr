@@ -23,6 +23,8 @@ export type WorktreeCleanupBlocker =
   | 'repository-context-mismatch'
   | 'protected-marker'
   | 'shared-with-active-task'
+  /** A playbook chain will run its next iteration in this worktree. */
+  | 'reserved-for-chain'
   // Cleanliness guards
   | 'detached-head'
   | 'no-branch'
@@ -93,6 +95,7 @@ const PERMANENT_BLOCKERS = [
 
 const RECOVERABLE_BLOCKERS = [
   'shared-with-active-task',
+  'reserved-for-chain',
   'detached-head',
   'no-branch',
   'uncommitted-changes',
@@ -181,6 +184,8 @@ export function describeBlocker(blocker: WorktreeCleanupBlocker): string {
       return 'repository context mismatch';
     case 'shared-with-active-task':
       return 'shared with another active task';
+    case 'reserved-for-chain':
+      return 'a playbook chain will run its next iteration here';
     case 'detached-head':
       return 'detached HEAD';
     case 'no-branch':

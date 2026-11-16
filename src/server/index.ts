@@ -2240,6 +2240,22 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // broadcaster wired below exists.
     onChanged: () => requestSnapshotBroadcast(),
     flushTasks: flushLaunchTaskState,
+    // The reconcile sweep's rule: a completed iteration's worktree goes only
+    // while completion cleanup is enabled in settings, a cancelled or
+    // terminated one always does, and a task that is no longer terminal is
+    // skipped. Every safety gate (dirty, unmerged, shared) still holds. A
+    // one-off "keep worktree" choice made when completing the task by hand is
+    // not stored, so it is not consulted here.
+    reclaimWorktree: async (task) => {
+      await cleanupReconciledTaskWorktrees(
+        taskStore,
+        task.status === 'completed'
+          ? { tasksCompleted: [task.id], tasksTerminated: [] }
+          : { tasksCompleted: [], tasksTerminated: [task.id] },
+        interactionLog,
+        { cleanupCompleted: getCleanupWorktreeOnComplete() ?? true },
+      );
+    },
     logger: console,
   });
   lifecycleDeps.onPendingTaskPromoted = async (task) => {
