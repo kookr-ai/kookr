@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, Suspense, type ComponentType, type LazyExoticComponent } from 'react';
 import type { ChangesPanel as ChangesPanelComponent } from './ChangesPanel.js';
 import type { ChangesEdit } from './ChangesPanel.js';
+import { splitOwnPullRequests } from '../../shared/task-own-pull-requests.js';
 import { lazyWithReload } from '../lazy-with-reload.js';
 import { useShallow } from 'zustand/react/shallow';
 import { useKookrStore } from '../store/useStore.js';
@@ -1165,6 +1166,15 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
       {(() => {
         const gh = taskGitHubState;
         const ghCount = (gh?.prs.length ?? 0) + (gh?.issues.length ?? 0);
+        // #4024 item 4: the tab is the task's own pull request when it has
+        // one, with every other PR and issue under "Mentioned".
+        const ownPrs = splitOwnPullRequests(gh?.prs ?? [], {
+          branch: agent.gitBranch,
+          createdAt: agent.taskCreatedAt,
+        }).own;
+        const ghTabLabel = ownPrs.length === 0
+          ? `Mentioned (${ghCount})`
+          : ownPrs.length === 1 ? 'Pull request' : `Pull requests (${ownPrs.length})`;
         const isCompleted = isTerminalTaskStatus(agent.taskStatus);
         const terminalVisible = computeTerminalVisible({ rightPane, layout, activeTab: narrowTab });
         // In split view the tabs choose what the left pane shows; in the tabbed
@@ -1237,9 +1247,10 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                   type="button"
                   className={`detail-tab ${selectedTab === 'github' ? 'active' : ''}`}
                   aria-pressed={selectedTab === 'github'}
+                  data-testid="detail-tab-github"
                   onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'github' }); setNarrowTab('github'); setLeftPane('github'); }}
                 >
-                  GitHub ({ghCount})
+                  {ghTabLabel}
                 </button>
               )}
               {wideDetailActive && (
@@ -1268,7 +1279,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
               {!rightOnlyMode && <div className={`detail-split-left${leftPaneHidden ? ' pane-hidden-tab' : ''}`}>
                 {selectedTab === 'github' ? (
                   <Suspense fallback={null}>
-                    <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} />
+                    <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} ownPrs={ownPrs} />
                   </Suspense>
                 ) : selectedTab === 'changes' && changesAvailable ? (
                   <Suspense fallback={null}>

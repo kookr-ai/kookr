@@ -7071,6 +7071,22 @@ label.task-share-row {
 
 /* Issues section */
 .gh-issues-section { display: flex; flex-direction: column; gap: 6px; }
+.gh-mentioned-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.gh-mentioned-row .gh-pr-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .gh-section-header {
   font-size: 12px;
   font-weight: 600;

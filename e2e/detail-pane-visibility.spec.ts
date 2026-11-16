@@ -44,7 +44,8 @@ async function seedDetailTask(page: Page, request: APIRequestContext) {
   await broadcastProjectSummaries(request);
 }
 
-// One open PR for the task, so the GitHub tab appears (same shape as e2e/supervisor-flow.spec.ts).
+// One open PR the task opened (after it started, so it is the task's own,
+// #4024), so the Pull request tab appears (same shape as e2e/supervisor-flow.spec.ts).
 async function broadcastOnePr(request: APIRequestContext, taskId: string) {
   const now = new Date().toISOString();
   const response = await request.post('/api/test/broadcast-github', {
@@ -63,6 +64,7 @@ async function broadcastOnePr(request: APIRequestContext, taskId: string) {
         },
         title: 'feat: split view band',
         status: 'open',
+        createdAt: now,
         author: 'operator',
         branch: 'feature/split-band',
         baseBranch: 'main',
@@ -155,10 +157,10 @@ test.describe('Detail pane visibility controls', () => {
     expect(rightHeaderBottom).not.toBeNull();
     expect(await bandBottom('.detail-split-left .act-role-filters')).toBe(rightHeaderBottom);
 
-    // The GitHub list gets the same band (#4026): its content starts where the
-    // right pane's Terminal header ends.
+    // The Pull request tab gets the same band (#4026): its content starts where
+    // the right pane's Terminal header ends.
     await broadcastOnePr(request, await latestTaskId(request));
-    const githubTab = tabs.getByRole('button', { name: 'GitHub (1)', exact: true });
+    const githubTab = tabs.getByRole('button', { name: 'Pull request', exact: true });
     await githubTab.click();
     await expect(githubTab).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('.detail-split-left .gh-pr-card')).toBeVisible();

@@ -308,7 +308,7 @@ describe('DetailPanel dense metadata', () => {
       },
     ], []));
     await flush();
-    const githubTab = [...container.querySelectorAll<HTMLButtonElement>('.detail-tabs .detail-tab')].find((el) => el.textContent === 'GitHub (1)');
+    const githubTab = [...container.querySelectorAll<HTMLButtonElement>('.detail-tabs .detail-tab')].find((el) => el.textContent === 'Mentioned (1)');
     act(() => githubTab!.click());
     await flush();
 
@@ -369,7 +369,7 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-panel.detail-tabbed')).not.toBeNull();
     expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
     expect(tab('Terminal')?.getAttribute('aria-pressed')).toBe('false');
-    expect(tab('GitHub (1)')?.getAttribute('aria-pressed')).toBe('false');
+    expect(tab('Mentioned (1)')?.getAttribute('aria-pressed')).toBe('false');
     expect(container.querySelector('[data-testid="activity-panel"]')).not.toBeNull();
     expect(container.querySelector('.detail-split-left')?.className).not.toContain('pane-hidden-tab');
     expect(container.querySelector('.detail-split-right')?.className).toContain('pane-hidden-tab');
@@ -389,9 +389,9 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-split-right')?.className).not.toContain('pane-hidden-tab');
     expect(terminalVisible()).toBe('true');
 
-    act(() => { tab('GitHub (1)')!.click(); });
+    act(() => { tab('Mentioned (1)')!.click(); });
 
-    expect(tab('GitHub (1)')?.getAttribute('aria-pressed')).toBe('true');
+    expect(tab('Mentioned (1)')?.getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelector('[data-testid="github-panel"]')).not.toBeNull();
     expect(terminalVisible()).toBe('false');
   });

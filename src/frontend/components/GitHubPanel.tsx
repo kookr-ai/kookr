@@ -4,7 +4,15 @@ import type { GitHubPRState, GitHubIssueState, GitHubReviewThread, GitHubCheck }
 interface Props {
   prs: GitHubPRState[];
   issues: GitHubIssueState[];
+  /**
+   * The PRs the task opened itself (a subset of `prs`), shown first as full
+   * summaries; the other PRs and the issues are listed under "Mentioned"
+   * (#4024 item 4). Omitted, every PR shows as a summary.
+   */
+  ownPrs?: GitHubPRState[];
 }
+
+const prKey = (pr: GitHubPRState) => `${pr.ref.owner}/${pr.ref.repo}#${pr.ref.number}`;
 
 function PRStatusBadge({ status }: { status: GitHubPRState['status'] }) {
   const classes: Record<string, string> = {
@@ -107,7 +115,21 @@ function PRCard({ pr }: { pr: GitHubPRState }) {
   );
 }
 
-export function GitHubPanel({ prs, issues }: Props) {
+/** One line for a PR the task only mentioned: number, title and state. */
+function MentionedPrRow({ pr }: { pr: GitHubPRState }) {
+  return (
+    <div className="gh-mentioned-row" data-testid="gh-mentioned-pr">
+      <a href={pr.ref.url} target="_blank" rel="noopener noreferrer" className="gh-pr-title">
+        #{pr.ref.number} {pr.title}
+      </a>
+      <PRStatusBadge status={pr.status} />
+    </div>
+  );
+}
+
+export function GitHubPanel({ prs, issues, ownPrs = prs }: Props) {
+  const ownKeys = new Set(ownPrs.map(prKey));
+  const mentionedPrs = prs.filter((pr) => !ownKeys.has(prKey(pr)));
   if (prs.length === 0 && issues.length === 0) {
     return (
       <div className="gh-panel gh-empty">
@@ -119,12 +141,15 @@ export function GitHubPanel({ prs, issues }: Props) {
 
   return (
     <div className="gh-panel">
-      {prs.map((pr) => (
-        <PRCard key={`${pr.ref.owner}/${pr.ref.repo}#${pr.ref.number}`} pr={pr} />
+      {ownPrs.map((pr) => (
+        <PRCard key={prKey(pr)} pr={pr} />
       ))}
-      {issues.length > 0 && (
-        <div className="gh-issues-section">
-          <div className="gh-section-header">Issues</div>
+      {(mentionedPrs.length > 0 || issues.length > 0) && (
+        <div className="gh-issues-section" data-testid="gh-mentioned">
+          <div className="gh-section-header">Mentioned</div>
+          {mentionedPrs.map((pr) => (
+            <MentionedPrRow key={prKey(pr)} pr={pr} />
+          ))}
           {issues.map((issue) => (
             <div key={`${issue.ref.owner}/${issue.ref.repo}#${issue.ref.number}`} className="gh-issue-card">
               <div className="gh-issue-header">
