@@ -330,6 +330,8 @@ export class LucyLiveSession {
   /** The question `askId` closed: stop reading it out now if she is, and tell the server not to say it. */
   dropAsk(askId: string): void {
     if (this.stopped) return;
+    // Other questions held behind this one stay: only this question is closed.
+    const stillHeld = this.heldTurns.filter((held) => held.askId !== askId);
     if (this.currentAskId === askId) {
       this.currentAskId = null;
       const cut = this.cutPlayback();
@@ -342,8 +344,10 @@ export class LucyLiveSession {
       this.lucyText = '';
       this.options.onView({ lucyText: '' });
     }
-    this.heldTurns = this.heldTurns.filter((held) => held.askId !== askId);
+    this.heldTurns = stillHeld;
     this.send({ type: 'drop_ask', askId });
+    // Nothing of the closed question waits any more: the next held one can start.
+    this.releaseHeldTurn();
   }
 
   // -------------------------------------------------------------------------
@@ -1013,7 +1017,8 @@ export class LucyLiveSession {
     this.active = [];
     this.pending.clear();
     this.decoding.clear();
-    // A question held behind what was cut goes too; the server ends it on the barge-in or the operator's turn.
+    // A question held behind what was cut goes too: an interruption ends it on the server (barge-in or the
+    // operator's confirmed turn). {@link dropAsk} keeps the other held questions when it cuts one.
     this.heldTurns = [];
     this.playHead = 0;
     this.playGeneration += 1;

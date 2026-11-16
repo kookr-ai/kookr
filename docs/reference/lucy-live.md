@@ -140,7 +140,8 @@ for an answer):
   heard is left out. When launching is on, the operator conversation answers instead, and it keeps every
   sentence of the question that was sent, marked "(interrupted)" if she was cut off.
 - If her earlier audio is still waiting to play when the question starts (an answer held behind a
-  clip), the browser holds the question until that audio has been scheduled, so it is never lost.
+  clip), the browser holds the question until that audio has been scheduled, so that audio is never
+  lost. Closing one question does not drop another held behind it; an interruption drops them all.
 - It is answered, withdrawn or expires while she reads it: she stops (`drop_ask`).
 - No clip is fetched for it, so it does not appear in her message list and has no Replay button; the
   card carries it. If Talk is switched off or the connection drops before she says it, she does not

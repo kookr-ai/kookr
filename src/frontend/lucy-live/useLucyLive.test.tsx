@@ -1447,6 +1447,44 @@ describe('useLucyLive', () => {
       expect(sources.map((s) => s.buffer!.tag)).toEqual([`${id}:0`]);
     });
 
+    test('closing a question leaves the question held behind it, which then plays', async () => {
+      const ws = await talkOn();
+      let releaseClip: () => void = () => undefined;
+      act(() => { releaseClip = clipStarted({ setVolume: () => undefined, stop: () => { releaseClip(); } }); });
+      await act(async () => { await announceAsk(ASK, { fetcher }); });
+      await serverReadsIt(ws, 'lucy-ask-1'); // waits behind the clip
+      await act(async () => {
+        ws.receive({ type: 'turn_done', turnId: 'lucy-ask-1', end: 'answered' });
+        ws.receive({ type: 'turn_start', turnId: 'lucy-ask-2', askId: 'ask-2' });
+        ws.receive(sentence('lucy-ask-2', 0, 'Another task asks.'));
+      });
+      await settle();
+      act(() => { stopAskAnnouncement(ASK); }); // the first question is answered on its card
+      act(() => { releaseClip(); });
+      await settle();
+      expect(sources.map((s) => s.buffer!.tag)).toEqual(['lucy-ask-2:0']);
+    });
+
+    test('a question held when the operator interrupts her is dropped, and never cuts into her next answer', async () => {
+      const ws = await talkOn();
+      speakTurn();
+      const id = lastTurnId();
+      holdDecoding = new Set([`${id}:0`]); // her answer is still being decoded when the question starts
+      await act(async () => { ws.receive(sentence(id, 0)); ws.receive({ type: 'turn_done', turnId: id, end: 'answered' }); });
+      await serverReadsIt(ws); // held behind her waiting answer
+      expect(sources).toHaveLength(0);
+      const processor = processors[processors.length - 1];
+      for (let i = 0; i < 40 && sent.filter((m) => m.type === 'speech_start').length < 2; i++) {
+        act(() => { processor.onaudioprocess?.({ inputBuffer: { getChannelData: () => frame(-15) } }); });
+      }
+      const candidate = lastTurnId();
+      await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: candidate }); });
+      mic(QUIET, 800);
+      await act(async () => { ws.receive(sentence(candidate, 0, 'Sure.')); ws.receive(sentence(candidate, 1, 'Here it is.')); });
+      await settle();
+      expect(sources.map((s) => s.buffer!.tag)).toEqual([`${candidate}:0`, `${candidate}:1`]);
+    });
+
     test('before the server says it is ready, the conversation refuses the question, which is played as a clip', async () => {
       statusResponse = { ok: true, body: { available: true, bargeInConfirmation: 'silero' } };
       await act(async () => { latest.setEnabled(true); });
