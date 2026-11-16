@@ -105,7 +105,7 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: true, approximate: true });
     h.settle();
     expect(h.client.isEstablished()).toBe(true);
-    expect(h.onState).toHaveBeenLastCalledWith({ kind: 'live', approximate: true });
+    expect(h.onState).toHaveBeenLastCalledWith({ kind: 'live', approximate: true, historyAvailable: true });
     h.control({ type: 'source', epoch: 'e', start: 106, end: 110, geometryRevision: 1, cols: 80, rows: 24 });
     h.data('live'); h.settle();
     expect(h.continuity.cursor).toBeNull();
@@ -399,6 +399,60 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     h.client.stop(); h.writer.dispose();
     vi.advanceTimersByTime(60_000);
     expect(h.sockets).toHaveLength(4);
+  });
+
+  describe('loading earlier output (#3564)', () => {
+    const sent = (socket: Socket) => socket.send.mock.calls.map(([frame]) => JSON.parse(String(frame)));
+    const partialSeed = () => {
+      const h = harness(); h.hello(); h.begin(); h.data('snapshot');
+      h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: true, approximate: true });
+      h.settle();
+      return h;
+    };
+
+    test('sends one request-history and replaces the view with the full ring', () => {
+      const h = partialSeed();
+      expect(h.onState).toHaveBeenLastCalledWith({ kind: 'live', approximate: true, historyAvailable: true });
+      expect(h.client.requestHistory()).toBe(true);
+      expect(h.client.requestHistory()).toBe(false);
+      expect(sent(h.socket).filter((frame) => frame.type === 'request-history')).toEqual([{ type: 'request-history', generation: 'g' }]);
+      expect(h.onState).toHaveBeenLastCalledWith({ kind: 'live', approximate: true });
+
+      // The server answers with a second replace seed on the same connection.
+      // A full ring is larger than one credit window, so the client must ACK
+      // its way through it while the attempt is already live.
+      h.terminal.reset.mockClear();
+      h.begin();
+      const frame = 'x'.repeat(8192);
+      for (let i = 0; i < 20; i++) { h.data(frame); h.settle(); }
+      expect(h.terminal.reset).toHaveBeenCalledTimes(1);
+      h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: false, approximate: true });
+      h.settle();
+      const kinds = h.onState.mock.calls.map(([next]) => next.kind);
+      expect(kinds).not.toContain('lagged');
+      expect(kinds).not.toContain('incompatible');
+      expect(h.onState).toHaveBeenLastCalledWith({ kind: 'live', approximate: true });
+      expect(h.client.isEstablished()).toBe(true);
+      expect(h.client.requestHistory()).toBe(false);
+      h.client.stop(); h.writer.dispose();
+    });
+
+    test('a refused request drops the action', () => {
+      const h = partialSeed();
+      h.control({ type: 'history-unavailable' });
+      expect(h.onState).toHaveBeenLastCalledWith({ kind: 'live', approximate: true });
+      expect(h.client.requestHistory()).toBe(false);
+      expect(sent(h.socket).some((frame) => frame.type === 'request-history')).toBe(false);
+      h.client.stop(); h.writer.dispose();
+    });
+
+    test('is not offered when the seed already held the whole ring', () => {
+      const h = harness(); h.hello(); h.begin(); h.data('whole ring'); h.end(10); h.settle();
+      expect(h.onState).toHaveBeenLastCalledWith({ kind: 'live', approximate: false });
+      expect(h.client.requestHistory()).toBe(false);
+      expect(sent(h.socket).some((frame) => frame.type === 'request-history')).toBe(false);
+      h.client.stop(); h.writer.dispose();
+    });
   });
 
   test('a failed ACK send cannot recurse during retirement', () => {

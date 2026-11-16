@@ -1160,7 +1160,10 @@ indices and transport acknowledgements.
   snapshot, and the stalled session is skipped for 60 seconds (a replay that
   runs past its own time budget is skipped the same way), so a poisoned ring
   cannot cost a deadline of CPU on every re-attach. The seed carries no resume
-  cursor, and older output stays behind `request-history`. If no snapshot can be
+  cursor, and older output stays behind `request-history`. Whenever a seed
+  leaves older output on the server, the pane's notice offers **Load earlier
+  output**, which sends one `request-history` and replaces the view with the
+  full ring; a refused request removes the action. If no snapshot can be
   built (emulator unavailable, busy, over its time budget, or backing off) the
   byte tail is sent instead and the reason is logged.
 
@@ -1168,7 +1171,7 @@ indices and transport acknowledgements.
 invalidates the cursor, even if that parse later completes. Carrying the retiring
 chunk's completion into exact resume, as specified by the RFC, remains deferred.
 
-**Linked tests:** `src/adapters/local-dtach-stream.test.ts`, `src/server/session-bridge-v2.test.ts`, `src/server/streaming-attach-snapshot.test.ts`, `src/server/streaming-attach-snapshot.failure.test.ts`, `src/server/terminal-snapshot-worker.test.ts`, `src/shared/terminal-protocol.test.ts`, `src/frontend/terminal-stream-client.test.ts`.
+**Linked tests:** `src/adapters/local-dtach-stream.test.ts`, `src/server/session-bridge-v2.test.ts`, `src/server/streaming-attach-snapshot.test.ts`, `src/server/streaming-attach-snapshot.failure.test.ts`, `src/server/terminal-snapshot-worker.test.ts`, `src/shared/terminal-protocol.test.ts`, `src/frontend/terminal-stream-client.test.ts`, `src/frontend/components/TerminalPanel.test.ts`, `e2e/terminal-recovery.spec.ts`.
 
 ### NFR-TERM-001: Bounded responsive terminal rendering [F5.2] — SHALL — `partial`
 
