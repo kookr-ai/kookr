@@ -5,7 +5,7 @@ import {
   buildDeliveredCompletionDigest,
   buildDeliveredCompletionNote,
   classifyDeliveredCompletion,
-  finishedAfterMergeAtMs,
+  finishedSettleStartMs,
   selectDeliveredMergedPr,
   type MergedPrAttribution,
   type TrackedPrRef,
@@ -349,23 +349,45 @@ describe('classifyDeliveredCompletion — settle path after a post-merge "finish
     expect(decision).toMatchObject({ autoComplete: true, reason: 'finished_after_merge' });
   });
 
-  it('a "finished" raised before the merge does not count: a pending one keeps the old refusal', () => {
+  it('a "finished" raised before the merge settles from the merge time (issue #3983)', () => {
+    // GitHub auto-merge: the agent said "finished", the merge came later.
+    const before = new Date(T0 - 60_000).toISOString();
+    const task = finished({ finishedSignalAt: before });
+    const opts = { firstObservedMergedAtMs: T0 };
+    expect(
+      classifyDeliveredCompletion(task, MERGED_WITH_TIME, { ...opts, now: new Date(T0 + DEFAULT_FINISHED_MERGED_SETTLE_MS - 1) }),
+    ).toMatchObject({ autoComplete: false, reason: 'within_settle', elapsedSinceMergeMs: DEFAULT_FINISHED_MERGED_SETTLE_MS - 1 });
+    expect(
+      classifyDeliveredCompletion(task, MERGED_WITH_TIME, { ...opts, now: new Date(T0 + DEFAULT_FINISHED_MERGED_SETTLE_MS) }),
+    ).toEqual({ autoComplete: true, reason: 'finished_after_merge', elapsedSinceMergeMs: DEFAULT_FINISHED_MERGED_SETTLE_MS });
+  });
+
+  it('a "finished" raised before the merge and still pending also takes the settle path', () => {
     const before = new Date(T0 - 60_000).toISOString();
     const decision = classifyDeliveredCompletion(
       finished({ finishedSignalAt: before, pendingSignal: { kind: 'completion_ready', raisedAt: before } }),
       MERGED_WITH_TIME,
-      { now: new Date(T0 + DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS), firstObservedMergedAtMs: T0 },
+      { now: new Date(T0 + DEFAULT_FINISHED_MERGED_SETTLE_MS), firstObservedMergedAtMs: T0 },
     );
-    expect(decision.reason).toBe('already_signaled');
+    expect(decision).toMatchObject({ autoComplete: true, reason: 'finished_after_merge' });
   });
 
-  it('a "finished" raised before the merge and since cleared leaves the budget path in charge', () => {
+  it('with no "finished" on record (a new prompt cleared it), the budget path stays in charge', () => {
     const decision = classifyDeliveredCompletion(
-      finished({ finishedSignalAt: new Date(T0 - 60_000).toISOString() }),
+      finished({ finishedSignalAt: undefined }),
       MERGED_WITH_TIME,
       { now: new Date(T0 + 5 * 60_000), firstObservedMergedAtMs: T0 },
     );
     expect(decision.reason).toBe('within_budget');
+  });
+
+  it('a pending signal with an unknown merge time keeps the old refusal', () => {
+    const decision = classifyDeliveredCompletion(
+      finished({ pendingSignal: { kind: 'completion_ready', raisedAt: new Date(SIGNAL_AT).toISOString() } }),
+      MERGED,
+      { now: new Date(T0 + DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS), firstObservedMergedAtMs: T0 },
+    );
+    expect(decision.reason).toBe('already_signaled');
   });
 
   it('an unknown merge time fails closed to the budget path', () => {
@@ -406,14 +428,18 @@ describe('classifyDeliveredCompletion — settle path after a post-merge "finish
   });
 });
 
-describe('finishedAfterMergeAtMs (issue #3930)', () => {
+describe('finishedSettleStartMs (issues #3930, #3983)', () => {
   const mergedAt = new Date(T0);
   it('returns the signal time when it is at or after the merge', () => {
-    expect(finishedAfterMergeAtMs({ finishedSignalAt: new Date(T0).toISOString() }, { mergedAt })).toBe(T0);
+    expect(finishedSettleStartMs({ finishedSignalAt: new Date(T0 + 5).toISOString() }, { mergedAt })).toBe(T0 + 5);
+    expect(finishedSettleStartMs({ finishedSignalAt: new Date(T0).toISOString() }, { mergedAt })).toBe(T0);
   });
-  it('is undefined for a signal before the merge, an unparseable signal, or no signal', () => {
-    expect(finishedAfterMergeAtMs({ finishedSignalAt: new Date(T0 - 1).toISOString() }, { mergedAt })).toBeUndefined();
-    expect(finishedAfterMergeAtMs({ finishedSignalAt: 'not a date' }, { mergedAt })).toBeUndefined();
-    expect(finishedAfterMergeAtMs({}, { mergedAt })).toBeUndefined();
+  it('returns the merge time for a signal raised before the merge', () => {
+    expect(finishedSettleStartMs({ finishedSignalAt: new Date(T0 - 1).toISOString() }, { mergedAt })).toBe(T0);
+  });
+  it('is undefined for an unparseable signal, no signal, or an unknown merge time', () => {
+    expect(finishedSettleStartMs({ finishedSignalAt: 'not a date' }, { mergedAt })).toBeUndefined();
+    expect(finishedSettleStartMs({}, { mergedAt })).toBeUndefined();
+    expect(finishedSettleStartMs({ finishedSignalAt: new Date(T0).toISOString() }, {})).toBeUndefined();
   });
 });
