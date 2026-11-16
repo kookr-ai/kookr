@@ -256,6 +256,16 @@ export interface Task {
    */
   pendingSignal?: PendingAgentSignal;
   /**
+   * When this task last raised a `completion_ready` ("finished") signal, as an
+   * ISO timestamp (issue #3930). Unlike {@link pendingSignal}, this survives the
+   * event pipeline's turn-resumed clear: a claude-code agent raises the signal
+   * from inside a Bash call, and that same call's PostToolUse event clears the
+   * pending signal within a second. The delivered-completion sweep reads this to
+   * know the task said "finished" after its pull request merged. Cleared when a
+   * new user prompt starts more work.
+   */
+  finishedSignalAt?: string;
+  /**
    * How this task reached terminal-complete (issue #1608). Stamped at complete
    * time for lesson-yield v2 per-path buckets. See {@link CompletionPath} in
    * `lesson-decision.ts`. Absent on historical tasks → counted as `unknown`.

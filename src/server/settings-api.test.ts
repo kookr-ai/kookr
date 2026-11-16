@@ -100,6 +100,7 @@ describe('Settings API', () => {
       reservedActiveSlots: 2,
       reservedSlotSources: ['kookr'],
       postMergeCleanupBudgetMinutes: 10,
+      mergedFinishedSettleMinutes: 2,
       idleRefineryEnabled: false,
       idleRefineryMinFreeSlots: 3,
       idleRefineryCooldownMinutes: 120,

@@ -696,6 +696,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Live getter for the post-merge cleanup budget (issue #1560). Same
   // live-binding pattern — applies on the next liveness tick.
   const getPostMergeCleanupBudgetMs = () => currentSettings.postMergeCleanupBudgetMinutes * 60_000;
+  // Live getter for the post-merge "finished" settle time (issue #3930).
+  const getMergedFinishedSettleMs = () => currentSettings.mergedFinishedSettleMinutes * 60_000;
   // Live getter for the adapter-launch hard timeout (issue #1526 Phase C /
   // #1528). Same live-binding pattern — applies to the next launch.
   const getLaunchTimeoutMs = () => currentSettings.launchTimeoutSeconds * 1000;
@@ -4226,6 +4228,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       providerPausedOccupancyMetrics,
       providerPausedOccupancyAlerter,
       getPostMergeCleanupBudgetMs,
+      getMergedFinishedSettleMs,
       resolveMergedPr,
       resolveMergedPrByBranch,
       loopDeliveryWatchdog,

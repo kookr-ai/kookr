@@ -695,6 +695,13 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
             `[event-pipeline] cleared stale completion_ready for task ${ownerTask.id} — turn resumed (${turnState})`,
           );
         }
+        // Issue #3930: the "said finished" record (`finishedSignalAt`) is kept
+        // across the tool-event clear above, because for claude-code that clear
+        // fires on the PostToolUse of the `kookr signal` call itself. A new user
+        // prompt is real new work, so it does end the record.
+        if (meta.origin !== 'replay' && pipelineEvent.type === 'user_prompt') {
+          taskStore.clearFinishedSignal(ownerTask.id);
+        }
       }
     }
     sessionActivityProcessor.process(tmuxName);

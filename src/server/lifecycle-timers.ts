@@ -217,6 +217,12 @@ export interface TimerDeps {
    */
   getPostMergeCleanupBudgetMs?: () => number;
   /**
+   * Live getter for the settle time after a post-merge "finished" signal, in
+   * milliseconds (issue #3930, `mergedFinishedSettleMinutes` setting). Falls
+   * back to the module default when absent.
+   */
+  getMergedFinishedSettleMs?: () => number;
+  /**
    * Live enable flag for the terminal-success verdict auto-complete sweep
    * (issue #2532). Read on every liveness tick. Absent ⇒ enabled — the sweep is
    * self-gating (only fires on a `needs_input` park with a terminal-success
@@ -1863,6 +1869,23 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             resolveMergedPr: deps.resolveMergedPr,
             isProviderPaused: isTaskProviderPaused,
             tracker: deliveredCompletionTracker,
+            // Issue #3930: the settle path completes a task minutes after its
+            // post-merge "finished" signal, so it needs the same live-work
+            // veto as the completion-ready sweep.
+            isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+            isTaskSelectedByAnyConnection: deps.isTaskSelectedByAnyConnection,
+            ...(deps.taskTailStore
+              ? {
+                  getTaskPaneText: async (taskId: string) => {
+                    try {
+                      const record = await deps.taskTailStore!.getByTaskId(taskId);
+                      return record?.text;
+                    } catch {
+                      return undefined;
+                    }
+                  },
+                }
+              : {}),
             ...(deps.signalOutboxSpoolDir ? { signalOutboxSpoolDir: deps.signalOutboxSpoolDir } : {}),
             ...(deps.agentLifecycleDeps?.onTaskOutcome
               ? { onTaskOutcome: deps.agentLifecycleDeps.onTaskOutcome }
@@ -1872,6 +1895,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           },
           {
             budgetMs: deps.getPostMergeCleanupBudgetMs?.(),
+            settleMs: deps.getMergedFinishedSettleMs?.(),
             throttle: true,
           },
         )

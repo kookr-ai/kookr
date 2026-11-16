@@ -579,6 +579,28 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
   });
 
+  test('issue #3930: the "said finished" record survives the tool-event clear and ends on a new user prompt', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+    const task = taskStore.findTaskBySession(tmuxName)!;
+    const raisedAt = new Date('2026-06-21T00:00:00.000Z').toISOString();
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt });
+
+    // The PostToolUse of the `kookr signal` call clears the pending signal...
+    adapter.injectHookEvent(tmuxName, makeToolUseHook());
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+    // ...but the task still said "finished".
+    expect(taskStore.getTask(task.id)?.finishedSignalAt).toBe(raisedAt);
+
+    // A replayed user prompt (restart hydration) is history, not new work.
+    adapter.injectHookEvent(tmuxName, makeUserPromptHook(), undefined, { origin: 'replay' });
+    expect(taskStore.getTask(task.id)?.finishedSignalAt).toBe(raisedAt);
+
+    // A live user prompt is new work: the record ends.
+    adapter.injectHookEvent(tmuxName, makeUserPromptHook());
+    expect(taskStore.getTask(task.id)?.finishedSignalAt).toBeUndefined();
+  });
+
   test('retains a pending completion_ready during replay hydration (no wipe on restart)', async () => {
     setup();
     const tmuxName = await launchAgent();

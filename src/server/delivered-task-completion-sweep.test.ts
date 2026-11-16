@@ -28,15 +28,21 @@ vi.mock('../core/signal-outbox.js', async (importOriginal) => {
 });
 
 import { TaskStore } from '../core/tasks.js';
+import type { Task } from '../core/task-read-model.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { signalOutboxPendingPath } from '../core/signal-outbox.js';
-import { DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS, type MergedPrAttribution } from '../core/completion/index.js';
+import {
+  DEFAULT_FINISHED_MERGED_SETTLE_MS,
+  DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS,
+  type MergedPrAttribution,
+} from '../core/completion/index.js';
 import {
   appendSignalOutbox,
   buildSignalOutboxEntry,
   readPendingSignals,
 } from '../core/signal-outbox.js';
 import {
+  DELIVERED_SWEEP_MIN_INTERVAL_MS,
   autoCompleteDeliveredTasks,
   createDeliveredCompletionTracker,
   createStoreDeliveredPrResolver,
@@ -574,5 +580,235 @@ describe('autoCompleteDeliveredTasks over the GitHubStateStore attribution (issu
 
     expect(await sweepPastBudget(taskStore, store)).toEqual([]);
     expect(taskStore.getTask(id)?.status).toBe('inProgress');
+  });
+});
+
+/**
+ * Issue #3930: a task that said "finished" after its own PR merged is completed
+ * after the short settle time (default 2 minutes) instead of the 10-minute
+ * cleanup budget, behind the same live-work veto as the completion-ready sweep.
+ */
+describe('autoCompleteDeliveredTasks — settle path after a post-merge "finished" (issue #3930)', () => {
+  const MERGED_AT = T0;
+  const SIGNAL_AT = plus(T0, 60_000);
+  const MERGED_WITH_TIME: MergedPrAttribution = { ...MERGED, mergedAt: MERGED_AT };
+  const HUMAN_PANE = 'some agent output\n❯\n';
+
+  /**
+   * The real production state: the agent raised `completion_ready` from a Bash
+   * call and that call's own PostToolUse event cleared the pending signal.
+   */
+  function saidFinished(taskStore: TaskStore, id: string, at: Date = SIGNAL_AT): void {
+    taskStore.setPendingSignal(id, { kind: 'completion_ready', raisedAt: at.toISOString() });
+    taskStore.clearPendingSignal(id);
+  }
+
+  async function sweepAt(
+    taskStore: TaskStore,
+    now: Date,
+    overrides: Partial<AutoCompleteDeliveredDeps> = {},
+    opts: Parameters<typeof autoCompleteDeliveredTasks>[1] = {},
+  ) {
+    return autoCompleteDeliveredTasks(
+      baseDeps(taskStore, () => MERGED_WITH_TIME, { now: () => now, ...overrides }),
+      opts,
+    );
+  }
+
+  const AFTER_SETTLE = plus(SIGNAL_AT, DEFAULT_FINISHED_MERGED_SETTLE_MS);
+
+  test('AC: a PR merged into staging plus a "finished" signal completes within the settle time plus one sweep', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const createdAt = taskStore.getTask(id)!.createdAt;
+    const mergedAt = plus(createdAt, 60_000);
+    const signalAt = plus(createdAt, 120_000);
+
+    // Production attribution over a GitHubStateStore whose PR base is `staging`,
+    // not the default branch.
+    const store = new GitHubStateStore();
+    const ref: GitHubReference = {
+      type: 'pr',
+      owner: 'kookr-ai',
+      repo: 'kookr',
+      number: 3941,
+      url: 'https://github.com/kookr-ai/kookr/pull/3941',
+      detectedAt: createdAt,
+      detectedFrom: `kookr-${id}`,
+      taskId: id,
+    };
+    store.addReference(ref);
+    store.updatePRState({
+      ref,
+      title: 'fix: something',
+      status: 'merged',
+      mergeable: 'UNKNOWN',
+      author: 'someone',
+      branch: 'feat-issue-3930',
+      baseBranch: 'staging',
+      reviewDecision: null,
+      reviewers: [],
+      unresolvedThreads: [],
+      totalComments: 0,
+      checks: [],
+      mergedAt,
+      lastFetchedAt: mergedAt,
+    });
+    saidFinished(taskStore, id, signalAt);
+
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-delivered-settle-'));
+    tmpDirs.push(dir);
+    const auditLogPath = join(dir, 'audit.jsonl');
+    const tracker = createDeliveredCompletionTracker();
+    const resolveMergedPr = createStoreDeliveredPrResolver(store);
+
+    // Liveness ticks every 5s, sweep throttled to one batch per 60s.
+    let completedAt: Date | undefined;
+    for (let t = signalAt.getTime(); t <= signalAt.getTime() + 10 * 60_000; t += 5_000) {
+      const now = new Date(t);
+      const r = await autoCompleteDeliveredTasks(
+        baseDeps(taskStore, resolveMergedPr, { tracker, now: () => now, auditLogPath }),
+        { throttle: true },
+      );
+      if (r.completedTaskIds.includes(id)) {
+        completedAt = now;
+        break;
+      }
+    }
+    expect(completedAt).toBeDefined();
+    const waited = completedAt!.getTime() - signalAt.getTime();
+    expect(waited).toBeGreaterThanOrEqual(DEFAULT_FINISHED_MERGED_SETTLE_MS);
+    expect(waited).toBeLessThanOrEqual(DEFAULT_FINISHED_MERGED_SETTLE_MS + DELIVERED_SWEEP_MIN_INTERVAL_MS);
+    expect(taskStore.getTask(id)?.status).toBe('completed');
+
+    const rows = (await readFile(auditLogPath, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(rows).toEqual([
+      expect.objectContaining({
+        type: 'task.deliveredAutoComplete',
+        taskId: id,
+        reason: 'finished_after_merge',
+        prNumber: 3941,
+        prUrl: 'https://github.com/kookr-ai/kookr/pull/3941',
+        settleMs: DEFAULT_FINISHED_MERGED_SETTLE_MS,
+      }),
+    ]);
+    expect(taskStore.getTask(id)?.completionDigest?.bullets[0]).toContain('settle time');
+  });
+
+  test('does not complete inside the settle time', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    saidFinished(taskStore, id);
+    const r = await sweepAt(taskStore, plus(AFTER_SETTLE, -1_000));
+    expect(r.completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+  });
+
+  test('AC negative: a "finished" signal with no merged PR is left alone', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    taskStore.setPendingSignal(id, { kind: 'completion_ready', raisedAt: SIGNAL_AT.toISOString() });
+    const r = await autoCompleteDeliveredTasks(
+      baseDeps(taskStore, () => null, { now: () => plus(SIGNAL_AT, 60 * 60_000) }),
+    );
+    expect(r.completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+    // The pending signal is still there for the existing "finished" paths.
+    expect(taskStore.getTask(id)?.pendingSignal?.kind).toBe('completion_ready');
+  });
+
+  test('protection: a turn in progress blocks the completion', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    saidFinished(taskStore, id);
+    taskStore.updateSession(id, `kookr-${id}`, { lastTurnState: 'running' });
+    expect((await sweepAt(taskStore, AFTER_SETTLE)).completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+
+    // Positive control: once the turn ends, the same sweep completes it.
+    taskStore.updateSession(id, `kookr-${id}`, { lastTurnState: 'completed_turn' });
+    expect((await sweepAt(taskStore, AFTER_SETTLE)).completedTaskIds).toEqual([id]);
+  });
+
+  test('protection: a person typing in the terminal (interactive pane) blocks the completion', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    saidFinished(taskStore, id);
+    let pane = HUMAN_PANE;
+    const getTaskPaneText = vi.fn(async () => pane);
+    expect((await sweepAt(taskStore, AFTER_SETTLE, { getTaskPaneText })).completedTaskIds).toEqual([]);
+    expect(getTaskPaneText).toHaveBeenCalledWith(id);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+
+    pane = 'just some agent output';
+    expect((await sweepAt(taskStore, AFTER_SETTLE, { getTaskPaneText })).completedTaskIds).toEqual([id]);
+  });
+
+  test('protection: a viewer with the task attached blocks the completion', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    saidFinished(taskStore, id);
+    const r = await sweepAt(taskStore, AFTER_SETTLE, { isTaskSelectedByAnyConnection: () => true });
+    expect(r.completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+  });
+
+  test('protection: a confirmed-open PR blocks the completion', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    saidFinished(taskStore, id);
+    const r = await sweepAt(taskStore, AFTER_SETTLE, { isHoldingOpenPr: () => true });
+    expect(r.completedTaskIds).toEqual([]);
+  });
+
+  test('protection: an active Ralph loop blocks the completion', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    saidFinished(taskStore, id);
+    taskStore.getTaskForMutation(id)!.ralphLoop = { status: 'running' } as Task['ralphLoop'];
+    expect((await sweepAt(taskStore, AFTER_SETTLE)).completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+  });
+
+  test('protection: a paused provider blocks the completion', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    saidFinished(taskStore, id);
+    const r = await sweepAt(taskStore, AFTER_SETTLE, { isProviderPaused: () => true });
+    expect(r.completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+  });
+
+  test('protection: at most two completions per minute, and a vetoed task does not use a slot', async () => {
+    const taskStore = new TaskStore();
+    const ids = [0, 1, 2, 3].map((i) => makeRunningTask(taskStore, `task ${i}`));
+    for (const id of ids) saidFinished(taskStore, id);
+    // The first task listed is attended; it must not use one of the two slots.
+    const attended = ids[0]!;
+    const isTaskSelectedByAnyConnection = (taskId: string) => taskId === attended;
+    const tracker = createDeliveredCompletionTracker();
+
+    const first = await sweepAt(taskStore, AFTER_SETTLE, { tracker, isTaskSelectedByAnyConnection }, { throttle: true });
+    expect(first.completedTaskIds).toEqual([ids[1], ids[2]]);
+
+    // Within the same minute: throttled, nothing more.
+    const throttled = await sweepAt(
+      taskStore, plus(AFTER_SETTLE, 30_000), { tracker, isTaskSelectedByAnyConnection }, { throttle: true },
+    );
+    expect(throttled.completedTaskIds).toEqual([]);
+
+    const next = await sweepAt(
+      taskStore, plus(AFTER_SETTLE, DELIVERED_SWEEP_MIN_INTERVAL_MS), { tracker, isTaskSelectedByAnyConnection }, { throttle: true },
+    );
+    expect(next.completedTaskIds).toEqual([ids[3]]);
+    expect(taskStore.getTask(attended)?.status).toBe('inProgress');
+  });
+
+  test('a new user prompt after the "finished" signal returns the task to the cleanup budget', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    saidFinished(taskStore, id);
+    taskStore.clearFinishedSignal(id);
+    expect((await sweepAt(taskStore, AFTER_SETTLE)).completedTaskIds).toEqual([]);
   });
 });

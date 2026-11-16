@@ -636,6 +636,12 @@ export class TaskStore {
     } else {
       task.pendingSignal = signal;
     }
+    // Issue #3930: remember the latest "finished" raise separately from the
+    // pending signal, which the event pipeline clears on the next live-turn
+    // hook event (often the PostToolUse of the very `kookr signal` call).
+    if (signal.kind === 'completion_ready') {
+      task.finishedSignalAt = signal.raisedAt;
+    }
     if (signal.signalId) {
       this.recordProcessedSignal(signal.signalId, taskId, signal.kind);
     }
@@ -749,6 +755,21 @@ export class TaskStore {
     const task = this.tasks.get(taskId);
     if (!task?.pendingSignal) return false;
     delete task.pendingSignal;
+    task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
+    return true;
+  }
+
+  /**
+   * Forget that the task said "finished" (issue #3930): a new user prompt means
+   * more work, so an earlier `completion_ready` raise no longer describes the
+   * task. Does not touch {@link pendingSignal}. Returns true when a record was
+   * actually cleared.
+   */
+  clearFinishedSignal(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task?.finishedSignalAt) return false;
+    delete task.finishedSignalAt;
     task.updatedAt = new Date();
     this.markTaskDirty(taskId);
     return true;

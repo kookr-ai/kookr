@@ -21,9 +21,17 @@
  * The budget clock starts when the sweep FIRST observes the merge (tracked in
  * memory, mirroring the auto-close throttle), so a just-delivered task always
  * gets one full budget window of cleanup before completion.
+ *
+ * Settle path (issue #3930): a task that said "finished" (`finishedSignalAt`)
+ * after its own PR merged does not need the cleanup budget. It completes once
+ * the short settle time (default 2 minutes) has passed since that signal —
+ * provided the shared live-work veto finds nobody at work: no live turn, no
+ * human prompt in the pane, no viewer attached, no confirmed-open PR. A
+ * deferral does not use one of the per-tick completion slots.
  */
 
 import { completeTask, type LifecycleDeps } from './agent-lifecycle.js';
+import { evaluateLiveWorkVeto, liveWorkVetoReasonText } from './live-work-veto.js';
 import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
@@ -33,11 +41,13 @@ import {
   removeSignalOutboxEntry,
 } from '../core/signal-outbox.js';
 import {
+  DEFAULT_FINISHED_MERGED_SETTLE_MS,
   DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS,
   buildDeliveredCompletionDigest,
   buildDeliveredCompletionNote,
   classifyDeliveredCompletion,
   selectDeliveredMergedPr,
+  type DeliveredCompletionPath,
   type MergedPrAttribution,
 } from '../core/completion/index.js';
 import type { GitHubStateStore } from '../core/github-state-store.js';
@@ -134,6 +144,18 @@ export interface AutoCompleteDeliveredDeps {
   /** Cross-tick budget-clock + throttle state (created once per server). */
   tracker: DeliveredCompletionTracker;
   /**
+   * Live-work veto inputs for the settle path (issue #3930), same contract as
+   * the completion-ready sweep: the live pane text (a human prompt or
+   * permission dialog vetoes), whether a viewer has the task attached, and
+   * whether the task holds a confirmed-open PR (only a definite `true` vetoes).
+   * Each is optional; a missing reader never vetoes.
+   */
+  getTaskPaneText?: (
+    taskId: string,
+  ) => string | undefined | null | Promise<string | undefined | null>;
+  isTaskSelectedByAnyConnection?: (taskId: string) => boolean;
+  isHoldingOpenPr?: (task: Task) => boolean | undefined;
+  /**
    * Durable signal-outbox spool dir (#1541). When set, the raised
    * `completion_ready` is appended before it is applied and removed after, so a
    * crash mid-raise replays on restart. Omit to skip the durable write.
@@ -148,6 +170,8 @@ export interface AutoCompleteDeliveredDeps {
 
 export interface AutoCompleteDeliveredOptions {
   budgetMs?: number;
+  /** Settle time after a post-merge "finished" signal (issue #3930). */
+  settleMs?: number;
   maxPerTick?: number;
   minIntervalMs?: number;
   /** When true, apply the `lastSweepAt` throttle on `deps.tracker`. */
@@ -218,28 +242,53 @@ async function recordDeliveredAutoComplete(
   deps: AutoCompleteDeliveredDeps,
   task: Task,
   merged: MergedPrAttribution,
-  elapsedSinceMergeMs: number,
-  budgetMs: number,
+  elapsedMs: number,
+  waitMs: number,
+  path: DeliveredCompletionPath,
 ): Promise<void> {
+  const settle = path === 'finished_after_merge';
   await appendAuditRow(deps.auditLogPath, {
     type: 'task.deliveredAutoComplete',
     timestamp: nowISO(),
     actor: DELIVERED_AUTO_COMPLETE_ACTOR,
     taskId: task.id,
+    reason: path,
     prNumber: merged.prNumber,
     ...(merged.prUrl ? { prUrl: merged.prUrl } : {}),
-    elapsedSinceMergeMs,
-    budgetMs,
+    // Budget path: time since the merge was first observed. Settle path: time
+    // since the post-merge "finished" signal.
+    ...(settle ? { elapsedSinceFinishedMs: elapsedMs, settleMs: waitMs } : { elapsedSinceMergeMs: elapsedMs, budgetMs: waitMs }),
   });
+  const minutes = Math.max(1, Math.round(waitMs / 60_000));
   deps.broadcastToAll?.({
     type: 'alert',
     agentId: task.sessions[task.sessions.length - 1]?.tmuxSession ?? '',
     summary: `Auto-completed on delivery: ${task.name ?? 'Task'}`,
-    details:
-      `PR #${merged.prNumber} merged; post-merge cleanup exceeded the `
-      + `${Math.round(budgetMs / 60_000)}m budget — completed automatically to free the slot.`,
+    details: settle
+      ? `PR #${merged.prNumber} merged and the task said it was finished; completed after the `
+        + `${minutes}m settle time to free the slot.`
+      : `PR #${merged.prNumber} merged; post-merge cleanup exceeded the `
+        + `${minutes}m budget — completed automatically to free the slot.`,
     severity: 'info',
   });
+}
+
+/**
+ * Settle-path veto (issue #3930): re-read the task and refuse when someone is
+ * still at work. Cheap checks first; the pane is read only when they pass.
+ * Returns the veto reason text, or null when the task may be completed.
+ */
+async function settlePathVeto(deps: AutoCompleteDeliveredDeps, taskId: string): Promise<string | null> {
+  const fresh = deps.taskStore.getTask(taskId);
+  if (!fresh || fresh.status !== 'inProgress') return 'task is no longer running';
+  const present = deps.isTaskSelectedByAnyConnection?.(taskId) ?? false;
+  const holdingOpenPr = deps.isHoldingOpenPr?.(fresh);
+  let veto = evaluateLiveWorkVeto(fresh, { present, holdingOpenPr });
+  if (!veto.veto && deps.getTaskPaneText) {
+    const paneText = await deps.getTaskPaneText(taskId);
+    veto = evaluateLiveWorkVeto(fresh, { paneText, present, holdingOpenPr });
+  }
+  return veto.veto ? liveWorkVetoReasonText(veto.reason) : null;
 }
 
 /**
@@ -254,6 +303,7 @@ export async function autoCompleteDeliveredTasks(
   const now = deps.now?.() ?? new Date();
   const nowMs = now.getTime();
   const budgetMs = opts.budgetMs ?? DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS;
+  const settleMs = opts.settleMs ?? DEFAULT_FINISHED_MERGED_SETTLE_MS;
   const tracker = deps.tracker;
 
   if (opts.throttle) {
@@ -286,15 +336,27 @@ export async function autoCompleteDeliveredTasks(
       now,
       firstObservedMergedAtMs,
       budgetMs,
+      settleMs,
       providerPaused,
     });
     if (!decision.autoComplete) continue;
 
     // Per-batch cap: leave the rest for the next tick (drains a backlog gently).
     if (completedThisTick >= maxPerTick) break;
+
+    const path: DeliveredCompletionPath =
+      decision.reason === 'finished_after_merge' ? 'finished_after_merge' : 'post_merge_budget_exceeded';
+    const waitMs = path === 'finished_after_merge' ? settleMs : budgetMs;
+    if (path === 'finished_after_merge') {
+      const veto = await settlePathVeto(deps, task.id);
+      if (veto) {
+        console.warn(`[delivered-complete] deferred task ${task.id} — ${veto} (PR #${merged.prNumber} merged)`);
+        continue;
+      }
+    }
     completedThisTick += 1;
 
-    const note = buildDeliveredCompletionNote(merged.prNumber, budgetMs);
+    const note = buildDeliveredCompletionNote(merged.prNumber, waitMs, path);
     try {
       await raiseCompletionReadyViaOutbox({
         taskStore: deps.taskStore,
@@ -316,11 +378,11 @@ export async function autoCompleteDeliveredTasks(
       await completeTask(task.id, deps.lifecycleDeps, {
         actorSource: DELIVERED_AUTO_COMPLETE_ACTOR,
       });
-      deps.taskStore.setCompletionDigest(task.id, buildDeliveredCompletionDigest(merged, budgetMs));
+      deps.taskStore.setCompletionDigest(task.id, buildDeliveredCompletionDigest(merged, waitMs, path));
       deps.taskStore.clearPendingSignal(task.id);
       tracker.forget(task.id);
       completedTaskIds.push(task.id);
-      await recordDeliveredAutoComplete(deps, task, merged, decision.elapsedSinceMergeMs ?? 0, budgetMs);
+      await recordDeliveredAutoComplete(deps, task, merged, decision.elapsedSinceMergeMs ?? 0, waitMs, path);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[delivered-complete] auto-complete failed for task ${task.id}: ${message}`);
