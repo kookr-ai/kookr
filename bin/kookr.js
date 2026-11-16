@@ -4,7 +4,7 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
 import { importMaybeTs } from './import-maybe-ts.js';
 
@@ -26,6 +26,7 @@ Usage:
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
   kookr merge <PR> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]  Review-gated squash-merge from any repo; deletes the head branch via the API.
+  kookr check-verification <PR> [--repo OWNER/NAME] [--json]  Classify a PR head's CI checks from any repo (exit 0 green/none, 10 never-executed, 20 executed-red, 30 pending).
   kookr status [--json] [--require-ready] [--fail-on <critical|warning|info|none>]
                                                         Print a read-only server snapshot.
   kookr brief [--json]          What is waiting on you, across all projects (permission prompts, questions, reviews, train).
@@ -186,6 +187,13 @@ async function main({
   // without --repo the PR is resolved from the current git remote.
   if (command === 'merge') {
     return exit(await runMergeCommand(rest, { env, err }));
+  }
+
+  // CI check classifier (issue #3643). Runs scripts/check-verification.mjs
+  // from this checkout with the caller's cwd, so a bare PR number resolves
+  // against the caller's repository; its exit code is passed through as is.
+  if (command === 'check-verification') {
+    return exit(runCheckVerificationCommand(rest, { env, err }));
   }
 
   if (command === 'status') {
@@ -441,6 +449,24 @@ function runMergeCommand(argv, { env = process.env, err = console } = {}) {
       finish(code ?? (signal ? 128 + (osConstants.signals[signal] ?? 0) : 1));
     });
   });
+}
+
+function runCheckVerificationCommand(argv, { env = process.env, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const script = join(here, '..', 'scripts', 'check-verification.mjs');
+  if (!existsSync(script)) {
+    // The npm package ships bin/ and dist/ but not scripts/ (see runMergeCommand).
+    err.error(`[kookr] check classifier not found at ${script}`);
+    err.error('[kookr] `kookr check-verification` needs a Kookr source checkout; run it from that checkout\'s bin/kookr.');
+    return 1;
+  }
+  // Read-only, so a plain synchronous run is enough: no signal forwarding.
+  const result = spawnSync(process.execPath, [script, ...argv], { stdio: 'inherit', env });
+  if (result.error) {
+    err.error(`[kookr] could not run the check classifier: ${result.error.message}`);
+    return 1;
+  }
+  return result.status ?? (result.signal ? 128 + (osConstants.signals[result.signal] ?? 0) : 1);
 }
 
 async function startServer({ err = console, exit = process.exit } = {}) {

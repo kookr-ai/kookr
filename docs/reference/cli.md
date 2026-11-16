@@ -788,6 +788,37 @@ directory, as with `gh`. The verb runs the wrapper from the checkout that the
 `kookr` on `PATH` belongs to, so it needs a source checkout: the npm package
 does not ship `scripts/`.
 
+## `kookr check-verification`
+
+Classify the GitHub check runs on a pull request's head commit, from any
+repository (issue #3643). It runs `scripts/check-verification.mjs`, the
+classifier `kookr merge` uses, so the delivery playbooks can find out the CI
+state before acting on it instead of assuming it.
+
+```bash
+kookr check-verification <PR> [--repo OWNER/NAME] [--json]
+kookr check-verification --sha <SHA> --repo OWNER/NAME [--json]
+kookr check-verification --from-file <check-runs.json> [--json]
+```
+
+| Exit | Classification | Meaning |
+|---|---|---|
+| `0` | `executed-green` / `none-required` | Every check ran and passed, or the head has no checks. |
+| `10` | `never-executed` | A check "failed" without running (a billing or quota block). Merge only with recorded local-gate evidence. |
+| `20` | `executed-red` | A check ran and failed on the code. Never merge. |
+| `30` | `pending` | A check is still running, or was cancelled. Wait. |
+| `1` | — | Usage or runtime error. |
+
+When one check has several runs on the head (re-runs of the same job in the
+same workflow run), the latest run decides it: a failed run followed by a
+successful re-run is green. One exception: a re-run that never executed does not
+hide an earlier run that failed on the code, so that check stays
+`executed-red`. Checks with the same name in different workflows are classified
+separately.
+
+Without `--repo`, the PR is resolved from the git remote of the current
+directory. Like `kookr merge`, the verb needs a source checkout.
+
 Exit codes are the wrapper's: `0` merged (a failed branch delete or a
 still-open closing issue is a warning and does not change it); `1` pre-flight or
 merge failed; `2` usage error; `3` checks failed, the PR conflicts with its base

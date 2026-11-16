@@ -24,7 +24,11 @@
 // `gh` to fetch the head SHA's check runs plus the annotations of any failing
 // run, then prints the classification.
 //
-// Usage:
+// When a check has several attempts on the head SHA (re-runs), the latest
+// attempt decides it, except that a never-executed re-run does not erase an
+// earlier attempt that ran and failed (see `selectDecidingRuns`).
+//
+// Usage (also `kookr check-verification`, which runs this file from any repo):
 //   node scripts/check-verification.mjs <pr-number> [--repo owner/name]
 //   node scripts/check-verification.mjs --sha <sha> --repo owner/name
 //   node scripts/check-verification.mjs --from-file <check-runs.json> [--json]
@@ -174,8 +178,79 @@ export function classifyRun(run) {
   return { name, status, conclusion, verdict: 'pending', reason: 'unknown-conclusion' };
 }
 
+// Which attempts are the same check. A re-run of a GitHub Actions job keeps the
+// workflow run, so its new check run lands in the same check suite under the
+// same name. Two different workflows can share a job name on one SHA (three
+// "Dependabot" runs in separate suites in the lucy-green fixture), so the suite
+// is part of the key: a green in one workflow never hides a red in another.
+// Runs with no name (or no suite/app data) still group by whatever is present.
+function attemptKey(run) {
+  const name = run && (run.name || run.context);
+  if (!name) return null;
+  const app = run.app && run.app.id != null ? run.app.id : '';
+  const suite = run.check_suite && run.check_suite.id != null ? run.check_suite.id : '';
+  return `${app}|${suite}|${name}`;
+}
+
+// Creation order of two attempts of one check. Check-run ids grow with
+// creation time, so the id is the order; timestamps are only a fallback (a
+// pending re-run has no completed_at, and a billing-blocked one no started_at).
+function isLaterAttempt(candidate, current) {
+  const a = Number(candidate.run && candidate.run.id);
+  const b = Number(current.run && current.run.id);
+  if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a > b;
+  const ta = Date.parse((candidate.run && (candidate.run.started_at || candidate.run.completed_at)) || '');
+  const tb = Date.parse((current.run && (current.run.started_at || current.run.completed_at)) || '');
+  if (!Number.isNaN(ta) && !Number.isNaN(tb) && ta !== tb) return ta > tb;
+  return candidate.index > current.index;
+}
+
 /**
- * Classify the whole set of check runs for a head SHA.
+ * Collapse the attempts of each check to the one that decides it: the latest
+ * attempt, so a stale failure followed by a successful re-run is green. One
+ * exception keeps the merge gate safe: a latest attempt that never executed
+ * (billing/quota) does not erase an earlier attempt that RAN and failed on this
+ * head — that check stays executed-red.
+ * @returns {{runs: Array<object>, superseded: number}} the deciding verdicts
+ *   (in input order) and how many earlier attempts were dropped.
+ */
+export function selectDecidingRuns(checkRuns) {
+  const groups = new Map();
+  const order = [];
+  checkRuns.forEach((run, index) => {
+    const entry = { run, index, verdict: classifyRun(run) };
+    const key = attemptKey(run);
+    if (key == null) {
+      order.push([entry]);
+      return;
+    }
+    let group = groups.get(key);
+    if (!group) {
+      group = [];
+      groups.set(key, group);
+      order.push(group);
+    }
+    group.push(entry);
+  });
+
+  let superseded = 0;
+  const deciding = order.map((group) => {
+    superseded += group.length - 1;
+    let latest = group[0];
+    for (const entry of group) if (isLaterAttempt(entry, latest)) latest = entry;
+    if (latest.verdict.verdict === 'never-executed') {
+      const ranRed = group.find((e) => e.verdict.verdict === 'executed-red');
+      if (ranRed) return ranRed;
+    }
+    return latest;
+  });
+  deciding.sort((x, y) => x.index - y.index);
+  return { runs: deciding.map((e) => e.verdict), superseded };
+}
+
+/**
+ * Classify the whole set of check runs for a head SHA. When one check has
+ * several attempts (re-runs), the latest decides; see `selectDecidingRuns`.
  * @param {Array<object>|{check_runs: Array<object>}} input raw check-runs
  *   (the `gh api .../check-runs` response, or just its array), with each failing
  *   run optionally carrying an `annotations` array.
@@ -188,9 +263,10 @@ export function classifyCheckRuns(input) {
       ? input.check_runs
       : [];
 
-  const runs = checkRuns.map(classifyRun);
+  const { runs, superseded } = selectDecidingRuns(checkRuns);
   const counts = {
     total: runs.length,
+    superseded,
     passed: runs.filter((r) => r.verdict === 'passed').length,
     executedRed: runs.filter((r) => r.verdict === 'executed-red').length,
     neverExecuted: runs.filter((r) => r.verdict === 'never-executed').length,
@@ -283,8 +359,10 @@ function fetchCheckRunPages(repo, sha) {
     // `filter=all` (not the API default `latest`): a rerun keeps the same commit
     // SHA, so a check that RAN and failed and was then re-run into a billing block
     // would, under `latest`, show only the never-executed rerun and hide the real
-    // failure. We must see every attempt so "ran and failed on this head" is never
-    // waived. Attempts have distinct ids, so the dedup-by-id below keeps them all.
+    // failure. We fetch every attempt and let `selectDecidingRuns` pick the one
+    // that decides each check (the latest, except that a never-executed rerun
+    // never erases an earlier executed-red). Attempts have distinct ids, so the
+    // dedup-by-id below keeps them all.
     const parsed = JSON.parse(
       gh(['api', `repos/${repo}/commits/${sha}/check-runs?filter=all&per_page=${CHECK_RUNS_PER_PAGE}&page=${page}`]),
     );
@@ -428,7 +506,7 @@ function parseArgs(argv) {
   return opts;
 }
 
-const USAGE = `Usage:
+const USAGE = `Usage (kookr check-verification takes the same arguments):
   node scripts/check-verification.mjs <pr-number> [--repo owner/name] [--json]
   node scripts/check-verification.mjs --sha <sha> --repo owner/name [--json]
   node scripts/check-verification.mjs --from-file <check-runs.json> [--json]`;
@@ -437,6 +515,9 @@ function printHuman(result, context) {
   const label = result.classification.toUpperCase();
   if (context) console.log(context);
   console.log(`Classification: ${label} — ${result.summary}`);
+  if (result.counts.superseded > 0) {
+    console.log(`  (${result.counts.superseded} earlier attempt(s) superseded by a re-run of the same check)`);
+  }
   for (const run of result.runs) {
     const detail = run.reason ? ` (${run.reason})` : '';
     console.log(`  - ${run.name}: ${run.verdict}${detail}`);

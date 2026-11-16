@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -13,7 +15,10 @@ import {
   CLASSIFICATIONS,
 } from './check-verification.mjs';
 
-const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'check-verification');
+const scriptsDir = dirname(fileURLToPath(import.meta.url));
+const fixturesDir = join(scriptsDir, 'fixtures', 'check-verification');
+const CLASSIFIER = join(scriptsDir, 'check-verification.mjs');
+const KOOKR_BIN = join(scriptsDir, '..', 'bin', 'kookr.js');
 
 function loadFixture(name: string): unknown {
   return JSON.parse(readFileSync(join(fixturesDir, name), 'utf8'));
@@ -228,5 +233,173 @@ describe('EXIT_CODES', () => {
     expect(EXIT_CODES['never-executed']).toBe(10);
     expect(EXIT_CODES['executed-red']).toBe(20);
     expect(EXIT_CODES.pending).toBe(30);
+  });
+});
+
+// Several attempts of one check on the head SHA (issue #3643). Ids grow with
+// creation, so the higher id is the re-run.
+describe('classifyCheckRuns — re-runs of the same check', () => {
+  const suite = { id: 500 };
+  const app = { id: 15368 };
+  const failedOnCode = {
+    id: 101,
+    name: 'unit',
+    app,
+    check_suite: suite,
+    status: 'completed',
+    conclusion: 'failure',
+    started_at: '2026-11-10T10:00:00Z',
+    completed_at: '2026-11-10T10:03:00Z',
+    annotations: [{ message: 'AssertionError: expected 1 to be 2' }],
+  };
+  const passedRerun = {
+    id: 102,
+    name: 'unit',
+    app,
+    check_suite: suite,
+    status: 'completed',
+    conclusion: 'success',
+    started_at: '2026-11-10T11:00:00Z',
+    completed_at: '2026-11-10T11:03:00Z',
+  };
+  const billingBlockedRerun = {
+    id: 102,
+    name: 'unit',
+    app,
+    check_suite: suite,
+    status: 'completed',
+    conclusion: 'failure',
+    started_at: null,
+    completed_at: '2026-11-10T11:00:04Z',
+  };
+  const runningRerun = {
+    id: 102,
+    name: 'unit',
+    app,
+    check_suite: suite,
+    status: 'in_progress',
+    conclusion: null,
+    started_at: '2026-11-10T11:00:00Z',
+    completed_at: null,
+  };
+
+  it('classifies a stale failure followed by a successful re-run as green', () => {
+    const result = classifyCheckRuns({ check_runs: [failedOnCode, passedRerun] });
+    expect(result.classification).toBe(CLASSIFICATIONS.EXECUTED_GREEN);
+    expect(result.mergeSafe).toBe(true);
+    expect(result.runs).toHaveLength(1);
+    expect(result.counts.superseded).toBe(1);
+  });
+
+  it('decides by creation order (id), not by the order the API lists the runs', () => {
+    // The API lists newest first; the earlier failure comes second here.
+    expect(classifyCheckRuns([passedRerun, failedOnCode]).classification).toBe(CLASSIFICATIONS.EXECUTED_GREEN);
+    // And a failing re-run after a pass is red, whichever order they arrive in.
+    const passedFirst = { ...passedRerun, id: 101 };
+    const failedLater = { ...failedOnCode, id: 102 };
+    expect(classifyCheckRuns([failedLater, passedFirst]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    expect(classifyCheckRuns([passedFirst, failedLater]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+  });
+
+  it('waits on a re-run that is still running', () => {
+    expect(classifyCheckRuns([failedOnCode, runningRerun]).classification).toBe(CLASSIFICATIONS.PENDING);
+  });
+
+  it('keeps a check that ran and failed red when its re-run never executed', () => {
+    const result = classifyCheckRuns([billingBlockedRerun, failedOnCode]);
+    expect(result.classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    expect(result.mergeSafe).toBe(false);
+  });
+
+  it('classifies a never-executed attempt followed by a successful re-run as green', () => {
+    const blockedFirst = { ...billingBlockedRerun, id: 101 };
+    expect(classifyCheckRuns([blockedFirst, passedRerun]).classification).toBe(CLASSIFICATIONS.EXECUTED_GREEN);
+  });
+
+  it('does not let a green in one workflow hide a red of the same name in another', () => {
+    const otherWorkflowPass = { ...passedRerun, check_suite: { id: 501 } };
+    const result = classifyCheckRuns([failedOnCode, otherWorkflowPass]);
+    expect(result.classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    expect(result.counts.superseded).toBe(0);
+  });
+
+  it('never merges runs that have no name', () => {
+    const unnamedRed = { ...failedOnCode, name: undefined };
+    const unnamedGreen = { ...passedRerun, name: undefined };
+    expect(classifyCheckRuns([unnamedRed, unnamedGreen]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+  });
+});
+
+// `kookr check-verification` (issue #3643): the same classifier, reachable from
+// any repository.
+describe('kookr check-verification', () => {
+  function run(file: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env) {
+    return spawnSync(process.execPath, [file, ...args], { cwd, env, encoding: 'utf8' });
+  }
+
+  it('returns the same exit codes as the script, from a cwd outside the kookr repo', () => {
+    const elsewhere = mkdtempSync(join(tmpdir(), 'kookr-check-verification-'));
+    try {
+      const pendingFile = join(elsewhere, 'pending.json');
+      writeFileSync(pendingFile, JSON.stringify([{ name: 'unit', status: 'in_progress', conclusion: null }]));
+      const cases: Array<[string, number]> = [
+        [join(fixturesDir, 'lucy-green.check-runs.json'), 0],
+        [join(fixturesDir, 'lucy-1843-billing-failed.check-runs.json'), 10],
+        [join(fixturesDir, 'kookr-genuine-executed-failure.check-runs.json'), 20],
+        [pendingFile, 30],
+      ];
+      for (const [file, code] of cases) {
+        const viaKookr = run(KOOKR_BIN, ['check-verification', '--from-file', file], elsewhere);
+        const viaScript = run(CLASSIFIER, ['--from-file', file], elsewhere);
+        expect(viaKookr.status).toBe(code);
+        expect(viaScript.status).toBe(code);
+        expect(viaKookr.stdout).toBe(viaScript.stdout);
+      }
+      expect(run(KOOKR_BIN, ['check-verification', '--bogus'], elsewhere).status).toBe(1);
+      expect(run(KOOKR_BIN, ['check-verification', '--help'], elsewhere).status).toBe(0);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('without --repo, resolves the PR against the caller\'s repository', () => {
+    const elsewhere = mkdtempSync(join(tmpdir(), 'kookr-check-verification-'));
+    try {
+      const stubDir = join(elsewhere, 'bin');
+      spawnSync('mkdir', [stubDir]);
+      const runs = {
+        total_count: 2,
+        check_runs: [
+          { id: 2, name: 'unit', status: 'completed', conclusion: 'success', output: { annotations_count: 0 } },
+          { id: 1, name: 'unit', status: 'completed', conclusion: 'failure', started_at: '2026-11-10T10:00:00Z', completed_at: '2026-11-10T10:03:00Z', output: { annotations_count: 0 } },
+        ],
+      };
+      writeFileSync(join(elsewhere, 'runs.json'), JSON.stringify(runs));
+      // A gh stub that logs its cwd and serves the classifier's reads.
+      writeFileSync(
+        join(stubDir, 'gh'),
+        `#!/bin/sh
+printf '%s\\n' "$PWD" >> "${elsewhere}/cwd.log"
+case "$*" in
+  "repo view"*) echo caller/repo ;;
+  "api repos/caller/repo/pulls/7 "*) echo 0123456789abcdef0123456789abcdef01234567 ;;
+  *check-runs*) cat "${elsewhere}/runs.json" ;;
+  *"/status") echo '{"state":"pending","total_count":0,"statuses":[]}' ;;
+  *) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac
+`,
+      );
+      chmodSync(join(stubDir, 'gh'), 0o755);
+      const env = { ...process.env, PATH: `${stubDir}:${process.env.PATH ?? ''}` };
+      const result = run(KOOKR_BIN, ['check-verification', '7'], elsewhere, env);
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('caller/repo #7');
+      expect(result.stdout).toContain('EXECUTED-GREEN');
+      const cwds = new Set(readFileSync(join(elsewhere, 'cwd.log'), 'utf8').trim().split('\n'));
+      expect([...cwds]).toEqual([elsewhere]);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 });

@@ -48,6 +48,14 @@ describe('kookr dispatcher', () => {
     expect(deps.errors).toEqual([]);
   });
 
+  it('dispatches check-verification to the classifier script (#3643)', async () => {
+    const deps = makeDeps();
+    await main({ argv: ['check-verification', '--help'], env: process.env, out: deps.out, err: deps.err, exit: deps.exit });
+    // The script's own --help exits 0; an unknown verb would exit 2.
+    expect(deps.codes).toEqual([0]);
+    expect(deps.errors).toEqual([]);
+  });
+
   it('dispatches status help through the main binary', async () => {
     const deps = makeDeps();
     await main({ argv: ['status', '--help'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
