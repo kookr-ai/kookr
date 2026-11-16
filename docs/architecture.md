@@ -64,8 +64,8 @@ On each hook event, the supervisor:
 
 A separate 5-second liveness interval reconciles session state against the dtach backend (detecting dead sessions), but event monitoring is purely event-driven. The `SessionHealthService` composes that backend state with PTY/ring progress, hook freshness, transcript mtime, task turn state, browser bridge replay/live timing, and the server restart epoch. It publishes the same versioned projection to `AgentState.sessionHealth` and `GET /api/diagnostics/session-health`; `detectCoordinatedStall` adds one fleet-level root diagnostic when independent sessions stop advancing together.
 
-Codex also reports actual provider output while a response is still streaming.
-Its `Notification(provider_progress)` carries an observation timestamp and the
+Codex, and opencode through its generated plugin, also report actual provider output while a response is still streaming.
+Each `Notification(provider_progress)` carries an observation timestamp and the
 session/turn identity, without model content. A dedicated pipeline path accepts
 only recent live observations for the established parent session and updates the
 watchdog clock with that original time. Session health reads the same clock.

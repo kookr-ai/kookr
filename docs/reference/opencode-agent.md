@@ -309,13 +309,19 @@ plugin, workspace and data are mounted at launch.
 
 ## Limits
 
-- A healthy worker can flash `stuckReason=hung_suspect` for a few seconds while the
-  model generates a long tool call (for example writing a large file) with no hook
-  for more than 30 s: Claude sessions are protected by transcript-file growth, which
-  has no opencode equivalent (opencode writes its DB when a part finishes), so the
-  watchdog sees a frozen pane, no tool in progress and no token activity. It clears
-  with the next hook event; it does not trigger a reap (that needs the much larger
-  reaper silence threshold).
+- While the model streams a long tool call (for example a large Write), opencode
+  publishes no event and writes nothing to its database until the call is
+  complete, so a healthy worker can go 40 s or more without a hook. To show that
+  it is still working, the generated plugin reads the model's streamed replies as
+  they arrive (it wraps `fetch` inside the opencode process and reads every POST
+  reply streamed as `text/event-stream`, which in practice means the model's, plus
+  any MCP tool that streams over HTTP). When one carries real output (a
+  non-empty text, reasoning or tool-argument field), the plugin sends
+  `Notification(provider_progress)`, at most once every 10 s. Kookr handles it as
+  it does for Codex: it refreshes the session's freshness without adding activity
+  entries. Pings, empty deltas, SSE comments and `[DONE]` do not count, so a
+  provider that stops sending output still reads as `hung_suspect` once its last
+  output is more than 30 s old (issue #3534).
 
 - The Settings dialog shows the opencode rows (effort, blacklist checkbox) and the
   launch pickers offer it only when the server registered it, that is when
