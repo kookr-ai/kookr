@@ -341,7 +341,7 @@ function pickSaidFields(input: LucySaidRecordInput): Record<string, unknown> {
 
 const TRIGGERS = ['click', 'replay', 'ask'] as const;
 const PANEL_STATES = ['open', 'minimized', 'off'] as const;
-const ENDED_BY = ['finished', 'user_stop', 'superseded'] as const;
+const ENDED_BY = ['finished', 'user_stop', 'superseded', 'barge_in'] as const;
 const UNHEARD_REASONS = ['muted', 'dnd', 'audio_suspended', 'error'] as const;
 const PANEL_ACTIONS = ['enable', 'disable', 'minimize', 'restore', 'move', 'replay'] as const;
 const LIVE_TIMING_KINDS = ['end_to_first_audio', 'barge_in_duck', 'barge_in_stop', 'barge_in_rejected'] as const;

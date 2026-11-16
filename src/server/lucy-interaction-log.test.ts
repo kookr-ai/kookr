@@ -263,6 +263,13 @@ describe('LucyInteractionLog hardening (client-controlled input)', () => {
     expect(events()[0]).toMatchObject({ type: 'lucy_clip_started', trigger: 'ask' });
   });
 
+  it('keeps endedBy "barge_in" for a clip the operator talked over with Talk on (#3672)', async () => {
+    const log = createLucyInteractionLog({ filePath: file, now });
+    log.recordUi('s1', { ...base, type: 'lucy_clip_ended', clipId: 'c', endedBy: 'barge_in', playedMs: 800, totalMs: 4000 });
+    await log.flush();
+    expect(events()[0]).toMatchObject({ type: 'lucy_clip_ended', endedBy: 'barge_in' });
+  });
+
   it('replaces enum values outside the documented set with "other"', async () => {
     const log = createLucyInteractionLog({ filePath: file, now });
     log.recordUi('s1', { ...base, platform: 'plan9', type: 'lucy_clip_started', clipId: 'c', trigger: 'drag', panelState: '<script>', tabVisible: 'yes' });

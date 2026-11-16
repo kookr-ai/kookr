@@ -26,6 +26,17 @@ let fakeAudioContextInitialState: AudioContextState = 'running';
 class FakeAudioContext {
   state: AudioContextState = fakeAudioContextInitialState;
   destination = {};
+  /** Volume controls handed out; the clip players route their source through one (issue #3672). */
+  gains: Array<{ gain: { value: number; cancelScheduledValues: ReturnType<typeof vi.fn>; setValueAtTime: ReturnType<typeof vi.fn>; linearRampToValueAtTime: ReturnType<typeof vi.fn> }; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = [];
+  createGain = vi.fn(() => {
+    const node = {
+      gain: { value: 1, cancelScheduledValues: vi.fn(), setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    this.gains.push(node);
+    return node as unknown as GainNode;
+  });
 
   constructor() {
     fakeAudioContexts.push(this);

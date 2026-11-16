@@ -13,7 +13,8 @@ import { getSoundPreferenceState } from '../audio/sound-preference.js';
 import { getDndState } from './useDnd.js';
 import { emitSpeechGenerating, emitSpeechIdle, emitSpeechPlaying } from '../audio/speech-bus.js';
 import { captureLastClip, discardLastClip } from '../audio/last-clip.js';
-import { beginClipPlayback, reportClipUnheard, stopReplay, type ClipPlayback } from '../audio/clip-playback.js';
+import { beginClipPlayback, reportClipUnheard, stopReplay, type ClipEndedBy, type ClipPlayback } from '../audio/clip-playback.js';
+import { clipStarted, rampClipVolume } from '../audio/playing-clips.js';
 import type {
   SpeakAgentErrorResponse,
   SpeakAgentRequest,
@@ -159,6 +160,8 @@ export function useSpeakAgent(
   const busOwnerRef = useRef<object>({});
   // The clip currently playing from this button, so telemetry and "heard" bookkeeping close exactly once.
   const playbackRef = useRef<ClipPlayback | null>(null);
+  // Takes the playing clip off the list the hands-free conversation reads (see playing-clips.ts).
+  const releaseFloorRef = useRef<(() => void) | null>(null);
 
   const clearClientTimeout = useCallback(() => {
     if (timeoutRef.current) {
@@ -167,10 +170,13 @@ export function useSpeakAgent(
     }
   }, []);
 
-  const cleanup = useCallback((endedBy: 'user_stop' | 'superseded' = 'superseded') => {
+  const cleanup = useCallback((endedBy: Exclude<ClipEndedBy, 'finished'> = 'superseded') => {
     clearClientTimeout();
+    releaseFloorRef.current?.();
+    releaseFloorRef.current = null;
     // A clip still playing when we get here was cut short. Only an explicit stop or cancel press is
-    // 'user_stop'; another agent being selected or the component unmounting is 'superseded'.
+    // 'user_stop'; another agent being selected or the component unmounting is 'superseded'; the operator
+    // talking over it with Talk on is 'barge_in'.
     // The normal end of a clip clears the ref first, so this does not double-count.
     playbackRef.current?.end(endedBy);
     playbackRef.current = null;
@@ -450,7 +456,10 @@ export function useSpeakAgent(
 
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
+      // Through a volume control, so the hands-free conversation can turn the clip down while it checks a sound.
+      const volume = ctx.createGain();
+      volume.connect(ctx.destination);
+      source.connect(volume);
       sourceRef.current = source;
       let playbackStartedAt = decodedAt;
       let currentTimings = decodedTimings;
@@ -521,6 +530,15 @@ export function useSpeakAgent(
       setState({ status: 'playing', cached: payload.cached, timings: playTimings });
       // The clip is audibly playing: let observers follow its loudness and show its text.
       emitSpeechPlaying(busOwnerRef.current, ctx, source);
+      // With Talk on, the hands-free conversation now counts this clip as Lucy talking.
+      releaseFloorRef.current = clipStarted({
+        setVolume: (gain) => rampClipVolume(volume, ctx, gain),
+        stop: (reason) => {
+          if (sourceRef.current !== source) return;
+          cleanup(reason);
+          setState({ status: 'idle', cached: payload.cached, timings: playTimings });
+        },
+      });
     })();
   }, [agentId, anomalyType, ttsAvailable, endpoint, state.status, stop, fetcher, cleanup, clearClientTimeout]);
 

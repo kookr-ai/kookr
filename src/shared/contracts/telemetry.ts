@@ -47,7 +47,7 @@ export const TELEMETRY_EVENT_TYPES = [
    * in `lucy-interactions.jsonl`, so what she said and what the operator did
    * can be joined. Shapes:
    * - lucy_clip_started: { clipId, trigger: 'click' | 'replay' | 'ask', panelState: 'open' | 'minimized' | 'off', tabVisible: boolean }
-   * - lucy_clip_ended: { clipId, endedBy: 'finished' | 'user_stop' | 'superseded', playedMs, totalMs }
+   * - lucy_clip_ended: { clipId, endedBy: 'finished' | 'user_stop' | 'superseded' | 'barge_in', playedMs, totalMs } (`barge_in`: the operator talked over it with Talk on)
    * - lucy_clip_unheard: { clipId, reason: 'muted' | 'dnd' | 'audio_suspended' | 'error' }
    * - lucy_panel_action: { action: 'enable' | 'disable' | 'minimize' | 'restore' | 'move' | 'replay', clipId?: string }
    * - lucy_live_timing: { kind: 'end_to_first_audio' | 'barge_in_duck' | 'barge_in_stop' | 'barge_in_rejected', ms: number }, measured in the browser during hands-free talk

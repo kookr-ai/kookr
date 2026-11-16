@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { __resetPlayingClipsForTests, playingClips } from './playing-clips.js';
 
 const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
@@ -10,6 +11,7 @@ import {
   beginClipPlayback,
   replayClip,
   replayLastClip,
+  replayingClipId,
   stopReplay,
 } from './clip-playback.js';
 import { __resetLastClipForTests, captureLastClip, getClip, getLastClip, getLastClipSnapshot, markClipHeard } from './last-clip.js';
@@ -209,6 +211,18 @@ class FakeAudioContext {
   static decodeGate: Promise<void> | null = null;
   state: AudioContextState;
   destination = {};
+  currentTime = 0;
+  /** Volume controls handed out; the clip players route their source through one (issue #3672). */
+  gains: Array<{ gain: { value: number; cancelScheduledValues: ReturnType<typeof vi.fn>; setValueAtTime: ReturnType<typeof vi.fn>; linearRampToValueAtTime: ReturnType<typeof vi.fn> }; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = [];
+  createGain = vi.fn(() => {
+    const node = {
+      gain: { value: 1, cancelScheduledValues: vi.fn(), setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    this.gains.push(node);
+    return node as unknown as GainNode;
+  });
   analyser = { fftSize: 0, smoothingTimeConstant: 0 };
   sources: FakeSource[] = [];
   constructor() {
@@ -256,6 +270,7 @@ describe('replayLastClip', () => {
     __resetSpeechBusForTests();
     __resetClipPlaybackForTests();
     __resetLastClipForTests();
+    __resetPlayingClipsForTests();
     subscribeSpeechBus((event) => events.push(event));
   });
 
@@ -284,7 +299,9 @@ describe('replayLastClip', () => {
     const ctx = FakeAudioContext.instances[0];
     const source = ctx.sources[0];
     expect(source.start).toHaveBeenCalled();
-    expect(source.connect).toHaveBeenCalledWith(ctx.destination);
+    // To the speakers through one volume control, plus the loudness tap.
+    expect(source.connect).toHaveBeenCalledWith(ctx.gains[0]);
+    expect(ctx.gains[0].connect).toHaveBeenCalledWith(ctx.destination);
     expect(source.connect).toHaveBeenCalledWith(ctx.analyser);
     expect(events.map((e) => e.type)).toEqual(['idle', 'playing']);
     expect(events[1]).toEqual({ type: 'playing', analyser: ctx.analyser });
@@ -297,6 +314,40 @@ describe('replayLastClip', () => {
     expect(getLastClipSnapshot().unheard).toBe(false);
     expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'c1', endedBy: 'finished', totalMs: 2000 });
     expect(ctx.close).toHaveBeenCalled();
+  });
+
+  describe('with Talk on, the hands-free conversation can control it (#3672)', () => {
+    test('a playing replay is listed until it ends, and its volume ramps through its own control', async () => {
+      capture();
+      expect(playingClips()).toHaveLength(0);
+      await replayLastClip();
+      const ctx = FakeAudioContext.instances[0];
+      expect(playingClips()).toHaveLength(1);
+      playingClips()[0].setVolume(0.25);
+      expect(ctx.gains[0].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.25, expect.any(Number));
+      ctx.sources[0].onended?.();
+      expect(playingClips()).toHaveLength(0);
+    });
+
+    test('stopped by the operator\'s voice: logged as barge_in, the bus goes idle and the list is empty', async () => {
+      capture();
+      await replayLastClip();
+      const ctx = FakeAudioContext.instances[0];
+      playingClips()[0].stop('barge_in');
+      expect(ofType('lucy_clip_ended')).toEqual([expect.objectContaining({ clipId: 'c1', endedBy: 'barge_in' })]);
+      expect(events.at(-1)).toEqual({ type: 'idle' });
+      expect(ctx.sources[0].stop).toHaveBeenCalled();
+      expect(playingClips()).toHaveLength(0);
+      expect(replayingClipId()).toBeNull();
+    });
+
+    test('a replay that never became audible is never listed', async () => {
+      capture();
+      FakeAudioContext.initialState = 'suspended';
+      FakeAudioContext.resumeLeavesSuspended = true;
+      expect(await replayLastClip()).toBe('blocked');
+      expect(playingClips()).toHaveLength(0);
+    });
   });
 
   test('decodes a copy, so the stored bytes survive for the next replay', async () => {

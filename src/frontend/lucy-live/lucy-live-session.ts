@@ -18,6 +18,11 @@
  *    good, `speech_rejected` turns her back up. If the server never answers she is stopped
  *    anyway. A server without Silero cannot check, so there her audio is stopped at once and
  *    the server told (`barge_in`), as before.
+ * 5. Her other spoken clips (a speaker button, Replay, a question read aloud) count as her
+ *    talking too, through `audio/playing-clips.ts`: they make her busy, are turned down,
+ *    stopped or turned back up with her answer, and are logged `endedBy: 'barge_in'` when
+ *    the operator's voice stops them. A clip that starts stops the answer she is saying; an
+ *    answer that is ready while a clip plays waits for the clip to end (issue #3672).
  */
 import {
   LUCY_LIVE_SAMPLE_RATE,
@@ -31,6 +36,7 @@ import {
 } from '../../shared/contracts/lucy-live.js';
 import { createScriptProcessorFallback, tryCreateWorkletNode } from '../audio/pcm-capture.js';
 import { emitSpeechGenerating, emitSpeechIdle, emitSpeechPlaying } from '../audio/speech-bus.js';
+import { playingClips, setAnswerYield, subscribePlayingClips, type ClipStopReason } from '../audio/playing-clips.js';
 import { track } from '../telemetry.js';
 import { CONFIRMED_GUARDED_START_MS, createVoiceDetector, type VoiceDetector } from './voice-detector.js';
 
@@ -229,9 +235,15 @@ export class LucyLiveSession {
 
   private timings: LucyLiveTimings = { ...INITIAL_VIEW.timings };
 
+  /** Undo the hooks into `playing-clips.ts`. */
+  private readonly releaseAnswerYield: () => void;
+  private readonly unsubscribeClips: () => void;
+
   constructor(private readonly options: LucyLiveSessionOptions) {
     // With Silero behind the interruption, a candidate can start as soon as a normal turn does.
     this.detector = createVoiceDetector(options.bargeInConfirmation ? { guardedStartMs: CONFIRMED_GUARDED_START_MS } : {});
+    this.releaseAnswerYield = setAnswerYield(() => this.yieldToClip());
+    this.unsubscribeClips = subscribePlayingClips(() => this.onClipsChanged());
   }
 
   /** Open the microphone and the socket. Failures are reported through `onFatal`. */
@@ -270,8 +282,12 @@ export class LucyLiveSession {
     if (this.stopped) return;
     this.stopped = true;
     this.ready = false;
+    this.releaseAnswerYield();
+    this.unsubscribeClips();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    // Talk switched off while a sound was being checked: the clip plays on at full volume.
+    if (this.duck) this.setClipsVolume(1);
     this.clearDuck();
     this.forgetLateCandidates();
     this.cutPlayback();
@@ -347,6 +363,7 @@ export class LucyLiveSession {
     this.sending = false;
     this.detector.reset();
     this.leftover = new Float32Array(0);
+    if (this.duck) this.setClipsVolume(1); // a clip being checked over plays on at full volume
     this.clearDuck();
     this.forgetLateCandidates();
     this.setGain(1); // the volume control outlives the socket: do not leave Lucy turned down
@@ -378,7 +395,8 @@ export class LucyLiveSession {
         this.lucyState = message.state;
         this.options.onView({ lucyState: message.state });
         if (message.state === 'thinking') {
-          if (this.active.length === 0) emitSpeechGenerating(this.busOwner);
+          // A clip that is playing keeps the bus; the session catches up when it ends.
+          if (this.active.length === 0 && playingClips().length === 0) emitSpeechGenerating(this.busOwner);
         } else if (message.state !== 'speaking') {
           this.settleBus();
         }
@@ -455,14 +473,15 @@ export class LucyLiveSession {
 
   /**
    * Lucy is working on an answer (from the end of the operator's turn until that turn is done),
-   * talking, or has sound queued. New sound in this window may be an interruption, so it goes
-   * through the server's speech check instead of silently replacing the unanswered question:
-   * a cough while she transcribes must not throw the question away.
+   * talking, has sound queued, or one of her clips is playing. New sound in this window may be
+   * an interruption, so it goes through the server's speech check instead of silently replacing
+   * the unanswered question: a cough while she transcribes must not throw the question away.
    */
   private lucyBusy(): boolean {
     return this.awaitingAnswer !== null
       || this.lucyState === 'transcribing' || this.lucyState === 'thinking' || this.lucyState === 'speaking'
-      || this.active.length > 0 || this.pending.size > 0 || this.decoding.size > 0;
+      || this.active.length > 0 || this.pending.size > 0 || this.decoding.size > 0
+      || playingClips().length > 0;
   }
 
   private onFrame(frame: Float32Array): void {
@@ -518,8 +537,10 @@ export class LucyLiveSession {
     }
     this.forgetLateCandidates();
     if (this.lucyBusy()) {
-      // No server check available: everything audible stops in this same call stack.
+      // No server check available: everything audible stops in this same call stack. Her queue
+      // is cleared first, so an answer waiting behind a clip is not started by the clip's end.
       const cut = this.cutPlayback();
+      this.stopClips('barge_in');
       emitSpeechIdle(this.busOwner);
       const stopMs = performance.now() - detectedAt;
       for (const sentence of cut) {
@@ -590,6 +611,7 @@ export class LucyLiveSession {
       this.clearDuck();
     }
     this.rampGain(DUCK_GAIN);
+    this.setClipsVolume(DUCK_GAIN);
     const duckMs = performance.now() - detectedAt;
     track({ type: 'lucy_live_timing', kind: 'barge_in_duck', ms: Math.round(duckMs * 10) / 10 });
     const timer = setTimeout(() => this.onConfirmationTimeout(turnId), CONFIRMATION_TIMEOUT_MS);
@@ -656,6 +678,7 @@ export class LucyLiveSession {
     this.clearDuck();
     this.replacedCandidate = null;
     this.rampGain(1);
+    this.setClipsVolume(1);
     // A rejection can arrive while the detector still thinks the sound is going on. Stop
     // sending it, and let the detector treat that sound as background noise so a steady
     // drone does not start (and duck Lucy for) a new candidate every moment.
@@ -691,7 +714,9 @@ export class LucyLiveSession {
 
   /** Stop every sound and make the interrupting audio the current turn. */
   private stopForInterruption(duck: CandidateTiming): void {
+    // Her queue first, so an answer waiting behind a clip is not started by the clip's end.
     const cut = this.cutPlayback();
+    this.stopClips('barge_in');
     // The next answer plays at full volume, unless a newer candidate is still being checked.
     this.setGain(this.duck ? DUCK_GAIN : 1);
     emitSpeechIdle(this.busOwner);
@@ -706,6 +731,55 @@ export class LucyLiveSession {
     this.beginOperatorTurn(duck.turnId);
     this.endedAt = duck.endedAt;
     if (duck.endedAt !== null) this.options.onView({ operatorText: '', operatorFinal: false });
+  }
+
+  // -------------------------------------------------------------------------
+  // Her other clips (speaker button, Replay, a question read aloud)
+  // -------------------------------------------------------------------------
+
+  private setClipsVolume(gain: number): void {
+    for (const clip of playingClips()) clip.setVolume(gain);
+  }
+
+  private stopClips(reason: ClipStopReason): void {
+    for (const clip of playingClips()) clip.stop(reason);
+  }
+
+  /** A clip started or ended. */
+  private onClipsChanged(): void {
+    if (this.stopped) return;
+    if (playingClips().length > 0) {
+      // A clip that starts while a sound is being checked is turned down with the rest.
+      if (this.duck) this.setClipsVolume(DUCK_GAIN);
+      return;
+    }
+    // The last clip ended: an answer that waited for it plays now.
+    this.pump();
+    if (this.active.length === 0) this.settleBus();
+  }
+
+  /**
+   * A clip is about to start: stop the answer she is saying, so the two never play together.
+   * The operator asked for the clip after the question, so the clip wins. An answer she is still
+   * preparing is not touched; its sentences wait for the clip (see {@link pump}).
+   */
+  private yieldToClip(): void {
+    if (this.stopped) return;
+    // Another clip is already playing, so nothing of hers is audible: an answer queued behind it keeps waiting.
+    if (playingClips().length > 0) return;
+    if (this.active.length === 0 && this.pending.size === 0 && this.decoding.size === 0) return;
+    const cut = this.cutPlayback();
+    emitSpeechIdle(this.busOwner);
+    for (const sentence of cut) {
+      this.send({ type: 'played', turnId: sentence.turnId, seq: sentence.seq, complete: false });
+    }
+    // The server stops the answer. Not while a sound is being checked: there `barge_in` would make
+    // the server take that sound as the operator's words, so the candidate's own verdict decides.
+    if (!this.duck) this.send({ type: 'barge_in' });
+    // The rest of that answer, still on its way, is not played.
+    this.currentTurnId = null;
+    this.lucyText = '';
+    this.options.onView({ lucyText: '', lastTurnEnd: 'interrupted' });
   }
 
   // -------------------------------------------------------------------------
@@ -777,8 +851,9 @@ export class LucyLiveSession {
     if (this.active.length === 0) this.settleBus();
   }
 
-  /** Schedule every decoded sentence that is next in `seq` order. */
+  /** Schedule every decoded sentence that is next in `seq` order; none while one of her clips plays. */
   private pump(): void {
+    if (playingClips().length > 0) return; // resumed by onClipsChanged when the clip ends
     while (this.pending.has(this.nextSeq)) {
       const buffer = this.pending.get(this.nextSeq) ?? null;
       this.pending.delete(this.nextSeq);
