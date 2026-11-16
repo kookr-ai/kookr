@@ -622,7 +622,7 @@ describe('startTTS', () => {
         );
 
         await expect(startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 })).rejects.toThrow(
-          /synthesis probe failed: HTTP 503: still loading$/,
+          /synthesis probe failed: HTTP 503: still loading; rebuilding the TTS image had failed first: failed to solve: index unreachable$/,
         );
         // Nothing was rebuilt, so there is nothing to roll back and no failed image to remember.
         expect(dockerVerbs().some((v) => v.startsWith('tag '))).toBe(false);
@@ -693,6 +693,143 @@ describe('startTTS', () => {
       } finally {
         await rm(ttsDir, { recursive: true, force: true });
       }
+    });
+
+    it('reports the build error, not only the start error, when the build fails and no image exists', async () => {
+      const ttsDir = await createTTSFixture();
+      try {
+        await writeFile(join(ttsDir, '.kookr-tts-build.hash'), 'hash-of-older-files\n');
+        execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+          if (args[0] === 'inspect') return cb(new Error('No such object: kookr-tts'), '', '');
+          if (args.at(-1) === 'build') return cb(new Error('failed to solve: index unreachable'), '', '');
+          if (args.includes('--no-build')) return cb(new Error('No such image: tts-kookr-tts'), '', '');
+          cb(null, '', '');
+        });
+        vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('connection refused'); }));
+
+        await expect(startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 })).rejects.toThrow(
+          /No such image: tts-kookr-tts; rebuilding the TTS image had failed first: failed to solve: index unreachable$/,
+        );
+      } finally {
+        await rm(ttsDir, { recursive: true, force: true });
+      }
+    });
+
+    describe('the previous image is gone but the failed-build stamp remains (#3985)', () => {
+      const startOpts = (ttsDir: string) => ({ ttsDir, port: 8004, device: 'cpu' as const, reuseAttempts: 1 });
+
+      /** Roll back a failed rebuild, as an earlier start did, then stop the old service and prune its image. */
+      async function seedPrunedRollback(ttsDir: string): Promise<string> {
+        await writeFile(join(ttsDir, '.kookr-tts-build.hash'), 'hash-of-older-files\n');
+        stubStaleService('probe-fails');
+        await startTTS(startOpts(ttsDir));
+        const failedHash = (await readFile(join(ttsDir, '.kookr-tts-failed.hash'), 'utf-8')).trim();
+        expect(failedHash).toMatch(/^[0-9a-f]{64}$/);
+        execFileMock.mockReset();
+        return failedHash;
+      }
+
+      /** Speech is down until a `compose up --build` succeeds; `--no-build` finds no image. */
+      function stubPrunedImage(opts: { rebuildFails?: boolean } = {}) {
+        let up = false;
+        execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+          if (args.includes('--no-build')) return cb(new Error('No such image: tts-kookr-tts'), '', '');
+          if (args.includes('up') && args.includes('--build')) {
+            if (opts.rebuildFails) return cb(new Error('container exited with code 1'), '', '');
+            up = true;
+          }
+          cb(null, '', '');
+        });
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async () => {
+            if (!up) throw new Error('connection refused');
+            return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+          }),
+        );
+      }
+
+      it('drops the stamp and rebuilds the current files once, then stamps the build that passes', async () => {
+        const ttsDir = await createTTSFixture();
+        try {
+          const failedHash = await seedPrunedRollback(ttsDir);
+          stubPrunedImage();
+
+          const manager = await startTTS(startOpts(ttsDir));
+
+          expect(manager.url).toBe('http://localhost:8004');
+          expect(dockerVerbs().filter((v) => v.startsWith('compose'))).toEqual([
+            expect.stringMatching(/ up -d --no-build$/),
+            expect.stringMatching(/ up -d --build$/),
+          ]);
+          await expect(readFile(join(ttsDir, '.kookr-tts-failed.hash'), 'utf-8')).rejects.toThrow(/ENOENT/);
+          expect((await readFile(join(ttsDir, '.kookr-tts-build.hash'), 'utf-8')).trim()).toBe(failedHash);
+
+          // The next start reuses the healthy rebuilt service without touching docker.
+          execFileMock.mockClear();
+          await startTTS(startOpts(ttsDir));
+          expect(execFileMock).not.toHaveBeenCalled();
+        } finally {
+          await rm(ttsDir, { recursive: true, force: true });
+        }
+      });
+
+      it('keeps the stamp, and does not rebuild over the previous image, when that image starts but fails its checks', async () => {
+        const ttsDir = await createTTSFixture();
+        const failedPath = join(ttsDir, '.kookr-tts-failed.hash');
+        try {
+          const failedHash = await seedPrunedRollback(ttsDir);
+          execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+            cb(null, '', '');
+          });
+          let booting = true;
+          vi.stubGlobal(
+            'fetch',
+            vi.fn(async (url: string | URL | Request) => {
+              const href = String(url);
+              if (booting && href.includes('/health')) {
+                booting = false;
+                throw new Error('connection refused');
+              }
+              if (href.includes('/synthesize')) return new Response('still loading', { status: 503 });
+              return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+            }),
+          );
+
+          await expect(startTTS(startOpts(ttsDir))).rejects.toThrow(/synthesis probe failed: HTTP 503: still loading$/);
+          expect(dockerVerbs().filter((v) => v.includes(' up -d'))).toEqual([expect.stringMatching(/ up -d --no-build$/)]);
+          expect((await readFile(failedPath, 'utf-8')).trim()).toBe(failedHash);
+          expect((await readFile(join(ttsDir, '.kookr-tts-build.hash'), 'utf-8')).trim()).toBe('hash-of-older-files');
+        } finally {
+          await rm(ttsDir, { recursive: true, force: true });
+        }
+      });
+
+      it('reports both failures and remembers nothing when the rebuild fails too, so the next start builds again', async () => {
+        const ttsDir = await createTTSFixture();
+        try {
+          await seedPrunedRollback(ttsDir);
+          stubPrunedImage({ rebuildFails: true });
+
+          await expect(startTTS(startOpts(ttsDir))).rejects.toThrow(
+            /No such image: tts-kookr-tts; rebuilding the TTS image from the current files also failed: .*container exited with code 1/,
+          );
+          expect(dockerVerbs().filter((v) => v.includes(' up -d'))).toEqual([
+            expect.stringMatching(/ up -d --no-build$/),
+            expect.stringMatching(/ up -d --build$/),
+          ]);
+          await expect(readFile(join(ttsDir, '.kookr-tts-failed.hash'), 'utf-8')).rejects.toThrow(/ENOENT/);
+          expect((await readFile(join(ttsDir, '.kookr-tts-build.hash'), 'utf-8')).trim()).toBe('hash-of-older-files');
+
+          // Next start: the stamp is gone, so the current files are built again rather than skipped.
+          execFileMock.mockReset();
+          stubPrunedImage();
+          await startTTS(startOpts(ttsDir));
+          expect(dockerVerbs().filter((v) => v.startsWith('compose')).some((v) => v.includes('--no-build'))).toBe(false);
+        } finally {
+          await rm(ttsDir, { recursive: true, force: true });
+        }
+      });
     });
   });
 

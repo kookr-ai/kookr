@@ -10,7 +10,8 @@
  *    other voice engine in the background so its first clip does not time out
  * 5. Exposes the TTS HTTP URL for synthesis requests
  * 6. Restarts the previous image when a rebuild of an outdated container fails to
- *    start or fails its checks (issue #3656)
+ *    start or fails its checks (issue #3656), and builds the current files once more when
+ *    that previous image can no longer be started, e.g. after an image prune (issue #3985)
  * 7. Keeps a real stop() = compose down for failed-start cleanup and
  *    `pnpm prod:stop --with-sidecars` (routine SIGTERM detaches — see shutdown.ts)
  *
@@ -162,7 +163,7 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
   // nothing to do with this machine (a package index or model host is down). The image built
   // from older files still works, so keep it (or start it) and try again on the next start: a
   // failed build is never remembered as a failed image.
-  let buildFailed = false;
+  let buildError: string | null = null;
   if (buildPlan.stale && !knownBad) {
     try {
       await execFileAsync('docker', ['compose', ...composeFlags, 'build'], {
@@ -180,9 +181,10 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
       console.warn(
         `[tts] Rebuilding the TTS image failed (${msg}); starting the existing image, which was built from older files`,
       );
-      buildFailed = true;
+      buildError = msg;
     }
   }
+  const buildFailed = buildError !== null;
 
   console.log(
     `[tts] Starting TTS container (device: ${resolvedDevice}${
@@ -207,6 +209,14 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
       upFlags: knownBad || buildFailed ? ['--no-build'] : build ? ['--build'] : [],
     });
   } catch (err) {
+    if (knownBad && err instanceof ComposeUpError) {
+      return rebuildAfterPreviousImageFailed(startOpts, err, ttsDir, buildPlan.inputHash);
+    }
+    if (buildError !== null) {
+      // The start error alone (often "no such image") hides why nothing newer was there to start.
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`${msg}; rebuilding the TTS image had failed first: ${buildError}`);
+    }
     // Only a rebuilt image is rolled back; one that was started as it was has nothing older.
     if (!previousImage || !build) throw err;
     return rollBackToPreviousImage(startOpts, previousImage, err, ttsDir, buildPlan.inputHash);
@@ -219,6 +229,9 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
   }
   return manager;
 }
+
+/** `docker compose up` itself failed, before any health or voice check ran. */
+class ComposeUpError extends Error {}
 
 interface TTSImage {
   /** Image ID (sha256:…), which stays valid after a rebuild moves the name to a new image. */
@@ -280,6 +293,36 @@ async function rollBackToPreviousImage(
 }
 
 /**
+ * `docker compose up --no-build` could not start the previous image, kept because the current
+ * files failed their checks: usually the image was removed (`docker image prune -a`). Whether the
+ * image still exists is not checked, so any failure of `up` itself (a port in use, say) counts. The
+ * failed-build stamp only protects a previous image that can still run, so drop it and build the
+ * current files once (issue #3985). If that fails too, nothing is remembered and the next start
+ * builds again. A previous image that starts but fails its checks is not covered: it is still
+ * there, so rebuilding over it would lose it.
+ */
+async function rebuildAfterPreviousImageFailed(
+  opts: StartContainerOptions,
+  cause: unknown,
+  ttsDir: string,
+  inputHash: string,
+): Promise<TTSManager> {
+  const causeMsg = cause instanceof Error ? cause.message : String(cause);
+  console.warn(
+    `[tts] The previous TTS image did not start (${causeMsg}); forgetting the failed build of the current files and rebuilding them once`,
+  );
+  await rm(join(ttsDir, TTS_FAILED_STAMP_FILE), { force: true }).catch(() => {});
+  try {
+    const manager = await startContainerAndProbe({ ...opts, upFlags: ['--build'] });
+    await writeTTSBuildStamp(ttsDir, inputHash);
+    return manager;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`${causeMsg}; rebuilding the TTS image from the current files also failed: ${msg}`);
+  }
+}
+
+/**
  * `docker compose up -d`, then wait for health and probe the configured voice. On a failed
  * probe or a health timeout the container is taken down before the error is thrown.
  */
@@ -294,7 +337,7 @@ async function startContainerAndProbe(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`[tts] Failed to start Docker container: ${msg}`);
+    throw new ComposeUpError(`[tts] Failed to start Docker container: ${msg}`);
   }
 
   // Wait for health check
