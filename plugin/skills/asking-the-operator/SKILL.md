@@ -129,6 +129,12 @@ typed into it." (or that it was relaunched). A relaunched session that asks the 
 question again (same question, options and context) takes over the pending ask
 instead of sending a second message.
 
+You do not need to remind the operator yourself: while the question waits,
+Kookr sends short Telegram reminders (by default after 10 minutes, after 1 hour,
+then every 4 hours, and once 10 minutes before it closes; never during the
+operator's quiet hours). So do not re-ask a question that is still pending to
+get attention; a second identical ask is deduplicated anyway.
+
 You can look an ask up later: `GET /api/asks/<id>` on the Kookr API
 (`$KOOKR_API_BASE_URL`) returns its `state` and `answer`. Treat that record,
 or `--wait`'s output, as authoritative; a typed message is a convenience.

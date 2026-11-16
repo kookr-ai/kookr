@@ -178,12 +178,28 @@ export class TelegramApiClient {
     return this.call<TelegramUpdate[]>('getUpdates', { offset, timeout: timeoutSec, allowed_updates: ['message', 'callback_query'] }, (timeoutSec + 5) * 1000);
   }
 
-  async sendMessage(chatId: number, text: string, replyMarkup?: { inline_keyboard: InlineKeyboardButton[][] }): Promise<TelegramMessage> {
+  /**
+   * `replyToMessageId`: send as a reply to that message, which Telegram shows quoted (a tap on the
+   * quote scrolls to it). Sent without the quote when that message is gone.
+   */
+  async sendMessage(
+    chatId: number,
+    text: string,
+    replyMarkup?: { inline_keyboard: InlineKeyboardButton[][] },
+    options: { replyToMessageId?: number } = {},
+  ): Promise<TelegramMessage> {
     return this.call<TelegramMessage>('sendMessage', {
       chat_id: chatId,
       text,
       ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      ...(options.replyToMessageId !== undefined
+        ? { reply_parameters: { message_id: options.replyToMessageId, allow_sending_without_reply: true } }
+        : {}),
     });
+  }
+
+  async deleteMessage(chatId: number, messageId: number): Promise<unknown> {
+    return this.call('deleteMessage', { chat_id: chatId, message_id: messageId });
   }
 
   /** Without `replyMarkup` the message loses its buttons; with it, only the given buttons remain. */

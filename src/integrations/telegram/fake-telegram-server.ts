@@ -34,6 +34,7 @@ export interface FakeTelegramServer {
     getUpdates: number;
     sendMessage: Array<{ chat_id: number; text: string; reply_markup?: unknown }>;
     editMessageText: Array<{ chat_id: number; message_id: number; text: string; reply_markup?: unknown }>;
+    deleteMessage: Array<{ chat_id: number; message_id: number }>;
     answerCallbackQuery: Array<{ callback_query_id: string; text?: string }>;
     getFile: Array<{ file_id: string }>;
     downloadFile: Array<{ filePath: string }>;
@@ -65,6 +66,7 @@ export async function startFakeTelegram(): Promise<FakeTelegramServer> {
     getUpdates: 0,
     sendMessage: [] as Array<{ chat_id: number; text: string; reply_markup?: unknown }>,
     editMessageText: [] as Array<{ chat_id: number; message_id: number; text: string; reply_markup?: unknown }>,
+    deleteMessage: [] as Array<{ chat_id: number; message_id: number }>,
     answerCallbackQuery: [] as Array<{ callback_query_id: string; text?: string }>,
     getFile: [] as Array<{ file_id: string }>,
     downloadFile: [] as Array<{ filePath: string }>,
@@ -147,6 +149,11 @@ export async function startFakeTelegram(): Promise<FakeTelegramServer> {
       }
       if (url.includes('/editMessageText')) {
         outbound.editMessageText.push(payload as { chat_id: number; message_id: number; text: string });
+        respond(true);
+        return;
+      }
+      if (url.includes('/deleteMessage')) {
+        outbound.deleteMessage.push(payload as { chat_id: number; message_id: number });
         respond(true);
         return;
       }

@@ -919,6 +919,7 @@ describe('loadSettings / saveSettings', () => {
       lucyInteractionLog: false,
       agentEffort: { 'claude-code': 'high' as const, 'codex-cli': 'minimal' as const },
       quietHours: [{ start: '22:00', end: '08:00' }],
+      askReminders: { afterMinutes: [15, 120], thenEveryMinutes: 0, beforeCloseMinutes: 30 },
       replySnippets: [{ label: 'Continue', text: 'continue' }],
       autoCloseCompletionReadyDelayMin: 45,
       completionReadyTtlMinutes: 90,

@@ -12,6 +12,7 @@ import type { TelegramHandle } from '../../shared/contracts/telegram.js';
 import type { TaskStatus } from '../../core/task-status.js';
 import { startFakeTelegram, type FakeTelegramServer } from '../../integrations/telegram/fake-telegram-server.js';
 import { startTelegramTrigger } from '../../integrations/telegram/index.js';
+import { DEFAULT_ASK_REMINDERS } from '../../shared/contracts/asks.js';
 import { AskService } from './ask-service.js';
 import { AskStore } from './ask-store.js';
 
@@ -53,6 +54,7 @@ async function boot(opts: { withAsks?: boolean; dashboardUrl?: string } = {}): P
     getNotifier: () => handle?.ask,
     taskStatus: (id) => statuses.get(id),
     deliverToTask: deliver,
+    reminderSettings: () => ({ schedule: DEFAULT_ASK_REMINDERS, quietHours: [] }),
     now: () => clock.now,
   });
   handle = await startTelegramTrigger({
@@ -463,6 +465,29 @@ describe('kookr ask over Telegram', () => {
       expect(r.ok ? undefined : r.error.code).toBe('delivery_failed');
       expect(fake.outbound.sendMessage).toHaveLength(0);
       expect(audit().some((e) => e.kind === 'ask_url_buttons_refused')).toBe(false);
+    });
+  });
+
+  describe('reminders (#3929)', () => {
+    it('sends a reminder as a reply to the question, answers a text reply to it, and deletes it when the question closes', async () => {
+      await boot();
+      const a = await ask();
+      const questionId = store.get(a.id)!.delivery!.messageId;
+      clock.now += 10 * 60_000;
+      await service!.sendDueReminders();
+      expect(fake.outbound.sendMessage).toHaveLength(2);
+      const reminder = fake.outbound.sendMessage[1] as { text: string; reply_markup?: unknown; reply_parameters?: unknown };
+      expect(reminder.text).toContain('Still waiting for your answer: asked 10 min ago, closes in 20 min');
+      expect(reminder.reply_parameters).toEqual({ message_id: questionId, allow_sending_without_reply: true });
+      expect(reminder.reply_markup).toBeUndefined();
+      const reminderId = store.get(a.id)!.reminders![0].messageId!;
+      await waitFor(() => expect(audit().some((e) => e.kind === 'ask_reminder_sent' && e.askId === a.id)).toBe(true));
+
+      reply('Ship it on Monday', reminderId);
+      await waitFor(() => expect(store.get(a.id)?.state).toBe('answered'));
+      expect(store.get(a.id)?.answer).toEqual({ kind: 'text', text: 'Ship it on Monday' });
+      await waitFor(() => expect(fake.outbound.editMessageText.some((e) => e.message_id === questionId)).toBe(true));
+      await waitFor(() => expect(fake.outbound.deleteMessage).toEqual([{ chat_id: USER, message_id: reminderId }]));
     });
   });
 });

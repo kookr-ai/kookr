@@ -1363,6 +1363,18 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
           await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, withLinkLines(text, ask));
         }
         audit({ kind: 'ask_finalized', askId: ask.id, taskId: ask.taskId, state: ask.state, resolution: ask.resolution, ...(ask.answeredVia ? { answeredVia: ask.answeredVia } : {}) });
+        // A reminder saying the question still waits is wrong once it closed. Best effort: Telegram
+        // refuses to delete a message older than 48 hours, which then simply stays.
+        for (const reminder of ask.reminders ?? []) {
+          if (reminder.messageId === undefined) continue;
+          await api.deleteMessage(ask.delivery.chatId, reminder.messageId).catch(() => undefined);
+        }
+      },
+      async sendAskReminder(ask, text) {
+        if (!ask.delivery) throw new Error('the question has no Telegram message to remind of');
+        const sent = await api.sendMessage(ask.delivery.chatId, text, undefined, { replyToMessageId: ask.delivery.messageId });
+        audit({ kind: 'ask_reminder_sent', askId: ask.id, taskId: ask.taskId, chatId: ask.delivery.chatId });
+        return { messageId: sent.message_id };
       },
     }
     : undefined;

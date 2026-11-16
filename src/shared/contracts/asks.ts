@@ -75,6 +75,127 @@ export interface AskRecord {
    * by then. Absent for up to `ASK_WAIT_FALLBACK_MS` while an answer waits for an attached `--wait` poll.
    */
   taskDelivery?: 'delivered' | 'failed' | 'skipped';
+  /**
+   * Reminders sent while the question waited (issue #3929), oldest first. Stored with the question so
+   * a restart never repeats one. `at` is written before the message is sent; `messageId` is added once
+   * Telegram accepted it, so a text reply to the reminder answers the question too.
+   */
+  reminders?: AskReminderSent[];
+}
+
+export interface AskReminderSent {
+  at: number;
+  /** `before_close`: the one reminder shortly before the question closes. Absent: a reminder of the schedule. */
+  kind?: 'before_close';
+  messageId?: number;
+}
+
+/**
+ * When an unanswered question is brought back to the operator's attention on Telegram (the
+ * `askReminders` setting). Each reminder is a reply to the question's message. Reminders are held
+ * back during quiet hours and at most one is sent when they end.
+ */
+export interface AskReminderSchedule {
+  /** Minutes after the question was sent, ascending (default 10 and 60). Empty: no reminders at all. */
+  afterMinutes: number[];
+  /** After the last of `afterMinutes`, one more every this many minutes (default 240). 0: no repeat. */
+  thenEveryMinutes: number;
+  /** One last reminder this many minutes before the question closes (default 10). 0: none. */
+  beforeCloseMinutes: number;
+}
+
+const MINUTE_MS = 60_000;
+
+export const DEFAULT_ASK_REMINDERS: AskReminderSchedule = { afterMinutes: [10, 60], thenEveryMinutes: 240, beforeCloseMinutes: 10 };
+
+/**
+ * Hard bounds on reminders, whatever the setting says, so a question left open for days, or many
+ * questions at once, cannot flood the operator's phone.
+ */
+export const ASK_REMINDER_LIMITS = {
+  /** Reminders of the schedule per question. The one before it closes comes on top. */
+  maxPerQuestion: 6,
+  /** Two reminders for the same question are at least this far apart. */
+  minGapMinutes: 10,
+  /** Reminders for all questions together, per rolling hour. The rest wait for a later sweep. */
+  maxPerHour: 6,
+  maxAfterEntries: 6,
+  /** Smallest `thenEveryMinutes` other than 0. */
+  minEveryMinutes: 30,
+  /** Largest value of any field: seven days, the longest a question can stay open. */
+  maxMinutes: 7 * 24 * 60,
+} as const;
+
+/** Normalise a raw `askReminders` setting. Never throws: bad parts fall back to the default, with a warning. */
+export function validateAskReminders(raw: unknown): { schedule: AskReminderSchedule; warnings: string[] } {
+  if (raw === undefined) return { schedule: { ...DEFAULT_ASK_REMINDERS, afterMinutes: [...DEFAULT_ASK_REMINDERS.afterMinutes] }, warnings: [] };
+  const warnings: string[] = [];
+  const obj = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined;
+  if (!obj) warnings.push('askReminders must be an object; using the default schedule');
+  const max = ASK_REMINDER_LIMITS.maxMinutes;
+  const isMinutes = (v: unknown, min: number): v is number => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
+
+  let afterMinutes = [...DEFAULT_ASK_REMINDERS.afterMinutes];
+  if (obj && obj.afterMinutes !== undefined) {
+    if (Array.isArray(obj.afterMinutes) && obj.afterMinutes.every((v) => isMinutes(v, 1))) {
+      afterMinutes = [...new Set(obj.afterMinutes as number[])].sort((a, b) => a - b);
+      if (afterMinutes.length > ASK_REMINDER_LIMITS.maxAfterEntries) {
+        warnings.push(`askReminders.afterMinutes keeps its first ${ASK_REMINDER_LIMITS.maxAfterEntries} entries`);
+        afterMinutes = afterMinutes.slice(0, ASK_REMINDER_LIMITS.maxAfterEntries);
+      }
+    } else {
+      warnings.push(`askReminders.afterMinutes must be a list of whole minutes 1..${max}; using the default`);
+    }
+  }
+  let thenEveryMinutes = DEFAULT_ASK_REMINDERS.thenEveryMinutes;
+  if (obj && obj.thenEveryMinutes !== undefined) {
+    if (obj.thenEveryMinutes === 0 || isMinutes(obj.thenEveryMinutes, ASK_REMINDER_LIMITS.minEveryMinutes)) {
+      thenEveryMinutes = obj.thenEveryMinutes as number;
+    } else {
+      warnings.push(`askReminders.thenEveryMinutes must be 0 or ${ASK_REMINDER_LIMITS.minEveryMinutes}..${max}; using the default`);
+    }
+  }
+  let beforeCloseMinutes = DEFAULT_ASK_REMINDERS.beforeCloseMinutes;
+  if (obj && obj.beforeCloseMinutes !== undefined) {
+    if (obj.beforeCloseMinutes === 0 || isMinutes(obj.beforeCloseMinutes, 1)) {
+      beforeCloseMinutes = obj.beforeCloseMinutes as number;
+    } else {
+      warnings.push(`askReminders.beforeCloseMinutes must be 0..${max}; using the default`);
+    }
+  }
+  return { schedule: { afterMinutes, thenEveryMinutes, beforeCloseMinutes }, warnings };
+}
+
+/**
+ * Which reminder, if any, a pending question is owed at `now`. Several points of the schedule that
+ * passed unsent (quiet hours, a restart, the hourly bound) are owed as one reminder, never a burst:
+ * the next reminder is owed only for a point later than the last one sent.
+ */
+export function askReminderDue(
+  ask: Pick<AskRecord, 'createdAt' | 'expiresAt' | 'reminders'>,
+  schedule: AskReminderSchedule,
+  now: number,
+): 'schedule' | 'before_close' | undefined {
+  if (schedule.afterMinutes.length === 0 || now >= ask.expiresAt) return undefined;
+  const sent = ask.reminders ?? [];
+  const last = sent.length > 0 ? sent[sent.length - 1].at : ask.createdAt;
+  if (sent.length > 0 && now - last < ASK_REMINDER_LIMITS.minGapMinutes * MINUTE_MS) return undefined;
+
+  if (schedule.beforeCloseMinutes > 0 && !sent.some((r) => r.kind === 'before_close')) {
+    const point = ask.expiresAt - schedule.beforeCloseMinutes * MINUTE_MS;
+    if (point > ask.createdAt && now >= point && point > last) return 'before_close';
+  }
+
+  if (sent.filter((r) => r.kind === undefined).length >= ASK_REMINDER_LIMITS.maxPerQuestion) return undefined;
+  const points = schedule.afterMinutes.map((m) => ask.createdAt + m * MINUTE_MS);
+  let latest: number | undefined;
+  for (const p of points) if (p <= now) latest = p;
+  const lastPoint = points[points.length - 1];
+  if (schedule.thenEveryMinutes > 0 && now >= lastPoint) {
+    const every = schedule.thenEveryMinutes * MINUTE_MS;
+    latest = lastPoint + Math.floor((now - lastPoint) / every) * every;
+  }
+  return latest !== undefined && latest > last ? 'schedule' : undefined;
 }
 
 /** The record as returned over HTTP: the nonce is server-internal. */
@@ -265,6 +386,8 @@ export interface AskAnswerPort {
 export interface AskNotifier {
   /** Post the question with buttons; resolves with the message coordinates. */
   sendAsk(ask: AskRecord, callbackData: (optionIndex: number) => string): Promise<{ chatId: number; messageId: number }>;
-  /** Edit the original message to its final state (keyboard removed). */
+  /** Edit the original message to its final state (keyboard removed), and delete its reminders. */
   finalizeAsk(ask: AskRecord, text: string): Promise<void>;
+  /** Send `text` as a reply to the question's message; resolves with the reminder's message id. */
+  sendAskReminder?(ask: AskRecord, text: string): Promise<{ messageId: number }>;
 }
