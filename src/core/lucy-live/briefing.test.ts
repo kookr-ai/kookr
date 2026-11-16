@@ -303,4 +303,10 @@ describe('buildLucyLiveBriefing: questions from tasks (kookr ask)', () => {
     expect(persona).toMatch(/never record an answer yourself/);
     expect(persona).toMatch(/press it in your panel or answer on Telegram/);
   });
+
+  it('the persona says she cannot open a tab and that nothing was opened when a "show me" reaches her (issue #3958)', () => {
+    const persona = buildLucyLivePersona('x');
+    expect(persona).toMatch(/You cannot open a link, a page or a tab/);
+    expect(persona).toMatch(/still asked to show or open something, nothing was opened/);
+  });
 });

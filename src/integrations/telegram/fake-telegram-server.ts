@@ -25,8 +25,11 @@ export interface FakeTelegramServer {
    * `downloadFile` returns; `filePath` is what `getFile` reports back.
    */
   registerFile(fileId: string, filePath: string, bytes: Buffer, reportedFileSize?: number | null): void;
-  /** Answer 400 to any sendMessage / editMessageText whose keyboard has a URL button, as Telegram does for a URL it dislikes. */
-  rejectUrlButtons(reject: boolean): void;
+  /**
+   * Answer 400 to any sendMessage / editMessageText whose keyboard has a URL button, as Telegram does for a URL it
+   * dislikes. `description` replaces Telegram's `Bad Request: BUTTON_URL_INVALID`, to refuse for another reason.
+   */
+  rejectUrlButtons(reject: boolean, description?: string): void;
   outbound: {
     getUpdates: number;
     sendMessage: Array<{ chat_id: number; text: string; reply_markup?: unknown }>;
@@ -47,6 +50,7 @@ export async function startFakeTelegram(): Promise<FakeTelegramServer> {
   const pendingEmptyPolls = new Map<NodeJS.Timeout, () => void>();
   let nextMessageId = 100;
   let urlButtonsRejected = false;
+  let refusalDescription = 'Bad Request: BUTTON_URL_INVALID';
   const hasUrlButton = (payload: Record<string, unknown>): boolean => {
     const markup = payload['reply_markup'] as { inline_keyboard?: Array<Array<Record<string, unknown>>> } | undefined;
     return (markup?.inline_keyboard ?? []).flat().some((b) => typeof b['url'] === 'string');
@@ -54,7 +58,7 @@ export async function startFakeTelegram(): Promise<FakeTelegramServer> {
   const refuse = (res: ServerResponse): void => {
     res.statusCode = 400;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ ok: false, error_code: 400, description: 'Bad Request: BUTTON_URL_INVALID' }));
+    res.end(JSON.stringify({ ok: false, error_code: 400, description: refusalDescription }));
   };
   const files = new Map<string, { filePath: string; bytes: Buffer; reportedFileSize?: number | null }>();
   const outbound = {
@@ -169,8 +173,9 @@ export async function startFakeTelegram(): Promise<FakeTelegramServer> {
     registerFile(fileId, filePath, bytes, reportedFileSize) {
       files.set(fileId, { filePath, bytes, reportedFileSize });
     },
-    rejectUrlButtons(reject) {
+    rejectUrlButtons(reject, description = 'Bad Request: BUTTON_URL_INVALID') {
       urlButtonsRejected = reject;
+      refusalDescription = description;
     },
     outbound,
     stop: () => {

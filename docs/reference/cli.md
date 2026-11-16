@@ -1748,7 +1748,8 @@ the asking task in the dashboard, and URLs written in the question or its
 background are clickable. On Telegram the question carries an **Open task** URL
 button too when `KOOKR_REMOTE_CHAT_DASHBOARD_URL` is set (Telegram refuses a
 button that points at `localhost`). If Telegram refuses a link button, the
-question is sent again with the links as text lines. While a question is
+question is sent again with the links as text lines, and they stay in the text
+once the question closes. While a question is
 waiting, saying "show me", "open it" or "show me the task" to Lucy live opens
 the link or the task (see [Lucy live](lucy-live.md#questions-from-tasks)).
 

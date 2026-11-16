@@ -284,6 +284,13 @@ describe('buildLucyOperatorPrompt', () => {
     }
   });
 
+  test('says she cannot open a question\'s link, so she never claims a page is open (issue #3958)', () => {
+    for (const canLaunch of [false, true]) {
+      expect(buildLucyOperatorPrompt('B', { canLaunch })).toMatch(/cannot open a question's link or any web page, only a task/);
+      expect(buildLucyOperatorPrompt('B', { canLaunch })).toMatch(/never say or imply that it is open/);
+    }
+  });
+
   test('says she cannot change anything', () => {
     expect(prompt).toMatch(/You cannot change anything\./);
   });

@@ -423,10 +423,22 @@ describe('kookr ask over Telegram', () => {
       expect(fake.outbound.sendMessage[0].text).toContain(`🔗 Open mockups: ${MOCKUPS}`);
       expect(rows().flat().map((b) => b.text)).toEqual(['Yes', 'No']);
       await waitFor(() => expect(audit().some((e) => e.kind === 'ask_url_buttons_refused' && e.askId === a.id)).toBe(true));
-      // Closing it falls back the same way, so the message still loses its choices.
+      // Closing it falls back the same way, so the message still loses its choices and keeps its links as text.
       await service!.cancel(a.id);
-      expect(fake.outbound.editMessageText.at(-1)).toMatchObject({ text: expect.stringContaining('Cancelled') });
-      expect(fake.outbound.editMessageText.at(-1)!.reply_markup).toBeUndefined();
+      const closed = fake.outbound.editMessageText.at(-1)!;
+      expect(closed.text).toContain('Cancelled');
+      expect(closed.text).toContain(`🔗 Open mockups: ${MOCKUPS}`);
+      expect(closed.reply_markup).toBeUndefined();
+    });
+
+    it('does not resend without the URL buttons when Telegram refuses the message for another reason', async () => {
+      await boot({ dashboardUrl: 'https://kookr.example.com' });
+      fake.rejectUrlButtons(true, 'Bad Request: chat not found');
+      const r = await service!.create({ taskId: 't1', question: 'Ship it?', options: ['Yes', 'No'], links: [{ url: MOCKUPS, label: 'Open mockups' }] });
+      expect(r.ok).toBe(false);
+      expect(r.ok ? undefined : r.error.code).toBe('delivery_failed');
+      expect(fake.outbound.sendMessage).toHaveLength(0);
+      expect(audit().some((e) => e.kind === 'ask_url_buttons_refused')).toBe(false);
     });
   });
 });
