@@ -458,7 +458,9 @@ export function snapshotStore(client) {
   // valid shelf name, no longer fails `nb list`: it is left out of `rows` and named
   // in `skipped`. That is a partial index too.
   // The names come from disk, so show control characters as visible escapes
-  // rather than sending them to the operator's terminal.
+  // rather than sending them to the operator's terminal. The same escape as the one in
+  // plugin/hooks/nb-inject.mjs (storeWarnings). Keep the two in step by hand: the plugin
+  // ships without the repository, so neither can import the other.
   const visible = (v) => String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
   if (Array.isArray(listed.json.skipped) && listed.json.skipped.length > 0) {
     const names = listed.json.skipped.map((s) => `${visible(s?.shelf ?? '?')} (${visible(s?.code ?? 'unreadable')})`).join(', ');

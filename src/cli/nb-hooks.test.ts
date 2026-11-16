@@ -140,7 +140,14 @@ describe('nb-retro Stop/SubagentStop hook', () => {
     expect(existsSync(twoDays)).toBe(false);
   });
 
-  test.each(['soon', '0', '-3'])('an invalid NB_RETRO_TTL_DAYS (%s) falls back to 7 days', (bad) => {
+  test('NB_RETRO_TTL_DAYS=Infinity never prunes', () => {
+    const old = ageSentinel('.retro-a-year', 365 * 24);
+    const r = runRetro({ NB_DIR: dir, NB_RETRO_TTL_DAYS: 'Infinity' }, { session_id: 'sess-inf' });
+    expect(r.code).toBe(2); // the nudge itself is unchanged
+    expect(existsSync(old)).toBe(true);
+  });
+
+  test.each(['soon', '0', '-3', '-Infinity'])('an invalid NB_RETRO_TTL_DAYS (%s) falls back to 7 days', (bad) => {
     const twoDays = ageSentinel('.retro-two-days', 48);
     const eight = ageSentinel('.retro-eight-days', 8 * 24);
     runRetro({ NB_DIR: dir, NB_RETRO_TTL_DAYS: bad }, { session_id: 'sess-E' });

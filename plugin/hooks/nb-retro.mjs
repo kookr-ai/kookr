@@ -37,6 +37,8 @@ const sid = String(event.session_id ?? event.sessionId ?? 'nosession').replace(/
 // NB_DIR with a leading `~` expanded the way agent-notebook and bin/nb.js expand it
 // (only `~` and `~/…`; `~user/…` stays as it is). Set where no shell expands it
 // (settings.json, systemd, cron), NB_DIR reaches the hook with the `~` still in it.
+// A copy of `expandHomeDir` in bin/nb.js. Keep the two in step by hand: the plugin ships
+// without the repository, so neither can import the other.
 function expandHomeDir(value) {
   if (value === '~') return homedir();
   if (value.startsWith('~/')) return join(homedir(), value.slice(2));
@@ -70,11 +72,13 @@ try {
 // `.retro-*` sentinel older than the TTL. The TTL (days, default 7, override with
 // NB_RETRO_TTL_DAYS, matching upstream's recipe) must stay well above any plausible
 // session length: a sentinel pruned while its session is still running would nudge
-// that session a second time. Best-effort; never fatal.
+// that session a second time. NB_RETRO_TTL_DAYS=Infinity never prunes (an addition to
+// upstream's recipe); `0`, a negative or a non-numeric value means 7, as upstream reads
+// it. Best-effort; never fatal.
 try {
   const ttlDays = Number(process.env.NB_RETRO_TTL_DAYS);
   const ttlMs = (Number.isFinite(ttlDays) && ttlDays > 0 ? ttlDays : 7) * 86_400_000;
-  const cutoff = Date.now() - ttlMs;
+  const cutoff = ttlDays === Infinity ? -Infinity : Date.now() - ttlMs;
   for (const f of readdirSync(dir)) {
     if (!f.startsWith('.retro-')) continue;
     try {

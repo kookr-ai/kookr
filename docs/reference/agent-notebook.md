@@ -178,8 +178,9 @@ that runs its `.mjs`) run for every session:
     whose only files are skipped is not silent: it prints the header and the
     warning.
   - **Bounds.** The flat view is capped at 60 rows / 8 KB (richest shelves first,
-    with a "N more shelves not shown" tail; the warning lines count against the
-    8 KB). The layered view applies the same cap
+    with a "N more shelves not shown" tail; the 8 KB is the hook's whole output, so
+    the fixed instructions above the index and the warning lines count against
+    it). The layered view applies the same cap
     to everything except the project group: this repo's own shelves are never
     truncated (they are the ones most likely to apply, and a repo has few), so a
     repo with more than 60 project shelves would exceed the cap. The domain and
@@ -418,7 +419,7 @@ All optional; defaults match the RFC.
 | `NB_GIT_AUTOCOMMIT` | `1` (when `NB_DIR` is a git repo) | `0` disables the per-change commit in `bin/nb.js` |
 | `KOOKR_NB_CURATOR` | unset | read by `bin/nb.js` only: set (non-empty) by the curator/promotion run so an `nb add` to `fleet-global` prints no stderr advisory. It has no effect on `nb move`/`nb rm`, which the promotion scripts use. Never set it for ordinary tasks. |
 | `NB_RETRO_DISABLED` | unset | set (non-`0`) to silence the Stop/SubagentStop retrospective nudge |
-| `NB_RETRO_TTL_DAYS` | `7` | age in days after which `nb-retro.mjs` prunes a `.retro-*` sentinel; keep it above your longest session |
+| `NB_RETRO_TTL_DAYS` | `7` | age in days after which `nb-retro.mjs` prunes a `.retro-*` sentinel; keep it above your longest session. `Infinity` never prunes; `0`, a negative or a non-numeric value means 7 |
 | `NB_MAX_LINES` | `50` | max entries per notebook (ceiling 5000); a full notebook evicts to admit a newcomer |
 | `NB_MAX_CHARS` | `200` | hard cap per lesson (over-long adds are rejected, not truncated). Agents are *instructed* to aim for about 150 characters — a style target under this ceiling. |
 | `NB_USAGE_RING` | `5000` | max lines in the usage log ring |
