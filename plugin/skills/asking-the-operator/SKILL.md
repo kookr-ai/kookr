@@ -88,6 +88,12 @@ kookr ask \
   text that looks like a credential (it also trips on words like "token" or
   "password") is replaced by a placeholder and the command warns you: rephrase
   and ask again. An option label that looks like one is refused (exit 4).
+- **Links** (optional): the page the question is about (a mockup, a
+  write-up, a pull request) goes in `--link <https URL>`, at most 2, each
+  with a `--link-label "Open mockups"` (at most 40 characters) right after
+  it. They are shown as buttons, never read aloud. A link must be `https://`
+  and at most 500 characters, or the command exits 2. While the question is
+  waiting, the operator can also say "show me" to Lucy to open it.
 - Use `--timeout 2h` (`30s`, `10m`, `2h`, `1d` or plain seconds; minimum 30
   seconds, maximum 24 hours) when the decision stops mattering after a while;
   the default is 30 minutes.
@@ -184,21 +190,23 @@ phone, with a comment.
    the operator's answer and becomes a follow-up task.
 4. **Notify, do not wait.** Send one `kookr ask` **without** `--wait`, with
    `--timeout 24h` (the maximum `kookr ask` accepts today), the options
-   (recommended first) and the link in `--context` too. Say in the context
-   that the durable way to answer is a comment on the link. An
+   (recommended first), and the material and the request comment as
+   `--link`s, each with a `--link-label`. They become buttons on Lucy's card
+   and on Telegram, so the operator opens them with one tap. Say in the
+   context that the durable way to answer is a comment on the request. An
    answer tapped on Telegram reaches the task only while it is still running;
    after it ends, Kookr tells the operator the answer was not delivered.
 
-   Until issue #3929 lands, the operator cannot open a link or the task from a
-   question shown in Lucy. So, as an exception to the "no paths or ids in the
-   question" rule above: **name the task** in the question (issue number and
-   a few words of its title), and end the question text with the **full URL
-   on its own line**. The issue comment carries the same full URL.
+   Name the task in the question (issue number and a few words of its title):
+   the Telegram message shows only the task id. Do not paste URLs into the
+   question; the card also has an "Open task" button.
 
    ```bash
    kookr ask --timeout 24h \
-     --question "$(printf 'Issue #%s (%s): which layout should the panel use?\n%s' "$N" "<short title>" "$COMMENT_URL")" \
-     --context "Opinion request: $COMMENT_URL — I am carrying on with A. Answer any time with a comment there, in your own words." \
+     --question "Issue #$N (<short title>): which layout should the panel use?" \
+     --context "I am carrying on with A. Answer any time with a comment on the opinion request, in your own words." \
+     --link "$ARTIFACT_URL" --link-label "Open mockups" \
+     --link "$COMMENT_URL" --link-label "Open the request" \
      --option "A: compact list (recommended)" --option "B: cards"
    ```
 5. **Carry on with the recommended option** when the choice is reversible (UI,

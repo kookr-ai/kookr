@@ -118,7 +118,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     // Agent -> operator multiple-choice question over Telegram (RFC kookr-ask);
     // keep in sync with src/cli/kookr-ask.ts.
     name: 'ask',
-    flags: ['--question', '--option', '--context', '--timeout', '--task-id', '--no-other', '--wait', '--json', '-h', '--help'],
+    flags: ['--question', '--option', '--context', '--link', '--link-label', '--timeout', '--task-id', '--no-other', '--wait', '--json', '-h', '--help'],
   },
   {
     // Attach a supervisor task to running tasks (RFC attachable-task-supervisor P1).

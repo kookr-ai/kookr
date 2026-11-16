@@ -89,7 +89,8 @@ function sameSpeechEndpoint(left: string | undefined, right: string): boolean {
   try { return normalize(left) === normalize(right); } catch { return false; }
 }
 
-function dashboardBaseUrl(env: Env, host: string, port: number, warn: (message: string) => void): string {
+/** The dashboard URL Telegram links use, and whether the operator set it (a phone can open only a configured one). */
+function dashboardBaseUrl(env: Env, host: string, port: number, warn: (message: string) => void): { url: string; configured: boolean } {
   const configured = env.KOOKR_REMOTE_CHAT_DASHBOARD_URL?.trim();
   if (configured) {
     try {
@@ -97,7 +98,7 @@ function dashboardBaseUrl(env: Env, host: string, port: number, warn: (message: 
       const isHttp = url.protocol === 'http:' || url.protocol === 'https:';
       const isOrigin = url.pathname === '/' && url.search === '' && url.hash === '' && url.username === '' && url.password === '';
       if (isHttp && isOrigin) {
-        return url.origin;
+        return { url: url.origin, configured: true };
       }
     } catch {
       // Fall through to the warning below.
@@ -112,7 +113,7 @@ function dashboardBaseUrl(env: Env, host: string, port: number, warn: (message: 
       `${localDashboardBaseUrl(host, port)} and may not open from a phone.`,
     );
   }
-  return localDashboardBaseUrl(host, port);
+  return { url: localDashboardBaseUrl(host, port), configured: false };
 }
 
 export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promise<RemoteChatTrigger> {
@@ -153,6 +154,7 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
     }
 
     const bridge = deps.taskBridge;
+    const dashboard = dashboardBaseUrl(env, deps.host, deps.port, warn);
     const handle = await telegramModule.startTelegramTrigger({
       token,
       allowedUserIds,
@@ -160,7 +162,8 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
       dataDir: deps.kookrDir,
       dryRun: env.KOOKR_REMOTE_CHAT_DRY_RUN === '1',
       allowCodexRemoteSpawn: env.KOOKR_REMOTE_CHAT_ALLOW_CODEX === '1',
-      dashboardBaseUrl: dashboardBaseUrl(env, deps.host, deps.port, warn),
+      dashboardBaseUrl: dashboard.url,
+      dashboardUrlConfigured: dashboard.configured,
       launchTask: deps.launchTask,
       llmClient: deps.llmClient,
       whisperUrl: env.KOOKR_STT_WHISPER_URL,

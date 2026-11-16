@@ -114,6 +114,26 @@ describe('AskService.create', () => {
     expect(r).toMatchObject({ ok: false, error: { code: 'redacted_option' } });
   });
 
+  it('stores links with trimmed labels and hands them to the notifier (#3929)', async () => {
+    const ask = await createOk({ links: [{ url: 'https://claude.ai/artifact/abc', label: '  Open mockups ' }, { url: 'https://github.com/o/r/pull/1' }] });
+    expect(ask.links).toEqual([{ url: 'https://claude.ai/artifact/abc', label: 'Open mockups' }, { url: 'https://github.com/o/r/pull/1' }]);
+    expect(h.notifier.sendAsk.mock.calls[0][0].links).toEqual(ask.links);
+    expect((await createOk({ question: 'no links' })).links).toBeUndefined();
+  });
+
+  it.each([
+    [[{ url: 'http://example.com' }], /https/],
+    [[{ url: `https://example.com/${'a'.repeat(481)}` }], /500/],
+    [[{ url: 'https://user:pw@example.com' }], /password/],
+    [[{ url: 'https://a.example' }, { url: 'https://b.example' }, { url: 'https://c.example' }], /at most 2/],
+    [[{ url: 'https://a.example', label: '' }], /label/],
+    [[{ url: 'https://example.com/?access_token=abc' }], /credential/],
+  ])('refuses links %j', async (links, message) => {
+    const r = await h.service.create({ ...base, links });
+    expect(r).toMatchObject({ ok: false, error: { code: 'invalid', message: expect.stringMatching(message) } });
+    expect(h.notifier.sendAsk).not.toHaveBeenCalled();
+  });
+
   it('dedupes on (task, idempotencyKey) only while the ask is pending', async () => {
     const a = await createOk({ idempotencyKey: 'k' });
     const again = await h.service.create({ ...base, idempotencyKey: 'k' });
@@ -578,6 +598,17 @@ describe('ask routes', () => {
     [{ ...base, timeoutSec: 'soon' }, 400],
   ])('maps %j to HTTP %i', async (payload, status) => {
     expect((await post(appFor(h.service), payload)).status).toBe(status);
+  });
+
+  it('passes links through, refuses a malformed links field and an http link with 400', async () => {
+    const app = appFor(h.service);
+    const ok = await post(app, { ...base, links: [{ url: 'https://claude.ai/artifact/abc', label: 'Open mockups' }] });
+    expect(ok.status).toBe(201);
+    expect((await ok.json()).ask.links).toEqual([{ url: 'https://claude.ai/artifact/abc', label: 'Open mockups' }]);
+    for (const links of ['https://x.example', [{ href: 'https://x.example' }], [{ url: 'https://x.example', label: 3 }], [null]]) {
+      expect((await post(app, { ...base, taskId: 't2', links })).status).toBe(400);
+    }
+    expect((await post(app, { ...base, taskId: 't2', links: [{ url: 'http://x.example' }] })).status).toBe(400);
   });
 
   it('maps rate limits to 429 and redacted labels to 422', async () => {

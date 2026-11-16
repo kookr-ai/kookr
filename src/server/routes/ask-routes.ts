@@ -94,6 +94,12 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
     if (body.idempotencyKey !== undefined && typeof body.idempotencyKey !== 'string') {
       return c.json({ error: 'idempotencyKey must be a string', code: 'invalid' }, 400);
     }
+    const links = body.links;
+    if (links !== undefined && !(Array.isArray(links) && links.every((l) => l !== null && typeof l === 'object'
+      && typeof (l as Record<string, unknown>).url === 'string'
+      && ((l as Record<string, unknown>).label === undefined || typeof (l as Record<string, unknown>).label === 'string')))) {
+      return c.json({ error: 'links must be an array of {url, label?} objects', code: 'invalid' }, 400);
+    }
     if (body.allowText !== undefined && typeof body.allowText !== 'boolean') {
       return c.json({ error: 'allowText must be a boolean', code: 'invalid' }, 400);
     }
@@ -102,6 +108,7 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
       taskId,
       question,
       options: options as string[],
+      ...(Array.isArray(links) ? { links: (links as Array<{ url: string; label?: string }>).map((l) => ({ url: l.url, ...(l.label !== undefined ? { label: l.label } : {}) })) } : {}),
       ...(str(body.context) !== undefined ? { context: str(body.context) } : {}),
       ...(typeof body.timeoutSec === 'number' ? { timeoutSec: body.timeoutSec } : {}),
       ...(str(body.idempotencyKey) !== undefined ? { idempotencyKey: str(body.idempotencyKey) } : {}),

@@ -1288,6 +1288,16 @@ export function App() {
     // showing it in the main detail panel, so close the drawer on selection.
     selectProject(null);
   }, [liveAgentByTaskId, selectAgent, selectProject]);
+  // "Open task" on a question card in Lucy's panel, and "show me the task" by voice (issue #3929).
+  // Same taskId→agent resolution as selectRecentTask, but it reports whether the task could be
+  // shown, so the card and Lucy can say so instead of doing nothing.
+  const openAskingTask = useCallback((taskId: string): boolean => {
+    const agentId = liveAgentByTaskId.get(taskId);
+    if (!agentId) return false;
+    selectAgent(agentId, taskId);
+    selectProject(null);
+    return true;
+  }, [liveAgentByTaskId, selectAgent, selectProject]);
   // Open the live task behind an Outcome Scoreboard finding (issue #2783). Same
   // taskId→agent resolution as selectRecentTask — reusing liveAgentByTaskId so a
   // finding can only ever open a task still backed by a live agent, keyed on the
@@ -1917,7 +1927,7 @@ export function App() {
       {avatarPanelEnabled && (
         <AvatarErrorBoundary>
           <Suspense fallback={null}>
-            <AvatarDock attentionCount={findings.length} onAnswerAsk={answerOperatorAsk} />
+            <AvatarDock attentionCount={findings.length} onAnswerAsk={answerOperatorAsk} onOpenTask={openAskingTask} />
           </Suspense>
         </AvatarErrorBoundary>
       )}

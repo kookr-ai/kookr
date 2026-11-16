@@ -11,7 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { ASK_LIMITS } from '../shared/contracts/asks.js';
+import { ASK_LIMITS, askLinkProblem, type AskLink } from '../shared/contracts/asks.js';
 import { resolveStopBaseUrl } from './kookr-stop.js';
 
 export const EXIT_OK = 0;
@@ -37,6 +37,11 @@ Required:
 
 Options:
   --context <text>      Extra background shown under the question (at most 1500 characters).
+  --link <https URL>    A page the question is about (a mockup, a write-up), at most 500
+                        characters; repeat up to 2 times. Shown as a button on Lucy's card
+                        and on Telegram, never read aloud. Do not paste the URL in the question.
+  --link-label <text>   Button text for the --link just before it (at most 40 characters,
+                        default "Open link"), e.g. --link-label "Open mockups".
   --timeout <dur>       How long the question stays open: 30s, 10m, 2h or plain seconds
                         (default 30m, minimum 30s, maximum 24h).
   --task-id <uuid>      Task asking (default: $KOOKR_TASK_ID, set in every Kookr task).
@@ -64,6 +69,7 @@ export interface ParsedAskArgs {
   question?: string;
   options: string[];
   context?: string;
+  links: AskLink[];
   timeoutSec?: number;
   taskId?: string;
   allowText: boolean;
@@ -84,7 +90,7 @@ export function parseDuration(raw: string): number | undefined {
 }
 
 export function parseAskArgs(argv: string[]): ParsedAskArgs {
-  const out: ParsedAskArgs = { options: [], allowText: true, json: false, help: false };
+  const out: ParsedAskArgs = { options: [], links: [], allowText: true, json: false, help: false };
   const fail = (msg: string): void => { if (out.error === undefined) out.error = msg; };
 
   for (let i = 0; i < argv.length; i++) {
@@ -107,6 +113,26 @@ export function parseAskArgs(argv: string[]): ParsedAskArgs {
       case '--question': { const v = value(); if (v !== undefined) out.question = v; break; }
       case '--option': { const v = value(); if (v !== undefined) out.options.push(v); break; }
       case '--context': { const v = value(); if (v !== undefined) out.context = v; break; }
+      case '--link': {
+        const v = value();
+        if (v === undefined) break;
+        if (out.links.length >= ASK_LIMITS.maxLinks) { fail(`at most ${ASK_LIMITS.maxLinks} --link values`); break; }
+        const problem = askLinkProblem({ url: v });
+        if (problem) fail(`--link: ${problem}`);
+        else out.links.push({ url: v });
+        break;
+      }
+      case '--link-label': {
+        const v = value();
+        if (v === undefined) break;
+        const last = out.links[out.links.length - 1];
+        if (!last) { fail('--link-label must follow the --link it names'); break; }
+        if (last.label !== undefined) { fail('one --link-label per --link'); break; }
+        const problem = askLinkProblem({ url: last.url, label: v });
+        if (problem) fail(`--link-label: ${problem}`);
+        else last.label = v.trim();
+        break;
+      }
       case '--task-id': { const v = value(); if (v !== undefined) out.taskId = v; break; }
       case '--timeout': {
         const v = value();
@@ -172,8 +198,11 @@ function isAskView(value: unknown): value is AskView {
  * to one pending ask, so an agent that re-runs the command after a tool timeout
  * does not post a second Telegram message.
  */
-export function defaultIdempotencyKey(taskId: string, question: string, options: string[], context?: string): string {
-  return createHash('sha256').update(JSON.stringify([taskId, question, options, context ?? ''])).digest('hex').slice(0, 32);
+export function defaultIdempotencyKey(taskId: string, question: string, options: string[], context?: string, links: readonly AskLink[] = []): string {
+  // Links are added only when there are some, so the key of a question without links is unchanged.
+  const parts: unknown[] = [taskId, question, options, context ?? ''];
+  if (links.length > 0) parts.push(links.map((l) => [l.url, l.label ?? '']));
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32);
 }
 
 export async function runAskCli(argv: string[], io: AskCliIo = {}): Promise<number> {
@@ -224,9 +253,10 @@ export async function runAskCli(argv: string[], io: AskCliIo = {}): Promise<numb
     question: args.question,
     options: args.options,
     ...(args.context !== undefined ? { context: args.context } : {}),
+    ...(args.links.length > 0 ? { links: args.links } : {}),
     ...(args.timeoutSec !== undefined ? { timeoutSec: args.timeoutSec } : {}),
     allowText: args.allowText,
-    idempotencyKey: defaultIdempotencyKey(taskId, args.question, args.options, args.context),
+    idempotencyKey: defaultIdempotencyKey(taskId, args.question, args.options, args.context, args.links),
   });
 
   // One retry on a network failure is safe: the idempotency key makes a repeat a no-op.

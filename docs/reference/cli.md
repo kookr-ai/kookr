@@ -1608,8 +1608,8 @@ otherwise the command exits `7` and changes nothing.
 
 ```text
 kookr ask --question "<text>" --option "<label>" --option "<label>" [--option "<label>"]
-          [--context "<text>"] [--timeout <dur>] [--task-id <uuid>] [--no-other]
-          [--wait[=<seconds>]] [--json]
+          [--context "<text>"] [--link <https URL> [--link-label "<text>"]]...
+          [--timeout <dur>] [--task-id <uuid>] [--no-other] [--wait[=<seconds>]] [--json]
 ```
 
 | Flag | Meaning |
@@ -1617,6 +1617,8 @@ kookr ask --question "<text>" --option "<label>" --option "<label>" [--option "<
 | `--question` | The question, at most 600 characters. |
 | `--option` | An answer button; give 2 to 4, each at most 48 characters on one line. |
 | `--context` | Background shown under the question, at most 1500 characters. |
+| `--link` | A page the question is about (a mockup, a write-up, a pull request): an `https://` URL of at most 500 characters. Give at most 2. Lucy's card shows it as a button that opens a new tab, Telegram as a URL button; Lucy does not read it aloud. Use it instead of pasting the URL into the question. |
+| `--link-label` | Button text for the `--link` just before it, at most 40 characters on one line, for example `"Open mockups"`. Default: `Open link`. |
 | `--timeout` | How long the question stays open: `30s`, `10m`, `2h` or plain seconds. Default 30 minutes, minimum 30 seconds, maximum 24 hours. |
 | `--task-id` | The asking task. Defaults to `KOOKR_TASK_ID`, which Kookr sets in every managed task. |
 | `--no-other` | Do not accept a free-text reply to the Telegram message as an answer. |
@@ -1630,7 +1632,18 @@ Telegram or in the dashboard). With `--wait` it also prints the chosen
 label (or the free text) on stdout. Re-running the same question with the same
 options from the same task while it is still pending returns the existing ask
 instead of sending a second Telegram message. Question and context text that
-looks like a credential is replaced by a placeholder, with a warning on stderr.
+looks like a credential is replaced by a placeholder, with a warning on stderr;
+a link that looks like one is refused (exit `4`), since a URL with a placeholder
+in it would not open.
+
+Every question card in Lucy's panel also has an **Open task** button that selects
+the asking task in the dashboard, and URLs written in the question or its
+background are clickable. On Telegram the question carries an **Open task** URL
+button too when `KOOKR_REMOTE_CHAT_DASHBOARD_URL` is set (Telegram refuses a
+button that points at `localhost`). If Telegram refuses a link button, the
+question is sent again with the links as text lines. While a question is
+waiting, saying "show me", "open it" or "show me the task" to Lucy live opens
+the link or the task (see [Lucy live](lucy-live.md#questions-from-tasks)).
 
 The ask is tied to the session that asked it. The answer, and the notice that
 the ask expired, are typed only into that session or into a session that
@@ -1647,7 +1660,7 @@ into whatever session is live when the answer arrives.
 | Exit | Meaning |
 | --- | --- |
 | `0` | Answered (with `--wait`), or created (without). |
-| `2` | Usage error (missing question, not 2 to 4 options, no task id, bad duration). |
+| `2` | Usage error (missing question, not 2 to 4 options, no task id, bad duration, a link that is not `https` or is longer than 500 characters). |
 | `3` | No Kookr server reachable. |
 | `4` | The server rejected the request (unknown or finished task, rate limit, delivery to Telegram failed). |
 | `5` | Expired with no answer. |

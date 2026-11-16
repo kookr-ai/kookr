@@ -34,4 +34,13 @@ describe('isLucyLiveClientMessage', () => {
     expect(isLucyLiveClientMessage({ type: 'speech_confirmed', turnId: 't1' })).toBe(false);
     expect(isLucyLiveClientMessage({ type: 'speech_rejected', turnId: 't1' })).toBe(false);
   });
+  it('validates open_result strictly (#3929)', () => {
+    expect(isLucyLiveClientMessage({ type: 'open_result', requestId: 'open-1', outcome: 'opened' })).toBe(true);
+    expect(isLucyLiveClientMessage({ type: 'open_result', requestId: 'open-1', outcome: 'blocked' })).toBe(true);
+    expect(isLucyLiveClientMessage({ type: 'open_result', requestId: 'open-1', outcome: 'unavailable' })).toBe(true);
+    expect(isLucyLiveClientMessage({ type: 'open_result', requestId: 'open-1', outcome: 'maybe' })).toBe(false);
+    expect(isLucyLiveClientMessage({ type: 'open_result', requestId: '', outcome: 'opened' })).toBe(false);
+    expect(isLucyLiveClientMessage({ type: 'open_result', requestId: 'x'.repeat(65), outcome: 'opened' })).toBe(false);
+    expect(isLucyLiveClientMessage({ type: 'open', requestId: 'open-1', target: { kind: 'task', taskId: 't1' } })).toBe(false);
+  });
 });

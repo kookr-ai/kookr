@@ -100,7 +100,12 @@ export type LucyLiveClientMessage =
    * The browser finished playing an answer sentence (or cut it short). Lets the server
    * record what the operator actually heard, so the conversation history stays honest.
    */
-  | { type: 'played'; turnId: string; seq: number; complete: boolean };
+  | { type: 'played'; turnId: string; seq: number; complete: boolean }
+  /** What the browser did with an `open` request: opened it, the browser blocked the tab, or there was nothing to open. */
+  | { type: 'open_result'; requestId: string; outcome: 'opened' | 'blocked' | 'unavailable' };
+
+/** What Lucy asks the browser to open by voice ("show me the mockups"): a question's link in a new tab, or the asking task. */
+export type LucyLiveOpenTarget = { kind: 'link'; url: string } | { kind: 'task'; taskId: string };
 
 // ---------------------------------------------------------------------------
 // Server -> browser
@@ -150,7 +155,12 @@ export type LucyLiveServerMessage =
    * session carries on). The browser shows `message`. Only `unavailable` ends the session;
    * with the socket still open, `bad_message` and `internal` are shown and the conversation continues.
    */
-  | { type: 'error'; code: LucyLiveErrorCode; message: string };
+  | { type: 'error'; code: LucyLiveErrorCode; message: string }
+  /**
+   * Open a page or select a task for the operator, who asked for it by voice. The browser answers with
+   * `open_result` carrying the same `requestId`, and Lucy says what happened.
+   */
+  | { type: 'open'; requestId: string; target: LucyLiveOpenTarget };
 
 /**
  * `bad_message`: a frame was malformed, unknown or too large. `internal`: the server failed
@@ -177,6 +187,9 @@ export function isLucyLiveClientMessage(value: unknown): value is LucyLiveClient
       return typeof v.turnId === 'string' && v.turnId.length > 0 && v.turnId.length <= 64
         && typeof v.seq === 'number' && Number.isInteger(v.seq) && v.seq >= 0
         && typeof v.complete === 'boolean';
+    case 'open_result':
+      return typeof v.requestId === 'string' && v.requestId.length > 0 && v.requestId.length <= 64
+        && (v.outcome === 'opened' || v.outcome === 'blocked' || v.outcome === 'unavailable');
     default:
       return false;
   }

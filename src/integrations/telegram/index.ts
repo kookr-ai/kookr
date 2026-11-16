@@ -6,7 +6,7 @@
  * setting KOOKR_TELEGRAM_BOT_TOKEN in .env enables it.
  */
 
-import type { AskAnswerPort, AskNotifier, AskRecord, AnswerRejection } from '../../shared/contracts/asks.js';
+import { DEFAULT_ASK_LINK_LABEL, type AskAnswerPort, type AskNotifier, type AskRecord, type AnswerRejection } from '../../shared/contracts/asks.js';
 import { createHash } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from '../../core/agent-types.js';
 import type { LlmClient } from '../../core/llm-client.js';
@@ -24,6 +24,7 @@ import {
   TelegramApiClient,
   TelegramApiError,
   TelegramDownloadTooLargeError,
+  type InlineKeyboardButton,
   type TelegramUpdate,
   type TelegramMessage,
 } from './api-client.js';
@@ -76,6 +77,12 @@ export interface StartTelegramTriggerDeps {
   maxSpawnsPerDay?: number;
   /** URL the dashboard is reachable at (e.g., http://localhost:4800). */
   dashboardBaseUrl: string;
+  /**
+   * Whether `dashboardBaseUrl` was set by the operator (`KOOKR_REMOTE_CHAT_DASHBOARD_URL`) rather than
+   * worked out from the local host. Only then does a question carry an "Open task" URL button: Telegram
+   * refuses a button that points at localhost, and a phone could not open it anyway.
+   */
+  dashboardUrlConfigured?: boolean;
   /** Function that calls into launch-service. Injected for testability. */
   launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
   /** May be null if no LLM provider is configured. /task bypass still works. */
@@ -1239,6 +1246,13 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     await lock.release();
   };
 
+  /** One URL button per link the question carries, then "Open task" when the dashboard has a URL a phone can open. */
+  function askUrlRows(ask: AskRecord): InlineKeyboardButton[][] {
+    const rows: InlineKeyboardButton[][] = (ask.links ?? []).map((l) => [{ text: l.label ?? DEFAULT_ASK_LINK_LABEL, url: l.url }]);
+    if (deps.dashboardUrlConfigured) rows.push([{ text: 'Open task', url: dashboardTaskUrl(deps.dashboardBaseUrl, ask.taskId) }]);
+    return rows;
+  }
+
   // `kookr ask` transport. Present only together with the answer port above.
   const askNotifier: AskNotifier | undefined = deps.asks
     ? {
@@ -1250,15 +1264,32 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         const lines = [`❓ Task ${ask.taskId} asks:`, '', ask.question];
         if (ask.context) lines.push('', ask.context);
         if (ask.allowText) lines.push('', 'Or reply to this message with text.');
-        const sent = await api.sendMessage(chatId, lines.join('\n'), {
-          inline_keyboard: ask.options.map((label, i) => [{ text: label, callback_data: callbackData(i) }]),
-        });
+        const choices: InlineKeyboardButton[][] = ask.options.map((label, i) => [{ text: label, callback_data: callbackData(i) }]);
+        const urlRows = askUrlRows(ask);
+        let sent: TelegramMessage;
+        try {
+          sent = await api.sendMessage(chatId, lines.join('\n'), { inline_keyboard: [...choices, ...urlRows] });
+        } catch (err) {
+          // Telegram refuses the whole message when it dislikes one URL button. The question matters
+          // more than the buttons: send it again with the links as plain text.
+          if (urlRows.length === 0 || !(err instanceof TelegramApiError) || err.status !== 400) throw err;
+          audit({ kind: 'ask_url_buttons_refused', askId: ask.id, taskId: ask.taskId, chatId, reason: err.message });
+          const linkLines = (ask.links ?? []).map((l) => `🔗 ${l.label ?? DEFAULT_ASK_LINK_LABEL}: ${l.url}`);
+          sent = await api.sendMessage(chatId, [...lines, '', ...linkLines].join('\n'), { inline_keyboard: choices });
+        }
         audit({ kind: 'ask_sent', askId: ask.id, taskId: ask.taskId, chatId });
         return { chatId, messageId: sent.message_id };
       },
       async finalizeAsk(ask, text) {
         if (!ask.delivery) return;
-        await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, text);
+        // The choices go; the links stay, so the page can still be opened after the question closed.
+        const urlRows = askUrlRows(ask);
+        try {
+          await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, text, urlRows.length > 0 ? { inline_keyboard: urlRows } : undefined);
+        } catch (err) {
+          if (urlRows.length === 0 || !(err instanceof TelegramApiError) || err.status !== 400) throw err;
+          await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, text);
+        }
         audit({ kind: 'ask_finalized', askId: ask.id, taskId: ask.taskId, state: ask.state, resolution: ask.resolution, ...(ask.answeredVia ? { answeredVia: ask.answeredVia } : {}) });
       },
     }

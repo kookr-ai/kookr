@@ -16,6 +16,7 @@ import type { LucyOperatorService } from '../lucy-operator/service.js';
 import { buildLucyLiveBriefing, type BriefingNeed, type BriefingTask, type BriefingTrainHealth } from '../../core/lucy-live/briefing.js';
 import { createBasetenLlmClientFromEnv } from '../../adapters/llm/baseten-client.js';
 import { buildAnswerMatchPrompt, parseAnswerMatch, pendingVoiceAsks, type AnswerMatch, type VoiceAskChoice } from '../../core/lucy-live/voice-answer.js';
+import { openableVoiceAsks } from '../../core/lucy-live/open-intent.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
 import { countSpokenWords, DISABLED_LUCY_INTERACTION_LOG, type LucyInteractionLog } from '../lucy-interaction-log.js';
 import type { AnswerResult, DashboardAnswerInput, OperatorAskView } from '../../shared/contracts/asks.js';
@@ -101,6 +102,7 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
             matchAnswer: deps.matchAnswer ?? matchWithHelperModel,
             answerAsk: (askId: string, optionIndex: number) => deps.answerAsk!({ askId, optionIndex }),
           } : {}),
+          ...(deps.getAsks ? { openableAsks: () => openableVoiceAsks(deps.getAsks!()) } : {}),
           buildBriefing: () => buildLucyLiveBriefing(deps.getTasks(), now(), deps.getAsks?.() ?? [], {
             ...(deps.getNeedsOperator ? { needs: deps.getNeedsOperator() } : {}),
             ...(deps.getTrainHealth ? { train: deps.getTrainHealth() } : {}),

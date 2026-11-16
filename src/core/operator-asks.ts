@@ -42,6 +42,7 @@ export function toOperatorAskView(ask: AskRecord, taskName: TaskNameLookup): Ope
     question: ask.question,
     ...(ask.context !== undefined ? { context: ask.context } : {}),
     options: [...ask.options],
+    ...(ask.links !== undefined && ask.links.length > 0 ? { links: ask.links.map((l) => ({ ...l })) } : {}),
     allowText: ask.allowText,
     state: ask.state,
     createdAt: ask.createdAt,

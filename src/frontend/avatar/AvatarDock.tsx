@@ -50,6 +50,7 @@ import {
   visibleOperatorAsks,
 } from '../store/operator-asks.js';
 import { AskCard, askOutcome, type AskAnswerChoice } from './AskCard.js';
+import { openAskLink } from './ask-links.js';
 import { LucyLaunchCard } from './LucyLaunchCard.js';
 import { LucyTypedInput } from './LucyTypedInput.js';
 import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
@@ -118,6 +119,11 @@ export interface AvatarDockProps {
    * still shown, and an answer reports "not connected".
    */
   onAnswerAsk?: (askId: string, choice: AskAnswerChoice) => boolean;
+  /**
+   * Select a task in the dashboard: the "Open task" button on a question card, and "show me the task"
+   * by voice. Returns false when the task cannot be shown. Without it there is no "Open task" button.
+   */
+  onOpenTask?: (taskId: string) => boolean;
 }
 
 const REPLAY_DESCRIPTION_ID = 'avatar-replay-description';
@@ -166,7 +172,7 @@ function bubbleCardPlacement(
   };
 }
 
-export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
+export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask }: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
   const [viewport, setViewport] = useState(viewportSize);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
@@ -187,7 +193,13 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
   const lastClip = useLastClip();
   const clips = useClipHistory();
   const sound = useSoundPreference();
-  const live = useLucyLive();
+  const live = useLucyLive({
+    // "Show me the mockups" / "open the task" while a question is waiting (the server picks the target).
+    onOpen: (target) => {
+      if (target.kind === 'link') return openAskLink(target.url);
+      return onOpenTask?.(target.taskId) ? 'opened' : 'unavailable';
+    },
+  });
   const operatorAsks = useOperatorAsks();
   // Why a press on the unavailable Talk button did nothing, for people who cannot see its tooltip.
   const [talkNotice, setTalkNotice] = useState<string | null>(null);
@@ -736,6 +748,7 @@ export function AvatarDock({ attentionCount, onAnswerAsk }: AvatarDockProps) {
               nowMs={now + askClockOffsetMs()}
               onAnswer={onAnswer}
               onDismiss={dismissOperatorAsk}
+              onOpenTask={onOpenTask}
             />
           ))}
         </ol>

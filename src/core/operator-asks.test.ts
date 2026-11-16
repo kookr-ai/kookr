@@ -25,6 +25,12 @@ describe('toOperatorAskView', () => {
     expect(JSON.stringify(view)).not.toMatch(/nonce|delivery|chatId|idempotency/);
   });
 
+  it('carries the links the card shows as buttons (#3929)', () => {
+    const links = [{ url: 'https://claude.ai/artifact/abc', label: 'Open mockups' }, { url: 'https://github.com/o/r/pull/1' }];
+    expect(toOperatorAskView(ask({ links }), names).links).toEqual(links);
+    expect(toOperatorAskView(ask({ links: [] }), names)).not.toHaveProperty('links');
+  });
+
   it('carries the answer and the channel it came from', () => {
     const view = toOperatorAskView(ask({
       state: 'answered', resolution: 'answered', answeredVia: 'telegram', answeredBy: 99, resolvedAt: NOW - 5,
