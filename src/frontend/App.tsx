@@ -1927,7 +1927,7 @@ export function App() {
       {avatarPanelEnabled && (
         <AvatarErrorBoundary>
           <Suspense fallback={null}>
-            <AvatarDock attentionCount={findings.length} onAnswerAsk={answerOperatorAsk} onOpenTask={openAskingTask} />
+            <AvatarDock attentionCount={findings.length} onAnswerAsk={answerOperatorAsk} onOpenTask={openAskingTask} onPermissionChoice={send} />
           </Suspense>
         </AvatarErrorBoundary>
       )}

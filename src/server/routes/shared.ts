@@ -365,6 +365,8 @@ export interface RouteDeps {
   issueClaims?: import('./issue-claim-routes.js').IssueClaimRouteDeps;
   /** `kookr ask` service (rfc-kookr-ask); undefined when Telegram is not configured. */
   asks?: import('./ask-routes.js').AskRouteDeps;
+  /** Lucy's permission notices (issue #3932): the speak route reads their sentences. */
+  lucyPermissionNotices?: Pick<import('../lucy-permission-notice.js').LucyPermissionNotifier, 'notice'>;
   /** Threaded to TaskRouteDeps so REST terminal transitions release claims (R8). */
   issueClaimRegistry?: import('../agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
   /** Threaded to TaskRouteDeps so REST task signals can notify remote-chat origins. */

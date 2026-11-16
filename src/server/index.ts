@@ -53,6 +53,8 @@ import {
 } from './lifecycle-timers.js';
 import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { PermissionPromptWaitAlerter } from './permission-prompt-wait-alert.js';
+import { LucyPermissionNotifier, pushLucyPermissionCards } from './lucy-permission-notice.js';
+import { DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS } from '../shared/contracts/lucy-permission.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import { FinishedAwaitingAckAckReaperMetrics } from './finished-awaiting-ack-ack-reaper.js';
@@ -2510,6 +2512,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
+  // Lucy speaks up when a task has waited a minute on a permission prompt
+  // (issue #3932): a card with the command and Approve once / Deny on her
+  // panel, and one sentence. Owner dashboards only, on connect and on change.
+  const lucyPermissionNotifier = new LucyPermissionNotifier({
+    push: (cards, announce) => pushLucyPermissionCards(connectionRegistry.snapshotDashboardConnections(), cards, announce),
+    getAnomaly: (sessionId) => queue.getAnomaly(sessionId),
+    getAgentEvents: (sessionId) => monitor.getAgentEvents(sessionId),
+    capturePane: (sessionId) => adapter.captureDisplay(sessionId),
+    getAfterMs: () => (currentSettings.lucyPermissionNoticeAfterSeconds ?? DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS) * 1000,
+  });
+
   // finishedAwaitingAck residual page after TTL reclaim (issue #2077). Page-only;
   // uses detectorBroadcast so fire/clear edges spool to Discord.
   const finishedAwaitingAckResidualAlerter = new FinishedAwaitingAckResidualAlerter({
@@ -3158,6 +3171,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     faaAckReapWarningCoordinator,
     faaAckReaperMetrics,
     hungTaskReaperMetrics,
+    lucyPermissionNotices: lucyPermissionNotifier,
     asks: {
       service: askService,
       // Lucy reads a pending question aloud in the avatar panel (POST /api/asks/:id/speak).
@@ -4028,6 +4042,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   const wsConnectionDeps: WsConnectionDeps = {
     ...(operatorAsksPort ? { operatorAsks: operatorAsksPort } : {}),
+    lucyPermissionCards: () => lucyPermissionNotifier.list(),
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
     serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,
@@ -4239,6 +4254,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       hungSuspectResidualAlerter,
       // issue #3872: phone page when a permission prompt waits 3+ minutes
       permissionPromptWaitAlerter,
+      // issue #3932: Lucy's card and sentence after a minute on a permission prompt
+      lucyPermissionNotifier,
       // issue #2077: Discord page when residual finishedAwaitingAck stays high after TTL
       finishedAwaitingAckResidualAlerter,
       // issue #2426: Discord page when ≥3 schedules are fail-closed paused

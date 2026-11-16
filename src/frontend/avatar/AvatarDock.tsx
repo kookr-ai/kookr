@@ -21,6 +21,10 @@
  * Telegram too, and an answer given on Telegram turns the card into "Answered on
  * Telegram". While minimised, the bubble's badge counts the waiting questions.
  *
+ * When a task has waited on a permission prompt for a minute, the server sends a card with the
+ * command and Approve once / Deny (`LucyPermissionCard.tsx`), and Lucy says one sentence about it
+ * (issue #3932). The sentence is spoken from here, so with the panel off nothing is said.
+ *
  * Under the 3D view the panel lists the last few spoken messages in full (what, about
  * which task, how long ago, heard or not), each with its own Replay button. The list is
  * a keyboard-focusable scroll region, so a long message is read by scrolling, not cut off.
@@ -39,7 +43,15 @@ import { getLastClip, useClipHistory, useLastClip } from '../audio/last-clip.js'
 import { replayClip, replayLastClip, stopReplay, type ReplayResult } from '../audio/clip-playback.js';
 import { useSoundPreference } from '../audio/sound-preference.js';
 import { track } from '../telemetry.js';
-import { announceAsk, stopAllAskAnnouncements, stopAskAnnouncement } from '../audio/ask-announcement.js';
+import {
+  announceAsk,
+  announcePermissionNotice,
+  stopAllAskAnnouncements,
+  stopAskAnnouncement,
+  stopPermissionNotice,
+} from '../audio/ask-announcement.js';
+import { onPermissionAnnounced, onPermissionNoticeWithdrawn, useLucyPermission } from '../store/lucy-permission.js';
+import { LucyPermissionCards, type PermissionChoiceSender } from './LucyPermissionCard.js';
 import {
   askClockOffsetMs,
   dismissOperatorAsk,
@@ -124,6 +136,11 @@ export interface AvatarDockProps {
    * by voice. Returns false when the task cannot be shown. Without it there is no "Open task" button.
    */
   onOpenTask?: (taskId: string) => boolean;
+  /**
+   * Send Approve once / Deny from a permission card (the dashboard's `permissionChoice` message).
+   * Returns false when it could not be sent. Without it the cards show no buttons that work.
+   */
+  onPermissionChoice?: PermissionChoiceSender;
 }
 
 const REPLAY_DESCRIPTION_ID = 'avatar-replay-description';
@@ -172,7 +189,7 @@ function bubbleCardPlacement(
   };
 }
 
-export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask }: AvatarDockProps) {
+export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask, onPermissionChoice }: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
   const [viewport, setViewport] = useState(viewportSize);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
@@ -295,9 +312,18 @@ export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask }: AvatarDo
       notice(`${askOutcome(ask).text}. Question: ${ask.question}`);
       stopAskAnnouncement(ask.id);
     });
+    // A task has waited on a permission prompt (issue #3932): the same rules, and she stops once every
+    // prompt the sentence is about has been answered.
+    const offPermission = onPermissionAnnounced((announcement) => {
+      notice(announcement.promptIds.length === 1 ? 'A task is waiting for your permission.' : 'Tasks are waiting for your permission.');
+      void announcePermissionNotice(announcement.noticeId);
+    });
+    const offWithdrawn = onPermissionNoticeWithdrawn((noticeId) => stopPermissionNotice(noticeId));
     return () => {
       offAnnounced();
       offClosed();
+      offPermission();
+      offWithdrawn();
       // The panel is going away (switched off): a clip still being fetched must not be played afterwards.
       stopAllAskAnnouncements();
     };
@@ -305,6 +331,8 @@ export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask }: AvatarDo
 
   const asks = visibleOperatorAsks(operatorAsks.asks, now + askClockOffsetMs());
   const pendingAskCount = asks.reduce((n, ask) => (ask.state === 'pending' ? n + 1 : n), 0);
+  // A task waiting on a permission prompt is waiting for the operator too: its card gets the same room as a question.
+  const permissionCardCount = useLucyPermission().cards.length;
   const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
     // The list moves when a question arrives or closes: a press that lands just after it did may have been
     // aimed at a card that is no longer under the pointer, so it is ignored (the operator presses again).
@@ -633,7 +661,7 @@ export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask }: AvatarDo
   const newestId = clips[0]?.clipId;
   return (
     <section
-      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${asks.length > 0 ? ' avatar-dock-asking' : ''}${pendingAskCount > 0 ? ' avatar-dock-ask-waiting' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
+      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${asks.length > 0 || permissionCardCount > 0 ? ' avatar-dock-asking' : ''}${pendingAskCount > 0 || permissionCardCount > 0 ? ' avatar-dock-ask-waiting' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
       style={{ left: position.x, top: position.y, width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT }}
       aria-label={`${NAME} avatar`}
       ref={dockRef}
@@ -753,6 +781,10 @@ export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask }: AvatarDo
           ))}
         </ol>
       )}
+      <LucyPermissionCards
+        {...(onPermissionChoice ? { onChoice: onPermissionChoice } : {})}
+        {...(onOpenTask ? { onOpenTask } : {})}
+      />
       <LucyLaunchCard />
       {showLive && (
         // A log, but not a live one: Lucy's answer is spoken aloud already, so it is not announced.

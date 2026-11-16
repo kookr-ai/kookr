@@ -17403,6 +17403,11 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .avatar-launch-result > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .avatar-launch-link { padding: 0; border: 0; background: none; color: var(--teal); font: inherit; cursor: pointer; text-decoration: underline; }
 .avatar-launch-link:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+/* Lucy's permission cards (issue #3932): the whole command, then Approve once / Deny. */
+.avatar-permissions { max-height: 280px; }
+.avatar-permission-tool { font-family: var(--font-mono); }
+.avatar-permission-command { margin: 0; max-height: 120px; overflow: auto; padding: 5px 7px; border: 1px solid var(--border-dim); border-radius: 4px; background: var(--bg-panel); color: var(--text-bright); font-family: var(--font-mono); font-size: 12px; line-height: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.avatar-permission .avatar-launch-buttons { flex-wrap: wrap; align-items: center; }
 .avatar-typed { flex: none; padding: 6px 11px; border-top: 1px solid var(--border-dim); font-size: 12px; }
 .avatar-typed-row { display: flex; gap: 4px; }
 .avatar-typed-row input { flex: 1 1 auto; min-width: 0; padding: 4px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-panel); color: var(--text-bright); font: inherit; }

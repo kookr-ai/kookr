@@ -11,6 +11,8 @@ import {
   __resetAskAnnouncementForTests,
   announceAsk,
   announceLaunchReport,
+  announcePermissionNotice,
+  stopPermissionNotice,
   stopAllAskAnnouncements,
   stopAskAnnouncement,
 } from './ask-announcement.js';
@@ -18,7 +20,7 @@ import { AUDIO_UNLOCK_TIMEOUT_MS, __resetClipPlaybackForTests, replayClip, repla
 import { __resetLastClipForTests, captureLastClip, getClipHistory } from './last-clip.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from './sound-preference.js';
 import { __resetSpeechBusForTests, emitSpeechGenerating, emitSpeechIdle } from './speech-bus.js';
-import { __resetDndForTests, enableDnd } from '../hooks/useDnd.js';
+import { __resetDndForTests, enableDnd, setQuietHoursWindows } from '../hooks/useDnd.js';
 import { __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
 
 type FakeSource = { buffer: unknown; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; onended: (() => void) | null };
@@ -409,6 +411,73 @@ describe('announceAsk', () => {
       expect(await first).toBe('started');
       expect(await second).toBe('started');
       expect(getClipHistory().map((c) => c.clipId)).toEqual(expect.arrayContaining(['clip-r1', 'clip-r2']));
+    });
+  });
+
+  describe('a task waiting on a permission prompt (issue #3932)', () => {
+    const SENTENCE = 'The task "Fix login" is waiting for your permission to use Bash. The command is on my card.';
+    const noticeFetcher = (clipId = 'clip-perm-1') => vi.fn(async () => speakResponse({ clipId, text: SENTENCE })) as unknown as typeof fetch;
+
+    test('posts only the notice id to the notice route and plays the clip', async () => {
+      const fetcher = noticeFetcher();
+      expect(await announcePermissionNotice('perm-1', { fetcher })).toBe('started');
+      const [url, init] = vi.mocked(fetcher).mock.calls[0]!;
+      expect(url).toBe('/api/lucy/permission-notice/speak');
+      expect(JSON.parse(String((init as RequestInit).body))).toEqual({ noticeId: 'perm-1' });
+      expect(FakeAudioContext.instances[0].sources[0].start).toHaveBeenCalledOnce();
+      expect(JSON.parse(localStorage.getItem(SPOKEN_ASKS_STORAGE_KEY) ?? '[]')).toEqual(['permission:perm-1']);
+    });
+
+    test('one tab speaks it, and a reload does not say it again', async () => {
+      expect(await announcePermissionNotice('perm-1', { fetcher: noticeFetcher() })).toBe('started');
+      __resetAskAnnouncementForTests(); // a reloaded page keeps only localStorage
+      const again = noticeFetcher();
+      expect(await announcePermissionNotice('perm-1', { fetcher: again })).toBe('other-tab');
+      expect(again).not.toHaveBeenCalled();
+    });
+
+    test('sound off, Do Not Disturb and quiet hours each keep an unheard clip and play nothing', async () => {
+      setSoundEnabled(false);
+      expect(await announcePermissionNotice('perm-a', { fetcher: noticeFetcher('clip-a') })).toBe('muted');
+      setSoundEnabled(true);
+      enableDnd(null);
+      expect(await announcePermissionNotice('perm-b', { fetcher: noticeFetcher('clip-b') })).toBe('dnd');
+      __resetDndForTests();
+      // A quiet-hours window covering the whole day: Do Not Disturb by schedule.
+      setQuietHoursWindows([{ start: '00:00', end: '23:59' }, { start: '23:59', end: '00:00' }]);
+      expect(await announcePermissionNotice('perm-c', { fetcher: noticeFetcher('clip-c') })).toBe('dnd');
+      expect(FakeAudioContext.instances.flatMap((ctx) => ctx.sources)).toHaveLength(0);
+      expect(getClipHistory().map((clip) => [clip.clipId, clip.heard])).toEqual(expect.arrayContaining([
+        ['clip-a', false], ['clip-b', false], ['clip-c', false],
+      ]));
+    });
+
+    test('before the first click in the page the clip is kept as unheard', async () => {
+      vi.stubGlobal('navigator', { userActivation: { hasBeenActive: false } });
+      expect(await announcePermissionNotice('perm-1', { fetcher: noticeFetcher(), sleep: noWait })).toBe('blocked');
+      expect(FakeAudioContext.instances).toHaveLength(0);
+      expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-perm-1', heard: false });
+    });
+
+    test('answered before she gets to it: not spoken, and its clip is dropped', async () => {
+      stopPermissionNotice('perm-1');
+      const fetcher = noticeFetcher();
+      expect(await announcePermissionNotice('perm-1', { fetcher })).toBe('cancelled');
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    test('answered while she says it: she stops', async () => {
+      const playing = announcePermissionNotice('perm-1', { fetcher: noticeFetcher() });
+      await vi.waitFor(() => expect(replayingClipId()).toBe('clip-perm-1'));
+      stopPermissionNotice('perm-1');
+      expect(replayingClipId()).toBeNull();
+      await playing;
+    });
+
+    test('a 409 (every prompt already answered) is cancelled, with no clip', async () => {
+      const fetcher = vi.fn(async () => new Response('{}', { status: 409 })) as unknown as typeof fetch;
+      expect(await announcePermissionNotice('perm-1', { fetcher })).toBe('cancelled');
+      expect(getClipHistory()).toHaveLength(0);
     });
   });
 });

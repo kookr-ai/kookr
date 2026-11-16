@@ -505,6 +505,27 @@ describe('handleWsConnection initial burst (#809 actor-aware)', () => {
   });
 });
 
+describe('handleWsConnection — Lucy\'s permission cards on connect (issue #3932)', () => {
+  const sentOf = (ws: FakeWs) => ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+  const card = { promptId: 'p1', taskId: 't1', agentId: 'kookr-t1', toolName: 'Bash', command: 'ls', since: 1 };
+
+  it('sends an owner the current cards, with no sentence to say', () => {
+    const ws = makeFakeWs();
+    const deps = { ...makeDeps(), lucyPermissionCards: () => [card] } as unknown as WsConnectionDeps;
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+    expect(sentOf(ws).filter((m) => m.type === 'lucyPermissionCards')).toEqual([{ type: 'lucyPermissionCards', cards: [card], serverNow: expect.any(Number) }]);
+  });
+
+  it('never sends them to a viewer', () => {
+    const ws = makeFakeWs();
+    const list = vi.fn(() => [card]);
+    const deps = { ...makeDeps(), lucyPermissionCards: list } as unknown as WsConnectionDeps;
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, VIEWER);
+    expect(sentOf(ws).some((m) => m.type === 'lucyPermissionCards')).toBe(false);
+    expect(list).not.toHaveBeenCalled();
+  });
+});
+
 describe('handleWsConnection — kookr ask in Lucy\'s panel (operatorAsks / answerAsk)', () => {
   const pendingAsk = {
     id: 'a1b2c3d4e5f6', taskId: 't1', question: 'Ship it?', options: ['Yes', 'No'], allowText: true,

@@ -3,7 +3,10 @@
  *
  * Everything else Lucy says follows a press on a speaker button. A question is
  * different: the task is waiting, so she says it unprompted, once, the moment
- * it arrives. The rules that keep that from being a nuisance:
+ * it arrives. Two other things she says unprompted go through the same path:
+ * the report of a task she launched ({@link announceLaunchReport}) and a task
+ * that has waited on a permission prompt ({@link announcePermissionNotice}).
+ * The rules that keep that from being a nuisance:
  *
  *  - Sound off in Settings, or Do Not Disturb: nothing is played. The clip is
  *    still fetched and kept in her message list, marked unheard, so the
@@ -30,6 +33,7 @@
  * list, and "heard" bookkeeping and telemetry work as for any other clip.
  */
 import { LUCY_LAUNCH_REPORT_SPEAK_PATH } from '../../shared/contracts/lucy-launch.js';
+import { LUCY_PERMISSION_NOTICE_SPEAK_PATH } from '../../shared/contracts/lucy-permission.js';
 import type { SpeakAudioResponse } from '../../shared/contracts/speech.js';
 import { getDndState } from '../hooks/useDnd.js';
 import { replayClip, replayingClipId, reportClipUnheard, stopReplay, type ReplayResult } from './clip-playback.js';
@@ -190,6 +194,24 @@ export function announceLaunchReport(
   options: AnnounceAskOptions = {},
 ): Promise<AskAnnouncementResult> {
   return announceKeyed(`report:${taskId}:${kind}`, { url: LUCY_LAUNCH_REPORT_SPEAK_PATH, body: { taskId } }, options);
+}
+
+/**
+ * Lucy says that a task has waited on a permission prompt (issue #3932), under the same rules as a question.
+ * The server wrote the sentence; only the notice id is sent. The dedupe key is `permission:<noticeId>`, and
+ * {@link stopPermissionNotice} cuts her off once every prompt it is about has been answered.
+ */
+export function announcePermissionNotice(noticeId: string, options: AnnounceAskOptions = {}): Promise<AskAnnouncementResult> {
+  return announceKeyed(permissionNoticeKey(noticeId), { url: LUCY_PERMISSION_NOTICE_SPEAK_PATH, body: { noticeId } }, options);
+}
+
+/** The prompts a permission notice was about have all been answered: stop saying it, or do not start. */
+export function stopPermissionNotice(noticeId: string): void {
+  stopAskAnnouncement(permissionNoticeKey(noticeId));
+}
+
+function permissionNoticeKey(noticeId: string): string {
+  return `permission:${noticeId}`;
 }
 
 /** Keys whose announcement has started and not yet finished, so they can be cancelled together. */

@@ -31,6 +31,10 @@ import {
   type ReplySnippet,
 } from '../shared/contracts/reply-snippets.js';
 import { DEFAULT_LUCY_AUTONOMY, isLucyAutonomy, type LucyAutonomy } from '../shared/contracts/lucy-launch.js';
+import {
+  DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS,
+  MAX_LUCY_PERMISSION_NOTICE_AFTER_SECONDS,
+} from '../shared/contracts/lucy-permission.js';
 import { isSpeakVoiceId, type SpeakVoiceId, type VerbosityScale } from '../shared/contracts/speech.js';
 import { QUOTA_NO_HEADROOM_UTILIZATION } from './quota-headroom-admission.js';
 
@@ -117,6 +121,13 @@ export interface KookrSettings {
    * and changed only here: Lucy has no way to change it.
    */
   lucyAutonomy?: LucyAutonomy;
+  /**
+   * How long (seconds) a task's agent waits on a permission prompt before Lucy shows
+   * its card and says so (issue #3932). Absent means 60; 0 turns these notices off.
+   * Whole seconds, at most one hour; anything else is dropped with a warning. Read live. At 300 or
+   * more the card's Approve once / Deny have already passed the 5-minute dashboard binding limit.
+   */
+  lucyPermissionNoticeAfterSeconds?: number;
   /**
    * Keep a local JSONL log of what the avatar ("Lucy") says and how the operator
    * reacts (`<kookrDir>/lucy-interactions.jsonl`, issue #3605). Default true; the
@@ -1022,6 +1033,18 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     }
   }
 
+  let lucyPermissionNoticeAfterSeconds: number | undefined;
+  if (raw.lucyPermissionNoticeAfterSeconds !== undefined && raw.lucyPermissionNoticeAfterSeconds !== null) {
+    const value = raw.lucyPermissionNoticeAfterSeconds;
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_LUCY_PERMISSION_NOTICE_AFTER_SECONDS) {
+      lucyPermissionNoticeAfterSeconds = value;
+    } else {
+      verbosityWarnings.push(
+        `Invalid lucyPermissionNoticeAfterSeconds ${JSON.stringify(value)} (whole seconds, 0-${MAX_LUCY_PERMISSION_NOTICE_AFTER_SECONDS}); dropped (using ${DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS})`,
+      );
+    }
+  }
+
   const lucyInteractionLog = typeof raw.lucyInteractionLog === 'boolean'
     ? raw.lucyInteractionLog
     : DEFAULT_SETTINGS.lucyInteractionLog;
@@ -1064,6 +1087,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       speakVerbosity,
       ...(speakVoice !== undefined ? { speakVoice } : {}),
       ...(lucyAutonomy !== undefined ? { lucyAutonomy } : {}),
+      ...(lucyPermissionNoticeAfterSeconds !== undefined ? { lucyPermissionNoticeAfterSeconds } : {}),
       lucyInteractionLog,
       agentEffort,
       quietHours: quietHoursValidation.windows,

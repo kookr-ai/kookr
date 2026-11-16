@@ -99,6 +99,7 @@ import {
   collectPermissionPromptWaits,
   type PermissionPromptWaitAlerter,
 } from './permission-prompt-wait-alert.js';
+import type { LucyPermissionNotifier } from './lucy-permission-notice.js';
 import type { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import type { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import {
@@ -385,6 +386,11 @@ export interface TimerDeps {
    * path so fire/clear edges spool to the operator's phone.
    */
   permissionPromptWaitAlerter?: Pick<PermissionPromptWaitAlerter, 'evaluate'>;
+  /**
+   * Lucy's card and sentence when a task has waited on a permission prompt
+   * for a minute (issue #3932). Reads the same blocked-task list as the page.
+   */
+  lucyPermissionNotifier?: Pick<LucyPermissionNotifier, 'evaluate'>;
   /**
    * Operator page when fail-closed schedule pauses stay ≥ bound (issue #2426).
    * Page-only — never re-enables a schedule. Prefer a `detectorBroadcast`
@@ -2204,17 +2210,12 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       // that has waited past the threshold, cleared when it is answered or
       // the task ends. Own try/catch so a failed reclaim sweep above never
       // silences it.
-      if (deps.permissionPromptWaitAlerter) {
-        try {
-          deps.permissionPromptWaitAlerter.evaluate(
-            collectPermissionPromptWaits(taskStore.viewLiveTasks(), deps.monitor),
-          );
-        } catch (err) {
-          console.warn(
-            '[liveness] permission-prompt wait alerter threw:',
-            err instanceof Error ? err.message : err,
-          );
-        }
+      if (deps.permissionPromptWaitAlerter || deps.lucyPermissionNotifier) {
+        evaluatePermissionPromptWaits(
+          () => collectPermissionPromptWaits(taskStore.viewLiveTasks(), deps.monitor),
+          deps.permissionPromptWaitAlerter,
+          deps.lucyPermissionNotifier,
+        );
       }
 
       // provider_paused occupancy bound + hard/soft TTL (issues #2079 / #2225):
@@ -2879,4 +2880,36 @@ export function clearAllTimers(handles: TimerHandles): void {
   if (handles.reflectWorktreeSweepInterval) clearInterval(handles.reflectWorktreeSweepInterval);
   if (handles.supervisionInterval) clearInterval(handles.supervisionInterval);
   if (handles.supervisionStartupTimer) clearTimeout(handles.supervisionStartupTimer);
+}
+
+/**
+ * One liveness pass over the tasks blocked on a permission prompt: the 3-minute page (issue #3872)
+ * and Lucy's card (issue #3932) read the same list. Each has its own try/catch so neither silences
+ * the other, and Lucy is told nothing when the list could not be built: an empty list would tell
+ * her every prompt was answered.
+ */
+export function evaluatePermissionPromptWaits(
+  collect: () => ReturnType<typeof collectPermissionPromptWaits>,
+  alerter: Pick<PermissionPromptWaitAlerter, 'evaluate'> | undefined,
+  notifier: Pick<LucyPermissionNotifier, 'evaluate'> | undefined,
+): void {
+  let waits: ReturnType<typeof collectPermissionPromptWaits> | undefined;
+  try {
+    waits = collect();
+    alerter?.evaluate(waits);
+  } catch (err) {
+    console.warn(
+      '[liveness] permission-prompt wait alerter threw:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+  if (!waits) return;
+  try {
+    notifier?.evaluate(waits);
+  } catch (err) {
+    console.warn(
+      '[liveness] Lucy permission notifier threw:',
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
