@@ -28,6 +28,7 @@ import {
   type RestartIntentRecord,
 } from '../../bin/kookr-spawn.js';
 import { listSignalFiles, readSignal } from '../observability/signal-delivery/operator-signal.js';
+import { resolveKookrDir, writeRestartIntent } from '../../bin/kookr-restart-intent.js';
 
 const MIN = 60_000;
 
@@ -278,12 +279,22 @@ describe('resolveBaseUrl — explicit base URL through a planned restart (#3928)
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('a healthy server wins over a lingering note', async () => {
+  it('ignores a note that is already stale: no extra request before the POST', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const r = await resolveBaseUrl({
+      env: { KOOKR_PORT: '4821' },
+      lookupRestartIntent: () => note(11 * MIN, { clock: Date.now() }),
+    });
+    expect(r).toEqual({ kind: 'explicit', baseUrl: 'http://127.0.0.1:4821' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('a healthy server wins over an in-progress note', async () => {
     const srv = await startRestartingServer(() => true);
     try {
       const r = await resolveBaseUrl({
         env: { KOOKR_API_BASE_URL: srv.baseUrl },
-        lookupRestartIntent: () => note(11 * MIN, { clock: Date.now() }),
+        lookupRestartIntent: () => note(MIN, { clock: Date.now() }),
       });
       expect(r).toEqual({ kind: 'explicit', baseUrl: srv.baseUrl });
       expect(srv.healthHits()).toBe(1);
@@ -315,7 +326,60 @@ describe('resolveBaseUrl — explicit base URL through a planned restart (#3928)
   });
 });
 
+describe('resolveBaseUrl — the wait is opt-in (#3928)', () => {
+  // `kookr signal` and `kookr issue` call resolveBaseUrl({ env, sleep }) and
+  // must not inherit spawn's wait: a signal spools and exits 0 at once.
+  it('ignores a note on disk unless the caller passes a lookup', async () => {
+    writeRestartIntent({ kookrDir: resolveKookrDir({ port: 4899 }), reason: 'prod:update', staleAfterMs: 30 * MIN });
+    const sleeps: number[] = [];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const r = await resolveBaseUrl({
+      env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4899' },
+      sleep: async (ms) => { sleeps.push(ms); },
+    });
+    expect(r).toEqual({ kind: 'explicit', baseUrl: 'http://127.0.0.1:4899' });
+    expect(sleeps).toEqual([]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('main — planned restart acceptance (#3928)', () => {
+  it('reads the real note from disk by default', async () => {
+    const clock = fakeClock(Date.now());
+    const startedAt = clock.now();
+    const srv = await startRestartingServer(() => clock.now() >= startedAt + MIN);
+    // Written under the test's HOME, at the server's port, 30 seconds ago.
+    writeRestartIntent({
+      kookrDir: resolveKookrDir({ port: srv.port }),
+      reason: 'prod:update',
+      staleAfterMs: 30 * MIN,
+      now: startedAt - 30_000,
+    });
+    try {
+      const out = capture();
+      const err = capture();
+      const { codes, exit } = exitCapture();
+      await main({
+        argv: ['--json', 'hello'],
+        env: { KOOKR_API_BASE_URL: srv.baseUrl, KOOKR_OPERATOR_SIGNAL_DIR: signalDir },
+        stdin: ttyStdin(),
+        cwd,
+        out: out.io,
+        err: err.io,
+        exit,
+        sleep: clock.sleep,
+        now: clock.now,
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(srv.posts).toHaveLength(1);
+      expect(JSON.parse(out.logs[0]).details.restartWait).toMatchObject({ outcome: 'recovered', waitedMs: MIN });
+      expect(err.errors[0]).toMatch(/Kookr is restarting, prod:update started 30s ago, waiting/);
+    } finally {
+      await srv.close();
+    }
+  });
+
+
   it('note 2 minutes old, server back after 4 minutes: one task, exit 0, wait facts in --json', async () => {
     const clock = fakeClock();
     const srv = await startRestartingServer(() => clock.now() >= 4 * MIN);
@@ -449,13 +513,39 @@ describe('main — planned restart acceptance (#3928)', () => {
   });
 
   it('KOOKR_SPAWN_RESTART_WAIT_SECONDS sets the limit and the flag overrides it', async () => {
+    mockAutoDetectFetch(() => false);
+    const waitedWith = async (argv: string[]) => {
+      const clock = fakeClock();
+      const out = capture();
+      const { codes, exit } = exitCapture();
+      await main({
+        argv: ['--json', ...argv, 'hello'],
+        env: { KOOKR_OPERATOR_SIGNAL_DIR: signalDir, KOOKR_SPAWN_RESTART_WAIT_SECONDS: '45' },
+        stdin: ttyStdin(),
+        cwd,
+        out: out.io,
+        err: capture().io,
+        exit,
+        sleep: clock.sleep,
+        now: clock.now,
+        lookupRestartIntent: () => note(MIN),
+      });
+      expect(codes).toEqual([EXIT_NO_SERVER]);
+      return JSON.parse(out.logs[0]).details.restartWait;
+    };
+    expect(await waitedWith([])).toMatchObject({ outcome: 'limit_reached', waitedMs: 45_000 });
+    expect(await waitedWith(['--restart-wait', '30'])).toMatchObject({ outcome: 'limit_reached', waitedMs: 30_000 });
+  });
+
+  it('a note cleared while the server stays down: usual exit 3, no alert', async () => {
     const clock = fakeClock();
     mockAutoDetectFetch(() => false);
+    const intent = note(MIN);
     const out = capture();
     const { codes, exit } = exitCapture();
     await main({
       argv: ['--json', 'hello'],
-      env: { KOOKR_OPERATOR_SIGNAL_DIR: signalDir, KOOKR_SPAWN_RESTART_WAIT_SECONDS: '45' },
+      env: { KOOKR_OPERATOR_SIGNAL_DIR: signalDir },
       stdin: ttyStdin(),
       cwd,
       out: out.io,
@@ -463,10 +553,43 @@ describe('main — planned restart acceptance (#3928)', () => {
       exit,
       sleep: clock.sleep,
       now: clock.now,
-      lookupRestartIntent: () => note(MIN),
+      lookupRestartIntent: () => (clock.now() < MIN ? intent : null),
     });
     expect(codes).toEqual([EXIT_NO_SERVER]);
-    expect(JSON.parse(out.logs[0]).details.restartWait).toMatchObject({ outcome: 'limit_reached', waitedMs: 45_000 });
+    const envelope = JSON.parse(out.logs[0]);
+    expect(envelope.message).toMatch(/no Kookr server reachable on :4800 or :4801 after \d+ attempts/);
+    expect(envelope.details.alert).toBeUndefined();
+    expect(await listSignalFiles(signalDir)).toEqual([]);
+  });
+
+  it('explicit URL whose restart never finishes: exit 3 and one alert once the note goes stale', async () => {
+    const clock = fakeClock();
+    const srv = await startRestartingServer(() => false);
+    try {
+      const out = capture();
+      const { codes, exit } = exitCapture();
+      await main({
+        argv: ['--json', 'hello'],
+        env: { KOOKR_API_BASE_URL: srv.baseUrl, KOOKR_OPERATOR_SIGNAL_DIR: signalDir },
+        stdin: ttyStdin(),
+        cwd,
+        out: out.io,
+        err: capture().io,
+        exit,
+        sleep: clock.sleep,
+        now: clock.now,
+        lookupRestartIntent: () => note(9 * MIN), // stale one minute in
+      });
+      expect(codes).toEqual([EXIT_NO_SERVER]);
+      expect(JSON.parse(out.logs[0])).toMatchObject({
+        code: 'NO_SERVER',
+        details: { ports: [srv.port], restartWait: { outcome: 'stale' }, alert: { written: true } },
+      });
+      expect(srv.posts).toEqual([]);
+      expect(await listSignalFiles(signalDir)).toHaveLength(1);
+    } finally {
+      await srv.close();
+    }
   });
 
   it('--dry-run never writes a lost-launch alert', async () => {

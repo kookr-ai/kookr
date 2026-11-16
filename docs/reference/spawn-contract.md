@@ -161,13 +161,17 @@ Details:
 
 - **The limit.** `--restart-wait <seconds>` or
   `KOOKR_SPAWN_RESTART_WAIT_SECONDS` caps spawn's own waiting time (0 to 3600;
-  `0` turns the wait off). Without either, spawn waits until the note goes
-  stale.
+  the flag wins). `0` means no waiting beyond the short retry; a launch lost to
+  a restart still gets the alert. Without either, spawn waits until the note
+  goes stale.
 - **Which server.** With auto-detect, spawn reads the notes for ports 4800 and
   4801. With `KOOKR_PORT`, or a local `KOOKR_API_BASE_URL` (worker tasks always
-  have one), spawn reads the note for that port. If a note exists it checks
-  `/api/health` before the POST; a healthy server wins over a lingering note. A
-  remote `KOOKR_API_BASE_URL` is never checked.
+  have one), spawn reads the note for that port. Only when it says a restart is
+  in progress does spawn check `/api/health` before the POST; a healthy server
+  wins over the note. A note that is already stale is ignored on this path, and
+  a remote `KOOKR_API_BASE_URL` is never checked.
+- **Only spawn waits.** `kookr signal` and `kookr issue` share spawn's server
+  lookup but do not wait: a signal is spooled and the command exits 0 at once.
 - **The note disappears mid-wait.** The deploy clears it once the new server is
   ready, so spawn probes once more. If that fails too it exits 3 with the usual
   message and no alert.

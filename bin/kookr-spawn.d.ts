@@ -105,6 +105,7 @@ export interface ResolveBaseUrlDeps {
   log?: (msg: string) => void;
   /** Cap on the planned-restart wait; null follows the note's own deadline. */
   restartWaitLimitMs?: number | null;
+  /** Default: no lookup, so no wait (kookr signal / kookr issue share this resolver). */
   lookupRestartIntent?: LookupRestartIntent;
 }
 

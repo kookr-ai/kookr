@@ -276,7 +276,7 @@ Options:
                            completion-ready or reaches a terminal state.
       --restart-wait <seconds>
                            Upper limit on waiting through a planned Kookr
-                           restart (0..${MAX_RESTART_WAIT_SECONDS}; 0 turns the wait off).
+                           restart (0..${MAX_RESTART_WAIT_SECONDS}; 0 = only the short retry).
                            When no server answers and the deploy's
                            restart note (~/.kookr/restart-intent.json) says
                            a restart is in progress, spawn keeps probing
@@ -1015,7 +1015,10 @@ async function resolveBaseUrl({
   now = Date.now,
   log = defaultLog,
   restartWaitLimitMs = null,
-  lookupRestartIntent = defaultLookupRestartIntent,
+  // #3928: off unless the caller opts in. `kookr signal` and `kookr issue`
+  // share this resolver, and a signal must spool and exit at once during a
+  // restart, so only spawn's main() passes the on-disk note reader.
+  lookupRestartIntent = () => null,
 } = {}) {
   if (env.KOOKR_API_BASE_URL && env.KOOKR_API_BASE_URL.trim() !== '') {
     const base = env.KOOKR_API_BASE_URL.trim().replace(/\/+$/, '');
@@ -1108,9 +1111,12 @@ async function resolveBaseUrl({
  * Explicit base URL (KOOKR_API_BASE_URL / KOOKR_PORT): today spawn POSTs at
  * once without probing. Worker tasks always run with KOOKR_API_BASE_URL set,
  * so they are the callers a planned restart hurts most (#3928). When the URL
- * is local and a restart note exists for its port, check /api/health first and
- * wait through the restart exactly like the auto-detect sweep. With no note
- * (or a remote URL) nothing changes: no extra request is made.
+ * is local and the note for its port says a restart is in progress, check
+ * /api/health first and wait through the restart like the auto-detect sweep.
+ * Otherwise nothing changes and no extra request is made — including for a
+ * note that is already stale: it can linger for hours after a failed deploy,
+ * and gating every POST on it would turn a slow-but-up server into a false
+ * "deploy failed" alert.
  */
 async function resolveExplicitBaseUrl({ baseUrl, env, sleep, now, log, restartWaitLimitMs, lookupRestartIntent }) {
   const explicit = { kind: 'explicit', baseUrl };
@@ -1118,15 +1124,15 @@ async function resolveExplicitBaseUrl({ baseUrl, env, sleep, now, log, restartWa
   if (port === null) return explicit;
   const startMs = now();
   const lookup = () => lookupRestartIntent({ env, port, now: now() });
-  if (classifyRestartIntent(lookup(), startMs).state === 'none') return explicit;
+  if (classifyRestartIntent(lookup(), startMs).state !== 'in-progress') return explicit;
 
   const retries = parseRetries(env.KOOKR_SPAWN_CONNECT_RETRIES);
   const restartWait = createRestartWaitTracker({ lookup, limitMs: restartWaitLimitMs, now, startMs, log });
   let attempts = 0;
   while (true) {
     if (await probeHealth(baseUrl, PROBE_TIMEOUT_MS)) {
-      // A healthy server wins over the note: an orphaned note can linger for
-      // hours after a deploy that bypassed the script's clear.
+      // A healthy server wins over the note: the deploy clears it only after
+      // its readiness gate, so the API can answer while the note is still there.
       return withRestartWait(explicit, restartWait.summary('recovered'));
     }
     attempts += 1;
