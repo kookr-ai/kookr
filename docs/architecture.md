@@ -820,7 +820,7 @@ to the full suite on every push and merges straight into `main`.
 5. **Revert and fix task.** When the full run fails, the train bisects the
    commits between `main` and `staging`, reverts the offending pull request on
    `staging`, reopens its issue with the failing output, and spawns one task to
-   fix and re-land it. When it cannot tell which change is at fault, it halts and
+   fix and re-land it (up to three per issue). When it cannot tell which change is at fault, it halts and
    notifies the operator instead of guessing.
 
 **Rollback.** To turn off only the fast gate, run

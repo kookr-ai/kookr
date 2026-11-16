@@ -149,7 +149,7 @@ fast-forwards `main` to the commit it verified; the linked issue closes then,
 not at the merge. If the train finds your change broke the suite, it reverts
 the PR on `staging` (a commit with the trailer `Kookr-Integration-Train: revert`),
 reopens the linked issue with the failing output, and spawns one task to fix and
-re-land it. To see what happened to a change: `pnpm train:status`,
+re-land it (up to three per issue). To see what happened to a change: `pnpm train:status`,
 `pnpm train:logs`, and the reopened issue. See
 `docs/reference/integration-train.md`.
 

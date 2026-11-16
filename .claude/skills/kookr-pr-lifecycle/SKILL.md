@@ -192,7 +192,7 @@ verified.
 - **If the train reverted your change**, it did three things: pushed a revert
   commit to `staging` carrying the trailer `Kookr-Integration-Train: revert`,
   reopened the linked issue with the failing output, and spawned one task to fix
-  and re-land it. Look at the reopened issue first, then `pnpm train:status` and
+  and re-land it (up to three per issue). Look at the reopened issue first, then `pnpm train:status` and
   `pnpm train:logs`.
 
 ## 8. Merge & Head-Branch Cleanup

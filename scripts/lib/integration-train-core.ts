@@ -86,9 +86,13 @@ export interface TrainState {
   /** Heads that were red once and green on the immediate re-run. */
   flakyHeads: string[];
   /**
-   * Fix-task budget: key -> automatic re-lands already spawned. The key is the
-   * linked issue (`issue-<n>`) when the reverted PR has one, because a re-land
-   * is a new PR with a new number but closes the same issue; `pr-<n>` otherwise.
+   * Fix-task budget: key -> automatic re-lands already spawned, at most
+   * `MAX_AUTOMATIC_RELANDS`. The key is the linked issue (`issue-<n>`) when the
+   * reverted PR has one, because a re-land is a new PR with a new number but
+   * closes the same issue. Otherwise it is `ref-<n>`, where `<n>` is the first
+   * reference in the commit subject, or the PR number when there is none.
+   * A count is never cleared, so it covers every revert of that issue, not
+   * only the current one.
    */
   fixTasks: Record<string, number>;
   /**
@@ -887,11 +891,12 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
       }
     } else {
       fixNote = `fix budget exhausted for ${budgetKey} (PR #${pr})`;
-      prNextStep = `needs a human: ${spawned} automatic fix task(s), the limit of ${MAX_AUTOMATIC_RELANDS}, were already reverted for this change, ` +
+      const scope = issueNumbers.length > 0 ? 'this issue' : 'this change';
+      prNextStep = `needs a human: ${spawned} automatic fix task(s), the limit of ${MAX_AUTOMATIC_RELANDS}, were already started for ${scope}, ` +
         'so the train starts no more. The operator has been alerted.';
       await raise(
         deps, state, 'fix-budget-exhausted',
-        `PR #${pr} failed again after ${spawned} automatic fix task(s), the limit; reverted ${culprit} (${revertSha}). Needs a human.`,
+        `PR #${pr} failed; ${spawned} automatic fix task(s), the limit, were already started for ${scope}; reverted ${culprit} (${revertSha}). Needs a human.`,
       );
     }
   }
@@ -942,11 +947,15 @@ function fixPrompt(p: {
   pr: number; culprit: string; revertSha: string; integration: string; failTail: string; issues: number[];
   attempt: number;
 }): string {
-  // A later attempt must not repeat the fix that was just reverted.
+  // A later attempt must not repeat an earlier fix that failed. The count never
+  // resets, so an earlier fix may have landed and stayed: say only that the
+  // earlier tasks were started, and let the task check what became of them.
+  const subject = p.issues.length > 0 ? 'this issue' : 'this change';
   const earlier = p.attempt > 1
     ? [
       '',
-      `This is automatic re-land ${p.attempt} of ${MAX_AUTOMATIC_RELANDS} for this change: ${p.attempt - 1} earlier fix attempt(s) were reverted too.`,
+      `This is automatic re-land ${p.attempt} of ${MAX_AUTOMATIC_RELANDS} for ${subject}: ` +
+        `${p.attempt - 1} earlier automatic fix task(s) were already started for ${subject}; check whether their pull requests were reverted.`,
       'Before choosing a fix, read the earlier failing output in the comments of the linked issue and the earlier fix pull requests, and do not repeat an approach that already failed.',
     ]
     : [];

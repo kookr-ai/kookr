@@ -427,6 +427,15 @@ describe('integration train cycle', () => {
     expect((await h.cycle()).outcome).toBe('reverted');
     expect(h.spawns.map((s) => s.idempotencyKey)).toEqual(['train-fix-ref-401-1']);
     expect(h.state.fixTasks['ref-401']).toBe(1);
+
+    // With no linked issue, a later prompt speaks of the change, not an issue.
+    h.commit('staging', { 'bad.txt': 'z' }, 'broken a third time (#401)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual(['train-fix-ref-401-1', 'train-fix-ref-401-2']);
+    expect(h.spawns[1].prompt).toContain(
+      'automatic re-land 2 of 3 for this change: 1 earlier automatic fix task(s) were already started for this change',
+    );
+    expect(h.spawns[1].prompt).not.toContain('this issue');
   });
 
   it('reports recovery once, on the first healthy cycle after an alert, never on a plain idle cycle', async () => {
@@ -763,19 +772,50 @@ describe('integration train cycle', () => {
     expect(h.spawns.map((s) => s.idempotencyKey)).toEqual([
       'train-fix-issue-130-1', 'train-fix-issue-130-2', 'train-fix-issue-130-3',
     ]);
-    expect(h.state.fixTasks['issue-130']).toBe(MAX_AUTOMATIC_RELANDS);
-    // Only a later attempt is told that earlier fixes were reverted.
-    expect(h.spawns[0].prompt).not.toContain('earlier fix attempt');
-    expect(h.spawns[1].prompt).toContain('automatic re-land 2 of 3');
-    expect(h.spawns[2].prompt).toContain('2 earlier fix attempt(s) were reverted too');
+    expect(h.state.fixTasks['issue-130']).toBe(3);
+    // Only a later attempt is told about the earlier fix tasks.
+    expect(h.spawns[0].prompt).not.toContain('earlier automatic fix task');
+    expect(h.spawns[1].prompt).toContain('automatic re-land 2 of 3 for this issue');
+    expect(h.spawns[2].prompt).toContain(
+      '2 earlier automatic fix task(s) were already started for this issue; check whether their pull requests were reverted',
+    );
 
     // The third re-land fails as well: the change is still reverted, but no fourth task starts.
     h.commit('staging', { 'bad.txt': 'again-16' }, 're-land, still broken (#16)');
     expect((await h.cycle()).outcome).toBe('reverted');
     expect(h.spawns).toHaveLength(3);
     const exhausted = h.notes.find((n) => n.kind === 'fix-budget-exhausted');
-    expect(exhausted?.detail).toContain('after 3 automatic fix task(s)');
+    expect(exhausted?.detail).toContain('3 automatic fix task(s), the limit, were already started for this issue');
     expect(h.state.fixTasks['issue-130']).toBe(3);
+  });
+
+  it('continues an issue budget kept from an earlier run: the next task is attempt 2', async () => {
+    h = makeHarness();
+    // An earlier fix task for issue 130 was started in an earlier run; this run
+    // saw no revert of it, so the prompt must not claim one.
+    h.state.fixTasks['issue-130'] = 1;
+    h.issues.set(17, [{ number: 130, state: 'open' }]);
+    h.commit('staging', { 'bad.txt': 'x' }, 'another change for the same issue (#17)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual(['train-fix-issue-130-2']);
+    expect(h.state.fixTasks['issue-130']).toBe(2);
+    expect(h.spawns[0].prompt).toContain('automatic re-land 2 of 3 for this issue');
+    expect(h.spawns[0].prompt).toContain(
+      '1 earlier automatic fix task(s) were already started for this issue; check whether their pull requests were reverted',
+    );
+    expect(h.spawns[0].prompt).not.toContain('were reverted too');
+  });
+
+  it('keeps an issue budget at 1 when the spawn of attempt 2 fails', async () => {
+    h = makeHarness();
+    h.state.fixTasks['issue-130'] = 1;
+    h.issues.set(18, [{ number: 130, state: 'open' }]);
+    h.deps.spawner = { async spawn() { throw new Error('kookr spawn failed'); } };
+    h.commit('staging', { 'bad.txt': 'x' }, 'broken re-land (#18)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.state.fixTasks['issue-130']).toBe(1);
+    const failed = h.notes.find((n) => n.kind === 'fix-spawn-failed');
+    expect(failed?.detail).toContain('train-fix-issue-130-2');
   });
 
   it('halts on a red head when the integration branch is not a first-parent line from main', async () => {
@@ -959,7 +999,7 @@ describe('integration train cycle', () => {
       h.commit('staging', { 'bad.txt': 'x' }, 'broken (#81)');
       expect((await h.cycle()).outcome).toBe('reverted');
       const [c] = h.prComments.get(81) ?? [];
-      expect(c).toContain(`Next: needs a human: ${MAX_AUTOMATIC_RELANDS} automatic fix task(s), the limit of ${MAX_AUTOMATIC_RELANDS}`);
+      expect(c).toContain('Next: needs a human: 3 automatic fix task(s), the limit of 3, were already started for this issue');
       expect(h.spawns).toEqual([]);
     });
 
