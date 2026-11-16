@@ -21,7 +21,7 @@ export const KOOKR_CWD = '/home/op/git/kookr';
 export const WEBSITE_CWD = '/home/op/git/website';
 export const PLANTED_COMMAND = 'git push --force origin release-branch';
 export const PLANTED_ERROR = 'npm ERR! could not resolve dependency tree near line forty';
-export const PLANTED_TOKEN = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+export const PLANTED_TOKEN = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'; // pragma: allowlist secret (fake token planted to prove redaction)
 
 function task(id: string, cwd: string, extra: Partial<OperatorInboxTask> = {}): OperatorInboxTask {
   return {
