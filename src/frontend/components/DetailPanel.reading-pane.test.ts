@@ -84,6 +84,29 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     vi.restoreAllMocks();
   });
 
+  test('#4024: the GitHub tab is named after the task\'s own pull request, or "Mentioned (n)" without one', async () => {
+    const mkPr = (number: number, branch: string, createdAt?: string): GitHubPRState => ({
+      ref: { type: 'pr', owner: 'kookr-ai', repo: 'kookr', number, url: `https://github.com/kookr-ai/kookr/pull/${number}`, detectedAt: new Date(0), detectedFrom: 'agent-1', taskId: 'task-1' },
+      title: `PR ${number}`, status: 'open', mergeable: 'MERGEABLE', author: 'me', branch, baseBranch: 'main',
+      reviewDecision: null, reviewers: [], unresolvedThreads: [], totalComments: 0, checks: [], lastFetchedAt: new Date(0),
+      ...(createdAt ? { createdAt: createdAt as unknown as Date } : {}),
+    });
+    const set = (prs: GitHubPRState[]) => act(() => useKookrStore.setState({ githubState: { 'task-1': { taskId: 'task-1', prs, issues: [], changes: [] } } }));
+    set([mkPr(1, 'someone-else'), mkPr(2, 'other')]);
+    render(makeAgent({ gitBranch: 'feat-mine', taskCreatedAt: '2026-11-16T12:00:00.000Z' }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(q('detail-tab-github')?.textContent).toBe('Mentioned (2)');
+
+    set([mkPr(1, 'someone-else'), mkPr(2, 'feat-mine')]);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(q('detail-tab-github')?.textContent).toBe('Pull request');
+
+    // No PR on the task branch: PRs opened since the task started are its own.
+    set([mkPr(3, 'a', '2026-11-16T13:00:00.000Z'), mkPr(4, 'b', '2026-11-16T14:00:00.000Z'), mkPr(5, 'c', '2026-11-16T11:00:00.000Z')]);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(q('detail-tab-github')?.textContent).toBe('Pull requests (2)');
+  });
+
   test.each(['split', 'tabs'] as const)('in the %s layout, Conversation takes the highlight when the open GitHub tab loses its references (#3618)', async (detailPaneMode) => {
     const pr: GitHubPRState = {
       ref: { type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 7, url: 'https://github.com/kookr-ai/kookr/pull/7', detectedAt: new Date(0), detectedFrom: 'test', taskId: 'task-1' },
@@ -97,12 +120,12 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
       .find((button) => button.textContent?.startsWith(label));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(q('detail-split-toggle')?.getAttribute('aria-pressed')).toBe(String(detailPaneMode === 'split'));
-    expect(tab('GitHub')?.getAttribute('aria-pressed')).toBe('true');
+    expect(q('detail-tab-github')?.getAttribute('aria-pressed')).toBe('true');
     expect(q('github-panel')).not.toBeNull();
 
     act(() => useKookrStore.setState({ githubState: { 'task-1': { ...withRefs, prs: [] } } }));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(tab('GitHub')).toBeUndefined();
+    expect(q('detail-tab-github')).toBeNull();
     expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelectorAll('.detail-tab.active:not(.detail-split-toggle)')).toHaveLength(1);
     expect(q('activity-panel')).not.toBeNull();
@@ -120,7 +143,8 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(changesTab.getAttribute('aria-pressed')).toBe('true');
     expect(q('changes-panel-stub')?.textContent).toBe('task-1');
-    expect(q('activity-panel')).toBeNull();
+    // The conversation stays mounted behind Changes, hidden, so closing an opened edit can refocus its row.
+    expect(q('detail-conversation-slot')?.style.display).toBe('none');
     expect(container.querySelectorAll('.detail-tab.active:not(.detail-split-toggle)')).toHaveLength(1);
     // Split view keeps the terminal beside it; the tabbed layout hides the terminal pane.
     expect(container.querySelector('.detail-split-right')?.classList.contains('pane-hidden-tab')).toBe(detailPaneMode === 'tabs');

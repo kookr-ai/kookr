@@ -18,7 +18,7 @@
   },
   "src/frontend/components/DetailPanel.tsx": {
     "TS18047": 1,
-    "TS2322": 16,
+    "TS2322": 14,
     "TS2345": 2,
     "TS7006": 1
   },

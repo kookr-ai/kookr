@@ -6,7 +6,7 @@ import type {
   TaskChangesResponse,
   TaskChangesUnavailableReason,
 } from '../../shared/contracts/task-changes.js';
-import { DiffHunks } from './DiffPane.js';
+import { DiffHunks, DiffPane } from './DiffPane.js';
 
 /**
  * The reading pane's Changes tab (#4024 item 4, variant A "inline accordion";
@@ -14,7 +14,30 @@ import { DiffHunks } from './DiffPane.js';
  * changed in its working directory against the branch it forked from; a row
  * opens that file's diff under it. Git runs on the server only when this tab
  * mounts or the operator presses Refresh, never on a timer.
+ *
+ * Slice 2: an Edit or Write row clicked in the conversation opens that one
+ * edit's patch at the top of this tab, and the file's row is marked.
  */
+
+/** One tool call's edit, opened from the conversation. */
+export interface ChangesEdit {
+  agentId: string;
+  toolUseId: string;
+  /** The path the tool wrote to, usually absolute. */
+  filePath: string;
+  /** Server start time when the edit was opened, to detect a restart. */
+  openedAt: string | null;
+}
+
+/**
+ * The change-list path an edit's file path refers to, or `null` when it lies
+ * outside the repository. Exported for tests.
+ */
+export function editPathInRepo(filePath: string, repoRoot: string): string | null {
+  if (!filePath.startsWith('/')) return filePath.replace(/^\.\//, '');
+  const root = repoRoot.endsWith('/') ? repoRoot : `${repoRoot}/`;
+  return filePath.startsWith(root) ? filePath.slice(root.length) : null;
+}
 
 type ListState =
   | { kind: 'loading' }
@@ -29,9 +52,10 @@ type FileState =
 
 const UNAVAILABLE_TEXT: Record<TaskChangesUnavailableReason, string> = {
   no_cwd: 'No working directory is recorded for this task.',
-  worktree_gone: "This task's worktree was removed. Its pull request shows what was pushed.",
+  worktree_gone: "This task's worktree was removed, and no pull request of its own is known.",
   not_git: 'This task does not run in a git repository.',
   no_base: 'No base branch to compare against (no origin/main, origin/staging or origin/master).',
+  pull_request_unreachable: "This task has no worktree to read, and GitHub did not answer for its pull request's files. Press Refresh to try again.",
 };
 
 const STATUS_LETTER: Record<TaskChangedFile['status'], string> = {
@@ -41,7 +65,32 @@ const STATUS_LETTER: Record<TaskChangedFile['status'], string> = {
   renamed: 'R',
 };
 
-export function ChangesPanel({ taskId }: { taskId: string }) {
+interface ChangesPanelProps {
+  /** The task whose changes to list; an agent with no task shows only `edit`. */
+  taskId?: string;
+  edit?: ChangesEdit | null;
+  onCloseEdit?: () => void;
+}
+
+export function ChangesPanel({ taskId, edit = null, onCloseEdit }: ChangesPanelProps) {
+  const editCard = edit ? (
+    <div className="changes-edit" data-testid="changes-edit">
+      <DiffPane
+        agentId={edit.agentId}
+        toolUseId={edit.toolUseId}
+        filePath={edit.filePath}
+        openedAt={edit.openedAt}
+        onClose={() => onCloseEdit?.()}
+      />
+    </div>
+  ) : null;
+  if (!taskId) {
+    return <div className="changes-panel" data-testid="changes-panel">{editCard}</div>;
+  }
+  return <TaskChangeList taskId={taskId} edit={edit} editCard={editCard} />;
+}
+
+function TaskChangeList({ taskId, edit, editCard }: { taskId: string; edit: ChangesEdit | null; editCard: React.ReactNode }) {
   const [list, setList] = useState<ListState>({ kind: 'loading' });
   const [refreshKey, setRefreshKey] = useState(0);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -49,7 +98,7 @@ export function ChangesPanel({ taskId }: { taskId: string }) {
   useEffect(() => {
     const ac = new AbortController();
     setList((prev) => (prev.kind === 'ok' ? prev : { kind: 'loading' }));
-    getTaskChanges<TaskChangesResponse>(taskId, ac.signal)
+    getTaskChanges<TaskChangesResponse>(taskId, ac.signal, { fresh: refreshKey > 0 })
       .then(({ ok, body }) => {
         if (ac.signal.aborted) return;
         if (!ok || !body) setList({ kind: 'err' });
@@ -83,11 +132,12 @@ export function ChangesPanel({ taskId }: { taskId: string }) {
   );
 
   if (list.kind === 'loading') {
-    return <div className="changes-panel" data-testid="changes-panel"><div className="changes-note">Loading changes…</div></div>;
+    return <div className="changes-panel" data-testid="changes-panel">{editCard}<div className="changes-note">Loading changes…</div></div>;
   }
   if (list.kind === 'err' || list.kind === 'unavailable') {
     return (
       <div className="changes-panel" data-testid="changes-panel">
+        {editCard}
         <div className="changes-head">
           <span className="changes-note" data-testid="changes-empty">
             {list.kind === 'err' ? 'Could not load the changes. Check the server log.' : UNAVAILABLE_TEXT[list.reason]}
@@ -98,17 +148,26 @@ export function ChangesPanel({ taskId }: { taskId: string }) {
     );
   }
 
-  const { baseRef, branch, files, truncated } = list.body;
+  const { baseRef, branch, files, truncated, repoRoot, pullRequest } = list.body;
+  const editPath = edit && repoRoot ? editPathInRepo(edit.filePath, repoRoot) : null;
   const totalAdded = files.reduce((n, f) => n + (f.added ?? 0), 0);
   const totalRemoved = files.reduce((n, f) => n + (f.removed ?? 0), 0);
 
   return (
     <div className="changes-panel" data-testid="changes-panel">
+      {editCard}
       <div className="changes-head">
         <span className="changes-summary" data-testid="changes-summary">
           {files.length === 0 ? 'No changes' : `${files.length} file${files.length === 1 ? '' : 's'}`}
           {' against '}<code>{baseRef}</code>
           {branch && <>{' on '}<code>{branch}</code></>}
+          {pullRequest && (
+            <>
+              {', from pull request '}
+              <a href={pullRequest.url} target="_blank" rel="noopener noreferrer">#{pullRequest.number}</a>
+              {' (no worktree to read)'}
+            </>
+          )}
         </span>
         {files.length > 0 && (
           <span className="changes-counts">
@@ -122,12 +181,14 @@ export function ChangesPanel({ taskId }: { taskId: string }) {
       <ul className="changes-list">
         {files.map((file) => {
           const open = expanded.has(file.path);
+          const editTarget = editPath === file.path;
           const slash = file.path.lastIndexOf('/');
           return (
             <li key={file.path} className="changes-item">
               <button
                 type="button"
-                className={`changes-row${open ? ' is-open' : ''}`}
+                className={`changes-row${open ? ' is-open' : ''}${editTarget ? ' is-edit-target' : ''}`}
+                data-edit-target={editTarget ? 'true' : undefined}
                 aria-expanded={open}
                 data-testid="changes-row"
                 onClick={() => toggle(file.path)}
@@ -141,6 +202,7 @@ export function ChangesPanel({ taskId }: { taskId: string }) {
                   {slash >= 0 && <span className="changes-dir">{file.path.slice(0, slash + 1)}</span>}
                   <span className="changes-name">{file.path.slice(slash + 1)}</span>
                 </span>
+                {editTarget && <span className="changes-edit-mark">opened edit</span>}
                 {file.added === null ? (
                   <span className="changes-note">binary</span>
                 ) : (
@@ -183,6 +245,7 @@ function ChangeFileDiff({ taskId, filePath, refreshKey, renamed }: { taskId: str
   else if (state.kind === 'err') content = <div className="changes-note">{state.message}</div>;
   else if (state.body.kind === 'binary') content = <div className="changes-note">Binary file; no text diff.</div>;
   else if (state.body.kind === 'too_large') content = <div className="changes-note">This diff is over 1 MB; open it in the terminal.</div>;
+  else if (state.body.kind === 'no_patch') content = <div className="changes-note">GitHub shows no text diff for this file (binary, or too large).</div>;
   else if (state.body.kind === 'unavailable') content = <div className="changes-note">{UNAVAILABLE_TEXT[state.body.reason]}</div>;
   else if (state.body.hunks.length === 0) {
     content = <div className="changes-note">{renamed ? 'Renamed; the content is unchanged.' : 'No line changes.'}</div>;

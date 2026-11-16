@@ -5,7 +5,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { TaskChangeFileResponse, TaskChangesResponse } from '../../shared/contracts/task-changes.js';
-import { ChangesPanel } from './ChangesPanel.js';
+import { ChangesPanel, editPathInRepo, type ChangesEdit } from './ChangesPanel.js';
 
 type Reply = { status: number; body: unknown };
 
@@ -25,10 +25,24 @@ async function flush() {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
-async function render(taskId = 'task-1') {
+/** `taskId: null` renders the panel of an agent with no task. */
+async function render(taskId: string | null = 'task-1', edit: ChangesEdit | null = null, onCloseEdit?: () => void) {
   root = createRoot(container);
-  act(() => { root!.render(<ChangesPanel taskId={taskId} />); });
+  act(() => { root!.render(<ChangesPanel taskId={taskId ?? undefined} edit={edit} onCloseEdit={onCloseEdit} />); });
   await flush();
+}
+
+const EDIT_PATCH = {
+  kind: 'edit',
+  filePath: '/work/widget/src/app/WidgetExport.tsx',
+  structuredPatch: [{ oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: ['-was', '+now'] }],
+  oldString: 'was',
+  newString: 'now',
+  serverStartedAt: '2026-11-16T00:00:00.000Z',
+};
+
+function editOf(filePath: string): ChangesEdit {
+  return { agentId: 'agent-1', toolUseId: 'tu-1', filePath, openedAt: '2026-11-16T00:00:00.000Z' };
 }
 
 const q = (testId: string) => container.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
@@ -38,6 +52,7 @@ const LIST: TaskChangesResponse = {
   kind: 'ok',
   baseRef: 'origin/staging',
   branch: 'feat-widget-export',
+  repoRoot: '/work/widget',
   files: [
     { path: 'src/app/WidgetExport.tsx', status: 'modified', added: 5, removed: 2 },
     { path: 'logo.png', status: 'added', added: null, removed: null },
@@ -126,10 +141,8 @@ describe('ChangesPanel (#4024)', () => {
   });
 
   test('Refresh reloads the list and the open diffs, keeping them open', async () => {
-    routes['/api/tasks/task-1/changes'] = [
-      { status: 200, body: LIST },
-      { status: 200, body: { ...LIST, files: [LIST.files[0]] } },
-    ];
+    routes['/api/tasks/task-1/changes'] = { status: 200, body: LIST };
+    routes['/api/tasks/task-1/changes?fresh=1'] = { status: 200, body: { ...LIST, files: [LIST.files[0]] } };
     await render();
     act(() => rows()[0].click());
     await flush();
@@ -137,12 +150,17 @@ describe('ChangesPanel (#4024)', () => {
     await flush();
     expect(rows()).toHaveLength(1);
     expect(rows()[0].getAttribute('aria-expanded')).toBe('true');
-    expect(calls.filter((c) => c === '/api/tasks/task-1/changes')).toHaveLength(2);
+    // Refresh asks again past the server's cached pull request list.
+    expect(calls.filter((c) => c.startsWith('/api/tasks/task-1/changes') && !c.includes('/file'))).toEqual([
+      '/api/tasks/task-1/changes',
+      '/api/tasks/task-1/changes?fresh=1',
+    ]);
     expect(calls.filter((c) => c.includes('/changes/file'))).toHaveLength(2);
   });
 
   test.each([
-    ['worktree_gone', "This task's worktree was removed. Its pull request shows what was pushed."],
+    ['worktree_gone', "This task's worktree was removed, and no pull request of its own is known."],
+    ['pull_request_unreachable', "This task has no worktree to read, and GitHub did not answer for its pull request's files. Press Refresh to try again."],
     ['no_cwd', 'No working directory is recorded for this task.'],
     ['not_git', 'This task does not run in a git repository.'],
   ] as const)('explains a %s task instead of an empty list', async (reason, text) => {
@@ -174,5 +192,87 @@ describe('ChangesPanel (#4024)', () => {
     routes['/api/tasks/task-1/changes'] = { status: 500, body: null };
     await render();
     expect(q('changes-empty')?.textContent).toBe('Could not load the changes. Check the server log.');
+  });
+
+  test('an opened edit shows its own patch above the list and marks its file row', async () => {
+    routes['/api/agents/agent-1/edit-events/tu-1'] = { status: 200, body: EDIT_PATCH };
+    await render('task-1', editOf('/work/widget/src/app/WidgetExport.tsx'));
+
+    const card = q('changes-edit')!;
+    expect(card.querySelector('.diff-pane-path')?.textContent).toBe('/work/widget/src/app/WidgetExport.tsx');
+    expect([...card.querySelectorAll('.diff-line')].map((l) => l.textContent)).toEqual(['-was', '+now']);
+    // The card comes before the list, so it is what the operator sees first.
+    expect(card.compareDocumentPosition(rows()[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rows().map((r) => r.getAttribute('data-edit-target'))).toEqual(['true', null, null]);
+    expect(rows()[0].textContent).toContain('opened edit');
+  });
+
+  test('an edit outside the repository still shows its patch, with no row marked', async () => {
+    routes['/api/agents/agent-1/edit-events/tu-1'] = { status: 200, body: { ...EDIT_PATCH, filePath: '/tmp/scratch.ts' } };
+    await render('task-1', editOf('/tmp/scratch.ts'));
+
+    expect(q('changes-edit')?.querySelectorAll('.diff-line')).toHaveLength(2);
+    expect(rows()).toHaveLength(3);
+    expect(rows().some((r) => r.hasAttribute('data-edit-target'))).toBe(false);
+  });
+
+  test('the edit shows even when the change list is unavailable', async () => {
+    routes['/api/tasks/task-1/changes'] = { status: 200, body: { kind: 'unavailable', reason: 'worktree_gone' } };
+    routes['/api/agents/agent-1/edit-events/tu-1'] = { status: 200, body: EDIT_PATCH };
+    await render('task-1', editOf('/work/widget/src/app/WidgetExport.tsx'));
+
+    expect(q('changes-edit')?.querySelectorAll('.diff-line')).toHaveLength(2);
+    expect(q('changes-empty')).not.toBeNull();
+  });
+
+  test('with no task only the edit shows, and git is never asked', async () => {
+    routes['/api/agents/agent-1/edit-events/tu-1'] = { status: 200, body: EDIT_PATCH };
+    const onClose = vi.fn();
+    await render(null, editOf('/work/widget/src/app/WidgetExport.tsx'), onClose);
+
+    expect(q('changes-edit')).not.toBeNull();
+    expect(q('changes-head')).toBeNull();
+    expect(calls).toEqual(['/api/agents/agent-1/edit-events/tu-1']);
+    act(() => container.querySelector<HTMLButtonElement>('.diff-pane-close')!.click());
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('a list from the pull request names it, and a file without a patch says why', async () => {
+    routes['/api/tasks/task-1/changes'] = {
+      status: 200,
+      body: {
+        kind: 'ok', source: 'pull_request', pullRequest: { number: 4070, url: 'https://github.com/o/r/pull/4070' },
+        baseRef: 'main', branch: 'feat-widget-export', repoRoot: null,
+        files: [{ path: 'big.json', status: 'modified', added: 9000, removed: 0 }], truncated: false,
+      },
+    };
+    routes['/api/tasks/task-1/changes/file?path=big.json'] = { status: 200, body: { kind: 'no_patch', path: 'big.json' } };
+    routes['/api/agents/agent-1/edit-events/tu-1'] = { status: 200, body: EDIT_PATCH };
+    await render('task-1', editOf('/work/widget/big.json'));
+
+    expect(q('changes-summary')?.textContent).toBe('1 file against main on feat-widget-export, from pull request #4070 (no worktree to read)');
+    expect(q('changes-summary')?.querySelector('a')?.getAttribute('href')).toBe('https://github.com/o/r/pull/4070');
+    // No repository root to match against, so no row claims the edit.
+    expect(rows()[0].hasAttribute('data-edit-target')).toBe(false);
+    act(() => rows()[0].click());
+    await flush();
+    expect(q('changes-diff')?.textContent).toBe('GitHub shows no text diff for this file (binary, or too large).');
+  });
+});
+
+describe('editPathInRepo', () => {
+  test('maps an absolute path inside the repository to its change-list path', () => {
+    expect(editPathInRepo('/work/widget/src/a.ts', '/work/widget')).toBe('src/a.ts');
+    expect(editPathInRepo('/work/widget/src/a.ts', '/work/widget/')).toBe('src/a.ts');
+  });
+
+  test('rejects a path outside the repository, including a sibling with the same prefix', () => {
+    expect(editPathInRepo('/tmp/a.ts', '/work/widget')).toBeNull();
+    expect(editPathInRepo('/work/widget2/a.ts', '/work/widget')).toBeNull();
+  });
+
+  test('keeps a relative path as given', () => {
+    expect(editPathInRepo('./src/a.ts', '/work/widget')).toBe('src/a.ts');
+    expect(editPathInRepo('src/a.ts', '/work/widget')).toBe('src/a.ts');
   });
 });

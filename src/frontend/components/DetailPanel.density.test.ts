@@ -36,7 +36,14 @@ vi.mock('./TerminalPanel.js', () => ({
     });
   },
 }));
-vi.mock('./DiffPane.js', () => ({ DiffPane: () => React.createElement('div', { 'data-testid': 'diff-pane' }) }));
+vi.mock('./ChangesPanel.js', () => ({
+  ChangesPanel: ({ taskId, edit, onCloseEdit }: { taskId?: string; edit?: { filePath: string } | null; onCloseEdit?: () => void }) => React.createElement(
+    'div',
+    { 'data-testid': 'changes-panel-stub', 'data-task': taskId ?? '' },
+    edit ? React.createElement('div', { 'data-testid': 'diff-pane', 'data-file': edit.filePath },
+      React.createElement('button', { type: 'button', onClick: () => onCloseEdit?.() }, 'Close')) : null,
+  ),
+}));
 vi.mock('./TaskTimeline.js', () => ({ TaskTimeline: () => React.createElement('div', { 'data-testid': 'task-timeline' }) }));
 vi.mock('./SnoozeDialog.js', () => ({ SnoozeDialog: () => null }));
 vi.mock('./EffectiveHookSettingsModal.js', () => ({ EffectiveHookSettingsModal: () => null }));
@@ -301,7 +308,7 @@ describe('DetailPanel dense metadata', () => {
       },
     ], []));
     await flush();
-    const githubTab = [...container.querySelectorAll<HTMLButtonElement>('.detail-tabs .detail-tab')].find((el) => el.textContent === 'GitHub (1)');
+    const githubTab = [...container.querySelectorAll<HTMLButtonElement>('.detail-tabs .detail-tab')].find((el) => el.textContent === 'Mentioned (1)');
     act(() => githubTab!.click());
     await flush();
 
@@ -362,7 +369,7 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-panel.detail-tabbed')).not.toBeNull();
     expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
     expect(tab('Terminal')?.getAttribute('aria-pressed')).toBe('false');
-    expect(tab('GitHub (1)')?.getAttribute('aria-pressed')).toBe('false');
+    expect(tab('Mentioned (1)')?.getAttribute('aria-pressed')).toBe('false');
     expect(container.querySelector('[data-testid="activity-panel"]')).not.toBeNull();
     expect(container.querySelector('.detail-split-left')?.className).not.toContain('pane-hidden-tab');
     expect(container.querySelector('.detail-split-right')?.className).toContain('pane-hidden-tab');
@@ -382,9 +389,9 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-split-right')?.className).not.toContain('pane-hidden-tab');
     expect(terminalVisible()).toBe('true');
 
-    act(() => { tab('GitHub (1)')!.click(); });
+    act(() => { tab('Mentioned (1)')!.click(); });
 
-    expect(tab('GitHub (1)')?.getAttribute('aria-pressed')).toBe('true');
+    expect(tab('Mentioned (1)')?.getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelector('[data-testid="github-panel"]')).not.toBeNull();
     expect(terminalVisible()).toBe('false');
   });
@@ -425,63 +432,6 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-split-right')?.className).toContain('pane-hidden-tab');
   });
 
-  test('#3561 4a: opening a diff from the conversation reveals it, and Escape returns to the conversation', async () => {
-    root = renderDetailPanel(container, makeAgent());
-
-    const openDiff = container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button');
-    act(() => { openDiff!.click(); });
-    await flush();
-
-    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
-    expect(container.querySelector('.detail-split-right')?.className).not.toContain('pane-hidden-tab');
-    expect(container.querySelector('.detail-split-left')?.className).toContain('pane-hidden-tab');
-    expect(terminalVisible()).toBe('false');
-
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
-    await flush();
-
-    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector('.detail-split-left')?.className).not.toContain('pane-hidden-tab');
-    expect(container.querySelector('.detail-split-right')?.className).toContain('pane-hidden-tab');
-  });
-
-  test('#3561 4a: Escape leaves a diff alone while it sits behind the Conversation tab', async () => {
-    root = renderDetailPanel(container, makeAgent());
-
-    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
-    await flush();
-    act(() => { tab('Conversation')!.click(); });
-
-    const escape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
-    act(() => { window.dispatchEvent(escape); });
-    await flush();
-
-    // The global handler (deselect) is free to act; the hidden diff stays open.
-    expect(escape.defaultPrevented).toBe(false);
-    act(() => { tab('Terminal')!.click(); });
-    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
-    expect(container.querySelector<HTMLElement>('.right-pane-slot-diff')?.style.display).toBe('flex');
-  });
-
-  test('#3618: after the pane Terminal button is clicked, closing the diff stays on the Terminal tab', async () => {
-    root = renderDetailPanel(container, makeAgent());
-
-    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
-    await flush();
-    expect(useKookrStore.getState().narrowTab).toBe('terminal');
-
-    const paneTab = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('.detail-pane-header .pane-tab'))
-      .find((button) => button.textContent === label);
-    act(() => { paneTab('Terminal')!.click(); });
-    act(() => { paneTab('Diff')!.click(); });
-    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
-    await flush();
-
-    expect(useKookrStore.getState().narrowTab).toBe('terminal');
-    expect(tab('Terminal')?.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector('.detail-split-right')?.className).not.toContain('pane-hidden-tab');
-  });
-
   function rerenderWith(agent: AgentState | null) {
     act(() => {
       root!.render(React.createElement(DetailPanel, {
@@ -493,34 +443,135 @@ describe('DetailPanel dense metadata', () => {
     });
   }
 
-  test('#3618: moving to another task after a diff auto-selected Terminal opens the next task on Conversation', async () => {
+  const openEdit = () => container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click();
+  const editCard = () => container.querySelector('[data-testid="diff-pane"]');
+
+  test('#4024: opening an edit from the conversation shows it in the Changes tab, and Escape returns to the conversation', async () => {
     root = renderDetailPanel(container, makeAgent());
 
-    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
+    act(openEdit);
     await flush();
-    expect(useKookrStore.getState().narrowTab).toBe('terminal');
+
+    expect(useKookrStore.getState().narrowTab).toBe('changes');
+    expect(tab('Changes')?.getAttribute('aria-pressed')).toBe('true');
+    expect(editCard()?.getAttribute('data-file')).toBe('/tmp/example.ts');
+    expect(container.querySelector('.detail-split-left')?.className).not.toContain('pane-hidden-tab');
+    expect(container.querySelector('.detail-split-right')?.className).toContain('pane-hidden-tab');
+    // The terminal pane no longer has a Terminal / Diff switch.
+    expect(container.querySelector('.right-pane-slot-diff')).toBeNull();
+    expect(container.querySelector('.detail-pane-header')).toBeNull();
+    expect(terminalVisible()).toBe('false');
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+    act(() => { window.dispatchEvent(escape); });
+    await flush();
+
+    expect(escape.defaultPrevented).toBe(true);
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
+    expect(useKookrStore.getState().narrowTab).toBe('activity');
+    expect(editCard()).toBeNull();
+  });
+
+  test('#4024: closing an edit gives focus back to the row that opened it, which stayed mounted', async () => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => { cb(0); return 0; });
+    root = renderDetailPanel(container, makeAgent());
+    const trigger = container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!;
+
+    act(() => { trigger.focus(); trigger.click(); });
+    await flush();
+    // The conversation is hidden behind Changes, not unmounted.
+    expect(trigger.isConnected).toBe(true);
+    expect(container.querySelector<HTMLElement>('[data-testid="detail-conversation-slot"]')?.style.display).toBe('none');
+
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    await flush();
+
+    expect(container.querySelector('[data-testid="activity-panel"] button')).toBe(trigger);
+    expect(document.activeElement).toBe(trigger);
+    expect(container.querySelector<HTMLElement>('[data-testid="detail-conversation-slot"]')?.style.display).toBe('contents');
+  });
+
+  test('#4024: the edit card close button returns to the tab the edit was opened from', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    act(openEdit);
+    await flush();
+    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="diff-pane"] button')!.click(); });
+    await flush();
+
+    expect(useKookrStore.getState().narrowTab).toBe('activity');
+    expect(editCard()).toBeNull();
+  });
+
+  test('#4024: Escape leaves an edit alone while it sits behind the Conversation tab', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    act(openEdit);
+    await flush();
+    act(() => { tab('Conversation')!.click(); });
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+    act(() => { window.dispatchEvent(escape); });
+    await flush();
+
+    // The global handler (deselect) is free to act; the hidden edit stays open.
+    expect(escape.defaultPrevented).toBe(false);
+    act(() => { tab('Changes')!.click(); });
+    expect(editCard()).not.toBeNull();
+  });
+
+  test('#3618: after leaving an edit for another tab and coming back through Changes, closing it stays on Changes', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    act(openEdit);
+    await flush();
+    act(() => { tab('Conversation')!.click(); });
+    act(() => { tab('Changes')!.click(); });
+    expect(editCard()).not.toBeNull();
+
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    await flush();
+
+    expect(editCard()).toBeNull();
+    expect(useKookrStore.getState().narrowTab).toBe('changes');
+    expect(tab('Changes')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  test('#3618: moving to another task after an edit opened Changes opens the next task on Conversation', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    act(openEdit);
+    await flush();
+    expect(useKookrStore.getState().narrowTab).toBe('changes');
 
     rerenderWith(makeAgent({ agentId: 'other-agent', taskId: 'other-task' }));
     await flush();
 
-    expect(useKookrStore.getState().narrowTab).toBe('activity');
     expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector('[data-testid="diff-pane"]')).toBeNull();
+    expect(editCard()).toBeNull();
   });
 
-  test('#3618: unmounting the pane while a diff holds Terminal hands the tab back (mobile task switch)', async () => {
+  test('#3618: unmounting the pane while an edit holds Changes hands the tab back (mobile task switch)', async () => {
     root = renderDetailPanel(container, makeAgent());
 
-    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
+    act(openEdit);
     await flush();
-    expect(useKookrStore.getState().narrowTab).toBe('terminal');
+    expect(useKookrStore.getState().narrowTab).toBe('changes');
 
     act(() => root!.unmount());
     root = null;
     expect(useKookrStore.getState().narrowTab).toBe('activity');
+  });
 
-    root = renderDetailPanel(container, makeAgent({ agentId: 'other-agent', taskId: 'other-task' }));
-    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
+  test('#3618: deselecting the task after an edit opened Changes returns to Conversation', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    act(openEdit);
+    await flush();
+    rerenderWith(null);
+    await flush();
+
+    expect(useKookrStore.getState().narrowTab).toBe('activity');
   });
 
   test('#3618: unmounting the pane leaves a Terminal tab the operator chose alone', () => {
@@ -533,17 +584,6 @@ describe('DetailPanel dense metadata', () => {
     expect(useKookrStore.getState().narrowTab).toBe('terminal');
   });
 
-  test('#3618: deselecting the task after a diff auto-selected Terminal returns to Conversation', async () => {
-    root = renderDetailPanel(container, makeAgent());
-
-    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
-    await flush();
-    rerenderWith(null);
-    await flush();
-
-    expect(useKookrStore.getState().narrowTab).toBe('activity');
-  });
-
   test('#3618: a Terminal tab the operator chose survives moving to another task', async () => {
     root = renderDetailPanel(container, makeAgent());
 
@@ -554,32 +594,50 @@ describe('DetailPanel dense metadata', () => {
     expect(useKookrStore.getState().narrowTab).toBe('terminal');
   });
 
-  test('#3618: after leaving a diff for another tab and coming back through Terminal, closing it stays on Terminal', async () => {
+  test('#4024: in split view an edit switches the left pane to Changes and Escape switches it back', async () => {
+    useKookrStore.getState().setDetailPaneMode('split');
     root = renderDetailPanel(container, makeAgent());
 
-    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
+    act(openEdit);
     await flush();
-    act(() => { tab('Conversation')!.click(); });
-    act(() => { tab('Terminal')!.click(); });
-    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
+
+    expect(editCard()).not.toBeNull();
+    expect(useKookrStore.getState().leftPane).toBe('changes');
+    expect(useKookrStore.getState().narrowTab).toBe('activity');
+    expect(terminalVisible()).toBe('true');
 
     act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
     await flush();
 
-    expect(container.querySelector<HTMLElement>('.right-pane-slot-diff')?.style.display).toBe('none');
-    expect(useKookrStore.getState().narrowTab).toBe('terminal');
-    expect(tab('Terminal')?.getAttribute('aria-pressed')).toBe('true');
+    expect(useKookrStore.getState().leftPane).toBe('activity');
+    expect(editCard()).toBeNull();
   });
 
-  test('#3561 4a: a diff opened in split view leaves the remembered tab alone', async () => {
+  test('#3618: in split view, moving to another task after an edit opened Changes puts the left pane back on Conversation', async () => {
     useKookrStore.getState().setDetailPaneMode('split');
     root = renderDetailPanel(container, makeAgent());
 
-    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
+    act(openEdit);
+    await flush();
+    expect(useKookrStore.getState().leftPane).toBe('changes');
+
+    rerenderWith(makeAgent({ agentId: 'other-agent', taskId: 'other-task' }));
     await flush();
 
-    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
-    expect(useKookrStore.getState().narrowTab).toBe('activity');
+    expect(useKookrStore.getState().leftPane).toBe('activity');
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  test('#4024: an agent with no task gets a Changes tab only for an opened edit', async () => {
+    root = renderDetailPanel(container, makeAgent({ taskId: undefined }));
+    expect(tab('Changes')).toBeUndefined();
+
+    act(openEdit);
+    await flush();
+
+    expect(tab('Changes')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('[data-testid="changes-panel-stub"]')?.getAttribute('data-task')).toBe('');
+    expect(editCard()).not.toBeNull();
   });
 
   test('right-only detail pane mode hides the conversation and returns to it from the persistent control', () => {
@@ -617,17 +675,11 @@ describe('DetailPanel dense metadata', () => {
     expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
   });
 
-  test('right-only diff mode keeps hidden terminal inactive', async () => {
+  test('#4024: an edit left open does not hide the terminal in terminal focus', async () => {
     root = renderDetailPanel(container, makeAgent());
 
-    const openDiff = container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button');
-    expect(openDiff).not.toBeNull();
-    act(() => {
-      openDiff!.click();
-    });
+    act(openEdit);
     await flush();
-    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
-
     act(() => {
       useKookrStore.getState().setDetailPaneMode('right');
     });
@@ -635,8 +687,7 @@ describe('DetailPanel dense metadata', () => {
 
     expect(container.querySelector('.detail-panel.terminal-focus')).not.toBeNull();
     expect(container.querySelector('.detail-split-left')).toBeNull();
-    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
-    expect(terminalVisible()).toBe('false');
+    expect(terminalVisible()).toBe('true');
   });
 
   test('empty state shortcut hint uses provided bindings', () => {

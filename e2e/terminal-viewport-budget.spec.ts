@@ -155,7 +155,7 @@ test.describe('Terminal viewport budgets', () => {
 
     await selectBudgetTask(page);
     await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
-    await expect(page.getByTestId('detail-tabs').getByRole('button', { name: /^GitHub/ })).toBeVisible();
+    await expect(page.getByTestId('detail-tab-github')).toBeVisible();
 
     await expectTerminalBudget(page, { width: 400, height: 480, cols: 50, rows: 34 }, 'desktop terminal');
 

@@ -1,7 +1,7 @@
 /**
  * E2E tests for the supervisor flow — covers gaps identified in issue #35:
  *   - Auto-advance after responding to a finding
- *   - GitHub tab PR card rendering
+ *   - Pull request tab PR card rendering
  *   - Task lifecycle transitions (complete, cancel, archive, reopen)
  */
 import { test, expect } from './fixtures.js';
@@ -235,17 +235,17 @@ test.describe('Supervisor flow — auto-advance', () => {
 });
 
 // ---------------------------------------------------------------------------
-// GitHub tab — PR card rendering
+// Pull request tab (was "GitHub (n)", #4024) — PR card rendering
 // ---------------------------------------------------------------------------
 
-test.describe('Supervisor flow — GitHub tab PR cards', () => {
+test.describe('Supervisor flow — Pull request tab PR cards', () => {
   test.beforeEach(async ({ page, request }) => {
     await resetServer(request);
     await page.goto('/');
     await expect(page.locator('.logo')).toHaveText('KOOKR');
   });
 
-  test('GitHub tab appears when PR data is broadcast', async ({ page, request }) => {
+  test('Pull request tab appears when PR data is broadcast', async ({ page, request }) => {
     // Launch an agent
     await launchViaUI(page, 'PR test agent', '/test/project');
     await waitForAgentCount(page, 1);
@@ -277,6 +277,8 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
           },
           title: 'feat: add supervisor dashboard',
           status: 'open',
+          // Opened after the task started, so it is the task's own PR (#4024).
+          createdAt: new Date().toISOString(),
           author: 'jeanibarz',
           branch: 'feature/dashboard',
           baseBranch: 'main',
@@ -292,12 +294,11 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
       },
     });
 
-    // GitHub tab should appear
-    const githubTab = page.locator('.detail-tab:has-text("GitHub")');
-    await expect(githubTab).toBeVisible();
-    await expect(githubTab).toContainText('1');
+    // The Pull request tab should appear
+    const githubTab = page.getByTestId('detail-tab-github');
+    await expect(githubTab).toHaveText('Pull request');
 
-    // Click GitHub tab to switch
+    // Click the tab to switch
     await githubTab.click();
 
     // PR card should be visible
@@ -335,6 +336,7 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
           },
           title: 'fix: resolve memory leak',
           status: 'open',
+          createdAt: new Date().toISOString(),
           author: 'jeanibarz',
           branch: 'fix/memory-leak',
           baseBranch: 'main',
@@ -361,7 +363,7 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
       },
     });
 
-    const githubTab = page.locator('.detail-tab:has-text("GitHub")');
+    const githubTab = page.getByTestId('detail-tab-github');
     await expect(githubTab).toBeVisible();
     await githubTab.click();
 
@@ -388,12 +390,12 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
 
     await page.locator('.finding-card').click();
 
-    // Without any githubUpdate, there should be no GitHub tab at all
+    // Without any githubUpdate, there should be no Pull request tab at all
     // (the tab only appears when ghCount > 0)
-    await expect(page.locator('.detail-tab:has-text("GitHub")')).not.toBeVisible();
+    await expect(page.getByTestId('detail-tab-github')).toHaveCount(0);
   });
 
-  test('GitHub tab shows issue cards', async ({ page, request }) => {
+  test('Mentioned tab shows issue cards', async ({ page, request }) => {
     await launchViaUI(page, 'Issue agent', '/test/project');
     await waitForAgentCount(page, 1);
     const tmuxName = await getLatestTmuxName(request);
@@ -429,8 +431,8 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
       },
     });
 
-    const githubTab = page.locator('.detail-tab:has-text("GitHub")');
-    await expect(githubTab).toBeVisible();
+    const githubTab = page.getByTestId('detail-tab-github');
+    await expect(githubTab).toHaveText('Mentioned (1)');
     await githubTab.click();
 
     // Issue card should render
@@ -451,7 +453,7 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
     await page.locator('.finding-card').click();
     const taskId = await getTaskId(request);
 
-    // Broadcast minimal PR data to make GitHub pane-tab appear
+    // Broadcast minimal PR data to make the Pull request / Mentioned tab appear
     await request.post('/api/test/broadcast-github', {
       data: {
         taskId,
@@ -473,17 +475,18 @@ test.describe('Supervisor flow — GitHub tab PR cards', () => {
       },
     });
 
-    // Switch left pane to GitHub
-    const githubTab = page.locator('.detail-tab:has-text("GitHub")');
-    await expect(githubTab).toBeVisible();
+    // Switch left pane to the PR tab. The PR has no opening time and is not on
+    // the task's branch, so it is only mentioned (#4024).
+    const githubTab = page.getByTestId('detail-tab-github');
+    await expect(githubTab).toHaveText('Mentioned (1)');
     await githubTab.click();
-    await expect(page.locator('.gh-pr-card')).toBeVisible();
+    await expect(page.getByTestId('gh-mentioned-pr')).toBeVisible();
 
     // Switch back to the conversation
     await page.locator('.detail-tab:has-text("Conversation")').click();
 
-    // GitHub panel should not be visible anymore
-    await expect(page.locator('.gh-pr-card')).not.toBeVisible();
+    // The PR list should not be visible anymore
+    await expect(page.getByTestId('gh-mentioned-pr')).not.toBeVisible();
   });
 });
 

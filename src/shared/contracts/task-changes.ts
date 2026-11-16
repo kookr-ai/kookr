@@ -25,15 +25,34 @@ export type TaskChangesUnavailableReason =
   | 'no_cwd'
   | 'worktree_gone'
   | 'not_git'
-  | 'no_base';
+  | 'no_base'
+  /** The worktree is gone and GitHub could not be asked for the pull request's files. */
+  | 'pull_request_unreachable';
 
 export type TaskChangesResponse =
   | {
       kind: 'ok';
-      /** The ref the diff is against, e.g. `origin/staging`. */
+      /**
+       * Where the list comes from: absent for the task's worktree; set to
+       * `pull_request` once the worktree is gone and the list is the task's
+       * own pull request's files, as GitHub reports them.
+       */
+      source?: 'pull_request';
+      /** The pull request the list comes from, when `source` is `pull_request`. */
+      pullRequest?: { number: number; url: string };
+      /**
+       * The ref the diff is against, e.g. `origin/staging`; for a pull
+       * request, its base branch.
+       */
       baseRef: string;
-      /** The worktree's branch, or `null` on a detached HEAD. */
+      /** The worktree's branch (`null` on a detached HEAD), or the pull request's head branch. */
       branch: string | null;
+      /**
+       * Absolute path of the repository root the paths are relative to, so
+       * the dashboard can match an edit's absolute file path to its row;
+       * `null` for a pull request's list.
+       */
+      repoRoot: string | null;
       files: TaskChangedFile[];
       /** True when the list was cut at the server's file cap. */
       truncated: boolean;
@@ -54,4 +73,6 @@ export type TaskChangeFileResponse =
   | { kind: 'patch'; path: string; hunks: TaskChangeHunk[] }
   | { kind: 'binary'; path: string }
   | { kind: 'too_large'; path: string }
+  /** A pull request file GitHub gives no patch for: binary, or a very large diff. */
+  | { kind: 'no_patch'; path: string }
   | { kind: 'unavailable'; reason: TaskChangesUnavailableReason };

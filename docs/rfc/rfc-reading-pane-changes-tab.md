@@ -1,6 +1,6 @@
 # Design note: the reading pane's Changes and Pull request tabs
 
-Status: Slice 1 implemented
+Status: Implemented (slices 1 to 3)
 Date: 2026-11-16
 Issue: #4024 (item 4), from #3561 variant B ("terminal, changes and pull request become tabs")
 
@@ -87,7 +87,8 @@ The tab shows one plain line instead of an empty list:
 | Case | What the tab says |
 |---|---|
 | The task has no working directory recorded | No working directory is recorded for this task. |
-| The directory is gone (worktree removed) | This task's worktree was removed. Its pull request shows what was pushed. |
+| The directory is gone (worktree removed), and the task has no own pull request | This task's worktree was removed, and no pull request of its own is known. |
+| The directory is gone or was never recorded, and GitHub did not answer for the pull request's files | This task has no worktree to read, and GitHub did not answer for its pull request's files. Press Refresh to try again. |
 | The directory is not a git repository | This task does not run in a git repository. |
 | No base branch can be found | No base branch to compare against (no origin/main, origin/staging or origin/master). |
 | The branch has no changes yet | No changes against origin/staging on `<branch>`. |
@@ -103,19 +104,47 @@ count and the total `+added −removed`, and a Refresh button. Below it, one row
 per file: status letter, path (directory dimmed, file name bright) and line
 counts. Clicking a row opens that file's diff in place, under the row; clicking
 again closes it (variant A below). The tab shows for every task, in the tabbed
-layout and in Split view's left pane; an agent with no task has none.
+layout and in Split view's left pane; an agent with no task has one only while an opened edit shows (slice 2).
 
 **Pull request** (renamed from "GitHub (n)", slice 3). The task's own pull
 request first, as a summary: title, state, checks, review decision, unresolved
 threads and the branch → base line. Other PRs and issues the task mentioned
-follow under a "Mentioned" heading. A task with no PR of its own gets a tab
-titled "Mentioned (n)" with only that list. When the worktree is gone, the
-Changes tab falls back to the PR's file list.
+follow under a "Mentioned" heading, one line per PR. The tab is titled "Pull
+request" ("Pull requests (n)" for several), and a task with no PR of its own
+gets a tab titled "Mentioned (n)" with only that list.
+
+GitHub does not record which task opened a pull request, so one rule decides,
+shared by the dashboard and the server (`src/shared/task-own-pull-requests.ts`):
+
+- A PR cited in the task's prompt is never its own.
+- When PRs are on the task's branch, those are its own, and no other.
+- Otherwise, a PR the agent mentioned is its own when it was opened at or
+  after the task was created. The branch alone cannot rule a PR out: it is
+  the branch of the session's directory, which can be the checkout the task
+  was launched in when the agent pushed from a worktree it created itself.
+
+**The pull request fallback** (slice 3). When the worktree is gone (or no
+directory was recorded) and the task has an own pull request that is not
+closed, the Changes tab lists that PR's files from
+`gh api repos/O/R/pulls/N/files` instead (the most recently opened PR when
+there are several). The header says "from pull request #N (no worktree to
+read)", and a file GitHub gives no patch for (binary, or a very large
+diff) says so. GitHub is asked only on tab open, Refresh or opening a file;
+the list is kept for 60 seconds so opening several files asks once, and
+Refresh asks again. The file route still answers only for a path in that
+list.
 
 **Per-edit diffs** (slice 2). Clicking an Edit or Write row in the conversation
-opens the Changes tab on that file instead of opening a diff in the terminal
-pane, so the terminal pane's Terminal / Diff switch goes away. The single-edit
-patch stays reachable from the file's row.
+opens that one edit's patch at the top of the Changes tab, instead of in the
+terminal pane, so the terminal pane's Terminal / Diff switch is gone. The
+file's row in the list below is marked "opened edit" (matched through the
+`repoRoot` the list carries); an edit outside the repository, or with the
+list unavailable, still shows its patch. Escape or the card's close button
+returns to the tab the edit was opened from and gives focus back to the row
+that opened it; in Split view the left pane switches to Changes and back. An
+agent with no task gets a Changes tab only while an edit is open. Keeping the
+edit as a card above the list, rather than inside its row, means the same
+view works when the file has no row.
 
 A completed task with a completion digest shows the digest instead of the
 tabs; that does not change here.
@@ -140,7 +169,7 @@ the list in view while reading a diff, which C does not. The operator chose
 
 ## Slices
 
-1. **Change list and Changes tab** (this PR): the two routes, the tab in the
+1. **Change list and Changes tab** (#4063): the two routes, the tab in the
    tabbed layout and in Split view's left pane, Refresh, the empty states.
 2. **Per-edit diffs open in the Changes tab:** route conversation diff clicks
    there and remove the terminal pane's Terminal / Diff switch.
