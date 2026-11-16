@@ -83,6 +83,7 @@ assert_validators_run() {
   local repo="$1"
   assert_log_contains "$repo" "validate:skills"
   assert_log_contains "$repo" "validate:docs-commands"
+  assert_log_contains "$repo" "validate:docs-env-vars"
   assert_log_contains "$repo" "validate:requirements"
   assert_log_contains "$repo" "validate:default-on"
 }

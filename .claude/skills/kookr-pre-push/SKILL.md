@@ -41,11 +41,12 @@ Check these before you push: each one is cheaper to satisfy up front than to lea
 10. `pnpm validate:playbooks` (bundled playbooks parse).
 11. `pnpm validate:docs-commands` (`pnpm` and `kookr` commands quoted in `README.md` and `docs/` exist).
 12. `pnpm validate:rerun-bound` (the max-2 CI-rerun rule stays in the pr-lifecycle skill and implement playbooks).
-13. `pnpm validate:requirements` (requirements status matrix).
-14. `pnpm validate:default-on` (a new feature switch in `docs/reference/environment-variables.md` defaults to on, or its row says why not; issue #3936).
-15. **Tests: the fast gate.** Skipped for docs-only diffs. `.kookr/delivery-gate.json` on `origin/main` sets `"prePushGate": "fast"`, so the hook runs `bash scripts/fast-gate-tests.sh <merge-base>`: only the tests related to the diff, never the whole suite. The integration train runs the full suite later on `staging` (see [integration-train](../../../docs/reference/integration-train.md)). When at most five test files fail, they are re-run once; a pass continues the push with a `FLAKY` notice (logged to `<git-common-dir>/kookr-flaky-tests.log`), a second failure rejects it.
-16. **Tests: the full lanes, only as a fallback.** The hook runs `pnpm test` and then `pnpm test:integration` instead of item 15 only when it does not resolve to the fast gate: `.kookr/delivery-gate.json` on `origin/main` is missing or its `prePushGate` is not `"fast"`, `jq` is not installed, a file named `kookr-full-gate` exists in the git common directory (the operator's kill switch), or the branch has no merge base with `origin/main`. The push output says which one ran (`Running fast gate ...` or `Running tests...`). The same five-file flaky re-run applies to `pnpm test`.
-17. `pnpm check:faa-gate`: a change to a finishedAwaitingAck mitigation surface must cite a classified root cause (read from `KOOKR_PR_BODY`) or a reasoned bypass.
+13. `pnpm validate:docs-env-vars` (every `KOOKR_*` environment variable read in source, or listed in `.env.example`, is documented in `docs/reference/environment-variables.md`, unless the verifier's internal allowlist names it; issue #4061).
+14. `pnpm validate:requirements` (requirements status matrix).
+15. `pnpm validate:default-on` (a new feature switch in `docs/reference/environment-variables.md` defaults to on, or its row says why not; issue #3936).
+16. **Tests: the fast gate.** Skipped for docs-only diffs. `.kookr/delivery-gate.json` on `origin/main` sets `"prePushGate": "fast"`, so the hook runs `bash scripts/fast-gate-tests.sh <merge-base>`: only the tests related to the diff, never the whole suite. The integration train runs the full suite later on `staging` (see [integration-train](../../../docs/reference/integration-train.md)). When at most five test files fail, they are re-run once; a pass continues the push with a `FLAKY` notice (logged to `<git-common-dir>/kookr-flaky-tests.log`), a second failure rejects it.
+17. **Tests: the full lanes, only as a fallback.** The hook runs `pnpm test` and then `pnpm test:integration` instead of item 16 only when it does not resolve to the fast gate: `.kookr/delivery-gate.json` on `origin/main` is missing or its `prePushGate` is not `"fast"`, `jq` is not installed, a file named `kookr-full-gate` exists in the git common directory (the operator's kill switch), or the branch has no merge base with `origin/main`. The push output says which one ran (`Running fast gate ...` or `Running tests...`). The same five-file flaky re-run applies to `pnpm test`.
+18. `pnpm check:faa-gate`: a change to a finishedAwaitingAck mitigation surface must cite a classified root cause (read from `KOOKR_PR_BODY`) or a reasoned bypass.
 
 A "docs-only" diff means `origin/main` exists, the diff against it is non-empty, and every changed file is an addition or modification of prose Markdown under `docs/` or a top-level `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CLA.md`, or `SECURITY.md`. A delete or rename runs the full gate.
 
@@ -53,7 +54,6 @@ A "docs-only" diff means `origin/main` exists, the diff against it is non-empty,
 
 - `pnpm check:cycles`: no import cycles.
 - `pnpm validate:delivery-ownership` and `pnpm validate:parent-fallback`: orchestration rehearsals.
-- `pnpm validate:docs-env-vars`: **every new `KOOKR_*` environment variable read in source is documented in `docs/reference/environment-variables.md`** (or listed in the verifier's internal allowlist), and every `KOOKR_*` var in `.env.example` is documented there too.
 - `pnpm validate:docs-api-routes`: **every new `/api/*` route registered under `src/server` is documented in `docs/reference/api.md`** (or listed in `INTERNAL_API_ROUTES` with a reason).
 - `pnpm test:smoke`, `pnpm test:hooks`, `pnpm test:stt`.
 

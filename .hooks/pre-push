@@ -505,6 +505,14 @@ if ! pnpm validate:rerun-bound; then
   exit 1
 fi
 
+echo "Validating documented environment variables..."
+if ! pnpm validate:docs-env-vars; then
+  echo ""
+  echo "Push rejected: documented environment-variable validation failed (issue #4061)."
+  echo "Document each KOOKR_* variable read in source in docs/reference/environment-variables.md."
+  exit 1
+fi
+
 echo "Validating requirements status matrix..."
 if ! pnpm validate:requirements; then
   echo ""

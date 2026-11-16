@@ -24,7 +24,8 @@ trap cleanup EXIT
 # RELATED_EXIT is non-zero (writing a rerun summary naming src/flaky.test.ts as
 # the failed file when SUMMARY_FAIL=1, the same file the real reporter would
 # report), `pnpm exec vitest run ...` (the flaky re-run) when RERUN_EXIT is
-# non-zero, and `pnpm test:hooks` when HOOKS_EXIT is non-zero.
+# non-zero, `pnpm test:hooks` when HOOKS_EXIT is non-zero, and
+# `pnpm validate:docs-env-vars` when ENVVARS_EXIT is non-zero.
 #
 # setup_repo <repo> <mode> <hookfile> <noorigin>
 #   mode: fast (config on origin/main), none (no config), other (prePushGate
@@ -53,6 +54,7 @@ case "$*" in
     exit "${RELATED_EXIT:-0}" ;;
   "exec vitest run "*) exit "${RERUN_EXIT:-0}" ;;
   "test:hooks") exit "${HOOKS_EXIT:-0}" ;;
+  "validate:docs-env-vars") exit "${ENVVARS_EXIT:-0}" ;;
 esac
 exit 0
 PNPM
@@ -112,11 +114,11 @@ PNPM
 }
 
 # run_case <name> <mode> <related-exit> [option...] -> sets STATUS, REPO
-# options: killswitch, noorigin, hookfile=<path>, hooksfail, summaryfail, rerunfail,
+# options: killswitch, noorigin, hookfile=<path>, hooksfail, summaryfail, rerunfail, envvarsfail,
 #          hooktest=<exit status of .claude/hooks-tests/x.test.sh>
 run_case() {
   local repo="$TMPDIR/$1" mode="$2" related="$3" opt
-  local hookfile="" noorigin="" killswitch="" hooks_exit=0 summary_fail=0 rerun_exit=0 hooktest="" fromstaging=""
+  local hookfile="" noorigin="" killswitch="" hooks_exit=0 summary_fail=0 rerun_exit=0 envvars_exit=0 hooktest="" fromstaging=""
   shift 3
   for opt in "$@"; do
     case "$opt" in
@@ -126,6 +128,7 @@ run_case() {
       hooksfail) hooks_exit=1 ;;
       summaryfail) summary_fail=1 ;;
       rerunfail) rerun_exit=1 ;;
+      envvarsfail) envvars_exit=1 ;;
       hooktest=*) hooktest="${opt#hooktest=}" ;;
       fromstaging) fromstaging=1 ;;
       stagingbehind) fromstaging=behind ;;
@@ -138,7 +141,7 @@ run_case() {
   : > "$repo/hooktest.log"
   STATUS=0
   (cd "$repo" && PNPM_LOG="$repo/pnpm.log" HOOKTEST_LOG="$repo/hooktest.log" RELATED_EXIT="$related" HOOKS_EXIT="$hooks_exit" \
-    SUMMARY_FAIL="$summary_fail" RERUN_EXIT="$rerun_exit" SKIP_PORTABILITY_CHECK=1 PATH="$repo/bin:$PATH" \
+    SUMMARY_FAIL="$summary_fail" RERUN_EXIT="$rerun_exit" ENVVARS_EXIT="$envvars_exit" SKIP_PORTABILITY_CHECK=1 PATH="$repo/bin:$PATH" \
     bash "$HOOK" < /dev/null > "$repo/hook.out" 2>&1) || STATUS=$?
   REPO="$repo"
 }
@@ -161,7 +164,17 @@ grep -Fxq "test" "$REPO/pnpm.log" && fail "fast mode must skip the full suite"
 grep -Fxq "test:integration" "$REPO/pnpm.log" && fail "fast mode must skip the integration lane"
 grep -Fq "Running fast gate" "$REPO/hook.out" || fail "expected the fast-gate banner"
 grep -Fq "fast gate compares HEAD against origin/main" "$REPO/hook.out" || fail "expected origin/main as the base"
+grep -Fxq "validate:docs-env-vars" "$REPO/pnpm.log" || fail "fast mode must run the documented env-var validator (#4061)"
 printf 'PASS: fast mode runs related tests only\n'
+
+# 1a. An undocumented env var rejects the push in fast mode before any test
+# runs (issue #4061: it used to reach the train's full suite instead).
+run_case fast-envvars fast 0 envvarsfail
+[ "$STATUS" -ne 0 ] || fail "a failing validate:docs-env-vars must reject the push"
+grep -Fq "Push rejected: documented environment-variable validation failed" "$REPO/hook.out" \
+  || fail "expected the env-var validator rejection message"
+grep -q "^exec vitest related" "$REPO/pnpm.log" && fail "a failed static check must stop the push before the fast gate"
+printf 'PASS: an undocumented env var rejects a fast-mode push\n'
 
 # 1b. A branch cut from origin/staging is compared against staging, not main:
 # the commit waiting on staging is not part of its diff (issue #3995).
@@ -193,6 +206,7 @@ run_case full none 0
 grep -Fxq "test" "$REPO/pnpm.log" || fail "default mode must run the full suite"
 grep -Fxq "test:integration" "$REPO/pnpm.log" || fail "default mode must run the integration lane"
 grep -q "^exec vitest related" "$REPO/pnpm.log" && fail "default mode must not run the fast gate"
+grep -Fxq "validate:docs-env-vars" "$REPO/pnpm.log" || fail "full mode must run the documented env-var validator (#4061)"
 printf 'PASS: no config keeps the full gate\n'
 
 # 4. Kill switch beats the config.
