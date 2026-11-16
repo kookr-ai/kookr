@@ -411,6 +411,22 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     expect(container.querySelectorAll('[data-testid="agent-operator-needed-banner"]')).toHaveLength(1);
   });
 
+  test.each(['terminal-tab', 'split'] as const)('with a finding on the %s layout, the signal and its Dismiss sit in the one card, beside Skip (#4024)', (where) => {
+    if (where === 'split') useKookrStore.getState().setDetailPaneMode('split');
+    const anomaly = { type: 'permission_blocked', severity: 'warning', explanation: 'Bash wants to run ls', detectedAt: new Date().toISOString() };
+    render(makeAgent({ anomaly, pendingSignal } as unknown as Partial<AgentState>));
+    if (where === 'terminal-tab') act(() => q('detail-tab-terminal')!.click());
+    expect(container.querySelectorAll('[data-testid="decision-card"]')).toHaveLength(1);
+    const card = q('decision-card')!;
+    expect(card.closest(where === 'split' ? '.detail-split-left' : '.response-area')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="agent-signal-banner"]')).toHaveLength(1);
+    expect(card.querySelector('[data-testid="agent-signal-banner"]')?.textContent).toContain('PR #12 is green');
+    expect(container.querySelectorAll('[data-testid="finding-skip"]')).toHaveLength(1);
+    expect(card.querySelector('[data-testid="finding-skip"]')).not.toBeNull();
+    act(() => (card.querySelector('[data-testid="agent-signal-dismiss"]') as HTMLButtonElement).click());
+    expect(sent).toContainEqual({ type: 'dismissAgentSignal', taskId: 'task-1' });
+  });
+
   test('where no card shows, the notices keep their banner above the tabs (#4024)', () => {
     render(makeAgent({ operatorNeeded, pendingSignal } as unknown as Partial<AgentState>), { terminalFocusMode: true });
     expect(q('decision-card')).toBeNull();
