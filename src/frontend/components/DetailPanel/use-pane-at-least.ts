@@ -3,11 +3,20 @@ import type React from 'react';
 
 /**
  * The facts column docks beside the conversation only when the reading pane is
- * at least this wide (issue #3561 slice 4b). Measured on main: the pane is
- * 839 px at a 1180 px window and 939 px at 1280 px, so 820 keeps the column
- * docked from about 1160 px up and leaves the conversation at least ~590 px.
+ * at least this wide (issue #3561 slice 4b; lowered from 820 in issue #4024).
+ * The column is 232 px, so 760 leaves the conversation at least ~530 px.
+ *
+ * Measured with a task selected (window width: pane width with all projects /
+ * pane width with a project's drawer open):
+ *   1180: 788 / 508   1279: 869 / 589   1280: 710 / 590   1360: 767 / 647
+ *   1400: 796 / 676   1440: 825 / 705   1520: 888 / 768   1600: 968 / 848
+ * The pane narrows at 1280 because the navigation gains its labels there
+ * (#3561 slice 5a). With 760, the column docks from about 1350 px with all
+ * projects (820 waited until about 1435 px) and from about 1515 px with a
+ * project's drawer open. At 1280 to about 1350 px it stays behind the Details
+ * button: docking there would leave the conversation under 480 px.
  */
-export const FACTS_DOCK_MIN_PANE_PX = 820;
+export const FACTS_DOCK_MIN_PANE_PX = 760;
 
 /**
  * Whether the element behind `ref` is at least `minPx` wide, kept current with

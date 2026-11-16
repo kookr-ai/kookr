@@ -65,8 +65,15 @@ test('the facts column docks on a wide pane and opens over a narrow one from Det
   await expect(facts.getByTestId('task-timeline')).toBeVisible();
   await expect(page.getByTestId('detail-facts-toggle')).toHaveCount(0);
 
-  // #3561 slice 5a: at 1280 px the labelled navigation leaves the pane under
-  // 820 px, so the column moves behind Details there.
+  // #4024: the column docks from a 760 px pane, so it stays docked at 1400 px,
+  // where the labelled navigation leaves the pane about 796 px wide.
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await expect(facts).toBeVisible();
+  await expect(facts).not.toHaveClass(/detail-facts--overlay/);
+  await expect(page.getByTestId('detail-facts-toggle')).toHaveCount(0);
+
+  // #3561 slice 5a: at 1280 px the labelled navigation leaves the pane about
+  // 710 px wide, under 760 px, so the column moves behind Details there.
   await page.setViewportSize({ width: 1280, height: 800 });
   await expect(facts).toHaveCount(0);
   const toggle = page.getByTestId('detail-facts-toggle');

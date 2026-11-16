@@ -17419,6 +17419,24 @@ button.coordinator-chain-member:focus-visible {
 .decision-card-last > summary { cursor: pointer; margin-bottom: 0; }
 .decision-card-last[open] > summary { margin-bottom: 4px; }
 .decision-card-last > summary:hover { color: var(--text-bright); }
+/* #4024: the agent's own notices (completion signal, operator needed) as
+   lines under the card's head. A left rule keeps their old colours: green
+   for the signal, red for operator needed. */
+.decision-card-notes { display: flex; flex-direction: column; gap: 4px; }
+.decision-card-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--green);
+  font-size: 13px;
+}
+.decision-card-note--attention { border-left-color: var(--red); }
+.decision-card-note-text { color: var(--text-bright); overflow-wrap: anywhere; }
+.decision-card-note-text strong { color: var(--green); }
+.decision-card-note--attention .decision-card-note-text strong { color: var(--red); }
+.decision-card-note .action-btn { flex-shrink: 0; }
 
 /* Lucy's launch card and the typed box (issue #3676). */
 .avatar-launch { flex: 0 1 auto; min-height: 0; max-height: 232px; overflow-y: auto; border-top: 1px solid var(--border-dim); font-size: 12px; color: var(--text-secondary); }

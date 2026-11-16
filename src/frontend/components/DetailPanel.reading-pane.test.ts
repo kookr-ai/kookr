@@ -358,6 +358,94 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     expect(container.querySelector('.response-row [data-testid="finding-skip"]')).not.toBeNull();
   });
 
+  const pendingSignal = { kind: 'completion_ready', raisedAt: '2026-05-09T00:05:00.000Z', note: 'PR #12 is green' };
+  const operatorNeeded = { reason: 'interactive_tool_denied', toolName: 'AskUserQuestion', detectedAt: '2026-05-09T00:06:00.000Z', message: 'AskUserQuestion was denied' };
+
+  test('without a finding, the agent signal shows a card of its own above the reply box, with its note and Dismiss (#4024)', () => {
+    render(makeAgent({ pendingSignal } as unknown as Partial<AgentState>));
+    const card = q('decision-card')!;
+    expect(card.closest('.detail-split-left')).not.toBeNull();
+    expect(card.className).toContain('decision-card--notice');
+    expect(card.querySelector('.decision-card-head')?.textContent).toBe('Agent signal');
+    const notice = card.querySelector('[data-testid="agent-signal-banner"]')!;
+    expect(notice.getAttribute('role')).toBe('status');
+    expect(notice.textContent).toContain('flagged ready');
+    expect(notice.textContent).toContain('PR #12 is green');
+    // Exactly once on the page: no banner above the tabs as well.
+    expect(container.querySelectorAll('[data-testid="agent-signal-banner"]')).toHaveLength(1);
+    // Nothing to answer or set aside without a finding.
+    expect(container.querySelector('[data-testid="finding-skip"]')).toBeNull();
+    expect(card.querySelector('.decision-card-acts')).toBeNull();
+    act(() => (card.querySelector('[data-testid="agent-signal-dismiss"]') as HTMLButtonElement).click());
+    expect(sent).toContainEqual({ type: 'dismissAgentSignal', taskId: 'task-1' });
+  });
+
+  test('without a finding, operator needed titles a red card; the Terminal tab keeps it compact (#4024)', () => {
+    render(makeAgent({ operatorNeeded, pendingSignal } as unknown as Partial<AgentState>));
+    let card = q('decision-card')!;
+    expect(card.className).toContain('decision-card--bad');
+    expect(card.querySelector('.decision-card-head')?.textContent).toBe('Operator needed');
+    expect(card.querySelector('[data-testid="agent-operator-needed-banner"]')?.textContent).toContain('AskUserQuestion was denied');
+    expect(card.querySelector('[data-testid="agent-signal-banner"]')).not.toBeNull();
+    act(() => q('detail-tab-terminal')!.click());
+    expect(container.querySelectorAll('[data-testid="decision-card"]')).toHaveLength(1);
+    card = q('decision-card')!;
+    expect(card.closest('.response-area')).not.toBeNull();
+    expect(card.className).toContain('decision-card--compact');
+    expect(container.querySelectorAll('[data-testid="agent-operator-needed-banner"]')).toHaveLength(1);
+    expect(card.querySelector('[data-testid="agent-operator-needed-banner"]')).not.toBeNull();
+  });
+
+  test('with a finding, the notices sit right under the card head, before the ask (#4024)', () => {
+    useKookrStore.getState().handleSuggestion('agent-1', [], [{ label: 'Allow once', value: 'allow', keystroke: '1' }]);
+    const anomaly = { type: 'permission_blocked', severity: 'warning', explanation: 'Bash wants to run ls', detectedAt: new Date().toISOString() };
+    render(makeAgent({ anomaly, operatorNeeded } as unknown as Partial<AgentState>));
+    const card = q('decision-card')!;
+    // The finding still titles the card and keeps its answers and Skip/Snooze.
+    expect(card.querySelector('.decision-card-head')?.textContent).not.toContain('Operator needed');
+    expect(card.querySelector('[data-testid="finding-skip"]')).not.toBeNull();
+    expect(card.querySelectorAll('.btn-quick-action')).toHaveLength(1);
+    const notice = card.querySelector('[data-testid="agent-operator-needed-banner"]')!;
+    const ask = card.querySelector('.decision-card-ask')!;
+    expect(notice.compareDocumentPosition(ask) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('[data-testid="agent-operator-needed-banner"]')).toHaveLength(1);
+  });
+
+  test.each(['terminal-tab', 'split'] as const)('with a finding on the %s layout, the signal and its Dismiss sit in the one card, beside Skip (#4024)', (where) => {
+    if (where === 'split') useKookrStore.getState().setDetailPaneMode('split');
+    const anomaly = { type: 'permission_blocked', severity: 'warning', explanation: 'Bash wants to run ls', detectedAt: new Date().toISOString() };
+    render(makeAgent({ anomaly, pendingSignal } as unknown as Partial<AgentState>));
+    if (where === 'terminal-tab') act(() => q('detail-tab-terminal')!.click());
+    expect(container.querySelectorAll('[data-testid="decision-card"]')).toHaveLength(1);
+    const card = q('decision-card')!;
+    expect(card.closest(where === 'split' ? '.detail-split-left' : '.response-area')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="agent-signal-banner"]')).toHaveLength(1);
+    expect(card.querySelector('[data-testid="agent-signal-banner"]')?.textContent).toContain('PR #12 is green');
+    expect(container.querySelectorAll('[data-testid="finding-skip"]')).toHaveLength(1);
+    expect(card.querySelector('[data-testid="finding-skip"]')).not.toBeNull();
+    act(() => (card.querySelector('[data-testid="agent-signal-dismiss"]') as HTMLButtonElement).click());
+    expect(sent).toContainEqual({ type: 'dismissAgentSignal', taskId: 'task-1' });
+  });
+
+  test('where no card shows, the notices keep their banner above the tabs (#4024)', () => {
+    render(makeAgent({ operatorNeeded, pendingSignal } as unknown as Partial<AgentState>), { terminalFocusMode: true });
+    expect(q('decision-card')).toBeNull();
+    const banner = q('agent-operator-needed-banner')!;
+    expect(banner.className).toContain('detail-signal-banner--attention');
+    expect(banner.closest('.detail-body-main')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="agent-operator-needed-banner"]')).toHaveLength(1);
+    expect(q('agent-signal-banner')?.className).toContain('detail-signal-banner');
+    act(() => root!.unmount());
+    // A finished task with a completion digest has no card either.
+    render(makeAgent({
+      operatorNeeded,
+      taskStatus: 'completed',
+      completionDigest: { bullets: ['Shipped'], filesChanged: [] },
+    } as unknown as Partial<AgentState>));
+    expect(q('decision-card')).toBeNull();
+    expect(q('agent-operator-needed-banner')?.className).toContain('detail-signal-banner--attention');
+  });
+
   test('Snooze in the decision card opens the snooze dialog', () => {
     render(makeAgent({ anomaly: { type: 'needs_input', severity: 'info', explanation: 'x', detectedAt: new Date().toISOString() } } as unknown as Partial<AgentState>));
     act(() => q('finding-snooze')!.click());

@@ -30,6 +30,7 @@ import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { DetailHeaderActions } from './DetailPanel/DetailHeaderActions.js';
 import { DetailMetaLine } from './DetailPanel/DetailMetaLine.js';
 import { DecisionCard } from './DetailPanel/DecisionCard.js';
+import { AgentSignalNotice, OperatorNeededNotice, type NoticePlacement } from './DetailPanel/AgentNotices.js';
 import { TaskFactsColumn } from './DetailPanel/TaskFactsColumn.js';
 import { usePaneAtLeast, FACTS_DOCK_MIN_PANE_PX } from './DetailPanel/use-pane-at-least.js';
 import { appendDictation } from '../append-dictation.js';
@@ -880,12 +881,12 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     && agent.turnState === 'completed_turn';
 
   // Agent → user signal (RFC: rfc-agent-signal-surface). Show a non-modal
-  // banner while the task is active; only emphasise Complete (pulse) when the
+  // notice while the task is active (in the decision card, see #4024); only emphasise Complete (pulse) when the
   // agent is actually idle (completed_turn) so a signal raised mid-work never
   // invites premature completion.
   const pendingSignal = agent.pendingSignal;
   // Operator-needed flag (issue #1562): an unattended agent tried a denied
-  // interactive tool. Surfaced as a header badge + banner so the block is
+  // interactive tool. Surfaced as a header badge + notice so the block is
   // visible instead of the agent hanging on an unanswerable prompt.
   const operatorNeeded = agent.operatorNeeded;
   const hasDerivedCompletionSignal = !!agent.latestCompletionSignal && isCompletedTurn;
@@ -918,11 +919,39 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   // focus and a completion digest keep only the answer buttons, in the reply
   // area, as before: focus is the operator asking for every line of terminal.
   const completionDigestShown = isTerminalTaskStatus(agent.taskStatus) && !!agent.completionDigest;
-  const findingCardAllowed = !!agent.anomaly && !completionDigestShown && !rightOnlyMode;
+  const decisionCardAllowed = !completionDigestShown && !rightOnlyMode;
+  // A finding card takes the answer buttons and Skip/Snooze out of the reply row.
+  const findingCardAllowed = !!agent.anomaly && decisionCardAllowed;
+  // #4024: the agent's signal and operator-needed notices join the decision
+  // card, and show a card of their own without a finding. Where no card can
+  // show, they keep their banner above the tabs.
+  const signalNoticeShown = showSignalBanner && !!agent.taskId;
+  const hasAgentNotices = signalNoticeShown || !!operatorNeeded;
+  const noticesInCard = hasAgentNotices && decisionCardAllowed;
   const terminalTabShown = tabbedLayout && narrowTab === 'terminal';
-  const decisionCardVisible = findingCardAllowed && !terminalTabShown;
-  const terminalDecisionCardVisible = findingCardAllowed && terminalTabShown;
-  const anyDecisionCardVisible = decisionCardVisible || terminalDecisionCardVisible;
+  const anyDecisionCardVisible = findingCardAllowed || noticesInCard;
+  const decisionCardVisible = anyDecisionCardVisible && !terminalTabShown;
+  const terminalDecisionCardVisible = anyDecisionCardVisible && terminalTabShown;
+  const renderAgentNotices = (placement: NoticePlacement) => (
+    <>
+      {signalNoticeShown && (
+        <AgentSignalNotice
+          placement={placement}
+          ready={signalCompleteReady}
+          note={pendingSignal?.note}
+          onDismiss={pendingSignal && !hasDerivedCompletionSignal
+            ? () => send({ type: 'dismissAgentSignal', taskId: agent.taskId! })
+            : undefined}
+        />
+      )}
+      {operatorNeeded && <OperatorNeededNotice placement={placement} message={operatorNeeded.message} />}
+    </>
+  );
+  const cardNotices = noticesInCard ? {
+    nodes: renderAgentNotices('card'),
+    label: operatorNeeded ? 'Operator needed' : 'Agent signal',
+    tone: operatorNeeded ? 'bad' as const : 'need' as const,
+  } : null;
   const showEvolutionPanel = Boolean(agent.taskId && agent.playbookId === 'autonomous-evolution.md');
   // Skip and Snooze decide what happens to the finding, so they sit in the
   // decision card when it shows; the reply row keeps input, voice and Send.
@@ -1056,44 +1085,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
       </div>
       <div className="detail-body">
       <div className="detail-body-main">
-      {showSignalBanner && agent.taskId && (
-        <div
-          className={`detail-signal-banner${signalCompleteReady ? ' detail-signal-banner--ready' : ''}`}
-          role="status"
-          aria-live="polite"
-          data-testid="agent-signal-banner"
-        >
-          <span className="detail-signal-banner__text">
-            <strong>Agent:</strong>{' '}
-            {signalCompleteReady
-              ? 'ready for review — complete this task?'
-              : 'flagged ready (still working — review when idle)'}
-            {pendingSignal?.note ? ` — ${pendingSignal.note}` : ''}
-          </span>
-          {pendingSignal && !hasDerivedCompletionSignal && (
-            <button
-              type="button"
-              className="action-btn action-btn--neutral"
-              data-testid="agent-signal-dismiss"
-              onClick={() => send({ type: 'dismissAgentSignal', taskId: agent.taskId! })}
-            >
-              Dismiss
-            </button>
-          )}
-        </div>
-      )}
-      {operatorNeeded && (
-        <div
-          className="detail-signal-banner detail-signal-banner--attention"
-          role="status"
-          aria-live="polite"
-          data-testid="agent-operator-needed-banner"
-        >
-          <span className="detail-signal-banner__text">
-            <strong>Operator needed:</strong> {operatorNeeded.message}
-          </span>
-        </div>
-      )}
+      {hasAgentNotices && !noticesInCard && renderAgentNotices('banner')}
       {agent.taskId && (
         <TaskShareModal
           taskId={agent.taskId}
@@ -1230,6 +1222,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                     agent={agent}
                     actions={quickActionButtons}
                     triage={findingTriageButtons}
+                    notices={cardNotices}
                   />
                 )}
               </div>}
@@ -1346,9 +1339,10 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
             actions={quickActionButtons}
             triage={findingTriageButtons}
             compact
+            notices={cardNotices}
           />
         )}
-        {!anyDecisionCardVisible && quickActionButtons}
+        {!findingCardAllowed && quickActionButtons}
         {replySnippets.length > 0 && (
           <div className="reply-snippet-picker">
             <span className="reply-snippet-picker-label" id="reply-snippet-chips-label">
@@ -1445,7 +1439,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
               Send & Next
             </button>
           )}
-          {!isDirectReply && !anyDecisionCardVisible && findingTriageButtons}
+          {!isDirectReply && !findingCardAllowed && findingTriageButtons}
         </div>
         {showSnooze && agent && (
           <SnoozeDialog
