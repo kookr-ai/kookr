@@ -74,7 +74,7 @@ const STATES: Record<string, { pr: Partial<GitHubPRState>; delivery: PrDeliveryS
   },
   skipped: {
     pr: { baseBranch: 'main' },
-    delivery: { ...base, stage: 'on-main', onMainAt: base.mergedAt, skippedTrain: true },
+    delivery: { ...base, stage: 'on-main', onMainAt: base.mergedAt, mergedIntoMain: true, skippedTrain: true },
     label: '#3920 · on main · skipped train',
     tone: 'skipped',
   },
@@ -100,6 +100,13 @@ describe('delivery labels', () => {
     expect(deliverySentence(STATES.reverted!.delivery)).toMatch(/Fix attempt 2 of 3 is running\.$/);
     expect(deliverySentence(STATES.needsHuman!.delivery)).toMatch(/it needs a human\.$/);
     expect(deliverySentence(STATES.skipped!.delivery)).toMatch(/it skipped the train\.$/);
+  });
+
+  test('a PR merged into main before the train existed is never described as train-verified', () => {
+    const preTrain: PrDeliveryState = { ...base, stage: 'on-main', mergedIntoMain: true };
+    expect(findingPrChipLabel(selectFindingPrChip([makePr({ baseBranch: 'main', delivery: preTrain })])!)).toBe('#3920 · on main');
+    expect(deliverySentence(preTrain)).toMatch(/merged straight into main, before the train ran\.$/);
+    expect(deliverySentence(preTrain)).not.toMatch(/train verified/);
   });
 });
 
@@ -269,6 +276,14 @@ describe('PrDeliveryFact (detail pane)', () => {
   test('reverted with no fix left: says it needs a human', () => {
     const { fact } = render('needsHuman');
     expect(fact?.querySelector('[data-testid="detail-delivery-revert"]')?.textContent).toContain('No automatic fix left: needs a human.');
+  });
+
+  test('merged into main before the train: one plain step, no staging step', () => {
+    act(() => {
+      root.render(<dl><PrDeliveryFact prs={[makePr({ baseBranch: 'main', delivery: { ...base, stage: 'on-main', mergedIntoMain: true } })]} /></dl>);
+    });
+    const labels = [...container.querySelectorAll('.detail-delivery-step span:nth-child(2)')].map((el) => el.textContent);
+    expect(labels).toEqual(['PR opened', 'Merged into main']);
   });
 
   test('skipped the train: one warning step instead of the staging step', () => {

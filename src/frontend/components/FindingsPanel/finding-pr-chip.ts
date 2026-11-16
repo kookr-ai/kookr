@@ -111,9 +111,9 @@ export function deliverySentence(delivery: PrDeliveryState, now: Date = new Date
     case 'in-staging':
       return `In ${branch}${since(delivery.mergedAt)}, awaiting the train: main does not have it yet.`;
     case 'on-main':
-      return delivery.skippedTrain
-        ? `On main${since(delivery.mergedAt)}, merged straight into main: it skipped the train.`
-        : `On main${since(delivery.onMainAt)}: the train verified it.`;
+      if (delivery.skippedTrain) return `On main${since(delivery.mergedAt)}, merged straight into main: it skipped the train.`;
+      if (delivery.mergedIntoMain) return `On main${since(delivery.mergedAt)}: merged straight into main, before the train ran.`;
+      return `On main${since(delivery.onMainAt)}: the train verified it.`;
     case 'reverted': {
       const revert = delivery.revert;
       const when = at(delivery.revertedAt) ? ` at ${at(delivery.revertedAt)}` : '';
@@ -150,6 +150,9 @@ export function deliveryTimeline(delivery: PrDeliveryState): DeliveryTimelineSte
     case 'on-main':
       if (delivery.skippedTrain) {
         return [opened, { label: 'Merged straight into main (skipped the train)', state: 'warn', ...(delivery.mergedAt ? { at: delivery.mergedAt } : {}) }];
+      }
+      if (delivery.mergedIntoMain) {
+        return [opened, { label: 'Merged into main', state: 'done', ...(delivery.mergedAt ? { at: delivery.mergedAt } : {}) }];
       }
       return [
         opened,

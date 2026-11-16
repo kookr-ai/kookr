@@ -55,6 +55,7 @@ describe('derivePrDeliveryState', () => {
     const state = derivePrDeliveryState(facts({ onMain: true, onMainAt: '2026-11-16T10:40:00.000Z' }));
     expect(state).toMatchObject({ stage: 'on-main', onMainAt: '2026-11-16T10:40:00.000Z', mergedAt: '2026-11-16T10:00:00.000Z' });
     expect(state?.skippedTrain).toBeUndefined();
+    expect(state?.mergedIntoMain).toBeUndefined();
   });
 
   test('a revert wins over main containing the commit (the revert reaches main with it)', () => {
@@ -93,12 +94,12 @@ describe('derivePrDeliveryState', () => {
       onMain: null,
       onMainAt: '2026-11-16T10:00:00.000Z',
     }));
-    expect(state).toMatchObject({ stage: 'on-main', skippedTrain: true, onMainAt: '2026-11-16T10:00:00.000Z' });
+    expect(state).toMatchObject({ stage: 'on-main', mergedIntoMain: true, skippedTrain: true, onMainAt: '2026-11-16T10:00:00.000Z' });
   });
 
   test('a PR merged into main before the train existed is on main, not flagged', () => {
     const state = derivePrDeliveryState(facts({ pr: { baseBranch: 'main', mergedAt: '2026-10-20T10:00:00.000Z' } }));
-    expect(state?.stage).toBe('on-main');
+    expect(state).toMatchObject({ stage: 'on-main', mergedIntoMain: true });
     expect(state?.skippedTrain).toBeUndefined();
   });
 

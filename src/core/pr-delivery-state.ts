@@ -58,7 +58,7 @@ export function derivePrDeliveryState(facts: PrDeliveryFacts): PrDeliveryState |
     // Merged straight into main. It is on main by definition; it skipped the
     // train only if it merged after the train was turned on.
     const skipped = isAfter(pr.mergedAt, facts.integrationSince);
-    return { ...merged, ...onMainAt, stage: 'on-main', ...(skipped ? { skippedTrain: true } : {}) };
+    return { ...merged, ...onMainAt, stage: 'on-main', mergedIntoMain: true, ...(skipped ? { skippedTrain: true } : {}) };
   }
   if (pr.baseBranch !== integrationBranch) return null;
 

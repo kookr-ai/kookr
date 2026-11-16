@@ -948,7 +948,7 @@ instance (issue #1526 Phase B / FM12, FM16).
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/snapshot` | Current agent states and anomalies |
+| `GET /api/snapshot` | Current agent states and anomalies. An agent whose PRs have a delivery state also has `prDelivery`: one `{ number, url, stage, ... }` per PR (see the PR `delivery` field below) |
 | `GET /api/queue` | Attention queue contents |
 | `GET /api/anomaly-stats` | Anomaly counters and detector stats |
 | `GET /api/capture/:sessionId` | Snapshot of the dtach session ring buffer; falls back to a persisted task tail (`source: "persisted"`) when the live ring is gone |
@@ -1274,7 +1274,7 @@ working. It is the first step of the ordered disable. Errors are always
 | --- | --- |
 | `GET /api/github` | All tracked tasks' PR and issue state |
 | `GET /api/github/status` | GitHub scanner status |
-| `GET /api/github/:taskId` | PR or issue state for one task |
+| `GET /api/github/:taskId` | PR or issue state for one task. In a repository with an integration branch, each PR carries `delivery`: `stage` (`pr-open`, `in-staging`, `on-main`, `reverted`), `integrationBranch`, the times `openedAt`, `mergedAt`, `onMainAt` and `revertedAt` when known, `mergedIntoMain` and `skippedTrain` for a PR merged straight into `main`, and for a revert `revert` (`revertCommit`, `attempt`, `maxAttempts`, `fixTaskKey`, `needsHuman`, `failingTests`). See the user guide, "Where A Task's Change Is" |
 
 ## Settings And Infrastructure
 

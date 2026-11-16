@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -151,7 +151,7 @@ describe('PrDeliveryTracker (real git repository)', () => {
       stage: 'in-staging', integrationBranch: 'staging',
       openedAt: '2026-11-16T08:30:00.000Z', mergedAt: '2026-11-16T09:40:00.000Z',
     });
-    expect(delivery(13)).toMatchObject({ stage: 'on-main', skippedTrain: true, onMainAt: '2026-11-16T07:00:00.000Z' });
+    expect(delivery(13)).toMatchObject({ stage: 'on-main', mergedIntoMain: true, skippedTrain: true, onMainAt: '2026-11-16T07:00:00.000Z' });
     // A merge commit this checkout has not fetched: no guess.
     expect(delivery(14)).toBeUndefined();
     expect(changed.sort()).toEqual(['task-10', 'task-11', 'task-12', 'task-13', 'task-9']);
@@ -173,6 +173,24 @@ describe('PrDeliveryTracker (real git repository)', () => {
       expect(changed).toEqual(['task-12']);
     } finally {
       git(['update-ref', '--create-reflog', '-m', 'reset', 'refs/remotes/origin/main', sha.promoted]);
+    }
+  });
+
+  test('a revert seen before the train logged its event is re-read until the event is there', async () => {
+    const events = join(trainDir, 'events.jsonl');
+    const logged = readFileSync(events, 'utf8');
+    writeFileSync(events, '');
+    try {
+      const { tracker, delivery } = setup([pr(11, { mergeCommit: sha.reverted })]);
+      await tracker.refresh();
+      expect(delivery(11)).toMatchObject({ stage: 'reverted', revert: { needsHuman: false } });
+      expect(delivery(11)?.revert?.attempt).toBeUndefined();
+
+      writeFileSync(events, logged);
+      await tracker.refresh();
+      expect(delivery(11)?.revert).toMatchObject({ attempt: 2, fixTaskKey: 'train-fix-issue-3915-2' });
+    } finally {
+      writeFileSync(events, logged);
     }
   });
 

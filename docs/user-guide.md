@@ -356,11 +356,13 @@ In a repository that merges through an integration branch (`staging`) and the [i
 | `↺ #N · reverted · needs you` | Reverted, and no fix task is running: the three automatic fixes are used up, or the fix task could not start. |
 | `! #N · on main · skipped train` | Merged straight into `main` after the train was turned on, so the train never verified it. |
 
+A PR merged into `main` before the train was turned on shows `● #N · on main`, and its sentence says it was merged straight into `main`, not that the train verified it.
+
 Each state has its own colour and glyph. Hover the chip for a sentence with the time the state was reached. On an open PR, a failed CI, a conflict or a review asking for changes still colours the chip and is listed after the state. In the detail pane, **Delivery** lists each step with its time: PR opened, merged into `staging`, on `main` or reverted. For a revert it also shows the failing tests from the train's verify log, the fix task (`train-fix-…`) and the revert commit.
 
 The state comes from what the server already has. The PR's base branch, merge time and merge commit come from the PR state Kookr already fetches. Whether `main` contains that commit comes from the local `origin/main`, which the train keeps current. The revert, the fix attempt and the failing tests come from the train's commits, `events.jsonl` and verify logs. Nothing extra is asked of GitHub per card. The server rechecks PRs that are still in `staging` once a minute. The time a change reached `main` is when this machine saw `origin/main` move to it, so it is missing for a change older than the reference's history.
 
-Kookr keeps GitHub state in memory. After a restart, it reloads the PRs of tasks that finished in the last seven days (from their completion summary) with one fetch, so a delivered task's chip comes back.
+Kookr keeps GitHub state in memory. After a restart, it reloads the PRs of tasks that finished in the last seven days, from their completion summary, so a delivered task's chip comes back. That reload only stores the PRs' state: it raises no alert for old review threads or checks. A PR that was still open when its task finished is polled for one more day, because the worker often merges it just before finishing.
 
 The chip keeps its plain form (`#N · merged`) when the repository has no integration branch, when the PR was closed without merging, or while the server cannot tell yet (for example, the merge commit has not been fetched locally). The same state is in the API: each PR in `GET /api/github/<taskId>` has a `delivery` field, and each agent in `GET /api/snapshot` has `prDelivery` (one entry per PR that has a state).
 

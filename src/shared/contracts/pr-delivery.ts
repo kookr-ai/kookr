@@ -43,7 +43,9 @@ export interface PrDeliveryState {
   onMainAt?: string;
   /** ISO time of the train's revert commit. */
   revertedAt?: string;
-  /** Merged straight into `main` after the integration branch was configured. */
+  /** The PR was merged straight into `main`, not through the integration branch. */
+  mergedIntoMain?: boolean;
+  /** Merged straight into `main` after the integration branch was configured (implies `mergedIntoMain`). */
   skippedTrain?: boolean;
   revert?: PrDeliveryRevert;
 }

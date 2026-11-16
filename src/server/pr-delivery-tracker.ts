@@ -86,6 +86,8 @@ export class PrDeliveryTracker {
   private readonly trainStateDir: (repoPath: string) => string;
   /** Final results (on main, reverted) by PR identity + merge commit. */
   private readonly settled = new Map<string, PrDeliveryState>();
+  /** Train state directory per checkout (resolving it runs git). */
+  private readonly trainDirs = new Map<string, string>();
   private running: Promise<void> | null = null;
   private again = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -156,16 +158,21 @@ export class PrDeliveryTracker {
       return { ok: r.code === 0, stdout: r.stdout };
     });
     if (!integrationBranch) return null;
+    // When the train was turned on: the oldest commit on main whose change to
+    // the config touches an `integrationBranch` line (the file may predate it).
     const added = await this.git(
-      ['log', '-1', '--diff-filter=A', '--format=%cI', `origin/${TRAIN_TARGET_BRANCH}`, '--', '.kookr/delivery-gate.json'],
+      ['log', '--reverse', '--format=%cI', '-G', 'integrationBranch', `origin/${TRAIN_TARGET_BRANCH}`, '--', '.kookr/delivery-gate.json'],
       repoPath,
     );
-    const since = added.code === 0 ? added.stdout.trim() : '';
-    let trainDir: string;
-    try {
-      trainDir = this.trainStateDir(repoPath);
-    } catch {
-      trainDir = '';
+    const since = added.code === 0 ? (added.stdout.split('\n')[0] ?? '').trim() : '';
+    let trainDir = this.trainDirs.get(repoPath);
+    if (trainDir === undefined) {
+      try {
+        trainDir = this.trainStateDir(repoPath);
+      } catch {
+        trainDir = '';
+      }
+      this.trainDirs.set(repoPath, trainDir);
     }
     return { integrationBranch, ...(since ? { integrationSince: since } : {}), trainDir };
   }
@@ -198,17 +205,22 @@ export class PrDeliveryTracker {
     const settled = this.settled.get(cacheKey);
     if (settled) return settled;
 
+    // Read main before the integration branch. The train pushes a revert to
+    // the integration branch before it promotes main to it, so when main
+    // already has the change, the read after it is sure to see the revert.
+    facts.onMain = await this.isOnMain(commit, repoPath);
     const revert = await this.findRevert(commit, repoPath, repo);
-    if (revert) facts.revert = revert;
-    else {
-      facts.onMain = await this.isOnMain(commit, repoPath);
-      if (facts.onMain) {
-        const at = await this.onMainSince(commit, repoPath);
-        if (at) facts.onMainAt = at;
-      }
+    if (revert) facts.revert = revert.facts;
+    else if (facts.onMain) {
+      const at = await this.onMainSince(commit, repoPath);
+      if (at) facts.onMainAt = at;
     }
     const delivery = derivePrDeliveryState(facts);
-    if (delivery && (delivery.stage === 'on-main' || delivery.stage === 'reverted')) this.settled.set(cacheKey, delivery);
+    // Final once on main, or once reverted with the train's event written: the
+    // train logs the event seconds after pushing the revert, and until then the
+    // fix attempt and "needs a human" are unknown.
+    const final = delivery?.stage === 'on-main' || (delivery?.stage === 'reverted' && revert?.logged === true);
+    if (delivery && final) this.settled.set(cacheKey, delivery);
     return delivery;
   }
 
@@ -259,7 +271,11 @@ export class PrDeliveryTracker {
     return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
   }
 
-  private async findRevert(commit: string, repoPath: string, repo: RepoFacts): Promise<PrDeliveryFacts['revert']> {
+  private async findRevert(
+    commit: string,
+    repoPath: string,
+    repo: RepoFacts,
+  ): Promise<{ facts: NonNullable<PrDeliveryFacts['revert']>; logged: boolean } | null> {
     const r = await this.git([
       'log', '-n', '1', '--format=%H%x09%cI', '--fixed-strings', '--all-match',
       '--grep', `This reverts commit ${commit}`,
@@ -275,7 +291,7 @@ export class PrDeliveryTracker {
     const fromLog = revertFactsFromTrainEvents(repo.events ?? [], commit);
     const verifyLog = repo.trainDir ? this.readText(join(repo.trainDir, `verify-${commit.slice(0, 10)}.log`)) : null;
     const at = fromLog?.at ?? committedAt;
-    return {
+    const facts = {
       revertCommit,
       ...(at ? { at } : {}),
       ...(fromLog?.attempt !== undefined ? { attempt: fromLog.attempt } : {}),
@@ -284,6 +300,7 @@ export class PrDeliveryTracker {
       needsHuman: fromLog?.needsHuman ?? false,
       failingTests: verifyLog ? failingTestsFromVerifyLog(verifyLog) : [],
     };
+    return { facts, logged: fromLog !== null };
   }
 }
 

@@ -86,6 +86,15 @@ export interface GitHubScannerDeps {
   onStarted?: () => void;
 }
 
+/** How long an open PR of a finished task keeps being polled (issue #3915). */
+const FINISHED_TASK_OPEN_PR_POLL_MS = 24 * 60 * 60 * 1000;
+/** How long a re-tracked reference is retried before the scanner gives up on it. */
+const QUIET_REF_RETRY_MS = 60 * 60 * 1000;
+
+function quietKey(ref: Pick<GitHubReference, 'taskId' | 'type' | 'owner' | 'repo' | 'number'>): string {
+  return `${ref.taskId}:${ref.type}:${ref.owner}/${ref.repo}#${ref.number}`;
+}
+
 /**
  * GitHubScannerService orchestrates periodic reference extraction and state fetching.
  * It is wired into the server and runs on intervals.
@@ -125,6 +134,15 @@ export class GitHubScannerService {
 
   // Track which task prompts have been scanned to avoid re-scanning
   private scannedPrompts = new Set<string>();
+
+  /**
+   * References added by trackReferences() that have not been fetched yet
+   * (issue #3915). They stay due on every state tick until one fetch lands,
+   * and that first fetch only stores state: it raises no change or alert,
+   * because it reports old news (a review thread from last week), not a change.
+   * Value: when to give up on a reference GitHub never answers for.
+   */
+  private quietRefs = new Map<string, number>();
 
   constructor(deps: GitHubScannerDeps) {
     this.taskStore = deps.taskStore;
@@ -210,6 +228,9 @@ export class GitHubScannerService {
   async trackReferences(refs: GitHubReference[]): Promise<void> {
     if (!this.ghAvailable) return;
     const added = refs.filter((ref) => this.stateStore.addReference(ref));
+    for (const ref of added) this.quietRefs.set(quietKey(ref), Date.now() + QUIET_REF_RETRY_MS);
+    // Skipped while another fetch runs or during a rate-limit backoff; the
+    // periodic tick then picks the refs up (isRefreshEligible).
     if (added.length > 0) await this.fetchReferences(added);
   }
 
@@ -389,14 +410,27 @@ export class GitHubScannerService {
   }
 
   private isRefreshEligible(ref: GitHubReference): boolean {
-    if (ref.type === 'pr' && this.stateStore.getPRState(ref)?.status === 'merged') {
+    const quietUntil = this.quietRefs.get(quietKey(ref));
+    if (quietUntil !== undefined) {
+      if (Date.now() < quietUntil) return true;
+      this.quietRefs.delete(quietKey(ref));
+    }
+    const prState = ref.type === 'pr' ? this.stateStore.getPRState(ref) : null;
+    if (prState?.status === 'merged') {
       return false;
     }
     const task = this.taskStore.getTask(ref.taskId);
     // Missing task stays eligible: refs can appear before the task row is
     // visible (prompt scan / tests seed synthetic ids). Delete paths must
     // call removeTask so a gone record does not leave an orphan poll.
-    return !task || !isTerminalStatus(task.status);
+    if (!task || !isTerminalStatus(task.status)) return true;
+    // A worker often merges its PR and finishes before the next poll, which
+    // would leave the finished task's PR "open" for good. Keep polling an
+    // open PR for a day after the task finished, until it merges or closes
+    // (issue #3915: the completed row shows where the change is).
+    return (prState?.status === 'open' || prState?.status === 'draft')
+      && task.finishedAt !== undefined
+      && Date.now() - new Date(task.finishedAt).getTime() < FINISHED_TASK_OPEN_PR_POLL_MS;
   }
 
   /** Fetch current state for the provided references and emit changes. */
@@ -458,6 +492,11 @@ export class GitHubScannerService {
   }
 
   private applyPRState(current: GitHubPRState): void {
+    if (this.quietRefs.delete(quietKey(current.ref))) {
+      this.stateStore.updatePRState(current);
+      this.onStateUpdate?.(current.ref.taskId);
+      return;
+    }
     const prev = this.stateStore.updatePRState(current);
     const changes = diffPRState(prev, current);
     this.emitStateResult(current.ref.taskId, changes, !prev);
