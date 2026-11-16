@@ -436,6 +436,7 @@ describe('integration train CLI', () => {
     expect(r.stdout).toContain(`stopped integration train (pid ${successor.pid})`);
     expect(await until(() => !alive(old.pid) && !alive(successor.pid), 5_000)).toBe(true);
     expect(existsSync(join(s.stateDir, 'train.pid'))).toBe(false);
+    expect(existsSync(join(s.stateDir, 'run-info.json'))).toBe(false);
   }, 120_000);
 
   it('stop also stops a successor the old train records while the stop waits for it to exit', async () => {
@@ -634,6 +635,9 @@ describe('integration train CLI', () => {
       const s = makeSandbox();
       const args = ['--worktree', s.worktree, '--verify-cmd', VERIFY, '--interval', '1'];
       const old = await startTrain(s, args);
+      // run-info.json names a dead pid, as when a late successor was killed:
+      // a failed hand-over must point it back at the old train
+      writeFileSync(join(s.stateDir, 'run-info.json'), JSON.stringify({ pid: 2 ** 22 + 1, restartRequests: true }));
       // options the successor rejects: it exits before its run loop starts
       const requestedAt = new Date().toISOString();
       writeFileSync(join(s.stateDir, 'restart-request.json'), JSON.stringify({

@@ -55,7 +55,7 @@ interface Options {
 
 /**
  * The options that take a value, and how each one sets it. `parseArgs` and
- * `withoutNowFlag` both read this one table, so a new option can not be added
+ * `withoutNowFlag` both read this one table, so a new option cannot be added
  * to one and missed in the other (issue #3851).
  */
 const VALUE_OPTIONS: ReadonlyMap<string, (opts: Options, value: string) => void> = new Map([
@@ -812,8 +812,10 @@ function keepFailedRequest(p: ReturnType<typeof paths>, request: RestartRequest,
       + `trying again after the next cycle: ${error}`;
     log(detail);
     event(detail);
-  } catch {
-    log('a newer restart request arrived meanwhile; it replaces the failed one');
+  } catch (err) {
+    log((err as NodeJS.ErrnoException).code === 'EEXIST'
+      ? 'a newer restart request arrived meanwhile; it replaces the failed one'
+      : `could not put the failed restart request back: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     try { unlinkSync(tmp); } catch { /* already gone */ }
   }
@@ -954,6 +956,9 @@ async function stop(waitMs = 30_000): Promise<Set<number>> {
     return new Set();
   }
   if (filed === null || signalled.has(filed) || !isIntegrationTrainProcess(filed)) rmSync(p.pid, { force: true });
+  // A stale `run-info.json` would make a later `start` or `restart` treat a reused pid as the train.
+  const info = runInfoPid(p.runInfo);
+  if (info !== null && signalled.has(info)) rmSync(p.runInfo, { force: true });
   rmSync(p.restartRequest, { force: true });
   rmSync(paths(legacyDir()).pid, { force: true });
   return signalled;
