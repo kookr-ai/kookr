@@ -202,7 +202,8 @@ At the end of the current unit:
    With `kookr spawn`, always pass `-C <repository checkout>`: the directory
    the spawn runs from (or `-C`) becomes the child's working directory and
    Kookr project, so a spawn run from the scratchpad without `-C` starts the
-   child in the scratchpad, under a `local/...` project.
+   child in the scratchpad, under a `local/...` project. Spawn warns in that
+   case (`details.cwdWarning` with `--json`); treat the warning as an error.
 5. **Immediately release this task's slot** after a confirmed successor spawn
    (or after a no-successor stop). Do not leave the parent `inProgress` while
    the child runs — that is how chains burn through `MAX_ACTIVE_TASKS`.

@@ -1,7 +1,7 @@
 import { OPENCODE_PROFILE_ID_PATTERN } from '../adapters/opencode-profiles.js';
 import { CLAUDE_CODE_MODEL_IDS, isValidOpenCodeModelId } from '../shared/contracts/agent-types.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
@@ -2458,6 +2458,83 @@ describe('main', () => {
     } finally {
       await closeServer(server);
     }
+  });
+
+  // ---- #3678: warn when the spawn directory is outside a git checkout ----
+
+  describe('missing -C outside a git checkout (#3678)', () => {
+    async function dryRun(argv: string[], cwd: string) {
+      const { server, baseUrl } = await startFakeApi(
+        () => ({ status: 201, body: JSON.stringify({ id: 'should-not-create' }) }),
+        undefined,
+        () => ({ status: 200, body: JSON.stringify([]) }),
+      );
+      try {
+        const { io, logs } = makeConsoleCapture();
+        const errBucket = makeConsoleCapture();
+        const { codes, exit } = makeExitCapture();
+        await main({
+          argv: ['--dry-run', ...argv, 'next unit'],
+          env: { KOOKR_API_BASE_URL: baseUrl },
+          stdin: ttyStdin(),
+          cwd,
+          out: io,
+          err: errBucket.io,
+          exit,
+          sleep: async () => {},
+        });
+        return { codes, logs, errors: errBucket.errors };
+      } finally {
+        await closeServer(server);
+      }
+    }
+
+    const warningRe = /^kookr-spawn: warning: no -C given and .+ is not inside a git checkout/;
+
+    it('warns on stderr when spawned without -C from a directory outside any checkout', async () => {
+      const r = await dryRun([], tmpCwd);
+      expect(r.codes).toEqual([EXIT_OK]);
+      const warnings = r.errors.filter((line) => warningRe.test(String(line)));
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0])).toContain(tmpCwd);
+      expect(String(warnings[0])).toContain('Pass -C <repository checkout>');
+    });
+
+    it('stays silent when -C names the directory explicitly', async () => {
+      const r = await dryRun(['-C', tmpCwd], tmpCwd);
+      expect(r.codes).toEqual([EXIT_OK]);
+      expect(r.errors.filter((line) => warningRe.test(String(line)))).toEqual([]);
+    });
+
+    it('stays silent in a subdirectory of a linked worktree (.git is a file)', async () => {
+      await writeFile(join(tmpCwd, '.git'), 'gitdir: /elsewhere/.git/worktrees/x\n');
+      const sub = join(tmpCwd, 'src', 'deep');
+      await mkdir(sub, { recursive: true });
+      const r = await dryRun([], sub);
+      expect(r.codes).toEqual([EXIT_OK]);
+      expect(r.errors.filter((line) => warningRe.test(String(line)))).toEqual([]);
+    });
+
+    it('stays silent at the root of a main checkout (.git is a directory)', async () => {
+      await mkdir(join(tmpCwd, '.git'));
+      const r = await dryRun([], tmpCwd);
+      expect(r.errors.filter((line) => warningRe.test(String(line)))).toEqual([]);
+    });
+
+    it('--json carries the warning in details.cwdWarning and keeps stderr quiet', async () => {
+      const r = await dryRun(['--json'], tmpCwd);
+      expect(r.codes).toEqual([EXIT_OK]);
+      expect(r.errors).toEqual([]);
+      const envelope = parseSingleJsonLog(r.logs);
+      expect(envelope.code).toBe('DRY_RUN');
+      expect(envelope.details.cwdWarning).toMatch(/^warning: no -C given and .+ is not inside a git checkout/);
+    });
+
+    it('--json without the warning adds no cwdWarning field', async () => {
+      const r = await dryRun(['--json', '-C', tmpCwd], tmpCwd);
+      const envelope = parseSingleJsonLog(r.logs);
+      expect(envelope.details).not.toHaveProperty('cwdWarning');
+    });
   });
 
   // ---- #1768: --dry-run preview (validate + resolve + dedupe, no POST) ----

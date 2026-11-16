@@ -74,19 +74,30 @@ export interface TrackedPrRef {
   detectedFrom: string;
   /** GitHub `mergedAt`, when known (issue #3746). */
   mergedAt?: Date;
+  /** GitHub `createdAt`: when the PR was opened, when known (issue #3678). */
+  openedAt?: Date;
 }
 
 /** Options for {@link selectDeliveredMergedPr}. */
 export interface SelectDeliveredMergedPrOptions {
   /**
-   * The task's creation time (issue #3746). When given, a merged PR counts as
-   * delivery only if its `mergedAt` is known and not earlier than this — a PR
-   * merged before the task existed cannot be the task's work, however often
-   * the agent saw its number in docs, fixtures or `gh` output. A PR with no
-   * known `mergedAt` is rejected too: this attribution force-completes live
-   * tasks, so unprovable evidence must not count. Accepts an ISO string
-   * because persisted task records can surface `createdAt` that way; an
-   * unparseable value rejects every merged PR (fail closed).
+   * The task's creation time. When given, a merged PR counts as delivery
+   * only if both its `mergedAt` (issue #3746) and its `openedAt` (issue #3678)
+   * are known and not earlier than this:
+   * - a PR merged before the task existed cannot be the task's work, however
+   *   often the agent saw its number in docs, fixtures or `gh` output;
+   * - a PR opened before the task existed was written by someone else. This
+   *   is the self-continuation case: a chain task opens its PR, enables
+   *   auto-merge and spawns its successor, the successor mentions that PR,
+   *   and the merge lands after the successor started. Without this bound the
+   *   successor is completed over its predecessor's PR. The cost: a task
+   *   started to finish an existing PR is not completed by this attribution
+   *   either; it completes through its own completion signal instead.
+   * A PR with no known `mergedAt` or `openedAt` is rejected too: this
+   * attribution force-completes live tasks, so unprovable evidence must not
+   * count. Accepts an ISO string because persisted task records can surface
+   * `createdAt` that way; an unparseable value rejects every merged PR (fail
+   * closed).
    */
   notBefore?: Date | string;
 }
@@ -97,8 +108,8 @@ export interface SelectDeliveredMergedPrOptions {
  * Only PRs discovered from the **agent's activity** count as delivery —
  * prompt-referenced merged PRs are excluded, so a live task whose prompt cites
  * an already-merged PR is never force-completed (correctness review, #1560).
- * With `opts.notBefore`, PRs merged before the task existed are excluded too
- * (issue #3746). Returns the first qualifying merged PR, so a stale PR listed
+ * With `opts.notBefore`, PRs opened or merged before the task existed are
+ * excluded too (issues #3678, #3746). Returns the first qualifying merged PR, so a stale PR listed
  * first never masks a real delivery listed after it.
  */
 export function selectDeliveredMergedPr(
@@ -109,7 +120,8 @@ export function selectDeliveredMergedPr(
   const merged = prs.find(
     (pr) => pr.status === 'merged'
       && pr.detectedFrom !== PROMPT_DETECTED_FROM
-      && (notBeforeMs === undefined || mergedNotBefore(pr.mergedAt, notBeforeMs)),
+      && (notBeforeMs === undefined
+        || (atOrAfter(pr.mergedAt, notBeforeMs) && atOrAfter(pr.openedAt, notBeforeMs))),
   );
   if (!merged) return null;
   return {
@@ -125,10 +137,10 @@ function toEpochMs(value: Date | string): number {
   return value instanceof Date ? value.getTime() : Date.parse(value);
 }
 
-/** True only when `mergedAt` is known and at or after `notBeforeMs` (NaN → false). */
-function mergedNotBefore(mergedAt: Date | undefined, notBeforeMs: number): boolean {
-  if (!(mergedAt instanceof Date)) return false;
-  return mergedAt.getTime() >= notBeforeMs;
+/** True only when `at` is known and at or after `notBeforeMs` (NaN → false). */
+function atOrAfter(at: Date | undefined, notBeforeMs: number): boolean {
+  if (!(at instanceof Date)) return false;
+  return at.getTime() >= notBeforeMs;
 }
 
 /**

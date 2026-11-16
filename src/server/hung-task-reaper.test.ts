@@ -25,8 +25,9 @@ import { createStoreDeliveredPrResolver } from './delivered-task-completion-swee
  * agent's own activity (`detectedFrom` ≠ 'prompt'), and return a resolver wired
  * exactly like production (`index.ts`): `createStoreDeliveredPrResolver`. This
  * replays the real #1560 delivery attribution the reaper reuses — no canned
- * `MergedPrAttribution`. Call it after the task exists: the PR's `mergedAt` is
- * "now", so it passes the task-creation bound (issue #3746).
+ * `MergedPrAttribution`. Call it after the task exists: the PR's `createdAt`
+ * and `mergedAt` are "now", so it passes the task-creation bound (issues
+ * #3678, #3746).
  */
 function mergedPrResolver(taskId: string, prNumber: number, prUrl: string): (task: Task) => MergedPrAttribution | null {
   const store = new GitHubStateStore();
@@ -54,6 +55,7 @@ function mergedPrResolver(taskId: string, prNumber: number, prUrl: string): (tas
     unresolvedThreads: [],
     totalComments: 0,
     checks: [],
+    createdAt: new Date(),
     mergedAt: new Date(),
     lastFetchedAt: new Date('2026-07-25T18:10:00.000Z'),
   };
@@ -716,7 +718,8 @@ describe('reapHungTask — delivered_then_hung outcome (issue #1559)', () => {
       ref, title: 'port the fix', status: 'merged', mergeable: 'MERGEABLE',
       author: 'someone', branch: 'x', baseBranch: 'main', reviewDecision: 'approved',
       reviewers: [], unresolvedThreads: [], totalComments: 0, checks: [],
-      // Merged after the task exists, so only the prompt exclusion can reject it.
+      // Opened and merged after the task exists, so only the prompt exclusion can reject it.
+      createdAt: new Date(),
       mergedAt: new Date(),
       lastFetchedAt: new Date('2026-07-25T18:10:00.000Z'),
     });

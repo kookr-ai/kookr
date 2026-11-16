@@ -112,8 +112,16 @@ the fix from PR #1500") is excluded (`detectedFrom === 'prompt'`), so a live tas
 that mentions an already-merged PR is never force-completed. A merged PR is also
 excluded when it merged **before the task was created**, or when its merge time
 (GitHub `mergedAt`) is unknown (issue #3746): the agent sees old PR numbers in
-docs, test fixtures and `gh` output, and none of them is its delivery. The
-hung-task, hung-suspect and provider-paused reapers share this attribution.
+docs, test fixtures and `gh` output, and none of them is its delivery. A merged
+PR is excluded as well when it was **opened before the task was created**, or
+when its opening time (GitHub `createdAt`) is unknown (issue #3678): a chain
+successor that mentions its predecessor's PR, still waiting on auto-merge, is
+not completed when that PR merges. A task started to finish an existing PR is
+therefore not completed by this path; it completes through its own
+`completion_ready` signal. A PR another task opened after this one started can
+still be attributed when the agent mentions it; the opening-time bound does not
+cover that case. The hung-task, hung-suspect and provider-paused reapers share
+this attribution.
 
 **Only opted-in tasks.** This path fires only for tasks with
 `autoCloseOnSignal` — the same population the signal path serves. An ask-first /

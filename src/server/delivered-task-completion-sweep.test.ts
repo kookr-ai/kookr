@@ -507,8 +507,17 @@ describe('autoCompleteDeliveredTasks (issue #1560)', () => {
 describe('autoCompleteDeliveredTasks over the GitHubStateStore attribution (issue #3746)', () => {
   const DAY_MS = 24 * 60 * 60 * 1000;
 
-  /** Record a merged PR seen in the task's own agent activity (not the prompt). */
-  function storeWithMergedPr(taskId: string, prNumber: number, mergedAt: Date | undefined): GitHubStateStore {
+  /**
+   * Record a merged PR seen in the task's own agent activity (not the prompt).
+   * `openedAt` is the PR's GitHub `createdAt`; it defaults to the merge time,
+   * and `null` records none.
+   */
+  function storeWithMergedPr(
+    taskId: string,
+    prNumber: number,
+    mergedAt: Date | undefined,
+    openedAt: Date | null | undefined = mergedAt,
+  ): GitHubStateStore {
     const store = new GitHubStateStore();
     const ref: GitHubReference = {
       type: 'pr',
@@ -534,6 +543,7 @@ describe('autoCompleteDeliveredTasks over the GitHubStateStore attribution (issu
       unresolvedThreads: [],
       totalComments: 0,
       checks: [],
+      ...(openedAt ? { createdAt: openedAt } : {}),
       ...(mergedAt ? { mergedAt } : {}),
       lastFetchedAt: new Date(),
     };
@@ -577,6 +587,34 @@ describe('autoCompleteDeliveredTasks over the GitHubStateStore attribution (issu
     const taskStore = new TaskStore();
     const id = makeRunningTask(taskStore);
     const store = storeWithMergedPr(id, 855, undefined);
+
+    expect(await sweepPastBudget(taskStore, store)).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+  });
+
+  test('issue #3678: a chain successor is not completed over its predecessor\'s PR merging after it started', async () => {
+    // The predecessor opened the PR and enabled auto-merge, then spawned this
+    // task; the successor mentioned the PR, and the merge landed after it started.
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const createdAt = taskStore.getTask(id)!.createdAt;
+    const store = storeWithMergedPr(
+      id,
+      3603,
+      new Date(createdAt.getTime() + 60_000),
+      new Date(createdAt.getTime() - 30 * 60_000),
+    );
+
+    expect(await sweepPastBudget(taskStore, store)).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+  });
+
+  test('a merged PR with no recorded opening time is not treated as delivery', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const createdAt = taskStore.getTask(id)!.createdAt;
+    const store = storeWithMergedPr(id, 3800, new Date(createdAt.getTime() + 60_000), null);
+    expect(store.getTaskState(id).prs[0]?.createdAt).toBeUndefined();
 
     expect(await sweepPastBudget(taskStore, store)).toEqual([]);
     expect(taskStore.getTask(id)?.status).toBe('inProgress');
@@ -651,6 +689,7 @@ describe('autoCompleteDeliveredTasks — settle path after a post-merge "finishe
       unresolvedThreads: [],
       totalComments: 0,
       checks: [],
+      createdAt: plus(createdAt, 30_000),
       mergedAt,
       lastFetchedAt: mergedAt,
     });

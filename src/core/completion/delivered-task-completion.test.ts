@@ -201,7 +201,12 @@ describe('selectDeliveredMergedPr', () => {
 
   describe('notBefore — the task creation bound (issue #3746)', () => {
     const TASK_CREATED = new Date('2026-11-14T13:56:12.000Z');
-    const mergedAt = (n: number, iso: string): TrackedPrRef => ({ ...agentPr(n), mergedAt: new Date(iso) });
+    /** A PR opened and merged at `iso` (opened-at only matters in the #3678 cases below). */
+    const mergedAt = (n: number, iso: string): TrackedPrRef => ({
+      ...agentPr(n),
+      openedAt: new Date(iso),
+      mergedAt: new Date(iso),
+    });
 
     it('never attributes a PR merged before the task existed', () => {
       // Prod: task 07eeed57 was completed over PR #855, merged five months earlier.
@@ -261,6 +266,49 @@ describe('selectDeliveredMergedPr', () => {
       expect(
         selectDeliveredMergedPr([mergedAt(3800, '2026-11-14T15:00:00.000Z')], { notBefore: 'not-a-date' }),
       ).toBeNull();
+    });
+
+    it('issue #3678: never attributes a PR opened before the task existed, even when it merged after', () => {
+      // A chain successor mentioned its predecessor's PR, which was waiting on
+      // auto-merge when the successor started.
+      const predecessorPr: TrackedPrRef = {
+        ...agentPr(3603),
+        openedAt: new Date('2026-11-14T13:00:00.000Z'),
+        mergedAt: new Date('2026-11-14T14:30:00.000Z'),
+      };
+      expect(selectDeliveredMergedPr([predecessorPr], { notBefore: TASK_CREATED })).toBeNull();
+    });
+
+    it('issue #3678: rejects a PR opened one millisecond before creation and accepts one opened exactly at it', () => {
+      const opened = (n: number, iso: string): TrackedPrRef => ({
+        ...agentPr(n),
+        openedAt: new Date(iso),
+        mergedAt: new Date('2026-11-14T15:00:00.000Z'),
+      });
+      expect(
+        selectDeliveredMergedPr([opened(1, '2026-11-14T13:56:11.999Z')], { notBefore: TASK_CREATED }),
+      ).toBeNull();
+      expect(
+        selectDeliveredMergedPr([opened(2, '2026-11-14T13:56:12.000Z')], { notBefore: TASK_CREATED })?.prNumber,
+      ).toBe(2);
+    });
+
+    it('issue #3678: fails closed when the opening time is unknown', () => {
+      const noOpenedAt: TrackedPrRef = { ...agentPr(3800), mergedAt: new Date('2026-11-14T15:00:00.000Z') };
+      expect(selectDeliveredMergedPr([noOpenedAt], { notBefore: TASK_CREATED })).toBeNull();
+    });
+
+    it('issue #3678: skips the predecessor\'s PR and returns the task\'s own PR listed after it', () => {
+      const predecessorPr: TrackedPrRef = {
+        ...agentPr(3603),
+        openedAt: new Date('2026-11-14T13:00:00.000Z'),
+        mergedAt: new Date('2026-11-14T14:30:00.000Z'),
+      };
+      expect(
+        selectDeliveredMergedPr([predecessorPr, mergedAt(3800, '2026-11-14T15:00:00.000Z')], {
+          notBefore: TASK_CREATED,
+        })?.prNumber,
+      ).toBe(3800);
     });
 
     it('without notBefore, keeps the pre-#3746 behaviour (merge time ignored)', () => {
