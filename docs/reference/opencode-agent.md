@@ -370,7 +370,7 @@ Operator-run checks: `scripts/opencode-containers-live.ts`.
 
 Worker containers are labelled `kookr.instance=<this install's id>` (the id lives in `<data dir>/instance-id`,
 created on first container launch and never regenerated), `kookr.task` and `kookr.launch`, and named `kookr-oc-*`.
-The server reconciles these containers every 60 s (adopt live ones, remove ended ones after retention, quarantine unknown ones); this command shows and prunes the same set.
+While container mode is configured (`KOOKR_OPENCODE_CONTAINERS` and `KOOKR_OPENCODE_CONTAINER_IMAGE` set), the server reconciles these containers every 60 s (adopt live ones, remove ended ones after retention, quarantine unknown ones); with the flag off nothing reconciles them, so use this command. It shows and prunes the same set.
 
 ```
 kookr containers ls [--json] [--dir PATH]
@@ -381,9 +381,15 @@ kookr containers prune --instance [--yes] [--force] [--dir PATH]
 120 s or its launch intent is open), `keep_terminal` / `stop_remove` (task finished; removed after 24 h),
 `quarantine_stop` / `quarantine_keep` / `remove_quarantined` (no such task: stopped, kept 24 h, then removed), or
 `hold` (the task store could not be read, so nothing is touched). `prune --instance` stops and removes every
-container and network of this instance; it is a dry run unless `--yes`, and refuses while any container or network belongs to a live task, is younger than 120 s, has an open launch intent, or the task store cannot be read, unless `--force`, which kills those workers. A container stopped by quarantine is not restarted if its task later reappears; `ls` then reports it as dead with a live task. Another Kookr instance's objects, and anything
+container and network of this instance; it is a dry run unless `--yes`, and refuses while any container or network belongs to a live task, is younger than 120 s, has an open launch intent, or the task store cannot be read, unless `--force`, which kills those workers. A container stopped by quarantine is not restarted if its task later reappears; `ls` then shows it as `adopt` with state `exited` (reason "task live but container is exited"): it is not running, so remove it with `prune` if the task needs a new worker. Another Kookr instance's objects, and anything
 not named `kookr-oc-*` with this instance's label, are never touched. Reconciler actions are appended to
-`<data dir>/container-reconcile.jsonl`.
+`<data dir>/container-reconcile.jsonl`. Stops and removals target the Docker id from the listing, so an object
+re-created under the same name in between is never touched.
+
+The command reads the task store itself, read-only, and chooses `tasks.sqlite` or `tasks.json` from its OWN
+`KOOKR_TASK_STORE`, exactly as the server would. Run it with the same `KOOKR_TASK_STORE` as the server: with a
+different value it can read a stale store left from an earlier mode, and a live task then looks unknown (`ls` shows
+`quarantine_stop`, and `prune` would not protect it).
 
 ## Pipeline playbook
 

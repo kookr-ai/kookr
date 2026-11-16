@@ -31,6 +31,21 @@ describe('DockerCliRunner', () => {
       await expect(r.removeNetwork(bad)).rejects.toThrow('unsafe');
     }
   });
+  test('stop/rm/network rm target the listed id when given, still checking the name (#3557)', async () => {
+    const calls: string[][] = [];
+    const r = new DockerCliRunner(async (a) => { calls.push(a); return ''; });
+    const id = 'a'.repeat(64);
+    await r.stopContainer('kookr-oc-1', 10, id);
+    await r.removeContainer('kookr-oc-1', id);
+    await r.removeNetwork('kookr-oc-net-1', id);
+    expect(calls).toEqual([['stop', '-t', '10', id], ['rm', id], ['network', 'rm', id]]);
+    await expect(r.removeContainer('postgres', id)).rejects.toThrow('not a kookr-oc- container');
+    for (const bad of ['--all', 'abc', 'A'.repeat(64), `${id};x`]) await expect(r.removeContainer('kookr-oc-1', bad)).rejects.toThrow('unsafe docker object id');
+  });
+  test('network removal is limited to kookr-oc- names (#3557)', async () => {
+    const r = new DockerCliRunner(async () => '');
+    await expect(r.removeNetwork('bridge')).rejects.toThrow('not a kookr-oc- network');
+  });
   test('stop passes the grace period as a separate argv element', async () => {
     const calls: string[][] = [];
     await new DockerCliRunner(async (a) => { calls.push(a); return ''; }).stopContainer('kookr-oc-1', 10);

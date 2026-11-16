@@ -93,6 +93,8 @@ describe('ContainerReconciler', () => {
     liveness.t1 = { state: 'terminal', endedAt: new Date(T0.getTime() - 25 * H) };
     await make().reconcile();
     expect(docker.calls).toEqual(['stop kookr-oc-aaaaaaaa-tok1', 'rm kookr-oc-aaaaaaaa-tok1']);
+    // Both calls target the id from the listing, not just the name (a same-name re-create is never hit, #3557).
+    expect(docker.ids).toEqual(['id', 'id']);
   });
 
   test('an unreadable task store makes the reconciler do nothing at all', async () => {
@@ -126,6 +128,7 @@ describe('ContainerReconciler', () => {
     await intents.close('tokentoken2');
     await make().reconcile();
     expect(docker.calls).toEqual(['net-rm kookr-oc-net-t2']);
+    expect(docker.ids).toEqual(['n2']);
   });
 
   test('networks are held when the task store is unreadable, when the task is live, and while young or undated', async () => {

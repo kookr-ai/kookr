@@ -70,6 +70,8 @@ describe('kookr containers', () => {
 
   test('prune --instance --yes --force removes this instance\'s containers and networks, and only those', async () => {
     expect(await run(['prune', '--instance', '--yes', '--force'])).toBe(0);
+    // Every stop/rm targets the listed id (the fixture's ids equal the names; the network's id is 'n').
+    expect(docker.ids).toEqual(['kookr-oc-live1-a', 'kookr-oc-live1-a', 'kookr-oc-gone-b', 'kookr-oc-gone-b', 'n']);
     expect(docker.calls).toContain('rm kookr-oc-live1-a');
     expect(docker.calls).toContain('rm kookr-oc-gone-b');
     expect(docker.calls).toContain('net-rm kookr-oc-net-gone');
