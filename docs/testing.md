@@ -166,3 +166,15 @@ This prints the Markdown to your terminal so you can see the per-layer breakdown
 By default it **warns** but does not fail the run. Set `KOOKR_GIT_GUARD_STRICT=1` to make it fail (via `process.exitCode`) so CI/pre-push block on a poisoner. The default is lenient because the guard was rolled out on a codebase that already had a pre-existing poisoner; once that is located and fixed, strict mode becomes the default.
 
 Cause: a git command in a test ran with a `cwd` that resolved into the real repo instead of an isolated temp dir. Worktrees share `.git/config`, so the write hit the whole repo. Fix the offending test to operate on a `mkdtemp` repo — pass `git -C <tmpdir> …` (or `cwd: tmpdir`) and set any identity there only, never in the ambient checkout.
+
+### A test passes alone but fails in the full run, under `src/core`, `src/shared`, `src/cli` or `scripts/lib`
+
+These directories run in the `shared` Vitest project (`vitest.config.mts`, issue #3811). A worker runs one file after another without restarting, which uses about 40% less CPU than a fresh worker per file. Before each file, `test/shared-worker-reset.setup.ts` resets the module registry (so `vi.mock` and module-level state start fresh), the timer globals and `Date`, `process.env` and the working directory. Anything else a file changes in the process stays for the next file in that worker: an event listener, a monkey-patched module export, a global the file assigns by hand.
+
+To reproduce, run the project shuffled with the seed from the failing run, or with a few seeds:
+
+```bash
+npx vitest run --project shared --sequence.shuffle.files --sequence.seed=11 src/core
+```
+
+Then fix the file that leaks, the one that ran before the failing file in the same worker, not the victim. One known trap: `vi.spyOn(globalThis, 'setTimeout')` under fake timers records the fake as the original, and Vitest's end-of-file `restoreAllMocks` puts the fake back after `useRealTimers()`. Swap the global by hand instead (see `src/core/with-timeout.test.ts`). As a last resort, move a file that cannot be fixed out of the shared project by excluding it in `vitest.config.mts`.
