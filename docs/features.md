@@ -451,6 +451,10 @@ background the task gave, and a box for a typed answer when the task accepts one
 - **She does not nag.** She speaks a question only when it arrives, never again on a reload, and in
   one browser tab only. With sound off or Do Not Disturb on she stays silent and the question waits
   in her message list as unheard. If it is answered while she is reading it, she stops.
+- **Open what it is about.** A question can carry up to two links (`kookr ask --link`), shown as
+  buttons such as "Open mockups" on the card and on Telegram, and the card has an **Open task** button
+  that selects the asking task. With hands-free talk on, "show me", "open it" or "show me the task"
+  does the same, and she says if the browser blocked the new tab.
 - **Minimised**, the bubble's badge counts the questions still waiting, with the findings.
 - **Needs** Telegram remote chat (that is what makes `kookr ask` available) and, for her voice, the
   speech service. With the avatar panel off nothing changes: the question is on Telegram only.
