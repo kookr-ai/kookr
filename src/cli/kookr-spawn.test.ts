@@ -2518,6 +2518,7 @@ describe('main', () => {
     it('stays silent at the root of a main checkout (.git is a directory)', async () => {
       await mkdir(join(tmpCwd, '.git'));
       const r = await dryRun([], tmpCwd);
+      expect(r.codes).toEqual([EXIT_OK]);
       expect(r.errors.filter((line) => warningRe.test(String(line)))).toEqual([]);
     });
 

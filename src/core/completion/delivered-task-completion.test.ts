@@ -246,7 +246,9 @@ describe('selectDeliveredMergedPr', () => {
     });
 
     it('fails closed when the merge time is unknown', () => {
-      expect(selectDeliveredMergedPr([agentPr(855)], { notBefore: TASK_CREATED })).toBeNull();
+      // Opened after the task was created, so only the unknown merge time can reject it.
+      const noMergedAt: TrackedPrRef = { ...agentPr(855), openedAt: new Date('2026-11-14T14:00:00.000Z') };
+      expect(selectDeliveredMergedPr([noMergedAt], { notBefore: TASK_CREATED })).toBeNull();
     });
 
     it('accepts an ISO-string creation time (persisted task records)', () => {

@@ -586,7 +586,9 @@ describe('autoCompleteDeliveredTasks over the GitHubStateStore attribution (issu
   test('a merged PR with no recorded merge time is not treated as delivery', async () => {
     const taskStore = new TaskStore();
     const id = makeRunningTask(taskStore);
-    const store = storeWithMergedPr(id, 855, undefined);
+    const createdAt = taskStore.getTask(id)!.createdAt;
+    // Opened after the task was created, so only the unknown merge time can reject it.
+    const store = storeWithMergedPr(id, 855, undefined, new Date(createdAt.getTime() + 60_000));
 
     expect(await sweepPastBudget(taskStore, store)).toEqual([]);
     expect(taskStore.getTask(id)?.status).toBe('inProgress');
