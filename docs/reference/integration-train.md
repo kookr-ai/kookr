@@ -84,8 +84,9 @@ copy pinned to it by a test) and behave as before when it is absent:
    linked issue the key follows the first `(#N)` in the commit subject
    (`train-fix-ref-<n>-<attempt>`), which a cherry-picked re-land keeps. A re-land
    is a new PR, which is why the count follows the issue. From the second
-   attempt on, the fix task is told how many earlier fixes were reverted and to
-   read their failing output first. The budget is used up only by a task that
+   attempt on, the fix task is told how many earlier fix tasks were started,
+   to check whether their pull requests were reverted, and to read their
+   failing output first. The budget is used up only by a task that
    was really spawned: if the spawn fails, the train notifies `fix-spawn-failed`
    and tries again the next time that PR fails. When a change fails after its
    third fix task, the train still reverts it but spawns nothing; it notifies
