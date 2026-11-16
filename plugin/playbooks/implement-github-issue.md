@@ -99,7 +99,7 @@ Implement GitHub issues end-to-end. In standard launch mode, handle the specifie
 
 `{{mergeAfterImplementation}}` controls whether the workflow stops at an implementation PR (`false`) or continues until each PR is safely merged (`true`).
 
-If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
+If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask. When the choice is one the operator should see — a visible UI change, or a reversible decision with real trade-offs — use the opinion request flow (`asking-the-operator` skill, "Unattended tasks"; `ui-mockup-variants` for UI): publish the material, link it on the issue with the `needs-operator-opinion` label, send one `kookr ask` without `--wait`, and carry on with the recommended option. Only a hard-to-undo choice (data migration, deletion, external side effect) stops there, with the request open.
 
 This playbook is delivery-pre-authorized. Once the issue is trusted and implementable, complete the delivery cycle end-to-end without pausing after each stage: implement, verify, commit, run the repo pre-push workflow, push, run the mandatory pre-`gh pr create` duplicate-guard (Phase 7: abort if the issue is already CLOSED or the head branch already has an open/recently-merged PR), create or update the PR, report the PR URL, and merge when `{{mergeAfterImplementation}}` allows it. If you show a diff or plan and receive approval, treat that as approval to finish the full cycle. Ask at most once only when the delivery policy is genuinely ambiguous or a required safety gate blocks automation.
 
@@ -400,6 +400,7 @@ If the trusted target is not an implementable unit after reading the issue body 
 
 - Use this for design discussions, umbrella/tracking issues whose sub-issues do the work, malformed issues with no recoverable acceptance criteria, or issues explicitly requesting alignment before code changes.
 - Do not use this for ordinary transient blockers such as red CI, claim contention, missing local dependencies, or network failures.
+- Do not use this for an issue that only needs a UI mockup or a choice between options when the change is reversible (UI, wording, defaults, a choice of approach). That is implementable: deliver it through the opinion request flow above. "Requesting alignment before code changes" means a hard-to-undo choice only.
 - Leave one concise audit comment, add `automation-blocked`, release the claim if one was acquired, write a permanent stalled verdict, and stop.
 
 ```bash

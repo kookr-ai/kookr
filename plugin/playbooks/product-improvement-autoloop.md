@@ -68,7 +68,7 @@ Spawn `subagent_type: "kookr-toolkit:user-test-simulator"` (persona/platform/goa
 ### Phase 2 — Auto-file (bounded), with routing
 File up to **{{maxFilePerCycle}}** new issues with the repo's labels. For each, set a **Kind** and route it:
 - **Auto-implementable** — `docs` or `code` fully groundable in the repo (e.g. an explainer assembled from existing modules, a factual asset-path guide). Eligible for Phase 3.
-- **needs-human** — anything that needs **real-host truth** (screenshots of an external app, a verified install flow, by-ear judgment), **media production** (video/motion), or **UI/design** work an issue-implementer can't produce from a doc task. Apply a `needs-human` label (create it if absent) and **exclude from Phase 3**. (The pilot learned this the hard way: a VoiceMeeter-routing guide or an onboarding video cannot be auto-implemented faithfully.)
+- **needs-human** — anything that needs **real-host truth** (screenshots of an external app, a verified install flow, by-ear judgment) or **media production** (video/motion). A **UI/design** change is *not* needs-human (issue #3920): it is implementable, and its task builds mockups, asks for the operator's opinion without waiting, and delivers the recommended variant (opinion request flow, `ui-mockup-variants` skill). Apply a `needs-human` label (create it if absent) and **exclude from Phase 3**. (The pilot learned this the hard way: a VoiceMeeter-routing guide or an onboarding video cannot be auto-implemented faithfully.)
 
 ### Phase 3 — Implement the auto-implementable ones
 Launch `parallel-issue-batch` for `{{repoFullName}}` with:
@@ -92,7 +92,7 @@ It implements each in its own worktree, opens one PR per issue that Closes it, o
 
 ## Anti-Patterns
 
-- **Never auto-implement a `needs-human` issue** (host-verification / media / UI). Filing it is fine; implementing it autonomously is the failure mode this playbook exists to avoid.
+- **Never auto-implement a `needs-human` issue** (host-verification / media). Filing it is fine; implementing it autonomously is the failure mode this playbook exists to avoid.
 - Never merge without an independent review verdict — removing the human gate does not remove the review gate.
 - Never let the chain run unbounded — `maxCycles` is required and must decrement; a cycle that can't decrement it must stop, not guess.
 - Don't duplicate issues `repository-idea-scout`, `product-onboarding-improvement-cycle`, or open issues already track.

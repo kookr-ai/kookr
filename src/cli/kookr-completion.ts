@@ -173,6 +173,11 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--json', '-h', '--help'],
   },
   {
+    name: 'opinion',
+    subcommands: ['sweep'],
+    flags: ['--repo', '--cwd', '--dry-run', '--json', '-h', '--help'],
+  },
+  {
     name: 'logs',
     flags: ['-n', '--lines', '--json', '--dir', '-h', '--help'],
   },
@@ -506,6 +511,8 @@ function renderBashCompletion(): string {
   const opsTimersFlags = opsFlags.split(' ').filter(flag => flag !== '--all-warnings').join(' ');
   const githubSubcommands = subcommandsFor('github');
   const githubFlags = flagsFor('github');
+  const opinionSubcommands = subcommandsFor('opinion');
+  const opinionFlags = flagsFor('opinion');
   const containersSubcommands = subcommandsFor('containers');
   const containersFlags = flagsFor('containers');
   const issueSubcommands = subcommandsFor('issue');
@@ -696,6 +703,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${githubSubcommands} ${githubFlags}" -- "\${cur}") )
       else
         COMPREPLY=( $(compgen -W "${githubFlags}" -- "\${cur}") )
+      fi
+      ;;
+    opinion)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${opinionSubcommands} ${opinionFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${opinionFlags}" -- "\${cur}") )
       fi
       ;;
     doctor)
@@ -903,6 +917,8 @@ function renderZshCompletion(): string {
   const opsTimersFlags = opsFlags.split(' ').filter(flag => flag !== '--all-warnings').join(' ');
   const githubSubcommands = subcommandsFor('github');
   const githubFlags = flagsFor('github');
+  const opinionSubcommands = subcommandsFor('opinion');
+  const opinionFlags = flagsFor('opinion');
   const containersSubcommands = subcommandsFor('containers');
   const containersFlags = flagsFor('containers');
   const issueSubcommands = subcommandsFor('issue');
@@ -1055,6 +1071,13 @@ _kookr()
         compadd -- ${githubSubcommands} ${githubFlags}
       else
         compadd -- ${githubFlags}
+      fi
+      ;;
+    opinion)
+      if (( CURRENT == 3 )); then
+        compadd -- ${opinionSubcommands} ${opinionFlags}
+      else
+        compadd -- ${opinionFlags}
       fi
       ;;
     doctor)

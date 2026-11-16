@@ -7,11 +7,16 @@ description: >
   by Lucy in the dashboard when it is open) and act on the answer. Use when you are blocked on a decision that is genuinely theirs to
   make, with 2-4 concrete options, and the operator is probably away from the
   terminal. Covers when to ask, how to write options, and how to read the
-  answer; also when NOT to ask.
+  answer; also when NOT to ask. In an unattended task, a UI mockup or a
+  reversible choice never blocks: publish the material, link it on the issue,
+  ask without waiting, and carry on with the recommended option (the opinion
+  request flow).
 keywords: >
   kookr ask, ask the operator, ask the user, operator decision, blocked on a
   decision, multiple choice question, Telegram question, need approval,
-  which option, unblock from phone, human in the loop, escalate a decision
+  which option, unblock from phone, human in the loop, escalate a decision,
+  opinion request, needs-operator-opinion, needs a mockup, needs a decision,
+  unattended task, ask without waiting, /opinion
 related: autonomous-watch-loop, automation-design
 ---
 
@@ -28,6 +33,11 @@ operator answers in whichever place they are; the first answer wins and you
 receive it the same way. Nothing changes in how you ask or read the answer.
 
 ## When to ask
+
+In an **unattended** task, needing a mockup or an opinion is not a reason to
+stop. Use the [opinion request flow](#unattended-tasks-ask-for-an-opinion-without-waiting)
+below: it asks without waiting and carries on. The rules in this section are
+for blocking questions in a session someone is watching.
 
 Ask only when **all** of these are true:
 
@@ -118,6 +128,93 @@ or `--wait`'s output, as authoritative; a typed message is a convenience.
 | 7 | Telegram is not configured here | The operator cannot be reached this way. Do not retry; pick the safest option or stop and report the blocker. |
 | 4 | Rejected (rate limit, unknown/finished task, delivery failed) | Read the message. Do not hammer the command; fall back as for 7. |
 | 2 / 3 / 8 | Usage error / no server / `--wait` window elapsed | Fix the command, or continue; for 8 check the ask later. |
+
+## Unattended tasks: ask for an opinion without waiting
+
+A task is **unattended** when nobody is at the terminal to answer: it was
+launched by a schedule or a parent task (`KOOKR_LAUNCH_PROVENANCE` is
+`schedule` or `parent`, or `KOOKR_PARENT_TASK_ID` is set), `KOOKR_UNATTENDED=1`
+is set, or its prompt says nobody is watching. There, a UI choice or a
+reversible decision never blocks the task. The operator answers later, from a
+phone, with a comment.
+
+1. **Prepare.** For a visible UI change, build the mockup variants with the
+   `ui-mockup-variants` skill, without asking first whether to build them. For
+   a decision, write the options (letters `A`, `B`, …), their trade-offs and a
+   recommendation.
+2. **Publish where a phone can open it.** A Claude artifact when the Artifact
+   tool is available in the session. Otherwise commit screenshots (PNG) to the
+   pull request branch and embed them in the comment. Never only a path or a
+   `localhost` URL on the host.
+3. **Link it on the issue** (and on the pull request once it exists) with one
+   comment. Its first line is the marker, with the recommended letter:
+
+   ```bash
+   gh label create needs-operator-opinion --repo "$REPO" --color FBCA04 \
+     --description "A task asked for the operator's opinion and carried on" 2>/dev/null || true
+   gh issue comment "$N" --repo "$REPO" --body-file - <<'MD'
+   <!-- kookr:opinion-request recommended=A -->
+   **Opinion wanted:** <the question, one sentence>
+
+   - **A (recommended):** <option>. <why it is recommended>
+   - **B:** <option>. <trade-off>
+
+   Material: <artifact link, or the embedded screenshots>. I am carrying on with **A**.
+   Task: <task name> (issue #<N>)
+
+   <full URL of the artifact or pull request, on its own line>
+   Reply with a comment that starts with `/opinion`: `/opinion ok` keeps A,
+   `/opinion B` picks B, `/opinion <what to change>` asks for a change.
+   MD
+   gh issue edit "$N" --repo "$REPO" --add-label needs-operator-opinion
+   ```
+
+   The `/opinion` prefix is required. Workers post on GitHub with the
+   operator's own account, so a reply cannot be told apart by its author.
+4. **Notify, do not wait.** Send one `kookr ask` **without** `--wait`, with
+   `--timeout 24h` (the maximum `kookr ask` accepts today), the options
+   (recommended first) and the link in `--context` too. Say in the context
+   that the durable way to answer is a `/opinion` comment on the link. An
+   answer tapped on Telegram reaches the task only while it is still running;
+   after it ends, Kookr tells the operator the answer was not delivered.
+
+   Until issue #3929 lands, the operator cannot open a link or the task from a
+   question shown in Lucy. So, as an exception to the "no paths or ids in the
+   question" rule above: **name the task** in the question (issue number and
+   a few words of its title), and end the question text with the **full URL
+   on its own line**. The issue comment carries the same full URL.
+
+   ```bash
+   kookr ask --no-other --timeout 24h \
+     --question "$(printf 'Issue #%s (%s): which layout should the panel use?\n%s' "$N" "<short title>" "$COMMENT_URL")" \
+     --context "Opinion request: $COMMENT_URL — I am carrying on with A. Answer any time with a /opinion comment there." \
+     --option "A: compact list (recommended)" --option "B: cards"
+   ```
+5. **Carry on with the recommended option** when the choice is reversible (UI,
+   wording, defaults, an approach you can change later): implement it and
+   deliver the pull request through the normal flow, with screenshots for a UI
+   change. When the choice is hard to undo (a data migration, deleting
+   something, an external side effect), deliver everything up to the choice
+   and stop there: write the marker as
+   `<!-- kookr:opinion-request recommended=A stopped -->`, say in the comment
+   that nothing past the choice was done, add `automation-blocked` as well
+   (issue selection skips it, so no other task re-picks the issue), and record
+   the blocker. Every `/opinion` reply to a stopped request, `/opinion ok`
+   included, starts the follow-up that carries out the chosen option.
+6. **If an answer arrives in your session** (`Operator answered ask …`), post
+   it on the issue as `/opinion <the answer> (answered on Telegram)` and keep
+   going. Do not change course yourself; the sweep below turns it into work.
+
+**How the answer comes back.** `kookr opinion sweep --repo <owner/name>` reads
+every item labelled `needs-operator-opinion`, open or closed. For each new
+`/opinion` reply after the request: `/opinion ok` (or the recommended letter
+alone) removes the label; any other reply, and every reply to a `stopped`
+request, starts one follow-up task that applies it. The sweep posts a `kookr:opinion-handled` marker for each reply it
+handled, so running it again does nothing. The `Deliver GitHub Issues`
+playbook runs the sweep at the start of every run.
+
+In this flow the one-question rules above still hold: one `kookr ask` per
+opinion request, and never a second ask for the same question.
 
 ## After the answer
 

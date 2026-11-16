@@ -142,7 +142,7 @@ This playbook is a parent/orchestrator. The parent selects and supervises
 single-issue work units. Child tasks implement one issue per PR; the documented
 multi-issue shape is future/legacy compatibility until atomic claim transfer exists.
 
-If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
+If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask. When the choice is one the operator should see — a visible UI change, or a reversible decision with real trade-offs — use the opinion request flow (`asking-the-operator` skill, "Unattended tasks"; `ui-mockup-variants` for UI): publish the material, link it on the issue with the `needs-operator-opinion` label, send one `kookr ask` without `--wait`, and carry on with the recommended option. Only a hard-to-undo choice (data migration, deletion, external side effect) stops there, with the request open.
 
 ## Required Skills
 
@@ -370,6 +370,14 @@ After `REPO_SLUG` is known, finish Phase 0's prior-run scan if it could not be c
 
 ## Phase 2: Gather Candidate Issues
 
+**Opinion sweep (issue #3920).** First, once per run, turn the operator's answers to earlier opinion requests into work:
+
+```bash
+kookr opinion sweep --repo "$REPO" || echo "opinion sweep failed or is unavailable; continuing"
+```
+
+It reads every issue and PR labelled `needs-operator-opinion` (open or closed), removes the label for an accepting `/opinion` reply, and starts one follow-up task for any other reply; a second run does nothing. Record its one-line summary in `$STATE_FILE`. It never blocks the batch: a failure is logged and selection continues.
+
 Resolve the authenticated GitHub user:
 
 ```bash
@@ -418,7 +426,7 @@ For each candidate, apply these filters before reading the issue body:
 
 1. Skip issues in the Phase 0 `completed_issues` or `blocked_issues` ledger. Record the exclusion and evidence in `$CANDIDATES_FILE`.
 2. If `allowOtherAuthors=false`, skip issues whose `author.login` differs from `$CURRENT_USER`.
-3. Skip labels indicating blocked, duplicate, invalid, wontfix, not planned, in progress, assigned to a team, awaiting external input, or needing human work (`needs-human` — e.g. media production, real-host verification, or UI/design an issue-implementer can't produce).
+3. Skip labels indicating blocked, duplicate, invalid, wontfix, not planned, in progress, assigned to a team, awaiting external input, or needing human work (`needs-human` — e.g. media production or real-host verification). Needing a mockup or a decision is **not** a reason to skip when the change is reversible (UI, wording, defaults, a choice of approach): keep the issue a candidate and its child delivers it through the opinion request flow. `needs-operator-opinion` alone is not a skip label (that task carried on); a task that stopped before a hard-to-undo choice also adds `automation-blocked`, which this rule skips until the operator answers.
 4. Skip issues already tied to an open implementation PR. Use both branch names and PR body/title checks:
 
    ```bash
@@ -764,7 +772,7 @@ Implementation target:
   fi
   ```
 - Monitor CI and fix failures. **CI-rerun bound — max 2 CI rerun attempts, then report and stop.** Re-run a failing check at most twice per PR; after the second failed rerun, **report the CI state** (failing check names and run links) and stop — **never loop** on reruns. Before spending a rerun, classify the failure: infra-red CI (budget/quota/runner outage — the run never executed the code) is non-blocking and should be classified non-blocking rather than rerun (see #1198), and does not consume one of the 2 attempts. (An unbounded rerun/merge loop once stranded a delivery task for ~3h — PR #1542 / task faf7902b.)
-- If you face a design choice the issues do not settle, pick the smallest implementation that satisfies them, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
+- If you face a design choice the issues do not settle, pick the smallest implementation that satisfies them, note the choice and alternatives in the PR description, and continue. Do not stop to ask. When the choice is one the operator should see — a visible UI change, or a reversible decision with real trade-offs — use the opinion request flow (`asking-the-operator` skill, "Unattended tasks"; `ui-mockup-variants` for UI): publish the material, link it on the issue with the `needs-operator-opinion` label, send one `kookr ask` without `--wait`, and carry on with the recommended option. Only a hard-to-undo choice (data migration, deletion, external side effect) stops there, with the request open.
 - Before an autonomous self-merge, run the `independent-merge-review` skill: spawn a **fresh-context** reviewer (blind to your implementation reasoning) that reviews the diff and posts a machine-readable verdict PR comment with an exact `review-head-sha`. Codex is the primary reviewer lane; if Codex is unavailable or rate-limited, the Claude fallback lane runs. **Repo-policy split (issue #3027) — pick one lane, do not mix them.** On `kookr-ai/kookr` (hard gate): never degrade to zero review; fix or explicitly rebut each confirmed correctness/safety finding before merging; round 1 is the one full review, and every re-review after a BLOCK is a short fix check on the diff since the blocked head, where a new non-critical finding on an unchanged line is a follow-up and, after two BLOCKs, only critical findings block; round 1 blocks on critical findings and small defects, and the small defects are fixed inside the PR. Nits stay in the verdict comment, never filed or fixed on request; only larger defects go into at most one issue per PR, with a checklist, filed through `kookr emission plan` and the logged dedupe (`independent-merge-review` §4a); `kookr merge` enforces this deterministically (it refuses to merge without a `pass` verdict bound to the current head; the `review-skipped-timeout` label is telemetry only); retry up to the durable default of 10 correction/review iterations, then record a concrete blocker; do not set `KOOKR_MERGE_REQUIRE_REVIEW=0` for an autonomous merge. On a repo whose `CLAUDE.md` / `AGENTS.md` documents that independent review is advisory (e.g. Lucy #3606): still post the verdict when the reviewer returns; timeout, missing, or BLOCK never become a task blocker or merge refusal; merge after local gates (`gh pr merge`; `KOOKR_MERGE_REQUIRE_REVIEW=0 gh pr merge` is authorized on that advisory autonomous merge if a global hook still denies the bare command). Classify: `kookr-ai/kookr` → hard; else `grep -qiE 'independent review is advisory' CLAUDE.md AGENTS.md` → advisory; else hard.
 - If mergeAfterImplementation is true, classify the head-SHA check runs before merging so a check that *ran and failed on the code* is never mistaken for one that *never executed*. In `kookr-ai/kookr` run `pnpm check-verification <PR> --repo "$REPO"` (exit 0 green/none, 10 never-executed, 20 executed-red, 30 pending; or `node scripts/check-verification.mjs`); in repos without the plugin apply the same rules from `gh pr checks` / `gh run view`. Then:
   - **`executed-red`** (a required check ran and failed on the code): **never merge.** Post the failing findings on the PR (`gh pr comment` with the failing check names + `gh run view` links) and record a real code blocker. When in doubt, treat a failure as real.

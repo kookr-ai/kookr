@@ -1089,6 +1089,29 @@ Exit behavior (consistent with `GITHUB_HELP_TEXT` and the exit constants in `src
 
 Related: the advisory `github.scanner-backoff` check in [`kookr doctor`](#kookr-doctor) probes the same endpoint when an API base is configured.
 
+## `kookr opinion`
+
+Act on the operator's answers to asynchronous opinion requests (issue #3920). An unattended task that needs a mockup or a reversible decision posts a request comment (marker `kookr:opinion-request`) on the issue or pull request, adds the `needs-operator-opinion` label, and carries on; the operator answers later with a comment whose first line starts with `/opinion`. The flow is described in the `asking-the-operator` skill ("Unattended tasks").
+
+```bash
+kookr opinion sweep --repo kookr-ai/kookr            # act on new replies
+kookr opinion sweep --repo kookr-ai/kookr --dry-run  # print what would be done
+```
+
+For every labelled item, open or closed, each new reply after the request is handled once:
+
+| Reply | Effect |
+| --- | --- |
+| `/opinion ok` (or `accept`, `lgtm`, …), or the recommended letter alone | Removes the `needs-operator-opinion` label. |
+| `/opinion <another option or a change>` | Starts one follow-up task (`kookr spawn`) that applies the reply. |
+| Any reply to a request marked `stopped` (the task stopped before a hard-to-undo choice) | Starts one follow-up task that carries out the chosen option. |
+
+After acting, the sweep posts a `kookr:opinion-handled` marker comment naming the reply, so a second run does nothing. If that marker cannot be posted, the next run sees the reply again; the follow-up's idempotency key (`opinion:<repo>#<n>:<reply id>`) replays the same task for 24 hours. The `Deliver GitHub Issues` playbook runs the sweep at the start of Phase 2.
+
+Options: `--repo <owner/name>` (required), `--cwd <path>` (working directory for follow-up tasks; default: cwd), `--dry-run`, `--json`.
+
+Exit codes: `0` swept (including nothing to do); `2` user error; `4` a `gh` or spawn call failed (the items that succeeded are still recorded).
+
 ## `kookr doctor`
 
 Run launch preflight checks covering runtime tools, the `runtime.persistence` data-dir writability check (`access(KOOKR_DIR or ~/.kookr, W_OK)`, parity with the server's critical `/api/ready` persistence probe), the advisory `runtime.settings-mode` check (POSIX owner-only permissions on `settings.json`, which holds `automationKillSwitch`; warns when `mode & 0o077 != 0`), the advisory `runtime.data-dir-mode` check (POSIX owner-only 0700 on the port-derived data directory; warns when group/other can enter it), `gh` auth, the `kb` launch dependency, agent binary resolution, the advisory `agent.grok-auth` check (launch-scoped Grok `auth.json` when `grok` is on `PATH` or `KOOKR_GROK_BIN` is set; required fail when `KOOKR_GROK_BIN` is set), the advisory `github.scanner-backoff` check (live `GET /api/github/status` `stateFetchBackoffMs` when `KOOKR_API_BASE_URL` / `KOOKR_PORT` points at a server), the advisory `plugins.fleet` check (live `GET /api/plugins/fleet`: whether plugin loadouts are on and why, fleet set size, named-but-not-installed count, last fleet check), the advisory `ops.http-latency` check (timed `GET /api/ready` at 500ms and `GET /api/health` at 2s when an API base is configured — timeout / over-budget / 5xx warn; health is skipped if ready already timed out), the advisory `ops.systemd-unit` check (Linux only; `systemctl --user is-active kookr.service`, warns when the shipped user unit is not active so an unattended crash is not left unsupervised), the advisory `ops.resource-watchdog` check (`KOOKR_RESOURCE_WATCHDOG` / live `resourceWatchdog.enabled`), the advisory `ops.hung-reclaim` check (live `GET /api/health` `capacity.byClass.hungSuspect` + `hungSuspectTtlReclaim` when residual is open_pr_failsafe-dominated), the advisory `ops.schedules-paused-by-failure` check (live `GET /api/health` `schedules.schedulesPausedByFailure` when any schedule is consecutive-failure paused), the advisory `ops.dead-man-self-heal` check (live `GET /api/health` `schedules.deadManSelfHeal` when the current episode has escalated), the advisory `hooks.ingestion-lag` check (live `GET /api/diagnostics/hook-ingestion` `notableLagCount` when an API base is configured), the advisory `hooks.missing-write-timestamps` check (live `GET /api/diagnostics/hook-ingestion` `missingWriteTimestampCount / totalArrivals` ratio when an API base is configured — warns when the ratio exceeds threshold with enough sample, since ingestion-lag numbers are unreliable for arrivals lacking a write timestamp), the advisory `ops.host-stale-dtach` check (live `GET /api/health` `staleProcesses.dtach` vs `sessionReaper` orphan gauges when an API base is configured — code `host_stale_dtach_mismatch`), the advisory `hooks.replay-checkpoints` check (live `GET /api/health` `hookReplayCheckpoints` sessionCount/fileBytes soft bounds when an API base is configured — code `hook_replay_checkpoints_oversize`), the advisory `ops.prod-smoke-tick` check (durable `{dataDir}/prod-smoke-tick-alert.json` consecutive-failure streak), and the advisory `ops.maintenance-prune` check (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` / optional timer-health `lastFiredAt`). Default output is a human-readable table of each check (status, summary, recommended actions). Pass `--json` for the machine-readable report used by scripts and CI. Pass `--strict` to exit non-zero when any advisory WARN is present.
@@ -2311,6 +2334,7 @@ kookr ops timers     # lifecycle-timer lastFiredAt + overdue (GET /api/diagnosti
 kookr ops timers --json  # same timer table as one JSON envelope (includes overdue list)
 kookr github status  # GitHub scanner liveness, backoff, and tracked-ref count (GET /api/github/status)
 kookr github status --json  # same scanner status as one JSON envelope
+kookr opinion sweep --repo OWNER/NAME [--dry-run]  # turn /opinion replies on needs-operator-opinion items into follow-up tasks
 ```
 
 ## `kookr containers`
