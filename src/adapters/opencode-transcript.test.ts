@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,7 @@ import {
   readOpenCodeTaskTranscript,
 } from './opencode-transcript.js';
 import { TRANSCRIPT_MAX_MESSAGE_BYTES } from '../core/transcript-normalizer.js';
+import type { TranscriptMessage } from '../shared/contracts/transcript.js';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'oc-transcript-')); });
@@ -95,9 +96,10 @@ describe('readOpenCodeDbTranscript', () => {
     db.close();
     for (const sid of ['ses_a', undefined]) {
       const out = await readOpenCodeDbTranscript(p, sid);
-      expect(out).toHaveLength(1000);
-      expect(out?.[0]).toMatchObject({ kind: 'text', text: 't6' });
-      expect(out?.[999]).toMatchObject({ kind: 'text', text: 't1005' });
+      expect(out).toHaveLength(1001);
+      expect(out?.[0]).toMatchObject({ kind: 'truncation_marker' }); // older rows were left out
+      expect(out?.[1]).toMatchObject({ kind: 'text', text: 't6' });
+      expect(out?.[1000]).toMatchObject({ kind: 'text', text: 't1005' });
     }
   });
 
@@ -131,7 +133,8 @@ describe('readOpenCodeDbTranscript', () => {
       type: 'tool', tool: 'read', callID: 'c2',
       state: { status: 'error', input: { filePath: '/x' }, error: 'File not found: /x', time: { start: 1, end: 2 } },
     });
-    part('p5', 'm1', 'ses_a', 1004, { type: 'tool', tool: 'edit', callID: 'c3', state: { status: 'running', input: { filePath: '/y' }, time: { start: 1 } } });
+    // A running tool with an output string still gets no result: only completed/error carry one.
+    part('p5', 'm1', 'ses_a', 1004, { type: 'tool', tool: 'edit', callID: 'c3', state: { status: 'running', input: { filePath: '/y' }, output: 'partial', time: { start: 1 } } });
     part('p6', 'm1', 'ses_a', 1005, { type: 'tool', tool: 'grep', state: { status: 'pending', input: {}, raw: '' } });
     part('p7', 'm1', 'ses_a', 1006, { type: 'tool', tool: 'bash', state: { status: 'completed', input: 'not-an-object', output: 42 } }); // odd shapes
     part('p8', 'm1', 'ses_a', 1007, { type: 'tool', tool: ['x'], state: 'garbage' }); // malformed state: call only, unknown name
@@ -158,15 +161,16 @@ describe('readOpenCodeDbTranscript', () => {
     msg('m1', 'ses_a', 1, 'assistant');
     part('p1', 'm1', 'ses_a', 1, {
       type: 'tool', tool: 'write',
-      state: { status: 'completed', input: { content: 'é'.repeat(OPENCODE_TOOL_TEXT_MAX_BYTES) }, output: 'o'.repeat(OPENCODE_TOOL_TEXT_MAX_BYTES * 3) },
+      // Prefix `{"cc":"` is 7 bytes (odd), so byte 4000 falls inside a 2-byte é: the cut must back off to 3999.
+      state: { status: 'completed', input: { cc: 'é'.repeat(OPENCODE_TOOL_TEXT_MAX_BYTES) }, output: 'o'.repeat(OPENCODE_TOOL_TEXT_MAX_BYTES * 3) },
     });
     part('p2', 'm1', 'ses_a', 2, { type: 'tool', tool: 'bash', state: { status: 'completed', input: {}, output: 'k'.repeat(OPENCODE_TOOL_TEXT_MAX_BYTES) } });
     db.close();
     const out = await readOpenCodeDbTranscript(p);
     expect(out?.map((m) => m.kind)).toEqual(['tool_call', 'tool_result', 'tool_call', 'tool_result']);
     const call = out?.[0];
-    expect(call?.kind === 'tool_call' && Buffer.byteLength(call.input ?? '', 'utf8')).toBeLessThanOrEqual(OPENCODE_TOOL_TEXT_MAX_BYTES);
-    expect(call?.kind === 'tool_call' && call.input?.startsWith('{"content":"éé')).toBe(true);
+    expect(call?.kind === 'tool_call' && call.input).toBe(`{"cc":"${'é'.repeat((OPENCODE_TOOL_TEXT_MAX_BYTES - 8) / 2)}`);
+    expect(call?.kind === 'tool_call' && Buffer.byteLength(call.input ?? '', 'utf8')).toBe(OPENCODE_TOOL_TEXT_MAX_BYTES - 1);
     expect(out?.[1]).toEqual({ kind: 'tool_result', name: 'write', text: 'o'.repeat(OPENCODE_TOOL_TEXT_MAX_BYTES), truncated: true, timestamp: new Date(1).toISOString() });
     expect(out?.[3]).toEqual({ kind: 'tool_result', name: 'bash', text: 'k'.repeat(OPENCODE_TOOL_TEXT_MAX_BYTES), timestamp: new Date(1).toISOString() }); // at the cap: not cut
   });
@@ -188,7 +192,23 @@ describe('readOpenCodeDbTranscript', () => {
       }
     })();
     db.close();
-    const out = (await readOpenCodeDbTranscript(p))!;
+    // Count the per-message part reads, to prove the read stops rather than reading all and trimming afterwards.
+    let partReads = 0;
+    const realPrepare = Database.prototype.prepare;
+    const spy = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (this: Database.Database, sql: string) {
+      const stmt = realPrepare.call(this, sql);
+      if (!sql.includes('p.message_id = @mid')) return stmt;
+      const all = stmt.all.bind(stmt);
+      return Object.assign(Object.create(stmt), { all: (...args: unknown[]) => { partReads++; return all(...(args as [])); } });
+    });
+    let out: TranscriptMessage[];
+    try {
+      out = (await readOpenCodeDbTranscript(p))!;
+    } finally {
+      spy.mockRestore();
+    }
+    expect(partReads).toBeGreaterThan(100);
+    expect(partReads).toBeLessThan(400); // ~2.5 MB / ~8 KB per message, far from all 900
     expect(out[0]).toMatchObject({ kind: 'truncation_marker' });
     expect(out.filter((m) => m.kind === 'truncation_marker')).toHaveLength(1);
     expect(out.reduce((s, m) => s + JSON.stringify(m).length, 0)).toBeLessThanOrEqual(OPENCODE_TRANSCRIPT_READ_MAX_BYTES + 200);

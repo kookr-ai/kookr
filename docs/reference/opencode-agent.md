@@ -290,9 +290,10 @@ and assistant text and, in the order they happened, each tool call
 (`tool_call`, with its input as JSON) and, once the tool has finished, its
 output or error (`tool_result`). Tool inputs and outputs are cut to 4 KB each
 (a cut output is marked `truncated`), text messages to 20 KB, and secrets are
-redacted as for the other providers. The read goes newest message first and
-stops after about 2.5 MB, so a large DB is never loaded whole; the route then
-keeps the newest 2 MB. `kookr peek` itself still prints only the last
+redacted as for the other providers. The read considers at most the newest
+1000 messages and goes newest message first, stopping once about 2.5 MB of
+transcript is built; the route then keeps the newest 2 MB. When older messages
+are left out, the transcript starts with a truncation marker. `kookr peek` itself still prints only the last
 assistant text, as for every provider. If the DB is missing, swept, locked or
 of an unknown schema the route falls back to its previous behaviour (hook
 ledger, then `unsupported_provider`).

@@ -22,7 +22,8 @@ import { openCodeTaskDataHome, openCodeTaskDir } from './opencode-task-data.js';
 
 /**
  * Row bound: at most the newest MAX_MESSAGE_ROWS user/assistant message rows are considered (picked in SQL, so
- * a large DB is never read whole; reading it all used to block the event loop for about a second).
+ * a large DB is never read whole; reading it all used to block the event loop for about a second). When older
+ * rows exist beyond it, the transcript starts with a truncation marker.
  */
 const MAX_MESSAGE_ROWS = 1000;
 
@@ -58,10 +59,16 @@ interface PartRow {
   terror: unknown;
 }
 
-/** Cut `text` to at most `maxBytes` UTF-8 bytes. SQL already cut it to `maxBytes + 1` characters. */
+/**
+ * Cut `text` to at most `maxBytes` UTF-8 bytes, at a character boundary (cutting inside a multi-byte character
+ * would decode to a 3-byte U+FFFD and overshoot the cap). SQL already cut it to `maxBytes + 1` characters.
+ */
 function clipToBytes(text: string, maxBytes: number): { text: string; cut: boolean } {
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return { text, cut: false };
-  return { text: Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8'), cut: true };
+  const buf = Buffer.from(text, 'utf8');
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--; // buf[end] is a continuation byte: back off to its lead byte
+  return { text: buf.subarray(0, end).toString('utf8'), cut: true };
 }
 
 /**
@@ -129,7 +136,10 @@ export async function readOpenCodeDbTranscript(dbPath: string, sessionId?: strin
           ORDER BY ${mTime ? 'm.time_created DESC,' : ''} m.id DESC
           LIMIT @limit`,
       )
-      .all({ limit: MAX_MESSAGE_ROWS, ...(filterSession ? { sid: sessionId } : {}) }) as MessageRow[];
+      .all({ limit: MAX_MESSAGE_ROWS + 1, ...(filterSession ? { sid: sessionId } : {}) }) as MessageRow[];
+    // One row past the bound tells whether older messages exist; it is dropped, not read.
+    const moreRows = messageRows.length > MAX_MESSAGE_ROWS;
+    if (moreRows) messageRows.length = MAX_MESSAGE_ROWS;
     // One message's text and tool parts, through opencode's (message_id, id) index. Every JSON call sits behind
     // json_valid (the WHERE CASE), so a corrupt part is skipped instead of failing the read; each string is cut
     // in SQL one character past its byte cap, so a huge part never reaches JS whole.
@@ -171,7 +181,11 @@ export async function readOpenCodeDbTranscript(dbPath: string, sessionId?: strin
     const messages = newestFirst.reverse().flat();
     if (messages.length === 0) return undefined;
     // Past the budget: keep the newest messages that fit and mark the cut (the newest one always survives).
-    return overBudget ? capMessagesKeepingTail(messages, OPENCODE_TRANSCRIPT_READ_MAX_BYTES) : messages;
+    if (overBudget) return capMessagesKeepingTail(messages, OPENCODE_TRANSCRIPT_READ_MAX_BYTES);
+    if (moreRows) {
+      return [{ kind: 'truncation_marker', note: `Earlier messages truncated (showing the most recent ${MAX_MESSAGE_ROWS}).` }, ...messages];
+    }
+    return messages;
   } catch {
     return undefined;
   } finally {
