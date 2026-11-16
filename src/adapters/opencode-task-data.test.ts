@@ -17,6 +17,8 @@ import {
   removeTaskDirOwnedByLaunch,
   resolveOpenCodeDataRoot,
   sweepOpenCodeTaskData,
+  waitForTaskDirUnlocked,
+  withTaskDirLock,
   writeGateBase,
 } from './opencode-task-data.js';
 import type { TaskStatus } from '../core/task-status.js';
@@ -199,6 +201,71 @@ describe('sweepOpenCodeTaskData', () => {
     expect(res.removed).toEqual([{ taskId: 'a', reason: 'size-cap' }]);
     expect([a, b, c].map((d) => existsSync(d))).toEqual([false, true, true]);
     expect(res.remainingBytes).toBeLessThanOrEqual(900);
+  });
+
+  test('size cap: a dir whose removal is skipped (task became active) still counts, so the next one is evicted', async () => {
+    const a = taskDir('a', 400, 3 * day);
+    const b = taskDir('b', 400, 2 * day);
+    const c = taskDir('c', 400, 1 * day);
+    const res = await sweepOpenCodeTaskData(base(
+      { a: 'terminated', b: 'terminated', c: 'terminated' },
+      { maxBytes: 900, isActive: (id: string) => id === 'a' },
+    ));
+    expect(res.removed).toEqual([{ taskId: 'b', reason: 'size-cap' }]);
+    expect([a, b, c].map((d) => existsSync(d))).toEqual([true, false, true]);
+    expect(res.remainingBytes).toBeGreaterThanOrEqual(800);
+    expect(res.remainingBytes).toBeLessThanOrEqual(900);
+  });
+
+  test('a dir whose task-done removal is skipped still counts towards the size cap', async () => {
+    const done = taskDir('done', 400, 2 * day);
+    const old = taskDir('old', 400, 3 * day);
+    const res = await sweepOpenCodeTaskData(base(
+      { done: 'completed', old: 'terminated' },
+      { maxBytes: 500, isActive: (id: string) => id === 'done' },
+    ));
+    expect(res.removed).toEqual([{ taskId: 'old', reason: 'size-cap' }]);
+    expect([done, old].map((d) => existsSync(d))).toEqual([true, false]);
+    expect(res.remainingBytes).toBeGreaterThanOrEqual(400);
+  });
+
+  test('the active check and the removal wait for the task dir lock', async () => {
+    const d = taskDir('locked');
+    let checks = 0;
+    let unlock!: () => void;
+    const held = withTaskDirLock(d, () => new Promise<void>((resolve) => { unlock = resolve; }));
+    const sweep = sweepOpenCodeTaskData(base({}, { isActive: () => { checks++; return false; } }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(checks).toBe(0);
+    expect(existsSync(d)).toBe(true);
+    unlock();
+    await held;
+    expect((await sweep).removed).toEqual([{ taskId: 'locked', reason: 'task-gone' }]);
+    expect(checks).toBe(1);
+  });
+
+  test('a launch waiting on the dir resumes only after an in-flight removal has finished', async () => {
+    const d = taskDir('inflight');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inCheck = new Promise<void>((resolve) => { entered = resolve; });
+    const sweep = sweepOpenCodeTaskData(base({}, { isActive: async () => { entered(); await gate; return false; } }));
+    await inCheck;
+    let dirSeenByWaiter: boolean | undefined;
+    const waiter = waitForTaskDirUnlocked(d).then(() => { dirSeenByWaiter = existsSync(d); });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(dirSeenByWaiter).toBeUndefined();
+    release();
+    await Promise.all([sweep, waiter]);
+    expect(dirSeenByWaiter).toBe(false);
+    await waitForTaskDirUnlocked(d); // nothing in flight: resolves at once
+  });
+
+  test('withTaskDirLock releases the lock when its holder throws', async () => {
+    const d = join(root, 'throws');
+    await expect(withTaskDirLock(d, async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    expect(await withTaskDirLock(d, async () => 'next')).toBe('next');
   });
 
   test('ignores unsafe names, files and a missing root', async () => {

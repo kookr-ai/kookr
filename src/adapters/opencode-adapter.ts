@@ -91,6 +91,7 @@ import {
   removeTaskDirOwnedByLaunch,
   resolveOpenCodeDataRoot,
   sweepOpenCodeTaskData,
+  waitForTaskDirUnlocked,
   touchTaskDir,
 } from './opencode-task-data.js';
 import { readTaskDirUsage, recordTaskUsage, usageBeforeFreshLaunch, writeUsageBaseline } from './opencode-task-usage.js';
@@ -218,6 +219,8 @@ export class OpenCodeSessionUnreadableError extends Error {
 
 /** Minimum spacing between two hook-driven refreshes of a session's task dir last-use time. */
 const SESSION_USE_TOUCH_INTERVAL_MS = 5 * 60_000;
+/** How many stopped session names are remembered to ignore their late hook events (oldest forgotten first). */
+const STOPPED_SESSION_MEMORY = 1024;
 
 export class OpenCodeAdapter implements AgentAdapter {
   readonly agentType = 'opencode';
@@ -236,6 +239,11 @@ export class OpenCodeAdapter implements AgentAdapter {
   private launchTokens = new Map<string, string>();
   /** tmuxName -> when a hook event last refreshed its task dir's last-use time. */
   private lastUseTouch = new Map<string, number>();
+  /**
+   * Sessions this adapter stopped. A hook event that arrives after the stop must not re-register the session: an entry in
+   * `tmuxToTaskId` exempts its task from every sweep for the life of the process, and `dataHomes`/`lastUseTouch` would leak.
+   */
+  private stoppedSessions = new Set<string>();
   private dataRoot: string;
   private dataMaxAgeMs: number;
   private dataMaxBytes: number;
@@ -349,7 +357,10 @@ export class OpenCodeAdapter implements AgentAdapter {
     const policy = resolveOpenCodeLaunchMode({ persisted: this.taskStore.getTask(taskId)?.metadata?.opencodeLaunchMode });
     if (!policy.ok) throw new Error(policy.message);
     const tmuxName = opts?.tmuxName ?? `kookr-${randomUUID().slice(0, 8)}`;
+    // Registered before anything else, so a sweep removal that has not yet made its active check skips this task.
     this.tmuxToTaskId.set(tmuxName, taskId);
+    // A session name can be reused (Ralph iterations, explicit names): this launch is live again.
+    this.stoppedSessions.delete(tmuxName);
 
     opts?.onPhase?.('session-create');
     // Resume only when the task's persistent opencode DB still holds a session; otherwise warn and
@@ -357,6 +368,10 @@ export class OpenCodeAdapter implements AgentAdapter {
     this.launchTokens.set(tmuxName, randomUUID());
     let opencodeSessionId: string | undefined;
     try {
+      // A sweep removal already past its active check is waited for: the launch then sees the dir gone (and launches
+      // fresh) instead of reading or re-creating it while `rm` deletes it. Fresh launches too: they read the gate base
+      // and usage, then re-create and re-mark the dir.
+      await waitForTaskDirUnlocked(openCodeTaskDir(this.dataRoot, taskId));
       throwIfLaunchAborted(opts?.signal);
       opencodeSessionId = resume?.sessionId ? await this.findResumableSession(taskId, resume) : undefined;
     } catch (err) {
@@ -686,6 +701,14 @@ export class OpenCodeAdapter implements AgentAdapter {
     });
   }
 
+  private rememberStopped(tmuxName: string): void {
+    this.stoppedSessions.delete(tmuxName);
+    this.stoppedSessions.add(tmuxName);
+    if (this.stoppedSessions.size > STOPPED_SESSION_MEMORY) {
+      this.stoppedSessions.delete(this.stoppedSessions.values().next().value as string);
+    }
+  }
+
   private forgetSession(tmuxName: string): void {
     this.initialPromptSubmitResolvers.delete(tmuxName);
     this.earlyParentStarts.delete(tmuxName);
@@ -737,6 +760,9 @@ export class OpenCodeAdapter implements AgentAdapter {
     this.initialPromptSubmitResolvers.get(tmuxName)?.();
     await this.adoptSession(tmuxName);
     await this.backend.killSession(tmuxName);
+    // From here no hook event or in-flight `markSessionUsed` may re-register the session (set before the maps are
+    // cleared below; this stop's own adopt above already ran).
+    this.rememberStopped(tmuxName);
     // After the kill (opencode has flushed its DB) and BEFORE the session dir is deleted.
     await this.recordSessionTokenUsage(tmuxName);
     await this.recordOpenCodeSessionId(tmuxName);
@@ -761,13 +787,16 @@ export class OpenCodeAdapter implements AgentAdapter {
    * ownership marker), so its stop records usage and the session id and touches the dir like any other stop.
    */
   private async adoptSession(tmuxName: string): Promise<void> {
+    if (this.stoppedSessions.has(tmuxName)) return;
     const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;
     if (!taskId) return;
     this.tmuxToTaskId.set(tmuxName, taskId);
     if (this.dataHomes.has(tmuxName)) return;
     try {
       const taskDir = openCodeTaskDir(this.dataRoot, taskId);
-      if (await isMarkedTaskDir(taskDir, taskId)) this.dataHomes.set(tmuxName, openCodeTaskDataHome(taskDir));
+      const marked = await isMarkedTaskDir(taskDir, taskId);
+      // Re-checked after the await: a stop that ran meanwhile has already cleared `dataHomes`.
+      if (marked && !this.stoppedSessions.has(tmuxName)) this.dataHomes.set(tmuxName, openCodeTaskDataHome(taskDir));
     } catch {
       /* an id unsafe as a dir name has no data dir to adopt */
     }
@@ -857,8 +886,11 @@ export class OpenCodeAdapter implements AgentAdapter {
     if (!event) return { parseStatus: 'dropped', ...diag, parentage: 'unknown' };
 
     const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;
-    if (taskId && !this.tmuxToTaskId.has(tmuxName)) this.tmuxToTaskId.set(tmuxName, taskId);
-    if (taskId) void this.markSessionUsed(tmuxName);
+    // A late event of a stopped session is still dispatched, but must not re-register the session (see stoppedSessions).
+    if (taskId && !this.stoppedSessions.has(tmuxName)) {
+      if (!this.tmuxToTaskId.has(tmuxName)) this.tmuxToTaskId.set(tmuxName, taskId);
+      void this.markSessionUsed(tmuxName);
+    }
     const rawSessionId = 'sessionId' in event ? event.sessionId : header.rawSessionId;
     const identity = this.getOrHydrateIdentity(tmuxName, taskId);
     const parentage = this.classifyAndRecord(tmuxName, taskId, event, header, identity, rawSessionId, observedAt);
@@ -891,6 +923,7 @@ export class OpenCodeAdapter implements AgentAdapter {
    * data at the next sweep (#3527). Best-effort, never throws.
    */
   private async markSessionUsed(tmuxName: string): Promise<void> {
+    if (this.stoppedSessions.has(tmuxName)) return;
     const now = Date.now();
     if (now - (this.lastUseTouch.get(tmuxName) ?? 0) < SESSION_USE_TOUCH_INTERVAL_MS) return;
     this.lastUseTouch.set(tmuxName, now);
