@@ -76,7 +76,9 @@ function resolveNbCliEntry() {
  * 0.8.0 expands it in NB_DIR (its `expandHomeDir`): only `~` and `~/…` (and
  * `~\…` on Windows); `~user/…` and everything else is returned as it is. An
  * NB_DIR set where no shell expands it (settings.json, systemd, cron) reaches
- * the process with the `~` still in it.
+ * the process with the `~` still in it. plugin/hooks/nb-retro.mjs has a copy of
+ * this function. Keep the two in step by hand: the plugin ships without the
+ * repository, so neither can import the other.
  */
 function expandHomeDir(value) {
   if (value === '~') return homedir();

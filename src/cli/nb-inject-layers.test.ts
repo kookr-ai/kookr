@@ -357,6 +357,8 @@ describe('nb-inject layered index — files and shelves nb reports as unusable (
   test('a store whose only files are skipped is not silent', () => {
     const r = inject(withProblems([], [{ shelf: 'locked', code: 'EACCES' }], []), { KOOKR_REPO_SLUG: 'mine' });
     expect(r.out).toContain('WARNING: 1 file in the store could not be used and is missing from this index: locked.md (EACCES).');
+    // The same header the flat view prints for an empty count, not "0 of 0" (#3893).
+    expect(r.out.split('\n')).toContain('agent-notebook notebooks — 0 in /store');
   });
 
   test('the real nb: an invalid file name and a conflicted shelf both reach the index', () => {
@@ -434,20 +436,33 @@ describe('nb-inject flat index — files and shelves nb reports as unusable (iss
   test('a store whose only files are skipped is not silent in the flat view either', () => {
     const r = inject(withProblems([], [{ shelf: 'locked', code: 'EACCES' }], []), {}, { flatOut: '' });
     expect(r.code).toBe(0);
-    expect(r.out).toContain('agent-notebook notebooks — 0 in /store');
+    expect(r.out.split('\n')).toContain('agent-notebook notebooks — 0 in /store');
     expect(r.out).toContain('WARNING: 1 file in the store could not be used and is missing from this index: locked.md (EACCES).');
   });
 
-  test('the warnings count against the 8 KB budget', () => {
+  test('the warnings and the instructions above the index count against the 8 KB budget', () => {
     const many = Array.from({ length: 60 }, (_, i) => `  shelf-${String(i).padStart(3, '0')}  1  ${'é'.repeat(70)}`);
     const big = `agent-notebook notebooks — 60 in /store\n${many.join('\n')}\n`;
     const conflicts = Array.from({ length: 5 }, (_, i) => ({ shelf: `c${i}${'x'.repeat(55)}`, marker: '=======' }));
     const r = inject(withProblems([], [], conflicts), {}, { flatOut: big });
     expect(r.out).toContain('WARNING: 5 shelves hold git merge-conflict markers');
-    const block = r.out.slice(r.out.indexOf('agent-notebook notebooks'));
-    expect(Buffer.byteLength(block)).toBeLessThanOrEqual(8 * 1024 + 1);
-    expect(block).toMatch(/… \d+ more shelves not shown/);
+    expect(r.out).toContain('Open the shelves that fit');
+    expect(Buffer.byteLength(r.out)).toBeLessThanOrEqual(8 * 1024); // all of stdout (#3596)
+    expect(r.out).toMatch(/… \d+ more shelves not shown/);
   });
+
+  test('a slow `--json` call is cut off after 2 s; the flat index is still printed, with no warning', () => {
+    // The JSON (which names a skipped file) arrives after 3 s: past the 2 s WARN_TIMEOUT_MS,
+    // inside the 4 s timeout of the main call. Had the call waited for it, the WARNING would show.
+    writeFileSync(join(work, 'slow.json'), problems);
+    const slowJson =
+      `#!/bin/sh\nif [ "$*" = "list --limit 1000" ]; then printf '%s' '${flat}'; exit 0; fi\n` +
+      `sleep 3; cat '${join(work, 'slow.json')}'\n`;
+    const r = inject([], {}, { script: slowJson });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('  patcher  1  y');
+    expect(r.out).not.toContain('WARNING'); // best-effort: a slow extra call is dropped, not reported
+  }, 20_000);
 
   test('the real nb: an invalid file name and a conflicted shelf reach the flat index', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-nb-flat-problems-'));
@@ -494,10 +509,11 @@ describe('nb-inject layered index — the 60-row / 8 KB cap', () => {
     expect(r.out).toContain('11 more shelves not shown');
   });
 
-  test('the whole block stays within 8 KB (bytes) while every project row is kept whole', () => {
+  test('the whole output, instructions included, stays within 8 KB (bytes) while every project row is kept whole', () => {
     const wide = 'é'.repeat(80);
     const r = inject([...project(10, wide), ...domain(100, wide)], { KOOKR_REPO_SLUG: 'mine' });
-    expect(Buffer.byteLength(index(r.out))).toBeLessThanOrEqual(8 * 1024);
+    expect(r.out).toContain('Open the shelves that fit');
+    expect(Buffer.byteLength(r.out)).toBeLessThanOrEqual(8 * 1024); // all of stdout (#3596)
     expect(group(r.out, PROJECT)).toHaveLength(10);
     const shown = group(r.out, DOMAIN).length;
     expect(shown).toBeGreaterThan(0);

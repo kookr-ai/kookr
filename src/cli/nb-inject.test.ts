@@ -213,12 +213,11 @@ describe('nb-inject — a failing `nb list` is reported, not mistaken for an emp
   test('caps the index at 8 KB (bytes, not characters) on whole rows', () => {
     // 40 rows of ~400 bytes each (200 two-byte chars): row cap not reached, byte cap is.
     const r = injectWithStub(listStub(40, 200));
-    const index = r.out.slice(r.out.indexOf('agent-notebook notebooks'));
-    expect(Buffer.byteLength(index)).toBeLessThanOrEqual(8 * 1024);
+    expect(Buffer.byteLength(r.out)).toBeLessThanOrEqual(8 * 1024); // all of stdout, instructions included (#3596)
     const shown = rowsIn(r.out);
-    // each row is 2+9+2+1+2+400 = ~416 bytes; budget 8192 - 96 (tail) - header
-    expect(shown).toBeGreaterThanOrEqual(18);
-    expect(shown).toBeLessThanOrEqual(19);
+    // each row is 2+9+2+1+2+400 = ~416 bytes; budget 8192 - ~990 (instructions) - 96 (tail) - header
+    expect(shown).toBeGreaterThanOrEqual(16);
+    expect(shown).toBeLessThanOrEqual(17);
     expect(r.out).toContain(`${40 - shown} more shelves not shown`);
     // whole rows only: every shown row is complete (200 chars of padding)
     for (const row of r.out.split('\n').filter((l) => /^ {2}shelf-\d+/.test(l))) {

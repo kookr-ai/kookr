@@ -23,8 +23,9 @@
 //     get noise in every session.
 //   - `nb` is present but times out or exits non-zero: print a one-line WARNING on
 //     STDOUT. Only stdout reaches the agent; stderr from a SessionStart hook never does.
-// The injected index is bounded (60 rows / 8 KB) so a large store cannot overflow the
-// session context; the rest stays one `nb list` away.
+// The injected output is bounded (60 rows / 8 KB, the fixed instructions above the index
+// included) so a large store cannot overflow the session context; the rest stays one
+// `nb list` away.
 //
 // Layered view (RFC docs/rfc/rfc-notebook-memory-layers.md, issue #3592). Memory is
 // layered project > domain > global, and a shelf's layer is derived from its NAME
@@ -51,6 +52,23 @@ const DESC_WIDTH = 80; // `nb list` bounds a description column to 80 characters
 const MAX_NAMED = 5; // shelves a store warning names before it says "and N more"
 const NAME_WIDTH = 60; // characters of one shelf name a store warning shows
 const WARN_TIMEOUT_MS = 2000; // the flat view's extra `nb list --json` call, best-effort only
+
+// The fixed instructions printed above the index. The 8 KB bound is on everything the
+// hook prints, so these bytes, and the final newline, come out of the index's budget.
+const PREAMBLE =
+  `## Your agent-notebook index\n` +
+  `Below is an index of your notebooks. Each one is a "shelf": a short, bounded list of ` +
+  `one-line lessons for one kind of task, written by you and other agents on past tasks. ` +
+  `Each line shows the shelf name, how many lessons it holds, and when to open it.\n` +
+  `Open the shelves that fit this task with \`nb show <shelf>\` (the shelf name is the first ` +
+  `column) and apply what they say. If the work turns up a new kind of problem, check the ` +
+  `index again and open another shelf.\n` +
+  `At the end you will be asked for a short retrospective on the shelves you opened — vote the ` +
+  `lessons that helped, \`nb rm\` any that were wrong, and \`nb add\` at most one new lesson (or none). ` +
+  `Vote by the \`<id>\` \`nb show\` prints at the start of each line, not a fuzzy text query (a ` +
+  `non-unique query errors; the tool then prints the candidate ids). A new lesson is one line, ≤200 ` +
+  `characters — an over-length \`nb add\` is rejected, not truncated.\n\n`;
+const INDEX_BYTES = MAX_BYTES - Buffer.byteLength(PREAMBLE) - 1;
 
 /**
  * Run `nb <args>` and return its trimmed stdout. A missing `nb` exits 0 silently; a
@@ -118,9 +136,7 @@ if (body === null) {
   // goes to stderr). Nothing to surface → stay silent, unless the store has files
   // `nb` could not use: then it is not empty, and the warnings say why.
   if (!index && warnings.length === 0) process.exit(0);
-  body = index
-    ? boundIndex(index, warnings)
-    : [`agent-notebook notebooks — 0 in ${typeof listing?.dir === 'string' ? listing.dir : 'the notebook store'}`, ...warnings].join('\n');
+  body = index ? boundIndex(index, warnings) : [emptyHeader(listing), ...warnings].join('\n');
 }
 if (body === '') process.exit(0);
 
@@ -148,12 +164,20 @@ function jsonListing(raw) {
 }
 
 /**
- * Keep the header line plus at most MAX_ROWS rows and MAX_BYTES bytes (whole rows
+ * The index header for a store with no usable shelf (only warnings to show), in the
+ * form `nb list` itself prints for an empty count. Both views use it.
+ */
+function emptyHeader(listing) {
+  return `agent-notebook notebooks — 0 in ${typeof listing?.dir === 'string' ? listing.dir : 'the notebook store'}`;
+}
+
+/**
+ * Keep the header line plus at most MAX_ROWS rows and INDEX_BYTES bytes (whole rows
  * only; rows arrive richest-first, so the ones dropped are the thinnest). Adds a
  * "N more" tail when anything was dropped. `warnings` (store problems) go right under
  * the header and count against the byte budget.
  */
-function boundIndex(text, warnings = []) {
+function boundIndex(text, warnings) {
   const lines = text.split('\n');
   const hasHeader = !/^\s/.test(lines[0]); // rows are indented; the header is not
   const header = hasHeader ? lines[0] : '';
@@ -167,7 +191,7 @@ function boundIndex(text, warnings = []) {
   const kept = [];
   for (const row of rows) {
     const cost = Buffer.byteLength(row) + 1;
-    if (kept.length >= MAX_ROWS || used + cost > MAX_BYTES - TAIL_RESERVE) break;
+    if (kept.length >= MAX_ROWS || used + cost > INDEX_BYTES - TAIL_RESERVE) break;
     kept.push(row);
     used += cost;
   }
@@ -190,6 +214,8 @@ function boundIndex(text, warnings = []) {
  * characters are shown as escapes, and each name and the number named are bounded.
  */
 function storeWarnings(listing) {
+  // The same escape as the one in scripts/lib/nb-client.mjs (planFromStore). Keep the two
+  // in step by hand: the plugin ships without the repository, so neither can import the other.
   const visible = (v) => {
     const text = String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
     return text.length > NAME_WIDTH ? `${text.slice(0, NAME_WIDTH - 1)}…` : text;
@@ -235,7 +261,7 @@ function renderRow(r, nameWidth, countWidth) {
  * then falls back to the flat index).
  *
  * Caps: the project group is never truncated (it is the shelves most likely to apply
- * and is small). Domain and global rows fill what is left of the 60-row / 8 KB budget,
+ * and is small). Domain and global rows fill what is left of the 60-row / INDEX_BYTES budget,
  * after the project rows and every fixed line; `fleet-global` is placed before the
  * domain rows so a long domain list can never push out the one host-wide shelf.
  */
@@ -245,7 +271,7 @@ function layeredIndex(raw, slug) {
   if (!Array.isArray(rows) || rows.some((r) => typeof r?.shelf !== 'string')) throw new Error('unexpected nb list --json shape');
   const warnings = storeWarnings(listing);
   if (rows.length === 0) {
-    return warnings.length ? [`agent-notebook notebooks — 0 of 0 in ${listing.dir ?? 'the notebook store'}`, ...warnings].join('\n') : '';
+    return warnings.length ? [emptyHeader(listing), ...warnings].join('\n') : '';
   }
 
   const aliases = layers.loadSlugAliases();
@@ -302,7 +328,7 @@ function layeredIndex(raw, slug) {
     const out = [];
     for (const l of render(group)) {
       const cost = Buffer.byteLength(l) + 1;
-      if (count >= MAX_ROWS || used + cost > MAX_BYTES) break; // the "more" tail is already in `fixed`
+      if (count >= MAX_ROWS || used + cost > INDEX_BYTES) break; // the "more" tail is already in `fixed`
       out.push(l);
       used += cost;
       count++;
@@ -325,20 +351,5 @@ function layeredIndex(raw, slug) {
   return out.join('\n');
 }
 
-process.stdout.write(
-  `## Your agent-notebook index\n` +
-    `Below is an index of your notebooks. Each one is a "shelf": a short, bounded list of ` +
-    `one-line lessons for one kind of task, written by you and other agents on past tasks. ` +
-    `Each line shows the shelf name, how many lessons it holds, and when to open it.\n` +
-    `Open the shelves that fit this task with \`nb show <shelf>\` (the shelf name is the first ` +
-    `column) and apply what they say. If the work turns up a new kind of problem, check the ` +
-    `index again and open another shelf.\n` +
-    `At the end you will be asked for a short retrospective on the shelves you opened — vote the ` +
-    `lessons that helped, \`nb rm\` any that were wrong, and \`nb add\` at most one new lesson (or none). ` +
-    `Vote by the \`<id>\` \`nb show\` prints at the start of each line, not a fuzzy text query (a ` +
-    `non-unique query errors; the tool then prints the candidate ids). A new lesson is one line, ≤200 ` +
-    `characters — an over-length \`nb add\` is rejected, not truncated.\n\n` +
-    body +
-    '\n',
-);
+process.stdout.write(PREAMBLE + body + '\n');
 process.exit(0);
