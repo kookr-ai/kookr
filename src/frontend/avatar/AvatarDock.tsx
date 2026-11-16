@@ -13,7 +13,9 @@
  * (`lucy-live/useLucyLive.ts`): she listens through the microphone, answers out loud
  * and can be interrupted by speaking over her. It lives in this component, not in the
  * 3D view, so it keeps running while the panel is minimised, and it is never saved:
- * every page load starts with the microphone closed.
+ * every page load starts with the microphone closed. A keyboard shortcut (Alt+Shift+M by
+ * default, `lucy_talk_toggle`) does the same from anywhere, and while Talk is on the
+ * minimised bubble carries a small microphone button that switches it off in one click.
  *
  * When a task asks the operator a question (`kookr ask`, the same question that
  * goes to Telegram), Lucy reads it out once and the panel shows it as a card with
@@ -67,6 +69,7 @@ import { LucyLaunchCard } from './LucyLaunchCard.js';
 import { LucyTypedInput } from './LucyTypedInput.js';
 import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
 import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
+import { formatShortcutBinding, matchesShortcutBinding, type ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 import {
   AVATAR_BUBBLE_SIZE,
   AVATAR_PANEL_HEIGHT,
@@ -141,6 +144,13 @@ export interface AvatarDockProps {
    * Returns false when it could not be sent. Without it the cards show no buttons that work.
    */
   onPermissionChoice?: PermissionChoiceSender;
+  /**
+   * The key that switches Talk on or off from anywhere in the dashboard, text boxes included (it is not
+   * dictation's key). Without it there is no shortcut.
+   */
+  talkShortcut?: ShortcutBinding;
+  /** True while a dialog that swallows the dashboard's shortcuts is open: the Talk shortcut then does nothing. */
+  shortcutsBlocked?: boolean;
 }
 
 const REPLAY_DESCRIPTION_ID = 'avatar-replay-description';
@@ -189,7 +199,18 @@ function bubbleCardPlacement(
   };
 }
 
-export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask, onPermissionChoice }: AvatarDockProps) {
+/** The microphone button on the minimised bubble that switches Talk off; it overhangs the bubble's bottom-right edge. */
+const BUBBLE_STOP_SIZE = 22;
+const BUBBLE_STOP_OVERHANG = 5;
+
+export function AvatarDock({
+  attentionCount,
+  onAnswerAsk,
+  onOpenTask,
+  onPermissionChoice,
+  talkShortcut,
+  shortcutsBlocked = false,
+}: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
   const [viewport, setViewport] = useState(viewportSize);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
@@ -241,6 +262,7 @@ export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask, onPermissi
   const dragRef = useRef<{ pointerId: number; dx: number; dy: number; last: { x: number; y: number } | null } | null>(null);
   const minimiseButtonRef = useRef<HTMLButtonElement | null>(null);
   const talkFocusedRef = useRef(false);
+  const bubbleStopFocusedRef = useRef(false);
   const dockRef = useRef<HTMLElement | null>(null);
   const bubbleRef = useRef<HTMLButtonElement | null>(null);
   // Set when the operator minimises or reopens, so keyboard focus can follow to the control that replaced the one they used.
@@ -500,6 +522,33 @@ export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask, onPermissi
     setTalkNotice(null);
     live.setEnabled(!live.enabled);
   };
+  const talkShortcutHint = talkShortcut ? ` (${formatShortcutBinding(talkShortcut)})` : '';
+  // The keyboard shortcut presses the Talk button, also while it is not on screen (panel minimised).
+  // Kept in a ref so the key listener below is added once, not on every render.
+  const talkShortcutRef = useRef<() => void>(() => {});
+  talkShortcutRef.current = () => {
+    // Hidden button: the server could not be asked, so there is nothing to switch on and no reason to give.
+    if (!talkVisible) return;
+    if (talkShortcut) track({ type: 'shortcut_used', key: formatShortcutBinding(talkShortcut), action: 'lucy_talk_toggle', context: 'global' });
+    if (talkUnavailable && prefs.minimized) {
+      // The reason is only shown in the open panel, so open it; focus moves only if it was on the bubble.
+      restoreFocusRef.current = document.activeElement === bubbleRef.current;
+      trackPanelAction('restore');
+      updateAvatarPanelPrefs({ minimized: false });
+    }
+    onTalk();
+  };
+  useEffect(() => {
+    if (!talkShortcut || shortcutsBlocked) return undefined;
+    const onKey = (event: KeyboardEvent): void => {
+      // A held key repeats; it must not flip the microphone on and off.
+      if (event.repeat || event.isComposing || !matchesShortcutBinding(event, talkShortcut)) return;
+      event.preventDefault();
+      talkShortcutRef.current();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [talkShortcut, shortcutsBlocked]);
   const liveMessage = talkNotice ?? live.errorMessage;
   useEffect(() => {
     if (!live.enabled) setHeardFinal(null);
@@ -512,6 +561,13 @@ export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask, onPermissi
       dockRef.current?.focus();
     }
   }, [talkVisible]);
+  // The bubble's stop button disappears once Talk is off; if it had focus, hand it to the bubble.
+  useLayoutEffect(() => {
+    if (!live.enabled && bubbleStopFocusedRef.current) {
+      bubbleStopFocusedRef.current = false;
+      bubbleRef.current?.focus();
+    }
+  }, [live.enabled]);
   const liveStateLabel = liveReady ? LIVE_STATE_LABEL[live.lucyState] : live.status === 'connecting' ? 'connecting' : null;
   const showLive = live.enabled || liveMessage !== null;
   // Spoken by the always-present announcement region below (a live region must exist before its text does).
@@ -611,12 +667,37 @@ export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask, onPermissi
           data-testid="avatar-bubble"
         >
           {!still && <span className="avatar-bubble-initial" aria-hidden="true">{NAME[0]}</span>}
-          {live.enabled && <span className="avatar-bubble-mic" data-testid="avatar-bubble-mic" aria-hidden="true" />}
           {lastClip.unheard && <span className="avatar-unheard-dot avatar-bubble-unheard" data-testid="avatar-unheard-dot" aria-hidden="true" />}
           {badgeCount > 0 && (
             <span className="avatar-bubble-badge" aria-hidden="true">{badgeCount > 99 ? '99+' : badgeCount}</span>
           )}
         </button>
+        {live.enabled && (
+          // A sibling of the bubble, not inside it: a button cannot hold another, and a press on the bubble opens the panel.
+          // It replaces the bubble's "microphone open" dot and sits where that dot was.
+          <button
+            type="button"
+            className="avatar-bubble-stop"
+            style={{
+              left: bubblePosition.x + AVATAR_BUBBLE_SIZE - BUBBLE_STOP_SIZE + BUBBLE_STOP_OVERHANG,
+              top: bubblePosition.y + AVATAR_BUBBLE_SIZE - BUBBLE_STOP_SIZE + BUBBLE_STOP_OVERHANG,
+              width: BUBBLE_STOP_SIZE,
+              height: BUBBLE_STOP_SIZE,
+            }}
+            onClick={onTalk}
+            onFocus={() => { bubbleStopFocusedRef.current = true; }}
+            onBlur={() => { bubbleStopFocusedRef.current = false; }}
+            aria-label={TALK_STOP_LABEL}
+            title={`${TALK_STOP_LABEL}${talkShortcutHint}`}
+            data-testid="avatar-bubble-stop"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="6" y="1.5" width="4" height="8" rx="2" />
+              <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.5M5.5 14.5h5" />
+              <path className="avatar-bubble-stop-slash" d="M2.5 2.5l11 11" />
+            </svg>
+          </button>
+        )}
         {cardVisible && (
           <div
             className="avatar-bubble-card"
@@ -693,7 +774,7 @@ export function AvatarDock({ attentionCount, onAnswerAsk, onOpenTask, onPermissi
             onFocus={() => { talkFocusedRef.current = true; }}
             onBlur={() => { talkFocusedRef.current = false; }}
             aria-describedby={talkUnavailable ? TALK_REASON_ID : undefined}
-            title={talkUnavailable ?? (live.enabled ? TALK_STOP_LABEL : TALK_LABEL)}
+            title={talkUnavailable ?? `${live.enabled ? TALK_STOP_LABEL : TALK_LABEL}${talkShortcutHint}`}
             data-testid="avatar-talk"
           >
             <svg viewBox="0 0 16 16" aria-hidden="true">

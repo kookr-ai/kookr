@@ -1932,7 +1932,14 @@ export function App() {
       {avatarPanelEnabled && (
         <AvatarErrorBoundary>
           <Suspense fallback={null}>
-            <AvatarDock attentionCount={findings.length} onAnswerAsk={answerOperatorAsk} onOpenTask={openAskingTask} onPermissionChoice={send} />
+            <AvatarDock
+              attentionCount={findings.length}
+              onAnswerAsk={answerOperatorAsk}
+              onOpenTask={openAskingTask}
+              onPermissionChoice={send}
+              talkShortcut={shortcutBindings.lucy_talk_toggle}
+              shortcutsBlocked={showOperations || modalBlocksShortcuts}
+            />
           </Suspense>
         </AvatarErrorBoundary>
       )}
