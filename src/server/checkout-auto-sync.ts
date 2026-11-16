@@ -256,10 +256,25 @@ const PROJECT_PLAYBOOK_DIR = '.kookr/playbooks';
  * catalog lists.
  *
  * Fails open: returns `null` when nothing is missing, `cwd` is not a git
- * worktree, there is no remote default branch, or any git call fails. Never
- * throws.
+ * worktree, there is no remote default branch, any git call fails, or the
+ * whole check takes longer than {@link SYNC_GIT_TIMEOUT_MS} (the drift
+ * check's budget; some helpers it calls use git's longer default timeout, so
+ * the deadline is enforced here). Never throws.
  */
 export async function findPlaybooksMissingFromCheckout(cwd: string): Promise<CheckoutMissingPlaybooks | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), SYNC_GIT_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([inspectMissingPlaybooks(cwd), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function inspectMissingPlaybooks(cwd: string): Promise<CheckoutMissingPlaybooks | null> {
   try {
     const inside = await driftGit(cwd, ['rev-parse', '--is-inside-work-tree']);
     if (inside !== 'true') return null;
@@ -269,16 +284,23 @@ export async function findPlaybooksMissingFromCheckout(cwd: string): Promise<Che
 
     // `ls-tree` resolves the pathspec against `cwd`, matching discovery's
     // `<cwd>/.kookr/playbooks/`. The trailing slash lists the directory's
-    // entries; -z keeps unusual file names unquoted.
+    // entries; -z keeps unusual file names unquoted. Each entry is
+    // `<mode> <type> <object>\t<path>`; only blobs count, as discovery reads
+    // files, not a directory that happens to be named `x.md`.
     const listing = await runGitIn(
       cwd,
-      ['ls-tree', '-z', '--name-only', defaultBranchRef, '--', `${PROJECT_PLAYBOOK_DIR}/`],
+      ['ls-tree', '-z', defaultBranchRef, '--', `${PROJECT_PLAYBOOK_DIR}/`],
       SYNC_GIT_OPTIONS,
     );
     if (listing.kind !== 'ok') return null;
     const onDefaultBranch = listing.stdout
       .split('\0')
-      .map((entry) => entry.slice(entry.lastIndexOf('/') + 1))
+      .flatMap((entry) => {
+        const tab = entry.indexOf('\t');
+        if (tab < 0 || entry.slice(0, tab).split(' ')[1] !== 'blob') return [];
+        const path = entry.slice(tab + 1);
+        return [path.slice(path.lastIndexOf('/') + 1)];
+      })
       .filter((name) => name.endsWith('.md'));
     if (onDefaultBranch.length === 0) return null;
 

@@ -375,6 +375,9 @@ describe('findPlaybooksMissingFromCheckout (issue #3764)', () => {
       await writeFile(join(remoteDir, '.kookr', 'playbooks', 'README.txt'), 'not a playbook\n');
       await mkdir(join(remoteDir, '.kookr', 'playbooks', 'nested'), { recursive: true });
       await writeFile(join(remoteDir, '.kookr', 'playbooks', 'nested', 'deep.md'), '# deep\n');
+      // A directory named like a playbook is not a playbook either.
+      await mkdir(join(remoteDir, '.kookr', 'playbooks', 'dir.md'), { recursive: true });
+      await writeFile(join(remoteDir, '.kookr', 'playbooks', 'dir.md', 'inner.txt'), 'x\n');
       git(remoteDir, 'add', '.kookr');
       git(remoteDir, 'commit', '-m', 'extra files');
       git(cloneDir, 'fetch', 'origin');

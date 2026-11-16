@@ -162,6 +162,19 @@ describe('PlaybookBrowser checkout-missing notice (#3764)', () => {
     expect(items).toEqual(['a.md', 'b.md', 'c.md', 'd.md', 'e.md', 'and 2 more']);
   });
 
+  test('handlePlaybooks stores the checkout-missing playbooks a message carries, and the notice shows them', async () => {
+    render();
+    await flush();
+    expect(notice()).toBeNull();
+
+    act(() => {
+      useKookrStore.getState().handlePlaybooks([samplePlaybook], '/work/myrepo', undefined, fourMissing);
+    });
+    await flush();
+    expect(useKookrStore.getState().playbooksCheckoutMissing).toEqual(fourMissing);
+    expect(notice()?.textContent).toContain('opencode-scoped-fix-pipeline.md');
+  });
+
   test('a later playbooks message without the field clears the notice', async () => {
     useKookrStore.setState({ playbooksCheckoutMissing: fourMissing });
     render();
