@@ -37,6 +37,7 @@ import {
   emptyTrainState,
   isOutdatedLockfileFailure,
   normalizeTrainState,
+  parseSpawnOutput,
   runTrainCycle,
   tailForComment,
 } from './lib/integration-train-core.js';
@@ -569,10 +570,11 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
       const file = join(dir, `${idempotencyKey}.prompt.md`);
       writeFileSync(file, prompt);
       // Launched from the repo root so the task lands in the right project.
+      // `--json` says whether the key replayed an earlier task (issue #3986).
       const r = await run('kookr', [
-        'spawn', '--prompt-file', file, '--idempotency-key', idempotencyKey, '--no-parent-task', '--unattended',
+        'spawn', '--prompt-file', file, '--idempotency-key', idempotencyKey, '--no-parent-task', '--unattended', '--json',
       ], root);
-      if (!r.ok) throw new Error(`kookr spawn failed: ${r.stderr.trim()}`);
+      return parseSpawnOutput(r);
     },
   };
 

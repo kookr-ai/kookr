@@ -23,7 +23,7 @@ export interface PrDeliveryRevert {
   attempt?: number;
   /** The train's limit on automatic re-lands. */
   maxAttempts?: number;
-  /** Idempotency key of the fix task, e.g. `train-fix-issue-3915-2`. */
+  /** Idempotency key of the fix task, e.g. `train-fix-issue-3915-2-1a2b3c4d5e` (issue, attempt, culprit SHA prefix). */
   fixTaskKey?: string;
   /** True when no fix task is running: the budget is used up or the spawn failed. */
   needsHuman: boolean;

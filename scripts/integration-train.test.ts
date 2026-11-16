@@ -19,6 +19,7 @@ import {
   MAX_AUTOMATIC_RELANDS,
   nextPluginVersion,
   parseIntegrationBranch,
+  parseSpawnOutput,
   normalizeTrainState,
   PLUGIN_JSON_PATH,
   pluginVersionOf,
@@ -74,6 +75,8 @@ interface Harness {
   /** Comments on each pull request, as GitHub would hold them across cycles and restarts. */
   prComments: Map<number, string[]>;
   spawns: Array<{ idempotencyKey: string; prompt: string }>;
+  /** Key prefixes the fake server already holds a task for: spawning one replays it (#3986). */
+  replayKeys: Set<string>;
   notes: Array<{ kind: TrainEventKind; detail: string }>;
   healthyCalls: number;
   deps: TrainDeps;
@@ -126,6 +129,7 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
     ghLog: [] as string[],
     prComments: new Map<number, string[]>(),
     spawns: [] as Array<{ idempotencyKey: string; prompt: string }>,
+    replayKeys: new Set<string>(),
     notes: [] as Array<{ kind: TrainEventKind; detail: string }>,
     healthyCalls: 0,
   } as unknown as Harness;
@@ -184,7 +188,13 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
         h.prComments.set(pr, list);
       },
     },
-    spawner: { async spawn(req) { h.spawns.push(req); } },
+    spawner: {
+      async spawn(req) {
+        h.spawns.push(req);
+        const replayed = [...h.replayKeys].some((k) => req.idempotencyKey.startsWith(k));
+        return { replayed, taskId: `task-${req.idempotencyKey}` };
+      },
+    },
     notifier: {
       async notify(kind, detail) { h.notes.push({ kind, detail }); },
       async healthy() { h.healthyCalls++; },
@@ -219,6 +229,9 @@ function makeHarness(opts: { config?: boolean; integrationBranch?: boolean; seed
 
 let h: Harness;
 
+/** A fix-task key without its culprit suffix (`train-fix-issue-1-2-<10 hex>` -> `train-fix-issue-1-2`). */
+const keyBase = (key: string): string => key.replace(/-[0-9a-f]{10}$/, '');
+
 function pluginJson(version: string): string {
   return `{\n  "name": "kookr-toolkit",\n  "version": "${version}",\n  "description": "demo"\n}\n`;
 }
@@ -252,6 +265,34 @@ describe('helpers', () => {
     for (const bad of [undefined, '', '0', '-2', '2.5', '1e3', '0x10', 'four', '+3', '99999999999999999999']) {
       expect(vitestMaxWorkers(bad), String(bad)).toBe(4);
     }
+  });
+
+  it('reads kookr spawn --json: a new task, a replay, a failure, and output that names no task (#3986)', () => {
+    const envelope = (details: Record<string, unknown>, ok = true) => JSON.stringify({ ok, code: ok ? 'OK' : 'SERVER_ERROR', message: ok ? 'created' : 'server unreachable', details });
+    expect(parseSpawnOutput({ ok: true, stdout: `${envelope({ taskId: 't1', idempotentReplay: false })}\n`, stderr: '' }))
+      .toEqual({ replayed: false, taskId: 't1' });
+    // a warning line before the envelope does not hide it
+    expect(parseSpawnOutput({ ok: true, stdout: `note: something\n${envelope({ taskId: 't2', idempotentReplay: true })}\n`, stderr: '' }))
+      .toEqual({ replayed: true, taskId: 't2' });
+    expect(() => parseSpawnOutput({ ok: false, stdout: envelope({}, false), stderr: '' })).toThrow('kookr spawn failed: server unreachable');
+    expect(() => parseSpawnOutput({ ok: false, stdout: '', stderr: 'command not found' })).toThrow('kookr spawn failed: command not found');
+    // exit 0 but nothing says which task: never assumed to be a new one
+    expect(() => parseSpawnOutput({ ok: true, stdout: 'task_id=t3\n✓ Task created\n', stderr: '' })).toThrow('without naming a task');
+    expect(() => parseSpawnOutput({ ok: true, stdout: envelope({ idempotentReplay: false }), stderr: '' })).toThrow('without naming a task');
+    expect(() => parseSpawnOutput({ ok: true, stdout: envelope({ taskId: '' }), stderr: '' })).toThrow('without naming a task');
+    expect(() => parseSpawnOutput({ ok: true, stdout: envelope({ taskId: 't4' }, false), stderr: '' })).toThrow('without naming a task');
+    // the last envelope wins; a missing or non-boolean flag is not a replay
+    expect(parseSpawnOutput({ ok: true, stdout: `${envelope({ taskId: 'a', idempotentReplay: true })}\n${envelope({ taskId: 'b' })}`, stderr: '' }))
+      .toEqual({ replayed: false, taskId: 'b' });
+    expect(parseSpawnOutput({ ok: true, stdout: envelope({ taskId: 'c', idempotentReplay: 'true' }), stderr: '' }))
+      .toEqual({ replayed: false, taskId: 'c' });
+    // a replayed task whose launch failed, or that was stopped, is no fix task
+    for (const status of ['terminated', 'cancelled']) {
+      expect(() => parseSpawnOutput({ ok: true, stdout: envelope({ taskId: 'd', idempotentReplay: true, task: { status } }), stderr: '' }))
+        .toThrow(`which is ${status}`);
+    }
+    expect(parseSpawnOutput({ ok: true, stdout: envelope({ taskId: 'e', idempotentReplay: true, task: { status: 'inProgress' } }), stderr: '' }))
+      .toEqual({ replayed: true, taskId: 'e' });
   });
 
   it('recognises an outdated-lockfile install failure only', () => {
@@ -358,7 +399,7 @@ describe('integration train cycle', () => {
     expect(comment).toContain(stagingHead);
     expect(comment).toContain('AssertionError');
     expect(h.spawns).toHaveLength(1);
-    expect(h.spawns[0].idempotencyKey).toBe('train-fix-issue-130-1');
+    expect(keyBase(h.spawns[0].idempotencyKey)).toBe('train-fix-issue-130-1');
     expect(h.spawns[0].prompt).toContain('Closes #130');
     expect(h.spawns[0].prompt).toContain('origin/main');
     expect(h.spawns[0].prompt).toContain(`git cherry-pick ${c3}`);
@@ -411,6 +452,40 @@ describe('integration train cycle', () => {
     expect(h.notes.map((n) => n.kind)).toEqual(['halted']);
   });
 
+  it('gives each failure its own fix-task key, so a lost state.json still starts a task for a new failure (#3986)', async () => {
+    h = makeHarness();
+    h.issues.set(501, [{ number: 5010, state: 'closed' }]);
+    const first = h.commit('staging', { 'bad.txt': 'x' }, 'broken (#501)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+    // state.json is lost or reset
+    h.state.fixTasks = {};
+    const second = h.commit('staging', { 'bad.txt': 'y' }, 'broken again (#501)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+
+    const keys = h.spawns.map((s) => s.idempotencyKey);
+    expect(keys).toEqual([`train-fix-issue-5010-1-${first.slice(0, 10)}`, `train-fix-issue-5010-1-${second.slice(0, 10)}`]);
+    expect(new Set(keys).size).toBe(2);
+    expect(h.state.fixTasks['issue-5010']).toBe(1);
+  });
+
+  it('counts a replayed key as the task of this failure, and starts nothing else (#3986)', async () => {
+    h = makeHarness();
+    h.issues.set(502, [{ number: 5020, state: 'closed' }]);
+    // the server already holds this failure's task (kookr spawn re-sent a request that timed out)
+    h.replayKeys.add('train-fix-issue-5020-1-');
+    h.commit('staging', { 'bad.txt': 'x' }, 'broken (#502)');
+    expect((await h.cycle()).outcome).toBe('reverted');
+
+    expect(h.spawns).toHaveLength(1);
+    expect(h.state.fixTasks['issue-5020']).toBe(1);
+    const reverted = h.notes.find((n) => n.kind === 'reverted')?.detail ?? '';
+    // the delivery tracker reads the first "fix task <key> spawned (...)" in the detail
+    expect(/fix task (\S+) spawned \(automatic re-land (\d+) of (\d+)\)/.exec(reverted)?.slice(1))
+      .toEqual([h.spawns[0].idempotencyKey, '1', '3']);
+    expect(reverted).toContain('the server returned the task already started for this failure');
+    expect(h.notes.map((n) => n.kind)).not.toContain('fix-spawn-failed');
+  });
+
   it('does not consume the fix budget when the spawn fails, and notifies fix-spawn-failed', async () => {
     h = makeHarness();
     h.commit('staging', { 'bad.txt': 'x' }, 'broken (#401)');
@@ -423,16 +498,16 @@ describe('integration train cycle', () => {
     expect(failed?.detail).toContain('train-fix-ref-401-1');
 
     // the budget is intact: the same PR failing again gets its task
-    h.deps.spawner = { async spawn(req) { h.spawns.push(req); } };
+    h.deps.spawner = { async spawn(req) { h.spawns.push(req); return { replayed: false, taskId: 'task-1' }; } };
     h.commit('staging', { 'bad.txt': 'y' }, 'broken again (#401)');
     expect((await h.cycle()).outcome).toBe('reverted');
-    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual(['train-fix-ref-401-1']);
+    expect(h.spawns.map((s) => keyBase(s.idempotencyKey))).toEqual(['train-fix-ref-401-1']);
     expect(h.state.fixTasks['ref-401']).toBe(1);
 
     // With no linked issue, a later prompt speaks of the change, not an issue.
     h.commit('staging', { 'bad.txt': 'z' }, 'broken a third time (#401)');
     expect((await h.cycle()).outcome).toBe('reverted');
-    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual(['train-fix-ref-401-1', 'train-fix-ref-401-2']);
+    expect(h.spawns.map((s) => keyBase(s.idempotencyKey))).toEqual(['train-fix-ref-401-1', 'train-fix-ref-401-2']);
     expect(h.spawns[1].prompt).toContain(
       'automatic re-land 2 of 3 for this change: 1 earlier automatic fix task(s) were already started for this change',
     );
@@ -770,7 +845,7 @@ describe('integration train cycle', () => {
       expect((await h.cycle()).outcome).toBe('idle');
       expect(h.notes.map((n) => n.kind)).not.toContain('fix-budget-exhausted');
     }
-    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual([
+    expect(h.spawns.map((s) => keyBase(s.idempotencyKey))).toEqual([
       'train-fix-issue-130-1', 'train-fix-issue-130-2', 'train-fix-issue-130-3',
     ]);
     expect(h.state.fixTasks['issue-130']).toBe(3);
@@ -798,7 +873,7 @@ describe('integration train cycle', () => {
     h.issues.set(17, [{ number: 130, state: 'open' }]);
     h.commit('staging', { 'bad.txt': 'x' }, 'another change for the same issue (#17)');
     expect((await h.cycle()).outcome).toBe('reverted');
-    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual(['train-fix-issue-130-2']);
+    expect(h.spawns.map((s) => keyBase(s.idempotencyKey))).toEqual(['train-fix-issue-130-2']);
     expect(h.state.fixTasks['issue-130']).toBe(2);
     expect(h.spawns[0].prompt).toContain('automatic re-land 2 of 3 for this issue');
     expect(h.spawns[0].prompt).toContain(
@@ -865,7 +940,7 @@ describe('integration train cycle', () => {
       expect((await h.cycle()).outcome).toBe('reverted');
       expect((await h.cycle()).outcome).toBe('idle');
     }
-    expect(h.spawns.map((s) => s.idempotencyKey)).toEqual([
+    expect(h.spawns.map((s) => keyBase(s.idempotencyKey))).toEqual([
       'train-fix-ref-13-1', 'train-fix-ref-13-2', 'train-fix-ref-13-3',
     ]);
     expect(h.notes.map((n) => n.kind)).not.toContain('fix-budget-exhausted');
@@ -979,7 +1054,7 @@ describe('integration train cycle', () => {
       expect(c).toContain(`commit ${bad} failed the full test suite on \`staging\``);
       expect(c).toContain(`reverted it with ${revertSha}`);
       expect(c).toContain('AssertionError: bad.txt exists');
-      expect(c).toContain('Next: the train started fix task `train-fix-issue-720-1` (automatic re-land 1 of 3)');
+      expect(c).toMatch(/Next: the train started fix task `train-fix-issue-720-1-[0-9a-f]{10}` \(automatic re-land 1 of 3\)/);
       expect(c).toContain('Issue(s) #720 stay open until then.');
       expect(c).toContain(trainPrCommentMarker('reverted', bad));
       expect(c).not.toContain('promoted');
@@ -1355,10 +1430,11 @@ describe('a revert the train verified survives a moving integration branch (#401
 
     // the operator fixes the branch protection; a merge moves the head and clears the halt
     h.rejectPushesTo.clear();
-    h.commit('staging', { 'other.txt': '1' }, 'unrelated (#72)');
+    const moved = h.commit('staging', { 'other.txt': '1' }, 'unrelated (#72)');
     const r = await h.cycle();
     expect(r.outcome).toBe('reverted');
-    expect(h.verifyCalls.length).toBe(verifies);
+    // the moved head is verified once (#4031), red, so the remembered revert is pushed without another verify
+    expect(h.verifyCalls.slice(verifies)).toEqual([moved]);
     expect(h.notes.filter((n) => n.kind === 'revert-push-rejected')).toHaveLength(1);
     const staging = h.originRef('staging');
     expect(git(h.origin, 'log', '-1', '--format=%B', staging)).toContain(`This reverts commit ${culprit}`);
@@ -1480,22 +1556,240 @@ describe('a revert the train verified survives a moving integration branch (#401
     expect(h.spawns).toEqual([]);
   });
 
-  it('a red re-applied revert halts multiple-failures on the next cycle, promoting nothing', async () => {
+  it('verifies a head that moved since the culprit was confirmed, and promotes it instead of reverting when a hand fix made it green (#4031)', async () => {
     h = makeHarness();
-    h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#91)');
-    const known = knownShas();
-    onRevertVerify(known, () => { h.commit('staging', { 'bad2.txt': 'y' }, 'also broken (#92)'); });
-    expect((await h.cycle()).outcome).toBe('reverted');
-    const main = h.originRef('main');
-    expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'multiple-failures' });
-    expect(h.originRef('main')).toBe(main);
+    h.issues.set(87, [{ number: 870, state: 'closed' }]);
+    const culprit = h.commit('staging', { 'bad.txt': 'x', 'feature.txt': 'f' }, 'culprit (#87)');
+    h.rejectPushesTo.add('staging');
+    expect((await h.cycle()).outcome).toBe('retry');
+    expect(h.state.pendingRevert).toMatchObject({ culprit, verified: true, redHead: culprit });
+    h.rejectPushesTo.clear();
+    // a person fixes the failure by hand; the revert would still undo feature.txt
+    const fix = h.commit('staging', { 'bad.txt': '' }, 'fix the failure by hand (#88)');
+
+    const verifies = h.verifyCalls.length;
+    const r = await h.cycle();
+    expect(r.outcome).toBe('promoted');
+    expect(h.verifyCalls.slice(verifies)).toEqual([fix]);
+    expect(h.originRef('staging')).toBe(fix); // no revert pushed
+    expect(h.originRef('main')).toBe(fix);
+    expect(git(h.origin, 'show', `${fix}:feature.txt`)).toBe('f');
+    expect(h.state.pendingRevert).toBeNull();
+    expect(h.ghLog.some((l) => l === 'reopen 870' || l.startsWith('comment 870:'))).toBe(false);
+    expect(h.spawns).toEqual([]);
+    expect(h.notes.map((n) => n.kind)).not.toContain('reverted');
   });
+
+  it('verifies a moved red head once, then not again while the revert push stays rejected (#4031)', async () => {
+    h = makeHarness();
+    const culprit = h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#97)');
+    h.rejectPushesTo.add('staging');
+    expect((await h.cycle()).outcome).toBe('retry');
+    const moved = h.commit('staging', { 'other.txt': '1' }, 'unrelated (#98)');
+    const verifies = h.verifyCalls.length;
+    expect(await h.cycle()).toMatchObject({ outcome: 'retry', detail: 'revert push rejected' });
+    expect(h.verifyCalls.slice(verifies)).toEqual([moved]);
+    expect(h.state.pendingRevert).toMatchObject({ culprit, redHead: moved });
+    // the head is where it was last seen red: no further run (this third refusal in a row halts)
+    expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'push-rejected' });
+    expect(h.verifyCalls.slice(verifies)).toEqual([moved]);
+    expect(h.state.pendingRevert).toMatchObject({ culprit, redHead: moved });
+  });
+
+  it('keeps nothing remembered when the promotion of a moved green head is rejected, and promotes it next cycle (#4031)', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'bad.txt': 'x', 'feature.txt': 'f' }, 'culprit (#99)');
+    h.rejectPushesTo.add('staging');
+    expect((await h.cycle()).outcome).toBe('retry');
+    h.rejectPushesTo.clear();
+    const fix = h.commit('staging', { 'bad.txt': '' }, 'fix by hand (#100)');
+    const main = h.originRef('main');
+    h.rejectMainPush = true;
+    expect(await h.cycle()).toMatchObject({ outcome: 'retry', detail: 'promotion push rejected' });
+    expect(h.originRef('main')).toBe(main);
+    expect(h.originRef('staging')).toBe(fix);
+    expect(h.state.pendingRevert).toBeNull();
+    // counted, after the rejected revert push of the first cycle
+    expect(h.state.pushRejections).toBe(2);
+    expect((await h.cycle()).outcome).toBe('promoted');
+    expect(h.originRef('main')).toBe(fix);
+    expect(h.spawns).toEqual([]);
+  });
+
+  it('verifies the head before a remembered revert from a state file that does not say which head was red (#4031)', async () => {
+    h = makeHarness();
+    const culprit = h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#89)');
+    h.rejectPushesTo.add('staging');
+    expect((await h.cycle()).outcome).toBe('retry');
+    h.rejectPushesTo.clear();
+    // written by the code before #4031: no redHead
+    const { redHead: _dropped, ...legacy } = h.state.pendingRevert as NonNullable<TrainState['pendingRevert']>;
+    h.state = normalizeTrainState(JSON.parse(JSON.stringify({ ...h.state, pendingRevert: legacy })));
+    expect(h.state.pendingRevert).toMatchObject({ culprit, redHead: null });
+
+    const verifies = h.verifyCalls.length;
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.verifyCalls.slice(verifies)).toEqual([culprit]); // the head once, red; the verified revert is not run again
+    expect(git(h.origin, 'log', '-1', '--format=%B', 'refs/heads/staging')).toContain(`This reverts commit ${culprit}`);
+  });
+
+  /**
+   * #91 breaks the branch. While its revert is verified, #92 (fine) and #93
+   * (broken too) merge, and with `fineAfter` #96 (fine) on top, so the revert
+   * is re-applied on top of them and pushed unverified. Returns the SHAs.
+   */
+  async function reappliedOverASecondCulprit(fineAfter = false): Promise<{ first: string; fine: string; second: string; revert: string }> {
+    h.issues.set(93, [{ number: 930, state: 'closed' }]);
+    const first = h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#91)');
+    const known = knownShas();
+    let fine = '';
+    let second = '';
+    let top = '';
+    onRevertVerify(known, () => {
+      fine = h.commit('staging', { 'fine.txt': '1' }, 'fine (#92)');
+      second = h.commit('staging', { 'bad2.txt': 'y' }, 'also broken (#93)');
+      top = fineAfter ? h.commit('staging', { 'fine2.txt': '1' }, 'fine too (#96)') : second;
+    });
+    expect((await h.cycle()).outcome).toBe('reverted');
+    const revert = h.originRef('staging');
+    expect(git(h.origin, 'rev-parse', `${revert}^`)).toBe(top);
+    return { first, fine, second, revert };
+  }
+
+  it('finds a broken change below a red re-applied revert by bisecting with the first culprit reverted, and reverts it (#4031)', async () => {
+    h = makeHarness();
+    const { first, fine, second, revert } = await reappliedOverASecondCulprit();
+    const spawnsBefore = h.spawns.length;
+    const verifies = h.verifyCalls.length;
+
+    const r = await h.cycle();
+    expect(r.outcome).toBe('reverted');
+    // head twice, main, the probe of #92, the new revert. #93's probe has the
+    // head's tree (red twice already), so it is neither run nor re-run.
+    expect(h.verifyCalls.length - verifies).toBe(5);
+    const head = h.originRef('staging');
+    expect(git(h.origin, 'rev-parse', `${head}^`)).toBe(revert);
+    expect(git(h.origin, 'log', '-1', '--format=%B', head)).toContain(`This reverts commit ${second}`);
+    expect(gitSoft(h.origin, ['cat-file', '-e', `${head}:bad.txt`]).ok).toBe(false);
+    expect(gitSoft(h.origin, ['cat-file', '-e', `${head}:bad2.txt`]).ok).toBe(false);
+    expect(git(h.origin, 'show', `${head}:fine.txt`)).toBe('1');
+    // the second revert was verified on the real head, so it is promoted at once
+    expect(h.originRef('main')).toBe(head);
+    // the second culprit's issue and fix task; the first is not blamed again
+    expect(h.ghLog).toContain('reopen 930');
+    expect(h.spawns.slice(spawnsBefore).map((s) => keyBase(s.idempotencyKey))).toEqual(['train-fix-issue-930-1']);
+    expect(git(h.origin, 'log', '--format=%B', `${revert}..${head}`)).not.toContain(first);
+    expect(h.state.pendingRevert).toBeNull();
+    expect(fine).not.toBe('');
+    expect((await h.cycle()).outcome).toBe('idle');
+  }, 30_000);
+
+  it('remembers a second culprit with the head it saw red, and pushes its verified revert next cycle without another run (#4031)', async () => {
+    h = makeHarness();
+    const { second, revert } = await reappliedOverASecondCulprit();
+    h.rejectPushesTo.add('staging');
+    expect(await h.cycle()).toMatchObject({ outcome: 'retry', detail: 'revert push rejected' });
+    expect(h.state.pendingRevert).toMatchObject({ culprit: second, verified: true, redHead: revert });
+    expect(h.originRef('staging')).toBe(revert);
+
+    h.rejectPushesTo.clear();
+    const verifies = h.verifyCalls.length;
+    expect((await h.cycle()).outcome).toBe('reverted');
+    expect(h.verifyCalls.length).toBe(verifies);
+    const head = h.originRef('staging');
+    expect(git(h.origin, 'log', '-1', '--format=%B', head)).toContain(`This reverts commit ${second}`);
+    expect(h.state.pendingRevert).toBeNull();
+  }, 30_000);
+
+  it('reverts nothing when the second culprit passes its confirming re-run (#4031)', async () => {
+    h = makeHarness();
+    const { revert } = await reappliedOverASecondCulprit(true);
+    const known = knownShas();
+    // probes are commits the train builds itself; the second red run of one is green
+    const realVerify = h.deps.verify;
+    const redRuns = new Map<string, number>();
+    h.deps.verify = async (sha) => {
+      const result = await realVerify(sha);
+      if (known.has(sha) || result.ok) return result;
+      const n = (redRuns.get(sha) ?? 0) + 1;
+      redRuns.set(sha, n);
+      return n === 2 ? { ok: true, tail: '' } : result;
+    };
+    const spawnsBefore = h.spawns.length;
+    const main = h.originRef('main');
+
+    expect(await h.cycle()).toMatchObject({ outcome: 'retry', detail: 'second culprit passed on re-run' });
+    expect(h.originRef('staging')).toBe(revert);
+    expect(h.originRef('main')).toBe(main);
+    expect(h.spawns.length).toBe(spawnsBefore);
+    expect(h.state.pendingRevert).toBeNull();
+  }, 30_000);
+
+  it('halts multiple-failures when reverting the first culprit on a commit below its red revert conflicts (#4031)', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#101)');
+    const known = knownShas();
+    onRevertVerify(known, () => {
+      // #102 edits the culprit's lines and breaks something else; #103 restores them
+      h.commit('staging', { 'bad.txt': 'y', 'bad2.txt': 'z' }, 'edits and breaks (#102)');
+      h.commit('staging', { 'bad.txt': 'x' }, 'restores (#103)');
+    });
+    expect((await h.cycle()).outcome).toBe('reverted');
+    const revert = h.originRef('staging');
+    const main = h.originRef('main');
+    const spawnsBefore = h.spawns.length;
+    expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'multiple-failures' });
+    expect(h.originRef('staging')).toBe(revert);
+    expect(h.originRef('main')).toBe(main);
+    expect(h.spawns.length).toBe(spawnsBefore);
+  }, 30_000);
+
+  it('halts multiple-failures when another train revert lies between a red revert and the change it reverts (#4031)', async () => {
+    h = makeHarness();
+    const trailer = 'Kookr-Integration-Train: revert';
+    const first = h.commit('staging', { 'bad.txt': 'x' }, 'first (#111)');
+    const second = h.commit('staging', { 'fine.txt': '1' }, 'second (#112)');
+    h.commit('staging', { 'bad.txt': '' }, `Revert "first (#111)"\n\nThis reverts commit ${first}.\n\n${trailer}`);
+    const head = h.commit('staging', { 'fine.txt': '' }, `Revert "second (#112)"\n\nThis reverts commit ${second}.\n\n${trailer}`);
+    h.scripted.set(head, [false, false]);
+    const r = await h.cycle();
+    expect(r).toMatchObject({ outcome: 'halted', reason: 'multiple-failures' });
+    expect(r.detail).toContain('another train revert');
+    expect(h.originRef('staging')).toBe(head);
+    expect(h.spawns).toEqual([]);
+  });
+
+  it('pushes nothing for a second culprit whose revert does not make the head pass: halts revert-not-sufficient (#4031)', async () => {
+    h = makeHarness();
+    h.commit('staging', { 'bad.txt': 'x' }, 'culprit (#94)');
+    const known = knownShas();
+    onRevertVerify(known, () => { h.commit('staging', { 'fine.txt': '1' }, 'fine (#95)'); });
+    expect((await h.cycle()).outcome).toBe('reverted');
+    const revert = h.originRef('staging');
+    // red for a reason the revert of #95 does not remove either
+    h.scripted.set(revert, [false, false]);
+    const realVerify = h.deps.verify;
+    h.deps.verify = async (sha) => {
+      if (gitSoft(h.train, ['rev-parse', `${sha}^`]).stdout === revert) return { ok: false, tail: 'still red' };
+      return realVerify(sha);
+    };
+    const main = h.originRef('main');
+    const spawnsBefore = h.spawns.length;
+    expect(await h.cycle()).toMatchObject({ outcome: 'halted', reason: 'revert-not-sufficient' });
+    expect(h.originRef('main')).toBe(main);
+    expect(h.originRef('staging')).toBe(revert);
+    expect(h.spawns.length).toBe(spawnsBefore);
+    expect(h.state.pendingRevert).toBeNull();
+  }, 30_000);
 
   it('ignores a malformed remembered culprit in the state file', () => {
     expect(normalizeTrainState({ pendingRevert: { culprit: 'not-a-sha' } } as never).pendingRevert).toBeNull();
     expect(normalizeTrainState({}).pendingRevert).toBeNull();
     const sha = 'a'.repeat(40);
     expect(normalizeTrainState({ pendingRevert: { culprit: sha, verified: 'yes', rejections: -1 } } as never).pendingRevert)
-      .toEqual({ culprit: sha, verified: false, failTail: '', rejections: 0, alerted: false });
+      .toEqual({ culprit: sha, verified: false, failTail: '', rejections: 0, alerted: false, redHead: null });
+    expect(normalizeTrainState({ pendingRevert: { culprit: sha, redHead: 'b'.repeat(40) } } as never).pendingRevert?.redHead)
+      .toBe('b'.repeat(40));
+    expect(normalizeTrainState({ pendingRevert: { culprit: sha, redHead: 'HEAD' } } as never).pendingRevert?.redHead).toBeNull();
   });
 });
