@@ -316,6 +316,19 @@ describe('GET /api/settings alertDestination (issue #3924)', () => {
     expect(body.alertDestination).toEqual(destination);
   });
 
+  test('PUT echoes the field so a save does not drop it', async () => {
+    const destination = { channels: ['telegram_owner_chat'], label: 'Telegram (owner chat)' };
+    const app = mkApp({ ...mkRouteDeps(), getAlertDestination: () => destination });
+    const res = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ githubPollingEnabled: false }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.alertDestination).toEqual(destination);
+  });
+
   test('omits the field when the getter is not wired', async () => {
     const body = await (await mkApp(mkRouteDeps()).request('/api/settings')).json() as Record<string, unknown>;
     expect(body).not.toHaveProperty('alertDestination');

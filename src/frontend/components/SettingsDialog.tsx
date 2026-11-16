@@ -808,7 +808,13 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
         const saved = body;
         if (saveId !== latestSaveIdRef.current) return;
         setWarnings(saved.warnings ?? []);
-        setSettings(saved);
+        // alertDestination is read-only and fixed for the server's lifetime
+        // (issue #3924); keep the loaded value if a save response lacks it.
+        setSettings((prev) => (
+          saved.alertDestination || !prev?.alertDestination
+            ? saved
+            : { ...saved, alertDestination: prev.alertDestination }
+        ));
         window.dispatchEvent(new CustomEvent('kookr:settings-updated', { detail: saved }));
         // Re-mirror the server-normalized windows (invalid ones dropped) so the
         // live gate matches exactly what was persisted.
