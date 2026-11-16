@@ -99,6 +99,23 @@ describe('kookr containers', () => {
     expect(lines.join('\n')).toContain('has not launched');
   });
 
+  test('a corrupt instance id is an error for ls, ls --json and prune, never "has not launched", and docker is never consulted', async () => {
+    writeFileSync(join(dir, 'instance-id'), 'garbage\n');
+    let dockerReads = 0;
+    const listContainers = docker.listContainers.bind(docker);
+    docker.listContainers = async (label) => { dockerReads++; return listContainers(label); };
+    const before = docker.containers.map((c) => c.name);
+    for (const argv of [['ls'], ['ls', '--json'], ['prune', '--instance', '--yes', '--force']]) {
+      lines = []; errs = [];
+      expect(await run(argv)).toBe(1);
+      expect(lines).toEqual([]);
+      expect(errs.join('\n')).toContain(`${join(dir, 'instance-id')} exists but is not a valid instance id`);
+    }
+    expect(dockerReads).toBe(0);
+    expect(docker.calls).toEqual([]);
+    expect(docker.containers.map((c) => c.name)).toEqual(before);
+  });
+
   test('an unreadable task store makes ls report hold, never quarantine', async () => {
     writeFileSync(join(dir, 'tasks.json'), '{broken');
     await run(['ls']);
