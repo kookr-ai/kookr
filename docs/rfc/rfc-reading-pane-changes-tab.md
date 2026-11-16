@@ -45,9 +45,9 @@ order:
    head branch is the worktree's current branch (`baseBranch` from the GitHub
    state store, as `origin/<baseBranch>`). A PR that the task only mentioned
    does not count.
-2. **Otherwise the nearest candidate** among `origin/staging`, `origin/main`
+2. **Otherwise the nearest candidate** among `origin/main`, `origin/staging`
    and `origin/master`: the one with the fewest commits between its merge base
-   and `HEAD`.
+   and `HEAD` (on a tie, the first in that order).
 
 The tab names the base it used ("against origin/staging"), so a wrong guess is
 visible instead of silent.
@@ -80,11 +80,11 @@ The tab shows one plain line instead of an empty list:
 
 | Case | What the tab says |
 |---|---|
-| The task has no working directory recorded | No working directory for this task. |
+| The task has no working directory recorded | No working directory is recorded for this task. |
 | The directory is gone (worktree removed) | This task's worktree was removed. Its pull request shows what was pushed. |
 | The directory is not a git repository | This task does not run in a git repository. |
-| No base branch can be found | No base branch to compare against (no origin/staging, origin/main or origin/master). |
-| The branch has no changes yet | No changes against origin/staging yet. |
+| No base branch can be found | No base branch to compare against (no origin/main, origin/staging or origin/master). |
+| The branch has no changes yet | No changes against origin/staging on `<branch>`. |
 
 A task that runs in a shared checkout instead of its own worktree gets the
 checkout's diff, which can include other work; the header shows the branch so

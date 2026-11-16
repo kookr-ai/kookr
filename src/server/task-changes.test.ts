@@ -1,11 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, unlinkSync, renameSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { gitExecEnv } from '../core/git-helpers.js';
 import {
+  defaultGitRunner,
   listTaskChanges,
+  MAX_CHANGED_FILES,
   parseNameStatus,
   parseNumstat,
   parseUnifiedDiff,
@@ -134,6 +136,55 @@ describe('listTaskChanges', () => {
     expect(await listTaskChanges(plain, [])).toEqual({ kind: 'unavailable', reason: 'not_git' });
     commitFile('base.txt', 'one\n', 'base');
     expect(await listTaskChanges(repo, [])).toEqual({ kind: 'unavailable', reason: 'no_base' });
+  });
+
+  it('counts an untracked symlink as one line and never follows it', async () => {
+    setUpStagingBranch();
+    writeFileSync(path.join(root, 'big.txt'), 'x\n'.repeat(500));
+    symlinkSync(path.join(root, 'big.txt'), path.join(repo, 'biglink'));
+    execFileSync('mkfifo', [path.join(root, 'pipe')]);
+    symlinkSync(path.join(root, 'pipe'), path.join(repo, 'pipelink'));
+    // Following the FIFO link would block here forever.
+    const res = await listTaskChanges(repo, []);
+    expect(res.kind === 'ok' && res.files.filter((f) => f.path.endsWith('link'))).toEqual([
+      { path: 'biglink', status: 'added', added: 1, removed: 0 },
+      { path: 'pipelink', status: 'added', added: 1, removed: 0 },
+    ]);
+  });
+
+  it('cuts the list at the file cap and says so', async () => {
+    setUpStagingBranch();
+    mkdirSync(path.join(repo, 'gen'));
+    for (let i = 0; i < MAX_CHANGED_FILES + 1; i++) writeFileSync(path.join(repo, 'gen', `f${String(i).padStart(3, '0')}.txt`), 'x\n');
+    const res = await listTaskChanges(repo, []);
+    expect(res.kind === 'ok' && res.files.length).toBe(MAX_CHANGED_FILES);
+    expect(res.kind === 'ok' && res.truncated).toBe(true);
+    expect(res.kind === 'ok' && res.files.some((f) => f.path === 'feature.txt')).toBe(true);
+  });
+
+  it('marks the list truncated when the untracked listing fails or overflows', async () => {
+    setUpStagingBranch();
+    writeFileSync(path.join(repo, 'one.txt'), '1\n');
+    writeFileSync(path.join(repo, 'two.txt'), '2\n');
+    const failing: typeof defaultGitRunner = async (args, cwd, opts) =>
+      args[0] === 'ls-files' ? { ok: false, exitCode: null, stdout: '', tooLarge: false } : defaultGitRunner(args, cwd, opts);
+    const failed = await listTaskChanges(repo, [], failing);
+    expect(failed.kind === 'ok' && [failed.files.map((f) => f.path), failed.truncated]).toEqual([['feature.txt'], true]);
+
+    // On overflow the paths that arrived are kept, minus the last one, which may be cut.
+    const overflowing: typeof defaultGitRunner = async (args, cwd, opts) =>
+      args[0] === 'ls-files' ? { ok: false, exitCode: null, stdout: 'one.txt\0two.t', tooLarge: true } : defaultGitRunner(args, cwd, opts);
+    const overflowed = await listTaskChanges(repo, [], overflowing);
+    expect(overflowed.kind === 'ok' && [overflowed.files.map((f) => f.path), overflowed.truncated]).toEqual([['feature.txt', 'one.txt'], true]);
+  });
+
+  it('lists a file once when it is untracked after git rm --cached', async () => {
+    setUpStagingBranch();
+    git('rm', '-q', '--cached', 'base.txt');
+    const res = await listTaskChanges(repo, []);
+    expect(res.kind === 'ok' && res.files.filter((f) => f.path === 'base.txt')).toEqual([
+      { path: 'base.txt', status: 'deleted', added: 0, removed: 3 },
+    ]);
   });
 
   it('works from a subdirectory of the worktree, with repository-relative paths', async () => {

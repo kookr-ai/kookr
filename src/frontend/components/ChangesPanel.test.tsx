@@ -160,6 +160,16 @@ describe('ChangesPanel (#4024)', () => {
     expect(rows()).toHaveLength(0);
   });
 
+  test('a cut list says so', async () => {
+    routes['/api/tasks/task-1/changes'] = { status: 200, body: { ...LIST, truncated: true } };
+    await render();
+    expect(container.textContent).toContain('Only the first 3 files are listed.');
+    routes['/api/tasks/task-1/changes'] = { status: 200, body: LIST };
+    act(() => q('changes-refresh')!.click());
+    await flush();
+    expect(container.textContent).not.toContain('Only the first');
+  });
+
   test('a server error is reported', async () => {
     routes['/api/tasks/task-1/changes'] = { status: 500, body: null };
     await render();

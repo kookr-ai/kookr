@@ -9,8 +9,8 @@
  * output cap.
  */
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { constants as fsConstants, existsSync } from 'node:fs';
+import { lstat, open } from 'node:fs/promises';
 import path from 'node:path';
 import { gitExecEnv } from '../core/git-helpers.js';
 import type {
@@ -30,7 +30,7 @@ export type GitRunner = (args: string[], cwd: string, opts?: { maxBuffer?: numbe
 /** Most files listed; the rest is cut and `truncated` is set. */
 export const MAX_CHANGED_FILES = 500;
 /** A single file's patch over this many bytes comes back as `too_large`. */
-export const MAX_PATCH_BYTES = 1024 * 1024;
+const MAX_PATCH_BYTES = 1024 * 1024;
 /** A new (untracked) file over this many bytes is listed without line counts. */
 const MAX_COUNTED_UNTRACKED_BYTES = 1024 * 1024;
 const LIST_MAX_BUFFER = 4 * 1024 * 1024;
@@ -152,7 +152,21 @@ async function computeTaskChanges(
     return { ...f, added: c?.added ?? null, removed: c?.removed ?? null };
   });
 
-  const untrackedPaths = others.ok ? others.stdout.split('\0').filter(Boolean) : [];
+  // A listing that failed or overflowed its buffer is incomplete: keep what
+  // arrived (minus a possibly cut last path) and say the list is cut, rather
+  // than presenting the tracked changes as everything the task changed.
+  let untrackedPaths: string[];
+  let untrackedIncomplete = false;
+  if (others.ok) {
+    untrackedPaths = others.stdout.split('\0').filter(Boolean);
+  } else {
+    untrackedIncomplete = true;
+    untrackedPaths = others.tooLarge ? others.stdout.split('\0').slice(0, -1).filter(Boolean) : [];
+  }
+  // A path git also reports as tracked (e.g. after `git rm --cached`) is listed once.
+  const tracked = new Set(files.map((f) => f.path));
+  untrackedPaths = untrackedPaths.filter((p) => !tracked.has(p));
+
   const untracked = new Set<string>();
   const room = Math.max(0, MAX_CHANGED_FILES - files.length);
   for (const p of untrackedPaths.slice(0, room)) {
@@ -169,7 +183,7 @@ async function computeTaskChanges(
       baseRef: base.ref,
       branch,
       files: files.slice(0, MAX_CHANGED_FILES),
-      truncated: total > MAX_CHANGED_FILES,
+      truncated: total > MAX_CHANGED_FILES || untrackedIncomplete,
     },
     repoRoot,
     mergeBase: base.mergeBase,
@@ -286,11 +300,19 @@ export function parseUnifiedDiff(out: string): TaskChangeHunk[] {
   return hunks;
 }
 
-/** Line count of a new file, or `null` when it is binary or too large to count. */
+/**
+ * Line count of a new file, or `null` when it is binary, too large to count,
+ * or not a regular file. A symlink counts as one line: git diffs the link
+ * itself (its target path), never the file it points to. The link is never
+ * followed, so a link to a FIFO or a device cannot block the server.
+ */
 async function countNewFileLines(absPath: string): Promise<number | null> {
   let handle;
   try {
-    handle = await open(absPath, 'r');
+    const link = await lstat(absPath);
+    if (link.isSymbolicLink()) return 1;
+    if (!link.isFile()) return null;
+    handle = await open(absPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
     const st = await handle.stat();
     if (!st.isFile() || st.size > MAX_COUNTED_UNTRACKED_BYTES) return null;
     const buf = Buffer.alloc(st.size);

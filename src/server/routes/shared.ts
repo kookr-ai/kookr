@@ -266,13 +266,13 @@ export interface OutcomeLedgerRouteDeps {
   interactionLog?: DeferredInteractionLogWriter;
 }
 
-/** Narrower deps for the typed task-relation graph routes (issue #599). */
 /** Deps for the Changes tab routes (#4024): the task's directory and its pull request base. */
 export interface TaskChangesRouteDeps {
   taskStore: TaskStore;
   githubStateStore?: Pick<GitHubStateStore, 'getTaskState'>;
 }
 
+/** Narrower deps for the typed task-relation graph routes (issue #599). */
 export interface TaskRelationsRouteDeps {
   taskStore: TaskStore;
   queue?: AttentionQueue;
