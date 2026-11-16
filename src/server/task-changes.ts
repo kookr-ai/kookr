@@ -36,7 +36,7 @@ const MAX_COUNTED_UNTRACKED_BYTES = 1024 * 1024;
 const LIST_MAX_BUFFER = 4 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 10_000;
 
-/** Bases tried when the task has no pull request of its own, in tie-break order. */
+/** Bases always tried, after the task's own pull request base, in tie-break order. */
 const FALLBACK_BASES = ['origin/main', 'origin/staging', 'origin/master'] as const;
 /** A PR base branch name we are willing to pass to git as `origin/<name>`. */
 const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
@@ -80,7 +80,8 @@ interface ComputedChanges {
 /**
  * The change list for a task whose working directory is `cwd`. `prs` are the
  * task's known pull requests: one whose head branch is the worktree's current
- * branch sets the base; the others are ignored.
+ * branch adds its base to the candidates (see `resolveBase`); the others are
+ * ignored.
  */
 export async function listTaskChanges(
   cwd: string | undefined,
@@ -192,11 +193,14 @@ async function computeTaskChanges(
 }
 
 /**
- * The base to diff against: the task's own pull request base when its head
- * branch is the current branch, otherwise the candidate whose merge base is
- * the fewest commits behind HEAD. A branch cut from origin/staging is then
- * not diffed against origin/main, which would list every staging commit not
- * yet promoted.
+ * The base to diff against: the candidate whose merge base is the fewest
+ * commits behind HEAD. A branch cut from origin/staging is then not diffed
+ * against origin/main, which would list every staging commit not yet
+ * promoted. The task's own pull request base (a PR whose head branch is the
+ * current branch) joins the candidates and wins a tie, but never overrides a
+ * nearer base: in a repository whose pull requests open against main and are
+ * retargeted to staging only at merge, trusting it would list every
+ * unpromoted staging commit for the whole life of the PR.
  */
 async function resolveBase(
   repoRoot: string,
@@ -205,20 +209,17 @@ async function resolveBase(
   runGit: GitRunner,
 ): Promise<{ ref: string; mergeBase: string } | null> {
   const own = branch ? prs.find((pr) => pr.branch === branch && SAFE_BRANCH.test(pr.baseBranch) && !pr.baseBranch.includes('..')) : undefined;
-  if (own) {
-    const ref = `origin/${own.baseBranch}`;
-    const mb = await runGit(['merge-base', ref, 'HEAD'], repoRoot);
-    if (mb.ok && mb.stdout.trim()) return { ref, mergeBase: mb.stdout.trim() };
-  }
+  const candidates = [...new Set([...(own ? [`origin/${own.baseBranch}`] : []), ...FALLBACK_BASES])];
 
   let best: { ref: string; mergeBase: string; ahead: number } | null = null;
-  for (const ref of FALLBACK_BASES) {
+  for (const ref of candidates) {
     const mb = await runGit(['merge-base', ref, 'HEAD'], repoRoot);
     const mergeBase = mb.ok ? mb.stdout.trim() : '';
     if (!mergeBase) continue;
     const count = await runGit(['rev-list', '--count', `${mergeBase}..HEAD`], repoRoot);
     const ahead = count.ok ? Number.parseInt(count.stdout.trim(), 10) : Number.NaN;
     if (!Number.isFinite(ahead)) continue;
+    // Strictly fewer only: on a tie the earlier candidate (the PR base) stays.
     if (!best || ahead < best.ahead) best = { ref, mergeBase, ahead };
   }
   return best ? { ref: best.ref, mergeBase: best.mergeBase } : null;

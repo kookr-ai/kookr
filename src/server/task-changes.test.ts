@@ -109,16 +109,25 @@ describe('listTaskChanges', () => {
     ]);
   });
 
-  it('uses the base branch of the task\'s own pull request, ignoring PRs for other branches', async () => {
+  it('never lets the PR base override a nearer base (PRs that open against main, merge into staging)', async () => {
     setUpStagingBranch();
-    const ownPr = await listTaskChanges(repo, [
-      { branch: 'someone-else', baseBranch: 'staging' },
-      { branch: 'feat', baseBranch: 'main' },
-    ]);
-    expect(ownPr.kind === 'ok' && ownPr.baseRef).toBe('origin/main');
-    expect(ownPr.kind === 'ok' && ownPr.files.map((f) => f.path)).toEqual(['feature.txt', 'staging-only.txt']);
+    const res = await listTaskChanges(repo, [{ branch: 'feat', baseBranch: 'main' }]);
+    expect(res.kind === 'ok' && res.baseRef).toBe('origin/staging');
+    expect(res.kind === 'ok' && res.files.map((f) => f.path)).toEqual(['feature.txt']);
+  });
 
-    const otherPrOnly = await listTaskChanges(repo, [{ branch: 'someone-else', baseBranch: 'main' }]);
+  it('adds the task\'s own PR base to the candidates and lets it win a tie; other PRs are ignored', async () => {
+    setUpStagingBranch();
+    // origin/release points where origin/staging does: a tie, so the PR base wins.
+    git('update-ref', 'refs/remotes/origin/release', 'refs/remotes/origin/staging');
+    const own = await listTaskChanges(repo, [
+      { branch: 'someone-else', baseBranch: 'main' },
+      { branch: 'feat', baseBranch: 'release' },
+    ]);
+    expect(own.kind === 'ok' && own.baseRef).toBe('origin/release');
+    expect(own.kind === 'ok' && own.files.map((f) => f.path)).toEqual(['feature.txt']);
+
+    const otherPrOnly = await listTaskChanges(repo, [{ branch: 'someone-else', baseBranch: 'release' }]);
     expect(otherPrOnly.kind === 'ok' && otherPrOnly.baseRef).toBe('origin/staging');
   });
 

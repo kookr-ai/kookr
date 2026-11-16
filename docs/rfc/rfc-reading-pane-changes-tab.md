@@ -38,16 +38,22 @@ files that `.gitignore` does not exclude. The merge base has to be the branch
 the task forked from, or the list fills with other people's commits. Branches
 in this repository are cut from `origin/staging` or from `origin/main`, and
 `staging` is often far ahead of `main`. A diff against the wrong one lists
-dozens of files the task never touched. The server picks the base in this
-order:
+dozens of files the task never touched. The server picks the base this way:
 
-1. **The task's pull request base**, when the task has a pull request whose
-   head branch is the worktree's current branch (`baseBranch` from the GitHub
-   state store, as `origin/<baseBranch>`). A PR that the task only mentioned
-   does not count.
-2. **Otherwise the nearest candidate** among `origin/main`, `origin/staging`
-   and `origin/master`: the one with the fewest commits between its merge base
-   and `HEAD` (on a tie, the first in that order).
+- **The candidates** are `origin/main`, `origin/staging` and `origin/master`,
+  plus the task's own pull request base when it has one (a pull request whose
+  head branch is the worktree's current branch, `baseBranch` from the GitHub
+  state store, as `origin/<baseBranch>`). A PR that the task only mentioned
+  does not count.
+- **The nearest one wins:** the candidate with the fewest commits between its
+  merge base and `HEAD`. On a tie the pull request base wins, then the order
+  above.
+- **The pull request base never overrides a nearer candidate.** In this
+  repository a pull request opens against `main` and is moved to `staging`
+  only when it merges, while the branch was cut from `staging`. Trusting the
+  PR base would list every unpromoted staging commit for the whole life of
+  the pull request. It still matters for a repository whose pull requests
+  target another branch (a `release` branch, say) and as the tie-breaker.
 
 The tab names the base it used ("against origin/staging"), so a wrong guess is
 visible instead of silent.
@@ -67,8 +73,8 @@ cannot be used to read other files. Git runs with array arguments (no shell),
 cap; a patch over the cap comes back as "too large" instead of a truncated
 diff.
 
-Git runs only when the operator opens the tab or presses Refresh, never on a
-timer: the host already runs many workers, and a diff is cheap only when
+Git runs only when the operator opens the tab, presses Refresh or opens a
+file's diff, never on a timer: the host already runs many workers, and a diff is cheap only when
 nobody runs it in a loop. For the same reason the tab is labelled "Changes"
 without a count: a count would mean running git for every task the operator
 selects, not only for the tab they open. The file count and the line totals

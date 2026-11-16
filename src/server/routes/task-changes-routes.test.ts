@@ -71,10 +71,12 @@ describe('GET /api/tasks/:id/changes', () => {
     });
   });
 
-  it('takes the base from the task\'s open PR, but not from a closed one', async () => {
-    const open = await (await mkApp([{ branch: 'feat', baseBranch: 'main', status: 'open' }]).request('/api/tasks/t1/changes')).json();
-    expect(open.baseRef).toBe('origin/main');
-    const closed = await (await mkApp([{ branch: 'feat', baseBranch: 'main', status: 'closed' }]).request('/api/tasks/t1/changes')).json();
+  it('considers the base of the task\'s open PR, but not of a closed one', async () => {
+    // origin/release ties with origin/staging, so an eligible PR base wins.
+    git('update-ref', 'refs/remotes/origin/release', 'refs/remotes/origin/staging');
+    const open = await (await mkApp([{ branch: 'feat', baseBranch: 'release', status: 'open' }]).request('/api/tasks/t1/changes')).json();
+    expect(open.baseRef).toBe('origin/release');
+    const closed = await (await mkApp([{ branch: 'feat', baseBranch: 'release', status: 'closed' }]).request('/api/tasks/t1/changes')).json();
     expect(closed.baseRef).toBe('origin/staging');
   });
 
