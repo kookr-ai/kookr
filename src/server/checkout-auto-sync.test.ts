@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import {
   autoSyncCheckoutForManualLaunch,
+  findPlaybooksMissingFromCheckout,
   inspectPlaybookCheckoutDrift,
 } from './checkout-auto-sync.js';
 
@@ -302,6 +303,157 @@ describe('inspectPlaybookCheckoutDrift (issue #2945)', () => {
       expect(result!.blobDiffers).toBe(false);
       expect(result!.drifted).toBe(true);
       expect(result!.warning).toContain('currently matches upstream');
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('findPlaybooksMissingFromCheckout (issue #3764)', () => {
+  async function addPlaybooks(repoDir: string, names: string[]) {
+    await mkdir(join(repoDir, '.kookr', 'playbooks'), { recursive: true });
+    for (const name of names) {
+      await writeFile(join(repoDir, '.kookr', 'playbooks', name), `# ${name}\n`);
+    }
+    git(repoDir, 'add', '.kookr');
+    git(repoDir, 'commit', '-m', `add ${names.join(', ')}`);
+  }
+
+  it('returns null for a directory that is not a git worktree', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'missing-nongit-'));
+    try {
+      await mkdir(join(dir, '.kookr', 'playbooks'), { recursive: true });
+      expect(await findPlaybooksMissingFromCheckout(dir)).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a path that does not exist', async () => {
+    expect(await findPlaybooksMissingFromCheckout(join(tmpdir(), 'missing-does-not-exist-3764'))).toBeNull();
+  });
+
+  it('returns null for a git repo with no remote default branch', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'missing-noremote-'));
+    try {
+      await initGitRepo(dir);
+      await addPlaybooks(dir, ['local.md']);
+      expect(await findPlaybooksMissingFromCheckout(dir)).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a checkout that has every default-branch playbook', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'missing-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'missing-'));
+    try {
+      await initGitRepo(remoteDir);
+      await addPlaybooks(remoteDir, ['a.md', 'b.md']);
+      const cloneDir = await cloneAndTrack(remoteDir, workDir);
+      expect(await findPlaybooksMissingFromCheckout(cloneDir)).toBeNull();
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports playbooks merged to the default branch that a no-upstream feature branch lacks', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'missing-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'missing-'));
+    try {
+      await initGitRepo(remoteDir);
+      await addPlaybooks(remoteDir, ['old.md']);
+      const cloneDir = await cloneAndTrack(remoteDir, workDir);
+      // Park the checkout on a feature branch with no upstream, as in the issue.
+      git(cloneDir, 'switch', '-c', 'feat-old');
+
+      // Merge two playbooks (and a non-playbook file, and a nested file that
+      // discovery would not list) to origin's default branch, then fetch.
+      await addPlaybooks(remoteDir, ['nb-janitor.md', 'agent-notebook-reflection.md']);
+      await writeFile(join(remoteDir, '.kookr', 'playbooks', 'README.txt'), 'not a playbook\n');
+      await mkdir(join(remoteDir, '.kookr', 'playbooks', 'nested'), { recursive: true });
+      await writeFile(join(remoteDir, '.kookr', 'playbooks', 'nested', 'deep.md'), '# deep\n');
+      // A directory named like a playbook is not a playbook either.
+      await mkdir(join(remoteDir, '.kookr', 'playbooks', 'dir.md'), { recursive: true });
+      await writeFile(join(remoteDir, '.kookr', 'playbooks', 'dir.md', 'inner.txt'), 'x\n');
+      git(remoteDir, 'add', '.kookr');
+      git(remoteDir, 'commit', '-m', 'extra files');
+      git(cloneDir, 'fetch', 'origin');
+      // Precondition: the feature branch really has no upstream.
+      expect(() => gitOutput(cloneDir, 'rev-parse', '--abbrev-ref', 'feat-old@{u}')).toThrow();
+
+      const result = await findPlaybooksMissingFromCheckout(cloneDir);
+
+      expect(result).toEqual({
+        defaultBranchRef: 'origin/main',
+        checkoutBranch: 'feat-old',
+        missing: ['agent-notebook-reflection.md', 'nb-janitor.md'],
+      });
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it('compares the working tree, not HEAD: a playbook file present on disk is not reported', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'missing-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'missing-'));
+    try {
+      await initGitRepo(remoteDir);
+      const cloneDir = await cloneAndTrack(remoteDir, workDir);
+      await addPlaybooks(remoteDir, ['copied.md', 'absent.md']);
+      git(cloneDir, 'fetch', 'origin');
+      await mkdir(join(cloneDir, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cloneDir, '.kookr', 'playbooks', 'copied.md'), '# untracked copy\n');
+
+      const result = await findPlaybooksMissingFromCheckout(cloneDir);
+
+      expect(result?.missing).toEqual(['absent.md']);
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it('omits the branch on a detached HEAD', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'missing-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'missing-'));
+    try {
+      await initGitRepo(remoteDir);
+      const cloneDir = await cloneAndTrack(remoteDir, workDir);
+      git(cloneDir, 'switch', '--detach', 'HEAD');
+      await addPlaybooks(remoteDir, ['new.md']);
+      git(cloneDir, 'fetch', 'origin');
+
+      const result = await findPlaybooksMissingFromCheckout(cloneDir);
+
+      expect(result).toEqual({ defaultBranchRef: 'origin/main', missing: ['new.md'] });
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the last-fetched ref and never reaches the network: an unreachable origin changes nothing', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'missing-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'missing-'));
+    try {
+      await initGitRepo(remoteDir);
+      const cloneDir = await cloneAndTrack(remoteDir, workDir);
+      await addPlaybooks(remoteDir, ['fetched.md']);
+      git(cloneDir, 'fetch', 'origin');
+      // A playbook merged after the last fetch is not known yet...
+      await addPlaybooks(remoteDir, ['unfetched.md']);
+      // ...and the origin then becomes unreachable.
+      git(cloneDir, 'remote', 'set-url', 'origin', join(workDir, 'gone.git'));
+
+      const started = Date.now();
+      const result = await findPlaybooksMissingFromCheckout(cloneDir);
+
+      expect(result?.missing).toEqual(['fetched.md']);
+      expect(Date.now() - started).toBeLessThan(10_000);
     } finally {
       await rm(remoteDir, { recursive: true, force: true });
       await rm(workDir, { recursive: true, force: true });

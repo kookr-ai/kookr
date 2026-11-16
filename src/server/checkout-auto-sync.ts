@@ -1,5 +1,9 @@
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { gitIn, runGitIn } from '../core/git-helpers.js';
+import { resolveDefaultBranch } from '../core/repo-policy-resolver.js';
 import type { SchedulePlaybookCheckoutSource } from '../core/schedule.js';
+import type { CheckoutMissingPlaybooks } from '../shared/contracts/playbook.js';
 import { canonicalizeCwd } from './cwd.js';
 
 export interface CheckoutAutoSyncResult {
@@ -231,6 +235,89 @@ export function formatPlaybookCheckoutDriftWarning(input: {
     + `Fast-forward this checkout before re-deriving a local fix. `
     + closer
   );
+}
+
+const PROJECT_PLAYBOOK_DIR = '.kookr/playbooks';
+
+/**
+ * List the project playbooks that are on the remote default branch but not in
+ * the working tree of `cwd` (issue #3764), for the Launch dialog's Playbooks
+ * tab.
+ *
+ * Unlike {@link inspectPlaybookCheckoutDrift}, this compares against the
+ * remote default branch (`origin/HEAD`, else `origin/main`/`origin/master`),
+ * not `@{u}`: a checkout parked on an old feature branch often has no
+ * upstream at all. It reads the already-fetched remote-tracking ref and never
+ * fetches, because it runs every time the Playbooks tab opens and must not
+ * delay the list; the ref is as fresh as the last fetch in that checkout.
+ *
+ * Mirrors discovery: only top-level `*.md` files of `.kookr/playbooks/`, and
+ * the working tree (not HEAD) is the "present" side, since that is what the
+ * catalog lists.
+ *
+ * Fails open: returns `null` when nothing is missing, `cwd` is not a git
+ * worktree, there is no remote default branch, any git call fails, or the
+ * whole check takes longer than {@link SYNC_GIT_TIMEOUT_MS} (the drift
+ * check's budget; some helpers it calls use git's longer default timeout, so
+ * the deadline is enforced here). Never throws.
+ */
+export async function findPlaybooksMissingFromCheckout(cwd: string): Promise<CheckoutMissingPlaybooks | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), SYNC_GIT_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([inspectMissingPlaybooks(cwd), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function inspectMissingPlaybooks(cwd: string): Promise<CheckoutMissingPlaybooks | null> {
+  try {
+    const inside = await driftGit(cwd, ['rev-parse', '--is-inside-work-tree']);
+    if (inside !== 'true') return null;
+
+    const defaultBranchRef = await resolveDefaultBranch(cwd, { allowLocalFallback: false });
+    if (!defaultBranchRef) return null;
+
+    // `ls-tree` resolves the pathspec against `cwd`, matching discovery's
+    // `<cwd>/.kookr/playbooks/`. The trailing slash lists the directory's
+    // entries; -z keeps unusual file names unquoted. Each entry is
+    // `<mode> <type> <object>\t<path>`; only blobs count, as discovery reads
+    // files, not a directory that happens to be named `x.md`.
+    const listing = await runGitIn(
+      cwd,
+      ['ls-tree', '-z', defaultBranchRef, '--', `${PROJECT_PLAYBOOK_DIR}/`],
+      SYNC_GIT_OPTIONS,
+    );
+    if (listing.kind !== 'ok') return null;
+    const onDefaultBranch = listing.stdout
+      .split('\0')
+      .flatMap((entry) => {
+        const tab = entry.indexOf('\t');
+        if (tab < 0 || entry.slice(0, tab).split(' ')[1] !== 'blob') return [];
+        const path = entry.slice(tab + 1);
+        return [path.slice(path.lastIndexOf('/') + 1)];
+      })
+      .filter((name) => name.endsWith('.md'));
+    if (onDefaultBranch.length === 0) return null;
+
+    const present = new Set(await readdir(join(cwd, PROJECT_PLAYBOOK_DIR)).catch(() => [] as string[]));
+    const missing = onDefaultBranch.filter((name) => !present.has(name)).sort();
+    if (missing.length === 0) return null;
+
+    const branch = await driftGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    return {
+      defaultBranchRef,
+      ...(branch && branch !== 'HEAD' ? { checkoutBranch: branch } : {}),
+      missing,
+    };
+  } catch (err) {
+    console.warn('[checkout-auto-sync] missing-playbook check failed', { cwd, err });
+    return null;
+  }
 }
 
 function shortenSha(sha: string): string {

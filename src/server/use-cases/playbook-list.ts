@@ -11,15 +11,19 @@
  */
 import type { LaunchDependency, Playbook } from '../../core/playbook.js';
 import type { HostCapability } from '../../shared/contracts/messages.js';
+import type { CheckoutMissingPlaybooks } from '../../shared/contracts/playbook.js';
 import { discoverPlaybooks } from '../../core/playbook-discovery.js';
 import { getProjectId } from '../../core/project-identity.js';
 import { CAPABILITY_PROBES } from '../launch-capability-probe.js';
 import { expandConfiguredCwd } from '../cwd-paths.js';
+import { findPlaybooksMissingFromCheckout } from '../checkout-auto-sync.js';
 
 interface PlaybookListResult {
   playbooks: Playbook[];
   /** Omitted entirely when no discovered playbook gates a parameter. */
   capabilities?: Partial<Record<LaunchDependency, HostCapability>>;
+  /** Omitted when the checkout has every default-branch playbook, or the check failed open (#3764). */
+  checkoutMissingPlaybooks?: CheckoutMissingPlaybooks;
 }
 
 /**
@@ -31,7 +35,13 @@ interface PlaybookListResult {
  * behavior is unchanged by capability gating.
  */
 export async function preparePlaybookList(cwd: string): Promise<PlaybookListResult> {
-  const playbooks = await discoverApplicablePlaybooks(cwd);
+  // The missing-playbook check runs beside discovery so it adds no latency of
+  // its own; it never rejects (fail-open), and the catch is a second guard.
+  const [playbooks, checkoutMissing] = await Promise.all([
+    discoverApplicablePlaybooks(cwd),
+    findPlaybooksMissingFromCheckout(cwd).catch(() => null),
+  ]);
+  const missingField = checkoutMissing ? { checkoutMissingPlaybooks: checkoutMissing } : {};
 
   // R5: probe only the dependencies that some discovered parameter gates on.
   const gatedDeps = new Set<LaunchDependency>();
@@ -40,7 +50,7 @@ export async function preparePlaybookList(cwd: string): Promise<PlaybookListResu
       if (parameter.gatedBy) gatedDeps.add(parameter.gatedBy);
     }
   }
-  if (gatedDeps.size === 0) return { playbooks };
+  if (gatedDeps.size === 0) return { playbooks, ...missingField };
 
   const capabilities: Partial<Record<LaunchDependency, HostCapability>> = {};
   await Promise.all(
@@ -50,7 +60,7 @@ export async function preparePlaybookList(cwd: string): Promise<PlaybookListResu
       if (status) capabilities[dependency] = status;
     }),
   );
-  return { playbooks, capabilities };
+  return { playbooks, capabilities, ...missingField };
 }
 
 /**

@@ -27,6 +27,7 @@ import type {
   DrainStatusSnapshot,
   SafeModeStatusSnapshot,
   LaunchDependency,
+  CheckoutMissingPlaybooks,
   SkillDiscoveryStateSnapshot,
   ServerMessage,
   SweepReport,
@@ -181,6 +182,12 @@ export interface TransportSessionSlice {
    * Drives capability-gated parameter rendering in the launch form.
    */
   hostCapabilities: Partial<Record<LaunchDependency, HostCapability>>;
+  /**
+   * Project playbooks on the remote default branch that the listed checkout
+   * lacks, from the most recent `playbooks` message (#3764). Null when none are
+   * missing or the server check failed open.
+   */
+  playbooksCheckoutMissing: CheckoutMissingPlaybooks | null;
   sttUrl: string;
   /** Pocket TTS HTTP base URL when configured server-side. Empty string when unset. Gates the speak-finding feature in the UI. */
   ttsUrl: string;
@@ -274,6 +281,7 @@ export interface TransportSessionSlice {
     playbooks: Playbook[],
     cwd: string,
     capabilities?: Partial<Record<LaunchDependency, HostCapability>>,
+    checkoutMissing?: CheckoutMissingPlaybooks,
   ) => void;
   setConnected: (connected: boolean) => void;
   /**

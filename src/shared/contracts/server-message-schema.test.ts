@@ -291,6 +291,24 @@ describe('ServerMessageSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  test('keeps the checkout-missing playbooks on a playbooks message (#3764)', () => {
+    const checkoutMissingPlaybooks = {
+      defaultBranchRef: 'origin/main',
+      checkoutBranch: 'feat-old',
+      missing: ['nb-janitor.md'],
+    };
+    const result = ServerMessageSchema.safeParse(serverMessageCase({
+      type: 'playbooks',
+      cwd: '/tmp/project',
+      playbooks: [],
+      checkoutMissingPlaybooks,
+    }));
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.type === 'playbooks' && result.data.checkoutMissingPlaybooks)
+      .toEqual(checkoutMissingPlaybooks);
+  });
+
   test('accepts legacy resource status messages without inode fields', () => {
     const {
       diskFreeInodes: _diskFreeInodes,

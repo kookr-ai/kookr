@@ -173,6 +173,11 @@ const playbooksMessage = z.object({
   cwd: z.string(),
   playbooks: z.array(jsonObject),
   capabilities: z.partialRecord(launchDependency, hostCapability).optional(),
+  checkoutMissingPlaybooks: z.object({
+    defaultBranchRef: z.string(),
+    checkoutBranch: z.string().optional(),
+    missing: z.array(z.string()),
+  }).optional(),
 });
 
 const quickAction = z.object({

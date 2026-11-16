@@ -168,3 +168,19 @@ export interface Playbook {
    */
   repoTags?: string[];
 }
+
+/**
+ * Project playbooks that exist on the remote default branch but not in the
+ * project checkout the catalog was read from (issue #3764). The project tier
+ * is read from `<cwd>/.kookr/playbooks/` on disk, so a checkout parked on an
+ * old branch silently lacks every playbook merged since; this tells the
+ * operator which ones and why.
+ */
+export interface CheckoutMissingPlaybooks {
+  /** Remote-tracking ref the checkout was compared against, e.g. `origin/main`. */
+  defaultBranchRef: string;
+  /** Branch the checkout is on. Omitted when HEAD is detached or unknown. */
+  checkoutBranch?: string;
+  /** File names (e.g. `nb-janitor.md`) on the default branch but absent on disk, sorted. Never empty. */
+  missing: string[];
+}
