@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import type { AskNotifier, AskRecord } from '../../shared/contracts/asks.js';
+import { ASK_LIMITS, type AskNotifier, type AskRecord } from '../../shared/contracts/asks.js';
 import { TTSClientError } from '../../adapters/tts-client.js';
 import type { TaskStatus } from '../../core/task-status.js';
 import { registerAskRoutes } from '../routes/ask-routes.js';
@@ -163,6 +163,35 @@ describe('AskService.create', () => {
     // Hourly window slides.
     h.clock.now += 61 * 60 * 1000;
     expect((await h.service.create({ ...base, question: 'q8' })).ok).toBe(true);
+  });
+
+  it('counts long-lived open asks against their own cap, so opinion requests never block a short question (#3966)', async () => {
+    const twoDays = 48 * 60 * 60;
+    for (let i = 1; i <= 3; i++) await createOk({ question: `opinion ${i}`, timeoutSec: twoDays });
+    // Three opinion requests left open for two days: a short question is still accepted.
+    const short = await createOk({ question: 'short 1' });
+    expect(short.expiresAt - short.createdAt).toBe(ASK_LIMITS.defaultTimeoutSec * 1000);
+    await createOk({ question: 'short 2' });
+    await createOk({ question: 'short 3' });
+    // The short pool is full. Long-lived asks still go through below.
+    expect(await h.service.create({ ...base, question: 'short 4' }))
+      .toMatchObject({ error: { code: 'rate_limited', scope: 'task_pending' } });
+
+    h.clock.now += 61 * 60 * 1000; // past the hourly cap of 6, nothing has expired
+    for (let i = 4; i <= 6; i++) await createOk({ question: `opinion ${i}`, timeoutSec: twoDays });
+    h.clock.now += 61 * 60 * 1000;
+    for (let i = 7; i <= 10; i++) await createOk({ question: `opinion ${i}`, timeoutSec: twoDays });
+    expect(await h.service.create({ ...base, question: 'opinion 11', timeoutSec: twoDays }))
+      .toMatchObject({ error: { code: 'rate_limited', scope: 'task_pending' } });
+    expect(h.store.all().filter((a) => a.state === 'pending' && a.question.startsWith('opinion'))).toHaveLength(ASK_LIMITS.maxLongLivedPendingPerTask);
+  });
+
+  it('puts an ask with a timeout of exactly the threshold in the short pool and one second more in the long-lived pool', async () => {
+    const edge = ASK_LIMITS.longLivedAfterSec;
+    for (let i = 1; i <= 3; i++) await createOk({ question: `edge ${i}`, timeoutSec: edge });
+    expect(await h.service.create({ ...base, question: 'default timeout' }))
+      .toMatchObject({ error: { code: 'rate_limited', scope: 'task_pending' } });
+    expect((await h.service.create({ ...base, question: 'just over', timeoutSec: edge + 1 })).ok).toBe(true);
   });
 
   it('enforces the global hourly cap across tasks', async () => {

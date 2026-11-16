@@ -84,7 +84,16 @@ export const ASK_LIMITS = {
   maxLabelChars: 48,
   maxQuestionChars: 600,
   maxContextChars: 1500,
+  /** Open asks per task with a timeout of at most {@link ASK_LIMITS.longLivedAfterSec}: someone is usually waiting on these. */
   maxPendingPerTask: 3,
+  /**
+   * Open asks per task with a longer timeout, counted separately (issue #3966). A task that asks for an
+   * opinion without waiting leaves the question open for a day or more; counted with the short ones,
+   * three of them would refuse every later question from that task for days.
+   */
+  maxLongLivedPendingPerTask: 10,
+  /** An ask whose timeout is longer than this (two hours) is long-lived. */
+  longLivedAfterSec: 2 * 60 * 60,
   maxPerTaskPerHour: 6,
   maxGlobalPerHour: 20,
   defaultTimeoutSec: 30 * 60,

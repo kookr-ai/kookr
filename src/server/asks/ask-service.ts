@@ -48,6 +48,11 @@ const MAX_ANSWER_TEXT_CHARS = ASK_LIMITS.maxAnswerTextChars;
 /** Stands in for a question/context that looked like a credential (the detector's own sentinel points at a dashboard view asks do not have). */
 const REDACTED_PLACEHOLDER = '[redacted — looked like a credential]';
 
+/** Whether an ask with this lifetime (timeout, in ms) is long-lived: counted against its own pending cap. */
+function isLongLived(lifetimeMs: number): boolean {
+  return lifetimeMs > ASK_LIMITS.longLivedAfterSec * 1000;
+}
+
 export interface AskServiceDeps {
   store: AskStore;
   /** The Telegram notifier, or undefined while Telegram is not configured. Resolved lazily (Telegram starts after the routes). */
@@ -216,7 +221,7 @@ export class AskService {
       return invalid(`timeout must be ${ASK_LIMITS.minTimeoutSec}..${ASK_LIMITS.maxTimeoutSec} seconds`);
     }
 
-    const limited = this.checkRateLimits(input.taskId);
+    const limited = this.checkRateLimits(input.taskId, isLongLived(timeoutSec * 1000));
     if (limited) {
       this.log(`[asks] rate limited (${limited}) task=${input.taskId}`);
       return { ok: false, error: { code: 'rate_limited', scope: limited } };
@@ -270,7 +275,11 @@ export class AskService {
     return { ok: true, ask: this.deps.store.get(ask.id) ?? ask, deduped: false, redacted };
   }
 
-  private checkRateLimits(taskId: string): 'task_pending' | 'task_hourly' | 'global_hourly' | null {
+  /**
+   * `longLived`: whether the new ask is long-lived. Open asks count against the cap of their own kind
+   * only, so opinion requests left open for days never block a short question, and the reverse.
+   */
+  private checkRateLimits(taskId: string, longLived: boolean): 'task_pending' | 'task_hourly' | 'global_hourly' | null {
     const since = this.now() - HOUR_MS;
     let pending = 0;
     let taskHourly = 0;
@@ -281,9 +290,9 @@ export class AskService {
       if (a.taskId === taskId) taskHourly++;
     }
     for (const a of this.deps.store.all()) {
-      if (a.taskId === taskId && a.state === 'pending') pending++;
+      if (a.taskId === taskId && a.state === 'pending' && isLongLived(a.expiresAt - a.createdAt) === longLived) pending++;
     }
-    if (pending >= ASK_LIMITS.maxPendingPerTask) return 'task_pending';
+    if (pending >= (longLived ? ASK_LIMITS.maxLongLivedPendingPerTask : ASK_LIMITS.maxPendingPerTask)) return 'task_pending';
     if (taskHourly >= ASK_LIMITS.maxPerTaskPerHour) return 'task_hourly';
     if (globalHourly >= ASK_LIMITS.maxGlobalPerHour) return 'global_hourly';
     return null;
