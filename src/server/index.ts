@@ -298,6 +298,7 @@ import type { SystemdNotifier } from './systemd-notify.js';
 import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import { createLucyOperatorHolder } from './lucy-operator/holder.js';
+import { operatorNeeds } from './lucy-operator/look-source.js';
 import { createAskTaskPorts, createTelegramTaskBridge, type TelegramTaskBridge } from './telegram-task-bridge.js';
 import { AskStore } from './asks/ask-store.js';
 import { AskService } from './asks/ask-service.js';
@@ -3029,6 +3030,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           getAsks: () => (askService
             ? listOperatorAsks(askService.all(), Date.now(), (taskId) => taskStore.getTask(taskId)?.name)
             : []),
+          // What waits on the operator and why, from the same findings as the operator conversation's board (issue #3927).
+          getNeedsOperator: () => operatorNeeds(taskStore.viewTasks(), queue.inspectActive()),
+          getTrainHealth: () => integrationTrainMonitor?.getHealthSnapshot() ?? null,
           // A spoken answer goes through the same audited entry point as the panel's buttons.
           answerAsk: (input) => (operatorAsksPort
             ? operatorAsksPort.answer(input)

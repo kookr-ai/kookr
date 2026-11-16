@@ -109,6 +109,54 @@ used here only as ears because, given the same task status, it invented answers 
 questions it could not know (a pull request "was merged", "we've spent 118 hours today"). The helper
 model answered all ten test questions without inventing anything.
 
+## What she answers from, and what leaves the machine
+
+With Talk on and launching off, each answer comes from the helper model on Baseten, a model provider
+outside your machine. With each question Kookr sends it Lucy's instructions, the last few exchanges of
+the conversation, your words (as the recogniser heard them, secrets hidden) and a short task status, at
+most 2,500 characters, built fresh for every turn. In order, the status holds:
+
+1. **Needs the operator.** Every live task that is waiting on you, the longest wait first: its short
+   name, its project, why it waits and for how long. The reasons are Kookr's own words, the same
+   findings the operator conversation's board shows: waiting for permission to use a tool (for example
+   "permission to use Bash"), it asked a question in its session, it says it is finished and wants
+   review, it has stalled and gone quiet, it keeps hitting the same error, and so on. At most eight are
+   listed, with how many more wait. When nothing waits it says so. When the status is too long, this
+   part is the last to be cut.
+2. **The integration train**, when this server watches one (the production port): halted, for how
+   long and why in plain words ("main itself fails the full test suite"); stalled, when merged changes
+   have not reached `main` for a while and the train is not running; otherwise a short all-clear.
+3. **Questions from tasks** (`kookr ask`): the ones waiting, with their choices, and the ones closed in
+   the last few minutes (see [Questions from tasks](#questions-from-tasks)).
+4. **Task counts and lists:** how many tasks are in each state, the unfinished ones with when they last
+   changed, and the six that ended last, with the reason a stopped one gave.
+
+What is never sent:
+
+- the command, file path, URL or any other text a permission prompt shows. Only the tool's name goes,
+  and only when Kookr took it from the agent's own permission request (not from the terminal screen)
+  and it looks like a tool name (`Bash`, `WebFetch`, `mcp__github__create_issue`), not a secret;
+  otherwise she says "a tool";
+- the text of a finding or of a task's "finished" note: an agent may have written it;
+- the train's halt reason as the train wrote it, and its last-cycle detail, which can quote test output.
+  An unknown halt reason becomes "a problem it reported";
+- long or unpronounceable task titles (they become "a task with no short name"), task requests, terminal
+  output and ids. Task names, project names and question text pass through the same secret redaction as
+  the spoken summaries, and terminal codes are removed.
+
+She can tell you what waits and why; she cannot answer a permission prompt or review a task. The
+dashboard does that.
+
+Measured against the real helper model with `scripts/measure-lucy-needs-operator.ts` (ten questions
+such as "what needs me?", "is anything stuck?" and "is the train running?", over three made-up
+situations: a Bash permission prompt plus a task waiting for review; nothing waiting; a stalled task, a
+waiting question and a halted train), three runs, 90 answers on 16 Nov 2026: 89 named the right task
+(or, with nothing waiting, said so), and none invented a task, a time or a train state, by the script's
+word checks and on reading every answer. The weak spot is "does anything need my review?" with only a
+stalled task waiting: once she offered the stalled task as the thing to review, and twice she began
+"yes, one task needs you" before saying that nothing waits for review. With the train healthy, "are my
+merged changes reaching main?" got "I don't have that" each time: the all-clear line does not say so.
+
 ## Measured timings
 
 Measured on 2026-11-11 on an RTX 3090 shared with Kookr's other speech services and an unrelated
