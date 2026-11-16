@@ -191,7 +191,7 @@ Minimum controls for every trace:
 - Include author-bias context in `dispositionReason` when rejection depends on user intent, scope budget, or subjective taste.
 - Require human approval for every prompt or roster diff.
 
-Before broad/default rollout of a critic change:
+Before shipping a critic change (measuring critics is this skill's task, so this check stays; it is a one-off replay of past RFCs, not a shadow phase or a soak period):
 
 - Evaluate a holdout set not used to motivate the change.
 - Use a blinded finding packet where feasible.
@@ -221,7 +221,7 @@ Required for adding, retiring, splitting, merging, or substantially changing a c
 1. Observe at least five RFCs or two active RFC-writing days, and at least three invocations of the target critic.
 2. Diagnose with a manual aggregate report.
 3. Propose a promotion packet with target dimensions, diff, examples, holdout plan, expected failure mode, and rollback condition.
-4. Trial in shadow mode or on holdout RFCs.
+4. Replay the change on holdout RFCs, then ship it switched on and keep measuring it with new traces. Do not run the new critic in shadow mode beside the old one; revert it if later traces show it got worse.
 
 Do not retire high-variance critics solely because their useful findings are infrequent. `design-minimalist` and `ambition-amplifier` are adversarial by design; a critic can be valuable even when the author chooses the other side.
 

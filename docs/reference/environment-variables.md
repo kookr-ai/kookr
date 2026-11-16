@@ -4,6 +4,15 @@ This is the canonical reference for `KOOKR_*` variables read or injected by
 Kookr at runtime. For a starter local configuration, copy `.env.example` and
 uncomment only the values you need.
 
+**New feature switches default to on** (issue #3936). A finished feature ships
+switched on; its variable is a kill switch that turns it off. A new row whose
+default leaves a feature off must say why in its Effect cell, with one of these
+phrases: `Off by default: deletes or migrates data`, `Off by default: spends
+money`, `Off by default: sends data to a third party`, or `Off by default: needs
+a credential or service`. `pnpm validate:default-on` enforces this. The switches
+that were already off when the rule landed are listed in
+`src/core/default-on-guard.ts`; turning them on is issue #3937.
+
 ## Server And Data
 
 | Variable | Default | Accepted values | Effect |

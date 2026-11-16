@@ -72,6 +72,8 @@ For each changed function, ask:
 Style, naming, conventions, imports, test organization — another specialist handles those.
 Ignore the "Repository Conventions" section if present.
 
+Do not ask for the change to ship switched off. A finished feature ships on by default, so on a change that is easy to undo, an off-by-default flag, a shadow or log-only mode, a staged rollout, a soak period or an evaluation gate is never a finding. A kill switch is fine. Ask for a gate only when turning the change on is hard to undo or reaches outside the host: it deletes or migrates data, spends money beyond normal model usage, sends something to a third party, or needs a credential or service the host may not have.
+
 ## Self-verification (CRITICAL — do this before writing each finding)
 
 Before reporting ANY finding, re-read the exact lines you're about to cite:

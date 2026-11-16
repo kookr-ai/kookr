@@ -343,6 +343,14 @@ reviewer, not the implementer, puts each finding in one class:
   break or dead code that changes no behaviour. It never blocks, is never fixed
   on request and is never filed: it stays in the verdict comment only. The
   implementer may fix a nit that sits in lines they are already changing.
+- **Not a finding: "ship it switched off".** A finished feature ships on by
+  default. On a change that is easy to undo, never block on, and never file a
+  follow-up asking for, an off-by-default flag, a shadow or log-only mode, a
+  staged rollout, a soak period or an evaluation gate. A kill switch is fine.
+  Asking for a gate is a valid finding only when turning the change on is hard
+  to undo or reaches outside the host: it deletes or migrates data, spends
+  money beyond normal model usage, sends something to a third party, or needs
+  a credential or service the host may not have.
 
 In round 1, critical findings and small defects block (§4a has the later
 rounds); small defects, larger defects and nits are all **non-critical**. When the reviewer

@@ -502,6 +502,13 @@ if ! pnpm validate:requirements; then
   exit 1
 fi
 
+echo "Checking new feature switches ship on..."
+if ! pnpm validate:default-on; then
+  echo ""
+  echo "Push rejected: a documented feature switch defaults to off without a reason (issue #3936)."
+  exit 1
+fi
+
 # Fast gate (issue #3788): when .kookr/delivery-gate.json on origin/main sets
 # "prePushGate": "fast", a push runs only the tests related to its diff and the
 # integration train runs the full suite. Absent config, the kill-switch file, or
