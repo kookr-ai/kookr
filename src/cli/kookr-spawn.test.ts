@@ -94,6 +94,19 @@ function parseSingleJsonLog(logs: string[]): any {
   return JSON.parse(logs[0]);
 }
 
+// #3928: when no server answers, spawn reads the planned-restart note from
+// ~/.kookr on disk and may wait or write an operator alert. Point HOME at an
+// empty dir so a live deploy on this host never reaches these tests.
+let isolatedHome: string;
+beforeEach(async () => {
+  isolatedHome = await mkdtemp(join(tmpdir(), 'kookr-spawn-home-'));
+  vi.stubEnv('HOME', isolatedHome);
+});
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await rm(isolatedHome, { recursive: true, force: true });
+});
+
 // ---------- parseArgs ----------
 
 describe('parseArgs', () => {

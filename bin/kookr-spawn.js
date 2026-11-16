@@ -12,9 +12,18 @@
 // that distinguishes a Kookr instance from an unrelated service.
 
 import { pathToFileURL } from 'node:url';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { resolve as pathResolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve as pathResolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import {
+  classifyRestartIntent,
+  firstRestartIntentAcrossPorts,
+  formatAge,
+  readRestartIntent,
+  resolveKookrDir,
+  restartIntentJson,
+} from './kookr-restart-intent.js';
 
 const PORTS_TO_TRY = [4800, 4801];
 const PROBE_TIMEOUT_MS = 1500;
@@ -33,6 +42,16 @@ const MAX_REDEPLOY_WAIT_MS = 300_000;
 // would always treat a live deploying server as unreachable (#1975 review).
 const DEPLOY_STATUS_TIMEOUT_MS = 15_000;
 const POST_TIMEOUT_MS = 10_000;
+// Issue #3928: when no server answers but the deploy script's planned-restart
+// note (~/.kookr/restart-intent.json, bin/kookr-restart-intent.js) says a
+// restart is in progress, keep probing until the server is back, the note goes
+// stale (a failed deploy), or the caller's limit passes — instead of giving up
+// after the short connect retry. A server that is down cannot answer
+// /api/deploy/status, so the note on local disk is the only signal left.
+const RESTART_PROGRESS_LOG_INTERVAL_MS = 30_000;
+const MAX_RESTART_WAIT_SECONDS = 3600;
+const LOST_LAUNCH_TITLE_MAX_CHARS = 160;
+const OPERATOR_SIGNAL_SCHEMA = 'operator-signal.v1';
 // #1591: ambiguous-outcome reconciliation. A POST that times out (client abort
 // at POST_TIMEOUT_MS) or returns a 5xx leaves the task's existence unknown — it
 // may or may not have been created. When an idempotency key is in play a re-POST
@@ -255,6 +274,15 @@ Options:
       --no-auto-idempotency  Force it off, overriding the env default.
       --wait[=<seconds>]   After creating the task, poll until it raises
                            completion-ready or reaches a terminal state.
+      --restart-wait <seconds>
+                           Upper limit on waiting through a planned Kookr
+                           restart (0..${MAX_RESTART_WAIT_SECONDS}; 0 turns the wait off).
+                           When no server answers and the deploy's
+                           restart note (~/.kookr/restart-intent.json) says
+                           a restart is in progress, spawn keeps probing
+                           until the server is back, then launches as usual.
+                           Default: until the note goes stale (the deploy's
+                           own deadline). Also KOOKR_SPAWN_RESTART_WAIT_SECONDS.
       --parent-task-id <uuid>  Override the parent task linkage explicitly.
       --no-parent-task     Launch detached, ignoring KOOKR_TASK_ID.
       --auto-close-on-signal
@@ -326,6 +354,11 @@ Environment:
                                    the connect wait by this many ms (0..300000).
                                    When status reports deploying, spawn already
                                    waits up to ${DEFAULT_REDEPLOY_WAIT_MS}ms.
+  KOOKR_SPAWN_RESTART_WAIT_SECONDS
+                                  Upper limit on the planned-restart wait
+                                   (same as --restart-wait; the flag wins).
+  KOOKR_OPERATOR_SIGNAL_DIR       Where a lost-launch operator alert is written
+                                   (default ~/.kookr/playbook-state/operator-signals).
 
 Hook-safety inside a Claude Code session:
   When invoked through a Claude Code Bash tool, positional argv and
@@ -339,7 +372,8 @@ Exit codes:
   0  Task created (or idempotent dedup against an already-active task).
      Also: --dry-run preview succeeded (no blocked duplicate).
   2  User error (bad flags, empty prompt, missing cwd, etc.).
-  3  No Kookr server reachable.
+  3  No Kookr server reachable (including a planned restart that went
+     stale or outlasted --restart-wait; an operator alert is written).
   4  Server returned an error.
   5  Duplicate active prompt blocked.
   6  --claim-issue held by another live task, OR --wait timed out.`;
@@ -373,6 +407,7 @@ function parseArgs(argv) {
     json: false,
     wait: false,
     waitTimeoutSeconds: null,
+    restartWaitSeconds: null,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -429,6 +464,10 @@ function parseArgs(argv) {
     } else if (tok.startsWith('--wait=')) {
       out.wait = true;
       out.waitTimeoutSeconds = parseWaitTimeoutSeconds(tok.slice('--wait='.length));
+    } else if (tok === '--restart-wait') {
+      out.restartWaitSeconds = parseRestartWaitSeconds(eat(), '--restart-wait');
+    } else if (tok.startsWith('--restart-wait=')) {
+      out.restartWaitSeconds = parseRestartWaitSeconds(tok.slice('--restart-wait='.length), '--restart-wait');
     } else if (tok === '--parent-task-id') {
       out.parentTaskId = eat();
     } else if (tok.startsWith('--parent-task-id=')) {
@@ -619,6 +658,34 @@ function parseWaitTimeoutSeconds(raw) {
     throw new UsageError(`--wait timeout must be a positive number of seconds (got: ${raw})`);
   }
   return n;
+}
+
+/**
+ * Parse an upper limit, in seconds, on how long spawn waits through a planned
+ * restart (#3928). `0` turns the wait off (today's short retry only).
+ */
+function parseRestartWaitSeconds(raw, label) {
+  const trimmed = String(raw ?? '').trim();
+  const n = Number(trimmed);
+  if (trimmed === '' || !Number.isFinite(n) || n < 0 || n > MAX_RESTART_WAIT_SECONDS) {
+    throw new UsageError(
+      `${label} must be a number of seconds in 0..${MAX_RESTART_WAIT_SECONDS} (got: ${raw})`,
+    );
+  }
+  return n;
+}
+
+/**
+ * The caller's cap on the planned-restart wait, in ms, or null when none is set
+ * (then the note's own deadline is the only limit). The flag wins over the env.
+ */
+function resolveRestartWaitLimitMs({ args, env }) {
+  if (args.restartWaitSeconds !== null && args.restartWaitSeconds !== undefined) {
+    return args.restartWaitSeconds * 1000;
+  }
+  const raw = env.KOOKR_SPAWN_RESTART_WAIT_SECONDS;
+  if (raw === undefined || raw === '') return null;
+  return parseRestartWaitSeconds(raw, 'KOOKR_SPAWN_RESTART_WAIT_SECONDS') * 1000;
 }
 
 /**
@@ -947,20 +1014,37 @@ async function resolveBaseUrl({
   sleep = defaultSleep,
   now = Date.now,
   log = defaultLog,
+  restartWaitLimitMs = null,
+  lookupRestartIntent = defaultLookupRestartIntent,
 } = {}) {
   if (env.KOOKR_API_BASE_URL && env.KOOKR_API_BASE_URL.trim() !== '') {
     const base = env.KOOKR_API_BASE_URL.trim().replace(/\/+$/, '');
-    return { kind: 'explicit', baseUrl: base };
+    return resolveExplicitBaseUrl({ baseUrl: base, env, sleep, now, log, restartWaitLimitMs, lookupRestartIntent });
   }
   const portEnv = parsePortEnv(env.KOOKR_PORT);
   if (portEnv.kind === 'invalid') {
     return { kind: 'invalid_port', raw: portEnv.raw };
   }
   if (portEnv.kind === 'valid') {
-    return { kind: 'explicit', baseUrl: `http://127.0.0.1:${portEnv.port}` };
+    return resolveExplicitBaseUrl({
+      baseUrl: `http://127.0.0.1:${portEnv.port}`,
+      env,
+      sleep,
+      now,
+      log,
+      restartWaitLimitMs,
+      lookupRestartIntent,
+    });
   }
   const retries = parseRetries(env.KOOKR_SPAWN_CONNECT_RETRIES);
   const startMs = now();
+  const restartWait = createRestartWaitTracker({
+    lookup: () => lookupRestartIntent({ env, port: null, now: now() }),
+    limitMs: restartWaitLimitMs,
+    now,
+    startMs,
+    log,
+  });
   let selected = selectProbeWaitBudget({
     defaultBudgetMs: defaultProbeBudgetMs(retries),
     deploying: false,
@@ -977,7 +1061,10 @@ async function resolveBaseUrl({
       return { kind: 'ambiguous', ports: PORTS_TO_TRY };
     }
     if (up.length === 1) {
-      return { kind: 'auto', baseUrl: `http://127.0.0.1:${up[0]}`, port: up[0] };
+      return withRestartWait(
+        { kind: 'auto', baseUrl: `http://127.0.0.1:${up[0]}`, port: up[0] },
+        restartWait.summary('recovered'),
+      );
     }
 
     attempts += 1;
@@ -1002,15 +1089,248 @@ async function resolveBaseUrl({
       }
     }
 
+    // #3928: a planned-restart note keeps the loop alive past both budgets
+    // above; with no note this is always false and today's timing is unchanged.
+    const waitingOnRestart = restartWait.step() === 'wait';
+
     const elapsed = Math.max(0, now() - startMs);
     const underDefaultAttempts = attempts < retries;
     const underExtendedBudget = selected.reason !== 'default' && elapsed < selected.budgetMs;
-    if (!underDefaultAttempts && !underExtendedBudget) {
+    if (!underDefaultAttempts && !underExtendedBudget && !waitingOnRestart) {
       break;
     }
     await sleep(RETRY_DELAY_MS);
   }
-  return { kind: 'none', ports: PORTS_TO_TRY, attempts };
+  return withRestartWait({ kind: 'none', ports: PORTS_TO_TRY, attempts }, restartWait.summary());
+}
+
+/**
+ * Explicit base URL (KOOKR_API_BASE_URL / KOOKR_PORT): today spawn POSTs at
+ * once without probing. Worker tasks always run with KOOKR_API_BASE_URL set,
+ * so they are the callers a planned restart hurts most (#3928). When the URL
+ * is local and a restart note exists for its port, check /api/health first and
+ * wait through the restart exactly like the auto-detect sweep. With no note
+ * (or a remote URL) nothing changes: no extra request is made.
+ */
+async function resolveExplicitBaseUrl({ baseUrl, env, sleep, now, log, restartWaitLimitMs, lookupRestartIntent }) {
+  const explicit = { kind: 'explicit', baseUrl };
+  const port = loopbackPortOf(baseUrl);
+  if (port === null) return explicit;
+  const startMs = now();
+  const lookup = () => lookupRestartIntent({ env, port, now: now() });
+  if (classifyRestartIntent(lookup(), startMs).state === 'none') return explicit;
+
+  const retries = parseRetries(env.KOOKR_SPAWN_CONNECT_RETRIES);
+  const restartWait = createRestartWaitTracker({ lookup, limitMs: restartWaitLimitMs, now, startMs, log });
+  let attempts = 0;
+  while (true) {
+    if (await probeHealth(baseUrl, PROBE_TIMEOUT_MS)) {
+      // A healthy server wins over the note: an orphaned note can linger for
+      // hours after a deploy that bypassed the script's clear.
+      return withRestartWait(explicit, restartWait.summary('recovered'));
+    }
+    attempts += 1;
+    const waitingOnRestart = restartWait.step() === 'wait';
+    if (attempts >= retries && !waitingOnRestart) break;
+    await sleep(RETRY_DELAY_MS);
+  }
+  return withRestartWait({ kind: 'none', ports: [port], attempts }, restartWait.summary());
+}
+
+/** Port of a loopback base URL, or null for a remote host or a bad URL. */
+function loopbackPortOf(baseUrl) {
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return null;
+  }
+  if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(url.hostname)) return null;
+  const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
+}
+
+/**
+ * Read the planned-restart note from local disk: the note for one port, or the
+ * most relevant one across the auto-detect ports (an in-progress note on either
+ * port beats a stale one; expired orphans are skipped).
+ */
+function defaultLookupRestartIntent({ env, port = null, now = Date.now() }) {
+  if (port !== null) return readRestartIntent(resolveKookrDir({ port, env }));
+  return firstRestartIntentAcrossPorts(PORTS_TO_TRY, { env, now })?.intent ?? null;
+}
+
+function withRestartWait(result, restartWait) {
+  return restartWait ? { ...result, restartWait } : result;
+}
+
+/**
+ * Track one planned-restart wait (#3928). After each failed health sweep the
+ * caller asks `step()` whether to keep probing:
+ *   - 'wait': a note says a restart is in progress and the caller's limit has
+ *     not passed (a progress line is logged every 30 seconds), or the note it
+ *     was waiting on just disappeared — the deploy clears the note once the new
+ *     server is ready, so one more probe settles the race.
+ *   - 'stop': the note went stale (a failed deploy), the limit passed, or the
+ *     note disappeared and the extra probe still failed.
+ *   - 'none': no note was ever seen; the caller keeps today's retry rules.
+ * A 'stop' never cuts the caller's default retries short.
+ * `summary()` returns null when no note was seen, so callers add nothing.
+ */
+function createRestartWaitTracker({ lookup, limitMs, now, startMs, log }) {
+  let seen = null;
+  let outcome = null;
+  let lastLogMs = null;
+  let graceUsed = false;
+  return {
+    step() {
+      const nowMs = now();
+      const intent = lookup();
+      const { state, ageMs } = classifyRestartIntent(intent, nowMs);
+      if (state === 'in-progress') {
+        seen = intent;
+        const waitedMs = Math.max(0, nowMs - startMs);
+        if (limitMs !== null && waitedMs >= limitMs) {
+          outcome = 'limit_reached';
+          return 'stop';
+        }
+        if (lastLogMs === null || nowMs - lastLogMs >= RESTART_PROGRESS_LOG_INTERVAL_MS) {
+          lastLogMs = nowMs;
+          log(
+            `kookr spawn: Kookr is restarting, ${intent.reason} started ${formatAge(ageMs)} ago, waiting` +
+            (limitMs !== null ? ` (limit ${formatAge(limitMs)})` : '') +
+            '...',
+          );
+        }
+        return 'wait';
+      }
+      if (state === 'stale') {
+        seen = intent;
+        outcome = 'stale';
+        return 'stop';
+      }
+      if (seen === null) return 'none';
+      if (!graceUsed) {
+        graceUsed = true;
+        return 'wait';
+      }
+      outcome = 'cleared';
+      return 'stop';
+    },
+    summary(finalOutcome = outcome) {
+      if (seen === null) return null;
+      const nowMs = now();
+      return {
+        outcome: finalOutcome ?? 'cleared',
+        waitedMs: Math.max(0, nowMs - startMs),
+        ...restartIntentJson(seen, nowMs),
+      };
+    },
+  };
+}
+
+// ---------- #3928: lost-launch operator alert ----------
+
+/** Mirror of defaultOperatorSignalDir in src/observability/signal-delivery/operator-signal.ts. */
+function operatorSignalDir(env) {
+  const override = typeof env.KOOKR_OPERATOR_SIGNAL_DIR === 'string' ? env.KOOKR_OPERATOR_SIGNAL_DIR.trim() : '';
+  if (override) return override;
+  const home = env.HOME ?? env.USERPROFILE ?? homedir();
+  return join(home, '.kookr', 'playbook-state', 'operator-signals');
+}
+
+/** Mirror of signalFileName in src/observability/signal-delivery/operator-signal.ts. */
+function operatorSignalFileName(key) {
+  const base = key
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[-.]+|-+$/g, '')
+    .slice(0, 120);
+  return `${base || 'signal'}.json`;
+}
+
+function promptFirstLine(prompt) {
+  const line = String(prompt ?? '').split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+  return line.length > LOST_LAUNCH_TITLE_MAX_CHARS
+    ? `${line.slice(0, LOST_LAUNCH_TITLE_MAX_CHARS - 1)}…`
+    : line;
+}
+
+/**
+ * Write one operator alert naming a launch that a failed or over-long restart
+ * cost (#3928). Plain JS on purpose: this runs exactly while dist/ may be
+ * mid-rebuild, so it cannot import the TypeScript writer. The file matches the
+ * operator-signal.v1 schema the delivery service reads.
+ *
+ * The key is per launch and per restart (prompt + cwd + claimed issue, plus the
+ * note's startedAt), and an existing file is left alone: a feeder that retries
+ * the same lost launch must not re-page the operator on every attempt.
+ *
+ * @returns {{ path: string, written: boolean } | { error: string }}
+ */
+function writeLostLaunchAlert({ env, prompt, cwd, claimIssue, claimRepo, restartWait, now = Date.now() }) {
+  try {
+    const identity = createHash('sha256')
+      .update(`${prompt}\0${cwd}\0${claimRepo ?? ''}\0${claimIssue ?? ''}`)
+      .digest('hex')
+      .slice(0, 16);
+    const key = `spawn-launch-lost:${identity}:${restartWait.startedAt ?? 'unknown'}`;
+    const dir = operatorSignalDir(env);
+    const path = join(dir, operatorSignalFileName(key));
+    if (existsSync(path)) return { path, written: false };
+    const issue = claimIssue !== null && claimIssue !== undefined
+      ? ` (issue #${claimIssue}${claimRepo ? ` in ${claimRepo}` : ''})`
+      : '';
+    const why = restartWait.outcome === 'stale'
+      ? `the restart (${restartWait.reason}) started ${formatAge(restartWait.ageMs)} ago and never came back — the deploy looks failed`
+      : `Kookr was still restarting (${restartWait.reason}) when spawn's wait limit passed after ${formatAge(restartWait.waitedMs)}`;
+    const signal = {
+      schemaVersion: OPERATOR_SIGNAL_SCHEMA,
+      key,
+      kind: 'alert',
+      source: 'kookr-spawn',
+      title: `Launch lost during a Kookr restart${issue}: ${promptFirstLine(prompt) || '(empty prompt)'}`,
+      detail: [
+        `kookr spawn could not launch this task: ${why}.`,
+        `Working directory: ${cwd}`,
+        ...(issue ? [`Claimed issue: #${claimIssue}${claimRepo ? ` (${claimRepo})` : ''}`] : []),
+        'No task was created. Re-run the spawn once Kookr is back.',
+      ].join('\n'),
+      createdAt: new Date(now).toISOString(),
+    };
+    mkdirSync(dir, { recursive: true });
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(signal, null, 2), 'utf8');
+    renameSync(tmp, path);
+    return { path, written: true };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * --json only: merge `extra` into the `details` of every envelope written to
+ * `out`. Lets the restart-wait facts reach every success envelope (there are a
+ * dozen exit points after base-URL resolution) without threading a parameter
+ * through each one.
+ */
+function withJsonDetails(out, extra) {
+  return {
+    log(line) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        // not an envelope
+      }
+      if (parsed && typeof parsed === 'object' && parsed.details && typeof parsed.details === 'object') {
+        parsed.details = { ...parsed.details, ...extra };
+        return out.log(JSON.stringify(parsed));
+      }
+      return out.log(line);
+    },
+    error: (...a) => out.error(...a),
+  };
 }
 
 function defaultSleep(ms) {
@@ -2191,6 +2511,7 @@ async function main({
   exit = process.exit,
   sleep = defaultSleep,
   now,
+  lookupRestartIntent = defaultLookupRestartIntent,
 } = {}) {
   let args;
   try {
@@ -2261,6 +2582,8 @@ async function main({
       sleep,
       now,
       log: (msg) => err.error(msg),
+      restartWaitLimitMs: resolveRestartWaitLimitMs({ args, env }),
+      lookupRestartIntent,
     });
   } catch (e) {
     if (e instanceof UsageError) {
@@ -2314,6 +2637,9 @@ async function main({
     );
     return exit(EXIT_NO_SERVER);
   }
+  if (resolved.kind === 'none' && resolved.restartWait && resolved.restartWait.outcome !== 'cleared') {
+    return reportLostToRestart({ args, resolved, prompt, cwdAbs, env, out, err, exit, now });
+  }
   if (resolved.kind === 'none') {
     if (args.json) {
       return exitJson({
@@ -2338,6 +2664,18 @@ async function main({
 
   const baseUrl = resolved.baseUrl;
   const parentTaskId = resolveParentTaskId({ args, env });
+  if (resolved.restartWait) {
+    // #3928: the server came back during a planned restart; launch as usual
+    // (same idempotency key: it is derived from the spawn's identity, not time).
+    if (args.json) {
+      out = withJsonDetails(out, { restartWait: resolved.restartWait });
+    } else {
+      err.error(
+        `kookr spawn: Kookr is back after waiting ${formatAge(resolved.restartWait.waitedMs)} ` +
+        `through a restart (${resolved.restartWait.reason}); launching.`,
+      );
+    }
+  }
 
   // Effective idempotency key: an explicit --idempotency-key always wins.
   // Otherwise, if auto-idempotency is opted into (flag or env) and the caller
@@ -2690,6 +3028,55 @@ async function main({
   return waitAndExit({ args, task: result.task, baseUrl, out, err, exit, sleep, now });
 }
 
+/**
+ * #3928: no server came back while a planned-restart note was on disk — the
+ * note went stale (failed deploy) or the caller's wait limit passed. Exit 3 as
+ * before, say why, and leave one operator alert naming the launch that was lost
+ * (not for --dry-run, which never launches anything).
+ */
+function reportLostToRestart({ args, resolved, prompt, cwdAbs, env, out, err, exit, now }) {
+  const rw = resolved.restartWait;
+  const ports = `:${resolved.ports.join(' or :')}`;
+  const why = rw.outcome === 'stale'
+    ? `a Kookr restart (${rw.reason}) started ${formatAge(rw.ageMs)} ago and has not come back — the deploy looks failed`
+    : `Kookr is still restarting (${rw.reason} started ${formatAge(rw.ageMs)} ago) and spawn's wait limit passed after ${formatAge(rw.waitedMs)}`;
+  const message = `no Kookr server reachable on ${ports}: ${why}; no task was created`;
+  const alert = args.dryRun
+    ? null
+    : writeLostLaunchAlert({
+        env,
+        prompt,
+        cwd: cwdAbs,
+        claimIssue: args.claimIssue,
+        claimRepo: args.claimRepo,
+        restartWait: rw,
+        ...(now ? { now: now() } : {}),
+      });
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_NO_SERVER,
+      ok: false,
+      code: 'NO_SERVER',
+      message,
+      details: {
+        ports: resolved.ports,
+        attempts: resolved.attempts,
+        restartWait: rw,
+        ...(alert ? { alert } : {}),
+      },
+    });
+  }
+  err.error(`kookr-spawn: ${message}.`);
+  if (alert && 'path' in alert) {
+    err.error(`kookr-spawn: operator alert ${alert.written ? 'written' : 'already present'}: ${alert.path}`);
+  } else if (alert) {
+    err.error(`kookr-spawn: could not write the operator alert (${alert.error}).`);
+  }
+  return exit(EXIT_NO_SERVER);
+}
+
 // ---------- entry guard (so tests can import without running) ----------
 
 function isInvokedDirectly() {
@@ -2753,6 +3140,8 @@ export {
   isReconcilableStatus,
   defaultProbeBudgetMs,
   parseRedeployWaitMs,
+  parseRestartWaitSeconds,
+  writeLostLaunchAlert,
   probeDeployStatus,
   probeDeployStatusAny,
   probeHealth,
@@ -2766,5 +3155,6 @@ export {
   DEPLOY_STATUS_TIMEOUT_MS,
   RECENT_RESTART_WINDOW_MS,
   PROBE_TIMEOUT_MS,
+  RESTART_PROGRESS_LOG_INTERVAL_MS,
   RETRY_DELAY_MS,
 };
