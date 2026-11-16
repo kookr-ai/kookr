@@ -190,6 +190,11 @@ export const DOCUMENTED_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_OPENCODE_SEED',
   // Read by scripts/prod-restart.sh (integration train supervision, issue #3796).
   'KOOKR_INTEGRATION_TRAIN_SUPERVISE',
+  // Kill switches of plugin hooks, read by their .sh wrappers in plugin/hooks/
+  // (issues #3652, #3653, #3654).
+  'KOOKR_GIT_ADD_ALL_GUARD_SKIP',
+  'KOOKR_UPSTREAM_LAG_SKIP',
+  'KOOKR_WORKTREE_DEPS_HINT_SKIP',
   // Shared speech writer and Compose overlay live under stt/, outside the
   // scanned app roots. Their actual configuration is covered by STT tests.
   'KOOKR_STT_CORPUS',
