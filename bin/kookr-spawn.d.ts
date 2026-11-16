@@ -250,6 +250,8 @@ export interface FormatDedupArgs {
 export interface MainDeps {
   /** #3928 test seam: defaults to reading the restart note from local disk. */
   lookupRestartIntent?: LookupRestartIntent;
+  /** #3861 test seam: ms a playbook launch waits for the first stdin byte (default 5000). */
+  stdinFirstByteTimeoutMs?: number;
   argv?: string[];
   env?: Record<string, string | undefined>;
   stdin?: NodeJS.ReadableStream & { isTTY?: boolean };
@@ -270,7 +272,10 @@ export function parseWaitTimeoutSeconds(raw: string): number;
 export function defaultProbeBudgetMs(retries: number, retryDelayMs?: number): number;
 export function parseRedeployWaitMs(raw: string | undefined | null): number | null;
 export function selectProbeWaitBudget(input: SelectProbeWaitBudgetInput): ProbeWaitBudget;
-/** Resolves to null only with --playbook and no prompt source (or empty stdin). */
+/**
+ * Resolves to null only with --playbook and no prompt source, an empty stdin,
+ * or a stdin that sent no byte within `stdinFirstByteTimeoutMs`.
+ */
 export function resolvePrompt(inputs: ResolvePromptInputs): Promise<string | null>;
 export function resolvePromptSource(
   args: ParsedArgs,

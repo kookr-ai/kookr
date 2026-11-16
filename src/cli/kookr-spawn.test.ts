@@ -2417,6 +2417,49 @@ describe('main', () => {
     }
   });
 
+  // #3959 / #3861: an empty or silent stdin on a playbook launch is no prompt,
+  // and the dry run must not name stdin as its source.
+  it.each([
+    ['empty stdin', () => pipedStdin(''), false],
+    ['silent open stdin', () => openPipeStdin(), true],
+  ])('--dry-run with --playbook and %s reports no prompt source', async (_label, makeStdin, expectNotice) => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 201, body: JSON.stringify({ id: 'nope' }) }),
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([]) }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: [
+          '--dry-run', '--json',
+          '--playbook', 'implement-github-issue.md',
+          '--param', 'issueSelector=7',
+          '--idempotency-key', 'issue:7',
+        ],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: makeStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+        stdinFirstByteTimeoutMs: 20,
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      const envelope = parseSingleJsonLog(logs);
+      expect(envelope.details.promptSource).toBeNull();
+      expect(envelope.details.body).not.toHaveProperty('prompt');
+      const notices = errBucket.errors.filter((line) => /no data on stdin after 20ms/.test(String(line)));
+      expect(notices).toHaveLength(expectNotice ? 1 : 0);
+      if (expectNotice) expect(String(notices[0])).toMatch(/^kookr-spawn: /);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   // ---- #1768: --dry-run preview (validate + resolve + dedupe, no POST) ----
 
   it('--dry-run prints the resolved payload and never POSTs (#1768)', async () => {

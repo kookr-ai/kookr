@@ -307,7 +307,8 @@ Options:
                            launched with no prompt and its --param values.
                            With no prompt argument or file, it still reads a
                            piped stdin, but gives up after 5s with no data;
-                           pass </dev/null to skip that wait (and in loops).
+                           pass </dev/null to skip that wait, and always
+                           inside a \`while read\` loop.
                            Requires --idempotency-key or --auto-idempotency.
       --playbook-scope <scope>
                            Select the playbook collection to search: project,
@@ -2668,6 +2669,7 @@ async function main({
   sleep = defaultSleep,
   now,
   lookupRestartIntent = defaultLookupRestartIntent,
+  stdinFirstByteTimeoutMs = DEFAULT_PLAYBOOK_STDIN_FIRST_BYTE_TIMEOUT_MS,
 } = {}) {
   let args;
   try {
@@ -2715,6 +2717,7 @@ async function main({
       stdin,
       env,
       warn: (message) => err.error(`kookr-spawn: ${message}`),
+      stdinFirstByteTimeoutMs,
     });
     cwdAbs = resolveCwd(args.cwd, cwd);
   } catch (e) {
