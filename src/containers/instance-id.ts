@@ -38,12 +38,20 @@ export async function getOrCreateInstanceId(dataDir: string): Promise<string> {
   }
 }
 
-/** Read-only variant for commands that must not create state: undefined when no instance id exists yet. */
+/**
+ * Read-only variant for commands that must not create state: undefined only when no instance id file exists yet.
+ * A file that exists but is corrupt or unreadable throws, so callers report the corruption instead of mistaking it
+ * for an install that never launched a container.
+ */
 export async function readInstanceId(dataDir: string): Promise<string | undefined> {
+  const file = join(dataDir, 'instance-id');
+  let v: string;
   try {
-    const v = (await readFile(join(dataDir, 'instance-id'), 'utf8')).trim();
-    return UUID.test(v) ? v : undefined;
-  } catch {
-    return undefined;
+    v = (await readFile(file, 'utf8')).trim();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw err;
   }
+  if (!UUID.test(v)) throw new Error(`${file} exists but is not a valid instance id`);
+  return v;
 }

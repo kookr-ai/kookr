@@ -74,7 +74,14 @@ export async function runContainersCli(argv: string[], deps: ContainersDeps = {}
   if (p.error) { err.error(p.error); err.error('Usage: kookr containers ls|prune --instance [--yes] [--json] [--dir PATH]'); return 2; }
 
   const dataDir = p.dir ?? resolveKookrDataDir(env);
-  const instanceId = await readInstanceId(dataDir);
+  let instanceId: string | undefined;
+  try {
+    instanceId = await readInstanceId(dataDir);
+  } catch (e) {
+    // A corrupt or unreadable id is not "never launched": hiding it would make ls look empty and prune a no-op.
+    err.error(`kookr containers: cannot read this install's container instance id: ${e instanceof Error ? e.message : String(e)}`);
+    return 1;
+  }
   if (!instanceId) {
     if (p.json) out.log(JSON.stringify({ instanceId: null, containers: [] }));
     else out.log(`No container instance id in ${dataDir}: this install has not launched any worker container.`);

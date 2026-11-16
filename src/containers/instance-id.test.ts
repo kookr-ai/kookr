@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -22,6 +22,15 @@ describe('instance id', () => {
     writeFileSync(join(dir, 'instance-id'), 'garbage');
     await expect(getOrCreateInstanceId(dir)).rejects.toThrow('refusing to replace');
     expect(readFileSync(join(dir, 'instance-id'), 'utf8')).toBe('garbage');
+    await expect(readInstanceId(dir)).rejects.toThrow('not a valid instance id');
+  });
+
+  test('readInstanceId is undefined only for a missing file; an empty file or a directory in its place throws', async () => {
     expect(await readInstanceId(dir)).toBeUndefined();
+    writeFileSync(join(dir, 'instance-id'), '');
+    await expect(readInstanceId(dir)).rejects.toThrow('not a valid instance id');
+    rmSync(join(dir, 'instance-id'));
+    mkdirSync(join(dir, 'instance-id'));
+    await expect(readInstanceId(dir)).rejects.toThrow();
   });
 });
