@@ -131,7 +131,10 @@ PR stacked on another feature branch. The server reads both branches per
 repository from a local checkout (the default branch from `origin/HEAD`, or once
 from `git ls-remote --symref origin HEAD` when the clone has no `origin/HEAD`);
 while it does not know the default branch, the base branch is not checked. The
-hung-task, hung-suspect and provider-paused reapers share this attribution.
+hung-task, hung-suspect and provider-paused reapers share this attribution for
+their "delivered" label. The hung-suspect and provider-paused sweeps also have a
+label-only fallback that asks GitHub for a merged PR by the task's session branch
+(#3578); that fallback does not check the base branch yet (#4077).
 
 **Only opted-in tasks.** This path fires only for tasks with
 `autoCloseOnSignal` — the same population the signal path serves. An ask-first /
@@ -152,8 +155,9 @@ batches), matching the completion-ready auto-close sweep.
 A self-continuation chain task (playbook parameter `selfContinuation=true`, or
 the prompt markers the `chain-handoff-stop` hook reads) should end its unit by
 spawning its successor or by recording why the chain stops. When such a task is
-completed while it has neither, by this sweep, by an operator or by any other
-completion path, the server records it: the task gets
+completed while it is still running and has neither, by this sweep, by an
+operator or by any other completion path, the server records it (completing a
+task that already ended, for example one the reaper terminated, is not marked): the task gets
 `chainEndedWithoutHandoff: true`, its completion digest starts with the bullet
 "Chain ended without successor or stop reason", and `audit.jsonl` gets a
 `task.chainEndedWithoutHandoff` row naming the actor. A child task, or any

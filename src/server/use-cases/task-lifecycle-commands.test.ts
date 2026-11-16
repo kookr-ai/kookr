@@ -137,6 +137,21 @@ describe('TaskLifecycleCommands.completeTask', () => {
     }
   });
 
+  test('issue #3678: completing an already-terminated chain task leaves no marker (it crashed, not a missing handoff)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('- self-continuation: true', '/repo');
+    addSession(taskStore, task.id);
+    taskStore.terminateTask(task.id);
+    expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+    const { deps } = makeDeps(taskStore);
+
+    const result = await new TaskLifecycleCommands(deps).completeTask(task.id);
+
+    expect(result.outcome).toBe('completed');
+    expect(taskStore.getTask(task.id)?.chainEndedWithoutHandoff).toBeUndefined();
+    expect(taskStore.getTask(task.id)?.completionDigest?.bullets ?? []).not.toContain('Chain ended without successor or stop reason');
+  });
+
   test('issue #3678: completing a chain task that raised its stop reason leaves no marker', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('- self-continuation: true', '/repo');

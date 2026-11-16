@@ -420,6 +420,34 @@ describe('GitHubScannerService', () => {
       };
     }
 
+    it('records the task\'s own git push and gh pr create as authorship evidence (issue #3678)', async () => {
+      const fetcher = createMockFetcher(true);
+      const task = taskStore.createTask({ prompt: 'do stuff', cwd: '/tmp' });
+      (fetcher.inferOwnerRepo as ReturnType<typeof vi.fn>).mockResolvedValue({ owner: 'acme', repo: 'app' });
+      scanner = new GitHubScannerService({
+        taskStore, stateStore, fetcher, config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges,
+      });
+      await scanner.start();
+
+      const events: AgentEvent[] = [
+        { type: 'tool_use', sessionId: 'sess-1', toolName: 'Bash', toolInput: { command: 'git push -u origin fix-bug' }, toolUseId: 'p1' },
+        {
+          type: 'tool_result', sessionId: 'sess-1', toolName: 'Bash', toolUseId: 'p1',
+          toolResponse: { stdout: '', stderr: 'To github.com:acme/app.git\n * [new branch]      fix-bug -> fix-bug\n' },
+        },
+        { type: 'tool_use', sessionId: 'sess-1', toolName: 'Bash', toolInput: { command: 'gh pr create --fill' }, toolUseId: 'p2' },
+        { type: 'tool_result', sessionId: 'sess-1', toolName: 'Bash', toolUseId: 'p2', toolResponse: 'https://github.com/acme/app/pull/100\n' },
+      ];
+      await scanner.processEventsImmediate('agent-1', events, task.id);
+
+      const pushed = { owner: 'acme', repo: 'app', number: 99, branch: 'fix-bug' };
+      const created = { owner: 'acme', repo: 'app', number: 100 };
+      expect(stateStore.authorshipOf(task.id, pushed)).toBe('self');
+      expect(stateStore.authorshipOf(task.id, created)).toBe('self');
+      expect(stateStore.authorshipOf('another-task', pushed)).toBe('other');
+      expect(stateStore.authorshipOf('another-task', created)).toBe('other');
+    });
+
     it('extracts a PR URL from tool_result events, adds reference, and triggers fetch', async () => {
       const fetcher = createMockFetcher(true);
       // Create a task so resolveOwnerRepo can look it up

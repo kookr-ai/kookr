@@ -115,7 +115,7 @@ export function createDeliveredCompletionTracker(): DeliveredCompletionTracker {
  * - PRs merged into a branch that is known not to be the repository's
  *   default or integration branch (issue #3983). `deliveryBranchesOf` reads
  *   the branches `PrDeliveryTracker` caches per repository; it is a required
- *   argument so that dropping it from the server wiring fails to compile.
+ *   argument, so the server wiring cannot omit it by accident.
  * A PR with no recorded `mergedAt` or `createdAt` is not attributed either.
  */
 export function createStoreDeliveredPrResolver(
