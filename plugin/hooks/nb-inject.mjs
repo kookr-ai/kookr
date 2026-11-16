@@ -54,7 +54,8 @@ const NAME_WIDTH = 60; // characters of one shelf name a store warning shows
 const WARN_TIMEOUT_MS = 2000; // the flat view's extra `nb list --json` call, best-effort only
 
 // The fixed instructions printed above the index. The 8 KB bound is on everything the
-// hook prints, so these bytes, and the final newline, come out of the index's budget.
+// hook prints, so these bytes come out of the index's budget (the extra 1 is a byte of
+// slack: the budget loops already charge one newline per line, the final one included).
 const PREAMBLE =
   `## Your agent-notebook index\n` +
   `Below is an index of your notebooks. Each one is a "shelf": a short, bounded list of ` +
@@ -165,7 +166,7 @@ function jsonListing(raw) {
 
 /**
  * The index header for a store with no usable shelf (only warnings to show), in the
- * form `nb list` itself prints for an empty count. Both views use it.
+ * "N in <dir>" form of the `nb list` text header. Both views use it.
  */
 function emptyHeader(listing) {
   return `agent-notebook notebooks — 0 in ${typeof listing?.dir === 'string' ? listing.dir : 'the notebook store'}`;
@@ -214,7 +215,7 @@ function boundIndex(text, warnings) {
  * characters are shown as escapes, and each name and the number named are bounded.
  */
 function storeWarnings(listing) {
-  // The same escape as the one in scripts/lib/nb-client.mjs (planFromStore). Keep the two
+  // The same escape as the one in scripts/lib/nb-client.mjs (snapshotStore). Keep the two
   // in step by hand: the plugin ships without the repository, so neither can import the other.
   const visible = (v) => {
     const text = String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
