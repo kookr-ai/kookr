@@ -9,6 +9,7 @@ import {
   getDefaultShortcutBindings,
   getFeaturedShortcuts,
   getPhysicalShortcutKey,
+  getShortcutHelpGroups,
   matchesShortcutAction,
   parseShortcutBinding,
   resolveShortcutBindings,
@@ -40,6 +41,25 @@ describe('shortcut bindings', () => {
     expect(formatShortcutBinding(mac.cancel_task)).toBe('Cmd+Ctrl+Backspace');
     expect(formatShortcutBinding(mac.toggle_shortcuts_help)).toBe('?');
     expect(findShortcutConflicts(mac)).toEqual([]);
+  });
+
+  test('gives Lucy\u2019s Talk its own key next to dictation, so both work inside a text box (#4010)', () => {
+    const defaults = getDefaultShortcutBindings('default');
+    const mac = getDefaultShortcutBindings('mac');
+    expect(formatShortcutBinding(defaults.lucy_talk_toggle)).toBe('Alt+Shift+M');
+    expect(formatShortcutBinding(mac.lucy_talk_toggle)).toBe('Cmd+Ctrl+Shift+M');
+    expect(findShortcutConflicts(defaults)).toEqual([]);
+
+    const altShiftM = { key: 'M', code: 'KeyM', altKey: true, shiftKey: true };
+    const altM = { key: 'm', code: 'KeyM', altKey: true };
+    expect(matchesShortcutAction(altShiftM, defaults, 'lucy_talk_toggle')).toBe(true);
+    expect(matchesShortcutAction(altShiftM, defaults, 'stt_toggle')).toBe(false);
+    expect(matchesShortcutAction(altM, defaults, 'lucy_talk_toggle')).toBe(false);
+    expect(matchesShortcutAction(altM, defaults, 'stt_toggle')).toBe(true);
+
+    // Listed in the shortcuts help.
+    const help = getShortcutHelpGroups(defaults).flatMap((group) => group.shortcuts.map((shortcut) => shortcut.id));
+    expect(help).toContain('lucy_talk_toggle');
   });
 
   test('detects mac platforms without requiring tests to run on macOS', () => {

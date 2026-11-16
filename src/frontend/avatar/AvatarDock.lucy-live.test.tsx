@@ -37,7 +37,8 @@ vi.mock('../lucy-live/useLucyLive.js', async () => {
   };
 });
 
-import { AvatarDock } from './AvatarDock.js';
+import { AvatarDock, type AvatarDockProps } from './AvatarDock.js';
+import { getDefaultShortcutBindings } from '../../shared/contracts/shortcut-bindings.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { __resetLastClipForTests } from '../audio/last-clip.js';
@@ -66,15 +67,17 @@ describe('AvatarDock hands-free talk', () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
   const talk = () => container.querySelector<HTMLButtonElement>('[data-testid="avatar-talk"]');
+  /** Extra props for the dock; reset before each test. */
+  let props: Partial<AvatarDockProps> = {};
   const render = () => {
     root = createRoot(container);
-    act(() => { root!.render(<AvatarDock attentionCount={0} />); });
+    act(() => { root!.render(<AvatarDock attentionCount={0} {...props} />); });
   };
   /** Re-render after changing what the hook returns. */
   const update = (next: UseLucyLiveResult) => {
     live.current = next;
     root ??= createRoot(container);
-    act(() => { root!.render(<AvatarDock attentionCount={0} />); });
+    act(() => { root!.render(<AvatarDock attentionCount={0} {...props} />); });
   };
 
   beforeEach(() => {
@@ -92,6 +95,7 @@ describe('AvatarDock hands-free talk', () => {
     live.unmounts = 0;
     live.setEnabled = vi.fn();
     live.current = base();
+    props = {};
     container = document.createElement('div');
     document.body.appendChild(container);
   });
@@ -255,7 +259,7 @@ describe('AvatarDock hands-free talk', () => {
     expect(live.mounts).toBe(1);
     act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Minimise Lucy"]')!.click());
     expect(container.querySelector('[data-testid="avatar-bubble"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="avatar-bubble-mic"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="avatar-bubble-stop"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="avatar-bubble"]')!.getAttribute('aria-label')).toContain('listening');
     // The hook belongs to the dock, not to the 3D view, so minimising neither remounts nor stops it.
     expect(live.mounts).toBe(1);
@@ -272,5 +276,169 @@ describe('AvatarDock hands-free talk', () => {
     render();
     expect(talk()!.getAttribute('aria-pressed')).toBe('false');
     expect(container.querySelector('[data-testid="avatar-live"]')).toBeNull();
+  });
+});
+
+describe('AvatarDock Talk shortcut and the bubble\u2019s off control (#4010)', () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+  const talkShortcut = getDefaultShortcutBindings('default').lucy_talk_toggle;
+  let props: Partial<AvatarDockProps> = {};
+  const render = (next: UseLucyLiveResult = live.current) => {
+    live.current = next;
+    root ??= createRoot(container);
+    act(() => { root!.render(<AvatarDock attentionCount={0} talkShortcut={talkShortcut} {...props} />); });
+  };
+  const bubble = () => container.querySelector<HTMLButtonElement>('[data-testid="avatar-bubble"]');
+  const stop = () => container.querySelector<HTMLButtonElement>('[data-testid="avatar-bubble-stop"]');
+  const press = (init: KeyboardEventInit = {}, target: EventTarget = document.body) => {
+    const event = new KeyboardEvent('keydown', { key: 'M', code: 'KeyM', altKey: true, shiftKey: true, bubbles: true, cancelable: true, ...init });
+    act(() => { target.dispatchEvent(event); });
+    return event;
+  };
+  const minimise = () => act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Minimise Lucy"]')!.click());
+
+  beforeEach(() => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    document.body.innerHTML = '';
+    localStorage.clear();
+    __resetLastClipForTests();
+    __resetSoundPreferenceForTests();
+    __resetSpeechBusForTests();
+    localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: false, position: null }));
+    __resetAvatarPanelPrefsForTests();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 });
+    live.setEnabled = vi.fn();
+    live.current = base();
+    props = {};
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    root = null;
+    setSoundEnabled(true);
+    __resetSoundPreferenceForTests();
+    document.body.innerHTML = '';
+  });
+
+  test('the shortcut switches Talk on and off, with the panel open or minimised', () => {
+    render();
+    expect(press().defaultPrevented).toBe(true);
+    expect(live.setEnabled).toHaveBeenLastCalledWith(true);
+    render(base({ enabled: true, status: 'ready' }));
+    minimise();
+    expect(bubble()).not.toBeNull();
+    press();
+    expect(live.setEnabled).toHaveBeenLastCalledWith(false);
+    expect(live.setEnabled).toHaveBeenCalledTimes(2);
+    // A toggle that works leaves the panel minimised.
+    expect(bubble()).not.toBeNull();
+  });
+
+  test('works while a text box has focus, and leaves Alt+M to dictation', () => {
+    render();
+    const input = document.createElement('textarea');
+    document.body.appendChild(input);
+    input.focus();
+    const dictation = press({ key: 'm', shiftKey: false }, input);
+    expect(dictation.defaultPrevented).toBe(false);
+    expect(live.setEnabled).not.toHaveBeenCalled();
+    press({}, input);
+    expect(live.setEnabled).toHaveBeenCalledWith(true);
+    expect(document.activeElement).toBe(input);
+  });
+
+  test('ignores a held key, an IME composition, and presses while a dialog blocks shortcuts', () => {
+    render();
+    press({ repeat: true });
+    press({ isComposing: true });
+    expect(live.setEnabled).not.toHaveBeenCalled();
+    props = { shortcutsBlocked: true };
+    render();
+    press();
+    expect(live.setEnabled).not.toHaveBeenCalled();
+    props = {};
+    render();
+    press();
+    expect(live.setEnabled).toHaveBeenCalledTimes(1);
+  });
+
+  test('does nothing when the Talk button is hidden (server status unknown)', () => {
+    render(base({ serverStatus: null }));
+    expect(container.querySelector('[data-testid="avatar-talk"]')).toBeNull();
+    press();
+    expect(live.setEnabled).not.toHaveBeenCalled();
+  });
+
+  test('when Talk is unavailable, a press while minimised opens the panel to show why', () => {
+    render(base({ serverStatus: { available: false, reason: 'No speech recogniser configured' } }));
+    minimise();
+    expect(bubble()).not.toBeNull();
+    press();
+    expect(live.setEnabled).not.toHaveBeenCalled();
+    expect(bubble()).toBeNull();
+    expect(container.querySelector('[data-testid="avatar-live-notice"]')!.textContent).toBe('No speech recogniser configured');
+  });
+
+  test('opening the panel for the reason leaves focus in the text box the operator is typing in', () => {
+    render(base({ serverStatus: { available: false, reason: 'No speech recogniser configured' } }));
+    minimise();
+    const input = document.createElement('textarea');
+    document.body.appendChild(input);
+    input.focus();
+    press({}, input);
+    expect(bubble()).toBeNull();
+    expect(document.activeElement).toBe(input);
+  });
+
+  test('opening the panel for the reason moves focus from the bubble to the panel', () => {
+    render(base({ serverStatus: { available: false, reason: 'No speech recogniser configured' } }));
+    minimise();
+    act(() => bubble()!.focus());
+    press({}, bubble()!);
+    expect(bubble()).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector('button[aria-label="Minimise Lucy"]'));
+  });
+
+  test('names the shortcut in the Talk button\u2019s tooltip', () => {
+    render();
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="avatar-talk"]')!.title).toBe('Talk to Lucy hands-free (Alt+Shift+M)');
+  });
+
+  test('the minimised bubble has a one-click off control only while Talk is on', () => {
+    render();
+    minimise();
+    expect(stop()).toBeNull();
+    render(base({ enabled: true, status: 'ready' }));
+    const button = stop()!;
+    expect(button.getAttribute('aria-label')).toBe('Stop hands-free');
+    expect(button.title).toBe('Stop hands-free (Alt+Shift+M)');
+    // Not inside the bubble: a press must not also open the panel.
+    expect(bubble()!.contains(button)).toBe(false);
+    act(() => button.click());
+    expect(live.setEnabled).toHaveBeenCalledTimes(1);
+    expect(live.setEnabled).toHaveBeenLastCalledWith(false);
+    expect(bubble()).not.toBeNull();
+  });
+
+  test('switches off even when sound is off in Settings', () => {
+    render(base({ enabled: true, status: 'ready' }));
+    minimise();
+    act(() => setSoundEnabled(false));
+    act(() => stop()!.click());
+    expect(live.setEnabled).toHaveBeenLastCalledWith(false);
+  });
+
+  test('hands keyboard focus to the bubble when the off control disappears', () => {
+    render(base({ enabled: true, status: 'ready' }));
+    minimise();
+    act(() => stop()!.focus());
+    expect(document.activeElement).toBe(stop());
+    render(base());
+    expect(stop()).toBeNull();
+    expect(document.activeElement).toBe(bubble());
   });
 });

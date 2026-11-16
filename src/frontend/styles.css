@@ -17351,16 +17351,26 @@ button.coordinator-chain-member:focus-visible {
 /* Shapes again: a tick for "answered", a bar for "closed without an answer". */
 .avatar-ask-check { flex: none; width: 9px; height: 5px; margin-bottom: 3px; border-left: 2px solid var(--teal); border-bottom: 2px solid var(--teal); transform: rotate(-45deg); }
 .avatar-ask-dash { flex: none; width: 9px; height: 2px; background: var(--text-muted); }
-.avatar-bubble-mic {
-  position: absolute;
-  right: 2px;
-  bottom: 2px;
-  width: 10px;
-  height: 10px;
+/* The minimised bubble's "microphone open" mark is a button (#4010): one click switches Talk off. Teal like the open
+   mic in the panel's header; a slash appears on hover and keyboard focus to say what a press does. */
+.avatar-bubble-stop {
+  position: fixed;
+  z-index: 121;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
   border-radius: 50%;
   background: var(--teal);
   box-shadow: 0 0 0 2px var(--bg-panel);
+  color: var(--bg-panel);
+  cursor: pointer;
 }
+.avatar-bubble-stop svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.avatar-bubble-stop-slash { opacity: 0; }
+.avatar-bubble-stop:hover .avatar-bubble-stop-slash,
+.avatar-bubble-stop:focus-visible .avatar-bubble-stop-slash { opacity: 1; }
+.avatar-bubble-stop:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   .avatar-dock-thinking .avatar-dock-state::before,
   .avatar-dock-speaking .avatar-dock-state::before,

@@ -16,6 +16,7 @@ export type ShortcutActionId =
   | 'toggle_auto_advance'
   | 'quick_launch'
   | 'stt_toggle'
+  | 'lucy_talk_toggle'
   | 'snooze_dialog'
   | 'quick_snooze'
   | 'focus_reply'
@@ -92,6 +93,8 @@ export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   { id: 'toggle_auto_advance', group: 'Navigation', label: 'Auto-Advance', description: 'Toggle Auto-Advance (follow priority project)', featured: true },
   { id: 'deselect_task', group: 'Navigation', label: 'Deselect task', description: 'Deselect current task', context: 'when no dialog is open' },
   { id: 'stt_toggle', group: 'Responding to findings', label: 'Toggle voice input', description: 'Toggle voice input (speech-to-text)', context: 'when STT is enabled' },
+  // Its own key, not Alt+M: Alt+M is dictation into the text box, so Lucy's Talk also works while a text box has focus.
+  { id: 'lucy_talk_toggle', group: 'Responding to findings', label: 'Talk to Lucy', description: 'Switch hands-free Talk with Lucy on or off, from anywhere (also inside a text box)', context: 'when Lucy\u2019s panel is on' },
   { id: 'quick_launch', group: 'Task management', label: 'Quick launch', description: 'Open quick launch bar to create a new task', featured: true },
   { id: 'snooze_dialog', group: 'Task management', label: 'Snooze task', description: 'Snooze selected task (opens duration picker)', featured: true },
   { id: 'quick_snooze', group: 'Task management', label: 'Quick snooze', description: 'Quick snooze selected task (5 minutes)' },
@@ -124,6 +127,7 @@ const DEFAULT_SHORTCUTS: ShortcutBindingMap = {
   toggle_auto_advance: binding('f', { alt: true }),
   quick_launch: binding('l', { alt: true }),
   stt_toggle: binding('m', { alt: true }),
+  lucy_talk_toggle: binding('m', { alt: true, shift: true }),
   snooze_dialog: binding('s', { alt: true }),
   quick_snooze: binding('z', { alt: true }),
   focus_reply: binding('r', { alt: true }),
@@ -155,6 +159,7 @@ const MAC_SHORTCUTS: ShortcutBindingMap = {
   toggle_auto_advance: binding('f', { meta: true, ctrl: true }),
   quick_launch: binding('l', { meta: true, ctrl: true }),
   stt_toggle: binding('m', { meta: true, ctrl: true }),
+  lucy_talk_toggle: binding('m', { meta: true, ctrl: true, shift: true }),
   snooze_dialog: binding('s', { meta: true, ctrl: true }),
   quick_snooze: binding('z', { meta: true, ctrl: true }),
   focus_reply: binding('r', { meta: true, ctrl: true }),

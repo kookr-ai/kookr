@@ -484,6 +484,10 @@ loud about a second after you stop, and you can talk over her to stop her. She a
 the current task status (what is running, stopped or recently finished) and says so when she does not
 know something. She cannot act on tasks yet.
 
+- **From the keyboard or the bubble.** **Alt+Shift+M** (**Cmd+Ctrl+Shift+M** on macOS) switches Talk on
+  or off from anywhere, also while a text box has focus (**Alt+M** stays dictation into that box), and
+  with the panel minimised. While Talk is on, the minimised bubble shows a small teal microphone
+  button; one click on it switches Talk off.
 - **The microphone is on only while Talk is on**, and Talk is off again after every page reload.
   Audio goes to your own Kookr server and to a speech recogniser running on your machine; only the
   text of what you said goes to the helper model, with the task status, to write her answer.
