@@ -87,6 +87,8 @@ interface ServerSettings {
   safeModeSince?: string | null;
   loadedFromDefaults?: boolean;
   warnings?: string[];
+  /** Read-only: where server alerts leave the machine (issue #3924). Absent on older servers. */
+  alertDestination?: { channels: string[]; label: string; reason?: string };
 }
 
 /** Sunday-first weekday labels for the quiet-hours day toggles (index = getDay()). */
@@ -806,7 +808,13 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
         const saved = body;
         if (saveId !== latestSaveIdRef.current) return;
         setWarnings(saved.warnings ?? []);
-        setSettings(saved);
+        // alertDestination is read-only and fixed for the server's lifetime
+        // (issue #3924); keep the loaded value if a save response lacks it.
+        setSettings((prev) => (
+          saved.alertDestination || !prev?.alertDestination
+            ? saved
+            : { ...saved, alertDestination: prev.alertDestination }
+        ));
         window.dispatchEvent(new CustomEvent('kookr:settings-updated', { detail: saved }));
         // Re-mirror the server-normalized windows (invalid ones dropped) so the
         // live gate matches exactly what was persisted.
@@ -1190,6 +1198,31 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                   {/* Notifications & Alerts */}
                   <div className="settings-section">
                     <div className="settings-section-title">Notifications & Alerts</div>
+                    {settings.alertDestination && (
+                      <div className="settings-row" data-testid="alert-destination">
+                        <div className="settings-row-info">
+                          <span className="settings-label">Server alerts</span>
+                          <span className="settings-desc">
+                            Where alerts such as a long-waiting permission prompt or a stalled
+                            train are sent when nobody is watching the dashboard.
+                          </span>
+                          {settings.alertDestination.channels.length === 0 && (
+                            <span className="settings-hint" role="note">
+                              These alerts never leave this machine
+                              {settings.alertDestination.reason ? ` (${settings.alertDestination.reason})` : ''}.
+                              Set KOOKR_SIGNAL_TELEGRAM_CHAT_ID or KOOKR_DISCORD_WEBHOOK_URL, or give the
+                              Telegram bot exactly one allowed user, then restart Kookr.
+                            </span>
+                          )}
+                        </div>
+                        <span
+                          className={`settings-permission-status${settings.alertDestination.channels.length === 0 ? ' denied' : ' granted'}`}
+                          role="status"
+                        >
+                          {settings.alertDestination.label}
+                        </span>
+                      </div>
+                    )}
                     {notificationPermission !== null && (
                       <div className="settings-row">
                         <div className="settings-row-info">

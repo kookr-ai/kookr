@@ -3,6 +3,7 @@ import {
   DEFAULT_DELIVERY_MIN_SEND_INTERVAL_MS,
   DEFAULT_DELIVERY_POLL_INTERVAL_MS,
   readSignalDeliveryConfigFromEnv,
+  resolveSignalDeliveryFromEnv,
 } from './config.js';
 
 const silent = { warn: () => {} };
@@ -157,6 +158,128 @@ describe('readSignalDeliveryConfigFromEnv', () => {
       );
       expect(cfg?.dryRun).toBe(true);
       expect(cfg?.discord).toEqual({ webhookUrl: VALID_DISCORD_URL });
+    });
+  });
+});
+
+describe('owner-chat fallback and alert destination (issue #3924)', () => {
+  const env = (vars: Record<string, string>) => vars as NodeJS.ProcessEnv;
+
+  test('token + one allowed user + no chat id sends to that user\'s private chat', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      env({ KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: ' 4242 ' }),
+      silent,
+    );
+    expect(config?.telegram).toEqual({ botToken: 'TOK', chatId: '4242' });
+    expect(destination).toEqual({ channels: ['telegram_owner_chat'], label: 'Telegram (owner chat)' });
+    // The legacy reader sees the same channel.
+    expect(readSignalDeliveryConfigFromEnv(
+      env({ KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '4242' }),
+      silent,
+    )?.telegram?.chatId).toBe('4242');
+  });
+
+  test('a repeated id still counts as one allowed user, as the bot sees it', () => {
+    const { config } = resolveSignalDeliveryFromEnv(
+      env({ KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '4242,4242' }),
+      silent,
+    );
+    expect(config?.telegram?.chatId).toBe('4242');
+  });
+
+  test('two allowed users and no chat id gives no channel, with a reason', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      env({ KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '1,2' }),
+      silent,
+    );
+    expect(config).toBeNull();
+    expect(destination.channels).toEqual([]);
+    expect(destination.label).toBe('nowhere outside the dashboard');
+    expect(destination.reason).toMatch(/several allowed users.*KOOKR_SIGNAL_TELEGRAM_CHAT_ID/);
+  });
+
+  test('an explicit chat id is used as is, even with one allowed user', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      env({
+        KOOKR_TELEGRAM_BOT_TOKEN: 'TOK',
+        KOOKR_TELEGRAM_ALLOWED_USERS: '4242',
+        KOOKR_SIGNAL_TELEGRAM_CHAT_ID: '-100777',
+      }),
+      silent,
+    );
+    expect(config?.telegram).toEqual({ botToken: 'TOK', chatId: '-100777' });
+    expect(destination).toEqual({
+      channels: ['telegram_configured_chat'],
+      label: 'Telegram (configured chat)',
+    });
+  });
+
+  test('the Telegram panic switch turns the fallback off', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      env({
+        KOOKR_TELEGRAM_BOT_TOKEN: 'TOK',
+        KOOKR_TELEGRAM_ALLOWED_USERS: '4242',
+        KOOKR_REMOTE_CHAT_DISABLED: '1',
+      }),
+      silent,
+    );
+    expect(config).toBeNull();
+    expect(destination.reason).toMatch(/KOOKR_REMOTE_CHAT_DISABLED=1/);
+  });
+
+  test('an allowed user without a bot token gives no channel', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      env({ KOOKR_TELEGRAM_ALLOWED_USERS: '4242' }),
+      silent,
+    );
+    expect(config).toBeNull();
+    expect(destination.reason).toMatch(/Telegram bot is not set up/);
+  });
+
+  test('a token with an empty allowlist gives no channel', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      env({ KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: 'abc' }),
+      silent,
+    );
+    expect(config).toBeNull();
+    expect(destination.reason).toMatch(/KOOKR_TELEGRAM_ALLOWED_USERS is empty/);
+  });
+
+  test('an install already sending to Discord is not also sent to the owner chat', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      env({
+        KOOKR_DISCORD_WEBHOOK_URL: VALID_DISCORD_URL,
+        KOOKR_TELEGRAM_BOT_TOKEN: 'TOK',
+        KOOKR_TELEGRAM_ALLOWED_USERS: '4242',
+      }),
+      silent,
+    );
+    expect(config?.telegram).toBeUndefined();
+    expect(destination).toEqual({ channels: ['discord'], label: 'Discord' });
+  });
+
+  test('a configured chat and Discord are both named', () => {
+    const { destination } = resolveSignalDeliveryFromEnv(
+      env({
+        KOOKR_DISCORD_WEBHOOK_URL: VALID_DISCORD_URL,
+        KOOKR_TELEGRAM_BOT_TOKEN: 'TOK',
+        KOOKR_SIGNAL_TELEGRAM_CHAT_ID: '123',
+      }),
+      silent,
+    );
+    expect(destination).toEqual({
+      channels: ['telegram_configured_chat', 'discord'],
+      label: 'Telegram (configured chat) + Discord',
+    });
+  });
+
+  test('nothing configured says why', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(env({}), silent);
+    expect(config).toBeNull();
+    expect(destination).toEqual({
+      channels: [],
+      label: 'nowhere outside the dashboard',
+      reason: 'no alert channel is configured and the Telegram bot is not set up',
     });
   });
 });

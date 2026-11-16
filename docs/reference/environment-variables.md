@@ -358,7 +358,7 @@ set.
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_TELEGRAM_BOT_TOKEN` | unset | Telegram bot token | Enables the Telegram remote-chat integration when allowlists are also configured. |
-| `KOOKR_TELEGRAM_ALLOWED_USERS` | unset | Comma-separated numeric Telegram user IDs | Restricts inbound Telegram messages to explicitly allowed users. Empty allowlist refuses startup. |
+| `KOOKR_TELEGRAM_ALLOWED_USERS` | unset | Comma-separated numeric Telegram user IDs | Restricts inbound Telegram messages to explicitly allowed users. Empty allowlist refuses startup. With exactly one id and no alert channel set, server alerts also go to that user's private chat (see [Operator Signal Delivery](#operator-signal-delivery)). |
 | `KOOKR_REMOTE_CHAT_PROJECTS` | unset | Comma-separated absolute project paths | Restricts remotely spawned tasks to these project paths. Empty allowlist refuses startup. |
 | `KOOKR_REMOTE_CHAT_DRY_RUN` | unset | `1` to enable | Parses and validates inbound Telegram messages, but replies without launching a task. |
 | `KOOKR_REMOTE_CHAT_ALLOW_CODEX` | unset | `1` to enable | Allows authorized Telegram users to select Codex CLI via `/agent codex`, `/task --agent codex ...`, or structured rephrase metadata. When unset, Telegram-spawned Codex tasks are rejected before confirmation and again at the launch-service trust boundary. |
@@ -426,10 +426,24 @@ name, batched to ≤1 message/min, restart-safe). Deploy-lag and prod-smoke
 fire/recover transitions are bridged automatically; the `kookr signal-emit` CLI
 lets scheduled monitors spool transition and liveness signals too.
 
+**Owner-chat fallback (issue #3924).** When neither `KOOKR_SIGNAL_TELEGRAM_CHAT_ID`
+nor a valid `KOOKR_DISCORD_WEBHOOK_URL` is set, but `KOOKR_TELEGRAM_BOT_TOKEN` is
+set and `KOOKR_TELEGRAM_ALLOWED_USERS` holds exactly one user id, alerts go to
+that user's private chat with the bot (a Telegram private chat has the user's id
+as its chat id). An explicit `KOOKR_SIGNAL_TELEGRAM_CHAT_ID` always wins. With
+several allowed users, an empty allowlist, Discord already set, or
+`KOOKR_REMOTE_CHAT_DISABLED=1` (the Telegram panic switch, also set by demo and
+harness servers), nothing is added. `/api/health` (`alertDestination`), `kookr status` (`Alerts:` line) and
+Settings → Notifications & Alerts say where alerts go: `Telegram (owner chat)`,
+`Telegram (configured chat)`, `Discord`, or `nowhere outside the dashboard`. In
+the last case the server logs one warning at start-up with the reason. The
+destination is read once at start-up, so restart Kookr after changing these
+variables.
+
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_DISCORD_WEBHOOK_URL` | unset | Public HTTP or HTTPS Discord incoming-webhook URL | Enables Discord delivery of operator signals. Same host safety policy as `KOOKR_WEBHOOK_URL`: rejected (Discord channel disabled, warning logged) when the host is localhost, private/CGNAT/link-local, a cloud-metadata hostname, or the URL embeds credentials. Lab LAN mocks can opt in with `KOOKR_WEBHOOK_ALLOW_PRIVATE` (metadata/link-local still blocked). Operator-supplied local config; do not commit shared secrets. |
-| `KOOKR_SIGNAL_TELEGRAM_CHAT_ID` | unset | Numeric Telegram chat ID | Enables Telegram delivery of operator signals to this chat (reuses `KOOKR_TELEGRAM_BOT_TOKEN`). Independent of the inbound remote-chat allowlist. |
+| `KOOKR_SIGNAL_TELEGRAM_CHAT_ID` | unset | Numeric Telegram chat ID | Enables Telegram delivery of operator signals to this chat (reuses `KOOKR_TELEGRAM_BOT_TOKEN`). Independent of the inbound remote-chat allowlist. When unset, alerts fall back to the single allowed user's private chat (see the owner-chat fallback above). |
 | `KOOKR_SIGNAL_DELIVERY_DRY_RUN` | unset | `1` to enable | Formats and logs each batch but never POSTs. Entries are still marked delivered so the log does not loop. |
 | `KOOKR_SIGNAL_DELIVERY_POLL_MS` | `15000` | Positive integer (ms) | Poll cadence for tailing the operator-signal outbox. |
 | `KOOKR_SIGNAL_DELIVERY_MIN_SEND_MS` | `60000` | Positive integer (ms) | Minimum spacing between outbound messages; each eligible tick drains all pending signals into one batched message. |

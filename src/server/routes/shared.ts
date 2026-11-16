@@ -616,6 +616,14 @@ export interface RouteDeps {
   getSignalDeliveryStatus?: () =>
     import('../../observability/signal-delivery/service.js').SignalDeliveryStatus | undefined;
   /**
+   * Where operator alerts leave the machine (issue #3924): Telegram (configured
+   * or owner chat), Discord, or nowhere outside the dashboard. Unlike
+   * `getSignalDeliveryStatus` it is wired even when no channel resolves, so
+   * health and settings can say "nowhere".
+   */
+  getAlertDestination?: () =>
+    import('../../observability/signal-delivery/config.js').AlertDestination;
+  /**
    * Combined maintenance-prune gauges (issues #2344 emergency + #2345 schedule).
    * `/api/health` reads only the in-memory snapshot (schedule enabled/interval
    * + last-run counters, emergency edge counters) — never starts a prune on

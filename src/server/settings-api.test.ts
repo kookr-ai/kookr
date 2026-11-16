@@ -105,6 +105,12 @@ describe('Settings API', () => {
       idleRefineryCooldownMinutes: 120,
       loadedFromDefaults: true,
       warnings: [],
+      // Issue #3924: where server alerts go. The value depends on the host's
+      // Telegram/Discord env, so only its shape is pinned here.
+      alertDestination: expect.objectContaining({
+        channels: expect.any(Array),
+        label: expect.any(String),
+      }),
     });
   });
 

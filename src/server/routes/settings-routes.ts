@@ -29,6 +29,9 @@ export interface SettingsRouteDeps extends Omit<SettingsMutationDeps, 'settings'
     /** Issue #2085: load failure that forced fail-closed SAFE MODE. */
     getLoadError?: () => string | undefined;
   };
+  /** Issue #3924: where operator alerts go, shown in Settings → Notifications & Alerts. */
+  getAlertDestination?: () =>
+    import('../../observability/signal-delivery/config.js').AlertDestination;
   /** Adapter registry consulted for advertised-agent filtering in the PUT broadcast. */
   launchServiceDeps?: {
     adapterRegistry: Pick<LaunchServiceDeps['adapterRegistry'], 'getTypes'>;
@@ -42,6 +45,7 @@ export function registerSettingsRoutes(app: Hono, deps: SettingsRouteDeps): void
       ...deps.settings.get(),
       loadedFromDefaults: deps.settings.getLoadedFromDefaults(),
       warnings: deps.settings.getLoadWarnings?.() ?? [],
+      ...(deps.getAlertDestination ? { alertDestination: deps.getAlertDestination() } : {}),
     });
   });
 
@@ -95,7 +99,13 @@ export function registerSettingsRoutes(app: Hono, deps: SettingsRouteDeps): void
       // Return what the server actually committed, not `validated`: the update
       // path overrides server-managed fields (e.g. roundRobinIndex) that the
       // client's body cannot authoritatively set.
-      return c.json({ ...deps.settings.get(), warnings });
+      return c.json({
+        ...deps.settings.get(),
+        warnings,
+        // Same read-only field as GET (issue #3924): the dialog replaces its
+        // state with this body, so leaving it out would drop the alerts row.
+        ...(deps.getAlertDestination ? { alertDestination: deps.getAlertDestination() } : {}),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);

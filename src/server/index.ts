@@ -222,14 +222,8 @@ import {
   createProviderTransientAlertHandler,
 } from './provider-transient-retry.js';
 import { defaultSignalOutboxDir } from '../core/signal-outbox.js';
-import {
-  SignalDeliveryService,
-  readSignalDeliveryConfigFromEnv,
-  defaultOperatorSignalDir,
-  operationalAlertToSignal,
-  writeOperatorSignal,
-  type OperationalAlertLike,
-} from '../observability/signal-delivery/index.js';
+import type { SignalDeliveryService } from '../observability/signal-delivery/index.js';
+import { wireSignalDelivery } from './bootstrap/signal-delivery-wiring.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TimerHealthTracker, timerHealthStatePath } from '../core/timer-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
@@ -2380,19 +2374,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Defined before schedule / pipeline-starvation / lesson-spool so those emitters
   // can share detectorBroadcast with deploy-lag and prod-smoke (issues #1986/#1987/#1990).
   // SignalDeliveryService (the outbox tail → Discord/Telegram) still starts later;
-  // spooling here only writes files when a delivery channel is configured.
-  const operatorSignalDir = defaultOperatorSignalDir(process.env);
-  const signalDeliveryConfig = readSignalDeliveryConfigFromEnv(process.env);
-  const emitOperationalSignal = (msg: ServerMessage): void => {
-    const input = operationalAlertToSignal(msg as OperationalAlertLike);
-    if (!input) return;
-    void writeOperatorSignal(operatorSignalDir, input).catch((err) => {
-      console.warn('[signal-delivery] failed to spool operational signal:', err);
-    });
-  };
-  const detectorBroadcast: (msg: ServerMessage) => void = signalDeliveryConfig
-    ? (msg) => { broadcastToAll(msg); emitOperationalSignal(msg); }
-    : broadcastToAll;
+  // spooling here only writes files when a delivery channel resolves — an
+  // explicit chat / webhook, or the bot owner's private chat (issue #3924).
+  // With none, the wiring logs once that alerts stay on this machine.
+  const signalDelivery = wireSignalDelivery({ env: process.env, broadcastToAll });
+  const { detectorBroadcast } = signalDelivery;
 
   // Attached task supervision (RFC attachable-task-supervisor, P2a): heartbeat +
   // deadline wakes, watchdog and fresh-episode self-healing. Operator alerts reuse
@@ -3247,6 +3233,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Delivery-bridge health (issue #3046). Undefined until the service is
     // constructed and never wired when the bridge is unconfigured.
     getSignalDeliveryStatus: () => signalDeliveryServiceHolder?.status(),
+    // Where alerts leave the machine (issue #3924); always present, including "nowhere".
+    getAlertDestination: () => signalDelivery.destination,
     // Server-log rotation health (issue #3113): last tick timestamp, error
     // message, and skip reason from the size-cap rotation timer. Cheap in-memory
     // read — surfaces a persistently failing rotation (ENOSPC / EACCES /
@@ -3917,12 +3905,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Operator-signal delivery bridge (issue #1716). Tails the operator-signal
   // outbox and pushes new alert/clear signals to Discord / Telegram. Off unless
-  // a channel is configured. detectorBroadcast (defined earlier) already spools
-  // operational-alert fire/recover edges into this dir for deploy-lag, prod-smoke,
-  // pipeline starvation (#1986), schedule dead-man (#1987), and lesson-spool (#1990).
-  const signalDeliveryService = signalDeliveryConfig
-    ? new SignalDeliveryService({ dir: operatorSignalDir, config: signalDeliveryConfig })
-    : null;
+  // a channel resolves (configured, or the owner-chat fallback of #3924).
+  // detectorBroadcast (defined earlier) already spools operational-alert
+  // fire/recover edges into this dir for deploy-lag, prod-smoke, pipeline
+  // starvation (#1986), schedule dead-man (#1987), and lesson-spool (#1990).
+  const signalDeliveryService = signalDelivery.createDeliveryService();
   // Publish to the health holder (issue #3046) so GET /api/health can project
   // the delivery-bridge status(). Stays undefined when unconfigured.
   signalDeliveryServiceHolder = signalDeliveryService ?? undefined;

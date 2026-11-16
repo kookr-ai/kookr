@@ -1571,4 +1571,76 @@ describe('SettingsDialog desktop-notification permission row', () => {
     expect(container.querySelector('.settings-permission')).toBeNull();
     expect(container.querySelector('[aria-label="Enable desktop notifications"]')).toBeNull();
   });
+
+  function stubSettingsWith(extra: Record<string, unknown>) {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ...DEFAULT_SETTINGS, ...extra }),
+    })));
+  }
+
+  test('names where server alerts go (issue #3924)', async () => {
+    stubSettingsWith({ alertDestination: { channels: ['telegram_owner_chat'], label: 'Telegram (owner chat)' } });
+    root = renderDialog(container);
+    await flush();
+
+    const row = sectionByTitle(container, 'Notifications & Alerts')
+      ?.querySelector('[data-testid="alert-destination"]');
+    expect(row).toBeTruthy();
+    expect(row!.querySelector('[role="status"]')?.textContent).toBe('Telegram (owner chat)');
+    expect(row!.querySelector('[role="note"]')).toBeNull();
+  });
+
+  test('warns once when server alerts go nowhere outside the dashboard (issue #3924)', async () => {
+    stubSettingsWith({
+      alertDestination: {
+        channels: [],
+        label: 'nowhere outside the dashboard',
+        reason: 'no alert channel is configured and the Telegram bot is not set up',
+      },
+    });
+    root = renderDialog(container);
+    await flush();
+
+    const notes = container.querySelectorAll('[data-testid="alert-destination"] [role="note"]');
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.textContent).toContain('never leave this machine');
+    expect(notes[0]!.textContent).toContain('the Telegram bot is not set up');
+    expect(notes[0]!.textContent).toContain('KOOKR_SIGNAL_TELEGRAM_CHAT_ID');
+  });
+
+  test('keeps the alert row after a save (issue #3924)', async () => {
+    const destination = {
+      channels: [],
+      label: 'nowhere outside the dashboard',
+      reason: 'no alert channel is configured and the Telegram bot is not set up',
+    };
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      // PUT echoes the committed settings without the read-only field, as an
+      // older server would; GET carries it.
+      if (url === '/api/settings' && init?.method === 'PUT') {
+        return { ok: true, status: 200, json: async () => ({ ...DEFAULT_SETTINGS, hungTaskReapEnabled: true, warnings: [] }) };
+      }
+      return { ok: true, json: async () => ({ ...DEFAULT_SETTINGS, alertDestination: destination }) };
+    }));
+    root = renderDialog(container);
+    await flush();
+    expect(container.querySelector('[data-testid="alert-destination"] [role="note"]')).not.toBeNull();
+
+    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle hung-task reaper"]');
+    expect(toggle).not.toBeNull();
+    await act(async () => { toggle!.click(); });
+    await flush();
+
+    expect(vi.mocked(fetch).mock.calls.some(([u, i]) => u === '/api/settings' && i?.method === 'PUT')).toBe(true);
+    const row = container.querySelector('[data-testid="alert-destination"]');
+    expect(row?.querySelector('[role="status"]')?.textContent).toBe('nowhere outside the dashboard');
+    expect(row?.querySelector('[role="note"]')).not.toBeNull();
+  });
+
+  test('shows no alert row for an older server without the field (issue #3924)', async () => {
+    root = renderDialog(container);
+    await flush();
+    expect(container.querySelector('[data-testid="alert-destination"]')).toBeNull();
+  });
 });

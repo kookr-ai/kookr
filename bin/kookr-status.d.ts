@@ -562,6 +562,15 @@ export function summarizeLaunchDependencies(
 export function summarizeSchedulesPausedByFailure(
   health: HealthLike,
 ): SchedulePausedByFailureSummary[] | null;
+/** Where server alerts leave the machine (issue #3924); empty channels = dashboard only. */
+export interface AlertDestinationSummary {
+  channels: string[];
+  label: string;
+  reason?: string;
+}
+export function summarizeAlertDestination(
+  health: HealthLike,
+): AlertDestinationSummary | null;
 export function summarizeHungSuspectTtlReclaim(
   health: HealthLike,
 ): HungSuspectTtlReclaimSummary | null;
