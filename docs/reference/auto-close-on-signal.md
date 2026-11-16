@@ -20,11 +20,11 @@ setting in `settings.json`.
 
 | Situation | Released after (default) | Setting | Section |
 |---|---|---|---|
-| Own pull request merged, then the task said finished (launched with auto-close) | 2 minutes after the signal | `mergedFinishedSettleMinutes` (1–60) | [Finished after the merge](#finished-after-the-merge-issue-3930) |
+| Said finished and own pull request merged, in either order (launched with auto-close) | 2 minutes after the later of the signal and the merge | `mergedFinishedSettleMinutes` (1–60) | [Finished and merged](#finished-and-merged-issues-3930-3983) |
 | Said finished, signal still pending, slots are short | 5 minutes | none (capacity-pressure soft TTL) | finishedAwaitingAck reclaim (#2355) |
 | Said finished, signal still pending (any task) | 6 minutes: 5, then a 60-second warning the operator can veto | `finishedAwaitingAckAckReapMinutes`, `finishedAwaitingAckAckReapGraceSeconds` | finishedAwaitingAck ack reaper (#2170) |
 | Said finished, signal still pending (any task, open-PR fail-safe) | 15 minutes | `finishedAwaitingAckTtlMinutes` | finishedAwaitingAck TTL reclaim (#1884) |
-| Own pull request merged, no "finished" after the merge (launched with auto-close) | 10 minutes after the merge is first seen | `postMergeCleanupBudgetMinutes` (1–120) | [Delivery-aware auto-completion](#delivery-aware-auto-completion-issue-1560) |
+| Own pull request merged, no "finished" on record or merge time unknown (launched with auto-close) | 10 minutes after the merge is first seen | `postMergeCleanupBudgetMinutes` (1–120) | [Delivery-aware auto-completion](#delivery-aware-auto-completion-issue-1560) |
 | Said finished, signal still pending (launched with auto-close) | 30 minutes | `autoCloseCompletionReadyDelayMin` (1–1440) | this page, top |
 | Said finished, signal still pending (not launched with auto-close) | 120 minutes | `completionReadyTtlMinutes` (5–10080) | [TTL escalation](#ttl-escalation-for-non-opted-in-tasks-issue-1526) |
 

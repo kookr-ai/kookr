@@ -139,10 +139,11 @@ export interface LlmCompletionDetail {
   /** Provider finish reason, e.g. 'stop' | 'length' | 'tool_calls'; null if unreported. */
   finishReason: string | null;
   /**
-   * Set when no provider answered and the last one failed with an error, so a
-   * caller can tell a dead provider (`auth`) from a transient failure
-   * (timeout, 429, 5xx) without the error itself (issue #3980). Absent when a
-   * provider answered, even with an empty completion.
+   * Set when no provider answered: the category of the last provider error,
+   * or `auth` when the only providers were skipped while paused after an auth
+   * failure. Lets a caller tell a dead provider (`auth`) from a transient
+   * failure (timeout, 429, 5xx) without the error itself (issue #3980). Absent
+   * when a provider answered, even with an empty completion.
    */
   failureCategory?: LlmProviderFailureCategory;
 }
