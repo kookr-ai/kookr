@@ -17255,6 +17255,26 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .avatar-ask-context summary { cursor: pointer; color: var(--text-secondary); }
 .avatar-ask-context summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .avatar-ask-context p { margin: 4px 0 0; padding-left: 8px; border-left: 2px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* `kookr ask` links (#3929): the pages a question is about, and the task that asked. */
+.avatar-ask-links { display: flex; flex-wrap: wrap; gap: 4px; }
+.avatar-ask-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--teal);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.avatar-ask-link:hover { border-color: var(--teal); }
+.avatar-ask-link:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+.avatar-ask-inline-link { color: var(--teal); overflow-wrap: anywhere; }
+.avatar-ask-inline-link:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
 .avatar-ask-answers { display: flex; flex-direction: column; gap: 6px; }
 .avatar-ask-options { display: flex; flex-direction: column; gap: 4px; }
 .avatar-ask-option, .avatar-ask-send {

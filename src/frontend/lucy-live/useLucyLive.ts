@@ -9,7 +9,7 @@
  * "Sound is off" preference, and turning session updates into render state.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { LUCY_LIVE_STATUS_PATH, type LucyLiveLanguage, type LucyLiveStatus } from '../../shared/contracts/lucy-live.js';
+import { LUCY_LIVE_STATUS_PATH, type LucyLiveLanguage, type LucyLiveOpenTarget, type LucyLiveStatus } from '../../shared/contracts/lucy-live.js';
 import { useSoundPreference } from '../audio/sound-preference.js';
 import { loadSTTLanguage } from '../store/stt-language.js';
 import { INITIAL_VIEW, LucyLiveSession, type LucyLiveView } from './lucy-live-session.js';
@@ -59,8 +59,16 @@ function conversationLanguage(): LucyLiveLanguage {
   return loadSTTLanguage() === 'fr' ? 'fr' : 'en';
 }
 
-export function useLucyLive(): UseLucyLiveResult {
+export interface UseLucyLiveOptions {
+  /** Open what the operator asked for by voice; see `LucyLiveSessionOptions.onOpen`. Read when the request arrives. */
+  onOpen?: (target: LucyLiveOpenTarget) => 'opened' | 'blocked' | 'unavailable';
+}
+
+export function useLucyLive(options: UseLucyLiveOptions = {}): UseLucyLiveResult {
   const sound = useSoundPreference();
+  // Kept in a ref so a new callback from the parent never restarts the conversation.
+  const onOpenRef = useRef(options.onOpen);
+  onOpenRef.current = options.onOpen;
   const [enabled, setEnabledState] = useState(false);
   const [view, setView] = useState<LucyLiveView>(INITIAL_VIEW);
   const [serverStatus, setServerStatus] = useState<LucyLiveStatus | null>(null);
@@ -136,6 +144,7 @@ export function useLucyLive(): UseLucyLiveResult {
           if (!cancelled) setView((previous) => ({ ...previous, ...patch }));
         },
         onFatal: fail,
+        onOpen: (target) => onOpenRef.current?.(target) ?? 'unavailable',
       });
       await session.start();
     })();

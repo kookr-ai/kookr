@@ -25,10 +25,12 @@ export interface FakeTelegramServer {
    * `downloadFile` returns; `filePath` is what `getFile` reports back.
    */
   registerFile(fileId: string, filePath: string, bytes: Buffer, reportedFileSize?: number | null): void;
+  /** Answer 400 to any sendMessage / editMessageText whose keyboard has a URL button, as Telegram does for a URL it dislikes. */
+  rejectUrlButtons(reject: boolean): void;
   outbound: {
     getUpdates: number;
     sendMessage: Array<{ chat_id: number; text: string; reply_markup?: unknown }>;
-    editMessageText: Array<{ chat_id: number; message_id: number; text: string }>;
+    editMessageText: Array<{ chat_id: number; message_id: number; text: string; reply_markup?: unknown }>;
     answerCallbackQuery: Array<{ callback_query_id: string; text?: string }>;
     getFile: Array<{ file_id: string }>;
     downloadFile: Array<{ filePath: string }>;
@@ -44,11 +46,21 @@ export async function startFakeTelegram(): Promise<FakeTelegramServer> {
   const queue: PendingBatch[] = [];
   const pendingEmptyPolls = new Map<NodeJS.Timeout, () => void>();
   let nextMessageId = 100;
+  let urlButtonsRejected = false;
+  const hasUrlButton = (payload: Record<string, unknown>): boolean => {
+    const markup = payload['reply_markup'] as { inline_keyboard?: Array<Array<Record<string, unknown>>> } | undefined;
+    return (markup?.inline_keyboard ?? []).flat().some((b) => typeof b['url'] === 'string');
+  };
+  const refuse = (res: ServerResponse): void => {
+    res.statusCode = 400;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: false, error_code: 400, description: 'Bad Request: BUTTON_URL_INVALID' }));
+  };
   const files = new Map<string, { filePath: string; bytes: Buffer; reportedFileSize?: number | null }>();
   const outbound = {
     getUpdates: 0,
     sendMessage: [] as Array<{ chat_id: number; text: string; reply_markup?: unknown }>,
-    editMessageText: [] as Array<{ chat_id: number; message_id: number; text: string }>,
+    editMessageText: [] as Array<{ chat_id: number; message_id: number; text: string; reply_markup?: unknown }>,
     answerCallbackQuery: [] as Array<{ callback_query_id: string; text?: string }>,
     getFile: [] as Array<{ file_id: string }>,
     downloadFile: [] as Array<{ filePath: string }>,
@@ -119,6 +131,10 @@ export async function startFakeTelegram(): Promise<FakeTelegramServer> {
         });
         return;
       }
+      if (urlButtonsRejected && (url.includes('/sendMessage') || url.includes('/editMessageText')) && hasUrlButton(payload)) {
+        refuse(res);
+        return;
+      }
       if (url.includes('/sendMessage')) {
         outbound.sendMessage.push(payload as { chat_id: number; text: string });
         const message_id = nextMessageId++;
@@ -152,6 +168,9 @@ export async function startFakeTelegram(): Promise<FakeTelegramServer> {
     },
     registerFile(fileId, filePath, bytes, reportedFileSize) {
       files.set(fileId, { filePath, bytes, reportedFileSize });
+    },
+    rejectUrlButtons(reject) {
+      urlButtonsRejected = reject;
     },
     outbound,
     stop: () => {

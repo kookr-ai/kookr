@@ -106,8 +106,10 @@ let getUserMedia: ReturnType<typeof vi.fn>;
 // --- Harness ---------------------------------------------------------------
 
 let latest: UseLucyLiveResult;
+/** What the probe passes to the hook; a test may set it before rendering. */
+const probeOptions: Parameters<typeof useLucyLive>[0] = {};
 function Probe(): null {
-  latest = useLucyLive();
+  latest = useLucyLive(probeOptions);
   return null;
 }
 
@@ -194,6 +196,27 @@ describe('useLucyLive', () => {
     act(() => { root?.unmount(); });
     root = null;
     vi.unstubAllGlobals();
+  });
+
+  test('an open request from the server is handed to onOpen and its outcome reported back (#3929)', async () => {
+    const onOpen = vi.fn(() => 'blocked' as const);
+    probeOptions.onOpen = onOpen;
+    try {
+      const ws = await turnOn();
+      const target = { kind: 'link', url: 'https://claude.ai/artifact/abc' };
+      await act(async () => { ws.receive({ type: 'open', requestId: 'open-1', target }); });
+      expect(onOpen).toHaveBeenCalledWith(target);
+      expect(onOpen).toHaveBeenCalledTimes(1);
+      expect(sent.filter((m) => m.type === 'open_result')).toEqual([{ type: 'open_result', requestId: 'open-1', outcome: 'blocked' }]);
+    } finally {
+      delete probeOptions.onOpen;
+    }
+  });
+
+  test('without an onOpen handler an open request is reported as unavailable', async () => {
+    const ws = await turnOn();
+    await act(async () => { ws.receive({ type: 'open', requestId: 'open-2', target: { kind: 'task', taskId: 't1' } }); });
+    expect(sent).toContainEqual({ type: 'open_result', requestId: 'open-2', outcome: 'unavailable' });
   });
 
   test('the ScriptProcessor fallback asks for 1024-sample chunks', async () => {

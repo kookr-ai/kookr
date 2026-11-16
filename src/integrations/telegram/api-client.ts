@@ -99,10 +99,10 @@ export interface TelegramCallbackQuery {
   message?: TelegramMessage;
 }
 
-export interface InlineKeyboardButton {
-  text: string;
-  callback_data: string;
-}
+/** A button that sends `callback_data` back to the bot, or one that opens `url` in the operator's browser. */
+export type InlineKeyboardButton =
+  | { text: string; callback_data: string }
+  | { text: string; url: string };
 
 export class TelegramApiError extends Error {
   constructor(
@@ -186,8 +186,9 @@ export class TelegramApiClient {
     });
   }
 
-  async editMessageText(chatId: number, messageId: number, text: string): Promise<unknown> {
-    return this.call('editMessageText', { chat_id: chatId, message_id: messageId, text });
+  /** Without `replyMarkup` the message loses its buttons; with it, only the given buttons remain. */
+  async editMessageText(chatId: number, messageId: number, text: string, replyMarkup?: { inline_keyboard: InlineKeyboardButton[][] }): Promise<unknown> {
+    return this.call('editMessageText', { chat_id: chatId, message_id: messageId, text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
   }
 
   async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<unknown> {

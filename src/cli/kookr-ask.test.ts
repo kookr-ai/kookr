@@ -99,6 +99,41 @@ describe('runAskCli usage errors (no network)', () => {
     expect(r.reqs).toEqual([]);
     expect(JSON.parse(r.io.logs[0])).toMatchObject({ ok: false, code: 'USER_ERROR' });
   });
+  it.each([
+    ['http://example.com/mockups', /https/],
+    ['ftp://example.com/x', /https/],
+    ['not a url', /https/],
+    [`https://example.com/${'a'.repeat(481)}`, /1\.\.500 characters/],
+  ])('rejects --link %s with exit 2 and no request', async (url, message) => {
+    const r = await run([...ARGS, '--link', url]);
+    expect(r.code).toBe(EXIT_USER_ERROR);
+    expect(r.reqs).toEqual([]);
+    expect(r.io.errors[0]).toMatch(message);
+  });
+  it('accepts a 500-character https link, the longest allowed', async () => {
+    const url = `https://example.com/${'a'.repeat(480)}`;
+    expect(url).toHaveLength(500);
+    const r = await run([...ARGS, '--link', url]);
+    expect(r.code).toBe(EXIT_OK);
+    expect(r.reqs[0]).toMatchObject({ body: { links: [{ url }] } });
+  });
+  it('refuses a third --link, a --link-label with no --link before it, and a second label for one link', async () => {
+    const third = await run([...ARGS, '--link', 'https://a.example', '--link', 'https://b.example', '--link', 'https://c.example']);
+    expect(third.code).toBe(EXIT_USER_ERROR);
+    expect(third.io.errors[0]).toMatch(/at most 2/);
+    const orphan = await run([...ARGS, '--link-label', 'Open mockups', '--link', 'https://a.example']);
+    expect(orphan.code).toBe(EXIT_USER_ERROR);
+    expect(orphan.io.errors[0]).toMatch(/must follow the --link/);
+    const twice = await run([...ARGS, '--link', 'https://a.example', '--link-label', 'One', '--link-label', 'Two']);
+    expect(twice.code).toBe(EXIT_USER_ERROR);
+    const long = await run([...ARGS, '--link', 'https://a.example', '--link-label', 'x'.repeat(41)]);
+    expect(long.code).toBe(EXIT_USER_ERROR);
+    expect(long.io.errors[0]).toMatch(/label/);
+    const twoLines = await run([...ARGS, '--link', 'https://a.example', '--link-label', 'Open\nmockups']);
+    expect(twoLines.code).toBe(EXIT_USER_ERROR);
+    expect(twoLines.reqs).toEqual([]);
+    expect(twoLines.io.errors[0]).toMatch(/single line/);
+  });
   it('prints help with exit 0', async () => {
     const r = await run(['--help']); expect(r.code).toBe(EXIT_OK); expect(r.io.logs.join()).toMatch(/Exit codes/);
   });
@@ -114,6 +149,21 @@ describe('runAskCli without --wait', () => {
     expect(f.reqs[0]).toMatchObject({ url: 'http://k/api/asks', method: 'POST', body: { taskId: 't1', question: 'Ship it?', options: ['Yes', 'No'], context: 'ctx', timeoutSec: 300, allowText: true, idempotencyKey: defaultIdempotencyKey('t1', 'Ship it?', ['Yes', 'No'], 'ctx') } });
     expect(defaultIdempotencyKey('t1', 'Q', ['a', 'b'])).not.toBe(defaultIdempotencyKey('t2', 'Q', ['a', 'b']));
     expect(defaultIdempotencyKey('t1', 'Q', ['a', 'b'])).not.toBe(defaultIdempotencyKey('t1', 'Q', ['b', 'a']));
+  });
+  it('sends each --link with the label after it, and folds links into the idempotency key', async () => {
+    const f = fake(created);
+    const code = await runAskCli([...ARGS, '--link', 'https://claude.ai/artifact/abc', '--link-label', 'Open mockups', '--link=https://github.com/o/r/pull/1'], { env: ENV, ...capture(), fetchImpl: f.impl });
+    expect(code).toBe(EXIT_OK);
+    const links = [{ url: 'https://claude.ai/artifact/abc', label: 'Open mockups' }, { url: 'https://github.com/o/r/pull/1' }];
+    expect(f.reqs[0].body).toMatchObject({ links, idempotencyKey: defaultIdempotencyKey('t1', 'Ship it?', ['Yes', 'No'], undefined, links) });
+    // A question without links keeps the key it always had; adding a link makes it another question.
+    expect(defaultIdempotencyKey('t1', 'Q', ['a', 'b'], undefined, [])).toBe(defaultIdempotencyKey('t1', 'Q', ['a', 'b']));
+    expect(defaultIdempotencyKey('t1', 'Q', ['a', 'b'], undefined, links)).not.toBe(defaultIdempotencyKey('t1', 'Q', ['a', 'b']));
+  });
+  it('sends no links field without --link', async () => {
+    const f = fake(created);
+    await runAskCli(ARGS, { env: ENV, ...capture(), fetchImpl: f.impl });
+    expect(f.reqs[0].body).not.toHaveProperty('links');
   });
   it('--task-id overrides KOOKR_TASK_ID and --no-other is forwarded', async () => {
     const f = fake(created);

@@ -14,9 +14,11 @@ vi.mock('./avatar-stage.js', () => ({
 }));
 vi.mock('./assets/lucy-bust.glb?url', () => ({ default: '/lucy-bust.glb' }));
 vi.mock('../telemetry.js', () => ({ track: vi.fn() }));
+// What the panel hands Lucy live: how to open what the operator asks to see by voice.
+const liveOptions = vi.hoisted(() => ({ latest: undefined as undefined | { onOpen?: (target: { kind: 'link'; url: string } | { kind: 'task'; taskId: string }) => string } }));
 vi.mock('../lucy-live/useLucyLive.js', () => ({
   SOUND_OFF_REASON: 'Sound is off in Settings',
-  useLucyLive: () => ({
+  useLucyLive: (options?: typeof liveOptions.latest) => (liveOptions.latest = options, {
     status: 'off', lucyState: 'idle', operatorText: '', operatorFinal: false, lucyText: '', lastTurnEnd: null,
     timings: { endToFirstAudioMs: null, bargeInStopMs: null }, micLevel: 0, errorMessage: null,
     enabled: false, setEnabled: vi.fn(), unavailableReason: null, serverStatus: { available: false },
@@ -55,11 +57,11 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
   const onAnswerAsk = vi.fn(() => true);
   const q = <T extends Element = HTMLElement>(testId: string) => container.querySelector<T>(`[data-testid="${testId}"]`);
   const all = <T extends Element = HTMLElement>(testId: string) => [...container.querySelectorAll<T>(`[data-testid="${testId}"]`)];
-  const render = (props: { minimized?: boolean; attentionCount?: number } = {}) => {
+  const render = (props: { minimized?: boolean; attentionCount?: number; onOpenTask?: (taskId: string) => boolean } = {}) => {
     localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: props.minimized ?? false, position: null }));
     __resetAvatarPanelPrefsForTests();
     root = createRoot(container);
-    act(() => { root!.render(<AvatarDock attentionCount={props.attentionCount ?? 0} onAnswerAsk={onAnswerAsk} />); });
+    act(() => { root!.render(<AvatarDock attentionCount={props.attentionCount ?? 0} onAnswerAsk={onAnswerAsk} onOpenTask={props.onOpenTask} />); });
   };
   const push = (asks: OperatorAskView[], announce?: string) => act(() => { handleOperatorAsks(asks, announce); });
   // A press right after the cards changed is ignored on purpose (see the mis-click test), so a click waits it out first.
@@ -111,6 +113,82 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     expect(q('avatar-ask-note')!.textContent).toBe('Also on Telegram. The first answer wins.');
     expect(card.textContent).toContain('29 min left');
     expect(q('avatar-asks')!.getAttribute('aria-label')).toBe('Questions waiting for your answer (1)');
+  });
+
+  describe('links and the asking task (#3929)', () => {
+    const MOCKUPS = 'https://claude.ai/artifact/abc-123';
+
+    test('a question with a link shows it as a button opening a new tab, next to "Open task"', () => {
+      const onOpenTask = vi.fn(() => true);
+      render({ onOpenTask });
+      push([ask({ links: [{ url: MOCKUPS, label: 'Open mockups' }] })]);
+      const links = all<HTMLAnchorElement>('avatar-ask-link');
+      expect(links.map((a) => a.textContent)).toEqual(['Open mockups']);
+      expect(links[0].getAttribute('href')).toBe(MOCKUPS);
+      expect(links[0].target).toBe('_blank');
+      expect(links[0].rel).toBe('noopener noreferrer');
+      const openTask = q<HTMLButtonElement>('avatar-ask-open-task')!;
+      expect(openTask.textContent).toBe('Open task');
+      click(openTask);
+      expect(onOpenTask).toHaveBeenCalledWith('t1');
+      // The task was shown, so the card does not complain.
+      expect(q('avatar-ask-note')!.textContent).toBe('Also on Telegram. The first answer wins.');
+    });
+
+    test('a question without a link shows only "Open task"', () => {
+      render({ onOpenTask: () => true });
+      push([ask()]);
+      expect(all('avatar-ask-link')).toEqual([]);
+      expect(all('avatar-ask-open-task')).toHaveLength(1);
+    });
+
+    test('a link without a label reads "Open link"; with no way to open the task there is no "Open task"', () => {
+      render();
+      push([ask({ links: [{ url: MOCKUPS }] })]);
+      expect(all('avatar-ask-link').map((a) => a.textContent)).toEqual(['Open link']);
+      expect(q('avatar-ask-open-task')).toBeNull();
+    });
+
+    test('a link that is not http(s) is never rendered as a clickable href', () => {
+      render();
+      push([ask({ links: [{ url: 'javascript:alert(1)', label: 'Evil' }, { url: MOCKUPS, label: 'Open mockups' }] })]);
+      expect(all('avatar-ask-link').map((a) => a.textContent)).toEqual(['Open mockups']);
+      expect(container.innerHTML).not.toContain('javascript:');
+    });
+
+    test('"Open task" says so when the task cannot be shown, instead of doing nothing', () => {
+      render({ onOpenTask: () => false });
+      push([ask()]);
+      click(q('avatar-ask-open-task'));
+      expect(q('avatar-ask-note')!.textContent).toBe('This task is not shown in the dashboard right now.');
+    });
+
+    test('URLs written in the question and its background are clickable, without the sentence punctuation', () => {
+      render();
+      push([ask({ question: `Which variant? See ${MOCKUPS}.`, context: 'Write-up: https://github.com/o/r/issues/1, and ftp://x.example is not a link.' })]);
+      const inQuestion = q('avatar-ask-question')!.querySelectorAll('a');
+      expect([...inQuestion].map((a) => a.getAttribute('href'))).toEqual([MOCKUPS]);
+      expect(q('avatar-ask-question')!.textContent).toBe(`Which variant? See ${MOCKUPS}.`);
+      const inContext = q('avatar-ask')!.querySelector('details')!.querySelectorAll('a');
+      expect([...inContext].map((a) => a.getAttribute('href'))).toEqual(['https://github.com/o/r/issues/1']);
+      expect(inContext[0].target).toBe('_blank');
+    });
+
+    test('Lucy live opens a link in a new tab and selects the task through the same handlers', () => {
+      const onOpenTask = vi.fn(() => true);
+      render({ onOpenTask });
+      const opened = { opener: {} as unknown };
+      const open = vi.spyOn(window, 'open').mockReturnValueOnce(opened as Window).mockReturnValueOnce(null);
+      expect(liveOptions.latest?.onOpen?.({ kind: 'link', url: MOCKUPS })).toBe('opened');
+      expect(open).toHaveBeenCalledWith(MOCKUPS, '_blank');
+      expect(opened.opener).toBeNull();
+      expect(liveOptions.latest?.onOpen?.({ kind: 'link', url: MOCKUPS })).toBe('blocked');
+      expect(liveOptions.latest?.onOpen?.({ kind: 'task', taskId: 't9' })).toBe('opened');
+      expect(onOpenTask).toHaveBeenCalledWith('t9');
+      onOpenTask.mockReturnValueOnce(false);
+      expect(liveOptions.latest?.onOpen?.({ kind: 'task', taskId: 't9' })).toBe('unavailable');
+      open.mockRestore();
+    });
   });
 
   test('a question without a task name or text answers still reads well', () => {

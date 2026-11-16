@@ -55,6 +55,7 @@ export type AuditEvent =
   // free-text reply is still recorded, redacted, by the generic
   // `message_received` event like every other inbound message.
   | { kind: 'ask_sent'; askId: string; taskId: string; chatId: number }
+  | { kind: 'ask_url_buttons_refused'; askId: string; taskId: string; chatId: number; reason: string }
   | { kind: 'ask_answered'; askId: string; taskId: string; sender: number; via: 'button' | 'text'; taskDelivery?: string }
   | { kind: 'ask_rejected'; askId?: string; sender: number; via: 'button' | 'text'; reason: string }
   | { kind: 'ask_finalized'; askId: string; taskId: string; state: string; resolution?: string; answeredVia?: string }

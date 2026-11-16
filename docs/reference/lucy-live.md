@@ -210,8 +210,11 @@ question goes to your phone over Telegram. If the dashboard is open and the avat
 asks it as well, whether or not hands-free talk is switched on.
 
 **What you see and hear.** The panel shows a card: which task is asking, the question, the background
-the task gave (folded under "Background"), one button per choice, a box for a typed answer when the
-task accepts one, and how long the question stays open. Lucy reads out who is asking, the question and
+the task gave (folded under "Background"), a button for each page the question links to (`kookr ask
+--link`, for example "Open mockups", which opens a new tab), an **Open task** button that selects the
+asking task in the dashboard, one button per choice, a box for a typed answer when the task accepts
+one, and how long the question stays open. URLs written in the question or its background are
+clickable. If the task cannot be shown (it has no live session in the dashboard), the card says so. Lucy reads out who is asking, the question and
 the choices. She does not read the background: it usually holds paths and numbers that are easier to
 read than to hear. While a question is waiting, the list of recent messages is hidden to make room.
 
@@ -247,6 +250,15 @@ said to her. A question is the one thing she says unprompted, under these rules:
 **Hands-free talk.** With Talk on, the status Lucy answers from also lists the questions that are
 waiting and the ones closed in the last 10 minutes, with where the answer came from. Ask her "does
 anything need me?" and she can tell you.
+
+**Opening it by voice.** While a question is waiting, say "show me", "open it", "show me the
+mockups" (or the words of a link's label) to open its first link, or the named one, in a new tab, and
+"show me the task" to select the task that asked. This always concerns the newest waiting question,
+and the whole sentence must be the request: "show me the status of the build" is an ordinary question.
+Lucy then says what happened: the tab is open; your browser blocked it (a tab opened by voice has no
+click behind it, so browsers usually block it until you allow pop-ups for the Kookr dashboard once;
+the button on the card always works); the question has no link; or no question is waiting. Words heard
+while her own voice was still audible never open anything.
 
 **Answering by voice.** You can say one of the listed choices ("run it tonight"). A misheard word would
 send the wrong decision to a task and that cannot be undone, so it takes two turns:

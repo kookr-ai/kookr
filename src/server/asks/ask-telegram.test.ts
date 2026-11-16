@@ -46,7 +46,7 @@ function audit(): Array<Record<string, unknown>> {
 }
 
 /** Boot the integration with (default) or without the ask service wired in. */
-async function boot(opts: { withAsks?: boolean } = {}): Promise<void> {
+async function boot(opts: { withAsks?: boolean; dashboardUrl?: string } = {}): Promise<void> {
   store = await AskStore.open(tmp);
   service = new AskService({
     store,
@@ -61,7 +61,8 @@ async function boot(opts: { withAsks?: boolean } = {}): Promise<void> {
     allowedProjects: [{ name: 'p', cwd: '/tmp/p' }],
     dataDir: tmp,
     dryRun: false,
-    dashboardBaseUrl: 'http://localhost:4800',
+    dashboardBaseUrl: opts.dashboardUrl ?? 'http://localhost:4800',
+    ...(opts.dashboardUrl ? { dashboardUrlConfigured: true } : {}),
     launchTask: vi.fn(async () => ({ task: { id: 't' }, queued: false }) as unknown as LaunchResult),
     llmClient: null,
     ...(opts.withAsks === false ? {} : { asks: service }),
@@ -363,5 +364,57 @@ describe('kookr ask over Telegram', () => {
     tap(`ask:${'a'.repeat(12)}:0:${'b'.repeat(16)}`);
     await waitFor(() => expect(toasts()).toContain('Questions are unavailable.'));
     expect(fake.outbound.sendMessage).toHaveLength(0);
+  });
+
+  describe('links (#3929)', () => {
+    type Button = { text: string; callback_data?: string; url?: string };
+    const rows = (n = 0): Button[][] => (fake.outbound.sendMessage.filter((m) => m.reply_markup)[n].reply_markup as { inline_keyboard: Button[][] }).inline_keyboard;
+    const MOCKUPS = 'https://claude.ai/artifact/abc-123';
+
+    it('carries each link as a URL button under the choices, and no "Open task" without a configured dashboard URL', async () => {
+      await boot();
+      await ask({ links: [{ url: MOCKUPS, label: 'Open mockups' }, { url: 'https://github.com/kookr-ai/kookr/pull/1' }] });
+      expect(rows()).toEqual([
+        [expect.objectContaining({ text: 'Yes', callback_data: expect.any(String) })],
+        [expect.objectContaining({ text: 'No', callback_data: expect.any(String) })],
+        [{ text: 'Open mockups', url: MOCKUPS }],
+        [{ text: 'Open link', url: 'https://github.com/kookr-ai/kookr/pull/1' }],
+      ]);
+      // A button is the link: the URL is not repeated in the text.
+      expect(fake.outbound.sendMessage[0].text).not.toContain(MOCKUPS);
+    });
+
+    it('adds an "Open task" button deep-linking to the task when the dashboard URL is configured', async () => {
+      await boot({ dashboardUrl: 'https://kookr.example.com' });
+      await ask();
+      expect(rows().at(-1)).toEqual([{ text: 'Open task', url: 'https://kookr.example.com/?task=t1' }]);
+    });
+
+    it('keeps the URL buttons, without the choices, when the question closes', async () => {
+      await boot({ dashboardUrl: 'https://kookr.example.com' });
+      const a = await ask({ links: [{ url: MOCKUPS, label: 'Open mockups' }] });
+      await service!.cancel(a.id);
+      const edit = fake.outbound.editMessageText.at(-1)!;
+      expect(edit.text).toContain('Cancelled');
+      expect((edit.reply_markup as { inline_keyboard: Button[][] }).inline_keyboard).toEqual([
+        [{ text: 'Open mockups', url: MOCKUPS }],
+        [{ text: 'Open task', url: 'https://kookr.example.com/?task=t1' }],
+      ]);
+    });
+
+    it('still asks when Telegram refuses a URL button: the links go into the text instead', async () => {
+      await boot({ dashboardUrl: 'https://kookr.example.com' });
+      fake.rejectUrlButtons(true);
+      const a = await ask({ links: [{ url: MOCKUPS, label: 'Open mockups' }] });
+      expect(store.get(a.id)?.state).toBe('pending');
+      expect(fake.outbound.sendMessage).toHaveLength(1);
+      expect(fake.outbound.sendMessage[0].text).toContain(`🔗 Open mockups: ${MOCKUPS}`);
+      expect(rows().flat().map((b) => b.text)).toEqual(['Yes', 'No']);
+      await waitFor(() => expect(audit().some((e) => e.kind === 'ask_url_buttons_refused' && e.askId === a.id)).toBe(true));
+      // Closing it falls back the same way, so the message still loses its choices.
+      await service!.cancel(a.id);
+      expect(fake.outbound.editMessageText.at(-1)).toMatchObject({ text: expect.stringContaining('Cancelled') });
+      expect(fake.outbound.editMessageText.at(-1)!.reply_markup).toBeUndefined();
+    });
   });
 });

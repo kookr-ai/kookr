@@ -58,6 +58,10 @@ import {
   buildAnswerReadBack, buildWhichQuestion, classifyReply, sayAnswerOutcome,
   type AnswerMatch, type VoiceAskChoice,
 } from '../../core/lucy-live/voice-answer.js';
+import {
+  OPEN_NOTHING_WAITING, OPEN_NO_LINK, matchOpenRequest, namesAChoice, sayOpenOutcome,
+  type OpenOutcome, type VoiceOpenableAsk,
+} from '../../core/lucy-live/open-intent.js';
 import { makeSpeakable } from '../../core/speakable-text.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
 
@@ -169,6 +173,11 @@ export interface LucyLivePorts {
   matchAnswer?(req: { transcript: string; asks: readonly VoiceAskChoice[]; signal: AbortSignal }): Promise<AnswerMatch>;
   /** Record the operator's choice through the ask service's dashboard entry point (audited, one winner). */
   answerAsk?(askId: string, optionIndex: number): Promise<{ ok: true } | { ok: false; reason?: string }>;
+  /**
+   * Questions still waiting, newest first, with their links and asking task, for "show me" / "open it".
+   * Absent: such requests go to the model like any other words.
+   */
+  openableAsks?(): readonly VoiceOpenableAsk[];
   now(): number;
   warn(message: string): void;
   recordTurn(record: LiveTurnRecord): void;
@@ -259,6 +268,8 @@ class TurnAbandoned extends Error {}
 
 /** Speech that begins this soon after her voice ends may still be its echo. */
 const AUDIBLE_TAIL_MS = 400;
+/** How long she waits for the browser to say whether it opened what was asked for. It answers at once unless it is gone. */
+export const OPEN_REPLY_TIMEOUT_MS = 3000;
 
 function describeFailure(stage: 'ears' | 'brain' | 'mouth', err: unknown): string {
   const detail = err instanceof Error ? err.message : String(err);
@@ -281,6 +292,9 @@ export class LucyLiveSession {
 
   /** Server clock until which the sentences sent so far are still being played. */
   private audibleUntil = 0;
+  /** Open requests sent to the browser, waiting for its `open_result`. */
+  private readonly openWaiters = new Map<string, (outcome: OpenOutcome | undefined) => void>();
+  private openCounter = 0;
 
   constructor(private readonly ports: LucyLivePorts) {}
 
@@ -311,6 +325,12 @@ export class LucyLiveSession {
       case 'played':
         this.onPlayed(msg.turnId, msg.seq, msg.complete);
         return;
+      case 'open_result': {
+        const waiter = this.openWaiters.get(msg.requestId);
+        this.openWaiters.delete(msg.requestId);
+        waiter?.(msg.outcome);
+        return;
+      }
     }
   }
 
@@ -715,6 +735,12 @@ export class LucyLiveSession {
       }
       if (reply === 'decline') return ANSWER_NOT_SENT;
     }
+    // "Show me", "open it": before choice matching, which may be switched off or answer "none".
+    // Not over her own voice: her sentences must never open a tab.
+    if (!turn.overlapsAudio) {
+      const opened = await this.planOpen(turn, transcript);
+      if (opened !== undefined || turn.closed) return opened;
+    }
     const asks = this.ports.pendingAsks?.() ?? [];
     const match = this.ports.matchAnswer;
     if (asks.length === 0 || !match || turn.overlapsAudio) return undefined;
@@ -735,6 +761,44 @@ export class LucyLiveSession {
     if (!ask || label === undefined) return undefined;
     turn.proposal = { askId: ask.askId, optionIndex: verdict.optionIndex, label };
     return buildAnswerReadBack(ask, verdict.optionIndex, asks.length);
+  }
+
+  /**
+   * "Show me the mockups", "open the task": open the newest waiting question's link or its task in the
+   * browser, and say what the browser reported. Undefined when the words are not such a request.
+   */
+  private async planOpen(turn: Turn, transcript: string): Promise<string | undefined> {
+    const openable = this.ports.openableAsks;
+    if (!openable) return undefined;
+    const asks = openable();
+    const request = matchOpenRequest(transcript, asks[0]?.links.map((l) => l.label) ?? []);
+    if (!request) return undefined;
+    // A choice that happens to start with "open" or "show" is an answer, not a request to open something.
+    if (namesAChoice(transcript, (this.ports.pendingAsks?.() ?? []).flatMap((a) => a.options))) return undefined;
+    const ask = asks[0];
+    if (!ask) return OPEN_NOTHING_WAITING;
+    if (request.target === 'task') return sayOpenOutcome('task', await this.openInBrowser(turn, { kind: 'task', taskId: ask.taskId }));
+    const link = ask.links[request.target === 'link' ? request.index ?? 0 : 0];
+    if (!link) return OPEN_NO_LINK;
+    return sayOpenOutcome('link', await this.openInBrowser(turn, { kind: 'link', url: link.url }));
+  }
+
+  /** Ask the browser to open `target`; resolves with what it reports, or undefined when it does not answer in time. */
+  private openInBrowser(turn: Turn, target: Extract<LucyLiveServerMessage, { type: 'open' }>['target']): Promise<OpenOutcome | undefined> {
+    const requestId = `open-${++this.openCounter}`;
+    return new Promise((resolve) => {
+      const finish = (outcome: OpenOutcome | undefined): void => {
+        clearTimeout(timer);
+        turn.abort.signal.removeEventListener('abort', onAbort);
+        this.openWaiters.delete(requestId);
+        resolve(outcome);
+      };
+      const onAbort = (): void => finish(undefined);
+      const timer = setTimeout(() => finish(undefined), OPEN_REPLY_TIMEOUT_MS);
+      this.openWaiters.set(requestId, finish);
+      turn.abort.signal.addEventListener('abort', onAbort, { once: true });
+      this.ports.send({ type: 'open', requestId, target });
+    });
   }
 
   /** Send a confirmed choice, after checking the same question is still waiting with the same choice. */

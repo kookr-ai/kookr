@@ -160,6 +160,7 @@ describe('startRemoteChatTrigger', () => {
       dryRun: true,
       allowCodexRemoteSpawn: true,
       dashboardBaseUrl: 'http://localhost:4800',
+      dashboardUrlConfigured: false,
       llmClient: null,
       whisperUrl: 'http://127.0.0.1:8010',
       launchTask,
@@ -238,6 +239,8 @@ describe('startRemoteChatTrigger', () => {
 
     expect(startTelegramTrigger).toHaveBeenCalledWith(expect.objectContaining({
       dashboardBaseUrl: 'https://kookr.example.com',
+      // Only a configured URL lets kookr ask questions carry an "Open task" button (#3929).
+      dashboardUrlConfigured: true,
     }));
     expect(warn).not.toHaveBeenCalled();
   });
@@ -271,6 +274,7 @@ describe('startRemoteChatTrigger', () => {
 
     expect(startTelegramTrigger).toHaveBeenCalledWith(expect.objectContaining({
       dashboardBaseUrl: 'http://127.0.0.1:4801',
+      dashboardUrlConfigured: false,
     }));
     expect(warnings).toEqual([
       '[telegram] KOOKR_REMOTE_CHAT_DASHBOARD_URL must be an http(s) origin like https://kookr.example.com; using local dashboard URL instead.',

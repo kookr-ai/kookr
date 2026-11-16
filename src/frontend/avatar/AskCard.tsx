@@ -2,10 +2,12 @@
  * One `kookr ask` question in Lucy's panel.
  *
  * While the question is waiting it shows who asks, the question, the optional
- * background and one button per choice (plus a text box when the task accepts
- * a typed answer). Once it is closed it turns into a one-line outcome that says
- * where the answer came from ("Answered on Telegram: …", "You answered: …"),
- * because the same question is also on the operator's phone and they need to
+ * background, a button per page the question links to (`kookr ask --link`) and
+ * an "Open task" button that selects the asking task, then one button per
+ * choice (plus a text box when the task accepts a typed answer). URLs written
+ * in the question or its background are clickable too. Once it is closed it
+ * turns into a one-line outcome that says where the answer came from
+ * ("Answered on Telegram: …", "You answered: …"), because the same question is also on the operator's phone and they need to
  * see that the two agree.
  *
  * Purely presentational: the list, the sending state and the socket live in
@@ -14,9 +16,10 @@
  * telling a screen reader the outcome, and keeping keyboard focus in the panel.
  */
 import { useId, useState } from 'react';
-import type { FormEvent } from 'react';
-import { ASK_LIMITS, type OperatorAskView } from '../../shared/contracts/asks.js';
+import type { FormEvent, ReactNode } from 'react';
+import { ASK_LIMITS, DEFAULT_ASK_LINK_LABEL, type OperatorAskView } from '../../shared/contracts/asks.js';
 import type { AskAnswerChoice, AskSubmitState } from '../store/operator-asks.js';
+import { isOpenableUrl, splitLinks } from './ask-links.js';
 
 export type { AskAnswerChoice };
 
@@ -29,6 +32,21 @@ export interface AskCardProps {
   nowMs: number;
   onAnswer: (askId: string, choice: AskAnswerChoice) => void;
   onDismiss: (askId: string) => void;
+  /**
+   * Select the asking task in the dashboard. Returns false when it cannot be shown (it has no live
+   * session in the dashboard), so the card can say so. Absent: no "Open task" button.
+   */
+  onOpenTask?: (taskId: string) => boolean;
+}
+
+/** Shown when "Open task" could not select the task. */
+export const OPEN_TASK_FAILED_TEXT = 'This task is not shown in the dashboard right now.';
+
+/** `text` with every http(s) URL in it rendered as a link that opens in a new tab. */
+export function TextWithLinks({ text }: { text: string }): ReactNode {
+  return splitLinks(text).map((segment, i) => (segment.kind === 'url'
+    ? <a key={i} href={segment.url} target="_blank" rel="noopener noreferrer" className="avatar-ask-inline-link">{segment.url}</a>
+    : segment.text));
 }
 
 /** "29 min left", "under a minute left". */
@@ -68,10 +86,13 @@ export function askOutcome(ask: OperatorAskView): { text: string; answered: bool
   return { text: 'The task withdrew this question', answered: false };
 }
 
-export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss }: AskCardProps) {
+export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask }: AskCardProps) {
   const [text, setText] = useState('');
+  const [openTaskFailed, setOpenTaskFailed] = useState(false);
   const questionId = useId();
   const who = ask.taskName ? `${ask.taskName} asks` : 'A task asks';
+  // The server only accepts https links; this guards against an old or hand-edited record all the same.
+  const links = (ask.links ?? []).filter((link) => isOpenableUrl(link.url));
 
   if (ask.state !== 'pending') {
     const outcome = askOutcome(ask);
@@ -122,12 +143,40 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss }: AskCardProp
         <span className="avatar-ask-who" title={who}>{who}</span>
         <span className="avatar-ask-time">{timeLeftText(ask.expiresAt, nowMs)}</span>
       </div>
-      <p className="avatar-ask-question" id={questionId} data-testid="avatar-ask-question">{ask.question}</p>
+      <p className="avatar-ask-question" id={questionId} data-testid="avatar-ask-question"><TextWithLinks text={ask.question} /></p>
       {ask.context && (
         <details className="avatar-ask-context">
           <summary>Background</summary>
-          <p>{ask.context}</p>
+          <p><TextWithLinks text={ask.context} /></p>
         </details>
+      )}
+      {(links.length > 0 || onOpenTask) && (
+        // What the question is about, one click away: the pages it links to, and the task that asked.
+        <div className="avatar-ask-links">
+          {links.map((link, index) => (
+            <a
+              key={`${index}-${link.url}`}
+              className="avatar-ask-link"
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={link.url}
+              data-testid="avatar-ask-link"
+            >
+              {link.label ?? DEFAULT_ASK_LINK_LABEL}
+            </a>
+          ))}
+          {onOpenTask && (
+            <button
+              type="button"
+              className="avatar-ask-link"
+              onClick={() => setOpenTaskFailed(!onOpenTask(ask.taskId))}
+              data-testid="avatar-ask-open-task"
+            >
+              Open task
+            </button>
+          )}
+        </div>
       )}
       {/* One group named by the question, so with several cards open each choice, text box and Send
           button is announced with the question it belongs to. */}
@@ -167,7 +216,7 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss }: AskCardProp
       </div>
       {/* Always present, only emptied, so a refusal is announced when it appears. */}
       <p className="avatar-ask-note" role="status" data-testid="avatar-ask-note">
-        {sending ? 'Sending your answer…' : refusal ?? 'Also on Telegram. The first answer wins.'}
+        {sending ? 'Sending your answer…' : refusal ?? (openTaskFailed ? OPEN_TASK_FAILED_TEXT : 'Also on Telegram. The first answer wins.')}
       </p>
     </li>
   );

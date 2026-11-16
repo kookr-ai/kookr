@@ -18,6 +18,21 @@ export type AskAnswer =
   | { kind: 'option'; index: number; label: string }
   | { kind: 'text'; text: string };
 
+/**
+ * A page the question is about (a mockup, a write-up, a pull request). The dashboard card shows it as
+ * a button that opens a new tab and Telegram as a URL button, so the operator never has to copy a URL
+ * out of the question text. Lucy does not read it aloud.
+ */
+export interface AskLink {
+  /** An `https://` URL, at most {@link ASK_LIMITS.maxLinkUrlChars} characters. */
+  url: string;
+  /** The button text, e.g. "Open mockups". Absent: "Open link". */
+  label?: string;
+}
+
+/** The button text for a link that has no label. */
+export const DEFAULT_ASK_LINK_LABEL = 'Open link';
+
 export interface AskRecord {
   /** 12 hex chars — short enough to fit Telegram's 64-byte callback_data. */
   id: string;
@@ -25,6 +40,8 @@ export interface AskRecord {
   question: string;
   context?: string;
   options: string[];
+  /** Pages to open from the question (`kookr ask --link`). Absent on asks without links and on older records. */
+  links?: AskLink[];
   /** Whether a free-text reply to the Telegram message counts as an answer. */
   allowText: boolean;
   state: AskState;
@@ -71,6 +88,10 @@ export const ASK_LIMITS = {
   minTimeoutSec: 30,
   maxTimeoutSec: 24 * 60 * 60,
   maxIdempotencyKeyChars: 128,
+  /** Links per question (`--link`). */
+  maxLinks: 2,
+  maxLinkUrlChars: 500,
+  maxLinkLabelChars: 40,
   /** Longest free-text answer, on either channel. */
   maxAnswerTextChars: 1000,
   /** Terminal asks are kept this long for `--wait` pollers and audit, then pruned. */
@@ -82,9 +103,38 @@ export interface CreateAskInput {
   question: string;
   context?: string;
   options: string[];
+  links?: AskLink[];
   allowText?: boolean;
   timeoutSec?: number;
   idempotencyKey?: string;
+}
+
+/**
+ * Why a link cannot be sent with a question, or undefined when it can. Shared by the CLI (which exits 2
+ * before any request) and the server (which refuses the request), so both say the same thing.
+ */
+export function askLinkProblem(link: AskLink): string | undefined {
+  const { url, label } = link;
+  if (url.length === 0 || url.length > ASK_LIMITS.maxLinkUrlChars) {
+    return `a link must be 1..${ASK_LIMITS.maxLinkUrlChars} characters`;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `a link must be an https:// URL (got: ${url.slice(0, 80)})`;
+  }
+  if (parsed.protocol !== 'https:' || parsed.hostname === '') return `a link must be an https:// URL (got: ${url.slice(0, 80)})`;
+  if (parsed.username !== '' || parsed.password !== '') return 'a link must not carry a user name or password';
+  // eslint-disable-next-line no-control-regex -- control characters are exactly what is refused
+  if (/[\s\u0000-\u001f\u007f]/.test(url)) return 'a link must not contain spaces or control characters';
+  if (label !== undefined) {
+    const trimmed = label.trim();
+    if (trimmed.length === 0 || trimmed.length > ASK_LIMITS.maxLinkLabelChars || /[\r\n]/.test(label)) {
+      return `a link label must be a single line of 1..${ASK_LIMITS.maxLinkLabelChars} characters`;
+    }
+  }
+  return undefined;
 }
 
 export type CreateAskError =
@@ -146,6 +196,7 @@ export interface OperatorAskView {
   question: string;
   context?: string;
   options: string[];
+  links?: AskLink[];
   allowText: boolean;
   state: AskState;
   createdAt: number;

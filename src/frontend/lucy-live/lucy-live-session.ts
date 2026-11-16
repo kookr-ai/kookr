@@ -24,6 +24,7 @@ import {
   LUCY_LIVE_WS_PATH,
   type LucyLiveClientMessage,
   type LucyLiveLanguage,
+  type LucyLiveOpenTarget,
   type LucyLiveServerMessage,
   type LucyLiveState,
   type LucyLiveTurnEnd,
@@ -78,6 +79,11 @@ export interface LucyLiveSessionOptions {
   onView: (patch: Partial<LucyLiveView>) => void;
   /** The session cannot continue; the caller should drop it. */
   onFatal: (status: 'unavailable' | 'error', message: string) => void;
+  /**
+   * Open what the operator asked for by voice ("show me the mockups"): a link in a new tab, or the
+   * asking task in the dashboard. Returns what happened, which Lucy then says. Absent: `unavailable`.
+   */
+  onOpen?: (target: LucyLiveOpenTarget) => 'opened' | 'blocked' | 'unavailable';
 }
 
 /** Microphone samples delivered per chunk, at the capture rate. Small, so a barge-in is noticed within a few tens of milliseconds. */
@@ -375,6 +381,16 @@ export class LucyLiveSession {
       case 'speech_confirmed':
         this.onConfirmed(message.turnId);
         break;
+      case 'open': {
+        let outcome: 'opened' | 'blocked' | 'unavailable' = 'unavailable';
+        try {
+          outcome = this.options.onOpen?.(message.target) ?? 'unavailable';
+        } catch {
+          outcome = message.target.kind === 'link' ? 'blocked' : 'unavailable';
+        }
+        this.send({ type: 'open_result', requestId: message.requestId, outcome });
+        break;
+      }
       case 'speech_rejected':
         this.onRejected(message.turnId);
         break;

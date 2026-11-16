@@ -25,6 +25,7 @@ import { redactCredentials } from '../../integrations/telegram/redact.js';
 import { isTerminalStatus, type TaskStatus } from '../../core/task-status.js';
 import {
   ASK_LIMITS,
+  askLinkProblem,
   type AnswerInput,
   type AnswerResult,
   type AskChange,
@@ -199,6 +200,17 @@ export class AskService {
     if (options.some((label) => redactCredentials(label) !== label)) {
       return { ok: false, error: { code: 'redacted_option' } };
     }
+    const links = input.links ?? [];
+    if (links.length > ASK_LIMITS.maxLinks) return invalid(`at most ${ASK_LIMITS.maxLinks} links`);
+    for (const link of links) {
+      const problem = askLinkProblem(link);
+      if (problem) return invalid(problem);
+      // A URL cannot be partly replaced with a placeholder and still open, so one that looks like it
+      // carries a credential is refused outright.
+      if (redactCredentials(link.url) !== link.url || (link.label !== undefined && redactCredentials(link.label) !== link.label)) {
+        return invalid('a link looks like it contains a credential');
+      }
+    }
     const timeoutSec = input.timeoutSec ?? ASK_LIMITS.defaultTimeoutSec;
     if (!Number.isFinite(timeoutSec) || timeoutSec < ASK_LIMITS.minTimeoutSec || timeoutSec > ASK_LIMITS.maxTimeoutSec) {
       return invalid(`timeout must be ${ASK_LIMITS.minTimeoutSec}..${ASK_LIMITS.maxTimeoutSec} seconds`);
@@ -225,6 +237,7 @@ export class AskService {
       question: safeQuestion,
       ...(safeContext !== undefined ? { context: safeContext } : {}),
       options,
+      ...(links.length > 0 ? { links: links.map((l) => ({ url: l.url, ...(l.label !== undefined ? { label: l.label.trim() } : {}) })) } : {}),
       allowText: input.allowText !== false,
       state: 'pending',
       createdAt,
