@@ -25,7 +25,7 @@ function makeDb(path: string) {
 }
 
 describe('readOpenCodeDbTranscript', () => {
-  it('returns user and assistant text in order, skipping tool/step parts and empty messages', async () => {
+  it('returns user and assistant text in order, skipping tool/step/ignored/non-string parts and empty messages', async () => {
     const p = join(dir, 'oc.db');
     const { db, msg, part } = makeDb(p);
     msg('m1', 'ses_a', 1000, 'user');
@@ -37,6 +37,8 @@ describe('readOpenCodeDbTranscript', () => {
     msg('m3', 'ses_a', 3000, 'assistant');
     part('p5', 'm3', 'ses_a', 3000, { type: 'text', text: 'Done.\n\nChanged x.' });
     part('p6', 'm3', 'ses_a', 3001, { type: 'step-finish', reason: 'stop' });
+    part('p7', 'm3', 'ses_a', 3002, { type: 'text', text: 'hidden', ignored: true });
+    part('p8', 'm3', 'ses_a', 3003, { type: 'text', text: 123 }); // not a string: skipped
     msg('m4', 'ses_a', 4000, 'assistant'); // in-flight, no text yet
     db.close();
     const out = await readOpenCodeDbTranscript(p);
