@@ -16386,6 +16386,60 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   color: var(--fg-muted, currentColor);
 }
 
+/* --- Related tasks never take the terminal's space (#3939) ----------------
+ * A long task chain starts collapsed to a summary line plus the chips of the
+ * tasks still active (at most two rows); expanded, the chips scroll inside a
+ * bounded box. The pane body below the tabs keeps at least 45% of the column,
+ * and the blocks above it shrink and scroll instead of pushing it down. */
+.coordinator-chain-strip--collapsible {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  max-height: 30%;
+}
+.coordinator-chain-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.coordinator-chain-summary-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.coordinator-chain-strip--collapsible .coordinator-chain-members {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.coordinator-chain-strip--collapsible .coordinator-chain-members:empty {
+  display: none;
+}
+.coordinator-chain-members--active {
+  max-height: 62px; /* two rows of 28px chips and the 6px gap between them */
+}
+.coordinator-chain-members--expanded {
+  max-height: 240px;
+}
+.coordinator-chain-strip--collapsible .coordinator-chain-action,
+.coordinator-chain-strip--collapsible .coordinator-chain-status {
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+.detail-body-main > .detail-split {
+  min-height: 45%;
+}
+.detail-body-main > .coordinator-chain-strip,
+.detail-body-main > .detail-next-actions,
+.detail-body-main > .evolution-panel {
+  flex-shrink: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .child-rollup-pill {
   display: inline-flex;
   align-items: center;

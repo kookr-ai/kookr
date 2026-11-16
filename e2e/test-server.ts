@@ -267,6 +267,30 @@ async function main() {
     }
   });
 
+  // Give a task many child task records without launching sessions (#3939):
+  // the launch API's spawn burst limit allows 30 per 10 minutes. The first
+  // `running` children stay in progress; every tenth of the rest is cancelled
+  // and the others are completed.
+  server.app.post('/api/test/create-child-tasks', async (c) => {
+    const { parentTaskId, count, running = 0 } = await c.req.json() as { parentTaskId: string; count: number; running?: number };
+    try {
+      const childIds: string[] = [];
+      for (let i = 0; i < count; i++) {
+        const child = server.taskStore.createTask({ prompt: `Child task ${i}`, cwd: '/test/children', parentTaskId });
+        server.taskStore.startTask(child.id);
+        if (i >= running) {
+          if ((i - running) % 10 === 9) server.taskStore.cancelTask(child.id);
+          else server.taskStore.completeTask(child.id);
+        }
+        childIds.push(child.id);
+      }
+      broadcastTestSnapshot();
+      return c.json({ ok: true, childIds });
+    } catch (err) {
+      return c.json({ error: String(err) }, 400);
+    }
+  });
+
   // Cancel a task (for lifecycle tests)
   server.app.post('/api/test/cancel-task/:taskId', (c) => {
     const taskId = c.req.param('taskId');

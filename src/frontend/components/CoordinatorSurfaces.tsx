@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import type {
+  CoordinatorChainMember,
   CoordinatorChainStrip,
   CoordinatorFinding,
   CoordinatorSnapshotState,
@@ -8,6 +9,7 @@ import type {
 } from '../../shared/contracts/coordinator.js';
 import { markPriorTasksDone, suppressCoordinatorChip } from '../api/index.js';
 import { useKookrStore } from '../store/useStore.js';
+import { isTerminalStatus, type TaskStatus } from '../../shared/contracts/task-status.js';
 
 const GLYPHS: Record<string, string> = {
   chain: '⛓',
@@ -135,6 +137,85 @@ function recordCoordinatorSnooze(chip: CoordinatorTaskChip): void {
   window.localStorage.setItem(key, String((Number.isFinite(count) ? count : 0) + 1));
 }
 
+/**
+ * Above this many related tasks the chain strip starts collapsed (#3939): a
+ * coordinating task with dozens of children otherwise fills the detail pane
+ * with chips and pushes the terminal off screen.
+ */
+export const CHAIN_STRIP_COLLAPSE_THRESHOLD = 6;
+const CHAIN_STRIP_EXPANDED_KEY_PREFIX = 'kookr-chain-strip-expanded:';
+
+function isFinishedMember(member: CoordinatorChainMember): boolean {
+  // Statuses outside TaskStatus are not known to be finished, so they stay visible.
+  return isTerminalStatus(member.status as TaskStatus) === true;
+}
+
+const RELATION_NOUNS: Record<CoordinatorChainMember['relation'], [string, string]> = {
+  parent: ['parent', 'parents'],
+  child: ['child', 'children'],
+  blocks: ['blocked task', 'blocked tasks'],
+  blocked_by: ['blocker', 'blockers'],
+};
+
+function statusGroupLabel(status: string): string {
+  switch (status) {
+    case 'inProgress': return 'in progress';
+    case 'open':
+    case 'pending': return 'not started';
+    case 'completed': return 'completed';
+    case 'cancelled':
+    case 'terminated': return 'cancelled or terminated';
+    default: return status;
+  }
+}
+
+/**
+ * One-line summary of a collapsed chain strip, for example
+ * "55 children · 3 in progress · 49 completed · 3 cancelled or terminated".
+ */
+export function summarizeChainMembers(members: readonly CoordinatorChainMember[]): string {
+  const relationCounts = new Map<CoordinatorChainMember['relation'], number>();
+  for (const member of members) relationCounts.set(member.relation, (relationCounts.get(member.relation) ?? 0) + 1);
+  const relationParts = (['parent', 'child', 'blocks', 'blocked_by'] as const)
+    .filter((relation) => relationCounts.has(relation))
+    .map((relation) => {
+      const count = relationCounts.get(relation)!;
+      const [singular, plural] = RELATION_NOUNS[relation];
+      return `${count} ${count === 1 ? singular : plural}`;
+    });
+  const statusCounts = new Map<string, number>();
+  for (const member of members) {
+    const label = statusGroupLabel(member.status);
+    statusCounts.set(label, (statusCounts.get(label) ?? 0) + 1);
+  }
+  const knownOrder = ['in progress', 'not started', 'completed', 'cancelled or terminated'];
+  const statusParts = [...statusCounts.keys()]
+    .sort((a, b) => {
+      const ai = knownOrder.indexOf(a);
+      const bi = knownOrder.indexOf(b);
+      return (ai === -1 ? knownOrder.length : ai) - (bi === -1 ? knownOrder.length : bi);
+    })
+    .map((label) => `${statusCounts.get(label)} ${label}`);
+  return [...relationParts, ...statusParts].join(' · ');
+}
+
+function readChainStripExpanded(taskId: string): boolean {
+  try {
+    return globalThis.localStorage?.getItem(CHAIN_STRIP_EXPANDED_KEY_PREFIX + taskId) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeChainStripExpanded(taskId: string, expanded: boolean): void {
+  try {
+    if (expanded) globalThis.localStorage?.setItem(CHAIN_STRIP_EXPANDED_KEY_PREFIX + taskId, 'true');
+    else globalThis.localStorage?.removeItem(CHAIN_STRIP_EXPANDED_KEY_PREFIX + taskId);
+  } catch {
+    // Storage can be unavailable (private window, blocked site data); the choice then lasts until reload.
+  }
+}
+
 export function CoordinatorChainStripView({
   agent,
 }: {
@@ -143,10 +224,33 @@ export function CoordinatorChainStripView({
   const coordinator = useKookrStore((s) => s.coordinator);
   const chain = agent.taskId ? coordinator?.chains[agent.taskId] : undefined;
   const [status, setStatus] = useState<string | null>(null);
-  if (!chain) return null;
+  // The panel is reused when another task is selected, so the in-memory
+  // choice only applies to the task it was made on.
+  const [expandedChoice, setExpandedChoice] = useState<{ taskId: string; expanded: boolean } | null>(null);
+  const membersId = useId();
+  const members = chain?.members;
+  const collapsible = (members?.length ?? 0) > CHAIN_STRIP_COLLAPSE_THRESHOLD;
+  const ordered = useMemo(() => {
+    if (!members || !collapsible) return { all: members ?? [], active: members ?? [] };
+    const active = members.filter((member) => !isFinishedMember(member));
+    const finished = members.filter(isFinishedMember);
+    return { all: [...active, ...finished], active };
+  }, [members, collapsible]);
+  if (!chain || !agent.taskId) return null;
+  const taskId = agent.taskId;
+
+  const expanded = !collapsible
+    || (expandedChoice?.taskId === taskId ? expandedChoice.expanded : readChainStripExpanded(taskId));
+  const shownMembers = expanded ? ordered.all : ordered.active;
+
+  function toggleExpanded() {
+    const next = !expanded;
+    setExpandedChoice({ taskId, expanded: next });
+    writeChainStripExpanded(taskId, next);
+  }
 
   async function markPriorDone() {
-    if (!agent.taskId || chain.priorTaskIds.length === 0) return;
+    if (!agent.taskId || !chain || chain.priorTaskIds.length === 0) return;
     setStatus('Checking...');
     try {
       const { ok, body } = await markPriorTasksDone({
@@ -161,9 +265,34 @@ export function CoordinatorChainStripView({
   }
 
   return (
-    <section className="coordinator-chain-strip" data-testid="coordinator-chain-strip" aria-label="Task chain">
-      <div className="coordinator-chain-members">
-        {chain.members.map((member) => (
+    <section
+      className={`coordinator-chain-strip${collapsible ? ' coordinator-chain-strip--collapsible' : ''}`}
+      data-testid="coordinator-chain-strip"
+      aria-label="Task chain"
+    >
+      {collapsible && (
+        <div className="coordinator-chain-summary">
+          <span className="coordinator-chain-summary-text" data-testid="coordinator-chain-summary">
+            {summarizeChainMembers(chain.members)}
+          </span>
+          <button
+            type="button"
+            className="btn-xs coordinator-chain-toggle"
+            aria-expanded={expanded}
+            aria-controls={membersId}
+            data-testid="coordinator-chain-toggle"
+            onClick={toggleExpanded}
+          >
+            {expanded ? 'Show less' : `Show all ${chain.members.length}`}
+          </button>
+        </div>
+      )}
+      <div
+        id={membersId}
+        className={`coordinator-chain-members${collapsible ? (expanded ? ' coordinator-chain-members--expanded' : ' coordinator-chain-members--active') : ''}`}
+        data-testid="coordinator-chain-members"
+      >
+        {shownMembers.map((member) => (
           <ChainMember key={`${member.relation}:${member.taskId}`} member={member} />
         ))}
       </div>
@@ -183,7 +312,12 @@ export function CoordinatorChainStripView({
 
 function ChainMember({ member }: { member: CoordinatorChainStrip['members'][number] }) {
   return (
-    <span className={`coordinator-chain-member coordinator-chain-member--${member.relation}`} title={member.taskId}>
+    <span
+      className={`coordinator-chain-member coordinator-chain-member--${member.relation}`}
+      title={member.taskId}
+      data-testid="coordinator-chain-member"
+      data-status={member.status}
+    >
       <span className="coordinator-chain-relation">{relationLabel(member.relation)}</span>
       <span className="coordinator-chain-label">{member.label}</span>
       <span className="coordinator-chain-state">{member.status}</span>
