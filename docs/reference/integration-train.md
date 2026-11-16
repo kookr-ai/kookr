@@ -318,6 +318,8 @@ Options: `--worktree <path>` (default: a sibling of the launching checkout, `<re
 
 The verify also runs with `KOOKR_VERIFY_FLAKY_RERUN=1`, so `scripts/verify.sh` applies the pre-push hook's flaky policy to the unit lane: when at most five test files fail they are re-run once, a pass continues and is logged to `<git common dir>/kookr-flaky-tests.log`, and a second failure is a red result.
 
+The train also sets `KOOKR_VERIFY_REPORT_FILE`, so `scripts/verify.sh` writes a small JSON file next to the log, `verify-<sha>.report.json`, naming the lanes and steps that failed and, for the unit lane, the failing test files (see `scripts/verify-report.mjs` for the format). A red run's report is kept with its log as `verify-<sha>.run<n>.report.json`. The train does not read it yet: issue #3995 plans to bisect a red head with only the lane or test files that failed.
+
 In that mode `scripts/verify.sh` also gives each test a 60 s timeout instead of 15 s (`KOOKR_VITEST_TEST_TIMEOUT_MS`), and, once `build:server` has written `dist/`, runs the unit suite at the same time as the other static checks, the hook tests and the STT tests; the integration, FAA and smoke lanes follow. A developer's plain `pnpm verify` keeps the sequential order. In every mode, the unit suite runs the files in `scripts/lib/vitest-serial-files.mjs` (they spawn real processes or race timers) after the rest, one at a time, with two retries (issue #3794).
 
 ## State files
@@ -328,7 +330,8 @@ repositories never do): `state.json` (halt, green
 SHAs, flaky heads, fix-task counts, whether an alert awaits its recovery signal,
 consecutive rejected pushes), `train.log`, `train.pid`, `train.lock`
 (one instance only; a second `cycle` or `run` exits quietly), `events.jsonl`
-(notifications), `verify-<sha>.log` (20 newest kept), and
+(notifications), `verify-<sha>.log` (20 newest kept) with its
+`verify-<sha>.report.json`, and
 `<idempotency key>.prompt.md` (the prompt handed to a spawned fix task),
 `last-cycle.json` (outcome of the newest cycle), `start-args.json` (options of
 the last `start`), `run-info.json` (pid and checkout `HEAD` of the running loop)

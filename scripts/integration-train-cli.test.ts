@@ -354,6 +354,36 @@ describe('integration train CLI', () => {
     expect(s.signals()).toEqual([]);
   }, 120_000);
 
+  it('points scripts/verify.sh at a report file next to each log and keeps the red run\'s report with its log (#3995)', () => {
+    const s = makeSandbox();
+    const head = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    const short = head.slice(0, 10);
+    const marker = join(s.root, 'ran-once');
+    // Stands in for scripts/verify.sh: writes its result where the train asks.
+    const redOnce = [
+      `if [ -e '${marker}' ]; then echo '{"status":"passed"}' > "$KOOKR_VERIFY_REPORT_FILE"; exit 0; fi`,
+      `touch '${marker}'`,
+      `echo '{"status":"failed","failures":[{"lane":"smoke_lane"}]}' > "$KOOKR_VERIFY_REPORT_FILE"`,
+      'exit 1',
+    ].join('; ');
+
+    expect(s.cycle(['--verify-cmd', redOnce]).status).toBe(0);
+    expect(s.ref('main')).toBe(head);
+    const read = (name: string) => JSON.parse(readFileSync(join(s.stateDir, name), 'utf8')) as { status: string };
+    expect(read(`verify-${short}.run1.report.json`)).toEqual({ status: 'failed', failures: [{ lane: 'smoke_lane' }] });
+    expect(read(`verify-${short}.report.json`)).toEqual({ status: 'passed' });
+  }, 120_000);
+
+  it('removes a stale report before verifying a SHA again', () => {
+    const s = makeSandbox();
+    const head = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    const report = join(s.stateDir, `verify-${head.slice(0, 10)}.report.json`);
+    mkdirSync(s.stateDir, { recursive: true });
+    writeFileSync(report, '{"status":"failed"}');
+    expect(s.cycle(['--verify-cmd', 'true']).status).toBe(0); // writes no report
+    expect(existsSync(report)).toBe(false);
+  }, 120_000);
+
   it('does nothing while another live process holds the lock', () => {
     const s = makeSandbox();
     const base = s.ref('main');

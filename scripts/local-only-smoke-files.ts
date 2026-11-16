@@ -94,6 +94,10 @@ export function assertKookrDiff(before: FileSnapshot, after: FileSnapshot): void
     }
   }
   if (errors.length > 0) {
-    throw new Error(`~/.kookr contains unexpected state outside allowed local startup artifacts (SQLite, JSON, and session files):\n${errors.join('\n')}`);
+    throw new Error(
+      `~/.kookr contains unexpected state outside allowed local startup artifacts (SQLite, JSON, and session files):\n${errors.join('\n')}\n`
+      + 'If the server is meant to write this file, add it to isAllowedLocalOnlyChange in scripts/local-only-smoke-files.ts '
+      + '(with a comment naming the code that writes it). Otherwise find the code that writes it outside the allowed state.',
+    );
   }
 }

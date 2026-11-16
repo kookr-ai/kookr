@@ -38,6 +38,11 @@ describe('local-only smoke filesystem assertion', () => {
     }
   });
 
+  it('says how to admit an intended new state file (#3995)', () => {
+    expect(() => assertKookrDiff(snapshot([]), snapshot(['new-feature-health.json'])))
+      .toThrow(/new file: new-feature-health\.json\nIf the server is meant to write this file, add it to isAllowedLocalOnlyChange in scripts\/local-only-smoke-files\.ts/);
+  });
+
   it.each(startupFiles)('allows subsequent updates and removal of %s', (file) => {
     expect(() => assertKookrDiff(snapshot([file]), snapshot([file], 'file', 2, 2))).not.toThrow();
     expect(() => assertKookrDiff(snapshot([file]), snapshot([]))).not.toThrow();

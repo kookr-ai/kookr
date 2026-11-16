@@ -149,6 +149,20 @@ describe('selectFastGate', () => {
     expect(run(['stt/Dockerfile']).result.commands).toEqual(['pnpm test:stt']);
   });
 
+  it('runs the local-only smoke gate for server and core code and the smoke scripts (#3995)', () => {
+    for (const path of ['src/server/index.ts', 'src/core/task-namer-health.ts', 'scripts/local-only-smoke.ts', 'scripts/local-only-smoke-files.ts']) {
+      const { result } = run([path]);
+      expect(result.commands, path).toEqual(['pnpm test:smoke']);
+      expect(result.related, path).toEqual([path]); // the related tests still run
+    }
+  });
+
+  it('does not run the smoke gate for a test file alone or for code outside server and core', () => {
+    for (const path of ['src/server/index.test.ts', 'src/core/a.spec.ts', 'scripts/local-only-smoke-files.test.ts', 'src/frontend/app.ts', 'src/cli/kookr.ts']) {
+      expect(run([path]).result.commands, path).toEqual([]);
+    }
+  });
+
   it('maps CSS to the design-token tests', () => {
     const { result } = run(['src/frontend/app.css']);
     expect(result.tests).toEqual(['src/frontend/design-tokens.test.ts']);
