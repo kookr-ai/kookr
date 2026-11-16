@@ -109,6 +109,15 @@ test.describe('Detail pane visibility controls', () => {
     await expect.poll(
       () => page.evaluate((key) => localStorage.getItem(key), DETAIL_PANE_MODE_STORAGE_KEY),
     ).toBe('split');
+    // Both panes start their content on one line (#3618): the left pane's
+    // filter chips form a band as tall as the right pane's Terminal header.
+    const bandBottom = async (selector: string) => {
+      const box = await page.locator(selector).boundingBox();
+      return box ? Math.round(box.y + box.height) : null;
+    };
+    const rightHeaderBottom = await bandBottom('.detail-split-right .detail-pane-header');
+    expect(rightHeaderBottom).not.toBeNull();
+    expect(await bandBottom('.detail-split-left .act-role-filters')).toBe(rightHeaderBottom);
 
     // Terminal focus hides the tab bar and the conversation.
     await page.getByRole('button', { name: /terminal focus/i }).click();
