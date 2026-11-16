@@ -34,6 +34,8 @@ trap cleanup EXIT
 #   appends "ran" to $HOOKTEST_LOG and exits with that status.
 # fromstaging: origin/staging holds one more commit (src/staged.ts) than
 #   origin/main, and the feature branch is cut from it (issue #3995).
+#   stagingbehind: origin/staging stays at the base commit while origin/main
+#   gains one commit (src/mainonly.ts); the branch is cut from main.
 setup_repo() {
   local repo="$1" mode="$2" hookfile="${3:-}" noorigin="${4:-}" hooktest="${5:-}" fromstaging="${6:-}" cfg=""
   git init -q -b main "$repo"
@@ -74,7 +76,14 @@ PNPM
   fi
   git -C "$repo" commit -q -m "base"
   git -C "$repo" update-ref refs/remotes/origin/main HEAD
-  if [ -n "$fromstaging" ]; then
+  if [ "$fromstaging" = behind ]; then
+    git -C "$repo" update-ref refs/remotes/origin/staging HEAD
+    mkdir -p "$repo/src"
+    printf 'main only\n' > "$repo/src/mainonly.ts"
+    git -C "$repo" add src/mainonly.ts
+    git -C "$repo" commit -q -m "promoted to main"
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
+  elif [ -n "$fromstaging" ]; then
     mkdir -p "$repo/src"
     printf 'staged\n' > "$repo/src/staged.ts"
     git -C "$repo" add src/staged.ts
@@ -119,6 +128,7 @@ run_case() {
       rerunfail) rerun_exit=1 ;;
       hooktest=*) hooktest="${opt#hooktest=}" ;;
       fromstaging) fromstaging=1 ;;
+      stagingbehind) fromstaging=behind ;;
     esac
   done
   mkdir -p "$repo"
@@ -161,6 +171,15 @@ grep -Fxq "exec vitest related --run --passWithNoTests src/index.ts" "$REPO/pnpm
   || fail "expected only the branch's own change, not src/staged.ts, in the related run"
 grep -Fq "fast gate compares HEAD against origin/staging" "$REPO/hook.out" || fail "expected origin/staging as the base"
 printf 'PASS: a branch cut from staging is compared against staging\n'
+
+# 1c. origin/staging behind origin/main (the branch is cut from main): its older
+# merge base is never used, so main's commits are not tested again.
+run_case staging-behind fast 0 stagingbehind
+[ "$STATUS" -eq 0 ] || fail "fast gate with staging behind main should pass (status $STATUS)"
+grep -Fxq "exec vitest related --run --passWithNoTests src/index.ts" "$REPO/pnpm.log" \
+  || fail "expected only the branch's own change, not src/mainonly.ts, in the related run"
+grep -Fq "fast gate compares HEAD against origin/main" "$REPO/hook.out" || fail "expected origin/main as the base"
+printf 'PASS: a staging branch behind main keeps origin/main as the base\n'
 
 # 2. Fast mode with failing related tests: rejected.
 run_case fast-fail fast 1
