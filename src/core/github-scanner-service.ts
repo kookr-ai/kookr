@@ -11,7 +11,12 @@ import type {
   GitHubStateChange,
 } from './github-types.js';
 import { GitHubStateStore } from './github-state-store.js';
-import { extractRefsFromEvents, extractRefsFromPrompt, toGitHubReferences } from './github-reference-scanner.js';
+import {
+  extractAuthorshipFromEvents,
+  extractRefsFromEvents,
+  extractRefsFromPrompt,
+  toGitHubReferences,
+} from './github-reference-scanner.js';
 import { diffPRState, diffIssueState } from './github-state-differ.js';
 import { isSafeGithubProjectId, projectIdToOwnerRepo } from './project-identity.js';
 import type { ProjectRepoHealth } from './project-summary.js';
@@ -329,6 +334,9 @@ export class GitHubScannerService {
     const ownerRepo = await this.resolveOwnerRepo(agentId, taskId);
     const refs = extractRefsFromEvents(events, ownerRepo?.owner, ownerRepo?.repo);
     const ghRefs = toGitHubReferences(refs, agentId, taskId);
+    // Issue #3678: what this task pushed or opened, so delivery attribution can
+    // tell its own PR from one it only reviewed, commented on or merged.
+    this.stateStore.recordAuthorship(taskId, extractAuthorshipFromEvents(events, ownerRepo?.owner, ownerRepo?.repo));
 
     const newRefs: GitHubReference[] = [];
     for (const ref of ghRefs) {

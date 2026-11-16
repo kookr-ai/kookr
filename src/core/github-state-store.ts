@@ -15,6 +15,12 @@ export class GitHubStateStore {
   private prStates = new Map<string, GitHubPRState>();
   private issueStates = new Map<string, GitHubIssueState>();
   private recentChanges = new Map<string, GitHubStateChange[]>(); // per task
+  /**
+   * Authorship evidence per task (issue #3678): `owner/repo:branch` keys of the
+   * branches its own `git push` reported pushing, and `owner/repo#number` keys
+   * of the PRs its own `gh pr create` printed. Owner and repo are lower case.
+   */
+  private authorship = new Map<string, { branches: Set<string>; prs: Set<string> }>();
 
   private refKey(ref: GitHubReference): string {
     return `${ref.taskId}:${ref.type}:${ref.owner}/${ref.repo}#${ref.number}`;
@@ -44,6 +50,42 @@ export class GitHubStateStore {
     if (this.references.has(key)) return false;
     this.references.set(key, ref);
     return true;
+  }
+
+  /**
+   * Record that a task pushed these branches or opened these PRs (issue
+   * #3678). Idempotent: the scanner re-reads a sliding window of events.
+   */
+  recordAuthorship(taskId: string, evidence: AuthorshipEvidence): void {
+    if (evidence.pushedBranches.length === 0 && evidence.createdPrs.length === 0) return;
+    let entry = this.authorship.get(taskId);
+    if (!entry) {
+      entry = { branches: new Set(), prs: new Set() };
+      this.authorship.set(taskId, entry);
+    }
+    for (const b of evidence.pushedBranches) entry.branches.add(branchKey(b.owner, b.repo, b.branch));
+    for (const pr of evidence.createdPrs) entry.prs.add(prKey(pr.owner, pr.repo, pr.number));
+  }
+
+  /**
+   * Who pushed or opened this PR, as far as recorded (issue #3678): `'self'`
+   * when `taskId` pushed its head branch or opened it, `'other'` when only
+   * another task did, `'none'` when no task did.
+   */
+  authorshipOf(
+    taskId: string,
+    pr: { owner: string; repo: string; number: number; branch?: string },
+  ): 'self' | 'other' | 'none' {
+    const pk = prKey(pr.owner, pr.repo, pr.number);
+    const bk = pr.branch ? branchKey(pr.owner, pr.repo, pr.branch) : null;
+    const holds = (e: { branches: Set<string>; prs: Set<string> }): boolean =>
+      e.prs.has(pk) || (bk !== null && e.branches.has(bk));
+    const own = this.authorship.get(taskId);
+    if (own && holds(own)) return 'self';
+    for (const [id, e] of this.authorship) {
+      if (id !== taskId && holds(e)) return 'other';
+    }
+    return 'none';
   }
 
   /** Get all references for a task. */
@@ -222,5 +264,20 @@ export class GitHubStateStore {
       }
     }
     this.recentChanges.delete(taskId);
+    this.authorship.delete(taskId);
   }
+}
+
+/** What one task's own commands showed it authored (issue #3678). */
+export interface AuthorshipEvidence {
+  pushedBranches: ReadonlyArray<{ owner: string; repo: string; branch: string }>;
+  createdPrs: ReadonlyArray<{ owner: string; repo: string; number: number }>;
+}
+
+function branchKey(owner: string, repo: string, branch: string): string {
+  return `${owner}/${repo}`.toLowerCase() + `:${branch}`;
+}
+
+function prKey(owner: string, repo: string, number: number): string {
+  return `${owner}/${repo}`.toLowerCase() + `#${number}`;
 }

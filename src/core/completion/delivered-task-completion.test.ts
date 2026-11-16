@@ -493,3 +493,36 @@ describe('finishedSettleStartMs (issues #3930, #3983)', () => {
     expect(finishedSettleStartMs({ finishedSignalAt: new Date(T0).toISOString() }, {})).toBeUndefined();
   });
 });
+
+describe('selectDeliveredMergedPr — base branch and authorship (issues #3983, #3678)', () => {
+  const pr = { status: 'merged', number: 5, detectedFrom: 'agent-1' };
+
+  it('rejects a PR merged into a branch known not to be a delivery branch', () => {
+    expect(selectDeliveredMergedPr([{ ...pr, baseBranch: 'feat/parent', deliveryBranches: ['main', 'staging'] }])).toBeNull();
+  });
+
+  it.each([
+    ['the default branch', { baseBranch: 'main', deliveryBranches: ['main', 'staging'] }],
+    ['the integration branch', { baseBranch: 'staging', deliveryBranches: ['main', 'staging'] }],
+    ['an unknown base (empty)', { baseBranch: '', deliveryBranches: ['main'] }],
+    ['unknown delivery branches', { baseBranch: 'feat/parent' }],
+    ['an empty delivery-branch list', { baseBranch: 'feat/parent', deliveryBranches: [] }],
+  ])('accepts a PR merged into %s', (_label, fields) => {
+    expect(selectDeliveredMergedPr([{ ...pr, ...fields }])?.prNumber).toBe(5);
+  });
+
+  it('rejects a PR only another task authored; accepts self, none, or absent', () => {
+    expect(selectDeliveredMergedPr([{ ...pr, authorship: 'other' }])).toBeNull();
+    for (const authorship of ['self', 'none', undefined] as const) {
+      expect(selectDeliveredMergedPr([{ ...pr, ...(authorship ? { authorship } : {}) }])?.prNumber).toBe(5);
+    }
+  });
+
+  it('a rejected PR listed first does not mask this task\'s own PR', () => {
+    expect(selectDeliveredMergedPr([
+      { ...pr, number: 4, authorship: 'other' },
+      { ...pr, number: 6, baseBranch: 'feat/x', deliveryBranches: ['main'] },
+      { ...pr, number: 7, authorship: 'self', baseBranch: 'main', deliveryBranches: ['main'] },
+    ])?.prNumber).toBe(7);
+  });
+});

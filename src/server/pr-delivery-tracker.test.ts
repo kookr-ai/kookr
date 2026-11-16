@@ -8,7 +8,9 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { GitHubStateStore } from '../core/github-state-store.js';
 import type { GitHubPRState, GitHubReference } from '../core/github-types.js';
 import {
+  type DeliveryGit,
   createRepoPathResolver,
+  deliveryBranchList,
   finishedTaskPrReferences,
   parsePullRequestUrl,
   PrDeliveryTracker,
@@ -204,6 +206,76 @@ describe('PrDeliveryTracker (real git repository)', () => {
     });
     await tracker.refresh();
     expect(store.getPRState({ owner: 'kookr-ai', repo: 'kookr', number: 10 })?.delivery).toBeUndefined();
+  });
+});
+
+describe('PrDeliveryTracker delivery branches (issue #3983)', () => {
+  const realGit: DeliveryGit = (args, cwd) => new Promise((resolve) => {
+    try {
+      resolve({ code: 0, stdout: execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) });
+    } catch (err) {
+      resolve({ code: (err as { status?: number }).status ?? null, stdout: '' });
+    }
+  });
+
+  function trackerWith(git: DeliveryGit, states: GitHubPRState[] = [pr(10, { mergeCommit: sha.promoted })]) {
+    const store = new GitHubStateStore();
+    for (const state of states) {
+      store.addReference(state.ref);
+      store.updatePRState(state);
+    }
+    return new PrDeliveryTracker({
+      store, kookrDir: root, resolveRepoPath: () => repo, trainStateDir: () => trainDir, onDeliveryChanged: () => {}, git,
+    });
+  }
+
+  test('caches the default branch from origin/HEAD and the integration branch, keyed by owner/repo', async () => {
+    git(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
+    try {
+      const tracker = trackerWith(realGit);
+      expect(tracker.getDeliveryBranches('kookr-ai', 'kookr')).toBeUndefined();
+      await tracker.refresh();
+      expect(tracker.getDeliveryBranches('Kookr-AI', 'Kookr')).toEqual({ defaultBranch: 'main', integrationBranch: 'staging' });
+      expect(tracker.getDeliveryBranches('kookr-ai', 'other')).toBeUndefined();
+    } finally {
+      git(['symbolic-ref', '--delete', 'refs/remotes/origin/HEAD']);
+    }
+  });
+
+  test('without origin/HEAD, asks the remote once and keeps its answer', async () => {
+    let lsRemoteCalls = 0;
+    const tracker = trackerWith(async (args, cwd) => {
+      if (args[0] === 'ls-remote') {
+        lsRemoteCalls += 1;
+        return { code: 0, stdout: 'ref: refs/heads/trunk\tHEAD\n0123456789abcdef0123456789abcdef01234567\tHEAD\n' };
+      }
+      return realGit(args, cwd);
+    });
+    await tracker.refresh();
+    await tracker.refresh();
+    expect(tracker.getDeliveryBranches('kookr-ai', 'kookr')).toEqual({ defaultBranch: 'trunk', integrationBranch: 'staging' });
+    expect(lsRemoteCalls).toBe(1);
+  });
+
+  test('a repository with no gate file still gets its default branch; an unreadable one gets null', async () => {
+    const answers = new Map<string, { code: number; stdout: string }>([
+      ['symbolic-ref', { code: 0, stdout: 'origin/main\n' }],
+    ]);
+    const tracker = trackerWith(async (args) => answers.get(args[0]!) ?? { code: 128, stdout: '' });
+    await tracker.refresh();
+    expect(tracker.getDeliveryBranches('kookr-ai', 'kookr')).toEqual({ defaultBranch: 'main', integrationBranch: null });
+
+    const failing = trackerWith(async () => ({ code: 128, stdout: '' }));
+    await failing.refresh();
+    expect(failing.getDeliveryBranches('kookr-ai', 'kookr')).toEqual({ defaultBranch: null, integrationBranch: null });
+  });
+
+  test('deliveryBranchList: unknown default branch means no check', () => {
+    expect(deliveryBranchList(undefined)).toBeUndefined();
+    expect(deliveryBranchList({ defaultBranch: null, integrationBranch: 'staging' })).toBeUndefined();
+    expect(deliveryBranchList({ defaultBranch: 'main', integrationBranch: null })).toEqual(['main']);
+    expect(deliveryBranchList({ defaultBranch: 'main', integrationBranch: 'staging' })).toEqual(['main', 'staging']);
+    expect(deliveryBranchList({ defaultBranch: 'main', integrationBranch: 'main' })).toEqual(['main']);
   });
 });
 

@@ -1148,7 +1148,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Forward-declared so onRepoHealthChanged can call back into the broadcast
   // function which references githubScanner.getRepoHealthSnapshot().
   let broadcastProjectSummariesRef: (() => void) | null = null;
-  const { githubStateStore, githubScanner } = createGitHubRuntime({
+  const { githubStateStore, githubScanner, prDeliveryTracker } = createGitHubRuntime({
     taskStore,
     githubBreaker,
     githubPollingIntervalSec: currentSettings.githubPollingIntervalSec,
@@ -1176,10 +1176,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Delivery attribution for the delivered-completion sweep (issue #1560) and
   // the reapers that share it: the task's own merged PR. Excludes PRs cited in
-  // the prompt and PRs merged before the task existed (issue #3746) — see
-  // `createStoreDeliveredPrResolver`.
+  // the prompt, PRs opened or merged before the task existed (issues #3678,
+  // #3746), PRs another task pushed or opened (#3678), and PRs merged into a
+  // branch other than the repository's default or integration branch (#3983)
+  // — see `createStoreDeliveredPrResolver`.
   const resolveMergedPr: (task: Task) => MergedPrAttribution | null =
-    createStoreDeliveredPrResolver(githubStateStore);
+    createStoreDeliveredPrResolver(
+      githubStateStore,
+      (owner, repo) => prDeliveryTracker?.getDeliveryBranches(owner, repo),
+    );
 
   // Label-only fallback for the TTL reapers (issue #3578): the in-memory store
   // above can be empty for a task that did merge its PR, so the reapers ask

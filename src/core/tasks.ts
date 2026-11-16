@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import { capCompletionDigestForStorage, type CompletionDigest } from './completion-digest.js';
+import { CHAIN_ENDED_WITHOUT_HANDOFF_BULLET } from './completion/chain-handoff.js';
 import { evaluateCompletionSignal, type CompletionSignalDecision } from './completion-signal.js';
 import { MAX_LAUNCH_TIMEOUT_SEC } from './settings-store.js';
 import { deterministicTaskName } from './task-naming.js';
@@ -1528,9 +1529,23 @@ export class TaskStore {
     if (!task) return;
     // Hard UTF-8 byte cap on bullets/filesChanged so memory + tasks.json stay
     // bounded (issue #1780). Client projection still count-caps for the wire.
-    const capped = capCompletionDigestForStorage(digest);
+    const capped = capCompletionDigestForStorage(withChainBreakBullet(task, digest));
     const criteriaVerdict = capped.criteriaVerdict ?? task.completionDigest?.criteriaVerdict;
     task.completionDigest = criteriaVerdict ? { ...capped, criteriaVerdict } : capped;
+    task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
+  }
+
+  /**
+   * Record that completing this task ended its self-continuation chain with no
+   * successor and no stop reason (issue #3678). The digest gets the bullet now
+   * and keeps it when a later writer replaces the digest.
+   */
+  markChainEndedWithoutHandoff(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.chainEndedWithoutHandoff = true;
+    task.completionDigest = withChainBreakBullet(task, task.completionDigest ?? { bullets: [], filesChanged: [] });
     task.updatedAt = new Date();
     this.markTaskDirty(taskId);
   }
@@ -1992,4 +2007,11 @@ export class TaskStore {
   getLifetimeSpendUsd(): number {
     return this.lifetimeSpendUsd;
   }
+}
+
+/** The digest with the chain-break bullet first when the task carries the marker (issue #3678). */
+function withChainBreakBullet(task: Pick<Task, 'chainEndedWithoutHandoff'>, digest: CompletionDigest): CompletionDigest {
+  if (task.chainEndedWithoutHandoff !== true) return digest;
+  if (digest.bullets.includes(CHAIN_ENDED_WITHOUT_HANDOFF_BULLET)) return digest;
+  return { ...digest, bullets: [CHAIN_ENDED_WITHOUT_HANDOFF_BULLET, ...digest.bullets] };
 }

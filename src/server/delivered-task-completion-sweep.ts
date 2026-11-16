@@ -52,6 +52,7 @@ import {
   type MergedPrAttribution,
 } from '../core/completion/index.js';
 import type { GitHubStateStore } from '../core/github-state-store.js';
+import { deliveryBranchList, type DeliveryBranches } from './pr-delivery-tracker.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 
@@ -100,7 +101,7 @@ export function createDeliveredCompletionTracker(): DeliveredCompletionTracker {
  * Production delivery attribution over the server's `GitHubStateStore` — the
  * `resolveMergedPr` dep for this sweep and for the reapers that share it.
  *
- * Two exclusions keep a live task from being completed over someone else's PR:
+ * Exclusions that keep a live task from being completed over someone else's PR:
  * - PRs merely cited in the task prompt (`detectedFrom === 'prompt'`, #1560);
  * - PRs merged before the task was created (issue #3746). The scanner records
  *   any PR number the agent saw in its own activity (a doc, a test fixture,
@@ -108,24 +109,42 @@ export function createDeliveredCompletionTracker(): DeliveredCompletionTracker {
  *   delivery;
  * - PRs opened before the task was created (issue #3678): a chain successor
  *   that mentions its predecessor's PR, still waiting on auto-merge, must not
- *   be completed when that PR merges.
+ *   be completed when that PR merges;
+ * - PRs that another task pushed or opened while this one left no such
+ *   evidence (issue #3678, `GitHubStateStore.authorshipOf`);
+ * - PRs merged into a branch that is known not to be the repository's
+ *   default or integration branch (issue #3983). `deliveryBranchesOf` reads
+ *   the branches `PrDeliveryTracker` caches per repository; it is a required
+ *   argument so that dropping it from the server wiring fails to compile.
  * A PR with no recorded `mergedAt` or `createdAt` is not attributed either.
  */
 export function createStoreDeliveredPrResolver(
-  store: Pick<GitHubStateStore, 'getTaskState'>,
+  store: Pick<GitHubStateStore, 'getTaskState' | 'authorshipOf'>,
+  deliveryBranchesOf: (owner: string, repo: string) => DeliveryBranches | undefined,
 ): (task: Pick<Task, 'id' | 'createdAt'>) => MergedPrAttribution | null {
   return (task) =>
     selectDeliveredMergedPr(
-      store.getTaskState(task.id).prs.map((pr) => ({
-        status: pr.status,
-        number: pr.ref.number,
-        url: pr.ref.url,
-        owner: pr.ref.owner,
-        repo: pr.ref.repo,
-        detectedFrom: pr.ref.detectedFrom,
-        ...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
-        ...(pr.createdAt ? { openedAt: pr.createdAt } : {}),
-      })),
+      store.getTaskState(task.id).prs.map((pr) => {
+        const deliveryBranches = deliveryBranchList(deliveryBranchesOf(pr.ref.owner, pr.ref.repo));
+        return {
+          status: pr.status,
+          number: pr.ref.number,
+          url: pr.ref.url,
+          owner: pr.ref.owner,
+          repo: pr.ref.repo,
+          detectedFrom: pr.ref.detectedFrom,
+          ...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
+          ...(pr.createdAt ? { openedAt: pr.createdAt } : {}),
+          baseBranch: pr.baseBranch,
+          ...(deliveryBranches ? { deliveryBranches } : {}),
+          authorship: store.authorshipOf(task.id, {
+            owner: pr.ref.owner,
+            repo: pr.ref.repo,
+            number: pr.ref.number,
+            branch: pr.branch,
+          }),
+        };
+      }),
       { notBefore: task.createdAt },
     );
 }
@@ -383,6 +402,9 @@ export async function autoCompleteDeliveredTasks(
       });
       await completeTask(task.id, deps.lifecycleDeps, {
         actorSource: DELIVERED_AUTO_COMPLETE_ACTOR,
+        // `task` is the clone read before the raise above: the sweep's own
+        // completion_ready is not the task's chain stop reason (issue #3678).
+        handoffSnapshot: task,
       });
       deps.taskStore.setCompletionDigest(task.id, buildDeliveredCompletionDigest(merged, waitMs, path));
       deps.taskStore.clearPendingSignal(task.id);

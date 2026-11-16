@@ -42,6 +42,7 @@ import {
   readPendingSignals,
 } from '../core/signal-outbox.js';
 import {
+  DELIVERED_AUTO_COMPLETE_ACTOR,
   DELIVERED_SWEEP_MIN_INTERVAL_MS,
   autoCompleteDeliveredTasks,
   createDeliveredCompletionTracker,
@@ -49,6 +50,8 @@ import {
   type AutoCompleteDeliveredDeps,
 } from './delivered-task-completion-sweep.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
+import { CHAIN_ENDED_WITHOUT_HANDOFF_BULLET } from '../core/completion/chain-handoff.js';
+import { storeResolverWithMergedPr } from './__fixtures__/delivered-pr-resolver.js';
 import type { GitHubPRState, GitHubReference } from '../core/github-types.js';
 import { SignalOutboxService } from './signal-outbox-service.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
@@ -554,7 +557,7 @@ describe('autoCompleteDeliveredTasks over the GitHubStateStore attribution (issu
   /** Two sweep ticks: first sighting, then well past the budget. */
   async function sweepPastBudget(taskStore: TaskStore, store: GitHubStateStore): Promise<string[]> {
     const tracker = createDeliveredCompletionTracker();
-    const resolveMergedPr = createStoreDeliveredPrResolver(store);
+    const resolveMergedPr = createStoreDeliveredPrResolver(store, () => undefined);
     const start = new Date();
     await autoCompleteDeliveredTasks(baseDeps(taskStore, resolveMergedPr, { tracker, now: () => start }));
     const later = plus(start, DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS * 2);
@@ -701,7 +704,7 @@ describe('autoCompleteDeliveredTasks — settle path after a post-merge "finishe
     tmpDirs.push(dir);
     const auditLogPath = join(dir, 'audit.jsonl');
     const tracker = createDeliveredCompletionTracker();
-    const resolveMergedPr = createStoreDeliveredPrResolver(store);
+    const resolveMergedPr = createStoreDeliveredPrResolver(store, () => undefined);
 
     // Liveness ticks every 5s, sweep throttled to one batch per 60s.
     let completedAt: Date | undefined;
@@ -851,5 +854,126 @@ describe('autoCompleteDeliveredTasks — settle path after a post-merge "finishe
     saidFinished(taskStore, id);
     taskStore.clearFinishedSignal(id);
     expect((await sweepAt(taskStore, AFTER_SETTLE)).completedTaskIds).toEqual([]);
+  });
+});
+
+describe('autoCompleteDeliveredTasks — base branch and authorship (issues #3983, #3678)', () => {
+  async function sweepPastBudget(taskStore: TaskStore, resolveMergedPr: AutoCompleteDeliveredDeps['resolveMergedPr']): Promise<string[]> {
+    const tracker = createDeliveredCompletionTracker();
+    const start = new Date();
+    await autoCompleteDeliveredTasks(baseDeps(taskStore, resolveMergedPr, { tracker, now: () => start }));
+    const later = plus(start, DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS * 2);
+    const r = await autoCompleteDeliveredTasks(baseDeps(taskStore, resolveMergedPr, { tracker, now: () => later }));
+    return r.completedTaskIds;
+  }
+
+  const BRANCHES = { defaultBranch: 'main', integrationBranch: 'staging' };
+
+  test.each([
+    ['the default branch', 'main'],
+    ['the integration branch', 'staging'],
+  ])('a PR merged into %s completes the task', async (_label, baseBranch) => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const { resolveMergedPr } = storeResolverWithMergedPr({ task: taskStore.getTask(id)!, prNumber: 10, baseBranch, branches: BRANCHES });
+    expect(await sweepPastBudget(taskStore, resolveMergedPr)).toEqual([id]);
+  });
+
+  test('a PR merged into a feature branch does not complete the task', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const { resolveMergedPr } = storeResolverWithMergedPr({ task: taskStore.getTask(id)!, prNumber: 10, baseBranch: 'feat/parent', branches: BRANCHES });
+    expect(await sweepPastBudget(taskStore, resolveMergedPr)).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+  });
+
+  test('an unknown default branch leaves the base branch unchecked (fail open)', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const { resolveMergedPr } = storeResolverWithMergedPr({
+      task: taskStore.getTask(id)!, prNumber: 10, baseBranch: 'feat/parent',
+      branches: { defaultBranch: null, integrationBranch: 'staging' },
+    });
+    expect(await sweepPastBudget(taskStore, resolveMergedPr)).toEqual([id]);
+  });
+
+  test('a PR another task pushed does not complete a task that only mentioned it', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const { resolveMergedPr } = storeResolverWithMergedPr({ task: taskStore.getTask(id)!, prNumber: 10, pushedBy: ['author-task'] });
+    expect(await sweepPastBudget(taskStore, resolveMergedPr)).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+  });
+
+  test('a PR this task pushed completes it, even when another task pushed the same branch', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const { resolveMergedPr } = storeResolverWithMergedPr({ task: taskStore.getTask(id)!, prNumber: 10, pushedBy: ['author-task', id] });
+    expect(await sweepPastBudget(taskStore, resolveMergedPr)).toEqual([id]);
+  });
+});
+
+describe('autoCompleteDeliveredTasks — chain-break marker (issue #3678)', () => {
+  const CHAIN_PROMPT = 'Implement the next issue.\n- self-continuation: true\n';
+
+  async function completeOverBudget(taskStore: TaskStore, id: string): Promise<{ audit: string }> {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-chain-break-'));
+    tmpDirs.push(dir);
+    const auditLogPath = join(dir, 'audit.jsonl');
+    const tracker = createDeliveredCompletionTracker();
+    const deps = (now: Date) => ({
+      ...baseDeps(taskStore, () => MERGED, { tracker, now: () => now }),
+      lifecycleDeps: { ...lifecycleDeps(taskStore), auditLogPath },
+    });
+    await autoCompleteDeliveredTasks(deps(T0));
+    const r = await autoCompleteDeliveredTasks(deps(plus(T0, DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS * 2)));
+    expect(r.completedTaskIds).toEqual([id]);
+    return { audit: existsSync(auditLogPath) ? await readFile(auditLogPath, 'utf8') : '' };
+  }
+
+  test('a chain task completed with no child and no stop reason is marked, in the digest and the audit log', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore, CHAIN_PROMPT);
+    const { audit } = await completeOverBudget(taskStore, id);
+
+    const task = taskStore.getTask(id)!;
+    expect(task.chainEndedWithoutHandoff).toBe(true);
+    // The sweep's own digest (written after completion) keeps the bullet first.
+    expect(task.completionDigest?.bullets[0]).toBe(CHAIN_ENDED_WITHOUT_HANDOFF_BULLET);
+    expect(task.completionDigest?.bullets[1]).toContain('Auto-completed on delivery');
+    const rows = audit.trim().split('\n').map((l) => JSON.parse(l));
+    expect(rows).toContainEqual(expect.objectContaining({
+      type: 'task.chainEndedWithoutHandoff',
+      taskId: id,
+      actor: DELIVERED_AUTO_COMPLETE_ACTOR,
+    }));
+  });
+
+  test('a chain task that spawned a successor is not marked', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore, CHAIN_PROMPT);
+    taskStore.createTask({ prompt: 'next unit', cwd: '/tmp', parentTaskId: id });
+    const { audit } = await completeOverBudget(taskStore, id);
+    expect(taskStore.getTask(id)?.chainEndedWithoutHandoff).toBeUndefined();
+    expect(audit).not.toContain('chainEndedWithoutHandoff');
+  });
+
+  test('a task that is not a chain link is not marked', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    await completeOverBudget(taskStore, id);
+    expect(taskStore.getTask(id)?.chainEndedWithoutHandoff).toBeUndefined();
+  });
+
+  test('a chain task that recorded its own stop reason is not marked', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore, CHAIN_PROMPT);
+    // "chain end: <reason>" raised and then cleared by the next tool event; the
+    // record survives as finishedSignalAt. No mergedAt on MERGED, so the budget
+    // path still applies.
+    taskStore.setPendingSignal(id, { kind: 'completion_ready', raisedAt: T0.toISOString(), note: 'chain end: no eligible issue' });
+    taskStore.clearPendingSignal(id);
+    await completeOverBudget(taskStore, id);
+    expect(taskStore.getTask(id)?.chainEndedWithoutHandoff).toBeUndefined();
   });
 });

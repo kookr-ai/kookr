@@ -23,3 +23,4 @@
 
 export * from './completion-ready-cleanup.js';
 export * from './delivered-task-completion.js';
+export * from './chain-handoff.js';

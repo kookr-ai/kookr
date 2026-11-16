@@ -110,6 +110,45 @@ describe('TaskLifecycleCommands.completeTask', () => {
     expect(mockCleanupTaskWorktrees).not.toHaveBeenCalled();
   });
 
+  test('issue #3678: an operator completing a chain task with no successor or stop reason marks the chain break', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-chain-break-user-'));
+    try {
+      const auditLogPath = join(dir, 'audit.jsonl');
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Implement the next issue.\n- self-continuation: true\n', '/repo');
+      addSession(taskStore, task.id);
+      const { deps } = makeDeps(taskStore);
+      const lifecycle = deps.getLifecycleDeps();
+      deps.getLifecycleDeps = () => ({ ...lifecycle, auditLogPath });
+
+      const result = await new TaskLifecycleCommands(deps).completeTask(task.id, {
+        actor: { source: 'websocket', actorId: 'operator' },
+      });
+
+      expect(result.outcome).toBe('completed');
+      const done = taskStore.getTask(task.id)!;
+      expect(done.chainEndedWithoutHandoff).toBe(true);
+      expect(done.completionDigest?.bullets[0]).toBe('Chain ended without successor or stop reason');
+      expect(await readJsonl(auditLogPath)).toContainEqual(expect.objectContaining({
+        type: 'task.chainEndedWithoutHandoff', taskId: task.id, actor: 'websocket',
+      }));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('issue #3678: completing a chain task that raised its stop reason leaves no marker', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('- self-continuation: true', '/repo');
+    addSession(taskStore, task.id);
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-11-16T00:00:00.000Z', note: 'chain end: queue empty' });
+    const { deps } = makeDeps(taskStore);
+
+    await new TaskLifecycleCommands(deps).completeTask(task.id);
+
+    expect(taskStore.getTask(task.id)?.chainEndedWithoutHandoff).toBeUndefined();
+  });
+
   test('treats active Ralph completion as partial session completion', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Run Ralph loop', '/repo');

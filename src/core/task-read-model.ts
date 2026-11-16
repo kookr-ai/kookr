@@ -266,6 +266,13 @@ export interface Task {
    */
   finishedSignalAt?: string;
   /**
+   * Set when this self-continuation task was completed with no child task and
+   * no recorded signal (issue #3678): its chain ended there without a
+   * successor or a stop reason. The completion digest carries a bullet saying
+   * so, whichever writer sets the digest.
+   */
+  chainEndedWithoutHandoff?: boolean;
+  /**
    * The operator chose to keep this chain member's worktree when completing it
    * (issue #3972). Set by the completion path only for a playbook-chain member
    * whose worktree the chain was no longer holding, so a `false` the completion

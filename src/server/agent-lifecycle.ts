@@ -57,6 +57,7 @@ import {
   type CompletionPath,
 } from '../core/lesson-decision.js';
 import { appendAuditRow } from '../core/audit-log.js';
+import { CHAIN_ENDED_WITHOUT_HANDOFF_BULLET, endsChainWithoutHandoff } from '../core/completion/chain-handoff.js';
 import {
   planTerminalClassification,
   type TerminalClassificationPlan,
@@ -616,11 +617,19 @@ export async function completeTask(
       | 'terminal_success_auto_complete'
       | 'chain_idle_complete'
       | 'chain_signal_complete';
+    /**
+     * The task as it was before the caller raised a completion signal of its
+     * own (issue #3678). The delivered-completion sweep raises
+     * `completion_ready` before completing; that signal is not the task's stop
+     * reason, so the chain-break check reads this snapshot instead.
+     */
+    handoffSnapshot?: Task;
   } = {},
 ): Promise<void> {
   const task = deps.taskStore.getTask(taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
   const completionEvents = captureCompletionEvents(task, deps);
+  const chainBreak = task.status === 'inProgress' && endsChainWithoutHandoff(opts.handoffSnapshot ?? task);
 
   // Silent-failure integrity guard (issue #1712). A terminal turn that made
   // ZERO tool calls and whose final message is a provider/transport error
@@ -669,6 +678,7 @@ export async function completeTask(
   // from the completion path stamped on the record just above — agent self vs
   // operator vs recovery — so no extra argument is threaded here.
   deps.taskStore.completeTask(taskId);
+  if (chainBreak) await recordChainEndedWithoutHandoff(task, deps, opts.actorSource);
   markCompletedMissingWorktreesCleanedUp(task, deps);
   scheduleNoEventCriteriaVerdict(task, completionEvents, deps);
 
@@ -697,6 +707,28 @@ export async function completeTask(
     cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
   }
   cleanupReflectWorktree(task, deps);
+}
+
+/**
+ * Mark a self-continuation task completed with no successor and no stop
+ * reason (issue #3678): a digest bullet on the task, and an audit row, so the
+ * broken chain is not mistaken for a crash.
+ */
+async function recordChainEndedWithoutHandoff(
+  task: Task,
+  deps: LifecycleDeps,
+  actorSource: string | undefined,
+): Promise<void> {
+  const store = deps.taskStore as TaskStore & { markChainEndedWithoutHandoff?: (id: string) => void };
+  store.markChainEndedWithoutHandoff?.(task.id);
+  console.warn(`[chain-handoff] task ${task.id} completed with no successor and no stop reason`);
+  await appendAuditRow(deps.auditLogPath, {
+    type: 'task.chainEndedWithoutHandoff',
+    timestamp: nowISO(),
+    actor: actorSource ?? 'unknown',
+    taskId: task.id,
+    reason: CHAIN_ENDED_WITHOUT_HANDOFF_BULLET,
+  });
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   type HungTaskReapEvidence,
 } from './hung-task-reaper.js';
 import { createStoreDeliveredPrResolver } from './delivered-task-completion-sweep.js';
+import type { DeliveryBranches } from './pr-delivery-tracker.js';
 
 /**
  * Record a merged PR on a `GitHubStateStore` for `taskId`, detected from the
@@ -29,7 +30,17 @@ import { createStoreDeliveredPrResolver } from './delivered-task-completion-swee
  * and `mergedAt` are "now", so it passes the task-creation bound (issues
  * #3678, #3746).
  */
-function mergedPrResolver(taskId: string, prNumber: number, prUrl: string): (task: Task) => MergedPrAttribution | null {
+function mergedPrResolver(
+  taskId: string,
+  prNumber: number,
+  prUrl: string,
+  opts: {
+    baseBranch?: string;
+    branches?: DeliveryBranches;
+    /** Another task's `git push` reported updating this PR's head branch (issue #3678). */
+    pushedByTaskId?: string;
+  } = {},
+): (task: Task) => MergedPrAttribution | null {
   const store = new GitHubStateStore();
   const ref: GitHubReference = {
     type: 'pr',
@@ -49,7 +60,7 @@ function mergedPrResolver(taskId: string, prNumber: number, prUrl: string): (tas
     mergeable: 'MERGEABLE',
     author: 'kookr-bot',
     branch: `feat/task-${taskId}`,
-    baseBranch: 'main',
+    baseBranch: opts.baseBranch ?? 'main',
     reviewDecision: 'approved',
     reviewers: [],
     unresolvedThreads: [],
@@ -60,7 +71,13 @@ function mergedPrResolver(taskId: string, prNumber: number, prUrl: string): (tas
     lastFetchedAt: new Date('2026-07-25T18:10:00.000Z'),
   };
   store.updatePRState(prState);
-  return createStoreDeliveredPrResolver(store);
+  if (opts.pushedByTaskId) {
+    store.recordAuthorship(opts.pushedByTaskId, {
+      pushedBranches: [{ owner: 'kookr-ai', repo: 'kookr', branch: prState.branch }],
+      createdPrs: [],
+    });
+  }
+  return createStoreDeliveredPrResolver(store, () => opts.branches);
 }
 
 function makeTask(taskStore: TaskStore) {
@@ -700,6 +717,53 @@ describe('reapHungTask — delivered_then_hung outcome (issue #1559)', () => {
     expect(rows[0].deliveredPr).toBeUndefined();
   });
 
+  // Issue #3983: the reaper shares the delivered-PR resolver, so a PR merged
+  // into a feature branch is not delivery, while one merged into the
+  // repository's integration branch is.
+  test('a PR merged into a feature branch is NOT counted as delivery (issue #3983)', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const result = await reapHungTask(task, incidentEvidence(), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      resolveMergedPr: mergedPrResolver(task.id, 1542, 'https://github.com/kookr-ai/kookr/pull/1542', {
+        baseBranch: 'feat/parent',
+        branches: { defaultBranch: 'main', integrationBranch: 'staging' },
+      }),
+      now: () => REAP_NOW,
+    });
+    expect(result.outcome).toBe('terminated');
+  });
+
+  test('a PR merged into the integration branch counts as delivery (issue #3983)', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const result = await reapHungTask(task, incidentEvidence(), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      resolveMergedPr: mergedPrResolver(task.id, 1542, 'https://github.com/kookr-ai/kookr/pull/1542', {
+        baseBranch: 'staging',
+        branches: { defaultBranch: 'main', integrationBranch: 'staging' },
+      }),
+      now: () => REAP_NOW,
+    });
+    expect(result.outcome).toBe('delivered_then_hung');
+  });
+
+  test('a merged PR another task pushed is NOT counted as this task\'s delivery (issue #3678)', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const result = await reapHungTask(task, incidentEvidence(), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      resolveMergedPr: mergedPrResolver(task.id, 1542, 'https://github.com/kookr-ai/kookr/pull/1542', {
+        pushedByTaskId: 'another-task',
+      }),
+      now: () => REAP_NOW,
+    });
+    expect(result.outcome).toBe('terminated');
+  });
+
   test('a prompt-referenced merged PR is NOT counted as delivery (excluded attribution)', async () => {
     const taskStore = new TaskStore();
     const task = makeTask(taskStore);
@@ -727,7 +791,7 @@ describe('reapHungTask — delivered_then_hung outcome (issue #1559)', () => {
     const result = await reapHungTask(task, incidentEvidence(), {
       taskStore,
       lifecycleDeps: lifecycleDeps(taskStore),
-      resolveMergedPr: createStoreDeliveredPrResolver(store),
+      resolveMergedPr: createStoreDeliveredPrResolver(store, () => undefined),
     });
 
     expect(result.outcome).toBe('terminated');
