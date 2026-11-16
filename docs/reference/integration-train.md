@@ -206,11 +206,39 @@ it wraps onto the next line), HTML comments, `<pre>` blocks, and quoted lines
 ignored. Only issues of the same repository count; `owner/repo#n` references
 and URLs are ignored. Each number is looked up with the REST issue endpoint
 (`gh api repos/{owner}/{repo}/issues/<n>`), and a number that is a pull request
-(the answer has a `pull_request` field) is never closed, reopened or commented
-on. `pnpm merge` reads the body with the same rules (`body_closing_numbers` in
+(the answer has a `pull_request` field) is never closed, reopened or given an
+issue comment. `pnpm merge` reads the body with the same rules (`body_closing_numbers` in
 `scripts/kookr-merge.sh`). A PR the train reverted reaches `main` together with its revert; its
 issue stays open. All train pushes use `--no-verify`, because the repo's pre-push hook
 needs a reviewer marker and runs tests; the train's own verify replaces it.
+
+## Where to read what happened to a pull request
+
+Each delivery step says what happened, why, and what comes next (issue #3913):
+
+1. **Opening it.** After `gh pr create` in a repository with an integration
+   branch, the plugin hook `pr-create-delivery-note` adds a note to the agent's
+   context: a base of `main` is expected, `kookr merge <PR>` retargets the pull
+   request to the integration branch and merges it there, and the train then
+   verifies it and moves `main`. Do not change the base, and do not merge with
+   `gh`.
+2. **Merging it.** `kookr merge` ends with a `kookr-merge: summary:` block. On
+   success (stdout) it gives the merge commit, the branch it went into, why the
+   full suite runs on the integration branch, and what the train does next. On a
+   refusal (stderr) it names the gate that refused, the evidence it used, and
+   the exact command to run next. A task that merged into the integration branch
+   is done; it does not wait for `main`.
+3. **Afterwards.** The train comments on the pull request whose commit it
+   handled: **promoted** (the commit is on `main`, with the head the full suite
+   passed on and the time) or **reverted** (the revert commit, the last 20
+   lines of the failing output, and what happens next: the fix task and its
+   attempt number out of `MAX_AUTOMATIC_RELANDS`, or "needs a human"). Each
+   comment carries a hidden marker
+   (`<!-- kookr-integration-train:<promoted|reverted>:<sha> -->`). Before
+   posting, the train reads the pull request's comments and skips the post when
+   the marker is already there, so a retry or a restart never repeats it. A
+   comment that fails to post is logged and never stops the cycle. A reverted
+   pull request also gets the longer failing output on its reopened issue.
 
 ## Supervision
 
