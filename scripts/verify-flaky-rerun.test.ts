@@ -55,7 +55,7 @@ function setup(failedFiles: string[]) {
     const r = spawnSync('bash', [VERIFY], {
       cwd: repo, encoding: 'utf8', // Clear what a parent run (the pre-push hook, the train) may have set.
       env: {
-        ...ENV_BASE, KOOKR_VERIFY_FLAKY_RERUN: '', VITEST_RERUN_SUMMARY_FILE: '',
+        ...ENV_BASE, KOOKR_VERIFY_FLAKY_RERUN: '', VITEST_RERUN_SUMMARY_FILE: '', KOOKR_VERIFY_REPORT_FILE: '',
         PATH: `${bin}:${process.env.PATH ?? ''}`, ...env,
       },
     });

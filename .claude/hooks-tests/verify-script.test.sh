@@ -32,6 +32,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Inside a train verify this names the train's own report file, which the
+# nested verify.sh runs below must not overwrite (issue #3995).
+unset KOOKR_VERIFY_REPORT_FILE
+
 # Stub `pnpm` so running verify.sh just logs each lane instead of executing it.
 mkdir -p "$TMPDIR/bin"
 cat > "$TMPDIR/bin/pnpm" <<'PNPM'

@@ -6,7 +6,7 @@
 // instance lock, and the refusal to reset a directory the train does not own.
 // `gh` and `kookr` are stubbed on PATH; git runs only in mkdtemp directories.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -352,6 +352,60 @@ describe('integration train CLI', () => {
     })]);
     // a record for fixing tests, not an alert
     expect(s.signals()).toEqual([]);
+  }, 120_000);
+
+  it('points scripts/verify.sh at a report file next to each log and keeps the red run\'s report with its log (#3995)', () => {
+    const s = makeSandbox();
+    const head = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    const short = head.slice(0, 10);
+    const marker = join(s.root, 'ran-once');
+    // Stands in for scripts/verify.sh: writes its result where the train asks.
+    const redOnce = [
+      `if [ -e '${marker}' ]; then echo '{"status":"passed"}' > "$KOOKR_VERIFY_REPORT_FILE"; exit 0; fi`,
+      `touch '${marker}'`,
+      `echo '{"status":"failed","failures":[{"lane":"smoke_lane"}]}' > "$KOOKR_VERIFY_REPORT_FILE"`,
+      'exit 1',
+    ].join('; ');
+
+    expect(s.cycle(['--verify-cmd', redOnce]).status).toBe(0);
+    expect(s.ref('main')).toBe(head);
+    const read = (name: string) => JSON.parse(readFileSync(join(s.stateDir, name), 'utf8')) as { status: string };
+    expect(read(`verify-${short}.run1.report.json`)).toEqual({ status: 'failed', failures: [{ lane: 'smoke_lane' }] });
+    expect(read(`verify-${short}.report.json`)).toEqual({ status: 'passed' });
+  }, 120_000);
+
+  it('prunes each old verify log together with its report, and keeps the reports of the logs it keeps', () => {
+    const s = makeSandbox();
+    s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    mkdirSync(s.stateDir, { recursive: true });
+    // 25 old log/report pairs, oldest first; the cycle's own verify adds one more.
+    for (let i = 0; i < 25; i += 1) {
+      const name = `verify-old${String(i).padStart(2, '0')}`;
+      for (const ext of ['.log', '.report.json']) {
+        const f = join(s.stateDir, `${name}${ext}`);
+        writeFileSync(f, '{}');
+        const t = new Date(Date.UTC(2026, 0, 1, 0, i));
+        utimesSync(f, t, t);
+      }
+    }
+    expect(s.cycle(['--verify-cmd', 'true']).status).toBe(0);
+    // 20 logs kept: the cycle's and old06..old24; old00..old05 pruned with their reports.
+    for (let i = 0; i < 6; i += 1) {
+      expect(existsSync(join(s.stateDir, `verify-old0${i}.log`))).toBe(false);
+      expect(existsSync(join(s.stateDir, `verify-old0${i}.report.json`))).toBe(false);
+    }
+    expect(existsSync(join(s.stateDir, 'verify-old06.log'))).toBe(true);
+    expect(existsSync(join(s.stateDir, 'verify-old06.report.json'))).toBe(true);
+  }, 120_000);
+
+  it('removes a stale report before verifying a SHA again', () => {
+    const s = makeSandbox();
+    const head = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    const report = join(s.stateDir, `verify-${head.slice(0, 10)}.report.json`);
+    mkdirSync(s.stateDir, { recursive: true });
+    writeFileSync(report, '{"status":"failed"}');
+    expect(s.cycle(['--verify-cmd', 'true']).status).toBe(0); // writes no report
+    expect(existsSync(report)).toBe(false);
   }, 120_000);
 
   it('does nothing while another live process holds the lock', () => {

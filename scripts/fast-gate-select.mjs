@@ -72,6 +72,16 @@ export const RULES = [
     command: 'pnpm test:hooks',
   },
   { re: /^stt\//, command: 'pnpm test:stt' },
+  // Server and core code, and the smoke scripts: the local-only smoke gate, which
+  // starts a real server on a temp data directory and fails on any state file it
+  // does not expect there (issue #3995). It takes about 65 s on the shared
+  // 16-core host under load (about 85 s with two pushes at once), so it runs
+  // for every such change rather than guessing which ones write state; test
+  // files alone do not trigger it.
+  {
+    re: /^(?!.*\.(test|spec)\.[^/]+$)(src\/(server|core)\/|scripts\/local-only-smoke[^/]*\.ts$)/,
+    command: 'pnpm test:smoke',
+  },
   // Styling: the design-token tests read the CSS.
   { re: /\.css$/, tests: (_p, tracked) => tracked.filter((f) => /^src\/frontend\/.*design-tokens.*\.test\./.test(f)) },
   // Skills, agents and playbooks: their own tests plus the validators.

@@ -280,13 +280,20 @@ function saveState(file: string, state: TrainState): void {
   renameSync(tmp, file);
 }
 
+/** The report file scripts/verify.sh writes next to a verify log (issue #3995). */
+const reportFileFor = (logFile: string): string => logFile.replace(/\.log$/, '.report.json');
+
+/** Keeps the `keep` newest verify logs, and the report file of each. */
 function pruneVerifyLogs(dir: string, keep: number): void {
   try {
     const files = readdirSync(dir)
       .filter((f) => /^verify-.*\.log$/.test(f))
       .map((f) => ({ f, t: statSync(join(dir, f)).mtimeMs }))
       .sort((a, b) => b.t - a.t);
-    for (const old of files.slice(keep)) rmSync(join(dir, old.f), { force: true });
+    for (const old of files.slice(keep)) {
+      rmSync(join(dir, old.f), { force: true });
+      rmSync(join(dir, reportFileFor(old.f)), { force: true });
+    }
   } catch { /* best effort */ }
 }
 
@@ -403,7 +410,9 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
   /**
    * A SHA is verified again after a red run (the head's flake re-run, or a
    * culprit's re-run). That run must not overwrite the red run's output: the
-   * red log is kept as `verify-<sha>.run<n>.log`. When the re-run is green, the
+   * red log is kept as `verify-<sha>.run<n>.log`, and its report file (the
+   * failed lanes and test files, from scripts/verify.sh) as
+   * `verify-<sha>.run<n>.report.json`. When the re-run is green, the
    * failing test files of the red run go to the train log and the events file,
    * so load-sensitive tests can be found and fixed.
    */
@@ -415,6 +424,9 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     if (prev?.red) {
       redLog = join(dir, `verify-${short}.run${prev.count}.log`);
       try { renameSync(logFile, redLog); } catch { redLog = null; }
+      if (redLog) {
+        try { renameSync(reportFileFor(logFile), reportFileFor(redLog)); } catch { /* the run wrote none */ }
+      }
     }
     const result = await runVerify(sha, logFile);
     runs.set(sha, { count: (prev?.count ?? 0) + 1, red: !result.ok });
@@ -436,6 +448,9 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
 
   const runVerify = async (sha: string, logFile: string): Promise<VerifyResult> => {
     writeFileSync(logFile, '');
+    // A report left by an earlier run of this SHA must not describe this one
+    // (a failed checkout or install never reaches scripts/verify.sh).
+    rmSync(reportFileFor(logFile), { force: true });
     const checkout = await git(['checkout', '--detach', '--force', '-q', sha]);
     // A failed checkout or install means the suite never ran. Report it as an
     // infrastructure failure so the train halts instead of blaming the commit.
@@ -444,8 +459,11 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     // no CI flag, so the train checks exactly what the local gate used to.
     // KOOKR_VERIFY_FLAKY_RERUN: scripts/verify.sh then applies the pre-push
     // hook's flaky policy to the unit lane (a few failed files are re-run once).
+    // KOOKR_VERIFY_REPORT_FILE: scripts/verify.sh writes which lanes and test
+    // files failed to `verify-<sha>.report.json`, next to the log.
     const env: NodeJS.ProcessEnv = {
       ...gitExecEnv(), KOOKR_VITEST_MAX_WORKERS: String(opts.workers), KOOKR_VERIFY_FLAKY_RERUN: '1',
+      KOOKR_VERIFY_REPORT_FILE: reportFileFor(logFile),
     };
 
     const lockHash = (() => {

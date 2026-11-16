@@ -13,12 +13,50 @@
 
 set -euo pipefail
 
+# Machine-readable result (issue #3995). With KOOKR_VERIFY_REPORT_FILE set (the
+# integration train points it at a file next to its verify log), every step
+# below is recorded as it starts and as it passes, and on exit
+# scripts/verify-report.mjs writes JSON to that file naming the lanes and steps
+# that failed and, for the unit lane, the failing test files (that script
+# documents the format). Unset, nothing is recorded or written.
+VERIFY_REPORT_FILE=${KOOKR_VERIFY_REPORT_FILE:-}
+VERIFY_REPORT_DIR=""
+write_verify_report() {
+  local code=$1 head
+  head=$(git rev-parse HEAD 2>/dev/null || true)
+  node "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/verify-report.mjs" \
+    --steps "$VERIFY_REPORT_DIR/steps" --unit-summary "$VERIFY_REPORT_DIR/unit-summary.json" \
+    --exit-code "$code" --head "$head" --out "$VERIFY_REPORT_FILE" \
+    || echo "[verify] could not write the report file $VERIFY_REPORT_FILE" >&2
+  rm -rf "$VERIFY_REPORT_DIR"
+}
+if [ -n "$VERIFY_REPORT_FILE" ]; then
+  # A stale report from an earlier run must never describe this one.
+  rm -f "$VERIFY_REPORT_FILE"
+  VERIFY_REPORT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/kookr-verify-report.XXXXXX")
+  trap 'write_verify_report "$?"' EXIT
+fi
+
+# record_step start|pass <lane> <label> <command...>: one line in the steps file.
+record_step() {
+  [ -n "$VERIFY_REPORT_DIR" ] || return 0
+  local event=$1 lane=$2 label=$3
+  shift 3
+  # Bookkeeping only: a failed write must never turn a green step red.
+  printf '%s\t%s\t%s\t%s\n' "$event" "$lane" "$label" "$*" >> "$VERIFY_REPORT_DIR/steps" 2>/dev/null || true
+}
+
+# The lane is the function that called run_lane (static_checks, unit_lane, ...).
+# A failing step stops the lane under errexit before its `pass` line, so a step
+# that started and never passed is a failure.
 run_lane() {
-  local label=$1
+  local label=$1 lane=${FUNCNAME[1]:-main}
   shift
 
   printf '==> %s\n' "$label"
+  record_step start "$lane" "$label" "$@"
   "$@"
+  record_step pass "$lane" "$label" "$@"
 }
 
 # The unit lane. A developer's `pnpm verify` runs it plainly. With
@@ -30,7 +68,12 @@ run_lane() {
 # (scripts/flaky-rerun-files.mjs lists every case).
 unit_tests() {
   if [ "${KOOKR_VERIFY_FLAKY_RERUN:-}" != "1" ]; then
-    pnpm test
+    if [ -n "$VERIFY_REPORT_DIR" ]; then
+      # The run summary names the failing files for the report file.
+      VITEST_RERUN_SUMMARY_FILE="$VERIFY_REPORT_DIR/unit-summary.json" pnpm test
+    else
+      pnpm test
+    fi
     return
   fi
   local script_dir report rerun_files log head branch f
@@ -40,6 +83,8 @@ unit_tests() {
     rm -f "$report"
     return 0
   fi
+  # Kept for the report file: the failing files of the full run.
+  [ -z "$VERIFY_REPORT_DIR" ] || cp "$report" "$VERIFY_REPORT_DIR/unit-summary.json" 2>/dev/null || true
   rerun_files=$(node "$script_dir/flaky-rerun-files.mjs" "$report" --max-files 5) || rerun_files=""
   rm -f "$report"
   [ -n "$rerun_files" ] || return 1
