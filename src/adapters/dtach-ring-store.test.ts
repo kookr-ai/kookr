@@ -1,6 +1,5 @@
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -502,7 +501,7 @@ describe('fleet shrink keeps the scrollback it drops (issue #3565)', () => {
   afterEach(() => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
-  function newStore(options: { asyncPersistence?: boolean } = {}) {
+  function newStore(options: { asyncPersistence?: boolean; asyncMaxBytes?: number } = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'dtach-ring-pre-shrink-'));
     dirs.push(dir);
     return { dir, store: new DtachRingStore(dir, options) };
@@ -689,8 +688,8 @@ describe('fleet shrink keeps the scrollback it drops (issue #3565)', () => {
   });
 
   /** Shrink, flush, expand, more output, flush: `s.ring` now names snapshot A. */
-  async function shrunkTwiceSetup(asyncPersistence: boolean) {
-    const { dir, store } = newStore({ asyncPersistence });
+  async function shrunkTwiceSetup(asyncPersistence: boolean, asyncMaxBytes?: number) {
+    const { dir, store } = newStore({ asyncPersistence, asyncMaxBytes });
     const state = createDtachRingState('s', 32);
     write(store, state, '0123456789ABCDEFGHIJ');
     store.shrink(state, 8);
@@ -772,6 +771,34 @@ describe('fleet shrink keeps the scrollback it drops (issue #3565)', () => {
     expect(restored(dir)).toBe('0123456789ABCDEFGHIJabcdefghijkl!');
   });
 
+  it('keeps the sync fallback from naming a snapshot still being written', async () => {
+    // A 1-byte async budget sends every flush down the synchronous fallback.
+    const { dir, store, state } = await shrunkTwiceSetup(true, 1);
+    store.shrink(state, 8);
+    write(store, state, '!');
+    store.persist(state);
+    const file = readFileSync(join(dir, 's.ring'));
+    const named = JSON.parse(file.subarray(0, file.indexOf(0x0a)).toString()).preShrink?.snapshotId;
+    expect(existsSync(join(dir, `s.pre-shrink.${named}.ring`))).toBe(true);
+    await store.drain();
+    store.persist(state);
+    expect(restored(dir)).toBe('0123456789ABCDEFGHIJabcdefghijkl!');
+  });
+
+  it('carries the first snapshot into the second when both async saves are still queued', async () => {
+    const { dir, store } = newStore({ asyncPersistence: true });
+    const state = createDtachRingState('s', 32);
+    write(store, state, '0123456789ABCDEFGHIJ');
+    store.shrink(state, 8);
+    expandRing(state, 32);
+    write(store, state, 'abcdefghijkl');
+    store.shrink(state, 8); // reads the first snapshot, which is not on disk yet
+    write(store, state, '!');
+    store.persist(state);
+    await store.drain();
+    expect(restored(dir)).toBe('0123456789ABCDEFGHIJabcdefghijkl!');
+  });
+
   it('remove waits for a snapshot still being written', async () => {
     const { dir, store } = newStore({ asyncPersistence: true });
     const state = createDtachRingState('s', 32);
@@ -794,6 +821,28 @@ describe('fleet shrink keeps the scrollback it drops (issue #3565)', () => {
     expect(snapshots(dir)).toEqual(['s.pre-shrink.ring']);
     await new DtachRingStore(dir).remove('s');
     expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it.each([false, true])('carries a fixed-name snapshot into the next shrink after an upgrade (async=%s)', async (asyncPersistence) => {
+    const { dir, store } = newStore();
+    const state = createDtachRingState('s', 32);
+    write(store, state, '0123456789ABCDEFGHIJ');
+    store.shrink(state, 8);
+    store.persist(state);
+    const [name] = snapshots(dir);
+    renameSync(join(dir, name!), join(dir, 's.pre-shrink.ring'));
+    // The upgraded server restores into a shrunk ring, so only the snapshot
+    // holds the oldest bytes, then grows it and shrinks it again.
+    const next = new DtachRingStore(dir, { asyncPersistence });
+    const upgraded = createDtachRingState('s', 8);
+    next.load(upgraded);
+    expandRing(upgraded, 32);
+    next.copyInto(upgraded, Buffer.from('xyz'));
+    next.shrink(upgraded, 8);
+    next.persist(upgraded);
+    await next.drain();
+    expect(snapshots(dir)).toHaveLength(1);
+    expect(restored(dir)).toBe('0123456789ABCDEFGHIJxyz');
   });
 
   it('on load deletes only the snapshots of this session that its ring does not name', () => {

@@ -422,8 +422,8 @@ export class DtachRingStore {
     try {
       const head = state.ringHead;
       const size = Math.min(head, state.ringBuffer.length);
-      // The shrink frees the old ring right after this, so a pending async
-      // save holds no more memory than the ring did.
+      // The shrink frees the old ring right after this; a pending async save
+      // holds this copy until it is written.
       const ring = Buffer.alloc(size);
       copyLogicalBytes(state.ringBuffer, head, size, ring);
       // A ring shrunk before, then expanded, still continues the older
