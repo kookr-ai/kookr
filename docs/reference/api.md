@@ -1804,7 +1804,7 @@ delta sequence number.
 | `update` | Refresh one agent's current state. | `agentId`, `state` |
 | `alert` | Surface an anomaly, validation error, or handler error. | `agentId`, `summary`, `details`, `severity`, optional `operationalAlert` `{ key, metric, state }` for operational alert fire/recovery events |
 | `githubUpdate` | Push GitHub PR/issue state for one task. | `taskId`, `prs`, `issues`, `changes` |
-| `playbooks` | Return playbook discovery results for a cwd. | `cwd`, `playbooks`, optional `capabilities` |
+| `playbooks` | Return playbook discovery results for a cwd. `checkoutMissingPlaybooks` (issue #3764) is present only when project playbooks exist on the remote default branch but are absent from the checkout at `cwd`, for example when the checkout is on an old branch. | `cwd`, `playbooks`, optional `capabilities`, optional `checkoutMissingPlaybooks` `{ defaultBranchRef, checkoutBranch?, missing[] }` (`defaultBranchRef` is the ref compared against, e.g. `origin/main`; `checkoutBranch` is omitted on a detached or unknown HEAD; `missing` lists the absent playbook file names, sorted, never empty) |
 | `suggestion` | Suggest operator replies or quick actions for an agent. | `agentId`, `suggestionId`, `suggestions`, `quickActions` |
 | `projectSummaries` | Update the project sidebar summary list. | `projects` |
 | `coordinator.snapshot` | Update coordinator findings, chips, outputs, and chains. | `coordinator` |
