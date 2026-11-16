@@ -354,9 +354,9 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     chatId: number;
     messageId?: number;
     body: string;
-    /** sending → open → done (tapped or closed). */
-    state: 'sending' | 'open' | 'done';
-    /** close() arrived while the card was still being sent. */
+    /** sending → open → (deciding →) done (tapped or closed). */
+    state: 'sending' | 'open' | 'deciding' | 'done';
+    /** close() arrived while the card was being sent or a tap was being decided. */
     closeRequested: boolean;
   }
   const permissionCards = new Map<string, PermissionCard>();
@@ -867,6 +867,10 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         const card = permissionCards.get(taskId);
         const onCard = card !== undefined && cb.message !== undefined
           && card.chatId === cb.message.chat.id && card.messageId === cb.message.message_id;
+        // While a tap on the card is decided, a close from the next tick waits,
+        // so it cannot label the card "answered outside Telegram" first.
+        const deciding = card !== undefined && onCard && card.state === 'open';
+        if (deciding) card.state = 'deciding';
         let result: TelegramReplyResult;
         if (card && cb.message && card.messageId === cb.message.message_id && card.chatId !== cb.message.chat.id) {
           // A card is answered only from the chat it was sent to.
@@ -896,6 +900,10 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
           await api.answerCallbackQuery(cb.id, decision === 'approve' ? 'Approved' : 'Denied').catch(() => undefined);
         } else {
           audit({ kind: 'permission_decision_failed', taskId, sender: cb.from.id, decision, reason: result.reason ?? 'unknown' });
+          if (card && deciding && card.state === 'deciding') {
+            card.state = 'open';
+            if (card.closeRequested) await finalizePermissionCard(taskId, card);
+          }
           await api.answerCallbackQuery(cb.id, result.reason ?? (decision === 'approve' ? 'Could not approve' : 'Could not deny')).catch(() => undefined);
         }
         return;
@@ -1123,7 +1131,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
           blockNoticePromptIds.delete(taskId);
           const card = permissionCards.get(taskId);
           if (!card) return;
-          if (card.state === 'sending') {
+          if (card.state === 'sending' || card.state === 'deciding') {
             card.closeRequested = true;
             return;
           }
@@ -1198,6 +1206,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
 
     try {
       await state.update((s) => { delete s.origin[taskId]; });
+      blockNoticePromptIds.delete(taskId);
       // `completion_ready` means the agent declared done and is still live,
       // awaiting the operator. Offer a one-tap "Continue" (keep working) and
       // let a plain reply reach the agent. Fully terminal outcomes get no

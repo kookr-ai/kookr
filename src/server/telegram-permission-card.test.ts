@@ -72,6 +72,7 @@ describe('Telegram permission card (issue #3925)', () => {
   let events: AgentEvent[];
   let anomaly: Anomaly;
   let pane: string;
+  let paneGate: Promise<void> | null;
   let taskStatus: string;
   let nowMs: number;
   const T0 = Date.parse('2026-11-16T09:00:00.000Z');
@@ -130,7 +131,7 @@ describe('Telegram permission card (issue #3925)', () => {
         respondAndAdvance: () => null,
       } as unknown as TelegramTaskBridgeDeps['queue'],
       adapter: { sendKeystroke },
-      capturePane: async () => pane,
+      capturePane: async () => { if (paneGate) await paneGate; return pane; },
       submitMessage: async () => ({}),
       interactionLog: { append: logAppend } as unknown as TelegramTaskBridgeDeps['interactionLog'],
       now: () => new Date(nowMs),
@@ -203,6 +204,7 @@ describe('Telegram permission card (issue #3925)', () => {
     logAppend.mockClear();
     pages = [];
     pane = CLAUDE_BASH_PANE;
+    paneGate = null;
     taskStatus = 'inProgress';
     nowMs = T0;
     openPrompt('rm -rf build');
@@ -325,6 +327,24 @@ describe('Telegram permission card (issue #3925)', () => {
     // editMessageText without reply_markup drops the inline keyboard.
     expect((edit as { reply_markup?: unknown }).reply_markup).toBeUndefined();
     expect(pages).toHaveLength(0);
+  });
+
+  test('a close that lands while a tap is being decided waits for the tap, then edits the card once', async () => {
+    const alerter = await start(buildWorld());
+    const { message, messageId } = await cardAfterThreshold(alerter);
+    let release: () => void = () => undefined;
+    paneGate = new Promise<void>((r) => { release = r; });
+    tap(keyboardOf(message).flat()[0]!.callback_data, { messageId, updateId: 1 });
+    await new Promise((r) => setTimeout(r, 150));
+    // Answered in the terminal while the tap waits on the pane read.
+    answerElsewhere();
+    tick(alerter);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fake.outbound.editMessageText).toHaveLength(0);
+    release();
+    await waitFor(() => expect(fake.outbound.editMessageText).toHaveLength(1));
+    expect(fake.outbound.editMessageText[0]!.text).toMatch(/Answered outside Telegram/);
+    expect(sendKeystroke).not.toHaveBeenCalled();
   });
 
   test('the task ending edits the card to say so', async () => {
