@@ -139,6 +139,58 @@ Guidance:
   alone. Neither creates a task, so neither is *ambiguous*; both are
   safe to retry under the same key.
 
+## Planned-restart wait
+
+Issue #3928. A deploy (`pnpm prod:update` / `pnpm prod:restart`) stops the
+server for a few minutes. `/api/deploy/status` cannot help then: a server that
+is down cannot answer. The deploy script leaves a note on local disk instead:
+`~/.kookr/restart-intent.json` (`~/.kookr-<port>/` for another port), written
+before the old server stops and removed once the new one is ready. See
+`bin/kookr-restart-intent.js`.
+
+When no server answers, `kookr spawn` reads that note:
+
+| Note | What spawn does |
+| --- | --- |
+| None (or older than 12 hours, an orphan) | Today's short retry: 3 probes, 3 seconds apart, then exit 3. No extra request. |
+| Restart in progress | Keep probing every 3 seconds. Print one stderr line every 30 seconds: `kookr spawn: Kookr is restarting, prod:update started 2m ago, waiting...`. Once `/api/health` answers, launch as usual with the same idempotency key. |
+| Stale: older than the deploy's own deadline (`KOOKR_STARTUP_TIMEOUT_SECONDS`, 1800 seconds by default; 10 minutes for a note without one) | The deploy looks failed. After the short retry, exit 3, say so, and write one operator alert. |
+| Restart in progress, but the caller's limit passed | Exit 3 and write one operator alert. |
+
+Details:
+
+- **The limit.** `--restart-wait <seconds>` or
+  `KOOKR_SPAWN_RESTART_WAIT_SECONDS` caps spawn's own waiting time (0 to 3600;
+  the flag wins). `0` means no waiting beyond the short retry; a launch lost to
+  a restart still gets the alert. Without either, spawn waits until the note
+  goes stale.
+- **Which server.** With auto-detect, spawn reads the notes for ports 4800 and
+  4801. With `KOOKR_PORT`, or a local `KOOKR_API_BASE_URL` (worker tasks always
+  have one), spawn reads the note for that port. Only when it says a restart is
+  in progress does spawn check `/api/health` before the POST; a healthy server
+  wins over the note. A note that is already stale is ignored on this path, and
+  a remote `KOOKR_API_BASE_URL` is never checked.
+- **Only spawn waits.** `kookr signal` and `kookr issue` share spawn's server
+  lookup but do not wait: a signal is spooled and the command exits 0 at once.
+- **The note disappears mid-wait.** The deploy clears it once the new server is
+  ready, so spawn probes once more. If that fails too it exits 3 with the usual
+  message and no alert.
+- **The alert** is one file in the operator-signal folder
+  (`~/.kookr/playbook-state/operator-signals/`, or `KOOKR_OPERATOR_SIGNAL_DIR`).
+  Its title names the prompt's first line and, with `--claim-issue`, the issue
+  number. The file is keyed by the launch (prompt, cwd, claimed issue) and the
+  restart, so a caller retrying the same lost launch does not page the operator
+  again. `--dry-run` never writes one.
+- **`--json`.** When spawn waited on a note, the envelope's `details.restartWait`
+  says how it ended: `outcome` (`recovered`, `stale`, `limit_reached` or
+  `cleared`), `waitedMs`, and the note's `reason`, `startedAt`, `state` and
+  `ageMs`. A failed wait also carries `details.alert` (`path` and `written`, or
+  `error`). With no note the envelope is unchanged.
+- **After the server is back.** A launch can still meet a `5xx` in the seconds
+  around the restart. With an idempotency key, the ambiguous-outcome
+  reconciliation above re-POSTs it under the same key; without one, that launch
+  can still fail, so pass a key (or `--auto-idempotency`).
+
 ## `kookr-spawn` conformance
 
 `bin/kookr-spawn.js` implements this contract:

@@ -38,6 +38,8 @@ export interface ParsedArgs {
   json: boolean;
   wait: boolean;
   waitTimeoutSeconds: number | null;
+  /** #3928: `--restart-wait <seconds>`; null when not given. */
+  restartWaitSeconds: number | null;
   help: boolean;
 }
 
@@ -57,19 +59,67 @@ export type PortEnvParse =
   | { kind: 'valid'; port: number }
   | { kind: 'invalid'; raw: string };
 
+/**
+ * #3928: present only when a planned-restart note was seen while no server
+ * answered. `outcome` says how the wait ended.
+ */
+export interface RestartWaitSummary {
+  outcome: 'recovered' | 'stale' | 'limit_reached' | 'cleared';
+  waitedMs: number;
+  state: 'none' | 'in-progress' | 'stale';
+  ageMs: number;
+  reason: string | null;
+  startedAt: string | null;
+}
+
 export type BaseUrlResolution =
-  | { kind: 'explicit'; baseUrl: string }
-  | { kind: 'auto'; baseUrl: string; port: number }
+  | { kind: 'explicit'; baseUrl: string; restartWait?: RestartWaitSummary }
+  | { kind: 'auto'; baseUrl: string; port: number; restartWait?: RestartWaitSummary }
   | { kind: 'ambiguous'; ports: number[] }
-  | { kind: 'none'; ports: number[]; attempts: number }
+  | { kind: 'none'; ports: number[]; attempts: number; restartWait?: RestartWaitSummary }
   | { kind: 'invalid_port'; raw: string };
+
+/** The planned-restart note as bin/kookr-restart-intent.js readRestartIntent returns it. */
+export interface RestartIntentRecord {
+  schemaVersion: string | null;
+  reason: string;
+  startedAt: string;
+  startedAtMs: number;
+  initiator: string | null;
+  pid: number | null;
+  staleAfterMs: number | null;
+  host: string | null;
+}
+
+export type LookupRestartIntent = (input: {
+  env: Record<string, string | undefined>;
+  /** null: the auto-detect ports. */
+  port: number | null;
+  now: number;
+}) => RestartIntentRecord | null;
 
 export interface ResolveBaseUrlDeps {
   env: Record<string, string | undefined>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   log?: (msg: string) => void;
+  /** Cap on the planned-restart wait; null follows the note's own deadline. */
+  restartWaitLimitMs?: number | null;
+  /** Default: no lookup, so no wait (kookr signal / kookr issue share this resolver). */
+  lookupRestartIntent?: LookupRestartIntent;
 }
+
+export const RESTART_PROGRESS_LOG_INTERVAL_MS: number;
+export function parseRestartWaitSeconds(raw: string, label: string): number;
+export function writeLostLaunchAlert(input: {
+  env: Record<string, string | undefined>;
+  prompt: string | null;
+  cwd: string;
+  claimIssue: number | null;
+  claimRepo: string | null;
+  restartWait: RestartWaitSummary;
+  now?: number;
+}): { path: string; written: boolean } | { error: string };
 
 export type ProbeWaitBudgetReason = 'default' | 'deploying' | 'recent_restart' | 'env_fallback';
 
@@ -194,6 +244,8 @@ export interface FormatDedupArgs {
 }
 
 export interface MainDeps {
+  /** #3928 test seam: defaults to reading the restart note from local disk. */
+  lookupRestartIntent?: LookupRestartIntent;
   argv?: string[];
   env?: Record<string, string | undefined>;
   stdin?: NodeJS.ReadableStream & { isTTY?: boolean };
