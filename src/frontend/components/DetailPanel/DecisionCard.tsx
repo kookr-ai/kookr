@@ -12,12 +12,19 @@ import { findingKindClass, findingTypeLabel, formatDuration } from '../../presen
  * line the card takes comes out of the terminal's height. A leaf component
  * owns the minute clock for "waiting 4m", so the tick does not re-render the
  * terminal.
+ *
+ * The agent's own notices (its completion signal, an operator-needed flag)
+ * render as lines right under the card's head (issue #4024), above anything
+ * the compact form folds or caps. They can show without a finding: the card
+ * then keeps only its head and those lines, with no answers, Skip or Snooze,
+ * because there is no finding to answer or set aside.
  */
 export function DecisionCard({
   agent,
   actions,
   triage,
   compact = false,
+  notices = null,
 }: {
   agent: AgentState;
   /** The finding's quick-action buttons (the existing `.quick-actions` block). */
@@ -26,6 +33,11 @@ export function DecisionCard({
   triage: React.ReactNode;
   /** The Terminal tab's form: last agent message folded, height capped tighter. */
   compact?: boolean;
+  /**
+   * The agent's notices, rendered under the head. `label` and `tone` title the
+   * card when there is no finding to title it.
+   */
+  notices?: { nodes: React.ReactNode; label: string; tone: 'need' | 'bad' } | null;
 }) {
   const [, setClock] = useState(0);
   useEffect(() => {
@@ -34,7 +46,23 @@ export function DecisionCard({
   }, []);
 
   const anomaly = agent.anomaly;
-  if (!anomaly) return null;
+  const compactClass = compact ? ' decision-card--compact' : '';
+  if (!anomaly) {
+    if (!notices) return null;
+    return (
+      <section
+        className={`decision-card decision-card--${notices.tone} decision-card--notice${compactClass}`}
+        data-testid="decision-card"
+        aria-label="What the agent needs"
+      >
+        <div className="decision-card-head">
+          <i className="decision-card-mark" aria-hidden="true" />
+          <span>{notices.label}</span>
+        </div>
+        <div className="decision-card-notes">{notices.nodes}</div>
+      </section>
+    );
+  }
   const kind = findingKindClass(anomaly.type, agent.turnState);
   const tone = kind === 'error' || kind === 'stuck' ? 'bad' : 'need';
   const detectedAt = typeof anomaly.detectedAt === 'string' ? anomaly.detectedAt : new Date(anomaly.detectedAt).toISOString();
@@ -43,7 +71,7 @@ export function DecisionCard({
 
   return (
     <section
-      className={`decision-card decision-card--${tone}${compact ? ' decision-card--compact' : ''}`}
+      className={`decision-card decision-card--${tone}${compactClass}`}
       data-testid="decision-card"
       aria-label="What the agent needs"
     >
@@ -52,6 +80,7 @@ export function DecisionCard({
         <span>{findingTypeLabel(agent)}</span>
         {waiting && <span className="decision-card-wait">waiting {waiting}</span>}
       </div>
+      {notices && <div className="decision-card-notes">{notices.nodes}</div>}
       {anomaly.explanation && <p className="decision-card-ask">{anomaly.explanation}</p>}
       {lastMessage && (compact ? (
         <details className="detail-transcript-context decision-card-last" data-testid="detail-transcript-context">
