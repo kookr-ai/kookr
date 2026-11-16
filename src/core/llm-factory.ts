@@ -3,6 +3,7 @@
  */
 
 import {
+  ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON,
   classifyLlmProviderHttpStatus,
   LLM_PROVIDER_FAILURE_CATEGORIES,
   isLlmProviderFailureCategory,
@@ -802,7 +803,10 @@ export class FallbackLlmClient implements LlmClient {
    * {@link completeWithFailureAudit}.
    */
   async completeDetailed(request: LlmCompletionRequest): Promise<LlmCompletionDetail> {
-    let lastDetail: LlmCompletionDetail = { text: null, finishReason: null };
+    // The last provider answer (empty), when any provider answered.
+    let lastDetail: LlmCompletionDetail | null = null;
+    // Category of the last thrown provider error (issue #3980).
+    let lastErrorCategory: LlmProviderFailureCategory | null = null;
     let attemptedCount = 0;
     let skippedPausedCount = 0;
     let stormSuppressed = false;
@@ -844,6 +848,7 @@ export class FallbackLlmClient implements LlmClient {
       } catch (err) {
         if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
         const failure = caughtFailure(client, err);
+        lastErrorCategory = failure.category;
         if (failure.category === 'auth') {
           const entry = pauseProviderAfterAuthFailure(client, failure.message);
           if (entry) {
@@ -871,6 +876,13 @@ export class FallbackLlmClient implements LlmClient {
       );
     }
 
-    return lastDetail;
+    // Say why there is no text (issue #3980): a provider's own empty answer
+    // wins, then its error, then a provider skipped for a past auth failure
+    // (still a dead provider), and only then a call the budget kept local.
+    if (lastDetail) return lastDetail;
+    if (lastErrorCategory) return { text: null, finishReason: null, failureCategory: lastErrorCategory };
+    if (skippedPausedCount > 0) return { text: null, finishReason: null, failureCategory: 'auth' };
+    if (stormSuppressed) return { text: null, finishReason: ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON };
+    return { text: null, finishReason: null };
   }
 }

@@ -16,7 +16,7 @@ import {
   withHelperLlmAccounting,
 } from './llm-factory.js';
 import { setLoggerRuntimeLevelGetter } from './logger.js';
-import { classifyLlmProviderHttpStatus, type LlmClient } from './llm-types.js';
+import { ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON, classifyLlmProviderHttpStatus, type LlmClient } from './llm-types.js';
 
 const ENV_KEYS = [
   'GROQ_API_KEY',
@@ -274,6 +274,31 @@ describe('FallbackLlmClient.completeDetailed', () => {
     const fb = new FallbackLlmClient([a]);
     await expect(fb.completeDetailed({ maxTokens: 10, userMessage: 'hi' }))
       .resolves.toEqual({ text: 'legacy name', finishReason: null });
+  });
+
+  test('reports the category of the last provider error when no provider answered (issue #3980)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const a: LlmClient = {
+      provider: 'a', model: 'a-model', complete: vi.fn(),
+      completeDetailed: vi.fn().mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 })),
+    };
+    const fb = new FallbackLlmClient([a]);
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: 'hi' }))
+      .resolves.toEqual({ text: null, finishReason: null, failureCategory: 'server_5xx' });
+    warn.mockRestore();
+  });
+
+  test('an empty answer from one provider wins over another provider\'s error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const a = detailedClient('a', { text: null, finishReason: 'length' });
+    const b: LlmClient = {
+      provider: 'b', model: 'b-model', complete: vi.fn(),
+      completeDetailed: vi.fn().mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 })),
+    };
+    const fb = new FallbackLlmClient([a, b]);
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: 'hi' }))
+      .resolves.toEqual({ text: null, finishReason: 'length' });
+    warn.mockRestore();
   });
 
   test('re-throws AbortError instead of advancing to the next provider', async () => {
@@ -889,15 +914,36 @@ describe('FallbackLlmClient provider attempt budget', () => {
     };
     const fb = new FallbackLlmClient([a, b]);
 
+    // The 429 reached the provider (issue #3980: its category is reported);
+    // the second call made no attempt at all.
     await expect(fb.completeDetailed({ maxTokens: 10, userMessage: '1' }))
-      .resolves.toEqual({ text: null, finishReason: null });
+      .resolves.toEqual({ text: null, finishReason: null, failureCategory: 'other' });
     expect(a.completeDetailed).toHaveBeenCalledOnce();
     expect(b.completeDetailed).not.toHaveBeenCalled();
 
     await expect(fb.completeDetailed({ maxTokens: 10, userMessage: '2' }))
-      .resolves.toEqual({ text: null, finishReason: null });
+      .resolves.toEqual({ text: null, finishReason: ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON });
     expect(a.completeDetailed).toHaveBeenCalledOnce();
     expect(b.completeDetailed).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  test('completeDetailed reports a provider skipped while auth-paused as an auth failure (issue #3980)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const a: LlmClient = {
+      provider: 'dead',
+      model: 'dead-model',
+      complete: vi.fn(),
+      completeDetailed: vi.fn().mockRejectedValue(Object.assign(new Error('410 Gone'), { status: 410 })),
+    };
+    const fb = new FallbackLlmClient([a]);
+
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: '1' }))
+      .resolves.toEqual({ text: null, finishReason: null, failureCategory: 'auth' });
+    // Now paused: no attempt, still reported as the dead provider it is.
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: '2' }))
+      .resolves.toEqual({ text: null, finishReason: null, failureCategory: 'auth' });
+    expect(a.completeDetailed).toHaveBeenCalledOnce();
     warn.mockRestore();
   });
 });

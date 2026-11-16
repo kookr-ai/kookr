@@ -15,7 +15,7 @@ import type {
   WorktreeDirtySummary,
 } from '../shared/contracts/worktree-cleanup-verdict.js';
 import { isLiveChainTip } from '../shared/contracts/playbook-chain.js';
-import { chainTipView, decideChainStep } from '../core/playbook-chain.js';
+import { chainTipView, classifyIteration, decideChainStep } from '../core/playbook-chain.js';
 import { isProtectedWorktreePath } from './worktree-marker.js';
 import { getWorktreeRemovalGuardReason, removeRegisteredWorktree, samePath } from './worktree-safety.js';
 
@@ -424,13 +424,17 @@ function findWorktreeHolder(
     const otherActiveTask = task.id !== taskId && (task.status === 'open' || task.status === 'inProgress');
     if (otherActiveTask && hasWorktreeSessionAt(task, worktreePath)) return 'shared-with-active-task';
   }
-  return chainReservesPath(allTasks, worktreePath) ? 'reserved-for-chain' : undefined;
+  return chainReservesPath(allTasks, worktreePath, taskId) ? 'reserved-for-chain' : undefined;
 }
 
-/** True when a playbook chain will still run an iteration in this worktree. */
-function chainReservesPath(allTasks: readonly Task[], worktreePath: string): boolean {
+/**
+ * True when a playbook chain will still run an iteration in this worktree.
+ * `completingTaskId` is the task whose completion is being decided; see
+ * {@link chainNeedsCwd}.
+ */
+function chainReservesPath(allTasks: readonly Task[], worktreePath: string, completingTaskId: string): boolean {
   return allTasks.some((task) => {
-    if (!chainNeedsCwd(task, allTasks)) return false;
+    if (!chainNeedsCwd(task, allTasks, task.id === completingTaskId)) return false;
     const sessionless = task.sessions.length === 0 && samePath(task.cwd, worktreePath);
     return sessionless || hasWorktreeSessionAt(task, worktreePath);
   });
@@ -448,7 +452,7 @@ export function isTaskWorktreeReservedForChain(taskStore: TaskStore, taskId: str
   const task = taskStore.getTask(taskId);
   if (!task) return false;
   const allTasks = taskStore.viewTasks();
-  return getWorktreePaths(task).some((path) => chainReservesPath(allTasks, path));
+  return getWorktreePaths(task).some((path) => chainReservesPath(allTasks, path, taskId));
 }
 
 function hasWorktreeSessionAt(task: Task, worktreePath: string): boolean {
@@ -464,11 +468,24 @@ function hasWorktreeSessionAt(task: Task, worktreePath: string): boolean {
  * worktree here. A chain that only decides to end later (a stop sent after the
  * tip finished, the deadline passing before the next sweep, the successor's
  * launch failing) is reclaimed by the chain service when it ends the chain.
+ *
+ * `beingCompleted` marks the tip whose own completion is being decided (the
+ * completion dialog, and the hold check that runs before the transition). A
+ * running tip always gets `wait` from the chain policy, so for that task the
+ * decision is predicted as if the iteration had completed now. Otherwise the
+ * final iteration of a chain, completed from the dashboard while it still
+ * runs, would show its worktree as kept for a next iteration that will never
+ * run, and the chain's end would then remove it anyway (issue #4019). Any
+ * other running tip keeps holding its worktree.
  */
-function chainNeedsCwd(task: Task, allTasks: readonly Task[]): boolean {
+function chainNeedsCwd(task: Task, allTasks: readonly Task[], beingCompleted: boolean): boolean {
   if (!task.chain || !isLiveChainTip(task, allTasks)) return false;
-  const decision = decideChainStep(chainTipView({ ...task, chain: task.chain }), new Date());
-  return decision.kind !== 'end';
+  const now = new Date();
+  const view = chainTipView({ ...task, chain: task.chain });
+  const predicted = beingCompleted && classifyIteration(view).kind === 'running'
+    ? { ...view, status: 'completed' as const, finishedAt: now }
+    : view;
+  return decideChainStep(predicted, now).kind !== 'end';
 }
 
 /** Get session info for a worktree path from the task. */

@@ -1835,6 +1835,88 @@ describe('cleanupTaskWorktrees — playbook chain tips (issue #3743)', () => {
   });
 });
 
+describe('a chain tip whose own completion is being decided (issue #4019)', () => {
+  const CHAIN_CWD = '/wt/chain';
+
+  function setupCleanWorktree() {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'log': '',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+    });
+  }
+
+  /** A still-running chain iteration with a clean worktree session at CHAIN_CWD. */
+  function runningTip(taskStore: TaskStore, iteration: number, maxIterations: number) {
+    const task = taskStore.createTask({
+      prompt: 'Chain iteration',
+      cwd: CHAIN_CWD,
+      chain: { chainId: '', iteration, maxIterations, startedAt: new Date().toISOString(), unhealthyStreak: 0 },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: `s-${task.id}`, agentType: 'claude-code', cwd: CHAIN_CWD, createdAt: new Date(),
+      gitIsWorktree: true, gitBranch: 'feature', gitCommit: 'abc123',
+    });
+    expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+    return task;
+  }
+
+  test('a running final iteration does not show its worktree as kept for the chain', async () => {
+    const taskStore = new TaskStore();
+    const tip = runningTip(taskStore, 3, 3);
+    setupCleanWorktree();
+
+    const [verdict] = await inspectTaskWorktrees(taskStore, tip.id);
+
+    expect(verdict.blocker).toBeUndefined();
+    expect(verdict.removable).toBe(true);
+    expect(isTaskWorktreeReservedForChain(taskStore, tip.id)).toBe(false);
+  });
+
+  test('a running tip with a stop request does not show its worktree as kept for the chain', async () => {
+    const taskStore = new TaskStore();
+    const tip = runningTip(taskStore, 1, 5);
+    taskStore.updateChain(tip.id, (chain) => ({ ...chain, stopRequest: { at: new Date().toISOString(), by: 'operator' } }));
+    setupCleanWorktree();
+
+    const [verdict] = await inspectTaskWorktrees(taskStore, tip.id);
+
+    expect(verdict.removable).toBe(true);
+    expect(isTaskWorktreeReservedForChain(taskStore, tip.id)).toBe(false);
+  });
+
+  test('a running mid-chain tip still keeps its worktree for the next iteration', async () => {
+    const taskStore = new TaskStore();
+    const tip = runningTip(taskStore, 1, 5);
+    setupCleanWorktree();
+
+    const [verdict] = await inspectTaskWorktrees(taskStore, tip.id);
+
+    expect(verdict.blocker).toBe('reserved-for-chain');
+    expect(isTaskWorktreeReservedForChain(taskStore, tip.id)).toBe(true);
+  });
+
+  test('the prediction applies only to the task being completed, not to another task in the worktree', () => {
+    // A queued final iteration (no session yet) still needs the worktree it
+    // will run in, whoever else is asking.
+    const taskStore = new TaskStore();
+    const queued = taskStore.createTask({
+      prompt: 'Chain iteration',
+      cwd: CHAIN_CWD,
+      chain: { chainId: '', iteration: 3, maxIterations: 3, startedAt: new Date().toISOString(), unhealthyStreak: 0 },
+    });
+    const other = taskStore.createTask({ prompt: 'Other work', cwd: CHAIN_CWD });
+    taskStore.addSession(other.id, {
+      tmuxSession: 's-other', agentType: 'claude-code', cwd: CHAIN_CWD, createdAt: new Date(),
+      gitIsWorktree: true, gitBranch: 'feature',
+    });
+
+    expect(taskStore.getTask(queued.id)!.sessions).toHaveLength(0);
+    expect(isTaskWorktreeReservedForChain(taskStore, other.id)).toBe(true);
+  });
+});
+
 describe('reclaimEndedChainWorktree (issue #3972)', () => {
   const CHAIN_CWD = '/wt/chain';
 

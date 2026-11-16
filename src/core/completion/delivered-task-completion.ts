@@ -27,8 +27,8 @@ import { isActiveRalphLoop } from './completion-ready-cleanup.js';
 export const DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS = 10 * 60 * 1000;
 
 /**
- * Default settle time for a task that said "finished" after its own pull
- * request merged: 2 minutes (issue #3930). The merged pull request is the proof
+ * Default settle time for a task that said "finished" and whose own pull
+ * request merged: 2 minutes (issue #3930), counted from the later of the two. The merged pull request is the proof
  * of delivery, so the task does not need the full cleanup budget; the settle
  * time only lets the agent's last hook events and the closing turn land.
  */
@@ -46,8 +46,8 @@ export interface MergedPrAttribution {
   owner?: string;
   repo?: string;
   /**
-   * GitHub `mergedAt` of the pull request (issue #3930). The settle path uses
-   * it to check that the task said "finished" after the merge, not before.
+   * GitHub `mergedAt` of the pull request (issue #3930). The settle path
+   * starts its clock at the later of this and the task's "finished" signal.
    */
   mergedAt?: Date;
 }
@@ -133,13 +133,13 @@ function mergedNotBefore(mergedAt: Date | undefined, notBeforeMs: number): boole
 
 /**
  * Why a delivered task was (not) auto-completed.
- * - `finished_after_merge` — the task said "finished" after its own PR merged
- *   and the settle time has passed (issue #3930). The sweep still applies the
- *   live-work veto (live turn, human at the terminal, viewer attached, open
- *   PR) before completing.
- * - `within_settle` — said "finished" after the merge, settle time not over.
- * - `post_merge_budget_exceeded` — merged PR, no "finished" signal after the
- *   merge, cleanup ran past the budget.
+ * - `finished_after_merge` — the task said "finished" (before or after its
+ *   own PR merged) and the settle time has passed since the later of the two
+ *   (issues #3930, #3983). The sweep still applies the live-work veto (live
+ *   turn, human at the terminal, viewer attached, open PR) before completing.
+ * - `within_settle` — said "finished", settle time not over.
+ * - `post_merge_budget_exceeded` — merged PR, no "finished" signal on record
+ *   (or no known merge time), cleanup ran past the budget.
  * - `not_merged` — no attributable merged PR (never auto-complete: negative).
  * - `within_budget` — merged, but still inside the cleanup budget.
  * - `not_in_progress` — task is not a running task.
@@ -167,20 +167,24 @@ export interface DeliveredCompletionDecision {
   autoComplete: boolean;
   reason: DeliveredCompletionReason;
   /**
-   * Milliseconds elapsed on the clock that applies: since the post-merge
-   * "finished" signal for the settle path, since the merge was first observed
-   * for the budget path.
+   * Milliseconds elapsed on the clock that applies: since the later of the
+   * "finished" signal and the merge for the settle path, since the merge was
+   * first observed for the budget path.
    */
   elapsedSinceMergeMs?: number;
 }
 
 /**
- * The time (epoch ms) the task said "finished" after its own PR merged, or
- * undefined (issue #3930). Requires both times to be known and the signal to be
- * at or after the merge: a "finished" raised before the merge says nothing
- * about the delivered work, and an unknown merge time fails closed.
+ * When the settle clock starts for a task that said "finished" and whose own
+ * PR merged (epoch ms), or undefined. The clock starts at the later of the two
+ * (issue #3930): the "finished" signal when it came after the merge, the merge
+ * when it came first. A "finished" raised before the merge (for example with
+ * GitHub auto-merge, issue #3983) still describes the delivered work: a new
+ * user prompt clears the record (`clearFinishedSignal`), so a surviving signal
+ * means no new work was asked for since. Both times must be known; an unknown
+ * merge time fails closed to the budget path.
  */
-export function finishedAfterMergeAtMs(
+export function finishedSettleStartMs(
   task: Pick<Task, 'finishedSignalAt'>,
   merged: Pick<MergedPrAttribution, 'mergedAt'>,
 ): number | undefined {
@@ -189,14 +193,15 @@ export function finishedAfterMergeAtMs(
   if (!Number.isFinite(signalMs)) return undefined;
   if (!(merged.mergedAt instanceof Date)) return undefined;
   const mergedMs = merged.mergedAt.getTime();
-  if (!Number.isFinite(mergedMs) || signalMs < mergedMs) return undefined;
-  return signalMs;
+  if (!Number.isFinite(mergedMs)) return undefined;
+  return Math.max(signalMs, mergedMs);
 }
 
 /**
  * Decide whether a running task should self-complete because its PR is merged
- * and either it said "finished" after the merge and the settle time has passed
- * (issue #3930), or post-merge cleanup has exceeded the budget.
+ * and either it said "finished" and the settle time has passed since the later
+ * of that signal and the merge (issues #3930, #3983), or post-merge cleanup has
+ * exceeded the budget.
  *
  * Pure and clock-injected: `now` and `firstObservedMergedAtMs` are supplied by
  * the caller so the boundary (`elapsed >= budget`) is exact under a controlled
@@ -207,9 +212,10 @@ export function finishedAfterMergeAtMs(
  *   3. no active Ralph loop (that lifecycle owns completion),
  *   4. agent must not be provider-paused on billing/quota (issue #1667),
  *   5. an attributable merged PR must exist (never auto-complete otherwise),
- *   6. said "finished" after the merge → `now - signal >= settle`,
+ *   6. said "finished" → `now - max(signal, merge) >= settle`,
  *   7. otherwise no pending `completion_ready` signal (the normal
- *      auto-close/TTL path owns a task that signaled before its merge),
+ *      auto-close/TTL path owns a pending signal the settle path cannot
+ *      time, for example when the merge time is unknown),
  *   8. `now - firstObservedMergedAt >= budget`.
  */
 export function classifyDeliveredCompletion(
@@ -246,10 +252,10 @@ export function classifyDeliveredCompletion(
   }
 
   const nowMs = opts.now.getTime();
-  const finishedAtMs = finishedAfterMergeAtMs(task, merged);
-  if (finishedAtMs !== undefined) {
+  const settleStartMs = finishedSettleStartMs(task, merged);
+  if (settleStartMs !== undefined) {
     const settleMs = opts.settleMs ?? DEFAULT_FINISHED_MERGED_SETTLE_MS;
-    const elapsed = Math.max(0, nowMs - finishedAtMs);
+    const elapsed = Math.max(0, nowMs - settleStartMs);
     if (elapsed < settleMs) {
       return { autoComplete: false, reason: 'within_settle', elapsedSinceMergeMs: elapsed };
     }

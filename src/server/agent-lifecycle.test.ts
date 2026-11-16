@@ -545,16 +545,38 @@ describe('completeTask', () => {
       expect(taskStore.getTask(id)!.worktreeKeptOnComplete).toBe(true);
     });
 
-    test('a running tip completed while the chain holds its worktree records no choice', async () => {
+    test('a running mid-chain tip completed while the chain holds its worktree records no choice', async () => {
       // The dialog showed "kept: a playbook chain will run its next iteration
       // here" and sent false for that reason, not as the operator's choice.
+      const taskStore = new TaskStore();
+      const id = startedChainTask(taskStore, 1, 5);
+
+      await completeTask(id, makeLifecycleDeps({ taskStore }), { cleanupWorktree: false });
+
+      expect(taskStore.getTask(id)!.status).toBe('completed');
+      expect(taskStore.getTask(id)!.worktreeKeptOnComplete).toBeUndefined();
+    });
+
+    test('a running final iteration completed with "keep" records the choice (issue #4019)', async () => {
+      // Completing it ends the chain, so the dialog offered the choice even
+      // though the iteration was still running when it opened.
       const taskStore = new TaskStore();
       const id = startedChainTask(taskStore, 3, 3);
 
       await completeTask(id, makeLifecycleDeps({ taskStore }), { cleanupWorktree: false });
 
       expect(taskStore.getTask(id)!.status).toBe('completed');
-      expect(taskStore.getTask(id)!.worktreeKeptOnComplete).toBeUndefined();
+      expect(taskStore.getTask(id)!.worktreeKeptOnComplete).toBe(true);
+    });
+
+    test('a running tip with a stop request completed with "keep" records the choice (issue #4019)', async () => {
+      const taskStore = new TaskStore();
+      const id = startedChainTask(taskStore, 1, 5);
+      taskStore.updateChain(id, (chain) => ({ ...chain, stopRequest: { at: new Date().toISOString(), by: 'operator' } }));
+
+      await completeTask(id, makeLifecycleDeps({ taskStore }), { cleanupWorktree: false });
+
+      expect(taskStore.getTask(id)!.worktreeKeptOnComplete).toBe(true);
     });
 
     test('a finished mid-chain iteration the chain will relaunch records no choice', async () => {

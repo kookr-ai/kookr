@@ -552,9 +552,11 @@ describe('single-provider auth/410 cooldown (issue #2959)', () => {
       buildBaseten: () => ({ provider: 'baseten', model: 'baseten-model', complete: vi.fn(), completeDetailed }),
     });
 
+    // Issue #3980: the dead provider's category is reported, not a bare null.
     await expect(client!.completeDetailed!({ maxTokens: 8, userMessage: 'hi' })).resolves.toEqual({
       text: null,
       finishReason: null,
+      failureCategory: 'auth',
     });
     expect(completeDetailed).toHaveBeenCalledTimes(1);
     expect(getHelperLlmHealthSnapshot().paused).toEqual([
@@ -565,6 +567,7 @@ describe('single-provider auth/410 cooldown (issue #2959)', () => {
     await expect(client!.completeDetailed!({ maxTokens: 8, userMessage: 'again' })).resolves.toEqual({
       text: null,
       finishReason: null,
+      failureCategory: 'auth',
     });
     expect(completeDetailed).toHaveBeenCalledTimes(1);
     warn.mockRestore();

@@ -138,7 +138,22 @@ export interface LlmCompletionDetail {
   text: string | null;
   /** Provider finish reason, e.g. 'stop' | 'length' | 'tool_calls'; null if unreported. */
   finishReason: string | null;
+  /**
+   * Set when no provider answered: the category of the last provider error,
+   * or `auth` when the only providers were skipped while paused after an auth
+   * failure. Lets a caller tell a dead provider (`auth`) from a transient
+   * failure (timeout, 429, 5xx) without the error itself (issue #3980). Absent
+   * when a provider answered, even with an empty completion.
+   */
+  failureCategory?: LlmProviderFailureCategory;
 }
+
+/**
+ * Synthetic finish reason for a call that made no network attempt because the
+ * process-wide helper-LLM attempt budget was spent (issue #3980). Like the
+ * circuit breaker's `circuit_open`, it says nothing about the provider.
+ */
+export const ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON = 'attempt_budget_exhausted';
 
 export interface LlmClient {
   /** Returns the text content of the first message, or null on failure. */

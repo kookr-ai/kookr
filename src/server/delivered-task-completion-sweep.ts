@@ -22,9 +22,10 @@
  * memory, mirroring the auto-close throttle), so a just-delivered task always
  * gets one full budget window of cleanup before completion.
  *
- * Settle path (issue #3930): a task that said "finished" (`finishedSignalAt`)
- * after its own PR merged does not need the cleanup budget. It completes once
- * the short settle time (default 2 minutes) has passed since that signal —
+ * Settle path (issues #3930, #3983): a task that said "finished"
+ * (`finishedSignalAt`) and whose own PR merged does not need the cleanup
+ * budget. It completes once the short settle time (default 2 minutes) has
+ * passed since the later of that signal and the merge —
  * provided the shared live-work veto finds nobody at work: no live turn, no
  * human prompt in the pane, no viewer attached, no confirmed-open PR. A
  * deferral does not use one of the per-tick completion slots.
@@ -256,7 +257,7 @@ async function recordDeliveredAutoComplete(
     prNumber: merged.prNumber,
     ...(merged.prUrl ? { prUrl: merged.prUrl } : {}),
     // Budget path: time since the merge was first observed. Settle path: time
-    // since the post-merge "finished" signal.
+    // since the later of the "finished" signal and the merge.
     ...(settle ? { elapsedSinceFinishedMs: elapsedMs, settleMs: waitMs } : { elapsedSinceMergeMs: elapsedMs, budgetMs: waitMs }),
   });
   const minutes = Math.max(1, Math.round(waitMs / 60_000));

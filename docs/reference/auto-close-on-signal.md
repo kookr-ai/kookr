@@ -20,11 +20,11 @@ setting in `settings.json`.
 
 | Situation | Released after (default) | Setting | Section |
 |---|---|---|---|
-| Own pull request merged, then the task said finished (launched with auto-close) | 2 minutes after the signal | `mergedFinishedSettleMinutes` (1–60) | [Finished after the merge](#finished-after-the-merge-issue-3930) |
+| Said finished and own pull request merged, in either order (launched with auto-close) | 2 minutes after the later of the signal and the merge | `mergedFinishedSettleMinutes` (1–60) | [Finished and merged](#finished-and-merged-issues-3930-3983) |
 | Said finished, signal still pending, slots are short | 5 minutes | none (capacity-pressure soft TTL) | finishedAwaitingAck reclaim (#2355) |
 | Said finished, signal still pending (any task) | 6 minutes: 5, then a 60-second warning the operator can veto | `finishedAwaitingAckAckReapMinutes`, `finishedAwaitingAckAckReapGraceSeconds` | finishedAwaitingAck ack reaper (#2170) |
 | Said finished, signal still pending (any task, open-PR fail-safe) | 15 minutes | `finishedAwaitingAckTtlMinutes` | finishedAwaitingAck TTL reclaim (#1884) |
-| Own pull request merged, no "finished" after the merge (launched with auto-close) | 10 minutes after the merge is first seen | `postMergeCleanupBudgetMinutes` (1–120) | [Delivery-aware auto-completion](#delivery-aware-auto-completion-issue-1560) |
+| Own pull request merged, no "finished" on record or merge time unknown (launched with auto-close) | 10 minutes after the merge is first seen | `postMergeCleanupBudgetMinutes` (1–120) | [Delivery-aware auto-completion](#delivery-aware-auto-completion-issue-1560) |
 | Said finished, signal still pending (launched with auto-close) | 30 minutes | `autoCloseCompletionReadyDelayMin` (1–1440) | this page, top |
 | Said finished, signal still pending (not launched with auto-close) | 120 minutes | `completionReadyTtlMinutes` (5–10080) | [TTL escalation](#ttl-escalation-for-non-opted-in-tasks-issue-1526) |
 
@@ -129,23 +129,24 @@ slack) — well before the hung-task reaper's hours-long threshold, which stays
 the backstop. The sweep drains gently (≤2 completions per batch, ≥60 s between
 batches), matching the completion-ready auto-close sweep.
 
-## Finished after the merge (issue #3930)
+## Finished and merged (issues #3930, #3983)
 
-When a task launched with `autoCloseOnSignal` says it is finished **after** its
-own pull request merged, the merged pull request is the proof of delivery and
+When a task launched with `autoCloseOnSignal` says it is finished and its own
+pull request has merged, the merged pull request is the proof of delivery and
 nobody needs to look first. The delivered-completion sweep completes such a task
-once the **settle time** has passed since the "finished" signal
-(`mergedFinishedSettleMinutes`, default **2 minutes**, range 1–60, read live
+once the **settle time** has passed since the later of the "finished" signal
+and the merge (`mergedFinishedSettleMinutes`, default **2 minutes**, range 1–60, read live
 each tick), instead of waiting the 10-minute cleanup budget.
 
 - **The pull request.** The same attribution as the cleanup budget: a PR from the
   task's own activity, merged after the task was created. The base branch does
   not matter, so a PR merged into an integration branch such as `staging`
   counts like one merged into `main`.
-- **The signal.** It must have been raised at or after the PR's GitHub
-  `mergedAt`. A "finished" raised before the merge leaves the task on the
-  cleanup budget. A new user prompt ends the record, because the task is
-  working again.
+- **The signal.** It can come before or after the PR's GitHub `mergedAt`. A
+  "finished" raised before the merge (for example when GitHub auto-merge merges
+  the PR later) starts the settle time at the merge. A new user prompt ends the
+  record, because the task is working again. Without a known `mergedAt` the
+  task stays on the cleanup budget.
 - **Protections.** Before completing, the sweep re-reads the task and defers
   while a turn is running, the pane shows a human prompt or permission dialog,
   a viewer has the task open, or the task holds a confirmed-open PR (the
@@ -154,7 +155,8 @@ each tick), instead of waiting the 10-minute cleanup budget.
   budget path, and a deferred task does not use one of the two places.
 - **Trail.** The `task.deliveredAutoComplete` audit row carries
   `reason: 'finished_after_merge'`, the PR number and URL, `settleMs`, and
-  `elapsedSinceFinishedMs`. Budget-path rows carry
+  `elapsedSinceFinishedMs` (counted from the later of the signal and the
+  merge). Budget-path rows carry
   `reason: 'post_merge_budget_exceeded'`, `budgetMs` and `elapsedSinceMergeMs`.
   The completion digest and the info alert name the PR and the settle time.
 
