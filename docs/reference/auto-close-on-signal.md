@@ -11,6 +11,37 @@ reads it live, so a change takes effect on the next tick without a restart. It
 governs only the auto-close grace window; the manual-review banner for
 non-opted-in tasks is unaffected.
 
+## Every wait before a finished task frees its slot
+
+A task holds a worker slot while it is in progress, finished or not. These are
+all the automatic releases, shortest first. "Said finished" means the agent ran
+`kookr signal completion-ready`. Defaults are Kookr's; a host can override each
+setting in `settings.json`.
+
+| Situation | Released after (default) | Setting | Section |
+|---|---|---|---|
+| Own pull request merged, then the task said finished (launched with auto-close) | 2 minutes after the signal | `mergedFinishedSettleMinutes` (1–60) | [Finished after the merge](#finished-after-the-merge-issue-3930) |
+| Said finished, signal still pending, slots are short | 5 minutes | none (capacity-pressure soft TTL) | finishedAwaitingAck reclaim (#2355) |
+| Said finished, signal still pending (any task) | 6 minutes: 5, then a 60-second warning the operator can veto | `finishedAwaitingAckAckReapMinutes`, `finishedAwaitingAckAckReapGraceSeconds` | finishedAwaitingAck ack reaper (#2170) |
+| Said finished, signal still pending (any task, open-PR fail-safe) | 15 minutes | `finishedAwaitingAckTtlMinutes` | finishedAwaitingAck TTL reclaim (#1884) |
+| Own pull request merged, no "finished" after the merge (launched with auto-close) | 10 minutes after the merge is first seen | `postMergeCleanupBudgetMinutes` (1–120) | [Delivery-aware auto-completion](#delivery-aware-auto-completion-issue-1560) |
+| Said finished, signal still pending (launched with auto-close) | 30 minutes | `autoCloseCompletionReadyDelayMin` (1–1440) | this page, top |
+| Said finished, signal still pending (not launched with auto-close) | 120 minutes | `completionReadyTtlMinutes` (5–10080) | [TTL escalation](#ttl-escalation-for-non-opted-in-tasks-issue-1526) |
+
+Each path has its own protections, described in its section. The settle
+path, the auto-close delay and the TTL escalation share one live-work veto:
+they defer while a turn is running, the pane shows a human prompt, a viewer has
+the task open, or the task holds a confirmed-open PR.
+
+**"Signal still pending" rarely lasts for claude-code tasks.** The agent raises
+the signal from inside a Bash call, and the hook event of that same call
+(PostToolUse) counts as the turn resuming, which clears the pending signal
+within a second (`src/server/event-pipeline.ts`). The rows that need a pending
+signal therefore mostly see claude-code tasks only when the signal arrived late
+through the outbox spool. The settle path does not depend on the pending
+signal: it reads `finishedSignalAt`, which records the latest "finished" raise
+and is kept until a new user prompt.
+
 ## TTL escalation for non-opted-in tasks (issue #1526)
 
 Tasks that did **not** opt in (`autoCloseOnSignal` unset/false — including
@@ -87,6 +118,39 @@ post-merge hang self-completes within ~15 minutes (10 min budget + polling
 slack) — well before the hung-task reaper's hours-long threshold, which stays
 the backstop. The sweep drains gently (≤2 completions per batch, ≥60 s between
 batches), matching the completion-ready auto-close sweep.
+
+## Finished after the merge (issue #3930)
+
+When a task launched with `autoCloseOnSignal` says it is finished **after** its
+own pull request merged, the merged pull request is the proof of delivery and
+nobody needs to look first. The delivered-completion sweep completes such a task
+once the **settle time** has passed since the "finished" signal
+(`mergedFinishedSettleMinutes`, default **2 minutes**, range 1–60, read live
+each tick), instead of waiting the 10-minute cleanup budget.
+
+- **The pull request.** The same attribution as the cleanup budget: a PR from the
+  task's own activity, merged after the task was created. The base branch does
+  not matter, so a PR merged into an integration branch such as `staging`
+  counts like one merged into `main`.
+- **The signal.** It must have been raised at or after the PR's GitHub
+  `mergedAt`. A "finished" raised before the merge leaves the task on the
+  cleanup budget. A new user prompt ends the record, because the task is
+  working again.
+- **Protections.** Before completing, the sweep re-reads the task and defers
+  while a turn is running, the pane shows a human prompt or permission dialog,
+  a viewer has the task open, or the task holds a confirmed-open PR (the
+  completion-ready sweep's live-work veto). An active Ralph loop or a paused
+  provider blocks it too. The two-per-minute cap is shared with the cleanup
+  budget path, and a deferred task does not use one of the two places.
+- **Trail.** The `task.deliveredAutoComplete` audit row carries
+  `reason: 'finished_after_merge'`, the PR number and URL, `settleMs`, and
+  `elapsedSinceFinishedMs`. Budget-path rows carry
+  `reason: 'post_merge_budget_exceeded'`, `budgetMs` and `elapsedSinceMergeMs`.
+  The completion digest and the info alert name the PR and the settle time.
+
+A "finished" signal with no merged PR is unchanged: it goes through the
+signal-based paths in the table above. Tasks launched without auto-close are
+unchanged too.
 
 ## Dirty-worktree visibility (issue #1580)
 

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_FINISHED_MERGED_SETTLE_MS,
   DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS,
   buildDeliveredCompletionDigest,
   buildDeliveredCompletionNote,
   classifyDeliveredCompletion,
+  finishedAfterMergeAtMs,
   selectDeliveredMergedPr,
   type MergedPrAttribution,
   type TrackedPrRef,
@@ -225,6 +227,7 @@ describe('selectDeliveredMergedPr', () => {
         prUrl: 'https://github.com/kookr-ai/kookr/pull/3800',
         owner: 'kookr-ai',
         repo: 'kookr',
+        mergedAt: new Date('2026-11-14T15:00:00.000Z'),
       });
     });
 
@@ -286,5 +289,131 @@ describe('buildDeliveredCompletionDigest', () => {
     const digest = buildDeliveredCompletionDigest({ prNumber: 77 }, 5 * 60_000);
     expect(digest.bullets[0]).toContain('PR #77');
     expect(digest.prUrls).toBeUndefined();
+  });
+});
+
+/**
+ * Issue #3930: a task that said "finished" after its own PR merged completes
+ * after a short settle time instead of the full cleanup budget.
+ */
+describe('classifyDeliveredCompletion — settle path after a post-merge "finished" (issue #3930)', () => {
+  const MERGED_AT = new Date(T0);
+  const MERGED_WITH_TIME: MergedPrAttribution = { ...MERGED, mergedAt: MERGED_AT };
+  const SIGNAL_AT = T0 + 60_000;
+  const finished = (overrides: Partial<Task> = {}) =>
+    ({ ...runningTask(), finishedSignalAt: new Date(SIGNAL_AT).toISOString(), ...overrides }) as Pick<
+      Task,
+      'status' | 'ralphLoop' | 'pendingSignal' | 'autoCloseOnSignal' | 'finishedSignalAt'
+    >;
+
+  it('defaults the settle time to 2 minutes', () => {
+    expect(DEFAULT_FINISHED_MERGED_SETTLE_MS).toBe(2 * 60 * 1000);
+  });
+
+  it('completes once the settle time has passed since the "finished" signal', () => {
+    expect(
+      classifyDeliveredCompletion(finished(), MERGED_WITH_TIME, {
+        now: new Date(SIGNAL_AT + DEFAULT_FINISHED_MERGED_SETTLE_MS),
+        firstObservedMergedAtMs: SIGNAL_AT,
+      }),
+    ).toEqual({
+      autoComplete: true,
+      reason: 'finished_after_merge',
+      elapsedSinceMergeMs: DEFAULT_FINISHED_MERGED_SETTLE_MS,
+    });
+  });
+
+  it('waits inside the settle time', () => {
+    const decision = classifyDeliveredCompletion(finished(), MERGED_WITH_TIME, {
+      now: new Date(SIGNAL_AT + DEFAULT_FINISHED_MERGED_SETTLE_MS - 1),
+    });
+    expect(decision).toMatchObject({ autoComplete: false, reason: 'within_settle' });
+  });
+
+  it('honours a configured settle time', () => {
+    const decision = classifyDeliveredCompletion(finished(), MERGED_WITH_TIME, {
+      now: new Date(SIGNAL_AT + 3 * 60_000),
+      settleMs: 5 * 60_000,
+    });
+    expect(decision.reason).toBe('within_settle');
+  });
+
+  it('completes while the "finished" signal is still pending (it no longer refuses as already_signaled)', () => {
+    const decision = classifyDeliveredCompletion(
+      finished({
+        pendingSignal: { kind: 'completion_ready', raisedAt: new Date(SIGNAL_AT).toISOString() },
+      }),
+      MERGED_WITH_TIME,
+      { now: new Date(SIGNAL_AT + DEFAULT_FINISHED_MERGED_SETTLE_MS) },
+    );
+    expect(decision).toMatchObject({ autoComplete: true, reason: 'finished_after_merge' });
+  });
+
+  it('a "finished" raised before the merge does not count: a pending one keeps the old refusal', () => {
+    const before = new Date(T0 - 60_000).toISOString();
+    const decision = classifyDeliveredCompletion(
+      finished({ finishedSignalAt: before, pendingSignal: { kind: 'completion_ready', raisedAt: before } }),
+      MERGED_WITH_TIME,
+      { now: new Date(T0 + DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS), firstObservedMergedAtMs: T0 },
+    );
+    expect(decision.reason).toBe('already_signaled');
+  });
+
+  it('a "finished" raised before the merge and since cleared leaves the budget path in charge', () => {
+    const decision = classifyDeliveredCompletion(
+      finished({ finishedSignalAt: new Date(T0 - 60_000).toISOString() }),
+      MERGED_WITH_TIME,
+      { now: new Date(T0 + 5 * 60_000), firstObservedMergedAtMs: T0 },
+    );
+    expect(decision.reason).toBe('within_budget');
+  });
+
+  it('an unknown merge time fails closed to the budget path', () => {
+    const decision = classifyDeliveredCompletion(finished(), MERGED, {
+      now: new Date(SIGNAL_AT + DEFAULT_FINISHED_MERGED_SETTLE_MS),
+      firstObservedMergedAtMs: SIGNAL_AT,
+    });
+    expect(decision.reason).toBe('within_budget');
+  });
+
+  it('no merged PR: never completes, whatever the signal', () => {
+    const decision = classifyDeliveredCompletion(finished(), null, {
+      now: new Date(SIGNAL_AT + 60 * 60_000),
+    });
+    expect(decision).toEqual({ autoComplete: false, reason: 'not_merged' });
+  });
+
+  it.each([
+    ['not_opted_in', { autoCloseOnSignal: false }, false],
+    ['ralph_active', { ralphLoop: { status: 'running' } as Task['ralphLoop'] }, false],
+    ['provider_paused', {}, true],
+  ] as const)('%s still blocks the settle path', (reason, overrides, providerPaused) => {
+    const decision = classifyDeliveredCompletion(finished(overrides as Partial<Task>), MERGED_WITH_TIME, {
+      now: new Date(SIGNAL_AT + 60 * 60_000),
+      providerPaused,
+    });
+    expect(decision).toEqual({ autoComplete: false, reason });
+  });
+
+  it('the note and digest name the PR and the settle time, not the cleanup budget', () => {
+    const note = buildDeliveredCompletionNote(1542, 2 * 60_000, 'finished_after_merge');
+    expect(note).toContain('PR #1542');
+    expect(note).toContain('2m settle time');
+    expect(note).not.toContain('budget');
+    const digest = buildDeliveredCompletionDigest(MERGED, 2 * 60_000, 'finished_after_merge');
+    expect(digest.bullets[0]).toContain('PR #1542');
+    expect(digest.bullets[0]).toContain('settle time');
+  });
+});
+
+describe('finishedAfterMergeAtMs (issue #3930)', () => {
+  const mergedAt = new Date(T0);
+  it('returns the signal time when it is at or after the merge', () => {
+    expect(finishedAfterMergeAtMs({ finishedSignalAt: new Date(T0).toISOString() }, { mergedAt })).toBe(T0);
+  });
+  it('is undefined for a signal before the merge, an unparseable signal, or no signal', () => {
+    expect(finishedAfterMergeAtMs({ finishedSignalAt: new Date(T0 - 1).toISOString() }, { mergedAt })).toBeUndefined();
+    expect(finishedAfterMergeAtMs({ finishedSignalAt: 'not a date' }, { mergedAt })).toBeUndefined();
+    expect(finishedAfterMergeAtMs({}, { mergedAt })).toBeUndefined();
   });
 });

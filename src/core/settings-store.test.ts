@@ -204,6 +204,14 @@ describe('validateSettings', () => {
     expect(validateSettings({ postMergeCleanupBudgetMinutes: 999 }).postMergeCleanupBudgetMinutes).toBe(120);
   });
 
+  it('defaults mergedFinishedSettleMinutes to 2 and clamps it to 1–60 (issue #3930)', () => {
+    expect(validateSettings({}).mergedFinishedSettleMinutes).toBe(2);
+    expect(validateSettings({ mergedFinishedSettleMinutes: 5 }).mergedFinishedSettleMinutes).toBe(5);
+    expect(validateSettings({ mergedFinishedSettleMinutes: 0 }).mergedFinishedSettleMinutes).toBe(1);
+    expect(validateSettings({ mergedFinishedSettleMinutes: 999 }).mergedFinishedSettleMinutes).toBe(60);
+    expect(validateSettings({ mergedFinishedSettleMinutes: 'soon' }).mergedFinishedSettleMinutes).toBe(2);
+  });
+
   it('falls back to the default when postMergeCleanupBudgetMinutes is not a number', () => {
     expect(validateSettings({ postMergeCleanupBudgetMinutes: 'soon' }).postMergeCleanupBudgetMinutes).toBe(10);
   });
@@ -919,6 +927,7 @@ describe('loadSettings / saveSettings', () => {
       reservedActiveSlots: 3,
       reservedSlotSources: ['kookr', 'ops'],
       postMergeCleanupBudgetMinutes: 15,
+      mergedFinishedSettleMinutes: 3,
       automationKillSwitch: false,
       safeModeSince: null,
       idleRefineryEnabled: true,

@@ -404,6 +404,15 @@ export interface KookrSettings {
    */
   postMergeCleanupBudgetMinutes: number;
   /**
+   * Settle time (minutes) for a task that said "finished" after its own pull
+   * request merged, issue #3930. Such a task is completed this long after its
+   * "finished" signal instead of waiting the full post-merge cleanup budget —
+   * unless a turn is running, a person is at its terminal, a viewer has it
+   * attached, or it holds an open PR. Only tasks launched with
+   * `autoCloseOnSignal`. Read via a live getter on every liveness tick.
+   */
+  mergedFinishedSettleMinutes: number;
+  /**
    * Global automation kill-switch (issue #1710 / #1699 WS0.4). When true,
    * autonomous actuation (schedule fires + schedule-sourced launches) is
    * halted; manual launches remain accepted. Distinct from drain mode (#659),
@@ -489,6 +498,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   reservedActiveSlots: 2,
   reservedSlotSources: ['kookr'],
   postMergeCleanupBudgetMinutes: 10,
+  mergedFinishedSettleMinutes: 2,
   automationKillSwitch: false,
   safeModeSince: null,
   idleRefineryEnabled: false,
@@ -617,6 +627,8 @@ const MAX_RESERVED_SLOT_SOURCES = 20;
 // fat-fingered value from effectively disabling it.
 const MIN_POST_MERGE_CLEANUP_BUDGET_MIN = 1;
 const MAX_POST_MERGE_CLEANUP_BUDGET_MIN = 120;
+const MIN_MERGED_FINISHED_SETTLE_MIN = 1;
+const MAX_MERGED_FINISHED_SETTLE_MIN = 60;
 
 /** Validate and clamp a raw settings object, filling in defaults for missing/invalid values. */
 export function validateSettings(raw: Record<string, unknown>): KookrSettings {
@@ -869,6 +881,14 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     );
   }
 
+  let mergedFinishedSettleMinutes = DEFAULT_SETTINGS.mergedFinishedSettleMinutes;
+  if (typeof raw.mergedFinishedSettleMinutes === 'number' && Number.isFinite(raw.mergedFinishedSettleMinutes)) {
+    mergedFinishedSettleMinutes = Math.max(
+      MIN_MERGED_FINISHED_SETTLE_MIN,
+      Math.min(MAX_MERGED_FINISHED_SETTLE_MIN, Math.round(raw.mergedFinishedSettleMinutes)),
+    );
+  }
+
   // Kill-switch field (issue #2085): missing key keeps the upgrade-safe
   // default (false). Present-but-non-boolean is corrupt — fail closed by
   // engaging SAFE MODE so schedule launches cannot run on unknown state.
@@ -1074,6 +1094,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       reservedActiveSlots,
       reservedSlotSources,
       postMergeCleanupBudgetMinutes,
+      mergedFinishedSettleMinutes,
       automationKillSwitch,
       safeModeSince,
       idleRefineryEnabled,

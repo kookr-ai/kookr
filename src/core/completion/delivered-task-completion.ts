@@ -27,6 +27,14 @@ import { isActiveRalphLoop } from './completion-ready-cleanup.js';
 export const DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS = 10 * 60 * 1000;
 
 /**
+ * Default settle time for a task that said "finished" after its own pull
+ * request merged: 2 minutes (issue #3930). The merged pull request is the proof
+ * of delivery, so the task does not need the full cleanup budget; the settle
+ * time only lets the agent's last hook events and the closing turn land.
+ */
+export const DEFAULT_FINISHED_MERGED_SETTLE_MS = 2 * 60 * 1000;
+
+/**
  * A task's attributable merged PR — the delivery evidence. Sourced from the
  * server's `GitHubStateStore` (a task's tracked PR references whose fetched
  * status is `merged`), the same attribution the delivery-aware-reaping sibling
@@ -37,6 +45,11 @@ export interface MergedPrAttribution {
   prUrl?: string;
   owner?: string;
   repo?: string;
+  /**
+   * GitHub `mergedAt` of the pull request (issue #3930). The settle path uses
+   * it to check that the task said "finished" after the merge, not before.
+   */
+  mergedAt?: Date;
 }
 
 /**
@@ -104,6 +117,7 @@ export function selectDeliveredMergedPr(
     ...(merged.url ? { prUrl: merged.url } : {}),
     ...(merged.owner ? { owner: merged.owner } : {}),
     ...(merged.repo ? { repo: merged.repo } : {}),
+    ...(merged.mergedAt instanceof Date ? { mergedAt: merged.mergedAt } : {}),
   };
 }
 
@@ -119,8 +133,13 @@ function mergedNotBefore(mergedAt: Date | undefined, notBeforeMs: number): boole
 
 /**
  * Why a delivered task was (not) auto-completed.
- * - `post_merge_budget_exceeded` — the actionable case: merged PR, cleanup ran
- *   past the budget.
+ * - `finished_after_merge` — the task said "finished" after its own PR merged
+ *   and the settle time has passed (issue #3930). The sweep still applies the
+ *   live-work veto (live turn, human at the terminal, viewer attached, open
+ *   PR) before completing.
+ * - `within_settle` — said "finished" after the merge, settle time not over.
+ * - `post_merge_budget_exceeded` — merged PR, no "finished" signal after the
+ *   merge, cleanup ran past the budget.
  * - `not_merged` — no attributable merged PR (never auto-complete: negative).
  * - `within_budget` — merged, but still inside the cleanup budget.
  * - `not_in_progress` — task is not a running task.
@@ -133,6 +152,8 @@ function mergedNotBefore(mergedAt: Date | undefined, notBeforeMs: number): boole
  *   pause is neither delivery nor a hang, so auto-complete must not fire.
  */
 export type DeliveredCompletionReason =
+  | 'finished_after_merge'
+  | 'within_settle'
   | 'post_merge_budget_exceeded'
   | 'not_merged'
   | 'within_budget'
@@ -145,13 +166,37 @@ export type DeliveredCompletionReason =
 export interface DeliveredCompletionDecision {
   autoComplete: boolean;
   reason: DeliveredCompletionReason;
-  /** Milliseconds elapsed since the merge was first observed, when merged. */
+  /**
+   * Milliseconds elapsed on the clock that applies: since the post-merge
+   * "finished" signal for the settle path, since the merge was first observed
+   * for the budget path.
+   */
   elapsedSinceMergeMs?: number;
 }
 
 /**
+ * The time (epoch ms) the task said "finished" after its own PR merged, or
+ * undefined (issue #3930). Requires both times to be known and the signal to be
+ * at or after the merge: a "finished" raised before the merge says nothing
+ * about the delivered work, and an unknown merge time fails closed.
+ */
+export function finishedAfterMergeAtMs(
+  task: Pick<Task, 'finishedSignalAt'>,
+  merged: Pick<MergedPrAttribution, 'mergedAt'>,
+): number | undefined {
+  if (typeof task.finishedSignalAt !== 'string') return undefined;
+  const signalMs = Date.parse(task.finishedSignalAt);
+  if (!Number.isFinite(signalMs)) return undefined;
+  if (!(merged.mergedAt instanceof Date)) return undefined;
+  const mergedMs = merged.mergedAt.getTime();
+  if (!Number.isFinite(mergedMs) || signalMs < mergedMs) return undefined;
+  return signalMs;
+}
+
+/**
  * Decide whether a running task should self-complete because its PR is merged
- * and post-merge cleanup has exceeded the budget.
+ * and either it said "finished" after the merge and the settle time has passed
+ * (issue #3930), or post-merge cleanup has exceeded the budget.
  *
  * Pure and clock-injected: `now` and `firstObservedMergedAtMs` are supplied by
  * the caller so the boundary (`elapsed >= budget`) is exact under a controlled
@@ -160,19 +205,22 @@ export interface DeliveredCompletionDecision {
  *   2. task must have opted into `autoCloseOnSignal` (ask-first / human-review
  *      tasks keep the existing completion-ready TTL fallback),
  *   3. no active Ralph loop (that lifecycle owns completion),
- *   4. no pending `completion_ready` signal (the normal auto-close/TTL path
- *      already owns a task that signaled),
- *   5. agent must not be provider-paused on billing/quota (issue #1667),
- *   6. an attributable merged PR must exist (never auto-complete otherwise),
- *   7. `now - firstObservedMergedAt >= budget`.
+ *   4. agent must not be provider-paused on billing/quota (issue #1667),
+ *   5. an attributable merged PR must exist (never auto-complete otherwise),
+ *   6. said "finished" after the merge → `now - signal >= settle`,
+ *   7. otherwise no pending `completion_ready` signal (the normal
+ *      auto-close/TTL path owns a task that signaled before its merge),
+ *   8. `now - firstObservedMergedAt >= budget`.
  */
 export function classifyDeliveredCompletion(
-  task: Pick<Task, 'status' | 'ralphLoop' | 'pendingSignal' | 'autoCloseOnSignal'>,
+  task: Pick<Task, 'status' | 'ralphLoop' | 'pendingSignal' | 'autoCloseOnSignal' | 'finishedSignalAt'>,
   merged: MergedPrAttribution | null,
   opts: {
     now: Date;
     firstObservedMergedAtMs?: number;
     budgetMs?: number;
+    /** Settle time after a post-merge "finished" signal (issue #3930). */
+    settleMs?: number;
     /**
      * Precomputed via `classifyProviderPause` / `isProviderPaused` (issue
      * #1667). When true, refuse auto-complete even if the merge budget has
@@ -190,9 +238,6 @@ export function classifyDeliveredCompletion(
   if (isActiveRalphLoop(task)) {
     return { autoComplete: false, reason: 'ralph_active' };
   }
-  if (task.pendingSignal?.kind === 'completion_ready') {
-    return { autoComplete: false, reason: 'already_signaled' };
-  }
   if (opts.providerPaused === true) {
     return { autoComplete: false, reason: 'provider_paused' };
   }
@@ -200,8 +245,22 @@ export function classifyDeliveredCompletion(
     return { autoComplete: false, reason: 'not_merged' };
   }
 
-  const budgetMs = opts.budgetMs ?? DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS;
   const nowMs = opts.now.getTime();
+  const finishedAtMs = finishedAfterMergeAtMs(task, merged);
+  if (finishedAtMs !== undefined) {
+    const settleMs = opts.settleMs ?? DEFAULT_FINISHED_MERGED_SETTLE_MS;
+    const elapsed = Math.max(0, nowMs - finishedAtMs);
+    if (elapsed < settleMs) {
+      return { autoComplete: false, reason: 'within_settle', elapsedSinceMergeMs: elapsed };
+    }
+    return { autoComplete: true, reason: 'finished_after_merge', elapsedSinceMergeMs: elapsed };
+  }
+
+  if (task.pendingSignal?.kind === 'completion_ready') {
+    return { autoComplete: false, reason: 'already_signaled' };
+  }
+
+  const budgetMs = opts.budgetMs ?? DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS;
   // The budget clock starts when the merge was FIRST observed by the sweep.
   // Absent a recorded observation (first sighting this tick), elapsed is 0 —
   // never immediately complete on the very tick that discovers the merge, so a
@@ -217,14 +276,31 @@ export function classifyDeliveredCompletion(
   return { autoComplete: true, reason: 'post_merge_budget_exceeded', elapsedSinceMergeMs };
 }
 
+/** Which delivered-completion path fired: the settle path (#3930) or the budget path (#1560). */
+export type DeliveredCompletionPath = 'finished_after_merge' | 'post_merge_budget_exceeded';
+
+/** Format a wait in minutes for operator text: whole minutes, never "0m". */
+function formatWaitMinutes(waitMs: number): string {
+  return `${Math.max(1, Math.round(waitMs / 60_000))}m`;
+}
+
 /**
- * The note carried on the raised `completion_ready` signal AND the audit row.
- * Names the merged PR so the surfaced signal and audit trail are self-evident.
+ * The note carried on the raised `completion_ready` signal. Names the merged PR
+ * and the wait that applied, so the surfaced signal is self-evident.
  */
-export function buildDeliveredCompletionNote(prNumber: number, budgetMs: number): string {
-  const budgetMin = Math.round(budgetMs / 60_000);
+export function buildDeliveredCompletionNote(
+  prNumber: number,
+  waitMs: number,
+  path: DeliveredCompletionPath = 'post_merge_budget_exceeded',
+): string {
+  if (path === 'finished_after_merge') {
+    return (
+      `Delivered: PR #${prNumber} merged and the task said it was finished; `
+      + `completing after the ${formatWaitMinutes(waitMs)} settle time.`
+    );
+  }
   return (
-    `Delivered: PR #${prNumber} merged; post-merge cleanup exceeded the ${budgetMin}m `
+    `Delivered: PR #${prNumber} merged; post-merge cleanup exceeded the ${formatWaitMinutes(waitMs)} `
     + 'budget — auto-completing.'
   );
 }
@@ -237,12 +313,15 @@ export function buildDeliveredCompletionNote(prNumber: number, budgetMs: number)
  */
 export function buildDeliveredCompletionDigest(
   merged: MergedPrAttribution,
-  budgetMs: number,
+  waitMs: number,
+  path: DeliveredCompletionPath = 'post_merge_budget_exceeded',
 ): CompletionDigest {
-  const budgetMin = Math.round(budgetMs / 60_000);
   const bullets: string[] = [
-    `Auto-completed on delivery: PR #${merged.prNumber} merged; post-merge cleanup `
-      + `exceeded the ${budgetMin}m budget`,
+    path === 'finished_after_merge'
+      ? `Auto-completed on delivery: PR #${merged.prNumber} merged and the task said it was `
+        + `finished; completed after the ${formatWaitMinutes(waitMs)} settle time`
+      : `Auto-completed on delivery: PR #${merged.prNumber} merged; post-merge cleanup `
+        + `exceeded the ${formatWaitMinutes(waitMs)} budget`,
   ];
   if (merged.prUrl) {
     bullets.push(`Merged PR: ${merged.prUrl}`);

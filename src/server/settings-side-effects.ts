@@ -242,6 +242,12 @@ export async function applySettingsSideEffects({
       + `(was ${prevSettings.postMergeCleanupBudgetMinutes}min)`,
     );
   }
+  if (prevSettings.mergedFinishedSettleMinutes !== newSettings.mergedFinishedSettleMinutes) {
+    console.log(
+      `[settings] mergedFinishedSettleMinutes → ${newSettings.mergedFinishedSettleMinutes}min `
+      + `(was ${prevSettings.mergedFinishedSettleMinutes}min)`,
+    );
+  }
 
   return warnings;
 }
