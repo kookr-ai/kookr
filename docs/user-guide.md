@@ -42,7 +42,7 @@ Kookr starts the agent in a persistent dtach session. If the server restarts, th
 
 Claude Code, Codex CLI, and Grok Build all appear as Launch providers when their CLI is installed and ready. A provider you have blacklisted under **Settings → Task Management → Blacklisted agents** stays hidden from Launch, Quick Launch, and other pickers until you uncheck it. Running sessions are left alone. Grok is the one that needs an extra install and login step.
 
-When Claude Code is selected — or would be next in round-robin — and the 5-hour or 7-day Claude plan window is already at or above the headroom threshold, the Launch dialog and Quick Launch bar show the same warning before submit. Enter still launches; the banner is not a hard stop. The status-bar quota pills remain display-only.
+When Claude Code is selected — or would be next in round-robin — and the 5-hour or 7-day Claude plan window is already at or above the headroom threshold, the Launch dialog and Quick Launch bar show the same warning before submit. Enter still launches; the banner is not a hard stop. To change that threshold, click the 5-hour / 7-day quota rows in the navigation footer (or in System → Usage): Settings opens on **General → Claude quota headroom**, a percentage from 0 to 100. The default is 90; 0 turns the check off.
 
 ### Reusing A Recent Prompt
 

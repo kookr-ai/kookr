@@ -10411,6 +10411,31 @@ button.usage-value:hover {
   flex-direction: column;
   gap: 8px;
 }
+/* The quota rows as one Settings opener (#3408): unchanged at rest; rows are
+   spans inside the button, so they need display: block back. */
+button.usage-quotas {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+button.usage-quotas:hover {
+  background: var(--bg-card-hover);
+}
+button.usage-quotas:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+button.usage-quotas .usage-row,
+button.usage-quotas .usage-bar {
+  display: block;
+}
 .usage-quota .quota-reset {
   color: var(--text-secondary);
 }

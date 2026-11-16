@@ -93,6 +93,7 @@ export function quotaColorClass(utilization: number): string {
 
 // The bare "5h" / "7d" figures are cryptic; spell out what they measure.
 const QUOTA_EXPLAINER = 'Claude plan rate-limit usage, rolling window (resets in the time shown)';
+const QUOTA_OPEN_SETTINGS_HINT = 'Click to change quota headroom in Settings';
 
 function QuotaRow({
   window,
@@ -101,6 +102,7 @@ function QuotaRow({
   utilization,
   resetsAt,
   staleMinutes,
+  inButton,
 }: {
   window: '5h' | '7d';
   longLabel: string;
@@ -108,17 +110,20 @@ function QuotaRow({
   utilization: number;
   resetsAt: string;
   staleMinutes: number | null;
+  /** Inside the Settings button a row may hold only phrasing content (spans). */
+  inButton: boolean;
 }) {
   const percent = Math.round(utilization);
   const reset = formatResetTime(resetsAt);
-  const title = `${longLabel}: ${percent}% used, resets in ${reset}. ${QUOTA_EXPLAINER}${staleMinutes !== null ? `. Quota data is ${staleMinutes}m old` : ''}`;
+  const title = `${longLabel}: ${percent}% used, resets in ${reset}. ${QUOTA_EXPLAINER}${staleMinutes !== null ? `. Quota data is ${staleMinutes}m old` : ''}${inButton ? `. ${QUOTA_OPEN_SETTINGS_HINT}` : ''}`;
+  const Block = inButton ? 'span' : 'div';
   return (
-    <div
+    <Block
       className={`usage-row usage-quota ${quotaColorClass(utilization)}`}
       data-testid={`usage-quota-${window}`}
       title={title}
     >
-      <div className="usage-line">
+      <Block className="usage-line">
         <span className="usage-label">
           <span className="usage-label-long">{longLabel}</span>
           <span className="usage-label-short" aria-hidden="true">{shortLabel}</span>
@@ -127,19 +132,32 @@ function QuotaRow({
           {percent}%{' '}
           <span className="quota-reset">({reset})</span>
         </span>
-      </div>
-      <div className="usage-bar" aria-hidden="true">
+      </Block>
+      <Block className="usage-bar" aria-hidden="true">
         <i style={{ width: `${Math.max(0, Math.min(100, utilization))}%` }} />
-      </div>
-    </div>
+      </Block>
+    </Block>
   );
 }
 
-export function QuotaRows({ quota }: { quota: QuotaStatus }) {
+/**
+ * The Claude plan windows. With `onOpenQuotaSettings` both rows form one
+ * button that opens Settings on the quota-headroom field (issue #3408);
+ * without it they stay a plain, non-interactive readout.
+ */
+export function QuotaRows({
+  quota,
+  onOpenQuotaSettings,
+}: {
+  quota: QuotaStatus;
+  onOpenQuotaSettings?: () => void;
+}) {
   const staleSec = Math.floor((Date.now() - quota.updatedAt) / 1000);
   const staleMinutes = staleSec > 300 ? Math.floor(staleSec / 60) : null;
-  return (
-    <div className={`usage-quotas${staleMinutes !== null ? ' quota-stale' : ''}`}>
+  const inButton = Boolean(onOpenQuotaSettings);
+  const className = `usage-quotas${staleMinutes !== null ? ' quota-stale' : ''}`;
+  const rows = (
+    <>
       {quota.fiveHour && (
         <QuotaRow
           window="5h"
@@ -148,6 +166,7 @@ export function QuotaRows({ quota }: { quota: QuotaStatus }) {
           utilization={quota.fiveHour.utilization}
           resetsAt={quota.fiveHour.resetsAt}
           staleMinutes={staleMinutes}
+          inButton={inButton}
         />
       )}
       {quota.sevenDay && (
@@ -158,9 +177,28 @@ export function QuotaRows({ quota }: { quota: QuotaStatus }) {
           utilization={quota.sevenDay.utilization}
           resetsAt={quota.sevenDay.resetsAt}
           staleMinutes={staleMinutes}
+          inButton={inButton}
         />
       )}
-    </div>
+    </>
+  );
+  if (!onOpenQuotaSettings) return <div className={className}>{rows}</div>;
+  // aria-label replaces the button's content for screen readers, so it carries
+  // the percentages too, like the "… Open Cost Comparison" spend buttons.
+  const readout = [
+    quota.fiveHour && `5-hour quota ${Math.round(quota.fiveHour.utilization)}%`,
+    quota.sevenDay && `7-day quota ${Math.round(quota.sevenDay.utilization)}%`,
+  ].filter(Boolean).join(', ');
+  return (
+    <button
+      type="button"
+      className={className}
+      data-testid="usage-quota-settings"
+      aria-label={`${readout}. Open Settings to change quota headroom`}
+      onClick={onOpenQuotaSettings}
+    >
+      {rows}
+    </button>
   );
 }
 
@@ -178,6 +216,8 @@ interface Props {
   onOpenDiagnostics?: () => void;
   /** Expand the list's Finished section from the completed count. */
   onExpandCompleted?: () => void;
+  /** Open Settings on the quota-headroom field from the quota rows (#3408). */
+  onOpenQuotaSettings?: () => void;
 }
 
 export function UsageSummary({
@@ -188,6 +228,7 @@ export function UsageSummary({
   onOpenCostComparison,
   onOpenDiagnostics,
   onExpandCompleted,
+  onOpenQuotaSettings,
 }: Props) {
   const quotaStatus = useKookrStore((s) => s.quotaStatus);
   const totalSpendUsd = useKookrStore((s) => s.totalSpendUsd);
@@ -303,7 +344,9 @@ export function UsageSummary({
           )}
         </div>
       )}
-      {quotaStatus && hasQuota && <QuotaRows quota={quotaStatus} />}
+      {quotaStatus && hasQuota && (
+        <QuotaRows quota={quotaStatus} onOpenQuotaSettings={onOpenQuotaSettings} />
+      )}
     </div>
   );
   if (placement === 'nav') return summary;
