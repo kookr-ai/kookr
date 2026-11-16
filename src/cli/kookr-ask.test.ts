@@ -215,6 +215,11 @@ describe('runAskCli --wait', () => {
     const r = await wait([pollWith({}), pollWith({ state: 'answered', answer: { kind: 'option', index: 1, label: 'No' } })]);
     expect(r.code).toBe(EXIT_OK); expect(r.io.logs).toEqual(['No']);
   });
+  it('marks every poll as a --wait poll, so the server does not also type the answer (#3824)', async () => {
+    const r = await wait([pollWith({}), pollWith({ state: 'answered', answer: { kind: 'option', index: 0, label: 'Yes' } })]);
+    const polls = r.f.reqs.filter((q) => q.method === 'GET');
+    expect(polls.map((q) => q.url)).toEqual(['http://k/api/asks/abc123abc123?wait=1', 'http://k/api/asks/abc123abc123?wait=1']);
+  });
   it('prints free text answers and puts the answer in the JSON envelope', async () => {
     const text = await wait([pollWith({ state: 'answered', answer: { kind: 'text', text: 'later please' } })]);
     expect(text.io.logs).toEqual(['later please']);

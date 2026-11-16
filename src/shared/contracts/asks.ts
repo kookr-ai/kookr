@@ -63,14 +63,16 @@ export interface AskRecord {
   resolution?: AskResolution;
   /**
    * The task's live session when the ask was created (its `tmuxSession` id). The answer and the
-   * expiry notice are typed only while this is still the task's live session: a relaunched task's
-   * fresh session never saw the question. Absent on older records and when the task had no live
-   * session at ask time; those are delivered to whatever session is live.
+   * expiry notice are typed only while this session, or one that resumed its conversation, is live:
+   * a relaunched task's fresh session never saw the question. Absent on older records and when the
+   * task had no live session at ask time; those are delivered to whatever session is live.
    */
   sessionId?: string;
   /**
-   * Outcome of typing the answer into the asking task's session. `skipped`: the answer is recorded
-   * but nothing was typed, because the task had ended or was relaunched in a fresh session by then.
+   * Outcome of typing the answer into the asking task's session. `delivered`: typed in, or read by
+   * the task's own `kookr ask --wait`, in which case it is not typed as well. `skipped`: the answer is
+   * recorded but nothing was typed, because the task had ended or was relaunched in a fresh session
+   * by then. Absent for up to `ASK_WAIT_FALLBACK_MS` while an answer waits for an attached `--wait` poll.
    */
   taskDelivery?: 'delivered' | 'failed' | 'skipped';
 }
@@ -79,6 +81,12 @@ export interface AskRecord {
 export type AskView = Omit<AskRecord, 'nonce'>;
 
 /** Hard limits, enforced server-side. The CLI also checks the timeout bounds, so a bad `--timeout` exits 2 without a request. */
+/**
+ * How often `kookr ask --wait` polls `GET /api/asks/:id?wait=1`. The server counts a waiter as attached
+ * for a few of these intervals after its last poll, so the answer is printed by the CLI rather than also typed.
+ */
+export const ASK_WAIT_POLL_INTERVAL_MS = 2_000;
+
 export const ASK_LIMITS = {
   maxOptions: 4,
   maxLabelChars: 48,

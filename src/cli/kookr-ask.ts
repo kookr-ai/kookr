@@ -11,7 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { ASK_LIMITS, askLinkProblem, type AskLink } from '../shared/contracts/asks.js';
+import { ASK_LIMITS, ASK_WAIT_POLL_INTERVAL_MS, askLinkProblem, type AskLink } from '../shared/contracts/asks.js';
 import { resolveStopBaseUrl } from './kookr-stop.js';
 
 export const EXIT_OK = 0;
@@ -24,7 +24,6 @@ export const EXIT_NOT_CONFIGURED = 7;
 export const EXIT_STILL_PENDING = 8;
 
 const REQUEST_TIMEOUT_MS = 10_000;
-const POLL_INTERVAL_MS = 2_000;
 
 export const ASK_HELP_TEXT = `kookr ask — ask the operator a multiple-choice question (delivered over Telegram).
 
@@ -52,10 +51,12 @@ Options:
   --json                Print one machine-readable JSON envelope.
   -h, --help            Show this help.
 
-Without --wait the command returns at once and prints the ask id. The operator's
-answer is also typed into this task's session as "Operator answered ask <id>: <label>".
-An answer given after the task ended (or was relaunched in a new session) is still
-recorded, but nothing is typed. Check an ask later with: GET /api/asks/<id>.
+Without --wait the command returns at once and prints the ask id, and the operator's
+answer is typed into this task's session as "Operator answered ask <id>: <label>".
+With --wait the answer is printed instead and not typed; it is typed only if this
+command stops waiting before it reads the answer. An answer given after the task
+ended (or was relaunched in a new session) is still recorded, but nothing is typed.
+Check an ask later with: GET /api/asks/<id>.
 
 Exit codes:
   0 answered, or created (no --wait)    5 expired with no answer
@@ -311,9 +312,10 @@ export async function runAskCli(argv: string[], io: AskCliIo = {}): Promise<numb
     if (now() >= deadline) {
       return fail('STILL_PENDING', `ask ${ask.id} is still pending (wait window elapsed). Check it later: GET /api/asks/${ask.id}.`, EXIT_STILL_PENDING, { askId: ask.id });
     }
-    await sleep(POLL_INTERVAL_MS);
+    await sleep(ASK_WAIT_POLL_INTERVAL_MS);
     try {
-      const poll = await fetchImpl(`${baseUrl}/api/asks/${encodeURIComponent(ask.id)}`, { headers: authHeaders(env), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      // `?wait=1` tells the server this command will print the answer, so it is not also typed into the session.
+      const poll = await fetchImpl(`${baseUrl}/api/asks/${encodeURIComponent(ask.id)}?wait=1`, { headers: authHeaders(env), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
       if (poll.status === 404) return fail('NOT_FOUND', `ask ${ask.id} no longer exists on the server.`, EXIT_REJECTED, { askId: ask.id });
       if (!poll.ok) continue;
       const next = ((await poll.json()) as { ask?: unknown }).ask;

@@ -7,7 +7,7 @@ import { ASK_LIMITS, type AskNotifier, type AskRecord } from '../../shared/contr
 import { TTSClientError } from '../../adapters/tts-client.js';
 import type { TaskStatus } from '../../core/task-status.js';
 import { registerAskRoutes } from '../routes/ask-routes.js';
-import { AskService } from './ask-service.js';
+import { ASK_WAIT_ATTACHED_MS, ASK_WAIT_FALLBACK_MS, AskService } from './ask-service.js';
 import { AskStore } from './ask-store.js';
 
 interface Harness {
@@ -575,11 +575,158 @@ describe('session pinning (#3548)', () => {
     expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${ask.id}: No`);
   });
 
+  it('types a --wait fallback only into the pinned session, and not after a fresh relaunch (#3824)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const kept = await createPinned({ question: 'Kept?' });
+      await pinned.pollForWaiter(kept.id);
+      await tapPinned(kept, 0);
+      await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS);
+      await new Promise<void>((r) => setImmediate(r));
+      expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${kept.id}: Yes`, 'sess-a');
+
+      const replaced = await createPinned({ question: 'Replaced?' });
+      await pinned.pollForWaiter(replaced.id);
+      await tapPinned(replaced, 0);
+      live.set('t1', 'sess-relaunched');
+      await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS);
+      await new Promise<void>((r) => setImmediate(r));
+      expect(h.deliver).toHaveBeenCalledTimes(1);
+      expect(h.store.get(replaced.id)?.taskDelivery).toBe('skipped');
+    } finally {
+      await pinned.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps the pinned session across a restart', async () => {
     const ask = await createPinned();
     await h.store.flush();
     const reopened = await AskStore.open(h.dir);
     expect(reopened.get(ask.id)?.sessionId).toBe('sess-a');
+  });
+});
+
+describe('an attached kookr ask --wait poll (#3824)', () => {
+  /** Lets the fallback's awaits (typing, closing the Telegram message) run after its timer fired. */
+  const settled = () => new Promise<void>((r) => setImmediate(r));
+
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('leaves the answer for the waiting command and never types it once that command read it', async () => {
+    const ask = await createOk();
+    await h.service.pollForWaiter(ask.id);
+    const changes: string[] = [];
+    h.service.onChange((c) => changes.push(c.kind));
+
+    const r = await tap(ask, 1);
+    expect(r).toMatchObject({ ok: true, ask: { state: 'answered', answer: { label: 'No' } } });
+    expect(r.ok && r.ask.taskDelivery).toBeUndefined();
+    expect(h.deliver).not.toHaveBeenCalled();
+    expect(h.notifier.finalizeAsk).toHaveBeenLastCalledWith(expect.anything(), '✅ Answered: No\n\n❓ Ship it?');
+
+    const read = await h.service.pollForWaiter(ask.id);
+    expect(read).toMatchObject({ state: 'answered', answer: { label: 'No' }, taskDelivery: 'delivered' });
+    expect(changes).toEqual(['resolved', 'updated']);
+
+    await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS * 2);
+    await settled();
+    expect(h.deliver).not.toHaveBeenCalled();
+  });
+
+  it('types the answer once as a fallback when the waiting command stops polling', async () => {
+    const ask = await createOk();
+    await h.service.pollForWaiter(ask.id);
+    await tap(ask, 0);
+    await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS - 1);
+    expect(h.deliver).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await settled();
+    expect(h.deliver).toHaveBeenCalledTimes(1);
+    expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${ask.id}: Yes`);
+    expect(h.store.get(ask.id)?.taskDelivery).toBe('delivered');
+    // A poll arriving after the fallback typed it changes nothing.
+    await h.service.pollForWaiter(ask.id);
+    expect(h.deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it('types the answer at once when the last --wait poll is too old', async () => {
+    const ask = await createOk();
+    await h.service.pollForWaiter(ask.id);
+    h.clock.now += ASK_WAIT_ATTACHED_MS + 1;
+    const r = await tap(ask, 0);
+    expect(r).toMatchObject({ ok: true, ask: { taskDelivery: 'delivered' } });
+    expect(h.deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts only ?wait=1 reads: a plain GET /api/asks/:id leaves the answer to be typed at once', async () => {
+    const app = new Hono();
+    registerAskRoutes(app, { service: h.service });
+    const plain = await createOk({ question: 'Plain read?' });
+    expect((await app.request(`/api/asks/${plain.id}`)).status).toBe(200);
+    await tap(plain, 0);
+    expect(h.deliver).toHaveBeenCalledTimes(1);
+
+    const waited = await createOk({ question: 'Waited read?' });
+    expect((await app.request(`/api/asks/${waited.id}?wait=1`)).status).toBe(200);
+    await tap(waited, 0);
+    expect(h.deliver).toHaveBeenCalledTimes(1);
+    const read = await (await app.request(`/api/asks/${waited.id}?wait=1`)).json();
+    expect(read.ask).toMatchObject({ state: 'answered', taskDelivery: 'delivered' });
+    expect((await app.request('/api/asks/zzz?wait=1')).status).toBe(404);
+  });
+
+  it('types nothing from the fallback when the task ended in the meantime, and tells the operator', async () => {
+    const ask = await createOk();
+    await h.service.pollForWaiter(ask.id);
+    await tap(ask, 0);
+    h.statuses.set('t1', 'completed' as TaskStatus);
+    await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS);
+    await settled();
+    expect(h.deliver).not.toHaveBeenCalled();
+    expect(h.store.get(ask.id)?.taskDelivery).toBe('skipped');
+    expect(h.notifier.finalizeAsk).toHaveBeenLastCalledWith(expect.anything(), expect.stringContaining('Recorded. The task has ended'));
+  });
+
+  it('warns the operator when the fallback could not type the answer', async () => {
+    h.deliver.mockResolvedValueOnce({ ok: false, reason: 'no live session' });
+    const ask = await createOk();
+    await h.service.pollForWaiter(ask.id);
+    await tap(ask, 0);
+    await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS);
+    await settled();
+    expect(h.store.get(ask.id)?.taskDelivery).toBe('failed');
+    expect(h.notifier.finalizeAsk).toHaveBeenLastCalledWith(expect.anything(), expect.stringContaining('Could not type it into the task (no live session)'));
+  });
+
+  it('after a restart, types a recent answer that was left for a waiter, but not an old one', async () => {
+    const recent = await createOk({ question: 'Recent?' });
+    const old = await createOk({ question: 'Old?' });
+    for (const ask of [recent, old]) await h.service.pollForWaiter(ask.id);
+    await tap(old, 0);
+    h.clock.now += 10 * 60 * 1000;
+    await h.service.pollForWaiter(recent.id);
+    await tap(recent, 0);
+    await h.service.stop();
+    await h.store.flush();
+
+    const store = await AskStore.open(h.dir);
+    const restarted = new AskService({
+      store,
+      getNotifier: () => h.notifier as unknown as AskNotifier,
+      taskStatus: (id) => h.statuses.get(id),
+      deliverToTask: h.deliver,
+      now: () => h.clock.now,
+    });
+    await restarted.start();
+    await vi.advanceTimersByTimeAsync(ASK_WAIT_FALLBACK_MS);
+    await settled();
+    expect(h.deliver).toHaveBeenCalledTimes(1);
+    expect(h.deliver).toHaveBeenCalledWith('t1', `Operator answered ask ${recent.id}: Yes`);
+    expect(store.get(old.id)?.taskDelivery).toBeUndefined();
+    await restarted.stop();
   });
 });
 
