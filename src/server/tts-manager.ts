@@ -294,7 +294,8 @@ async function rollBackToPreviousImage(
 
 /**
  * `docker compose up --no-build` could not start the previous image, kept because the current
- * files failed their checks: usually the image was removed (`docker image prune -a`). The
+ * files failed their checks: usually the image was removed (`docker image prune -a`). Whether the
+ * image still exists is not checked, so any failure of `up` itself (a port in use, say) counts. The
  * failed-build stamp only protects a previous image that can still run, so drop it and build the
  * current files once (issue #3985). If that fails too, nothing is remembered and the next start
  * builds again. A previous image that starts but fails its checks is not covered: it is still
