@@ -631,7 +631,7 @@ Use them only for controlled local sessions.
 | Variable | Risk |
 | --- | --- |
 | `KOOKR_BYPASS_ALL_PERMISSIONS=true` | Removes agent permission prompts. Claude Code gets `--dangerously-skip-permissions`; Codex CLI gets `--dangerously-bypass-approvals-and-sandbox`. |
-| `lucyAutonomy` setting = `hands-off` (Settings → Lucy; needs `KOOKR_LUCY_LAUNCH=true`) | Every task Lucy starts runs with all permissions bypassed, whatever `KOOKR_BYPASS_ALL_PERMISSIONS` says, and a clear spoken or typed request starts it after a short window in which the operator can say "cancel". Same exposure as `KOOKR_BYPASS_ALL_PERMISSIONS=true`, reachable by voice: a misheard request starts a task that can run any command. Settings shows this warning when it is switched on. |
+| `lucyAutonomy` setting = `hands-off` (Settings → Lucy; needs Lucy's launching, which is on by default wherever an OpenRouter key is set; `KOOKR_LUCY_LAUNCH=0` blocks it) | Every task Lucy starts runs with all permissions bypassed, whatever `KOOKR_BYPASS_ALL_PERMISSIONS` says, and a clear spoken or typed request starts it after a short window in which the operator can say "cancel". Same exposure as `KOOKR_BYPASS_ALL_PERMISSIONS=true`, reachable by voice: a misheard request starts a task that can run any command. Settings shows this warning when it is switched on. |
 | `KOOKR_BACKEND` set to anything except `dtach` | Prevents startup. Remove stale `KOOKR_BACKEND=tmux` entries instead of expecting rollback behavior. |
 | `KOOKR_AUTO_RELAUNCH=false` | Disables crash recovery, so tasks that died while the server was down will not be resumed automatically. |
 | `KOOKR_CONTEXT_ADVISORY_DISABLED=1` | Suppresses context-window advisories even if the feature is enabled. |
