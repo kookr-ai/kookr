@@ -45,6 +45,7 @@ export interface ArchivedTaskJson {
   playbookParameterValues?: unknown;
   priority?: unknown;
   tokenUsage?: unknown;
+  launchIntent?: unknown;
   completionDigest?: unknown;
   completionFeedback?: unknown;
   ralphLoop?: unknown;

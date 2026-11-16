@@ -52,10 +52,9 @@ export interface AggregatorInput {
   claudeUsage: Map<string, TokenUsage>;
 
   /**
-   * Per-Claude-task model id (TokenTracker.getModel). Drives the R17
-   * pricing-staleness banner for Anthropic rows; the per-task row itself
-   * keeps `model: null` because dated Claude model ids don't round-trip
-   * through the panel's strict-exact-match pricing path.
+   * Per-Claude-task model id (TokenTracker.getModel), verbatim. Shown as the
+   * per-task row's `model` (falling back to the persisted
+   * `task.tokenUsage.model`), and checked for the R17 pricing-staleness banner.
    */
   claudeModels?: Map<string, string | null>;
 
@@ -131,22 +130,11 @@ export function aggregate(input: AggregatorInput): CostComparisonResponse {
       unknownModels.add(computed.row.model);
     }
     // Pricing staleness is a separate concern from unknown-pricing (the row IS priced; the date is old).
-    // For Codex, the row carries `model` directly. For Claude, dated model ids don't round-trip through
-    // exact-match pricing, so we check staleness via the side-channel `claudeModels` map populated
-    // by the route handler from TokenTracker.getModel.
+    // Both Codex and Claude rows carry the observed `model` (Claude's from TokenTracker.getModel).
     if (computed.row.dataQuality === 'complete' && computed.row.model) {
       const pricing = lookupPricing(computed.row.model);
       if (pricing && isPricingStale(pricing, input.todayMs)) {
         stalePricingByModel.set(computed.row.model, pricing.lastVerified);
-      }
-    }
-    if (agent === 'claude-code' && input.claudeModels) {
-      const claudeModel = input.claudeModels.get(task.id);
-      if (claudeModel) {
-        const pricing = lookupPricing(claudeModel);
-        if (pricing && isPricingStale(pricing, input.todayMs)) {
-          stalePricingByModel.set(claudeModel, pricing.lastVerified);
-        }
       }
     }
 
@@ -326,13 +314,16 @@ function computeClaudeRow(
   // `task.tokenUsage` snapshot for completed tasks whose transcript is no longer registered.
   // Missing usage is not a verified zero-cost task; surface it explicitly.
   const usage = input.claudeUsage.get(task.id) ?? task.tokenUsage ?? null;
+  // The model the transcript reports, verbatim (#3559). Display only: cost
+  // comes from the usage record, which prices each message at its own model.
+  const model = input.claudeModels?.get(task.id) ?? usage?.model ?? null;
   const fb = task.completionFeedback?.rating;
   const thumb: 'up' | 'down' | null = fb === 'up' ? 'up' : fb === 'down' ? 'down' : null;
 
   if (!usage) {
     return {
       row: {
-        taskId: task.id, taskName, agent: 'claude-code', model: null, playbookId: task.playbookId ?? null,
+        taskId: task.id, taskName, agent: 'claude-code', model, playbookId: task.playbookId ?? null,
         startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'missing-usage',
@@ -343,7 +334,7 @@ function computeClaudeRow(
 
   return {
     row: {
-      taskId: task.id, taskName, agent: 'claude-code', model: null, playbookId: task.playbookId ?? null,
+      taskId: task.id, taskName, agent: 'claude-code', model, playbookId: task.playbookId ?? null,
       startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
       inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
       cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens,

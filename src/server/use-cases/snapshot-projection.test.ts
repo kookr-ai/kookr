@@ -272,6 +272,27 @@ describe('snapshot projection', () => {
     expect(hugeName!.endsWith('…')).toBe(true);
   });
 
+  it('projects the launch model pin as requestedModel on live, pending and terminal tasks (#3559)', () => {
+    const taskStore = new TaskStore();
+    const ids = ['live', 'pending', 'terminal'].map(() => {
+      const task = createTaskForMutation(taskStore, 'Ship it', '/cwd');
+      task.launchIntent = { ...task.launchIntent!, model: 'claude-opus-4-7' };
+      return task.id;
+    });
+    taskStore.addSession(ids[0], { tmuxSession: 'agent-pinned', agentType: 'claude-code', cwd: '/cwd', createdAt: new Date() });
+    taskStore.getTaskForMutation(ids[1])!.status = 'pending';
+    taskStore.addSession(ids[2], { tmuxSession: 'agent-pinned-done', agentType: 'claude-code', cwd: '/cwd', createdAt: new Date() });
+    taskStore.completeTask(ids[2]);
+    const unpinned = createTaskForMutation(taskStore, 'No pin', '/cwd');
+    unpinned.status = 'pending';
+
+    const snapshot = project(taskStore, [liveAgent('agent-pinned')]);
+    for (const id of ids) {
+      expect(snapshot.find((state) => state.taskId === id)?.requestedModel).toBe('claude-opus-4-7');
+    }
+    expect(snapshot.find((state) => state.taskId === unpinned.id)).not.toHaveProperty('requestedModel');
+  });
+
   it('drops prompt openers from prompt-derived names on live, pending and terminal tasks (#3561 slice 3)', () => {
     const taskStore = new TaskStore();
     const prompt = 'You are continuing a sequential task chain.\n\nGoal: ship slice 3';

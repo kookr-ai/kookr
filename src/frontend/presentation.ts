@@ -751,6 +751,8 @@ export function archivedTaskToAgentState(record: ArchivedTaskRecordJson): AgentS
   }
   const tokenUsage = asTokenUsage(task.tokenUsage);
   if (tokenUsage) agent.tokenUsage = tokenUsage;
+  const requestedModel = isRecord(task.launchIntent) ? asNonEmptyString(task.launchIntent.model) : undefined;
+  if (requestedModel) agent.requestedModel = requestedModel;
   const gitBranch = asNonEmptyString(session?.gitBranch);
   if (gitBranch) agent.gitBranch = gitBranch;
   const gitCommit = asNonEmptyString(session?.gitCommit);
@@ -849,7 +851,8 @@ function asTokenUsage(value: unknown): TokenUsage | undefined {
   const cacheWriteTokens = asFiniteNumber(value.cacheWriteTokens) ?? 0;
   const costUsd = asFiniteNumber(value.costUsd) ?? 0;
   if (inputTokens === undefined || outputTokens === undefined) return undefined;
-  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd };
+  const model = asNonEmptyString(value.model);
+  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, ...(model ? { model } : {}) };
 }
 
 function asFiniteNumber(value: unknown): number | undefined {

@@ -1270,6 +1270,58 @@ describe('startLifecycleTimers budget threshold wiring', () => {
   });
 });
 
+describe('startLifecycleTimers token usage scan', () => {
+  test('saves usage again when only the observed model changed (#3559 backfill)', async () => {
+    vi.useFakeTimers();
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'recorded before models were kept', cwd: '/tmp' });
+    taskStore.addSession(task.id, aSession({ tmuxSession: 'agent-model', lastStatus: 'running' }));
+    const counts = { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5 };
+    // Saved by an older build: same counts, no model.
+    taskStore.updateTokenUsage(task.id, counts);
+    const handles = startLifecycleTimers({
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(),
+        sampleFindingEvidence: vi.fn(),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore,
+      queue: new AttentionQueue(),
+      adapter: { captureDisplay: vi.fn(async () => '') } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => [task.id]),
+        getUsage: vi.fn(() => ({ ...counts, model: 'claude-opus-4-7-20260424' })),
+      } as any,
+      watchdog: {
+        getTrackedAgents: vi.fn(() => []),
+        recordTokenActivity: vi.fn(),
+        tick: vi.fn(),
+      } as any,
+      hookWatcher: { drainNow: vi.fn(async () => undefined) } as any,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 60_000,
+      livenessIntervalMs: 60_000,
+      broadcastToAll: vi.fn(),
+      budgetChecker: new BudgetChecker(0),
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(taskStore.getTask(task.id)?.tokenUsage?.model).toBe('claude-opus-4-7-20260424');
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});
+
 describe('startLifecycleTimers hung-task reaper wiring (issue #1526 Phase A)', () => {
   // The production safety property: maybeReapHungTask is only ever invoked
   // when the SAME watchdog.tick() call this tick already ran returned
