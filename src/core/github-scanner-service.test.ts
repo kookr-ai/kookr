@@ -198,6 +198,19 @@ describe('GitHubScannerService', () => {
       expect(fetcher.fetchPRState).not.toHaveBeenCalled();
     });
 
+    it('fetches re-tracked refs in batches of at most 25', async () => {
+      const fetcher = createMockFetcher(true);
+      fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
+      scanner = new GitHubScannerService({ taskStore, stateStore, fetcher, config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges });
+      await scanner.start();
+      const many = Array.from({ length: 60 }, (_, i) => ({ ...finishedRef, number: 100 + i, url: `https://github.com/test/repo/pull/${100 + i}` }));
+
+      await scanner.trackReferences(many);
+
+      const sizes = (fetcher.fetchStates as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as GitHubReference[]).length);
+      expect(sizes).toEqual([25, 25, 10]);
+    });
+
     it('does nothing before start (gh availability unknown)', async () => {
       const fetcher = createMockFetcher(true);
       scanner = new GitHubScannerService({ taskStore, stateStore, fetcher, config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges });

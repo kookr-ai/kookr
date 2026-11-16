@@ -90,6 +90,8 @@ export interface GitHubScannerDeps {
 const FINISHED_TASK_OPEN_PR_POLL_MS = 24 * 60 * 60 * 1000;
 /** How long a re-tracked reference is retried before the scanner gives up on it. */
 const QUIET_REF_RETRY_MS = 60 * 60 * 1000;
+/** Most re-tracked references fetched in one batch. */
+const QUIET_REF_BATCH = 25;
 
 function quietKey(ref: Pick<GitHubReference, 'taskId' | 'type' | 'owner' | 'repo' | 'number'>): string {
   return `${ref.taskId}:${ref.type}:${ref.owner}/${ref.repo}#${ref.number}`;
@@ -229,9 +231,13 @@ export class GitHubScannerService {
     if (!this.ghAvailable) return;
     const added = refs.filter((ref) => this.stateStore.addReference(ref));
     for (const ref of added) this.quietRefs.set(quietKey(ref), Date.now() + QUIET_REF_RETRY_MS);
-    // Skipped while another fetch runs or during a rate-limit backoff; the
-    // periodic tick then picks the refs up (isRefreshEligible).
-    if (added.length > 0) await this.fetchReferences(added);
+    // In small batches: the fetch is one GraphQL query per repository, and a
+    // week of finished tasks can hold hundreds of PRs. A batch skipped while
+    // another fetch runs or during a rate-limit backoff is picked up by the
+    // periodic tick (isRefreshEligible), a few at a time.
+    for (let i = 0; i < added.length; i += QUIET_REF_BATCH) {
+      await this.fetchReferences(added.slice(i, i + QUIET_REF_BATCH));
+    }
   }
 
   /** Stop all periodic scanning. Increments generation to cancel in-flight fetches. */
@@ -406,7 +412,10 @@ export class GitHubScannerService {
     // so background GraphQL/gh work does not compete with terminal I/O.
     if (this.shouldSkipPeriodicTick('github-state-fetch')) return;
     const refs = this.stateStore.getAllReferences().filter((ref) => this.isRefreshEligible(ref));
-    await this.fetchReferences(refs);
+    // Re-tracked refs still waiting for their first fetch ride along a few at a
+    // time, so they never swell the live tasks' query past its timeout.
+    let quiet = 0;
+    await this.fetchReferences(refs.filter((ref) => !this.quietRefs.has(quietKey(ref)) || quiet++ < QUIET_REF_BATCH));
   }
 
   private isRefreshEligible(ref: GitHubReference): boolean {
