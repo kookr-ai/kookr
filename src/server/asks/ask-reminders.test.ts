@@ -172,6 +172,18 @@ describe('ask reminders', () => {
     expect(h.store.get(a.id)?.reminders).toEqual([{ at: START + 10 * MIN }]);
   });
 
+  it('deletes a reminder whose question closed while it was being sent', async () => {
+    const deleteAskReminder = vi.fn(async () => undefined);
+    (h.notifier as Record<string, unknown>).deleteAskReminder = deleteAskReminder;
+    const a = await ask();
+    h.notifier.sendAskReminder.mockImplementationOnce(async () => {
+      await h.service.cancel(a.id);
+      return { messageId: 555 };
+    });
+    await runUntil(11 * MIN);
+    expect(deleteAskReminder).toHaveBeenCalledWith(expect.objectContaining({ id: a.id, state: 'cancelled' }), 555);
+  });
+
   it('a text reply to a reminder answers the question', async () => {
     const a = await ask();
     await runUntil(11 * MIN);

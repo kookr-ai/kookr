@@ -1322,6 +1322,12 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     return askLinks(ask).map((l) => [{ text: l.text, url: l.url }]);
   }
 
+  /** Best effort: Telegram refuses to delete a message older than 48 hours, which then simply stays. */
+  async function deleteReminder(ask: AskRecord, messageId: number): Promise<void> {
+    if (!ask.delivery) return;
+    await api.deleteMessage(ask.delivery.chatId, messageId).catch(() => undefined);
+  }
+
   // `kookr ask` transport. Present only together with the answer port above.
   const askNotifier: AskNotifier | undefined = deps.asks
     ? {
@@ -1355,20 +1361,24 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         // The choices go; the links stay, so the page can still be opened after the question closed.
         const urlRows = askUrlRows(ask);
         try {
-          await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, text, urlRows.length > 0 ? { inline_keyboard: urlRows } : undefined);
-        } catch (err) {
-          // Kept broad on purpose: whatever the 400, the closing edit must still remove the choices.
-          // The links then stay as text, as when the question was sent.
-          if (urlRows.length === 0 || !(err instanceof TelegramApiError) || err.status !== 400) throw err;
-          await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, withLinkLines(text, ask));
+          try {
+            await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, text, urlRows.length > 0 ? { inline_keyboard: urlRows } : undefined);
+          } catch (err) {
+            // Kept broad on purpose: whatever the 400, the closing edit must still remove the choices.
+            // The links then stay as text, as when the question was sent.
+            if (urlRows.length === 0 || !(err instanceof TelegramApiError) || err.status !== 400) throw err;
+            await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, withLinkLines(text, ask));
+          }
+          audit({ kind: 'ask_finalized', askId: ask.id, taskId: ask.taskId, state: ask.state, resolution: ask.resolution, ...(ask.answeredVia ? { answeredVia: ask.answeredVia } : {}) });
+        } finally {
+          // A reminder saying the question still waits is wrong once it closed, even if the edit failed.
+          for (const reminder of ask.reminders ?? []) {
+            if (reminder.messageId !== undefined) await deleteReminder(ask, reminder.messageId);
+          }
         }
-        audit({ kind: 'ask_finalized', askId: ask.id, taskId: ask.taskId, state: ask.state, resolution: ask.resolution, ...(ask.answeredVia ? { answeredVia: ask.answeredVia } : {}) });
-        // A reminder saying the question still waits is wrong once it closed. Best effort: Telegram
-        // refuses to delete a message older than 48 hours, which then simply stays.
-        for (const reminder of ask.reminders ?? []) {
-          if (reminder.messageId === undefined) continue;
-          await api.deleteMessage(ask.delivery.chatId, reminder.messageId).catch(() => undefined);
-        }
+      },
+      async deleteAskReminder(ask, messageId) {
+        await deleteReminder(ask, messageId);
       },
       async sendAskReminder(ask, text) {
         if (!ask.delivery) throw new Error('the question has no Telegram message to remind of');

@@ -390,4 +390,6 @@ export interface AskNotifier {
   finalizeAsk(ask: AskRecord, text: string): Promise<void>;
   /** Send `text` as a reply to the question's message; resolves with the reminder's message id. */
   sendAskReminder?(ask: AskRecord, text: string): Promise<{ messageId: number }>;
+  /** Delete one reminder message. Best effort: never throws. */
+  deleteAskReminder?(ask: AskRecord, messageId: number): Promise<void>;
 }

@@ -226,6 +226,9 @@ export class AskService {
           if (entry) entry.messageId = messageId;
         });
         this.log(`[asks] reminder sent ask=${ask.id} kind=${due}`);
+        // Closed during the send: the closing step could not delete a reminder it did not know yet.
+        const current = this.deps.store.get(ask.id);
+        if (current && current.state !== 'pending') await notifier.deleteAskReminder?.(current, messageId);
       } catch (err) {
         this.log(`[asks] reminder failed ask=${ask.id}: ${String(err)}`);
       }
