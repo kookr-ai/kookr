@@ -36,7 +36,7 @@ Check these before you push: each one is cheaper to satisfy up front than to lea
    - **version bump in `plugin/.claude-plugin/plugin.json`: not in your pull request while an integration branch is configured.** With `.kookr/delivery-gate.json` on `origin/main` naming one (as now), the integration train commits the bump when it promotes plugin changes (issue #3793), and the hook does not ask for it. Without an integration branch, any change under `plugin/` (other than `plugin.json` itself) needs a `"version"` value that differs from `origin/main`'s; the hook only compares the two values.
 6. **Shell portability** (`scripts/check-shell-portability.sh`) on changed shell scripts, hooks, and files that spawn subprocesses. Skipped for docs-only diffs or with `SKIP_PORTABILITY_CHECK=1`.
 7. `pnpm build:server` (server type-check). Skipped for docs-only diffs.
-8. `pnpm check:e2e` (E2E type-check). Skipped for docs-only diffs.
+8. `pnpm check:e2e` (E2E type-check), then `pnpm check:frontend` (type-check of `src/frontend`, which the root tsconfig leaves out). `check:frontend` fails when any file has more errors of a TS error code than `scripts/frontend-type-baseline.json` records: fix the new error, do not add it to the baseline. It also fails when there are fewer; run `pnpm check:frontend --update-baseline` and commit the smaller baseline. Both skipped for docs-only diffs.
 9. `pnpm validate:skills` (skill frontmatter).
 10. `pnpm validate:playbooks` (bundled playbooks parse).
 11. `pnpm validate:docs-commands` (`pnpm` and `kookr` commands quoted in `README.md` and `docs/` exist).

@@ -96,6 +96,7 @@ assert_gate_skipped() {
   # No gate lane should have run for a delete-only push.
   assert_log_absent "$repo" "build:server"
   assert_log_absent "$repo" "check:e2e"
+  assert_log_absent "$repo" "check:frontend"
   assert_log_absent "$repo" "test"
   assert_log_absent "$repo" "validate:skills"
 }
@@ -104,6 +105,7 @@ assert_gate_ran() {
   local repo="$1"
   assert_log_contains "$repo" "build:server"
   assert_log_contains "$repo" "check:e2e"
+  assert_log_contains "$repo" "check:frontend"
   assert_log_contains "$repo" "test"
 }
 

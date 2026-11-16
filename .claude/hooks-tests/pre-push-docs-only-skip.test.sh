@@ -74,6 +74,7 @@ assert_all_heavy_lanes_run() {
   local repo="$1"
   assert_log_contains "$repo" "build:server"
   assert_log_contains "$repo" "check:e2e"
+  assert_log_contains "$repo" "check:frontend"
   assert_log_contains "$repo" "test"
   assert_log_contains "$repo" "test:integration"
 }
@@ -106,6 +107,7 @@ run_hook "$docs_repo"
 assert_validators_run "$docs_repo"
 assert_log_absent "$docs_repo" "build:server"
 assert_log_absent "$docs_repo" "check:e2e"
+assert_log_absent "$docs_repo" "check:frontend"
 assert_log_absent "$docs_repo" "test"
 assert_log_absent "$docs_repo" "test:integration"
 

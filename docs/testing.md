@@ -14,6 +14,7 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 | `pnpm test:coverage` | Vitest with V8 coverage. | Local. |
 | `pnpm test:watch` | Vitest watch mode. | Local. |
 | `pnpm check:e2e` | TypeScript check for Playwright tests. | Local. |
+| `pnpm check:frontend` | TypeScript check for the dashboard's production files under `src/frontend` (`tsconfig.frontend.json`; frontend tests are not included). Fails when a file has more errors of a TS error code than `scripts/frontend-type-baseline.json` records, and when it has fewer (shrink the baseline with `pnpm check:frontend --update-baseline`). Part of `pnpm verify` and pre-push. | Local. |
 | `pnpm validate:docs-commands` | Verifies documented package scripts, local CLI binaries, and repo-local command entrypoints exist. | Local. |
 | `pnpm validate:docs-env-vars` | Verifies `KOOKR_*` env vars read in source are documented (or allowlisted). | Local. |
 | `pnpm validate:docs-api-routes` | Verifies every registered `/api/*` route is mentioned in `docs/reference/api.md` (or allowlisted as internal). | Local. |

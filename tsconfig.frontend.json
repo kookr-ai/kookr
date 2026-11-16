@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "rootDir": "src",
+    "outDir": null,
+    "declaration": false,
+    "sourceMap": false,
+    "incremental": false,
+    "noEmit": true
+  },
+  "include": ["src/frontend/**/*.ts", "src/frontend/**/*.tsx"],
+  "exclude": ["node_modules", "dist", "src/frontend/**/*.test.ts", "src/frontend/**/*.test.tsx", "src/frontend/**/__tests__/**"]
+}
