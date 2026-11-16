@@ -17101,7 +17101,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 .avatar-dock-unheard { right: 0; top: 0; }
 .avatar-bubble-unheard { left: -2px; top: -2px; width: 12px; height: 12px; }
-.avatar-dock-view { position: relative; flex: 1; min-height: 0; background: #07050d; }
+.avatar-dock-view { position: relative; flex: 1; min-height: 112px; background: #07050d; }
 .avatar-stage-canvas { display: block; width: 100%; height: 100%; }
 .avatar-dock-status {
   position: absolute;
@@ -17116,9 +17116,11 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   pointer-events: none;
 }
 /* The message list under the 3D view: the last few spoken messages, newest first, each in full. It takes what it
-   needs up to a cap and scrolls beyond that (keyboard-focusable), so the 3D view keeps the rest of the window. */
+   needs up to a cap and scrolls beyond that (keyboard-focusable). The 3D view keeps a 112px floor (#3662), so
+   when the window is short of room (the typed-input row, the live text) the list gives way first and scrolls. */
 .avatar-dock-transcript {
-  flex: none;
+  flex: 0 1 auto;
+  min-height: 0;
   max-height: 176px;
   overflow-y: auto;
   border-top: 1px solid var(--border-dim);
