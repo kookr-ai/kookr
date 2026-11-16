@@ -73,7 +73,7 @@ export function validateSkills(repoRoot: string = process.cwd()): SkillValidatio
   }
 
   validatePluginReadmeInventory(repoRoot, errors);
-  validatePluginManifestCounts(repoRoot, errors);
+  validatePluginManifestDescriptions(repoRoot, errors);
   validatePluginGroups(repoRoot, errors);
 
   return { root: repoRoot, errors, warnings };
@@ -180,15 +180,10 @@ function validatePluginReadmeInventory(repoRoot: string, errors: SkillIssue[]): 
   }
 }
 
-function validatePluginManifestCounts(repoRoot: string, errors: SkillIssue[]): void {
-  const skillCount = collectImmediateSkillDirs(join(repoRoot, PLUGIN_SKILLS_ROOT)).length;
-  const agentCount = collectMarkdownBasenames(join(repoRoot, PLUGIN_AGENTS_ROOT)).length;
-
-  checkManifestDescriptionCounts(
+function validatePluginManifestDescriptions(repoRoot: string, errors: SkillIssue[]): void {
+  checkManifestDescriptionHasNoCounts(
     join(repoRoot, PLUGIN_MANIFEST),
     readJsonObject(join(repoRoot, PLUGIN_MANIFEST), errors)?.description,
-    skillCount,
-    agentCount,
     errors,
   );
 
@@ -198,11 +193,9 @@ function validatePluginManifestCounts(repoRoot: string, errors: SkillIssue[]): v
     : [];
   for (const plugin of plugins) {
     if (!plugin || typeof plugin !== 'object' || Array.isArray(plugin)) continue;
-    checkManifestDescriptionCounts(
+    checkManifestDescriptionHasNoCounts(
       join(repoRoot, MARKETPLACE_MANIFEST),
       (plugin as { description?: unknown }).description,
-      skillCount,
-      agentCount,
       errors,
     );
   }
@@ -230,30 +223,22 @@ function readJsonObject(path: string, errors: SkillIssue[]): Record<string, unkn
   return parsed as Record<string, unknown>;
 }
 
-function checkManifestDescriptionCounts(
-  file: string,
-  description: unknown,
-  skillCount: number,
-  agentCount: number,
-  errors: SkillIssue[],
-): void {
-  // No advertised counts to check when a description is missing or not prose.
+/**
+ * The manifest descriptions must not say how many skills or subagents ship
+ * (#3977). The count sat on the line next to the version the integration train
+ * bumps, so every pull request that added or removed a skill conflicted with
+ * each promotion and lost its review binding. The "What's included" README
+ * check above keeps the inventory itself honest.
+ */
+function checkManifestDescriptionHasNoCounts(file: string, description: unknown, errors: SkillIssue[]): void {
+  // Nothing to check when a description is missing or not prose.
   if (typeof description !== 'string') return;
 
-  const skillsMatch = description.match(/(\d+)\s+skills/);
-  if (skillsMatch && Number(skillsMatch[1]) !== skillCount) {
+  const count = description.match(/\b\d+\s+(?:skills?|(?:review\s+)?subagents?)\b/);
+  if (count) {
     errors.push({
       file,
-      message: `description says ${skillsMatch[1]} skills but ${PLUGIN_SKILLS_ROOT} has ${skillCount} loadable SKILL.md directories`,
-    });
-  }
-
-  // Shipped copy says "<n> subagents"; older copy said "<n> review subagents" (#3538).
-  const agentsMatch = description.match(/(\d+)\s+(?:review\s+)?subagents/);
-  if (agentsMatch && Number(agentsMatch[1]) !== agentCount) {
-    errors.push({
-      file,
-      message: `description says ${agentsMatch[1]} review subagents but ${PLUGIN_AGENTS_ROOT} has ${agentCount} agent files`,
+      message: `description says "${count[0]}": leave the skill and subagent counts out of the manifest descriptions (it conflicts with the train's version bump, #3977)`,
     });
   }
 }

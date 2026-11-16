@@ -1301,17 +1301,25 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     await lock.release();
   };
 
-  /** `text` followed by the question's links as text lines, for when Telegram refuses them as buttons. */
+  /** The question's links, then "Open task" when the dashboard has a URL a phone can open. */
+  function askLinks(ask: AskRecord): Array<{ text: string; url: string }> {
+    const links = (ask.links ?? []).map((l) => ({ text: l.label ?? DEFAULT_ASK_LINK_LABEL, url: l.url }));
+    if (deps.dashboardUrlConfigured) links.push({ text: 'Open task', url: dashboardTaskUrl(deps.dashboardBaseUrl, ask.taskId) });
+    return links;
+  }
+
+  /**
+   * `text` followed by the same links as the URL buttons, as text lines, for when Telegram refuses
+   * them as buttons ("Open task" included, #3994).
+   */
   function withLinkLines(text: string, ask: AskRecord): string {
-    const linkLines = (ask.links ?? []).map((l) => `🔗 ${l.label ?? DEFAULT_ASK_LINK_LABEL}: ${l.url}`);
+    const linkLines = askLinks(ask).map((l) => `🔗 ${l.text}: ${l.url}`);
     return linkLines.length > 0 ? [text, '', ...linkLines].join('\n') : text;
   }
 
-  /** One URL button per link the question carries, then "Open task" when the dashboard has a URL a phone can open. */
+  /** One URL button per link (see `askLinks`). */
   function askUrlRows(ask: AskRecord): InlineKeyboardButton[][] {
-    const rows: InlineKeyboardButton[][] = (ask.links ?? []).map((l) => [{ text: l.label ?? DEFAULT_ASK_LINK_LABEL, url: l.url }]);
-    if (deps.dashboardUrlConfigured) rows.push([{ text: 'Open task', url: dashboardTaskUrl(deps.dashboardBaseUrl, ask.taskId) }]);
-    return rows;
+    return askLinks(ask).map((l) => [{ text: l.text, url: l.url }]);
   }
 
   // `kookr ask` transport. Present only together with the answer port above.

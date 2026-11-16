@@ -181,9 +181,14 @@ export function classifyRun(run) {
 
 // Which attempts are the same check. A re-run of a GitHub Actions job keeps the
 // workflow run, so its new check run lands in the same check suite under the
-// same name. Two different workflows can share a job name on one SHA (three
-// "Dependabot" runs in separate suites in the lucy-green fixture), so the suite
-// is part of the key: a green in one workflow never hides a red in another.
+// same name (checked on live data for #4029: attempts 1 and 2 of
+// jeanibarz/lucy run 30574675321 are check runs 90979830604 and 90980750962,
+// both in suite 82904850390). Two different workflows can share a job name on
+// one SHA (three "Dependabot" runs in separate suites in the lucy-green
+// fixture), so the suite is part of the key: a green in one workflow never
+// hides a red in another. A workflow that runs again as a new workflow run (a
+// later push or `pull_request` event on the same SHA) is a new suite, so its
+// stale failure stays red even when GitHub's rollup is green: the safe side.
 // Runs with no name (or no suite/app data) still group by whatever is present.
 function attemptKey(run) {
   const name = run && (run.name || run.context);
@@ -206,12 +211,36 @@ function isLaterAttempt(candidate, current) {
   return candidate.index > current.index;
 }
 
+// A GitHub Actions check run is a job: its id is the job id, and its
+// details_url ends in /actions/runs/<run id>/job/<job id>.
+const ACTIONS_JOB_URL = /\/actions\/runs\/\d+\/job\/(\d+)(?:[/?#]|$)/;
+
+/** The Actions job id behind a check run, or null when it is not an Actions job. */
+function actionsJobId(run) {
+  if (!run) return null;
+  const match = typeof run.details_url === 'string' ? run.details_url.match(ACTIONS_JOB_URL) : null;
+  if (match) return match[1];
+  if (run.app && run.app.slug === 'github-actions' && run.id != null) return String(run.id);
+  return null;
+}
+
+/** The workflow-run attempt (1, 2, ...) an Actions job belongs to, or null when unknown. */
+function runAttempt(run) {
+  const attempt = run && run.run_attempt;
+  return Number.isInteger(attempt) && attempt > 0 ? attempt : null;
+}
+
 /**
  * True when `later` is a re-run that replaces `earlier`: it succeeded or is
  * still running (so the check stays pending until it settles), was created
  * after `earlier` (higher id), and started only once `earlier` had finished.
- * Two jobs of one workflow run that share a name overlap in time, so neither
- * replaces the other; a re-run of a finished job starts after it.
+ * Two jobs of one workflow run that share a name and overlap in time are
+ * siblings, so neither replaces the other; a re-run of a finished job starts
+ * after it. Same-named siblings can also run one after the other (a matrix
+ * with a fixed `name:` and `max-parallel: 1`, or jobs chained with `needs:`),
+ * so for GitHub Actions jobs timing is not enough: `later` must belong to a
+ * later attempt of the workflow run (`run_attempt`, filled in from the jobs
+ * API). An unknown attempt never retires a failure (#4029).
  */
 function replacesAttempt(later, earlier) {
   if (!later.run) return false;
@@ -220,6 +249,11 @@ function replacesAttempt(later, earlier) {
   const a = Number(later.run.id);
   const b = Number(earlier.run && earlier.run.id);
   if (!Number.isFinite(a) || !Number.isFinite(b) || a <= b) return false;
+  if (actionsJobId(later.run) || actionsJobId(earlier.run)) {
+    const laterAttempt = runAttempt(later.run);
+    const earlierAttempt = runAttempt(earlier.run);
+    if (laterAttempt == null || earlierAttempt == null || laterAttempt <= earlierAttempt) return false;
+  }
   const started = Date.parse(later.run.started_at || '');
   const finished = Date.parse((earlier.run && earlier.run.completed_at) || '');
   return !Number.isNaN(started) && !Number.isNaN(finished) && started >= finished;
@@ -446,6 +480,8 @@ function collectCheckRuns(repo, sha) {
     }
   }
 
+  enrichActionsAttempts(repo, checkRuns);
+
   // Legacy commit statuses (Status API) are a separate required-check surface
   // from check runs. A red *required status* would otherwise be invisible here
   // and the head SHA misread as `none-required` / merge-safe. The combined-status
@@ -485,6 +521,32 @@ function collectCheckRuns(repo, sha) {
   }
 
   return checkRuns;
+}
+
+/**
+ * Record each Actions job's workflow-run attempt (`run_attempt`) on its check
+ * run, which the check-runs API does not carry, so `replacesAttempt` can tell
+ * a re-run from a same-named sibling job. Only checks with more than one
+ * attempt need it. A failed lookup leaves the attempt unknown, and an unknown
+ * attempt never retires a failure.
+ */
+function enrichActionsAttempts(repo, checkRuns) {
+  const sizes = new Map();
+  for (const run of checkRuns) {
+    const key = attemptKey(run);
+    if (key != null) sizes.set(key, (sizes.get(key) || 0) + 1);
+  }
+  for (const run of checkRuns) {
+    const key = attemptKey(run);
+    if (key == null || sizes.get(key) < 2 || runAttempt(run) != null) continue;
+    const jobId = actionsJobId(run);
+    if (jobId == null) continue;
+    try {
+      run.run_attempt = JSON.parse(gh(['api', `repos/${repo}/actions/jobs/${jobId}`])).run_attempt;
+    } catch {
+      // Unknown attempt: this run cannot retire, or be retired by, another one.
+    }
+  }
 }
 
 function fetchCheckRuns(repo, sha) {

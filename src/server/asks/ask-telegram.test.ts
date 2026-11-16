@@ -431,6 +431,30 @@ describe('kookr ask over Telegram', () => {
       expect(closed.reply_markup).toBeUndefined();
     });
 
+    it('keeps the "Open task" link as text when Telegram refuses the URL buttons (#3994)', async () => {
+      await boot({ dashboardUrl: 'https://kookr.example.com' });
+      fake.rejectUrlButtons(true);
+      // No links of its own: "Open task" is the only link the question has.
+      const a = await ask();
+      expect(fake.outbound.sendMessage).toHaveLength(1);
+      expect(fake.outbound.sendMessage[0].text).toContain('🔗 Open task: https://kookr.example.com/?task=t1');
+      expect(rows().flat().map((b) => b.text)).toEqual(['Yes', 'No']);
+      await service!.cancel(a.id);
+      const closed = fake.outbound.editMessageText.at(-1)!;
+      expect(closed.text).toContain('Cancelled');
+      expect(closed.text).toContain('🔗 Open task: https://kookr.example.com/?task=t1');
+      expect(closed.reply_markup).toBeUndefined();
+    });
+
+    it('adds no "Open task" line to the fallback without a configured dashboard URL', async () => {
+      await boot();
+      fake.rejectUrlButtons(true);
+      await ask({ links: [{ url: MOCKUPS, label: 'Open mockups' }] });
+      expect(fake.outbound.sendMessage).toHaveLength(1);
+      expect(fake.outbound.sendMessage[0].text).toContain(`🔗 Open mockups: ${MOCKUPS}`);
+      expect(fake.outbound.sendMessage[0].text).not.toContain('Open task');
+    });
+
     it('does not resend without the URL buttons when Telegram refuses the message for another reason', async () => {
       await boot({ dashboardUrl: 'https://kookr.example.com' });
       fake.rejectUrlButtons(true, 'Bad Request: chat not found');

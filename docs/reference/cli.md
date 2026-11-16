@@ -820,13 +820,19 @@ same workflow run), a run that did not pass stops counting once a later run of
 that check succeeded after it finished: a failed run followed by a successful
 re-run is green. A later run that never executed, was skipped, or overlapped the
 failure in time (a different job with the same name) does not hide it, so that
-check stays `executed-red`. A re-run still in progress makes the check
+check stays `executed-red`. For GitHub Actions jobs the later run must also
+belong to a later attempt of the workflow run (its `run_attempt`, read from the
+Actions jobs API): a same-named job of the same attempt that ran after the
+failure is a different job, not a re-run, and when the attempt cannot be read
+the failure stays red. `--from-file` reads no attempts, so there an Actions re-run
+counts only when the file's runs carry `run_attempt`. A re-run still in progress makes the check
 `pending`. Checks with the same name in different workflow runs are classified
 separately, so a failure in an earlier workflow run stays red even when a later
 run of that workflow passed.
 
 Without `--repo`, the PR is resolved from the git remote of the current
-directory. Like `kookr merge`, the verb needs a source checkout.
+directory. The npm package ships the classifier, so the verb works from an
+installed `kookr` as well as from a source checkout.
 
 ## Server Discovery
 

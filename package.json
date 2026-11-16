@@ -13,6 +13,7 @@
   "files": [
     "bin",
     "dist",
+    "scripts/check-verification.mjs",
     "stt/models/silero_vad_v5.onnx",
     "stt/src/transcription-corpus.cjs",
     "stt/src/corpus-api.cjs",
