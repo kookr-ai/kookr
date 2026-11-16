@@ -122,27 +122,31 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
     attempts: reuseAttempts,
     backoffMs: reuseBackoffMs,
   });
-  // The image the healthy container runs, noted before a rebuild replaces it, so a rebuilt
+  // Files whose image failed its checks on an earlier start and was rolled back. The image
+  // name points at the previous image again, so that image is what starts (reused if it is
+  // healthy, otherwise `up --no-build`): each retry of the failed files would replace a working
+  // container and cost up to startupTimeoutMs without speech.
+  const failedStampPath = join(ttsDir, TTS_FAILED_STAMP_FILE);
+  const knownBad = buildPlan.stale && (await readStamp(failedStampPath)) === buildPlan.inputHash;
+  if (knownBad) {
+    console.warn(
+      `[tts] An image built from the current TTS files failed its checks on an earlier start;` +
+        ` using the previous image, which was built from older files.` +
+        ` Change the files or delete ${failedStampPath} to try again`,
+    );
+  }
+  // The image the existing container runs, noted before a rebuild replaces it, so a rebuilt
   // image that fails its checks can be swapped back for it (issue #3656).
-  let previousImage: TTSImage | null = null;
+  const previousImage = buildPlan.stale && !knownBad ? await inspectRunningTTSImage(env) : null;
+  if (reuseResult.ok && knownBad) {
+    return reused();
+  }
   if (reuseResult.ok && buildPlan.stale) {
-    const failedStampPath = join(ttsDir, TTS_FAILED_STAMP_FILE);
-    if ((await readStamp(failedStampPath)) === buildPlan.inputHash) {
-      // Each try replaces the working container and costs up to startupTimeoutMs without
-      // speech, so the same inputs are not tried again on every restart.
-      console.warn(
-        `[tts] An image built from the current TTS files failed its checks on an earlier start;` +
-          ` keeping the running service, which was built from older files.` +
-          ` Change the files or delete ${failedStampPath} to try again`,
-      );
-      return reused();
-    }
     // A healthy container that was built from older inputs would keep serving the old
     // code after an update (for example, it would not know a voice the new code adds).
     console.log(
       `[tts] Healthy TTS service at port ${port} was built from older inputs; rebuilding instead of reusing it`,
     );
-    previousImage = await inspectRunningTTSImage(env);
     // Build before touching the running container. A build can fail for reasons that have
     // nothing to do with this machine (a package index or model host is down); the service
     // that is running still works, so keep it and try again on the next start.
@@ -175,7 +179,10 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
     }, voice: ${voice}, port: ${port})...`,
   );
 
-  if (buildPlan.build) {
+  const build = buildPlan.build && !knownBad;
+  if (knownBad) {
+    console.log('[tts] Starting the previous TTS image without a build');
+  } else if (build) {
     console.log(`[tts] Building TTS image (${buildPlan.reason})...`);
   } else {
     console.log('[tts] Reusing existing TTS image; build inputs are unchanged');
@@ -184,14 +191,17 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
   const startOpts = { composeFlags, env, port, voice, startupTimeoutMs, readinessProbeTimeoutMs };
   let manager: TTSManager;
   try {
-    manager = await startContainerAndProbe({ ...startOpts, upFlags: buildPlan.build ? ['--build'] : [] });
+    manager = await startContainerAndProbe({
+      ...startOpts,
+      upFlags: knownBad ? ['--no-build'] : build ? ['--build'] : [],
+    });
   } catch (err) {
     if (!previousImage) throw err;
     return rollBackToPreviousImage(startOpts, previousImage, err, ttsDir, buildPlan.inputHash);
   }
   // Stamp only an image that passed its checks: a stamp written before the probe would make
   // the next start treat a failed image as current.
-  if (buildPlan.build) {
+  if (build) {
     await writeTTSBuildStamp(ttsDir, buildPlan.inputHash);
     await rm(join(ttsDir, TTS_FAILED_STAMP_FILE), { force: true }).catch(() => {});
   }
@@ -214,7 +224,7 @@ interface StartContainerOptions {
   readinessProbeTimeoutMs: number;
 }
 
-/** The image the running speech container was created from, or null if it cannot be read. */
+/** The image the speech container (running or stopped) was created from, or null if there is none. */
 async function inspectRunningTTSImage(env: NodeJS.ProcessEnv): Promise<TTSImage | null> {
   try {
     const { stdout } = await execFileAsync(
@@ -227,7 +237,7 @@ async function inspectRunningTTSImage(env: NodeJS.ProcessEnv): Promise<TTSImage 
   } catch {
     // No container under that name, or no docker CLI: there is nothing to go back to.
   }
-  console.warn('[tts] Could not read the image of the running TTS container; a failed rebuild cannot be rolled back');
+  console.log('[tts] No existing TTS container image found; a failed rebuild cannot be rolled back');
   return null;
 }
 

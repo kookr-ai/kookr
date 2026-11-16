@@ -402,15 +402,21 @@ describe('startTTS', () => {
      * OLD_IMAGE; the rebuilt image fails in the way `newImage` says, and once `docker tag`
      * has pointed the name back at OLD_IMAGE the restarted service passes its checks.
      */
-    function stubStaleService(newImage: 'probe-fails' | 'never-healthy', opts: { tagFails?: boolean } = {}) {
-      let current: 'old' | 'new' = 'old';
+    function stubStaleService(
+      newImage: 'probe-fails' | 'never-healthy' | 'up-fails',
+      opts: { tagFails?: boolean; oldImageProbeFails?: boolean } = {},
+    ) {
+      let current: 'old' | 'new' | 'restarted-old' = 'old';
       execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === 'inspect') return cb(null, { stdout: `${OLD_IMAGE} ${IMAGE_NAME}\n`, stderr: '' });
         if (args[0] === 'tag') {
           if (opts.tagFails) return cb(new Error('No such image'), '', '');
-          current = 'old';
+          current = 'restarted-old';
         }
-        if (args.includes('up') && args.includes('--build')) current = 'new';
+        if (args.includes('up') && args.includes('--build')) {
+          if (newImage === 'up-fails') return cb(new Error('container exited with code 1'), '', '');
+          current = 'new';
+        }
         cb(null, '', '');
       });
       vi.stubGlobal(
@@ -418,6 +424,9 @@ describe('startTTS', () => {
         vi.fn(async (url: string | URL | Request) => {
           const href = String(url);
           if (current === 'new' && newImage === 'never-healthy') throw new Error('connection refused');
+          if (href.includes('/synthesize') && current === 'restarted-old' && opts.oldImageProbeFails) {
+            return new Response('old image broken too', { status: 500 });
+          }
           if (href.includes('/synthesize') && current === 'new') {
             return new Response('model failed to load', { status: 500 });
           }
@@ -452,6 +461,28 @@ describe('startTTS', () => {
         execFileMock.mockClear();
         await start();
         expect(execFileMock).not.toHaveBeenCalled();
+
+        // Same files, but the old service is still booting (Docker restarted it) and fails the
+        // reuse check: the previous image is started as it is, not rebuilt from the failed files.
+        execFileMock.mockReset();
+        execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+          cb(null, '', '');
+        });
+        let booting = true;
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async (url: string | URL | Request) => {
+            if (booting && String(url).includes('/health')) {
+              booting = false;
+              throw new Error('connection refused');
+            }
+            return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+          }),
+        );
+        await start();
+        expect(dockerVerbs()).toEqual([expect.stringMatching(/up -d --no-build$/)]);
+        expect((await readFile(stampPath, 'utf-8')).trim()).toBe('hash-of-older-files');
+        expect((await readFile(failedPath, 'utf-8')).trim()).toBe(failedHash);
 
         // The files change (a fix lands): the rebuild is tried again, passes, and is stamped.
         await writeFile(join(ttsDir, 'src', 'server.py'), 'print("fixed")\n');
@@ -501,6 +532,42 @@ describe('startTTS', () => {
         expect(dockerVerbs().some((v) => v.endsWith(' down'))).toBe(true);
         expect(dockerVerbs().some((v) => v.includes('--no-build'))).toBe(false);
         // Nothing was rolled back, so the failure is not remembered: the next start retries.
+        await expect(readFile(join(ttsDir, '.kookr-tts-failed.hash'), 'utf-8')).rejects.toThrow(/ENOENT/);
+      } finally {
+        await rm(ttsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('restarts the previous image when compose up of the rebuilt one fails', async () => {
+      const ttsDir = await createTTSFixture();
+      try {
+        await writeFile(join(ttsDir, '.kookr-tts-build.hash'), 'hash-of-older-files\n');
+        stubStaleService('up-fails');
+
+        const manager = await startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
+
+        expect(manager.url).toBe('http://localhost:8004');
+        const verbs = dockerVerbs();
+        expect(verbs.indexOf(`tag ${OLD_IMAGE} ${IMAGE_NAME}`)).toBeGreaterThan(
+          verbs.findIndex((v) => v.endsWith('up -d --build')),
+        );
+        expect(verbs.at(-1)).toMatch(/up -d --no-build$/);
+        await expect(readFile(join(ttsDir, '.kookr-tts-failed.hash'), 'utf-8')).resolves.toMatch(/^[0-9a-f]{64}\n$/);
+      } finally {
+        await rm(ttsDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not remember the failed files when the restarted previous image fails its probe too', async () => {
+      const ttsDir = await createTTSFixture();
+      try {
+        await writeFile(join(ttsDir, '.kookr-tts-build.hash'), 'hash-of-older-files\n');
+        stubStaleService('probe-fails', { oldImageProbeFails: true });
+
+        await expect(startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 })).rejects.toThrow(
+          /restarting the previous TTS image also failed: .*old image broken too/,
+        );
+        expect(dockerVerbs().at(-1)).toMatch(/ down$/);
         await expect(readFile(join(ttsDir, '.kookr-tts-failed.hash'), 'utf-8')).rejects.toThrow(/ENOENT/);
       } finally {
         await rm(ttsDir, { recursive: true, force: true });
@@ -580,6 +647,9 @@ describe('startTTS', () => {
       stubColdStart(() => new Response('ok', { status: 200 }));
       await startTTS({ ttsDir: '/repo/tts', port: 8004, device: 'cpu', reuseAttempts: 1 });
       expect(synthesizedVoices()).toEqual(['/app/voices/matilda.mp3', 'af_heart']);
+      // The warm-up carries its own deadline, so a hung engine load cannot leave it open forever.
+      const warmUp = vi.mocked(fetch).mock.calls.find((c) => String(c[1]?.body).includes('af_heart'));
+      expect(warmUp?.[1]?.signal).toBeInstanceOf(AbortSignal);
     });
 
     it('loads Pocket TTS (Matilda) after a fresh start whose default voice is a Kokoro voice', async () => {
