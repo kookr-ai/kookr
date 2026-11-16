@@ -132,6 +132,33 @@ describe('LifecycleHandler lifecycle commands', () => {
     }
   });
 
+  test('reopenTask threads the connection actor into its audit row (#3914)', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-ws-reopen-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Reopen via WS', '/repo');
+      addSession(taskStore, task.id);
+      taskStore.terminateTask(task.id);
+      const { deps } = makeDeps(taskStore, {
+        auditLogPath,
+        deletionAuditActor: () => ({ source: 'websocket', actorId: 'conn-1' }),
+      });
+
+      await new LifecycleHandler(deps).handle({ type: 'reopenTask', taskId: task.id });
+
+      const row = JSON.parse((await readFile(auditLogPath, 'utf-8')).trim()) as unknown;
+      expect(row).toEqual(expect.objectContaining({
+        type: 'task.reopen',
+        actor: { source: 'websocket', actorId: 'conn-1' },
+        taskId: task.id,
+        outcome: 'reopened',
+      }));
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
   test('completeTask delegates active Ralph completion to shared partial policy', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Ralph loop', '/repo');

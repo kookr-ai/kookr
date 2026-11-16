@@ -43,6 +43,26 @@ export interface PreparePlaybookLaunchInput {
   parentTaskId?: string;
   /** Where to read the playbook file from. Defaults to 'project' for back-compat. */
   scope?: PlaybookScope;
+  /**
+   * Parameter names the caller typed itself (e.g. `kookr spawn --param`), as
+   * opposed to values the launch surface fills in. When set, a name the
+   * playbook does not declare throws {@link UndeclaredPlaybookParameterError}
+   * right after parsing, before any required-parameter check, so a misspelled
+   * name is reported as such rather than as the required parameter it missed.
+   */
+  callerParameterNames?: readonly string[];
+}
+
+/** A launch named parameters that the playbook does not declare (issue #3863). */
+export class UndeclaredPlaybookParameterError extends Error {
+  constructor(playbookPath: string, undeclared: readonly string[], declared: readonly string[]) {
+    const declaredList = declared.length > 0 ? declared.join(', ') : '(none)';
+    super(
+      `Playbook ${playbookPath} does not declare parameter(s): ${undeclared.join(', ')}. `
+        + `Declared parameters: ${declaredList}.`,
+    );
+    this.name = 'UndeclaredPlaybookParameterError';
+  }
 }
 
 export interface NormalizedPlaybookLaunchInput extends PreparePlaybookLaunchInput {
@@ -89,6 +109,13 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
   // per-scope param-snapshot keys (sourceCwd::id) stay stable across cwds.
   const sourceCwd = scope === 'project' ? normalized.playbookSourceCwd : playbooksDir;
   const playbook = parsePlaybook(content, input.playbookPath, sourceCwd, scope);
+  if (input.callerParameterNames) {
+    const declared = playbook.parameters.map((parameter) => parameter.name);
+    const undeclared = input.callerParameterNames.filter((name) => !declared.includes(name));
+    if (undeclared.length > 0) {
+      throw new UndeclaredPlaybookParameterError(input.playbookPath, undeclared, declared);
+    }
+  }
   const criteria = playbook.checklist.length > 0
     ? playbook.checklist.map((item) => `- ${item}`).join('\n')
     : undefined;

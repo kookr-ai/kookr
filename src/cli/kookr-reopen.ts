@@ -20,7 +20,7 @@
  * `KOOKR_SUPERVISOR_TOKEN` when set, else `KOOKR_API_TOKEN`, else nothing.
  */
 
-import { SUPERVISOR_ACTOR_HEADER } from '../shared/contracts/supervisor-actions.js';
+import { SUPERVISOR_ACTOR_HEADER, type ReopenResumeReport } from '../shared/contracts/supervisor-actions.js';
 import { resolveStopBaseUrl } from './kookr-stop.js';
 
 // The server awaits the relaunch before answering, and a single launch may take
@@ -50,7 +50,8 @@ conversation:
                  cannot be continued; the reason is printed
 
 Options:
-  --json          Print one machine-readable JSON envelope to stdout.
+  --json          Print one machine-readable JSON envelope to stdout
+                  (with --help, the help text is in details.help).
   -h, --help      Show this help.
 
 Environment:
@@ -100,11 +101,6 @@ export function parseReopenArgs(argv: string[]): ParsedReopenArgs {
   if (positionals.length === 1) out.taskId = positionals[0];
   return out;
 }
-
-export type ReopenResumeReport =
-  | { mode: 'resume'; conversationId: string; caveat?: string }
-  | { mode: 'fresh'; reason: string }
-  | { mode: 'not_resumable'; reason: string };
 
 export interface ReopenResponse {
   ok: true;
@@ -167,7 +163,10 @@ export async function runReopenCli(argv: string[], io: ReopenCliIo = {}): Promis
 
   const args = parseReopenArgs(argv);
   if (args.help) {
-    out.log(REOPEN_HELP_TEXT);
+    // Under --json even help is one envelope, like `kookr status --json --help`.
+    out.log(args.json
+      ? JSON.stringify({ ok: true, code: 'OK', message: 'Help', details: { subcommand: 'reopen', help: REOPEN_HELP_TEXT } })
+      : REOPEN_HELP_TEXT);
     return EXIT_OK;
   }
 
@@ -225,7 +224,7 @@ export async function runReopenCli(argv: string[], io: ReopenCliIo = {}): Promis
         { taskId, timeoutMs: REQUEST_TIMEOUT_MS },
       );
     }
-    return fail(EXIT_NO_SERVER, 'NO_SERVER', `request failed: ${e instanceof Error ? e.message : String(e)}`);
+    return fail(EXIT_NO_SERVER, 'NO_SERVER', `request failed: ${e instanceof Error ? e.message : String(e)}`, { taskId });
   }
 
   if (status < 200 || status >= 300) {

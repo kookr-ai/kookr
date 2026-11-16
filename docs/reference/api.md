@@ -441,7 +441,9 @@ A playbook launch can take one of two shapes:
 The selected playbook must exist and parse successfully. A missing or
 out-of-scope path, a malformed playbook, a missing required parameter (the error
 names it), or a `parameterValues` key that the playbook does not declare
-returns `400` without launching a task. Playbook launches require
+returns `400` without launching a task. When a request has both an undeclared
+key and a missing required parameter, the error names the undeclared key, since
+it is usually a misspelling of the missing one. Playbook launches require
 `idempotencyKey`, which makes retrying an ambiguous request resolve to the
 original task. Delivery policy is derived only from the parsed playbook
 metadata, so a raw client `deliveryMode` or
@@ -721,7 +723,24 @@ the task's prior conversation:
 
 In all three cases the task is reopened. The resume request is held in
 server memory only, so a task still `pending` when the server restarts
-launches fresh. Error responses:
+launches fresh.
+
+`resume` is decided before the launch, and the first launch attempt uses up
+the resume request. If that attempt fails without cancelling the task, the
+response is still `200` with `"mode": "resume"`, but the later retry starts
+fresh from the original prompt. This happens, for example, when a failed
+dependency-recovery probe puts the task back in the pending queue.
+
+Each call that reaches the reopen command (past the token and `shared:`
+checks) is recorded as a `task.reopen` row in `audit.jsonl`, whether it
+reopens the task or is refused, attributed through `X-Kookr-Actor` (see
+[Actor attribution](#actor-attribution-and-the-supervisor-token)). The row
+always carries `outcome`. A reopened task's row adds `status` and
+`resumeMode`. A refused call's row adds `error`, plus `code` when the refusal
+is a 409 (for example `task_not_terminal`). An unexpected server error
+(HTTP 500) writes no row.
+
+Error responses:
 
 - Unknown id returns `404`.
 - A task that is not terminal (`open`, `pending`, `inProgress`) returns
@@ -995,12 +1014,13 @@ instance (issue #1526 Phase B / FM12, FM16).
 ### Actor attribution and the supervisor token
 
 Every mutating task-lifecycle route — `DELETE /api/tasks/:id`,
-`POST /api/tasks/:id/complete`, `POST /api/tasks/abort`,
-`POST /api/tasks/completion-ready/ack-all`, and `POST /api/agents/:id/message`
-— accepts an optional `X-Kookr-Actor` request header identifying the caller,
-e.g. `lucy-supervisor`, `dashboard`, `agent:<taskId>`, `cli`. The resolved
-actor is recorded in `audit.jsonl` rows (`task.deleteTask`, `task.batchAbort`,
-`task.complete`, `task.completionReadyAckAll`) and, for the message route, in
+`POST /api/tasks/:id/complete`, `POST /api/tasks/:id/reopen`,
+`POST /api/tasks/abort`, `POST /api/tasks/completion-ready/ack-all`, and
+`POST /api/agents/:id/message` — accepts an optional `X-Kookr-Actor` request
+header identifying the caller, e.g. `lucy-supervisor`, `dashboard`,
+`agent:<taskId>`, `cli`. The resolved actor is recorded in `audit.jsonl` rows
+(`task.deleteTask`, `task.batchAbort`, `task.complete`, `task.reopen`,
+`task.completionReadyAckAll`) and, for the message route, in
 the interaction log's `user_input` event. The WebSocket transport attributes
 the same way using its per-connection id instead of a header.
 

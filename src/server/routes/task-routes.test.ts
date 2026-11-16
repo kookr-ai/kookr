@@ -1556,6 +1556,19 @@ Phase {{phase}}: {{prompt}}
       expect(launchTask).not.toHaveBeenCalled();
     });
 
+    test('names a misspelled parameter before the required one it was meant to fill (#3863)', async () => {
+      const res = await post({
+        cwd,
+        playbook: { path: 'issue.md', parameterValues: { repo: 'o/r', isue: '8' } },
+        idempotencyKey: 'issue:typo-missing',
+      });
+
+      expect(res.status).toBe(400);
+      const { error } = await res.json() as { error: string };
+      expect(error).toBe('Playbook issue.md does not declare parameter(s): isue. Declared parameters: issue, repo.');
+      expect(launchTask).not.toHaveBeenCalled();
+    });
+
     test('tells a prompt sent to a playbook without a prompt parameter how to launch it', async () => {
       const res = await post({
         prompt: 'This must not be discarded',

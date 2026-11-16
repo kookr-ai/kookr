@@ -22,6 +22,7 @@
 import { access } from 'node:fs/promises';
 import type { SessionInfo, Task } from '../core/tasks.js';
 import type { ResumeContext } from '../adapters/agent-adapter.js';
+import type { ReopenResumeReport } from '../shared/contracts/supervisor-actions.js';
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -141,24 +142,8 @@ export async function buildTaskResumeContext(
 const RESUME_CAPABLE_AGENT_TYPES: ReadonlySet<string> = new Set(['claude-code', 'opencode']);
 
 /**
- * What a reopen will do with the task's prior conversation (issue #3671):
- *  - `resume`        — the relaunch continues conversation `conversationId`
- *                      (`caveat` set when that is a best effort, as for opencode).
- *  - `fresh`         — the relaunch starts from the original prompt by design
- *                      (an active Ralph loop: every iteration is a fresh context).
- *  - `not_resumable` — the relaunch starts from the original prompt because the
- *                      conversation cannot be continued; `reason` says why.
- *
- * In every case the task is still reopened and relaunched; this only tells the
- * caller which of the three it will get, before the launch happens.
- */
-export type ReopenResumeReport =
-  | { mode: 'resume'; conversationId: string; caveat?: string }
-  | { mode: 'fresh'; reason: string }
-  | { mode: 'not_resumable'; reason: string };
-
-/**
- * Predict whether reopening `task` resumes its conversation. Mirrors the launch
+ * Predict whether reopening `task` resumes its conversation (the report's
+ * shape is in shared/contracts/supervisor-actions.ts). Mirrors the launch
  * path's own decision: `reopenTask` only requests a resume for a non-Ralph task
  * with a persisted provider session id, promotion then runs
  * {@link buildTaskResumeContext} (which refuses a claude-code conversation whose

@@ -3,7 +3,8 @@
  * contract shapes for the mutating task-lifecycle endpoints a supervising
  * agent (or any non-dashboard caller — CLI, a chat bot like Lucy) uses to
  * inspect and unblock a wedged Kookr instance: `POST /api/tasks/:id/complete`,
- * `POST /api/tasks/abort`, and `POST /api/tasks/completion-ready/ack-all`.
+ * `POST /api/tasks/:id/reopen`, `POST /api/tasks/abort`, and
+ * `POST /api/tasks/completion-ready/ack-all`.
  * See docs/reference/api.md ("Supervisor Surface") for the full reference.
  */
 
@@ -62,3 +63,21 @@ export interface AckAllCompletionReadyResponse {
   results: AckAllCompletionReadyTaskResult[];
   summary: AckAllCompletionReadySummary;
 }
+
+/**
+ * What a reopen (`POST /api/tasks/:id/reopen`, issue #3671) will do with the
+ * task's prior conversation. Shared by the server and `kookr reopen`:
+ *  - `resume`        — the relaunch continues conversation `conversationId`
+ *                      (`caveat` set when that is a best effort, as for opencode).
+ *  - `fresh`         — the relaunch starts from the original prompt by design
+ *                      (an active Ralph loop: every iteration is a fresh context).
+ *  - `not_resumable` — the relaunch starts from the original prompt because the
+ *                      conversation cannot be continued; `reason` says why.
+ *
+ * In every case the task is still reopened and relaunched; this only tells the
+ * caller which of the three it will get, before the launch happens.
+ */
+export type ReopenResumeReport =
+  | { mode: 'resume'; conversationId: string; caveat?: string }
+  | { mode: 'fresh'; reason: string }
+  | { mode: 'not_resumable'; reason: string };

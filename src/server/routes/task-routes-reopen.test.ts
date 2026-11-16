@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Hono } from 'hono';
 import { TaskStore } from '../../core/tasks.js';
 import { Monitor } from '../../core/monitor.js';
@@ -25,7 +28,7 @@ afterEach(() => {
   else process.env[SUPERVISOR_TOKEN_ENV] = originalToken;
 });
 
-function mkApp(taskStore: TaskStore): { app: Hono; broadcastToAll: ReturnType<typeof vi.fn> } {
+function mkApp(taskStore: TaskStore, opts: { kookrDir?: string } = {}): { app: Hono; broadcastToAll: ReturnType<typeof vi.fn> } {
   const queue = new AttentionQueue();
   const monitor = new Monitor(taskStore, queue);
   const broadcastToAll = vi.fn();
@@ -39,6 +42,7 @@ function mkApp(taskStore: TaskStore): { app: Hono; broadcastToAll: ReturnType<ty
     broadcastToAll,
     serverCwd: '/server',
     launchServiceDeps: { taskStore, adapterRegistry: {}, lifecycleDeps: {} } as never,
+    ...(opts.kookrDir ? { kookrDir: opts.kookrDir } : {}),
   } as unknown as TaskRouteDeps;
   const app = new Hono();
   registerTaskRoutes(app, deps);
@@ -167,6 +171,40 @@ describe('POST /api/tasks/:id/reopen (issue #3671)', () => {
   test('404s for an unknown task id', async () => {
     const { app } = mkApp(new TaskStore());
     expect((await reopen(app, 'does-not-exist')).status).toBe(404);
+  });
+
+  test('audits each call as a task.reopen row attributed to X-Kookr-Actor (#3914)', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-reopen-audit-'));
+    try {
+      const taskStore = new TaskStore();
+      const id = terminatedTask(taskStore, { claudeSessionId: 'sess-prior' });
+      const { app } = mkApp(taskStore, { kookrDir });
+
+      expect((await reopen(app, id, { 'x-kookr-actor': 'cli' })).status).toBe(200);
+      // A second reopen of the now-pending task is refused, and audited too.
+      expect((await reopen(app, id, { 'x-kookr-actor': 'cli' })).status).toBe(409);
+
+      const rows = readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(rows).toEqual([
+        expect.objectContaining({
+          type: 'task.reopen',
+          actor: { source: 'api', actorId: 'cli' },
+          taskId: id,
+          outcome: 'reopened',
+          status: 'pending',
+          resumeMode: 'resume',
+        }),
+        expect.objectContaining({
+          type: 'task.reopen',
+          actor: { source: 'api', actorId: 'cli' },
+          taskId: id,
+          outcome: 'invalid',
+          code: 'task_not_terminal',
+        }),
+      ]);
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
   });
 
   test('is supervisor-gated like /complete when KOOKR_SUPERVISOR_TOKEN is set', async () => {

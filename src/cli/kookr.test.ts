@@ -92,6 +92,18 @@ describe('kookr dispatcher', () => {
     }
   });
 
+  it('passes a non-zero reopen exit code through to exit (#3914)', async () => {
+    const deps = makeDeps();
+    try {
+      // Two task ids is a usage error, decided before any server lookup.
+      await main({ argv: ['reopen', 't-1', 't-2'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
+      expect(deps.codes).toEqual([2]);
+      expect(deps.errors.join('\n')).toContain('expected one <taskId>');
+    } finally {
+      process.exitCode = undefined;
+    }
+  });
+
   it('dispatches queue help through the main binary (#3933)', async () => {
     const deps = makeDeps();
     try {
