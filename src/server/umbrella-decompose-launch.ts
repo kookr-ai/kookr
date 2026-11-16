@@ -4,6 +4,7 @@ import { parsePlaybook, interpolateParameters } from '../core/playbook-parser.js
 import { resolveSchedulePlaybookSync } from './schedule-validator.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
 import { playbookScopeDir } from '../core/playbook-paths.js';
+import { withBlankOptionalParameters } from './use-cases/playbook-launch.js';
 import type { PlaybookSourceIdentity } from '../shared/contracts/playbook.js';
 
 /**
@@ -48,14 +49,20 @@ export async function resolveUmbrellaDecomposeLaunch(
   const raw = await readFile(resolved.filePath, 'utf-8');
   const sourceCwd = playbookScopeDir('plugin', serverCwd) ?? serverCwd;
   const playbook = parsePlaybook(raw, UMBRELLA_DECOMPOSE_PLAYBOOK_PATH, sourceCwd, 'plugin');
-  // No operator-supplied parameters: apply defaults only. A body with no
+  // No operator-supplied parameters: apply defaults only, and render an
+  // optional parameter with no default as '' (#3901), as manual and scheduled
+  // launches do. The recorded values stay defaults-only. A body with no
   // {{placeholders}} is returned unchanged.
   const playbookParameterValues = Object.fromEntries(
     playbook.parameters.flatMap((parameter) => (
       parameter.default === undefined ? [] : [[parameter.name, parameter.default]]
     )),
   );
-  const prompt = interpolateParameters(playbook.body, playbook.parameters, playbookParameterValues);
+  const prompt = interpolateParameters(
+    playbook.body,
+    playbook.parameters,
+    withBlankOptionalParameters(playbook.parameters, playbookParameterValues),
+  );
   const criteria = playbook.checklist.length > 0 ? playbook.checklist.join('\n') : undefined;
   const cwd = expandConfiguredCwd(playbook.cwd ?? serverCwd);
 
