@@ -145,9 +145,21 @@ function recordCoordinatorSnooze(chip: CoordinatorTaskChip): void {
 export const CHAIN_STRIP_COLLAPSE_THRESHOLD = 6;
 const CHAIN_STRIP_EXPANDED_KEY_PREFIX = 'kookr-chain-strip-expanded:';
 
+/**
+ * A terminated task failed unless it was stopped on purpose by the operator
+ * (`manual`) or by a supervisor (`supervisor`). A terminated member with no
+ * reason (an older server) counts as failed, so it stays visible (#3946).
+ */
+function isFailedMember(member: CoordinatorChainMember): boolean {
+  return member.status === 'terminated'
+    && member.terminationReason !== 'manual'
+    && member.terminationReason !== 'supervisor';
+}
+
 function isFinishedMember(member: CoordinatorChainMember): boolean {
   // Statuses outside TaskStatus are not known to be finished, so they stay visible.
-  return isTerminalStatus(member.status as TaskStatus) === true;
+  // A failed task still needs attention, so it stays visible too (#3939 item 2).
+  return isTerminalStatus(member.status as TaskStatus) === true && !isFailedMember(member);
 }
 
 const RELATION_NOUNS: Record<CoordinatorChainMember['relation'], [string, string]> = {
@@ -157,15 +169,16 @@ const RELATION_NOUNS: Record<CoordinatorChainMember['relation'], [string, string
   blocked_by: ['blocker', 'blockers'],
 };
 
-function statusGroupLabel(status: string): string {
-  switch (status) {
+function statusGroupLabel(member: CoordinatorChainMember): string {
+  if (isFailedMember(member)) return 'failed';
+  switch (member.status) {
     case 'inProgress': return 'in progress';
     case 'open':
     case 'pending': return 'not started';
     case 'completed': return 'completed';
     case 'cancelled':
     case 'terminated': return 'cancelled or terminated';
-    default: return status;
+    default: return member.status;
   }
 }
 
@@ -185,10 +198,10 @@ export function summarizeChainMembers(members: readonly CoordinatorChainMember[]
     });
   const statusCounts = new Map<string, number>();
   for (const member of members) {
-    const label = statusGroupLabel(member.status);
+    const label = statusGroupLabel(member);
     statusCounts.set(label, (statusCounts.get(label) ?? 0) + 1);
   }
-  const knownOrder = ['in progress', 'not started', 'completed', 'cancelled or terminated'];
+  const knownOrder = ['in progress', 'not started', 'failed', 'completed', 'cancelled or terminated'];
   const statusParts = [...statusCounts.keys()]
     .sort((a, b) => {
       const ai = knownOrder.indexOf(a);
@@ -222,6 +235,7 @@ export function CoordinatorChainStripView({
   agent: AgentState;
 }): React.ReactElement | null {
   const coordinator = useKookrStore((s) => s.coordinator);
+  const agents = useKookrStore((s) => s.agents);
   const chain = agent.taskId ? coordinator?.chains[agent.taskId] : undefined;
   const [status, setStatus] = useState<string | null>(null);
   // The panel is reused when another task is selected, so the in-memory
@@ -236,6 +250,13 @@ export function CoordinatorChainStripView({
     const finished = members.filter(isFinishedMember);
     return { all: [...active, ...finished], active };
   }, [members, collapsible]);
+  const agentIdByTaskId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const candidate of agents) {
+      if (candidate.taskId && !map.has(candidate.taskId)) map.set(candidate.taskId, candidate.agentId);
+    }
+    return map;
+  }, [agents]);
   if (!chain || !agent.taskId) return null;
   const taskId = agent.taskId;
 
@@ -293,7 +314,11 @@ export function CoordinatorChainStripView({
         data-testid="coordinator-chain-members"
       >
         {shownMembers.map((member) => (
-          <ChainMember key={`${member.relation}:${member.taskId}`} member={member} />
+          <ChainMember
+            key={`${member.relation}:${member.taskId}`}
+            member={member}
+            agentId={agentIdByTaskId.get(member.taskId)}
+          />
         ))}
       </div>
       {chain.priorTaskIds.length > 0 && (
@@ -310,18 +335,39 @@ export function CoordinatorChainStripView({
   );
 }
 
-function ChainMember({ member }: { member: CoordinatorChainStrip['members'][number] }) {
-  return (
-    <span
-      className={`coordinator-chain-member coordinator-chain-member--${member.relation}`}
-      title={member.taskId}
-      data-testid="coordinator-chain-member"
-      data-status={member.status}
-    >
+/**
+ * One related task. When the dashboard knows the task's agent, the chip is a
+ * button that opens that task, like the other task links in the detail pane;
+ * a task the dashboard no longer lists stays a plain label, so there is no
+ * button that does nothing (#3946).
+ */
+function ChainMember({ member, agentId }: { member: CoordinatorChainMember; agentId: string | undefined }) {
+  const failed = isFailedMember(member);
+  const className = `coordinator-chain-member coordinator-chain-member--${member.relation}${failed ? ' coordinator-chain-member--failed' : ''}`;
+  const state = failed && member.terminationReason ? `${member.status} (${member.terminationReason})` : member.status;
+  const content = (
+    <>
       <span className="coordinator-chain-relation">{relationLabel(member.relation)}</span>
       <span className="coordinator-chain-label">{member.label}</span>
-      <span className="coordinator-chain-state">{member.status}</span>
-    </span>
+      <span className="coordinator-chain-state">{state}</span>
+    </>
+  );
+  const common = {
+    className,
+    title: member.taskId,
+    'data-testid': 'coordinator-chain-member',
+    'data-status': member.status,
+    'data-failed': failed ? 'true' : undefined,
+  };
+  if (!agentId) return <span {...common}>{content}</span>;
+  return (
+    <button
+      type="button"
+      {...common}
+      onClick={() => useKookrStore.getState().selectAgent(agentId, member.taskId)}
+    >
+      {content}
+    </button>
   );
 }
 

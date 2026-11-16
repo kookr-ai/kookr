@@ -16463,6 +16463,20 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .coordinator-chain-members--expanded {
   max-height: 240px;
 }
+/* Chips that open their task (#3946), and failed tasks kept visible when collapsed. */
+button.coordinator-chain-member {
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.coordinator-chain-member:hover,
+button.coordinator-chain-member:focus-visible {
+  border-color: var(--accent);
+}
+.coordinator-chain-member--failed {
+  border-color: var(--red);
+}
 .coordinator-chain-strip--collapsible .coordinator-chain-action,
 .coordinator-chain-strip--collapsible .coordinator-chain-status {
   flex-shrink: 0;

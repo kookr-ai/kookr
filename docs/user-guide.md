@@ -217,9 +217,11 @@ The small dismiss button on a chip suppresses that detector class for that agent
 
 ### Chain Strips
 
-When a selected task has related tasks, Kookr shows a chain strip with compact members such as `parent`, `child`, `blocks`, and `blocked by`. Parent and child entries come from task launch linkage. `blocks` and `blocked by` entries come from manually declared task edges.
+When a selected task has related tasks, Kookr shows a chain strip with compact members such as `parent`, `child`, `blocks`, and `blocked by`. Parent and child entries come from task launch linkage. `blocks` and `blocked by` entries come from manually declared task edges. Clicking a member opens that task, when the dashboard still lists it.
 
-When a task has more than 6 related tasks, the strip starts collapsed so it never takes the terminal's space. It shows one summary line, for example `55 children · 3 in progress · 47 completed · 5 cancelled or terminated`, and only the chips of tasks that are not finished (completed, cancelled and terminated tasks are hidden), on at most two rows. **Show all** expands the full list, active tasks first, inside a box of at most 240 px that scrolls. The browser remembers per task whether you expanded it. Whatever sits above the Conversation and Terminal tabs, the area below them keeps at least 45% of the detail column's height.
+A terminated task counts as failed unless it was stopped on purpose, by an operator or by a supervisor. A failed member has a red border and shows why it ended, for example `terminated (oom)`.
+
+When a task has more than 6 related tasks, the strip starts collapsed so it never takes the terminal's space. It shows one summary line, for example `55 children · 3 in progress · 2 failed · 47 completed · 3 cancelled or terminated`, and only the chips of tasks that still need attention, on at most two rows: tasks that are not finished, and failed tasks. Completed and cancelled tasks, and tasks that were stopped on purpose, are hidden. **Show all** expands the full list, active tasks first, inside a box of at most 240 px that scrolls. The browser remembers per task whether you expanded it. Whatever sits above the Conversation and Terminal tabs, the area below them keeps at least 45% of the detail column's height.
 
 The strip's `Mark prior N done` action applies only to prior tasks: parent tasks and tasks listed as `blocked_by`. Before changing anything, Kookr refreshes GitHub state for those prior tasks and verifies that the chain has not changed. It only marks prior tasks done when each prior task is already terminal, has a freshly verified merged PR, has passing or neutral post-merge checks, and has no dirty worktree health.
 
