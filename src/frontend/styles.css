@@ -6958,6 +6958,25 @@ label.task-share-row {
   }
 }
 
+/* Split view (#3618): give the left pane the same 28 px band as the right
+   pane's Terminal/Diff header, so both panes start on one line. The activity
+   filter chips become that band (it grows rather than clips if a very narrow
+   pane wraps them); the GitHub list gets an empty one. */
+@media (min-width: 1201px) {
+  .detail-split:not(.detail-split-tabbed) > .detail-split-left .act-role-filters,
+  .detail-split:not(.detail-split-tabbed) > .detail-split-left:has(> .gh-panel)::before {
+    flex: 0 0 auto;
+    min-height: 28px;
+    align-items: center;
+    padding: 0 16px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border-dim);
+  }
+  .detail-split:not(.detail-split-tabbed) > .detail-split-left:has(> .gh-panel)::before {
+    content: '';
+  }
+}
+
 /* --- GitHub Panel --- */
 .gh-panel {
   flex: 1;
