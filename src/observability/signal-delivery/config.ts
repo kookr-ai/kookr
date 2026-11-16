@@ -12,6 +12,17 @@
  * user's id). An explicit `KOOKR_SIGNAL_TELEGRAM_CHAT_ID` always wins, and with
  * several allowed users nothing is guessed.
  *
+ * Telegram alerts go to the same Bot API host as the bot itself: the
+ * `KOOKR_TELEGRAM_API_URL` override (fake servers, private bot-API proxies) is
+ * honoured and checked with the bot client's host policy. An override that
+ * fails the check switches Telegram alerts off instead of falling back to the
+ * public API (issue #3952).
+ *
+ * `KOOKR_SIGNAL_DELIVERY=0` switches alert delivery off entirely (no outbox
+ * writes, no delivery service). Test servers start with it off, so a test that
+ * sets a Telegram token never spools into the operator's HOME outbox or posts
+ * alerts (issue #3952).
+ *
  * Discord webhook URLs use the same host policy as findings webhooks (#2063):
  * public http(s) only by default; cloud metadata and link-local are always
  * rejected. Lab LAN receivers can opt in with KOOKR_WEBHOOK_ALLOW_PRIVATE.
@@ -19,6 +30,7 @@
 
 import { validateWebhookUrl } from '../../integrations/webhook/index.js';
 import { parseAllowedUserIds } from '../../integrations/telegram/allowed-users.js';
+import { validateTelegramApiUrl } from '../../integrations/telegram/telegram-api-url.js';
 import type { DiscordChannelConfig, TelegramChannelConfig } from './channels.js';
 
 /** Default poll cadence: signals are time-sensitive but batched to ≤1 msg/min. */
@@ -103,6 +115,16 @@ export function resolveSignalDeliveryFromEnv(
   env: NodeJS.ProcessEnv,
   logger: Pick<Console, 'warn'> = console,
 ): ResolvedSignalDelivery {
+  if (isFalsyEnvFlag(env.KOOKR_SIGNAL_DELIVERY)) {
+    return {
+      config: null,
+      destination: {
+        channels: [],
+        label: NO_ALERT_DESTINATION_LABEL,
+        reason: 'alert delivery is switched off (KOOKR_SIGNAL_DELIVERY=0)',
+      },
+    };
+  }
   const rawDiscordUrl = env.KOOKR_DISCORD_WEBHOOK_URL?.trim();
   const telegramToken = env.KOOKR_TELEGRAM_BOT_TOKEN?.trim();
   const telegramChatId = env.KOOKR_SIGNAL_TELEGRAM_CHAT_ID?.trim();
@@ -122,12 +144,28 @@ export function resolveSignalDeliveryFromEnv(
     }
   }
 
+  // Same Bot API host as the bot client (issue #3952). Unset or blank means
+  // the public API (channels.ts default); a rejected override disables
+  // Telegram alerts rather than sending them to a host the operator did not pick.
+  const rawTelegramApiUrl = env.KOOKR_TELEGRAM_API_URL?.trim();
+  let telegramBaseUrl: string | undefined;
+  let telegramApiUrlError: string | undefined;
+  if (rawTelegramApiUrl) {
+    const validation = validateTelegramApiUrl(rawTelegramApiUrl);
+    if (validation.ok) telegramBaseUrl = validation.url;
+    else telegramApiUrlError = validation.reason;
+  }
+
   let telegram: TelegramChannelConfig | undefined;
   let telegramKind: AlertChannelKind | undefined;
   let noDestinationReason: string | undefined;
   if (telegramChatId) {
     if (telegramToken) {
-      telegram = { botToken: telegramToken, chatId: telegramChatId };
+      telegram = {
+        botToken: telegramToken,
+        chatId: telegramChatId,
+        ...(telegramBaseUrl ? { baseUrl: telegramBaseUrl } : {}),
+      };
       telegramKind = 'telegram_configured_chat';
     } else {
       logger.warn(
@@ -144,11 +182,24 @@ export function resolveSignalDeliveryFromEnv(
       env.KOOKR_REMOTE_CHAT_DISABLED === '1',
     );
     if ('chatId' in fallback) {
-      telegram = { botToken: telegramToken as string, chatId: fallback.chatId };
+      telegram = {
+        botToken: telegramToken as string,
+        chatId: fallback.chatId,
+        ...(telegramBaseUrl ? { baseUrl: telegramBaseUrl } : {}),
+      };
       telegramKind = 'telegram_owner_chat';
     } else {
       noDestinationReason = fallback.reason;
     }
+  }
+
+  if (telegram && telegramApiUrlError) {
+    logger.warn(
+      `[signal-delivery] ignoring invalid KOOKR_TELEGRAM_API_URL (${telegramApiUrlError}); Telegram delivery disabled`,
+    );
+    telegram = undefined;
+    telegramKind = undefined;
+    noDestinationReason = `KOOKR_TELEGRAM_API_URL is invalid (${telegramApiUrlError})`;
   }
 
   const channels: AlertChannelKind[] = [
@@ -222,6 +273,12 @@ function isTruthyEnvFlag(raw: string | undefined): boolean {
   if (!raw) return false;
   const v = raw.trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+function isFalsyEnvFlag(raw: string | undefined): boolean {
+  if (!raw) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '0' || v === 'false' || v === 'no' || v === 'off';
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
