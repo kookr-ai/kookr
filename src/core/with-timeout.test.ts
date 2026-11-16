@@ -1,6 +1,22 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { withTimeout } from './with-timeout.js';
 
+// Swap a global timer function for one test without vi.spyOn. A spy taken
+// while fake timers are installed records the fake as the "original", and
+// Vitest's end-of-file restoreAllMocks puts that fake back after
+// useRealTimers. In a worker shared with other files (isolate: false), the
+// next file's setTimeout then never fires (#3811).
+function wrapGlobalTimer<K extends 'setTimeout' | 'clearTimeout'>(
+  name: K,
+  wrap: (original: (typeof globalThis)[K]) => (typeof globalThis)[K],
+): () => void {
+  const original = globalThis[name];
+  globalThis[name] = wrap(original);
+  return () => {
+    globalThis[name] = original;
+  };
+}
+
 describe('withTimeout', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -48,7 +64,11 @@ describe('withTimeout', () => {
   });
 
   test('clears the deadline timer when the promise wins so no open handles remain', async () => {
-    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+    const clearSpy = vi.fn();
+    const restore = wrapGlobalTimer('clearTimeout', (original) => ((handle?: Parameters<typeof clearTimeout>[0]) => {
+      clearSpy(handle);
+      return original(handle);
+    }) as typeof clearTimeout);
     try {
       const resultPromise = withTimeout(Promise.resolve(42), 5_000, 0);
       await expect(resultPromise).resolves.toBe(42);
@@ -57,12 +77,16 @@ describe('withTimeout', () => {
       // After clearTimeout in finally, the fake-timer queue should be empty.
       expect(vi.getTimerCount()).toBe(0);
     } finally {
-      clearSpy.mockRestore();
+      restore();
     }
   });
 
   test('clears the deadline timer after timeout fires', async () => {
-    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+    const clearSpy = vi.fn();
+    const restore = wrapGlobalTimer('clearTimeout', (original) => ((handle?: Parameters<typeof clearTimeout>[0]) => {
+      clearSpy(handle);
+      return original(handle);
+    }) as typeof clearTimeout);
     try {
       const never = new Promise<string>(() => {});
 
@@ -73,15 +97,14 @@ describe('withTimeout', () => {
       expect(clearSpy).toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
     } finally {
-      clearSpy.mockRestore();
+      restore();
     }
   });
 
   test('unref path does not throw under Node', async () => {
     // Wrap Node Timeout.unref so we assert the helper actually calls it.
     const unrefSpy = vi.fn();
-    const originalSetTimeout = globalThis.setTimeout;
-    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((
+    const restore = wrapGlobalTimer('setTimeout', (originalSetTimeout) => ((
       handler: Parameters<typeof setTimeout>[0],
       timeout?: number,
       ...args: unknown[]
@@ -95,7 +118,7 @@ describe('withTimeout', () => {
         };
       }
       return handle;
-    });
+    }) as typeof setTimeout);
 
     try {
       const never = new Promise<string>(() => {});
@@ -107,7 +130,7 @@ describe('withTimeout', () => {
       await vi.advanceTimersByTimeAsync(100);
       await expect(resultPromise).resolves.toBe('fallback');
     } finally {
-      setTimeoutSpy.mockRestore();
+      restore();
     }
   });
 });

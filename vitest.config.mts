@@ -12,6 +12,11 @@ const rerunSummaryFile = process.env.VITEST_RERUN_SUMMARY_FILE;
 const testTimeout = vitestTestTimeoutMs(process.env.KOOKR_VITEST_TEST_TIMEOUT_MS);
 
 const UNIT_INCLUDE = ['plugin/**/*.test.mjs', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'];
+// Directories whose files run in the `shared` project (issue #3811): several
+// files per worker, no fresh worker per file. Add a directory only after at
+// least five runs with `--sequence.shuffle.files` and different seeds pass,
+// for example: npx vitest run --project shared --sequence.shuffle.files --sequence.seed=22
+const SHARED_WORKER_INCLUDE = ['src/core/**/*.test.ts', 'src/shared/**/*.test.ts', 'src/cli/**/*.test.ts', 'scripts/lib/**/*.test.ts'];
 // Integration-style files run via `pnpm test:integration` /
 // `pnpm test:integration:live` (#2823). Patterns cover hyphen, dot, and e2e
 // naming under both src/ and relay/.
@@ -34,8 +39,16 @@ export default defineConfig({
     // The integration train (scripts/integration-train.ts) sets KOOKR_VITEST_MAX_WORKERS to use a bigger share.
     // Only a positive integer is accepted; anything else keeps 4.
     maxWorkers: vitestMaxWorkers(process.env.KOOKR_VITEST_MAX_WORKERS),
-    // Two projects (issue #3794), both inheriting everything else here:
-    //   unit    every test file except the serial ones, in parallel;
+    // Three projects (issues #3794, #3811), all inheriting everything else here:
+    //   unit    every test file except the serial and shared ones, in parallel,
+    //           each file in a fresh worker;
+    //   shared  the files in SHARED_WORKER_INCLUDE, in parallel with `unit`,
+    //           but a worker runs file after file without restarting
+    //           (isolate: false). That uses about 40% less CPU for them.
+    //           test/shared-worker-reset.setup.ts resets the module registry
+    //           and timer globals before each file, and restores process.env
+    //           and the working directory after it, so one file cannot change
+    //           what the next one sees;
     //   serial  files that spawn real processes or race timers against I/O
     //           (scripts/lib/vitest-serial-files.mjs). They run after `unit`
     //           finishes (groupOrder), one at a time, and a failed test is
@@ -46,7 +59,20 @@ export default defineConfig({
     // `vitest run <file>` and `vitest related` pick the project from the path,
     // so the fast gate and the flaky re-run apply the same rules.
     projects: [
-      { extends: true, test: { name: 'unit', include: UNIT_INCLUDE, exclude: [...UNIT_EXCLUDE, ...SERIAL_TEST_FILES] } },
+      {
+        extends: true,
+        test: { name: 'unit', include: UNIT_INCLUDE, exclude: [...UNIT_EXCLUDE, ...SERIAL_TEST_FILES, ...SHARED_WORKER_INCLUDE] },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'shared',
+          include: SHARED_WORKER_INCLUDE,
+          exclude: [...UNIT_EXCLUDE, ...SERIAL_TEST_FILES],
+          isolate: false,
+          setupFiles: ['./test/shared-worker-reset.setup.ts'],
+        },
+      },
       {
         extends: true,
         test: {
