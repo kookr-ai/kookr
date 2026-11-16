@@ -71,9 +71,12 @@ export function TaskDependencyRail({ agent }: TaskDependencyRailProps): React.Re
   );
 }
 
-function dotClass(status: RailNode['status']): string {
+// Same roles as the task status dot (#3617): terminated is a failure, not
+// "done", so it gets the failed marker.
+export function dotClass(status: RailNode['status']): string {
   if (status === 'inProgress') return 'run';
-  if (status === 'completed' || status === 'cancelled' || status === 'terminated') return 'done';
+  if (status === 'terminated') return 'failed';
+  if (status === 'completed' || status === 'cancelled') return 'done';
   return 'wait';
 }
 

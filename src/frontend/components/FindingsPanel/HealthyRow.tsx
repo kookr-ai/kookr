@@ -114,6 +114,9 @@ export function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
             <StuckReasonBadge agent={agent} />
             <ChildRollupPill agent={agent} />
             <ChainBadge agent={agent} />
+            {/* In the meta line, not the hover controls, so the iteration
+                count stays visible at rest (#3617). */}
+            <RalphLoopBadge agent={agent} />
             {durText && (
               <>
                 <span className="healthy-row-sep" aria-hidden="true">·</span>
@@ -162,11 +165,8 @@ export function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
             >
               <MissedIcon />
             </button>
-            <RalphLoopControls agent={agent} />
+            <RalphLoopControls agent={agent} showBadge={false} />
             <ChainStopButton agent={agent} />
-            {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
-              <RalphLoopBadge agent={agent} />
-            )}
             <SchedulePlaybookButton agent={agent} onSchedule={onSchedulePlaybook} />
           </div>
         </div>

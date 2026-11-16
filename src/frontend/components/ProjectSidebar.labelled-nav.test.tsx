@@ -221,6 +221,33 @@ describe('ProjectSidebar labelled navigation (#3561 slice 5a)', () => {
     expect(byTestId('project-sidebar')?.classList.contains('labelled')).toBe(false);
   });
 
+  test('a project whose only tasks are queued or snoozed is not idle (#3617)', async () => {
+    useKookrStore.setState({
+      agents: [
+        { agentId: 'q1', taskId: 'q1', projectId: 'github.com/org/idle-a', taskStatus: 'pending', events: [], anomaly: null },
+        {
+          agentId: 's1', taskId: 's1', projectId: 'github.com/org/idle-b', taskStatus: 'inProgress',
+          snoozedUntil: Date.now() + 60_000, events: [], anomaly: null,
+        },
+      ] as never,
+    });
+    await render();
+    expect(byTestId('project-icon-github.com/org/idle-a')?.closest('.project-nav-idle')).toBeNull();
+    expect(byTestId('project-icon-github.com/org/idle-b')?.closest('.project-nav-idle')).toBeNull();
+    expect(byTestId('project-nav-idle-toggle')).toBeNull();
+  });
+
+  test('a project whose tasks have all finished stays idle', async () => {
+    useKookrStore.setState({
+      agents: [
+        { agentId: 'c1', taskId: 'c1', projectId: 'github.com/org/idle-a', taskStatus: 'completed', events: [], anomaly: null },
+        { agentId: 't1', taskId: 't1', projectId: 'github.com/org/idle-a', taskStatus: 'terminated', events: [], anomaly: null },
+      ] as never,
+    });
+    await render();
+    expect(byTestId('project-icon-github.com/org/idle-a')?.closest('.project-nav-idle')).not.toBeNull();
+  });
+
   test('the toggle is absent when every project is live', async () => {
     useKookrStore.getState().handleProjectSummaries([
       summary('github.com/org/live', 'org/live', { activeAgents: 1 }),
@@ -323,6 +350,24 @@ describe('ProjectSidebar labelled navigation (#3561 slice 5a)', () => {
       await openMenu('github.com/org/waiting');
       await act(async () => { menuItem('Move up')!.click(); });
       expect(order()).toEqual(['github.com/org/live', 'github.com/org/waiting', 'github.com/org/idle-a']);
+    });
+
+    test('the landmark names the queues only where the layout shows them (#3617)', async () => {
+      const label = () => byTestId('project-sidebar')?.getAttribute('aria-label');
+      setWide(true);
+      await render();
+      expect(label()).toBe('Queues and projects');
+
+      await act(async () => {
+        root.render(<ProjectSidebar onManage={() => {}} queues={queues()} labelled={false} />);
+      });
+      expect(label()).toBe('Projects');
+
+      await act(async () => { root.unmount(); });
+      root = createRoot(container);
+      setWide(false);
+      await render();
+      expect(label()).toBe('Projects');
     });
 
     test('with idle projects expanded, Move up swaps with the idle neighbour', async () => {

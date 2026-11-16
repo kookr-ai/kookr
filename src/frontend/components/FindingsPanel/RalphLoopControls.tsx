@@ -4,7 +4,14 @@ import { useKookrStore } from '../../store/useStore.js';
 import { sendRalphLoopCommand, type RalphLoopCommand } from '../../ralph-loop-api.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
 
-export function RalphLoopControls({ agent }: { agent: AgentState }): React.ReactElement | null {
+export function RalphLoopControls({
+  agent,
+  showBadge = true,
+}: {
+  agent: AgentState;
+  /** False where the caller already shows the iteration badge elsewhere. */
+  showBadge?: boolean;
+}): React.ReactElement | null {
   const loop = agent.ralphLoop;
   if (!loop) return null;
   const taskId = agent.taskId;
@@ -25,7 +32,7 @@ export function RalphLoopControls({ agent }: { agent: AgentState }): React.React
 
   return (
     <span className="ralph-loop-controls" onClick={(e) => e.stopPropagation()}>
-      <RalphLoopBadge agent={agent} />
+      {showBadge && <RalphLoopBadge agent={agent} />}
       {loop.status === 'running' && (
         <button
           className="btn-xs ralph-btn"

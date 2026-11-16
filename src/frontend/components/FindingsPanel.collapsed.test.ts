@@ -23,6 +23,14 @@ function syncGlobalStore() {
   useKookrStore.setState(nextData);
 }
 
+/** Collapse all / Expand all and Migrate interrupted… live in the rail's
+ *  "More actions" menu (#3617); open it before looking for them. */
+function openMoreActions(): void {
+  const trigger = document.querySelector<HTMLButtonElement>('[data-testid="rail-actions-trigger"]');
+  expect(trigger).not.toBeNull();
+  act(() => trigger!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+}
+
 function makeAgent(overrides: Partial<AgentState> = {}): AgentState {
   return {
     agentId: overrides.agentId ?? 'agent-1',
@@ -155,23 +163,33 @@ describe('FindingsPanel collapsed-state persistence', () => {
       completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
     });
 
+    openMoreActions();
     expect(container.querySelector('button[aria-label="Expand all findings sections"]')).toBeInstanceOf(HTMLButtonElement);
   });
 
-  test('bulk toggle is disabled when no collapsible sections are rendered', () => {
+  test('bulk toggle is not offered when no collapsible sections are rendered', () => {
     root = renderPanel(container, {});
 
-    const collapseAll = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Collapse all findings sections"]',
-    );
-    expect(collapseAll).toBeInstanceOf(HTMLButtonElement);
-    expect(collapseAll?.disabled).toBe(true);
+    // Nothing to collapse, abort or migrate: the menu itself is absent, so it
+    // never offers a no-op (#3617).
+    expect(container.querySelector('[data-testid="rail-actions-trigger"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Collapse all findings sections"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Expand all findings sections"]')).toBeNull();
+  });
 
-    act(() => collapseAll!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    expect(localStorage.getItem(HEALTHY_SECTION_COLLAPSED_KEY)).toBeNull();
-    expect(localStorage.getItem(PENDING_SECTION_COLLAPSED_KEY)).toBeNull();
-    expect(localStorage.getItem(SNOOZED_SECTION_COLLAPSED_KEY)).toBeNull();
-    expect(localStorage.getItem(COMPLETED_SECTION_COLLAPSED_KEY)).toBeNull();
+  test('the rail header holds no on-screen Collapse all button; it is a menu item (#3617)', () => {
+    root = renderPanel(container, { healthy: [makeAgent({ agentId: 'h1' })] });
+
+    expect(container.querySelector('button[aria-label="Collapse all findings sections"]')).toBeNull();
+    openMoreActions();
+    const item = container.querySelector<HTMLButtonElement>('button[aria-label="Collapse all findings sections"]');
+    expect(item?.getAttribute('role')).toBe('menuitem');
+    expect(item?.closest('[role="menu"]')).not.toBeNull();
+
+    act(() => item!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    // Choosing it closes the menu and collapses the section.
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+    expect(container.querySelector('.healthy-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
   });
 
   test('stored localStorage value overrides the default for each section', () => {
@@ -270,6 +288,7 @@ describe('FindingsPanel collapsed-state persistence', () => {
     expect(container.querySelector('.snoozed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
 
+    openMoreActions();
     const collapseAll = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Collapse all findings sections"]',
     );
@@ -300,6 +319,7 @@ describe('FindingsPanel collapsed-state persistence', () => {
     expect(container.querySelector('.pending-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('.snoozed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    openMoreActions();
     expect(container.querySelector('button[aria-label="Expand all findings sections"]')).toBeInstanceOf(HTMLButtonElement);
   });
 
@@ -316,6 +336,7 @@ describe('FindingsPanel collapsed-state persistence', () => {
       completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
     });
 
+    openMoreActions();
     const expandAll = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Expand all findings sections"]',
     );

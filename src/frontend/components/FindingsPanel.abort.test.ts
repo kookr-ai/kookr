@@ -35,12 +35,13 @@ function renderPanel(
   abortActiveTaskIds: string[],
   findings: AgentState[],
   send: (msg: ClientMessage) => void,
+  healthy: AgentState[] = [],
 ): Root {
   const root = createRoot(container);
   act(() => {
     root.render(React.createElement(FindingsPanel, {
       findings,
-      healthy: [],
+      healthy,
       pending: [],
       snoozed: [],
       completed: [],
@@ -157,5 +158,37 @@ describe('FindingsPanel — control-room batch abort (issue #1325)', () => {
 
     expect(send).not.toHaveBeenCalled();
     expect(document.querySelector('.confirm-dialog')).toBeNull();
+  });
+
+  test('one menu holds Collapse all, Migrate interrupted… and Abort all; arrow keys move between them (#3617)', () => {
+    useKookrStore.setState({
+      availableAgentTypes: [
+        { type: 'claude-code', label: 'Claude Code' },
+        { type: 'codex-cli', label: 'Codex CLI' },
+      ],
+    } as never);
+    root = renderPanel(container, ['task-1'], [], send, [makeAgent({ taskId: 'task-1' })]);
+
+    // None of the three sits in the header at rest.
+    for (const label of ['Collapse all', 'Migrate interrupted…', 'Abort all active tasks…']) {
+      expect(queryButtonByText(label)).toBeUndefined();
+    }
+
+    openMoreActions();
+    const items = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]'));
+    // The destructive item comes last.
+    expect(items.map((b) => b.textContent?.trim())).toEqual(['Collapse all', 'Migrate interrupted…', 'Abort all active tasks…']);
+    expect(document.activeElement).toBe(items[0]);
+
+    const press = (key: string) => act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })));
+    press('ArrowDown');
+    expect(document.activeElement).toBe(items[1]);
+    press('ArrowDown');
+    expect(document.activeElement).toBe(items[2]);
+    press('ArrowDown');
+    expect(document.activeElement).toBe(items[0]);
+    press('ArrowUp');
+    expect(document.activeElement).toBe(items[2]);
+    expect(send).not.toHaveBeenCalled();
   });
 });

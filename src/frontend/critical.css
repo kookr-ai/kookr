@@ -307,9 +307,32 @@ code, kbd { font-family: var(--font-mono); }
 .project-sidebar-organizer { width: 36px; height: 36px; border-radius: 8px; font-size: 16px; }
 
 /* Labelled navigation (#3561 slice 5a): hidden in the icon rail; the full
-   layout lives in styles.css. The width rule keeps the first paint stable. */
+   layout lives in styles.css. */
 .project-nav-queues, .project-nav-heading, .project-nav-name, .project-nav-dot, .project-nav-idle-toggle, .nav-resizer { display: none; }
-@media (min-width: 1280px) { .project-sidebar.labelled { width: var(--nav-width, 212px); min-width: var(--nav-width, 212px); } }
+/* First paint of the labelled layout (#3617): the rules that set its
+   geometry, copied from styles.css with the same values, so the first frame
+   shows named rows instead of a wide column of centred icons. */
+@media (min-width: 1280px) {
+  .project-sidebar.labelled { width: var(--nav-width, 212px); min-width: var(--nav-width, 212px); align-items: stretch; gap: 2px; padding: 8px; }
+  .project-sidebar.labelled .project-sidebar-section { align-items: stretch; gap: 2px; }
+  .project-sidebar.labelled .project-nav-queues { display: flex; flex-direction: column; gap: 2px; }
+  .project-sidebar.labelled .project-nav-heading { display: block; padding: 12px 8px 4px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+  .project-sidebar.labelled .project-nav-queue,
+  .project-sidebar.labelled .project-icon,
+  .project-sidebar.labelled .project-nav-idle-toggle { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; height: 32px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 13px; font-weight: 400; text-align: left; }
+  .project-sidebar.labelled .project-nav-idle-toggle { color: var(--text-secondary); }
+  .project-sidebar.labelled .project-icon.all { margin-bottom: 0; }
+  .project-sidebar.labelled .project-icon-letter { display: none; }
+  .project-sidebar.labelled .project-nav-name { display: block; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .project-sidebar.labelled .project-nav-dot { display: block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-secondary); }
+  .project-sidebar.labelled .project-nav-count,
+  .project-sidebar.labelled .project-icon-task-count,
+  .project-sidebar.labelled .project-icon-badge { position: static; }
+  .project-sidebar.labelled .project-nav-idle { display: none; }
+  .project-sidebar.labelled .project-sidebar-filter { width: 100%; height: 28px; margin: 4px 0; }
+  .project-sidebar.labelled .project-sidebar-filter-input { width: 100%; height: 28px; padding: 0 8px; }
+  .project-sidebar.labelled .project-sidebar-divider { width: auto; margin: 4px 8px; }
+}
 /* Spend and quota (#3561 slice 5b): unstyled until styles.css loads, so the
    footer never flashes as loose text. */
 .usage-summary { display: none; }

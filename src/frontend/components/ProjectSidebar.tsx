@@ -5,6 +5,7 @@ import { useProjectNotificationMute } from '../hooks/useProjectNotificationMute.
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { Tooltip } from './Tooltip.js';
 import { formatCost } from '../presentation.js';
+import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 
 type DropPosition = 'before' | 'after';
 
@@ -524,6 +525,14 @@ export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true,
   // doesn't lie. The project-summary `activeAgents` filters out snoozed
   // tasks, which would let the gauge show "9/10" while the server actually
   // queues the next launch. Count raw inProgress agents instead.
+  const projectsWithOpenTasks = useMemo(
+    () => new Set(
+      agents
+        .filter((a) => a.projectId && a.taskStatus !== undefined && !isTerminalStatus(a.taskStatus))
+        .map((a) => a.projectId as string),
+    ),
+    [agents],
+  );
   const cappedCount = useMemo(
     () => agents.filter((a) => a.taskStatus === 'inProgress').length,
     [agents],
@@ -642,10 +651,13 @@ export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true,
 
   const filterActive = filterQuery.trim() !== '';
   const tuckIdle = !showIdleProjects && !filterActive;
+  // A project with a queued or snoozed task is not idle: `activeAgents`
+  // leaves both out, but the work is still coming back (#3617).
   const isIdleProject = (summary: ProjectSummary, pinned: boolean): boolean =>
     !pinned
     && summary.activeAgents <= 0
     && summary.findingCount <= 0
+    && !projectsWithOpenTasks.has(summary.project)
     && selectedProject !== summary.project;
   const idleProjectCount = visibleProjectSummaries.filter(
     (summary) => isIdleProject(summary, Boolean(visibleRowMap.get(summary.project)?.pinned)),
@@ -806,7 +818,7 @@ export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true,
   }
 
   return (
-    <nav className={`project-sidebar${labelled ? ' labelled' : ''} kookr-tour-target-layout`} data-testid="project-sidebar" aria-label="Queues and projects">
+    <nav className={`project-sidebar${labelled ? ' labelled' : ''} kookr-tour-target-layout`} data-testid="project-sidebar" aria-label={labelled && labelledLayoutWide ? 'Queues and projects' : 'Projects'}>
       {queues && (
         <div className="project-nav-queues">
           <NavQueue id="needs-you" label="Needs you" count={queues.needsYou} need={queues.needsYou > 0} onClick={queues.onNeedsYou} />
