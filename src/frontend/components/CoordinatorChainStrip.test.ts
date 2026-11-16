@@ -19,16 +19,27 @@ function syncGlobalStore(): void {
   useKookrStore.setState(nextData);
 }
 
-function child(index: number, status: string): CoordinatorChainMember {
-  return { taskId: `child-${index}`, label: `Child ${index}`, status, relation: 'child' };
+function child(
+  index: number,
+  status: string,
+  terminationReason?: CoordinatorChainMember['terminationReason'],
+): CoordinatorChainMember {
+  return {
+    taskId: `child-${index}`,
+    label: `Child ${index}`,
+    status,
+    relation: 'child',
+    ...(terminationReason ? { terminationReason } : {}),
+  };
 }
 
-/** 55 children: children 10, 20 and 30 running, 49 completed, 3 cancelled or terminated. */
+/** 55 children: children 10, 20 and 30 running, 49 completed, 3 cancelled or deliberately terminated. */
 function fiftyFiveChildren(): CoordinatorChainMember[] {
   return Array.from({ length: 55 }, (_, i) => {
     if (i === 10 || i === 20 || i === 30) return child(i, 'inProgress');
     if (i === 52) return child(i, 'cancelled');
-    if (i === 53 || i === 54) return child(i, 'terminated');
+    if (i === 53) return child(i, 'terminated', 'manual');
+    if (i === 54) return child(i, 'terminated', 'supervisor');
     return child(i, 'completed');
   });
 }
@@ -198,12 +209,50 @@ describe('CoordinatorChainStripView (#3939)', () => {
       child(2, 'open'),
       child(3, 'completed'),
       child(4, 'cancelled'),
-      child(5, 'terminated'),
+      child(5, 'terminated', 'manual'),
       { taskId: 'blocker', label: 'Blocker', status: 'paused', relation: 'blocked_by' },
     ]);
     render();
     expect(toggle().getAttribute('aria-expanded')).toBe('false');
     expect(chipIds()).toEqual(['parent', 'child-1', 'child-2', 'blocker']);
+  });
+
+  test('collapsed, failed children stay visible and deliberate stops do not (#3946)', () => {
+    const members = fiftyFiveChildren();
+    members[40] = child(40, 'terminated', 'oom');
+    members[41] = child(41, 'terminated', 'unknown');
+    members[42] = child(42, 'terminated'); // no reason from an older server: treated as failed
+    setChain(PARENT_TASK_ID, members);
+    render();
+
+    expect(container.querySelector('[data-testid="coordinator-chain-summary"]')?.textContent)
+      .toBe('55 children · 3 in progress · 3 failed · 46 completed · 3 cancelled or terminated');
+    expect(chipIds()).toEqual(['child-10', 'child-20', 'child-30', 'child-40', 'child-41', 'child-42']);
+    const failed = container.querySelector('[title="child-40"]');
+    expect(failed?.getAttribute('data-failed')).toBe('true');
+    expect(failed?.textContent).toContain('terminated (oom)');
+    expect(container.querySelector('[title="child-10"]')?.hasAttribute('data-failed')).toBe(false);
+
+    act(() => toggle().click());
+    const manual = container.querySelector('[title="child-53"]');
+    expect(manual?.hasAttribute('data-failed')).toBe(false);
+    expect(manual?.textContent).toContain('terminated');
+    expect(manual?.textContent).not.toContain('(manual)');
+  });
+
+  test('a chip opens its task when the dashboard lists it, and stays a plain label otherwise (#3946)', () => {
+    setChain(PARENT_TASK_ID, [child(1, 'inProgress'), child(2, 'completed')]);
+    useKookrStore.setState({ agents: [agentFor(PARENT_TASK_ID), agentFor('child-1')] });
+    render();
+
+    const listed = container.querySelector<HTMLElement>('[title="child-1"]');
+    expect(listed?.tagName).toBe('BUTTON');
+    expect(listed?.getAttribute('type')).toBe('button');
+    const unlisted = container.querySelector<HTMLElement>('[title="child-2"]');
+    expect(unlisted?.tagName).toBe('SPAN');
+
+    act(() => listed!.click());
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-child-1');
   });
 
   test('a short chain shows every chip with no toggle, in server order', () => {

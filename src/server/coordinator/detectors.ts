@@ -391,6 +391,7 @@ function addMember(
     label: task.name ?? task.prompt.slice(0, 60),
     status: task.status,
     relation,
+    ...(task.status === 'terminated' ? { terminationReason: task.terminationReason ?? 'unknown' } : {}),
   });
 }
 

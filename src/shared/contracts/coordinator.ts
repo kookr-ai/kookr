@@ -1,4 +1,5 @@
 import type { AgentType } from './agent-types.js';
+import type { TerminationReason } from './task-status.js';
 
 export type CoordinatorDetectorId = 'declared_edge' | 'stale' | 'duplicate' | 'done_not_cleared';
 
@@ -36,6 +37,12 @@ export interface CoordinatorChainMember {
   label: string;
   status: string;
   relation: 'parent' | 'child' | 'blocks' | 'blocked_by';
+  /**
+   * Why the task was terminated, sent only when `status` is `terminated`. The
+   * chain strip uses it to keep failed tasks visible and hide deliberate stops
+   * (`manual`, `supervisor`) behind "Show all" (#3946).
+   */
+  terminationReason?: TerminationReason;
 }
 
 export interface CoordinatorChainStrip {

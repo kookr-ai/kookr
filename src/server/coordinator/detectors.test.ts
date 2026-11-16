@@ -37,6 +37,7 @@ function task(overrides: Partial<CoordinatorTask> & Pick<CoordinatorTask, 'id'>)
     childTaskIds: overrides.childTaskIds,
     blocks: overrides.blocks,
     blocked_by: overrides.blocked_by,
+    terminationReason: overrides.terminationReason,
   }) as CoordinatorTask;
 }
 
@@ -99,6 +100,26 @@ describe('runDetectors', () => {
       ['source', 'parent'],
     ]);
     expect(state.chains.target?.priorTaskIds).toEqual(['source']);
+  });
+
+  test('chain members carry the termination reason of terminated tasks only (#3946)', () => {
+    const parent = task({ id: 'parent', childTaskIds: ['oom', 'stopped', 'legacy', 'done'] });
+    const children = [
+      task({ id: 'oom', parentTaskId: 'parent', status: 'terminated', terminationReason: 'oom' }),
+      task({ id: 'stopped', parentTaskId: 'parent', status: 'terminated', terminationReason: 'manual' }),
+      task({ id: 'legacy', parentTaskId: 'parent', status: 'terminated' }),
+      // A reopened task can keep its old reason; it is not sent once the task is no longer terminated.
+      task({ id: 'done', parentTaskId: 'parent', status: 'completed', terminationReason: 'timeout' }),
+    ];
+    const state = buildCoordinatorSnapshotState({ tasks: [parent, ...children] }, [], { now: NOW });
+
+    expect(state.chains.parent?.members.map((member) => [member.taskId, member.terminationReason])).toEqual([
+      ['oom', 'oom'],
+      ['stopped', 'manual'],
+      ['legacy', 'unknown'],
+      ['done', undefined],
+    ]);
+    expect(state.chains.parent?.members.find((member) => member.taskId === 'done')).not.toHaveProperty('terminationReason');
   });
 
   test.each([
