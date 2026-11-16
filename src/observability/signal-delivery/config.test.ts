@@ -283,3 +283,86 @@ describe('owner-chat fallback and alert destination (issue #3924)', () => {
     });
   });
 });
+
+describe('Telegram Bot API host and the delivery kill switch (issue #3952)', () => {
+  const env = (vars: Record<string, string>) => vars as NodeJS.ProcessEnv;
+  const OWNER = { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '4242' };
+  const EXPLICIT = { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_SIGNAL_TELEGRAM_CHAT_ID: '123' };
+
+  test('owner-chat alerts go to the KOOKR_TELEGRAM_API_URL host the bot uses', () => {
+    const { config } = resolveSignalDeliveryFromEnv(
+      env({ ...OWNER, KOOKR_TELEGRAM_API_URL: ' http://127.0.0.1:18080 ' }),
+      silent,
+    );
+    expect(config?.telegram).toEqual({ botToken: 'TOK', chatId: '4242', baseUrl: 'http://127.0.0.1:18080' });
+  });
+
+  test('configured-chat alerts go to the KOOKR_TELEGRAM_API_URL host too', () => {
+    const { config } = resolveSignalDeliveryFromEnv(
+      env({ ...EXPLICIT, KOOKR_TELEGRAM_API_URL: 'http://10.0.0.5:8081' }),
+      silent,
+    );
+    expect(config?.telegram).toEqual({ botToken: 'TOK', chatId: '123', baseUrl: 'http://10.0.0.5:8081' });
+  });
+
+  test('an unset or blank override keeps the public Bot API default', () => {
+    for (const extra of [{}, { KOOKR_TELEGRAM_API_URL: '   ' }]) {
+      const { config } = resolveSignalDeliveryFromEnv(env({ ...OWNER, ...extra }), silent);
+      expect(config?.telegram).toEqual({ botToken: 'TOK', chatId: '4242' });
+    }
+  });
+
+  test('a blocked override disables Telegram alerts instead of using the public API', () => {
+    const warn = vi.fn();
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      env({ ...OWNER, KOOKR_TELEGRAM_API_URL: 'http://169.254.169.254/' }),
+      { warn },
+    );
+    expect(config).toBeNull();
+    expect(destination.channels).toEqual([]);
+    expect(destination.reason).toMatch(/KOOKR_TELEGRAM_API_URL is invalid/);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ignoring invalid KOOKR_TELEGRAM_API_URL'));
+  });
+
+  test('a blocked override drops Telegram but keeps Discord', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      env({
+        ...EXPLICIT,
+        KOOKR_DISCORD_WEBHOOK_URL: VALID_DISCORD_URL,
+        KOOKR_TELEGRAM_API_URL: 'http://user:pw@127.0.0.1:18080',
+      }),
+      silent,
+    );
+    expect(config?.telegram).toBeUndefined();
+    expect(config?.discord).toEqual({ webhookUrl: VALID_DISCORD_URL });
+    expect(destination).toEqual({ channels: ['discord'], label: 'Discord' });
+  });
+
+  test('a blocked override with no Telegram channel changes nothing', () => {
+    const warn = vi.fn();
+    const { config } = resolveSignalDeliveryFromEnv(
+      env({ KOOKR_DISCORD_WEBHOOK_URL: VALID_DISCORD_URL, KOOKR_TELEGRAM_API_URL: 'http://169.254.169.254/' }),
+      { warn },
+    );
+    expect(config?.discord).toEqual({ webhookUrl: VALID_DISCORD_URL });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test.each(['0', 'false', 'off', 'NO'])('KOOKR_SIGNAL_DELIVERY=%s switches every channel off', (value) => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      env({ ...EXPLICIT, KOOKR_DISCORD_WEBHOOK_URL: VALID_DISCORD_URL, KOOKR_SIGNAL_DELIVERY: value }),
+      silent,
+    );
+    expect(config).toBeNull();
+    expect(destination).toEqual({
+      channels: [],
+      label: 'nowhere outside the dashboard',
+      reason: 'alert delivery is switched off (KOOKR_SIGNAL_DELIVERY=0)',
+    });
+  });
+
+  test.each(['1', 'on', ''])('KOOKR_SIGNAL_DELIVERY=%j leaves delivery on', (value) => {
+    const { config } = resolveSignalDeliveryFromEnv(env({ ...OWNER, KOOKR_SIGNAL_DELIVERY: value }), silent);
+    expect(config?.telegram?.chatId).toBe('4242');
+  });
+});

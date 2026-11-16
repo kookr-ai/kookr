@@ -88,4 +88,23 @@ describe('wireSignalDelivery (issue #3924)', () => {
       /server alerts go nowhere outside the dashboard: .*several allowed users/,
     );
   });
+
+  // Issue #3952: a test server that sets a Telegram token and one allowed user
+  // (index.asks.test.ts, telegram-permission-card.test.ts, ...) builds its wiring
+  // from process.env. Test servers start with KOOKR_SIGNAL_DELIVERY=0, so it
+  // must not spool into the operator's HOME outbox or build a delivery service.
+  test('a test server with a Telegram owner set up still sends no alerts', () => {
+    vi.stubEnv('KOOKR_TELEGRAM_BOT_TOKEN', 'test-token');
+    vi.stubEnv('KOOKR_TELEGRAM_ALLOWED_USERS', '4242');
+    try {
+      const broadcastToAll = vi.fn();
+      const wiring = wireSignalDelivery({ env: process.env, broadcastToAll, warn: vi.fn() });
+      expect(wiring.config).toBeNull();
+      expect(wiring.destination.reason).toMatch(/KOOKR_SIGNAL_DELIVERY=0/);
+      expect(wiring.detectorBroadcast).toBe(broadcastToAll);
+      expect(wiring.createDeliveryService()).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

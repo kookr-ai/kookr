@@ -14,8 +14,10 @@
  * start with each of them switched off, so a booted test server never samples
  * the host, schedules a worktree reclaim or a data-dir prune, captures
  * transcripts, reads the host's plugin registry, launches a refill, batch or
- * chain continuation, or turns on Lucy because the developer's shell has an
- * OpenRouter key. A test that exercises one of these features sets it itself.
+ * chain continuation, turns on Lucy because the developer's shell has an
+ * OpenRouter key, or spools and sends operator alerts because a test set a
+ * Telegram token and one allowed user (issue #3952). A test that exercises
+ * one of these features sets it itself.
  */
 export const TEST_FEATURE_KILL_SWITCHES: Readonly<Record<string, string>> = {
   KOOKR_LUCY_OPERATOR: '0',
@@ -31,6 +33,7 @@ export const TEST_FEATURE_KILL_SWITCHES: Readonly<Record<string, string>> = {
   KOOKR_ISSUE_CLAIMS: '0',
   KOOKR_UMBRELLA_CHAIN_ADVANCER: 'off',
   KOOKR_FINDING_TRANSCRIPT_CONTEXT: '0',
+  KOOKR_SIGNAL_DELIVERY: '0',
 };
 
 /** Keys preserved across the Vitest scrub. Mirrors vitest.config.ts `test.env`. */

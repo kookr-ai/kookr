@@ -6,7 +6,7 @@
  *  - **Discord** — a host-validated incoming-webhook URL (`KOOKR_DISCORD_WEBHOOK_URL`); body
  *    is `{ content }`.
  *  - **Telegram** — the Bot API `sendMessage` for a fixed alert chat id, reusing
- *    the existing `KOOKR_TELEGRAM_BOT_TOKEN`.
+ *    the existing `KOOKR_TELEGRAM_BOT_TOKEN` and `KOOKR_TELEGRAM_API_URL` host.
  *
  * Neither channel retries here; the caller (SignalDeliveryService) decides
  * whether an undelivered batch stays pending for the next tick.
@@ -41,7 +41,10 @@ export interface DiscordChannelConfig {
 export interface TelegramChannelConfig {
   botToken: string;
   chatId: string;
-  /** Override for tests; defaults to the public Bot API host. */
+  /**
+   * Bot API host; defaults to the public one. Config sets it from a validated
+   * `KOOKR_TELEGRAM_API_URL` so alerts follow the bot client (issue #3952).
+   */
   baseUrl?: string;
 }
 
