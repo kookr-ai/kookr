@@ -219,7 +219,8 @@ When a task's agent stops on a Claude Code permission prompt ("Claude needs your
 - Answer the prompt from the dashboard, from Telegram, or in the task terminal. The recovered page (`op:permission_prompt:<taskId>:clear`) fires when the prompt is answered or the task ends.
 - One page per prompt: a prompt that stays open is not re-paged. A new prompt on the same task waits its own 3 minutes.
 - The clear follows the monitor's `permission_blocked` finding. Any later hook event from the session, such as another subagent's tool call or a `SessionStart`, ends that finding, so the clear can arrive while the prompt is still on screen.
-- Episode state is process memory: after a restart, a prompt that is still open pages again 3 minutes later.
+- Episode state is process memory: after a restart, a prompt that is still open pages again 3 minutes later. A page sent before the restart gets no recovered message if its prompt is answered within those 3 minutes.
+- A prompt can page twice. If another event ends the hook finding while the prompt is still open, and the pane watchdog then sees the dialog again, that counts as a new prompt and pages 3 minutes later.
 
 ## 4. Resource watchdog env
 

@@ -1995,7 +1995,7 @@ describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', 
     vi.useFakeTimers();
     const evaluate = vi.fn();
     const taskStore = new TaskStore();
-    const task = taskStore.createTask({ prompt: 'blocked worker', cwd: '/repo' });
+    const task = taskStore.createTask({ prompt: 'blocked worker', cwd: '/repo', name: 'Blocked worker' });
     taskStore.addSession(task.id, {
       tmuxSession: 'kookr-perm-blocked',
       agentType: 'claude-code',
@@ -2033,14 +2033,14 @@ describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', 
       permissionPromptWaitAlerter: { evaluate },
     }));
     try {
-      // The live-session reconcile path awaits more than one timer turn.
-      await vi.advanceTimersByTimeAsync(500);
+      // The live-session reconcile path awaits real I/O before the alerter
+      // runs, so wait for the call instead of advancing a fixed amount.
+      await vi.waitFor(() => expect(evaluate).toHaveBeenCalled(), { timeout: 10_000, interval: 50 });
       expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
-      expect(evaluate).toHaveBeenCalled();
       const last = evaluate.mock.calls[evaluate.mock.calls.length - 1]?.[0];
       expect(last).toEqual([{
         taskId: task.id,
-        ...(task.name ? { taskName: task.name } : {}),
+        taskName: 'Blocked worker',
         toolName: 'Bash',
         command: 'rm -rf /tmp/x',
         sinceMs: detectedAt.getTime(),

@@ -134,11 +134,29 @@ export function describePermissionToolInput(
 }
 
 /**
+ * The `permission_request` event that is still waiting for an answer: the
+ * last event of the window once trailing notifications and subagent stops
+ * are skipped (the same trim the anomaly detector applies). Any other later
+ * event means that request was already answered, so it must not be quoted.
+ */
+function openPermissionRequest(
+  events: ReadonlyArray<AgentEvent>,
+): Extract<AgentEvent, { type: 'permission_request' }> | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type === 'notification' || event.type === 'subagent_stop') continue;
+    return event.type === 'permission_request' ? event : undefined;
+  }
+  return undefined;
+}
+
+/**
  * Build the alerter input from the task store and the monitor: every live,
  * in-progress task whose latest session currently has a `permission_blocked`
- * finding. The tool and command come from that session's latest
- * `permission_request` event; a pane-detected block with no such event still
- * pages, with the tool named from the finding.
+ * finding. The tool and command come from the open `permission_request`
+ * event. A block seen only on the pane or by the watchdog has no open event;
+ * it still pages, with the tool named from the finding when the finding
+ * names one, and no command.
  */
 export function collectPermissionPromptWaits(
   tasks: Iterable<PermissionPromptTaskView>,
@@ -154,17 +172,9 @@ export function collectPermissionPromptWaits(
     const sinceMs = new Date(anomaly.detectedAt).getTime();
     if (!Number.isFinite(sinceMs)) continue;
 
-    const events = monitor.getAgentEvents(sessionName);
-    let request: Extract<AgentEvent, { type: 'permission_request' }> | undefined;
-    for (let i = events.length - 1; i >= 0; i--) {
-      const event = events[i];
-      if (event.type === 'permission_request') {
-        request = event;
-        break;
-      }
-    }
+    const request = openPermissionRequest(monitor.getAgentEvents(sessionName));
     const toolName = request?.toolName
-      ?? /permission for tool: (\S+)/.exec(anomaly.explanation)?.[1]
+      ?? /for tool: (\S+)/.exec(anomaly.explanation)?.[1]
       ?? 'unknown tool';
     waits.push({
       taskId: task.id,

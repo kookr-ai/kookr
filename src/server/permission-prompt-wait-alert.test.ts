@@ -77,6 +77,7 @@ describe('PermissionPromptWaitAlerter (issue #3872)', () => {
       `recovered:${permissionPromptAlertKey('task-1')}`,
     ]);
     expect(h.sent[1].severity).toBe('info');
+    expect(h.sent[1].summary).toContain('Implement kookr issue 3743 merge PR');
 
     // Further ticks with nothing blocked stay quiet.
     h.at(11 * MIN);
@@ -257,30 +258,67 @@ describe('collectPermissionPromptWaits', () => {
     ]);
   });
 
-  test('skips tasks that are not in progress, and sessions with no permission block', () => {
-    const blocked: Anomaly = {
-      agentId: 's1',
-      type: 'permission_blocked',
-      severity: 'warning',
-      explanation: 'Agent is blocked on permission for tool: Write',
-      detectedAt: new Date(T0),
+  function anomaly(agentId: string, type: Anomaly['type'], explanation: string): Anomaly {
+    return { agentId, type, severity: 'warning', explanation, detectedAt: new Date(T0) };
+  }
+
+  test('skips tasks that are not in progress, sessions with no finding, and other finding types', () => {
+    const findings: Record<string, Anomaly> = {
+      s1: anomaly('s1', 'permission_blocked', 'Permission request pending for tool: Write'),
+      s3: anomaly('s3', 'needs_input', 'Agent is waiting for input. Last message: "done?"'),
+      s4: anomaly('s4', 'stale_agent', 'No activity for 30 minutes'),
     };
     const monitor = {
-      getCurrentAnomaly: (agentId: string) => (agentId === 's1' ? blocked : null),
+      getCurrentAnomaly: (agentId: string) => findings[agentId] ?? null,
       getAgentEvents: () => [],
     };
     const tasks: PermissionPromptTaskView[] = [
       { id: 'done', status: 'completed', sessions: [{ tmuxSession: 's1' }] },
       { id: 'idle', status: 'inProgress', sessions: [{ tmuxSession: 's2' }] },
+      { id: 'asking', status: 'inProgress', sessions: [{ tmuxSession: 's3' }] },
+      { id: 'stale', status: 'inProgress', sessions: [{ tmuxSession: 's4' }] },
       { id: 'none', status: 'inProgress', sessions: [] },
       // Only the latest session counts.
       { id: 'resumed', status: 'inProgress', sessions: [{ tmuxSession: 's1' }, { tmuxSession: 's2' }] },
       { id: 'live', status: 'inProgress', sessions: [{ tmuxSession: 's1' }] },
     ];
-    // A pane-detected block with no permission_request event still pages,
-    // with the tool taken from the finding.
+    // A watchdog-detected block with no permission_request event still pages,
+    // with the tool taken from the watchdog's explanation.
     expect(collectPermissionPromptWaits(tasks, monitor)).toEqual([
       { taskId: 'live', toolName: 'Write', command: '', sinceMs: T0 },
+    ]);
+  });
+
+  test('a pane-detected block does not quote an earlier request that was already answered', () => {
+    const events: AgentEvent[] = [
+      { type: 'permission_request', sessionId: 's', toolName: 'Bash', toolInput: { command: 'cmdA' } },
+      { type: 'tool_result', sessionId: 's', toolName: 'Bash' },
+    ];
+    const monitor = {
+      getCurrentAnomaly: (agentId: string) => anomaly(agentId, 'permission_blocked', 'Pane shows permission dialog: "Do you want to proceed?"'),
+      getAgentEvents: () => events,
+    };
+    const task: PermissionPromptTaskView = { id: 't', status: 'inProgress', sessions: [{ tmuxSession: 's1' }] };
+    expect(collectPermissionPromptWaits([task], monitor)).toEqual([
+      { taskId: 't', toolName: 'unknown tool', command: '', sinceMs: T0 },
+    ]);
+  });
+
+  test('quotes the open request, not an older answered one, past trailing notifications', () => {
+    const events: AgentEvent[] = [
+      { type: 'permission_request', sessionId: 's', toolName: 'Bash', toolInput: { command: 'old command' } },
+      { type: 'tool_result', sessionId: 's', toolName: 'Bash' },
+      { type: 'permission_request', sessionId: 's', toolName: 'Write', toolInput: { file_path: '/repo/new.ts' } },
+      { type: 'notification', sessionId: 's', notificationType: 'permission_prompt', message: 'Claude needs your permission' },
+      { type: 'subagent_stop', sessionId: 's', agentId: 'a1', agentType: 'general-purpose', lastMessage: '' },
+    ];
+    const monitor = {
+      getCurrentAnomaly: (agentId: string) => anomaly(agentId, 'permission_blocked', 'Agent is blocked on permission for tool: Write'),
+      getAgentEvents: () => events,
+    };
+    const task: PermissionPromptTaskView = { id: 't', status: 'inProgress', sessions: [{ tmuxSession: 's1' }] };
+    expect(collectPermissionPromptWaits([task], monitor)).toEqual([
+      { taskId: 't', toolName: 'Write', command: '/repo/new.ts', sinceMs: T0 },
     ]);
   });
 });
