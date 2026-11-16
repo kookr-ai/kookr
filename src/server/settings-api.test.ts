@@ -73,6 +73,7 @@ describe('Settings API', () => {
       lucyInteractionLog: true,
       agentEffort: {},
       quietHours: [],
+      askReminders: { afterMinutes: [10, 60], thenEveryMinutes: 240, beforeCloseMinutes: 10 },
       replySnippets: [],
       autoCloseCompletionReadyDelayMin: 30,
       completionReadyTtlMinutes: 120,

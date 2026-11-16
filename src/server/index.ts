@@ -1343,6 +1343,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         getNotifier: () => askNotifierHolder,
         taskStatus: (taskId) => taskStore.getTask(taskId)?.status,
         ...createAskTaskPorts({ taskStore, bridge: () => askBridgeHolder }),
+        reminderSettings: () => ({ schedule: currentSettings.askReminders, quietHours: currentSettings.quietHours }),
         log: (message) => console.log(message),
       });
     } catch (err) {

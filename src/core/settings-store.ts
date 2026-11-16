@@ -26,6 +26,7 @@ import {
   type PlatformShortcutBindingOverrides,
 } from '../shared/contracts/shortcut-bindings.js';
 import { validateQuietHours, type QuietHoursWindow } from '../shared/contracts/quiet-hours.js';
+import { DEFAULT_ASK_REMINDERS, validateAskReminders, type AskReminderSchedule } from '../shared/contracts/asks.js';
 import {
   validateReplySnippets,
   type ReplySnippet,
@@ -150,6 +151,11 @@ export interface KookrSettings {
    * path) and resumes automatically afterward. Empty = no scheduled silencing.
    */
   quietHours: QuietHoursWindow[];
+  /**
+   * When an unanswered `kookr ask` question is brought back to the operator on Telegram, as a reply
+   * to the question (issue #3929). Held back during `quietHours`. `afterMinutes: []` turns reminders off.
+   */
+  askReminders: AskReminderSchedule;
   /**
    * User-managed canned replies for the response composer. The frontend only
    * inserts these into the draft; it never sends them automatically.
@@ -482,6 +488,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   lucyInteractionLog: true,
   agentEffort: {},
   quietHours: [],
+  askReminders: DEFAULT_ASK_REMINDERS,
   replySnippets: [],
   autoCloseCompletionReadyDelayMin: 30,
   completionReadyTtlMinutes: 120,
@@ -994,6 +1001,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
   const shortcutValidation = validateShortcutBindingOverrides(raw.shortcutBindings);
 
   const quietHoursValidation = validateQuietHours(raw.quietHours);
+  const askRemindersValidation = validateAskReminders(raw.askReminders);
 
   const verbosityWarnings: string[] = [];
   let speakVerbosity: VerbosityScale = DEFAULT_VERBOSITY;
@@ -1066,6 +1074,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       ...verbosityWarnings,
       ...agentEffortWarnings,
       ...quietHoursValidation.warnings,
+      ...askRemindersValidation.warnings,
       ...replySnippetValidation.warnings,
       ...blacklistWarnings,
     ],
@@ -1091,6 +1100,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       lucyInteractionLog,
       agentEffort,
       quietHours: quietHoursValidation.windows,
+      askReminders: askRemindersValidation.schedule,
       replySnippets: replySnippetValidation.snippets,
       autoCloseCompletionReadyDelayMin: autoCloseDelayMin,
       completionReadyTtlMinutes,

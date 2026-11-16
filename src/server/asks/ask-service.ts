@@ -27,9 +27,13 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { redactCredentials } from '../../integrations/telegram/redact.js';
 import { isTerminalStatus, type TaskStatus } from '../../core/task-status.js';
+import { isWithinQuietHours, type QuietHoursWindow } from '../../shared/contracts/quiet-hours.js';
 import {
   ASK_LIMITS,
+  ASK_REMINDER_LIMITS,
   askLinkProblem,
+  askReminderDue,
+  type AskReminderSchedule,
   type AnswerInput,
   type AnswerResult,
   type AskChange,
@@ -84,6 +88,11 @@ export interface AskServiceDeps {
    * (crash recovery, operator Reopen). Without it (or `liveSession`), pinned asks are delivered as if unpinned.
    */
   sessionContinues?: (taskId: string, sessionId: string) => boolean;
+  /**
+   * The live reminder schedule and quiet hours (issue #3929), read on every sweep so a settings
+   * change applies at once. Absent: no reminders are sent.
+   */
+  reminderSettings?: () => { schedule: AskReminderSchedule; quietHours: readonly QuietHoursWindow[] };
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -169,10 +178,61 @@ export class AskService {
     this.timer.unref();
   }
 
-  /** One maintenance pass: enforce retention, then expire overdue asks. */
+  /** One maintenance pass: enforce retention, expire overdue asks, then send the reminders owed. */
   private async tick(): Promise<void> {
     this.deps.store.prune(this.now());
     await this.sweepExpired();
+    await this.sendDueReminders();
+  }
+
+  /**
+   * Remind the operator of questions still waiting (issue #3929), as a reply to each question's
+   * Telegram message. Nothing is sent during quiet hours: the points of the schedule that pass then
+   * are owed as one reminder when they end (`askReminderDue`). Runs from the sweep only, never from
+   * a read, so a busy `--wait` poll cannot speed reminders up.
+   */
+  async sendDueReminders(): Promise<void> {
+    const settings = this.deps.reminderSettings?.();
+    const notifier = this.deps.getNotifier();
+    if (!settings || !notifier?.sendAskReminder) return;
+    const now = this.now();
+    if (isWithinQuietHours(settings.quietHours, new Date(now))) return;
+
+    const all = this.deps.store.all();
+    let sentLastHour = 0;
+    for (const a of all) for (const r of a.reminders ?? []) if (now - r.at < HOUR_MS) sentLastHour++;
+    // Least recently reminded first, so when the hourly bound holds some back, the same questions
+    // do not take the whole budget again on the next sweep.
+    const lastReminded = (a: AskRecord): number => a.reminders?.at(-1)?.at ?? a.createdAt;
+    const waiting = all.filter((a) => a.state === 'pending' && a.delivery).sort((a, b) => lastReminded(a) - lastReminded(b));
+    for (const ask of waiting) {
+      // Answered or withdrawn while an earlier reminder of this sweep was being sent.
+      if (this.deps.store.get(ask.id)?.state !== 'pending') continue;
+      const due = askReminderDue(ask, settings.schedule, now);
+      if (due === undefined) continue;
+      // Held back, not dropped: it is still owed on the next sweep with room in the hour.
+      if (sentLastHour >= ASK_REMINDER_LIMITS.maxPerHour) return;
+      // Recorded before the send: a sweep that overlaps a slow send, or a restart in the middle of
+      // it, must not send the same reminder twice. A send that fails is not retried.
+      const index = ask.reminders?.length ?? 0;
+      this.deps.store.update(ask.id, (a) => {
+        a.reminders = [...(a.reminders ?? []), { at: now, ...(due === 'before_close' ? { kind: 'before_close' as const } : {}) }];
+      });
+      sentLastHour++;
+      try {
+        const { messageId } = await notifier.sendAskReminder(ask, reminderText(ask, now));
+        this.deps.store.update(ask.id, (a) => {
+          const entry = a.reminders?.[index];
+          if (entry) entry.messageId = messageId;
+        });
+        this.log(`[asks] reminder sent ask=${ask.id} kind=${due}`);
+        // Closed during the send: the closing step could not delete a reminder it did not know yet.
+        const current = this.deps.store.get(ask.id);
+        if (current && current.state !== 'pending') await notifier.deleteAskReminder?.(current, messageId);
+      } catch (err) {
+        this.log(`[asks] reminder failed ask=${ask.id}: ${String(err)}`);
+      }
+    }
   }
 
   async stop(): Promise<void> {
@@ -367,8 +427,9 @@ export class AskService {
     return this.deps.store.all();
   }
 
+  /** The ask whose question message, or one of whose reminders, is (chatId, messageId). */
   findByMessage(chatId: number, messageId: number): AskRecord | undefined {
-    return this.deps.store.all().find((a) => a.delivery?.chatId === chatId && a.delivery.messageId === messageId);
+    return this.deps.store.all().find((a) => a.delivery?.chatId === chatId && isAskMessage(a, messageId));
   }
 
   // ------------------------------------------------------------------- cancel
@@ -414,7 +475,7 @@ export class AskService {
         return { ok: false, reason: 'forged' };
       }
     }
-    if (!ask.delivery || ask.delivery.chatId !== input.chatId || ask.delivery.messageId !== input.messageId) {
+    if (!ask.delivery || ask.delivery.chatId !== input.chatId || !isAskMessage(ask, input.messageId)) {
       return { ok: false, reason: 'wrong_chat', ask };
     }
     return this.settle(
@@ -633,6 +694,37 @@ export class AskService {
       this.log(`[asks] finalize failed ask=${ask.id}: ${String(err)}`);
     }
   }
+}
+
+/** Whether `messageId` is the question's Telegram message or one of its reminders (same chat). */
+function isAskMessage(ask: AskRecord, messageId: number): boolean {
+  return ask.delivery?.messageId === messageId || (ask.reminders ?? []).some((r) => r.messageId === messageId);
+}
+
+/** "10 min", "2 h", "2 h 5 min", "3 d 4 h": a duration in the two largest units that matter. */
+export function formatWaitDuration(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 === 0 ? `${days} d` : `${days} d ${hours % 24} h`;
+}
+
+/** The reminder text: how long the question has waited, when it closes, and how to answer it. */
+export function reminderText(ask: AskRecord, now: number): string {
+  // By code point, so an emoji is never cut in half.
+  const chars = Array.from(ask.question);
+  const short = chars.length > 120 ? `${chars.slice(0, 119).join('')}…` : ask.question;
+  return [
+    `⏰ Still waiting for your answer: asked ${formatWaitDuration(now - ask.createdAt)} ago, closes in ${formatWaitDuration(ask.expiresAt - now)}.`,
+    '',
+    `❓ ${short}`,
+    '',
+    ask.allowText
+      ? 'Tap the question above to answer with its buttons, or reply to this message with text.'
+      : 'Tap the question above to answer with its buttons.',
+  ].join('\n');
 }
 
 /** The first line of the closed Telegram message for an answered ask. */

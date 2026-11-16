@@ -1804,6 +1804,25 @@ once the question closes. While a question is
 waiting, saying "show me", "open it" or "show me the task" to Lucy live opens
 the link or the task (see [Lucy live](lucy-live.md#questions-from-tasks)).
 
+While a question waits, Kookr reminds the operator on Telegram with a short
+reply to the question's message, so one tap on the quote goes back to its
+buttons; unless the question was asked with `--no-other`, a text reply to the
+reminder answers it too. A reminder says
+how long the question has waited and when it closes. By default one comes after
+10 minutes, after 1 hour, then every 4 hours, and once 10 minutes before the
+question closes. Hard bounds keep a phone quiet whatever the setting says: at
+most 6 reminders of the schedule per question (plus the one before it closes),
+at least 10 minutes between two reminders of the same question, and at most 6
+reminders an hour for all questions together. No reminder is sent during the
+operator's `quietHours`; the ones missed there come as a single reminder when
+the quiet hours end. Reminders stop when the question is answered (on Telegram
+or in the dashboard), withdrawn or expired, and are then deleted from the chat
+(Telegram keeps those older than 48 hours). The times already sent are stored
+with the question, so a restart does not repeat one. The schedule is the
+`askReminders` setting (`PUT /api/settings`, see
+[API: ask reminders](api.md#ask-reminders)); `"afterMinutes": []` turns
+reminders off.
+
 The ask is tied to the session that asked it. The answer, and the notice that
 the ask expired, are typed only into that session or into a session that
 resumed its conversation (crash recovery, or the operator reopening the task).

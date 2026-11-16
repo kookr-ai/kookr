@@ -1385,6 +1385,27 @@ returns HTTP 503 with `code: grok_auth_preflight` and `loginCommand`, and
 creates no task (issue #3178). An explicit non-blacklisted `grok-build` pin
 still reaches adapter preflight.
 
+#### Ask reminders
+
+`askReminders` (issue #3929) sets when an unanswered `kookr ask` question is
+brought back to the operator on Telegram, as a reply to the question's message.
+It applies at the next sweep (every 30 seconds) after a successful update.
+
+| Field | Default | Bounds | Effect |
+| --- | --- | --- | --- |
+| `afterMinutes` | `[10, 60]` | up to 6 whole minutes, `1`–`10080` each | Reminders this many minutes after the question was sent. `[]` turns every reminder off, the two below included. |
+| `thenEveryMinutes` | `240` | `0`, or `30`–`10080` | After the last of `afterMinutes`, one more every this many minutes. `0`: no repeat. |
+| `beforeCloseMinutes` | `10` | `0`–`10080` | One last reminder this many minutes before the question closes. `0`: none. |
+
+A field that is out of bounds falls back to its default, with a warning in the
+response. Whatever the setting, a question gets at most 6 reminders of the
+schedule plus the one before it closes, two reminders of one question are at
+least 10 minutes apart, and all questions together get at most 6 reminders an
+hour (the others wait for the next sweep with room). No reminder is sent while
+local time is inside a `quietHours` window; the points of the schedule missed
+there, or while the server was down, are owed as one reminder, never a burst.
+Each sent reminder is stored on the ask as `reminders: [{ at, kind?, messageId? }]`.
+
 #### Idempotency ledger retention
 
 The `GET`/`PUT /api/settings` surface accepts these retention settings. They
