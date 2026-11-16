@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { CircuitBreaker } from '../../core/circuit-breaker.js';
 import type { GitHubFetcher, GitHubPRState, GitHubReference } from '../../core/github-types.js';
@@ -162,5 +162,65 @@ describe('createGitHubRuntime', () => {
         severity: 'info',
       },
     ]);
+  });
+
+  test('re-tracks a finished task\'s PR after a restart and broadcasts its delivery state (issue #3915)', async () => {
+    const messages: ServerMessage[] = [];
+    const finishedAt = new Date('2026-11-16T09:05:00.000Z');
+    const commit = 'c'.repeat(40);
+    const mergedState = (ref: GitHubReference): GitHubPRState => ({
+      ref, title: 'feat: delivery state', status: 'merged', mergeable: 'UNKNOWN', author: 'dev', branch: 'b',
+      baseBranch: 'staging', reviewDecision: null, reviewers: [], unresolvedThreads: [], totalComments: 0, checks: [],
+      mergedAt: new Date('2026-11-16T09:00:00.000Z'), mergeCommit: commit, lastFetchedAt: finishedAt,
+    });
+    const fetcher: GitHubFetcher = {
+      isAvailable: async () => true,
+      inferOwnerRepo: async () => ({ owner: 'kookr-ai', repo: 'kookr' }),
+      fetchPRState: async () => null,
+      fetchIssueState: async () => null,
+      fetchStates: async (refs) => ({ prs: refs.filter((r) => r.type === 'pr').map(mergedState), issues: [] }),
+    };
+    // Only what the runtime reads from the task store in this path.
+    const taskStore = {
+      viewTasks: () => [{
+        id: 'task-done', status: 'completed', finishedAt,
+        completionDigest: { bullets: [], filesChanged: [], prUrls: ['https://github.com/kookr-ai/kookr/pull/3920'] },
+      }],
+      getTask: () => undefined,
+    } as unknown as TaskStore;
+    // Local git as the tracker sees it: staging is configured, main does not have the commit yet.
+    const git = vi.fn(async (args: string[]) => {
+      if (args[0] === 'rev-parse') return { code: 0, stdout: 'x\n' };
+      if (args[0] === 'show') return { code: 0, stdout: '{"integrationBranch":"staging"}' };
+      if (args[0] === 'merge-base') return { code: 1, stdout: '' };
+      return { code: 0, stdout: '' };
+    });
+
+    const { githubScanner, prDeliveryTracker } = createGitHubRuntime({
+      taskStore,
+      githubBreaker: new CircuitBreaker({ name: 'github-test' }),
+      githubPollingIntervalSec: 30,
+      broadcastToAll: (msg) => messages.push(msg),
+      onRepoHealthChanged: () => {},
+      fetcher,
+      repoHealthFetcher: async () => new Map(),
+      ghUserLoginResolver: async () => 'dev',
+      prDelivery: {
+        kookrDir: '/nonexistent', resolveRepoPath: () => '/repo', git, trainStateDir: () => '',
+        now: () => new Date('2026-11-16T10:00:00.000Z'),
+      },
+    });
+    scanners.push(githubScanner, { stop: () => prDeliveryTracker?.stop() });
+
+    await githubScanner.start();
+
+    await vi.waitFor(() => {
+      const withDelivery = messages.find((m) => m.type === 'githubUpdate' && m.prs[0]?.delivery);
+      expect(withDelivery).toMatchObject({
+        type: 'githubUpdate',
+        taskId: 'task-done',
+        prs: [{ ref: { number: 3920, detectedFrom: 'completion-digest' }, delivery: { stage: 'in-staging', integrationBranch: 'staging' } }],
+      });
+    });
   });
 });

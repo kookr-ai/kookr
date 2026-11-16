@@ -1329,6 +1329,28 @@ kbd {
   border-color: var(--red);
   color: var(--red);
 }
+/* Delivery state of the PR (issue #3915): each tone has its own glyph too. */
+.finding-pr-chip-glyph {
+  margin-right: 4px;
+  font-size: 12px;
+  line-height: 1;
+}
+.finding-pr-chip--delivery-staging {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+.finding-pr-chip--delivery-main {
+  border-color: var(--green);
+  color: var(--green);
+}
+.finding-pr-chip--delivery-reverted {
+  border-color: var(--red);
+  color: var(--red);
+}
+.finding-pr-chip--delivery-skipped {
+  border-color: var(--amber);
+  color: var(--amber);
+}
 .finding-context .branch-label { font-size: 12px; color: var(--text-muted); }
 .finding-context .autonomy-badge-inline { font-size: 12px; }
 .finding-context-sep {
@@ -2821,6 +2843,28 @@ a.overview-tour-link:visited:hover {
   gap: 4px 8px;
 }
 .detail-fact dd a { color: var(--teal); }
+.detail-fact dd.detail-delivery { flex-direction: column; align-items: flex-start; gap: 4px; overflow: visible; }
+.detail-delivery-badge { cursor: default; }
+.detail-delivery-timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; width: 100%; font-size: 12px; }
+.detail-delivery-step { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 6px; align-items: baseline; }
+.detail-delivery-step time { color: var(--text-secondary); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.detail-delivery-step--done > span:first-child { color: var(--green); }
+.detail-delivery-step--pending { color: var(--text-secondary); }
+.detail-delivery-step--bad > span:first-child { color: var(--red); }
+.detail-delivery-step--warn > span:first-child { color: var(--amber); }
+.detail-delivery-revert {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 4px;
+  background: rgba(248, 113, 113, 0.06);
+  font-size: 12px;
+  color: var(--text);
+}
+.detail-delivery-revert ul { margin: 0; padding-left: 16px; display: grid; gap: 2px; }
+.detail-delivery-revert code { overflow-wrap: anywhere; }
 .detail-facts-section { display: flex; flex-direction: column; gap: 8px; }
 .detail-agent-provider { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .detail-agent-provider-icon { width: 14px; height: 14px; flex-shrink: 0; fill: currentColor; }

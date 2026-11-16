@@ -16,6 +16,7 @@ import { PathCopyButton } from '../PathCopyButton.js';
 import { TaskDependencyEditor } from '../TaskDependencyEditor.js';
 import { TaskDependencyRail } from '../TaskDependencyRail.js';
 import { TaskTimeline } from '../TaskTimeline.js';
+import { PrDeliveryFact } from './PrDeliveryFact.js';
 import type { TaskShareHeaderStatus } from '../task-share-header-status.js';
 
 export function AgentProviderBadge({
@@ -198,6 +199,7 @@ export function TaskFactsColumn({
             ) : 'none yet'}
           </Fact>
         )}
+        {agent.taskId && <PrDeliveryFact prs={prs} />}
       </dl>
       {agent.taskId && (
         <div className="detail-facts-section">

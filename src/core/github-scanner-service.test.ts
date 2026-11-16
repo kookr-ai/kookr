@@ -84,6 +84,194 @@ describe('GitHubScannerService', () => {
     });
   });
 
+  describe('onStarted and trackReferences() (issue #3915)', () => {
+    const finishedRef: GitHubReference = {
+      type: 'pr', owner: 'test', repo: 'repo', number: 7,
+      url: 'https://github.com/test/repo/pull/7',
+      taskId: 'task-done', detectedAt: new Date(), detectedFrom: 'completion-digest',
+    };
+
+    it('calls onStarted only when gh is available', async () => {
+      const onStarted = vi.fn();
+      scanner = new GitHubScannerService({
+        taskStore, stateStore, fetcher: createMockFetcher(false), config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges, onStarted,
+      });
+      await scanner.start();
+      expect(onStarted).not.toHaveBeenCalled();
+
+      scanner = new GitHubScannerService({
+        taskStore, stateStore, fetcher: createMockFetcher(true), config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges, onStarted,
+      });
+      await scanner.start();
+      expect(onStarted).toHaveBeenCalledTimes(1);
+    });
+
+    it('tracks a finished task\'s PR and fetches it once, and does not refetch a known reference', async () => {
+      const fetcher = createMockFetcher(true);
+      scanner = new GitHubScannerService({ taskStore, stateStore, fetcher, config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges });
+      await scanner.start();
+
+      await scanner.trackReferences([finishedRef]);
+      expect(stateStore.getReferences('task-done')).toHaveLength(1);
+      expect(fetcher.fetchPRState).toHaveBeenCalledTimes(1);
+
+      await scanner.trackReferences([finishedRef]);
+      expect(fetcher.fetchPRState).toHaveBeenCalledTimes(1);
+    });
+
+    it('stores the first fetch of a re-tracked ref without raising changes', async () => {
+      const fetcher = createMockFetcher(true);
+      const onStateUpdate = vi.fn();
+      const old: GitHubPRState = {
+        ref: finishedRef, title: 'old', status: 'merged', mergeable: 'UNKNOWN', author: 'dev', branch: 'b', baseBranch: 'staging',
+        reviewDecision: 'changes_requested', reviewers: [],
+        unresolvedThreads: [{ id: 't1', isResolved: false, author: 'bot', body: 'nit', createdAt: '2026-11-10T00:00:00Z' }],
+        totalComments: 1, checks: [{ name: 'ci', status: 'completed', conclusion: 'failure' }], lastFetchedAt: new Date(),
+      };
+      (fetcher.fetchPRState as ReturnType<typeof vi.fn>).mockResolvedValue(old);
+      scanner = new GitHubScannerService({ taskStore, stateStore, fetcher, config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges, onStateUpdate });
+      await scanner.start();
+
+      await scanner.trackReferences([finishedRef]);
+
+      expect(stateStore.getPRState(finishedRef)?.title).toBe('old');
+      expect(onChanges).not.toHaveBeenCalled();
+      expect(onStateUpdate).toHaveBeenCalledWith('task-done');
+    });
+
+    it('retries a re-tracked ref on the next tick when its first fetch was skipped', async () => {
+      const fetcher = createMockFetcher(true);
+      const done = { ...finishedRef };
+      // A finished task: its refs are normally never polled.
+      const task = taskStore.createTask({ prompt: 'p', cwd: '/tmp' });
+      done.taskId = task.id;
+      taskStore.startTask(task.id);
+      taskStore.completeTask(task.id);
+      (fetcher.fetchPRState as ReturnType<typeof vi.fn>).mockImplementation(async (ref: GitHubReference) => ({
+        ref, title: 't', status: 'merged', mergeable: 'UNKNOWN', author: 'a', branch: 'b', baseBranch: 'staging',
+        reviewDecision: null, reviewers: [], unresolvedThreads: [], totalComments: 0, checks: [], lastFetchedAt: new Date(),
+      }));
+      scanner = new GitHubScannerService({
+        taskStore, stateStore, fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000, referenceExtractionIntervalMs: 60_000 },
+        onChanges,
+      });
+      await scanner.start();
+      // Simulate a fetch in flight: the re-tracked ref's own fetch is skipped.
+      (scanner as unknown as { fetching: boolean }).fetching = true;
+      await scanner.trackReferences([done]);
+      (scanner as unknown as { fetching: boolean }).fetching = false;
+      expect(fetcher.fetchPRState).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetcher.fetchPRState).toHaveBeenCalledTimes(1);
+      expect(stateStore.getPRState(done)?.status).toBe('merged');
+
+      // Fetched and merged: no further polling.
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(fetcher.fetchPRState).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps polling an open PR of a task that just finished, but not a day later', async () => {
+      const fetcher = createMockFetcher(true);
+      const task = taskStore.createTask({ prompt: 'p', cwd: '/tmp' });
+      taskStore.startTask(task.id);
+      taskStore.completeTask(task.id);
+      const openRef: GitHubReference = { ...finishedRef, number: 8, url: 'https://github.com/test/repo/pull/8', taskId: task.id, detectedFrom: 'agent-1' };
+      stateStore.addReference(openRef);
+      stateStore.updatePRState({
+        ref: openRef, title: 't', status: 'open', mergeable: 'UNKNOWN', author: 'a', branch: 'b', baseBranch: 'staging',
+        reviewDecision: null, reviewers: [], unresolvedThreads: [], totalComments: 0, checks: [], lastFetchedAt: new Date(),
+      });
+      scanner = new GitHubScannerService({
+        taskStore, stateStore, fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000, referenceExtractionIntervalMs: 60 * 60 * 1000 },
+        onChanges,
+      });
+      await scanner.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetcher.fetchPRState).toHaveBeenCalledTimes(1);
+
+      (fetcher.fetchPRState as ReturnType<typeof vi.fn>).mockClear();
+      vi.setSystemTime(Date.now() + 25 * 60 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetcher.fetchPRState).not.toHaveBeenCalled();
+    });
+
+    it('fetches re-tracked refs in batches of at most 25', async () => {
+      const fetcher = createMockFetcher(true);
+      fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
+      scanner = new GitHubScannerService({ taskStore, stateStore, fetcher, config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges });
+      await scanner.start();
+      const many = Array.from({ length: 60 }, (_, i) => ({ ...finishedRef, number: 100 + i, url: `https://github.com/test/repo/pull/${100 + i}` }));
+
+      await scanner.trackReferences(many);
+
+      const sizes = (fetcher.fetchStates as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as GitHubReference[]).length);
+      expect(sizes).toEqual([25, 25, 10]);
+    });
+
+    function stalledScanner(fetcher: GitHubFetcher) {
+      scanner = new GitHubScannerService({
+        taskStore, stateStore, fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000, referenceExtractionIntervalMs: 60 * 60 * 1000 },
+        onChanges,
+      });
+      return scanner;
+    }
+
+    it('a periodic tick carries at most 25 re-tracked refs next to the live ones', async () => {
+      const fetcher = createMockFetcher(true);
+      fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
+      const live: GitHubReference = { ...finishedRef, number: 1, taskId: 'task-live', detectedFrom: 'agent-1' };
+      stateStore.addReference(live);
+      const s = stalledScanner(fetcher);
+      await s.start();
+      // Their own fetch is skipped (another fetch in flight), so the tick must pick them up.
+      (s as unknown as { fetching: boolean }).fetching = true;
+      await s.trackReferences(Array.from({ length: 40 }, (_, i) => ({ ...finishedRef, number: 100 + i })));
+      (s as unknown as { fetching: boolean }).fetching = false;
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const batch = (fetcher.fetchStates as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as GitHubReference[];
+      expect(batch.filter((r) => r.taskId === 'task-done')).toHaveLength(25);
+      expect(batch).toContainEqual(live);
+    });
+
+    it('gives up on a re-tracked ref GitHub never answers for after an hour', async () => {
+      const fetcher = createMockFetcher(true);
+      fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
+      const task = taskStore.createTask({ prompt: 'p', cwd: '/tmp' });
+      taskStore.startTask(task.id);
+      taskStore.completeTask(task.id);
+      const ref: GitHubReference = { ...finishedRef, taskId: task.id };
+      const s = stalledScanner(fetcher);
+      await s.start();
+      await s.trackReferences([ref]);
+      const calls = () => (fetcher.fetchStates as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(1000);
+      const beforeExpiry = calls();
+      expect(beforeExpiry).toBeGreaterThan(1);
+
+      vi.setSystemTime(Date.now() + 61 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      // Past the hour the ref is no longer due; the store keeps no state for it.
+      expect(calls()).toBe(beforeExpiry);
+      expect(stateStore.getPRState(ref)).toBeNull();
+    });
+
+    it('does nothing before start (gh availability unknown)', async () => {
+      const fetcher = createMockFetcher(true);
+      scanner = new GitHubScannerService({ taskStore, stateStore, fetcher, config: DEFAULT_GITHUB_SCANNER_CONFIG, onChanges });
+      await scanner.trackReferences([finishedRef]);
+      expect(stateStore.getReferences('task-done')).toHaveLength(0);
+      expect(fetcher.fetchPRState).not.toHaveBeenCalled();
+    });
+  });
+
   describe('stop()', () => {
     it('marks scanner as inactive', async () => {
       scanner = new GitHubScannerService({
@@ -575,7 +763,7 @@ describe('GitHubScannerService', () => {
       expect(fetcher.fetchStates).toHaveBeenCalledWith([closedRef, openRef, issueRef]);
     });
 
-    it('stops polling refs once the owning task is completed, cancelled, or terminated', async () => {
+    it('stops polling refs once the owning task is completed, cancelled, or terminated, except a recent task\'s open PR', async () => {
       const fetcher = createMockFetcher(true);
       fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
 
@@ -609,7 +797,10 @@ describe('GitHubScannerService', () => {
       await vi.advanceTimersByTimeAsync(1000);
 
       expect(fetcher.fetchStates).toHaveBeenCalledTimes(1);
-      expect(fetcher.fetchStates).toHaveBeenCalledWith([activeRef]);
+      // The just-finished task's PR was last seen open: it may have merged
+      // since, so it is still polled (issue #3915). Refs of finished tasks
+      // with no open PR state are not.
+      expect(fetcher.fetchStates).toHaveBeenCalledWith([completedRef, activeRef]);
       expect(stateStore.getTaskState(completed.id).prs).toHaveLength(1);
       expect(stateStore.getPRState(completedRef)?.status).toBe('open');
     });

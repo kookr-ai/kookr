@@ -1,3 +1,5 @@
+import type { PrDeliveryState } from './pr-delivery.js';
+
 export interface GitHubReference {
   type: 'pr' | 'issue';
   owner: string;
@@ -48,6 +50,12 @@ export interface GitHubPRState {
   checks: GitHubCheck[];
   /** When the PR was merged (GitHub `mergedAt`); absent while unmerged or unreported (issue #3746). */
   mergedAt?: Date;
+  /** When the PR was opened (GitHub `createdAt`), when reported (issue #3915). */
+  createdAt?: Date;
+  /** The merge commit on the base branch, once merged (issue #3915). */
+  mergeCommit?: string;
+  /** Where the change is relative to the integration train (issue #3915). */
+  delivery?: PrDeliveryState;
   lastFetchedAt: Date;
 }
 

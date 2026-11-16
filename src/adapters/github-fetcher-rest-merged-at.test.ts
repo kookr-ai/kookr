@@ -69,3 +69,28 @@ describe('fetchPRState mergedAt (issue #3746)', () => {
     expect(state).not.toHaveProperty('mergedAt');
   });
 });
+
+describe('fetchPRState delivery fields (issue #3915)', () => {
+  beforeEach(() => transportMocks.execGh.mockReset());
+
+  it('requests createdAt and mergeCommit and returns them when well formed', async () => {
+    mockGh({ ...VIEW, state: 'MERGED', mergedAt: '2026-06-10T09:00:00Z', createdAt: '2026-06-10T08:00:00Z', mergeCommit: { oid: 'a'.repeat(40) } });
+
+    const state = await fetchPRState(prRef);
+
+    const viewArgs = transportMocks.execGh.mock.calls.map((c) => c[0] as string[]).find((a) => a[1] === 'view');
+    const fields = viewArgs?.[viewArgs.indexOf('--json') + 1]?.split(',');
+    expect(fields).toEqual(expect.arrayContaining(['createdAt', 'mergeCommit']));
+    expect(state?.createdAt?.toISOString()).toBe('2026-06-10T08:00:00.000Z');
+    expect(state?.mergeCommit).toBe('a'.repeat(40));
+  });
+
+  it('omits a missing or malformed merge commit and creation time', async () => {
+    mockGh({ ...VIEW, state: 'OPEN', mergedAt: null, createdAt: 'garbage', mergeCommit: { oid: 'not-a-sha' } });
+
+    const state = await fetchPRState(prRef);
+
+    expect(state).not.toHaveProperty('createdAt');
+    expect(state).not.toHaveProperty('mergeCommit');
+  });
+});
