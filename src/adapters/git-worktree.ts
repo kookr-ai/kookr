@@ -420,15 +420,35 @@ function findWorktreeHolder(
   worktreePath: string,
 ): 'shared-with-active-task' | 'reserved-for-chain' | undefined {
   const allTasks = taskStore.viewTasks();
-  let holder: 'reserved-for-chain' | undefined;
   for (const task of allTasks) {
     const otherActiveTask = task.id !== taskId && (task.status === 'open' || task.status === 'inProgress');
     if (otherActiveTask && hasWorktreeSessionAt(task, worktreePath)) return 'shared-with-active-task';
-    if (holder || !chainNeedsCwd(task, allTasks)) continue;
-    const sessionless = task.sessions.length === 0 && samePath(task.cwd, worktreePath);
-    if (sessionless || hasWorktreeSessionAt(task, worktreePath)) holder = 'reserved-for-chain';
   }
-  return holder;
+  return chainReservesPath(allTasks, worktreePath) ? 'reserved-for-chain' : undefined;
+}
+
+/** True when a playbook chain will still run an iteration in this worktree. */
+function chainReservesPath(allTasks: readonly Task[], worktreePath: string): boolean {
+  return allTasks.some((task) => {
+    if (!chainNeedsCwd(task, allTasks)) return false;
+    const sessionless = task.sessions.length === 0 && samePath(task.cwd, worktreePath);
+    return sessionless || hasWorktreeSessionAt(task, worktreePath);
+  });
+}
+
+/**
+ * True when a playbook chain still holds one of this task's worktrees, the
+ * case the completion dialog shows as `reserved-for-chain`. Completion uses it
+ * to tell an operator's "keep worktree" choice apart from a `false` the dialog
+ * sent only because the chain held the worktree (issue #3972). Unlike the
+ * dialog's blocker, another active task using the path does not hide the
+ * chain's hold here.
+ */
+export function isTaskWorktreeReservedForChain(taskStore: TaskStore, taskId: string): boolean {
+  const task = taskStore.getTask(taskId);
+  if (!task) return false;
+  const allTasks = taskStore.viewTasks();
+  return getWorktreePaths(task).some((path) => chainReservesPath(allTasks, path));
 }
 
 function hasWorktreeSessionAt(task: Task, worktreePath: string): boolean {
@@ -585,6 +605,36 @@ export async function cleanupReconciledTaskWorktrees(
     }
   }
   return reaped;
+}
+
+/**
+ * Reclaim a chain member's worktree once its chain has ended (the playbook
+ * chain service's `reclaimWorktree` hook). Follows the reconcile sweep's rule:
+ * a cancelled or terminated member is always cleaned, a completed one only
+ * while `cleanupOnComplete` is on and only when the operator did not choose to
+ * keep its worktree when completing it (`worktreeKeptOnComplete`, issue
+ * #3972). A member that is no longer terminal is skipped, and every safety gate
+ * (dirty, unmerged, shared) still holds. Returns true when a worktree was
+ * removed.
+ */
+export async function reclaimEndedChainWorktree(
+  taskStore: TaskStore,
+  taskId: string,
+  interactionLog: DeferredInteractionLogWriter | undefined,
+  opts: { cleanupOnComplete: boolean },
+): Promise<boolean> {
+  const task = taskStore.getTask(taskId);
+  if (!task) return false;
+  const completed = task.status === 'completed';
+  const reaped = await cleanupReconciledTaskWorktrees(
+    taskStore,
+    completed
+      ? { tasksCompleted: [taskId], tasksTerminated: [] }
+      : { tasksCompleted: [], tasksTerminated: [taskId] },
+    interactionLog,
+    { cleanupCompleted: opts.cleanupOnComplete && task.worktreeKeptOnComplete !== true },
+  );
+  return reaped.length > 0;
 }
 
 // Returns true only when the worktree directory was actually removed from

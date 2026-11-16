@@ -38,8 +38,11 @@ vi.mock('../core/project-identity.js', () => ({
 
 // Mock cleanupTaskWorktrees (fire-and-forget in completeTask/cancelTask)
 const mockCleanupTaskWorktrees = vi.fn().mockResolvedValue(undefined);
-vi.mock('../adapters/git-worktree.js', () => ({
+// The chain-hold check is pure (no git), so the real one runs (issue #3972).
+vi.mock('../adapters/git-worktree.js', async (importOriginal) => ({
   cleanupTaskWorktrees: (...args: unknown[]) => mockCleanupTaskWorktrees(...args),
+  isTaskWorktreeReservedForChain:
+    (await importOriginal<typeof import('../adapters/git-worktree.js')>()).isTaskWorktreeReservedForChain,
 }));
 
 // Mock removeReflectWorktree (fire-and-forget reflect-worktree reclaim on terminal transitions)
@@ -508,6 +511,75 @@ describe('completeTask', () => {
     expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-42');
     expect(deps.adapter.stop).toHaveBeenCalledWith('kookr-s1');
     expect(mockCleanupTaskWorktrees).not.toHaveBeenCalled();
+  });
+
+  describe('keep-worktree choice on a playbook chain member (issue #3972)', () => {
+    const CHAIN_CWD = '/wt/chain';
+
+    /** A started chain iteration with a worktree session at CHAIN_CWD. */
+    function startedChainTask(taskStore: TaskStore, iteration: number, maxIterations: number): string {
+      const task = taskStore.createTask({
+        prompt: 'Chain iteration',
+        cwd: CHAIN_CWD,
+        chain: { chainId: '', iteration, maxIterations, startedAt: new Date().toISOString(), unhealthyStreak: 0 },
+      });
+      taskStore.addSession(task.id, {
+        tmuxSession: `s-${task.id}`, agentType: 'claude-code', cwd: CHAIN_CWD, createdAt: new Date(),
+        gitIsWorktree: true, gitBranch: 'feature', gitCommit: 'abc123',
+      });
+      // Adding the session starts the task.
+      expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+      return task.id;
+    }
+
+    test('a finished final iteration completed with "keep" records the choice', async () => {
+      const taskStore = new TaskStore();
+      // Terminated by the system and the last of 3: the chain is about to
+      // end, so the dialog offered the choice.
+      const id = startedChainTask(taskStore, 3, 3);
+      taskStore.terminateTask(id, { reason: 'timeout' });
+
+      await completeTask(id, makeLifecycleDeps({ taskStore }), { cleanupWorktree: false });
+
+      expect(taskStore.getTask(id)!.status).toBe('completed');
+      expect(taskStore.getTask(id)!.worktreeKeptOnComplete).toBe(true);
+    });
+
+    test('a running tip completed while the chain holds its worktree records no choice', async () => {
+      // The dialog showed "kept: a playbook chain will run its next iteration
+      // here" and sent false for that reason, not as the operator's choice.
+      const taskStore = new TaskStore();
+      const id = startedChainTask(taskStore, 3, 3);
+
+      await completeTask(id, makeLifecycleDeps({ taskStore }), { cleanupWorktree: false });
+
+      expect(taskStore.getTask(id)!.status).toBe('completed');
+      expect(taskStore.getTask(id)!.worktreeKeptOnComplete).toBeUndefined();
+    });
+
+    test('a finished mid-chain iteration the chain will relaunch records no choice', async () => {
+      const taskStore = new TaskStore();
+      const id = startedChainTask(taskStore, 1, 5);
+      taskStore.terminateTask(id, { reason: 'timeout' });
+
+      await completeTask(id, makeLifecycleDeps({ taskStore }), { cleanupWorktree: false });
+
+      expect(taskStore.getTask(id)!.worktreeKeptOnComplete).toBeUndefined();
+    });
+
+    test('no choice is recorded without an explicit false, nor outside a chain', async () => {
+      const taskStore = new TaskStore();
+      const chainId = startedChainTask(taskStore, 3, 3);
+      taskStore.terminateTask(chainId, { reason: 'timeout' });
+      const plain = taskStore.createTask({ prompt: 'Plain task', cwd: '/wt/plain' });
+      taskStore.startTask(plain.id);
+
+      await completeTask(chainId, makeLifecycleDeps({ taskStore }));
+      await completeTask(plain.id, makeLifecycleDeps({ taskStore }), { cleanupWorktree: false });
+
+      expect(taskStore.getTask(chainId)!.worktreeKeptOnComplete).toBeUndefined();
+      expect(taskStore.getTask(plain.id)!.worktreeKeptOnComplete).toBeUndefined();
+    });
   });
 
   test('uses the live cleanup setting when no per-task override is supplied', async () => {

@@ -266,6 +266,15 @@ export interface Task {
    */
   finishedSignalAt?: string;
   /**
+   * The operator chose to keep this chain member's worktree when completing it
+   * (issue #3972). Set by the completion path only for a playbook-chain member
+   * whose worktree the chain was no longer holding, so a `false` the completion
+   * dialog sent because the chain held the worktree is not mistaken for a
+   * choice. Read when the chain ends: the reclaim then leaves the worktree on
+   * disk. Cleared when the task leaves its terminal state.
+   */
+  worktreeKeptOnComplete?: true;
+  /**
    * How this task reached terminal-complete (issue #1608). Stamped at complete
    * time for lesson-yield v2 per-path buckets. See {@link CompletionPath} in
    * `lesson-decision.ts`. Absent on historical tasks → counted as `unknown`.

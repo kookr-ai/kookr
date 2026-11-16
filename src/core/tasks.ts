@@ -998,6 +998,10 @@ export class TaskStore {
       );
     } else {
       delete task.finishedAt;
+      // A "keep worktree" choice belongs to the completion it was made in
+      // (issue #3972); a reopened task that later ends another way must not
+      // inherit it.
+      delete task.worktreeKeptOnComplete;
     }
     if (dependencyAdmission && isTerminalStatus(to) && !dependencyCleanupFence) {
       // Terminal work is no longer retryable pending intent. Remove the
