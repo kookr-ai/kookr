@@ -902,6 +902,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           // counted apart from "reset known and pending" above.
           skippedProviderResetUnresolved:
             providerPausedOccupancySnapshot.skippedProviderResetUnresolved,
+          // Issue #3574: reclaims withheld because a healthy quota poller with
+          // no exhausted window contradicts the pause.
+          skippedProviderQuotaHealthy:
+            providerPausedOccupancySnapshot.skippedProviderQuotaHealthy,
           // Issue #3115: age of the oldest open-PR fail-safe hold and how many
           // holds have run past the hard TTL. The open-PR exemption still holds
           // reclaim (unchanged); these fields only make an indefinitely pinned

@@ -126,6 +126,8 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
                 providerPausedOccupancy.skippedAwaitingProviderReset,
               skippedProviderResetUnresolved:
                 providerPausedOccupancy.skippedProviderResetUnresolved,
+              skippedProviderQuotaHealthy:
+                providerPausedOccupancy.skippedProviderQuotaHealthy,
             },
           }
         : {}),
