@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { parseReopenArgs, runReopenCli } from './kookr-reopen.js';
+import { REOPEN_HELP_TEXT, parseReopenArgs, runReopenCli } from './kookr-reopen.js';
 import { SUPERVISOR_ACTOR_HEADER } from '../shared/contracts/supervisor-actions.js';
 
 function captureConsole() {
@@ -164,6 +164,39 @@ describe('runReopenCli', () => {
     expect(await runReopenCli(['t-1'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(3);
   });
 
+  it('--json: an unreachable server is NO_SERVER and names the task', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('fetch failed');
+    });
+    expect(await runReopenCli(['t-1', '--json'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(3);
+    expect(JSON.parse(io.logs[0]!)).toMatchObject({
+      ok: false,
+      code: 'NO_SERVER',
+      details: { subcommand: 'reopen', taskId: 't-1' },
+    });
+  });
+
+  it('--json --help prints the help inside one envelope and sends nothing', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn();
+    expect(await runReopenCli(['--json', '--help'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(0);
+    expect(io.logs).toHaveLength(1);
+    expect(JSON.parse(io.logs[0]!)).toEqual({
+      ok: true,
+      code: 'OK',
+      message: 'Help',
+      details: { subcommand: 'reopen', help: REOPEN_HELP_TEXT },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('--help without --json prints the plain help text', async () => {
+    const io = captureConsole();
+    expect(await runReopenCli(['--help'], { env: BASE_ENV, ...io })).toBe(0);
+    expect(io.logs).toEqual([REOPEN_HELP_TEXT]);
+  });
+
   it('a timeout is exit 4 and tells the caller to check the task before retrying', async () => {
     const io = captureConsole();
     const fetchImpl = vi.fn(async () => {
@@ -211,6 +244,13 @@ describe('runReopenCli', () => {
       const code = await runReopenCli(['t-1'], { env: {}, ...io, fetchImpl: probeFetch([]) as never });
       expect(code).toBe(3);
       expect(io.errors.join('\n')).toContain('no Kookr server reachable');
+    });
+
+    it('--json: no reachable instance is NO_SERVER, exit 3', async () => {
+      const io = captureConsole();
+      const code = await runReopenCli(['t-1', '--json'], { env: {}, ...io, fetchImpl: probeFetch([]) as never });
+      expect(code).toBe(3);
+      expect(JSON.parse(io.logs[0]!)).toMatchObject({ ok: false, code: 'NO_SERVER' });
     });
 
     it('a single reachable instance is used', async () => {

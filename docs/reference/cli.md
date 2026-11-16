@@ -796,17 +796,17 @@ the recorded local gate; `4` blocked by the independent-review gate.
 
 ## Server Discovery
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr ask`, `kookr peek`, `kookr signal`, `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr reopen`, `kookr ask`, `kookr peek`, `kookr signal`, `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
 3. Probe local ports `4800` and `4801`
 
-Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr reply` / `kookr peek` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
+Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr reply` / `kookr reopen` / `kookr peek` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
 
 ## JSON Output
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr ask`, `kookr peek`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr reopen`, `kookr ask`, `kookr peek`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -1656,7 +1656,8 @@ Conversation: resumes c3753022-…
 conversationId?, caveat?, reason? }`, and `details.status` is the task's status
 after the call (`pending` while it waits for a slot). The resume request lives
 in server memory only: if the server restarts while the task is still
-`pending`, it launches fresh.
+`pending`, it launches fresh. `kookr reopen --json --help` prints the help text
+inside the same envelope, in `details.help`.
 
 Authentication and target selection are the same as for `kookr stop`: the
 command forwards `KOOKR_SUPERVISOR_TOKEN` (else `KOOKR_API_TOKEN`), and

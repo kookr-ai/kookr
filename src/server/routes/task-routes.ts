@@ -99,7 +99,7 @@ import {
   resolveMergeRequiredGate,
   shouldUseLiveMergeVerify,
 } from '../../core/merge-required.js';
-import { preparePlaybookLaunchWithMetadata } from '../use-cases/playbook-launch.js';
+import { preparePlaybookLaunchWithMetadata, UndeclaredPlaybookParameterError } from '../use-cases/playbook-launch.js';
 import { discoverApplicablePlaybooks } from '../use-cases/playbook-list.js';
 import {
   readArchivedTasks,
@@ -897,16 +897,14 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
               ...(body.prompt === undefined ? {} : { prompt: body.prompt }),
             },
             agentType,
+            // Checked against the parsed playbook before its required
+            // parameters, so a misspelled name is reported as undeclared
+            // rather than as the required parameter it missed (#3863). The
+            // prompt merged in above is not a caller-typed name.
+            callerParameterNames: Object.keys(playbookWrapper.parameterValues),
           });
           const declared = preparedPlaybook.playbook.parameters.map((parameter) => parameter.name);
           const declaredList = declared.length > 0 ? declared.join(', ') : '(none)';
-          const unknown = Object.keys(playbookWrapper.parameterValues).filter((name) => !declared.includes(name));
-          if (unknown.length > 0) {
-            return c.json({
-              error: `Playbook ${playbookWrapper.path} does not declare parameter(s): ${unknown.join(', ')}. `
-                + `Declared parameters: ${declaredList}.`,
-            }, 400);
-          }
           if (body.prompt !== undefined) {
             // Prompt-wrapper mode: the prompt must land in the task, never be
             // silently dropped by a playbook that has nowhere to put it.
@@ -929,6 +927,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
             return c.json({ error: 'playbook launches require idempotencyKey' }, 400);
           }
         } catch (err) {
+          if (err instanceof UndeclaredPlaybookParameterError) return c.json({ error: err.message }, 400);
           const message = err instanceof Error ? err.message : String(err);
           return c.json({ error: `Invalid playbook launch: ${message}` }, 400);
         }
@@ -1264,7 +1263,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // re-queued and relaunched (immediately when a slot is free), and `resume`
   // reports whether the relaunch continues the prior conversation, starts
   // fresh by design, or cannot resume it and why. Supervisor-gated like
-  // `/complete`, since it launches an agent on an existing task.
+  // `/complete`, since it launches an agent on an existing task, and audited
+  // the same way: every outcome is a `task.reopen` row attributed via
+  // `X-Kookr-Actor`.
   app.post('/api/tasks/:id/reopen', async (c) => {
     if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
       return supervisorUnauthorizedResponse(c);
@@ -1273,7 +1274,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
 
     try {
-      const result = await lifecycleCommands.reopenTask(id);
+      const result = await lifecycleCommands.reopenTask(id, { actor: actorFromRequest(c) });
       if (result.outcome === 'not_found') {
         return c.json({ error: 'Task not found' }, 404);
       }

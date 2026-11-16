@@ -393,6 +393,54 @@ describe('TaskLifecycleCommands.reopenTask (resume prior conversation)', () => {
     expect(taskStore.getTask(task.id)?.status).toBe('pending');
   });
 
+  test('audits a failed relaunch as a task.reopen row with its code and the actor (#3914)', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-reopen-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Relaunch fails', '/repo');
+      addSession(taskStore, task.id, 'kookr-prior');
+      taskStore.terminateTask(task.id);
+      const tryPromotePending = vi.fn(async () => {
+        taskStore.cancelTask(task.id, { source: 'provider_admission', reason: 'launch_failure', detail: 'adapter exploded' });
+      });
+      const { deps } = makeDeps(taskStore, { auditLogPath, tryPromotePending });
+
+      const result = await new TaskLifecycleCommands(deps).reopenTask(task.id, {
+        actor: { source: 'websocket', actorId: 'conn-7' },
+      });
+
+      expect(result).toMatchObject({ outcome: 'invalid', code: 'reopen_launch_failed' });
+      expect(await readJsonl(auditLogPath)).toEqual([
+        expect.objectContaining({
+          type: 'task.reopen',
+          actor: { source: 'websocket', actorId: 'conn-7' },
+          taskId: task.id,
+          outcome: 'invalid',
+          code: 'reopen_launch_failed',
+          error: expect.stringContaining('adapter exploded'),
+        }),
+      ]);
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
+  test('audits an unknown id with an unknown actor when none is given', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-reopen-audit-noop-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const { deps } = makeDeps(new TaskStore(), { auditLogPath });
+
+      expect((await new TaskLifecycleCommands(deps).reopenTask('missing-task')).outcome).toBe('not_found');
+      expect(await readJsonl(auditLogPath)).toEqual([
+        expect.objectContaining({ type: 'task.reopen', actor: { source: 'unknown' }, taskId: 'missing-task', outcome: 'not_found' }),
+      ]);
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
   test('refuses to reopen a running task instead of launching a second agent beside it', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Still running', '/repo');

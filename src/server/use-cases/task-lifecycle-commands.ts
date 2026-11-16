@@ -25,7 +25,8 @@ import { deleteTask, type DeleteTaskDeps } from './delete-task.js';
 import { writeFeedbackBundle } from './write-feedback-bundle.js';
 import { writeTaskSnapshotBundle } from './write-task-snapshot-bundle.js';
 import { requestTaskReflect } from './request-task-reflect.js';
-import { describeReopenResume, hasResumableSession, type ReopenResumeReport } from '../resume-context.js';
+import { describeReopenResume, hasResumableSession } from '../resume-context.js';
+import type { ReopenResumeReport } from '../../shared/contracts/supervisor-actions.js';
 import { hungTaskReportPrefix } from '../hung-task-report-paths.js';
 import { firstHookMissReportPrefix } from '../first-hook-miss-report-paths.js';
 
@@ -179,7 +180,7 @@ export class TaskLifecycleCommands {
     } & TaskDeletionAuditOpts = {},
   ): Promise<TaskLifecycleCommandResult> {
     const result = await this.completeTaskInner(taskId, opts);
-    await this.writeTaskCompletionAudit(taskId, result, opts.actor);
+    await this.writeTaskCommandAudit('task.complete', taskId, result, opts.actor);
     return result;
   }
 
@@ -280,7 +281,18 @@ export class TaskLifecycleCommands {
     };
   }
 
-  async reopenTask(taskId: string): Promise<TaskLifecycleCommandResult> {
+  /**
+   * Reopen a terminal task and relaunch it (issue #3671). Like
+   * {@link completeTask}, every outcome is audited as a `task.reopen` row
+   * when `auditLogPath` is configured, attributed to `opts.actor` (#3914).
+   */
+  async reopenTask(taskId: string, opts: TaskDeletionAuditOpts = {}): Promise<TaskLifecycleCommandResult> {
+    const result = await this.reopenTaskInner(taskId);
+    await this.writeTaskCommandAudit('task.reopen', taskId, result, opts.actor);
+    return result;
+  }
+
+  private async reopenTaskInner(taskId: string): Promise<TaskLifecycleCommandResult> {
     // Only a terminal task can be reopened. The store also allows
     // `inProgress -> open`, so without this guard a reopen of a running task
     // would pend and promote it, launching a second agent beside the live one.
@@ -963,26 +975,30 @@ export class TaskLifecycleCommands {
     }
   }
 
-  private async writeTaskCompletionAudit(
+  /** One audit row for a single-task command (`completeTask`, `reopenTask`). */
+  private async writeTaskCommandAudit(
+    type: 'task.complete' | 'task.reopen',
     taskId: string,
     result: TaskLifecycleCommandResult,
     actor?: TaskDeletionAuditActor,
   ): Promise<void> {
     if (!this.deps.auditLogPath) return;
     const row: Record<string, unknown> = {
-      type: 'task.complete',
+      type,
       timestamp: nowISO(),
       actor: actor ?? { source: 'unknown' },
       taskId,
       outcome: result.outcome,
       ...('task' in result ? { status: result.task.status } : {}),
+      ...(result.outcome === 'reopened' ? { resumeMode: result.resume.mode } : {}),
+      ...('code' in result ? { code: result.code } : {}),
       ...('error' in result ? { error: result.error } : {}),
     };
     try {
       await mkdir(dirname(this.deps.auditLogPath), { recursive: true });
       await appendFile(this.deps.auditLogPath, `${JSON.stringify(row)}\n`, 'utf-8');
     } catch (err) {
-      console.warn('[task-audit] failed to append completion audit row:', err);
+      console.warn(`[task-audit] failed to append ${type} audit row:`, err);
     }
   }
 
