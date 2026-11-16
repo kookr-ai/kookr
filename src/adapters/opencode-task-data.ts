@@ -102,6 +102,37 @@ export async function isAbsentOrEmptyDir(dir: string): Promise<boolean> {
   }
 }
 
+/**
+ * In-process lock per task dir, held by the sweep across its last "is the task active?" check AND the removal
+ * (marker read plus recursive `rm`). Keyed by the dir path, so every adapter over the same data root shares it.
+ */
+const taskDirLocks = new Map<string, Promise<void>>();
+
+/** Run `fn` while holding the lock of `dir`; callers queue in order. The lock is released even when `fn` throws. */
+export async function withTaskDirLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const prev = taskDirLocks.get(dir) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  const tail = prev.then(() => mine);
+  taskDirLocks.set(dir, tail);
+  try {
+    await prev;
+    return await fn();
+  } finally {
+    release();
+    if (taskDirLocks.get(dir) === tail) taskDirLocks.delete(dir);
+  }
+}
+
+/**
+ * Wait until no sweep removal of `dir` is in flight. A launch registers its task as active first and then waits
+ * here: a removal that has not yet made its active check will see the launch and skip; one already past it is
+ * waited for, so the launch reads the dir after the removal (and launches fresh), never in the middle of it.
+ */
+export async function waitForTaskDirUnlocked(dir: string): Promise<void> {
+  await taskDirLocks.get(dir);
+}
+
 /** Remove a task dir only when Kookr marked it; returns whether anything was removed. Never touches foreign dirs. */
 export async function removeMarkedTaskDir(dir: string, taskId: string): Promise<boolean> {
   if (!(await isMarkedTaskDir(dir, taskId))) return false;
@@ -189,6 +220,15 @@ export async function touchTaskDir(taskDir: string): Promise<void> {
   }
 }
 
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+}
+
 async function dirBytes(dir: string): Promise<number> {
   let total = 0;
   let entries: import('node:fs').Dirent[];
@@ -248,13 +288,32 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
   const now = opts.now ?? Date.now();
   const survivors: Array<{ taskId: string; dir: string; mtimeMs: number; bytes: number }> = [];
   let protectedBytes = 0;
-  const remove = async (taskId: string, dir: string, reason: SweepResult['removed'][number]['reason']) => {
+  /**
+   * `removed` by this sweep, `gone` when the dir no longer exists (an overlapping sweep removed it first), `kept` when
+   * it is still on disk (its task became active, its marker changed, or the removal failed).
+   */
+  const remove = async (
+    taskId: string,
+    dir: string,
+    reason: SweepResult['removed'][number]['reason'],
+  ): Promise<'removed' | 'gone' | 'kept'> => {
     try {
-      if (await opts.isActive?.(taskId)) return;
-      if (await removeMarkedTaskDir(dir, taskId)) result.removed.push({ taskId, reason });
+      return await withTaskDirLock(dir, async () => {
+        if (await opts.isActive?.(taskId)) return 'kept';
+        if (await removeMarkedTaskDir(dir, taskId)) {
+          result.removed.push({ taskId, reason });
+          return 'removed';
+        }
+        return (await pathExists(dir)) ? 'kept' : 'gone';
+      });
     } catch (err) {
       opts.warn?.(`[opencode-task-data] could not remove ${dir}: ${(err as Error).message}`);
+      return 'kept';
     }
+  };
+  /** A dir whose removal was skipped still occupies disk: count it towards the size cap. */
+  const removeOrCount = async (taskId: string, dir: string, reason: SweepResult['removed'][number]['reason']) => {
+    if ((await remove(taskId, dir, reason)) === 'kept') protectedBytes += await dirBytes(dir);
   };
   for (const taskId of names) {
     if (!TASK_ID_RE.test(taskId) || opts.activeTaskIds.has(taskId)) continue;
@@ -270,7 +329,7 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
       continue;
     }
     const status = opts.statusOf(taskId);
-    if (status === undefined) { await remove(taskId, dir, 'task-gone'); continue; }
+    if (status === undefined) { await removeOrCount(taskId, dir, 'task-gone'); continue; }
     // A task that is still open/pending/in progress may have a live terminal session that survived a Kookr
     // restart (dtach keeps it running) and is therefore not in `activeTaskIds`: the caps never evict it.
     if (status === 'open' || status === 'pending' || status === 'inProgress') {
@@ -278,12 +337,12 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
       continue;
     }
     if ((status === 'completed' || status === 'cancelled') && now - mtimeMs >= opts.doneTtlMs) {
-      await remove(taskId, dir, 'task-done');
+      await removeOrCount(taskId, dir, 'task-done');
       continue;
     }
     // Age counts from last use (the adapter touches the dir on launch and stop), so a launch in flight is safe.
     if (opts.maxAgeMs > 0 && now - mtimeMs > opts.maxAgeMs) {
-      await remove(taskId, dir, 'expired');
+      await removeOrCount(taskId, dir, 'expired');
       continue;
     }
     survivors.push({ taskId, dir, mtimeMs, bytes: await dirBytes(dir) });
@@ -295,8 +354,8 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
       if (total <= opts.maxBytes) break;
       // Never evict a dir used in the last few minutes: its launch may be in flight.
       if (now - s.mtimeMs < SIZE_EVICTION_GRACE_MS) continue;
-      await remove(s.taskId, s.dir, 'size-cap');
-      total -= s.bytes;
+      // Only a dir that is really gone frees space; one skipped because its task became active still counts.
+      if ((await remove(s.taskId, s.dir, 'size-cap')) !== 'kept') total -= s.bytes;
     }
   }
   result.remainingBytes = total;

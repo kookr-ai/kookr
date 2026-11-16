@@ -14,6 +14,13 @@ import type { OpenCodeProfile } from './opencode-kookr-hooks.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
 import type { AgentEvent } from '../core/types.js';
 import { TaskStore } from '../core/tasks.js';
+import { isMarkedTaskDir, withTaskDirLock } from './opencode-task-data.js';
+
+vi.mock('./opencode-task-data.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./opencode-task-data.js')>();
+  // Delegates by default; a test can gate one call to reach an otherwise unobservable interleaving.
+  return { ...actual, isMarkedTaskDir: vi.fn(actual.isMarkedTaskDir) };
+});
 
 vi.mock('./git-info.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-info.js')>();
@@ -793,6 +800,83 @@ describe('OpenCodeAdapter', () => {
       } finally {
         probe.mockRestore();
       }
+    });
+  });
+
+  describe('hook events and launches racing stop and the sweep (#4057)', () => {
+    const FIXTURE_DB = fileURLToPath(new URL('./__fixtures__/opencode-session.db', import.meta.url));
+    const FIXTURE_SESSION = 'ses_e40a99e51ffeNDXOMdLPpnyMew';
+    const DAY = 86_400_000;
+    const taskDirOf = (taskId: string) => join(sessionRoot, 'opencode-data', taskId);
+    const toolHook = () => hook('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' } });
+    type Internals = { tmuxToTaskId: Map<string, string>; dataHomes: Map<string, string>; lastUseTouch: Map<string, number> };
+    const internals = (a: OpenCodeAdapter) => a as unknown as Internals;
+
+    test('a hook event after stop does not re-register the session, so its task data is still swept', async () => {
+      const adapter = makeAdapter({ dataDoneTtlHours: 24 });
+      const { task, id } = await launch(adapter);
+      taskStore.completeTask(task.id);
+      await adapter.stop(id); // kept for the done grace
+      const late = adapter.injectHookEvent(id, toolHook());
+      expect(late.parseStatus).toBe('ok'); // still dispatched
+      await new Promise((r) => setTimeout(r, 50));
+      expect(internals(adapter).tmuxToTaskId.has(id)).toBe(false);
+      expect(internals(adapter).lastUseTouch.has(id)).toBe(false);
+      const past = new Date(Date.now() - 2 * DAY);
+      utimesSync(taskDirOf(task.id), past, past);
+      await adapter.sweepTaskData();
+      expect(existsSync(taskDirOf(task.id))).toBe(false);
+    });
+
+    test('a markSessionUsed in flight across stop does not put the data home back', async () => {
+      const { id } = await launch(makeAdapter());
+      const restarted = makeAdapter(); // adopts the session from the task store
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const marked = vi.mocked(isMarkedTaskDir);
+      const real = marked.getMockImplementation()!;
+      marked.mockClear();
+      marked.mockImplementationOnce(async (dir, taskId) => { await gate; return real(dir, taskId); });
+      restarted.injectHookEvent(id, toolHook()); // its adopt now waits on the marker read
+      await restarted.stop(id);
+      release();
+      await vi.waitFor(() => expect(marked).toHaveBeenCalledTimes(2));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(internals(restarted).dataHomes.has(id)).toBe(false);
+      expect(internals(restarted).tmuxToTaskId.has(id)).toBe(false);
+    });
+
+    test('a relaunch under a stopped session name registers again', async () => {
+      const adapter = makeAdapter();
+      const { id } = await launch(adapter);
+      await adapter.stop(id);
+      const next = taskStore.createTask('next', '/workspace');
+      await adapter.launch(next.id, 'next', '/workspace', undefined, { tmuxName: id });
+      adapter.injectHookEvent(id, toolHook());
+      expect(internals(adapter).tmuxToTaskId.get(id)).toBe(next.id);
+      expect(internals(adapter).lastUseTouch.has(id)).toBe(true); // the live session's activity is recorded again
+    });
+
+    test('a resume launch that starts while a sweep removal of its dir is in flight waits for it, then launches fresh', async () => {
+      const { task, id } = await launch(makeAdapter());
+      const dbDir = join(backend.sessions.get(id)!.spec.env!.XDG_DATA_HOME!, 'opencode');
+      mkdirSync(dbDir, { recursive: true });
+      copyFileSync(FIXTURE_DB, join(dbDir, 'opencode.db'));
+      await backend.killSession(id);
+      const restarted = makeAdapter();
+      const dir = taskDirOf(task.id);
+      let resumed!: Promise<string>;
+      // The lock stands for a sweep removal that is already past its active check (the launch was not registered yet).
+      await withTaskDirLock(dir, async () => {
+        resumed = restarted.launch(task.id, 'x', '/workspace', { sessionId: FIXTURE_SESSION }, { tmuxName: 'kookr-oc2' });
+        resumed.catch(() => { /* asserted below */ });
+        await new Promise((r) => setTimeout(r, 50));
+        expect(backend.sessions.has('kookr-oc2')).toBe(false);
+        rmSync(dir, { recursive: true, force: true });
+      });
+      const id2 = await resumed;
+      expect(backend.sessions.get(id2)!.spec.args).toEqual(['/workspace']);
+      expect(await isMarkedTaskDir(dir, task.id)).toBe(true);
     });
   });
 
