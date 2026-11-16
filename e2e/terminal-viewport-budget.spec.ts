@@ -93,6 +93,35 @@ async function expectTerminalBudget(page: Page, minimum: TerminalBudget, label: 
   }
 }
 
+/** Give the task `count` child task records, `running` of them in progress (#3939). */
+async function seedChildTasks(request: APIRequestContext, parentTaskId: string, count: number, running: number) {
+  const response = await request.post('/api/test/create-child-tasks', { data: { parentTaskId, count, running } });
+  expect(response.ok(), `create child tasks: ${response.status()} ${await response.text()}`).toBe(true);
+}
+
+type PaneShare = { body: number; split: number };
+
+async function readPaneShare(page: Page): Promise<PaneShare> {
+  return page.locator('.detail-body-main').evaluate((element) => {
+    const split = element.querySelector(':scope > .detail-split');
+    return {
+      body: Math.round(element.getBoundingClientRect().height),
+      split: Math.round(split?.getBoundingClientRect().height ?? 0),
+    };
+  });
+}
+
+async function expectTerminalKeepsItsShare(page: Page, label: string) {
+  await expect.poll(async () => {
+    const { body, split } = await readPaneShare(page);
+    return split / body;
+  }, { message: `${label}: pane body keeps 45% of the detail column`, timeout: 5_000 }).toBeGreaterThanOrEqual(0.449);
+  // The terminal must also stay inside the window, not just be tall.
+  const bottom = await page.locator('.terminal-xterm').evaluate((element) => element.getBoundingClientRect().bottom);
+  expect(bottom, `${label}: terminal bottom inside the viewport`).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
+  await expectTerminalBudget(page, { width: 300, height: 200, cols: 40, rows: 12 }, label);
+}
+
 test.describe('Terminal viewport budgets', () => {
   test.beforeEach(async ({ page, request }) => {
     await resetServer(request);
@@ -173,4 +202,44 @@ test.describe('Terminal viewport budgets', () => {
     await expect(page.getByTestId('project-detail-drawer')).toHaveCount(0);
     await expectTerminalBudget(page, { width: 340, height: 80, cols: 40, rows: 5 }, 'restored mobile terminal');
   });
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 1920, height: 1080 }]) {
+    test(`60 related tasks never push the terminal off screen at ${viewport.width}x${viewport.height} (#3939)`, async ({ page, request }) => {
+      test.setTimeout(90_000);
+      await page.setViewportSize(viewport);
+      const { taskId } = await seedTerminalBudgetTask(page, request);
+      await selectBudgetTask(page);
+      const baseline = await readTerminalBudget(page);
+
+      await seedChildTasks(request, taskId, 60, 3);
+      // The coordinator chains travel with the page-load snapshot, as in coordinator-surfaces.spec.ts.
+      await page.reload();
+      await selectBudgetTask(page);
+      const strip = page.getByTestId('coordinator-chain-strip');
+      await expect(strip.getByTestId('coordinator-chain-summary')).toContainText('60 children', { timeout: 15_000 });
+      await expect(strip.getByTestId('coordinator-chain-summary')).toContainText('3 in progress');
+
+      // Collapsed (the default): only the 3 running children are chips.
+      const toggle = strip.getByTestId('coordinator-chain-toggle');
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await expect(strip.getByTestId('coordinator-chain-member')).toHaveCount(3);
+      await expectTerminalKeepsItsShare(page, `collapsed ${viewport.width}x${viewport.height}`);
+      const collapsed = await readTerminalBudget(page);
+      expect(collapsed.height, 'collapsed strip (summary + up to two chip rows) costs the terminal at most 150px').toBeGreaterThanOrEqual(baseline.height - 150);
+
+      // Expanded: all 60 chips scroll inside a bounded box; the terminal keeps its share.
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      await expect(strip.getByTestId('coordinator-chain-member')).toHaveCount(60);
+      const list = strip.getByTestId('coordinator-chain-members');
+      const box = await list.evaluate((element) => ({ client: element.clientHeight, scroll: element.scrollHeight }));
+      expect(box.client, 'expanded list is bounded').toBeLessThanOrEqual(240);
+      expect(box.scroll, 'expanded list scrolls instead of growing').toBeGreaterThan(box.client);
+      await expectTerminalKeepsItsShare(page, `expanded ${viewport.width}x${viewport.height}`);
+
+      // The choice survives a reload.
+      await page.reload();
+      await selectBudgetTask(page);
+      await expect(page.getByTestId('coordinator-chain-toggle')).toHaveAttribute('aria-expanded', 'true');
+    });
+  }
 });
