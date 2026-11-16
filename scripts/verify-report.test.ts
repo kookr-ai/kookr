@@ -4,7 +4,7 @@
 // status FAIL_<script> asks for (default 0), and `pnpm test` copies a prepared
 // Vitest run summary where test/rerun-gate.reporter.mjs would write it. git runs
 // only in a mkdtemp repository.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -68,6 +68,13 @@ describe('buildVerifyReport', () => {
     expect(report).toMatchObject({ status: 'failed', failures: [] });
   });
 
+  it('names no failing step when a signal stopped the run', () => {
+    const report = buildVerifyReport({
+      exitCode: 143, signal: 'TERM', steps: 'start\tunit_lane\tRunning tests\tunit_tests\n',
+    });
+    expect(report).toMatchObject({ status: 'interrupted', signal: 'TERM', failures: [] });
+  });
+
   it('adds every failing test file to the unit lane, relative to the repository', () => {
     const report = buildVerifyReport({
       exitCode: 1,
@@ -124,6 +131,10 @@ function setup() {
   const summaryFile = join(root, 'summary.json');
   writeFileSync(join(bin, 'pnpm'), [
     '#!/usr/bin/env bash',
+    // PNPM_LOG: one line per call, with its arguments.
+    '[ -z "${PNPM_LOG:-}" ] || printf "%s\\n" "$*" >> "$PNPM_LOG"',
+    // HANG_MARK: `pnpm test` says it started, then hangs until killed.
+    'if [ "$1" = test ] && [ -n "${HANG_MARK:-}" ]; then : > "$HANG_MARK"; exec sleep 60; fi',
     'if [ "$1" = test ] && [ -n "${VITEST_RERUN_SUMMARY_FILE:-}" ] && [ -f "$SUMMARY_SRC" ]; then',
     '  cp "$SUMMARY_SRC" "$VITEST_RERUN_SUMMARY_FILE"',
     'fi',
@@ -148,7 +159,30 @@ function setup() {
     const report = existsSync(reportFile) ? JSON.parse(readFileSync(reportFile, 'utf8')) : null;
     return { status: r.status, out: `${r.stdout}${r.stderr}`, report };
   };
-  return { run, head, reportFile };
+  // Like the train on a timeout: SIGTERM to verify.sh's whole process group
+  // once the unit lane is running.
+  const runKilled = async () => {
+    writeFileSync(summaryFile, JSON.stringify(summaryOf(repo, [])));
+    const mark = join(root, 'hang.mark');
+    const child = spawn('bash', [VERIFY], {
+      cwd: repo, detached: true, stdio: 'ignore',
+      env: {
+        ...ENV_BASE, KOOKR_VERIFY_FLAKY_RERUN: '', VITEST_RERUN_SUMMARY_FILE: '',
+        KOOKR_VERIFY_REPORT_FILE: reportFile, SUMMARY_SRC: summaryFile, HANG_MARK: mark,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+      },
+    });
+    const exited = new Promise<number | null>((res) => child.on('exit', (code) => res(code)));
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(mark) && Date.now() < deadline) await new Promise((res) => setTimeout(res, 50));
+    process.kill(-(child.pid as number), 'SIGTERM');
+    const status = await exited;
+    const report = existsSync(reportFile) ? JSON.parse(readFileSync(reportFile, 'utf8')) : null;
+    return { status, report };
+  };
+  const pnpmLog = join(root, 'pnpm.log');
+  const pnpmCalls = () => (existsSync(pnpmLog) ? readFileSync(pnpmLog, 'utf8').split('\n').filter(Boolean) : []);
+  return { run, runKilled, head, reportFile, pnpmLog, pnpmCalls };
 }
 
 describe('verify.sh report file (KOOKR_VERIFY_REPORT_FILE)', () => {
@@ -212,10 +246,70 @@ describe('verify.sh report file (KOOKR_VERIFY_REPORT_FILE)', () => {
     expect(r.report.status).toBe('passed');
   });
 
+  it('reports a run stopped by SIGTERM as interrupted, with no failing step', async () => {
+    const s = setup();
+    const r = await s.runKilled();
+    expect(r.report).toMatchObject({ status: 'interrupted', signal: 'TERM', exitCode: 143, failures: [] });
+  });
+
   it('writes nothing when the variable is unset', () => {
     const s = setup();
     const r = s.run({ KOOKR_VERIFY_REPORT_FILE: '', FAIL_check_cycles: '1' });
     expect(r.status).toBe(1);
     expect(r.report).toBeNull();
+  });
+});
+
+describe('verify.sh narrow run (KOOKR_VERIFY_ONLY_STEPS, KOOKR_VERIFY_UNIT_FILES)', () => {
+  const modes: Array<[string, Record<string, string>]> = [['sequential', {}], ['train mode', { KOOKR_VERIFY_FLAKY_RERUN: '1' }]];
+
+  it.each(modes)('runs only the listed step, after the server build (%s)', (_mode, env) => {
+    const s = setup();
+    const r = s.run({
+      ...env, PNPM_LOG: s.pnpmLog, KOOKR_VERIFY_ONLY_STEPS: 'pnpm validate:docs-env-vars',
+      FAIL_validate_docs_env_vars: '1',
+      // a step that is not listed does not run, so it cannot fail the run
+      FAIL_check_cycles: '1', FAIL_test_smoke: '1',
+    });
+    expect(r.status).toBe(1);
+    expect(s.pnpmCalls()).toEqual(['build:server', 'validate:docs-env-vars']);
+    expect(r.out).toContain('==> Checking for import cycles (skipped: not in KOOKR_VERIFY_ONLY_STEPS)');
+    // the report names the step that failed, and no skipped step
+    expect(r.report.failures).toEqual([{
+      lane: 'static_checks', step: 'Validating documented environment variables', command: 'pnpm validate:docs-env-vars',
+    }]);
+  });
+
+  it.each(modes)('runs only the listed unit test files, and passes when none of them exists yet (%s)', (_mode, env) => {
+    const s = setup();
+    const r = s.run({
+      ...env, PNPM_LOG: s.pnpmLog, KOOKR_VERIFY_ONLY_STEPS: 'unit_tests',
+      KOOKR_VERIFY_UNIT_FILES: 'src/a.test.ts\nsrc/b.test.ts\n',
+    });
+    expect(r.status, r.out).toBe(0);
+    expect(s.pnpmCalls()).toEqual(['build:server', 'test --passWithNoTests src/a.test.ts src/b.test.ts']);
+    expect(r.report).toMatchObject({ status: 'passed', failures: [] });
+  });
+
+  it('lists the failing files of a narrow unit run like a full one', () => {
+    const s = setup();
+    const r = s.run({
+      KOOKR_VERIFY_ONLY_STEPS: 'unit_tests', KOOKR_VERIFY_UNIT_FILES: 'src/core/broken.test.ts', FAIL_test: '1',
+    }, ['src/core/broken.test.ts']);
+    expect(r.status).toBe(1);
+    expect(r.report.failures).toEqual([{
+      lane: 'unit_lane', step: 'Running tests', command: 'unit_tests', testFiles: ['src/core/broken.test.ts'],
+    }]);
+  });
+
+  it('runs every step when the variables are empty', () => {
+    const s = setup();
+    const r = s.run({ PNPM_LOG: s.pnpmLog, KOOKR_VERIFY_ONLY_STEPS: '', KOOKR_VERIFY_UNIT_FILES: '' });
+    expect(r.status, r.out).toBe(0);
+    const calls = s.pnpmCalls();
+    expect(calls).toContain('test');
+    expect(calls).toContain('test:smoke');
+    expect(calls).toContain('validate:docs-env-vars');
+    expect(calls.some((c) => c.includes('--passWithNoTests'))).toBe(false);
   });
 });

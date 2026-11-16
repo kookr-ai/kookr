@@ -13,6 +13,7 @@
 // must not import child_process, fs or the network.
 
 import { parseIntegrationBranch } from '../../src/core/integration-branch.js';
+import { AUTOMATION_MARKER } from '../../src/core/opinion-requests.js';
 
 /** Mirrors `delivery_gate_integration_branch` in scripts/lib/delivery-gate.sh. */
 export { parseIntegrationBranch };
@@ -33,6 +34,111 @@ export interface VerifyResult {
    * treating it as a red test and bisecting.
    */
   infra?: boolean;
+  /**
+   * What scripts/verify.sh wrote to its report file for this run (issue
+   * #3995), or undefined when it wrote none (killed, an older verify.sh, a
+   * failed checkout or install, or a report that does not parse).
+   */
+  report?: VerifyReport;
+}
+
+/** One failed step of a verify run, as scripts/verify-report.mjs names it. */
+export interface VerifyFailure {
+  /** Lane function in scripts/verify.sh (`static_checks`, `unit_lane`, ...). */
+  lane: string;
+  /** Label the step prints after `==>`. */
+  step: string;
+  /** What the step runs (`pnpm validate:docs-env-vars`, or `unit_tests` for the unit lane). */
+  command: string;
+  /** Unit lane only, and only when the run summary named every failing file. */
+  testFiles?: string[];
+}
+
+/** The machine-readable result of one scripts/verify.sh run (format: scripts/verify-report.mjs). */
+export interface VerifyReport {
+  head: string;
+  status: 'passed' | 'failed' | 'interrupted';
+  failures: VerifyFailure[];
+}
+
+/**
+ * A narrow verify (issue #3995): only these steps of scripts/verify.sh, and
+ * for the unit lane only these test files. The server build always runs too.
+ */
+export interface VerifyScope {
+  /** Step commands, as `VerifyFailure.command` names them. */
+  steps: string[];
+  /** Unit test files; set exactly when `steps` includes `unit_tests`. */
+  testFiles: string[];
+}
+
+/** The unit lane's step command in scripts/verify.sh. */
+const UNIT_STEP = 'unit_tests';
+
+/** Parses a verify report file; null when it is not one this train can trust. */
+export function parseVerifyReport(text: string): VerifyReport | null {
+  let raw: unknown;
+  try { raw = JSON.parse(text); } catch { return null; }
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as { version?: unknown; head?: unknown; status?: unknown; failures?: unknown };
+  if (r.version !== 1 || typeof r.head !== 'string') return null;
+  if (r.status !== 'passed' && r.status !== 'failed' && r.status !== 'interrupted') return null;
+  if (!Array.isArray(r.failures)) return null;
+  const failures: VerifyFailure[] = [];
+  for (const f of r.failures as unknown[]) {
+    if (!f || typeof f !== 'object') return null;
+    const { lane, step, command, testFiles } = f as Record<string, unknown>;
+    if (typeof lane !== 'string' || typeof step !== 'string' || typeof command !== 'string') return null;
+    const failure: VerifyFailure = { lane, step, command };
+    if (testFiles !== undefined) {
+      if (!Array.isArray(testFiles) || !testFiles.every((t) => typeof t === 'string' && t !== '')) return null;
+      failure.testFiles = testFiles as string[];
+    }
+    failures.push(failure);
+  }
+  return { head: r.head, status: r.status, failures };
+}
+
+/**
+ * The narrow verify for a head that failed twice, from the reports of both
+ * red runs, or null when the failing part cannot be identified and the train
+ * must bisect with the full suite. Null when a report is missing, describes
+ * another commit, did not fail (`interrupted`: a signal stopped the run, so the
+ * steps it lists as unfinished did not fail), or names no failing step; when a
+ * unit-lane failure does not name its test files; or when the two runs share
+ * no failing step. Only what failed in both runs is kept: a step or a test
+ * file that failed once is noise the bisect must not chase.
+ */
+export function narrowScope(reports: ReadonlyArray<VerifyReport | undefined>, head: string): VerifyScope | null {
+  if (reports.length === 0) return null;
+  let steps: Set<string> | null = null;
+  let files: Set<string> | null = null;
+  for (const report of reports) {
+    if (!report || report.head !== head || report.status !== 'failed' || report.failures.length === 0) return null;
+    const runSteps = new Set<string>();
+    const runFiles = new Set<string>();
+    for (const f of report.failures) {
+      // One per line in the narrow run's environment, so no line breaks.
+      if (f.command.trim() === '' || f.command.includes('\n')) return null;
+      if (f.command === UNIT_STEP) {
+        if (!f.testFiles || f.testFiles.length === 0 || f.testFiles.some((t) => t.includes('\n'))) return null;
+        for (const t of f.testFiles) runFiles.add(t);
+      }
+      runSteps.add(f.command);
+    }
+    const prevSteps: Set<string> | null = steps;
+    const prevFiles: Set<string> | null = files;
+    steps = prevSteps === null ? runSteps : new Set(Array.from(prevSteps).filter((c) => runSteps.has(c)));
+    files = prevFiles === null ? runFiles : new Set(Array.from(prevFiles).filter((t) => runFiles.has(t)));
+  }
+  if (steps === null || files === null || steps.size === 0) return null;
+  if (steps.has(UNIT_STEP) && files.size === 0) return null;
+  return { steps: Array.from(steps).sort(), testFiles: steps.has(UNIT_STEP) ? Array.from(files).sort() : [] };
+}
+
+/** One line naming a scope, for the train log. */
+function describeScope(scope: VerifyScope): string {
+  return scope.steps.map((c) => (c === UNIT_STEP ? `${c} (${scope.testFiles.join(', ')})` : c)).join('; ');
 }
 
 export interface ClosingIssue {
@@ -190,8 +296,12 @@ export interface TrainDeps {
   git(args: string[]): Promise<GitResult>;
   /** Writes a file at `path`, relative to the train's worktree (the plugin version bump). */
   writeFile(path: string, content: string): Promise<void>;
-  /** Verifies the given SHA (checks it out in the worktree, runs the suite). */
-  verify(sha: string): Promise<VerifyResult>;
+  /**
+   * Verifies the given SHA (checks it out in the worktree, runs the suite).
+   * With a scope, runs only that part of the suite (issue #3995). A narrow
+   * green proves nothing about the rest, so the train never promotes on one.
+   */
+  verify(sha: string, scope?: VerifyScope): Promise<VerifyResult>;
   github: TrainGithub;
   spawner: TrainSpawner;
   notifier: TrainNotifier;
@@ -476,6 +586,20 @@ async function commentPullRequestOnce(
   await safe(deps, () => deps.github.commentPullRequest(pr, marker, [...lines, '', marker].join('\n')));
 }
 
+/**
+ * An issue comment of the train's, marked as automation (issue #4033). The
+ * train posts with the operator's GitHub account, so `kookr opinion sweep`
+ * would otherwise read it as the operator's reply to an opinion request.
+ */
+export function automationComment(text: string): string {
+  return `<!-- ${AUTOMATION_MARKER} -->\n${text}`;
+}
+
+/** The comment the train closes an issue with once its change reached main. */
+export function verifiedOnMainComment(shortSha: string): string {
+  return automationComment(`Verified on main in ${shortSha}.`);
+}
+
 export function tailForComment(output: string): string {
   const lines = output.split('\n').slice(-COMMENT_TAIL_LINES).join('\n');
   return lines.length > COMMENT_TAIL_CHARS ? lines.slice(lines.length - COMMENT_TAIL_CHARS) : lines;
@@ -753,16 +877,34 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     return { outcome: 'version-bumped', detail: `plugin version ${next}` };
   };
 
-  // Verify bookkeeping for this cycle.
+  // Verify bookkeeping for this cycle. Only full runs (`verify`) are recorded
+  // as results or as verified green: a commit is promoted only on a full green.
   const results = new Map<string, boolean>();
   const redTails = new Map<string, string>();
+  /** The report of each red full run, per SHA, oldest first (issue #3995). */
+  const redReports = new Map<string, Array<VerifyReport | undefined>>();
   const verify = async (sha: string): Promise<boolean> => {
     const r = await deps.verify(sha);
     if (r.infra) throw new VerifyInfraError(`verify could not run for ${sha.slice(0, 10)}: ${r.tail.slice(-400)}`);
     results.set(sha, r.ok);
     if (r.ok) pushCapped(state.verifiedGreen, sha, VERIFIED_GREEN_CAP);
-    else redTails.set(sha, r.tail);
+    else {
+      redTails.set(sha, r.tail);
+      redReports.set(sha, [...(redReports.get(sha) ?? []), r.report]);
+    }
     log(`verify ${sha.slice(0, 10)}: ${r.ok ? 'green' : 'red'}`);
+    return r.ok;
+  };
+  /**
+   * Runs only `scope` of the suite on `sha` (issue #3995). Its green is no
+   * verification: it never reaches `results` or `verifiedGreen`. Its red output
+   * is kept, since it is the failure the culprit's issue comment quotes.
+   */
+  const verifyNarrow = async (sha: string, scope: VerifyScope): Promise<boolean> => {
+    const r = await deps.verify(sha, scope);
+    if (r.infra) throw new VerifyInfraError(`verify could not run for ${sha.slice(0, 10)}: ${r.tail.slice(-400)}`);
+    if (!r.ok) redTails.set(sha, r.tail);
+    log(`narrow verify ${sha.slice(0, 10)}: ${r.ok ? 'green' : 'red'}`);
     return r.ok;
   };
   const isGreen = (sha: string): boolean => results.get(sha) === true || state.verifiedGreen.includes(sha);
@@ -841,11 +983,45 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   }
   if (!redTails.get(headSha)) redTails.set(headSha, firstRedTail);
 
+  // 7b. Bisect with the failing part only (issue #3995). The reports of the
+  // head's two red runs name the steps that failed and, for the unit lane, the
+  // test files. A full run takes about ten minutes; those steps alone take a
+  // fraction of that. They must fail on the head when run alone, or they are
+  // not what makes it red: the bisect then uses the full suite, as before.
+  // The narrow runs only find the culprit. Nothing is promoted on one: the
+  // revert of the culprit is verified with the full suite before it is pushed.
+  let scope = narrowScope(redReports.get(headSha) ?? [], headSha);
+  if (scope === null) {
+    log('the red runs do not identify the failing part; bisecting with the full suite');
+  } else {
+    log(`head ${headSha.slice(0, 10)} failed in ${describeScope(scope)}; re-running only that on it`);
+    if (await verifyNarrow(headSha, scope)) {
+      log('the failing part passes alone on the head; bisecting with the full suite');
+      scope = null;
+    } else {
+      log('the failing part fails alone on the head; bisecting with it');
+    }
+  }
+
   // 8. Is main itself red right now? Always re-run it, even when the train
   // verified this SHA earlier: a full disk, a dead network or an overloaded
   // host fails every commit alike, and bisecting through that would blame and
-  // revert an innocent change. A red base means "environment", so halt.
-  if (!(await verify(mainSha))) {
+  // revert an innocent change. A red base means "environment", so halt. With a
+  // narrow scope, main runs the failing part only; when that is red, the full
+  // suite decides, because a halt stops every promotion and only a full red
+  // run may cause one. A main the train never verified always gets the full suite.
+  let baseGreen: boolean;
+  if (scope !== null && !mainUnverified) {
+    baseGreen = await verifyNarrow(mainSha, scope);
+    if (!baseGreen) {
+      log(`main ${mainSha.slice(0, 10)} fails the narrow run; checking it with the full suite`);
+      scope = null;
+      baseGreen = await verify(mainSha);
+    }
+  } else {
+    baseGreen = await verify(mainSha);
+  }
+  if (!baseGreen) {
     // A red main the train never verified is not the environment: it reached
     // main without the train, so name what did.
     if (mainUnverified) {
@@ -911,11 +1087,14 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   }
 
   // 9b. Bisect. The commit at `lo` (or main) is good, the head is bad; assume a
-  // single transition between them.
+  // single transition between them. With a scope (step 7b), each step runs
+  // only the failing part.
+  const bisectScope = scope;
+  const probe = (sha: string): Promise<boolean> => (bisectScope === null ? verify(sha) : verifyNarrow(sha, bisectScope));
   let hi = candidates.length - 1;
   while (hi - lo > 1) {
     const mid = (lo + hi) >> 1;
-    if (await verify(candidates[mid])) lo = mid;
+    if (await probe(candidates[mid])) lo = mid;
     else hi = mid;
   }
   const culprit = candidates[hi];
@@ -926,7 +1105,7 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   // time. The head already failed twice in steps 6 and 7; any other commit was
   // seen red only once during the bisect. A green re-run means a flaky test
   // steered the bisect, so revert nothing and let the next cycle start over.
-  if (culprit !== headSha && (await verify(culprit))) {
+  if (culprit !== headSha && (await probe(culprit))) {
     log(`culprit ${culprit.slice(0, 10)} passed on re-run; treating the failure as flaky, nothing reverted`);
     return { outcome: 'retry', detail: 'culprit passed on re-run' };
   }
@@ -942,10 +1121,16 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
 
   // Promote the last good commit so main keeps moving while the culprit is
   // dealt with. Candidates are limited to commits that contain main, so this is
-  // always a fast-forward.
+  // always a fast-forward. After a narrow bisect the last good commit passed
+  // only the failing part, which is no verification: it is not promoted, and
+  // main moves with the verified revert instead, which contains it.
   if (lastGood !== mainSha) {
-    const promoted = await promote(lastGood);
-    if (!promoted.ok) return rejected('promotion of last good', promoted);
+    if (isGreen(lastGood)) {
+      const promoted = await promote(lastGood);
+      if (!promoted.ok) return rejected('promotion of last good', promoted);
+    } else {
+      log(`last good ${lastGood.slice(0, 10)} passed only the narrow run; not promoted on its own`);
+    }
   }
 
   return (await revertCulprit(state.pendingRevert, false)) as CycleResult;
@@ -1195,10 +1380,11 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
   if (pr === null) {
     fixNote = 'no PR number in the subject; no issue handling and no fix task';
   } else {
-    const body =
+    const body = automationComment(
       `Integration train: commit ${culprit} (PR #${pr}) failed verification and was reverted ` +
       `on \`${integration}\` by ${revertSha}.\n\nLast lines of the failing verify output:\n\n` +
-      '```\n' + failTail + '\n```';
+      '```\n' + failTail + '\n```',
+    );
     const issues = await safe(deps, () => deps.github.closingIssues(pr)) ?? [];
     for (const issue of issues) {
       if (issue.state === 'closed') await safe(deps, () => deps.github.reopenIssue(issue.number));
@@ -1380,7 +1566,7 @@ async function reportPromoted(deps: TrainDeps, shas: string[], promoted: string,
     const closed: number[] = [];
     for (const issue of issues) {
       if (issue.state !== 'open') { closed.push(issue.number); continue; }
-      const ok = await safe(deps, async () => { await deps.github.closeIssue(issue.number, `Verified on main in ${short}.`); return true; });
+      const ok = await safe(deps, async () => { await deps.github.closeIssue(issue.number, verifiedOnMainComment(short)); return true; });
       if (ok === true) closed.push(issue.number);
     }
     const verified = sha === promoted ? 'this commit' : `\`${integration}\` at ${promoted}, which contains this commit`;

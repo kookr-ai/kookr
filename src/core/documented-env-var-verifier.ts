@@ -223,6 +223,9 @@ export const DOCUMENTED_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_VERIFY_FLAKY_RERUN',
   // Read by scripts/verify.sh (unscanned); the integration train sets it (issue #3995).
   'KOOKR_VERIFY_REPORT_FILE',
+  // Read by scripts/verify.sh (unscanned); the integration train sets them for a narrow bisect run (issue #3995).
+  'KOOKR_VERIFY_ONLY_STEPS',
+  'KOOKR_VERIFY_UNIT_FILES',
   // Read by vitest.config.mts (outside the scanned roots); scripts/verify.sh sets it in train mode.
   'KOOKR_VITEST_TEST_TIMEOUT_MS',
   // Consumed by hook shell scripts.

@@ -32,12 +32,15 @@ import {
   type TrainDeps,
   type TrainEventKind,
   type TrainState,
+  type VerifyReport,
   type VerifyResult,
+  type VerifyScope,
   closingIssueNumbersFromText,
   emptyTrainState,
   isOutdatedLockfileFailure,
   normalizeTrainState,
   parseSpawnOutput,
+  parseVerifyReport,
   runTrainCycle,
   tailForComment,
 } from './lib/integration-train-core.js';
@@ -416,21 +419,25 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
    * `verify-<sha>.run<n>.report.json`. When the re-run is green, the
    * failing test files of the red run go to the train log and the events file,
    * so load-sensitive tests can be found and fixed.
+   * A narrow run (a scope, issue #3995) has a log and a count of its own,
+   * `verify-<sha>.narrow.log`, so it never moves a full run's log or report.
    */
-  const verify = async (sha: string): Promise<VerifyResult> => {
+  const verify = async (sha: string, scope?: VerifyScope): Promise<VerifyResult> => {
     const short = sha.slice(0, 10);
-    const logFile = join(dir, `verify-${short}.log`);
-    const prev = runs.get(sha);
+    const name = scope ? `${short}.narrow` : short;
+    const runKey = scope ? `${sha}:narrow` : sha;
+    const logFile = join(dir, `verify-${name}.log`);
+    const prev = runs.get(runKey);
     let redLog: string | null = null;
     if (prev?.red) {
-      redLog = join(dir, `verify-${short}.run${prev.count}.log`);
+      redLog = join(dir, `verify-${name}.run${prev.count}.log`);
       try { renameSync(logFile, redLog); } catch { redLog = null; }
       if (redLog) {
         try { renameSync(reportFileFor(logFile), reportFileFor(redLog)); } catch { /* the run wrote none */ }
       }
     }
-    const result = await runVerify(sha, logFile);
-    runs.set(sha, { count: (prev?.count ?? 0) + 1, red: !result.ok });
+    const result = await runVerify(sha, logFile, scope);
+    runs.set(runKey, { count: (prev?.count ?? 0) + 1, red: !result.ok });
     if (result.ok && prev?.red) {
       let text = '';
       try { if (redLog) text = readFileSync(redLog, 'utf8'); } catch { /* unreadable */ }
@@ -447,7 +454,7 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     return result;
   };
 
-  const runVerify = async (sha: string, logFile: string): Promise<VerifyResult> => {
+  const runVerify = async (sha: string, logFile: string, scope?: VerifyScope): Promise<VerifyResult> => {
     writeFileSync(logFile, '');
     // A report left by an earlier run of this SHA must not describe this one
     // (a failed checkout or install never reaches scripts/verify.sh).
@@ -462,9 +469,15 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     // hook's flaky policy to the unit lane (a few failed files are re-run once).
     // KOOKR_VERIFY_REPORT_FILE: scripts/verify.sh writes which lanes and test
     // files failed to `verify-<sha>.report.json`, next to the log.
+    // KOOKR_VERIFY_ONLY_STEPS / KOOKR_VERIFY_UNIT_FILES: a narrow run's steps
+    // and unit test files, one per line. Always set, and empty for a full run,
+    // so a value inherited from the train's own environment never narrows the
+    // run that decides a promotion.
     const env: NodeJS.ProcessEnv = {
       ...gitExecEnv(), KOOKR_VITEST_MAX_WORKERS: String(opts.workers), KOOKR_VERIFY_FLAKY_RERUN: '1',
       KOOKR_VERIFY_REPORT_FILE: reportFileFor(logFile),
+      KOOKR_VERIFY_ONLY_STEPS: scope ? scope.steps.join('\n') : '',
+      KOOKR_VERIFY_UNIT_FILES: scope ? scope.testFiles.join('\n') : '',
     };
 
     const lockHash = (() => {
@@ -497,7 +510,9 @@ function buildDeps(opts: Options, dir: string, root: string, wt: string): TrainD
     let text = '';
     try { text = readFileSync(logFile, 'utf8'); } catch { /* no output */ }
     log(`verify output for ${sha.slice(0, 10)}: ${logFile}`);
-    return { ok, tail: tailForComment(text) };
+    let report: VerifyReport | null = null;
+    try { report = parseVerifyReport(readFileSync(reportFileFor(logFile), 'utf8')); } catch { /* none written */ }
+    return { ok, tail: tailForComment(text), ...(report ? { report } : {}) };
   }
 
   const gh = async (args: string[]): Promise<string> => {

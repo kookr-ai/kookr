@@ -57,14 +57,32 @@ copy pinned to it by a test) and behave as before when it is absent:
    credentials.
 6. Red: verify the same head once more. Green now means a flake: promote it and
    record it in `flakyHeads`.
+   Still red: the train looks for the failing part (issue #3995). When the
+   report files of both red runs (`verify-<sha>.report.json`, see "Logs" below)
+   name the same failing steps, and every unit-lane failure among them names its
+   test files, the train runs only those steps and files on the head, a
+   narrow run. A narrow run of `scripts/verify.sh` builds the server, then runs
+   only the steps in `KOOKR_VERIFY_ONLY_STEPS` and, for the unit lane, only the
+   files in `KOOKR_VERIFY_UNIT_FILES`. If it fails, steps 7 and 8 use narrow
+   runs. If the reports are missing, describe a run stopped by a signal
+   (`interrupted`), name no failing step or no unit test files, or if the
+   narrow run passes on the head, steps 7 and 8 use the full suite, as before.
+   A narrow run only locates the culprit: a narrow green is never a reason to
+   promote, so the only full run after the head's two is the revert's (step 9).
 7. Still red: verify `main` itself, every time, even if the train verified that
    commit earlier. A red `main` means the environment is broken (disk, network,
    host load), so the train halts (`base-red`) and reverts nothing. If the train
-   never verified that `main`, it halts `main-unverified-red` instead.
+   never verified that `main`, it halts `main-unverified-red` instead. With a
+   narrow run, `main` runs the failing part only; if that is red, `main` gets
+   the full suite, which alone can halt the train, and a green full run sends
+   the cycle on with the full-suite bisect. A `main` the train never verified
+   always gets the full suite.
 8. Otherwise find the first bad commit by bisecting the commits between `main`
    and the head, then run that commit once more. If it passes, a flaky test
    steered the bisect: nothing is reverted and the next cycle starts over
-   (`retry`). If it fails again, the last good commit is promoted.
+   (`retry`). If it fails again, the last good commit is promoted, unless it
+   passed only a narrow run: then `main` moves with the verified revert, which
+   contains it.
 9. Revert the bad commit on the integration branch, in the train's own worktree
    and not yet pushed. The bisect assumes the suite went from green to red once;
    that is false when, say, a later commit fixed the culprit and a different
@@ -181,7 +199,7 @@ own bump would conflict with it on `staging`. The train's commit changes only
 `plugin.json`, which no pull request touches any more, so a pull request rebased
 over it keeps its `review-patch-id`.
 
-During a red cycle the bisect can promote a last good commit that sits below
+During a red cycle a full-suite bisect can promote a last good commit that sits below
 the bump. `main` then carries plugin changes at the old version until the
 revert (or a later head) is promoted; it already holds the bump, so nothing is
 bumped twice. If the cycle halts instead, the gap lasts until the halt is
@@ -252,6 +270,12 @@ writes one `clear` signal, "integration train recovered". It is written once per
 problem (`state.json` keeps an `alerting` flag), never while a halt stands, and
 not on an ordinary idle cycle. A halt that is still standing does not notify
 again.
+
+Every comment the train posts on an issue (the close comment and the revert
+comment) starts with `<!-- kookr:automation -->` on its own line. The train
+posts with the operator's GitHub account, and `kookr opinion sweep` reads any
+unmarked comment by a member as the operator's reply to an opinion request
+(issue #4033).
 
 After each promotion the train closes the still-open issues linked to the PRs
 that reached `main` (GitHub does not do it for merges into a non-default
@@ -390,7 +414,7 @@ Options: `--worktree <path>` (default: a sibling of the launching checkout, `<re
 
 The verify also runs with `KOOKR_VERIFY_FLAKY_RERUN=1`, so `scripts/verify.sh` applies the pre-push hook's flaky policy to the unit lane: when at most five test files fail they are re-run once, a pass continues and is logged to `<git common dir>/kookr-flaky-tests.log`, and a second failure is a red result.
 
-The train also sets `KOOKR_VERIFY_REPORT_FILE`, so `scripts/verify.sh` writes a small JSON file next to the log, `verify-<sha>.report.json`, naming the lanes and steps that failed and, for the unit lane, the failing test files (see `scripts/verify-report.mjs` for the format). A red run's report is kept with its log as `verify-<sha>.run<n>.report.json`. The train does not read it yet: issue #3995 plans to bisect a red head with only the lane or test files that failed.
+The train also sets `KOOKR_VERIFY_REPORT_FILE`, so `scripts/verify.sh` writes a small JSON file next to the log, `verify-<sha>.report.json`, naming the lanes and steps that failed and, for the unit lane, the failing test files (see `scripts/verify-report.mjs` for the format). A red run's report is kept with its log as `verify-<sha>.run<n>.report.json`. The train reads the reports of the head's two red runs to bisect with the failing part only (step 6 above). A narrow run logs to `verify-<sha>.narrow.log` (a red one that is re-run is kept as `verify-<sha>.narrow.run<n>.log`), so it never replaces a full run's log or report.
 
 In that mode `scripts/verify.sh` also gives each test a 60 s timeout instead of 15 s (`KOOKR_VITEST_TEST_TIMEOUT_MS`), and, once `build:server` has written `dist/`, runs the unit suite at the same time as the other static checks, the hook tests and the STT tests; the integration, FAA and smoke lanes follow. A developer's plain `pnpm verify` keeps the sequential order. In every mode, the unit suite runs the files in `scripts/lib/vitest-serial-files.mjs` (they spawn real processes or race timers) after the rest, one at a time, with two retries (issue #3794).
 

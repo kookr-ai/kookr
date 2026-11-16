@@ -398,6 +398,53 @@ describe('integration train CLI', () => {
     expect(read(`verify-${short}.report.json`)).toEqual({ status: 'passed' });
   }, 120_000);
 
+  it('bisects with the steps the report names, passes them to the verify command, and never narrows a full run (#3995)', () => {
+    const s = makeSandbox();
+    const main = s.ref('main');
+    const one = s.commit('staging', { 'a.txt': '1' }, 'one (#1)');
+    const bad = s.commit('staging', { 'bad.txt': 'x' }, 'broken (#7)');
+    const head = s.commit('staging', { 'c.txt': '1' }, 'three (#3)');
+    const envLog = join(s.root, 'verify-env.log');
+    // Stands in for scripts/verify.sh. It logs the narrow-run variables of each
+    // run, with line breaks as commas. A full run writes the report verify.sh
+    // would; a narrow run is red when the commit has bad.txt.
+    const verifyCmd = [
+      `steps=$(printf %s "$KOOKR_VERIFY_ONLY_STEPS" | tr '\n' ,)`,
+      `files=$(printf %s "$KOOKR_VERIFY_UNIT_FILES" | tr '\n' ,)`,
+      `echo "$(git rev-parse HEAD) [$steps] [$files]" >> '${envLog}'`,
+      'if [ -n "$KOOKR_VERIFY_ONLY_STEPS" ]; then test ! -e bad.txt; exit $?; fi',
+      'test -e bad.txt || exit 0',
+      `printf '{"version":1,"head":"%s","status":"failed","exitCode":1,"failures":[{"lane":"static_checks","step":"A","command":"pnpm check:a"},{"lane":"unit_lane","step":"Running tests","command":"unit_tests","testFiles":["src/a.test.ts","src/b.test.ts"]}]}' "$(git rev-parse HEAD)" > "$KOOKR_VERIFY_REPORT_FILE"`,
+      'exit 1',
+    ].join('\n');
+    // Values in the train's own environment must not narrow a full run.
+    const r = s.cli(['cycle', '--verify-cmd', verifyCmd, '--worktree', s.worktree], {
+      KOOKR_VERIFY_ONLY_STEPS: 'leaked', KOOKR_VERIFY_UNIT_FILES: 'leaked',
+    });
+    expect(r.status).toBe(0);
+    const revert = s.ref('staging');
+    expect(git(s.origin, 'log', '-1', '--format=%B', revert)).toContain(`This reverts commit ${bad}`);
+    expect(s.ref('main')).toBe(revert);
+
+    const narrow = '[pnpm check:a,unit_tests] [src/a.test.ts,src/b.test.ts]';
+    const runs = readFileSync(envLog, 'utf8').split('\n').filter(Boolean);
+    expect(runs).toEqual([
+      `${head} [] []`, `${head} [] []`, // the head, twice, in full
+      `${head} ${narrow}`, // the failing part alone on the head
+      `${main} [] []`, // a main this new train never verified gets the full suite
+      `${one} ${narrow}`, `${bad} ${narrow}`, `${bad} ${narrow}`, // two bisect steps, then confirmation
+      `${revert} [] []`, // the revert, in full
+    ]);
+    // A narrow run has a log of its own; the head's red runs keep theirs and their reports.
+    const short = head.slice(0, 10);
+    expect(existsSync(join(s.stateDir, `verify-${short}.narrow.log`))).toBe(true);
+    expect(existsSync(join(s.stateDir, `verify-${short}.run1.report.json`))).toBe(true);
+    expect(existsSync(join(s.stateDir, `verify-${short}.report.json`))).toBe(true);
+    expect(existsSync(join(s.stateDir, `verify-${bad.slice(0, 10)}.narrow.run1.log`))).toBe(true);
+    const trainLog = readFileSync(join(s.stateDir, 'train.log'), 'utf8');
+    expect(trainLog).toContain(`failed in pnpm check:a; unit_tests (src/a.test.ts, src/b.test.ts)`);
+  }, 120_000);
+
   it('prunes each old verify log together with its report, and keeps the reports of the logs it keeps', () => {
     const s = makeSandbox();
     s.commit('staging', { 'a.txt': '1' }, 'one (#1)');

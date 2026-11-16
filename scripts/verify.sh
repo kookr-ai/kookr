@@ -21,12 +21,13 @@ set -euo pipefail
 # documents the format). Unset, nothing is recorded or written.
 VERIFY_REPORT_FILE=${KOOKR_VERIFY_REPORT_FILE:-}
 VERIFY_REPORT_DIR=""
+VERIFY_SIGNAL=""
 write_verify_report() {
   local code=$1 head
   head=$(git rev-parse HEAD 2>/dev/null || true)
   node "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/verify-report.mjs" \
     --steps "$VERIFY_REPORT_DIR/steps" --unit-summary "$VERIFY_REPORT_DIR/unit-summary.json" \
-    --exit-code "$code" --head "$head" --out "$VERIFY_REPORT_FILE" \
+    --exit-code "$code" --head "$head" --signal "$VERIFY_SIGNAL" --out "$VERIFY_REPORT_FILE" \
     || echo "[verify] could not write the report file $VERIFY_REPORT_FILE" >&2
   rm -rf "$VERIFY_REPORT_DIR"
 }
@@ -35,6 +36,12 @@ if [ -n "$VERIFY_REPORT_FILE" ]; then
   rm -f "$VERIFY_REPORT_FILE"
   VERIFY_REPORT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/kookr-verify-report.XXXXXX")
   trap 'write_verify_report "$?"' EXIT
+  # bash runs the EXIT trap after a signal too. A run stopped by a signal (the
+  # train's timeout or stop) did not fail where it stopped: the report says
+  # "interrupted" and names no failing step.
+  trap 'VERIFY_SIGNAL=TERM; exit 143' TERM
+  trap 'VERIFY_SIGNAL=INT; exit 130' INT
+  trap 'VERIFY_SIGNAL=HUP; exit 129' HUP
 fi
 
 # record_step start|pass <lane> <label> <command...>: one line in the steps file.
@@ -46,6 +53,24 @@ record_step() {
   printf '%s\t%s\t%s\t%s\n' "$event" "$lane" "$label" "$*" >> "$VERIFY_REPORT_DIR/steps" 2>/dev/null || true
 }
 
+# Narrow run (issue #3995). The integration train bisects a red head with only
+# the steps that failed on it: KOOKR_VERIFY_ONLY_STEPS lists them, one step
+# command per line, as the report file names them (`pnpm validate:docs-env-vars`,
+# `unit_tests`). Every other step is skipped and recorded nowhere, so it is
+# neither a pass nor a failure in the report. The server build always runs: tests
+# that start bin/kookr.js run dist/, which must match the checked-out commit.
+# Unset, every step runs.
+VERIFY_ONLY_STEPS=${KOOKR_VERIFY_ONLY_STEPS:-}
+step_selected() {
+  local lane=$1 command=$2 line
+  [ -n "$VERIFY_ONLY_STEPS" ] || return 0
+  [ "$lane" != build_server_lane ] || return 0
+  while IFS= read -r line; do
+    [ "$line" != "$command" ] || return 0
+  done <<< "$VERIFY_ONLY_STEPS"
+  return 1
+}
+
 # The lane is the function that called run_lane (static_checks, unit_lane, ...).
 # A failing step stops the lane under errexit before its `pass` line, so a step
 # that started and never passed is a failure.
@@ -53,6 +78,10 @@ run_lane() {
   local label=$1 lane=${FUNCNAME[1]:-main}
   shift
 
+  if ! step_selected "$lane" "$*"; then
+    printf '==> %s (skipped: not in KOOKR_VERIFY_ONLY_STEPS)\n' "$label"
+    return 0
+  fi
   printf '==> %s\n' "$label"
   record_step start "$lane" "$label" "$@"
   "$@"
@@ -66,20 +95,32 @@ run_lane() {
 # worktree (<git common dir>/kookr-flaky-tests.log); a second failure, more
 # files, unhandled errors or a crashed worker fail the lane
 # (scripts/flaky-rerun-files.mjs lists every case).
+#
+# KOOKR_VERIFY_UNIT_FILES (one test file per line, issue #3995) runs only those
+# files: the train's narrow bisect. A file the checked-out commit does not have
+# yet cannot fail, hence --passWithNoTests.
 unit_tests() {
+  local -a files=()
+  local f
+  if [ -n "${KOOKR_VERIFY_UNIT_FILES:-}" ]; then
+    files=(--passWithNoTests)
+    while IFS= read -r f; do
+      [ -z "$f" ] || files+=("$f")
+    done <<< "$KOOKR_VERIFY_UNIT_FILES"
+  fi
   if [ "${KOOKR_VERIFY_FLAKY_RERUN:-}" != "1" ]; then
     if [ -n "$VERIFY_REPORT_DIR" ]; then
       # The run summary names the failing files for the report file.
-      VITEST_RERUN_SUMMARY_FILE="$VERIFY_REPORT_DIR/unit-summary.json" pnpm test
+      VITEST_RERUN_SUMMARY_FILE="$VERIFY_REPORT_DIR/unit-summary.json" pnpm test ${files[@]+"${files[@]}"}
     else
-      pnpm test
+      pnpm test ${files[@]+"${files[@]}"}
     fi
     return
   fi
-  local script_dir report rerun_files log head branch f
+  local script_dir report rerun_files log head branch
   script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
   report=$(mktemp "${TMPDIR:-/tmp}/kookr-verify-vitest.XXXXXX")
-  if VITEST_RERUN_SUMMARY_FILE="$report" pnpm test; then
+  if VITEST_RERUN_SUMMARY_FILE="$report" pnpm test ${files[@]+"${files[@]}"}; then
     rm -f "$report"
     return 0
   fi
