@@ -56,10 +56,10 @@ export interface TrainGithub {
 /** What `kookr spawn` did with a fix-task request. */
 export interface TrainSpawnResult {
   /**
-   * True when the idempotency key already named an earlier task, which the
-   * server returned instead of starting a new one (issue #3986). That happens
-   * when `fixTasks` in `state.json` was lost and an attempt number is reused
-   * within the server's 24-hour idempotency window.
+   * True when the server returned the task it already holds for this
+   * idempotency key instead of starting a new one. `kookr spawn` itself
+   * re-sends a request that timed out, so this does not prove that an
+   * earlier run of the train used the key.
    */
   replayed: boolean;
   /** Id of the task started or replayed, when the server named it. */
@@ -68,13 +68,16 @@ export interface TrainSpawnResult {
 
 /**
  * Reads the outcome of `kookr spawn --json` (one JSON envelope on stdout:
- * `{ ok, code, message, details }`). Throws when the spawn failed, and when it
- * exited 0 without an envelope that names a task: then nobody can tell
- * whether a task started or an earlier one was replayed, and the train says
- * `fix-spawn-failed` rather than assume a new task is on its way.
+ * `{ ok, code, message, details }`). Throws, so the train says
+ * `fix-spawn-failed` rather than assume a fix task is on its way, when the
+ * spawn failed, when it exited 0 without an envelope that names a task, and
+ * when the key returned a task that was terminated or cancelled.
  */
 export function parseSpawnOutput(r: GitResult): TrainSpawnResult {
-  let envelope: { ok?: unknown; message?: unknown; details?: { taskId?: unknown; idempotentReplay?: unknown } } | null = null;
+  let envelope: {
+    ok?: unknown; message?: unknown;
+    details?: { taskId?: unknown; idempotentReplay?: unknown; task?: { status?: unknown } };
+  } | null = null;
   for (const line of r.stdout.split('\n').reverse()) {
     const text = line.trim();
     if (!text.startsWith('{')) continue;
@@ -86,7 +89,14 @@ export function parseSpawnOutput(r: GitResult): TrainSpawnResult {
   if (envelope?.ok !== true || !details || typeof details.taskId !== 'string' || details.taskId === '') {
     throw new Error(`kookr spawn exited 0 without naming a task: ${(r.stdout.trim() || r.stderr.trim()).slice(-300)}`);
   }
-  return { replayed: details.idempotentReplay === true, taskId: details.taskId };
+  const replayed = details.idempotentReplay === true;
+  // The server also replays a task whose launch failed (it keeps the key on
+  // the disposed task). That task does no work, so it is no fix task.
+  const status = details.task?.status;
+  if (replayed && (status === 'terminated' || status === 'cancelled')) {
+    throw new Error(`kookr spawn returned task ${details.taskId} for this key, which is ${status}: no fix task is running`);
+  }
+  return { replayed, taskId: details.taskId };
 }
 
 export interface TrainSpawner {
@@ -813,8 +823,8 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     }
   }
 
-  // 6. Verify the head (unless step 5b just saw it red: step 7 re-runs it).
-  if (results.get(headSha) !== false && await verify(headSha)) {
+  // 6. Verify the head.
+  if (await verify(headSha)) {
     const promoted = await promote(headSha);
     if (!promoted.ok) return rejected('promotion push', promoted);
     return { outcome: 'promoted' };
@@ -874,13 +884,14 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     const revertCommit = candidates[revertIdx];
     if (revertCommit === headSha || !(await verify(revertCommit))) {
       const second = await secondCulprit(candidates, earlier.reverted, revertIdx);
-      if (second === null) {
+      if ('halt' in second) {
         return halt(
           'multiple-failures', mainSha, headSha,
-          `still red at ${revertCommit.slice(0, 10)}, which already reverts an earlier culprit; a second change in the batch is failing`,
+          `still red at ${revertCommit.slice(0, 10)}, which already reverts an earlier culprit; ` +
+            `another change is failing too and the train cannot find it: ${second.halt}`,
         );
       }
-      if (second === 'flaky') {
+      if ('flaky' in second) {
         log('second culprit passed on re-run; treating the failure as flaky, nothing reverted');
         return { outcome: 'retry', detail: 'second culprit passed on re-run' };
       }
@@ -952,15 +963,22 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
    * any culprit; the head's two runs in steps 6 and 7 count when the probe has
    * the head's tree. revertCulprit then verifies the revert of the found commit
    * on the real head before pushing anything.
-   * Returns null when there is no commit between the two or a probe cannot be
-   * built (conflict, or `reverted` already undone), and 'flaky' when the
-   * confirming run passes.
+   * Returns `halt` with the reason when it cannot search: no commit between
+   * the two, another train revert between them (its probes would still hold
+   * that earlier culprit), or a probe that cannot be built (conflict, or
+   * `reverted` already undone). Returns `flaky` when the confirming run passes.
    */
   const secondCulprit = async (
     candidates: string[], reverted: string, revertIdx: number,
-  ): Promise<{ culprit: string; tail: string } | 'flaky' | null> => {
+  ): Promise<{ culprit: string; tail: string } | { flaky: true } | { halt: string }> => {
     const cIdx = candidates.indexOf(reverted);
-    if (cIdx < 0 || revertIdx - cIdx < 2) return null;
+    if (cIdx < 0 || revertIdx - cIdx < 2) return { halt: 'no commit lies between the reverted change and its revert' };
+    for (let i = cIdx + 1; i < revertIdx; i++) {
+      const body = await git(['log', '-1', '--format=%B', candidates[i]]);
+      if (body.ok && body.stdout.includes(TRAIN_REVERT_TRAILER)) {
+        return { halt: `another train revert, ${candidates[i].slice(0, 10)}, lies between them` };
+      }
+    }
     const subject = await out(['log', '-1', '--format=%s', reverted]);
     const revertCommit = candidates[revertIdx];
     // The probe of the commit just below the train's revert has the revert's
@@ -968,9 +986,11 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     const revertTree = await out(['rev-parse', `${revertCommit}^{tree}`]);
     const probes = new Map<number, string>();
     const sameAsRevert = new Set<number>();
-    const probe = async (i: number): Promise<boolean | null> => {
+    const probe = async (i: number): Promise<boolean | string> => {
       const built = await buildRevert(candidates[i], reverted, subject);
-      if (built === 'conflict' || built === 'empty') return null;
+      if (built === 'conflict' || built === 'empty') {
+        return `reverting ${reverted.slice(0, 10)} on ${candidates[i].slice(0, 10)} ${built === 'conflict' ? 'conflicts' : 'changes nothing'}`;
+      }
       probes.set(i, built);
       if ((await out(['rev-parse', `${built}^{tree}`])) === revertTree) {
         sameAsRevert.add(i);
@@ -983,18 +1003,18 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     while (bad - good > 1) {
       const mid = (good + bad) >> 1;
       const green = await probe(mid);
-      if (green === null) return null;
+      if (typeof green === 'string') return { halt: green };
       if (green) good = mid;
       else bad = mid;
     }
-    if (bad === revertIdx) return null;
+    if (bad === revertIdx) return { halt: 'no commit below the revert is red with the reverted change undone' };
     const probed = probes.get(bad) as string;
     const tail = redTails.get(probed) ?? redTails.get(revertCommit) ?? '';
     // Confirmed already when the probe is the head's tree (red twice in steps 6 and 7).
     const redTwice = sameAsRevert.has(bad) && revertCommit === headSha;
     log(`commit ${candidates[bad].slice(0, 10)} is red with ${reverted.slice(0, 10)} reverted` +
       (redTwice ? '' : '; re-running to confirm'));
-    if (!redTwice && await verify(probed)) return 'flaky';
+    if (!redTwice && await verify(probed)) return { flaky: true };
     return { culprit: candidates[bad], tail };
   };
 
@@ -1193,48 +1213,39 @@ async function cycle(deps: TrainDeps, state: TrainState): Promise<CycleResult> {
     const budgetKey = issueNumbers.length > 0
       ? `issue-${issueNumbers[0]}`
       : `ref-${firstReferenceFromSubject(subject) ?? pr}`;
-    // A key that names an earlier task is replayed by the server instead of
-    // starting a new one (issue #3986): `fixTasks` was lost (a reset or deleted
-    // `state.json`) and an attempt number came round again. That earlier task
-    // counts against the budget, as it would have had the count survived, and
-    // the next attempt number is tried.
-    const replayedKeys: string[] = [];
-    let started: { key: string; attempt: number } | null = null;
-    let failedKey: string | null = null;
-    for (let attempt = (state.fixTasks[budgetKey] ?? 0) + 1; attempt <= MAX_AUTOMATIC_RELANDS; attempt++) {
-      const key = `train-fix-${budgetKey}-${attempt}`;
+    const spawned = state.fixTasks[budgetKey] ?? 0;
+    if (spawned < MAX_AUTOMATIC_RELANDS) {
+      const attempt = spawned + 1;
+      // The key names the failure, not only the attempt (issue #3986). When
+      // `state.json` loses `fixTasks`, an attempt number comes round again;
+      // a key of budget and attempt alone would then make the server return
+      // the earlier task (its idempotency window is 24 hours) and no task
+      // would start for this failure. With the culprit in the key, a replay
+      // can only be this failure's own task: a retry of the same request
+      // (`kookr spawn` re-sends after a timeout) or a re-run of this step.
+      const key = `train-fix-${budgetKey}-${attempt}-${culprit.slice(0, 10)}`;
       const result = await safe(deps, () => deps.spawner.spawn({
         idempotencyKey: key,
         prompt: fixPrompt({ pr, culprit, revertSha, integration, failTail, issues: issueNumbers, attempt }),
       }));
-      if (result === undefined) { failedKey = key; break; }
-      // The budget is consumed only by a task that exists.
-      state.fixTasks[budgetKey] = attempt;
-      if (!result.replayed) { started = { key, attempt }; break; }
-      log(`fix task key ${key} already names task ${result.taskId ?? '(unknown id)'}; trying the next attempt`);
-      replayedKeys.push(key);
-    }
-    // Said after the outcome: the delivery tracker reads the first
-    // "fix task <key> spawned" or "could not be spawned" in the event detail.
-    const replayNote = replayedKeys.length > 0
-      ? `; key(s) ${replayedKeys.join(', ')} already named earlier tasks (state.json had lost them), so they were counted and skipped`
-      : '';
-    const spawned = state.fixTasks[budgetKey] ?? 0;
-    if (started !== null) {
-      const { key, attempt } = started;
-      fixNote = `fix task ${key} spawned (automatic re-land ${attempt} of ${MAX_AUTOMATIC_RELANDS})${replayNote}`;
-      prNextStep = `the train started fix task \`${key}\` (automatic re-land ${attempt} of ${MAX_AUTOMATIC_RELANDS}). ` +
-        'It re-applies this change, fixes the failure and delivers it in a new pull request. ' +
-        (issueNumbers.length > 0 ? `Issue(s) ${issueNumbers.map((n) => `#${n}`).join(', ')} stay open until then.` : '');
-    } else if (failedKey !== null) {
-      fixNote = `fix task ${failedKey} could not be spawned${replayNote}`;
-      prNextStep = `needs a human: the train could not start fix task \`${failedKey}\`. The operator has been alerted.`;
-      await raise(
-        deps, state, 'fix-spawn-failed',
-        `PR #${pr} reverted as ${revertSha}; fix task ${failedKey} could not be spawned. Needs a human.`,
-      );
+      if (result !== undefined) {
+        // The budget is consumed only by a task that exists.
+        state.fixTasks[budgetKey] = attempt;
+        fixNote = `fix task ${key} spawned (automatic re-land ${attempt} of ${MAX_AUTOMATIC_RELANDS})` +
+          (result.replayed ? `; the server returned the task already started for this failure (${result.taskId ?? 'no id'})` : '');
+        prNextStep = `the train started fix task \`${key}\` (automatic re-land ${attempt} of ${MAX_AUTOMATIC_RELANDS}). ` +
+          'It re-applies this change, fixes the failure and delivers it in a new pull request. ' +
+          (issueNumbers.length > 0 ? `Issue(s) ${issueNumbers.map((n) => `#${n}`).join(', ')} stay open until then.` : '');
+      } else {
+        fixNote = `fix task ${key} could not be spawned`;
+        prNextStep = `needs a human: the train could not start fix task \`${key}\`. The operator has been alerted.`;
+        await raise(
+          deps, state, 'fix-spawn-failed',
+          `PR #${pr} reverted as ${revertSha}; fix task ${key} could not be spawned. Needs a human.`,
+        );
+      }
     } else {
-      fixNote = `fix budget exhausted for ${budgetKey} (PR #${pr})${replayNote}`;
+      fixNote = `fix budget exhausted for ${budgetKey} (PR #${pr})`;
       const scope = issueNumbers.length > 0 ? 'this issue' : 'this change';
       prNextStep = `needs a human: ${spawned} automatic fix task(s), the limit of ${MAX_AUTOMATIC_RELANDS}, were already started for ${scope}, ` +
         'so the train starts no more. The operator has been alerted.';

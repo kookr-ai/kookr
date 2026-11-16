@@ -109,8 +109,8 @@ function makeSandbox(): Sandbox {
     '',
   ].join('\n'));
   // `kookr spawn` fails while ghData/spawn-fails exists. Otherwise it answers
-  // like `kookr spawn --json`: an earlier task is replayed for a key that has
-  // a ghData/replay-<key> file (#3986), else a new task is created.
+  // like `kookr spawn --json`: the task the server already holds is replayed
+  // while ghData/replay exists (#3986), else a new task is created.
   writeFileSync(join(bin, 'kookr'), [
     '#!/usr/bin/env bash',
     `printf 'kookr %s\\n' "$*" >> "${callLog}"`,
@@ -118,7 +118,7 @@ function makeSandbox(): Sandbox {
     'if [ "$1" = spawn ]; then',
     '  key=""; prev=""',
     '  for a in "$@"; do [ "$prev" = --idempotency-key ] && key="$a"; prev="$a"; done',
-    `  replay=false; [ -e "${ghData}/replay-$key" ] && replay=true`,
+    `  replay=false; [ -e "${ghData}/replay" ] && replay=true`,
     '  printf \'{"ok":true,"code":"OK","message":"done","details":{"taskId":"task-%s","idempotentReplay":%s}}\\n\' "$key" "$replay"',
     'fi',
     'exit 0',
@@ -250,7 +250,7 @@ describe('integration train CLI', () => {
     expect(s.calls().some((c) => c.startsWith('gh issue comment 42 --body '))).toBe(true);
     const spawns = s.calls().filter((c) => c.startsWith('kookr spawn '));
     expect(spawns).toHaveLength(1);
-    expect(spawns[0]).toContain('--idempotency-key train-fix-issue-42-1');
+    expect(spawns[0]).toContain(`--idempotency-key train-fix-issue-42-1-${bad.slice(0, 10)}`);
     expect(spawns[0]).toContain('--json');
     // the operator is alerted once, with no "recovered" in front of it
     expect(s.signals().map((x) => [x.kind, x.title])).toEqual([['alert', 'integration train: reverted']]);
@@ -270,26 +270,19 @@ describe('integration train CLI', () => {
     expect(byFileName).toEqual(['alert', 'clear']);
   }, 120_000);
 
-  it('starts the next fix task when kookr spawn replays an earlier task for the key (#3986)', () => {
+  it('counts a fix task the server replays for this failure as started, and spawns no other (#3986)', () => {
     const s = makeSandbox();
-    // state.json was lost, but the server still holds attempt 1's key
-    writeFileSync(join(s.ghData, 'replay-train-fix-issue-42-1'), '');
-    s.commit('staging', { 'bad.txt': 'x' }, 'broken (#7)');
+    writeFileSync(join(s.ghData, 'replay'), '');
+    const bad = s.commit('staging', { 'bad.txt': 'x' }, 'broken (#7)');
 
     expect(s.cycle().status).toBe(0);
-    const keys = s.calls().filter((c) => c.startsWith('kookr spawn '))
-      .map((c) => /--idempotency-key (\S+)/.exec(c)?.[1]);
-    expect(keys).toEqual(['train-fix-issue-42-1', 'train-fix-issue-42-2']);
+    const spawns = s.calls().filter((c) => c.startsWith('kookr spawn '));
+    expect(spawns).toHaveLength(1);
+    expect(spawns[0]).toContain(`--idempotency-key train-fix-issue-42-1-${bad.slice(0, 10)}`);
     const state = JSON.parse(readFileSync(join(s.stateDir, 'state.json'), 'utf8')) as { fixTasks: Record<string, number> };
-    expect(state.fixTasks).toEqual({ 'issue-42': 2 });
+    expect(state.fixTasks).toEqual({ 'issue-42': 1 });
     expect(s.signals().map((x) => x.title)).toEqual(['integration train: reverted']);
-    expect(s.signals()[0].detail).toContain('fix task train-fix-issue-42-2 spawned (automatic re-land 2 of 3)');
-    // the pull request is told about the task that was really started
-    // (the call log holds the multi-line comment body as it was passed)
-    const log = readFileSync(s.callLog, 'utf8');
-    expect(log).toContain('gh pr comment 7 ');
-    expect(log).toContain('the train started fix task `train-fix-issue-42-2` (automatic re-land 2 of 3)');
-    expect(log).not.toContain('`train-fix-issue-42-1`');
+    expect(s.signals()[0].detail).toContain('the server returned the task already started for this failure');
   }, 120_000);
 
   it('writes every event of one cycle to the outbox with its own detail', () => {

@@ -115,29 +115,39 @@ copy pinned to it by a test) and behave as before when it is absent:
    the revert was re-applied on top of it), the train looks for that second
    change among the commits between the two (issue #4031). It bisects them
    with the first change reverted on top of each, in its own worktree and
-   without pushing, runs the commit it finds once more to confirm, then
-   reverts it like any culprit: the revert must pass the full suite on the
-   real head before it is pushed, otherwise the train halts
-   `revert-not-sufficient`. It halts `multiple-failures` only when there is no
-   commit between the two, or when one of those trial reverts conflicts.
+   without pushing. The trial just below the train's revert has that revert's
+   files, already red in this cycle, so it is not run again. The commit found
+   is confirmed by a second red run (the head's two runs count when its trial
+   has the head's files); a green confirming run means a flake, and nothing is
+   reverted (`retry`). Then it is reverted like any culprit: the revert must
+   pass the full suite on the real head before it is pushed, otherwise the
+   train halts `revert-not-sufficient`. The train halts `multiple-failures`
+   when it cannot search: no commit between the two, another train revert
+   between them, or a trial revert that conflicts or changes nothing. The
+   halt detail says which.
 10. After a pushed revert, the linked issues of the reverted PR are reopened with
    the failure output and one fix task is spawned. The budget is three automatic
-   re-lands per linked issue (keys `train-fix-issue-<n>-1` to `-3`). With no
-   linked issue the key follows the first `(#N)` in the commit subject
-   (`train-fix-ref-<n>-<attempt>`), which a cherry-picked re-land keeps. A re-land
+   re-lands per linked issue (attempts 1 to 3, counted in `fixTasks`). With no
+   linked issue the budget follows the first `(#N)` in the commit subject,
+   which a cherry-picked re-land keeps. The task's idempotency key is
+   `train-fix-<issue-<n> or ref-<n>>-<attempt>-<first 10 characters of the culprit SHA>`. A re-land
    is a new PR, which is why the count follows the issue. From the second
    attempt on, the fix task is told how many earlier fix tasks were started,
    to check whether their pull requests were reverted, and to read their
    failing output first. The budget is used up only by a task that
    was really spawned: if the spawn fails, the train notifies `fix-spawn-failed`
-   and tries again the next time that PR fails. The train runs `kookr spawn
-   --json` and reads `idempotentReplay` (issue #3986). If `state.json` lost its
-   counts, an attempt number can come round again, and within 24 hours the
-   server returns the earlier task for that key instead of starting a new one.
-   The train then counts that key as used and tries the next attempt number,
-   within the same budget; the `reverted` event names the keys it skipped. When
-   every remaining key replays, the budget is spent: `fix-budget-exhausted`. A
-   spawn that exits 0 without naming a task counts as `fix-spawn-failed`. When a change fails after its
+   and tries again the next time that PR fails.
+   The key names the failure (issue #3986). If `state.json` loses its counts,
+   an attempt number comes round again; a key of issue and attempt alone would
+   then make the server return the earlier task (it keeps a key for 24 hours),
+   and no task would start for the new failure. With the culprit in the key,
+   the server returns an existing task only for this same failure, for example
+   when `kookr spawn` re-sends a request that timed out. The train runs
+   `kookr spawn --json`; such a replay counts as this failure's task and the
+   `reverted` event says so. A replayed task that was terminated or cancelled
+   (its launch failed) does no work, so it counts as `fix-spawn-failed`, as
+   does a spawn that exits 0 without naming a task. A lost `state.json` still
+   resets the count, so the budget starts again at attempt 1. When a change fails after its
    third fix task, the train still reverts it but spawns nothing; it notifies
    `fix-budget-exhausted` and a human takes over.
 
@@ -216,7 +226,7 @@ guess in these cases:
 | `culprit-is-merge` | The first bad commit is the merge that folded `main` into the integration branch. Only commits that contain `main` are bisected, because an older commit can fail for a reason `main` already fixed. |
 | `history-shape` | The head is red and the integration branch is not a first-parent line from `main`, which happens after a non-squash merge. The commits cannot be bisected. |
 | `revert-not-sufficient` | The suspected culprit was reverted locally but the result still fails verify: another change is failing too, or the culprit was already fixed. The revert is discarded and nothing is pushed. The detail names the suspected culprit. |
-| `multiple-failures` | Rare. A revert the train pushed earlier was not promoted yet and now fails verify itself, or is the red head, and the train could not find the second failing change below it: there is no commit between the reverted change and its revert, or reverting the first change on one of them conflicts (see step 9). |
+| `multiple-failures` | Rare. A revert the train pushed earlier was not promoted yet and now fails verify itself, or is the red head, and the train could not search for the other failing change below it: no commit between the reverted change and its revert, another train revert between them, or a trial revert that conflicts or changes nothing (see step 9). The detail says which. |
 | `revert-conflict` | Reverting the culprit conflicts with later commits. |
 | `reconcile-conflict` | Merging `main` into the integration branch conflicts (the merge left unmerged paths). |
 | `push-rejected` | A push to `main` or to the integration branch was rejected three cycles in a row (branch protection, credentials). The detail has git's message. |
