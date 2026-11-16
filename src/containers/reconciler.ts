@@ -33,6 +33,8 @@ export interface ReconcileAction {
   kind: ReconcileActionKind;
   /** Container or network name. */
   name: string;
+  /** Docker id from the listing this action was planned on; the apply step targets it, not the name (#3557). */
+  id?: string;
   taskId?: string;
   reason: string;
 }
@@ -116,7 +118,7 @@ export class ContainerReconciler {
         continue;
       }
       const act = (kind: ReconcileActionKind, reason: string) => {
-        actions.push({ kind, name: c.name, taskId, reason });
+        actions.push({ kind, name: c.name, id: c.id, taskId, reason });
         if (kind === 'stop_remove' || kind === 'remove_quarantined') removing.add(c.name);
         else survivingTasks.add(taskId!);
       };
@@ -152,7 +154,7 @@ export class ContainerReconciler {
       if (launch && (await this.d.intents.isOpen(launch))) continue;
       const liveness = this.d.tasks(taskId);
       if (liveness.state === 'store_unreadable' || liveness.state === 'live') continue; // a live task's network is never removed
-      actions.push({ kind: 'remove_network', name: n.name, taskId, reason: 'no container of this task remains' });
+      actions.push({ kind: 'remove_network', name: n.name, id: n.id, taskId, reason: 'no container of this task remains' });
     }
     return actions;
   }
@@ -181,18 +183,18 @@ export class ContainerReconciler {
       let error: string | undefined;
       try {
         if (a.kind === 'quarantine_stop') {
-          await this.d.docker.stopContainer(a.name, grace);
+          await this.d.docker.stopContainer(a.name, grace, a.id);
           quarantine[a.name] = at.toISOString();
           qDirty = true;
           result = 'ok';
         } else if (a.kind === 'stop_remove' || a.kind === 'remove_quarantined') {
-          await this.d.docker.stopContainer(a.name, grace);
-          await this.d.docker.removeContainer(a.name);
+          await this.d.docker.stopContainer(a.name, grace, a.id);
+          await this.d.docker.removeContainer(a.name, a.id);
           delete quarantine[a.name];
           qDirty = true;
           result = 'ok';
         } else if (a.kind === 'remove_network') {
-          await this.d.docker.removeNetwork(a.name);
+          await this.d.docker.removeNetwork(a.name, a.id);
           result = 'ok';
         }
       } catch (err) {

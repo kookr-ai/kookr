@@ -59,11 +59,14 @@ export interface DockerRunnerPort {
   forceRemoveContainer(name: string): Promise<void>;
   /** Containers (any state) whose label `key` equals `value`. */
   listContainers(label: { key: string; value: string }): Promise<ContainerInfo[]>;
-  /** Stop with a grace period, then leave the container in place. */
-  stopContainer(name: string, graceSeconds: number): Promise<void>;
-  removeContainer(name: string): Promise<void>;
+  /**
+   * Stop with a grace period, then leave the container in place. `id` (from a listing) makes Docker act on exactly the
+   * listed object, so a container re-created under the same name in between is never hit; `name` is still checked.
+   */
+  stopContainer(name: string, graceSeconds: number, id?: string): Promise<void>;
+  removeContainer(name: string, id?: string): Promise<void>;
   listNetworks(label: { key: string; value: string }): Promise<NetworkInfo[]>;
-  removeNetwork(name: string): Promise<void>;
+  removeNetwork(name: string, id?: string): Promise<void>;
 }
 
 export type A2aTaskState = 'SUBMITTED' | 'WORKING' | 'INPUT_REQUIRED' | 'COMPLETED' | 'FAILED' | 'CANCELED' | 'UNKNOWN';

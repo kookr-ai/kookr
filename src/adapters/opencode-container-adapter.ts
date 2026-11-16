@@ -18,7 +18,10 @@ import type { TaskStore } from '../core/tasks.js';
 import { cloneForWorker } from '../containers/clone-extract.js';
 import { containerSessionKey, ledgerLocation, type ContainerLedgerIngest } from '../containers/ledger-ingest.js';
 import type { IntentStore } from '../containers/intent-store.js';
-import { LABEL_INSTANCE, LABEL_LAUNCH, LABEL_TASK, CONTAINER_NAME_PREFIX, type A2aClientPort, type ContainerRunSpec, type DockerRunnerPort } from '../containers/ports.js';
+import {
+  LABEL_INSTANCE, LABEL_LAUNCH, LABEL_TASK, CONTAINER_NAME_PREFIX, type A2aClientPort, type ContainerInfo, type ContainerRunSpec, type DockerRunnerPort,
+  type TaskLookupPort,
+} from '../containers/ports.js';
 import { resolveGateBaseEnv } from './opencode-gate-base.js';
 import { composeOpenCodeSession, type ComposeOpenCodeSessionOptions } from './opencode-home-composer.js';
 import {
@@ -66,6 +69,11 @@ export interface ContainerRuntimeRecord {
   image: string;
   contextId?: string;
   a2aTaskId?: string;
+  /**
+   * Deliverable-gate base (`KOOKR_OPENCODE_GATE_BASE`) recorded at the first launch from the freshly made clone. Kept
+   * here, in the host-private record, so a resume never runs host git inside the worker-writable clone (#3584).
+   */
+  gateBase?: string;
   startedAt: string;
 }
 
@@ -215,7 +223,14 @@ export class OpenCodeContainerAdapter {
       }
 
       const spool = await this.d.ledger.prepare(taskId, token);
-      const cfgDir = await this.composeConfig(taskId, sessionKey, rt, dataHome, taskDir, workDir, resuming, priorGateBase, opts);
+      // Fresh launch: the clone was just made by the host and no worker has touched it, so reading its HEAD is safe.
+      // Resume: the clone is worker-writable (its .git/config included), so host git never runs in it; the base comes
+      // from the host-private record (or, for a record written before it carried one, the validated gate-base file).
+      // The in-container gate re-verifies the base and falls back to a merge-base when it no longer resolves.
+      const gateBaseEnv = resuming
+        ? gateBaseEnvOf(priorRecord?.gateBase ?? await readGateBase(taskDir))
+        : await resolveGateBaseEnv(workDir, taskDir, false, priorRecord?.gateBase ?? priorGateBase);
+      const cfgDir = await this.composeConfig(taskId, sessionKey, rt, dataHome, gateBaseEnv, opts);
 
       const spec: ContainerRunSpec = {
         name: containerName,
@@ -248,11 +263,15 @@ export class OpenCodeContainerAdapter {
         throw classifyDockerError(err);
       }
       opts?.onSessionCreated?.(containerName);
+      // The launch timeout aborts the signal: every wait below re-checks it, so a timed-out launch removes its container
+      // instead of leaving it running.
+      throwIfAborted(opts?.signal);
       const port = await this.d.docker.publishedPort(containerName, 8000);
-      await this.waitHealthy(containerName);
+      await this.waitHealthy(containerName, opts?.signal);
       const record: ContainerRuntimeRecord = {
         taskId, containerName, launchToken: token, port, a2aToken, image: this.cfg.image, startedAt: new Date(this.now).toISOString(),
         ...(resuming && priorRecord?.contextId ? { contextId: priorRecord.contextId } : {}),
+        ...(gateBaseEnv.KOOKR_OPENCODE_GATE_BASE ? { gateBase: gateBaseEnv.KOOKR_OPENCODE_GATE_BASE } : {}),
       };
       await this.writeRecord(record);
       this.records.set(containerName, record);
@@ -276,12 +295,13 @@ export class OpenCodeContainerAdapter {
       taskRegistered = true;
       this.d.ledger.attach(taskId, token, { adopt: true });
 
+      throwIfAborted(opts?.signal);
       opts?.onPhase?.('ack');
       const sent = await this.sendWithAuthCheck(record, resuming ? CONTINUE_PROMPT : prompt, record.contextId);
       record.contextId = sent.contextId;
       record.a2aTaskId = sent.taskId;
       await this.writeRecord(record);
-      await this.waitLedgerCanary(spool.file);
+      await this.waitLedgerCanary(spool.file, opts?.signal);
       await this.d.intents.close(token);
       launched = true;
       return containerName;
@@ -295,8 +315,7 @@ export class OpenCodeContainerAdapter {
 
   /** Compose the read-only `/cfg` dir: opencode.json (provider key via a file ref), plugin, AGENTS.md. */
   private async composeConfig(
-    taskId: string, sessionKey: string, rt: string, dataHome: string, taskDir: string,
-    workDir: string, resuming: boolean, priorGateBase: string | undefined, opts?: AdapterLaunchOptions,
+    taskId: string, sessionKey: string, rt: string, dataHome: string, gateBaseEnv: Record<string, string>, opts?: AdapterLaunchOptions,
   ): Promise<string> {
     const { loaded, permission, instructions } = await resolveSessionPolicy(
       { profilesDir: this.cfg.profilesDir, defaultPermission: this.cfg.permission ?? 'allow', defaultProfile: this.cfg.profile, env: this.env, shelfShow: this.cfg.shelfShow, warn: (m) => console.warn(m) },
@@ -305,7 +324,7 @@ export class OpenCodeContainerAdapter {
     const issue = opts?.issue ?? this.d.taskStore.getTask(taskId)?.metadata?.opencodeIssue;
     const hookEnv = {
       KOOKR_TASK_ID: taskId,
-      ...(await resolveGateBaseEnv(workDir, taskDir, resuming, priorGateBase)),
+      ...gateBaseEnv,
       ...(issue !== undefined ? { KOOKR_OPENCODE_ISSUE: String(issue) } : {}),
       ...(this.cfg.profile?.hookEnv ?? {}),
     };
@@ -347,13 +366,14 @@ export class OpenCodeContainerAdapter {
     return all.filter((c) => LIVE_STATES.has(c.state)).length;
   }
 
-  private async waitHealthy(name: string): Promise<void> {
+  private async waitHealthy(name: string, signal?: AbortSignal): Promise<void> {
     const deadline = this.now + this.cfg.readyTimeoutMs;
     for (;;) {
+      throwIfAborted(signal);
       const st = await this.d.docker.healthStatus(name);
       if (st === 'healthy') return;
       if (st === 'unhealthy') throw new ContainerLaunchError('health_timeout', 'the worker healthcheck reported unhealthy');
-      // Fail fast when the entrypoint already exited (13 secret/workspace, 14 hook self-test, 10-12 child death).
+      // Fail fast when the entrypoint already exited (13 secret, 14 hook self-test, 15 workspace, 10-12 child death).
       const info = (await this.d.docker.listContainers({ key: LABEL_INSTANCE, value: this.d.instanceId }).catch(() => [])).find((c) => c.name === name);
       if (info && (info.state === 'exited' || info.state === 'dead')) {
         const code = info.exitCode;
@@ -377,10 +397,11 @@ export class OpenCodeContainerAdapter {
    * Readiness beyond "the process answers": the plugin must have written at least one hook record (SessionStart or
    * UserPromptSubmit) to the ledger. Without it the gate would be blind, so the launch fails instead.
    */
-  private async waitLedgerCanary(file: string): Promise<void> {
+  private async waitLedgerCanary(file: string, signal?: AbortSignal): Promise<void> {
     const size = this.cfg.ledgerSize ?? (async (f: string) => (await stat(f).catch(() => ({ size: 0 }))).size);
     const deadline = this.now + this.cfg.canaryTimeoutMs;
     while ((await size(file)) === 0) {
+      throwIfAborted(signal);
       if (this.now >= deadline) throw new ContainerLaunchError('plugin_not_loaded', `no hook event reached the ledger within ${this.cfg.canaryTimeoutMs} ms`);
       await this.sleep(500);
     }
@@ -418,7 +439,8 @@ export class OpenCodeContainerAdapter {
 
   /**
    * Stop = A2A cancel (best effort) -> `docker stop -t 10` -> record usage/session id from the bind-mounted DB ->
-   * remove the container and the secrets. The conversation data and the clone are kept (resume, deliverable extraction).
+   * remove the container and the secrets. The conversation data and the clone are kept (resume, deliverable extraction);
+   * `sweepRuntime` cleans up what a container that exited without `stop()` leaves behind.
    * A2A state is advisory: a failed cancel never skips the container stop.
    */
   async stop(handle: string): Promise<void> {
@@ -463,6 +485,79 @@ export class OpenCodeContainerAdapter {
       const id = await readOpenCodeSessionId(dataHome, this.d.taskStore.getTask(taskId)?.metadata?.opencodeSessionId);
       if (id && this.d.taskStore.getTask(taskId)?.metadata?.opencodeSessionId !== id) this.d.taskStore.recordOpenCodeSessionId(taskId, id);
     } catch { /* telemetry is best-effort */ }
+  }
+
+  // ---- runtime-state housekeeping (#3584) ----------------------------------------------------------------------
+
+  /**
+   * Removes per-task runtime state that no container needs any more; run after each reconcile pass. Returns what it
+   * removed (`<taskId>:secrets|spool|runtime`).
+   *  - `secrets/` of a task with no live container: covers a container that exited without `stop()`. (While one runs,
+   *    its healthcheck reads the password file, so secrets are never removed under it.)
+   *  - the spool of a task that ended more than `retentionMs` ago, or that no longer exists and whose control record
+   *    was last written more than `retentionMs` ago, once no container of it remains in any state (a quarantined,
+   *    stopped container keeps its ledger as evidence until the reconciler removes it);
+   *  - the whole runtime dir, clone included, of such a task that no longer exists (the same 24 h the reconciler
+   *    gives an unknown container, so a task store that briefly misses a task does not cost the clone).
+   * A task with a launch in flight is never touched: between writing its secrets and `docker run` no container exists.
+   * The clone of an ended task is kept: until deliverable extraction is wired it is the only copy of the worker's commits.
+   * A failed Docker listing or an unreadable task store skips the pass: neither proves a container or a task is gone.
+   */
+  async sweepRuntime(tasks: TaskLookupPort, retentionMs: number): Promise<string[]> {
+    let containers: ContainerInfo[];
+    try {
+      containers = await this.d.docker.listContainers({ key: LABEL_INSTANCE, value: this.d.instanceId });
+    } catch {
+      return [];
+    }
+    const anyContainer = new Set(containers.map((c) => c.labels[LABEL_TASK]).filter((t): t is string => !!t));
+    const liveContainer = new Set(containers.filter((c) => LIVE_STATES.has(c.state)).map((c) => c.labels[LABEL_TASK]).filter((t): t is string => !!t));
+    const removed: string[] = [];
+    const safe = (names: string[]) => names.filter((n) => /^[A-Za-z0-9_-]{1,64}$/.test(n));
+    const runtimeIds = safe(await readdir(join(this.cfg.runtimeRoot, 'tasks')).catch(() => [] as string[]));
+    const spoolIds = safe(await readdir(this.spoolRoot).catch(() => [] as string[]));
+    const now = this.now;
+    // Docker is asked again right before each removal: a launch may have started (and even finished) after the listing
+    // above, and its new container must not lose its secrets. Any doubt (a failed listing) counts as "has a container".
+    const noContainerNow = async (taskId: string, liveOnly: boolean): Promise<boolean> => {
+      try {
+        const now = await this.d.docker.listContainers({ key: LABEL_INSTANCE, value: this.d.instanceId });
+        return !now.some((c) => c.labels[LABEL_TASK] === taskId && (!liveOnly || LIVE_STATES.has(c.state)));
+      } catch {
+        return false;
+      }
+    };
+    for (const taskId of new Set([...runtimeIds, ...spoolIds])) {
+      const idle = () => !this.launching.has(taskId) && !liveContainer.has(taskId);
+      if (!idle()) continue;
+      const st = tasks(taskId);
+      if (st.state === 'store_unreadable') continue;
+      const rt = this.taskRuntimeDir(taskId);
+      if (runtimeIds.includes(taskId) && (await exists(join(rt, 'secrets'))) && (await noContainerNow(taskId, true)) && idle()) {
+        await rm(join(rt, 'secrets'), { recursive: true, force: true }).then(() => removed.push(`${taskId}:secrets`), () => undefined);
+      }
+      if (anyContainer.has(taskId)) continue;
+      const gone = st.state === 'unknown' && now - (await this.lastUsedMs(taskId)) >= retentionMs;
+      const expired = st.state === 'terminal' && now - st.endedAt.getTime() >= retentionMs;
+      if (!gone && !expired) continue;
+      if (!(await noContainerNow(taskId, false))) continue;
+      if (spoolIds.includes(taskId) && idle()) {
+        await rm(join(this.spoolRoot, taskId), { recursive: true, force: true }).then(() => removed.push(`${taskId}:spool`), () => undefined);
+      }
+      if (gone && runtimeIds.includes(taskId) && idle()) {
+        await rm(rt, { recursive: true, force: true }).then(() => removed.push(`${taskId}:runtime`), () => undefined);
+      }
+    }
+    return removed;
+  }
+
+  /** Last write of the task's control record (else of its runtime dir); 0 when neither exists. */
+  private async lastUsedMs(taskId: string): Promise<number> {
+    for (const p of [this.recordPath(taskId), this.taskRuntimeDir(taskId)]) {
+      const st = await stat(p).catch(() => undefined);
+      if (st) return st.mtimeMs;
+    }
+    return 0;
   }
 
   // ---- adopt / records ---------------------------------------------------------------------------------------
@@ -536,6 +631,10 @@ export class OpenCodeContainerAdapter {
     }
     return out;
   }
+}
+
+function gateBaseEnvOf(sha: string | undefined): Record<string, string> {
+  return sha && /^[0-9a-f]{7,64}$/.test(sha) ? { KOOKR_OPENCODE_GATE_BASE: sha } : {};
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

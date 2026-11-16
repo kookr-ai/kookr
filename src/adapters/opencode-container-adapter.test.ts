@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
@@ -12,6 +12,7 @@ import { TaskStore } from '../core/tasks.js';
 import { gitExecEnv } from '../core/git-helpers.js';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { ContainerUnsupportedError, OpenCodeContainerAdapter, type OpenCodeContainerAdapterConfig } from './opencode-container-adapter.js';
+import { composeOpenCodeSession, type ComposeOpenCodeSessionOptions } from './opencode-home-composer.js';
 
 const repo = resolve(__dirname, '..', '..');
 
@@ -241,6 +242,131 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
     const sessions = store.getTask(task.id)!.sessions;
     expect(sessions.find((s) => s.tmuxSession === resumed)?.resumedConversationId).toBe('ses_abc123');
     expect(sessions.find((s) => s.tmuxSession === fresh)?.resumedConversationId).toBeUndefined();
+  });
+
+  test('a resume takes the gate base from the host-private record and never runs host git in the worker clone (#3584)', async () => {
+    const composed: ComposeOpenCodeSessionOptions[] = [];
+    const a = make({ composeSession: async (o) => { composed.push(o); return composeOpenCodeSession(o); } });
+    const task = newTask();
+    const head = g(src, 'rev-parse', 'HEAD');
+    const fresh = await a.launch(task.id, 'first', src);
+    expect(composed[0]!.claudeHooks?.env?.KOOKR_OPENCODE_GATE_BASE).toBe(head);
+    await a.stop(fresh);
+    expect(JSON.parse(readFileSync(join(root, 'rt', 'tasks', task.id, 'runtime.json'), 'utf8')).gateBase).toBe(head);
+    // The worker owns the clone: make any host git run in it fail, and drop the worker-writable gate-base file.
+    writeFileSync(join(root, 'rt', 'tasks', task.id, 'work', '.git', 'HEAD'), 'garbage\n');
+    rmSync(join(root, 'data', task.id, 'gate-base'), { force: true });
+    const dataHome = join(root, 'data', task.id, 'data');
+    mkdirSync(join(dataHome, 'opencode'), { recursive: true });
+    const db = new Database(join(dataHome, 'opencode', 'opencode.db'));
+    db.exec('CREATE TABLE session (id text PRIMARY KEY, parent_id text, time_updated integer NOT NULL)');
+    db.prepare('INSERT INTO session VALUES (?, ?, ?)').run('ses_abc123', null, 5);
+    db.close();
+    await a.launch(task.id, 'first', src, { sessionId: 'ses_abc123' });
+    expect(composed[1]!.claudeHooks?.env?.KOOKR_OPENCODE_GATE_BASE).toBe(head);
+    expect(JSON.parse(readFileSync(join(root, 'rt', 'tasks', task.id, 'runtime.json'), 'utf8')).gateBase).toBe(head);
+  });
+
+  test('an aborted launch (the launch timeout fired) stops waiting for health and removes its container (#3584)', async () => {
+    docker.health = 'starting';
+    const ac = new AbortController();
+    let polls = 0;
+    let t = 0; // a fake clock bounds the wait, so code that ignores the abort fails as health_timeout instead of hanging
+    const a = make({ readyTimeoutMs: 100_000, now: () => (t += 10), sleep: async () => { if (++polls === 3) ac.abort(); } });
+    await expect(a.launch(newTask().id, 'x', src, undefined, { signal: ac.signal })).rejects.toThrow('aborted');
+    expect(polls).toBe(3);
+    expect(docker.containers).toHaveLength(0);
+    expect(docker.calls).toContain(`rm-f ${docker.runs[0]!.name}`);
+  });
+
+  test('an abort during the ledger canary wait also removes the container', async () => {
+    const ac = new AbortController();
+    let t = 0;
+    const a = make({ ledgerSize: async () => 0, canaryTimeoutMs: 100_000, now: () => (t += 10), sleep: async () => ac.abort() });
+    await expect(a.launch(newTask().id, 'x', src, undefined, { signal: ac.signal })).rejects.toThrow('aborted');
+    expect(docker.containers).toHaveLength(0);
+  });
+
+  describe('sweepRuntime (#3584)', () => {
+    const H = 3_600_000;
+    const rtDir = (id: string) => join(root, 'rt', 'tasks', id);
+    const spoolDir = (id: string) => join(root, 'rt', 'spool', id);
+    async function launched() {
+      const task = newTask();
+      const a = make();
+      const handle = await a.launch(task.id, 'x', src);
+      return { a, task, handle };
+    }
+    test('a container that exited without stop() loses its secrets; the clone, record and spool stay', async () => {
+      const { a, task } = await launched();
+      docker.containers[0]!.state = 'exited';
+      expect(await a.sweepRuntime(() => ({ state: 'live' }), 24 * H)).toEqual([`${task.id}:secrets`]);
+      expect(existsSync(join(rtDir(task.id), 'secrets'))).toBe(false);
+      for (const p of [join(rtDir(task.id), 'work', '.git'), join(rtDir(task.id), 'runtime.json'), spoolDir(task.id)]) expect(existsSync(p), p).toBe(true);
+    });
+    test('a container started after the sweep listed Docker keeps its secrets (Docker is re-asked before each removal)', async () => {
+      const { a, task } = await launched();
+      const list = docker.listContainers.bind(docker);
+      let calls = 0;
+      // First listing: taken before the launch registered its container; every later listing sees it running.
+      docker.listContainers = async (l) => (++calls === 1 ? [] : list(l));
+      expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 0)).toEqual([]);
+      expect(existsSync(join(rtDir(task.id), 'secrets'))).toBe(true);
+      expect(existsSync(spoolDir(task.id))).toBe(true);
+    });
+    test('a launch in flight (secrets written, no container yet) is never swept', async () => {
+      const task = newTask();
+      let swept: string[] | undefined;
+      let secretsDuringSweep = false;
+      const a: OpenCodeContainerAdapter = make({
+        composeSession: async (o) => {
+          swept = await a.sweepRuntime(() => ({ state: 'unknown' }), 0);
+          secretsDuringSweep = existsSync(join(rtDir(task.id), 'secrets', 'a2a_token'));
+          return composeOpenCodeSession(o);
+        },
+      });
+      await a.launch(task.id, 'x', src);
+      expect(swept).toEqual([]);
+      expect(secretsDuringSweep).toBe(true);
+    });
+    test('a running container keeps everything (its healthcheck reads the secrets)', async () => {
+      const { a, task } = await launched();
+      expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 0)).toEqual([]);
+      expect(existsSync(join(rtDir(task.id), 'secrets'))).toBe(true);
+    });
+    test('a failed docker listing or an unreadable task store removes nothing', async () => {
+      const { a, task } = await launched();
+      docker.containers[0]!.state = 'exited';
+      const list = docker.listContainers.bind(docker);
+      docker.listContainers = async () => { throw new Error('docker down'); };
+      expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 0)).toEqual([]);
+      docker.listContainers = list;
+      expect(await a.sweepRuntime(() => ({ state: 'store_unreadable' }), 0)).toEqual([]);
+      expect(existsSync(join(rtDir(task.id), 'secrets'))).toBe(true);
+    });
+    test('an ended task: the spool goes after retention once no container remains; the clone is kept', async () => {
+      const { a, task, handle } = await launched();
+      await a.stop(handle); // removes the container and the secrets
+      const ended = (h: number) => () => ({ state: 'terminal' as const, endedAt: new Date(Date.now() - h * H) });
+      expect(await a.sweepRuntime(ended(1), 24 * H)).toEqual([]);
+      expect(await a.sweepRuntime(ended(25), 24 * H)).toEqual([`${task.id}:spool`]);
+      expect(existsSync(spoolDir(task.id))).toBe(false);
+      expect(existsSync(join(rtDir(task.id), 'work', '.git'))).toBe(true);
+    });
+    test('a task that no longer exists: everything goes once no container of it remains and its record is a day old', async () => {
+      const { a, task } = await launched();
+      docker.containers[0]!.state = 'exited'; // stopped by quarantine, kept
+      expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 24 * H)).toEqual([`${task.id}:secrets`]);
+      expect(existsSync(spoolDir(task.id))).toBe(true);
+      docker.containers = []; // quarantine elapsed, the reconciler removed it
+      // A record written in the last 24 h keeps the clone (the store may only briefly miss the task).
+      expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 24 * H)).toEqual([]);
+      const dayAgo = new Date(Date.now() - 25 * H);
+      utimesSync(join(rtDir(task.id), 'runtime.json'), dayAgo, dayAgo);
+      expect((await a.sweepRuntime(() => ({ state: 'unknown' }), 24 * H)).sort()).toEqual([`${task.id}:runtime`, `${task.id}:spool`]);
+      expect(existsSync(rtDir(task.id))).toBe(false);
+      expect(existsSync(spoolDir(task.id))).toBe(false);
+    });
   });
 
   // #3527: a fresh relaunch (a Ralph iteration) wipes the task's DB, so its usage must add up, not be replaced.

@@ -140,10 +140,10 @@ export async function runContainersCli(argv: string[], deps: ContainersDeps = {}
     }
     let failed = 0;
     for (const c of targets) {
-      try { await docker.stopContainer(c.name, 10); await docker.removeContainer(c.name); } catch (e) { failed++; err.error(`failed to remove ${c.name}: ${String(e)}`); }
+      try { await docker.stopContainer(c.name, 10, c.id); await docker.removeContainer(c.name, c.id); } catch (e) { failed++; err.error(`failed to remove ${c.name}: ${String(e)}`); }
     }
     for (const n of nets) {
-      try { await docker.removeNetwork(n.name); } catch (e) { failed++; err.error(`failed to remove network ${n.name}: ${String(e)}`); }
+      try { await docker.removeNetwork(n.name, n.id); } catch (e) { failed++; err.error(`failed to remove network ${n.name}: ${String(e)}`); }
     }
     return failed ? 1 : 0;
   } catch (e) {

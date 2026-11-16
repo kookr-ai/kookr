@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { CONTAINER_NAME_PREFIX, type ContainerInfo, type ContainerRunSpec, type DockerRunnerPort, type NetworkInfo } from './ports.js';
+import { CONTAINER_NAME_PREFIX, type ContainerInfo, type ContainerMount, type ContainerRunSpec, type DockerRunnerPort, type NetworkInfo } from './ports.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,6 +37,35 @@ export class DockerCliRunner implements DockerRunnerPort {
     return name;
   }
 
+  /** Networks follow the same `kookr-oc-` rule as containers: nothing else is ever removed (#3557). */
+  private static safeNetwork(name: string): string {
+    DockerCliRunner.safeName(name);
+    if (!name.startsWith(CONTAINER_NAME_PREFIX)) throw new Error(`refusing unsafe docker object name ${JSON.stringify(name)} (not a ${CONTAINER_NAME_PREFIX} network)`);
+    return name;
+  }
+
+  /**
+   * The argv target for a mutating call: the full object id from a listing when given (Docker then acts on exactly that
+   * object, never on one re-created under the same name since the listing), else the name. The name is checked either way.
+   */
+  private static target(checkedName: string, id?: string): string {
+    if (id === undefined) return checkedName;
+    if (!/^[0-9a-f]{64}$/.test(id)) throw new Error(`refusing unsafe docker object id ${JSON.stringify(id)} for ${checkedName}`);
+    return id;
+  }
+
+  /**
+   * One `--mount` value. `-v src:dst:mode` splits on ':', so a host path containing ':' would be misread; `--mount` is
+   * comma-separated key=value instead, and a ',' or '"' in a path (which its CSV syntax would need quoting for) is refused.
+   * Unlike `-v`, `--mount` fails on a missing source instead of creating it as root, which is what Kookr wants.
+   */
+  static bindMount(m: ContainerMount): string {
+    for (const p of [m.source, m.target]) {
+      if (!p.startsWith('/') || /[,"\n\r]/.test(p)) throw new Error(`refusing unsafe mount path ${JSON.stringify(p)}`);
+    }
+    return `type=bind,source=${m.source},target=${m.target}${m.readOnly ? ',readonly' : ''}`;
+  }
+
   /** The argv for `docker run` (exported for tests). Values are single argv entries; nothing goes through a shell. */
   static runArgs(spec: ContainerRunSpec): string[] {
     DockerCliRunner.safeContainer(spec.name);
@@ -46,7 +75,7 @@ export class DockerCliRunner implements DockerRunnerPort {
       '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '-p', `127.0.0.1::${spec.publishPort}`];
     for (const [k, v] of Object.entries(spec.labels)) a.push('--label', `${k}=${v}`);
     for (const t of spec.tmpfs) a.push('--tmpfs', t);
-    for (const m of spec.mounts) a.push('-v', `${m.source}:${m.target}:${m.readOnly ? 'ro' : 'rw'}`);
+    for (const m of spec.mounts) a.push('--mount', DockerCliRunner.bindMount(m));
     for (const [k, v] of Object.entries(spec.env)) a.push('-e', `${k}=${v}`);
     a.push(spec.image);
     return a;
@@ -90,12 +119,13 @@ export class DockerCliRunner implements DockerRunnerPort {
     }));
   }
 
-  async stopContainer(name: string, graceSeconds: number): Promise<void> {
-    await this.exec(['stop', '-t', String(Math.max(0, Math.floor(graceSeconds))), DockerCliRunner.safeContainer(name)], this.timeoutMs + graceSeconds * 1000);
+  async stopContainer(name: string, graceSeconds: number, id?: string): Promise<void> {
+    const target = DockerCliRunner.target(DockerCliRunner.safeContainer(name), id);
+    await this.exec(['stop', '-t', String(Math.max(0, Math.floor(graceSeconds))), target], this.timeoutMs + graceSeconds * 1000);
   }
 
-  async removeContainer(name: string): Promise<void> {
-    await this.exec(['rm', DockerCliRunner.safeContainer(name)], this.timeoutMs);
+  async removeContainer(name: string, id?: string): Promise<void> {
+    await this.exec(['rm', DockerCliRunner.target(DockerCliRunner.safeContainer(name), id)], this.timeoutMs);
   }
 
   async listNetworks(label: { key: string; value: string }): Promise<NetworkInfo[]> {
@@ -106,7 +136,7 @@ export class DockerCliRunner implements DockerRunnerPort {
     return rows.map((r) => ({ id: r.Id, name: r.Name, labels: r.Labels ?? {}, ...(r.Created ? { createdAt: new Date(r.Created) } : {}) }));
   }
 
-  async removeNetwork(name: string): Promise<void> {
-    await this.exec(['network', 'rm', DockerCliRunner.safeName(name)], this.timeoutMs);
+  async removeNetwork(name: string, id?: string): Promise<void> {
+    await this.exec(['network', 'rm', DockerCliRunner.target(DockerCliRunner.safeNetwork(name), id)], this.timeoutMs);
   }
 }

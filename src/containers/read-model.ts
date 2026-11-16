@@ -53,27 +53,37 @@ export interface ContainerReadModel {
 }
 
 const A2A_TERMINAL: ReadonlySet<string> = new Set(['COMPLETED', 'FAILED', 'CANCELED']);
+/** Docker states of a container that is not running but is not dead either (#3557): starting, restarting, paused. */
+const TRANSITIONAL: ReadonlySet<string> = new Set(['created', 'restarting', 'paused']);
 
 /**
  * Pure derivation of health and divergence. Precedence when signals disagree: container state > ledger > A2A.
  * Three missed probes make health `unknown` — never `healthy`; a worker we cannot see is not assumed fine.
+ * A container that is starting (`created`) is `unknown`, one restarting or paused is `degraded`; neither is dead. A
+ * container that exited cleanly (exit 0, not OOM-killed) after its task ended is `healthy`: that is the normal end.
  */
 export function buildContainerReadModel(i: ContainerReadModelInput): ContainerReadModel {
   const c = i.container;
   const containerState = c?.state ?? 'missing';
   const running = containerState === 'running';
+  const transitional = TRANSITIONAL.has(containerState);
   const hooksBlind = running && i.ingestLagMs !== undefined && i.ingestLagMs > HOOKS_BLIND_LAG_MS;
   const probeStale = running && (i.consecutiveProbeMisses >= PROBE_MISSES_FOR_UNKNOWN
     || !i.lastProbeAt || i.now.getTime() - i.lastProbeAt.getTime() > PROBE_INTERVAL_MS * 3);
 
   let divergence: ContainerDivergence = 'none';
-  if (!running && i.taskLive) divergence = 'container_dead_task_live';
+  if (!running && !transitional && i.taskLive) divergence = 'container_dead_task_live';
   else if (running && !i.taskLive) divergence = 'task_terminal_container_live';
   else if (running && i.a2aState && A2A_TERMINAL.has(i.a2aState) && !i.ledgerTerminal) divergence = 'a2a_ahead_of_ledger';
   else if (probeStale) divergence = 'probe_stale';
 
   let health: ContainerHealth;
-  if (!running) health = c && (c.oomKilled || (c.exitCode ?? 0) !== 0 || i.taskLive) ? 'failed' : 'unknown';
+  if (transitional) health = containerState === 'created' ? 'unknown' : 'degraded';
+  else if (!running) {
+    if (!c) health = 'unknown';
+    else if (c.oomKilled || (c.exitCode ?? 0) !== 0 || i.taskLive) health = 'failed';
+    else health = 'healthy'; // exited cleanly after the task ended
+  }
   else if (probeStale) health = 'unknown';
   else if (hooksBlind || i.a2aState === 'FAILED' || (c?.restartCount ?? 0) > 0) health = 'degraded';
   else health = 'healthy';

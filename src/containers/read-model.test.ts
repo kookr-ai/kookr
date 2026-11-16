@@ -42,7 +42,17 @@ describe('buildContainerReadModel', () => {
     expect(buildContainerReadModel(base({ container: c({ restartCount: 1 }) })).health).toBe('degraded');
     expect(buildContainerReadModel(base({ a2aState: 'FAILED', ledgerTerminal: true })).health).toBe('degraded');
   });
-  test('missing container with a live task is failed', () => {
+  test('a starting, restarting or paused container with a live task is not reported dead (#3557)', () => {
+    expect(buildContainerReadModel(base({ container: c({ state: 'created' }) }))).toMatchObject({ health: 'unknown', divergence: 'none' });
+    expect(buildContainerReadModel(base({ container: c({ state: 'restarting', restartCount: 1 }) }))).toMatchObject({ health: 'degraded', divergence: 'none' });
+    expect(buildContainerReadModel(base({ container: c({ state: 'paused' }) }))).toMatchObject({ health: 'degraded', divergence: 'none' });
+  });
+  test('a cleanly exited container whose task ended is healthy; a non-zero exit is failed (#3557)', () => {
+    expect(buildContainerReadModel(base({ taskLive: false, container: c({ state: 'exited', exitCode: 0 }) }))).toMatchObject({ health: 'healthy', divergence: 'none' });
+    expect(buildContainerReadModel(base({ taskLive: false, container: c({ state: 'exited', exitCode: 1 }) })).health).toBe('failed');
+    expect(buildContainerReadModel(base({ taskLive: false, container: undefined })).health).toBe('unknown');
+  });
+  test('missing container with a live task is unknown + container_dead_task_live', () => {
     expect(buildContainerReadModel(base({ container: undefined }))).toMatchObject({ containerState: 'missing', health: 'unknown', divergence: 'container_dead_task_live' });
   });
 });

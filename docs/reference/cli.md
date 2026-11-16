@@ -2557,4 +2557,5 @@ kookr containers prune --instance [--yes] [--force] [--dir PATH]
 
 Inspect and clean up opencode worker containers (experimental; see
 [opencode-agent.md](opencode-agent.md#worker-container-housekeeping-kookr-containers)). `ls` is read-only;
-`prune --instance` is a dry run unless `--yes`, and needs `--force` to remove containers of live tasks.
+`prune --instance` is a dry run unless `--yes`, and needs `--force` to remove containers of live tasks. Run it with the
+server's `KOOKR_TASK_STORE`: it reads the task store itself and picks the store from its own environment.

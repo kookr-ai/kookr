@@ -20,6 +20,13 @@ describe('opencode-worker image contract', () => {
     expect(tc).toMatch(/NODE_IMAGE=\S+@sha256:[0-9a-f]{64}/);
   });
 
+  it('installs pnpm in the toolchain layer from a tarball checked against a pinned sha512', () => {
+    const tc = read('toolchains/kookr.Dockerfile');
+    expect(tc).toMatch(/^ARG PNPM_SHA512=[0-9a-f]{128}$/m);
+    expect(tc).toContain('sha512sum -c -');
+    expect(tc).not.toMatch(/npm install -g pnpm@/);
+  });
+
   it('installs python deps only with hashes and node deps from a lockfile with integrity', () => {
     expect(read('Dockerfile')).toContain('--require-hashes');
     const req = read('requirements.txt');
@@ -47,10 +54,18 @@ describe('opencode-worker image contract', () => {
     expect(e).toContain('/run/secrets');
     expect(e).not.toMatch(/:\?required/);
     const body = e.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n');
-    for (const code of [10, 11, 12, 13, 14]) expect(body).toMatch(new RegExp(`(?:exit |code=)${code}\\b`));
+    for (const code of [10, 11, 12, 13, 14, 15]) expect(body).toMatch(new RegExp(`(?:exit |finish |code=)${code}\\b`));
     expect(body).toContain('STOPPING=1');
     expect(e).toContain('wait -n "$OC" "$A2A"');
     expect(e).toContain('--max-time 2');
+  });
+
+  it('never puts the opencode password in a curl argv (entrypoint and healthcheck read it from stdin)', () => {
+    for (const f of ['entrypoint.sh', 'Dockerfile']) {
+      const t = read(f);
+      expect(t, f).not.toMatch(/curl[^\n]*-u\s/);
+      expect(t, f).toContain('-K -');
+    }
   });
 
   it('ships the operator-run live test and build script', () => {

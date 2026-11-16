@@ -312,10 +312,14 @@ plugin, workspace and data are mounted at launch.
 
 - Pins: base images by digest, opencode 1.19.5 from a lockfile with sha512 integrity, `opencode-a2a` with
   `--require-hashes`, plugin dependencies pre-seeded at build time (first message 1.7 s instead of 12.7 s).
-- Secrets: read from 0600 files in `/run/secrets` (`opencode_password`, `a2a_token`), never from the container environment (`docker inspect` shows none); the entrypoint passes them to its two child processes through their process env. The `kookr.Dockerfile` toolchain layer pins pnpm by version, not by tarball hash (known gap).
+- Secrets: read from 0600 files in `/run/secrets` (`opencode_password`, `a2a_token`), never from the container environment (`docker inspect` shows none); the entrypoint passes them to its two child processes through their process env. The files must be 0600: the entrypoint refuses group- or other-readable ones (exit 13), so the Kookr data dir must be
+on a filesystem with POSIX modes (not, for example, a Windows drive under `/mnt/c` in WSL, which shows 0777).
+Kookr's data and runtime paths are bind-mounted with `--mount`, so they may contain `:` but not `,` or `"` (the launch
+is refused). The healthchecks pass the password to `curl` on stdin, not in its arguments. The `kookr.Dockerfile` toolchain layer installs pnpm from its registry tarball, checked against a pinned sha512.
 - The entrypoint exits when either child dies, with a distinct code: 10 opencode never healthy, 11 opencode
-  exited, 12 A2A wrapper exited, 13 missing secret, 14 hook self-test failed (a hook executable listed in
-  `/kookr-hooks/MANIFEST` is missing). Output is prefixed `[entrypoint]`, `[opencode]`, `[a2a]`.
+  exited, 12 A2A wrapper exited, 13 missing, empty or group-readable secret, 14 hook self-test failed (a hook executable listed in
+  `/kookr-hooks/MANIFEST` is missing or not executable), 15 workspace missing. A stop request (SIGTERM) exits 0,
+  also during startup. Output is prefixed `[entrypoint]`, `[opencode]`, `[a2a]`.
 - `deploy/opencode-worker/build.sh` builds it (`WITH_KOOKR_TOOLCHAIN=1` also builds the toolchain layer with
   node and pnpm); `deploy/opencode-worker/test-container.sh <image>` is the operator-run live check (needs docker).
 
@@ -353,23 +357,29 @@ plugin, workspace and data are mounted at launch.
 
 `metadata.opencodeLaunchMode` (`tui` | `container`) records how an opencode task launches, decided once and honoured
 by every relaunch. With `KOOKR_OPENCODE_CONTAINERS` on, a task that has never run launches as a `container`; a task that
-already has sessions and no recorded mode is a host-TUI task and stays one. A task persisted as `container` is refused
+already has opencode sessions and no recorded mode is a host-TUI task and stays one. A task persisted as `container` is refused
 by the TUI adapter, and refused outright when the flag is off (no silent fallback either way).
 
 Container mode (S2d of [RFC #3541](../rfc/rfc-opencode-worker-containers.md)) in short: one live container at a time
 (a second concurrent launch is refused with `container_cap_reached`); launch refusals carry a stable reason
 (`docker_down`, `image_missing`, `health_timeout`, `plugin_not_loaded`, `a2a_unauth`, `provider_key_missing`,
 `hook_assets_missing`, `pr_lint_unresolvable`, `clone_failed`); the worker gets its own `git clone` (never a push
-credential) and the host fetches the result as `refs/kookr/opencode/<taskId>`; `sendInput` goes to the worker over A2A and
+credential), whose commits stay in that clone: fetching them into the source repo as `refs/kookr/opencode/<taskId>`
+exists as code but is not wired into the adapter yet (#3584); `sendInput` goes to the worker over A2A and
 `sendKeystroke` is unsupported (container workers are non-interactive; the terminal view is `docker logs -f`). The A2A
 task state is advisory and never reaches "completed" in this mode; hook records and the container state are the truth.
-Operator-run checks: `scripts/opencode-containers-live.ts`.
+Runtime state lives under `<data dir>/opencode-containers/` (per-task `tasks/<id>/` with the clone, secrets and control
+record; `spool/<id>/` with the hook ledgers). After each reconcile pass the server removes the secrets of a task with no
+running, starting, restarting or paused container, the spool of a task that ended more than 24 h ago once none of its containers
+remain, and both the spool and the whole task dir of a task that no longer exists once none of its containers remain
+and its control record is more than 24 h old. The clone of an ended task is kept (it holds the
+worker's commits). Operator-run checks: `scripts/opencode-containers-live.ts`.
 
 ### Worker container housekeeping (`kookr containers`)
 
 Worker containers are labelled `kookr.instance=<this install's id>` (the id lives in `<data dir>/instance-id`,
 created on first container launch and never regenerated), `kookr.task` and `kookr.launch`, and named `kookr-oc-*`.
-The server reconciles these containers every 60 s (adopt live ones, remove ended ones after retention, quarantine unknown ones); this command shows and prunes the same set.
+While container mode is on (`KOOKR_OPENCODE_ENABLED`, `KOOKR_OPENCODE_CONTAINERS` and `KOOKR_OPENCODE_CONTAINER_IMAGE` set, and the opencode preflight passed), the server reconciles these containers every 60 s (adopt live ones, remove ended ones after retention, quarantine unknown ones); with the flag off nothing reconciles them, so use this command. It shows and prunes the same set.
 
 ```
 kookr containers ls [--json] [--dir PATH]
@@ -380,9 +390,15 @@ kookr containers prune --instance [--yes] [--force] [--dir PATH]
 120 s or its launch intent is open), `keep_terminal` / `stop_remove` (task finished; removed after 24 h),
 `quarantine_stop` / `quarantine_keep` / `remove_quarantined` (no such task: stopped, kept 24 h, then removed), or
 `hold` (the task store could not be read, so nothing is touched). `prune --instance` stops and removes every
-container and network of this instance; it is a dry run unless `--yes`, and refuses while any container or network belongs to a live task, is younger than 120 s, has an open launch intent, or the task store cannot be read, unless `--force`, which kills those workers. A container stopped by quarantine is not restarted if its task later reappears; `ls` then reports it as dead with a live task. Another Kookr instance's objects, and anything
+container and network of this instance; it is a dry run unless `--yes`, and refuses while any container or network belongs to a live task, is younger than 120 s, has an open launch intent, or the task store cannot be read, unless `--force`, which kills those workers. A container stopped by quarantine is not restarted if its task later reappears; `ls` then shows it as `adopt` with state `exited` (reason "task live but container is exited"): it is not running, so remove it with `prune` if the task needs a new worker. Another Kookr instance's objects, and anything
 not named `kookr-oc-*` with this instance's label, are never touched. Reconciler actions are appended to
-`<data dir>/container-reconcile.jsonl`.
+`<data dir>/container-reconcile.jsonl`. Stops and removals target the Docker id from the listing, so an object
+re-created under the same name in between is never touched.
+
+The command reads the task store itself, read-only, and chooses `tasks.sqlite` or `tasks.json` from its OWN
+`KOOKR_TASK_STORE`, exactly as the server would. Run it with the same `KOOKR_TASK_STORE` as the server: with a
+different value it can read a stale store left from an earlier mode, and a live task then looks unknown (`ls` shows
+`quarantine_stop`, and `prune` would not protect it).
 
 ## Pipeline playbook
 

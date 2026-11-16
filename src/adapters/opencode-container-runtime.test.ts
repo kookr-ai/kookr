@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
@@ -36,6 +36,27 @@ describe('opencode container runtime wiring', () => {
       });
       expect(rt).toBeDefined();
       expect(await rt!.bindWatcher({ watch() {}, stop() {}, isWatching: () => false })).toEqual([]);
+      rt!.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('each reconcile tick also sweeps runtime state: the secrets of a task with no container go (#3584)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'oc-rt-'));
+    try {
+      const store = new TaskStore();
+      const task = store.createTask({ prompt: 'p', cwd: dir });
+      const secrets = join(dir, 'opencode-containers', 'tasks', task.id, 'secrets');
+      mkdirSync(secrets, { recursive: true });
+      writeFileSync(join(secrets, 'a2a_token'), 't');
+      const rt = await createOpenCodeContainerRuntime({
+        taskStore: store, backend: new FakeTerminalBackend(), hooksDir: join(dir, 'hooks'), docker: new FakeDocker(),
+        env: { KOOKR_OPENCODE_CONTAINERS: 'true', KOOKR_OPENCODE_CONTAINER_IMAGE: 'img:1' },
+      });
+      rt!.startReconciler();
+      await vi.waitFor(() => expect(existsSync(secrets)).toBe(false));
+      expect(existsSync(join(dir, 'opencode-containers', 'tasks', task.id))).toBe(true); // a live task keeps its dir
       rt!.stop();
     } finally {
       rmSync(dir, { recursive: true, force: true });
