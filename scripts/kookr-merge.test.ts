@@ -1292,6 +1292,40 @@ describe('a conflict seen after the first read still fails fast (#3817)', () => 
   const mergeCalls = (calls: string[]) => calls.filter((c) => c.startsWith('pr merge') && !c.includes('--help'));
   const watchCalls = (calls: string[]) => calls.filter((c) => c.includes('--watch') && !c.includes('--help'));
 
+  it('merges when --watch passes and the merge state read after it is clean', () => {
+    const dir = makeStubDir({
+      checksResponses: [rollup(RUNNING, 'BLOCKED', 'MERGEABLE'), rollup(GREEN, 'CLEAN', 'MERGEABLE')],
+      watchExit: 0,
+    });
+    try {
+      const { status, merged, calls, pollCount } = runMerge(dir, { GH_HAS_WATCH: '1' });
+      expect(status).toBe(0);
+      expect(merged).toBe(true);
+      expect(watchCalls(calls)).toHaveLength(1);
+      // Pre-flight, then the one read after --watch: no poll loop.
+      expect(pollCount).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses with exit 3 when --watch fails, the state after it has no conflict, and no waiver applies', () => {
+    const dir = makeStubDir({
+      checksResponses: [rollup(RED, 'BLOCKED', 'MERGEABLE')],
+      watchExit: 1,
+    });
+    try {
+      const { status, stderr, merged, calls } = runMerge(dir, { GH_HAS_WATCH: '1' });
+      expect(status).toBe(3);
+      expect(merged).toBe(false);
+      expect(watchCalls(calls)).toHaveLength(1);
+      expect(mergeCalls(calls)).toHaveLength(0);
+      expect(stderr).toContain('gh pr checks --watch reported a check that did not pass');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('polls instead of using --watch when GitHub has not computed mergeability yet', () => {
     // --watch ignores mergeability, and the stub's --watch exits 0: reaching it
     // would merge a PR that turns out to conflict.

@@ -121,6 +121,9 @@ describe('pr-create-delivery-note', () => {
     expect(hook(`env GH_REPO=other/thing ${create}`, gated, foreign)).toBeNull();
     expect(hook(`GH_REPO=owner/name ${create}`, gated)).toContain('#42');
     expect(hook(create, gated, foreign, {}, { GH_REPO: 'other/thing' })).toBeNull();
+    // The output names this repository's pull request, so only GH_REPO itself
+    // can stop the note here.
+    expect(hook(create, gated, `${URL}\n`, {}, { GH_REPO: 'other/thing' })).toBeNull();
     expect(hook(create, gated, `${URL}\n`, {}, { GH_REPO: 'github.com/owner/name' })).toContain('#42');
     // The flag wins over the variable, and an inline prefix over the environment.
     expect(hook(`${create} --repo owner/name`, gated, `${URL}\n`, {}, { GH_REPO: 'other/thing' })).toContain('#42');
