@@ -354,17 +354,22 @@ plugin, workspace and data are mounted at launch.
 
 `metadata.opencodeLaunchMode` (`tui` | `container`) records how an opencode task launches, decided once and honoured
 by every relaunch. With `KOOKR_OPENCODE_CONTAINERS` on, a task that has never run launches as a `container`; a task that
-already has sessions and no recorded mode is a host-TUI task and stays one. A task persisted as `container` is refused
+already has opencode sessions and no recorded mode is a host-TUI task and stays one. A task persisted as `container` is refused
 by the TUI adapter, and refused outright when the flag is off (no silent fallback either way).
 
 Container mode (S2d of [RFC #3541](../rfc/rfc-opencode-worker-containers.md)) in short: one live container at a time
 (a second concurrent launch is refused with `container_cap_reached`); launch refusals carry a stable reason
 (`docker_down`, `image_missing`, `health_timeout`, `plugin_not_loaded`, `a2a_unauth`, `provider_key_missing`,
 `hook_assets_missing`, `pr_lint_unresolvable`, `clone_failed`); the worker gets its own `git clone` (never a push
-credential) and the host fetches the result as `refs/kookr/opencode/<taskId>`; `sendInput` goes to the worker over A2A and
+credential), whose commits stay in that clone: fetching them into the source repo as `refs/kookr/opencode/<taskId>`
+exists as code but is not wired into the adapter yet (#3584); `sendInput` goes to the worker over A2A and
 `sendKeystroke` is unsupported (container workers are non-interactive; the terminal view is `docker logs -f`). The A2A
 task state is advisory and never reaches "completed" in this mode; hook records and the container state are the truth.
-Operator-run checks: `scripts/opencode-containers-live.ts`.
+Runtime state lives under `<data dir>/opencode-containers/` (per-task `tasks/<id>/` with the clone, secrets and control
+record; `spool/<id>/` with the hook ledgers). After each reconcile pass the server removes the secrets of a task with no
+running container, the spool of a task that ended more than 24 h ago or no longer exists once none of its containers
+remain, and the whole task dir of a task that no longer exists. The clone of an ended task is kept (it holds the
+worker's commits). Operator-run checks: `scripts/opencode-containers-live.ts`.
 
 ### Worker container housekeeping (`kookr containers`)
 

@@ -18,7 +18,10 @@ import type { TaskStore } from '../core/tasks.js';
 import { cloneForWorker } from '../containers/clone-extract.js';
 import { containerSessionKey, ledgerLocation, type ContainerLedgerIngest } from '../containers/ledger-ingest.js';
 import type { IntentStore } from '../containers/intent-store.js';
-import { LABEL_INSTANCE, LABEL_LAUNCH, LABEL_TASK, CONTAINER_NAME_PREFIX, type A2aClientPort, type ContainerRunSpec, type DockerRunnerPort } from '../containers/ports.js';
+import {
+  LABEL_INSTANCE, LABEL_LAUNCH, LABEL_TASK, CONTAINER_NAME_PREFIX, type A2aClientPort, type ContainerInfo, type ContainerRunSpec, type DockerRunnerPort,
+  type TaskLookupPort,
+} from '../containers/ports.js';
 import { resolveGateBaseEnv } from './opencode-gate-base.js';
 import { composeOpenCodeSession, type ComposeOpenCodeSessionOptions } from './opencode-home-composer.js';
 import {
@@ -436,7 +439,8 @@ export class OpenCodeContainerAdapter {
 
   /**
    * Stop = A2A cancel (best effort) -> `docker stop -t 10` -> record usage/session id from the bind-mounted DB ->
-   * remove the container and the secrets. The conversation data and the clone are kept (resume, deliverable extraction).
+   * remove the container and the secrets. The conversation data and the clone are kept (resume, deliverable extraction);
+   * `sweepRuntime` cleans up what a container that exited without `stop()` leaves behind.
    * A2A state is advisory: a failed cancel never skips the container stop.
    */
   async stop(handle: string): Promise<void> {
@@ -481,6 +485,57 @@ export class OpenCodeContainerAdapter {
       const id = await readOpenCodeSessionId(dataHome, this.d.taskStore.getTask(taskId)?.metadata?.opencodeSessionId);
       if (id && this.d.taskStore.getTask(taskId)?.metadata?.opencodeSessionId !== id) this.d.taskStore.recordOpenCodeSessionId(taskId, id);
     } catch { /* telemetry is best-effort */ }
+  }
+
+  // ---- runtime-state housekeeping (#3584) ----------------------------------------------------------------------
+
+  /**
+   * Removes per-task runtime state that no container needs any more; run after each reconcile pass. Returns what it
+   * removed (`<taskId>:secrets|spool|runtime`).
+   *  - `secrets/` of a task with no live container: covers a container that exited without `stop()`. (While one runs,
+   *    its healthcheck reads the password file, so secrets are never removed under it.)
+   *  - the spool of a task that ended more than `retentionMs` ago or no longer exists, once no container of it remains
+   *    in any state (a quarantined, stopped container keeps its ledger as evidence until the reconciler removes it);
+   *  - the whole runtime dir, clone included, of a task that no longer exists, under the same condition.
+   * The clone of an ended task is kept: until deliverable extraction is wired it is the only copy of the worker's commits.
+   * A failed Docker listing or an unreadable task store skips the pass: neither proves a container or a task is gone.
+   */
+  async sweepRuntime(tasks: TaskLookupPort, retentionMs: number): Promise<string[]> {
+    let containers: ContainerInfo[];
+    try {
+      containers = await this.d.docker.listContainers({ key: LABEL_INSTANCE, value: this.d.instanceId });
+    } catch {
+      return [];
+    }
+    const anyContainer = new Set(containers.map((c) => c.labels[LABEL_TASK]).filter((t): t is string => !!t));
+    const liveContainer = new Set(containers.filter((c) => LIVE_STATES.has(c.state)).map((c) => c.labels[LABEL_TASK]).filter((t): t is string => !!t));
+    const removed: string[] = [];
+    const safe = (names: string[]) => names.filter((n) => /^[A-Za-z0-9_-]{1,64}$/.test(n));
+    const runtimeIds = safe(await readdir(join(this.cfg.runtimeRoot, 'tasks')).catch(() => [] as string[]));
+    const spoolIds = safe(await readdir(this.spoolRoot).catch(() => [] as string[]));
+    const now = this.now;
+    for (const taskId of new Set([...runtimeIds, ...spoolIds])) {
+      // Re-checked right before every removal: a launch of this task may have started while the pass was running.
+      const idle = () => !this.launching.has(taskId) && !liveContainer.has(taskId);
+      if (!idle()) continue;
+      const st = tasks(taskId);
+      if (st.state === 'store_unreadable') continue;
+      const rt = this.taskRuntimeDir(taskId);
+      if (runtimeIds.includes(taskId) && (await exists(join(rt, 'secrets'))) && idle()) {
+        await rm(join(rt, 'secrets'), { recursive: true, force: true }).then(() => removed.push(`${taskId}:secrets`), () => undefined);
+      }
+      if (anyContainer.has(taskId)) continue;
+      const gone = st.state === 'unknown';
+      const expired = st.state === 'terminal' && now - st.endedAt.getTime() >= retentionMs;
+      if (!gone && !expired) continue;
+      if (spoolIds.includes(taskId) && idle()) {
+        await rm(join(this.spoolRoot, taskId), { recursive: true, force: true }).then(() => removed.push(`${taskId}:spool`), () => undefined);
+      }
+      if (gone && runtimeIds.includes(taskId) && idle()) {
+        await rm(rt, { recursive: true, force: true }).then(() => removed.push(`${taskId}:runtime`), () => undefined);
+      }
+    }
+    return removed;
   }
 
   // ---- adopt / records ---------------------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import { getOrCreateInstanceId } from '../containers/instance-id.js';
 import { IntentStore } from '../containers/intent-store.js';
 import { ContainerLedgerIngest, type LedgerWatcherPort } from '../containers/ledger-ingest.js';
 import type { DockerRunnerPort, A2aClientPort, TaskLookupPort } from '../containers/ports.js';
-import { ContainerReconciler } from '../containers/reconciler.js';
+import { ContainerReconciler, DEFAULT_TERMINAL_RETENTION_MS } from '../containers/reconciler.js';
 import {
   DEFAULT_OPENCODE_API_KEY_ENV, DEFAULT_OPENCODE_BASE_URL, DEFAULT_OPENCODE_MODEL_ID, DEFAULT_OPENCODE_PROVIDER_ID,
 } from './opencode-adapter.js';
@@ -102,7 +102,12 @@ export async function createOpenCodeContainerRuntime(deps: CreateContainerRuntim
     logFile: join(kookrDir, 'container-reconcile.jsonl'), quarantineFile: join(kookrDir, 'container-quarantine.json'),
   });
   let timer: NodeJS.Timeout | undefined;
-  const tick = (): void => { void reconciler.reconcile().catch((e) => warn(`[containers] reconcile failed: ${(e as Error).message}`)); };
+  const tick = (): void => {
+    void reconciler.reconcile()
+      .then(() => adapter.sweepRuntime(tasks, DEFAULT_TERMINAL_RETENTION_MS))
+      .then((removed) => { if (removed.length > 0) console.log(`[containers] removed runtime state: ${removed.join(', ')}`); })
+      .catch((e) => warn(`[containers] reconcile failed: ${(e as Error).message}`));
+  };
   return {
     adapter,
     async bindWatcher(w) {

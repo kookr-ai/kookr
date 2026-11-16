@@ -287,6 +287,59 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
     expect(docker.containers).toHaveLength(0);
   });
 
+  describe('sweepRuntime (#3584)', () => {
+    const H = 3_600_000;
+    const rtDir = (id: string) => join(root, 'rt', 'tasks', id);
+    const spoolDir = (id: string) => join(root, 'rt', 'spool', id);
+    async function launched() {
+      const task = newTask();
+      const a = make();
+      const handle = await a.launch(task.id, 'x', src);
+      return { a, task, handle };
+    }
+    test('a container that exited without stop() loses its secrets; the clone, record and spool stay', async () => {
+      const { a, task } = await launched();
+      docker.containers[0]!.state = 'exited';
+      expect(await a.sweepRuntime(() => ({ state: 'live' }), 24 * H)).toEqual([`${task.id}:secrets`]);
+      expect(existsSync(join(rtDir(task.id), 'secrets'))).toBe(false);
+      for (const p of [join(rtDir(task.id), 'work', '.git'), join(rtDir(task.id), 'runtime.json'), spoolDir(task.id)]) expect(existsSync(p), p).toBe(true);
+    });
+    test('a running container keeps everything (its healthcheck reads the secrets)', async () => {
+      const { a, task } = await launched();
+      expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 0)).toEqual([]);
+      expect(existsSync(join(rtDir(task.id), 'secrets'))).toBe(true);
+    });
+    test('a failed docker listing or an unreadable task store removes nothing', async () => {
+      const { a, task } = await launched();
+      docker.containers[0]!.state = 'exited';
+      const list = docker.listContainers.bind(docker);
+      docker.listContainers = async () => { throw new Error('docker down'); };
+      expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 0)).toEqual([]);
+      docker.listContainers = list;
+      expect(await a.sweepRuntime(() => ({ state: 'store_unreadable' }), 0)).toEqual([]);
+      expect(existsSync(join(rtDir(task.id), 'secrets'))).toBe(true);
+    });
+    test('an ended task: the spool goes after retention once no container remains; the clone is kept', async () => {
+      const { a, task, handle } = await launched();
+      await a.stop(handle); // removes the container and the secrets
+      const ended = (h: number) => () => ({ state: 'terminal' as const, endedAt: new Date(Date.now() - h * H) });
+      expect(await a.sweepRuntime(ended(1), 24 * H)).toEqual([]);
+      expect(await a.sweepRuntime(ended(25), 24 * H)).toEqual([`${task.id}:spool`]);
+      expect(existsSync(spoolDir(task.id))).toBe(false);
+      expect(existsSync(join(rtDir(task.id), 'work', '.git'))).toBe(true);
+    });
+    test('a task that no longer exists: everything goes, but only once no container of it remains (quarantine evidence)', async () => {
+      const { a, task } = await launched();
+      docker.containers[0]!.state = 'exited'; // stopped by quarantine, kept
+      expect(await a.sweepRuntime(() => ({ state: 'unknown' }), 24 * H)).toEqual([`${task.id}:secrets`]);
+      expect(existsSync(spoolDir(task.id))).toBe(true);
+      docker.containers = []; // quarantine elapsed, the reconciler removed it
+      expect((await a.sweepRuntime(() => ({ state: 'unknown' }), 24 * H)).sort()).toEqual([`${task.id}:runtime`, `${task.id}:spool`]);
+      expect(existsSync(rtDir(task.id))).toBe(false);
+      expect(existsSync(spoolDir(task.id))).toBe(false);
+    });
+  });
+
   // #3527: a fresh relaunch (a Ralph iteration) wipes the task's DB, so its usage must add up, not be replaced.
   test('a fresh relaunch adds its usage to the task, and a restarted adapter stop does not count it twice', async () => {
     const fixtureDb = resolve(__dirname, '__fixtures__', 'opencode-session.db');
