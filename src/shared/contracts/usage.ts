@@ -12,7 +12,12 @@ export interface TokenUsage {
    * and on aggregates that mix vendors.
    */
   provider?: 'openai' | 'anthropic';
-  /** Model name the `costUsd` estimate was priced against (e.g. `gpt-5.3-codex`). */
+  /**
+   * Model name the `costUsd` estimate was priced against (e.g. `gpt-5.3-codex`).
+   * For Claude Code tasks it is the first model the transcript reports, kept
+   * verbatim (e.g. `claude-opus-4-7-20260424`); a session that switched models
+   * still prices each message at its own model's rates.
+   */
   model?: string;
   /**
    * Whether transcript-derived pricing used a known model row (exact key or

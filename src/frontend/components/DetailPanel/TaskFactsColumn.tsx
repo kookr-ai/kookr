@@ -55,7 +55,7 @@ function Fact({ label, children, testId }: { label: string; children: React.Reac
  * The reading pane's facts column (issue #3561 slice 4b). It replaces the
  * header's Details popover, the Relationships row above the tabs and the
  * timestamp card at the top of the conversation: project, directory, branch,
- * agent (with the hooks view), cost, tokens, pull request, relationships and
+ * agent (with the hooks view), model, cost, tokens, pull request, relationships and
  * the task timeline, then the copy, share and prompt links.
  *
  * DetailPanel renders exactly one instance. On a wide pane it is docked beside
@@ -90,6 +90,8 @@ export function TaskFactsColumn({
   const costRate = formatCostRate(usage?.costUsd, agent.startedAt);
   const tokenCount = usage ? usage.inputTokens + usage.outputTokens : 0;
   const hasCacheReads = !!usage && usage.cacheReadTokens > 0;
+  // What ran (the transcript's own model id, verbatim) vs what the launch pinned (#3559).
+  const observedModel = usage?.model;
   const firstPr = prs[0];
   const finished = agent.taskStatus === 'completed' || agent.taskStatus === 'cancelled' || agent.taskStatus === 'terminated';
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -157,6 +159,16 @@ export function TaskFactsColumn({
               >
                 hooks
               </button>
+            </span>
+          </Fact>
+        )}
+        {(observedModel || agent.requestedModel) && (
+          <Fact label="Model" testId="detail-fact-model">
+            {observedModel && (
+              <span title="The model the agent's transcript reports for this task">{observedModel}</span>
+            )}
+            <span className="detail-tokens">
+              {agent.requestedModel ? `requested ${agent.requestedModel}` : `${provider?.label ?? 'agent'} default`}
             </span>
           </Fact>
         )}

@@ -307,6 +307,7 @@ function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   if (task.tokenUsage) {
     state.tokenUsage = task.tokenUsage;
   }
+  if (task.launchIntent?.model) state.requestedModel = task.launchIntent.model;
   const latestCompletionSignal = deriveLatestCompletionSignal({
     taskId: meta.taskId,
     agentId: state.agentId,
@@ -337,6 +338,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
     description: displayPrompt,
     cwd: task.cwd,
     agentType: task.agentType,
+    ...(task.launchIntent?.model ? { requestedModel: task.launchIntent.model } : {}),
     ...(taskCreatedAt ? { startedAt: taskCreatedAt } : {}),
     playbookId: task.playbookId,
     playbookSource: task.playbookSource,
@@ -389,6 +391,7 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: lastSession?.cwd ?? task.cwd }),
     priority: task.priority,
     tokenUsage: task.tokenUsage,
+    ...(task.launchIntent?.model ? { requestedModel: task.launchIntent.model } : {}),
     gitBranch: lastSession?.gitBranch,
     gitCommit: lastSession?.gitCommit,
     gitIsWorktree: lastSession?.gitIsWorktree,

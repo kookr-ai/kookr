@@ -170,6 +170,32 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     expect(container.querySelector('.detail-badge')?.textContent).toContain('PERMISSION');
   });
 
+  test('the Model fact shows the transcript model verbatim and the launch pin under it (#3559)', () => {
+    const usage = { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5 };
+    const modelFact = () => q('detail-fact-model');
+
+    render(makeAgent({ tokenUsage: { ...usage, model: 'claude-opus-4-7-20260424' }, requestedModel: 'claude-opus-4-7' }));
+    expect(modelFact()?.querySelector('dt')?.textContent).toBe('Model');
+    expect([...modelFact()!.querySelectorAll('dd > span')].map((span) => span.textContent))
+      .toEqual(['claude-opus-4-7-20260424', 'requested claude-opus-4-7']);
+
+    act(() => root!.unmount());
+    render(makeAgent({ tokenUsage: { ...usage, model: 'claude-fable-5-2' } }));
+    expect([...modelFact()!.querySelectorAll('dd > span')].map((span) => span.textContent))
+      .toEqual(['claude-fable-5-2', 'Claude Code default']);
+
+    // Before the first transcript reply only the request is known.
+    act(() => root!.unmount());
+    render(makeAgent({ requestedModel: 'claude-fable-5-2' }));
+    expect([...modelFact()!.querySelectorAll('dd > span')].map((span) => span.textContent))
+      .toEqual(['requested claude-fable-5-2']);
+
+    // Neither known: no row at all.
+    act(() => root!.unmount());
+    render(makeAgent({ tokenUsage: usage }));
+    expect(modelFact()).toBeNull();
+  });
+
   test('the facts column holds the copy, share and full-prompt links', () => {
     render(makeAgent());
     const facts = q('detail-facts')!;

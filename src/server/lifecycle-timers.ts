@@ -1331,7 +1331,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           const task = taskStore.getTask(taskId);
           if (!task) continue;
           const prev = task.tokenUsage;
-          if (!prev || prev.costUsd !== usage.costUsd || prev.inputTokens !== usage.inputTokens || prev.outputTokens !== usage.outputTokens) {
+          if (!prev || prev.costUsd !== usage.costUsd || prev.inputTokens !== usage.inputTokens || prev.outputTokens !== usage.outputTokens || prev.model !== usage.model) {
             taskStore.updateTokenUsage(taskId, usage);
             changed = true;
             // Notify watchdog that agent is actively consuming tokens

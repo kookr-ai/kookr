@@ -141,8 +141,15 @@ function updateBucket(
   bucket.cacheWriteTokens += factor * (usage.cache_creation_input_tokens ?? 0);
 }
 
+/**
+ * Claude Code writes locally generated assistant entries (an interrupted turn,
+ * an API error notice) with the placeholder model `<synthetic>`. It names no
+ * model that ran, so it never counts as the observed model.
+ */
+const PLACEHOLDER_MODEL = '<synthetic>';
+
 function rememberModel(state: TranscriptState, model: string | undefined): void {
-  if (model) state.models.add(model);
+  if (model && model !== PLACEHOLDER_MODEL) state.models.add(model);
 }
 
 function firstObservedModel(state: TranscriptState): string | null {
@@ -315,11 +322,13 @@ export class TokenTracker {
     let cacheWriteTokens = 0;
     let costUsd = 0;
     let pricingQuality: TokenUsage['pricingQuality'];
+    let model: string | null = null;
 
     for (const path of this.taskToTranscripts.get(taskId) ?? []) {
       const state = this.transcripts.get(path);
       if (!state) continue;
       found = true;
+      model ??= firstObservedModel(state);
       for (const bucket of state.tokenBuckets.values()) {
         inputTokens += bucket.inputTokens;
         outputTokens += bucket.outputTokens;
@@ -356,6 +365,9 @@ export class TokenTracker {
       cacheReadTokens,
       cacheWriteTokens,
       costUsd,
+      // Same as getModel: the first model the transcripts report, verbatim
+      // (dated ids included); the dashboard shows it as what ran (#3559).
+      ...(model ? { model } : {}),
       ...(pricingQuality ? { pricingQuality } : {}),
     };
   }
@@ -366,11 +378,11 @@ export class TokenTracker {
   }
 
   /**
-   * First non-null model observed across the task's registered transcripts.
-   * Used by the cost-comparison surface to drive the R17 pricing-staleness
-   * banner for Claude rows (the row's `model` field on the wire stays null
-   * because Anthropic transcripts carry dated model ids that don't round-trip
-   * cleanly across the panel's exact-match pricing path).
+   * First model observed across the task's registered transcripts, verbatim
+   * (`<synthetic>` placeholders skipped). It answers "which model did this
+   * task run on": `getUsage` carries it as `TokenUsage.model`, and the
+   * cost-comparison surface shows it per Claude row and checks it for the R17
+   * pricing-staleness banner.
    */
   getModel(taskId: string): string | null {
     for (const path of this.taskToTranscripts.get(taskId) ?? []) {

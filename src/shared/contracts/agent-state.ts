@@ -84,6 +84,12 @@ export interface AgentState {
   launchHealthSummary?: TaskLaunchHealthSummary;
   launchPermissionPosture?: TaskLaunchPermissionPosture;
   tokenUsage?: TokenUsage;
+  /**
+   * Model pinned at launch (`launchIntent.model`), as the operator requested
+   * it. Absent when no pin was set and the agent used its own default. The
+   * model the task actually ran on is `tokenUsage.model` (issue #3559).
+   */
+  requestedModel?: string;
   gitBranch?: string;
   gitCommit?: string;
   gitIsWorktree?: boolean;

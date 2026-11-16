@@ -70,9 +70,8 @@ export function registerCostComparisonRoutes(app: Hono, deps: CostComparisonRout
     }
     const { outcomes, orphanBindings } = scanner.bindTasks(scan.rollouts, codexTasks);
 
-    // Claude side: pull live token usage and the resolved model id (used by the aggregator
-    // to drive the R17 pricing-staleness banner — Claude per-task rows themselves keep
-    // model:null because dated Claude ids don't round-trip through exact-match pricing).
+    // Claude side: pull live token usage and the observed model id (shown on each Claude
+    // per-task row and checked by the aggregator for the R17 pricing-staleness banner).
     const claudeUsage = new Map<string, NonNullable<ReturnType<typeof tokenTracker.getUsage>>>();
     const claudeModels = new Map<string, string | null>();
     for (const t of tasks) {

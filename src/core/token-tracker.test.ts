@@ -97,6 +97,27 @@ describe('TokenTracker', () => {
       expect(usage!.costUsd).toBeCloseTo(7.5, 1);
     });
 
+    test('usage carries the first observed model verbatim, skipping <synthetic> placeholders (#3559)', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'API Error' }] } },
+        {
+          type: 'assistant',
+          message: {
+            role: 'assistant', model: 'claude-opus-4-7-20260424',
+            content: [{ type: 'text', text: 'hi' }],
+            usage: { input_tokens: 10, output_tokens: 5 },
+          },
+        },
+      ]);
+
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      expect(tracker.getModel('task-1')).toBe('claude-opus-4-7-20260424');
+      expect(tracker.getUsage('task-1')?.model).toBe('claude-opus-4-7-20260424');
+    });
+
     test('prices mixed-model transcripts with a separate bucket for each model', async () => {
       const path = join(dir, 'transcript.jsonl');
       writeJsonl(path, [

@@ -43,6 +43,7 @@ function tokenUsage(o: Partial<TokenUsage> = {}): TokenUsage {
     cacheReadTokens: o.cacheReadTokens ?? 0,
     cacheWriteTokens: o.cacheWriteTokens ?? 0,
     costUsd: o.costUsd ?? 0,
+    ...(o.model ? { model: o.model } : {}),
   };
 }
 
@@ -172,6 +173,33 @@ describe('aggregate — single-agent', () => {
     expect(r.perPlaybook).toHaveLength(1);
     expect(r.perPlaybook[0].playbookName).toBe('Playbook 1');
     expect(r.perPlaybook[0].perAgent['claude-code']?.thumbsUpRate).toBe(0.5);
+  });
+
+  test('Claude rows show the observed model verbatim, falling back to the persisted usage model (#3559)', () => {
+    const r = aggregate(baseInput({
+      tasks: [
+        task({ id: 'live', agentType: 'claude-code' }),
+        task({ id: 'archived', agentType: 'claude-code', tokenUsage: tokenUsage({ costUsd: 1, model: 'claude-fable-5-2' }) }),
+        task({ id: 'unknown', agentType: 'claude-code', tokenUsage: tokenUsage({ costUsd: 1 }) }),
+      ],
+      claudeUsage: new Map([['live', tokenUsage({ costUsd: 1 })]]),
+      claudeModels: new Map([['live', 'claude-opus-4-7-20260424']]),
+    }));
+    const modelOf = (id: string) => r.perTask.find((row) => row.taskId === id)?.model;
+    expect(modelOf('live')).toBe('claude-opus-4-7-20260424');
+    expect(modelOf('archived')).toBe('claude-fable-5-2');
+    expect(modelOf('unknown')).toBeNull();
+  });
+
+  test('a Claude row priced at a stale rate still raises the pricing-staleness note', () => {
+    const r = aggregate(baseInput({
+      tasks: [task({ id: 'c', agentType: 'claude-code' })],
+      claudeUsage: new Map([['c', tokenUsage({ costUsd: 1 })]]),
+      claudeModels: new Map([['c', 'claude-opus-5']]),
+      todayMs: new Date('2027-06-01T00:00:00.000Z').getTime(),
+    }));
+    const stale = r.notes.find((n) => n.message.includes('was last verified'));
+    expect(stale?.message).toContain('claude-opus-5');
   });
 
   test('Codex task with bound outcome contributes Codex tokens with cached subtracted before billing', () => {
