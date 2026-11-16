@@ -43,7 +43,8 @@ Reopens a completed, terminated, or cancelled task via POST /api/tasks/:id/reope
 a slot is free. The output says what the relaunch does with the prior
 conversation:
 
-  resume         continues the task's last provider conversation
+  resume         continues the task's last provider conversation (for opencode,
+                 a best effort: it starts fresh if the session data was pruned)
   fresh          starts from the original prompt by design (active Ralph loop)
   not_resumable  starts from the original prompt because the conversation
                  cannot be continued; the reason is printed
@@ -62,7 +63,8 @@ Exit codes:
   0  Reopened.
   2  User error (bad arguments, unknown task, task not terminal).
   3  No server reachable.
-  4  Server/HTTP error (includes a relaunch that failed).
+  4  Server/HTTP error (a relaunch that failed, cleanup still in progress,
+     a missing or wrong supervisor token, a timeout).
   5  Ambiguous port (two instances reachable — set KOOKR_PORT to choose).
 `;
 
@@ -100,7 +102,7 @@ export function parseReopenArgs(argv: string[]): ParsedReopenArgs {
 }
 
 export type ReopenResumeReport =
-  | { mode: 'resume'; conversationId: string }
+  | { mode: 'resume'; conversationId: string; caveat?: string }
   | { mode: 'fresh'; reason: string }
   | { mode: 'not_resumable'; reason: string };
 
@@ -125,7 +127,9 @@ function isReopenResponse(body: unknown): body is ReopenResponse {
 export function formatResumeLine(resume: ReopenResumeReport): string {
   switch (resume.mode) {
     case 'resume':
-      return `Conversation: resumes ${resume.conversationId}`;
+      return resume.caveat
+        ? `Conversation: tries to resume ${resume.conversationId} (${resume.caveat})`
+        : `Conversation: resumes ${resume.conversationId}`;
     case 'fresh':
       return `Conversation: starts fresh (${resume.reason})`;
     case 'not_resumable':

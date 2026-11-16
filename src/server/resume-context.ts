@@ -142,7 +142,8 @@ const RESUME_CAPABLE_AGENT_TYPES: ReadonlySet<string> = new Set(['claude-code', 
 
 /**
  * What a reopen will do with the task's prior conversation (issue #3671):
- *  - `resume`        — the relaunch continues conversation `conversationId`.
+ *  - `resume`        — the relaunch continues conversation `conversationId`
+ *                      (`caveat` set when that is a best effort, as for opencode).
  *  - `fresh`         — the relaunch starts from the original prompt by design
  *                      (an active Ralph loop: every iteration is a fresh context).
  *  - `not_resumable` — the relaunch starts from the original prompt because the
@@ -152,7 +153,7 @@ const RESUME_CAPABLE_AGENT_TYPES: ReadonlySet<string> = new Set(['claude-code', 
  * caller which of the three it will get, before the launch happens.
  */
 export type ReopenResumeReport =
-  | { mode: 'resume'; conversationId: string }
+  | { mode: 'resume'; conversationId: string; caveat?: string }
   | { mode: 'fresh'; reason: string }
   | { mode: 'not_resumable'; reason: string };
 
@@ -164,8 +165,10 @@ export type ReopenResumeReport =
  * recorded transcript is gone), and the adapter must be one that honours resume.
  *
  * For opencode the conversation is resolved against the task's own session
- * database at launch, so `resume` there means "will try"; the adapter can still
- * fall back to a fresh launch if that database no longer holds the session.
+ * database at launch, so `resume` there means "will try": the report carries a
+ * `caveat`, because the adapter falls back to a fresh launch when that database
+ * no longer holds the session (opencode-task-data.ts prunes a finished task's
+ * data after a TTL).
  */
 export async function describeReopenResume(
   task: Task,
@@ -173,6 +176,11 @@ export async function describeReopenResume(
 ): Promise<ReopenResumeReport> {
   if (opts.activeRalphLoop) {
     return { mode: 'fresh', reason: 'active Ralph loop: every iteration starts a fresh context' };
+  }
+  // Agent type first: a Codex task usually has no provider id either (its
+  // hooks do not report one), and "cannot resume" is the real reason there.
+  if (!RESUME_CAPABLE_AGENT_TYPES.has(task.agentType)) {
+    return { mode: 'not_resumable', reason: `agent type ${task.agentType} does not support resume` };
   }
   const session = pickResumableSession(task);
   if (!session?.claudeSessionId) {
@@ -182,12 +190,16 @@ export async function describeReopenResume(
         'no session recorded a provider conversation id (the agent never reported SessionStart, or the hook event was lost)',
     };
   }
-  if (!RESUME_CAPABLE_AGENT_TYPES.has(task.agentType)) {
-    return { mode: 'not_resumable', reason: `agent type ${task.agentType} does not support resume` };
-  }
   const { resumeContext, fallbackReason } = await buildResumeContext(session);
   if (!resumeContext) {
     return { mode: 'not_resumable', reason: fallbackReason ?? 'conversation is not recoverable' };
   }
+  if (task.agentType === 'opencode') {
+    return { mode: 'resume', conversationId: resumeContext.sessionId, caveat: OPENCODE_RESUME_CAVEAT };
+  }
   return { mode: 'resume', conversationId: resumeContext.sessionId };
 }
+
+const OPENCODE_RESUME_CAVEAT =
+  "opencode looks the conversation up in the task's own session data at launch and starts fresh if it is gone " +
+  '(a finished task\'s data is pruned after 24 h by default)';

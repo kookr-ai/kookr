@@ -238,13 +238,32 @@ describe('describeReopenResume (issue #3671)', () => {
     }
   });
 
-  test('opencode with a provider id → resume (its adapter resolves the session itself)', async () => {
+  test('opencode with a provider id → resume, with a caveat that it may start fresh', async () => {
     const report = await describeReopenResume(
       agentTask('opencode', [
         session({ tmuxSession: 'a', agentType: 'opencode', claudeSessionId: 'ses_abc', transcriptPath: '/no/such/path' }),
       ]),
       noRalph,
     );
-    expect(report).toEqual({ mode: 'resume', conversationId: 'ses_abc' });
+    expect(report).toMatchObject({ mode: 'resume', conversationId: 'ses_abc' });
+    expect(report.mode === 'resume' && report.caveat).toMatch(/starts fresh/);
+  });
+
+  test('claude-code resume carries no caveat', async () => {
+    const report = await describeReopenResume(
+      agentTask('claude-code', [session({ tmuxSession: 'a', claudeSessionId: 'sess-1' })]),
+      noRalph,
+    );
+    expect(report).not.toHaveProperty('caveat');
+  });
+
+  // A Codex session usually records no provider id at all; the reason must
+  // still name the agent, not a missed SessionStart.
+  test('codex-cli with NO provider id → not resumable because the agent cannot resume', async () => {
+    const report = await describeReopenResume(
+      agentTask('codex-cli', [session({ tmuxSession: 'a', agentType: 'codex-cli' })]),
+      noRalph,
+    );
+    expect(report).toEqual({ mode: 'not_resumable', reason: 'agent type codex-cli does not support resume' });
   });
 });

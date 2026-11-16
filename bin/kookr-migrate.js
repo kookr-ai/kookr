@@ -306,7 +306,7 @@ function buildPlan({ candidates, scope, taskIds }) {
 // Reopen (issue #3671), which resumes the task under its own agent.
 const SAME_AGENT_REASON = 'same_agent_use_restore';
 const SAME_AGENT_HINT =
-  '  Tasks blocked as same_agent_use_restore already run on this agent: use `kookr reopen <taskId>` to resume them.';
+  '  Tasks blocked as same_agent_use_restore already run on this agent: reopen them with `kookr reopen <taskId>` instead (it resumes the conversation when the agent supports resume).';
 
 function formatPlan(plan, targetAgent) {
   const lines = [`Migration plan -> ${targetAgent}`];

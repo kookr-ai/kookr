@@ -409,6 +409,33 @@ describe('TaskLifecycleCommands.reopenTask (resume prior conversation)', () => {
     expect(tryPromotePending).not.toHaveBeenCalled();
   });
 
+  test('two concurrent reopens: one reopens, the other is refused as not terminal (no throw, no second launch)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'reopen-race-'));
+    try {
+      // A recorded transcript makes the resume report await a file check,
+      // which is where a second reopen can interleave.
+      const transcriptPath = join(dir, 'sess.jsonl');
+      await writeFile(transcriptPath, '{}\n');
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Double-clicked', '/repo');
+      addSession(taskStore, task.id, 'kookr-prior');
+      taskStore.updateSession(task.id, 'kookr-prior', { claudeSessionId: 'sess-resumable', transcriptPath });
+      taskStore.terminateTask(task.id);
+      const tryPromotePending = vi.fn(async () => undefined);
+      const { deps } = makeDeps(taskStore, { tryPromotePending });
+      const commands = new TaskLifecycleCommands(deps);
+
+      const results = await Promise.all([commands.reopenTask(task.id), commands.reopenTask(task.id)]);
+
+      expect(results.map((r) => r.outcome).sort()).toEqual(['invalid', 'reopened']);
+      expect(results.find((r) => r.outcome === 'invalid')).toMatchObject({ code: 'task_not_terminal' });
+      expect(tryPromotePending).toHaveBeenCalledTimes(1);
+      expect(taskStore.getTask(task.id)?.status).toBe('pending');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('reports cleanup-in-progress and leaves no resume request behind', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Probe still settling', '/repo');

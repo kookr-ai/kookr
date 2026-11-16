@@ -701,8 +701,10 @@ the task's prior conversation:
 
 - `{"mode": "resume", "conversationId": "<id>"}`: the relaunch continues
   that provider conversation (`claude --resume <id> --fork-session` for Claude
-  Code; opencode resolves the id against its own session database and can
-  still start fresh if the session is gone from it).
+  Code). For opencode the report adds a `caveat`: opencode resolves the id
+  against the task's own session database at launch and starts fresh if the
+  session is gone from it (a finished task's data is pruned after 24 hours by
+  default).
 - `{"mode": "fresh", "reason": "..."}`: the relaunch starts from the original
   prompt by design. This happens for a task with an active Ralph loop, because
   every iteration is a fresh context.
@@ -713,7 +715,9 @@ the task's prior conversation:
   transcript no longer exists, or the agent type (Codex CLI, Grok Build) does
   not support resume.
 
-In all three cases the task is reopened. Error responses:
+In all three cases the task is reopened. The resume request is held in
+server memory only, so a task still `pending` when the server restarts
+launches fresh. Error responses:
 
 - Unknown id returns `404`.
 - A task that is not terminal (`open`, `pending`, `inProgress`) returns

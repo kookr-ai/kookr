@@ -54,6 +54,15 @@ describe('runReopenCli', () => {
     expect(io.logs.join('\n')).toContain('Conversation: resumes sess-1');
   });
 
+  it('prints an opencode resume as a best effort, with its caveat', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(reopened({ mode: 'resume', conversationId: 'ses_1', caveat: 'starts fresh if it is gone' })),
+    );
+    expect(await runReopenCli(['t-1'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(0);
+    expect(io.logs.join('\n')).toContain('Conversation: tries to resume ses_1 (starts fresh if it is gone)');
+  });
+
   it('says when the task is not resumable, with the reason', async () => {
     const io = captureConsole();
     const fetchImpl = vi.fn(async () =>

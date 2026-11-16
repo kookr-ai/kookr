@@ -1503,6 +1503,10 @@ Conversation: resumes c3753022-…
 ```
 
 - `resumes <id>`: the relaunch continues that provider conversation.
+- `tries to resume <id> (<caveat>)`: an opencode task. opencode looks the
+  conversation up in the task's own session data at launch and starts fresh
+  if that data is gone (a finished task's data is pruned after 24 hours by
+  default, `KOOKR_OPENCODE_DATA_DONE_TTL_HOURS`).
 - `starts fresh (<reason>)`: the relaunch starts from the original prompt by
   design (an active Ralph loop).
 - `not resumable — <reason>`: the relaunch starts from the original prompt
@@ -1513,8 +1517,10 @@ Conversation: resumes c3753022-…
 
 `--json` prints one `{ ok, code, message, details }` envelope.
 `details.resume` carries `{ mode: "resume" | "fresh" | "not_resumable",
-conversationId?, reason? }`, and `details.status` is the task's status after
-the call (`pending` while it waits for a slot).
+conversationId?, caveat?, reason? }`, and `details.status` is the task's status
+after the call (`pending` while it waits for a slot). The resume request lives
+in server memory only: if the server restarts while the task is still
+`pending`, it launches fresh.
 
 Authentication and target selection are the same as for `kookr stop`: the
 command forwards `KOOKR_SUPERVISOR_TOKEN` (else `KOOKR_API_TOKEN`), and
@@ -1524,7 +1530,9 @@ command forwards `KOOKR_SUPERVISOR_TOKEN` (else `KOOKR_API_TOKEN`), and
 Exit codes: `0` reopened. `2` usage error, unknown task (`NOT_FOUND`), or a
 task that is not terminal (`TASK_NOT_TERMINAL`; nothing is launched). `3` no
 server reachable. `4` server/HTTP error, including a relaunch that failed
-(`details.serverCode: "reopen_launch_failed"`) and a request timeout. On a
+(`details.serverCode: "reopen_launch_failed"`), dependency-probe cleanup still
+in progress (`task_cleanup_in_progress`), a missing or wrong supervisor token
+(HTTP 401), a remote-owned `shared:` id (HTTP 403), and a request timeout. On a
 timeout the server may still be relaunching the task: check it with
 `kookr peek <taskId>` before retrying. A retry on a task that was already
 reopened is refused, not duplicated. `5` ambiguous port.
@@ -1894,8 +1902,9 @@ candidate blocked.
 
 A task whose `--to` agent is the agent it already runs on is blocked as
 `same_agent_use_restore`: migration only moves work between agents. To resume
-such a task in its own conversation, use [`kookr reopen <taskId>`](#kookr-reopen).
-The human output prints that hint whenever this reason appears.
+such a task in its own conversation, use [`kookr reopen <taskId>`](#kookr-reopen)
+(Codex CLI and Grok Build tasks relaunch fresh, since those agents cannot
+resume). The human output prints that hint whenever this reason appears.
 
 In `--json` mode a single JSON object is printed to stdout: a dry-run emits
 `{ ok: true, mode: "plan", targetAgent, candidates, notFound }` (`notFound`

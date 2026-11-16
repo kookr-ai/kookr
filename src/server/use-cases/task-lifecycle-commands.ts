@@ -281,21 +281,30 @@ export class TaskLifecycleCommands {
   }
 
   async reopenTask(taskId: string): Promise<TaskLifecycleCommandResult> {
-    const task = this.deps.taskStore.getTask(taskId);
-    if (!task) return { outcome: 'not_found', error: `Task not found: ${taskId}` };
     // Only a terminal task can be reopened. The store also allows
     // `inProgress -> open`, so without this guard a reopen of a running task
     // would pend and promote it, launching a second agent beside the live one.
-    if (!isTerminalStatus(task.status)) {
+    const notReopenable = (current: Task | undefined): TaskLifecycleCommandResult | undefined => {
+      if (!current) return { outcome: 'not_found', error: `Task not found: ${taskId}` };
+      if (isTerminalStatus(current.status)) return undefined;
       return {
         outcome: 'invalid',
         code: 'task_not_terminal',
-        error: `Task ${taskId} is ${task.status}; only a completed, terminated, or cancelled task can be reopened`,
+        error: `Task ${taskId} is ${current.status}; only a completed, terminated, or cancelled task can be reopened`,
       };
-    }
+    };
+    const before = this.deps.taskStore.getTask(taskId);
+    const refusedBefore = notReopenable(before);
+    if (refusedBefore || !before) return refusedBefore!;
     // Decide what the relaunch does with the prior conversation BEFORE the
     // launch: promotion consumes the resume flag and appends a new session.
-    const resume = await describeReopenResume(task, { activeRalphLoop: isActiveRalphLoop(task) });
+    const resume = await describeReopenResume(before, { activeRalphLoop: isActiveRalphLoop(before) });
+    // That await can yield (a transcript existence check), so a concurrent
+    // reopen may have re-queued the task meanwhile. Check again; from here to
+    // pendTask nothing awaits, so the check and the transitions are atomic.
+    const task = this.deps.taskStore.getTask(taskId);
+    const refusedNow = notReopenable(task);
+    if (refusedNow || !task) return refusedNow!;
     // Reopening a terminal task must re-queue it, not merely un-terminate it.
     //
     // The bare `terminated -> open` transition is not durable on its own: the
@@ -323,16 +332,15 @@ export class TaskLifecycleCommands {
     // service, not a resumed conversation. The flag is consumed once by the
     // launch path (adapters that do not yet support resume degrade to a fresh
     // launch with a warning).
-    if (!isActiveRalphLoop(task) && hasResumableSession(task)) {
-      this.deps.taskStore.requestResumeOnNextLaunch(taskId);
-    }
     try {
       this.deps.taskStore.reopenTask(taskId); // terminated -> open
     } catch (err) {
       if (!(err instanceof TaskCleanupInProgressError)) throw err;
-      // The task stays terminal, so it must not keep a resume request either.
-      this.deps.taskStore.takeResumeOnNextLaunch(taskId);
       return { outcome: 'invalid', code: 'task_cleanup_in_progress', error: err.message };
+    }
+    // Set after the reopen succeeded, so a refused reopen leaves no request.
+    if (!isActiveRalphLoop(task) && hasResumableSession(task)) {
+      this.deps.taskStore.requestResumeOnNextLaunch(taskId);
     }
     const pended = this.deps.taskStore.pendTask(taskId); // open -> pending
     // Launch immediately when a slot is free so the task visibly resumes rather
