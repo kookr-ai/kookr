@@ -798,6 +798,14 @@ describe('API reference WebSocket protocol docs', () => {
     expect(extractDocumentedWsTypes(apiReference, 'Server-to-client messages')).toEqual([...SERVER_MESSAGE_TYPES]);
     expect(extractDocumentedWsTypes(apiReference, 'Client-to-server messages')).toEqual([...CLIENT_MESSAGE_TYPES]);
   });
+
+  test('the playbooks row documents the optional checkoutMissingPlaybooks field (issue #3976)', () => {
+    const apiReference = readFileSync(join(process.cwd(), 'docs/reference/api.md'), 'utf8');
+    const row = apiReference.split('\n').find((line) => line.startsWith('| `playbooks` |'));
+
+    expect(row, 'missing playbooks server message row').toBeDefined();
+    expect(row).toContain('optional `checkoutMissingPlaybooks` `{ defaultBranchRef, checkoutBranch?, missing[] }`');
+  });
 });
 
 function extractDocumentedWsTypes(markdown: string, heading: string): string[] {
