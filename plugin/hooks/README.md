@@ -208,6 +208,31 @@ parked on its own work, as in `needs_input:stop`), outside a Kookr task
 (`KOOKR_TASK_ID` unset), and on the re-run after a block (`stop_hook_active`).
 Every error path allows the stop. Opt out with `KOOKR_DELIVERY_STOP_SKIP=1`.
 
+## Chain Handoff Stop Guard
+
+`chain-handoff-stop.sh` (Stop) stops a self-continuation chain task from ending
+its turn with no successor and no recorded stop reason (issue #3678). A chain
+task that did this broke its chain with eligible issues still open, and the
+task looked like a crash. The hook blocks, with an instruction, when the task:
+
+- is a self-continuation task: playbook parameter `selfContinuation=true`, or a
+  prompt carrying `- self-continuation: true`, the rendered
+  ``**Self-continuation** — `true` `` toggle, or the continuation-envelope header;
+- is not a playbook-chain iteration (Kookr launches the next one itself) and not
+  an active Ralph loop;
+- has no child task and has raised no completion signal.
+
+The instruction covers the three cases: finish an unfinished unit instead of
+ending the turn, spawn the successor with `kookr spawn -C <repository checkout>
+... --parent-task-id "$KOOKR_TASK_ID"`, or record the stop reason with
+`kookr signal completion-ready --note "chain end: <reason>"`.
+
+It does not use `stop_hook_active`, because the stop that ends the unit often
+comes right after another Stop hook blocked. Instead it blocks at most 3 times
+per task (a counter file under the temp directory). It stays silent when the
+agent is parked on background work and outside a Kookr task. Every error path
+allows the stop. Opt out with `KOOKR_CHAIN_HANDOFF_STOP_SKIP=1`.
+
 ## Git Add All Guard
 
 `git-add-all-guard.sh` is a `PreToolUse` hook on `Bash` that, in a Kookr task
