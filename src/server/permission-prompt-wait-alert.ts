@@ -35,12 +35,22 @@
  *
  * Wire via detectorBroadcast (index.ts) so fire/clear edges spool to the
  * operator-signal outbox (Telegram/Discord).
+ *
+ * Telegram card (issue #3925): when a `card` port is wired, the threshold
+ * first offers the prompt to it. The Telegram integration then sends the
+ * operator one message with the whole command and Approve once / Deny
+ * buttons. When that message is in place the plain-text page (and its
+ * recovered clear) is not sent, so the operator gets one message, not two;
+ * the page is still sent when the card could not be (Telegram off, no prompt
+ * the buttons can be bound to, send failure). When the prompt goes away the
+ * card is told, so it can say what happened and drop its buttons.
  */
 
 import type { Anomaly } from '../shared/contracts/anomalies.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { AgentEvent } from '../core/agent-events.js';
 import { redactSecrets } from '../core/redact-secrets.js';
+import type { PermissionPromptCardPort } from '../shared/contracts/telegram.js';
 import { OPERATIONAL_ALERT_AGENT_ID } from './operational-alert-rules.js';
 
 /** Operational-alert key prefix; the task id follows the colon. */
@@ -85,11 +95,18 @@ export interface PermissionPromptWaitAlerterDeps {
   getThresholdMs?: () => number;
   /** Injectable clock (tests). */
   now?: () => number;
+  /** Telegram permission card (issue #3925); the page is the fallback. */
+  card?: PermissionPromptCardPort;
 }
 
 interface PromptEpisode {
   sinceMs: number;
+  /** The plain-text page was emitted (its recovered clear is owed). */
   firing: boolean;
+  /** The threshold was reached and the operator was (or is being) told. */
+  notified: boolean;
+  /** The prompt was offered to the Telegram card. */
+  cardOffered: boolean;
   taskName?: string;
   toolName: string;
 }
@@ -217,16 +234,16 @@ export class PermissionPromptWaitAlerter {
         episode = undefined;
       }
       if (!episode) {
-        episode = { sinceMs: wait.sinceMs, firing: false, toolName: wait.toolName };
+        episode = { sinceMs: wait.sinceMs, firing: false, notified: false, cardOffered: false, toolName: wait.toolName };
         this.episodes.set(wait.taskId, episode);
       }
       episode.toolName = wait.toolName;
       if (wait.taskName) episode.taskName = wait.taskName;
 
       const waitedMs = nowMs - wait.sinceMs;
-      if (!episode.firing && waitedMs >= thresholdMs) {
-        episode.firing = true;
-        this.emit(buildPermissionPromptAlert(wait, waitedMs));
+      if (!episode.notified && waitedMs >= thresholdMs) {
+        episode.notified = true;
+        this.notify(wait, episode, waitedMs);
       }
     }
 
@@ -241,8 +258,43 @@ export class PermissionPromptWaitAlerter {
     return [...this.episodes].filter(([, ep]) => ep.firing).map(([id]) => id);
   }
 
+  /** Offer the prompt to the Telegram card; page when the card is not in place. */
+  private notify(wait: PermissionPromptWait, episode: PromptEpisode, waitedMs: number): void {
+    const card = this.deps.card;
+    const page = (): void => {
+      episode.firing = true;
+      this.emit(buildPermissionPromptAlert(wait, waitedMs));
+    };
+    if (!card) {
+      page();
+      return;
+    }
+    episode.cardOffered = true;
+    let offered: Promise<boolean>;
+    try {
+      offered = card.offer(wait.taskId, waitedMs);
+    } catch {
+      offered = Promise.resolve(false);
+    }
+    void offered.catch(() => false).then((inPlace) => {
+      // Page only while this prompt is still open: a prompt answered while the
+      // card was being sent needs no page.
+      if (!inPlace && this.episodes.get(wait.taskId) === episode) page();
+    });
+  }
+
   private closeEpisode(taskId: string, episode: PromptEpisode): void {
     this.episodes.delete(taskId);
+    if (episode.cardOffered) {
+      try {
+        this.deps.card?.close(taskId);
+      } catch (err) {
+        console.warn(
+          '[permission-prompt-wait] card close threw (ignored):',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
     if (episode.firing) {
       this.emit(buildPermissionPromptRecoveryAlert({
         taskId,

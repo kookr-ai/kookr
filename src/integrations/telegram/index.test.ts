@@ -1276,7 +1276,7 @@ describe('startTelegramTrigger — answer-a-task reply loop (buttons + reply rou
     const approveTaskPermission = vi.fn(async () => ({ ok: true }));
     fake.queueUpdates([cb('approve:task-xyz:abc123def456')]);
     handle = await startTelegramTrigger(deps({ approveTaskPermission }));
-    await waitFor(() => expect(approveTaskPermission).toHaveBeenCalledWith('task-xyz', 'abc123def456'));
+    await waitFor(() => expect(approveTaskPermission).toHaveBeenCalledWith('task-xyz', 'abc123def456', USER));
     await waitFor(() => expect(fake.outbound.editMessageText.some((e) => e.text === '✅ Approved task task-xyz.')).toBe(true));
     await waitFor(() => expect(fake.outbound.answerCallbackQuery.some((a) => a.text === 'Approved')).toBe(true));
   });
@@ -1285,7 +1285,7 @@ describe('startTelegramTrigger — answer-a-task reply loop (buttons + reply rou
     const approveTaskPermission = vi.fn(async () => ({ ok: true }));
     fake.queueUpdates([cb('approve:task-xyz')]);
     handle = await startTelegramTrigger(deps({ approveTaskPermission }));
-    await waitFor(() => expect(approveTaskPermission).toHaveBeenCalledWith('task-xyz', undefined));
+    await waitFor(() => expect(approveTaskPermission).toHaveBeenCalledWith('task-xyz', undefined, USER));
   });
 
   it('routes a Continue button click to replyToTask and renders success', async () => {

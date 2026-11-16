@@ -1,6 +1,12 @@
 import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchResult, LaunchOpts } from '../../shared/contracts/launch.js';
-import type { TelegramHandle, TelegramTaskOutcome, TelegramReplyResult } from '../../shared/contracts/telegram.js';
+import type {
+  PermissionPromptCardInfo,
+  PermissionPromptClosedReason,
+  TelegramHandle,
+  TelegramTaskOutcome,
+  TelegramReplyResult,
+} from '../../shared/contracts/telegram.js';
 import type { TelegramTaskBridge } from '../telegram-task-bridge.js';
 import type { AskAnswerPort } from '../../shared/contracts/asks.js';
 
@@ -21,8 +27,11 @@ export interface TelegramTriggerModule {
     transcriptionModel?: string;
     lifecycleSignal?: AbortSignal;
     replyToTask?: (taskId: string, text: string) => Promise<TelegramReplyResult>;
-    approveTaskPermission?: (taskId: string, expectedPromptId?: string) => Promise<TelegramReplyResult>;
+    approveTaskPermission?: (taskId: string, expectedPromptId?: string, senderId?: number) => Promise<TelegramReplyResult>;
     permissionPromptId?: (taskId: string) => string | null;
+    denyTaskPermission?: (taskId: string, expectedPromptId: string, senderId: number) => Promise<TelegramReplyResult>;
+    describePermissionPrompt?: (taskId: string) => Promise<PermissionPromptCardInfo | null>;
+    permissionPromptClosedReason?: (taskId: string) => PermissionPromptClosedReason;
     asks?: AskAnswerPort;
   }): Promise<TelegramHandle>;
   probeWhisperReachability(url: string): Promise<
@@ -172,8 +181,13 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
       ...(bridge
         ? {
           replyToTask: (taskId: string, text: string) => bridge.sendText(taskId, text),
-          approveTaskPermission: (taskId: string, expectedPromptId?: string) => bridge.approvePermission(taskId, expectedPromptId),
+          approveTaskPermission: (taskId: string, expectedPromptId?: string, senderId?: number) =>
+            bridge.approvePermission(taskId, expectedPromptId, senderId === undefined ? undefined : { telegramUserId: senderId }),
           permissionPromptId: (taskId: string) => bridge.permissionPromptId(taskId),
+          denyTaskPermission: (taskId: string, expectedPromptId: string, senderId: number) =>
+            bridge.denyPermission(taskId, expectedPromptId, { telegramUserId: senderId }),
+          describePermissionPrompt: (taskId: string) => bridge.describePermissionPrompt(taskId),
+          permissionPromptClosedReason: (taskId: string) => bridge.permissionPromptClosedReason(taskId),
         }
         : {}),
     });
