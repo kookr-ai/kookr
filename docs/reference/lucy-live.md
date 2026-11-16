@@ -134,8 +134,9 @@ most 2,500 characters, built fresh for every turn. In order, the status holds:
 What is never sent:
 
 - the command, file path, URL or any other text a permission prompt shows. Only the tool's name goes,
-  and only when it looks like a tool name (`Bash`, `WebFetch`, `mcp__github__create_issue`); otherwise
-  she says "a tool";
+  and only when Kookr took it from the agent's own permission request (not from the terminal screen)
+  and it looks like a tool name (`Bash`, `WebFetch`, `mcp__github__create_issue`), not a secret;
+  otherwise she says "a tool";
 - the text of a finding or of a task's "finished" note: an agent may have written it;
 - the train's halt reason as the train wrote it, and its last-cycle detail, which can quote test output.
   An unknown halt reason becomes "a problem it reported";

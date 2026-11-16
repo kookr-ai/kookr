@@ -74,8 +74,11 @@ const MAX_ASK_BRIEFING_CHARS = 1100;
 const MAX_LISTED_ASKS = 4;
 /** A question longer than this is cut in the briefing; the full text is on the card and on Telegram. */
 const MAX_BRIEFING_QUESTION_CHARS = 220;
-/** The "Needs the operator" share of the briefing, so a long list cannot push everything else out. */
-const MAX_NEEDS_BRIEFING_CHARS = 900;
+/**
+ * At most this many waiting tasks are listed. The section has no share of its own: its lines are
+ * short (a spoken name, a 40-character project, Kookr's reason, a duration), it comes first, and
+ * the overall cap cuts from the end, so it is the last part to give way.
+ */
 export const MAX_LISTED_NEEDS = 8;
 
 /** Why a task waits, said of the operator in the third person. Only Kookr's own words: nothing an agent wrote. */
@@ -178,7 +181,7 @@ function buildNeedsBriefingLines(needs: readonly BriefingNeed[] | undefined, now
     lines.push(`- ${shortName(need.name === undefined ? undefined : cleanTaskText(need.name))}${where}: ${needWords(need.attention)}, ${forHowLong(need.attention.sinceMs, nowMs)}`);
   }
   if (needs.length > MAX_LISTED_NEEDS) lines.push(`- and ${needs.length - MAX_LISTED_NEEDS} more not listed`);
-  return [capLines(lines, MAX_NEEDS_BRIEFING_CHARS), ''];
+  return [...lines, ''];
 }
 
 /** One line on the integration train: what is wrong when it is halted or stalled, and a short all-clear otherwise. */
@@ -189,7 +192,9 @@ function buildTrainBriefingLines(train: BriefingTrainHealth | null | undefined, 
     return [`Integration train: halted ${forHowLong(toMs(train.halted.at || undefined), nowMs)} because ${why}; merged changes do not reach main until someone fixes it.`, ''];
   }
   const waiting = train.pendingSince ? forHowLong(toMs(train.pendingSince), nowMs) : undefined;
-  if (train.alerting || (!train.running && waiting)) {
+  // `running` is read fresh; `alerting` is the monitor's flag from its last check, minutes old at worst.
+  // A train that is running again is said to run, even while that flag has not cleared yet.
+  if (!train.running && (train.alerting || waiting)) {
     return [`Integration train: ${train.alerting ? 'stalled, ' : ''}not running; merged changes have waited ${waiting ?? 'for an unknown time'} to reach main.`, ''];
   }
   return [train.running ? 'Integration train: running, no problem reported.' : 'Integration train: not running, and no merged change is waiting for it.', ''];
@@ -233,7 +238,8 @@ function buildAskBriefingLines(asks: readonly OperatorAskView[], nowMs: number):
       lines.push(`- ${askWho(ask)} asked: ${oneLine(ask.question, MAX_BRIEFING_QUESTION_CHARS)} Outcome: ${askOutcome(ask, nowMs)}.`);
     }
   }
-  return [capLines(lines, MAX_ASK_BRIEFING_CHARS), ''];
+  // Back into separate lines, so the overall cap drops the questions from the end rather than all at once.
+  return [...capLines(lines, MAX_ASK_BRIEFING_CHARS).split('\n'), ''];
 }
 
 export function buildLucyLiveBriefing(
@@ -288,7 +294,7 @@ export function buildLucyLiveBriefing(
 const CUT_LINE = '(list cut short)';
 
 /** Join lines, dropping whole trailing lines rather than cutting one in half. The result, cut line included, fits in `max`. */
-function capLines(lines: readonly string[], max: number): string {
+export function capLines(lines: readonly string[], max: number): string {
   const joined = lines.join('\n');
   if (joined.length <= max) return joined;
   const kept: string[] = [];

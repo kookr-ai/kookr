@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLucyLiveBriefing, MAX_BRIEFING_CHARS, MAX_LISTED_NEEDS, type BriefingNeed, type BriefingTask, type BriefingTrainHealth } from './briefing.js';
+import { buildLucyLiveBriefing, capLines, MAX_BRIEFING_CHARS, MAX_LISTED_NEEDS, type BriefingNeed, type BriefingTask, type BriefingTrainHealth } from './briefing.js';
 import { buildLucyLivePersona } from './persona.js';
 
 const NOW = Date.parse('2026-01-01T12:00:00Z');
@@ -133,10 +133,12 @@ describe('buildLucyLiveBriefing: what needs the operator (#3927)', () => {
     const text = buildLucyLiveBriefing(tasks, NOW, asks, { needs, train: { running: false, halted: null, pendingSince: ago(45).toISOString(), alerting: true } });
     expect(text.length).toBeLessThanOrEqual(MAX_BRIEFING_CHARS);
     expect(text.startsWith('Needs the operator: 30 tasks are waiting')).toBe(true);
-    // The section is exactly what it is on its own: the task list and the questions gave way, not it.
-    const alone = buildLucyLiveBriefing([], NOW, [], { needs }).split('\n\nThere are no tasks at all.')[0]!;
-    expect(text.startsWith(alone)).toBe(true);
-    expect(alone).toContain('"Waiting task 0"');
+    // The whole section survives, every listed task and the count of the rest: the questions and the task list gave way.
+    for (let i = 0; i < MAX_LISTED_NEEDS; i++) expect(text).toContain(`"Waiting task ${i}" in project a-rather-long-project-name-here: waiting for permission to use mcp__github__create_pull_request`);
+    expect(text).toContain('- and 22 more not listed');
+    expect(text.indexOf('- and 22 more not listed')).toBeLessThan(text.indexOf('Integration train'));
+    // Questions are cut from their end, not dropped all at once.
+    expect(text).toContain('Questions from tasks waiting for the operator: 10');
     expect(text).toContain('(list cut short)');
   });
 });
@@ -160,11 +162,36 @@ describe('buildLucyLiveBriefing: the integration train (#3927)', () => {
       .toContain('Integration train: stalled, not running; merged changes have waited for 45 minutes to reach main.');
   });
 
+  it('says it is not running when a merged change waits and no alarm is out yet', () => {
+    expect(brief({ running: false, halted: null, pendingSince: ago(20).toISOString(), alerting: false }))
+      .toContain('Integration train: not running; merged changes have waited for 20 minutes to reach main.');
+  });
+
+  it('a train that runs again is said to run, even while the monitor\'s alarm from its last check is still set', () => {
+    const text = brief({ running: true, halted: null, pendingSince: ago(40).toISOString(), alerting: true });
+    expect(text).toContain('Integration train: running, no problem reported.');
+    expect(text).not.toContain('not running');
+  });
+
   it('gives a short all-clear otherwise, and nothing when no train is watched', () => {
     expect(brief({ running: true, halted: null, pendingSince: null, alerting: false })).toContain('Integration train: running, no problem reported.');
     expect(brief({ running: false, halted: null, pendingSince: null, alerting: false })).toContain('Integration train: not running, and no merged change is waiting for it.');
     expect(brief(null)).not.toContain('Integration train');
     expect(brief(undefined)).not.toContain('Integration train');
+  });
+});
+
+describe('capLines', () => {
+  it('keeps the cut note inside the limit', () => {
+    const lines = Array.from({ length: 10 }, () => 'aaaaaaaaaa');
+    const text = capLines(lines, 50);
+    expect(text.length).toBeLessThanOrEqual(50);
+    expect(text.endsWith('(list cut short)')).toBe(true);
+    expect(text.split('\n').filter((l) => l === 'aaaaaaaaaa')).toHaveLength(3);
+  });
+
+  it('leaves text that fits as it is', () => {
+    expect(capLines(['abc', 'def'], 7)).toBe('abc\ndef');
   });
 });
 

@@ -3030,10 +3030,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           getAsks: () => (askService
             ? listOperatorAsks(askService.all(), Date.now(), (taskId) => taskStore.getTask(taskId)?.name)
             : []),
-          // A spoken answer goes through the same audited entry point as the panel's buttons.
           // What waits on the operator and why, from the same findings as the operator conversation's board (issue #3927).
           getNeedsOperator: () => operatorNeeds(taskStore.viewTasks(), queue.inspectActive()),
           getTrainHealth: () => integrationTrainMonitor?.getHealthSnapshot() ?? null,
+          // A spoken answer goes through the same audited entry point as the panel's buttons.
           answerAsk: (input) => (operatorAsksPort
             ? operatorAsksPort.answer(input)
             : Promise.resolve({ ok: false, reason: 'not_found' } as const)),

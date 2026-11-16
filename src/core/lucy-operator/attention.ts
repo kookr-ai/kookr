@@ -14,6 +14,7 @@
 import type { AnomalyType } from '../../shared/contracts/anomalies.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
+import { redactSpeechSecrets } from '../task-speech-summary.js';
 
 type TimeValue = Date | string | number;
 
@@ -42,6 +43,13 @@ export interface OperatorAttention {
 
 /** A tool name as Claude Code reports it (`Bash`, `WebFetch`, `mcp__github__create_issue`). Anything else is not quoted. */
 const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+/**
+ * The two explanations Kookr writes from a hook's `PermissionRequest` event, which carry the
+ * tool's name as the hook reported it (`anomaly-detector.ts`, `watchdog.ts`). A permission finding
+ * read off the terminal screen quotes a screen line instead, which can hold anything, so it is
+ * never matched: the whole explanation must be one of these two sentences.
+ */
+const HOOK_PERMISSION_EXPLANATION = /^(?:Agent is blocked on permission|Permission request pending) for tool: (\S+)$/;
 
 function toMs(value: TimeValue | undefined): number | undefined {
   if (value === undefined) return undefined;
@@ -49,10 +57,15 @@ function toMs(value: TimeValue | undefined): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
-/** The tool named by a permission finding ("... for tool: Bash"), or undefined when it names none or not cleanly. */
+/**
+ * The tool named by a hook-derived permission finding ("Agent is blocked on permission for tool: Bash"),
+ * or undefined when the finding is not one of those, or the name does not look like a tool name, or
+ * looks like a secret.
+ */
 export function permissionToolName(explanation: string | undefined): string | undefined {
-  const raw = explanation ? /for tool: (\S+)/.exec(explanation)?.[1] : undefined;
-  return raw && TOOL_NAME.test(raw) ? raw : undefined;
+  const raw = explanation ? HOOK_PERMISSION_EXPLANATION.exec(explanation)?.[1] : undefined;
+  if (!raw || !TOOL_NAME.test(raw)) return undefined;
+  return redactSpeechSecrets(raw) === raw ? raw : undefined;
 }
 
 /**
