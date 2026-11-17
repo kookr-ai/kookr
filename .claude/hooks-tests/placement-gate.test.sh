@@ -58,7 +58,7 @@ assert_case() {
   if [ "$actual_exit" != "$expected_exit" ]; then
     ok=0
     printf 'FAIL: %s — expected exit %s, got %s\n%s\n' "$name" "$expected_exit" "$actual_exit" "$out" >&2
-  elif [ -n "$expected_grep" ] && ! printf '%s' "$out" | grep -qE "$expected_grep"; then
+  elif [ -n "$expected_grep" ] && ! grep -qE "$expected_grep" <<<"$out"; then
     ok=0
     printf 'FAIL: %s — output did not match /%s/\n%s\n' "$name" "$expected_grep" "$out" >&2
   elif [ -z "$expected_grep" ] && [ -n "$out" ]; then

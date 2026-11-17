@@ -132,7 +132,7 @@ OUT=$(
     bash -c 'printf "%s" "$1" | bash "$2"' _ "${PAYLOAD}" "${HOOK}" 2>&1
 ) || true
 
-if printf '%s' "${OUT}" | grep -q '"permissionDecision": "deny"'; then
+if grep -q '"permissionDecision": "deny"' <<<"${OUT}"; then
   report FAIL "2: hook allows when remote-derived state file exists" \
     "hook emitted deny output:" \
     "$(printf '%s' "${OUT}" | head -c 400)"
@@ -165,7 +165,7 @@ OUT2=$(
 ) || true
 rm -f "${WRONG_STATE}"
 
-if printf '%s' "${OUT2}" | grep -q '"permissionDecision": "deny"'; then
+if grep -q '"permissionDecision": "deny"' <<<"${OUT2}"; then
   report PASS "4: hook denies when only the legacy cwd-basename key exists (pre-fix repro)"
 else
   report FAIL "4: hook denies when only the legacy cwd-basename key exists" \

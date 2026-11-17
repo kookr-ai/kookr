@@ -70,7 +70,7 @@ if [ "$STATUS" -ne 0 ]; then
   exit 1
 fi
 
-if printf '%s' "$OUT" | grep -q 'Kookr-specific runtime references'; then
+if grep -q 'Kookr-specific runtime references' <<<"$OUT"; then
   printf 'FAIL: hook still emits the removed Kookr-coupling rejection\n' >&2
   printf '%s\n' "$OUT" >&2
   exit 1

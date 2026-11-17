@@ -89,7 +89,7 @@ run_hook() {
 # Classify hook output: "allow" (no deny JSON body) vs "deny".
 classify() {
   local out="$1"
-  if printf '%s' "$out" | grep -q '"permissionDecision": "deny"'; then
+  if grep -q '"permissionDecision": "deny"' <<<"$out"; then
     printf 'deny'
   else
     printf 'allow'
@@ -161,7 +161,7 @@ run_case_1b() {
 
   if [ "$(classify "$out")" != "deny" ]; then
     record_fail "$name" "expected deny for empty touch, got allow"
-  elif ! printf '%s' "$out" | grep -qiE 'producer token|forgery|write-pr-gate-marker'; then
+  elif ! grep -qiE 'producer token|forgery|write-pr-gate-marker' <<<"$out"; then
     record_fail "$name" "deny reason missing forgery/token guidance: $(printf '%s' "$out" | head -c 300)"
   else
     record_pass "$name"
@@ -190,7 +190,7 @@ run_case_2() {
 
   if [ "$(classify "$out")" != "deny" ]; then
     record_fail "$name" "expected deny, got allow: $(printf '%s' "$out" | head -c 200)"
-  elif ! printf '%s' "$out" | grep -q 'Pre-PR review has not been completed'; then
+  elif ! grep -q 'Pre-PR review has not been completed' <<<"$out"; then
     record_fail "$name" "deny reason missing 'Pre-PR review has not been completed': $(printf '%s' "$out" | head -c 200)"
   else
     record_pass "$name"
@@ -378,7 +378,7 @@ run_case_6a() {
     ) || true
   )
 
-  if printf '%s' "$out" | grep -q '"permissionDecision": "deny"'; then
+  if grep -q '"permissionDecision": "deny"' <<<"$out"; then
     record_fail "$name" "expected allow (fail-open), got deny"
   elif [ ! -s "$log" ]; then
     record_fail "$name" "expected error-log entry at $log, but file is empty/missing"
@@ -759,7 +759,7 @@ run_closes_case() {
         record_fail "$name" "expected deny, got allow: $(printf '%s' "$out" | head -c 200)"
       elif [[ "$reason" != *"closing keyword inside inline code"* ]]; then
         record_fail "$name" "denied for another reason: $(printf '%s' "$reason" | head -c 200)"
-      elif ! printf '%s\n' "$reason" | grep -qxF -- "$needle"; then
+      elif ! grep -qxF -- "$needle" <<<"$reason"; then
         record_fail "$name" "reason does not show the bare form '$needle' on its own line: $reason"
       else
         record_pass "$name"

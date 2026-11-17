@@ -54,7 +54,7 @@ run_case() {
   out=$(printf '%s' "$payload" | bash "$HOOK" 2>&1) || true
 
   local got="allow"
-  if printf '%s' "$out" | grep -q '"permissionDecision": "deny"'; then
+  if grep -q '"permissionDecision": "deny"' <<<"$out"; then
     got="deny"
   fi
 
@@ -62,7 +62,7 @@ run_case() {
   if [ "$got" != "$expect" ]; then
     status="FAIL"
   elif [ -n "$assert_regex" ]; then
-    if ! printf '%s' "$out" | grep -qE "$assert_regex"; then
+    if ! grep -qE "$assert_regex" <<<"$out"; then
       status="FAIL"
     fi
   fi
@@ -356,7 +356,7 @@ run_worktree_body_file_case() {
   local out
   out=$(printf '%s' "$payload" | (cd "$parent" && bash "$HOOK") 2>&1) || true
   local got="allow"
-  if printf '%s' "$out" | grep -q '"permissionDecision": "deny"'; then
+  if grep -q '"permissionDecision": "deny"' <<<"$out"; then
     got="deny"
   fi
   local errors=""
@@ -367,7 +367,7 @@ run_worktree_body_file_case() {
   local passed=0
   if [ "$got" = "allow" ]; then
     if [ -n "$expected_error" ]; then
-      printf '%s' "$errors" | grep -q "$expected_error" && passed=1
+      grep -q "$expected_error" <<<"$errors" && passed=1
     elif [ -z "$errors" ]; then
       passed=1
     fi

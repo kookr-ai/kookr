@@ -92,7 +92,7 @@ OUT="${REST#*	}"
 if [ "$STATUS" -eq 0 ]; then
   printf 'FAIL: plugin change without version bump was accepted\n' >&2
   FAILURES=$((FAILURES + 1))
-elif ! printf '%s' "$OUT" | grep -q 'without bumping plugin.json#version'; then
+elif ! grep -q 'without bumping plugin.json#version' <<<"$OUT"; then
   printf 'FAIL: rejection did not cite the missing version bump\n%s\n' "$OUT" >&2
   FAILURES=$((FAILURES + 1))
 elif [ -n "$LANES" ]; then
@@ -129,7 +129,7 @@ OUT="${REST#*	}"
 if [ "$STATUS" -ne 0 ]; then
   printf 'FAIL: plugin change with version bump was rejected\n%s\n' "$OUT" >&2
   FAILURES=$((FAILURES + 1))
-elif ! printf '%s\n' "$LANES" | tr ',' '\n' | grep -qx 'test'; then
+elif ! grep -qx 'test' <<<"$(tr ',' '\n' <<<"$LANES")"; then
   printf 'FAIL: bumped plugin change passed without running the test lanes: %s\n' "$LANES" >&2
   FAILURES=$((FAILURES + 1))
 else
@@ -146,7 +146,7 @@ OUT="${REST#*	}"
 if [ "$STATUS" -ne 0 ]; then
   printf 'FAIL: unbumped plugin change was rejected although the train bumps the version\n%s\n' "$OUT" >&2
   FAILURES=$((FAILURES + 1))
-elif printf '%s' "$OUT" | grep -q 'without bumping plugin.json#version'; then
+elif grep -q 'without bumping plugin.json#version' <<<"$OUT"; then
   printf 'FAIL: the version-bump rule fired with an integration branch configured\n%s\n' "$OUT" >&2
   FAILURES=$((FAILURES + 1))
 else

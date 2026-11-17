@@ -87,11 +87,11 @@ case_1() {
 EOF
   local payload; payload=$(mk_payload "i just merged main, what next?" "$repo")
   local out; out=$(run_hook "$payload" "$tmp" "$tmp/fix")
-  if echo "$out" | grep -q "post-merge-keyword-scan" \
-     && echo "$out" | grep -q "#97" \
-     && echo "$out" | grep -q "#102" \
-     && echo "$out" | grep -q "BEHIND" \
-     && echo "$out" | grep -q "DIRTY"; then
+  if grep -q "post-merge-keyword-scan" <<<"$out" \
+     && grep -q "#97" <<<"$out" \
+     && grep -q "#102" <<<"$out" \
+     && grep -q "BEHIND" <<<"$out" \
+     && grep -q "DIRTY" <<<"$out"; then
     record_pass "$name"
   else
     record_fail "$name" "expected reminder with #97 BEHIND and #102 DIRTY, got: $(printf '%s' "$out" | head -c 300)"
@@ -216,7 +216,7 @@ case_7() {
 EOF
   local payload; payload=$(mk_payload "gh pr merge done" "$repo")
   local out; out=$(run_hook "$payload" "$tmp" "$tmp/fix")
-  if echo "$out" | grep -q "#200"; then
+  if grep -q "#200" <<<"$out"; then
     record_pass "$name"
   else
     record_fail "$name" "expected #200 in output, got: $(printf '%s' "$out" | head -c 300)"
@@ -260,7 +260,7 @@ case_9() {
   echo '[{"number":5,"headRefName":"x","mergeStateStatus":"BEHIND","mergeable":"M","title":"T"}]' > "$tmp/fix/pr_list.json"
   local payload; payload=$(mk_payload "I MERGED it just now" "$repo")
   local out; out=$(run_hook "$payload" "$tmp" "$tmp/fix")
-  if echo "$out" | grep -q "#5"; then
+  if grep -q "#5" <<<"$out"; then
     record_pass "$name"
   else
     record_fail "$name" "expected #5 in output (case-insensitive match), got: $(printf '%s' "$out" | head -c 200)"

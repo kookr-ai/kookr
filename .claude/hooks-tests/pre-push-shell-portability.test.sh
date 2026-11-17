@@ -63,7 +63,7 @@ expect_rejects_portability() {
   local repo="$2"
   local out actual_exit
   out=$(run_hook "$repo" 2>&1) && actual_exit=0 || actual_exit=$?
-  if [ "$actual_exit" != 0 ] && printf '%s' "$out" | grep -q 'shell portability check failed'; then
+  if [ "$actual_exit" != 0 ] && grep -q 'shell portability check failed' <<<"$out"; then
     printf 'PASS: %s\n' "$name"
   else
     printf 'FAIL: %s — expected shell portability rejection, got exit %s\n' "$name" "$actual_exit" >&2

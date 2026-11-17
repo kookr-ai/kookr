@@ -34,7 +34,7 @@ run_hook() {
 }
 
 classify() {
-  if printf '%s' "$1" | grep -q '"permissionDecision": "deny"'; then
+  if grep -q '"permissionDecision": "deny"' <<<"$1"; then
     printf 'deny'
   else
     printf 'allow'
@@ -62,7 +62,7 @@ check "no KOOKR_TASK_ID → allow" allow "$(classify "$OUT")" "$OUT"
 # 2. KOOKR_TASK_ID + default require review → deny bare gh pr merge
 OUT=$(run_hook "$(mk_payload 'gh pr merge 42 --squash --delete-branch')" KOOKR_TASK_ID=task-1)
 check "kookr session bare merge → deny" deny "$(classify "$OUT")" "$OUT"
-if [ "$(classify "$OUT")" = "deny" ] && printf '%s' "$OUT" | grep -q 'kookr merge'; then
+if [ "$(classify "$OUT")" = "deny" ] && grep -q 'kookr merge' <<<"$OUT"; then
   PASS=$((PASS + 1))
   printf '  [OK]   deny reason steers to kookr merge\n'
 else
