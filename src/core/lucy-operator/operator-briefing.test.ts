@@ -104,6 +104,11 @@ describe('buildOperatorBriefing: opinions and the all-clear', () => {
 });
 
 describe('buildOperatorBriefing: caps', () => {
+  it('is capped at 45 words and three follow-ups', () => {
+    expect(MAX_OPERATOR_BRIEFING_WORDS).toBe(45);
+    expect(MAX_OPERATOR_BRIEFING_CHIPS).toBe(3);
+  });
+
   const longNames = ['Move the billing tables to Postgres', 'Rewrite the nightly report job today', 'Audit every link in the docs', 'Warm the cache after each deploy', 'Trim the search index on Sundays'];
 
   it('stays within 45 words and counts what did not fit, most urgent groups kept', () => {

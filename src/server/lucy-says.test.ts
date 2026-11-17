@@ -95,6 +95,11 @@ describe('the sentences', () => {
 });
 
 describe('LucySaysNotifier', () => {
+  test('the window is two minutes and the repeat time ten', () => {
+    expect(LUCY_SAYS_GROUP_WINDOW_MS).toBe(2 * MIN);
+    expect(LUCY_SAYS_REPEAT_MS).toBe(10 * MIN);
+  });
+
   test('the first event is written at once, as one sentence naming the task', () => {
     const h = harness();
     h.note('t1', 'wants_review', 'Docs link audit');

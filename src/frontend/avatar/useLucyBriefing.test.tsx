@@ -39,6 +39,10 @@ describe('offerBriefing', () => {
     __resetLucyBriefingForTests();
   });
 
+  test('a briefing is fresh for 30 minutes', () => {
+    expect(BRIEFING_FRESH_MS).toBe(30 * MIN);
+  });
+
   test('writes the briefing as a finished message from Lucy, with its follow-ups and its signature', async () => {
     const server = fakeServer(WAITING);
     expect(await offerBriefing('opened', { fetcher: server.fetcher, now: clock })).toBe('written');

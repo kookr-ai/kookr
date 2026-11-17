@@ -161,6 +161,11 @@ describe('listOperatorAsks task state', () => {
 describe('buildAskSpeech', () => {
   const wordCount = (text: string): number => text.split(/\s+/).filter(Boolean).length;
 
+  it('is capped at 25 words, of which at most 18 are the question', () => {
+    expect(MAX_ASK_SPEECH_WORDS).toBe(25);
+    expect(MAX_ASK_SPEECH_QUESTION_WORDS).toBe(18);
+  });
+
   it('says who asks and what about in one sentence, and that the choices are on her card', () => {
     expect(buildAskSpeech(ask({ question: 'Run the table rename on production now?', options: ['Yes', 'No', 'Later'] }), 'Billing migration'))
       .toBe('The task Billing migration needs your input: Run the table rename on production now? Three choices are on my card.');
