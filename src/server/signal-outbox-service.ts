@@ -263,6 +263,7 @@ export class SignalOutboxService {
             sessionsScanned: resolved.sessionsScanned,
             decision: resolved.decision,
             missingLogs: resolved.missingLogs,
+            observed: resolved.observed,
           });
           if (!gate.allow) {
             this.log(

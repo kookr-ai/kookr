@@ -1511,6 +1511,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
           sessionsScanned: resolved.sessionsScanned,
           decision: resolved.decision,
           missingLogs: resolved.missingLogs,
+          observed: resolved.observed,
         });
         if (!gate.allow) {
           return c.json(
