@@ -64,7 +64,10 @@ export interface LucyLiveView {
   /** The latest transcript of what the operator said; `operatorFinal` tells whether it can still change. */
   operatorText: string;
   operatorFinal: boolean;
-  /** The sentences of Lucy's current answer received so far. */
+  /**
+   * The sentences of Lucy's current answer received so far. For a task's question she reads out: nothing
+   * until its first sound is heard, then all of it.
+   */
   lucyText: string;
   lastTurnEnd: LucyLiveTurnEnd | null;
   timings: LucyLiveTimings;
@@ -955,7 +958,10 @@ export class LucyLiveSession {
     // While a possible interruption is being checked the answer keeps arriving and is queued (ducked).
     if (message.turnId !== this.currentTurnId || (this.sending && !this.duck)) return;
     this.lucyText = this.lucyText ? `${this.lucyText} ${message.text}` : message.text;
-    this.options.onView({ lucyText: this.lucyText });
+    // A question's words are shown once she has begun to say it (see `announce`). Until then it may still be
+    // said again later or given back for a clip, and what is shown goes into the conversation thread: shown
+    // now, the question would be there twice.
+    if (this.currentAskId === null || this.currentAskHeard) this.options.onView({ lucyText: this.lucyText });
     const generation = this.playGeneration;
     const context = this.audioContext();
     if (context.state === 'suspended') void context.resume().catch(() => undefined);
@@ -1035,6 +1041,8 @@ export class LucyLiveSession {
     sentence.announced = true;
     if (this.currentAskId !== null && sentence.turnId === this.currentTurnId) {
       // She has begun to say the question: from now on it is hers to finish or be cut off, never given back.
+      // Its words, kept back until now, are shown.
+      if (!this.currentAskHeard) this.options.onView({ lucyText: this.lucyText });
       this.currentAskHeard = true;
       this.handedAsks.delete(this.currentAskId);
     }

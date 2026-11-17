@@ -156,6 +156,9 @@ for an answer):
   card carries it. If she can no longer say it before any of it was heard (the server already has ten
   questions waiting and answers `ask_refused`, the connection drops, or Talk is switched off), the
   browser plays it as a clip after all, under the usual clip rules (issue #4015).
+- Its words are written in her conversation thread, like an answer's, but only once its first sound
+  is heard. A question of which nothing was heard is therefore in the thread once: as her words when
+  she says it later, or as the clip when it is played as one.
 
 Because Silero filters the noise, the browser's own bar for a candidate while she talks is 0.15 s of
 loud sound, down from 0.3 s. Silero also guards ordinary turns: if a whole turn never contains a
