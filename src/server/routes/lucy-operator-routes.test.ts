@@ -317,7 +317,9 @@ describe('action routes', () => {
   function withActions(options: { saysFinished?: boolean } = {}) {
     const replies: Array<{ sessionId: string; text: string }> = [];
     const closes: string[] = [];
+    const audits: Array<{ via: string; outcome: string }> = [];
     const controller = createLucyActionController({
+      audit: (row) => { audits.push({ via: row.via, outcome: row.outcome }); },
       getTask: (taskId) => (taskId === 'aaaa1111' ? { id: 'aaaa1111', name: 'Bake-off report', status: 'inProgress', saysFinished: options.saysFinished === true, liveSessionId: 'kookr-s1' } : undefined),
       getAsks: () => [],
       writeText: async () => '{"text":"Rebase on main."}',
@@ -328,7 +330,7 @@ describe('action routes', () => {
     });
     const model = scriptedModel([{ calls: [{ name: options.saysFinished ? 'propose_close' : 'propose_reply', args: { task: 'aaaa' } }] }]);
     const service = createLucyOperator({ model: model.port, modelName: 'test/model', source: fakeSource({ tasks: [boardTask({ id: 'aaaa1111', name: 'Bake-off report' })] }), actions: controller, warn: () => {} });
-    return { app: appWith({ service }), replies, closes };
+    return { app: appWith({ service }), replies, closes, audits };
   }
   const route = (app: Hono, path: string, body: unknown) =>
     app.request(`http://localhost${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) });
@@ -346,7 +348,7 @@ describe('action routes', () => {
   });
 
   test('a card is made by a turn and carried out by the confirm route, once', async () => {
-    const { app, replies } = withActions();
+    const { app, replies, audits } = withActions();
     const turn = await lines(await post(app, { text: 'tell the report task to rebase on main', conversationId: 'c1' }));
     expect(turn.find((e) => e.type === 'action_proposal')).toMatchObject({ proposal: { id: 'a1', kind: 'reply', text: 'Rebase on main.' } });
     expect(replies).toEqual([]);
@@ -356,6 +358,8 @@ describe('action routes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ outcome: 'done', proposalId: 'a1', kind: 'reply', taskId: 'aaaa1111' });
     expect(replies).toEqual([{ sessionId: 'kookr-s1', text: 'Rebase on main.' }]);
+    // The route records how it was confirmed itself: a click, whatever the body says.
+    expect(audits).toEqual([{ via: 'click', outcome: 'done' }]);
 
     const again = await route(app, LUCY_ACTION_CONFIRM_PATH, { conversationId: 'c1', proposalId: 'a1' });
     expect(await again.json()).toEqual({ outcome: 'unknown', proposalId: 'a1' });
