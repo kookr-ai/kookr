@@ -166,11 +166,14 @@ function namingResponseFormat(mode: NamingMode): LlmResponseFormat | undefined {
  * Why a naming call produced no name (issue #3980), so the namer health signal
  * (#3616) counts only evidence about the provider:
  * - `failed` — a provider answered with nothing usable (empty or unparseable),
- *   or failed for good (`auth`: 401/402/403/410, or skipped while paused after
- *   such a failure). Counts toward "Task namer failing".
+ *   or failed for good: `auth` (401/402/403/410, or skipped while paused after
+ *   such a failure), `unreachable` (connection refused, host not found), or
+ *   `client_4xx` (400, 404, 422, ...) on the plain-text attempt (issue #4042).
+ *   Counts toward "Task namer failing".
  * - `transient` — every attempt that reached a provider failed with a timeout,
- *   a 429, a 5xx or an unclassified error. Not counted: it says the provider
- *   was briefly unreachable, not that it is dead.
+ *   a 408/425/429, a 5xx, an unclassified error, or a `client_4xx` on a
+ *   structured-output attempt. Not counted: it says the provider was briefly
+ *   unavailable, not that it is dead.
  * - `skipped` — no provider was contacted (circuit breaker open, or the
  *   process-wide helper-LLM attempt budget spent). Not counted.
  */
@@ -187,19 +190,36 @@ function worseFailure(a: TaskNamingFailure | undefined, b: TaskNamingFailure): T
   return a !== undefined && FAILURE_RANK[a] >= FAILURE_RANK[b] ? a : b;
 }
 
-function failureForCategory(category: LlmProviderFailureCategory): TaskNamingFailure {
-  // A malformed response is the provider answering with garbage, and auth is
-  // a dead or deprecated provider; the other categories can clear by retrying.
-  return category === 'auth' || category === 'malformed_response' ? 'failed' : 'transient';
+function failureForCategory(category: LlmProviderFailureCategory, mode: NamingMode): TaskNamingFailure {
+  switch (category) {
+    // A malformed response is the provider answering with garbage, auth is a
+    // dead or deprecated provider, and unreachable is an endpoint nothing
+    // answers at; retrying does not clear any of them.
+    case 'auth':
+    case 'malformed_response':
+    case 'unreachable':
+      return 'failed';
+    // A provider may reject a response format it does not support with a 4xx
+    // (OpenRouter answers 404 "No endpoints found that support the requested
+    // parameters"), and the next mode can still succeed. Only a 4xx on the
+    // plain request, which asks for no special format, says the provider
+    // refuses the call itself — a withdrawn model, for one (issue #4042).
+    case 'client_4xx':
+      return mode === 'plain' ? 'failed' : 'transient';
+    case 'network_timeout':
+    case 'server_5xx':
+    case 'other':
+      return 'transient';
+  }
 }
 
 /** Classify one attempt that returned no usable name. */
-function failureForDetail(detail: LlmCompletionDetail): TaskNamingFailure {
+function failureForDetail(detail: LlmCompletionDetail, mode: NamingMode): TaskNamingFailure {
   if (detail.text !== null) return 'failed';
   if (detail.finishReason === 'circuit_open' || detail.finishReason === ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON) {
     return 'skipped';
   }
-  if (detail.failureCategory) return failureForCategory(detail.failureCategory);
+  if (detail.failureCategory) return failureForCategory(detail.failureCategory, mode);
   return 'failed';
 }
 
@@ -267,7 +287,7 @@ export async function generateTaskNameDetailed(
         logTaskNaming(prompt, cwd, criteria, name);
         return { name };
       }
-      failure = worseFailure(failure, failureForDetail(detail));
+      failure = worseFailure(failure, failureForDetail(detail, mode));
       lastFailure = text === null
         ? `empty completion (mode=${mode}, finish_reason=${finishReason ?? 'unknown'}${
           detail.failureCategory ? `, category=${detail.failureCategory}` : ''})`
@@ -282,14 +302,13 @@ export async function generateTaskNameDetailed(
       if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
       lastFailure = `error (mode=${mode}): ${err instanceof Error ? err.message : String(err)}`;
       const category = classifyLlmProviderFailure(err);
-      failure = worseFailure(failure, failureForCategory(category));
+      failure = worseFailure(failure, failureForCategory(category, mode));
       // A permanent/cooldown-class provider failure (the 'auth' category, which
       // covers 401/402/403/410 Gone) fails identically for every mode: they share
       // one client, so a dead or deprecated provider will reject the remaining
       // modes the same way. Stop after the first — like a returned circuit_open
       // — instead of paying two more dead round-trips per spawn (issue #2960).
-      // Transient failures (network/timeout/429/5xx ⇒ non-auth category) keep
-      // the per-mode retry.
+      // Every other category keeps the per-mode retry.
       if (category === 'auth') break;
     }
   }

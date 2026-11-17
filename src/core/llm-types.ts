@@ -86,7 +86,9 @@ export type LlmProviderFailureCategory = HelperLlmFailureCategory;
 
 export const LLM_PROVIDER_FAILURE_CATEGORIES: readonly LlmProviderFailureCategory[] = [
   'network_timeout',
+  'unreachable',
   'auth',
+  'client_4xx',
   'server_5xx',
   'malformed_response',
   'other',
@@ -107,8 +109,37 @@ export function classifyLlmProviderHttpStatus(status: number): LlmProviderFailur
   // 410 Gone: the provider removed the model. Same cooldown class as auth so a
   // dead namer is not re-hit on every spawn (issue #2634).
   if (status === 401 || status === 402 || status === 403 || status === 410) return 'auth';
+  // 408 Request Timeout, 425 Too Early and 429 Too Many Requests ask the
+  // client to retry later, so they stay in the transient `other` class.
+  if (status === 408 || status === 425 || status === 429) return 'other';
+  // Every other 4xx (400, 404 "no endpoints for model", 422, ...) is the
+  // provider refusing this request; sending it again fails the same way. A
+  // category of its own lets the namer count it as evidence of a broken
+  // provider instead of a passing blip (issue #4042).
+  if (status >= 400 && status <= 499) return 'client_4xx';
   if (status >= 500 && status <= 599) return 'server_5xx';
   return 'other';
+}
+
+/**
+ * Network error codes meaning nothing answers at the endpoint: the connection
+ * was refused (no server on that port) or the host name does not resolve.
+ * Unlike a timeout or a reset, these repeat on every call until the endpoint
+ * or its configuration changes (issue #4042).
+ */
+const UNREACHABLE_ERROR_CODES: ReadonlySet<string> = new Set(['ECONNREFUSED', 'ENOTFOUND']);
+
+/**
+ * True when a network error (or the `cause` that `fetch` wraps it in) says the
+ * endpoint is unreachable rather than slow — see {@link UNREACHABLE_ERROR_CODES}.
+ */
+export function isLlmProviderEndpointUnreachable(err: unknown): boolean {
+  const codeOf = (value: unknown): string => {
+    const code = (value as { code?: unknown } | null)?.code;
+    return typeof code === 'string' ? code.toUpperCase() : '';
+  };
+  const cause = (err as { cause?: unknown } | null)?.cause;
+  return UNREACHABLE_ERROR_CODES.has(codeOf(err)) || UNREACHABLE_ERROR_CODES.has(codeOf(cause));
 }
 
 export interface LlmProviderFailureRecord {
@@ -141,8 +172,10 @@ export interface LlmCompletionDetail {
   /**
    * Set when no provider answered: the category of the last provider error,
    * or `auth` when the only providers were skipped while paused after an auth
-   * failure. Lets a caller tell a dead provider (`auth`) from a transient
-   * failure (timeout, 429, 5xx) without the error itself (issue #3980). Absent
+   * failure. Lets a caller tell a dead provider (`auth`), a refused request
+   * (`client_4xx`) or an endpoint nothing answers at (`unreachable`) from a
+   * transient failure (timeout, 429, 5xx) without the error itself (issues
+   * #3980, #4042). Absent
    * when a provider answered, even with an empty completion.
    */
   failureCategory?: LlmProviderFailureCategory;

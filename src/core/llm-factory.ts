@@ -5,6 +5,7 @@
 import {
   ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON,
   classifyLlmProviderHttpStatus,
+  isLlmProviderEndpointUnreachable,
   LLM_PROVIDER_FAILURE_CATEGORIES,
   isLlmProviderFailureCategory,
   type HelperLlmDiagnosticsCounters,
@@ -262,21 +263,27 @@ export function classifyLlmProviderFailure(err: unknown): LlmProviderFailureCate
   const status = classifyStatus(
     numberFromUnknown(shaped?.status) ?? numberFromUnknown(shaped?.statusCode),
   );
-  if (status) return status;
-
-  const code = typeof shaped?.code === 'string' ? shaped.code.toUpperCase() : '';
-  if (['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)) {
-    return 'network_timeout';
-  }
-
   const text = `${typeof shaped?.name === 'string' ? shaped.name : ''} ${
     typeof shaped?.message === 'string' ? shaped.message : String(err)
   }`.toLowerCase();
-  if (/unauthori[sz]ed|forbidden|invalid api key|api key|authentication|authorization|permission denied/.test(text)) {
-    return 'auth';
+  const authText = /unauthori[sz]ed|forbidden|invalid api key|api key|authentication|authorization|permission denied/
+    .test(text);
+  // Some providers reject a bad key with a plain 400 (Gemini: 400 "API key not
+  // valid"). The message, not the status, says the key is dead, so it keeps the
+  // auth pause rather than reading as a refused request (issue #4042).
+  if (status === 'client_4xx') return authText ? 'auth' : 'client_4xx';
+  if (status) return status;
+
+  if (isLlmProviderEndpointUnreachable(err)) return 'unreachable';
+  const code = typeof shaped?.code === 'string' ? shaped.code.toUpperCase() : '';
+  if (['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'EAI_AGAIN'].includes(code)) {
+    return 'network_timeout';
   }
+
+  if (authText) return 'auth';
   if (/\b5\d\d\b|server error|bad gateway|service unavailable|gateway timeout/.test(text)) return 'server_5xx';
   if (/json|parse|malformed|invalid response|unexpected end|message content|choices/.test(text)) return 'malformed_response';
+  if (/econnrefused|enotfound/.test(text)) return 'unreachable';
   if (/timed?\s*out|timeout|network|fetch failed|socket|dns|connection/.test(text)) return 'network_timeout';
   return 'other';
 }
@@ -336,6 +343,10 @@ function shortLlmFailureReason(failure: LlmProviderFailureRecord, status: number
       return 'auth failure';
     case 'network_timeout':
       return 'network timeout';
+    case 'unreachable':
+      return 'endpoint unreachable';
+    case 'client_4xx':
+      return status === 404 ? 'not found' : 'request rejected';
     case 'server_5xx':
       return 'server error';
     case 'malformed_response':

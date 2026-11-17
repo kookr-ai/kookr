@@ -15,7 +15,9 @@ export interface DiagnosticFinding {
 
 export type HelperLlmFailureCategory =
   | 'network_timeout'
+  | 'unreachable'
   | 'auth'
+  | 'client_4xx'
   | 'server_5xx'
   | 'malformed_response'
   | 'other';
