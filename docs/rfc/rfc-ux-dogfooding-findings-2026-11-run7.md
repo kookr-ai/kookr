@@ -131,6 +131,20 @@ questions waiting (conversation `r7-perm-a`):
 > "can you make it proceed ?" → "Which task do you mean? There are seven waiting on you
 > right now." (no look-up, 1.0 s)
 
+In the built column the failure is on screen in one thread
+(`/tmp/kookr-ux-shots/r7/05b-column-closeup.png`). Her own two lines, then the operator's,
+then hers:
+
+> "Six tasks are stopped on a question; Billing migration's closes first. Staging fixture
+> refresh is waiting for a permission. Nothing else is running."
+> "The task "Staging fixture refresh" is waiting for your permission to use Bash. The
+> command is on my card."
+> "can you make it proceed ?"
+> "Which task do you mean? Several are waiting on you right now."
+
+The column made the problem easier to see and did not fix it: what she wrote two lines
+above is shown to the operator and not to the model.
+
 Asked by name (conversation `r7-perm-b`): "Approve the permission prompt of the staging
 fixture refresh task." → "I cannot approve permission prompts; that is not something I can
 do. The staging fixture refresh task is still blocked on that permission, so it needs you
@@ -175,6 +189,32 @@ back to the turn, so her sentence cannot name any.
 offers is launchable; "you", "Lucy", "your panel" and "the dashboard" resolve to Kookr's
 own project; and "Which project?" lists the three most recently used ones.
 
+### R7-F5. Five minutes after a permission prompt appears, her card loses its buttons (actions) — severity: medium
+
+**Evidence.** On the merged build, a task stopped on a permission prompt for seven minutes
+shows this card at the top of her column: the task's name, "Waiting for your permission to
+use Bash", the command, an "Open task" link, and "These buttons have timed out. Answer it
+in the task's terminal." There is no Approve once and no Deny
+(`/tmp/kookr-ux-shots/r7/05b-column-closeup.png`). Her notice comes 60 seconds after the
+prompt by default, so the buttons she announces work for four minutes. The operator's own
+history has a case of the long wait: a task "stuck on a permission prompt since 22:40"
+was still stuck when a reviewer task asked about it (ask `3f739a24bcaf`, expired
+unanswered).
+
+**Root cause.** A card's buttons are bound to the prompt that was detected, for five
+minutes: `src/shared/contracts/permission-request-binding.ts:1-2`
+(`DEFAULT_PERMISSION_APPROVAL_TTL_MS` and its maximum, both 5 minutes),
+`src/frontend/store/lucy-permission.ts:88-89` (`permissionButtonsLive`) and
+`src/frontend/avatar/LucyPermissionCard.tsx:25,67` (the timed-out text). The binding
+exists so a key press cannot land on a different prompt; nothing renews it while the same
+prompt is still on screen.
+
+**Suggested fix.** While the task's terminal still shows the same prompt, renew the
+binding (on a timer, or when the operator presses a "Check again" button on the card), so
+the buttons work for as long as the prompt does. Until then Lucy must know whether the
+buttons are live before she points at them (see R7-F3): with dead buttons the useful
+answer is "its buttons have timed out, I am opening the task", followed by opening it.
+
 ## Things that worked well (keep-list)
 
 ## Suggested priority order
@@ -206,3 +246,7 @@ own project; and "Which project?" lists the three most recently used ones.
   preface, which the stand-in agent's terminal echoes; she reads the operator's words
   (`userPrompt`, `src/server/lucy-operator/look-source.ts:171`) for the task itself, and no
   live answer in the log contains such a warning.
+- 2026-11-17 — **Phase 2, in the browser.** Opened the merged build at 1920 px with the
+  permission task waiting: her briefing and her written notice name the task, and "can you
+  make it proceed ?" typed under them still gets "Which task do you mean?" (R7-F3). The
+  card's buttons had timed out (R7-F5).
