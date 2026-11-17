@@ -57,6 +57,8 @@ interface LucyExtras {
   chips?: string[];
   /** The task the entry is about: it gets an "Open task" button. */
   taskId?: string;
+  /** Set on a briefing: its signature, which changes only when what waits on the operator changes. */
+  briefing?: string;
 }
 
 /** The spoken clip of an entry: who it was about and whether it is template wording. */
@@ -84,7 +86,11 @@ export type ConversationEntry =
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
 /** What a caller gives to {@link appendConversationEntry}: an entry without the fields the store fills in. */
-export type NewConversationEntry = DistributiveOmit<ConversationEntry, 'id' | 'at' | 'rev'> & { at?: number };
+export type NewConversationEntry = DistributiveOmit<ConversationEntry, 'id' | 'at' | 'rev'> & {
+  at?: number;
+  /** Given only for something every open tab is told about (a line from the server, a briefing), so the tabs agree on the id and the entry is added once. */
+  id?: string;
+};
 
 /** The fields {@link updateConversationEntry} can change. */
 export interface ConversationEntryPatch {
@@ -135,7 +141,7 @@ function isEntry(value: unknown): value is ConversationEntry {
   const entry = value as Record<string, unknown>;
   if (typeof entry.id !== 'string' || typeof entry.at !== 'number' || typeof entry.text !== 'string') return false;
   if (!optional(entry.rev, 'number')) return false;
-  const lucyExtras = validChips(entry.chips) && optional(entry.taskId, 'string');
+  const lucyExtras = validChips(entry.chips) && optional(entry.taskId, 'string') && optional(entry.briefing, 'string');
   switch (entry.kind) {
     case 'typed-you':
     case 'notice':
@@ -297,8 +303,9 @@ function cleanChips(chips: readonly string[]): string[] {
  * if no entry has that id yet: for a message every open tab receives, so the shared thread gets it once.
  */
 export function appendConversationEntry(entry: NewConversationEntry, options: { id?: string } = {}): string {
-  if (options.id !== undefined && entries.some((existing) => existing.id === options.id)) return options.id;
-  const id = options.id ?? newId();
+  const givenId = options.id ?? entry.id;
+  if (givenId !== undefined && entries.some((existing) => existing.id === givenId)) return givenId;
+  const id = givenId ?? newId();
   const added = { ...entry, id, at: entry.at ?? Date.now() } as ConversationEntry;
   if ('chips' in added && added.chips) added.chips = cleanChips(added.chips);
   addedHere.add(id);

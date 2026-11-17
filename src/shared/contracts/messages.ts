@@ -23,6 +23,7 @@ import type { TaskRelation } from './task-relations.js';
 import type { TelemetryEvent } from './telemetry.js';
 import type { LucyLaunchOutcome, LucyLaunchProposalView, LucyLaunchReport } from './lucy-launch.js';
 import type { LucyPermissionAnnouncement, LucyPermissionCardView } from './lucy-permission.js';
+import type { LucySaysMessage } from './lucy-says.js';
 import type {
   EmptyEnterIntentRequest,
   EmptyEnterDecision,
@@ -420,6 +421,8 @@ export type ServerMessage =
       | { outcome: LucyLaunchOutcome; proposal?: undefined; report?: undefined }
       | { report: LucyLaunchReport; proposal?: undefined; outcome?: undefined }
     ))
+  /** A line Lucy writes on her own about a task she did not launch (`lucy-says.ts`). Owner connections only; never sent again on reconnect. */
+  | LucySaysMessage
   | { type: 'update'; agentId: string; state: AgentState }
   | {
       type: 'alert';
@@ -761,6 +764,7 @@ export const SERVER_MESSAGE_TYPES = [
   'snapshot',
   'delta',
   'lucy_launch',
+  'lucy_says',
   'update',
   'alert',
   'githubUpdate',

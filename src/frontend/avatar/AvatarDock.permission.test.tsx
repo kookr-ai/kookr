@@ -102,7 +102,7 @@ describe('AvatarDock: permission cards (issue #3932)', () => {
     expect(q('avatar-permission-ask')!.textContent).toBe('Waiting for your permission to use Bash');
     expect(q('avatar-permission')!.textContent).toContain('Fix the login page');
     expect(speech.announcePermissionNotice).toHaveBeenCalledTimes(1);
-    expect(speech.announcePermissionNotice).toHaveBeenCalledWith('perm-1');
+    expect(speech.announcePermissionNotice).toHaveBeenCalledWith('perm-1', { fetcher: expect.any(Function) });
     // The same list again (a reconnect, another card changing): nothing more is said.
     await push([card()]);
     expect(speech.announcePermissionNotice).toHaveBeenCalledTimes(1);
@@ -116,7 +116,7 @@ describe('AvatarDock: permission cards (issue #3932)', () => {
     expect(q('avatar-tray-count')!.textContent).toBe('2');
     expect(q('avatar-tray')!.classList.contains('avatar-tray-waiting')).toBe(true);
     // She still says it, and pressing the strip shows the cards.
-    expect(speech.announcePermissionNotice).toHaveBeenCalledWith('perm-1');
+    expect(speech.announcePermissionNotice).toHaveBeenCalledWith('perm-1', expect.anything());
     await act(async () => { q('avatar-tray-toggle')!.click(); });
     expect(all('avatar-permission')).toHaveLength(2);
   });

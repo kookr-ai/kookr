@@ -113,6 +113,25 @@ const LEVEL_RANK: Record<LucyAutonomy, number> = { careful: 0, balanced: 1, 'han
 const MAX_OPERATOR_WORDS = 6;
 /** The same task is not announced as needing the operator again within this time. */
 const NEEDS_INPUT_REPEAT_MS = 5 * 60 * 1000;
+/**
+ * A "needs the operator" report waits this long before it is sent, and is dropped if the task's end
+ * (or "done, please look") is reported meanwhile. A task that finishes often stops for input a few
+ * seconds before it signals that it is done; without the wait the operator heard "needs you" and,
+ * six seconds later, "says it is done" for the same task.
+ */
+export const NEEDS_INPUT_HOLD_MS = 8_000;
+/** What a task that needs the operator is waiting for, when Kookr knows. */
+export type LucyNeedsReason = 'question' | 'permission';
+
+/**
+ * What a finding says the task is waiting for: a permission prompt, or a question it asked in its
+ * session. Undefined for any other finding (the task stopped and waits for input of some kind).
+ */
+export function needsReasonOf(anomaly: { type: string; subType?: string }): LucyNeedsReason | undefined {
+  if (anomaly.type === 'permission_blocked') return 'permission';
+  if (anomaly.type === 'needs_input' && anomaly.subType === 'ask_user_question') return 'question';
+  return undefined;
+}
 const MAX_WORDS_CHARS = 2000;
 
 /** Rough time to speak a sentence: about three words a second, plus a second for the voice to start. */
@@ -138,8 +157,12 @@ export interface LucyLaunchController {
   closeConversation(conversationId: string): void;
   /** The proposal currently held for a conversation, if it can still be confirmed. */
   pending(conversationId: string): LucyLaunchProposalView | undefined;
-  /** A task ended or needs the operator: tell its conversation if she launched it. */
-  onTaskOutcome(taskId: string, outcome: { kind: 'completion_ready' | 'completed' | 'failed' | 'cancelled' | 'needs_input' }, taskLabel?: string): void;
+  /**
+   * A task ended or needs the operator: tell its conversation if she launched it. One report per event:
+   * a `needs_input` report is held for {@link NEEDS_INPUT_HOLD_MS} and dropped when the task's end follows
+   * within that time. `waitsFor` says what a task that needs the operator is waiting for, when known.
+   */
+  onTaskOutcome(taskId: string, outcome: { kind: 'completion_ready' | 'completed' | 'failed' | 'cancelled' | 'needs_input'; waitsFor?: LucyNeedsReason }, taskLabel?: string): void;
   /** The sentence last announced for a task she launched, or undefined. The speech route says only this. */
   reportText(taskId: string): string | undefined;
   /** Stop timers (shutdown, tests). */
@@ -158,6 +181,8 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
   const launchedFrom = new Map<string, string>();
   const reports = new Map<string, string>();
   const lastNeeds = new Map<string, number>();
+  /** "Needs the operator" reports waiting out {@link NEEDS_INPUT_HOLD_MS}, by task. */
+  const heldNeeds = new Map<string, { text: string; timer: unknown }>();
 
   const record = (conversationId: string, input: Omit<LucyLaunchRecordInput, 'conversationId'>): void => {
     try {
@@ -496,34 +521,60 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       // The name was written by an agent or pasted by the operator: it gets the same cleaning as on the board.
       const spoken = taskLabel ? spokenTaskName(redactedTaskName(taskLabel)) : '';
       const label = spoken && !isGenericTaskName(spoken) ? ` "${spoken}"` : '';
-      const text = reportSentence(outcome.kind, label);
+      const text = reportSentence(outcome.kind, label, outcome.waitsFor);
+      // The sentence is kept for the speech route only once it is sent, so a held report that is dropped is never spoken.
+      const send = (kind: LucyLaunchReport['kind'], sentence: string): void => {
+        reports.set(taskId, sentence);
+        while (reports.size > MAX_REMEMBERED_TASKS) {
+          const oldest = reports.keys().next().value;
+          if (oldest === undefined) break;
+          reports.delete(oldest);
+        }
+        announce({ type: 'lucy_launch', conversationId, report: { taskId, conversationId, kind, text: sentence } });
+      };
       if (outcome.kind === 'needs_input') {
         // The same finding is admitted again and again while a task waits: say it once.
         const last = lastNeeds.get(taskId);
         if (last !== undefined && now() - last < NEEDS_INPUT_REPEAT_MS) return;
-        lastNeeds.set(taskId, now());
-        while (lastNeeds.size > MAX_REMEMBERED_TASKS) {
-          const oldest = lastNeeds.keys().next().value;
-          if (oldest === undefined) break;
-          lastNeeds.delete(oldest);
+        const waiting = heldNeeds.get(taskId);
+        if (waiting) {
+          // Already held: a later finding that knows what the task waits for gives the better sentence.
+          if (outcome.waitsFor) waiting.text = text;
+          return;
         }
-      } else {
-        launchedFrom.delete(taskId);
-        lastNeeds.delete(taskId);
+        const entry: { text: string; timer: unknown } = { text, timer: undefined };
+        entry.timer = setTimer(() => {
+          if (heldNeeds.get(taskId) !== entry) return;
+          heldNeeds.delete(taskId);
+          if (!launchedFrom.has(taskId)) return;
+          lastNeeds.set(taskId, now());
+          while (lastNeeds.size > MAX_REMEMBERED_TASKS) {
+            const oldest = lastNeeds.keys().next().value;
+            if (oldest === undefined) break;
+            lastNeeds.delete(oldest);
+          }
+          send('needs_input', entry.text);
+        }, NEEDS_INPUT_HOLD_MS);
+        heldNeeds.set(taskId, entry);
+        return;
       }
-      reports.set(taskId, text);
-      while (reports.size > MAX_REMEMBERED_TASKS) {
-        const oldest = reports.keys().next().value;
-        if (oldest === undefined) break;
-        reports.delete(oldest);
+      // The task ended, or says it is done: that is the one report. A "needs the operator" still held is dropped.
+      const superseded = heldNeeds.get(taskId);
+      if (superseded) {
+        clearTimer(superseded.timer);
+        heldNeeds.delete(taskId);
       }
-      announce({ type: 'lucy_launch', conversationId, report: { taskId, conversationId, kind: outcome.kind === 'needs_input' ? 'needs_input' : 'finished', text } });
+      launchedFrom.delete(taskId);
+      lastNeeds.delete(taskId);
+      send('finished', text);
     },
 
     reportText: (taskId) => reports.get(taskId),
 
     dispose() {
       for (const conversationId of [...held.keys()]) drop(conversationId);
+      for (const waiting of heldNeeds.values()) clearTimer(waiting.timer);
+      heldNeeds.clear();
     },
   };
 }
@@ -542,7 +593,7 @@ function sayOutcome(outcome: LucyLaunchOutcome): string {
   }
 }
 
-function reportSentence(kind: 'completion_ready' | 'completed' | 'failed' | 'cancelled' | 'needs_input', label: string): string {
+function reportSentence(kind: 'completion_ready' | 'completed' | 'failed' | 'cancelled' | 'needs_input', label: string, waitsFor?: LucyNeedsReason): string {
   switch (kind) {
     case 'completion_ready':
       return `The task I started${label} says it is done and is waiting for you to look at it.`;
@@ -553,6 +604,9 @@ function reportSentence(kind: 'completion_ready' | 'completed' | 'failed' | 'can
     case 'cancelled':
       return `The task I started${label} was cancelled.`;
     case 'needs_input':
+      // Say what it waits for when Kookr knows; "needs you" alone sends the operator looking for the reason.
+      if (waitsFor === 'question') return `The task I started${label} is waiting on a question.`;
+      if (waitsFor === 'permission') return `The task I started${label} is waiting for a permission.`;
       return `The task I started${label} needs you.`;
   }
 }

@@ -93,6 +93,8 @@ describe('LucyPermissionNotifier', () => {
     expect(h.announcements()).toHaveLength(1);
     const [announce] = h.announcements();
     expect(announce?.promptIds).toEqual([h.lastCards()[0]?.promptId]);
+    // The sentence travels with the announcement, so the panel can write it when it cannot be spoken.
+    expect(announce?.text).toBe(h.notifier.notice(announce!.noticeId)?.text);
     expect(h.notifier.notice(announce!.noticeId)).toMatchObject({
       text: 'The task "Fix the a build" is waiting for your permission to use Bash. The command is on my card.',
       open: true,
@@ -129,6 +131,7 @@ describe('LucyPermissionNotifier', () => {
     const announced = h.announcements();
     expect(announced).toHaveLength(2);
     expect(h.notifier.notice(announced[1]!.noticeId)?.text).toBe('Two more tasks are waiting for you.');
+    expect(announced[1]!.text).toBe('Two more tasks are waiting for you.');
     expect(announced[1]!.promptIds).toHaveLength(2);
 
     await tick(10 * MIN);

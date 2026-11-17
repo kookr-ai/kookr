@@ -351,4 +351,43 @@ describe('lucy-conversation', () => {
       expect(getConversationEntries().some((e) => e.id === old)).toBe(false);
     });
   });
+
+  test('an entry can be given its id; a second one with the same id is not added', () => {
+    const first = appendConversationEntry({ id: 'says:m1', kind: 'typed-lucy', status: 'done', text: 'Docs link audit failed.' });
+    const again = appendConversationEntry({ id: 'says:m1', kind: 'typed-lucy', status: 'done', text: 'Docs link audit failed.' });
+    appendConversationEntry({ id: 'says:m2', kind: 'typed-lucy', status: 'done', text: 'Another failed.' });
+    // Entries without an id of their own are never taken for duplicates, even with the same text.
+    appendConversationEntry({ kind: 'notice', text: 'same words' });
+    appendConversationEntry({ kind: 'notice', text: 'same words' });
+    expect([first, again]).toEqual(['says:m1', 'says:m1']);
+    expect(getConversationEntries().map((e) => e.text)).toEqual(['Docs link audit failed.', 'Another failed.', 'same words', 'same words']);
+    expect(saved().map((e) => e.id).slice(0, 2)).toEqual(['says:m1', 'says:m2']);
+    // The id survives a reload, so a duplicate that arrives after it is still caught.
+    __reloadLucyConversationForTests();
+    appendConversationEntry({ id: 'says:m1', kind: 'typed-lucy', status: 'done', text: 'Docs link audit failed.' });
+    expect(getConversationEntries().filter((e) => e.id === 'says:m1')).toHaveLength(1);
+  });
+
+  test('what Lucy writes on her own keeps its follow-ups, its task and its briefing signature across a reload', () => {
+    appendConversationEntry({ kind: 'typed-lucy', status: 'done', text: 'All clear: nothing needs you.', chips: ['What is everyone working on?'], briefing: 'sig-1' });
+    appendConversationEntry({ kind: 'typed-lucy', status: 'done', text: 'Docs link audit failed.', taskId: 't1' });
+    __reloadLucyConversationForTests();
+    expect(getConversationEntries()).toEqual([
+      expect.objectContaining({ kind: 'typed-lucy', status: 'done', chips: ['What is everyone working on?'], briefing: 'sig-1' }),
+      expect.objectContaining({ kind: 'typed-lucy', status: 'done', text: 'Docs link audit failed.', taskId: 't1' }),
+    ]);
+  });
+
+  test('a saved entry whose follow-ups, task or signature are not text is dropped on reload', () => {
+    const entry = (over: Record<string, unknown>) => ({ id: `e${Math.random()}`, at: 1, kind: 'typed-lucy', status: 'done', text: 'kept?', ...over });
+    localStorage.setItem(LUCY_CONVERSATION_KEY, JSON.stringify([
+      entry({ chips: 'not a list' }),
+      entry({ chips: ['fine', 42] }),
+      entry({ taskId: 7 }),
+      entry({ briefing: { no: 'object' } }),
+      entry({ text: 'kept', chips: [], taskId: 't1', briefing: 'sig' }),
+    ]));
+    __reloadLucyConversationForTests();
+    expect(getConversationEntries().map((e) => e.text)).toEqual(['kept']);
+  });
 });

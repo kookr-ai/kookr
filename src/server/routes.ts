@@ -50,6 +50,9 @@ import { registerSpeechRoutes } from './routes/speech-routes.js';
 import { registerLucyLiveRoutes } from './routes/lucy-live-routes.js';
 import { registerLucyOperatorRoutes } from './routes/lucy-operator-routes.js';
 import { registerLucyPermissionRoutes } from './routes/lucy-permission-routes.js';
+import { registerLucyBriefingRoutes } from './routes/lucy-briefing-routes.js';
+import { operatorBriefingInput } from './lucy-operator/briefing-source.js';
+import { listOperatorAsks } from '../core/operator-asks.js';
 import { buildLucyOperator } from './lucy-operator/create-lucy-operator.js';
 import { registerPipelineStarvationRoutes } from './routes/pipeline-starvation-routes.js';
 import { PipelineStarvationService } from './pipeline-starvation-service.js';
@@ -271,7 +274,19 @@ export function createRoutes(deps: RouteDeps): Hono {
     lucyLogPath: deps.lucyInteractionLogPath,
   });
   registerLucyLiveRoutes(app, { lucyLiveStatus: deps.lucyLiveStatus, getLucyLiveStatus: deps.getLucyLiveStatus });
-  registerLucyOperatorRoutes(app, { lucyOperator: buildLucyOperator(sharedDeps), speech: sharedDeps.asks?.speech });
+  const lucyOperator = buildLucyOperator(sharedDeps);
+  registerLucyOperatorRoutes(app, { lucyOperator, speech: sharedDeps.asks?.speech });
+  registerLucyBriefingRoutes(app, {
+    lucyOperator,
+    // The same task list, findings and questions her board reads, so the briefing and her answers agree.
+    getInput: () => operatorBriefingInput(
+      sharedDeps.taskStore.viewTasks(),
+      sharedDeps.queue.inspectActive(),
+      sharedDeps.asks?.service
+        ? listOperatorAsks(sharedDeps.asks.service.all(), Date.now(), (taskId) => sharedDeps.taskStore.getTask(taskId)?.name, (taskId) => sharedDeps.taskStore.getTask(taskId)?.status)
+        : [],
+    ),
+  });
   registerLucyPermissionRoutes(app, {
     ...(sharedDeps.lucyPermissionNotices ? { notices: sharedDeps.lucyPermissionNotices } : {}),
     ...(sharedDeps.asks?.speech ? { speech: sharedDeps.asks.speech } : {}),

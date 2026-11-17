@@ -55,6 +55,8 @@ import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { PermissionPromptWaitAlerter } from './permission-prompt-wait-alert.js';
 import { LucyPermissionNotifier, pushLucyPermissionCards } from './lucy-permission-notice.js';
 import { DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS } from '../shared/contracts/lucy-permission.js';
+import { LUCY_OPERATOR_ACTOR_ID } from '../shared/contracts/lucy-launch.js';
+import { LucySaysNotifier, pushLucySays, taskEventForFinding, taskEventForOutcome, taskEventStillTrue } from './lucy-says.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import { FinishedAwaitingAckAckReaperMetrics } from './finished-awaiting-ack-ack-reaper.js';
@@ -304,6 +306,7 @@ import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import { readOperatorInbox } from './operator-inbox.js';
 import { createLucyOperatorHolder } from './lucy-operator/holder.js';
+import { needsReasonOf } from './lucy-operator/launch-controller.js';
 import { operatorNeeds } from './lucy-operator/look-source.js';
 import { createAskTaskPorts, createTelegramTaskBridge, type TelegramTaskBridge } from './telegram-task-bridge.js';
 import { AskStore } from './asks/ask-store.js';
@@ -812,7 +815,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       if (event.anomaly.type !== 'needs_input' && event.anomaly.type !== 'permission_blocked') return;
       try {
         const task = taskStore.findTaskBySession(event.agentId);
-        if (task) lucyOperatorHolder.get()?.launch?.onTaskOutcome(task.id, { kind: 'needs_input' }, task.name);
+        // What it waits for, so her report says "is waiting on a question" or "for a permission", not only "needs you".
+        const waitsFor = needsReasonOf(event.anomaly);
+        if (task) lucyOperatorHolder.get()?.launch?.onTaskOutcome(task.id, { kind: 'needs_input', ...(waitsFor ? { waitsFor } : {}) }, task.name);
       } catch (err) {
         console.warn('[lucy-launch] needs-input report failed:', err);
       }
@@ -2526,6 +2531,33 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     capturePane: (sessionId) => adapter.captureDisplay(sessionId),
     getAfterMs: () => (currentSettings.lucyPermissionNoticeAfterSeconds ?? DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS) * 1000,
   });
+
+  // Lucy writes a word in her thread when something happens to a task she did not launch: it failed,
+  // went quiet, lost contact, or said it is finished and still waits for a review ten minutes later.
+  // Held, grouped and rate-limited in the notifier; owner dashboards only; never sent again on
+  // reconnect. Nothing is spoken.
+  const lucySaysNotifier = new LucySaysNotifier({
+    push: (message) => pushLucySays(connectionRegistry.snapshotDashboardConnections(), message),
+    // A task she launched is reported by the launch controller, in the conversation that asked for it.
+    isOwnLaunch: (taskId) => taskStore.getTask(taskId)?.metadata?.launchActorId === LUCY_OPERATOR_ACTOR_ID,
+    // Asked when a grouping window closes and when a held "wants review" comes due: a task that picked
+    // up again, or that Kookr closed in the meantime, is left out.
+    stillTrue: (event) => taskEventStillTrue(event, taskStore.getTask(event.taskId), (sessionId) => queue.getAnomaly(sessionId)?.type),
+  });
+  const stopLucySaysObserver = queue.addObserver({
+    admitted: (event) => {
+      if (!taskEventForFinding(event.anomaly.type)) return;
+      try {
+        const task = taskStore.findTaskBySession(event.agentId);
+        const kind = task && !isTerminalStatus(task.status) ? taskEventForFinding(event.anomaly.type, task.pendingSignal?.kind) : undefined;
+        if (task && kind) lucySaysNotifier.note({ taskId: task.id, taskName: task.name, kind });
+      } catch (err) {
+        console.warn('[lucy-says] finding note failed:', err);
+      }
+    },
+  });
+  // False until the outcomes replayed at start-up have gone by: those are not news to write about.
+  let lucySaysOutcomesLive = false;
 
   // finishedAwaitingAck residual page after TTL reclaim (issue #2077). Page-only;
   // uses detectorBroadcast so fire/clear edges spool to Discord.
@@ -4639,6 +4671,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       console.warn('[lucy-launch] outcome report failed:', err);
     }
     try {
+      // A task that failed, or says it is finished and wants a review: a word in Lucy's thread.
+      const task = lucySaysOutcomesLive ? taskStore.getTask(taskId) : undefined;
+      const kind = task ? taskEventForOutcome(outcome.kind, task.terminationReason) : undefined;
+      if (task && kind) lucySaysNotifier.note({ taskId, taskName: task.name, kind });
+    } catch (err) {
+      console.warn('[lucy-says] outcome note failed:', err);
+    }
+    try {
       void remoteChatOnTaskOutcome?.(taskId, outcome);
     } catch (err) {
       console.warn('[lifecycle] remoteChat onTaskOutcome threw:', err);
@@ -4657,6 +4697,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     });
   };
   notifyBootReconciledTaskOutcomes(onTaskOutcomeHolder, reconcileResult);
+  lucySaysOutcomesLive = true;
 
   // --- Close ---
 
@@ -4701,6 +4742,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     stopWebhookObserver?.();
     stopDeliveryTraceObserver();
     stopLucyNeedsInputObserver();
+    stopLucySaysObserver();
+    lucySaysNotifier.dispose();
     // No hands-off launch may fire during shutdown.
     lucyOperatorHolder.get()?.launch?.dispose();
 

@@ -42,6 +42,12 @@
  * command and Approve once / Deny (`LucyPermissionCard.tsx`), and Lucy says one sentence about it
  * (issue #3932). The sentence is spoken from here, so with the panel off nothing is said.
  *
+ * She writes first and speaks second. When the panel is first shown, and when the operator comes back after
+ * ten minutes away to changed work, she writes a short briefing in the thread (`useLucyBriefing.ts`). When a
+ * task she did not launch fails, goes quiet or wants a review, she writes one line (`useLucySays.ts`). Neither
+ * is spoken. And when a question or a permission notice cannot be spoken because no clip could be fetched,
+ * the words are written in the thread instead of being lost (`unspoken-words.ts`).
+ *
  * This file and everything it imports (three.js, the avatar file) is loaded
  * only when the operator has switched the panel on — see the lazy import in
  * App.tsx and `store/avatar-panel-prefs.ts`.
@@ -62,10 +68,11 @@ import {
   stopAskAnnouncement,
   stopPermissionNotice,
 } from '../audio/ask-announcement.js';
-import { onPermissionAnnounced, onPermissionNoticeWithdrawn } from '../store/lucy-permission.js';
+import { getLucyPermissionSnapshot, onPermissionAnnounced, onPermissionNoticeWithdrawn } from '../store/lucy-permission.js';
 import type { PermissionChoiceSender } from './LucyPermissionCard.js';
 import {
   askClockOffsetMs,
+  getOperatorAsksSnapshot,
   onAskAnnounced,
   onAskClosed,
   useOperatorAsks,
@@ -79,6 +86,9 @@ import { LucyThread } from './LucyThread.js';
 import { WaitingTray } from './WaitingTray.js';
 import { ColumnResizer } from './ColumnResizer.js';
 import { useClipThreadSync, useNoticeThreadSync, useTalkThreadSync } from './useThreadSync.js';
+import { useLucyBriefing } from './useLucyBriefing.js';
+import { useLucySaysThreadSync } from './useLucySays.js';
+import { announceOrWrite, writtenAsk, writtenPermissionNotice } from './unspoken-words.js';
 import { useLucyConversation } from '../store/lucy-conversation.js';
 import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
 import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
@@ -314,7 +324,11 @@ export function AvatarDock({
     const notice = (text: string): void => setAskNotice((previous) => ({ seq: (previous?.seq ?? 0) + 1, text }));
     const offAnnounced = onAskAnnounced((ask) => {
       notice(ask.taskName ? `New question from ${ask.taskName}.` : 'New question from a task.');
-      void announceAsk(ask.id);
+      // No clip could be fetched (no speech service, or it failed): her words are written in the thread instead.
+      void announceOrWrite(
+        (options) => announceAsk(ask.id, options),
+        () => writtenAsk(ask, getOperatorAsksSnapshot().asks),
+      );
     });
     const offClosed = onAskClosed((ask) => {
       notice(`${askOutcome(ask).text}. Question: ${ask.question}`);
@@ -324,7 +338,10 @@ export function AvatarDock({
     // prompt the sentence is about has been answered.
     const offPermission = onPermissionAnnounced((announcement) => {
       notice(announcement.promptIds.length === 1 ? 'A task is waiting for your permission.' : 'Tasks are waiting for your permission.');
-      void announcePermissionNotice(announcement.noticeId);
+      void announceOrWrite(
+        (options) => announcePermissionNotice(announcement.noticeId, options),
+        () => writtenPermissionNotice(announcement, getLucyPermissionSnapshot().cards),
+      );
     });
     const offWithdrawn = onPermissionNoticeWithdrawn((noticeId) => stopPermissionNotice(noticeId));
     return () => {
@@ -454,6 +471,10 @@ export function AvatarDock({
   useTalkThreadSync(live);
   useClipThreadSync(clips);
   useNoticeThreadSync(liveMessage, talkNoticeSeq);
+  // She writes first: a briefing when the panel is first shown, and when the operator comes back to changed work.
+  useLucyBriefing({ shown: !prefs.minimized });
+  // A word about a task she did not launch (it failed, went quiet, wants a review): written, not spoken.
+  useLucySaysThreadSync();
   // If the Talk button disappears while it has focus, keyboard focus would fall to the page; keep it in the dock.
   useLayoutEffect(() => {
     if (!talkVisible && talkFocusedRef.current) {
