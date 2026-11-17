@@ -13,20 +13,11 @@
  * 2. Suite-wide classification of "this is a test-suite dtach, not prod" so
  *    the vitest globalSetup reaper (`test/dtach-master-reaper.global.ts`) can
  *    sweep stragglers without touching `/tmp/kookr-dtach/` production sockets.
- *    That sweep is scoped to the run that started the processes, plus true
- *    orphans selected by age (issue #4109, `test-run-identity.ts`).
  *
  * Linux-only (`/proc`); degrades to a no-op elsewhere.
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import { readProcessEnviron } from '../adapters/proc-process-lister.js';
-import { killProcessTree, readProcessStartTimeMs } from '../adapters/process-tree.js';
-import {
-  classifyTestProcessOwnership,
-  currentTestRunId,
-  testRunIdFromEnviron,
-  testRunIdFromPath,
-} from './test-run-identity.js';
+import { killProcessTree } from '../adapters/process-tree.js';
 
 /**
  * mkdtemp prefixes used by dtach-spawning tests. Matched as path segments so
@@ -36,14 +27,11 @@ import {
  *   only for checkouts older than kookr-ai/kookr#3825)
  * - `src/server/session-reaper-dtach-integration.test.ts` (`kookr-session-reaper-it-`)
  *
- * These markers only identify dtach sessions that carry no run id, which the
- * global teardown reaps once they are older than the orphan age threshold
- * (issue #4109). A session that carries a run id is reaped by its own run's
- * teardown whatever its prefix. Do NOT add `local-dtach-backend.test.ts`'s
- * session prefix (`ldb-case-`) here: before #4109 every teardown on the host
- * killed every match, including live sessions of other runs, which made that
- * file flake under load (#3825). A guard test in that file still fails if a
- * marker here starts matching its prefix.
+ * Do NOT add `local-dtach-backend.test.ts`'s session prefix (`ldb-case-`) here.
+ * The global teardown reaper runs at the end of EVERY vitest process on the host
+ * and kills every match, including live sessions of other vitest runs still in
+ * progress; that is what made that file flake under load (#3825). A guard test
+ * in that file fails if a marker here starts matching its prefix.
  */
 export const TEST_DTACH_DIR_MARKERS = [
   '/tsc-',
@@ -54,13 +42,6 @@ export const TEST_DTACH_DIR_MARKERS = [
 
 /** Production instance socket root — never reap masters under this path. */
 const PROD_DTACH_MARKER = '/kookr-dtach/';
-
-/**
- * A `dtach` executable followed by a mode flag (`dtach -n …`, `/x/dtach -a …`),
- * so a process that only mentions dtach in a path or a file name is not taken
- * for a session.
- */
-const DTACH_INVOCATION = /(?:^|[\s/])dtach\s+-[A-Za-z]\b/;
 
 export interface CmdlinePid {
   pid: number;
@@ -137,67 +118,30 @@ export async function reapDtachReferencing(
   return targets;
 }
 
-export interface LingeringTestDtachOptions {
-  list?: () => Iterable<CmdlinePid>;
-  /** Run id of the teardown that is sweeping (default: from `process.env`). */
-  runId?: string | null;
-  readEnviron?: (pid: number) => Record<string, string> | null;
-  readStartTimeMs?: (pid: number) => number | null;
-  isPidAlive?: (pid: number) => boolean;
-  now?: number;
-  minOrphanAgeMs?: number;
-  /** Never selected (default: this process). */
-  selfPid?: number;
-}
-
 /**
- * Pids of lingering test-suite dtach masters/attachers that this teardown may
- * reap (issue #4109): those started by the current run, plus true orphans.
- *
- * A dtach process's run id comes from its environment, or else from a
- * `/kvr-<id>/` segment of its socket path. One carrying no run id is a test
- * process only if its socket path matches a {@link TEST_DTACH_DIR_MARKERS}
- * prefix, and is then reaped only by age. Production sockets under
- * `/tmp/kookr-dtach/` are never selected. See `test-run-identity.ts` for the
- * ownership rules.
+ * Pids of lingering test-suite dtach masters/attachers (any known test socket
+ * prefix). Used by the suite-wide globalSetup reaper as a safety net for
+ * files that forgot a per-dir afterEach, or for mid-run crashes.
  */
-export function findLingeringTestDtachPids(options: LingeringTestDtachOptions = {}): number[] {
-  const list = options.list ?? listProcCmdlines;
-  const readEnviron = options.readEnviron ?? readProcessEnviron;
-  const readStartTimeMs = options.readStartTimeMs ?? readProcessStartTimeMs;
-  const currentRunId = options.runId === undefined ? currentTestRunId() : options.runId;
-  const now = options.now ?? Date.now();
-  const selfPid = options.selfPid ?? process.pid;
-
+export function findLingeringTestDtachPids(
+  list: () => Iterable<CmdlinePid> = listProcCmdlines,
+): number[] {
   const targets: number[] = [];
   for (const { pid, cmdline } of list()) {
-    if (pid === selfPid) continue;
-    if (!DTACH_INVOCATION.test(cmdline) || cmdline.includes(PROD_DTACH_MARKER)) continue;
-    const ownerRunId = testRunIdFromEnviron(readEnviron(pid)) ?? testRunIdFromPath(cmdline);
-    if (ownerRunId === null && !isTestSuiteDtachCmdline(cmdline)) continue;
-    const verdict = classifyTestProcessOwnership({
-      ownerRunId,
-      currentRunId,
-      startTimeMs: readStartTimeMs(pid),
-      now,
-      isPidAlive: options.isPidAlive,
-      minOrphanAgeMs: options.minOrphanAgeMs,
-    });
-    if (verdict !== 'keep') targets.push(pid);
+    if (isTestSuiteDtachCmdline(cmdline)) targets.push(pid);
   }
   return targets;
 }
 
 /**
- * Reap every lingering test-suite dtach process this teardown may reap (see
- * {@link findLingeringTestDtachPids}). Returns the pids targeted (whether or
- * not they were still alive after the kill). Best-effort: never throws on
- * individual kill failures.
+ * Reap every lingering test-suite dtach process. Returns the pids targeted
+ * (whether or not they were still alive after the kill). Best-effort: never
+ * throws on individual kill failures.
  */
 export async function reapLingeringTestDtachMasters(
-  options: LingeringTestDtachOptions & { graceMs?: number } = {},
+  options: { graceMs?: number; list?: () => Iterable<CmdlinePid> } = {},
 ): Promise<number[]> {
-  const targets = findLingeringTestDtachPids(options);
+  const targets = findLingeringTestDtachPids(options.list ?? listProcCmdlines);
   const graceMs = options.graceMs ?? 500;
   for (const pid of targets) {
     try {

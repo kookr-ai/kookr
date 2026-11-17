@@ -101,9 +101,6 @@ export default defineConfig({
     // /tmp/tsc-* (and other known test prefixes) so the suite cannot leak
     // resident masters the way an un-reaped createSession would.
     globalSetup: [
-      // First, so its teardown runs after the reapers that read the run id
-      // (issue #4109).
-      './test/test-run-id.global.ts',
       './test/git-repo-guard.global.ts',
       './test/relay-orphan-reaper.global.ts',
       './test/dtach-master-reaper.global.ts',

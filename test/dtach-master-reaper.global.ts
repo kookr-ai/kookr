@@ -7,11 +7,9 @@
 // prefixes) for days. teardown() is the belt-and-suspenders sweep: it runs
 // after ALL workers exit and reaps any leftover test-suite dtach process.
 //
-// Scoped to the run that started the processes (issue #4109): it reaps dtach
-// processes carrying this run's id (set by `test-run-id.global.ts`), plus true
-// orphans selected by age, and leaves the live sessions of a concurrent run
-// alone. See `src/test-utils/reap-dtach.ts` and `test-run-identity.ts`.
-// Production sockets under `/tmp/kookr-dtach/` are never touched.
+// Scoped strictly to known test mkdtemp prefixes (see
+// `src/test-utils/reap-dtach.ts`); production sockets under `/tmp/kookr-dtach/`
+// are never touched.
 //
 // Linux-only (reads /proc); a no-op elsewhere. Warn-only by default so a
 // straggler mid-graceful-shutdown never flakes CI; set
@@ -19,10 +17,10 @@
 // they are reaped). Like git-repo-guard / relay-orphan-reaper, a strict failure
 // sets process.exitCode — a throw in globalSetup teardown does not fail vitest 4.
 
-import { reapLingeringTestDtachMasters } from '../src/test-utils/reap-dtach.js';
+import { findLingeringTestDtachPids, reapLingeringTestDtachMasters } from '../src/test-utils/reap-dtach.js';
 
 export function setup(): void {
-  // Nothing to snapshot; the run id is set by test-run-id.global.ts.
+  // Nothing to snapshot; path-marker scope is self-identifying.
 }
 
 function isStrict(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -35,11 +33,17 @@ export async function teardown(): Promise<void> {
 
   let lingering: number[];
   try {
-    lingering = await reapLingeringTestDtachMasters({ graceMs: 500 });
+    lingering = findLingeringTestDtachPids();
   } catch {
     return; // defensive: never break the suite over a best-effort sweep
   }
   if (lingering.length === 0) return;
+
+  try {
+    await reapLingeringTestDtachMasters({ graceMs: 500 });
+  } catch {
+    // still emit the warning below with the pre-reap pid list
+  }
 
   const msg =
     `[dtach-master-reaper] reaped ${lingering.length} lingering test-suite dtach ` +
