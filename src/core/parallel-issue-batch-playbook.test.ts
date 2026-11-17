@@ -585,3 +585,19 @@ describe('parallel-issue-batch playbook: asynchronous opinion requests (#3920)',
     expect(pb.body).toContain('send one `kookr ask` without `--wait`, and carry on with the recommended option');
   });
 });
+
+describe('parallel-issue-batch playbook: kookr merge for every repository (#4107)', () => {
+  const content = readFileSync(join(import.meta.dirname, '..', '..', 'plugin', 'playbooks', 'parallel-issue-batch.md'), 'utf-8');
+
+  test('child template and parent phases merge with kookr merge --repo', () => {
+    expect(content).toContain('Merge with `kookr merge <PR> --repo "$REPO"` in every repository');
+    expect(content).toContain('KOOKR_MERGE_REQUIRE_REVIEW=0 kookr merge <PR> --repo "$REPO"');
+    expect(content).not.toMatch(/gh pr merge\s+[\"<$][^`\n]*--delete-branch/);
+    expect(content).not.toContain('--admin --delete-branch');
+    // kookr merge never passes --admin: the never-executed waiver keeps an
+    // admin fallback for branch protection that requires the unrun check.
+    expect(content).toContain('gh pr merge <PR> --repo "$REPO" --squash --admin`, then delete the head branch');
+    // The mechanical pre-spawn check greps this literal in the template.
+    expect(content).toContain('delete the head branch');
+  });
+});

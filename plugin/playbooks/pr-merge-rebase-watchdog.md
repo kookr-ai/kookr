@@ -204,8 +204,16 @@ Only when `{{mergeAfterUpdate}}` is `true`, the PR is `CLEAN`, checks are green 
 failing required check, or a requested change. Use the repo merge wrapper:
 
 ```bash
-kookr merge "$N" --repo "$REPO"   # kookr-ai/kookr wrapper; elsewhere: gh pr merge "$N" -R "$REPO" --squash --delete-branch
+kookr merge "$N" --repo "$REPO"   # every repository; deletes the head branch through the API
 ```
+
+`kookr merge` works from any directory and requires an independent-review
+`pass` verdict bound to the current head. If it exits 4 (no such verdict), do
+not merge this tick: record the PR as `awaiting review verdict`. Only on a
+repository whose `CLAUDE.md` / `AGENTS.md` says independent review is advisory,
+prefix the command with `KOOKR_MERGE_REQUIRE_REVIEW=0`. Fallback only where
+`kookr` is not on `PATH`: `gh pr merge "$N" -R "$REPO" --squash`, then
+`git push origin --delete "$BR"`.
 
 If `kookr merge` exits 3 and says the PR conflicts with its base branch, the
 base moved after this sweep read `CLEAN`: the PR is now `DIRTY`. Do not retry

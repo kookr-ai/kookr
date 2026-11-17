@@ -349,3 +349,20 @@ describe('implement-github-issue playbook: asynchronous opinion requests (#3920)
     expect(phase26).toContain('Do not use this for an issue that only needs a UI mockup or a choice between options when the change is reversible');
   });
 });
+
+describe('implement-github-issue playbook: kookr merge for every repository (#4107)', () => {
+  const content = readFileSync(join(import.meta.dirname, '..', '..', 'plugin', 'playbooks', 'implement-github-issue.md'), 'utf-8');
+
+  test('other repositories merge with kookr merge --repo, not gh pr merge --delete-branch', () => {
+    // `gh pr merge --delete-branch` run from a linked worktree merges the PR,
+    // then fails its local clean-up; `kookr merge` deletes through the API.
+    expect(content).toContain('Use the same wrapper for every other repository');
+    expect(content).toContain('KOOKR_MERGE_REQUIRE_REVIEW=0 kookr merge <PR> --repo "$REPO"');
+    expect(content).not.toMatch(/gh pr merge\s+[\"<$][^`\n]*--delete-branch/);
+    expect(content).not.toMatch(/gh pr merge\s+["<$][^`\n]*--auto/);
+    // No terminal outcome still names GitHub auto-merge.
+    expect(content).not.toMatch(/auto-merge enabled|enabled safe auto-merge/);
+    // The fallback for a host without kookr deletes the branch explicitly.
+    expect(content).toContain('gh pr merge <PR_NUMBER> --repo "$REPO" --squash && git push origin --delete <head-branch>');
+  });
+});
