@@ -1,9 +1,11 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  captureOpenCodeTaskTranscript,
   captureTaskTranscript,
   deleteTaskTranscripts,
   hasCompleteSnapshot,
@@ -158,5 +160,99 @@ describe('transcript-store', () => {
     const msgs = (await readStoredTranscript(dir, 'task1', 'sess1'))!;
     expect(msgs[0]).toMatchObject({ kind: 'truncation_marker' });
     expect(msgs[msgs.length - 1]).toMatchObject({ text: 'LAST' });
+  });
+});
+
+describe('captureOpenCodeTaskTranscript (issue #3537)', () => {
+  let root: string;
+  let dir: string;
+  let dbPath: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'transcript-store-oc-'));
+    dir = join(root, 'transcripts');
+    await mkdir(join(root, 'oc'), { recursive: true });
+    dbPath = join(root, 'oc', 'opencode.db');
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** A minimal opencode DB (real schema columns) with one assistant turn: text, then a bash tool call + result. */
+  function writeDb(text = `config is ${SECRET}/db`): void {
+    const db = new Database(dbPath);
+    db.exec(`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);`);
+    db.prepare('INSERT INTO message VALUES (?,?,?,?,?)').run('m0', 'ses_abc', 1, 1, JSON.stringify({ role: 'user' }));
+    db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('p0', 'm0', 'ses_abc', 1, 1, JSON.stringify({ type: 'text', text: 'please list' }));
+    db.prepare('INSERT INTO message VALUES (?,?,?,?,?)').run('m1', 'ses_abc', 5, 5, JSON.stringify({ role: 'assistant' }));
+    db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('p1', 'm1', 'ses_abc', 5, 5, JSON.stringify({ type: 'text', text }));
+    db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('p2', 'm1', 'ses_abc', 6, 6, JSON.stringify({
+      type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'ls' }, output: 'TOP_SECRET_FILE_LISTING' },
+    }));
+    // Another session's message in the same DB must not leak into this session's snapshot.
+    db.prepare('INSERT INTO message VALUES (?,?,?,?,?)').run('m2', 'ses_other', 7, 7, JSON.stringify({ role: 'assistant' }));
+    db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('p3', 'm2', 'ses_other', 7, 7, JSON.stringify({ type: 'text', text: 'OTHER SESSION' }));
+    db.close();
+  }
+
+  const params = () => ({ transcriptsDir: dir, taskId: 'task1', sessionId: 'sess1', dbPath, opencodeSessionId: 'ses_abc' });
+
+  it('stores the DB conversation redacted, tool results omitted, with an opencode-db sidecar', async () => {
+    writeDb();
+    const res = await captureOpenCodeTaskTranscript(params());
+    expect(res).toMatchObject({ outcome: 'captured', messageCount: 4 });
+    const msgs = (await readStoredTranscript(dir, 'task1', 'sess1'))!;
+    expect(msgs).toMatchObject([
+      { kind: 'text', role: 'user', text: 'please list' },
+      { kind: 'text', role: 'assistant' },
+      { kind: 'tool_call', name: 'bash', input: '{"command":"ls"}' },
+      { kind: 'tool_result', name: 'bash', text: '[tool result omitted]', truncated: true },
+    ]);
+    const raw = JSON.stringify(msgs);
+    expect(raw).not.toContain('postgres://u:p@h');
+    expect(raw).not.toContain('TOP_SECRET_FILE_LISTING');
+    expect(raw).not.toContain('OTHER SESSION');
+    const meta = (await readSnapshotMeta(dir, 'task1', 'sess1'))!;
+    const st = await stat(dbPath);
+    expect(meta).toMatchObject({
+      complete: true, source: 'opencode-db', messageCount: 4, wal: null,
+      vendor: { sizeBytes: st.size, mtimeMs: st.mtimeMs, ino: st.ino },
+    });
+  });
+
+  it('is idempotent on an unchanged DB and re-captures when the DB or its -wal changes', async () => {
+    writeDb();
+    const readDb = vi.fn((await import('../../adapters/opencode-transcript.js')).readOpenCodeDbTranscript);
+    expect((await captureOpenCodeTaskTranscript({ ...params(), readDb })).outcome).toBe('captured');
+    expect((await captureOpenCodeTaskTranscript({ ...params(), readDb })).outcome).toBe('already_captured');
+    expect(readDb).toHaveBeenCalledTimes(1);
+
+    // An empty -wal (what a checkpoint leaves) is the same as none.
+    await writeFile(`${dbPath}-wal`, '');
+    expect((await captureOpenCodeTaskTranscript({ ...params(), readDb })).outcome).toBe('already_captured');
+
+    // A non-empty -wal is new data the main file does not show yet.
+    await writeFile(`${dbPath}-wal`, 'x'.repeat(64));
+    expect((await captureOpenCodeTaskTranscript({ ...params(), readDb })).outcome).toBe('captured');
+    expect((await readSnapshotMeta(dir, 'task1', 'sess1'))!.wal).toMatchObject({ sizeBytes: 64 });
+    expect((await captureOpenCodeTaskTranscript({ ...params(), readDb })).outcome).toBe('already_captured');
+
+    const later = new Date(Date.now() + 60_000);
+    await utimes(`${dbPath}-wal`, later, later);
+    expect((await captureOpenCodeTaskTranscript({ ...params(), readDb })).outcome).toBe('captured');
+    expect(readDb).toHaveBeenCalledTimes(3);
+  });
+
+  it('writes nothing when the DB is absent or holds no messages', async () => {
+    expect((await captureOpenCodeTaskTranscript(params())).outcome).toBe('vendor_absent');
+    writeDb();
+    expect((await captureOpenCodeTaskTranscript({ ...params(), opencodeSessionId: 'ses_none' })).outcome).toBe('vendor_absent');
+    expect(await readSnapshotMeta(dir, 'task1', 'sess1')).toBeUndefined();
+    expect(await readStoredTranscript(dir, 'task1', 'sess1')).toBeUndefined();
+  });
+
+  it('rejects unsafe ids', async () => {
+    writeDb();
+    expect((await captureOpenCodeTaskTranscript({ ...params(), taskId: '../x' })).outcome).toBe('invalid_id');
   });
 });
