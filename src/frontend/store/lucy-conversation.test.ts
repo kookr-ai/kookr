@@ -220,6 +220,21 @@ describe('lucy-conversation', () => {
   describe('several tabs share the one saved thread', () => {
     const fromOther = (id: string, text: string, over: Record<string, unknown> = {}) => ({ id, at: Date.now(), kind: 'notice', text, ...over });
 
+    test('two tabs told the same thing at the same moment leave one line: the id is derived from the thing, not from the tab', () => {
+      vi.useFakeTimers();
+      // Both tabs receive the same line from the server and append it before either has seen the other's save.
+      appendConversationEntry({ id: 'says:m1', kind: 'typed-lucy', status: 'done', text: 'Docs link audit failed.' });
+      otherTabSaves([{ id: 'says:m1', at: Date.now(), kind: 'typed-lucy', status: 'done', text: 'Docs link audit failed.' }]);
+      expect(getConversationEntries().filter((e) => e.id === 'says:m1')).toHaveLength(1);
+      expect(getConversationEntries().filter((e) => e.text === 'Docs link audit failed.')).toHaveLength(1);
+      // And once the other tab's copy is here, a late duplicate from this tab's own socket adds nothing.
+      appendConversationEntry({ id: 'says:m1', kind: 'typed-lucy', status: 'done', text: 'Docs link audit failed.' });
+      vi.advanceTimersByTime(1000);
+      expect(getConversationEntries().filter((e) => e.id === 'says:m1')).toHaveLength(1);
+      expect(saved().filter((e) => e.id === 'says:m1')).toHaveLength(1);
+      vi.useRealTimers();
+    });
+
     test('what another tab saved shows up here, in its order', () => {
       appendConversationEntry({ kind: 'typed-you', text: 'mine' });
       otherTabSaves([...saved(), fromOther('o1', 'theirs'), fromOther('o2', 'theirs too')]);
