@@ -132,7 +132,10 @@ function whereToAnswer(optionCount: number, cut: boolean): string {
  */
 function cutQuestion(question: string, maxWords: number): string | undefined {
   if (maxWords <= 0) return undefined;
-  const sentences = question.match(/[^.!?…]+[.!?…]+(?=\s|$)|[^.!?…]+$/gu) ?? [question];
+  // A sentence ends at end punctuation followed by a space and then a capital, a digit or an opening
+  // quote or bracket. A dot inside a token ("2.1", "api.example.com") or after an abbreviation that
+  // the sentence continues from ("e.g. skip") is not an end.
+  const sentences = question.split(/(?<=[.!?…])\s+(?=[\p{Lu}\p{N}"'“‘(\[])/u);
   const kept: string[] = [];
   let used = 0;
   for (const sentence of sentences) {

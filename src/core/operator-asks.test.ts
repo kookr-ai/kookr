@@ -213,6 +213,18 @@ describe('buildAskSpeech', () => {
     expect(spoken).toBe('The task Fix login needs your input: The rename is ready. The rest and three choices are on my card.');
   });
 
+  it('does not take a dot inside a number, a host name or an abbreviation for the end of a sentence', () => {
+    // Each of these is too long to read whole, so it is cut; the start of the question must survive.
+    expect(buildAskSpeech(ask({ question: 'We are at version 2.1 now and the changelog is long. Ship it?' }), 'Fix login'))
+      .toBe('The task Fix login needs your input: We are at version 2.1 now and the changelog… The rest and two choices are on my card.');
+    expect(buildAskSpeech(ask({ question: 'There are options e.g. skip the backup or run the backup first and then migrate everything tonight. Which one?' }), 'Fix login'))
+      .toBe('The task Fix login needs your input: There are options e.g. skip the backup or run… The rest and two choices are on my card.');
+    expect(buildAskSpeech(ask({ question: 'Deploy api.example.com now or wait until the certificate for the other host has been renewed by the ops team later this week?' }), 'Fix login'))
+      .toMatch(/^The task Fix login needs your input: Deploy api\.example\.com now or wait until/);
+    // Short enough to read whole: untouched.
+    expect(buildAskSpeech(ask({ question: 'Is v2.1 ok?' }), 'Fix login')).toBe('The task Fix login needs your input: Is v2.1 ok? Two choices are on my card.');
+  });
+
   it('cuts a long single sentence between two words', () => {
     const spoken = buildAskSpeech(ask({
       question: 'Should I rebase the branch onto staging before pushing and then open the pull request against staging or keep it against main?',
