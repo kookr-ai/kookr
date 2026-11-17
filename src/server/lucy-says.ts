@@ -47,6 +47,49 @@ export interface LucyTaskEvent {
   kind: LucyTaskEventKind;
 }
 
+/** The finding that makes a task "gone quiet" or "lost contact"; undefined for every other finding. */
+export function taskEventForFinding(anomalyType: string): LucyTaskEventKind | undefined {
+  if (anomalyType === 'stale_agent') return 'stalled';
+  if (anomalyType === 'hook_disconnected') return 'lost_contact';
+  return undefined;
+}
+
+/**
+ * The event for a task outcome: it failed, or it says it is finished and wants a review. A task that
+ * completed or was cancelled is not news here. Neither is a failure the operator caused (`manual`)
+ * or one a server restart caused (`server-restart`: such a task is resumed, or was already known).
+ */
+export function taskEventForOutcome(outcomeKind: string, terminationReason?: string): LucyTaskEventKind | undefined {
+  if (outcomeKind === 'completion_ready') return 'wants_review';
+  if (outcomeKind === 'failed' && terminationReason !== 'manual' && terminationReason !== 'server-restart') return 'failed';
+  return undefined;
+}
+
+/** The task fields {@link taskEventStillTrue} reads; Kookr's task record satisfies it. */
+export interface LucySaysTask {
+  status: string;
+  sessions: ReadonlyArray<{ tmuxSession: string }>;
+  pendingSignal?: { kind: string };
+}
+
+/**
+ * Whether an event that waited in a window is still true when the window closes: the task is still
+ * failed (not resumed), still waiting for its review, or still has the finding on one of its
+ * sessions. `findingOf` gives the type of the finding raised on a session, if any.
+ */
+export function taskEventStillTrue(
+  event: Pick<LucyTaskEvent, 'kind'>,
+  task: LucySaysTask | undefined,
+  findingOf: (sessionId: string) => string | undefined,
+): boolean {
+  if (!task) return false;
+  if (event.kind === 'failed') return task.status === 'terminated';
+  if (task.status === 'completed' || task.status === 'terminated' || task.status === 'cancelled') return false;
+  if (event.kind === 'wants_review') return task.pendingSignal?.kind === 'completion_ready';
+  const wanted = event.kind === 'stalled' ? 'stale_agent' : 'hook_disconnected';
+  return task.sessions.some((session) => findingOf(session.tmuxSession) === wanted);
+}
+
 export interface LucySaysNotifierDeps {
   /** Send the line to the owner's open dashboards. Returns how many it reached. Must not throw. */
   push: (message: LucySaysMessage) => number;

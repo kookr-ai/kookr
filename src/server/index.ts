@@ -56,7 +56,7 @@ import { PermissionPromptWaitAlerter } from './permission-prompt-wait-alert.js';
 import { LucyPermissionNotifier, pushLucyPermissionCards } from './lucy-permission-notice.js';
 import { DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS } from '../shared/contracts/lucy-permission.js';
 import { LUCY_OPERATOR_ACTOR_ID } from '../shared/contracts/lucy-launch.js';
-import { LucySaysNotifier, pushLucySays } from './lucy-says.js';
+import { LucySaysNotifier, pushLucySays, taskEventForFinding, taskEventForOutcome, taskEventStillTrue } from './lucy-says.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import { FinishedAwaitingAckAckReaperMetrics } from './finished-awaiting-ack-ack-reaper.js';
@@ -2540,19 +2540,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // A task she launched is reported by the launch controller, in the conversation that asked for it.
     isOwnLaunch: (taskId) => taskStore.getTask(taskId)?.metadata?.launchActorId === LUCY_OPERATOR_ACTOR_ID,
     // Asked when a grouping window closes: a task that picked up again, or whose review was taken, is left out.
-    stillTrue: (event) => {
-      const task = taskStore.getTask(event.taskId);
-      if (!task) return false;
-      if (event.kind === 'failed') return task.status === 'terminated';
-      if (isTerminalStatus(task.status)) return false;
-      if (event.kind === 'wants_review') return task.pendingSignal?.kind === 'completion_ready';
-      const wanted = event.kind === 'stalled' ? 'stale_agent' : 'hook_disconnected';
-      return task.sessions.some((session) => queue.getAnomaly(session.tmuxSession)?.type === wanted);
-    },
+    stillTrue: (event) => taskEventStillTrue(event, taskStore.getTask(event.taskId), (sessionId) => queue.getAnomaly(sessionId)?.type),
   });
   const stopLucySaysObserver = queue.addObserver({
     admitted: (event) => {
-      const kind = event.anomaly.type === 'stale_agent' ? 'stalled' : event.anomaly.type === 'hook_disconnected' ? 'lost_contact' : undefined;
+      const kind = taskEventForFinding(event.anomaly.type);
       if (!kind) return;
       try {
         const task = taskStore.findTaskBySession(event.agentId);
@@ -4678,14 +4670,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
     try {
       // A task that failed, or says it is finished and wants a review: a word in Lucy's thread.
-      // A task the operator stopped by hand, or one cut off by a server restart, is not news.
-      if (lucySaysOutcomesLive && (outcome.kind === 'failed' || outcome.kind === 'completion_ready')) {
-        const task = taskStore.getTask(taskId);
-        const reason = task?.terminationReason;
-        if (task && !(outcome.kind === 'failed' && (reason === 'manual' || reason === 'server-restart'))) {
-          lucySaysNotifier.note({ taskId, taskName: task.name, kind: outcome.kind === 'failed' ? 'failed' : 'wants_review' });
-        }
-      }
+      const task = lucySaysOutcomesLive ? taskStore.getTask(taskId) : undefined;
+      const kind = task ? taskEventForOutcome(outcome.kind, task.terminationReason) : undefined;
+      if (task && kind) lucySaysNotifier.note({ taskId, taskName: task.name, kind });
     } catch (err) {
       console.warn('[lucy-says] outcome note failed:', err);
     }

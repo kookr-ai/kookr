@@ -5,6 +5,9 @@ import {
   groupedEventSentence,
   pushLucySays,
   singleEventSentence,
+  taskEventForFinding,
+  taskEventForOutcome,
+  taskEventStillTrue,
   windowLine,
   type LucyTaskEvent,
   type LucyTaskEventKind,
@@ -272,6 +275,45 @@ describe('LucySaysNotifier', () => {
     const notifier = new LucySaysNotifier({ push: () => { throw new Error('socket gone'); }, setTimer: () => { throw new Error('no window may open'); } });
     expect(() => notifier.note({ taskId: 't1', kind: 'failed' })).not.toThrow();
     warn.mockRestore();
+  });
+});
+
+describe('which events are worth a word', () => {
+  test('only a task that went quiet or lost contact, among the findings', () => {
+    expect(taskEventForFinding('stale_agent')).toBe('stalled');
+    expect(taskEventForFinding('hook_disconnected')).toBe('lost_contact');
+    for (const other of ['needs_input', 'permission_blocked', 'repeated_error', 'merge_conflict', 'hook_missing', 'api_error']) {
+      expect(taskEventForFinding(other)).toBeUndefined();
+    }
+  });
+
+  test('a failure and "finished, please review", among the outcomes; not a task the operator stopped or a restart cut off', () => {
+    expect(taskEventForOutcome('completion_ready')).toBe('wants_review');
+    expect(taskEventForOutcome('failed')).toBe('failed');
+    expect(taskEventForOutcome('failed', 'timeout')).toBe('failed');
+    expect(taskEventForOutcome('failed', 'unknown')).toBe('failed');
+    expect(taskEventForOutcome('failed', 'supervisor')).toBe('failed');
+    expect(taskEventForOutcome('failed', 'manual')).toBeUndefined();
+    expect(taskEventForOutcome('failed', 'server-restart')).toBeUndefined();
+    expect(taskEventForOutcome('completed')).toBeUndefined();
+    expect(taskEventForOutcome('cancelled')).toBeUndefined();
+  });
+
+  test('an event is still true while the task is still in that state', () => {
+    const sessions = [{ tmuxSession: 's1' }, { tmuxSession: 's2' }];
+    const finding = (type?: string) => (sessionId: string) => (sessionId === 's2' ? type : undefined);
+    expect(taskEventStillTrue({ kind: 'failed' }, { status: 'terminated', sessions }, finding())).toBe(true);
+    // Resumed after the crash: no longer failed.
+    expect(taskEventStillTrue({ kind: 'failed' }, { status: 'inProgress', sessions }, finding())).toBe(false);
+    expect(taskEventStillTrue({ kind: 'wants_review' }, { status: 'inProgress', sessions, pendingSignal: { kind: 'completion_ready' } }, finding())).toBe(true);
+    expect(taskEventStillTrue({ kind: 'wants_review' }, { status: 'inProgress', sessions }, finding())).toBe(false);
+    expect(taskEventStillTrue({ kind: 'wants_review' }, { status: 'completed', sessions, pendingSignal: { kind: 'completion_ready' } }, finding())).toBe(false);
+    expect(taskEventStillTrue({ kind: 'stalled' }, { status: 'inProgress', sessions }, finding('stale_agent'))).toBe(true);
+    expect(taskEventStillTrue({ kind: 'stalled' }, { status: 'inProgress', sessions }, finding('needs_input'))).toBe(false);
+    expect(taskEventStillTrue({ kind: 'stalled' }, { status: 'terminated', sessions }, finding('stale_agent'))).toBe(false);
+    expect(taskEventStillTrue({ kind: 'lost_contact' }, { status: 'inProgress', sessions }, finding('hook_disconnected'))).toBe(true);
+    expect(taskEventStillTrue({ kind: 'lost_contact' }, { status: 'inProgress', sessions }, finding())).toBe(false);
+    expect(taskEventStillTrue({ kind: 'failed' }, undefined, finding())).toBe(false);
   });
 });
 
