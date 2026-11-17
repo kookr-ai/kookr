@@ -22,7 +22,10 @@ import type { LucyLaunchProposalView } from '../src/shared/contracts/lucy-launch
  * The second half is about the column's layout, which only a real browser can
  * measure (happy-dom does no layout): with fifteen questions and a launch card
  * waiting, at 1440 x 900, everything the operator must reach is on screen, and
- * the dashboard ends where the column starts.
+ * the dashboard ends where the column starts. The column is a chat: the
+ * "Waiting on you" strip is one line until it is unfolded, the conversation
+ * always keeps 45% of the column, the launch card is the last thing in the
+ * conversation, and at most two areas in the column scroll.
  */
 
 const AVATAR_ASSET = /vendor-three|AvatarDock|\.glb(\?|$)/;
@@ -91,7 +94,9 @@ test.describe('avatar panel (optional)', () => {
     const dock = page.getByTestId('avatar-dock');
     await expect(dock).toBeVisible();
     await expect(dock).toHaveAttribute('data-avatar-state', 'idle');
-    await expect(page.getByTestId('avatar-hint')).toContainText('speaker button');
+    // An empty conversation starts with her welcome and three things to ask.
+    await expect(page.getByTestId('avatar-hint')).toContainText('Hi, I’m Lucy.');
+    await expect(page.getByTestId('avatar-chip')).toHaveText(['Brief me', 'What needs me right now?', 'What can you do?']);
     expect(requests.some((url) => /AvatarDock/.test(url)), 'the panel code is fetched on demand').toBe(true);
     // Positive control for the "downloads nothing" checks above: the 3D renderer really does live in a chunk
     // of its own with this name. If it were folded into a shared chunk, those checks would pass while every
@@ -172,16 +177,23 @@ test.describe('avatar panel (optional)', () => {
     const dock = page.getByTestId('avatar-dock');
     await expect(dock).toBeVisible();
 
-    // The unavailable Talk button is aria-disabled but still answers a press with the reason, so force the click.
-    await page.getByRole('button', { name: 'Talk to Lucy hands-free' }).click({ force: true });
+    // Talk is a labelled button beside the text box. Unavailable, it says so in four words; the long reason is its tooltip.
+    const talk = page.getByTestId('avatar-talk');
+    await expect(talk).toHaveText('Talk is not set up');
+    await expect(talk).toHaveAttribute('title', reason);
+    await expect(talk).toHaveAttribute('aria-disabled', 'true');
+    await expect(page.getByTestId('avatar-thread')).not.toContainText(reason);
+    expect((await talk.boundingBox())!.height).toBeGreaterThanOrEqual(28);
+    // It is aria-disabled but still answers a press with the reason, so force the click.
+    await talk.click({ force: true });
     await expect(page.getByTestId('avatar-live-notice')).toHaveText(reason);
     await page.getByLabel('Type a request to Lucy').fill('What is running?');
     await page.getByTestId('avatar-typed-send').click();
     await expect(page.getByTestId('avatar-typed-reply')).toContainText('Line 8 of a long answer');
 
-    // The dock clips what overflows it: the whole typed form must lie inside the column.
+    // The dock clips what overflows it: the whole composer must lie inside the column.
     const dockBox = (await dock.boundingBox())!;
-    const typed = (await page.getByTestId('avatar-typed').boundingBox())!;
+    const typed = (await page.getByTestId('avatar-composer').boundingBox())!;
     expect(Math.round(typed.y + typed.height)).toBeLessThanOrEqual(Math.round(dockBox.y + dockBox.height));
     // The 3D view is a fixed 120 px, and the notice and the reply are both entries of the one thread.
     expect(Math.round((await page.locator('.avatar-dock-view').boundingBox())!.height)).toBe(120);
@@ -594,6 +606,37 @@ function fifteenQuestions(): OperatorAskView[] {
   return [live, ...opinions];
 }
 
+/** Three questions tasks are waiting on and three opinion requests: the state the usability review looked at. */
+function threeQuestions(): OperatorAskView[] {
+  const at = Date.now();
+  const view = (n: number, over: Partial<OperatorAskView>): OperatorAskView => ({
+    id: `q${String(n).padStart(11, '0')}`,
+    taskId: `task-q${n}`,
+    taskName: `Task ${n}`,
+    question: `Question ${n}?`,
+    options: ['Yes', 'No'],
+    allowText: true,
+    state: 'pending',
+    createdAt: at - 5 * MIN,
+    expiresAt: at + (20 + n) * MIN,
+    ...over,
+  });
+  return [
+    // The tallest card the review saw: background, Open task, three choices and a text box.
+    view(1, {
+      taskName: 'Billing migration',
+      question: 'The migration renames two billing tables. Run it on production now?',
+      context: 'Staging ran clean in 40 seconds.',
+      options: ['Run it now', 'Run it tonight (recommended)', 'Do not run it'],
+    }),
+    view(2, { taskName: 'Invoice export bug', question: 'The export drops the last row because of an off-by-one in the pager. Fix the pager, or switch the export to streaming?', options: ['A: fix the pager (recommended)', 'B: switch to streaming'] }),
+    view(3, { taskName: 'Docs link audit', question: '41 broken links found. One issue per page or a single checklist issue?' }),
+    view(4, { taskEnded: true, taskName: 'Quota pill layout' }),
+    view(5, { taskEnded: true, taskName: 'Changelog cleanup' }),
+    view(6, { taskEnded: true, taskName: 'Search index rebuild' }),
+  ];
+}
+
 /**
  * Lucy's operator column, measured in a real browser at 1440 x 900 (issue #3632).
  *
@@ -704,7 +747,59 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
 
   const columnLeft = async (page: Page): Promise<number> => (await page.getByTestId('avatar-dock').boundingBox())!.x;
 
-  test('with fifteen questions and a launch card waiting, the composer, Talk, the open question and Go / Cancel are all on screen, and the dashboard ends where the column starts', async ({ page }) => {
+  /** Heights the column's layout rules are about, in CSS pixels. */
+  const columnHeights = (page: Page) => page.evaluate(() => {
+    const height = (selector: string): number => document.querySelector(selector)?.getBoundingClientRect().height ?? 0;
+    return {
+      dock: height('[data-testid="avatar-dock"]'),
+      view: height('.avatar-dock-view'),
+      tray: height('[data-testid="avatar-tray"]'),
+      thread: height('[data-testid="avatar-thread-wrap"]'),
+    };
+  });
+
+  /**
+   * The areas inside the column that scroll right now: an element whose own overflow lets it scroll and whose
+   * content is taller than it. (The text box only scrolls past five lines; it is listed too if it does.)
+   */
+  const scrollAreas = (page: Page) => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="avatar-dock"] *')]
+    .filter((el) => /auto|scroll/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight + 1)
+    .map((el) => el.dataset.testid ?? el.className));
+  /** Every element in the column that is allowed to scroll, whether or not its content is long enough yet. */
+  const scrollableBoxes = (page: Page) => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="avatar-dock"] *')]
+    .filter((el) => /auto|scroll/.test(getComputedStyle(el).overflowY))
+    .map((el) => el.dataset.testid ?? el.className));
+
+  /** Unfold the "Waiting on you" strip and wait for the list's height to settle (it changes over 150 ms). */
+  async function unfoldTray(page: Page): Promise<void> {
+    const strip = page.getByTestId('avatar-tray-toggle');
+    await expect(strip).toHaveAttribute('aria-expanded', 'false');
+    await strip.click();
+    await expect(strip).toHaveAttribute('aria-expanded', 'true');
+    await traySettled(page);
+  }
+  /**
+   * The tray list has stopped changing: three looks, a moment apart, agree on its height and on whether it scrolls
+   * (it is given its scrollbar a moment after its height settles).
+   */
+  async function traySettled(page: Page): Promise<void> {
+    const body = page.locator('.avatar-tray-body');
+    const seen: string[] = [];
+    await expect.poll(async () => {
+      seen.push(`${(await body.boundingBox())?.height ?? 0}/${await body.getAttribute('data-scrolls')}`);
+      return seen.length >= 3 && seen.slice(-3).every((look) => look === seen[seen.length - 1]);
+    }, { intervals: [120], timeout: 5_000 }).toBe(true);
+  }
+
+  /** At most two areas of the column may scroll, and they are the conversation and the unfolded list. */
+  async function expectAtMostTheTwoScrollAreas(page: Page): Promise<void> {
+    const boxes = await scrollableBoxes(page);
+    expect(boxes.filter((box) => box !== 'avatar-thread' && box !== 'avatar-tray-body'), `areas that can scroll: ${boxes.join(', ')}`).toEqual([]);
+    expect(boxes.length).toBeLessThanOrEqual(2);
+    expect(boxes).toContain('avatar-thread');
+  }
+
+  test('with fifteen questions and a launch card waiting, the composer, Talk, the strip and Go / Cancel are all on screen, an opened question is whole, and the dashboard ends where the column starts', async ({ page }) => {
     await openColumn(page, { asks: fifteenQuestions(), launch: launchProposal() });
     const dock = page.getByTestId('avatar-dock');
     const viewport = page.viewportSize()!;
@@ -717,19 +812,74 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
       expect(Math.round(box.height)).toBe(viewport.height);
     });
 
+    await test.step('the "Waiting on you" strip is folded to one line by default: it counts what waits, and no row or card is open', async () => {
+      const strip = page.getByTestId('avatar-tray-toggle');
+      await expect(strip).toHaveAttribute('aria-expanded', 'false');
+      await expect(strip).toHaveText('1 waiting on you · 14 opinions wanted');
+      await expectVisible(strip, 'the strip');
+      await expect(page.getByTestId('avatar-ask-row')).toHaveCount(0);
+      await expect(page.getByTestId('avatar-ask')).toHaveCount(0);
+      // One line: fifteen questions cost about thirty pixels, and the 3D view keeps its 120.
+      const heights = await columnHeights(page);
+      expect(heights.tray).toBeLessThanOrEqual(36);
+      expect(Math.round(heights.view)).toBe(120);
+      // Something is waiting, so the strip has its amber wash.
+      await expect(page.getByTestId('avatar-tray')).toHaveClass(/avatar-tray-waiting/);
+    });
+
     await test.step('criterion 1: the composer\'s text box and the Talk button are in the window and need no scrolling', async () => {
       await expectVisible(page.getByTestId('avatar-typed-input'), 'the composer text box');
       await expectVisible(page.getByTestId('avatar-typed-send'), 'Send');
-      await expectVisible(page.getByTestId('avatar-talk'), 'the Talk button');
-      await expectVisible(page.getByRole('button', { name: 'Minimise Lucy' }), 'Minimise');
+      const talk = page.getByTestId('avatar-talk');
+      await expectVisible(talk, 'the Talk button');
+      // A labelled button of normal size beside the text box, not a 22 px icon in the header.
+      await expect(talk).toHaveText('Talk');
+      const talkBox = (await talk.boundingBox())!;
+      const inputBox = (await page.getByTestId('avatar-typed-input').boundingBox())!;
+      expect(talkBox.height).toBeGreaterThanOrEqual(28);
+      expect(talkBox.x + talkBox.width).toBeLessThanOrEqual(inputBox.x);
+      expect(Math.abs(talkBox.y + talkBox.height - (inputBox.y + inputBox.height))).toBeLessThanOrEqual(1);
+      expect(await page.locator('.avatar-dock-header').getByTestId('avatar-talk').count()).toBe(0);
+      // The header keeps Replay and Minimise, as targets of at least 28 px.
+      for (const name of ['Replay last message', 'Minimise Lucy']) {
+        const button = page.getByRole('button', { name });
+        await expectVisible(button, name);
+        const box = (await button.boundingBox())!;
+        expect(box.width, `${name} width`).toBeGreaterThanOrEqual(28);
+        expect(box.height, `${name} height`).toBeGreaterThanOrEqual(28);
+      }
       // Nothing in the dashboard page scrolls to reach them either.
       expect(await page.evaluate(() => document.scrollingElement!.scrollHeight <= window.innerHeight)).toBe(true);
     });
 
-    await test.step('criterion 2: every control of the open question lies inside the tray\'s visible box', async () => {
-      const tray = (await page.locator('.avatar-tray-body').boundingBox())!;
+    await test.step('criterion 4: the launch card is the last thing in the conversation; Go and Cancel are whole, in the window and not clipped', async () => {
+      const thread = page.getByTestId('avatar-thread');
+      await expect(thread.getByTestId('avatar-launch-card')).toHaveCount(1);
+      const go = page.getByTestId('avatar-launch-go');
+      const cancel = page.getByTestId('avatar-launch-cancel');
+      await expectVisible(go, 'Go');
+      await expectVisible(cancel, 'Cancel');
+      const goBox = (await go.boundingBox())!;
+      const cancelBox = (await cancel.boundingBox())!;
+      // Natural height: a 12 px line (17 px with the font's own leading) plus 5 px of padding above and below and a border.
+      expect(goBox.height).toBeGreaterThanOrEqual(24);
+      expect(Math.round(goBox.height)).toBe(Math.round(cancelBox.height));
+      // Nothing sits between the thread and the composer any more.
+      const threadBox = (await page.getByTestId('avatar-thread-wrap').boundingBox())!;
+      const composer = (await page.getByTestId('avatar-composer').boundingBox())!;
+      expect(Math.abs(threadBox.y + threadBox.height - composer.y)).toBeLessThanOrEqual(1);
+      await shot(page, 'column-open-15-questions');
+    });
+
+    await test.step('criterion 2: unfolded, with the question opened, every control of its card lies inside the list\'s visible box, and the conversation keeps 45% of the column', async () => {
+      await unfoldTray(page);
+      // Unfolding opens nothing by itself.
+      await expect(page.getByTestId('avatar-ask')).toHaveCount(0);
+      await page.getByTestId('avatar-ask-row').first().click();
       const card = page.locator('[data-testid="avatar-ask"][data-ask-state="pending"]');
       await expect(card).toHaveCount(1);
+      await traySettled(page);
+      const tray = (await page.locator('.avatar-tray-body').boundingBox())!;
       const controls = card.locator('a, button, input');
       // The plan link, Open task, three options, the text box, Send and the button that folds the card: at least six.
       expect(await controls.count()).toBeGreaterThanOrEqual(6);
@@ -741,27 +891,15 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
         expect(seen.rect!.y, `${name} starts inside the tray`).toBeGreaterThanOrEqual(tray.y - 1);
         expect(seen.rect!.y + seen.rect!.height, `${name} ends inside the tray`).toBeLessThanOrEqual(tray.y + tray.height + 1);
       }
-      // The tray never takes more than half of the column.
-      const trayBox = (await page.getByTestId('avatar-tray').boundingBox())!;
-      expect(trayBox.height).toBeLessThanOrEqual(viewport.height / 2 + 1);
-    });
-
-    await test.step('criterion 4: Go and Cancel are whole, inside the window and not clipped', async () => {
-      const go = page.getByTestId('avatar-launch-go');
-      const cancel = page.getByTestId('avatar-launch-cancel');
-      await expectVisible(go, 'Go');
-      await expectVisible(cancel, 'Cancel');
-      const goBox = (await go.boundingBox())!;
-      const cancelBox = (await cancel.boundingBox())!;
-      // Natural height: a 12 px line (17 px with the font's own leading) plus 5 px of padding above and below and a border.
-      expect(goBox.height).toBeGreaterThanOrEqual(24);
-      expect(Math.round(goBox.height)).toBe(Math.round(cancelBox.height));
-      // Nothing inside the launch card is cut off: its content is not taller than the box that shows it.
-      expect(await page.getByTestId('avatar-launch').evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
-      // And it sits directly above the composer.
-      const launch = (await page.getByTestId('avatar-launch').boundingBox())!;
-      const typed = (await page.getByTestId('avatar-typed').boundingBox())!;
-      expect(Math.abs(launch.y + launch.height - typed.y)).toBeLessThanOrEqual(2);
+      const heights = await columnHeights(page);
+      expect(heights.thread).toBeGreaterThanOrEqual(heights.dock * 0.45 - 0.5);
+      // Go and Cancel are still on screen: the conversation stayed on its newest entry while it got shorter.
+      await expectVisible(page.getByTestId('avatar-launch-go'), 'Go');
+      await expectVisible(page.getByTestId('avatar-launch-cancel'), 'Cancel');
+      await expectVisible(page.getByTestId('avatar-typed-input'), 'the composer text box');
+      // Two areas scroll in the column, never more: the unfolded list and the conversation.
+      await expectAtMostTheTwoScrollAreas(page);
+      await shot(page, 'column-question-open');
     });
 
     await test.step('criterion 6: .main ends at or left of the column, and spans the window again once Lucy is minimised', async () => {
@@ -771,7 +909,6 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
       const topbar = (await page.locator('.topbar').first().boundingBox())!;
       expect(topbar.x + topbar.width).toBeLessThanOrEqual(left + 0.5);
       expect(await page.locator('.app').evaluate((el) => getComputedStyle(el).paddingRight)).toBe('380px');
-      await shot(page, 'column-open-15-questions');
 
       await page.getByRole('button', { name: 'Minimise Lucy' }).click();
       await expect(page.getByTestId('avatar-bubble')).toBeVisible();
@@ -788,14 +925,15 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
   test('criterion 3: the opinions fold into one row, and unfolded they run from the question closing soonest to the one closing last; an opinion opens as a full card inside the tray', async ({ page }) => {
     const asks = fifteenQuestions();
     await openColumn(page, { asks, launch: launchProposal() });
+    await unfoldTray(page);
     const toggle = page.getByTestId('avatar-opinions-toggle');
     await expect(toggle).toContainText('14 opinions wanted by finished tasks');
     await expect(toggle).toContainText('first closes in 4 h');
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await expect(page.getByTestId('avatar-opinion-list')).toHaveCount(0);
-    // Fifteen questions cost one open card and one row, not fifteen cards.
+    // Fifteen questions, unfolded, cost the strip and two rows, not fifteen cards.
     const trayBefore = (await page.getByTestId('avatar-tray').boundingBox())!;
-    expect(trayBefore.height).toBeLessThan(450);
+    expect(trayBefore.height).toBeLessThan(140);
 
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
@@ -808,10 +946,16 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await shot(page, 'opinions-unfolded');
 
     // Pressing a row opens that question's whole card, brought into view inside the tray, and folds the other.
+    await traySettled(page);
     await rows.nth(5).getByTestId('avatar-ask-row').click();
     const card = page.locator('[data-testid="avatar-ask"]');
     await expect(card).toHaveCount(1);
     await expect(card).toHaveAttribute('data-ask-id', ids[5]);
+    await traySettled(page);
+    // The conversation kept its 45% while the list took the rest and scrolls inside itself.
+    const heights = await columnHeights(page);
+    expect(heights.thread).toBeGreaterThanOrEqual(heights.dock * 0.45 - 0.5);
+    expect(await scrollAreas(page)).toContain('avatar-tray-body');
     const tray = (await page.locator('.avatar-tray-body').boundingBox())!;
     for (const testId of ['avatar-ask-option', 'avatar-ask-input', 'avatar-ask-send']) {
       const controls = card.getByTestId(testId);
@@ -826,70 +970,80 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await expectVisible(page.getByTestId('avatar-launch-go'), 'Go');
   });
 
-  test('a long launch description scrolls inside the card: the card stays under 40% of the column and Go / Cancel stay whole', async ({ page }) => {
+  test('a long launch description makes the card taller and the conversation scrolls: the card has no scroll box of its own, and Go / Cancel are at its foot, on screen', async ({ page }) => {
     const long = Array.from({ length: 80 }, (_, n) => `Step ${n + 1}: read the logs of the chained tasks and write down what the third one received.`).join('\n');
     await openColumn(page, { asks: fifteenQuestions(), launch: launchProposal(long) });
-    const dock = (await page.getByTestId('avatar-dock').boundingBox())!;
-    const launch = (await page.getByTestId('avatar-launch').boundingBox())!;
-    expect(launch.height).toBeLessThanOrEqual(dock.height * 0.4 + 1);
+    const thread = page.getByTestId('avatar-thread');
+    await expect(thread.getByTestId('avatar-launch-card')).toHaveCount(1);
+    // The whole description is laid out: nothing inside the card clips or scrolls it.
+    const body = page.locator('.avatar-launch-body');
+    expect(await body.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+    expect(await body.evaluate((el) => getComputedStyle(el).overflowY)).toBe('visible');
+    // The card is taller than the room there is, so it is the conversation that scrolls; it opened on the card's foot.
+    expect(await scrollAreas(page)).toEqual(['avatar-thread']);
     await expectVisible(page.getByTestId('avatar-launch-go'), 'Go');
     await expectVisible(page.getByTestId('avatar-launch-cancel'), 'Cancel');
     await expectVisible(page.getByTestId('avatar-typed-input'), 'the composer text box');
     await expectVisible(page.getByTestId('avatar-talk'), 'the Talk button');
-    // The description scrolls (it is taller than the room it has) and the keyboard can reach it.
-    const body = page.locator('.avatar-launch-body');
-    expect(await body.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
-    await body.focus();
-    await expect(body).toBeFocused();
-    // The tray gave way to the card but stays usable: it keeps room for a few rows and scrolls inside itself, so the
-    // open question is reached by scrolling the tray, never by scrolling the page.
-    const trayBody = page.locator('.avatar-tray-body');
-    expect((await trayBody.boundingBox())!.height).toBeGreaterThanOrEqual(150);
-    expect(await trayBody.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
-    await page.getByTestId('avatar-ask-send').scrollIntoViewIfNeeded();
-    const send = await visibility(page.locator('[data-testid="avatar-ask"] [data-testid="avatar-ask-send"]'));
-    expect(send.clippedBy).toBeNull();
+    // The keyboard can reach the conversation to read the description from its start.
+    await thread.focus();
+    await expect(thread).toBeFocused();
+    await page.keyboard.press('Home');
+    await expect.poll(() => thread.evaluate((el) => el.scrollTop)).toBe(0);
+    // With the list unfolded too, there are two scrolling areas at most, and the page itself never scrolls.
+    await unfoldTray(page);
+    await page.getByTestId('avatar-opinions-toggle').click();
+    await traySettled(page);
+    expect((await scrollAreas(page)).sort()).toEqual(['avatar-thread', 'avatar-tray-body']);
+    await expectAtMostTheTwoScrollAreas(page);
     expect(await page.evaluate(() => document.scrollingElement!.scrollHeight <= window.innerHeight)).toBe(true);
     await shot(page, 'launch-card-long-description');
   });
 
-  test('the report row and the "Started" row keep their full height with the launch card up: never shrinkable', async ({ page }) => {
-    const long = Array.from({ length: 60 }, (_, n) => `Step ${n + 1}: look at what the third task received.`).join('\n');
-    const { send } = await openColumn(page, { asks: fifteenQuestions(), launch: launchProposal(long) });
-    send({ type: 'lucy_launch', conversationId: 'typed-e2e', report: { taskId: 't-report', conversationId: 'typed-e2e', kind: 'finished', text: 'The investigation finished: the third task never got the plan.' } });
-    const report = page.getByTestId('avatar-launch-report');
-    await expect(report).toBeVisible();
-    await expectVisible(report.getByTestId('avatar-launch-report-open'), 'the report\'s Open task');
-    await expectVisible(report.getByRole('button', { name: 'Dismiss report' }), 'the report\'s Dismiss');
-    await expectVisible(page.getByTestId('avatar-launch-go'), 'Go');
-    await expectVisible(page.getByTestId('avatar-launch-cancel'), 'Cancel');
-    await expectVisible(page.getByTestId('avatar-typed-input'), 'the composer text box');
-    // Its text is whole: the row is as tall as its content.
-    expect(await report.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
-    await shot(page, 'launch-card-and-report');
+  test('what became of a proposal, and her report of the task, are entries of the conversation that stay; nothing needs Dismiss', async ({ page }) => {
+    const { send } = await openColumn(page, { asks: fifteenQuestions(), launch: launchProposal() });
+    const thread = page.getByTestId('avatar-thread');
 
-    // The proposal ends ("Started"): that row is whole too.
+    // The proposal ends ("Started"): the card goes and one line in the conversation says what happened.
     send({ type: 'lucy_launch', conversationId: 'typed-e2e', outcome: { outcome: 'launched', proposalId: 'p-e2e', taskId: 't-new', project: 'kookr' } });
-    const started = page.getByTestId('avatar-launch-result');
-    await expect(started).toBeVisible();
+    const started = thread.getByTestId('avatar-launch-result');
+    await expect(started).toHaveText('Started kookr task·Open task');
+    await expect(page.getByTestId('avatar-launch-card')).toHaveCount(0);
     await expectVisible(started.getByTestId('avatar-launch-open'), 'Started: Open task');
-    await expectVisible(started.getByRole('button', { name: 'Dismiss', exact: true }), 'Started: Dismiss');
+
+    // Her report of that task is a message of hers, with a button to open the task.
+    send({ type: 'lucy_launch', conversationId: 'typed-e2e', report: { taskId: 't-new', conversationId: 'typed-e2e', kind: 'finished', text: 'The investigation finished: the third task never got the plan.' } });
+    const report = thread.getByTestId('avatar-launch-report');
+    await expect(report).toContainText('The investigation finished: the third task never got the plan.');
+    await expect(report).toHaveClass(/avatar-entry-lucy/);
+    await expectVisible(report.getByTestId('avatar-launch-report-open'), 'the report\'s Open task');
+    await expect(report.getByTestId('avatar-entry-time')).toHaveText(/^\d\d:\d\d$/);
+    await expect(page.getByRole('button', { name: /Dismiss/ })).toHaveCount(0);
+    // In the order they happened, and both still there after a reload: they are part of the record.
+    await expect(thread.locator('.avatar-thread-list > li')).toHaveCount(2);
+    expect(await thread.locator('.avatar-thread-list > li').evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.testid))).toEqual(['avatar-launch-result', 'avatar-launch-report']);
     await expectVisible(page.getByTestId('avatar-typed-input'), 'the composer text box');
+    await shot(page, 'launch-outcome-and-report');
+    await page.reload();
+    await expect(page.getByTestId('avatar-launch-result')).toHaveText('Started kookr task·Open task');
+    await expect(page.getByTestId('avatar-launch-report')).toHaveCount(1);
   });
 
-  test('criterion 5: after two typed turns, both sentences and both replies are in the thread, in order', async ({ page }) => {
+  const DONE = { type: 'done', end: 'answered', firstTextMs: 1, totalMs: 2, steps: 1, inputTokens: 1, outputTokens: 1, costUsd: null };
+  const turnBody = (...events: object[]): string => [...events, DONE].map((event) => JSON.stringify(event)).join('\n') + '\n';
+
+  test('criterion 5: after two typed turns, both sentences and both replies are in the thread, in order, as chat bubbles with a time; a new tab shows the same conversation', async ({ page }) => {
     let turn = 0;
     const replies = ['Five tasks are running, all in kookr.', 'Two of them are pushing.'];
     await page.route('**/api/lucy/turn', (route) => route.fulfill({
       contentType: 'application/x-ndjson',
-      body: [{ type: 'text', delta: replies[turn++] ?? 'Done.' }, { type: 'done', end: 'answered', firstTextMs: 1, totalMs: 2, steps: 1, inputTokens: 1, outputTokens: 1, costUsd: null }]
-        .map((event) => JSON.stringify(event)).join('\n') + '\n',
+      body: turnBody({ type: 'text', delta: replies[turn++] ?? 'Done.' }),
     }));
     await openColumn(page, { asks: [] });
     const input = page.getByTestId('avatar-typed-input');
     await input.fill('Give me a status of every running task.');
     await page.getByTestId('avatar-typed-send').click();
-    await expect(page.getByTestId('avatar-typed-reply')).toHaveText('Lucy Five tasks are running, all in kookr.');
+    await expect(page.getByTestId('avatar-typed-reply').locator('.avatar-entry-bubble')).toHaveText('Lucy Five tasks are running, all in kookr.');
     // Sending clears the box and keeps the cursor in it.
     await expect(input).toHaveValue('');
     await expect(input).toBeFocused();
@@ -898,20 +1052,242 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await expect(page.getByTestId('avatar-typed-reply')).toHaveCount(2);
 
     const thread = page.getByTestId('avatar-thread');
-    const entries = thread.locator('li');
-    await expect(entries).toHaveText([
-      /You\s+Give me a status of every running task\./,
-      /Lucy\s+Five tasks are running, all in kookr\./,
-      /You\s+Which of them are pushing\?/,
-      /Lucy\s+Two of them are pushing\./,
+    const entries = thread.locator('.avatar-thread-list > li');
+    await expect(entries.locator('.avatar-entry-bubble')).toHaveText([
+      /^You\s+Give me a status of every running task\.$/,
+      /^Lucy\s+Five tasks are running, all in kookr\.$/,
+      /^You\s+Which of them are pushing\?$/,
+      /^Lucy\s+Two of them are pushing\.$/,
     ]);
+
+    await test.step('her bubbles are on the left, the operator\'s on the right with a teal wash, 13 px text, and a time under them', async () => {
+      const boxes = await entries.evaluateAll((els) => els.map((el) => {
+        const bubble = el.querySelector('.avatar-entry-bubble')!;
+        const list = el.parentElement!.getBoundingClientRect();
+        const rect = bubble.getBoundingClientRect();
+        const style = getComputedStyle(bubble);
+        return { left: Math.round(rect.left - list.left), right: Math.round(list.right - rect.right), background: style.backgroundColor, fontSize: style.fontSize };
+      }));
+      const [you, lucy] = boxes;
+      // Hers starts at the left edge and stops short of the right; the operator's is the mirror image.
+      expect(lucy.left).toBe(0);
+      expect(lucy.right).toBeGreaterThan(20);
+      expect(you.right).toBe(0);
+      expect(you.left).toBeGreaterThan(20);
+      expect(you.background).toBe('rgba(45, 212, 191, 0.1)');
+      expect(lucy.background).not.toBe(you.background);
+      expect(boxes.map((box) => box.fontSize)).toEqual(['13px', '13px', '13px', '13px']);
+      // No monospace "You" / "Lucy" label is on screen: who speaks is told to a screen reader only.
+      await expect(thread.locator('.avatar-live-who')).toHaveCount(0);
+      const label = thread.locator('.avatar-entry-bubble > .sr-only').first();
+      await expect(label).toHaveText('You');
+      expect((await label.boundingBox())!.width).toBeLessThanOrEqual(1);
+      // A time under the bubbles; the two turns happened within a minute, so each speaker shows one.
+      const times = thread.getByTestId('avatar-entry-time');
+      await expect(times.first()).toHaveText(/^\d\d:\d\d$/);
+      const now = await page.evaluate(() => { const d = new Date(); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; });
+      const shown = await times.allTextContents();
+      expect(shown.length).toBeGreaterThanOrEqual(2);
+      // Local time: the minute it is now, or the one before if the minute turned during the test.
+      const [h, m] = now.split(':').map(Number);
+      const before = `${String((h + (m === 0 ? 23 : 0)) % 24).padStart(2, '0')}:${String((m + 59) % 60).padStart(2, '0')}`;
+      for (const time of shown) expect([now, before]).toContain(time);
+    });
     await shot(page, 'two-typed-turns');
 
-    // A reload in the same tab keeps the thread.
+    // A reload in the same tab keeps the thread, scrolled to its newest entry.
     await page.reload();
     await expect(page.getByTestId('avatar-typed-you')).toHaveCount(2);
     await expect(page.getByTestId('avatar-typed-reply')).toHaveCount(2);
+
+    await test.step('a new tab shows the same conversation, continues it under the same id, and each tab sees what the other adds', async () => {
+      const second = await page.context().newPage();
+      await withoutWebGL(second);
+      const secondBodies: Array<{ conversationId: string }> = [];
+      await second.route('**/api/lucy/turn', (route) => {
+        secondBodies.push(route.request().postDataJSON() as { conversationId: string });
+        return route.fulfill({ contentType: 'application/x-ndjson', body: turnBody({ type: 'text', delta: 'Answered in the second tab.' }) });
+      });
+      await second.goto('/');
+      const secondEntries = second.getByTestId('avatar-thread').locator('.avatar-thread-list > li');
+      await expect(secondEntries).toHaveCount(4);
+      await expect(secondEntries.last().locator('.avatar-entry-bubble')).toHaveText(/Two of them are pushing\./);
+      // Not sessionStorage any more: that is what made a new tab start empty.
+      expect(await second.evaluate(() => [sessionStorage.getItem('kookr:lucyConversation'), sessionStorage.getItem('kookr:lucyTypedConversationId')])).toEqual([null, null]);
+      const firstId = await page.evaluate(() => localStorage.getItem('kookr:lucyTypedConversationId'));
+      expect(firstId).toMatch(/^typed-/);
+
+      await second.getByTestId('avatar-typed-input').fill('And from here?');
+      await second.getByTestId('avatar-typed-input').press('Enter');
+      await expect(secondEntries).toHaveCount(6);
+      expect(secondBodies.map((body) => body.conversationId)).toEqual([firstId]);
+      // The first tab, still open, picks the two new entries up without a reload.
+      await expect(entries).toHaveCount(6);
+      await expect(entries.last().locator('.avatar-entry-bubble')).toHaveText(/Answered in the second tab\./);
+      // One copy of each: the tabs did not echo each other's entries back.
+      await expect(page.getByTestId('avatar-typed-you')).toHaveCount(3);
+      await expect(second.getByTestId('avatar-typed-you')).toHaveCount(3);
+      await second.close();
+    });
   });
+
+  test('a typed turn says what she is doing while it runs, then her reply, with a short list shown as a list', async ({ page }) => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let sent = '';
+    await page.route('**/api/lucy/turn', async (route) => {
+      sent = (route.request().postDataJSON() as { text: string }).text;
+      // The answer is held back so the line that says she is thinking can be seen.
+      await held;
+      await route.fulfill({
+        contentType: 'application/x-ndjson',
+        body: turnBody(
+          { type: 'tool_call', id: 'call_9f3a', name: 'read_board', args: {} },
+          { type: 'tool_result', id: 'call_9f3a', name: 'read_board', ok: true, summary: '6 tasks' },
+          { type: 'tool_call', id: 'call_77b1', name: 'read_task_output', args: { task: 'kookr-t-4411' } },
+          { type: 'tool_result', id: 'call_77b1', name: 'read_task_output', ok: true, summary: 'screen of kookr-t-4411' },
+          { type: 'tool_call', id: 'call_c0de', name: 'read_questions', args: {} },
+          { type: 'tool_result', id: 'call_c0de', name: 'read_questions', ok: true, summary: '3 questions' },
+          { type: 'text', delta: 'Three tasks are stopped on a question:\n- Billing migration: I would run it tonight\n- Invoice export bug: fix the pager\n• Docs link audit: one checklist issue\nNothing else is running. <b>not bold</b>' },
+        ),
+      });
+    });
+    await openColumn(page, { asks: [] });
+    // The welcome's first button sends its own text as a typed turn.
+    await page.getByTestId('avatar-chip').filter({ hasText: 'Brief me' }).click();
+    const doing = page.getByTestId('avatar-typed-doing');
+    await expect(doing).toHaveText('Lucy Thinking…');
+    expect(sent).toBe('Brief me');
+    await expect(page.getByTestId('avatar-hint')).toHaveCount(0);
+    await expect(page.getByTestId('avatar-typed-you').locator('.avatar-entry-bubble')).toHaveText('You Brief me');
+    // Under the operator's message, where her reply will be.
+    const youBox = (await page.getByTestId('avatar-typed-you').boundingBox())!;
+    expect((await doing.boundingBox())!.y).toBeGreaterThanOrEqual(youBox.y + youBox.height);
+    // While she is answering, the next request waits.
+    await expect(page.getByTestId('avatar-typed-send')).toHaveAttribute('aria-disabled', 'true');
+
+    release();
+    const reply = page.getByTestId('avatar-typed-reply');
+    await expect(doing).toHaveText('Looked at 3 things');
+    const bubble = reply.locator('.avatar-entry-bubble');
+    await expect(bubble.locator('ul > li')).toHaveText(['Billing migration: I would run it tonight', 'Invoice export bug: fix the pager', 'Docs link audit: one checklist issue']);
+    await expect(bubble.locator('p')).toHaveText(['Three tasks are stopped on a question:', 'Nothing else is running. <b>not bold</b>']);
+    // The list is drawn as one: bullets, not dashes typed out. And markup in her words is text, not elements.
+    expect(await bubble.locator('ul').evaluate((el) => getComputedStyle(el).listStyleType)).toBe('disc');
+    await expect(bubble).not.toContainText('- Billing');
+    await expect(bubble.locator('b')).toHaveCount(0);
+    // Never an id, a handle or an argument.
+    for (const hidden of ['call_9f3a', 'kookr-t-4411', 'read_board', '6 tasks']) await expect(page.getByTestId('avatar-thread')).not.toContainText(hidden);
+    await expect(page.getByTestId('avatar-typed-send')).not.toHaveAttribute('aria-disabled', 'true');
+    await shot(page, 'typed-turn-activity-and-list');
+  });
+
+  test('the composer grows from one line to five and no further; Enter sends, Shift+Enter makes a new line', async ({ page }) => {
+    const sent: string[] = [];
+    await page.route('**/api/lucy/turn', (route) => {
+      sent.push((route.request().postDataJSON() as { text: string }).text);
+      return route.fulfill({ contentType: 'application/x-ndjson', body: turnBody({ type: 'text', delta: 'Noted.' }) });
+    });
+    await openColumn(page, { asks: [] });
+    const input = page.getByTestId('avatar-typed-input');
+    await expect(input).toHaveAttribute('placeholder', 'Ask Lucy, or tell her what to do');
+    expect(await input.evaluate((el) => el.tagName)).toBe('TEXTAREA');
+    const height = async (): Promise<number> => Math.round((await input.boundingBox())!.height);
+    const oneLine = await height();
+    const lineHeight = await input.evaluate((el) => Number.parseFloat(getComputedStyle(el).lineHeight));
+    expect(lineHeight).toBe(19);
+
+    await input.click();
+    await page.keyboard.type('line 1');
+    expect(await height()).toBe(oneLine);
+    const heights: number[] = [oneLine];
+    for (let line = 2; line <= 7; line += 1) {
+      await page.keyboard.press('Shift+Enter');
+      await page.keyboard.type(`line ${line}`);
+      heights.push(await height());
+    }
+    // One line more for each of lines 2 to 5, then no taller: lines 6 and 7 scroll inside the box.
+    expect(heights.slice(0, 5)).toEqual([0, 1, 2, 3, 4].map((extra) => oneLine + extra * lineHeight));
+    expect(heights.slice(5)).toEqual([heights[4], heights[4]]);
+    expect(sent).toEqual([]);
+    // The composer grew with it and is still whole inside the column, with the conversation above it.
+    await expectVisible(input, 'the text box at five lines');
+    await expectVisible(page.getByTestId('avatar-typed-send'), 'Send');
+    const heightsNow = await columnHeights(page);
+    expect(heightsNow.thread).toBeGreaterThanOrEqual(heightsNow.dock * 0.45 - 0.5);
+
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('avatar-typed-you').locator('.avatar-entry-bubble')).toHaveText(/line 1\s*line 2[\s\S]*line 7/);
+    expect(sent).toEqual(['line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7']);
+    // Sent: the box is one line again, and still has the cursor.
+    await expect(input).toHaveValue('');
+    await expect.poll(height).toBe(oneLine);
+    await expect(input).toBeFocused();
+  });
+
+  for (const size of [{ width: 1440, height: 900 }, { width: 1280, height: 800 }]) {
+    test(`with three questions waiting at ${size.width} x ${size.height}: the conversation keeps 45% of the column, and an opened card is whole without scrolling inside it`, async ({ page }) => {
+      await page.setViewportSize(size);
+      await openColumn(page, { asks: threeQuestions() });
+      const strip = page.getByTestId('avatar-tray-toggle');
+      await expect(strip).toHaveText('3 waiting on you · 3 opinions wanted');
+      const minimum = async (): Promise<void> => {
+        const heights = await columnHeights(page);
+        expect(heights.thread, `thread ${heights.thread} of column ${heights.dock}`).toBeGreaterThanOrEqual(heights.dock * 0.45 - 0.5);
+      };
+
+      // Folded (the default): the conversation has nearly all of the column.
+      await minimum();
+      expect(Math.round((await columnHeights(page)).view)).toBe(120);
+
+      // Unfolded: three rows and the opinions row; still no card, and the 3D view has not had to give anything up.
+      await unfoldTray(page);
+      await expect(page.getByTestId('avatar-ask-row')).toHaveCount(3);
+      await expect(page.getByTestId('avatar-ask')).toHaveCount(0);
+      await minimum();
+      expect(Math.round((await columnHeights(page)).view)).toBe(120);
+
+      // The tallest card opened: whole inside the list's visible box, with no scroll box of its own.
+      await page.locator('[data-ask-id="q00000000001"]').getByTestId('avatar-ask-row').click();
+      const card = page.locator('[data-testid="avatar-ask"][data-ask-state="pending"]');
+      await expect(card).toHaveAttribute('data-ask-id', 'q00000000001');
+      await traySettled(page);
+      await minimum();
+      const seen = await visibility(card);
+      const body = (await page.locator('.avatar-tray-body').boundingBox())!;
+      expect(seen.inViewport, `the card is inside the window: ${JSON.stringify(seen.rect)}`).toBe(true);
+      expect(seen.clippedBy, 'the card is not cut off by the list or the column').toBeNull();
+      expect(seen.rect!.y).toBeGreaterThanOrEqual(body.y - 1);
+      expect(seen.rect!.y + seen.rect!.height).toBeLessThanOrEqual(body.y + body.height + 1);
+      // Nothing inside the card scrolls: the list scrolls as one area, the card never does.
+      expect(await card.evaluate((el) => [el, ...el.querySelectorAll('*')].filter((node) => /auto|scroll/.test(getComputedStyle(node).overflowY)).length)).toBe(0);
+      expect(await card.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+      // The column never has more than two areas that can scroll.
+      await expectAtMostTheTwoScrollAreas(page);
+      await expectVisible(page.getByTestId('avatar-typed-input'), 'the composer text box');
+      await shot(page, `three-questions-card-open-${size.width}x${size.height}`);
+
+      // Opening the other cards keeps the rule; the third has two choices and a longer question.
+      for (const id of ['q00000000002', 'q00000000003']) {
+        await page.locator(`[data-ask-id="${id}"]`).getByTestId('avatar-ask-row').click();
+        await expect(card).toHaveAttribute('data-ask-id', id);
+        await traySettled(page);
+        await minimum();
+        const other = await visibility(card);
+        expect(other.clippedBy, `card ${id} is not cut off`).toBeNull();
+      }
+
+      // The choice is remembered for the tab: after a reload the strip is still unfolded, and no card opened itself.
+      await page.reload();
+      await expect(strip).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.getByTestId('avatar-ask-row')).toHaveCount(3);
+      await expect(page.getByTestId('avatar-ask')).toHaveCount(0);
+      await strip.click();
+      await expect(strip).toHaveAttribute('aria-expanded', 'false');
+      await page.reload();
+      await expect(strip).toHaveAttribute('aria-expanded', 'false');
+    });
+  }
 
   test('the column\'s left edge resizes it: the page follows, the width is remembered, and the keyboard can do it too', async ({ page }) => {
     await openColumn(page, { asks: [] });
@@ -1040,9 +1416,31 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await shot(page, 'task-selected-1440x900-col440');
   });
 
-  test('the column has no structural accessibility violations with questions, opinions and a launch card showing', async ({ page }) => {
-    await openColumn(page, { asks: fifteenQuestions(), launch: launchProposal() });
+  test('the column has no structural accessibility violations with a conversation, questions, opinions and a launch card showing', async ({ page }) => {
+    await page.route('**/api/lucy/turn', (route) => route.fulfill({
+      contentType: 'application/x-ndjson',
+      body: turnBody(
+        { type: 'tool_call', id: '1', name: 'read_board', args: {} },
+        { type: 'tool_result', id: '1', name: 'read_board', ok: true, summary: 'ok' },
+        { type: 'text', delta: 'Two things:\n- one\n- two' },
+      ),
+    }));
+    const { send } = await openColumn(page, { asks: fifteenQuestions(), launch: launchProposal() });
+    // A conversation with every kind of entry: a typed turn with a list, an outcome, a report, then a new card.
+    await page.getByTestId('avatar-typed-input').fill('Brief me');
+    await page.getByTestId('avatar-typed-input').press('Enter');
+    await expect(page.getByTestId('avatar-typed-doing')).toHaveText('Looked at 1 thing');
+    send({ type: 'lucy_launch', conversationId: 'typed-e2e', outcome: { outcome: 'launched', proposalId: 'p-e2e', taskId: 't-new', project: 'kookr' } });
+    send({ type: 'lucy_launch', conversationId: 'typed-e2e', report: { taskId: 't-new', conversationId: 'typed-e2e', kind: 'finished', text: 'The task I started has finished.' } });
+    await expect(page.getByTestId('avatar-launch-report')).toHaveCount(1);
+    send({ type: 'lucy_launch', conversationId: 'typed-e2e', proposal: { ...launchProposal(), id: 'p-e2e-2' } });
+    await expect(page.getByTestId('avatar-launch-card')).toBeVisible();
+    // The strip unfolded, the opinions unfolded, and a question's card open.
+    await unfoldTray(page);
     await page.getByTestId('avatar-opinions-toggle').click();
+    await page.getByTestId('avatar-ask-row').first().click();
+    await expect(page.locator('[data-testid="avatar-ask"][data-ask-state="pending"]')).toHaveCount(1);
+    await traySettled(page);
     const results = await new AxeBuilder({ page })
       .include('[data-testid="avatar-dock"]')
       .withTags(['wcag2a', 'wcag2aa'])
