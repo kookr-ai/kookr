@@ -17,6 +17,12 @@
 #   FORCE_FULL_PANEL=1     same as --force
 #   SPECIALIST_BASE_REF    default base ref (else origin/main, else main)
 #
+# The diff classified is merge-base(<base>, HEAD) against the WORKING TREE, so
+# staged and unstaged edits to tracked files count even before they are
+# committed (issue #4113). Untracked files are not included; `git add` them
+# first. When uncommitted tracked files are included, a note goes to stderr;
+# stdout is unchanged.
+#
 # Output (stable, machine-readable lines followed by human rationale):
 #   SPECIALISTS=correctness,lint-like,test
 #   DOCS_DRIFT=active|inactive
@@ -59,14 +65,30 @@ fi
 
 if [ -n "$BASE_REF" ] && git rev-parse --verify -q "$BASE_REF" >/dev/null 2>&1; then
   MB=$(git merge-base "$BASE_REF" HEAD 2>/dev/null || printf '%s' "$BASE_REF")
-  CHANGED_FILES=$(git diff --name-only "$MB" HEAD)
+  # Diff against the working tree, not HEAD: an agent that has not committed
+  # yet must not get a silently narrowed panel (issue #4113).
+  CHANGED_FILES=$(git diff --name-only "$MB" --)
   # Exclude git's `+++ b/<path>` file headers so a filename containing the word
   # "export" cannot masquerade as a public-API change in the grep below.
-  ADDED_LINES=$(git diff "$MB" HEAD | grep '^+' | grep -v '^+++' || true)
+  ADDED_LINES=$(git diff "$MB" -- | grep '^+' | grep -v '^+++' || true)
+elif git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  # No base ref available (detached / no default branch): classify the
+  # uncommitted tracked changes, staged and unstaged.
+  CHANGED_FILES=$(git diff --name-only HEAD --)
+  ADDED_LINES=$(git diff HEAD -- | grep '^+' | grep -v '^+++' || true)
 else
-  # No base ref available (fresh repo / detached): fall back to staged content.
+  # Unborn HEAD (fresh repo): only staged content exists to classify.
   CHANGED_FILES=$(git diff --cached --name-only)
   ADDED_LINES=$(git diff --cached | grep '^+' | grep -v '^+++' || true)
+fi
+
+# Tell the caller (on stderr, so the stdout block stays byte-identical) when
+# uncommitted tracked changes were folded into the classification.
+if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  uncommitted=$(git diff --name-only HEAD -- | grep -c . || true)
+  if [ "${uncommitted:-0}" -gt 0 ]; then
+    printf 'select-specialists: included %s uncommitted tracked file(s) (staged or unstaged) in the classified diff\n' "$uncommitted" >&2
+  fi
 fi
 
 has_change=0
