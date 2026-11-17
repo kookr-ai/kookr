@@ -1358,6 +1358,7 @@ describe('useLucyLive', () => {
       expect(sources[0].stop).toHaveBeenCalledTimes(1);
       expect(sources[1].stop).toHaveBeenCalledTimes(1);
       expect(sent.filter((m) => m.type === 'played')).toEqual([{ type: 'played', turnId: 'lucy-ask-1', seq: 0, complete: false }]);
+      expect(sent.some((m) => m.type === 'turn_unplayed')).toBe(false); // part of it was heard
     });
 
     test('a turn_start that arrives while the operator has just begun to speak does not take over their turn', async () => {
@@ -1367,6 +1368,8 @@ describe('useLucyLive', () => {
       const operatorTurn = lastTurnId();
       await serverReadsIt(ws);
       expect(sources).toHaveLength(0);
+      // The server may have sent a sentence before it saw their speech_start: tell it none was heard (#4015).
+      expect(sent.filter((m) => m.type === 'turn_unplayed')).toEqual([{ type: 'turn_unplayed', turnIds: ['lucy-ask-1'] }]);
       mic(QUIET, 800);
       // The server held the question back; the operator's own transcript and answer are what she shows and plays.
       await act(async () => {
@@ -1479,6 +1482,8 @@ describe('useLucyLive', () => {
       }
       const candidate = lastTurnId();
       await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: candidate }); });
+      // None of it was heard, so the server is told to say it again after this turn (#4015).
+      expect(sent.filter((m) => m.type === 'turn_unplayed')).toEqual([{ type: 'turn_unplayed', turnIds: ['lucy-ask-1'] }]);
       mic(QUIET, 800);
       await act(async () => { ws.receive(sentence(candidate, 0, 'Sure.')); ws.receive(sentence(candidate, 1, 'Here it is.')); });
       await settle();
@@ -1514,6 +1519,98 @@ describe('useLucyLive', () => {
       act(() => { stopAskAnnouncement(ASK); });
       expect(answer.stop).not.toHaveBeenCalled();
       expect(sent.at(-1)).toEqual({ type: 'drop_ask', askId: ASK });
+    });
+
+    test('a question cut while its first sentence was still decoding is reported unplayed', async () => {
+      const ws = await talkOn();
+      holdDecoding = new Set(['lucy-ask-1:0', 'lucy-ask-1:1']);
+      await serverReadsIt(ws);
+      expect(sources).toHaveLength(0);
+      const processor = processors[processors.length - 1];
+      for (let i = 0; i < 40 && !sent.some((m) => m.type === 'speech_start'); i++) {
+        act(() => { processor.onaudioprocess?.({ inputBuffer: { getChannelData: () => frame(-15) } }); });
+      }
+      await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: lastTurnId() }); });
+      expect(sent.filter((m) => m.type === 'turn_unplayed')).toEqual([{ type: 'turn_unplayed', turnIds: ['lucy-ask-1'] }]);
+      expect(sent.some((m) => m.type === 'played')).toBe(false);
+    });
+
+    test('closing a question still being decoded starts the question held behind it (#4015)', async () => {
+      const ws = await talkOn();
+      await act(async () => { await announceAsk(ASK, { fetcher }); });
+      holdDecoding = new Set(['lucy-ask-1:0']); // question 1 is current but nothing of it is scheduled yet
+      await act(async () => { ws.receive({ type: 'turn_start', turnId: 'lucy-ask-1', askId: ASK }); ws.receive(sentence('lucy-ask-1', 0, 'First question.')); });
+      await act(async () => { ws.receive({ type: 'turn_start', turnId: 'lucy-ask-2', askId: 'ask-2' }); ws.receive(sentence('lucy-ask-2', 0, 'Second question.')); });
+      await settle();
+      expect(sources).toHaveLength(0); // question 2 is held behind question 1
+      act(() => { stopAskAnnouncement(ASK); }); // no clip is playing: nothing else would release it
+      await settle();
+      expect(sources.map((s) => s.buffer!.tag)).toEqual(['lucy-ask-2:0']);
+      expect(latest.lucyText).toBe('Second question.');
+      expect(sent.some((m) => m.type === 'turn_unplayed')).toBe(false); // the closed one is not to be said again
+    });
+
+    test("a held question's end is shown once it starts: its error is not lost (#4015)", async () => {
+      const ws = await talkOn();
+      speakTurn();
+      const id = lastTurnId();
+      holdDecoding = new Set([`${id}:0`]);
+      await act(async () => { ws.receive(sentence(id, 0)); ws.receive({ type: 'turn_done', turnId: id, end: 'answered' }); });
+      await act(async () => {
+        ws.receive({ type: 'turn_start', turnId: 'lucy-ask-1', askId: ASK });
+        ws.receive({ type: 'turn_done', turnId: 'lucy-ask-1', end: 'error', reason: 'I could not speak the answer.' });
+      });
+      await settle();
+      expect(latest.lastTurnEnd).toBe('answered'); // still her answer's
+      expect(latest.errorMessage).toBeNull();
+      await act(async () => { decodeGates.get(`${id}:0`)!(); });
+      await settle();
+      expect(latest.lastTurnEnd).toBe('error');
+      expect(latest.errorMessage).toBe('I could not speak the answer.');
+    });
+
+    describe('a question she can no longer say goes back to the clip path (#4015)', () => {
+      const clipFetcher = vi.fn(async () => new Response('{}', { status: 503 })) as unknown as typeof fetch;
+      beforeEach(() => { (clipFetcher as unknown as ReturnType<typeof vi.fn>).mockClear(); });
+      async function handed(): Promise<FakeWebSocket> {
+        const ws = await talkOn();
+        let result: string | undefined;
+        await act(async () => { result = await announceAsk(ASK, { fetcher: clipFetcher }); });
+        expect(result).toBe('live');
+        expect(clipFetcher).not.toHaveBeenCalled();
+        return ws;
+      }
+
+      test('when the server refuses it', async () => {
+        const ws = await handed();
+        await act(async () => { ws.receive({ type: 'ask_refused', askId: ASK }); });
+        await settle();
+        expect(clipFetcher).toHaveBeenCalledOnce();
+      });
+
+      test('when Talk is switched off before she said it', async () => {
+        await handed();
+        await act(async () => { latest.setEnabled(false); });
+        await settle();
+        expect(clipFetcher).toHaveBeenCalledOnce();
+      });
+
+      test('when the connection drops before she said it', async () => {
+        const ws = await handed();
+        await act(async () => { ws.drop(); });
+        await settle();
+        expect(clipFetcher).toHaveBeenCalledOnce();
+      });
+
+      test('not once she has begun to say it, nor after it closed', async () => {
+        const ws = await handed();
+        await serverReadsIt(ws); // its first sentence is playing
+        await act(async () => { await announceAsk('ask-2', { fetcher: clipFetcher }); });
+        act(() => { stopAskAnnouncement('ask-2'); });
+        await act(async () => { latest.setEnabled(false); });
+        await settle();
+        expect(clipFetcher).not.toHaveBeenCalled();
+      });
     });
 
     test('with Talk off again the question goes back to the clip path', async () => {

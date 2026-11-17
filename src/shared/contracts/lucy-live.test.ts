@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isLucyLiveClientMessage } from './lucy-live.js';
+import { MAX_UNPLAYED_TURNS, isLucyLiveClientMessage } from './lucy-live.js';
 
 describe('isLucyLiveClientMessage', () => {
   it('accepts speech_start with or without lucyAudible', () => {
@@ -43,6 +43,18 @@ describe('isLucyLiveClientMessage', () => {
     }
     // turn_start is the server's; a client cannot send it.
     expect(isLucyLiveClientMessage({ type: 'turn_start', turnId: 't1', askId: 'ask-1' })).toBe(false);
+  });
+  it('validates turn_unplayed (#4015)', () => {
+    expect(isLucyLiveClientMessage({ type: 'turn_unplayed', turnIds: ['lucy-ask-1'] })).toBe(true);
+    expect(isLucyLiveClientMessage({ type: 'turn_unplayed', turnIds: ['lucy-ask-1', 'lucy-ask-2'] })).toBe(true);
+    expect(isLucyLiveClientMessage({ type: 'turn_unplayed', turnIds: [] })).toBe(false);
+    expect(isLucyLiveClientMessage({ type: 'turn_unplayed', turnIds: [''] })).toBe(false);
+    expect(isLucyLiveClientMessage({ type: 'turn_unplayed', turnIds: ['x'.repeat(65)] })).toBe(false);
+    expect(isLucyLiveClientMessage({ type: 'turn_unplayed', turnIds: [7] })).toBe(false);
+    expect(isLucyLiveClientMessage({ type: 'turn_unplayed', turnIds: Array(MAX_UNPLAYED_TURNS + 1).fill('t') })).toBe(false);
+    expect(isLucyLiveClientMessage({ type: 'turn_unplayed', turnId: 't1' })).toBe(false);
+    // ask_refused is the server's; a client cannot send it.
+    expect(isLucyLiveClientMessage({ type: 'ask_refused', askId: 'ask-1' })).toBe(false);
   });
   it('validates open_result strictly (#3929)', () => {
     expect(isLucyLiveClientMessage({ type: 'open_result', requestId: 'open-1', outcome: 'opened' })).toBe(true);

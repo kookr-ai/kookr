@@ -319,11 +319,15 @@ describe('createLucyLive', () => {
       ws.json({ type: 'say_ask', askId: 'a1' });
       await tick(); await tick(); await tick();
       expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
-      const said = ws.sent.filter((m) => m.type === 'sentence').map((m) => m.text).join(' ');
+      const sentences = ws.sent.filter((m) => m.type === 'sentence');
+      const said = sentences.map((m) => m.text).join(' ');
       expect(said).toContain('The task Cleanup needs your input.');
+      // What she said is noted as the browser reports hearing it, just before the next answer (#4015).
+      expect(remembered).toHaveLength(0);
+      for (const s of sentences) ws.json({ type: 'played', turnId: s.turnId, seq: s.seq, complete: true });
+      await runTurn(ws, 't2');
       expect(remembered).toHaveLength(1);
       expect(remembered[0]![2]).toBe(said);
-      await runTurn(ws, 't2');
       expect(requests[0]!.request.conversationId).toBe(remembered[0]![0]);
     });
 

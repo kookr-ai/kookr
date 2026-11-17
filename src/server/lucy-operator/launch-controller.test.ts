@@ -62,6 +62,16 @@ describe('propose', () => {
     expect(t.logs.map((l) => l.event)).toEqual(['proposed']);
   });
 
+  test('without a conversation id, pending() is the one proposal held in any conversation (#4015)', async () => {
+    const t = setup();
+    expect(t.controller.pending()).toBeUndefined();
+    await t.propose();
+    expect(t.controller.pending()?.id).toBe('p1');
+    expect(t.controller.pending('another')).toBeUndefined();
+    t.advance(LAUNCH_PROPOSAL_TTL_MS);
+    expect(t.controller.pending()).toBeUndefined(); // expired
+  });
+
   test('the writer is given the operator\'s words and the project names, and nothing else', async () => {
     const t = setup();
     await t.propose(['first thing I said', 'Lucy, investigate it']);

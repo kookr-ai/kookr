@@ -28,7 +28,8 @@
  * question sends `say_ask`, and the server says it as a turn of its own, started by the server
  * (`turn_start`), once the operator's turn and her answer are over. Its sentences are played,
  * ducked and interrupted exactly like an answer's, and it enters the conversation history marked
- * as something she said unprompted.
+ * as something she said unprompted. If the browser plays none of it (`turn_unplayed`), the server says it
+ * again later; if the server will not take it (`ask_refused`), the browser plays it as a clip instead.
  *
  * Wire format. Text frames are JSON matching the unions below. Binary frames, sent
  * only by the browser between `speech_start` and `speech_end`, are raw PCM: signed
@@ -117,7 +118,14 @@ export type LucyLiveClientMessage =
    */
   | { type: 'say_ask'; askId: string }
   /** The question `askId` closed: do not say it, and stop saying it if she has begun. */
-  | { type: 'drop_ask'; askId: string };
+  | { type: 'drop_ask'; askId: string }
+  /**
+   * The browser played none of these turns the server started (`turn_start`), oldest first: it ignored them
+   * because the operator had just begun to speak, or dropped them before any of their audio was heard (held
+   * behind her other audio, or still decoding, when she was cut). Their questions were not said, whatever was
+   * sent: the server says them again after the operator's turn and keeps them out of the conversation history.
+   */
+  | { type: 'turn_unplayed'; turnIds: string[] };
 
 /** What Lucy asks the browser to open by voice ("show me the mockups"): a question's link in a new tab, or the asking task. */
 export type LucyLiveOpenTarget = { kind: 'link'; url: string } | { kind: 'task'; taskId: string };
@@ -183,7 +191,12 @@ export type LucyLiveServerMessage =
    * Open a page or select a task for the operator, who asked for it by voice. The browser answers with
    * `open_result` carrying the same `requestId`, and Lucy says what happened.
    */
-  | { type: 'open'; requestId: string; target: LucyLiveOpenTarget };
+  | { type: 'open'; requestId: string; target: LucyLiveOpenTarget }
+  /**
+   * The server will not say the question `askId` it was given with `say_ask` (too many are waiting, or it cannot
+   * word questions): the browser says it another way, as a clip.
+   */
+  | { type: 'ask_refused'; askId: string };
 
 /**
  * `bad_message`: a frame was malformed, unknown or too large. `internal`: the server failed
@@ -191,6 +204,9 @@ export type LucyLiveServerMessage =
  * at all (today that is reported by the status route and the upgrade refusal instead).
  */
 export type LucyLiveErrorCode = 'unavailable' | 'bad_message' | 'internal';
+
+/** Most turn ids one `turn_unplayed` may carry (the server keeps at most ten questions waiting, plus the current one). */
+export const MAX_UNPLAYED_TURNS = 16;
 
 export function isLucyLiveClientMessage(value: unknown): value is LucyLiveClientMessage {
   if (typeof value !== 'object' || value === null) return false;
@@ -216,6 +232,9 @@ export function isLucyLiveClientMessage(value: unknown): value is LucyLiveClient
     case 'say_ask':
     case 'drop_ask':
       return typeof v.askId === 'string' && v.askId.length > 0 && v.askId.length <= 64;
+    case 'turn_unplayed':
+      return Array.isArray(v.turnIds) && v.turnIds.length > 0 && v.turnIds.length <= MAX_UNPLAYED_TURNS
+        && v.turnIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 64);
     default:
       return false;
   }
