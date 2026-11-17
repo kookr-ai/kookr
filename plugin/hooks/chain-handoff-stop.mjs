@@ -76,10 +76,10 @@ const OFFER_OPENER = /\b(?:want me to|would you like me to|shall i|should i|can 
 const CONTINUE_VERB =
   '(?:continue|proceed|move on|move|go on|go ahead|carry on|keep going|start|begin|spawn|launch|pick up|tackle|work on|take on|take)';
 const STARTS_WITH_CONTINUE = new RegExp(`^${CONTINUE_VERB}\\b`, 'i');
-const NEXT_UNIT = /\b(?:next|remaining|another|successor|rest|following)\b/i;
-// A continuation verb with only a short tail: "Shall I proceed?", "Want me to continue with #14 now?"
+const NEXT_UNIT = /\b(?:next|remaining|another|successor|rest|following|chain|queue|batch)\b/i;
+// A continuation verb with only a short tail: "Shall I proceed?", "Should I continue with issue #14 now?"
 const CONTINUE_SHORT_TAIL = new RegExp(
-  `\\b${CONTINUE_VERB}(?:\\s+(?:with|on|to|it|this|that|now|then|here|#\\d+))*\\s*\\?`,
+  `\\b${CONTINUE_VERB}(?:\\s+(?:with|on|to|the|issue|unit|task|pr|it|this|that|now|then|here|#\\d+))*\\s*\\?`,
   'i',
 );
 

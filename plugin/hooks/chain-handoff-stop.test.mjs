@@ -136,12 +136,19 @@ describe('endsWithQuestion', () => {
     expect(endsWithQuestion('Let me know if you want me to continue with the next issue?')).toBe(false);
     expect(endsWithQuestion('Continue with the next issue?')).toBe(false);
     expect(endsWithQuestion('Next issue?')).toBe(false);
+    expect(endsWithQuestion('Should I continue with issue #14?')).toBe(false);
+    expect(endsWithQuestion('Should I continue with the chain?')).toBe(false);
+    expect(endsWithQuestion('Should I continue the chain?')).toBe(false);
+    expect(endsWithQuestion('Want me to keep going with the queue?')).toBe(false);
     // Real decisions still count.
     expect(endsWithQuestion('Should I merge now?')).toBe(true);
     expect(endsWithQuestion('Should I continue even though the migration deletes rows?')).toBe(true);
     expect(endsWithQuestion('Which issue should come next?')).toBe(true);
     expect(endsWithQuestion('Two issues are eligible. Which one should the chain take next?')).toBe(true);
     expect(endsWithQuestion('Should I start on #14 or #15?')).toBe(true);
+    // Only the last sentence of the line is read: an earlier "remaining" does not make it an offer.
+    expect(endsWithQuestion('I fixed the remaining tests. Should I merge now?')).toBe(true);
+    expect(endsWithQuestion('Should I continue with the migration?')).toBe(true);
   });
 });
 
