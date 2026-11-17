@@ -2,7 +2,8 @@
  * The composer at the foot of Lucy's column (issue #3676): a text box for typing a request to her,
  * "investigate why the issue tasks stop chaining", with the level of autonomy she is working at.
  *
- * The box grows with what is typed, from one line to five. Enter sends; Shift+Enter starts a new line.
+ * The box grows with what is typed, from one line to five (from two to eight in Lucy's room, `roomy`).
+ * Enter sends; Shift+Enter starts a new line.
  * Whatever the dock puts in `leading` (the Talk button) sits beside the box, and stays when the box
  * itself is gone.
  *
@@ -314,21 +315,28 @@ export function sendLucyTypedText(text: string, options: { fetcher?: typeof fetc
 
 /** The box never grows past this many lines; beyond that it scrolls inside itself. */
 const MAX_COMPOSER_LINES = 5;
+/** In Lucy's room there is room for more; it also starts two lines tall there (styles.css). */
+const MAX_ROOMY_COMPOSER_LINES = 8;
 
 export interface LucyTypedInputProps {
   fetcher?: typeof fetch;
   /** Shown beside the box (the Talk button). It stays when the box is gone because the feature is off. */
   leading?: ReactNode;
+  /** True in Lucy's room: the box starts at two lines and grows to eight. */
+  roomy?: boolean;
 }
 
-export function LucyTypedInput({ fetcher, leading }: LucyTypedInputProps = {}) {
+export function LucyTypedInput({ fetcher, leading, roomy = false }: LucyTypedInputProps = {}) {
   const { off, busy, announce } = useLucyTyped();
   const [text, setText] = useState('');
   const inputId = useId();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const level = useLucyAutonomyLabel();
 
-  // As tall as what is typed, from one line to five; only past five lines does it scroll.
+  // As tall as what is typed, from one line to five (two to eight in the room; the stylesheet holds the least
+  // height); only past the most does it scroll. Measured again when the room is entered or left, so a draft
+  // typed in one layout has the right height in the other.
+  const maxLines = roomy ? MAX_ROOMY_COMPOSER_LINES : MAX_COMPOSER_LINES;
   useLayoutEffect(() => {
     const box = inputRef.current;
     if (!box) return;
@@ -344,10 +352,10 @@ export function LucyTypedInput({ fetcher, leading }: LucyTypedInputProps = {}) {
     const edges = box.offsetHeight - box.clientHeight;
     const padding = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
     const wanted = box.scrollHeight + edges;
-    const most = Number.isFinite(line) ? line * MAX_COMPOSER_LINES + padding + edges : Infinity;
+    const most = Number.isFinite(line) ? line * maxLines + padding + edges : Infinity;
     if (wanted > 0) box.style.height = `${Math.min(wanted, most)}px`;
     box.style.overflowY = wanted > most ? 'auto' : 'hidden';
-  }, [text, off]);
+  }, [text, off, maxLines]);
 
   if (off && !leading) return null;
 
@@ -378,7 +386,7 @@ export function LucyTypedInput({ fetcher, leading }: LucyTypedInputProps = {}) {
             <textarea
               id={inputId}
               ref={inputRef}
-              rows={1}
+              rows={roomy ? 2 : 1}
               value={text}
               maxLength={MAX_LUCY_TURN_TEXT_CHARS}
               placeholder="Ask Lucy, or tell her what to do"

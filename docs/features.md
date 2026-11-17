@@ -152,7 +152,7 @@ The chosen layout is a two-panel "supervisor-first" design. The UI is organized 
 | F5.1 | **Supervisor findings panel** | Left side (340px): rich finding cards ordered by urgency, each with severity badge, supervisor explanation, a one-line recommended next-action line (from the findings catalog), inline quick-reply input, skip/snooze, and live response chips when the suggestion channel has them (up to five Allow/Deny or Yes/No actions; permission chips without a live request binding are omitted). When the task already has a PR in `githubState`, the card also shows one compact `#N status` chip (with CI-failed or changes-requested cues); clicking it selects the task and opens the GitHub pane. When the finding has a `parentTaskId` that still resolves in the live snapshot, the card's context row also shows a compact `parent: <name>` chip; clicking it selects that parent without opening a new pane. Git branch stays off the card. When the rail mixes types, header chips filter the cards by anomaly type (multi-select OR, persisted in `localStorage`; empty selection shows all). The rail is one scrolling list grouped by state: "Needs you" (the finding cards, always first, one line reading "nothing waiting" when empty), then Working, Pending, Snoozed and Finished (collapsed by default). Working rows are two lines, with their action buttons shown on hover, keyboard focus or selection. Unselected finding cards hide the recommendation, cost, turn-state line and copy-ID chip, which the selected card shows. |
 | F5.2 | **Terminal panel** | The task reading pane shows an interactive xterm.js terminal bridged to the selected agent's dtach session. It is a tab beside Conversation and Changes (and GitHub when the task has references); on windows wider than 1200 px a **Split view** toggle shows the conversation and the terminal side by side, and the choice is remembered. Terminal focus (Alt+T) shows the terminal alone; leaving it returns to the layout it was entered from, Split view included. Fractional wheel scrolling stays local to the terminal. The negotiated stream bounds pending output by acknowledging bytes after parsing; a slow or interrupted view shows an explicit recovery state instead of silently losing continuity. Dropping an image onto the terminal, or pasting one from the clipboard through the terminal's right-click Paste (for example a screenshot; plain Ctrl+V stays the agent's own key), saves it on the Kookr host and pastes the saved file's path into the agent's prompt without submitting it; Claude Code and Codex CLI attach that path as an image. Because only the image bytes cross from the browser, this works when the browser and Kookr are on different filesystems (Chrome on Windows with Kookr in WSL). PNG, JPEG, GIF and WebP up to 10 MB are accepted. See the [terminal validation report](reports/terminal-responsiveness-validation.md) for measured performance and qualification limits. |
 | F5.3 | **Status bar** | Bottom: task count, finding count, a completed-task chip when at least one live agent finished in the last 24 hours (e.g. `3 completed / 24h`; hidden at zero; tooltip notes the live-list lower bound; clicking it expands the Completed rail and scrolls it into view), a launched-task chip when at least one live agent started in the last 24 hours (e.g. `3 launched / 24h`; hidden at zero; never inferred from a finish time; tooltip notes the live-list lower bound; clicking it opens Diagnostics containing the Outcome Scoreboard), the oldest live finding wait when at least one finding is active (clicking it selects that unanswered finding), the rolling 24-hour cost chip and plan quota. Everything else sits behind the top-bar **System** indicator (issue #3561 slice 2), which turns amber while a hidden readout is degraded and shows non-urgent states neutrally (a muted-speaker glyph when alert sounds are muted, a grey dot for elevated CPU or RAM; issue #3619): host resources, ops-health pills, sound, achievements, speech-to-text, a time-to-unblock chip when at least five human-reply samples exist in the last 24 hours (visible label is volume plus median, e.g. `12 unblocked (24h) · median 8m`), and — when the live-friction snapshot has signalCount > 0 — a live-friction chip with skip and snooze counts from signals[] (false-positive included only when that kind is present; diagnostics-only; does not reorder findings). Top bar: queue dots showing triage position, findings/healthy counts, cost where available, a neutral **Bypass mode** chip when permission bypass is on, and the System indicator whose detail ends with **About** (build hash and deploy controls). |
-| F5.4 | **Keyboard shortcuts** | Ctrl+Enter: send & advance. Alt+N: next finding. Alt+L: quick launch. macOS defaults use Cmd+Ctrl instead of Alt. Rebindable in Settings. |
+| F5.4 | **Keyboard shortcuts** | Ctrl+Enter: send & advance. Alt+N: next finding. Alt+L: quick launch. With the avatar panel on, Alt+Shift+M: hands-free Talk; Alt+Shift+L: Lucy's room (she takes the whole window) and back. macOS defaults use Cmd+Ctrl instead of Alt. Rebindable in Settings. |
 | F5.5 | **Real-time updates** | All panels update live as agent states change. No manual refresh. |
 | F5.6 | **Respond-and-advance loop** | "Send & Next" as primary action. After responding, a confirmation overlay shows what was sent and where the UI is advancing to. Queue dots track triage progress. |
 | F5.7 | **"All clear" state** | When no findings exist, the findings panel shows a calm "all agents working autonomously" state. |
@@ -423,6 +423,28 @@ says out loud, and a one-line strip above it holds what is waiting on you.
   it in words: "1 question for you", "2 findings need you", "1 unheard message" (each row only when it
   applies) and "Click to open Lucy". Escape closes the card; screen readers get the same sentence from the bubble's label
   instead. A minimised panel shuts its 3D view down and uses no graphics memory.
+- **Lucy's room: she takes the whole window.** The column's title bar has an **Expand** button; press it,
+  or **Alt+Shift+L** (**Cmd+Ctrl+Shift+L** on macOS; rebindable in Settings, and it works from anywhere, text
+  boxes and a minimised bubble included), and she covers the dashboard, which stays loaded underneath. The
+  same button, now **Back to dashboard**, or the same key brings the column back. From 1100 px wide the room
+  has three parts: a slim title bar (her name and what she is doing on the left; **Talk**, **Replay last
+  message** and **Back to dashboard** on the right); the conversation in the middle, at most 760 px wide and
+  centred, with the composer under it (the text box starts two lines tall and grows to eight); and a side
+  rail on the right, 400 to 520 px wide with the window, with her 3D view at the top (about 280 px tall in a
+  1080 px window) above everything that waits on you as whole cards: permission cards first, then every question a task is
+  waiting for, each with its answers on screen, then the opinion requests folded under one line. The rail
+  scrolls by itself, and when nothing waits it says so in one line. In a narrower window the room is one
+  column, laid out like the docked column, with the same title bar. Nothing is restarted by the switch: the
+  3D view keeps running, a half-typed message stays in the text box (which gets the keyboard focus on
+  entering), and the conversation stays where it was. **Open task** on a card in the room selects the task
+  and brings the column back, so the task is on screen beside her (also when she was a minimised bubble
+  before the room). While the room covers the dashboard, the
+  dashboard's own keyboard shortcuts do nothing (so a stray Enter cannot act on a task you cannot see); Ctrl+K
+  and her own two shortcuts still work. The room belongs to one browser tab: it is remembered until the tab is
+  closed and survives a reload, and it does not switch your other tabs, so the dashboard can stay in one
+  window while she has another. Opening **`/?lucy=room`** starts a tab in the room whatever the saved
+  preferences say, also when she was minimised, and switches the panel on if it was off; the parameter is
+  then removed from the address.
 - **Usable from the keyboard.** Focus stays on the panel when you minimise or reopen it,
   and every message's Replay button can be reached with Tab. With "reduce motion" set in your operating
   system, the decorative rings and particles stand still; only her mouth and a slight sway remain.
@@ -659,7 +681,8 @@ line; it rotates at 10 MB and keeps three older files).
   malformed reply, or wording that was too long or read as an instruction), whether it was cached, word count, and timings. From the browser: when a clip started
   (click or replay), how it ended (finished, stopped by you, replaced) and how much of it
   played, clips that were never heard (muted, do-not-disturb, audio blocked), and avatar-panel
-  actions (enable, disable, minimise, restore, move, replay). Each clip has an id that links the two
+  actions (enable, disable, minimise, restore, move, replay, and expand and collapse for entering and
+  leaving her room). Each clip has an id that links the two
   sides. If you use hands-free talk, every turn is also recorded (`kind: "live_turn"`): what you said,
   as text (secret-looking tokens such as API keys are replaced first), her answer, how the turn ended
   (answered, interrupted, nothing heard, or failed, with the reason), and timings such as how long

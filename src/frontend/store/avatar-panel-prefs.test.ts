@@ -10,9 +10,13 @@ import {
   AVATAR_COLUMN_MIN_WIDTH,
   AVATAR_PAGE_MIN_WIDTH,
   AVATAR_PANEL_KEY,
+  AVATAR_READING_WIDTH,
+  AVATAR_ROOM_RAIL_MIN_VIEWPORT_PX,
   DEFAULT_AVATAR_PANEL_PREFS,
   __resetAvatarPanelPrefsForTests,
   avatarColumnLayout,
+  avatarRoomRailWidth,
+  avatarThreadIsCentred,
   clampAvatarColumnWidth,
   loadAvatarPanelPrefs,
   saveAvatarPanelPrefs,
@@ -199,6 +203,61 @@ describe('avatar-panel-prefs', () => {
       expect(avatarColumnLayout(2560, undefined)).toEqual({ mode: 'docked', width: 380, maxWidth: 1280 });
       // However wide the window, nothing wider than the saved ceiling.
       expect(avatarColumnLayout(8000, 9999).maxWidth).toBe(AVATAR_COLUMN_MAX_WIDTH);
+    });
+
+    test('in her room she has the whole window at every width, with the side rail from 1100 px', () => {
+      expect(AVATAR_ROOM_RAIL_MIN_VIEWPORT_PX).toBe(1100);
+      // The rail is 400 px, and 24% of a very wide window up to 520 px.
+      expect(avatarColumnLayout(2560, undefined, true)).toEqual({ mode: 'room', width: 2560, maxWidth: 2560, rail: true, railWidth: 520 });
+      expect(avatarColumnLayout(1920, 450, true)).toEqual({ mode: 'room', width: 1920, maxWidth: 1920, rail: true, railWidth: 461 });
+      expect(avatarColumnLayout(1440, 9999, true)).toEqual({ mode: 'room', width: 1440, maxWidth: 1440, rail: true, railWidth: 400 });
+      expect(avatarColumnLayout(1100, undefined, true)).toEqual({ mode: 'room', width: 1100, maxWidth: 1100, rail: true, railWidth: 400 });
+      // Narrower than that it is one column, also where the column would float (769 to 1319) or be a sheet (768 and below).
+      expect(avatarColumnLayout(1099, undefined, true)).toEqual({ mode: 'room', width: 1099, maxWidth: 1099, rail: false, railWidth: 0 });
+      expect(avatarColumnLayout(1000, 450, true)).toEqual({ mode: 'room', width: 1000, maxWidth: 1000, rail: false, railWidth: 0 });
+      expect(avatarColumnLayout(768, undefined, true)).toEqual({ mode: 'room', width: 768, maxWidth: 768, rail: false, railWidth: 0 });
+      expect(avatarColumnLayout(375, undefined, true)).toEqual({ mode: 'room', width: 375, maxWidth: 375, rail: false, railWidth: 0 });
+    });
+
+    test('the rail never leaves the conversation less than 700 px, and grows only in a very wide window', () => {
+      expect(avatarRoomRailWidth(1099)).toBe(0);
+      expect(avatarRoomRailWidth(1100)).toBe(400);
+      expect(avatarRoomRailWidth(1667)).toBe(400);
+      expect(avatarRoomRailWidth(1700)).toBe(408);
+      expect(avatarRoomRailWidth(2166)).toBe(520);
+      expect(avatarRoomRailWidth(5000)).toBe(520);
+      for (let viewport = 1100; viewport <= 4000; viewport += 13) {
+        expect(viewport - avatarRoomRailWidth(viewport)).toBeGreaterThanOrEqual(700);
+      }
+    });
+
+    test('the conversation is a centred reading column only where its area is clearly wider than 760 px', () => {
+      expect(AVATAR_READING_WIDTH).toBe(760);
+      // The docked column at its usual widths fills its area; a wide one is centred.
+      expect(avatarThreadIsCentred(avatarColumnLayout(1920, undefined))).toBe(false);
+      expect(avatarThreadIsCentred(avatarColumnLayout(1920, 839))).toBe(false);
+      expect(avatarThreadIsCentred(avatarColumnLayout(1920, 840))).toBe(true);
+      expect(avatarThreadIsCentred(avatarColumnLayout(2560, 1280))).toBe(true);
+      expect(avatarThreadIsCentred(avatarColumnLayout(1280, 560))).toBe(false);
+      expect(avatarThreadIsCentred(avatarColumnLayout(600, undefined))).toBe(false);
+      // The room: what the rail leaves is what counts.
+      expect(avatarThreadIsCentred(avatarColumnLayout(1100, undefined, true))).toBe(false);
+      expect(avatarThreadIsCentred(avatarColumnLayout(1239, undefined, true))).toBe(false);
+      expect(avatarThreadIsCentred(avatarColumnLayout(1240, undefined, true))).toBe(true);
+      expect(avatarThreadIsCentred(avatarColumnLayout(1920, undefined, true))).toBe(true);
+      // Without a rail the whole window is the conversation's.
+      expect(avatarThreadIsCentred(avatarColumnLayout(1000, undefined, true))).toBe(true);
+      expect(avatarThreadIsCentred(avatarColumnLayout(839, undefined, true))).toBe(false);
+    });
+
+    test('without the room the same windows are the column, the floating column and the sheet, as before', () => {
+      for (const room of [false, undefined]) {
+        expect(avatarColumnLayout(2560, undefined, room)).toEqual({ mode: 'docked', width: 380, maxWidth: 1280 });
+        expect(avatarColumnLayout(1920, 450, room)).toEqual({ mode: 'docked', width: 450, maxWidth: 920 });
+        expect(avatarColumnLayout(1440, 9999, room)).toEqual({ mode: 'docked', width: 440, maxWidth: 440 });
+        expect(avatarColumnLayout(1100, undefined, room)).toEqual({ mode: 'overlay', width: 380, maxWidth: 560 });
+        expect(avatarColumnLayout(768, undefined, room)).toEqual({ mode: 'sheet', width: 768, maxWidth: 768 });
+      }
     });
 
     test('whenever it is docked the page is left at least 1000 px', () => {

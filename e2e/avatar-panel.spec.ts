@@ -26,6 +26,11 @@ import type { LucyLaunchProposalView } from '../src/shared/contracts/lucy-launch
  * "Waiting on you" strip is one line until it is unfolded, the conversation
  * always keeps 45% of the column, the launch card is the last thing in the
  * conversation, and at most two areas in the column scroll.
+ *
+ * The last tests are about "Lucy's room", where she takes the whole window:
+ * entering it with a message half typed, the side rail and the centred
+ * conversation, a reload, the way back, `/?lucy=room`, the shortcut, and
+ * "Open task" leaving the room.
  */
 
 const AVATAR_ASSET = /vendor-three|AvatarDock|\.glb(\?|$)/;
@@ -1507,5 +1512,172 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await expect(dock).toHaveCount(0);
     await expect(page.getByTestId('avatar-bubble')).toBeVisible();
     await expect(page.locator('.app')).toBeVisible();
+  });
+
+  // --- Lucy's room: she takes the whole window ---
+
+  /** Two questions tasks are waiting for and two opinion requests, for the room's side rail. */
+  function roomQuestions(): OperatorAskView[] {
+    const [live, ...opinions] = fifteenQuestions();
+    const second: OperatorAskView = { ...opinions[0], id: 'b00000000001', taskEnded: false, taskName: 'Invoice export bug', question: 'Fix the pager, or switch the export to streaming?', options: ['Fix the pager', 'Switch to streaming'], expiresAt: Date.now() + 20 * MIN };
+    return [live, second, opinions[1], opinions[2]];
+  }
+
+  const rootColumnWidth = (page: Page) => page.evaluate(() => document.documentElement.style.getPropertyValue('--lucy-column-width'));
+
+  test('Lucy\'s room: Expand gives her the whole window with the conversation in the middle and what waits in a side rail; a half-typed message, a reload and the way back all hold', async ({ page }) => {
+    await page.route('**/api/lucy/turn', (route) => route.fulfill({
+      contentType: 'application/x-ndjson',
+      body: turnBody({ type: 'text', delta: 'Two questions are waiting:\n- Billing migration: run it now, tonight, or not at all\n- Invoice export bug: fix the pager or switch to streaming' }),
+    }));
+    await openColumn(page, { asks: roomQuestions() });
+    const dock = page.getByTestId('avatar-dock');
+    const toggle = page.getByTestId('avatar-room-toggle');
+    const input = page.getByTestId('avatar-typed-input');
+    await expect(toggle).toHaveText('Expand');
+    expect(await rootColumnWidth(page)).toBe('380px');
+    await input.fill('What is wai');
+
+    await toggle.click();
+    await expect(dock).toHaveAttribute('data-column-mode', 'room');
+    await expect(dock).toHaveAttribute('data-room-rail', 'true');
+    await expect(dock).toHaveAttribute('aria-label', 'Lucy\u2019s room');
+    await expect(toggle).toHaveText('Back to dashboard');
+    // The whole window, over the page; the page is not asked for room any more.
+    await expect.poll(async () => { const b = (await dock.boundingBox())!; return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; }).toEqual([0, 0, 1440, 900]);
+    expect(await rootColumnWidth(page)).toBe('');
+    expect(await page.locator('.app').evaluate((el) => getComputedStyle(el).paddingRight)).toBe('0px');
+    await expect(page.getByTestId('avatar-column-resizer')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Minimise Lucy' })).toHaveCount(0);
+
+    // What was being typed is still there, in the text box that now has the focus and is two lines tall.
+    await expect(input).toHaveValue('What is wai');
+    await expect(input).toBeFocused();
+    expect(Math.round((await input.boundingBox())!.height)).toBe(60);
+
+    // The side rail: 400 px on the right, her view on top, then every waiting question as an open card.
+    const tray = page.getByTestId('avatar-tray');
+    const rail = (await tray.boundingBox())!;
+    expect(Math.round(rail.x)).toBe(1040);
+    expect(Math.round(rail.x + rail.width)).toBe(1440);
+    expect(Math.round(rail.y + rail.height)).toBe(900);
+    const view = (await page.locator('.avatar-dock-view').boundingBox())!;
+    expect(Math.round(view.x)).toBe(1040);
+    expect(Math.round(view.width)).toBe(400);
+    expect(Math.round(view.height)).toBe(234);
+    expect(Math.round(view.y + view.height)).toBe(Math.round(rail.y));
+    await expect(page.getByTestId('avatar-tray-title').locator('h2')).toHaveText('Waiting on you');
+    await expect(page.getByTestId('avatar-tray-count')).toHaveText('2 waiting');
+    await expect(page.getByTestId('avatar-tray-toggle')).toHaveCount(0);
+    await expect(page.locator('[data-testid="avatar-ask"][data-ask-state="pending"]')).toHaveCount(2);
+    await expect(page.getByTestId('avatar-ask-option')).toHaveCount(5);
+    await expect(page.getByTestId('avatar-opinions-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByTestId('avatar-opinions-toggle')).toContainText('2 opinions wanted by finished tasks');
+    // The folded strip's measured height (0) did not come along: the rail has the height the room gives it.
+    expect(await page.locator('#avatar-tray-body').evaluate((el) => (el as HTMLElement).style.height)).toBe('');
+    await expectVisible(page.getByTestId('avatar-ask-option').first(), 'the first answer in the rail');
+    for (const card of await page.locator('[data-testid="avatar-ask"][data-ask-state="pending"]').all()) {
+      const box = (await card.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(1040);
+      expect(box.x + box.width).toBeLessThanOrEqual(1440);
+    }
+
+    // The conversation: a reading column of 760 px at most, centred in what the rail leaves, the composer lined up with it.
+    await input.pressSequentially('ting?');
+    await input.press('Enter');
+    const list = page.getByTestId('avatar-entry-list');
+    await expect(list).toBeVisible();
+    await expect(list.locator('li')).toHaveCount(2);
+    const reply = (await page.getByTestId('avatar-typed-reply').boundingBox())!;
+    const you = (await page.getByTestId('avatar-typed-you').boundingBox())!;
+    const send = (await page.getByTestId('avatar-typed-send').boundingBox())!;
+    const composerInput = (await input.boundingBox())!;
+    expect(Math.round(reply.x)).toBe(140);
+    expect(Math.round(you.x + you.width)).toBe(900);
+    expect(Math.round(composerInput.x)).toBe(140);
+    expect(Math.round(send.x + send.width)).toBe(900);
+    // The composer sits at the foot of the conversation column, and the newest reply is on screen above it.
+    expect(composerInput.y).toBeGreaterThan(reply.y + reply.height);
+    await expectVisible(list, 'her list answer');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    await shot(page, 'room-1440');
+
+    // This tab stays in the room across a reload; the shared preferences were not touched.
+    expect(await page.evaluate(() => sessionStorage.getItem('kookr:lucyRoom'))).toBe('1');
+    expect(JSON.parse((await page.evaluate((key) => localStorage.getItem(key), AVATAR_PANEL_KEY))!)).not.toHaveProperty('room');
+    await page.reload();
+    await expect(dock).toHaveAttribute('data-column-mode', 'room');
+    await expect(page.getByTestId('avatar-typed-you')).toHaveCount(1);
+
+    // And back: the column, the page beside it, focus on the button that opened the room.
+    await toggle.click();
+    await expect(dock).toHaveAttribute('data-column-mode', 'docked');
+    await expect(toggle).toHaveText('Expand');
+    await expect(toggle).toBeFocused();
+    expect(await rootColumnWidth(page)).toBe('380px');
+    const main = (await page.locator('.main').boundingBox())!;
+    expect(Math.round(main.x + main.width)).toBe(1440 - 380);
+    await expect(page.getByTestId('avatar-tray-toggle')).toHaveAttribute('aria-expanded', 'false');
+    expect(await page.evaluate(() => sessionStorage.getItem('kookr:lucyRoom'))).toBeNull();
+  });
+
+  test('Lucy\'s room by address and by shortcut: /?lucy=room switches a panel that is off on and opens the room, and Alt+Shift+L goes back and forth', async ({ page }) => {
+    await withoutWebGL(page);
+    await page.addInitScript((key) => {
+      if (window.localStorage.getItem(key) === null) window.localStorage.setItem(key, '{"enabled":false,"minimized":false}');
+    }, AVATAR_PANEL_KEY);
+    await page.goto('/?lucy=room');
+    const dock = page.getByTestId('avatar-dock');
+    await expect(dock).toHaveAttribute('data-column-mode', 'room');
+    // Read once and removed from the address, so a reload follows what the operator did since.
+    expect(new URL(page.url()).search).toBe('');
+    expect(JSON.parse((await page.evaluate((key) => localStorage.getItem(key), AVATAR_PANEL_KEY))!)).toMatchObject({ enabled: true, minimized: false });
+    await expect(page.getByTestId('avatar-typed-input')).toBeFocused();
+    // Nothing waits: the rail keeps its place and says so.
+    await expect(page.getByTestId('avatar-tray-empty')).toHaveText('Nothing is waiting on you.');
+    expect(Math.round((await page.getByTestId('avatar-tray').boundingBox())!.width)).toBe(400);
+    await shot(page, 'room-empty-1440');
+
+    await page.keyboard.press('Alt+Shift+L');
+    await expect(dock).toHaveAttribute('data-column-mode', 'docked');
+    await expect(page.getByTestId('avatar-tray')).toHaveCount(0);
+    await page.keyboard.press('Alt+Shift+L');
+    await expect(dock).toHaveAttribute('data-column-mode', 'room');
+
+    // A window narrower than 1100 px: one column, no rail.
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await expect(dock).toHaveAttribute('data-room-rail', 'false');
+    await expect(page.getByTestId('avatar-tray')).toHaveCount(0);
+    const box = (await dock.boundingBox())!;
+    expect([Math.round(box.x), Math.round(box.width), Math.round(box.height)]).toEqual([0, 1000, 800]);
+    await expect(page.getByTestId('avatar-room-toggle')).toHaveText('Back to dashboard');
+    await shot(page, 'room-narrow-1000');
+  });
+
+  test('Lucy\'s room: "Open task" on a card selects the task in the dashboard and brings her back to the column beside it', async ({ page, request }) => {
+    test.setTimeout(60_000);
+    await resetServer(request);
+    const { send } = await openColumn(page, { asks: [] });
+    await launchTaskWithCard(page, request);
+    const tasks = (await (await request.get('/api/tasks')).json()) as Array<{ id: string; prompt: string }>;
+    const task = tasks.find((candidate) => candidate.prompt === 'Avatar replay task')!;
+    const [live] = fifteenQuestions();
+    send({ type: 'operatorAsks', asks: [{ ...live, taskId: task.id, links: [] }], serverNow: Date.now() });
+    await expect(page.getByTestId('avatar-tray')).toBeVisible();
+
+    await page.getByTestId('avatar-room-toggle').click();
+    const dock = page.getByTestId('avatar-dock');
+    await expect(dock).toHaveAttribute('data-column-mode', 'room');
+    await expect(page.locator('.finding-card.selected')).toHaveCount(0);
+    // The dashboard's own keys are quiet while the room covers it: bare Enter does not walk to the next task.
+    await page.getByTestId('avatar-thread').focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.finding-card.selected')).toHaveCount(0);
+
+    await page.getByTestId('avatar-ask-open-task').click();
+    await expect(dock).toHaveAttribute('data-column-mode', 'docked');
+    await expect(page.locator('.finding-card.selected')).toHaveCount(1);
+    const main = (await page.locator('.main').boundingBox())!;
+    expect(Math.round(main.x + main.width)).toBe(1440 - 380);
   });
 });

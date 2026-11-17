@@ -605,8 +605,9 @@ describe('AvatarDock', () => {
       expect(button.title).toBe('No message to replay yet');
       expect(button.querySelector('svg')).not.toBeNull();
       const header = container.querySelector('.avatar-dock-header')!;
-      expect(Array.from(header.querySelectorAll('button')).map((b) => b.getAttribute('aria-label'))).toEqual([
+      expect(Array.from(header.querySelectorAll('button')).map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual([
         'Replay last message',
+        'Expand',
         'Minimise Lucy',
       ]);
 

@@ -1301,8 +1301,8 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           lip-syncs spoken summaries. The dashboard shrinks to make room for it. Off by
                           default. Turning it on downloads the 3D renderer and a 3.6 MB avatar file, and
                           uses your graphics card while the column is open. Drag its left edge to change
-                          its width, and minimise it to a small bubble. This choice is saved for this
-                          browser only.
+                          its width, minimise it to a small bubble, or press Expand to give her the whole
+                          window. This choice is saved for this browser only.
                         </span>
                       </div>
                       <button

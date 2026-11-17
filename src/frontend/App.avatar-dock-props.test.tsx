@@ -2,6 +2,8 @@
 
 // App hands Lucy's panel the Talk shortcut and tells it when global shortcuts are blocked (#4010, #4058).
 // AvatarDock's own tests pass these props by hand, so without this file deleting either prop in App stays green.
+// It also covers what only App can do for "Lucy's room": read `/?lucy=room` before the first paint, pass the
+// room's shortcut, and keep the dashboard's own shortcuts quiet while the room covers it.
 
 import React from 'react';
 import { act } from 'react';
@@ -10,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App.js';
 import type { AvatarDockProps } from './avatar/AvatarDock.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
-import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from './store/avatar-panel-prefs.js';
+import { AVATAR_PANEL_KEY, AVATAR_ROOM_KEY, __resetAvatarPanelPrefsForTests, getAvatarRoom, setAvatarRoom } from './store/avatar-panel-prefs.js';
 import { __resetViewerSessionForTests } from './viewer-session.js';
 import { detectShortcutPlatform, getDefaultShortcutBindings } from '../shared/contracts/shortcut-bindings.js';
 
@@ -105,6 +107,7 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
     document.body.innerHTML = '';
     localStorage.clear();
     sessionStorage.clear();
+    window.history.replaceState(null, '', '/');
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     __resetAvatarPanelPrefsForTests();
@@ -114,6 +117,13 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
   const renderApp = async () => {
     await act(async () => { root.render(React.createElement(App)); });
     await flush();
+  };
+  const press = async (init: KeyboardEventInit) => {
+    const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+    // From the page, as a real key press is: the handler looks at the element it came from.
+    await act(async () => { document.body.dispatchEvent(event); });
+    await flush();
+    return event;
   };
   const select = async (agentId: string | null) => {
     await act(async () => { useKookrStore.setState({ selectedAgentId: agentId }); });
@@ -165,5 +175,65 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
     await act(async () => { opened = dock.props!.onOpenTask!('gone'); });
     expect(opened).toBe(false);
     expect(selected()).toBeNull();
+  });
+
+  test('passes the platform’s binding for Lucy’s room', async () => {
+    await renderApp();
+    expect(dock.props!.roomShortcut).toEqual(getDefaultShortcutBindings(detectShortcutPlatform()).lucy_room_toggle);
+  });
+
+  test('while Lucy’s room covers the dashboard its own shortcuts do nothing, and hers are not blocked', async () => {
+    await renderApp();
+    await select('ag1');
+
+    // Outside the room Escape deselects the task, as always.
+    await press({ key: 'Escape' });
+    expect(selected()).toBeNull();
+
+    await select('ag1');
+    await act(async () => { setAvatarRoom(true); });
+    await flush();
+    const escape = await press({ key: 'Escape' });
+    expect(selected()).toBe('ag1');
+    expect(escape.defaultPrevented).toBe(false);
+    // The Talk and room shortcuts live in the dock and keep working: the room is not a dialog.
+    expect(dock.props!.shortcutsBlocked).toBe(false);
+
+    // Back in the dashboard the shortcut works again.
+    await act(async () => { setAvatarRoom(false); });
+    await flush();
+    await press({ key: 'Escape' });
+    expect(selected()).toBeNull();
+  });
+
+  test('a room flag left over in a tab whose panel is switched off changes nothing', async () => {
+    localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: false, minimized: false }));
+    sessionStorage.setItem(AVATAR_ROOM_KEY, '1');
+    __resetAvatarPanelPrefsForTests();
+    await renderApp();
+    expect(dock.props).toBeNull();
+    await select('ag1');
+    await press({ key: 'Escape' });
+    expect(selected()).toBeNull();
+  });
+
+  test('/?lucy=room opens the dashboard with her in the room, switches her panel on if it was off, and leaves the address clean', async () => {
+    localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: false, minimized: true }));
+    __resetAvatarPanelPrefsForTests();
+    window.history.replaceState(null, '', '/?lucy=room');
+
+    await renderApp();
+    expect(dock.props).not.toBeNull();
+    expect(getAvatarRoom()).toBe(true);
+    expect(window.location.search).toBe('');
+    expect(JSON.parse(localStorage.getItem(AVATAR_PANEL_KEY)!)).toEqual({ enabled: true, minimized: false });
+  });
+
+  test('without the parameter a panel that is off stays off', async () => {
+    localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: false, minimized: false }));
+    __resetAvatarPanelPrefsForTests();
+    await renderApp();
+    expect(dock.props).toBeNull();
+    expect(getAvatarRoom()).toBe(false);
   });
 });

@@ -86,7 +86,7 @@ import {
 } from '../shared/contracts/shortcut-bindings.js';
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
-import { useAvatarPanelPrefs } from './store/avatar-panel-prefs.js';
+import { applyAvatarRoomAddress, useAvatarPanelPrefs, useAvatarRoom } from './store/avatar-panel-prefs.js';
 import { buildAnswerAskMessage, type AskAnswerChoice } from './store/operator-asks.js';
 import { AvatarErrorBoundary } from './avatar/AvatarErrorBoundary.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
@@ -485,7 +485,13 @@ export function App() {
   // as the top-bar pill — so the two controls never diverge.
   const dnd = useDnd();
   const [debugTimelineEnabled] = useState(() => isDebugTimelineEnabled());
+  // `/?lucy=room` opens the dashboard with Lucy in her room (and switches her panel on if it was off). Read
+  // once, before the panel's preferences are, so the first paint is already the room.
+  useState(() => applyAvatarRoomAddress());
   const avatarPanelEnabled = useAvatarPanelPrefs().enabled;
+  // Lucy's room covers the dashboard in this tab. A flag left over while her panel is off changes nothing.
+  const lucyRoom = useAvatarRoom();
+  const lucyRoomOpen = avatarPanelEnabled && lucyRoom;
   useEffect(() => {
     // Optional Long Task API observer (debug/?longtask=1). Measured snapshot /
     // xterm spans sample independently of this flag.
@@ -1013,6 +1019,12 @@ export function App() {
       if ((showOperations || modalBlocksShortcuts) && e.key !== 'Escape') {
         return;
       }
+      // Lucy's room covers the dashboard: a key pressed there must not act on a task that is out of sight
+      // (bare Enter advancing, Alt+End completing, Escape deselecting and taking focus out of her text box).
+      // Her own shortcuts (Talk, the room) are handled in AvatarDock and keep working.
+      if (lucyRoomOpen) {
+        return;
+      }
       if (matchesShortcutAction(e, shortcutBindings, 'next_bottleneck')) {
         e.preventDefault();
         track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.next_bottleneck), action: 'next_bottleneck', context: 'global' });
@@ -1233,7 +1245,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, modalBlocksShortcuts, showOperations, openModal, toggleModal, openCompleteConfirmation, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive, selectedAgent]);
+  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, modalBlocksShortcuts, lucyRoomOpen, showOperations, openModal, toggleModal, openCompleteConfirmation, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive, selectedAgent]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
@@ -1940,6 +1952,7 @@ export function App() {
               onOpenTask={openAskingTask}
               onPermissionChoice={send}
               talkShortcut={shortcutBindings.lucy_talk_toggle}
+              roomShortcut={shortcutBindings.lucy_room_toggle}
               shortcutsBlocked={showOperations || modalBlocksShortcuts}
             />
           </Suspense>

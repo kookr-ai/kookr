@@ -385,6 +385,9 @@ export class AvatarStage {
     this.composer.setSize(width, height);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    // Resizing clears the canvas, and the next frame is drawn only after the browser has painted this one:
+    // draw now, so a view that changes size (the column dragged, Lucy's room entered) never shows a blank frame.
+    if (this.ready) this.composer.render();
   }
 
   private setMorph(name: string, value: number): void {

@@ -29,6 +29,7 @@ import {
 } from '../store/lucy-launch.js';
 import { useLucyConversation } from '../store/lucy-conversation.js';
 import { useKookrStore } from '../store/useStore.js';
+import { leaveAvatarRoomToShowTask } from '../store/avatar-panel-prefs.js';
 import type { LucyLaunchProposalView } from '../../shared/contracts/lucy-launch.js';
 
 const LEVEL_LABEL: Record<LucyLaunchProposalView['level'], string> = {
@@ -41,11 +42,16 @@ const KIND_LABEL: Record<LucyLaunchProposalView['kind'], string> = {
   implementation: 'Implementation',
 };
 
-/** Select a task in the dashboard, the same way opening an existing duplicate in Quick Launch does. */
+/**
+ * Select a task in the dashboard, the same way opening an existing duplicate in Quick Launch does. From
+ * Lucy's room, which covers the dashboard, this also leaves the room so the task is on screen beside her.
+ */
 export function openLucyTask(taskId: string): void {
   const state = useKookrStore.getState();
   const agent = state.agents.find((a) => a.taskId === taskId);
-  if (agent) state.selectAgent(agent.agentId, taskId);
+  if (!agent) return;
+  state.selectAgent(agent.agentId, taskId);
+  leaveAvatarRoomToShowTask();
 }
 
 /** True when Enter pressed with focus on `target` already has another meaning. */
