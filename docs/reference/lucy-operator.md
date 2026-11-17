@@ -295,16 +295,17 @@ off) do not read the record.
 
 ## The permission card
 
-A task that has waited on a permission prompt gets a card at the top of Lucy's panel (see
-[Lucy live](lucy-live.md#when-a-task-waits-on-a-permission-prompt)). Her instructions name the card
+A task that has waited on a permission prompt gets a card at the top of Lucy's panel (see "A task
+waiting for your permission" under [Questions from tasks](lucy-live.md#questions-from-tasks)). Her instructions name the card
 and its three buttons with the labels the card shows: **Approve once**, **Deny** and **Open task**.
 
 For a task blocked on a permission prompt, the board line and `read_task` now also say:
 
 - the tool the prompt asks to use, when Kookr has a clean name for it;
 - the command, file path or URL, taken from the card (secrets already hidden by the server), cleaned
-  and cut to 160 characters like other task text. It is on the board, which is rebuilt every turn; it
-  is never kept in the conversation history unless she quotes it in a reply;
+  and cut to 160 characters like other task text. It is on the board, which is rebuilt every turn, and
+  never in the record of what she said unprompted. A typed reply of hers may quote it, as her
+  instructions allow, and her replies are kept in the conversation history like any other reply;
 - the state of the card: its buttons work (and for about how long), its buttons have timed out, it
   has no answer buttons, or there is no card on her panel.
 
@@ -445,6 +446,9 @@ that sends what you said and the task names, and never a task's request.
 |---|---|
 | The operator's sentence and the earlier exchanges of the conversation | Every turn |
 | The board: task names, project names, states, costs, spend, quota | Every turn |
+| For a task blocked on a permission prompt whose card is on her panel: the tool and the command, file path or URL of the prompt (secrets hidden, cut to 160 characters) | Every turn, while the card is there |
+| What she said unprompted in the last fifteen minutes: up to six sentences, which can quote a task name or the start of a task's question (secrets hidden, cut to 200 characters) | Every turn |
+| The operator's own messages of the conversation, the names of the launchable projects and which of them is Kookr itself, to the call that writes a task | When she proposes a launch |
 | A task's request, folder, waiting signal, closing summary, linked pull requests and the state of its own pull requests | When she reads that task |
 | The operator's own messages of the conversation, alone, to the call that writes a reply or a free-text answer | When she proposes one |
 | The last 40 lines of a task's terminal screen, up to 3000 characters | When she reads that task's output |
