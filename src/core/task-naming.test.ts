@@ -457,6 +457,15 @@ describe('generateTaskNameDetailed: a broken provider is not mistaken for a blip
     expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'failed' });
   });
 
+  test('an unreachable endpoint counts even when only a structured attempt hit it', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient((req) => {
+      if (modeOf(req) === 'plain') throw httpError(429);
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) });
+    });
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'failed' });
+  });
+
   test.each(['ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN'])('a %s network error stays transient', async (code) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const client = detailedClient(() => {
@@ -475,6 +484,16 @@ describe('generateTaskNameDetailed: a broken provider is not mistaken for a blip
       }),
     }]);
     try {
+      // Through the fallback client a provider error comes back as a returned
+      // detail, not a thrown error: the mode rule must hold on that path too.
+      const structured404ThenPlain429: LlmClient = {
+        provider: 'p', model: 'p-model', complete: vi.fn(),
+        completeDetailed: vi.fn(async (req: LlmCompletionRequest) => {
+          throw httpError(modeOf(req) === 'plain' ? 429 : 404);
+        }),
+      };
+      expect(await generateTaskNameDetailed(new FallbackLlmClient([structured404ThenPlain429]), 'Fix bug', '/project'))
+        .toEqual({ name: null, failure: 'transient' });
       expect(await generateTaskNameDetailed(fallbackOver(httpError(404)), 'Fix bug', '/project'))
         .toEqual({ name: null, failure: 'failed' });
       const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) });

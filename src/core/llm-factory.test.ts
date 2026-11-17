@@ -376,6 +376,9 @@ describe('classifyLlmProviderFailure', () => {
     expect(classifyLlmProviderFailure({ status: 404, message: 'No endpoints found for model' })).toBe('client_4xx');
     expect(classifyLlmProviderFailure({ statusCode: 422, message: 'unprocessable' })).toBe('client_4xx');
     expect(classifyLlmProviderFailure({ status: 429, message: 'slow down' })).toBe('other');
+    // Gemini rejects a bad key with a 400: the message keeps it in the auth class.
+    expect(classifyLlmProviderFailure({ status: 400, message: 'API key not valid. Please pass a valid API key.' }))
+      .toBe('auth');
     expect(classifyLlmProviderFailure(Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }))).toBe('unreachable');
     expect(classifyLlmProviderFailure(Object.assign(new Error('getaddrinfo'), { code: 'ENOTFOUND' }))).toBe('unreachable');
     expect(classifyLlmProviderFailure(

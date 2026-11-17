@@ -263,6 +263,15 @@ export function classifyLlmProviderFailure(err: unknown): LlmProviderFailureCate
   const status = classifyStatus(
     numberFromUnknown(shaped?.status) ?? numberFromUnknown(shaped?.statusCode),
   );
+  const text = `${typeof shaped?.name === 'string' ? shaped.name : ''} ${
+    typeof shaped?.message === 'string' ? shaped.message : String(err)
+  }`.toLowerCase();
+  const authText = /unauthori[sz]ed|forbidden|invalid api key|api key|authentication|authorization|permission denied/
+    .test(text);
+  // Some providers reject a bad key with a plain 400 (Gemini: 400 "API key not
+  // valid"). The message, not the status, says the key is dead, so it keeps the
+  // auth pause rather than reading as a refused request (issue #4042).
+  if (status === 'client_4xx') return authText ? 'auth' : 'client_4xx';
   if (status) return status;
 
   if (isLlmProviderEndpointUnreachable(err)) return 'unreachable';
@@ -271,12 +280,7 @@ export function classifyLlmProviderFailure(err: unknown): LlmProviderFailureCate
     return 'network_timeout';
   }
 
-  const text = `${typeof shaped?.name === 'string' ? shaped.name : ''} ${
-    typeof shaped?.message === 'string' ? shaped.message : String(err)
-  }`.toLowerCase();
-  if (/unauthori[sz]ed|forbidden|invalid api key|api key|authentication|authorization|permission denied/.test(text)) {
-    return 'auth';
-  }
+  if (authText) return 'auth';
   if (/\b5\d\d\b|server error|bad gateway|service unavailable|gateway timeout/.test(text)) return 'server_5xx';
   if (/json|parse|malformed|invalid response|unexpected end|message content|choices/.test(text)) return 'malformed_response';
   if (/econnrefused|enotfound/.test(text)) return 'unreachable';
