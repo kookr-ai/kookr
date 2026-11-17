@@ -215,6 +215,12 @@ function actionsRunId(run) {
  * one pull request on it: two pull requests that share a head branch test
  * different merge commits, and a fork's run lists none. `workflow_run` is
  * filled in from the Actions runs API by the CLI.
+ *
+ * Like GitHub's own check rollup (latest run wins), this trusts a later run
+ * of the workflow to check the same thing again. A workflow whose result
+ * depends on the event's contents (test steps gated on the event action, an
+ * "affected files" set taken from the push) can pass without re-testing, and
+ * that pass then retires the earlier failure.
  */
 function workflowIdentity(run) {
   const wr = run && run.workflow_run;
