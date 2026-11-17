@@ -39,6 +39,7 @@ import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
 import Database from 'better-sqlite3';
 import { captureTaskTranscript } from '../use-cases/transcript-store.js';
+import { runTranscriptCaptureSweep } from '../use-cases/capture-transcript-sweep.js';
 import { archiveTerminalTasks } from '../use-cases/task-archive.js';
 
 function mkApp(deps: Partial<TaskRouteDeps>): Hono {
@@ -4606,6 +4607,51 @@ describe('GET /api/tasks/:id/transcript (RFC transcript-capture phase 1)', () =>
         { kind: 'tool_result', name: 'bash' },
       ]);
       expect(JSON.stringify(body.messages)).not.toContain('ghp_0123456789abcdefghij');
+    } finally {
+      if (saved === undefined) delete process.env.KOOKR_OPENCODE_DATA_DIR; else process.env.KOOKR_OPENCODE_DATA_DIR = saved;
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('an opencode task keeps its transcript from the durable snapshot once its data dir is gone (issue #3537)', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'kookr-oc-data-'));
+    const saved = process.env.KOOKR_OPENCODE_DATA_DIR;
+    process.env.KOOKR_OPENCODE_DATA_DIR = dataRoot;
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('oc', '/repo');
+      taskStore.addSession(task.id, { tmuxSession: 'sess-oc', agentType: 'opencode', claudeSessionId: 'ses_abc', cwd: '/repo', createdAt: new Date(Date.now() - 3_600_000) } as never);
+      const dbDir = join(dataRoot, task.id, 'data', 'opencode');
+      mkdirSync(dbDir, { recursive: true });
+      const db = new Database(join(dbDir, 'opencode.db'));
+      db.exec(`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+               CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);`);
+      db.prepare('INSERT INTO message VALUES (?,?,?,?,?)').run('m1', 'ses_abc', 5, 5, JSON.stringify({ role: 'assistant' }));
+      db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('p1', 'm1', 'ses_abc', 5, 5, JSON.stringify({ type: 'text', text: 'all done here' }));
+      db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('p2', 'm1', 'ses_abc', 6, 6, JSON.stringify({
+        type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'ls' }, output: 'listing' },
+      }));
+      db.close();
+      taskStore.completeTask(task.id);
+      // The server's capture sweep, with the same kookrDir layout the route reads.
+      const summary = await runTranscriptCaptureSweep({
+        tasks: taskStore.listTasks(),
+        hooksDir: join(kookrDir, 'hooks'),
+        transcriptsDir: join(kookrDir, 'transcripts'),
+        config: { scope: 'all', maxTasksPerTick: 5 },
+      });
+      expect(summary.captured).toBe(1);
+      // The opencode retention sweep deletes the task's data dir.
+      rmSync(join(dataRoot, task.id), { recursive: true, force: true });
+      const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+      const body = await (await app.request(`/api/tasks/${task.id}/transcript`)).json();
+      expect(body.source).toBe('stored');
+      expect(body.sessionId).toBe('sess-oc');
+      expect(body.messages).toMatchObject([
+        { kind: 'text', role: 'assistant', text: 'all done here' },
+        { kind: 'tool_call', name: 'bash' },
+        { kind: 'tool_result', name: 'bash', text: '[tool result omitted]' },
+      ]);
     } finally {
       if (saved === undefined) delete process.env.KOOKR_OPENCODE_DATA_DIR; else process.env.KOOKR_OPENCODE_DATA_DIR = saved;
       rmSync(dataRoot, { recursive: true, force: true });

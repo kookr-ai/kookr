@@ -302,6 +302,19 @@ assistant text, as for every provider. If the DB is missing, swept, locked or
 of an unknown schema the route falls back to its previous behaviour (hook
 ledger, then `unsupported_provider`).
 
+The per-task DB is deleted by the retention sweep (24 h after the task ends by
+default, see `KOOKR_OPENCODE_DATA_*`). So that the conversation outlives it, the
+durable transcript capture (`KOOKR_TRANSCRIPT_CAPTURE`, on by default for your
+own repos) also snapshots opencode tasks. The snapshot is taken from the DB,
+redacted and with tool-result bodies omitted, like Claude snapshots. The server
+runs it every 15 minutes for terminal opencode tasks (after the capture grace),
+and the daily maintenance capture runs it too. The snapshot is fingerprinted on
+the DB file and its `-wal` file. The route serves it first (`source: "stored"`),
+so `kookr peek` and the transcript API keep working once the data dir is gone.
+A task whose data dir is removed before the first capture tick, for example
+with `KOOKR_OPENCODE_DATA_DONE_TTL_HOURS=0` or by the size cap, has no
+snapshot.
+
 ## Container image and container launch mode (experimental)
 
 `deploy/opencode-worker/` builds `opencode-worker`, the image for the container launch mode
