@@ -106,6 +106,40 @@ interface RepoFacts {
 /** Wait before asking the remote for its default branch again after a failure. */
 export const REMOTE_DEFAULT_BRANCH_RETRY_MS = 10 * 60_000;
 
+/**
+ * Build a reader for a checkout's default branch, or null. It reads the local
+ * `origin/HEAD` when the clone has it, otherwise asks the remote once
+ * (`git ls-remote --symref origin HEAD`: many clones, this host's included,
+ * have no `origin/HEAD`). A remote answer is kept, per checkout path, for the
+ * life of the reader; a failed one is retried after
+ * {@link REMOTE_DEFAULT_BRANCH_RETRY_MS}, so an offline host does not pay the
+ * `ls-remote` timeout on every call for the same path. Used by the tracker
+ * and by the by-branch delivery probe (issue #4093).
+ */
+export function createDefaultBranchReader(
+  git: DeliveryGit = defaultGit,
+): (repoPath: string) => Promise<string | null> {
+  const remoteDefaultBranches = new Map<string, string>();
+  const retryAtByPath = new Map<string, number>();
+  return async (repoPath) => {
+    const local = await git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoPath);
+    const ref = local.code === 0 ? local.stdout.trim() : '';
+    if (ref.startsWith('origin/') && ref.length > 'origin/'.length) return ref.slice('origin/'.length);
+    const cached = remoteDefaultBranches.get(repoPath);
+    if (cached !== undefined) return cached;
+    const retryAt = retryAtByPath.get(repoPath);
+    if (retryAt !== undefined && Date.now() < retryAt) return null;
+    const remote = await git(['ls-remote', '--symref', 'origin', 'HEAD'], repoPath);
+    const name = remote.code === 0 ? /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(remote.stdout)?.[1] : undefined;
+    if (!name) {
+      retryAtByPath.set(repoPath, Date.now() + REMOTE_DEFAULT_BRANCH_RETRY_MS);
+      return null;
+    }
+    remoteDefaultBranches.set(repoPath, name);
+    return name;
+  };
+}
+
 /** How many of `origin/main`'s reflog entries are searched for the promotion time. */
 const REFLOG_DEPTH = 500;
 
@@ -119,10 +153,8 @@ export class PrDeliveryTracker {
   private readonly trainDirs = new Map<string, string>();
   /** Delivery branches by `owner/repo` (lower case), refreshed with each pass (issue #3983). */
   private readonly deliveryBranches = new Map<string, DeliveryBranches>();
-  /** Default branch per checkout as the remote reported it (`ls-remote`), when `origin/HEAD` is not set. */
-  private readonly remoteDefaultBranches = new Map<string, string>();
-  /** When a failed `ls-remote` may be retried, per checkout (an offline host must not pay its timeout every pass). */
-  private readonly remoteDefaultBranchRetryAt = new Map<string, number>();
+  /** Default branch per checkout (`origin/HEAD`, else a cached `ls-remote`). */
+  private readonly readDefaultBranch: (repoPath: string) => Promise<string | null>;
   private running: Promise<void> | null = null;
   private again = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -130,6 +162,7 @@ export class PrDeliveryTracker {
   constructor(private readonly deps: PrDeliveryTrackerDeps) {
     this.git = deps.git ?? defaultGit;
     this.readText = deps.readText ?? defaultReadText;
+    this.readDefaultBranch = createDefaultBranchReader(this.git);
     this.trainStateDir = deps.trainStateDir
       ?? ((repoPath) => effectiveIntegrationTrainStateDir(deps.kookrDir, resolveRepoKey(repoPath)));
   }
@@ -217,31 +250,6 @@ export class PrDeliveryTracker {
       const r = await this.git(args, cwd);
       return { ok: r.code === 0, stdout: r.stdout };
     });
-  }
-
-  /**
-   * The repository's default branch, or null. Read from the local
-   * `origin/HEAD` when the clone has it, otherwise asked of the remote once
-   * (`git ls-remote --symref origin HEAD`: many clones, this host's included,
-   * have no `origin/HEAD`). A remote answer is kept for the life of the
-   * process; a failed one is retried after {@link REMOTE_DEFAULT_BRANCH_RETRY_MS}.
-   */
-  private async readDefaultBranch(repoPath: string): Promise<string | null> {
-    const local = await this.git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoPath);
-    const ref = local.code === 0 ? local.stdout.trim() : '';
-    if (ref.startsWith('origin/') && ref.length > 'origin/'.length) return ref.slice('origin/'.length);
-    const cached = this.remoteDefaultBranches.get(repoPath);
-    if (cached !== undefined) return cached;
-    const retryAt = this.remoteDefaultBranchRetryAt.get(repoPath);
-    if (retryAt !== undefined && Date.now() < retryAt) return null;
-    const remote = await this.git(['ls-remote', '--symref', 'origin', 'HEAD'], repoPath);
-    const name = remote.code === 0 ? /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(remote.stdout)?.[1] : undefined;
-    if (!name) {
-      this.remoteDefaultBranchRetryAt.set(repoPath, Date.now() + REMOTE_DEFAULT_BRANCH_RETRY_MS);
-      return null;
-    }
-    this.remoteDefaultBranches.set(repoPath, name);
-    return name;
   }
 
   private async readRepoFacts(repoPath: string, integrationBranch: string): Promise<RepoFacts> {

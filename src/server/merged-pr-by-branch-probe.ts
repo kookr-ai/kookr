@@ -30,8 +30,13 @@
  * - the PR must have been merged into the repository's default or integration
  *   branch when those are known (issue #4077, the rule the store resolver
  *   applies since #3983): a merge into another feature branch delivers
- *   nothing yet. When the delivery branches are unknown, or the row carries
- *   no base branch, the PR counts, as it did before.
+ *   nothing yet. The tracker knows those branches only for repositories
+ *   whose PRs the store already tracks, which this fallback usually lacks
+ *   (after a restart, or for a repository with no tracked PR). On that cold
+ *   cache the probe reads the default branch itself from the task's
+ *   checkout (`origin/HEAD`, else `git ls-remote`; issue #4093). When the
+ *   default branch is still unknown, or the row carries no base branch, the
+ *   PR counts, as it did before.
  */
 
 import type { Task } from '../core/tasks.js';
@@ -39,7 +44,11 @@ import type { MergedPrAttribution } from '../core/completion/index.js';
 import { sanitizeGithubOwnerRepo } from '../core/project-identity.js';
 import { execGh } from '../adapters/gh-cli-transport.js';
 import { readIntegrationBranch } from '../core/delivery-gate-config.js';
-import { deliveryBranchList, type DeliveryBranches } from './pr-delivery-tracker.js';
+import {
+  createDefaultBranchReader,
+  deliveryBranchList,
+  type DeliveryBranches,
+} from './pr-delivery-tracker.js';
 
 /** Branch names that never identify a single task's delivery. */
 const DEFAULT_BRANCH_NAMES = new Set(['main', 'master', 'develop', 'trunk', 'head']);
@@ -153,20 +162,43 @@ export interface MergedPrByBranchProbeDeps {
   /**
    * The branches a merge into counts as delivery for `owner/repo` (issue
    * #4077): production passes `PrDeliveryTracker.getDeliveryBranches`, the
-   * same lookup the store resolver uses (#3983). Absent, or undefined for a
-   * repository, means unknown: any base branch counts.
+   * same lookup the store resolver uses (#3983). When it has no default
+   * branch for the repository (absent, undefined, or a null `defaultBranch`),
+   * the probe reads one from the task's checkout instead (issue #4093).
    */
   deliveryBranchesOf?: (owner: string, repo: string) => DeliveryBranches | undefined;
+  /**
+   * The default branch of the repository the task ran in, or null (issue
+   * #4093). Used only when `deliveryBranchesOf` does not know it. The default
+   * reads `origin/HEAD` from the latest session's cwd, then the task's cwd,
+   * with a cached `git ls-remote --symref origin HEAD` fallback.
+   */
+  readDefaultBranch?: (task: Task) => Promise<string | null>;
+}
+
+/** The task's checkouts to read repository facts from: the session's worktree may already be gone. */
+function checkoutsOfTask(task: Task): string[] {
+  const candidates = [task.sessions[task.sessions.length - 1]?.cwd, task.cwd];
+  return [...new Set(candidates.filter((c): c is string => typeof c === 'string' && c !== ''))];
 }
 
 async function integrationBranchOfTask(task: Task): Promise<string | null> {
-  // The session's worktree may already be cleaned up; fall back to the task's cwd.
-  const candidates = [task.sessions[task.sessions.length - 1]?.cwd, task.cwd];
-  for (const cwd of new Set(candidates.filter((c): c is string => typeof c === 'string' && c !== ''))) {
+  for (const cwd of checkoutsOfTask(task)) {
     const branch = await readIntegrationBranch(cwd);
     if (branch !== null) return branch;
   }
   return null;
+}
+
+function defaultBranchOfTaskReader(): (task: Task) => Promise<string | null> {
+  const readDefaultBranch = createDefaultBranchReader();
+  return async (task) => {
+    for (const cwd of checkoutsOfTask(task)) {
+      const branch = await readDefaultBranch(cwd);
+      if (branch !== null) return branch;
+    }
+    return null;
+  };
 }
 
 /**
@@ -180,10 +212,12 @@ export function createMergedPrByBranchProbe(
   const runGh = deps.runGh ?? execGh;
   const timeout = deps.timeoutMs ?? DEFAULT_MERGED_PR_BY_BRANCH_TIMEOUT_MS;
   const resolveIntegration = deps.readIntegrationBranch ?? integrationBranchOfTask;
+  const resolveDefault = deps.readDefaultBranch ?? defaultBranchOfTaskReader();
   return async (task) => {
     // Cheap checks first: only a candidate task pays for the config read.
     if (!pickMergedPrBranchProbeTarget(task)) return null;
-    const target = pickMergedPrBranchProbeTarget(task, await resolveIntegration(task).catch(() => null));
+    const integrationBranch = await resolveIntegration(task).catch(() => null);
+    const target = pickMergedPrBranchProbeTarget(task, integrationBranch);
     if (!target) return null;
     try {
       const { stdout } = await runGh(
@@ -199,8 +233,19 @@ export function createMergedPrByBranchProbe(
       );
       const parsed: unknown = JSON.parse(stdout);
       if (!Array.isArray(parsed)) return null;
-      const deliveryBranches = deliveryBranchList(deps.deliveryBranchesOf?.(target.owner, target.repo));
-      return selectMergedPrForBranch(parsed as MergedPrListRow[], target, deliveryBranches);
+      const rows = parsed as MergedPrListRow[];
+      let branches = deps.deliveryBranchesOf?.(target.owner, target.repo);
+      // Cold tracker cache (issue #4093): learn the default branch from the
+      // task's checkout, but only when a row has a base branch to check. The
+      // integration branch comes from the same checkout; a failed read of it
+      // looks like "no train", so a merge into staging would then not count.
+      if (!branches?.defaultBranch && rows.some((r) => typeof r?.baseRefName === 'string' && r.baseRefName !== '')) {
+        branches = {
+          defaultBranch: await resolveDefault(task).catch(() => null),
+          integrationBranch: branches?.integrationBranch ?? integrationBranch,
+        };
+      }
+      return selectMergedPrForBranch(rows, target, deliveryBranchList(branches));
     } catch (err) {
       console.warn(
         `[merged-pr-by-branch] probe failed for task ${task.id}:`,
