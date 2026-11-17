@@ -55,6 +55,13 @@ export const TEST_DTACH_DIR_MARKERS = [
 /** Production instance socket root — never reap masters under this path. */
 const PROD_DTACH_MARKER = '/kookr-dtach/';
 
+/**
+ * A `dtach` executable followed by a mode flag (`dtach -n …`, `/x/dtach -a …`),
+ * so a process that only mentions dtach in a path or a file name is not taken
+ * for a session.
+ */
+const DTACH_INVOCATION = /(?:^|[\s/])dtach\s+-[A-Za-z]\b/;
+
 export interface CmdlinePid {
   pid: number;
   cmdline: string;
@@ -165,7 +172,7 @@ export function findLingeringTestDtachPids(options: LingeringTestDtachOptions = 
   const targets: number[] = [];
   for (const { pid, cmdline } of list()) {
     if (pid === selfPid) continue;
-    if (!cmdline.includes('dtach') || cmdline.includes(PROD_DTACH_MARKER)) continue;
+    if (!DTACH_INVOCATION.test(cmdline) || cmdline.includes(PROD_DTACH_MARKER)) continue;
     const ownerRunId = testRunIdFromEnviron(readEnviron(pid)) ?? testRunIdFromPath(cmdline);
     if (ownerRunId === null && !isTestSuiteDtachCmdline(cmdline)) continue;
     const verdict = classifyTestProcessOwnership({

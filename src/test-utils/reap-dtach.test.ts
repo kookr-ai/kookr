@@ -156,13 +156,14 @@ describe('findLingeringTestDtachPids', () => {
     ).toEqual([40]);
   });
 
-  it('never selects production kookr-dtach, unmarked dtach without a run id, non-dtach or itself', () => {
+  it('never selects production kookr-dtach, unmarked dtach without a run id, non-dtach (even naming dtach) or itself', () => {
     expect(
       find({
         1: { cmdline: 'dtach -n /tmp/tsc-self/s.sock', env: { [TEST_RUN_ID_ENV]: MINE } },
         50: { cmdline: 'dtach -n /tmp/kookr-dtach/1000/port-4800/k.sock -E claude', env: { [TEST_RUN_ID_ENV]: MINE }, startTimeMs: OLD },
         51: { cmdline: 'dtach -n /tmp/other-app/s.sock -E x', startTimeMs: OLD },
         52: { cmdline: 'node dist/index.js', env: { [TEST_RUN_ID_ENV]: MINE } },
+        53: { cmdline: 'node /home/u/dtach-tools/run.js /tmp/tsc-a/x', env: { [TEST_RUN_ID_ENV]: MINE } },
       }),
     ).toEqual([]);
   });

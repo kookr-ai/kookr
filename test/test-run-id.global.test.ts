@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -81,6 +81,9 @@ describe('setup / teardown across Vitest projects', () => {
   });
 
   afterEach(() => {
+    // A failed assertion can leave the shared run open; close it so its run
+    // temp dir is deleted.
+    while ((globalThis as Record<symbol, unknown>)[Symbol.for('kookr.test-run-id.global')]) teardown();
     for (const [key, value] of [[TEST_RUN_ID_ENV, saved.id], ['TMPDIR', saved.tmp]] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -113,5 +116,15 @@ describe('the real run, seen from a worker', () => {
 
   it.runIf(process.platform === 'linux')('uses the run temp dir as os.tmpdir()', () => {
     expect(basename(tmpdir())).toBe(`${TEST_RUN_TMPDIR_PREFIX}${process.env[TEST_RUN_ID_ENV]}`);
+  });
+
+  // Every run initializes globalSetup for at least two Vitest projects (this
+  // file's and the root), each with its own module instance. They must share
+  // one id, so the Vitest process owns exactly one run temp dir.
+  it.runIf(process.platform === 'linux')('has one run temp dir per Vitest process', () => {
+    const ownerPid = ownerPidOfTestRunId(process.env[TEST_RUN_ID_ENV]!);
+    const prefix = `${TEST_RUN_TMPDIR_PREFIX}${ownerPid}-`;
+    const runDirs = readdirSync(dirname(tmpdir())).filter((name) => name.startsWith(prefix));
+    expect(runDirs).toEqual([basename(tmpdir())]);
   });
 });
