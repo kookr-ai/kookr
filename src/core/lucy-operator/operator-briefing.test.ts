@@ -208,6 +208,13 @@ describe('buildOperatorBriefing: signature', () => {
     expect(signature({ ...base, asks: [...base.asks, ask('o1', 'gone', undefined, { taskEnded: true })] })).not.toBe(before);
   });
 
+  it('changes when the same task keeps waiting but for another reason (quiet, then a merge conflict)', () => {
+    const quiet = { tasks: [task('t1', 'Docs link audit', 'stale_agent'), task('w1', 'A')] };
+    const conflict = { tasks: [task('t1', 'Docs link audit', 'merge_conflict'), task('w1', 'A')] };
+    expect(buildOperatorBriefing(quiet, NOW).text).not.toBe(buildOperatorBriefing(conflict, NOW).text);
+    expect(signature(conflict)).not.toBe(signature(quiet));
+  });
+
   it('is one value for every all-clear', () => {
     expect(signature({ tasks: [] })).toBe(signature({ tasks: [task('w1', 'A'), task('d1', 'B', undefined, 'completed')] }));
   });

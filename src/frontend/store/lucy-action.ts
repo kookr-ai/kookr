@@ -19,7 +19,7 @@ import {
   type LucyActionProposalView,
 } from '../../shared/contracts/lucy-action.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
-import { appendConversationEntry } from './lucy-conversation.js';
+import { appendConversationEntry, updateConversationEntry } from './lucy-conversation.js';
 
 export interface LucyActionResult {
   text: string;
@@ -42,6 +42,9 @@ const EMPTY: LucyActionSnapshot = Object.freeze({ proposal: null, conversationId
 
 let snapshot: LucyActionSnapshot = EMPTY;
 const listeners = new Set<() => void>();
+/** Proposals this tab ended as "timed out" by its own clock, with what the line needs if the server's real outcome follows. */
+const expiredHere = new Map<string, { title: string; taskId?: string }>();
+const MAX_REMEMBERED_EXPIRIES = 20;
 
 function set(next: Partial<LucyActionSnapshot>): void {
   snapshot = { ...snapshot, ...next };
@@ -60,10 +63,25 @@ export function useLucyAction(): LucyActionSnapshot {
   );
 }
 
-/** Apply an `outcome`. Only the shown proposal is affected; one for any other id is ignored. */
+/**
+ * Apply an `outcome`. Only the shown proposal closes; one for any other id is ignored, except the real outcome of a
+ * proposal this tab already ended as "timed out" (a reply or close that went through just as the card ran out),
+ * which replaces that line so the thread does not keep saying it timed out.
+ */
 export function applyLucyActionOutcome(outcome: LucyActionOutcome): void {
   const shown = snapshot.proposal;
-  if (shown?.id !== outcome.proposalId) return;
+  if (shown?.id !== outcome.proposalId) {
+    const expired = expiredHere.get(outcome.proposalId);
+    if (expired && outcome.outcome !== 'expired' && outcome.outcome !== 'unknown') {
+      expiredHere.delete(outcome.proposalId);
+      updateConversationEntry(`action-${outcome.proposalId}`, {
+        text: `${expired.title}: ${describeActionOutcome(outcome)}`,
+        started: outcome.outcome === 'done',
+        ...(expired.taskId ? { taskId: expired.taskId } : {}),
+      });
+    }
+    return;
+  }
   const text = describeActionOutcome(outcome);
   set({ proposal: null, sending: false, error: null, result: { text, taskId: shown.taskId } });
   // What became of the card is kept in the conversation, like a launch: once per proposal, however many tabs say so.
@@ -90,6 +108,12 @@ export function handleLucyAction(msg: LucyActionMessage): void {
 
 /** The card ran out of time by itself (`expiresAt` passed); the server's outcome may follow or may have been missed. */
 export function expireLucyAction(proposalId: string): void {
+  const shown = snapshot.proposal;
+  if (shown?.id !== proposalId) return;
+  // A press is on its way: the route's answer or the broadcast closes the card with what really happened.
+  if (snapshot.sending) return;
+  if (expiredHere.size >= MAX_REMEMBERED_EXPIRIES) expiredHere.clear();
+  expiredHere.set(proposalId, { title: shown.title, ...(shown.taskId ? { taskId: shown.taskId } : {}) });
   applyLucyActionOutcome({ outcome: 'expired', proposalId });
 }
 
@@ -109,6 +133,7 @@ async function post(path: string, fetcher: typeof fetch): Promise<void> {
     });
     if (!response.ok) {
       set({ sending: false, error: 'Lucy could not do that. Try again.' });
+      expireIfDue(proposal);
       return;
     }
     // The socket broadcast is what closes the card. The route's own answer is applied too, so a lost
@@ -120,7 +145,13 @@ async function post(path: string, fetcher: typeof fetch): Promise<void> {
     if (snapshot.proposal?.id === proposal.id) set({ sending: false });
   } catch {
     set({ sending: false, error: 'Lucy could not be reached. Try again.' });
+    expireIfDue(proposal);
   }
+}
+
+/** The card's own timer skipped its expiry while a press was in flight; if the press failed after that, end the card now. */
+function expireIfDue(proposal: LucyActionProposalView): void {
+  if (Date.now() >= proposal.expiresAt) expireLucyAction(proposal.id);
 }
 
 /** Send / Close: a click on the card. The body names the card and nothing else. */
@@ -134,5 +165,6 @@ export function declineLucyAction(fetcher: typeof fetch = fetch): Promise<void> 
 
 export function __resetLucyActionForTests(): void {
   snapshot = EMPTY;
+  expiredHere.clear();
   listeners.clear();
 }

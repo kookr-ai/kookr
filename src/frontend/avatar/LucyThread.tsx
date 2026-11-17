@@ -32,7 +32,7 @@ import type { ReactNode } from 'react';
 import type { ClipHistoryItem } from '../audio/last-clip.js';
 import type { ConversationEntry } from '../store/lucy-conversation.js';
 import { openLucyTask } from './LucyLaunchCard.js';
-import { lookedAtText, sendLucyTypedText, useLucyTyped } from './LucyTypedInput.js';
+import { announceInComposer, lookedAtText, sendLucyTypedText, useLucyTyped } from './LucyTypedInput.js';
 import { formatRelativeTime } from './relative-time.js';
 
 const NAME = 'Lucy';
@@ -161,6 +161,37 @@ export function LucyThread({
   const lastIdRef = useRef<string | null>(null);
   const [newBelow, setNewBelow] = useState(false);
   const typed = useLucyTyped();
+  // What each outcome line said when last looked at (null before the first look: a thread loaded from storage is not announced).
+  const outcomeTextsRef = useRef<Map<string, string> | null>(null);
+  // The button inside a card or a suggestion row that holds keyboard focus, so its going away can be noticed.
+  const focusedRef = useRef<HTMLElement | null>(null);
+
+  // What became of a card is recorded in this silent log; say it through the composer's status region as well.
+  useEffect(() => {
+    const seen = outcomeTextsRef.current;
+    const now = new Map<string, string>();
+    for (const entry of entries) if (entry.kind === 'launch-outcome') now.set(entry.id, entry.text);
+    outcomeTextsRef.current = now;
+    if (seen === null) return;
+    // The newest changed line (a new one, or a "timed out" replaced by what really happened) is the one told.
+    let told: string | null = null;
+    for (const [id, text] of now) if (seen.get(id) !== text) told = text;
+    if (told !== null) announceInComposer(told);
+  }, [entries]);
+
+  // A card or a suggestion row that held focus is gone (its button was pressed): keep focus in the thread instead of
+  // letting it fall to the page. Focus the operator has moved elsewhere is left alone.
+  useEffect(() => {
+    const was = focusedRef.current;
+    if (!was) return;
+    if (was.isConnected) {
+      if (document.activeElement !== was) focusedRef.current = null;
+      return;
+    }
+    focusedRef.current = null;
+    const active = document.activeElement;
+    if (active === null || active === document.body || active === document.documentElement) scrollRef.current?.focus();
+  });
 
   // Follow the newest entry, and the growth of the one still arriving, while the operator is at the bottom.
   // Scrolled up, the list stays put and says there is something new. A thread just opened starts at the newest entry.
@@ -355,6 +386,14 @@ export function LucyThread({
               <p className="avatar-entry-doing" data-testid="avatar-typed-doing">{lookedAtText(entry.looked ?? 0)}</p>
             )}
             {entry.text && <div className="avatar-entry-bubble"><Who>{NAME}</Who><ReplyText text={entry.text} /></div>}
+            {/* A line she wrote on her own about a task (a task that failed, a question she could not speak) offers to open it. */}
+            {entry.taskId && entry.status === 'done' && (
+              <div className="avatar-entry-actions">
+                <button type="button" className="avatar-chip avatar-entry-open" onClick={() => openLucyTask(entry.taskId!)} data-testid="avatar-typed-lucy-open">
+                  Open task
+                </button>
+              </div>
+            )}
             {chipsOf(entry.chips, newest && entry.status === 'done')}
             {timeOf(entry, index)}
           </li>
@@ -450,7 +489,15 @@ export function LucyThread({
   };
 
   return (
-    <div className="avatar-thread" data-testid="avatar-thread-wrap">
+    <div
+      className="avatar-thread"
+      data-testid="avatar-thread-wrap"
+      onFocus={(event) => {
+        const target = event.target as HTMLElement;
+        if (cardsRef.current?.contains(target) || target.closest('.avatar-chips')) focusedRef.current = target;
+      }}
+      onBlur={(event) => { if (event.relatedTarget !== null) focusedRef.current = null; }}
+    >
       {/* A log, but not a live one: Lucy's answers are spoken aloud already, so they are not announced.
           Focusable because it scrolls. */}
       <div

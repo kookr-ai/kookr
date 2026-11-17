@@ -266,7 +266,7 @@ function fingerprint(text: string): string {
 }
 
 function buildSignature(state: BriefingState): string {
-  const parts = NEED_ORDER.map((group) => `${group}:${state.needs[group].map((need) => need.taskId).sort().join(',')}`);
+  const parts = NEED_ORDER.map((group) => `${group}:${state.needs[group].map((need) => `${need.taskId}/${need.kind}`).sort().join(',')}`);
   // A task that asks a second question after its first was answered is news, so the questions themselves count too.
   parts.push(`asks:${[...state.blockingAskIds].sort().join(',')}`);
   parts.push(`opinion:${state.opinions.map((ask) => ask.id).sort().join(',')}`);

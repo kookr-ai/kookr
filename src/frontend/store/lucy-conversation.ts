@@ -104,6 +104,9 @@ export interface ConversationEntryPatch {
   clipId?: string;
   subject?: string;
   usedFallback?: boolean;
+  /** A launch or action outcome line replaced by the server's real outcome. */
+  started?: boolean;
+  taskId?: string;
 }
 
 const EMPTY: readonly ConversationEntry[] = Object.freeze([]);

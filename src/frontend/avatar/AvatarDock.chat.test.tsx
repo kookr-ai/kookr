@@ -391,6 +391,28 @@ describe('Lucy\'s column as a chat', () => {
       expect(entries().map((li) => li.querySelector('.avatar-entry-bubble')!.textContent)).toEqual(['You What needs me right now?', 'Lucy On it.']);
     });
 
+    test('a suggestion button that holds keyboard focus hands it to the thread when its row goes away', async () => {
+      render();
+      const chip = all('avatar-chip')[1];
+      act(() => { chip.focus(); });
+      expect(document.activeElement).toBe(chip);
+      act(() => { chip.click(); });
+      await settle();
+      expect(chip.isConnected).toBe(false);
+      expect(document.activeElement).toBe(q('avatar-thread'));
+    });
+
+    test('focus the operator moved to the text box is not taken back when the row goes away', async () => {
+      render();
+      const chip = all('avatar-chip')[1];
+      act(() => { chip.focus(); });
+      act(() => { input().focus(); });
+      act(() => { chip.click(); });
+      await settle();
+      expect(chip.isConnected).toBe(false);
+      expect(document.activeElement).toBe(input());
+    });
+
     test('the buttons are gone, with the text box, when typed requests are switched off on the server', async () => {
       answerTurns(() => new Response('{}', { status: 404 }));
       render();

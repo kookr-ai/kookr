@@ -38,7 +38,7 @@ import { __resetSoundPreferenceForTests } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
 import { __resetLucyActionForTests, getLucyActionSnapshot, handleLucyAction, type LucyActionMessage } from '../store/lucy-action.js';
-import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
+import { __resetLucyConversationForTests, appendConversationEntry } from '../store/lucy-conversation.js';
 import { __resetLucyLaunchForTests, handleLucyLaunch } from '../store/lucy-launch.js';
 import { useKookrStore } from '../store/useStore.js';
 import type { LucyActionProposalView } from '../../shared/contracts/lucy-action.js';
@@ -222,6 +222,51 @@ describe('AvatarDock: Lucy action card', () => {
     await send({ conversationId: CONV, outcome });
     expect(q('avatar-action-card')).toBeNull();
     expect(results()).toEqual([`${title}: ${line}`]);
+  });
+
+  test('what became of the card is also told through the always-present status region', async () => {
+    mount();
+    await showCard();
+    expect(q('avatar-typed-announce')!.textContent).toBe('');
+    await send({ conversationId: CONV, outcome: { outcome: 'refused', proposalId: 'a1', reason: 'That question was already answered, so I did not send anything.' } });
+    expect(q('avatar-typed-announce')!.textContent).toBe('Reply to Billing migration: That question was already answered, so I did not send anything.');
+  });
+
+  test('an outcome line already in the saved thread is not announced when the panel opens', () => {
+    appendConversationEntry({ kind: 'launch-outcome', text: 'Old: Sent', started: true });
+    mount();
+    expect(q('avatar-typed-announce')!.textContent).toBe('');
+  });
+
+  test('the real outcome replacing a local timed out line is announced', async () => {
+    vi.useFakeTimers();
+    mount();
+    await showCard(reply({ expiresAt: Date.now() + 5_000 } as Partial<LucyActionProposalView>));
+    await act(async () => { vi.advanceTimersByTime(5_100); });
+    expect(q('avatar-typed-announce')!.textContent).toBe('Reply to Billing migration: That request timed out');
+    await send({ conversationId: CONV, outcome: { outcome: 'done', proposalId: 'a1', kind: 'reply', taskId: 't1' } });
+    expect(results()).toEqual(['Reply to Billing migration: Sent']);
+    expect(q('avatar-typed-announce')!.textContent).toBe('Reply to Billing migration: Sent');
+  });
+
+  test('the Send button that holds focus hands it to the thread when the card goes', async () => {
+    mount();
+    await showCard();
+    const button = q('avatar-action-confirm')!;
+    act(() => { button.focus(); });
+    expect(document.activeElement).toBe(button);
+    await send({ conversationId: CONV, outcome: { outcome: 'done', proposalId: 'a1', kind: 'reply', taskId: 't1' } });
+    expect(button.isConnected).toBe(false);
+    expect(document.activeElement).toBe(q('avatar-thread'));
+  });
+
+  test('focus the operator moved elsewhere is not taken back when the card goes', async () => {
+    mount();
+    await showCard();
+    act(() => { q('avatar-action-confirm')!.focus(); });
+    act(() => { q('avatar-typed-input')!.focus(); });
+    await send({ conversationId: CONV, outcome: { outcome: 'done', proposalId: 'a1', kind: 'reply', taskId: 't1' } });
+    expect(document.activeElement).toBe(q('avatar-typed-input'));
   });
 
   test('an outcome for another proposal leaves the card alone', async () => {

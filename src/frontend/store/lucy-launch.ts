@@ -26,7 +26,7 @@ import {
 } from '../../shared/contracts/lucy-launch.js';
 import { announceLaunchReport } from '../audio/ask-announcement.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
-import { appendConversationEntry, getConversationEntries, removeConversationEntries } from './lucy-conversation.js';
+import { appendConversationEntry, getConversationEntries, removeConversationEntries, updateConversationEntry } from './lucy-conversation.js';
 
 export interface LucyLaunchResult {
   text: string;
@@ -56,6 +56,9 @@ const RECENT_ENTRIES = 4;
 
 let snapshot: LucyLaunchSnapshot = EMPTY;
 const listeners = new Set<() => void>();
+/** Proposals this tab ended as "timed out" by its own clock; the server's real outcome may still follow. */
+const expiredHere = new Set<string>();
+const MAX_REMEMBERED_EXPIRIES = 20;
 
 function set(next: Partial<LucyLaunchSnapshot>): void {
   snapshot = { ...snapshot, ...next };
@@ -95,11 +98,6 @@ export function isLaunchReadBack(text: string, options: { partial?: boolean } = 
   return options.partial ? readBack.startsWith(said) : readBack === said;
 }
 
-/** True when the proposal with this id is the card on screen. */
-export function isLucyProposalShown(proposalId: string): boolean {
-  return snapshot.proposal?.id === proposalId;
-}
-
 export function describeOutcome(outcome: LucyLaunchOutcome): LucyLaunchResult {
   switch (outcome.outcome) {
     case 'launched': return { text: `Started ${outcome.project} task${outcome.queued ? ' (queued)' : ''}`, started: true, taskId: outcome.taskId };
@@ -119,9 +117,24 @@ function recordOutcome(proposalId: string, result: LucyLaunchResult): void {
   );
 }
 
-/** Apply an `outcome`. Only the shown proposal is affected; one for any other id is ignored. */
+/**
+ * Apply an `outcome`. Only the shown proposal closes; one for any other id is ignored, except the real outcome of a
+ * proposal this tab already ended as "timed out" (a launch that went through just as the card ran out), which
+ * replaces that line so the thread does not keep saying it timed out.
+ */
 export function applyLucyLaunchOutcome(outcome: LucyLaunchOutcome): void {
-  if (snapshot.proposal?.id !== outcome.proposalId) return;
+  if (snapshot.proposal?.id !== outcome.proposalId) {
+    if (expiredHere.has(outcome.proposalId) && outcome.outcome !== 'expired' && outcome.outcome !== 'unknown') {
+      expiredHere.delete(outcome.proposalId);
+      const result = describeOutcome(outcome);
+      updateConversationEntry(`launch-${outcome.proposalId}`, {
+        text: result.text,
+        started: result.started,
+        ...(result.taskId ? { taskId: result.taskId } : {}),
+      });
+    }
+    return;
+  }
   set({ proposal: null, sending: false, error: null });
   recordOutcome(outcome.proposalId, describeOutcome(outcome));
 }
@@ -163,6 +176,10 @@ export function handleLucyLaunch(msg: Extract<ServerMessage, { type: 'lucy_launc
 /** The card ran out of time by itself (`expiresAt` passed); the server's outcome may follow or may have been missed. */
 export function expireLucyProposal(proposalId: string): void {
   if (snapshot.proposal?.id !== proposalId) return;
+  // A press is on its way: the route's answer or the broadcast closes the card with what really happened.
+  if (snapshot.sending) return;
+  if (expiredHere.size >= MAX_REMEMBERED_EXPIRIES) expiredHere.clear();
+  expiredHere.add(proposalId);
   set({ proposal: null, sending: false, error: null });
   recordOutcome(proposalId, describeOutcome({ outcome: 'expired', proposalId }));
 }
@@ -179,6 +196,7 @@ async function post(path: string, body: Record<string, unknown>, fetcher: typeof
     });
     if (!response.ok) {
       set({ sending: false, error: 'Lucy could not do that. Try again.' });
+      expireIfDue(proposal);
       return;
     }
     // The socket broadcast is what closes the card. The route's own answer is applied too, so a lost
@@ -190,7 +208,13 @@ async function post(path: string, body: Record<string, unknown>, fetcher: typeof
     if (snapshot.proposal?.id === proposal.id) set({ sending: false });
   } catch {
     set({ sending: false, error: 'Lucy could not be reached. Try again.' });
+    expireIfDue(proposal);
   }
+}
+
+/** The card's own timer skipped its expiry while a press was in flight; if the press failed after that, end the card now. */
+function expireIfDue(proposal: LucyLaunchProposalView): void {
+  if (Date.now() >= proposal.expiresAt) expireLucyProposal(proposal.id);
 }
 
 /** Go (button or Enter). The body never carries a permission level; the server reads it. */
@@ -206,5 +230,6 @@ export function declineLucyLaunch(fetcher: typeof fetch = fetch): Promise<void> 
 
 export function __resetLucyLaunchForTests(): void {
   snapshot = EMPTY;
+  expiredHere.clear();
   listeners.clear();
 }

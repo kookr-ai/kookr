@@ -121,6 +121,11 @@ function say(words: string): void {
   setTypedState({ announce: { seq: (typedState.announce?.seq ?? 0) + 1, text: words } });
 }
 
+/** Tell a screen reader something the silent thread just recorded (what became of a card), through the composer's status region. */
+export function announceInComposer(words: string): void {
+  say(words);
+}
+
 export function getLucyTypedState(): LucyTypedState {
   return typedState;
 }

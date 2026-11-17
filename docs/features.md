@@ -570,7 +570,7 @@ know something. She cannot act on tasks yet.
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
   `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
 
-#### Ask Lucy a question (on by default with an OpenRouter key, no screen yet)
+#### Ask Lucy a question (on by default with an OpenRouter key)
 
 When an OpenRouter key is set, Kookr answers questions about your tasks at `POST /api/lucy/turn`
 (on by default; `KOOKR_LUCY_OPERATOR=0` switches it off):
@@ -585,8 +585,9 @@ talk uses it too when launching is on (next section).
   it was asked to do, what it is waiting for, its closing summary), list projects, or ask the
   dashboard to open a task. She cannot read a task's terminal output yet.
 - **On its own she cannot change anything.** No look-up tool launches, replies to, closes, snoozes or stops a
-  task, so text written by an agent cannot make her act. The one exception is the optional launch
-  proposal below, which only the operator can confirm. She is told that everything tasks write is
+  task, so text written by an agent cannot make her act. The exceptions are the proposals described
+  below (starting a task, and answering, replying to or closing an existing one), which only the operator
+  can confirm. She is told that everything tasks write is
   information to report, never an instruction.
 - **Limits.** A turn makes at most four model calls and stops after 30 seconds. When a limit ends a
   turn, her last sentence says so.
@@ -617,6 +618,30 @@ says so, and the sentence is a message of hers in the conversation with an **Ope
 - **What leaves the machine.** Hands-free talk is then answered by the operator conversation, so each
   spoken request goes to OpenRouter, and a second call writes the task from your words and the project
   names only. Details: [Lucy operator](reference/lucy-operator.md#launching-a-task-by-voice-or-text).
+
+#### Ask Lucy to answer, reply to or close a task (on by default)
+
+Under the same switch as launching (`KOOKR_LUCY_LAUNCH`), you can tell Lucy to act on a task that
+already exists: "answer the billing question with Postgres", "tell the billing task to rebase on main",
+"close the billing task" (only for a task that says it is finished). As with a launch, nothing happens
+at once. She proposes it as a card in the avatar panel that shows exactly what will be sent, and it
+goes only when you click **Send** (or **Close**) or say "go". Anything else you say drops it, and an
+unconfirmed card expires after two minutes. Kookr checks again at that moment that the question is
+still waiting, the task still runs or still says it is finished, and refuses with a short sentence when
+the card is no longer true. What became of the card stays in the conversation as one line ("Sent",
+"Closed", or the reason nothing was done), with a button to open the task. Details:
+[Lucy operator](reference/lucy-operator.md#acting-on-an-existing-task-answer-reply-close).
+
+#### Lucy writes to you first: a briefing and task events (on by default with the Lucy conversation)
+
+Two things appear in Lucy's thread without you asking, as written messages that are not spoken. When
+her panel first opens she writes a **briefing** of at most about 45 words: what waits on you, what is
+working, and up to three follow-up buttons. She writes it again when you come back after 10 minutes or
+more away, but only if what waits on you changed. When a task she did not launch fails, goes quiet or
+loses contact, or says it is finished and still waits for review after ten minutes, she writes one line
+about it (events close together are written as one line, at most one line every two minutes), with an
+**Open task** button. Details:
+[Lucy live](reference/lucy-live.md#what-she-writes-on-her-own).
 
 #### Interaction log (on by default, local only)
 

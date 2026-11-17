@@ -52,6 +52,7 @@ import { __resetLucyConversationForTests, getConversationEntries } from '../stor
 import { __resetLucyPermissionForTests, handleLucyPermissionCards } from '../store/lucy-permission.js';
 import { __resetLucySaysForTests, handleLucySays } from '../store/lucy-says.js';
 import { __resetOperatorAsksForTests, handleOperatorAsks } from '../store/operator-asks.js';
+import { useKookrStore } from '../store/useStore.js';
 
 const BRIEFING = {
   text: 'Billing migration is stopped on a question. Two more are working.',
@@ -168,6 +169,24 @@ describe('AvatarDock: she writes first', () => {
       });
       expect(lines()).toEqual(['Lucy Docs link audit says it is finished and wants your review.']);
       expect(written()).toEqual([expect.objectContaining({ status: 'done', taskId: 't9' })]);
+    });
+
+    test('her line about a task offers Open task, which opens that task', async () => {
+      const selectAgent = vi.fn();
+      useKookrStore.setState({ agents: [{ agentId: 'ag9', taskId: 't9' }] as never, selectAgent } as never);
+      await render();
+      act(() => { handleLucySays({ type: 'lucy_says', id: 'says-open', kind: 'task_failed', text: 'Docs link audit failed.', taskIds: ['t9'], at: 1 }); });
+      const open = container.querySelector<HTMLElement>('[data-testid="avatar-typed-lucy-open"]')!;
+      expect(open.textContent).toBe('Open task');
+      act(() => { open.click(); });
+      expect(selectAgent).toHaveBeenCalledWith('ag9', 't9');
+    });
+
+    test('a line of hers with no task offers no Open task', async () => {
+      await render();
+      act(() => { handleLucySays({ type: 'lucy_says', id: 'says-none', kind: 'task_failed', text: 'Something happened.', taskIds: [], at: 1 }); });
+      expect(lines()).toEqual(['Lucy Something happened.']);
+      expect(container.querySelector('[data-testid="avatar-typed-lucy-open"]')).toBeNull();
     });
 
     test('it is written while the panel is minimised too, and nothing is spoken for it', async () => {
