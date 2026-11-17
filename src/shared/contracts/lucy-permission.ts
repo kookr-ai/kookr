@@ -3,7 +3,8 @@
  *
  * The server decides everything: which prompts get a card, when she speaks, and the exact
  * sentence. The browser shows the cards it is sent and, when a message carries `announce`,
- * fetches the clip for that notice id. It never sends text to be spoken.
+ * fetches the clip for that notice id. It never sends text to be spoken; the sentence comes along
+ * only so it can be written in her thread when it could not be spoken.
  */
 import type { PermissionRequestBinding } from './permission-request-binding.js';
 
@@ -53,4 +54,10 @@ export interface LucyPermissionAnnouncement {
   noticeId: string;
   /** The prompts the sentence is about. Once none of them is on the list, she stops. */
   promptIds: string[];
+  /**
+   * The sentence itself, so the panel can write it into her thread when no clip could be fetched
+   * (no speech service, or it failed). The clip is still made from the server's own copy: the
+   * browser never sends text to be spoken. Absent from a server older than this field.
+   */
+  text?: string;
 }

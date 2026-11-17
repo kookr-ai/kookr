@@ -275,7 +275,8 @@ export class LucyPermissionNotifier {
       if (oldest === undefined) break;
       this.notices.delete(oldest);
     }
-    if (this.push({ noticeId, promptIds }) === 0) return; // Nobody heard it: said once a dashboard is open.
+    // The sentence goes along so the panel can write it when it could not be spoken (no clip).
+    if (this.push({ noticeId, promptIds, text }) === 0) return; // Nobody heard it: said once a dashboard is open.
     for (const ep of unspoken) ep.spoken = true;
     this.lastSpokenAt = nowMs;
   }

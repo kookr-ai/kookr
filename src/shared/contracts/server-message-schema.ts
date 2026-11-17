@@ -504,7 +504,7 @@ const operatorAsksMessage = z.object({
 const lucyPermissionCardsMessage = z.object({
   type: z.literal('lucyPermissionCards'),
   cards: z.array(jsonObject),
-  announce: z.object({ noticeId: z.string(), promptIds: z.array(z.string()) }).optional(),
+  announce: z.object({ noticeId: z.string(), promptIds: z.array(z.string()), text: z.string().optional() }).optional(),
   serverNow: z.number().optional(),
 });
 
