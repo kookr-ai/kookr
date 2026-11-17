@@ -469,6 +469,68 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     handle = await startTelegramTrigger(makeDeps({ getOperatorInbox: () => { throw new Error('boom'); } }));
     await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
     expect(fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1].text).toMatch(/Could not read what is waiting/);
+    await waitFor(() =>
+      expect(readAuditEvents(tmp).some((e) => e.kind === 'brief_query_failed' && e.sender === ALLOWED_USER_ID && e.err === 'Error: boom')).toBe(true),
+    );
+    expect(readAuditEvents(tmp).some((e) => e.kind === 'brief_replied')).toBe(false);
+  });
+
+  // The `/brief` dispatch in the message handler (issue #3994): the tests above
+  // check the reply; these pin which messages reach it and that nothing else runs.
+  describe('/brief dispatch', () => {
+    /** The fixture inbox with its kookr project moved to the project enabled here. */
+    function scopedInbox() {
+      const inbox = fixtureInbox();
+      return { ...inbox, items: inbox.items.map((item) => (item.cwd === KOOKR_CWD ? { ...item, cwd: PROJECT.cwd } : item)) };
+    }
+
+    it('answers /brief with one message and does not also read it as a task request', async () => {
+      const llmClient = fakeLlm(JSON.stringify({ prompt: 'Investigate.', cwd: PROJECT.cwd }));
+      const getOperatorInbox = vi.fn(() => scopedInbox());
+      fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/brief' })]);
+      handle = await startTelegramTrigger(makeDeps({ llmClient, getOperatorInbox, dashboardBaseUrl: 'https://kookr.example.test' }));
+      await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+      await sleep(200);
+      expect(getOperatorInbox).toHaveBeenCalledTimes(1);
+      expect(fake.outbound.sendMessage).toHaveLength(1);
+      const sent = fake.outbound.sendMessage[0];
+      expect(sent.chat_id).toBe(ALLOWED_USER_ID);
+      expect(sent.text.split('\n')[0]).toMatch(/^5 waiting:/);
+      // A named item links to its task on the dashboard this trigger was given.
+      expect(sent.text).toContain('https://kookr.example.test/?task=perm');
+      expect(llmClient.complete).not.toHaveBeenCalled();
+      expect(launchTaskMock).not.toHaveBeenCalled();
+    });
+
+    it('answers /brief addressed to the bot by name', async () => {
+      const getOperatorInbox = vi.fn(() => scopedInbox());
+      fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/brief@kookr_core_bot' })]);
+      handle = await startTelegramTrigger(makeDeps({ getOperatorInbox }));
+      await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+      expect(getOperatorInbox).toHaveBeenCalledTimes(1);
+      expect(fake.outbound.sendMessage[0].text.split('\n')[0]).toMatch(/^5 waiting:/);
+    });
+
+    it('does not read the inbox for a message that only starts with /brief', async () => {
+      const getOperatorInbox = vi.fn(() => scopedInbox());
+      fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/briefing' })]);
+      handle = await startTelegramTrigger(makeDeps({ getOperatorInbox }));
+      await sleep(200);
+      expect(getOperatorInbox).not.toHaveBeenCalled();
+      expect(fake.outbound.sendMessage.some((m) => /waiting/.test(m.text))).toBe(false);
+    });
+
+    it('says /brief is not available when the server gave no inbox reader', async () => {
+      const llmClient = fakeLlm(JSON.stringify({ prompt: 'Investigate.', cwd: PROJECT.cwd }));
+      fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/brief' })]);
+      handle = await startTelegramTrigger(makeDeps({ llmClient }));
+      await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+      await sleep(200);
+      expect(fake.outbound.sendMessage).toHaveLength(1);
+      expect(fake.outbound.sendMessage[0].text).toBe('/brief is not available on this server.');
+      expect(llmClient.complete).not.toHaveBeenCalled();
+      expect(readAuditEvents(tmp).some((e) => e.kind === 'brief_query_failed' || e.kind === 'brief_replied')).toBe(false);
+    });
   });
 
   it('/tasks replies with an error message when the task query fails', async () => {
