@@ -266,6 +266,10 @@ const serverMessageCases = [
     conversationId: 'c1',
     outcome: { outcome: 'launched', proposalId: 'p1', taskId: 't1', project: 'kookr' },
   }),
+  serverMessageCase({
+    type: 'lucy_says', id: 'says-1', kind: 'task_wants_review', taskIds: ['t1'], at: 1790000000000,
+    text: 'Docs link audit says it is finished and wants your review.',
+  }),
 ] as const;
 
 const coveredServerMessageTypes = serverMessageCases.map((message) => message.type);

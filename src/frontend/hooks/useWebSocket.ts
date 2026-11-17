@@ -13,6 +13,7 @@ import { measureSync } from '../debug-timeline.js';
 import { acknowledgeDictationLaunch, resumeDictationCorpusRetries } from '../store/dictation-corpus.js';
 import { handleOperatorAskResult, handleOperatorAsks } from '../store/operator-asks.js';
 import { handleLucyPermissionCards } from '../store/lucy-permission.js';
+import { handleLucySays } from '../store/lucy-says.js';
 import { handleLucyLaunch } from '../store/lucy-launch.js';
 
 // Stale-socket callbacks are ignored silently in the controller; here we count
@@ -393,6 +394,10 @@ export function useWebSocket() {
             // Lucy's cards for tasks waiting on a permission prompt (issue #3932).
             case 'lucyPermissionCards':
               handleLucyPermissionCards(msg);
+              break;
+            // A line Lucy writes on her own about a task she did not launch.
+            case 'lucy_says':
+              handleLucySays({ type: 'lucy_says', id: msg.id, kind: msg.kind, text: msg.text, taskIds: msg.taskIds, at: msg.at });
               break;
             case 'operatorAskResult':
               handleOperatorAskResult(msg.askId, msg.ok, msg.reason);

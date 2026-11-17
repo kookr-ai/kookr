@@ -55,6 +55,8 @@ import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { PermissionPromptWaitAlerter } from './permission-prompt-wait-alert.js';
 import { LucyPermissionNotifier, pushLucyPermissionCards } from './lucy-permission-notice.js';
 import { DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS } from '../shared/contracts/lucy-permission.js';
+import { LUCY_OPERATOR_ACTOR_ID } from '../shared/contracts/lucy-launch.js';
+import { LucySaysNotifier, pushLucySays } from './lucy-says.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import { FinishedAwaitingAckAckReaperMetrics } from './finished-awaiting-ack-ack-reaper.js';
@@ -2527,6 +2529,39 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getAfterMs: () => (currentSettings.lucyPermissionNoticeAfterSeconds ?? DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS) * 1000,
   });
 
+  // Lucy writes a word in her thread when something happens to a task she did not launch: it failed,
+  // went quiet, lost contact, or says it is finished and wants a review. Grouped and rate-limited in
+  // the notifier; owner dashboards only; never sent again on reconnect. Nothing is spoken.
+  const lucySaysNotifier = new LucySaysNotifier({
+    push: (message) => pushLucySays(connectionRegistry.snapshotDashboardConnections(), message),
+    // A task she launched is reported by the launch controller, in the conversation that asked for it.
+    isOwnLaunch: (taskId) => taskStore.getTask(taskId)?.metadata?.launchActorId === LUCY_OPERATOR_ACTOR_ID,
+    // Asked when a grouping window closes: a task that picked up again, or whose review was taken, is left out.
+    stillTrue: (event) => {
+      const task = taskStore.getTask(event.taskId);
+      if (!task) return false;
+      if (event.kind === 'failed') return task.status === 'terminated';
+      if (isTerminalStatus(task.status)) return false;
+      if (event.kind === 'wants_review') return task.pendingSignal?.kind === 'completion_ready';
+      const wanted = event.kind === 'stalled' ? 'stale_agent' : 'hook_disconnected';
+      return task.sessions.some((session) => queue.getAnomaly(session.tmuxSession)?.type === wanted);
+    },
+  });
+  const stopLucySaysObserver = queue.addObserver({
+    admitted: (event) => {
+      const kind = event.anomaly.type === 'stale_agent' ? 'stalled' : event.anomaly.type === 'hook_disconnected' ? 'lost_contact' : undefined;
+      if (!kind) return;
+      try {
+        const task = taskStore.findTaskBySession(event.agentId);
+        if (task && !isTerminalStatus(task.status)) lucySaysNotifier.note({ taskId: task.id, taskName: task.name, kind });
+      } catch (err) {
+        console.warn('[lucy-says] finding note failed:', err);
+      }
+    },
+  });
+  // False until the outcomes replayed at start-up have gone by: those are not news to write about.
+  let lucySaysOutcomesLive = false;
+
   // finishedAwaitingAck residual page after TTL reclaim (issue #2077). Page-only;
   // uses detectorBroadcast so fire/clear edges spool to Discord.
   const finishedAwaitingAckResidualAlerter = new FinishedAwaitingAckResidualAlerter({
@@ -4639,6 +4674,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       console.warn('[lucy-launch] outcome report failed:', err);
     }
     try {
+      // A task that failed, or says it is finished and wants a review: a word in Lucy's thread.
+      // A task the operator stopped by hand, or one cut off by a server restart, is not news.
+      if (lucySaysOutcomesLive && (outcome.kind === 'failed' || outcome.kind === 'completion_ready')) {
+        const task = taskStore.getTask(taskId);
+        const reason = task?.terminationReason;
+        if (task && !(outcome.kind === 'failed' && (reason === 'manual' || reason === 'server-restart'))) {
+          lucySaysNotifier.note({ taskId, taskName: task.name, kind: outcome.kind === 'failed' ? 'failed' : 'wants_review' });
+        }
+      }
+    } catch (err) {
+      console.warn('[lucy-says] outcome note failed:', err);
+    }
+    try {
       void remoteChatOnTaskOutcome?.(taskId, outcome);
     } catch (err) {
       console.warn('[lifecycle] remoteChat onTaskOutcome threw:', err);
@@ -4657,6 +4705,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     });
   };
   notifyBootReconciledTaskOutcomes(onTaskOutcomeHolder, reconcileResult);
+  lucySaysOutcomesLive = true;
 
   // --- Close ---
 
@@ -4701,6 +4750,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     stopWebhookObserver?.();
     stopDeliveryTraceObserver();
     stopLucyNeedsInputObserver();
+    stopLucySaysObserver();
+    lucySaysNotifier.dispose();
     // No hands-off launch may fire during shutdown.
     lucyOperatorHolder.get()?.launch?.dispose();
 

@@ -146,6 +146,16 @@ const lucyLaunchMessage = z.object({
   report: jsonObject.optional(),
 });
 
+// A line Lucy writes on her own about a task she did not launch.
+const lucySaysMessage = z.object({
+  type: z.literal('lucy_says'),
+  id: z.string(),
+  kind: z.string(),
+  text: z.string(),
+  taskIds: z.array(z.string()),
+  at: z.number(),
+});
+
 const updateMessage = z.object({
   type: z.literal('update'),
   agentId: z.string(),
@@ -510,6 +520,7 @@ const ServerMessageSchemaImpl = z.union([
   snapshotMessage,
   deltaMessage,
   lucyLaunchMessage,
+  lucySaysMessage,
   updateMessage,
   alertMessage,
   githubUpdateMessage,

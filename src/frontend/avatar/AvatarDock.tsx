@@ -78,6 +78,7 @@ import { WaitingTray } from './WaitingTray.js';
 import { ColumnResizer } from './ColumnResizer.js';
 import { useClipThreadSync, useNoticeThreadSync, useTalkThreadSync } from './useThreadSync.js';
 import { useLucyBriefing } from './useLucyBriefing.js';
+import { useLucySaysThreadSync } from './useLucySays.js';
 import { useLucyConversation } from '../store/lucy-conversation.js';
 import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
 import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
@@ -453,6 +454,8 @@ export function AvatarDock({
   useNoticeThreadSync(liveMessage, talkNoticeSeq);
   // She writes first: a briefing when the panel is first shown, and when the operator comes back to changed work.
   useLucyBriefing({ shown: !prefs.minimized });
+  // A word about a task she did not launch (it failed, went quiet, wants a review): written, not spoken.
+  useLucySaysThreadSync();
   // If the Talk button disappears while it has focus, keyboard focus would fall to the page; keep it in the dock.
   useLayoutEffect(() => {
     if (!talkVisible && talkFocusedRef.current) {
