@@ -91,6 +91,11 @@ describe('attended chain task asking the operator (issue #4047)', () => {
     expect(decide({ event: ev({ last_assistant_message: ask }), task: chainTask() })).toBeNull();
     expect(decide({ event: ev({ last_assistant_message: ask }), task: chainTask({ unattended: false }) })).toBeNull();
   });
+  it('still blocks an unflagged task ending on a closing offer or a summary bullet (issue #4089)', () => {
+    for (const msg of ['PR merged.\n\nWant me to continue with the next issue?', 'PR #12 is merged. Want me to continue with the next issue?', 'Unit done:\n- PR #12 merged\n- Flake still open?']) {
+      expect(decide({ event: ev({ last_assistant_message: msg }), task: chainTask() })).not.toBeNull();
+    }
+  });
   it('still blocks a task flagged unattended, since nobody will answer', () => {
     expect(decide({ event: ev({ last_assistant_message: ask }), task: chainTask({ unattended: true }) })).not.toBeNull();
   });
@@ -111,6 +116,32 @@ describe('endsWithQuestion', () => {
     expect(endsWithQuestion('Done. The PR is merged.')).toBe(false);
     expect(endsWithQuestion(['Why?', 'a', 'b', 'c', 'd', 'e', 'f'].join('\n'))).toBe(false);
     expect(endsWithQuestion(undefined)).toBe(false);
+  });
+  it('ignores a question that is not the last line, unless only an option list follows (issue #4089)', () => {
+    expect(endsWithQuestion('Is the CI flaky?\nIt was; I re-ran it and the PR merged.')).toBe(false);
+    expect(endsWithQuestion('Done.\n\n- Merged #12\n- Is the flake tracked? Yes, #13?')).toBe(false);
+    expect(endsWithQuestion('Summary:\n- PR merged\n- Follow-up filed?')).toBe(false);
+    expect(endsWithQuestion(['Pick one?', '- a', '- b', '- c', '- d', '- e', '- f', '- g'].join('\n'))).toBe(false);
+  });
+  it('does not count a closing offer to continue the chain (issue #4089)', () => {
+    expect(endsWithQuestion('PR #12 is merged.\n\nWant me to continue with the next issue?')).toBe(false);
+    expect(endsWithQuestion('Shall I proceed?')).toBe(false);
+    expect(endsWithQuestion('**Would you like me to start on the remaining issues now?**')).toBe(false);
+    expect(endsWithQuestion('Should I move on to #14 next?')).toBe(false);
+    expect(endsWithQuestion('PR #12 is merged. Want me to continue with the next issue?')).toBe(false);
+    expect(endsWithQuestion('Want me to continue with #14?')).toBe(false);
+    expect(endsWithQuestion('Shall I take the next issue?')).toBe(false);
+    expect(endsWithQuestion('Want me to move to the next one?')).toBe(false);
+    expect(endsWithQuestion('Should I go ahead with the next issue?')).toBe(false);
+    expect(endsWithQuestion('Let me know if you want me to continue with the next issue?')).toBe(false);
+    expect(endsWithQuestion('Continue with the next issue?')).toBe(false);
+    expect(endsWithQuestion('Next issue?')).toBe(false);
+    // Real decisions still count.
+    expect(endsWithQuestion('Should I merge now?')).toBe(true);
+    expect(endsWithQuestion('Should I continue even though the migration deletes rows?')).toBe(true);
+    expect(endsWithQuestion('Which issue should come next?')).toBe(true);
+    expect(endsWithQuestion('Two issues are eligible. Which one should the chain take next?')).toBe(true);
+    expect(endsWithQuestion('Should I start on #14 or #15?')).toBe(true);
   });
 });
 

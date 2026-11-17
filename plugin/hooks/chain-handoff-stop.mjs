@@ -29,7 +29,9 @@
 // limit, so a later stop is not blocked after an operator message clears the
 // signal. Known limits: any child task counts as the successor; an unflagged
 // task that asks its question without a question mark still uses up the
-// blocks; and an unflagged task that nobody watches can end on a question.
+// blocks; and an unflagged task that nobody watches can still end on a real
+// question (only its last line, or the line before an option list, counts,
+// and an offer to continue the chain never does: issue #4089).
 // Opt out: KOOKR_CHAIN_HANDOFF_STOP_SKIP=1.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -60,20 +62,69 @@ export function isSelfContinuationTask(task) {
   );
 }
 
+const LIST_ITEM = /^(?:[-*+]|\d+[.)])\s/;
+const QUESTION_END = /\?[\s*_`'"’”)\]]*$/;
+/** Lines of an option list that may follow the question. */
+const MAX_OPTION_LINES = 6;
+// A closing offer to keep the chain going ("Want me to continue with the next
+// issue?", "Shall I proceed?", "Next issue?"). The chain contract already
+// answers it (yes), so it is not a question the operator must answer. This is
+// a best-effort denylist, biased toward "offer": a real decision misread as an
+// offer only costs a bounded block, while an offer misread as a question
+// breaks the chain (issue #4089).
+const OFFER_OPENER = /\b(?:want me to|would you like me to|shall i|should i|can i|may i|ready to|ok(?:ay)? to)\b/i;
+const CONTINUE_VERB =
+  '(?:continue|proceed|move on|move|go on|go ahead|carry on|keep going|start|begin|spawn|launch|pick up|tackle|work on|take on|take)';
+const STARTS_WITH_CONTINUE = new RegExp(`^${CONTINUE_VERB}\\b`, 'i');
+const NEXT_UNIT = /\b(?:next|remaining|another|successor|rest|following)\b/i;
+// A continuation verb with only a short tail: "Shall I proceed?", "Want me to continue with #14 now?"
+const CONTINUE_SHORT_TAIL = new RegExp(
+  `\\b${CONTINUE_VERB}(?:\\s+(?:with|on|to|it|this|that|now|then|here|#\\d+))*\\s*\\?`,
+  'i',
+);
+
+/** The last sentence of a line, stripped of markdown emphasis and quotes. */
+function lastSentence(line) {
+  const bare = line.replace(/[*_`'"’”“]/g, '').trim();
+  const parts = bare.split(/(?<=[.!:?])\s+/);
+  return parts[parts.length - 1];
+}
+
+/** True when the question is an offer to continue the chain rather than a decision. */
+export function isClosingOffer(line) {
+  const sentence = lastSentence(line);
+  if (!OFFER_OPENER.test(sentence) && !STARTS_WITH_CONTINUE.test(sentence) && !/^next\b/i.test(sentence)) return false;
+  return NEXT_UNIT.test(sentence) || CONTINUE_SHORT_TAIL.test(sentence);
+}
+
 /**
- * True when the agent's last message ends on a question: a line ending in `?`
- * among its last few non-empty lines, so a question followed by a short list of
- * options still counts. Markdown emphasis and closing quotes or brackets after
- * the `?` are ignored. A missing or empty message is not a question.
+ * True when the agent's last message ends on a question to the operator: its
+ * last non-empty line ends in `?`, or that line is followed only by a short
+ * list of options ("Pick one?" then "- A", "- B"). The question line itself
+ * must not be a list item, so a summary bullet ending in `?` does not count,
+ * and a closing offer to continue the chain ("Want me to continue with the
+ * next issue?") does not count either (issue #4089). Markdown emphasis and
+ * closing quotes or brackets after the `?` are ignored. A missing or empty
+ * message is not a question. Known gaps: a question followed by a prose
+ * trailer ("I recommend 1.") or by options that are not list items no longer
+ * counts, and a header-style question above summary bullets ("What's next?"
+ * then "- #14") still does.
  */
 export function endsWithQuestion(message) {
   if (typeof message !== 'string') return false;
   const lines = message
     .split('\n')
     .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-6);
-  return lines.some((line) => /\?[\s*_`'"’”)\]]*$/.test(line));
+    .filter(Boolean);
+  let i = lines.length - 1;
+  let options = 0;
+  while (i >= 0 && LIST_ITEM.test(lines[i])) {
+    i -= 1;
+    options += 1;
+  }
+  if (i < 0 || options > MAX_OPTION_LINES) return false;
+  const line = lines[i];
+  return QUESTION_END.test(line) && !isClosingOffer(line);
 }
 
 /**
