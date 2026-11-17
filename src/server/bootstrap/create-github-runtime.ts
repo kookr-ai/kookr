@@ -10,7 +10,7 @@ import {
   type NonCriticalTickPauseHook,
   type RepoHealthFetcher,
 } from '../../core/github-scanner-service.js';
-import { GitHubStateStore } from '../../core/github-state-store.js';
+import { GitHubStateStore, taskRecordAuthorshipPersistence } from '../../core/github-state-store.js';
 import { isTerminalStatus } from '../../core/task-status.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
@@ -48,7 +48,9 @@ export interface GitHubRuntime {
 }
 
 export function createGitHubRuntime(deps: GitHubRuntimeDeps): GitHubRuntime {
-  const githubStateStore = new GitHubStateStore();
+  // Authorship evidence lives on each task record, so attribution survives a
+  // restart (issue #4077).
+  const githubStateStore = new GitHubStateStore(taskRecordAuthorshipPersistence(deps.taskStore));
   const githubScannerConfig = {
     ...DEFAULT_GITHUB_SCANNER_CONFIG,
     stateFetchIntervalMs: deps.githubPollingIntervalSec * 1000,

@@ -1190,7 +1190,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // above can be empty for a task that did merge its PR, so the reapers ask
   // GitHub by the task's session branch before recording "not delivered".
   // Never wired into the delivered-completion sweep — it must not complete.
-  const resolveMergedPrByBranch = createMergedPrByBranchProbe();
+  // Same delivery-branch lookup as the resolver above (issue #4077).
+  const resolveMergedPrByBranch = createMergedPrByBranchProbe({
+    deliveryBranchesOf: (owner, repo) => prDeliveryTracker?.getDeliveryBranches(owner, repo),
+  });
 
   // Delivery-aware loop watchdog (issue #1902, WS2.4 of #1699). Judges a Ralph
   // loop on POSITIVE delivery progress with hysteresis: sampled once per
