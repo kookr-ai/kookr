@@ -100,6 +100,9 @@ const LIVE_STATE_LABEL: Record<LucyLiveState, string> = {
 /** The Talk button's accessible name; constant, because `aria-pressed` carries on/off. */
 const TALK_LABEL = `Talk to ${NAME} hands-free`;
 const TALK_STOP_LABEL = 'Stop hands-free';
+/** Announced when hands-free starts listening and when it is switched off. */
+const TALK_ON_NOTICE = 'Hands-free on, listening';
+const TALK_OFF_NOTICE = 'Hands-free off';
 const TALK_REASON_ID = 'avatar-talk-reason';
 const REPLAY_LABEL = 'Replay last message';
 /** Re-render the "N min ago" labels this often while the message list is on screen. */
@@ -250,6 +253,9 @@ export function AvatarDock({
   // What a screen reader is told about questions from tasks: that one arrived (Lucy speaks the question
   // itself, so only a short notice) and how one ended (which she does not say). A new entry per event.
   const [askNotice, setAskNotice] = useState<{ seq: number; text: string } | null>(null);
+  // That hands-free just started listening or was switched off. The shortcut can do either with focus
+  // elsewhere (also while minimised), so nothing else tells a screen reader. A new entry per change.
+  const [talkStateNotice, setTalkStateNotice] = useState<{ seq: number; text: string } | null>(null);
   // The control inside a question card that holds keyboard focus, and its card. A card is replaced when its
   // question closes and removed when it is dismissed; the focused control then disappears and the browser
   // drops focus to the top of the page. Only that case is repaired (see the effect below).
@@ -550,6 +556,20 @@ export function AvatarDock({
     return () => document.removeEventListener('keydown', onKey);
   }, [talkShortcut, shortcutsBlocked]);
   const liveMessage = talkNotice ?? live.errorMessage;
+  // Only changes are announced, never the state the dock mounts in.
+  const wasReadyRef = useRef(liveReady);
+  const wasEnabledRef = useRef(live.enabled);
+  useEffect(() => {
+    const wasReady = wasReadyRef.current;
+    const wasEnabled = wasEnabledRef.current;
+    wasReadyRef.current = liveReady;
+    wasEnabledRef.current = live.enabled;
+    const next = (text: string): void => setTalkStateNotice((previous) => ({ seq: (previous?.seq ?? 0) + 1, text }));
+    if (liveReady && !wasReady) next(TALK_ON_NOTICE);
+    else if (!live.enabled && wasEnabled) next(TALK_OFF_NOTICE);
+    // Switched on (now connecting) or reconnecting: the old notice no longer holds; "Connecting\u2026" takes over.
+    else if (liveReady !== wasReady || live.enabled !== wasEnabled) setTalkStateNotice(null);
+  }, [liveReady, live.enabled]);
   useEffect(() => {
     if (!live.enabled) setHeardFinal(null);
     else if (live.operatorFinal && live.operatorText) setHeardFinal((previous) => ({ seq: (previous?.seq ?? 0) + 1, text: live.operatorText }));
@@ -573,6 +593,11 @@ export function AvatarDock({
   // Spoken by the always-present announcement region below (a live region must exist before its text does).
   const connectingNotice = live.status === 'connecting' ? 'Connecting\u2026' : null;
   const announcement = liveMessage ?? connectingNotice;
+  // An error, a reason or "Connecting…" replaces the on/off notice for good: kept, it would come back as a
+  // new element when that message clears and be read a second time.
+  useEffect(() => {
+    if (announcement) setTalkStateNotice(null);
+  }, [announcement]);
 
   // Replay is unavailable (not hidden) when there is nothing to play, she is busy, or sound is off in Settings.
   const replayUnavailable = !lastClip.hasClip
@@ -635,6 +660,20 @@ export function AvatarDock({
   };
   const onBubbleBlur = (): void => setFocused(false);
 
+  // Always present, only emptied: the Talk-unavailable reason, errors, "Connecting\u2026", hands-free on/off, the
+  // operator's final words and question notices are announced from here. Each change is a new element so it is
+  // spoken again. The bubble and the panel both render it last, so React keeps it as the same element across
+  // minimise and restore: a region created with its text already inside is not reliably announced (#4058).
+  const announcer = (
+    <div className="sr-only" role="status" data-testid="avatar-live-announce">
+      {announcement && <span key={`notice-${talkNoticeSeq}-${announcement}`}>{announcement}</span>}
+      {/* An error or "Connecting\u2026" says more than "on" or "off", so it takes the notice's place. */}
+      {talkStateNotice && !announcement && <span key={`talk-${talkStateNotice.seq}`}>{talkStateNotice.text}</span>}
+      {heardFinal && <span key={`heard-${heardFinal.seq}`}>You said: {heardFinal.text}</span>}
+      {askNotice && <span key={`ask-${askNotice.seq}`} data-testid="avatar-ask-announce">{askNotice.text}</span>}
+    </div>
+  );
+
   if (prefs.minimized) {
     const activity = state !== 'idle' ? `, ${STATE_LABEL[state]}` : liveReady ? ', listening' : '';
     const label = [
@@ -649,7 +688,7 @@ export function AvatarDock({
     const badgeCount = attentionCount + pendingAskCount;
     const cardPlacement = bubbleCardPlacement(bubblePosition, viewport);
     const cardRight = bubblePosition.x + AVATAR_BUBBLE_SIZE;
-    return (
+    const bubbleView = (
       <>
         <button
           type="button"
@@ -736,11 +775,12 @@ export function AvatarDock({
         )}
       </>
     );
+    return <>{bubbleView}{announcer}</>;
   }
 
   const replayTitleSuffix = newestUnheard ? ' (unheard)' : '';
   const newestId = clips[0]?.clipId;
-  return (
+  const panelView = (
     <section
       className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${asks.length > 0 || permissionCardCount > 0 ? ' avatar-dock-asking' : ''}${pendingAskCount > 0 || permissionCardCount > 0 ? ' avatar-dock-ask-waiting' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
       style={{ left: position.x, top: position.y, width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT }}
@@ -821,13 +861,6 @@ export function AvatarDock({
                 ? ''
                 : 'Loading…'}
         </span>
-      </div>
-      {/* Always present, only emptied: the Talk-unavailable reason, errors, "Connecting\u2026" and the operator's
-          final words are announced from here. Each change is a new element so it is spoken again. */}
-      <div className="sr-only" role="status" data-testid="avatar-live-announce">
-        {announcement && <span key={`notice-${talkNoticeSeq}-${announcement}`}>{announcement}</span>}
-        {heardFinal && <span key={`heard-${heardFinal.seq}`}>You said: {heardFinal.text}</span>}
-        {askNotice && <span key={`ask-${askNotice.seq}`} data-testid="avatar-ask-announce">{askNotice.text}</span>}
       </div>
       {asks.length > 0 && (
         // Questions from tasks (`kookr ask`), above everything else she shows: a task is waiting on these.
@@ -971,4 +1004,5 @@ export function AvatarDock({
       <LucyTypedInput />
     </section>
   );
+  return <>{panelView}{announcer}</>;
 }
