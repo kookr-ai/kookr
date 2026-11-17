@@ -3581,7 +3581,9 @@ describe('POST /api/tasks/:id/signal', () => {
 
     function seedMergeTask(
       taskStore: TaskStore,
-      commands: string[],
+      // A string is a PreToolUse command; `{ command, output }` is the
+      // PostToolUse line carrying that command's output.
+      commands: Array<string | { command: string; output: string }>,
       opts: { prompt?: string; tmuxSession?: string } = {},
     ): string {
       const tmuxSession = opts.tmuxSession ?? 'kookr-merge-gate';
@@ -3595,12 +3597,19 @@ describe('POST /api/tasks/:id/signal', () => {
         cwd: '/repo',
         createdAt: new Date(),
       });
-      const lines = commands.map((command) =>
-        JSON.stringify({
-          hook_event_name: 'PreToolUse',
-          tool_name: 'Bash',
-          tool_input: { command },
-        }),
+      const lines = commands.map((entry) =>
+        typeof entry === 'string'
+          ? JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: entry },
+          })
+          : JSON.stringify({
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: entry.command },
+            tool_response: { stdout: entry.output, stderr: '' },
+          }),
       );
       writeFileSync(
         join(kookrDir, 'hooks', `${tmuxSession}.jsonl`),
@@ -3614,7 +3623,11 @@ describe('POST /api/tasks/:id/signal', () => {
       const taskStore = new TaskStore();
       const id = seedMergeTask(taskStore, [
         'gh pr create --fill',
-        'echo https://github.com/kookr-ai/kookr/pull/1836',
+        // The gate reads the opened PR's number from `gh pr create` output (#4126).
+        {
+          command: 'gh pr create --fill',
+          output: 'https://github.com/kookr-ai/kookr/pull/1836\n',
+        },
       ]);
       const deps = { ...mkLoopDeps(taskStore), kookrDir };
 
