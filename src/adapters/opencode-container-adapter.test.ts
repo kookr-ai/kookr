@@ -11,8 +11,11 @@ import type { A2aClientPort, A2aTaskState } from '../containers/ports.js';
 import { TaskStore } from '../core/tasks.js';
 import { gitExecEnv } from '../core/git-helpers.js';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
+import { OpenCodeAdapter } from './opencode-adapter.js';
 import { ContainerUnsupportedError, OpenCodeContainerAdapter, type OpenCodeContainerAdapterConfig } from './opencode-container-adapter.js';
 import { composeOpenCodeSession, type ComposeOpenCodeSessionOptions } from './opencode-home-composer.js';
+import { isMarkedTaskDir, TASK_DIR_MARKER, withTaskDirLock } from './opencode-task-data.js';
+import { isTaskDirLaunching } from './opencode-launching-task-dirs.js';
 
 const repo = resolve(__dirname, '..', '..');
 
@@ -265,6 +268,88 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
     await a.launch(task.id, 'first', src, { sessionId: 'ses_abc123' });
     expect(composed[1]!.claudeHooks?.env?.KOOKR_OPENCODE_GATE_BASE).toBe(head);
     expect(JSON.parse(readFileSync(join(root, 'rt', 'tasks', task.id, 'runtime.json'), 'utf8')).gateBase).toBe(head);
+  });
+
+  describe('a container launch racing the host adapter retention sweep (#4085)', () => {
+    const taskDir = (id: string) => join(root, 'data', id);
+    /** A stopped container task with a resumable conversation in its persistent data. */
+    async function stoppedWithConversation(a: OpenCodeContainerAdapter) {
+      const task = newTask();
+      await a.stop(await a.launch(task.id, 'first', src));
+      const dataHome = join(taskDir(task.id), 'data');
+      mkdirSync(join(dataHome, 'opencode'), { recursive: true });
+      const db = new Database(join(dataHome, 'opencode', 'opencode.db'));
+      db.exec('CREATE TABLE session (id text PRIMARY KEY, parent_id text, time_updated integer NOT NULL)');
+      db.prepare('INSERT INTO session VALUES (?, ?, ?)').run('ses_abc123', null, 5);
+      db.close();
+      return task;
+    }
+
+    test('a sweep of the host adapter (same data root) keeps the dir of a container launch in flight', async () => {
+      let gate: Promise<void> | undefined;
+      let reached!: () => void;
+      const atCompose = new Promise<void>((resolve) => { reached = resolve; });
+      const a = make({ composeSession: async (o) => { if (gate) { reached(); await gate; } return composeOpenCodeSession(o); } });
+      const task = await stoppedWithConversation(a);
+      // The sweep reads the task as completed (no done grace), so it removes the data unless it sees the launch. In
+      // production the reopen that precedes the resume lands between the sweep's status read and its removal.
+      store.completeTask(task.id);
+      const host = new OpenCodeAdapter(backend, store, {
+        env: { PATH: '/usr/bin:/bin' } as NodeJS.ProcessEnv, agentBin: '/opt/opencode', sessionRoot: join(root, 'host-sessions'),
+        dataRoot: join(root, 'data'), dataDoneTtlHours: 0, postStopSweepDelayMs: 0, shelfShow: async () => '',
+      });
+      let release!: () => void;
+      gate = new Promise<void>((resolve) => { release = resolve; });
+      const resumed = a.launch(task.id, 'first', src, { sessionId: 'ses_abc123' });
+      resumed.catch(() => { /* asserted below */ });
+      await atCompose; // the launch has read the dir (resume) and is composing its config
+      await host.sweepTaskData();
+      expect(existsSync(taskDir(task.id))).toBe(true);
+      store.reopenTask(task.id);
+      release();
+      await resumed;
+      expect(a2a.sent.at(-1)!.text).toBe('Continue the task from where you left off.');
+      expect(existsSync(join(taskDir(task.id), 'data', 'opencode', 'opencode.db'))).toBe(true);
+    });
+
+    test('a container resume that starts while a sweep removal of its dir is in flight waits for it, then launches fresh', async () => {
+      const a = make();
+      const task = await stoppedWithConversation(a);
+      const dir = taskDir(task.id);
+      let resumed!: Promise<string>;
+      // The lock stands for a sweep removal already past its active check (the launch was not marked yet).
+      await withTaskDirLock(dir, async () => {
+        resumed = a.launch(task.id, 'again', src, { sessionId: 'ses_abc123' });
+        resumed.catch(() => { /* asserted below */ });
+        await new Promise((r) => setTimeout(r, 50));
+        expect(docker.runs).toHaveLength(1); // only the first launch: this one waits before touching the dir
+        rmSync(dir, { recursive: true, force: true });
+      });
+      await resumed;
+      expect(a2a.sent.at(-1)!.text).toBe('again'); // nothing left to resume: a fresh launch with the prompt
+      expect(await isMarkedTaskDir(dir, task.id)).toBe(true);
+      expect(isTaskDirLaunching(dir)).toBe(false);
+    });
+
+    test('a launch aborted while it waits for a sweep removal stops there and releases its mark', async () => {
+      const a = make();
+      const task = await stoppedWithConversation(a);
+      const dir = taskDir(task.id);
+      const markerBefore = readFileSync(join(dir, TASK_DIR_MARKER), 'utf8');
+      const ac = new AbortController();
+      let aborted!: Promise<string>;
+      await withTaskDirLock(dir, async () => {
+        aborted = a.launch(task.id, 'again', src, { sessionId: 'ses_abc123' }, { signal: ac.signal });
+        aborted.catch(() => { /* asserted below */ });
+        await new Promise((r) => setTimeout(r, 20));
+        expect(isTaskDirLaunching(dir)).toBe(true);
+        ac.abort();
+      });
+      await expect(aborted).rejects.toThrow('aborted');
+      expect(docker.runs).toHaveLength(1);
+      expect(readFileSync(join(dir, TASK_DIR_MARKER), 'utf8')).toBe(markerBefore); // the dir was never re-marked
+      expect(isTaskDirLaunching(dir)).toBe(false);
+    });
   });
 
   test('an aborted launch (the launch timeout fired) stops waiting for health and removes its container (#3584)', async () => {

@@ -15,6 +15,7 @@ import type { ProbeExecRunner } from './probe-agent-binary.js';
 import type { AgentEvent } from '../core/types.js';
 import { TaskStore } from '../core/tasks.js';
 import { isMarkedTaskDir, withTaskDirLock } from './opencode-task-data.js';
+import { markTaskDirLaunching } from './opencode-launching-task-dirs.js';
 
 vi.mock('./opencode-task-data.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./opencode-task-data.js')>();
@@ -855,6 +856,45 @@ describe('OpenCodeAdapter', () => {
       adapter.injectHookEvent(id, toolHook());
       expect(internals(adapter).tmuxToTaskId.get(id)).toBe(next.id);
       expect(internals(adapter).lastUseTouch.has(id)).toBe(true); // the live session's activity is recorded again
+    });
+
+    test('a hook event after a failed relaunch does not re-register the session, so its task data is still swept (#4085)', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      await adapter.stop(id);
+      // The relaunch reuses the session name, which the task store still resolves to the task.
+      const ac = new AbortController();
+      ac.abort();
+      await expect(adapter.launch(task.id, 'again', '/workspace', undefined, { tmuxName: id, signal: ac.signal }))
+        .rejects.toThrow();
+      expect(adapter.injectHookEvent(id, toolHook()).parseStatus).toBe('ok'); // still dispatched
+      await new Promise((r) => setTimeout(r, 50));
+      expect(internals(adapter).tmuxToTaskId.has(id)).toBe(false);
+      expect(internals(adapter).lastUseTouch.has(id)).toBe(false);
+      taskStore.completeTask(task.id);
+      await adapter.sweepTaskData();
+      expect(existsSync(taskDirOf(task.id))).toBe(false);
+      // A later successful relaunch under the same name is live again.
+      const next = taskStore.createTask('next', '/workspace');
+      await adapter.launch(next.id, 'next', '/workspace', undefined, { tmuxName: id });
+      adapter.injectHookEvent(id, toolHook());
+      expect(internals(adapter).tmuxToTaskId.get(id)).toBe(next.id);
+    });
+
+    test('the sweep keeps a task dir another adapter marked as launching, and removes it once released (#4085)', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      await adapter.stop(id);
+      taskStore.completeTask(task.id);
+      const release = markTaskDirLaunching(taskDirOf(task.id));
+      try {
+        await adapter.sweepTaskData();
+        expect(existsSync(taskDirOf(task.id))).toBe(true);
+      } finally {
+        release();
+      }
+      await adapter.sweepTaskData();
+      expect(existsSync(taskDirOf(task.id))).toBe(false);
     });
 
     test('a resume launch that starts while a sweep removal of its dir is in flight waits for it, then launches fresh', async () => {
