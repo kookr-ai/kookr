@@ -35,7 +35,8 @@ to merge upstream.
 ## Evidence
 
 Scanned from PreToolUse shell commands (plus the PostToolUse output of `gh pr create`) in `~/.kookr/hooks/<tmuxSession>.jsonl`
-(Claude `Bash` + Grok `run_terminal_command` shapes):
+(Claude `Bash` + Grok `run_terminal_command` shapes; the Codex and OpenCode
+adapters log the Claude shape, PostToolUse output included):
 
 | Signal | Detection |
 |--------|-----------|
@@ -51,7 +52,13 @@ merged (issue #4126):
 
 - the URL that `gh pr create` printed (read from the PostToolUse output);
 - the argument of `gh pr merge <n|url>`, `kookr merge <n>`, `pnpm merge <n>`
-  or `kookr-merge.sh <n>`.
+  or `kookr-merge.sh <n>`: the first word after the command that is not a
+  flag. Flags before it are skipped, along with the value of a flag that takes
+  one (`-R`/`--repo`, `-t`/`--subject`, `-b`/`--body`, `-F`/`--body-file`,
+  `-A`/`--author-email`, `--match-head-commit`), so `gh pr merge --squash <url>`
+  and `gh pr merge -R owner/repo <n>` both name the right pull request. If that
+  word is not a number or pull-request URL (a branch name, say), no number is
+  taken from the command.
 
 When neither gives a number, the check falls back to the pull request of the
 current branch (`gh pr view --json number,mergedAt`). A number seen only in a

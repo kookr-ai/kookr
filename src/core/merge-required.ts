@@ -143,11 +143,92 @@ const PR_URL_RE =
   /https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/(?:-\/)?(?:pull|merge_requests)\/(\d+)/gi;
 
 /**
- * The PR argument of a merge command: `gh pr merge <n|url>`,
- * `pnpm merge <n>`, `kookr merge <n>`, `kookr-merge.sh <n>`.
+ * A merge command's verb: `gh pr merge`, `pnpm merge`, `kookr merge`,
+ * `kookr-merge.sh`. Its first non-flag word names the PR it merges.
  */
-const MERGE_COMMAND_ARG_RE =
-  /\b(?:gh\s+pr\s+merge|pnpm\s+merge|kookr\s+merge|kookr-merge\.sh)\s+(?:#?(\d+)\b|(https?:\/\/\S+))/gi;
+const MERGE_VERB_RE =
+  /\b(?:gh\s+pr\s+merge|pnpm\s+merge|kookr\s+merge|kookr-merge\.sh)(?=\s|$)/gi;
+
+/**
+ * Merge-command flags that take their value as the next word: the
+ * `gh pr merge` flags listed by `gh help pr merge`, plus `--repo` of the
+ * merge wrappers. Any other flag is read as taking no value, and a
+ * `--flag=value` word is one word.
+ */
+const MERGE_VALUE_FLAGS = new Set([
+  '-A', '--author-email',
+  '-b', '--body',
+  '-F', '--body-file',
+  '--match-head-commit',
+  '-R', '--repo',
+  '-t', '--subject',
+]);
+
+const BARE_PR_ARG_RE = /^#?(\d+)$/;
+const PR_URL_ARG_RE =
+  /^https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/(?:-\/)?(?:pull|merge_requests)\/(\d+)(?:[/?#]|$)/i;
+
+/**
+ * Split shell text into words, honouring quotes and backslashes, up to the end
+ * of the simple command (`;`, `&`, `|`, `)` or a newline). Returns undefined
+ * when a quote is never closed: the words cannot be trusted then.
+ */
+function wordsUntilCommandEnd(text: string): string[] | undefined {
+  const words: string[] = [];
+  let word = '';
+  let inWord = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === '\n' || c === ';' || c === '&' || c === '|' || c === ')') break;
+    if (c === ' ' || c === '\t' || c === '\r') {
+      if (inWord) words.push(word);
+      word = '';
+      inWord = false;
+      continue;
+    }
+    inWord = true;
+    if (c === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end < 0) return undefined;
+      word += text.slice(i + 1, end);
+      i = end;
+    } else if (c === '"') {
+      let j = i + 1;
+      for (; j < text.length && text[j] !== '"'; j++) {
+        if (text[j] === '\\' && j + 1 < text.length) j++;
+        word += text[j];
+      }
+      if (j >= text.length) return undefined;
+      i = j;
+    } else if (c === '\\') {
+      if (i + 1 < text.length) word += text[++i];
+    } else {
+      word += c;
+    }
+  }
+  if (inWord) words.push(word);
+  return words;
+}
+
+/**
+ * The first non-flag word after a merge verb (issue #4128), skipping the value
+ * of each flag in {@link MERGE_VALUE_FLAGS}. So `gh pr merge --squash <url>`
+ * and `gh pr merge -R o/r 12` read the URL and 12, never `o/r`.
+ */
+function mergeCommandArgument(afterVerb: string): string | undefined {
+  const words = wordsUntilCommandEnd(afterVerb);
+  if (!words) return undefined;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
+    if (w === '--') return words[i + 1];
+    if (w.length > 1 && w.startsWith('-')) {
+      if (MERGE_VALUE_FLAGS.has(w)) i++;
+      continue;
+    }
+    return w;
+  }
+  return undefined;
+}
 
 const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/i;
 
@@ -171,19 +252,21 @@ function addPositive(nums: Set<number>, raw: string | undefined): void {
 /**
  * PR numbers this command merges (issue #4126): the argument of
  * `gh pr merge <n|url>` / `pnpm merge <n>` / `kookr merge <n>` /
- * `kookr-merge.sh <n>`.
+ * `kookr-merge.sh <n>`, with flags before it skipped (issue #4128).
  *
  * Any other mention is ignored — a URL in a comment, "PR #N" in a commit
  * message or `echo`, `gh pr view <n>` / `gh pr diff <n>` / `gh pr list`. Those
  * PRs belong to someone else, so the gate must not demand that they be merged.
+ * When the argument is missing, is not a number or PR URL (a branch name), or
+ * cannot be read (an unclosed quote), no number is returned and the gate falls
+ * back to the created PR or the current branch: better than a wrong PR.
  */
 export function extractPrNumbersFromCommand(command: string): number[] {
   const nums = new Set<number>();
-  for (const match of command.matchAll(MERGE_COMMAND_ARG_RE)) {
-    addPositive(nums, match[1]);
-    if (match[2]) {
-      for (const url of match[2].matchAll(PR_URL_RE)) addPositive(nums, url[1]);
-    }
+  for (const verb of command.matchAll(MERGE_VERB_RE)) {
+    const arg = mergeCommandArgument(command.slice(verb.index + verb[0].length));
+    if (arg === undefined) continue;
+    addPositive(nums, (BARE_PR_ARG_RE.exec(arg) ?? PR_URL_ARG_RE.exec(arg))?.[1]);
   }
   return [...nums];
 }
