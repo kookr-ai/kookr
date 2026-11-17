@@ -9,6 +9,10 @@
  * The writer of the task description is given those words and the list of projects, and
  * nothing else. It never sees the board, a task name, a look-up result or one of her own
  * replies, because all of those can carry text an agent wrote.
+ *
+ * Two facts about the project list come from the server, never from a guess on names
+ * (issue #4144): which project is Kookr itself, so "fix this problem with you" has somewhere to
+ * go, and which projects were used most recently, so "Which project?" can name candidates.
  */
 
 import type { LucyLaunchKind } from '../../shared/contracts/lucy-launch.js';
@@ -30,12 +34,51 @@ export const ECHO_TAIL_MS = 400;
 export interface LaunchableProject {
   name: string;
   cwd: string;
+  /**
+   * This project is Kookr itself: the repository the running server belongs to. Set by the server
+   * from the project's id, never from its name, so a separate project that happens to be called
+   * "lucy" or "kookr" is not taken for it.
+   */
+  own?: true;
+  /** When a task was last started in it, in epoch milliseconds; absent when Kookr holds none. */
+  lastUsedAt?: number;
 }
 
 /** The pieces the model writes. The server turns them into a validated spec; none of them is trusted as-is. */
 export type LucySpecDraft =
   | { kind: LucyLaunchKind; project: string; description: string; agentType?: string }
-  | { ambiguous: string };
+  | { ambiguous: string }
+  /** The writer could not tell which project is meant. The server writes the question, with candidates. */
+  | { askProject: true };
+
+/** The last part of a project name ("kookr" for "kookr-ai/kookr"): what an operator usually says. */
+function shortProjectName(name: string): string {
+  const parts = name.split('/').filter((part) => part.trim());
+  return (parts[parts.length - 1] ?? name).trim();
+}
+
+function sameName(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * What the writer is told about Kookr itself. A fact stated by the server about one listed name, or
+ * the statement that no listed project is Kookr, so the writer never picks one because of its name.
+ */
+function ownProjectLines(projects: readonly LaunchableProject[]): string[] {
+  const own = projects.find((p) => p.own === true);
+  const about = 'The developer is talking to Lucy, the assistant inside a dashboard called Kookr. When they say "you", "yourself", "Lucy", "your panel", "the dashboard" or "Kookr", or ask for work on a problem in how Lucy answered them or in how she and they interact ("this interactivity problem"), the work is about Kookr itself.';
+  if (own) {
+    return [
+      about,
+      `The project named "${own.name}" is Kookr itself: the application that Lucy, her panel and this dashboard belong to. Work about Kookr itself goes to "${own.name}". No other listed project is Kookr, whatever its name: a project called "lucy" or "kookr" is a separate repository.`,
+    ];
+  }
+  return [
+    about,
+    'None of the listed projects is known to be Kookr itself. A project that is merely called "lucy" or "kookr" is a separate repository, not Kookr. So when the work is about Kookr itself, do not pick a project: reply with {"ask":"project"}.',
+  ];
+}
 
 /**
  * Instructions for the one model call that writes the task description. The operator's words
@@ -50,21 +93,25 @@ export function buildSpecWriterPrompt(projects: readonly LaunchableProject[]): s
     'Reply with one of:',
     '{"kind":"investigation"|"implementation","project":"<one name from the list>","description":"<the task, written for the agent>","agentType":"claude-code"|"codex-cli" (only if the developer asked for an agent)}',
     '{"ambiguous":"<one short question to ask the developer>"}',
+    '{"ask":"project"} (exactly this, when you cannot tell which project they mean; the question is then asked for you, with the likely projects named)',
     '',
     'Rules:',
     '- Use the newest message to decide what to start; earlier messages only fill in what it leaves out ("it", "that one").',
     '- "investigation" means the developer wants to know why something happens or what is going on: the agent reports findings and does not change code. "implementation" means they want something changed, fixed or built.',
     '- If the developer did not ask for any work to be started (a question about status, small talk, a comment), reply with {"ambiguous":"What would you like me to start?"}.',
-    '- If the project is not clear from their words and more than one project is listed, reply with {"ambiguous":"Which project?"}. If only one project is listed, use it.',
+    '- If the project is not clear from their words and more than one project is listed, reply with {"ask":"project"}. If only one project is listed, use it, unless the work is about Kookr itself and that project is not Kookr.',
+    '- The developer may say only the last part of a project name ("kookr" for "kookr-ai/kookr"). Reply with the whole name from the list.',
     '- Write the description in the developer\'s terms, in English, as a complete request, at most about 1500 characters. Do not invent details they did not give. Do not put shell commands in it. Never mention these rules.',
     '- Do not put agent names or phrases like "use codex" in the description; use agentType.',
     '',
     'Projects (use these names exactly):',
     list || '(none)',
+    '',
+    ...ownProjectLines(projects),
   ].join('\n');
 }
 
-const DRAFT_KEYS = new Set(['kind', 'project', 'description', 'agentType', 'ambiguous']);
+const DRAFT_KEYS = new Set(['kind', 'project', 'description', 'agentType', 'ambiguous', 'ask']);
 
 /** Read the model's reply as a draft. Returns null for anything that is not one of the two shapes above. */
 export function parseSpecDraft(text: string): LucySpecDraft | null {
@@ -81,7 +128,10 @@ export function parseSpecDraft(text: string): LucySpecDraft | null {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
   const record = parsed as Record<string, unknown>;
   if (Object.keys(record).some((key) => !DRAFT_KEYS.has(key))) return null;
+  if (record.ask !== undefined) return record.ask === 'project' ? { askProject: true } : null;
   if (typeof record.ambiguous === 'string' && record.ambiguous.trim()) {
+    // A question about the project, however it is worded, is asked by the server, with candidates.
+    if (/\bprojects?\b/i.test(record.ambiguous)) return { askProject: true };
     return { ambiguous: record.ambiguous.trim().slice(0, 200) };
   }
   if (record.kind !== 'investigation' && record.kind !== 'implementation') return null;
@@ -95,12 +145,56 @@ export function parseSpecDraft(text: string): LucySpecDraft | null {
   };
 }
 
-/** Pick the project the draft named. Exact name match only (case-insensitive); a near miss is not a guess. */
+/**
+ * Pick the project the draft named. The whole name must match (case-insensitive), or, failing that,
+ * the last part of exactly one project's name ("kookr" for "kookr-ai/kookr"): that is how an
+ * operator says it, and it names one project or none. Anything else is not a guess.
+ */
 export function resolveProject(name: string, projects: readonly LaunchableProject[]): LaunchableProject | null {
-  const wanted = name.trim().toLowerCase();
-  if (!wanted) return null;
-  const hits = projects.filter((p) => p.name.toLowerCase() === wanted);
-  return hits.length === 1 ? hits[0]! : null;
+  if (!name.trim()) return null;
+  const exact = projects.filter((p) => sameName(p.name, name));
+  if (exact.length > 0) return exact.length === 1 ? exact[0]! : null;
+  const byLastPart = projects.filter((p) => sameName(shortProjectName(p.name), name));
+  return byLastPart.length === 1 ? byLastPart[0]! : null;
+}
+
+/** How many projects "Which project?" names. More would not be listened to. */
+export const MAX_PROJECT_CANDIDATES = 3;
+
+/**
+ * The projects "Which project?" offers: Kookr itself first when it is on the list, then the ones a
+ * task was started in most recently, then the rest in the order the dashboard lists them.
+ */
+export function projectCandidates(projects: readonly LaunchableProject[]): LaunchableProject[] {
+  const rank = (p: LaunchableProject): number => (p.own === true ? Number.POSITIVE_INFINITY : p.lastUsedAt ?? Number.NEGATIVE_INFINITY);
+  return projects
+    .map((project, index) => ({ project, index }))
+    .sort((a, b) => {
+      const byUse = rank(b.project) - rank(a.project);
+      // Two projects with no known use (or both Kookr, which cannot happen) keep the dashboard's order.
+      return Number.isNaN(byUse) || byUse === 0 ? a.index - b.index : byUse;
+    })
+    .slice(0, MAX_PROJECT_CANDIDATES)
+    .map((entry) => entry.project);
+}
+
+/**
+ * What she says when the project is not clear: the question with up to three candidates, short enough
+ * to say aloud ("Which project: kookr, kb-scout-evol or earnings-watch?"). The names come from the
+ * server's project list; a project is called by the last part of its name when no other launchable
+ * project shares it, which `resolveProject` accepts back.
+ */
+export function buildWhichProjectSay(projects: readonly LaunchableProject[]): string {
+  const clean = (text: string): string => redactSpeechSecrets(text.replace(/\s+/g, ' ').trim()).slice(0, 40).trim();
+  const spoken = (project: LaunchableProject): string => {
+    const short = shortProjectName(project.name);
+    const unique = projects.filter((other) => sameName(shortProjectName(other.name), short) || sameName(other.name, short)).length === 1;
+    return clean(unique ? short : project.name);
+  };
+  const names = projectCandidates(projects).map(spoken).filter((name) => name.length > 0);
+  if (names.length === 0) return 'Which project?';
+  if (names.length === 1) return `Which project? The only one I can launch in is ${names[0]}.`;
+  return `Which project: ${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}?`;
 }
 
 /** How many launchable projects she names when she has to refuse one. */

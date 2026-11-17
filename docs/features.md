@@ -614,7 +614,11 @@ panel shows it as a card with the whole description at the end of the conversati
 for her read-back, which is not also written as a message), and the task starts when you say "go", press
 Enter or click Go. Anything else you say drops it, and a proposal expires after two minutes. What became
 of it stays in the conversation as one line ("Started kookr task", with a button to open the task,
-"Cancelled" or "Timed out"). An unclear request gets one question instead. An investigation is told to
+"Cancelled" or "Timed out"). An unclear request gets one question instead; when it is the project
+that is unclear, the question names up to three ("Which project: kookr, kb-scout-evol or
+earnings-watch?"). She can launch in every project that has a folder on this machine, as the Launch
+dialog can, including Kookr's own: "fix this problem with you" or "with the dashboard" goes to Kookr's
+own project, which the server identifies by its repository, never by a name. An investigation is told to
 report findings and file issues, not to open a pull request. When the task finishes or needs you, she
 says so, and the sentence is a message of hers in the conversation with an **Open task** button.
 
@@ -624,8 +628,8 @@ says so, and the sentence is a message of hers in the conversation with an **Ope
   "cancel"). She cannot change this setting, and only your own words start anything: text written by
   agents never does.
 - **What leaves the machine.** Hands-free talk is then answered by the operator conversation, so each
-  spoken request goes to OpenRouter, and a second call writes the task from your words and the project
-  names only. Details: [Lucy operator](reference/lucy-operator.md#launching-a-task-by-voice-or-text).
+  spoken request goes to OpenRouter, and a second call writes the task from your words, the project
+  names and which of them is Kookr itself, and nothing else. Details: [Lucy operator](reference/lucy-operator.md#launching-a-task-by-voice-or-text).
 
 #### Ask Lucy to answer, reply to or close a task (on by default)
 

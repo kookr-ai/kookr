@@ -191,7 +191,7 @@ describe('list_projects with launching on', () => {
     const outcome = await dispatchLucyTool('list_projects', '{}', fakeSource({ projects: many }), NOW);
     const lines = outcome.content.split('\n');
     expect(lines[1]).toBe(`- p${MAX_PROJECT_LINES + 4}: 0 active, 0 waiting on the operator, can launch here`);
-    expect(lines[2]).toBe('- p0: 0 active, 0 waiting on the operator, cannot launch here (not tracked)');
+    expect(lines[2]).toBe('- p0: 0 active, 0 waiting on the operator, cannot launch here (no folder of its own on this machine)');
     expect(lines.at(-1)).toBe('- and 5 more not listed');
   });
 

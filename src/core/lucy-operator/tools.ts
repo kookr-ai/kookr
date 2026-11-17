@@ -316,7 +316,7 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
         const lines = ordered
           .slice(0, MAX_PROJECT_LINES)
           .map((p) => {
-            const where = p.launchable === undefined ? '' : p.launchable ? ', can launch here' : ', cannot launch here (not tracked)';
+            const where = p.launchable === undefined ? '' : p.launchable ? ', can launch here' : ', cannot launch here (no folder of its own on this machine)';
             return `- ${boardText(p.name, 60)}: ${p.activeTasks} active, ${p.findings} waiting on the operator${where}`;
           });
         if (projects.length > MAX_PROJECT_LINES) lines.push(`- and ${projects.length - MAX_PROJECT_LINES} more not listed`);

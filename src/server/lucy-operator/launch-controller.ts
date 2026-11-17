@@ -26,6 +26,7 @@ import {
   buildTaskPrompt,
   classifyReply,
   buildUnknownProjectSay,
+  buildWhichProjectSay,
   ECHO_TAIL_MS,
   estimateSpeechMs,
   HANDS_OFF_CANCEL_WINDOW_MS,
@@ -391,6 +392,9 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       }
       const draft = parseSpecDraft(reply);
       if (!draft) return none('I could not make a task out of that. Could you say it again?', 'unreadable draft');
+      // The question about the project is the server's own sentence: it names the likely projects, from
+      // the project list and never from anything the writer wrote.
+      if ('askProject' in draft) return none(buildWhichProjectSay(projects), 'ambiguous');
       if ('ambiguous' in draft) return none(draft.ambiguous, 'ambiguous');
 
       const project = resolveProject(draft.project, projects);

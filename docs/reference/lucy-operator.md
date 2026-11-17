@@ -92,7 +92,7 @@ operator to a snooze control that does not exist.
 | `read_task_output` | What a task's terminal shows: the last 40 lines of the rendered screen (a running task), or of the tail saved when it ended |
 | `read_questions` | Every `kookr ask` question still waiting for the operator, not only the few the board shows: those whose task is still waiting first, then the one that closes soonest. Each line says who asked, how long ago, when it closes, whether its task has finished (then nothing is blocked on it, it only asks for an opinion), and the question and choices, which are task text and arrive marked as untrusted. At most 40 questions and about 8,000 characters; a cut is stated ("and N more questions not listed"). The board lists its few questions in the same order and ends with a line that points here. When she may act, each question also carries a short code (`qf00d`, from the question's id), its choices are numbered, and its line says whether it takes only a listed choice or also the operator's own words: that is what `propose_answer` points at |
 | `show_task` | A short confirmation; it asks the dashboard to open the task (a `screen` event in the stream) |
-| `list_projects` | The projects Kookr knows, with how many tasks are active in each. With launching on, each line also says `can launch here` or `cannot launch here (not tracked)`, and the projects she may launch in come first so the 30-line cap never hides them. When she cannot place a launch request, she names the project she understood and up to five she can launch in |
+| `list_projects` | The projects Kookr knows, with how many tasks are active in each. With launching on, each line also says `can launch here` or `cannot launch here (no folder of its own on this machine)`, and the projects she may launch in come first so the 30-line cap never hides them. When she cannot place a launch request, she names the project she understood and up to five she can launch in |
 
 ### How she names a task
 
@@ -136,11 +136,36 @@ reported once, as done.
 
 1. The model calls `propose_launch`. The tool takes **no arguments**: it is only a signal.
 2. Kookr itself writes the task. A separate model call is given the operator's own messages from this
-   conversation (oldest first) and the names of the projects, and nothing else: not the board, not a
-   task name, not a look-up result, not one of her own earlier replies. Its answer must be a task, or one
-   clarifying question ("Which project?") which she then asks. The task is checked against the same
-   strict schema the Telegram path uses (`TaskSpecSchema`: length cap, no extra fields, a known agent)
-   and the project must match a listed name exactly.
+   conversation (oldest first), the names of the projects and which of them is Kookr itself, and
+   nothing else: not the board, not a task name, not a look-up result, not one of her own earlier
+   replies. Its answer must be a task, one clarifying question which she then asks, or the fixed
+   token `{"ask":"project"}` when it cannot tell which project is meant. The task is checked against
+   the same strict schema the Telegram path uses (`TaskSpecSchema`: length cap, no extra fields, a
+   known agent) and the project must match a listed name: the whole name, or the last part of exactly
+   one name ("kookr" for `kookr-ai/kookr`).
+
+   **Where she may launch** (issue #4144). Every project the dashboard shows that has a folder on
+   this machine, whether or not it is tracked. This is what the dashboard's Launch dialog offers as a
+   working folder. Before, only tracked projects passed, which left out Kookr's own repository on an
+   install where most tasks run there. `list_projects` marks the same projects.
+
+   **Kookr's own project.** The server knows which repository it runs from (`getProjectId` of its
+   working folder: the git remote, for example `github.com/kookr-ai/kookr`) and marks the listed
+   project with that id. Ids are compared, never names or folders: production runs from a
+   `kookr-prod` worktree whose recorded folder is the parent clone. The writer is told, as a fact
+   about the list, that this project is Kookr itself, the application Lucy, her panel and the
+   dashboard belong to. So "you", "yourself", "Lucy", "your panel", "the dashboard", "Kookr" and
+   "this interactivity problem" go to that project, and a separate project that happens to be called
+   `lucy` does not capture them. When the server cannot know its repository for certain (no git
+   remote: the id would only be `local/<folder name>`), or that project has no folder here, the
+   writer is told that no listed project is Kookr, and she asks.
+
+   **"Which project?" names candidates.** When the project is unclear the question is the server's
+   own sentence, never the writer's: "Which project: kookr, kb-scout-evol or earnings-watch?". It
+   names up to three projects: Kookr itself first when it is on the list, then the ones a task was
+   started in most recently. A project is called by the last part of its name when no other
+   launchable project shares it, and that short name is accepted back as the answer. The candidates
+   come from the server's project list; the writer still never sees her replies or any task text.
 3. At most one proposal is held at a time, across all conversations (voice and typed share one card on
    screen, so "go" can only mean the card that is shown), for two minutes. What she says is the server's
    read-back sentence ("I will launch an investigation in kookr: ... Say go to start."), so the card and
@@ -212,6 +237,11 @@ Any other sentence the operator says during the window drops the held launch, li
 Relaunching, aborting, approving a permission prompt and merging are later slices. When they arrive,
 abort, approve and merge need a typed or clicked confirmation at Careful and Balanced, and a spoken
 specific "yes" at Hands-off; never "go" alone.
+
+A task launched from a conversation with her is not told which conversation it came from. So a task
+such as "reflect on my last answer" does not know which exchange is meant unless the operator's own
+words say it: the writer never sees her replies. Giving the task a pointer to the conversation in
+`lucy-interactions.jsonl` (issue #4144, item 3) is a design question left open.
 
 ## What she said unprompted
 

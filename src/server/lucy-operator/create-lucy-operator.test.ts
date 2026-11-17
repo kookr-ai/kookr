@@ -156,7 +156,8 @@ describe('buildLucyLookSource', () => {
       ];
       expect(await buildLucyLookSource(registryDeps(), { launching: true }).projects()).toEqual([
         { name: 'tracked', activeTasks: 0, findings: 0, launchable: true },
-        { name: 'untracked', activeTasks: 0, findings: 0, launchable: false },
+        // Not tracked, but it has a folder here: the Launch dialog offers it, so she may launch in it (issue #4144).
+        { name: 'untracked', activeTasks: 0, findings: 0, launchable: true },
         { name: 'nopath', activeTasks: 0, findings: 0, launchable: false },
       ]);
     });

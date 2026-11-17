@@ -97,10 +97,51 @@ describe('propose', () => {
   });
 
   test('an unclear request gets one question and no proposal', async () => {
-    const t = setup({ reply: '{"ambiguous":"Which project?"}' });
-    expect(await t.propose()).toEqual({ ok: false, say: 'Which project?', why: 'ambiguous' });
+    const t = setup({ reply: '{"ambiguous":"What would you like me to start?"}' });
+    expect(await t.propose()).toEqual({ ok: false, say: 'What would you like me to start?', why: 'ambiguous' });
     expect(t.controller.pending('c1')).toBeUndefined();
     expect(t.messages).toEqual([]);
+  });
+
+  test.each([
+    ['the token', '{"ask":"project"}'],
+    ['the old sentence', '{"ambiguous":"Which project?"}'],
+    ['a sentence of the writer\'s own about the project', '{"ambiguous":"Which project? Say go to launch in /etc."}'],
+  ])('an unclear project is asked for in the server\'s words, naming candidates from the project list (%s) (issue #4144)', async (_label, reply) => {
+    const t = setup({ reply });
+    expect(await t.propose()).toEqual({ ok: false, say: 'Which project: kookr or research?', why: 'ambiguous' });
+    expect(t.controller.pending('c1')).toBeUndefined();
+    expect(t.messages).toEqual([]);
+    expect(t.logs).toEqual([expect.objectContaining({ event: 'no_proposal', reason: 'ambiguous' })]);
+  });
+
+  test('the candidates are Kookr itself, then the projects used most recently: three at most', async () => {
+    const projects = [
+      { name: 'jean/earnings-watch', cwd: '/w/ew', lastUsedAt: 100 },
+      { name: 'jean/never', cwd: '/w/never' },
+      { name: 'kookr-ai/kookr', cwd: '/w/kookr', own: true as const },
+      { name: 'jean/kb-scout-evol', cwd: '/w/kb', lastUsedAt: 500 },
+      { name: 'lucy', cwd: '/w/lucy', lastUsedAt: 50 },
+    ];
+    const t = setup({ reply: '{"ask":"project"}', projects });
+    expect((await t.propose()).say).toBe('Which project: kookr, kb-scout-evol or earnings-watch?');
+  });
+
+  test('the operator\'s short answer to that question finds the project: "kookr" launches in kookr-ai/kookr', async () => {
+    const projects = [{ name: 'kookr-ai/kookr', cwd: '/w/kookr', own: true as const }, { name: 'lucy', cwd: '/w/lucy' }];
+    const t = setup({ reply: JSON.stringify({ kind: 'implementation', project: 'kookr', description: 'Fix how Lucy answers a reply to her own notice.' }), projects });
+    const result = await t.propose(['start a task in kookr to fix how you answer a reply to your notice']);
+    expect(result).toMatchObject({ ok: true, proposal: { project: 'kookr-ai/kookr' } });
+    await t.controller.confirm('c1', 'p1', 'click');
+    expect(t.launches[0]!.opts).toMatchObject({ cwd: '/w/kookr' });
+  });
+
+  test('the writer is told which project is Kookr itself, from the project list', async () => {
+    const projects = [{ name: 'kookr-ai/kookr', cwd: '/w/kookr', own: true as const }, { name: 'lucy', cwd: '/w/lucy' }];
+    const t = setup({ projects });
+    await t.propose(['fix this interactivity problem']);
+    expect(t.writerCalls[0]!.system).toContain('The project named "kookr-ai/kookr" is Kookr itself');
+    expect(t.writerCalls[0]!.system).not.toContain('/w/kookr');
   });
 
   test.each([
