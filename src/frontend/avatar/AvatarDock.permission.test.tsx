@@ -108,17 +108,20 @@ describe('AvatarDock: permission cards (issue #3932)', () => {
     expect(speech.announcePermissionNotice).toHaveBeenCalledTimes(1);
   });
 
-  test('with the strip folded the cards are not on screen, and the strip counts them as waiting on you', async () => {
+  test('permission cards unfold the strip by themselves, are counted as waiting on you, and can be folded away', async () => {
     sessionStorage.clear();
     mount();
-    await push([card(), card({ promptId: 'req-b', taskId: 't2', agentId: 'kookr-t2' })], { noticeId: 'perm-1', promptIds: ['req-aaaa', 'req-b'] });
     expect(all('avatar-permission')).toHaveLength(0);
+    await push([card(), card({ promptId: 'req-b', taskId: 't2', agentId: 'kookr-t2' })], { noticeId: 'perm-1', promptIds: ['req-aaaa', 'req-b'] });
+    // She says "the command is on my card": the cards are on screen without a press.
+    expect(all('avatar-permission')).toHaveLength(2);
     expect(q('avatar-tray-count')!.textContent).toBe('2');
     expect(q('avatar-tray')!.classList.contains('avatar-tray-waiting')).toBe(true);
-    // She still says it, and pressing the strip shows the cards.
     expect(speech.announcePermissionNotice).toHaveBeenCalledWith('perm-1', expect.anything());
+    // The operator can fold them away; the strip still counts them.
     await act(async () => { q('avatar-tray-toggle')!.click(); });
-    expect(all('avatar-permission')).toHaveLength(2);
+    expect(all('avatar-permission')).toHaveLength(0);
+    expect(q('avatar-tray-count')!.textContent).toBe('2');
   });
 
   test('three cards are three cards; a grouped sentence is one announcement', async () => {

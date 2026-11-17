@@ -78,6 +78,14 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
 
   // Folded to one line until the operator unfolds it; remembered for this browser tab.
   const [expanded, setExpanded] = useState(loadTrayExpanded);
+  // A permission prompt is the one thing that unfolds the strip by itself: a task is stopped on it and Lucy
+  // has just said "the command is on my card", so Approve and Deny must be on screen. The remembered choice
+  // is not changed, and the operator can fold it away again.
+  const seenPermissionCount = useRef(permissionCount);
+  useEffect(() => {
+    if (permissionCount > seenPermissionCount.current) setExpanded(true);
+    seenPermissionCount.current = permissionCount;
+  }, [permissionCount]);
   // Which card is open: none until the operator presses a row. A question that arrives later never opens
   // itself or takes the place of the open one (that would throw away a half-typed answer).
   const [chosen, setChosen] = useState<string | null>(null);
