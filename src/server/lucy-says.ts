@@ -8,8 +8,12 @@
  *
  * The rules that keep this from being a stream of noise, all decided here so every tab agrees:
  *
- * - The first event is written at once, as one sentence naming the task ("Docs link audit says it
- *   is finished and wants your review."). It opens a window of {@link LUCY_SAYS_GROUP_WINDOW_MS}.
+ * - "Finished, wants your review" is never written at once. Kookr closes almost every task that
+ *   signals it is finished by itself, within minutes, so the line would be untrue almost every
+ *   time. The event is held for {@link LUCY_SAYS_REVIEW_HOLD_MS} and enters the rules below only
+ *   if the task is then still open and still carries the signal. The three other events enter at once.
+ * - The first event is written at once, as one sentence naming the task ("Docs link audit
+ *   failed."). It opens a window of {@link LUCY_SAYS_GROUP_WINDOW_MS}.
  * - Events that arrive while the window is open wait. When it closes they are written together in
  *   one line ("Two more tasks want your review: A and B."), and a new window opens. So at most one
  *   line every two minutes, however many tasks end at once. An event that is no longer true when
@@ -33,6 +37,7 @@ import { countWord, sayableTaskName } from '../core/lucy-operator/operator-brief
 import {
   LUCY_SAYS_GROUP_WINDOW_MS,
   LUCY_SAYS_REPEAT_MS,
+  LUCY_SAYS_REVIEW_HOLD_MS,
   type LucySaysKind,
   type LucySaysMessage,
 } from '../shared/contracts/lucy-says.js';
@@ -103,7 +108,7 @@ export interface LucySaysNotifierDeps {
   push: (message: LucySaysMessage) => number;
   /** True for a task Lucy launched herself; its events are left to the launch controller. */
   isOwnLaunch?: (taskId: string) => boolean;
-  /** Asked when a window closes: is this still true of the task? Absent means yes. */
+  /** Asked when a window closes, and when a held "wants review" comes due: is this still true of the task? Absent means yes. */
   stillTrue?: (event: LucyTaskEvent) => boolean;
   now?: () => number;
   newId?: () => string;
@@ -194,6 +199,8 @@ export class LucySaysNotifier {
   /** The timer of the open window; undefined when no window is open. */
   private windowTimer: unknown;
   private windowOpen = false;
+  /** `taskId:kind` -> a "wants review" event waiting out {@link LUCY_SAYS_REVIEW_HOLD_MS}, with its timer. */
+  private readonly heldReviews = new Map<string, { event: LucyTaskEvent; timer: unknown }>();
 
   constructor(deps: LucySaysNotifierDeps) {
     this.deps = deps;
@@ -210,19 +217,43 @@ export class LucySaysNotifier {
       this.remember(key, nowMs);
       return;
     }
-    if (this.windowOpen) {
-      if (!this.waiting.some((other) => keyOf(other) === key)) this.waiting.push(event);
-      return;
-    }
-    this.write([event], { text: singleEventSentence(event), kind: WIRE_KIND[event.kind], taskIds: [event.taskId] });
+    if (event.kind === 'wants_review') this.holdReview(key, event);
+    else this.admit(key, event);
   }
 
-  /** Stop the window timer (shutdown, tests). Events still waiting are dropped. */
+  /** Stop every timer (shutdown, tests). Events still waiting or held are dropped. */
   dispose(): void {
     if (this.windowTimer !== undefined) this.clearTimer(this.windowTimer);
     this.windowTimer = undefined;
     this.windowOpen = false;
     this.waiting = [];
+    for (const held of this.heldReviews.values()) this.clearTimer(held.timer);
+    this.heldReviews.clear();
+  }
+
+  /**
+   * Keep a "wants review" event back for {@link LUCY_SAYS_REVIEW_HOLD_MS}. When the time is up it is
+   * written like any other event, but only if it is still true: most tasks have been closed by then.
+   * The same signal arriving again while it is held changes nothing; the wait runs from the first.
+   */
+  private holdReview(key: string, event: LucyTaskEvent): void {
+    if (this.heldReviews.has(key)) return;
+    const held: { event: LucyTaskEvent; timer: unknown } = { event, timer: undefined };
+    held.timer = this.setTimer(() => {
+      if (this.heldReviews.get(key) !== held) return;
+      this.heldReviews.delete(key);
+      if (this.stillTrue(event)) this.admit(key, event);
+    }, LUCY_SAYS_REVIEW_HOLD_MS);
+    this.heldReviews.set(key, held);
+  }
+
+  /** Write the event at once, or let it wait for the open window to close. */
+  private admit(key: string, event: LucyTaskEvent): void {
+    if (this.windowOpen) {
+      if (!this.waiting.some((other) => keyOf(other) === key)) this.waiting.push(event);
+      return;
+    }
+    this.write([event], { text: singleEventSentence(event), kind: WIRE_KIND[event.kind], taskIds: [event.taskId] });
   }
 
   private closeWindow(): void {

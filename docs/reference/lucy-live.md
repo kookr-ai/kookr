@@ -408,9 +408,11 @@ which questions are open; one more task that is simply working is not a change. 
 from `GET /api/lucy/briefing` and needs Lucy's operator conversation to be on (the follow-up requests
 are turns of it); with the conversation off she writes none.
 
-**A word about a task.** When a task she did not launch fails, goes quiet, loses contact with Kookr,
-or says it is finished and wants your review, she writes one line: "Docs link audit says it is
-finished and wants your review." Further events within the next two minutes are written together
+**A word about a task.** When a task she did not launch fails, goes quiet or loses contact with
+Kookr, she writes one line at once: "Docs link audit failed." A task that says it is finished is
+different: Kookr closes almost every such task by itself within a few minutes, so she waits ten
+minutes and writes "Docs link audit says it is finished and wants your review." only if the task is
+then still open and still waiting. Further events within two minutes of a line are written together
 when those two minutes are over ("Two more tasks want your review: A and B."), so at most one line
 every two minutes. The same task and the same kind of event are not written twice within ten
 minutes. A task you stopped yourself is left out, and so is a task she launched: its end is reported

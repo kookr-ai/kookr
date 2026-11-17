@@ -2533,13 +2533,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
 
   // Lucy writes a word in her thread when something happens to a task she did not launch: it failed,
-  // went quiet, lost contact, or says it is finished and wants a review. Grouped and rate-limited in
-  // the notifier; owner dashboards only; never sent again on reconnect. Nothing is spoken.
+  // went quiet, lost contact, or said it is finished and still waits for a review ten minutes later.
+  // Held, grouped and rate-limited in the notifier; owner dashboards only; never sent again on
+  // reconnect. Nothing is spoken.
   const lucySaysNotifier = new LucySaysNotifier({
     push: (message) => pushLucySays(connectionRegistry.snapshotDashboardConnections(), message),
     // A task she launched is reported by the launch controller, in the conversation that asked for it.
     isOwnLaunch: (taskId) => taskStore.getTask(taskId)?.metadata?.launchActorId === LUCY_OPERATOR_ACTOR_ID,
-    // Asked when a grouping window closes: a task that picked up again, or whose review was taken, is left out.
+    // Asked when a grouping window closes and when a held "wants review" comes due: a task that picked
+    // up again, or that Kookr closed in the meantime, is left out.
     stillTrue: (event) => taskEventStillTrue(event, taskStore.getTask(event.taskId), (sessionId) => queue.getAnomaly(sessionId)?.type),
   });
   const stopLucySaysObserver = queue.addObserver({

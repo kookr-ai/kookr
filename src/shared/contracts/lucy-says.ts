@@ -1,7 +1,8 @@
 /**
  * Wire contract for a word Lucy writes on her own when something happens to a task she did not
- * launch: it failed, it went quiet, Kookr lost contact with it, or it says it is finished and wants
- * a review. (A task she launched herself is reported by the launch controller, `lucy_launch`.)
+ * launch: it failed, it went quiet, Kookr lost contact with it, or it said it is finished and is still
+ * waiting for a review ten minutes later. (A task she launched herself is reported by the launch
+ * controller, `lucy_launch`.)
  *
  * The server decides everything: which events are worth a word, how they are grouped and the exact
  * sentence (`server/lucy-says.ts`). The browser writes the sentence into her thread. Nothing is
@@ -13,6 +14,13 @@ export type LucySaysKind = 'task_failed' | 'task_stalled' | 'task_lost_contact' 
 
 /** The first event is written at once; the ones that follow within this window are written together when it closes. */
 export const LUCY_SAYS_GROUP_WINDOW_MS = 2 * 60_000;
+/**
+ * "It says it is finished and wants your review" is never written at once: it waits this long and is
+ * written only if the task is then still open and still waiting. Kookr closes almost every task that
+ * signals it is finished within a few minutes (measured over 24 hours: 91 of 92, median 137 seconds),
+ * so a line written at once would be untrue almost every time.
+ */
+export const LUCY_SAYS_REVIEW_HOLD_MS = 10 * 60_000;
 /** The same task and the same kind of event are not written again within this time. */
 export const LUCY_SAYS_REPEAT_MS = 10 * 60_000;
 

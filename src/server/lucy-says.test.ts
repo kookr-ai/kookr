@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { LUCY_SAYS_GROUP_WINDOW_MS, LUCY_SAYS_REPEAT_MS, type LucySaysMessage } from '../shared/contracts/lucy-says.js';
+import { LUCY_SAYS_GROUP_WINDOW_MS, LUCY_SAYS_REPEAT_MS, LUCY_SAYS_REVIEW_HOLD_MS, type LucySaysMessage } from '../shared/contracts/lucy-says.js';
 import {
   LucySaysNotifier,
   groupedEventSentence,
@@ -95,32 +95,143 @@ describe('the sentences', () => {
 });
 
 describe('LucySaysNotifier', () => {
-  test('the window is two minutes and the repeat time ten', () => {
+  test('the window is two minutes, the repeat time ten, and a review is held ten', () => {
     expect(LUCY_SAYS_GROUP_WINDOW_MS).toBe(2 * MIN);
     expect(LUCY_SAYS_REPEAT_MS).toBe(10 * MIN);
+    expect(LUCY_SAYS_REVIEW_HOLD_MS).toBe(10 * MIN);
   });
 
-  test('the first event is written at once, as one sentence naming the task', () => {
+  test.each([
+    ['failed', 'task_failed', 'Docs link audit failed.'],
+    ['stalled', 'task_stalled', 'Docs link audit has gone quiet.'],
+    ['lost_contact', 'task_lost_contact', 'Kookr lost contact with Docs link audit.'],
+  ] as const)('a first %s event is written at once, as one sentence naming the task', (kind, wireKind, text) => {
     const h = harness();
-    h.note('t1', 'wants_review', 'Docs link audit');
-    expect(h.sent).toEqual([{
-      type: 'lucy_says', id: 'says-1', kind: 'task_wants_review', taskIds: ['t1'], at: T0,
-      text: 'Docs link audit says it is finished and wants your review.',
-    }]);
+    h.note('t1', kind, 'Docs link audit');
+    expect(h.sent).toEqual([{ type: 'lucy_says', id: 'says-1', kind: wireKind, taskIds: ['t1'], at: T0, text }]);
   });
 
   test('events inside the two-minute window are written together when it closes, not before', () => {
     const h = harness();
-    h.note('t1', 'wants_review', 'Docs link audit');
+    h.note('t1', 'failed', 'Docs link audit');
     h.advance(20 * SEC);
-    h.note('t2', 'wants_review', 'A');
+    h.note('t2', 'failed', 'A');
     h.advance(60 * SEC);
-    h.note('t3', 'wants_review', 'B');
+    h.note('t3', 'failed', 'B');
     h.advance(LUCY_SAYS_GROUP_WINDOW_MS - 80 * SEC - 1);
     expect(h.sent).toHaveLength(1);
     h.advance(1);
-    expect(h.texts()).toEqual(['Docs link audit says it is finished and wants your review.', 'Two more tasks want your review: A and B.']);
-    expect(h.sent[1]).toMatchObject({ kind: 'task_wants_review', taskIds: ['t2', 't3'], at: T0 + LUCY_SAYS_GROUP_WINDOW_MS });
+    expect(h.texts()).toEqual(['Docs link audit failed.', 'Two more tasks failed: A and B.']);
+    expect(h.sent[1]).toMatchObject({ kind: 'task_failed', taskIds: ['t2', 't3'], at: T0 + LUCY_SAYS_GROUP_WINDOW_MS });
+  });
+
+  describe('"finished, wants your review" is held for ten minutes', () => {
+    test('it is never written at once, and not one millisecond before the ten minutes are over', () => {
+      const h = harness();
+      h.note('t1', 'wants_review', 'Docs link audit');
+      expect(h.sent).toEqual([]);
+      h.advance(LUCY_SAYS_REVIEW_HOLD_MS - 1);
+      expect(h.sent).toEqual([]);
+      h.advance(1);
+      expect(h.sent).toEqual([{
+        type: 'lucy_says', id: 'says-1', kind: 'task_wants_review', taskIds: ['t1'], at: T0 + LUCY_SAYS_REVIEW_HOLD_MS,
+        text: 'Docs link audit says it is finished and wants your review.',
+      }]);
+    });
+
+    test('a task that was closed meanwhile, as almost all are, is never written about', () => {
+      const h = harness();
+      h.note('t1', 'wants_review', 'Docs link audit');
+      h.advance(137 * SEC);
+      h.resolve('t1', 'wants_review'); // Kookr closed the task
+      h.advance(LUCY_SAYS_REVIEW_HOLD_MS);
+      expect(h.sent).toEqual([]);
+      expect(h.pendingTimers()).toBe(0);
+    });
+
+    test('held reviews that come due close together are one sentence, then one grouped line', () => {
+      const h = harness();
+      h.note('t1', 'wants_review', 'Docs link audit');
+      h.advance(20 * SEC);
+      h.note('t2', 'wants_review', 'A');
+      h.advance(40 * SEC);
+      h.note('t3', 'wants_review', 'B');
+      h.advance(LUCY_SAYS_REVIEW_HOLD_MS - 60 * SEC);
+      expect(h.texts()).toEqual(['Docs link audit says it is finished and wants your review.']);
+      h.advance(LUCY_SAYS_GROUP_WINDOW_MS - 1);
+      expect(h.sent).toHaveLength(1);
+      h.advance(1);
+      expect(h.texts()).toEqual(['Docs link audit says it is finished and wants your review.', 'Two more tasks want your review: A and B.']);
+      expect(h.sent[1]).toMatchObject({ kind: 'task_wants_review', taskIds: ['t2', 't3'] });
+    });
+
+    test('a review that comes due while a window is open waits for it, and is left out if closed by then', () => {
+      const h = harness();
+      h.note('t1', 'wants_review', 'A');
+      h.note('t2', 'wants_review', 'B');
+      h.advance(LUCY_SAYS_REVIEW_HOLD_MS - 30 * SEC);
+      h.note('t3', 'failed', 'C'); // opens a window 30 s before the reviews come due
+      h.advance(60 * SEC);
+      h.resolve('t2', 'wants_review'); // closed after it came due, before the window closed
+      h.advance(LUCY_SAYS_GROUP_WINDOW_MS);
+      expect(h.texts()).toEqual(['C failed.', 'A says it is finished and wants your review.']);
+    });
+
+    test('the same signal again while it is held changes nothing: one line, ten minutes after the first', () => {
+      const h = harness();
+      h.note('t1', 'wants_review', 'A');
+      h.advance(4 * MIN);
+      h.note('t1', 'wants_review', 'A');
+      h.advance(6 * MIN);
+      expect(h.sent).toHaveLength(1);
+      expect(h.sent[0]!.at).toBe(T0 + LUCY_SAYS_REVIEW_HOLD_MS);
+      h.advance(LUCY_SAYS_REVIEW_HOLD_MS);
+      expect(h.sent).toHaveLength(1);
+    });
+
+    test('a failure in the meantime is still written at once', () => {
+      const h = harness();
+      h.note('t1', 'wants_review', 'A');
+      h.advance(MIN);
+      h.note('t2', 'failed', 'B');
+      expect(h.texts()).toEqual(['B failed.']);
+    });
+
+    test('a review that comes due with no dashboard open is dropped, not kept for later', () => {
+      const h = harness();
+      h.note('t1', 'wants_review', 'A');
+      h.setDashboards(0);
+      h.advance(LUCY_SAYS_REVIEW_HOLD_MS);
+      h.setDashboards(1);
+      h.advance(30 * MIN);
+      expect(h.sent).toEqual([]);
+      expect(h.pendingTimers()).toBe(0);
+    });
+
+    test('dispose clears the held reviews', () => {
+      const h = harness();
+      h.note('t1', 'wants_review', 'A');
+      h.note('t2', 'wants_review', 'B');
+      expect(h.pendingTimers()).toBe(2);
+      h.notifier.dispose();
+      expect(h.pendingTimers()).toBe(0);
+      h.advance(LUCY_SAYS_REVIEW_HOLD_MS);
+      expect(h.sent).toEqual([]);
+    });
+
+    test('with nothing to ask whether it is still true, a held review is written when it comes due', () => {
+      const sent: LucySaysMessage[] = [];
+      let due: (() => void) | undefined;
+      const notifier = new LucySaysNotifier({
+        push: (message) => { sent.push(message); return 1; },
+        setTimer: (fn, ms) => { if (ms === LUCY_SAYS_REVIEW_HOLD_MS) due = fn; return fn; },
+        clearTimer: () => {},
+      });
+      notifier.note({ taskId: 't1', kind: 'wants_review', taskName: 'A' });
+      expect(sent).toEqual([]);
+      due!();
+      expect(sent.map((message) => message.text)).toEqual(['A says it is finished and wants your review.']);
+    });
   });
 
   test('a single event that waited is written as its own sentence', () => {
@@ -157,10 +268,10 @@ describe('LucySaysNotifier', () => {
     const h = harness();
     h.note('t1', 'failed', 'A');
     h.note('t2', 'stalled', 'B');
-    h.note('t3', 'wants_review', 'C');
+    h.note('t3', 'lost_contact', 'C');
     h.resolve('t2', 'stalled');
     h.advance(LUCY_SAYS_GROUP_WINDOW_MS);
-    expect(h.texts()).toEqual(['A failed.', 'C says it is finished and wants your review.']);
+    expect(h.texts()).toEqual(['A failed.', 'Kookr lost contact with C.']);
     // Nothing at all was left: no line, and no new window.
     h.note('t4', 'stalled', 'D');
     h.resolve('t4', 'stalled');
@@ -204,10 +315,10 @@ describe('LucySaysNotifier', () => {
   test('the same event arriving twice while it waits in a window is written once', () => {
     const h = harness();
     h.note('t1', 'failed', 'A');
-    h.note('t2', 'wants_review', 'B');
-    h.note('t2', 'wants_review', 'B');
+    h.note('t2', 'stalled', 'B');
+    h.note('t2', 'stalled', 'B');
     h.advance(LUCY_SAYS_GROUP_WINDOW_MS);
-    expect(h.texts()).toEqual(['A failed.', 'B says it is finished and wants your review.']);
+    expect(h.texts()).toEqual(['A failed.', 'B has gone quiet.']);
   });
 
   test('a task Lucy launched herself is left to the launch controller', () => {
@@ -215,8 +326,9 @@ describe('LucySaysNotifier', () => {
     h.note('hers', 'failed', 'Her task');
     h.note('hers', 'wants_review', 'Her task');
     h.note('hers', 'stalled', 'Her task');
-    h.advance(LUCY_SAYS_GROUP_WINDOW_MS);
+    h.advance(LUCY_SAYS_REVIEW_HOLD_MS + LUCY_SAYS_GROUP_WINDOW_MS);
     expect(h.sent).toEqual([]);
+    expect(h.pendingTimers()).toBe(0);
     h.note('t1', 'failed', 'A');
     expect(h.texts()).toEqual(['A failed.']);
   });
@@ -231,8 +343,8 @@ describe('LucySaysNotifier', () => {
     h.advance(10 * MIN);
     expect(h.sent).toEqual([]);
     // The next thing that happens is written as a first event, with nothing of the past in it.
-    h.note('t3', 'wants_review', 'C');
-    expect(h.texts()).toEqual(['C says it is finished and wants your review.']);
+    h.note('t3', 'stalled', 'C');
+    expect(h.texts()).toEqual(['C has gone quiet.']);
   });
 
   test('a line nobody received does not count as said: the same event is written when it happens again', () => {
