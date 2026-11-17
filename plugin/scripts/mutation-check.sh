@@ -121,12 +121,24 @@ case "$FROM" in *"$NL"*) die_usage "--from contains a newline: it must be text f
 REPO=$(git -C "$REPO_ARG" rev-parse --show-toplevel 2>/dev/null) || die_setup "not a git checkout: $REPO_ARG"
 REPO=$(cd "$REPO" && pwd -P) || die_setup "cannot enter $REPO"
 
+# Print absolute path $1 relative to $REPO. The directory part is resolved with
+# `pwd -P` first, because $REPO is resolved too: on macOS a temp path under /var
+# is really under /private/var. Fails when the path is outside $REPO.
+repo_rel() {
+  local dir base
+  dir=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
+  base=$(basename "$1")
+  case "$dir/" in "$REPO"/*) ;; *) return 1 ;; esac
+  dir=${dir#"$REPO"}
+  dir=${dir#/}
+  if [ -n "$dir" ]; then printf '%s/%s\n' "$dir" "$base"; else printf '%s\n' "$base"; fi
+}
+
 # The file must be a path inside the repository. Accept an absolute path under
 # the root, but never one that climbs out or goes through node_modules (that
 # directory is a link to the caller's real one inside the worktree).
-case "$FILE" in "$REPO"/*) FILE=${FILE#"$REPO"/} ;; esac
 case "$FILE" in
-  /*) die_usage "--file must be inside the repository ($REPO): $FILE" ;;
+  /*) FILE=$(repo_rel "$FILE") || die_usage "--file must be inside the repository ($REPO): $FILE" ;;
 esac
 case "/$FILE/" in
   */../*) die_usage "--file must not contain '..': $FILE" ;;
@@ -140,7 +152,7 @@ if [ "$MODE" = vitest ]; then
   # Test files are passed relative to the worktree root.
   for t in "$@"; do
     case "$t" in -*) die_usage "--vitest takes test files only, got option '$t'" ;; esac
-    case "$t" in "$REPO"/*) t=${t#"$REPO"/} ;; /*) die_usage "--vitest file is outside the repository: $t" ;; esac
+    case "$t" in /*) t=$(repo_rel "$t") || die_usage "--vitest file is outside the repository ($REPO): $t" ;; esac
     set -- "$@" "$t"
     shift
   done
@@ -178,11 +190,14 @@ WT_ADDED=1
 # ---- 3. The caller's uncommitted changes -----------------------------------
 
 if [ "$WITH_UNCOMMITTED" -eq 1 ]; then
-  git -C "$REPO" diff --binary HEAD >"$SCRATCH/uncommitted.patch" || die_setup "git diff failed in $REPO"
+  # Pin the patch format: the caller's config (diff.noprefix, color.ui=always,
+  # an external diff driver) would otherwise produce a patch git apply rejects.
+  git -C "$REPO" diff --binary --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ HEAD \
+    >"$SCRATCH/uncommitted.patch" || die_setup "git diff failed in $REPO"
   if [ -s "$SCRATCH/uncommitted.patch" ]; then
-    if ! git -C "$WT" apply --binary "$SCRATCH/uncommitted.patch" 2>"$SCRATCH/apply.log"; then
+    if ! git -C "$WT" apply --binary --whitespace=nowarn "$SCRATCH/uncommitted.patch" 2>"$SCRATCH/apply.log"; then
       cat "$SCRATCH/apply.log" >&2
-      die_setup "the uncommitted changes do not apply to $REV (they are relative to HEAD)"
+      die_setup "the uncommitted changes (taken against HEAD) do not apply to --rev $REV"
     fi
   fi
   # Untracked files that are not ignored: an author's new test file is the
@@ -197,6 +212,13 @@ fi
 TARGET="$WT/$FILE"
 if [ -L "$TARGET" ]; then die_usage "--file is a symbolic link: $FILE"; fi
 if [ ! -f "$TARGET" ]; then die_usage "--file is not a file in the worktree of $REV: $FILE"; fi
+# A tracked symbolic link to a directory on the path would send the write
+# outside the worktree, possibly into a real directory of the caller's.
+TARGET_DIR=$(cd "$(dirname "$TARGET")" && pwd -P) || die_setup "cannot enter the directory of $FILE"
+case "$TARGET_DIR/" in
+  "$WT"/*) ;;
+  *) die_usage "--file resolves outside the worktree (a directory on its path is a symbolic link to $TARGET_DIR): $FILE" ;;
+esac
 
 # ---- 6a. Build the mutant now, so a bad address is refused before any test run
 
@@ -252,7 +274,6 @@ fi
 
 # ---- 4. node_modules --------------------------------------------------------
 
-linked=0
 for nm in "$REPO/node_modules" "$REPO"/*/node_modules; do
   [ -d "$nm" ] || continue
   rel=${nm#"$REPO"/}
@@ -260,7 +281,6 @@ for nm in "$REPO/node_modules" "$REPO"/*/node_modules; do
   [ -d "$parent" ] || continue
   [ -e "$WT/$rel" ] && continue
   ln -s "$nm" "$WT/$rel" || die_setup "could not link $rel"
-  linked=$((linked + 1))
 done
 if [ ! -d "$REPO/node_modules" ]; then
   if [ -f "$WT/pnpm-lock.yaml" ]; then hint="pnpm install --frozen-lockfile"

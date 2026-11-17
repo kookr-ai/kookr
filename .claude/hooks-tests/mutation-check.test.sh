@@ -173,12 +173,33 @@ run_mc "$WORK/t6c" --repo "$R" --file calc.sh --line 2 --from '+' --to '+' -- sh
 assert_rc 2 "no-op change"
 run_mc "$WORK/t6d" --repo "$R" --file ../calc.sh --line 2 --from '+' --to '-' -- sh test.sh
 assert_rc 2 "--file with .."
+grep -q -- "--file must not contain '..'" <<<"$ERR" || fail "--file with ..: wrong message: $ERR"
 run_mc "$WORK/t6e" --repo "$R" --file calc.sh --line 2 --from '+' --to '-'
 assert_rc 2 "no test command"
 assert_clean_tmp "$WORK/t6" "$R" "--from twice"
 assert_clean_tmp "$WORK/t6b" "$R" "--to newline"
 [ "$(fingerprint "$R")" = "$BEFORE" ] || fail "refusals: caller checkout changed"
 ok "refused: --from twice on a line, newline in --to, no-op, '..' path, no test"
+
+# ---- refusal: a path that leaves the worktree through a symbolic link ---------
+R4="$WORK/r4"; make_repo "$R4"
+mkdir -p "$WORK/ext"
+printf 'outside\n' >"$WORK/ext/y.sh"
+ln -s calc.sh "$R4/link.sh"
+ln -s "$WORK/ext" "$R4/linkdir"
+g -C "$R4" add link.sh linkdir
+g -C "$R4" commit -q -m "symlinks"
+export RUN_LOG="$WORK/run6f.log"
+run_mc "$WORK/t6f" --repo "$R4" --file link.sh --line 2 --from '+' --to '-' -- sh test.sh
+assert_rc 2 "symlinked file"
+grep -q -- '--file is a symbolic link' <<<"$ERR" || fail "symlinked file: wrong message: $ERR"
+run_mc "$WORK/t6g" --repo "$R4" --file linkdir/y.sh --line 1 --from 'outside' --to 'MUTATED' -- sh test.sh
+assert_rc 2 "symlinked directory"
+grep -q -- '--file resolves outside the worktree' <<<"$ERR" || fail "symlinked directory: wrong message: $ERR"
+[ "$(cat "$WORK/ext/y.sh")" = outside ] || fail "symlinked directory: the file outside the worktree was written"
+[ ! -e "$RUN_LOG" ] || fail "symlink refusals: the test ran"
+assert_clean_tmp "$WORK/t6g" "$R4" "symlinked directory"
+ok "refused: a symlinked file, and a path through a symlinked directory (nothing written outside)"
 
 # ---- red before the change ---------------------------------------------------
 R2="$WORK/r2"; make_repo "$R2"
@@ -211,6 +232,16 @@ cmp -s "$R2/calc.sh" <(g -C "$R2" show HEAD~1:calc.sh) || fail "--with-uncommitt
 assert_clean_tmp "$WORK/t8" "$R2" "--with-uncommitted"
 assert_ran_in_removed_worktree "$RUN_LOG" "$R2" "--with-uncommitted"
 ok "--with-uncommitted: applies the caller's diff and untracked files, caller unchanged"
+
+# The caller's git config must not change the patch format.
+export RUN_LOG="$WORK/run8b.log"
+GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=diff.noprefix GIT_CONFIG_VALUE_0=true \
+  GIT_CONFIG_KEY_1=color.ui GIT_CONFIG_VALUE_1=always GIT_CONFIG_KEY_2=color.diff GIT_CONFIG_VALUE_2=always \
+  run_mc "$WORK/t8b" --repo "$R2" --with-uncommitted --file calc.sh --line 2 --from '$1 + $2' --to '$1 - $2' -- sh test.sh
+assert_rc 0 "--with-uncommitted with diff.noprefix and color.ui=always"
+assert_clean_tmp "$WORK/t8b" "$R2" "--with-uncommitted with diff config"
+[ "$(fingerprint "$R2")" = "$BEFORE2" ] || fail "--with-uncommitted with diff config: caller checkout changed"
+ok "--with-uncommitted ignores diff.noprefix and color.ui=always in the caller's config"
 
 # ---- an inherited GIT_DIR does not redirect the script -------------------------
 export RUN_LOG="$WORK/run9.log"
@@ -255,7 +286,10 @@ SRC
 chmod +x "$R3/node_modules/.bin/vitest"
 BEFORE3=$(fingerprint "$R3")
 export VITEST_ARGS="$WORK/vitest.args" VITEST_CONFIG_COPY="$WORK/vitest.config.copy" VITEST_CACHE="$WORK/vitest.cache" RUN_LOG="$WORK/run11.log"
-run_mc "$WORK/t11" --repo "$R3" --file calc.sh --line 2 --from '$1 + $2' --to '$1 - $2' --vitest "$R3/test.sh"
+# Absolute paths given through a symbolic link to the repository (as macOS
+# temp paths under /var are) must still count as inside it.
+ln -s "$R3" "$WORK/r3-link"
+run_mc "$WORK/t11" --repo "$WORK/r3-link" --file "$WORK/r3-link/calc.sh" --line 2 --from '$1 + $2' --to '$1 - $2' --vitest "$WORK/r3-link/test.sh"
 assert_rc 1 "--vitest"
 [ "$OUT" = survived ] || fail "--vitest: expected survived from the stand-in: $OUT"
 [ "$(grep -c . "$VITEST_ARGS")" = 2 ] || fail "--vitest: expected two vitest runs: $(cat "$VITEST_ARGS")"
@@ -273,7 +307,7 @@ case "$(head -n 1 "$VITEST_CACHE")" in */mutation-check.*/vite-cache) ;; *) fail
 [ -x "$R3/node_modules/.bin/vitest" ] || fail "--vitest: the caller's node_modules was removed"
 assert_clean_tmp "$WORK/t11" "$R3" "--vitest"
 assert_ran_in_removed_worktree "$RUN_LOG" "$R3" "--vitest"
-ok "--vitest: links node_modules, passes a config without globalSetup, keeps the cache in scratch"
+ok "--vitest: links node_modules, passes a config without globalSetup, keeps the cache in scratch, accepts paths through a symlink"
 
 # ---- no node_modules: the install hint is printed --------------------------------
 rm -rf "$R3/node_modules"
