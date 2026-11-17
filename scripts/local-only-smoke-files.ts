@@ -52,6 +52,13 @@ export function assertKookrDiff(before: FileSnapshot, after: FileSnapshot): void
       || entry === 'plugin-auto-update.json'
       // The task-namer health snapshot is written after the first naming call (task-namer-health.ts, #3616).
       || entry === 'task-namer-health.json'
+      // Written when the first achievement unlocks, after the launch that unlocked it has returned
+      // (achievement-watcher.ts, saveAchievements). A slow run on a loaded host sees it; a fast one does not.
+      || entry === 'achievements.json'
+      // Written by the resource watchdog once it has taken a sample under pressure
+      // (resource-watchdog-state.ts and resource-watchdog-audit.ts), so only on a loaded host.
+      || entry === 'resource-watchdog.state.json'
+      || entry === 'resource-watchdog-audit.jsonl'
       || /^tasks\.json\.pre-sqlite-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/.test(entry)
     )) return true;
     return entry === 'tasks.json'

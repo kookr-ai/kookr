@@ -7,8 +7,11 @@ import { describe, expect, it } from 'vitest';
 import { assertKookrDiff, snapshotDir, type FileSnapshot } from './local-only-smoke-files.js';
 
 const startupFiles = [
+  'achievements.json',
   'last-good-health.json',
   'plugin-auto-update.json',
+  'resource-watchdog-audit.jsonl',
+  'resource-watchdog.state.json',
   'server.lock.sqlite',
   'task-namer-health.json',
   'tasks.json.pre-sqlite-2026-09-14T02-20-45-356Z',
@@ -67,6 +70,12 @@ describe('local-only smoke filesystem assertion', () => {
     'nested/plugin-auto-update.json',
     'task-namer-health.json.tmp',
     'nested/task-namer-health.json',
+    'achievements.json.tmp',
+    'nested/achievements.json',
+    'resource-watchdog.state.json.tmp',
+    'nested/resource-watchdog.state.json',
+    'resource-watchdog-audit.jsonl.1',
+    'nested/resource-watchdog-audit.jsonl',
     'tasks.json.pre-sqlite-',
     'tasks.json.pre-sqlite-unrelated',
     'tasks.json.pre-sqlite-2026-09-14T02-20-45-356Z.extra',
