@@ -46,8 +46,15 @@ the first run of this loop) — match its format and depth.
 - **Fetch before branching**: local `main` is routinely stale and the running
   dashboard tracks `origin/main`. Base everything on `origin/main` so fixes
   diff cleanly against what is actually deployed.
-- **Ask before push/PR.** Commit freely in worktrees; pushing and opening PRs
-  needs an explicit user go-ahead.
+- **Ask before push/PR, and ask early.** Commit freely in worktrees; pushing and
+  opening PRs needs an explicit user go-ahead. Do not leave that question for the
+  final report: two runs in a row ended with "the push question is with the
+  operator", the tasks completed, and nothing was pushed, so the operator re-ran
+  the loop on a dashboard that still had every finding. As soon as there is
+  something to show, send one `kookr ask` (no `--wait`) with a link to real
+  screenshots and two or three options ("Push and open the PRs", "Push, open PRs,
+  merge when gates pass", "Keep it local"), and carry on. Asked that way, the
+  question was answered in 27 seconds. No answer means no push.
 - Commits end with: `Co-Authored-By: <the assistant's model name> <noreply@anthropic.com>`
 
 ## Phase 1 — Setup
@@ -57,12 +64,19 @@ the first run of this loop) — match its format and depth.
    final report): `git worktree add ../kookr-dogfood-<yyyymm> -b rfc/ux-dogfooding-<yyyymm> origin/main`.
 3. Seed `docs/rfc/rfc-ux-dogfooding-findings-<yyyy-mm>.md` with: status Draft,
    method, empty Findings / Things-that-worked-well / Session-log sections.
+4. **Look for work earlier runs left unpushed** before measuring anything:
+   `git branch --list 'rfc/ux-dogfooding-*'` and the fix branches their RFCs name,
+   checked against `git ls-remote --heads origin`. If a previous run built fixes
+   that never reached the remote, the live dashboard still shows what that run
+   measured, and landing those fixes is worth more than finding the same things
+   again: ask about them first (see "Ask before push/PR, and ask early").
 
 ## Phase 2 — Dogfood with a running RFC
 
-Drive classic workflows end to end, focusing on **{{focus_area}}** if given.
-Launch real, useful tasks only in: {{target_projects}} (default: the three
-private projects). Prioritise the repos that feed Kookr's own self-recursive
+Drive classic workflows end to end. Focus area for this run (empty means a
+broad pass): **{{focus_area}}**
+Projects where real tasks may be launched (empty means the default, the three
+private projects): **{{target_projects}}** Prioritise the repos that feed Kookr's own self-recursive
 improvement — `knowledge-base-mcp-server`, `local-research-agent`,
 `reason-at-home` — so the work you trigger is genuinely useful, not throwaway.
 Good task seeds: README-vs-code consistency audit, dead-code scan, bug hunt in a
@@ -131,6 +145,56 @@ Screenshot/automation notes that save an hour:
 - When a monitor waits for a task to re-signal, don't gate on
   `raisedAt >= monitor start` — the re-signal often lands before the monitor
   arms. Compare against the *previous* signal's `raisedAt` instead.
+- **The operator's own browser is live data.** Question cards, permission cards and
+  launch cards there are real decisions (mirrored to Telegram): measure them with read-only
+  DOM probes, never click an answer, Send or Dismiss. Exercise those flows on a throwaway
+  server seeded through `POST /api/asks` (`scripts/ask-lucy-browser-proof.ts` shows how).
+- **A second dashboard tab speaks.** With Lucy's panel on, every open tab plays her clips,
+  so a probe tab talks over the operator. Close it as soon as the measurements are taken,
+  and never switch Talk on there (it opens the operator's microphone).
+- **Headless Chromium may never paint on this host** (no `requestAnimationFrame`, every
+  click and screenshot waits forever). Run Playwright headed under a virtual display:
+  `xvfb-run -a -s "-screen 0 1600x1000x24" pnpm exec playwright test <spec> --headed --workers=1`.
+- **`origin/main` moves while you work.** Review a branch with the three-dot diff
+  (`git diff origin/main...HEAD`); the two-dot diff shows other people's merges as your
+  deletions.
+- **Explore agents cannot write files**, and a closing hook can replace their last message
+  with a notebook note. Ask for the map "in your final message", and if it comes back empty,
+  ask the same agent to send it again rather than re-exploring.
+- **A rerun on the same panel starts from the last run's branches, not from the live
+  dashboard.** If the previous run left unpushed fix branches, the live dashboard still
+  shows what that run already measured. Merge those branches onto `origin/main` in a fresh
+  integration worktree, run *that* build on a throwaway server, and dogfood it; stack new
+  clusters on the integration branch and say so in the RFC.
+- **The operator's history is evidence.** `~/.kookr/lucy-interactions.jsonl` records what
+  Lucy said (`kind: said`), what the panel did with each clip (`kind: ui`, joined on
+  `clipId`: started, ended, unheard and why) and every panel action. Count before you
+  theorise: "62% of her unprompted clips were never played" came from that file.
+- **A throwaway server needs a fake Telegram for task questions** (`POST /api/asks` answers
+  503 without one): start `startFakeTelegram()` from
+  `src/integrations/telegram/fake-telegram-server.js` and pass its URL as
+  `KOOKR_TELEGRAM_API_URL`, as `scripts/ask-lucy-browser-proof.ts` does.
+- **Never print `.env`.** A `grep` with a `sed` redaction leaked three API keys into this
+  session's transcript when the pattern did not match. List names only
+  (`cut -d= -f1 .env`), and read a secret inside the launcher script that needs it.
+- **A blocked command runs nothing.** The task hooks reject `git add -A` and `rm -rf` on a
+  variable path, and they reject the whole Bash call: an edit earlier in the same command
+  did not happen. Stage by path, delete by literal path, and re-run the rest.
+- **Ask implementers to write their report to a file as well as their last message**; the
+  closing hook can replace the message.
+- **Landing a large stack: review it in parts.** One reviewer cannot read 15,000 lines
+  in the review's time budget. Split the diff by area (one `git diff origin/main...HEAD --
+  <files>` file per area), give each area its own fresh-context reviewer with the same
+  brief, and post one verdict that lists every part. The Codex review lane needs
+  `bubblewrap` on this host; without it the lane script exits 3 and the Claude lane is
+  the one to use.
+- **This repository has no ESLint.** `pnpm exec eslint` fails with `spawn eslint EACCES`
+  because there is nothing to run; conventions are checked by `pnpm typecheck` and the
+  design-token tests. Do not record "lint not run" as a gap.
+- **The playbook text a task receives comes from the checkout it was launched in.** A
+  task launched in a parked `~/git/kookr` gets that checkout's older copy of this file.
+  Read the current one with `git show origin/main:.kookr/playbooks/ux-dogfood-loop.md`
+  before following it.
 
 For every medium/high finding, attempt a code root-cause (grep server +
 frontend, cite `file:line` in the RFC). A finding with a root cause is an
@@ -139,8 +203,9 @@ implementation ticket; one without is just a complaint.
 ## Phase 3 — Commit the RFC and decide
 
 Commit the RFC in its worktree (`docs(rfc): ...`). Report the findings summary
-to the user. If **{{implement}}** is not 'true', stop here and ask whether to
-push the RFC branch and/or proceed to implementation.
+to the user. The `implement` parameter of this run is **{{implement}}**. If it is
+not 'true', stop here and ask whether to push the RFC branch and/or proceed to
+implementation.
 
 ## Phase 4 — Implementation fan-out (implement=true)
 
@@ -165,4 +230,7 @@ push the RFC branch and/or proceed to implementation.
 - If the session surfaced lessons about *this playbook's process itself*,
   update this playbook in the same PR as the RFC.
 - Signal completion when the deliverables are committed and the push/PR
-  question is in the user's hands: `kookr signal completion-ready --note "..."`.
+  question has been asked through `kookr ask` (and, if the operator said yes,
+  the branches are pushed and the pull requests are open or merged):
+  `kookr signal completion-ready --note "..."`. A question that exists only in
+  the final report does not count as asked.
