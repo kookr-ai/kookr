@@ -1468,7 +1468,7 @@ describe('useLucyLive', () => {
       expect(sources.map((s) => s.buffer!.tag)).toEqual(['lucy-ask-2:0']);
     });
 
-    test('a question held when the operator interrupts her is dropped, and never cuts into her next answer', async () => {
+    test('a question held when the operator interrupts her is dropped and reported unplayed, and never cuts into her next answer', async () => {
       const ws = await talkOn();
       speakTurn();
       const id = lastTurnId();

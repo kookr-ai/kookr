@@ -473,6 +473,32 @@ describe('LucyLiveSession: what of a question the operator heard (#4015)', () =>
     expect(turnStarts(h).map((t) => t.askId)).toEqual(['a1', 'a2', 'a1', 'a2']);
   });
 
+  it('an ended question and the one still being sent go back ahead of the questions still waiting, in order', async () => {
+    const h = harness();
+    h.asks.set('a2', 'Second question. It has two parts.');
+    h.asks.set('a3', 'Third question.');
+    h.session.handleMessage({ type: 'say_ask', askId: 'a1' });
+    await flush();
+    const q1 = turnStarts(h)[0].turnId;
+    expect(doneOf(h, q1)?.end).toBe('answered');
+    const release = gate(h, h.synthSignals.length + 1); // q2's first sentence goes out, the rest wait
+    h.session.handleMessage({ type: 'say_ask', askId: 'a2' });
+    await advance(h, 10_000);
+    const q2 = turnStarts(h)[1].turnId;
+    expect(doneOf(h, q2)).toBeUndefined(); // still being sent
+    h.session.handleMessage({ type: 'say_ask', askId: 'a3' });
+    // The browser held both behind other audio and lost them: q1 had ended on the server, q2 had not.
+    h.session.handleMessage({ type: 'speech_start', turnId: 'op1' });
+    h.session.handleMessage({ type: 'turn_unplayed', turnIds: [q1, q2] });
+    release();
+    h.session.handleAudio(Buffer.alloc(3200));
+    h.session.handleMessage({ type: 'speech_end', turnId: 'op1' });
+    h.ears[0].say('What now?');
+    await flush();
+    for (let i = 0; i < 4; i += 1) await advance(h, 10_000);
+    expect(turnStarts(h).map((t) => t.askId)).toEqual(['a1', 'a2', 'a1', 'a2', 'a3']);
+  });
+
   it('a turn_unplayed for a question the browser reported playing is ignored', async () => {
     const h = harness();
     h.session.handleMessage({ type: 'say_ask', askId: 'a1' });
