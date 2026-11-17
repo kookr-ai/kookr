@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { OPERATOR_ASK_MAX_LISTED, OPERATOR_ASK_RESOLVED_VISIBLE_MS, type AskRecord } from '../shared/contracts/asks.js';
+import type { TaskStatus } from '../shared/contracts/task-status.js';
 import { askTaskName, buildAskSpeech, listOperatorAsks, toOperatorAskView } from './operator-asks.js';
 
 const NOW = 2_000_000_000_000;
@@ -14,34 +15,52 @@ function ask(over: Partial<AskRecord> = {}): AskRecord {
 }
 
 const names = (id: string): string | undefined => (id === 't1' ? 'Fix login' : undefined);
+// t1 is still running, t-done has finished, and any other id is a task that no longer exists.
+const statuses = (id: string): TaskStatus | undefined => (id === 't1' ? 'inProgress' : id === 't-done' ? 'completed' : undefined);
 
 describe('toOperatorAskView', () => {
   it('keeps what the panel shows and drops the nonce and the Telegram coordinates', () => {
-    const view = toOperatorAskView(ask({ context: 'Background', idempotencyKey: 'k' }), names);
+    const view = toOperatorAskView(ask({ context: 'Background', idempotencyKey: 'k' }), names, statuses);
     expect(view).toEqual({
-      id: 'a1b2c3d4e5f6', taskId: 't1', taskName: 'Fix login', question: 'Ship it?', context: 'Background',
+      id: 'a1b2c3d4e5f6', taskId: 't1', taskName: 'Fix login', taskEnded: false, question: 'Ship it?', context: 'Background',
       options: ['Yes', 'No'], allowText: true, state: 'pending', createdAt: NOW - 60_000, expiresAt: NOW + 60_000,
     });
     expect(JSON.stringify(view)).not.toMatch(/nonce|delivery|chatId|idempotency/);
   });
 
+  it.each([
+    ['a running task', 't1', false],
+    ['a finished task', 't-done', true],
+    ['a task that no longer exists', 'gone', true],
+  ])('marks whether the task that asked has ended: %s', (_label, taskId, ended) => {
+    expect(toOperatorAskView(ask({ taskId }), names, statuses).taskEnded).toBe(ended);
+  });
+
+  it.each(['open', 'pending', 'inProgress', 'completed', 'terminated', 'cancelled'] as const)(
+    'reads the %s status the way isTerminalStatus does',
+    (status) => {
+      const ended = status === 'completed' || status === 'terminated' || status === 'cancelled';
+      expect(toOperatorAskView(ask(), names, () => status).taskEnded).toBe(ended);
+    },
+  );
+
   it('carries the links the card shows as buttons (#3929)', () => {
     const links = [{ url: 'https://claude.ai/artifact/abc', label: 'Open mockups' }, { url: 'https://github.com/o/r/pull/1' }];
-    expect(toOperatorAskView(ask({ links }), names).links).toEqual(links);
-    expect(toOperatorAskView(ask({ links: [] }), names)).not.toHaveProperty('links');
+    expect(toOperatorAskView(ask({ links }), names, statuses).links).toEqual(links);
+    expect(toOperatorAskView(ask({ links: [] }), names, statuses)).not.toHaveProperty('links');
   });
 
   it('carries the answer and the channel it came from', () => {
     const view = toOperatorAskView(ask({
       state: 'answered', resolution: 'answered', answeredVia: 'telegram', answeredBy: 99, resolvedAt: NOW - 5,
       answer: { kind: 'option', index: 0, label: 'Yes' },
-    }), names);
+    }), names, statuses);
     expect(view).toMatchObject({ state: 'answered', answeredVia: 'telegram', resolvedAt: NOW - 5, answer: { label: 'Yes' } });
     expect(view).not.toHaveProperty('answeredBy');
   });
 
   it('leaves the task name out when the title is missing, too long or unreadable', () => {
-    expect(toOperatorAskView(ask({ taskId: 'unknown' }), names)).not.toHaveProperty('taskName');
+    expect(toOperatorAskView(ask({ taskId: 'unknown' }), names, statuses)).not.toHaveProperty('taskName');
     expect(askTaskName('Fix the login page')).toBe('Fix the login page');
     expect(askTaskName(undefined)).toBeUndefined();
     expect(askTaskName('word '.repeat(40))).toBeUndefined();
@@ -55,7 +74,7 @@ describe('listOperatorAsks', () => {
       ask({ id: 'just-answered', state: 'answered', resolvedAt: NOW - 1_000, createdAt: NOW - 30_000 }),
       ask({ id: 'long-answered', state: 'answered', resolvedAt: NOW - OPERATOR_ASK_RESOLVED_VISIBLE_MS - 1 }),
       ask({ id: 'newest', createdAt: NOW - 1_000 }),
-    ], NOW, names);
+    ], NOW, names, statuses);
     expect(list.map((a) => a.id)).toEqual(['newest', 'just-answered', 'old-pending']);
   });
 
@@ -64,7 +83,7 @@ describe('listOperatorAsks', () => {
       ask({ id: 'answered-old-format', state: 'answered', answeredAt: NOW - 2_000 }),
       ask({ id: 'expired-old-format', state: 'expired', expiresAt: NOW - 3_000 }),
       ask({ id: 'expired-long-ago', state: 'expired', expiresAt: NOW - OPERATOR_ASK_RESOLVED_VISIBLE_MS - 1 }),
-    ], NOW, names);
+    ], NOW, names, statuses);
     expect(list.map((a) => a.id).sort()).toEqual(['answered-old-format', 'expired-old-format']);
   });
 
@@ -72,7 +91,7 @@ describe('listOperatorAsks', () => {
     const list = listOperatorAsks([
       ask({ id: 'unsent', delivery: undefined }),
       ask({ id: 'failed', state: 'cancelled', resolution: 'delivery_failed', resolvedAt: NOW }),
-    ], NOW, names);
+    ], NOW, names, statuses);
     expect(list).toEqual([]);
   });
 
@@ -80,7 +99,7 @@ describe('listOperatorAsks', () => {
     const closedNewer = Array.from({ length: OPERATOR_ASK_MAX_LISTED + 5 }, (_, i) => ask({
       id: `closed-${i}`, state: 'answered', resolvedAt: NOW - i, createdAt: NOW - 1000 - i,
     }));
-    const list = listOperatorAsks([ask({ id: 'old-pending', createdAt: NOW - 9 * 60_000 }), ...closedNewer], NOW, names);
+    const list = listOperatorAsks([ask({ id: 'old-pending', createdAt: NOW - 9 * 60_000 }), ...closedNewer], NOW, names, statuses);
     expect(list).toHaveLength(OPERATOR_ASK_MAX_LISTED + 1);
     expect(list.map((a) => a.id)).toContain('old-pending');
     expect(list[0].id).toBe('closed-0');
@@ -94,7 +113,7 @@ describe('listOperatorAsks', () => {
     }));
     // Asked long ago, answered just now: the newest outcome, though the oldest question.
     const justAnswered = ask({ id: 'just-answered', state: 'answered', resolvedAt: NOW - 10, createdAt: NOW - 20 * 60_000 });
-    const ids = listOperatorAsks([...waiting, ...olderClosed, justAnswered], NOW, names).map((a) => a.id);
+    const ids = listOperatorAsks([...waiting, ...olderClosed, justAnswered], NOW, names, statuses).map((a) => a.id);
     expect(ids).toContain('just-answered');
     expect(ids.filter((id) => id.startsWith('pending-'))).toHaveLength(OPERATOR_ASK_MAX_LISTED + 2);
     expect(ids.filter((id) => !id.startsWith('pending-'))).toHaveLength(OPERATOR_ASK_MAX_LISTED);
@@ -102,7 +121,7 @@ describe('listOperatorAsks', () => {
 
   it('lists every pending question even beyond the cap', () => {
     const many = Array.from({ length: OPERATOR_ASK_MAX_LISTED + 1 }, (_, i) => ask({ id: `pending-${i}`, createdAt: NOW - i }));
-    const list = listOperatorAsks(many, NOW, names);
+    const list = listOperatorAsks(many, NOW, names, statuses);
     expect(list.map((a) => a.id)).toEqual(many.map((a) => a.id));
   });
 
@@ -111,14 +130,24 @@ describe('listOperatorAsks', () => {
       ask({ id: 'answered-old-format', state: 'answered', answeredAt: NOW - 2_000 }),
       // Written before resolvedAt existed: cancelled 17 hours ago, with a 24-hour timeout still in the future.
       ask({ id: 'cancelled-old-format', state: 'cancelled', resolution: 'cancelled', createdAt: NOW - 17 * 3_600_000, expiresAt: NOW + 7 * 3_600_000 }),
-    ], NOW, names);
+    ], NOW, names, statuses);
     expect(list.map((a) => a.id)).toEqual(['answered-old-format']);
     expect(list[0].resolvedAt).toBe(NOW - 2_000);
   });
 
   it('carries whether the answer reached the task', () => {
-    const [view] = listOperatorAsks([ask({ state: 'answered', resolvedAt: NOW, taskDelivery: 'failed' })], NOW, names);
+    const [view] = listOperatorAsks([ask({ state: 'answered', resolvedAt: NOW, taskDelivery: 'failed' })], NOW, names, statuses);
     expect(view.taskDelivery).toBe('failed');
+  });
+});
+
+describe('listOperatorAsks task state', () => {
+  it('marks each listed question, keeping the newest-first order', () => {
+    const list = listOperatorAsks([
+      ask({ id: 'done', taskId: 't-done', createdAt: NOW - 1_000 }),
+      ask({ id: 'running', taskId: 't1', createdAt: NOW - 2_000 }),
+    ], NOW, names, statuses);
+    expect(list.map((a) => [a.id, a.taskEnded])).toEqual([['done', true], ['running', false]]);
   });
 });
 

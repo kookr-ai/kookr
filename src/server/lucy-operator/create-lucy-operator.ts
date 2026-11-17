@@ -16,17 +16,17 @@ import type { LucyLookSource } from '../../core/lucy-operator/tools.js';
 import { renderTerminalScreenTextIsolated } from '../terminal-snapshot-worker.js';
 import { createLucyLookSource } from './look-source.js';
 import { createLucyOperator } from './service.js';
-import { buildLucyLaunchController } from './launch-wiring.js';
+import { buildLucyLaunchController, selectLaunchableProjects } from './launch-wiring.js';
 
 /** Connect her look-ups to the server's stores. Exported so the connections can be tested one by one. */
-export function buildLucyLookSource(deps: RouteDeps): LucyLookSource {
+export function buildLucyLookSource(deps: RouteDeps, options: { launching?: boolean } = {}): LucyLookSource {
   return createLucyLookSource({
     getTasks: () => deps.taskStore.viewTasks(),
     // `inspectActive` only reads; `getAll` would also bring expired snoozes back as a side effect.
     getFindings: () => deps.queue.inspectActive(),
     getLifetimeSpendUsd: () => deps.taskStore.getLifetimeSpendUsd(),
     // The same list the panel and the spoken briefing use, so she and the card agree on what is waiting.
-    getAsks: () => (deps.asks?.service ? listOperatorAsks(deps.asks.service.all(), Date.now(), (taskId) => deps.taskStore.getTask(taskId)?.name) : []),
+    getAsks: () => (deps.asks?.service ? listOperatorAsks(deps.asks.service.all(), Date.now(), (taskId) => deps.taskStore.getTask(taskId)?.name, (taskId) => deps.taskStore.getTask(taskId)?.status) : []),
     getQuota: () => deps.getQuotaStatus?.() ?? null,
     getReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
     readTerminalStream: async (task) => {
@@ -43,7 +43,15 @@ export function buildLucyLookSource(deps: RouteDeps): LucyLookSource {
       return stored ? { text: stored.text, live: false } : null;
     },
     renderScreenText: renderTerminalScreenTextIsolated,
-    listProjects: deps.ledgerAnalytics && deps.projectConfigStore ? () => listProjectSummaries(deps) : undefined,
+    listProjects: deps.ledgerAnalytics && deps.projectConfigStore
+      ? async () => {
+        const summaries = await listProjectSummaries(deps);
+        // Only when launching is on is the marking meaningful; otherwise she is not told where she may launch.
+        if (!options.launching) return summaries;
+        const launchable = new Set(selectLaunchableProjects(summaries).map((entry) => entry.summary));
+        return summaries.map((summary) => ({ displayName: summary.displayName, activeAgents: summary.activeAgents, findingCount: summary.findingCount, launchable: launchable.has(summary) }));
+      }
+      : undefined,
   });
 }
 
@@ -56,7 +64,7 @@ export function buildLucyOperator(deps: RouteDeps): LucyOperatorRouteDeps['lucyO
   const service = createLucyOperator({
     model,
     modelName: config.model.model,
-    source: buildLucyLookSource(deps),
+    source: buildLucyLookSource(deps, { launching: Boolean(config.launch) }),
     // Launching is a second switch: she can answer questions without ever being able to propose a task.
     ...(config.launch ? { launch: buildLucyLaunchController(deps, model, deps.lucyInteractionLog) } : {}),
     log: deps.lucyInteractionLog,

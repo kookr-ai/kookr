@@ -18,7 +18,7 @@ import type { LlmFunctionTool } from '../llm-types.js';
 import { LUCY_LOOK_TOOL_NAMES, type LucyLookToolName } from '../../shared/contracts/lucy-turn.js';
 import { redactSpeechSecrets } from '../task-speech-summary.js';
 import { cleanTaskText } from './task-text.js';
-import { agoWords, boardText, buildLucyBoard, resolveTaskRef, spokenLabel, type LucyBoardInput, type LucyBoardTask } from './board.js';
+import { agoWords, askWho, boardText, buildLucyBoard, orderPendingAsks, resolveTaskRef, spokenLabel, taskHandles, type LucyBoardInput, type LucyBoardTask } from './board.js';
 
 /** More about one task than the board shows. Every string here was written by an agent or pasted by the operator. */
 export interface LucyTaskDetail {
@@ -52,6 +52,8 @@ export interface LucyProjectLine {
   name: string;
   activeTasks: number;
   findings: number;
+  /** Whether she may launch a task in this project. Absent when launching is off for this install. */
+  launchable?: boolean;
 }
 
 /** Where the look tools get their facts. The server implements this over its stores; tests use a fake. */
@@ -72,6 +74,11 @@ export const MAX_TASK_SUMMARY_CHARS = 800;
 export const MAX_TASK_SIGNAL_CHARS = 300;
 export const MAX_TASK_FOLDER_CHARS = 200;
 export const MAX_PROJECT_LINES = 30;
+/** What `read_questions` sends: at most this many questions, and at most this many characters in all. */
+export const MAX_QUESTION_LINES = 40;
+export const MAX_QUESTIONS_CHARS = 8000;
+const MAX_QUESTION_TEXT_CHARS = 300;
+const MAX_QUESTION_OPTION_CHARS = 40;
 /** What `read_task_output` sends: the last lines of the screen, capped in lines and then in characters (keeping the end). */
 export const TASK_OUTPUT_LINES = 40;
 export const MAX_TASK_OUTPUT_CHARS = 3000;
@@ -90,6 +97,7 @@ export const LUCY_LOOK_TOOLS: readonly LlmFunctionTool[] = [
   tool('read_board', 'Read the current board again: what needs the operator, what is working, what just finished, spend and quota.', {}, []),
   tool('read_task', 'Read more about one task: what it was asked to do, where it runs, what it is waiting for, and its closing summary if it ended.', { task: TASK_PARAM }, ['task']),
   tool('read_task_output', 'Read what a task\'s terminal shows right now (or showed when it ended): the last lines of its screen. Use it when asked what a task is doing at this moment.', { task: TASK_PARAM }, ['task']),
+  tool('read_questions', 'List every question that tasks asked the operator and that is still waiting, soonest to close first, with whether its task has finished. The board shows only a few of them.', {}, []),
   tool('show_task', 'Open one task on the operator\'s screen. It changes nothing in the task.', { task: TASK_PARAM }, ['task']),
   tool('list_projects', 'List the projects Kookr knows, with how many tasks are active in each.', {}, []),
 ];
@@ -169,6 +177,46 @@ function isLookTool(name: string): name is LucyLookToolName {
   return (LUCY_LOOK_TOOL_NAMES as readonly string[]).includes(name);
 }
 
+/** "in 20 minutes": how long until `thenMs`, the mirror of {@link agoWords}. */
+function inWords(thenMs: number, nowMs: number): string {
+  const minutes = Math.round((thenMs - nowMs) / 60_000);
+  if (minutes < 1) return 'any moment now';
+  if (minutes === 1) return 'in 1 minute';
+  if (minutes < 120) return `in ${minutes} minutes`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `in ${hours} hours`;
+  return `in ${Math.round(hours / 24)} days`;
+}
+
+/**
+ * Every waiting question, one numbered line of Kookr's own facts each, then the text the tasks wrote
+ * for them in a single untrusted block. When the lists do not fit, the last questions are left out and
+ * the count of those is stated, so she never takes a cut list for all of it.
+ */
+function describeQuestions(board: LucyBoardInput, nowMs: number): string {
+  const pending = orderPendingAsks(board.asks ?? []);
+  if (pending.length === 0) return 'No question from a task is waiting for the operator.';
+  const handles = taskHandles(board.tasks);
+  const facts: string[] = [];
+  const written: string[] = [];
+  let size = 0;
+  for (const ask of pending.slice(0, MAX_QUESTION_LINES)) {
+    const n = facts.length + 1;
+    const state = ask.taskEnded === true ? 'its task has finished, so nothing is waiting on it' : 'its task is still running and may be waiting on it';
+    const fact = `${n}. ${askWho(ask, handles)} asked ${agoWords(ask.createdAt, nowMs)}, closes ${inWords(ask.expiresAt, nowMs)}; ${state}.`;
+    const choices = ask.options.map((o) => boardText(o, MAX_QUESTION_OPTION_CHARS)).join('; ');
+    const text = `${n}. ${boardText(ask.question, MAX_QUESTION_TEXT_CHARS)} Choices: ${choices}.`;
+    if (facts.length > 0 && size + fact.length + text.length + 2 > MAX_QUESTIONS_CHARS) break;
+    facts.push(fact);
+    written.push(text);
+    size += fact.length + text.length + 2;
+  }
+  const rest = pending.length - facts.length;
+  const header = `Questions waiting for the operator (${pending.length}; the operator answers them with the buttons on the card or on Telegram, never by voice, and you cannot answer them):`;
+  const more = rest > 0 ? `\n- and ${rest} more questions not listed` : '';
+  return `${header}\n${facts.join('\n')}${more}\nWhat each question says, written by the tasks:\n${untrusted(written.join('\n'), MAX_QUESTIONS_CHARS)}`;
+}
+
 function describeTask(task: LucyBoardTask, detail: LucyTaskDetail | null, nowMs: number): string {
   const facts: string[] = [`Task: ${spokenLabel(task)}`, `State: ${task.status}`];
   if (task.project) facts.push(`Project: ${boardText(task.project, 60)}`);
@@ -212,12 +260,22 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
       case 'read_board':
         return { ok: true, content: buildLucyBoard(source.board(), nowMs), summary: 'Read the board' };
 
+      case 'read_questions': {
+        const board = source.board();
+        return { ok: true, content: describeQuestions(board, nowMs), summary: `Read ${orderPendingAsks(board.asks ?? []).length} questions` };
+      }
+
       case 'list_projects': {
         const projects = await source.projects();
         if (projects.length === 0) return { ok: true, content: 'Kookr knows no projects.', summary: 'Listed 0 projects' };
-        const lines = projects
+        // With launching on, the projects she may launch in come first so the cap never hides them.
+        const ordered = [...projects].sort((a, b) => Number(b.launchable === true) - Number(a.launchable === true));
+        const lines = ordered
           .slice(0, MAX_PROJECT_LINES)
-          .map((p) => `- ${boardText(p.name, 60)}: ${p.activeTasks} active, ${p.findings} waiting on the operator`);
+          .map((p) => {
+            const where = p.launchable === undefined ? '' : p.launchable ? ', can launch here' : ', cannot launch here (not tracked)';
+            return `- ${boardText(p.name, 60)}: ${p.activeTasks} active, ${p.findings} waiting on the operator${where}`;
+          });
         if (projects.length > MAX_PROJECT_LINES) lines.push(`- and ${projects.length - MAX_PROJECT_LINES} more not listed`);
         return { ok: true, content: `Projects (${projects.length}):\n${lines.join('\n')}`, summary: `Listed ${projects.length} projects` };
       }

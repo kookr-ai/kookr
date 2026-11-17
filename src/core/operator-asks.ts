@@ -17,6 +17,7 @@ import {
   type AskRecord,
   type OperatorAskView,
 } from '../shared/contracts/asks.js';
+import { isTerminalStatus, type TaskStatus } from '../shared/contracts/task-status.js';
 import { makeSpeakable } from './speakable-text.js';
 import { isGenericTaskName, spokenTaskName } from './spoken-task-name.js';
 import { redactSpeechSecrets, redactedTaskName } from './task-speech-summary.js';
@@ -24,14 +25,20 @@ import { redactSpeechSecrets, redactedTaskName } from './task-speech-summary.js'
 /** Looks up a task's title; undefined when the task is unknown or untitled. */
 export type TaskNameLookup = (taskId: string) => string | undefined;
 
+/** Looks up a task's status; undefined when the task no longer exists. */
+export type TaskStatusLookup = (taskId: string) => TaskStatus | undefined;
+
 /** The task title as Lucy may show and say it: redacted, and absent when it is too long or unreadable. */
 export function askTaskName(rawName: string | undefined): string | undefined {
   const spoken = spokenTaskName(redactedTaskName(rawName));
   return isGenericTaskName(spoken) ? undefined : spoken;
 }
 
-export function toOperatorAskView(ask: AskRecord, taskName: TaskNameLookup): OperatorAskView {
+export function toOperatorAskView(ask: AskRecord, taskName: TaskNameLookup, taskStatus: TaskStatusLookup): OperatorAskView {
   const name = askTaskName(taskName(ask.taskId));
+  // A task that is gone counts as ended: nothing can be waiting on its answer.
+  const status = taskStatus(ask.taskId);
+  const taskEnded = status === undefined || isTerminalStatus(status);
   // A closed ask always carries the time it closed, worked out here once, so the browser and Lucy's
   // briefing never have to guess it from other fields.
   const resolvedAt = ask.state === 'pending' ? undefined : closedAt(ask);
@@ -39,6 +46,7 @@ export function toOperatorAskView(ask: AskRecord, taskName: TaskNameLookup): Ope
     id: ask.id,
     taskId: ask.taskId,
     ...(name !== undefined ? { taskName: name } : {}),
+    taskEnded,
     question: ask.question,
     ...(ask.context !== undefined ? { context: ask.context } : {}),
     options: [...ask.options],
@@ -75,7 +83,12 @@ function closedAt(ask: AskRecord): number {
  * always shows its outcome, however many others are waiting.
  * A question whose Telegram message was never sent is left out on both counts: it was never asked.
  */
-export function listOperatorAsks(asks: readonly AskRecord[], nowMs: number, taskName: TaskNameLookup): OperatorAskView[] {
+export function listOperatorAsks(
+  asks: readonly AskRecord[],
+  nowMs: number,
+  taskName: TaskNameLookup,
+  taskStatus: TaskStatusLookup,
+): OperatorAskView[] {
   const asked = asks.filter((ask) => ask.delivery !== undefined && ask.resolution !== 'delivery_failed');
   const newestFirst = (a: AskRecord, b: AskRecord): number => b.createdAt - a.createdAt;
   const pending = asked.filter((ask) => ask.state === 'pending').sort(newestFirst);
@@ -83,7 +96,7 @@ export function listOperatorAsks(asks: readonly AskRecord[], nowMs: number, task
     .filter((ask) => ask.state !== 'pending' && nowMs - closedAt(ask) <= OPERATOR_ASK_RESOLVED_VISIBLE_MS)
     .sort((a, b) => closedAt(b) - closedAt(a))
     .slice(0, OPERATOR_ASK_MAX_LISTED);
-  return [...pending, ...closed].sort(newestFirst).map((ask) => toOperatorAskView(ask, taskName));
+  return [...pending, ...closed].sort(newestFirst).map((ask) => toOperatorAskView(ask, taskName, taskStatus));
 }
 
 function endSentence(text: string): string {

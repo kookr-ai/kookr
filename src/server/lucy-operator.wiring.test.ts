@@ -160,7 +160,7 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
       provider: { order: ['cohere/fp8', 'deepinfra/fp8'], only: ['cohere', 'deepinfra'] },
       reasoning: { effort: 'medium' },
     });
-    expect(received[0]!.body.tools.map((t: any) => t.function.name)).toEqual(['read_board', 'read_task', 'read_task_output', 'show_task', 'list_projects']);
+    expect(received[0]!.body.tools.map((t: any) => t.function.name)).toEqual(['read_board', 'read_task', 'read_task_output', 'read_questions', 'show_task', 'list_projects']);
     expect(received[0]!.body.messages[0].content).toContain(`[${code}] "Fix login flow"`);
     // The second call carries the look-up's answer back.
     expect(received[1]!.body.messages.at(-1)).toMatchObject({ role: 'tool', tool_call_id: 'call_1' });

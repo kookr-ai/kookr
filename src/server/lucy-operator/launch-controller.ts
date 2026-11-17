@@ -25,6 +25,7 @@ import {
   buildSpecWriterPrompt,
   buildTaskPrompt,
   classifyReply,
+  buildUnknownProjectSay,
   ECHO_TAIL_MS,
   HANDS_OFF_CANCEL_WINDOW_MS,
   LAUNCH_PROPOSAL_TTL_MS,
@@ -346,7 +347,7 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       if ('ambiguous' in draft) return none(draft.ambiguous, 'ambiguous');
 
       const project = resolveProject(draft.project, projects);
-      if (!project) return none('Which project is that for?', 'unknown project');
+      if (!project) return none(buildUnknownProjectSay(draft.project, projects), 'unknown project');
       // The same strict schema as the Telegram path: length caps, no extra fields, a known agent.
       const checked = TaskSpecSchema.safeParse({
         prompt: draft.description,

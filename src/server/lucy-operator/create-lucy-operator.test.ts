@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+
+const registry = vi.hoisted(() => ({ summaries: [] as unknown[] }));
+vi.mock('../routes/project-routes.js', () => ({ listProjectSummaries: async () => registry.summaries }));
+
 import { closeSharedTerminalSnapshotWorker } from '../terminal-snapshot-worker.js';
 import type { RouteDeps } from '../routes/shared.js';
 import { buildLucyLookSource, buildLucyOperator } from './create-lucy-operator.js';
@@ -51,6 +55,17 @@ describe('buildLucyLookSource', () => {
     expect(board.asks?.[0]).not.toHaveProperty('nonce');
   });
 
+  test('each listed question says whether its task has ended, from the task store', () => {
+    const record = (id: string, taskId: string) => ({ id, taskId, question: 'Which database?', options: ['Postgres'], allowText: false, state: 'pending', createdAt: NOW.getTime() - 60_000, expiresAt: NOW.getTime() + 600_000, nonce: 'n', delivery: { chatId: 1, messageId: 2 } });
+    const tasks: Record<string, { name: string; status: string }> = { running: { name: 'A', status: 'inProgress' }, done: { name: 'B', status: 'completed' } };
+    const { deps } = routeDeps({
+      asks: { service: { all: () => [record('a1', 'running'), record('a2', 'done'), record('a3', 'deleted')] } },
+      taskStore: { viewTasks: () => [], getTask: (id: string) => tasks[id], getLifetimeSpendUsd: () => 0 },
+    });
+    const asks = buildLucyLookSource(deps).board().asks ?? [];
+    expect(asks.map((a) => [a.id, a.taskEnded]).sort()).toEqual([['a1', false], ['a2', true], ['a3', true]]);
+  });
+
   test('without an ask service the board has no questions', () => {
     expect(buildLucyLookSource(routeDeps().deps).board().asks).toBeUndefined();
   });
@@ -97,6 +112,29 @@ describe('buildLucyLookSource', () => {
       const without = routeDeps({ adapter: failing, taskTailStore: { getByTaskId: async () => null } }).deps;
       expect(await buildLucyLookSource(without).taskOutput('t1')).toBeNull();
     }, 30_000);
+  });
+
+  describe('list_projects with a project registry', () => {
+    const registryDeps = () => routeDeps({ ledgerAnalytics: {}, projectConfigStore: {} }).deps;
+    const summary = (displayName: string, extra: Record<string, unknown>) => ({ project: `github.com/o/${displayName}`, displayName, activeAgents: 0, findingCount: 0, ...extra });
+
+    test('marks where she may launch when launching is on, by the same rule the launcher uses', async () => {
+      registry.summaries = [
+        summary('tracked', { localPath: '/work/tracked', tracked: true }),
+        summary('untracked', { localPath: '/work/untracked', tracked: false }),
+        summary('nopath', { tracked: true }),
+      ];
+      expect(await buildLucyLookSource(registryDeps(), { launching: true }).projects()).toEqual([
+        { name: 'tracked', activeTasks: 0, findings: 0, launchable: true },
+        { name: 'untracked', activeTasks: 0, findings: 0, launchable: false },
+        { name: 'nopath', activeTasks: 0, findings: 0, launchable: false },
+      ]);
+    });
+
+    test('says nothing about launching when it is off for this install', async () => {
+      registry.summaries = [summary('tracked', { localPath: '/work/tracked', tracked: true })];
+      expect(await buildLucyLookSource(registryDeps()).projects()).toEqual([{ name: 'tracked', activeTasks: 0, findings: 0 }]);
+    });
   });
 
   test('without a project registry, projects come from the task list', async () => {

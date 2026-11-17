@@ -14,7 +14,7 @@
  */
 
 import { appendAuditRow } from '../../core/audit-log.js';
-import { listOperatorAsks, type TaskNameLookup } from '../../core/operator-asks.js';
+import { listOperatorAsks, type TaskNameLookup, type TaskStatusLookup } from '../../core/operator-asks.js';
 import type {
   AnswerResult,
   AskChange,
@@ -23,6 +23,7 @@ import type {
   OperatorAskView,
 } from '../../shared/contracts/asks.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
+import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { Actor } from '../auth.js';
 
 const WS_OPEN = 1;
@@ -36,6 +37,7 @@ export interface OperatorAsksSource {
 export interface OperatorAsksPortDeps {
   service: OperatorAsksSource;
   taskName: TaskNameLookup;
+  taskStatus: TaskStatusLookup;
   /** Shared `audit.jsonl`; undefined writes nothing (lightweight harnesses). */
   auditLogPath?: string;
   now?: () => number;
@@ -46,6 +48,11 @@ export interface OperatorAsksPortDeps {
 /** What the dashboard socket handler uses: the current list, and recording an answer. */
 export interface OperatorAsksPort {
   list(): OperatorAskView[];
+  /**
+   * The list to re-send after a task outcome, or undefined when nothing on screen changes: only a task
+   * that has ended and still has a pending question flips that question's "task ended" mark.
+   */
+  listAfterTaskOutcome(taskId: string): OperatorAskView[] | undefined;
   answer(input: DashboardAnswerInput): Promise<AnswerResult>;
 }
 
@@ -53,7 +60,13 @@ export function createOperatorAsksPort(deps: OperatorAsksPortDeps): OperatorAsks
   const now = deps.now ?? Date.now;
   const appendAudit = deps.appendAudit ?? appendAuditRow;
   return {
-    list: () => listOperatorAsks(deps.service.all(), now(), deps.taskName),
+    list: () => listOperatorAsks(deps.service.all(), now(), deps.taskName, deps.taskStatus),
+    listAfterTaskOutcome(taskId) {
+      const status = deps.taskStatus(taskId);
+      if (status === undefined || !isTerminalStatus(status)) return undefined;
+      if (!deps.service.all().some((ask) => ask.taskId === taskId && ask.state === 'pending')) return undefined;
+      return listOperatorAsks(deps.service.all(), now(), deps.taskName, deps.taskStatus);
+    },
     async answer(input) {
       const result = await deps.service.answerFromDashboard(input);
       try {
@@ -85,19 +98,20 @@ export interface DashboardConnectionLike {
 /**
  * Send the current question list to every open owner connection after a
  * change. `announce` is set only when the change is a question just created,
- * which is the one Lucy reads aloud. Returns how many connections were sent to.
+ * which is the one Lucy reads aloud. `change` is undefined when the list is re-sent
+ * for another reason (a task ended), which announces nothing. Returns how many connections were sent to.
  */
 export function pushOperatorAsks(
   connections: Iterable<DashboardConnectionLike>,
   asks: OperatorAskView[],
-  change: AskChange,
+  change: AskChange | undefined,
   warn: (message: string, err: unknown) => void = (message, err) => console.warn(message, err),
 ): number {
   const data = JSON.stringify({
     type: 'operatorAsks',
     asks,
     serverNow: Date.now(),
-    ...(change.kind === 'created' ? { announce: change.ask.id } : {}),
+    ...(change?.kind === 'created' ? { announce: change.ask.id } : {}),
   } satisfies ServerMessage);
   let sent = 0;
   for (const { ws, actor } of connections) {

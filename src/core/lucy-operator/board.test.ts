@@ -253,12 +253,35 @@ describe('buildLucyBoard questions from tasks', () => {
     expect(board).not.toContain('y'.repeat(60));
   });
 
+  test('puts questions whose task is still waiting first, then the one that closes soonest', () => {
+    const board = buildLucyBoard({ ...base, asks: [
+      ask({ id: 'ended-soon', question: 'Ended soon?', taskEnded: true, expiresAt: NOW + 1 * 60_000, createdAt: NOW - 1_000 }),
+      ask({ id: 'running-late', question: 'Running late?', taskEnded: false, expiresAt: NOW + 50 * 60_000, createdAt: NOW - 2_000 }),
+      ask({ id: 'unknown', question: 'Unknown?', expiresAt: NOW + 20 * 60_000, createdAt: NOW - 3_000 }),
+      ask({ id: 'running-soon', question: 'Running soon?', taskEnded: false, expiresAt: NOW + 5 * 60_000, createdAt: NOW - 4_000 }),
+    ] }, NOW);
+    const order = board.split('\n').filter((l) => l.startsWith('- ') && l.includes(' asked ')).map((l) => /: ([\w ]+\?)/.exec(l)![1]);
+    expect(order).toEqual(['Running soon?', 'Unknown?', 'Running late?', 'Ended soon?']);
+  });
+
+  test('says on a question that its task has finished, and nothing on one whose task is waiting or unknown', () => {
+    const board = buildLucyBoard({ ...base, asks: [
+      ask({ id: 'a1', question: 'Done?', taskEnded: true }),
+      ask({ id: 'a2', question: 'Waiting?', taskEnded: false }),
+      ask({ id: 'a3', question: 'Older?' }),
+    ] }, NOW);
+    const lines = board.split('\n');
+    expect(lines.find((l) => l.includes('Done?'))).toMatch(/Choices: Postgres; SQLite\. Its task has finished, so nothing is waiting on it\.$/);
+    expect(lines.find((l) => l.includes('Waiting?'))!.endsWith('Choices: Postgres; SQLite.')).toBe(true);
+    expect(lines.find((l) => l.includes('Older?'))!.endsWith('Choices: Postgres; SQLite.')).toBe(true);
+  });
+
   test('caps the lists and says how many are not shown', () => {
     const pending = Array.from({ length: MAX_BOARD_ASKS_PENDING + 3 }, (_, i) => ask({ id: `p${i}` }));
     const closed = Array.from({ length: MAX_BOARD_ASKS_CLOSED + 2 }, (_, i) => ask({ id: `c${i}`, state: 'expired', resolvedAt: NOW }));
     const board = buildLucyBoard({ ...base, asks: [...pending, ...closed] }, NOW);
     expect(board).toContain(`(${MAX_BOARD_ASKS_PENDING + 3};`);
-    expect(board).toContain('- and 3 more questions not listed');
+    expect(board).toContain('- and 3 more questions not listed here; read_questions lists them all');
     expect(board).toContain('- and 2 more closed questions not listed');
   });
 });
@@ -288,6 +311,14 @@ describe('buildLucyOperatorPrompt', () => {
     for (const canLaunch of [false, true]) {
       expect(buildLucyOperatorPrompt('B', { canLaunch })).toMatch(/cannot open a question's link or any web page, only a task/);
       expect(buildLucyOperatorPrompt('B', { canLaunch })).toMatch(/never say or imply that it is open/);
+    }
+  });
+
+  test('tells her read_questions lists every waiting question, and that one whose task has finished blocks nothing', () => {
+    for (const canLaunch of [false, true]) {
+      const text = buildLucyOperatorPrompt('B', { canLaunch });
+      expect(text).toContain('read_questions');
+      expect(text).toMatch(/task having finished is only a request for the operator's opinion: nothing is blocked on it/);
     }
   });
 

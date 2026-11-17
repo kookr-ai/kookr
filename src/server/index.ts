@@ -3112,7 +3112,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           getTasks: () => taskStore.viewTasks(),
           // So she knows which questions are waiting and which were answered, and where.
           getAsks: () => (askService
-            ? listOperatorAsks(askService.all(), Date.now(), (taskId) => taskStore.getTask(taskId)?.name)
+            ? listOperatorAsks(askService.all(), Date.now(), (taskId) => taskStore.getTask(taskId)?.name, (taskId) => taskStore.getTask(taskId)?.status)
             : []),
           // What waits on the operator and why, from the same findings as the operator conversation's board (issue #3927).
           getNeedsOperator: () => operatorNeeds(taskStore.viewTasks(), queue.inspectActive()),
@@ -3185,6 +3185,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         taskName: (taskId) => taskStore.getTask(taskId)?.name,
         lucyLog: lucyInteractionLog,
       },
+      taskName: (taskId) => taskStore.getTask(taskId)?.name,
+      taskStatus: (taskId) => taskStore.getTask(taskId)?.status,
     },
     ...(issueClaimServices ? {
       issueClaims: {
@@ -4035,6 +4037,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ? createOperatorAsksPort({
       service: askService,
       taskName: (taskId) => taskStore.getTask(taskId)?.name,
+      taskStatus: (taskId) => taskStore.getTask(taskId)?.status,
       auditLogPath: join(kookrDir, 'audit.jsonl'),
     })
     : undefined;
@@ -4623,6 +4626,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // - PR4 R5: idea-scout complete → capacity-gated batch kick when episode open
   const remoteChatOnTaskOutcome = remoteChatTrigger.onTaskOutcome;
   onTaskOutcomeHolder = (taskId, outcome) => {
+    try {
+      // A question whose task just ended is now an opinion request nothing waits on: tell the dashboard.
+      const asks = operatorAsksPort?.listAfterTaskOutcome(taskId);
+      if (asks) pushOperatorAsks(connectionRegistry.snapshotDashboardConnections(), asks, undefined);
+    } catch (err) {
+      console.warn('[asks] could not re-send the question list after a task ended:', err);
+    }
     try {
       lucyOperatorHolder.get()?.launch?.onTaskOutcome(taskId, outcome, taskStore.getTask(taskId)?.name);
     } catch (err) {

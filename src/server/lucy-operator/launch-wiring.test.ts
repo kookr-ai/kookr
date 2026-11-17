@@ -13,7 +13,7 @@ vi.mock('../launch-service.js', async (importOriginal) => ({
   launchTask: async (_deps: unknown, opts: unknown, server: unknown) => { launched.calls.push({ opts, server }); return { task: { id: 'task-7' } }; },
 }));
 
-import { buildLucyLaunchController, lucyLaunchableProjects, lucyLaunchRoomCheck } from './launch-wiring.js';
+import { buildLucyLaunchController, lucyLaunchableProjects, lucyLaunchRoomCheck, selectLaunchableProjects } from './launch-wiring.js';
 
 const activeTask = (id: string) => ({ id, status: 'inProgress', sessions: [{ tmuxSession: `s-${id}`, lastStatus: 'running' }], createdAt: new Date(), updatedAt: new Date() });
 
@@ -46,6 +46,19 @@ describe('lucyLaunchableProjects', () => {
       { name: 'kookr', cwd: '/work/kookr' },
       { name: 'research', cwd: '/work/research' },
     ]);
+  });
+});
+
+describe('selectLaunchableProjects', () => {
+  test('picks the same projects as lucyLaunchableProjects and keeps each project\'s summary, so list_projects shares the rule', async () => {
+    summaries.list = [
+      { project: 'github.com/o/kookr', displayName: 'kookr', localPath: '/work/kookr', tracked: true },
+      { project: 'github.com/o/untracked', displayName: 'untracked', localPath: '/work/untracked', tracked: false },
+      { project: 'github.com/o/dupe', displayName: 'kookr again', localPath: '/work/kookr', tracked: true },
+    ];
+    const picked = selectLaunchableProjects(summaries.list as never);
+    expect(picked.map((entry) => entry.summary)).toEqual([summaries.list[0]]);
+    expect(picked.map((entry) => entry.project)).toEqual(await lucyLaunchableProjects(deps()));
   });
 });
 

@@ -58,7 +58,7 @@ export interface LucyLookSourceDeps {
   readTerminalStream?: (task: LookTask) => Promise<{ text: string; live: boolean } | null>;
   /** Replays a raw stream through a terminal emulator off the main thread; the server wires the worker. */
   renderScreenText?: (bytes: Uint8Array, options: TerminalScreenTextOptions) => Promise<TerminalScreenTextResult>;
-  listProjects?: () => Promise<ReadonlyArray<{ displayName: string; activeAgents: number; findingCount: number }>>;
+  listProjects?: () => Promise<ReadonlyArray<{ displayName: string; activeAgents: number; findingCount: number; launchable?: boolean }>>;
 }
 
 /** Why a task waits on the operator, in words she can repeat. The finding's own text is not used: an agent may have shaped it. */
@@ -185,7 +185,7 @@ export function createLucyLookSource(deps: LucyLookSourceDeps): LucyLookSource {
     async projects(): Promise<readonly LucyProjectLine[]> {
       if (deps.listProjects) {
         const projects = await deps.listProjects();
-        return projects.map((project) => ({ name: project.displayName, activeTasks: project.activeAgents, findings: project.findingCount }));
+        return projects.map((project) => ({ name: project.displayName, activeTasks: project.activeAgents, findings: project.findingCount, ...(project.launchable !== undefined ? { launchable: project.launchable } : {}) }));
       }
       // No project registry wired: fall back to the projects that have tasks on the board.
       const findings = deps.getFindings();

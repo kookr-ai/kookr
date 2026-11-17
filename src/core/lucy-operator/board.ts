@@ -186,8 +186,19 @@ function taskLine(task: LucyBoardTask, handle: string, nowMs: number, when: 'upd
   return `- ${parts.join(' · ')}`;
 }
 
+/**
+ * Pending questions in the order she should weigh them: those whose task is still waiting come first
+ * (a task that has ended, or is gone, makes its question only a request for the operator's opinion),
+ * then the one that closes soonest. The sort is stable, so equal questions keep the order they came in.
+ */
+export function orderPendingAsks(asks: readonly OperatorAskView[]): OperatorAskView[] {
+  return asks
+    .filter((a) => a.state === 'pending')
+    .sort((a, b) => Number(a.taskEnded === true) - Number(b.taskEnded === true) || a.expiresAt - b.expiresAt);
+}
+
 /** The task that asked, as she may name it aloud: its short name, or "a task" when it has none. The code lets her tools find it. */
-function askWho(ask: OperatorAskView, handles: ReadonlyMap<string, string>): string {
+export function askWho(ask: OperatorAskView, handles: ReadonlyMap<string, string>): string {
   const handle = handles.get(ask.taskId);
   const name = ask.taskName ? `"${boardText(ask.taskName, 40)}"` : 'a task';
   return handle ? `[${handle}] ${name}` : name;
@@ -211,7 +222,7 @@ function askOutcome(ask: OperatorAskView, nowMs: number): string {
  * given with the buttons on the card or on Telegram: she cannot take one by voice.
  */
 function askLines(asks: readonly OperatorAskView[], handles: ReadonlyMap<string, string>, nowMs: number): string[] {
-  const pending = asks.filter((a) => a.state === 'pending').sort((a, b) => b.createdAt - a.createdAt);
+  const pending = orderPendingAsks(asks);
   const closed = asks
     .filter((a) => a.state !== 'pending')
     .sort((a, b) => (b.resolvedAt ?? b.expiresAt) - (a.resolvedAt ?? a.expiresAt));
@@ -223,9 +234,9 @@ function askLines(asks: readonly OperatorAskView[], handles: ReadonlyMap<string,
     lines.push(`Questions from tasks waiting for the operator (${pending.length}; they are answered with the buttons on the card in the panel or on Telegram, never by voice, and you cannot answer them):`);
     for (const ask of pending.slice(0, MAX_BOARD_ASKS_PENDING)) {
       const choices = ask.options.map((o) => boardText(o, MAX_ASK_OPTION_CHARS)).join('; ');
-      lines.push(`- ${askWho(ask, handles)} asked ${agoWords(toMs(ask.createdAt), nowMs)}: ${boardText(ask.question, MAX_ASK_QUESTION_CHARS)} Choices: ${choices}.`);
+      lines.push(`- ${askWho(ask, handles)} asked ${agoWords(toMs(ask.createdAt), nowMs)}: ${boardText(ask.question, MAX_ASK_QUESTION_CHARS)} Choices: ${choices}.${ask.taskEnded === true ? ' Its task has finished, so nothing is waiting on it.' : ''}`);
     }
-    if (pending.length > MAX_BOARD_ASKS_PENDING) lines.push(`- and ${pending.length - MAX_BOARD_ASKS_PENDING} more questions not listed`);
+    if (pending.length > MAX_BOARD_ASKS_PENDING) lines.push(`- and ${pending.length - MAX_BOARD_ASKS_PENDING} more questions not listed here; read_questions lists them all`);
   }
   if (closed.length > 0) {
     lines.push(`Questions closed recently (${closed.length}):`);
