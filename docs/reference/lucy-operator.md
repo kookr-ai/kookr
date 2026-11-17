@@ -433,8 +433,9 @@ with whole turns between 0.6 and 3.1 s.
 - She looks things up, and proposes four changes the operator must confirm: starting a task, answering
   a task's question, replying to a task, and closing a task that says it is finished. Aborting,
   approving a permission prompt, relaunching and merging are not built.
-- The avatar panel's text box and its hands-free talk use the endpoint. Her typed replies are written in the
-  thread and not spoken; hands-free talk speaks its answers.
+- The avatar panel's text box uses the endpoint, and its hands-free talk uses the same conversation
+  when launching is on. Her typed replies are written in the thread and not spoken; hands-free talk
+  speaks its answers.
 - In conversation she does not speak first: a turn starts only when the operator asks. Outside a
   turn, she reads out a task's question, the report of a task she launched, and a task
   that has waited a minute on a permission prompt (see [Lucy live](lucy-live.md)). She also writes,
