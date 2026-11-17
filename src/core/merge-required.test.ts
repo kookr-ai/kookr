@@ -197,6 +197,23 @@ describe('classifyMergeTrailCommand / extractPrNumbersFromCommand', () => {
     expect(
       extractPrNumbersFromCommand(`bash -c "gh pr merge --subject 'a 1' 17"`),
     ).toEqual([17]);
+    expect(
+      extractPrNumbersFromCommand(`sh -c 'gh pr merge --subject "fix 9" 18'`),
+    ).toEqual([18]);
+  });
+
+  test('escaped quotes inside a wrapper fall back instead of reading a value word', () => {
+    // The inner `\"…\"` is quoted one level deeper than this parser reads, so
+    // a word of the quoted value must not be taken for the argument.
+    expect(
+      extractPrNumbersFromCommand('bash -c "gh pr merge --subject \\"fix 9 now\\" 12"'),
+    ).toEqual([]);
+    expect(
+      extractPrNumbersFromCommand('ssh host "gh pr merge --body \\"closes #5 too\\" 12"'),
+    ).toEqual([]);
+    expect(
+      extractPrNumbersFromCommand('bash -c "gh pr merge --subject \\"fix 9\\" 12"'),
+    ).toEqual([]);
   });
 
   test('a line continuation is not a word', () => {
@@ -206,6 +223,8 @@ describe('classifyMergeTrailCommand / extractPrNumbersFromCommand', () => {
       ),
     ).toEqual([62]);
     expect(extractPrNumbersFromCommand('gh pr merge \\\n  -R o/r \\\n  63')).toEqual([63]);
+    // The shell deletes a backslash-newline, so mid-word it joins the word.
+    expect(extractPrNumbersFromCommand('gh pr merge --squash 31\\\n2')).toEqual([312]);
   });
 
   test('redirections and their targets are not the argument', () => {
@@ -213,6 +232,8 @@ describe('classifyMergeTrailCommand / extractPrNumbersFromCommand', () => {
     expect(extractPrNumbersFromCommand('gh pr merge --squash 2>&1')).toEqual([]);
     expect(extractPrNumbersFromCommand('gh pr merge --squash > log 2>&1')).toEqual([]);
     expect(extractPrNumbersFromCommand('gh pr merge --squash >out.txt 3')).toEqual([3]);
+    // `>&2` is one redirection: its `&` does not end the command.
+    expect(extractPrNumbersFromCommand('gh pr merge --squash >&2 34')).toEqual([34]);
     expect(extractPrNumbersFromCommand('gh pr merge 18 >log 2>&1')).toEqual([18]);
     expect(extractPrNumbersFromCommand('gh pr merge 19 </dev/null')).toEqual([19]);
     // A number glued to `>` or `<` is a file descriptor: the shell passes no argument.

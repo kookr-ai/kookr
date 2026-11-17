@@ -177,8 +177,10 @@ const COMMAND_END_CHARS = new Set(['\n', ';', '&', '|', ')', '`']);
  *
  * - A quote that never closes also ends the command, keeping the words read so
  *   far. The merge is then usually the last thing inside a wrapper whose own
- *   quote closes after it: `bash -c "gh pr merge 12"`, `ssh host '…'`.
- * - A backslash-newline is a line continuation, not a word.
+ *   quote closes after it: `bash -c "gh pr merge 12"`, `ssh host '…'`. If a
+ *   backslash escape came first, the inner text was quoted one level deeper
+ *   (`\"fix 9\"`) and its words cannot be read at this level: no words then.
+ * - A backslash-newline is deleted, as the shell does: a line continuation.
  * - A redirection (`>log`, `2>&1`, `<in`) is dropped with its target, and a
  *   number glued to it is a file descriptor, not an argument: in
  *   `gh pr merge --squash 2>&1` the shell passes no `2` to the command.
@@ -188,6 +190,7 @@ function wordsUntilCommandEnd(text: string): string[] {
   let word = '';
   let inWord = false;
   let dropNextWord = false;
+  let sawEscape = false;
   const endWord = (): void => {
     if (inWord && !dropNextWord) words.push(word);
     if (inWord) dropNextWord = false;
@@ -203,7 +206,6 @@ function wordsUntilCommandEnd(text: string): string[] {
     }
     if (c === '\\' && text[i + 1] === '\n') {
       i++;
-      endWord();
       continue;
     }
     if (c === '<' || c === '>') {
@@ -218,7 +220,10 @@ function wordsUntilCommandEnd(text: string): string[] {
     }
     if (c === "'") {
       const end = text.indexOf("'", i + 1);
-      if (end < 0) break;
+      if (end < 0) {
+        if (sawEscape) return [];
+        break;
+      }
       inWord = true;
       word += text.slice(i + 1, end);
       i = end;
@@ -229,11 +234,15 @@ function wordsUntilCommandEnd(text: string): string[] {
         if (text[j] === '\\' && j + 1 < text.length) j++;
         quoted += text[j];
       }
-      if (j >= text.length) break;
+      if (j >= text.length) {
+        if (sawEscape) return [];
+        break;
+      }
       inWord = true;
       word += quoted;
       i = j;
     } else if (c === '\\') {
+      sawEscape = true;
       inWord = true;
       if (i + 1 < text.length) word += text[++i];
     } else {
