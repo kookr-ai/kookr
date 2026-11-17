@@ -255,8 +255,11 @@ becomes one line: "Sent", "Closed", or the reason nothing was done.
    `POST /api/tasks/:id/complete`.
 
 A task "says it is finished" when it raised its "finished, please review" signal and has not been given
-new work since (the pending signal, or the record of it that survives the agent's last tool calls). A
-task that is still working, or that stopped without saying so, gets a sentence instead of a card.
+new work since (the pending signal, or the record of it that survives the agent's last tool calls). The
+board shows only the pending signal, so she is told not to judge this herself: she calls `propose_close`
+whenever the operator asks to close a task, and Kookr decides. A task that is still working, or that
+stopped without saying so, gets a sentence instead of a card ("... is still working: it has not said it
+is finished, so I will not close it."). A task shared by a contact is never acted on.
 Closing leaves the worktree to the operator's "clean up on complete" setting, as the HTTP route does;
 the cleanup itself still refuses a worktree with uncommitted or unpushed work. A task whose last turn
 ended on a provider error is recorded as failed by Kookr's own integrity check, and she then says so

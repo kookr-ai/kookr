@@ -14,6 +14,7 @@ import { isActiveRalphLoop } from '../../core/completion/completion-ready-cleanu
 import { nowISO } from '../../core/interaction-log.js';
 import type { LucyModelPort } from '../../core/lucy-operator/model-port.js';
 import { listOperatorAsks } from '../../core/operator-asks.js';
+import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import { LUCY_OPERATOR_ACTOR_ID } from '../../shared/contracts/lucy-launch.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { LucyInteractionLog } from '../lucy-interaction-log.js';
@@ -69,6 +70,9 @@ export function buildLucyActionController(
   const commands = wiring.lifecycleCommands;
   return createLucyActionController({
     getTask: (taskId) => {
+      // A task shared by a contact is owned by their machine: like the task routes and the dashboard socket,
+      // nothing here changes one. They are kept in their own store, so this is a second lock on the same door.
+      if (isSharedTaskId(taskId)) return undefined;
       const task = deps.taskStore.getTask(taskId);
       if (!task) return undefined;
       // The session a reply is typed into: the newest one that has not ended, as for her look at the terminal.

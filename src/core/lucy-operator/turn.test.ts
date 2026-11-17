@@ -549,7 +549,9 @@ describe('her instructions for the turn', () => {
     expect(prompt).not.toMatch(/you cannot answer it/);
     expect(prompt).not.toMatch(/cannot take their answer by voice/);
     expect(prompt).toMatch(/You cannot approve permission prompts, stop or abort a task, merge, start a task, or change how much you may do on your own: that is set in Settings/);
-    expect(prompt).toMatch(/If the operator asks you to close a task that is still working, say that it is still working instead/);
+    // Whether a task says it is finished is the server's call (the board does not always show it): she asks, Kookr answers.
+    expect(prompt).toMatch(/call propose_close whenever the operator asks you to close a task, and do not decide yourself/);
+    expect(prompt).toMatch(/for a task that is still working it gives you the sentence that says so instead of a card/);
   });
 
   test('when she may not act, her instructions still say she can only look', async () => {

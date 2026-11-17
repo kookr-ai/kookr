@@ -50,7 +50,7 @@ export const LUCY_ACTION_TOOLS: readonly LlmFunctionTool[] = [
   ),
   tool(
     'propose_close',
-    'Call this when the operator asks you to close (complete) a task that says it is finished. Pass only the task. Kookr shows the operator a card; the task is closed only when they confirm it. It is refused for a task that is still working.',
+    'Call this when the operator asks you to close (complete) a task. Pass only the task. Kookr checks that the task says it is finished: if it does, it shows the operator a card and the task is closed only when they confirm it; if the task is still working, it gives you the sentence that says so.',
     { task: TASK_PARAM },
     ['task'],
   ),

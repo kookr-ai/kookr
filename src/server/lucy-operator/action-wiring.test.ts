@@ -177,6 +177,15 @@ describe('a close', () => {
     expect(await lucyCloseTask(commands, 't1')).toEqual(expected);
   });
 
+  test('a task shared by a contact is never acted on, even if one were in the task store', async () => {
+    const h = harness({ task: { id: 'shared:abc', ...finished } });
+    for (const kind of ['close', 'reply'] as const) {
+      expect(await h.controller.propose({ conversationId: 'c1', request: { kind, taskId: 'shared:abc' }, operatorWords: WORDS })).toMatchObject({ ok: false, say: 'I cannot find that task any more.' });
+    }
+    expect(h.completed).toEqual([]);
+    expect(h.submitted).toEqual([]);
+  });
+
   test('without the lifecycle commands she says closing is not available', async () => {
     const h = harness({ task: finished });
     const controller = buildLucyActionController(h.deps, h.model.port, undefined);

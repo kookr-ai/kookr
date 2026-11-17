@@ -23,7 +23,6 @@
  *  - the conversation thread (`LucyThread.tsx`): what the operator typed, the Talk exchanges and every
  *    message she said aloud, oldest first;
  *  - the launch card, when she proposes starting a task (`LucyLaunchCard.tsx`), always whole above the box;
- *  - the action card, when she proposes answering, replying to or closing a task (`LucyActionCard.tsx`), in the same place;
  *  - the composer: the text box for typing to her (`LucyTypedInput.tsx`).
  *
  * A "Talk" button in the header switches on hands-free conversation with Lucy
