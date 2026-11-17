@@ -1755,6 +1755,26 @@ export class TaskStore {
   }
 
   /**
+   * Add GitHub authorship evidence to a task (issue #4077), the keys
+   * `GitHubStateStore` recorded for it. Keys are only ever added, so a
+   * partial write cannot drop evidence a previous run saved. No-op when
+   * nothing is new.
+   */
+  addGithubAuthorship(taskId: string, authorship: { pushedBranches: readonly string[]; createdPrs: readonly string[] }): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    const saved = task.githubAuthorship;
+    const branches = new Set(Array.isArray(saved?.pushedBranches) ? saved.pushedBranches : []);
+    const prs = new Set(Array.isArray(saved?.createdPrs) ? saved.createdPrs : []);
+    const before = branches.size + prs.size;
+    for (const b of authorship.pushedBranches) branches.add(b);
+    for (const pr of authorship.createdPrs) prs.add(pr);
+    if (saved && branches.size + prs.size === before) return;
+    task.githubAuthorship = { pushedBranches: [...branches], createdPrs: [...prs] };
+    this.markTaskDirty(taskId);
+  }
+
+  /**
    * Set the issue-ownership claim projection on a task (RFC:
    * rfc-issue-ownership-lock R3). Sole legitimate caller is
    * IssueClaimRegistry — enforced by a call-site guard test; do NOT call

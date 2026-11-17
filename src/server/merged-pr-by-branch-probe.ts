@@ -26,7 +26,12 @@
  *   (a fork PR that happens to reuse the branch name does not count);
  * - the PR must have been *opened* at or after the task was created, so a
  *   branch another task had already PR'd before this one started does not
- *   count.
+ *   count;
+ * - the PR must have been merged into the repository's default or integration
+ *   branch when those are known (issue #4077, the rule the store resolver
+ *   applies since #3983): a merge into another feature branch delivers
+ *   nothing yet. When the delivery branches are unknown, or the row carries
+ *   no base branch, the PR counts, as it did before.
  */
 
 import type { Task } from '../core/tasks.js';
@@ -34,6 +39,7 @@ import type { MergedPrAttribution } from '../core/completion/index.js';
 import { sanitizeGithubOwnerRepo } from '../core/project-identity.js';
 import { execGh } from '../adapters/gh-cli-transport.js';
 import { readIntegrationBranch } from '../core/delivery-gate-config.js';
+import { deliveryBranchList, type DeliveryBranches } from './pr-delivery-tracker.js';
 
 /** Branch names that never identify a single task's delivery. */
 const DEFAULT_BRANCH_NAMES = new Set(['main', 'master', 'develop', 'trunk', 'head']);
@@ -81,30 +87,41 @@ export function pickMergedPrBranchProbeTarget(
   return { owner: safe.owner, repo: safe.repo, branch, notBeforeMs };
 }
 
-/** One row of `gh pr list --json number,url,createdAt,mergedAt,headRefName,isCrossRepository`. */
+/** One row of `gh pr list --json number,url,createdAt,mergedAt,headRefName,baseRefName,isCrossRepository`. */
 export interface MergedPrListRow {
   number?: unknown;
   url?: unknown;
   createdAt?: unknown;
   mergedAt?: unknown;
   headRefName?: unknown;
+  baseRefName?: unknown;
   isCrossRepository?: unknown;
 }
 
 /**
  * Choose the delivered PR from `gh pr list` rows: exact head-branch match,
- * opened at or after `notBeforeMs`, and merged. Picks the earliest qualifying
- * merge so the label names the PR that first delivered the work.
+ * opened at or after `notBeforeMs`, merged, and merged into one of
+ * `deliveryBranches` when that list is given (issue #4077). Picks the
+ * earliest qualifying merge so the label names the PR that first delivered
+ * the work.
  */
 export function selectMergedPrForBranch(
   rows: readonly MergedPrListRow[],
   target: Pick<MergedPrBranchProbeTarget, 'owner' | 'repo' | 'branch' | 'notBeforeMs'>,
+  deliveryBranches?: readonly string[],
 ): MergedPrAttribution | null {
   let best: { attribution: MergedPrAttribution; mergedAtMs: number } | null = null;
   for (const row of rows) {
     if (typeof row.number !== 'number' || !Number.isInteger(row.number) || row.number <= 0) continue;
     if (row.headRefName !== target.branch) continue;
     if (row.isCrossRepository !== false) continue;
+    // Same rule as the store resolver (#3983): reject only a base branch that
+    // is known and is not a delivery branch.
+    if (
+      deliveryBranches && deliveryBranches.length > 0
+      && typeof row.baseRefName === 'string' && row.baseRefName !== ''
+      && !deliveryBranches.includes(row.baseRefName)
+    ) continue;
     if (typeof row.createdAt !== 'string' || typeof row.mergedAt !== 'string') continue;
     const openedAtMs = Date.parse(row.createdAt);
     if (!Number.isFinite(openedAtMs) || openedAtMs < target.notBeforeMs) continue;
@@ -133,6 +150,13 @@ export interface MergedPrByBranchProbeDeps {
    * default reads `.kookr/delivery-gate.json` from the latest session's cwd.
    */
   readIntegrationBranch?: (task: Task) => Promise<string | null>;
+  /**
+   * The branches a merge into counts as delivery for `owner/repo` (issue
+   * #4077): production passes `PrDeliveryTracker.getDeliveryBranches`, the
+   * same lookup the store resolver uses (#3983). Absent, or undefined for a
+   * repository, means unknown: any base branch counts.
+   */
+  deliveryBranchesOf?: (owner: string, repo: string) => DeliveryBranches | undefined;
 }
 
 async function integrationBranchOfTask(task: Task): Promise<string | null> {
@@ -168,14 +192,15 @@ export function createMergedPrByBranchProbe(
           '--repo', `${target.owner}/${target.repo}`,
           '--head', target.branch,
           '--state', 'merged',
-          '--json', 'number,url,createdAt,mergedAt,headRefName,isCrossRepository',
+          '--json', 'number,url,createdAt,mergedAt,headRefName,baseRefName,isCrossRepository',
           '--limit', '20',
         ],
         { timeout },
       );
       const parsed: unknown = JSON.parse(stdout);
       if (!Array.isArray(parsed)) return null;
-      return selectMergedPrForBranch(parsed as MergedPrListRow[], target);
+      const deliveryBranches = deliveryBranchList(deps.deliveryBranchesOf?.(target.owner, target.repo));
+      return selectMergedPrForBranch(parsed as MergedPrListRow[], target, deliveryBranches);
     } catch (err) {
       console.warn(
         `[merged-pr-by-branch] probe failed for task ${task.id}:`,

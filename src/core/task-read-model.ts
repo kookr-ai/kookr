@@ -228,6 +228,15 @@ export interface Task {
    * clearIssueClaim, and only by the registry (RFC R3).
    */
   issueClaim?: IssueClaim;
+  /**
+   * What this task's own commands showed it authored, kept so delivery
+   * attribution survives a server restart (issues #3678, #4077): the
+   * `owner/repo:branch` keys of branches its `git push` pushed and the
+   * `owner/repo#number` keys of PRs its `gh pr create` opened (owner and repo
+   * lower case). Written only by `TaskStore.addGithubAuthorship`. Absent on
+   * older records, where the evidence was in memory only.
+   */
+  githubAuthorship?: { pushedBranches: string[]; createdPrs: string[] };
   /** Operator-declared launch intent metadata, used by coordinator detectors. */
   metadata?: TaskMetadata;
   /** User-declared task priority. Omitted means normal priority. */

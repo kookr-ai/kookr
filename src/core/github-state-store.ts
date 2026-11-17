@@ -5,6 +5,7 @@ import type {
   TaskGitHubState,
   GitHubStateChange,
 } from './github-types.js';
+import type { TaskStore } from './tasks.js';
 
 /**
  * In-memory store for GitHub state per task.
@@ -21,6 +22,55 @@ export class GitHubStateStore {
    * of the PRs its own `gh pr create` printed. Owner and repo are lower case.
    */
   private authorship = new Map<string, { branches: Set<string>; prs: Set<string> }>();
+  /** Whether {@link authorshipPersistence} has been read into {@link authorship}. */
+  private authorshipLoaded = false;
+
+  /**
+   * @param authorshipPersistence where authorship evidence outlives a restart
+   *   (issue #4077). Without it the evidence is in memory only.
+   */
+  constructor(private readonly authorshipPersistence?: AuthorshipPersistence) {}
+
+  /**
+   * Read the persisted evidence once, on the first authorship read or write
+   * (issue #4077). It is lazy because the server builds this store before it
+   * loads its tasks; both first uses (the scanner's hook events and the
+   * delivery sweeps) come after that load.
+   */
+  private ensureAuthorshipLoaded(): void {
+    if (this.authorshipLoaded || !this.authorshipPersistence) return;
+    this.authorshipLoaded = true;
+    try {
+      for (const { taskId, authorship } of this.authorshipPersistence.load()) {
+        this.restoreAuthorship(taskId, authorship);
+      }
+    } catch (err) {
+      console.warn('[github-state] could not load persisted authorship:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  /** Merge one task's persisted evidence; ignores anything that is not arrays of strings. */
+  private restoreAuthorship(taskId: string, persisted: unknown): void {
+    if (typeof persisted !== 'object' || persisted === null) return;
+    const { pushedBranches, createdPrs } = persisted as Partial<Record<keyof PersistedAuthorship, unknown>>;
+    const strings = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : [];
+    const branches = strings(pushedBranches);
+    const prs = strings(createdPrs);
+    if (branches.length === 0 && prs.length === 0) return;
+    const entry = this.authorshipEntry(taskId);
+    for (const b of branches) entry.branches.add(b);
+    for (const pr of prs) entry.prs.add(pr);
+  }
+
+  private authorshipEntry(taskId: string): { branches: Set<string>; prs: Set<string> } {
+    let entry = this.authorship.get(taskId);
+    if (!entry) {
+      entry = { branches: new Set(), prs: new Set() };
+      this.authorship.set(taskId, entry);
+    }
+    return entry;
+  }
 
   private refKey(ref: GitHubReference): string {
     return `${ref.taskId}:${ref.type}:${ref.owner}/${ref.repo}#${ref.number}`;
@@ -55,16 +105,21 @@ export class GitHubStateStore {
   /**
    * Record that a task pushed these branches or opened these PRs (issue
    * #3678). Idempotent: the scanner re-reads a sliding window of events.
+   * Evidence that is new is also saved through the persistence (issue #4077).
    */
   recordAuthorship(taskId: string, evidence: AuthorshipEvidence): void {
     if (evidence.pushedBranches.length === 0 && evidence.createdPrs.length === 0) return;
-    let entry = this.authorship.get(taskId);
-    if (!entry) {
-      entry = { branches: new Set(), prs: new Set() };
-      this.authorship.set(taskId, entry);
-    }
+    this.ensureAuthorshipLoaded();
+    const entry = this.authorshipEntry(taskId);
+    const before = entry.branches.size + entry.prs.size;
     for (const b of evidence.pushedBranches) entry.branches.add(branchKey(b.owner, b.repo, b.branch));
     for (const pr of evidence.createdPrs) entry.prs.add(prKey(pr.owner, pr.repo, pr.number));
+    if (!this.authorshipPersistence || entry.branches.size + entry.prs.size === before) return;
+    try {
+      this.authorshipPersistence.save(taskId, { pushedBranches: [...entry.branches], createdPrs: [...entry.prs] });
+    } catch (err) {
+      console.warn(`[github-state] could not persist authorship for task ${taskId}:`, err instanceof Error ? err.message : err);
+    }
   }
 
   /**
@@ -76,6 +131,7 @@ export class GitHubStateStore {
     taskId: string,
     pr: { owner: string; repo: string; number: number; branch?: string },
   ): 'self' | 'other' | 'none' {
+    this.ensureAuthorshipLoaded();
     const pk = prKey(pr.owner, pr.repo, pr.number);
     const bk = pr.branch ? branchKey(pr.owner, pr.repo, pr.branch) : null;
     const holds = (e: { branches: Set<string>; prs: Set<string> }): boolean =>
@@ -264,8 +320,43 @@ export class GitHubStateStore {
       }
     }
     this.recentChanges.delete(taskId);
+    // Load first, so a later first read cannot bring the removed evidence back.
+    this.ensureAuthorshipLoaded();
     this.authorship.delete(taskId);
   }
+}
+
+/**
+ * One task's authorship evidence as stored on the task record (issue #4077):
+ * the store's own keys, `owner/repo:branch` and `owner/repo#number`.
+ */
+export interface PersistedAuthorship {
+  pushedBranches: string[];
+  createdPrs: string[];
+}
+
+/** Where authorship evidence outlives a server restart (issue #4077). */
+export interface AuthorshipPersistence {
+  /** Every task's saved evidence. Malformed entries are ignored. */
+  load(): Iterable<{ taskId: string; authorship: unknown }>;
+  /** Save a task's evidence after it grew; receives the task's full evidence. */
+  save(taskId: string, authorship: PersistedAuthorship): void;
+}
+
+/**
+ * Authorship persistence on the task records (issue #4077): each task's
+ * evidence is its `githubAuthorship` field, so it is saved and archived with
+ * the task. Tasks without the field load nothing.
+ */
+export function taskRecordAuthorshipPersistence(
+  taskStore: Pick<TaskStore, 'viewTasks' | 'addGithubAuthorship'>,
+): AuthorshipPersistence {
+  return {
+    load: () => taskStore.viewTasks()
+      .filter((task) => task.githubAuthorship !== undefined)
+      .map((task) => ({ taskId: task.id, authorship: task.githubAuthorship })),
+    save: (taskId, authorship) => taskStore.addGithubAuthorship(taskId, authorship),
+  };
 }
 
 /** What one task's own commands showed it authored (issue #3678). */

@@ -181,6 +181,39 @@ describe('selectMergedPrForBranch (issue #3578)', () => {
   });
 });
 
+describe('selectMergedPrForBranch base branch (issue #4077)', () => {
+  const target = { owner: 'kookr-ai', repo: 'kookr', branch: 'fix/x', notBeforeMs: CREATED.getTime() };
+  const row = (number: number, baseRefName?: string) => ({
+    number,
+    createdAt: '2026-11-10T08:00:00Z',
+    mergedAt: '2026-11-10T09:00:00Z',
+    headRefName: 'fix/x',
+    isCrossRepository: false,
+    ...(baseRefName !== undefined ? { baseRefName } : {}),
+  });
+
+  it('ignores a PR merged into a feature branch when the delivery branches are known', () => {
+    expect(selectMergedPrForBranch([row(50, 'feat/parent')], target, ['main', 'staging'])).toBeNull();
+  });
+
+  it('accepts a PR merged into the default or the integration branch', () => {
+    expect(selectMergedPrForBranch([row(51, 'main')], target, ['main', 'staging'])?.prNumber).toBe(51);
+    expect(selectMergedPrForBranch([row(52, 'staging')], target, ['main', 'staging'])?.prNumber).toBe(52);
+  });
+
+  it('skips the feature-branch merge and picks the delivery-branch one', () => {
+    const intoFeature = { ...row(53, 'feat/parent'), mergedAt: '2026-11-10T08:30:00Z' };
+    expect(selectMergedPrForBranch([intoFeature, row(54, 'main')], target, ['main'])?.prNumber).toBe(54);
+  });
+
+  it('counts any base branch when the delivery branches are unknown or the row has none', () => {
+    expect(selectMergedPrForBranch([row(55, 'feat/parent')], target)?.prNumber).toBe(55);
+    expect(selectMergedPrForBranch([row(56, 'feat/parent')], target, [])?.prNumber).toBe(56);
+    expect(selectMergedPrForBranch([row(57)], target, ['main'])?.prNumber).toBe(57);
+    expect(selectMergedPrForBranch([row(58, '')], target, ['main'])?.prNumber).toBe(58);
+  });
+});
+
 describe('createMergedPrByBranchProbe (issue #3578)', () => {
   it('does not ask gh about the integration branch the task repository configures (#3797)', async () => {
     const runGh = vi.fn(async () => ({ stdout: '[]' }));
@@ -245,11 +278,35 @@ describe('createMergedPrByBranchProbe (issue #3578)', () => {
         '--repo', 'kookr-ai/kookr',
         '--head', 'fix/terminal-snapshot-seed-3564',
         '--state', 'merged',
-        '--json', 'number,url,createdAt,mergedAt,headRefName,isCrossRepository',
+        '--json', 'number,url,createdAt,mergedAt,headRefName,baseRefName,isCrossRepository',
         '--limit', '20',
       ],
       { timeout: 1234 },
     );
+  });
+
+  // Issue #4077: the store resolver rejects a merge into a feature branch
+  // (#3983); the by-branch fallback must not label it delivered either.
+  it('applies the repository delivery branches from the lookup to the gh rows', async () => {
+    const intoFeature = { number: 60, createdAt: '2026-11-10T08:00:00Z', mergedAt: '2026-11-10T09:00:00Z', headRefName: 'fix/terminal-snapshot-seed-3564', baseRefName: 'feat/parent', isCrossRepository: false };
+    const runGh = vi.fn(async () => ({ stdout: JSON.stringify([intoFeature]) }));
+    const deliveryBranchesOf = vi.fn((owner: string, repo: string) =>
+      owner === 'kookr-ai' && repo === 'kookr' ? { defaultBranch: 'main', integrationBranch: 'staging' } : undefined);
+    const probe = createMergedPrByBranchProbe({ runGh, readIntegrationBranch: async () => null, deliveryBranchesOf });
+
+    await expect(probe(makeTask())).resolves.toBeNull();
+    expect(deliveryBranchesOf).toHaveBeenCalledWith('kookr-ai', 'kookr');
+
+    runGh.mockResolvedValueOnce({ stdout: JSON.stringify([{ ...intoFeature, baseRefName: 'staging' }]) });
+    await expect(probe(makeTask())).resolves.toMatchObject({ prNumber: 60 });
+
+    // Default branch unknown: the tracker cannot tell a feature branch apart, so any base counts.
+    const unknown = createMergedPrByBranchProbe({
+      runGh: async () => ({ stdout: JSON.stringify([intoFeature]) }),
+      readIntegrationBranch: async () => null,
+      deliveryBranchesOf: () => ({ defaultBranch: null, integrationBranch: 'staging' }),
+    });
+    await expect(unknown(makeTask())).resolves.toMatchObject({ prNumber: 60 });
   });
 
   it('does not call gh when the task has no usable target', async () => {

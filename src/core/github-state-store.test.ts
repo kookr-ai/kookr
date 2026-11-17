@@ -1,6 +1,8 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi } from 'vitest';
 import type { GitHubReference, GitHubIssueState, GitHubPRState } from './github-types.js';
-import { GitHubStateStore } from './github-state-store.js';
+import { GitHubStateStore, taskRecordAuthorshipPersistence, type AuthorshipPersistence } from './github-state-store.js';
+import { TaskStore } from './tasks.js';
+import type { Task } from './task-read-model.js';
 
 function makeRef(number = 42, taskId = 'task-1'): GitHubReference {
   return {
@@ -280,5 +282,107 @@ describe('GitHubStateStore authorship (issue #3678)', () => {
     store.recordAuthorship('a', { pushedBranches: [], createdPrs: [{ owner: 'kookr-ai', repo: 'kookr', number: 7 }] });
     store.removeTask('a');
     expect(store.authorshipOf('b', pr)).toBe('none');
+  });
+});
+
+describe('GitHubStateStore authorship across a restart (issue #4077)', () => {
+  const pr = { owner: 'kookr-ai', repo: 'kookr', number: 7, branch: 'fix/x' };
+  const pushedFixX = { pushedBranches: [{ owner: 'Kookr-AI', repo: 'kookr', branch: 'fix/x' }], createdPrs: [] };
+
+  /** A server restart: the task records go through JSON, a fresh store reads them. */
+  function restart(tasks: TaskStore): { tasks: TaskStore; store: GitHubStateStore } {
+    const reloaded = new TaskStore();
+    reloaded.loadTasks(JSON.parse(JSON.stringify(tasks.viewTasks())) as Task[]);
+    return { tasks: reloaded, store: new GitHubStateStore(taskRecordAuthorshipPersistence(reloaded)) };
+  }
+
+  test('the author stays self when another task pushes the same branch after a restart', () => {
+    const tasks = new TaskStore();
+    const a = tasks.createTask({ prompt: 'author', cwd: '/tmp' });
+    const b = tasks.createTask({ prompt: 'later pusher', cwd: '/tmp' });
+    new GitHubStateStore(taskRecordAuthorshipPersistence(tasks)).recordAuthorship(a.id, pushedFixX);
+
+    const after = restart(tasks);
+    after.store.recordAuthorship(b.id, pushedFixX);
+    expect(after.store.authorshipOf(a.id, pr)).toBe('self');
+    // The persisted evidence also keeps a third task from claiming it.
+    const c = after.tasks.createTask({ prompt: 'bystander', cwd: '/tmp' });
+    expect(after.store.authorshipOf(c.id, pr)).toBe('other');
+  });
+
+  test('evidence restored from records is reported as other for a non-author with no fresh event', () => {
+    const tasks = new TaskStore();
+    const a = tasks.createTask({ prompt: 'author', cwd: '/tmp' });
+    const b = tasks.createTask({ prompt: 'reviewer', cwd: '/tmp' });
+    new GitHubStateStore(taskRecordAuthorshipPersistence(tasks)).recordAuthorship(a.id, {
+      pushedBranches: [], createdPrs: [{ owner: 'kookr-ai', repo: 'kookr', number: 7 }],
+    });
+    const { store } = restart(tasks);
+    expect(store.authorshipOf(b.id, { ...pr, branch: undefined })).toBe('other');
+  });
+
+  test('a record without the field restores nothing (older records keep today\'s behaviour)', () => {
+    const tasks = new TaskStore();
+    const a = tasks.createTask({ prompt: 'p', cwd: '/tmp' });
+    const { tasks: reloaded, store } = restart(tasks);
+    expect(reloaded.getTask(a.id)?.githubAuthorship).toBeUndefined();
+    expect(store.authorshipOf(a.id, pr)).toBe('none');
+  });
+
+  test('saves only when the evidence grows, and the saved field holds the store keys', () => {
+    const tasks = new TaskStore();
+    const a = tasks.createTask({ prompt: 'p', cwd: '/tmp' });
+    const persistence = taskRecordAuthorshipPersistence(tasks);
+    const save = vi.spyOn(persistence, 'save');
+    const store = new GitHubStateStore(persistence);
+    store.recordAuthorship(a.id, pushedFixX);
+    store.recordAuthorship(a.id, pushedFixX);
+    expect(save).toHaveBeenCalledTimes(1);
+    store.recordAuthorship(a.id, { pushedBranches: [], createdPrs: [{ owner: 'kookr-ai', repo: 'kookr', number: 7 }] });
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(tasks.getTask(a.id)?.githubAuthorship).toEqual({
+      pushedBranches: ['kookr-ai/kookr:fix/x'],
+      createdPrs: ['kookr-ai/kookr#7'],
+    });
+  });
+
+  test('a save never drops keys an earlier run saved', () => {
+    const tasks = new TaskStore();
+    const a = tasks.createTask({ prompt: 'p', cwd: '/tmp' });
+    tasks.addGithubAuthorship(a.id, { pushedBranches: ['kookr-ai/kookr:old'], createdPrs: [] });
+    tasks.addGithubAuthorship(a.id, { pushedBranches: ['kookr-ai/kookr:fix/x'], createdPrs: [] });
+    expect(tasks.getTask(a.id)?.githubAuthorship).toEqual({
+      pushedBranches: ['kookr-ai/kookr:old', 'kookr-ai/kookr:fix/x'],
+      createdPrs: [],
+    });
+  });
+
+  test('loads persisted evidence once, lazily, and ignores malformed entries', () => {
+    const load = vi.fn(() => [
+      { taskId: 'a', authorship: { pushedBranches: ['kookr-ai/kookr:fix/x', 42], createdPrs: 'nope' } },
+      { taskId: 'b', authorship: null },
+      { taskId: 'c', authorship: { pushedBranches: [{}], createdPrs: [] } },
+    ]);
+    const persistence: AuthorshipPersistence = { load, save: vi.fn() };
+    const store = new GitHubStateStore(persistence);
+    expect(load).not.toHaveBeenCalled();
+    expect(store.authorshipOf('a', pr)).toBe('self');
+    expect(store.authorshipOf('b', pr)).toBe('other');
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  test('a failing load or save is logged and leaves the in-memory evidence working', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const store = new GitHubStateStore({
+        load: () => { throw new Error('disk'); },
+        save: () => { throw new Error('disk'); },
+      });
+      store.recordAuthorship('a', pushedFixX);
+      expect(store.authorshipOf('a', pr)).toBe('self');
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
