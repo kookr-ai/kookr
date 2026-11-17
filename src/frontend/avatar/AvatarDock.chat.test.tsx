@@ -243,9 +243,12 @@ describe('Lucy\'s column as a chat', () => {
       expect(reply.firstElementChild).toBe(doing());
       // Nothing of the ids, handles, arguments or result summaries is ever on screen or kept.
       const shown = q('avatar-thread')!.textContent!;
+      // An entry's own id and time are left out of what is searched: one is random and the other is the clock,
+      // so either can hold "80" by chance (a time of 1794888074960 did).
+      const kept = JSON.stringify(getConversationEntries().map(({ id: _id, at: _at, ...rest }) => rest));
       for (const secret of ['call_9f3a', 'call_77b1', 'kookr-t-4411', '80', '6 tasks', 'read_board', 'read_task_output']) {
         expect(shown).not.toContain(secret);
-        expect(JSON.stringify(getConversationEntries())).not.toContain(secret);
+        expect(kept).not.toContain(secret);
       }
     });
 
