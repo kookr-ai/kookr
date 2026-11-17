@@ -71,8 +71,9 @@ reasoning is never sent on.
 How long and in what shape she answers depends on how the operator spoke to her. A spoken turn
 (`input: "voice"`) is answered in one to three sentences with no list, because it is read aloud. A
 typed turn may instead be answered with a short list when the answer covers several tasks or several
-questions: one item per line, each starting with `- `, at most six items, and no other markdown. In
-both she answers in the language the operator used. The sentences the server itself writes (a
+questions: one item per line, each starting with `- `, at most six items, and no other markdown. A
+typed turn is answered in the language the operator used; a spoken one in English, because her voice
+only speaks English. The sentences the server itself writes (a
 proposal's read-back, a refusal, "Sent.") are in English, and so are the words that confirm a card.
 
 Her instructions also tell her never to point the operator at a button, a setting or a command that
@@ -438,7 +439,8 @@ with whole turns between 0.6 and 3.1 s.
   that has waited a minute on a permission prompt (see [Lucy live](lucy-live.md)). She also writes,
   without speaking, a briefing when her panel opens and a line when a task fails, stalls or wants a
   review (see [What she writes on her own](lucy-live.md#what-she-writes-on-her-own)).
-- She is told to answer in the operator's language. The sentences the server writes itself (a read-back,
+- Typed, she is told to answer in the operator's language; spoken, in English, because her voice only
+  speaks English. The sentences the server writes itself (a read-back,
   a refusal, "Sent.") and the words that confirm a card are English. The wording of the instructions
   added with her actions on existing tasks (what she may propose, the typed list, the language, no
   pointing at controls that do not exist) was not measured against a model.

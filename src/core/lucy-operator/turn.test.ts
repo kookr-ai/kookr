@@ -519,13 +519,15 @@ describe('her instructions for the turn', () => {
     expect(promptOf(spoken)).not.toMatch(/short list/);
   });
 
-  test('she answers in the operator\'s language, typed or spoken, instead of always in English', async () => {
-    for (const spoken of [false, true]) {
-      const t = setup([{ text: 'Hi.' }]);
-      await system(t.deps, { spoken });
-      expect(promptOf(t)).toMatch(/Answer in the language the operator used in their message/);
-      expect(promptOf(t)).not.toMatch(/^- Answer in English\.$/m);
-    }
+  test('typed, she answers in the operator\'s language; spoken, in English, because her voice only speaks English', async () => {
+    const typed = setup([{ text: 'Hi.' }]);
+    await system(typed.deps, { spoken: false });
+    expect(promptOf(typed)).toMatch(/Answer in the language the operator used in their message/);
+    expect(promptOf(typed)).not.toMatch(/Answer in English: your voice/);
+    const spoken = setup([{ text: 'Hi.' }]);
+    await system(spoken.deps, { spoken: true });
+    expect(promptOf(spoken)).toMatch(/Answer in English: your voice only speaks English\./);
+    expect(promptOf(spoken)).not.toMatch(/Answer in the language the operator used/);
   });
 
   test('she never points at a control these instructions do not name, and knows questions have no snooze', async () => {

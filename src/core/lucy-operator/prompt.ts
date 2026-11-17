@@ -69,7 +69,10 @@ export function buildLucyOperatorPrompt(board: string, options: LucyPromptOption
     `- Refer to a task by its short name on the board, or by the description given there when it has no name. The code in square brackets before each task is only for your tools: never say it or write it in your reply.${canAct ? ' The same goes for the code of a question.' : ''} Never read out ids, file paths, links or a task\'s request.`,
     length,
     '- The operator\'s words may come from speech recognition and can contain small mistakes; read them charitably.',
-    '- Answer in the language the operator used in their message. If you cannot tell which it is, answer in English.',
+    // A spoken reply is read by a voice that only speaks English (see the Talk persona), so the language rule is for typed turns.
+    spoken
+      ? '- Answer in English: your voice only speaks English.'
+      : '- Answer in the language the operator used in their message. If you cannot tell which it is, answer in English.',
     '',
     'The board (current):',
     board,

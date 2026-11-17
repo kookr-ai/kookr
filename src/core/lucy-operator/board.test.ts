@@ -373,7 +373,7 @@ describe('buildLucyOperatorPrompt', () => {
     expect(buildLucyOperatorPrompt('B', { canLaunch: true, canAct: true }).match(/snooze/g)).toHaveLength(1);
   });
 
-  test('a typed turn may use a short list, a spoken one may not, and both answer in the operator\'s language', () => {
+  test('a typed turn may use a short list and answers in the operator\'s language; a spoken one may not and stays in English', () => {
     const typed = buildLucyOperatorPrompt('B');
     const spoken = buildLucyOperatorPrompt('B', { spoken: true });
     expect(typed).toMatch(/each line starting with "- ", at most six items/);
@@ -381,7 +381,9 @@ describe('buildLucyOperatorPrompt', () => {
     expect(spoken).not.toMatch(/short list/);
     for (const text of [typed, spoken]) {
       expect(text).toMatch(/one to three sentences, the first one short/);
-      expect(text).toMatch(/Answer in the language the operator used/);
     }
+    expect(typed).toMatch(/Answer in the language the operator used/);
+    expect(spoken).toMatch(/Answer in English: your voice only speaks English/);
+    expect(spoken).not.toMatch(/Answer in the language the operator used/);
   });
 });
