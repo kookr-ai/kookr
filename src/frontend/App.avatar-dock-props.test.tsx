@@ -111,6 +111,15 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
     __resetViewerSessionForTests();
   });
 
+  const renderApp = async () => {
+    await act(async () => { root.render(React.createElement(App)); });
+    await flush();
+  };
+  const select = async (agentId: string | null) => {
+    await act(async () => { useKookrStore.setState({ selectedAgentId: agentId }); });
+  };
+  const selected = () => useKookrStore.getState().selectedAgentId;
+
   test('passes the platform’s Talk binding, and blocks it while Diagnostics or the bug report is open', async () => {
     await act(async () => { root.render(React.createElement(App)); });
     await flush();
@@ -129,5 +138,32 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
     await click('[data-testid="mock-palette"]');
     await click('[data-command="bug-report"]');
     expect(dock.props!.shortcutsBlocked).toBe(true);
+  });
+
+  test('"Open task" selects the task and leaves it selected, also when a project drawer was open; a task with no live agent is refused', async () => {
+    await act(async () => {
+      useKookrStore.setState({ agents: [{ agentId: 'ag1', taskId: 't1', projectId: 'billing' } as never] });
+    });
+    await renderApp();
+    const openTask = dock.props!.onOpenTask!;
+
+    let opened = false;
+    await act(async () => { opened = openTask('t1'); });
+    expect(opened).toBe(true);
+    expect(selected()).toBe('ag1');
+    expect(useKookrStore.getState().selectedTaskId).toBe('t1');
+
+    // With a project drawer open: the drawer closes and the task stays selected.
+    await select(null);
+    await act(async () => { useKookrStore.setState({ selectedProject: 'billing' }); });
+    await act(async () => { opened = dock.props!.onOpenTask!('t1'); });
+    expect(opened).toBe(true);
+    expect(selected()).toBe('ag1');
+    expect(useKookrStore.getState().selectedProject).toBeNull();
+
+    await select(null);
+    await act(async () => { opened = dock.props!.onOpenTask!('gone'); });
+    expect(opened).toBe(false);
+    expect(selected()).toBeNull();
   });
 });

@@ -1294,8 +1294,10 @@ export function App() {
   const openAskingTask = useCallback((taskId: string): boolean => {
     const agentId = liveAgentByTaskId.get(taskId);
     if (!agentId) return false;
-    selectAgent(agentId, taskId);
+    // The drawer first, then the task: closing the project drawer clears the selection (`selectProject(null)`),
+    // so in the other order the task was selected and deselected in the same press and nothing was shown.
     selectProject(null);
+    selectAgent(agentId, taskId);
     return true;
   }, [liveAgentByTaskId, selectAgent, selectProject]);
   // Open the live task behind an Outcome Scoreboard finding (issue #2783). Same
