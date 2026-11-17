@@ -473,18 +473,26 @@ describe('DetailPanel dense metadata', () => {
   });
 
   test('#4024: closing an edit gives focus back to the row that opened it, which stayed mounted', async () => {
-    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => { cb(0); return 0; });
+    // Hold animation frames and run them after React has re-rendered, as a
+    // browser does. The panel defers the focus call to the next frame because a
+    // browser ignores focus() on an element that is still hidden; jsdom 31
+    // ignores it too, so a frame run inside the Escape handler would focus nothing.
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => frames.push(cb));
+    const runFrames = () => act(() => { for (const cb of frames.splice(0)) cb(0); });
     root = renderDetailPanel(container, makeAgent());
     const trigger = container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!;
 
     act(() => { trigger.focus(); trigger.click(); });
     await flush();
+    runFrames();
     // The conversation is hidden behind Changes, not unmounted.
     expect(trigger.isConnected).toBe(true);
     expect(container.querySelector<HTMLElement>('[data-testid="detail-conversation-slot"]')?.style.display).toBe('none');
 
     act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
     await flush();
+    runFrames();
 
     expect(container.querySelector('[data-testid="activity-panel"] button')).toBe(trigger);
     expect(document.activeElement).toBe(trigger);
