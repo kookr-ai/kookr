@@ -11,7 +11,7 @@ import {
   PROVIDER_RESET_HOLD_GRACE_MS,
   emptyProviderPausedTtlSkipCounts,
   effectiveProviderPausedTtlMs,
-  isAccountLevelProviderPauseDetail,
+  isFirstPartyProviderPauseDetail,
   providerPausedOpenPrFailsafeSkipTotal,
   selectExpiredProviderPausedTasks,
   summarizeOpenPrFailsafeHoldAge,
@@ -53,13 +53,16 @@ export class ProviderPausedStartTracker {
    */
   private readonly knownResetAt = new Map<string, number>();
   /**
-   * Tasks whose current pause showed account-level evidence (billing, auth or
-   * quota stop_failure) at least once (issue #4050). Latched because the
-   * pause detail is read from a recent-events window: a later error event or
-   * tool result can become the newest match and hide the stop_failure, which
-   * would bring the healthy-quota hold back. Cleared with the pause start.
+   * Tasks whose current pause showed a first-party stop_failure (billing,
+   * auth or quota error, issue #4050, or a rate limit, issue #4082) at least
+   * once. Latched because the pause detail is read from a recent-events
+   * window: a later error event or tool result can become the newest match
+   * and hide the stop_failure, which would bring the healthy-quota hold back.
+   * The latch is set on every pass, poller healthy or not, so a pause seen
+   * only while the poller backed off keeps it once the window rolls over.
+   * Cleared with the pause start.
    */
-  private readonly accountLevelEvidence = new Set<string>();
+  private readonly firstPartyEvidence = new Set<string>();
 
   /**
    * Observe one task: latch start if paused+inProgress, else clear.
@@ -105,24 +108,24 @@ export class ProviderPausedStartTracker {
   }
 
   /**
-   * Record that the current pause showed account-level evidence (issue
-   * #4050). Ignored when the task has no latched pause start.
+   * Record that the current pause showed a first-party stop_failure (issues
+   * #4050, #4082). Ignored when the task has no latched pause start.
    */
-  latchAccountLevelEvidence(taskId: string): void {
+  latchFirstPartyEvidence(taskId: string): void {
     if (!this.pauseStartedAt.has(taskId)) return;
-    this.accountLevelEvidence.add(taskId);
+    this.firstPartyEvidence.add(taskId);
   }
 
-  /** Whether the current pause showed account-level evidence (issue #4050). */
-  hasAccountLevelEvidence(taskId: string): boolean {
-    return this.accountLevelEvidence.has(taskId);
+  /** Whether the current pause showed a first-party stop_failure (issues #4050, #4082). */
+  hasFirstPartyEvidence(taskId: string): boolean {
+    return this.firstPartyEvidence.has(taskId);
   }
 
   /** Drop a task (after reclaim / terminal). */
   clear(taskId: string): void {
     this.pauseStartedAt.delete(taskId);
     this.knownResetAt.delete(taskId);
-    this.accountLevelEvidence.delete(taskId);
+    this.firstPartyEvidence.delete(taskId);
   }
 
   /**
@@ -178,8 +181,9 @@ export interface ProviderResetSource {
  * - otherwise (fresh, healthy, no binding window) → `quota_healthy` (issue
  *   #3574): the quota contradicts the pause. The sweep downgrades it to `none`
  *   when a reset was latched earlier in this pause — then the window rolled
- *   over and the pause was real — and when the pause showed account-level
- *   evidence (issue #4050), which the usage windows cannot contradict.
+ *   over and the pause was real — and when the pause showed a first-party
+ *   stop_failure: a billing, auth or quota error (issue #4050) or a rate
+ *   limit (issue #4082), which a later healthy snapshot cannot contradict.
  */
 export function classifyProviderResetState(input: {
   source: ProviderResetSource;
@@ -467,10 +471,11 @@ export interface ReclaimProviderPausedTasksDeps {
   getProviderResetSource?: () => ProviderResetSource;
   /**
    * Which evidence classified the task as paused — the `detail` of
-   * `classifyProviderPause` (issue #4050). A billing, auth or quota
-   * stop_failure seen during a pause turns the healthy-quota hold (#3574)
-   * off for that pause, so it is reclaimed at the soft or hard TTL like
-   * before #3574. Omitted, or undefined for a task → the hold still applies.
+   * `classifyProviderPause` (issue #4050). A first-party stop_failure seen
+   * during a pause — billing, auth or quota (#4050) or rate limit (#4082) —
+   * turns the healthy-quota hold (#3574) off for that pause, so it is
+   * reclaimed at the soft or hard TTL like before #3574. Omitted, or
+   * undefined for a task → the hold still applies.
    */
   getProviderPauseDetail?: (task: Task) => string | undefined;
   /**
@@ -641,8 +646,8 @@ export async function reclaimAgedProviderPausedTasks(
     for (const task of tasks) {
       const latchedStartMs = getPauseStartedAtMs(task);
       if (latchedStartMs === undefined || !taskUsesClaudeQuota(task)) continue;
-      if (isAccountLevelProviderPauseDetail(readProviderPauseDetail(deps, task))) {
-        deps.pauseStartTracker.latchAccountLevelEvidence(task.id);
+      if (isFirstPartyProviderPauseDetail(readProviderPauseDetail(deps, task))) {
+        deps.pauseStartTracker.latchFirstPartyEvidence(task.id);
       }
       const fresh = classifyProviderResetState({
         source: resetSource,
@@ -669,12 +674,15 @@ export async function reclaimAgedProviderPausedTasks(
       }
       if (
         state.kind === 'quota_healthy'
-        && deps.pauseStartTracker.hasAccountLevelEvidence(task.id)
+        && deps.pauseStartTracker.hasFirstPartyEvidence(task.id)
       ) {
         // Issue #4050: a billing, auth or quota stop_failure is the CLI's own
         // report that the account is blocked. The 5-hour and 7-day windows do
-        // not show that, so a healthy snapshot does not contradict it: apply
-        // the normal soft/hard TTL instead of holding up to 6h.
+        // not show that, so a healthy snapshot does not contradict it.
+        // Issue #4082: the same goes for a rate-limit stop_failure. If the
+        // poller backed off for the whole pause, it never saw the exhausted
+        // window, and its first healthy snapshot comes after the rollover.
+        // Apply the normal soft/hard TTL instead of holding up to 6h.
         state = { kind: 'none' };
       }
       resetStates.set(task.id, state);
