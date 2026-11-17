@@ -246,6 +246,107 @@ describe('runReplyCli — resolution and delivery', () => {
     expect(requests.some((r) => r.url.includes('/message'))).toBe(false);
   });
 
+  describe('task-id prefix (issue #4112)', () => {
+    const ID_A = 'e468f92d-1111-4aaa-8aaa-000000000001';
+    const ID_B = 'e468f92d-2222-4bbb-8bbb-000000000002';
+    const ID_C = '7c0ffee0-3333-4ccc-8ccc-000000000003';
+
+    it('delivers to the one live agent whose taskId starts with an 8-character prefix', async () => {
+      const io = captureIo();
+      const { impl, requests } = fakeFetch({
+        agents: [
+          { agentId: 'agent-a', taskId: ID_A, taskName: 'Alpha', taskStatus: 'inProgress' },
+          { agentId: 'agent-c', taskId: ID_C, taskName: 'Gamma', taskStatus: 'inProgress' },
+        ],
+        messageResult: { ok: true, agentId: 'agent-a', delivered: true },
+      });
+      const code = await runReplyCli(['e468f92d', 'continue', '--json'], { env: {}, out: io.out, err: io.err, fetchImpl: impl });
+      expect(code).toBe(0);
+      const posts = requests.filter((r) => r.url.includes('/message'));
+      expect(posts.map((r) => r.url)).toEqual(['http://127.0.0.1:4800/api/agents/agent-a/message']);
+      expect(JSON.parse(io.logs[0]).details).toEqual({ taskId: ID_A, agentId: 'agent-a', delivered: true });
+    });
+
+    it('fails AMBIGUOUS_AGENT (exit 5) when the prefix matches several task ids, naming them, and sends nothing', async () => {
+      const io = captureIo();
+      const { impl, requests } = fakeFetch({
+        agents: [
+          { agentId: 'agent-a', taskId: ID_A, taskName: 'Alpha', taskStatus: 'inProgress' },
+          { agentId: 'agent-b', taskId: ID_B, taskName: 'Beta', taskStatus: 'inProgress' },
+          { agentId: 'agent-c', taskId: ID_C, taskName: 'Gamma', taskStatus: 'inProgress' },
+        ],
+      });
+      const code = await runReplyCli(['e468f92d', 'hi', '--json'], { env: {}, out: io.out, err: io.err, fetchImpl: impl });
+      expect(code).toBe(5);
+      const parsed = JSON.parse(io.logs[0]);
+      expect(parsed).toMatchObject({ ok: false, code: 'AMBIGUOUS_AGENT', details: { matchedBy: 'prefix' } });
+      expect(parsed.details.candidates.map((c: { taskId: string }) => c.taskId)).toEqual([ID_A, ID_B]);
+      expect(requests.some((r) => r.url.includes('/message'))).toBe(false);
+    });
+
+    it('treats a prefix shared with a terminal task as ambiguous too (human output lists both ids)', async () => {
+      const io = captureIo();
+      const { impl, requests } = fakeFetch({
+        agents: [
+          { agentId: 'agent-a', taskId: ID_A, taskName: 'Alpha', taskStatus: 'inProgress' },
+          { agentId: 'agent-b', taskId: ID_B, taskName: 'Beta', taskStatus: 'completed' },
+        ],
+      });
+      const code = await runReplyCli(['e468f92d', 'hi'], { env: {}, out: io.out, err: io.err, fetchImpl: impl });
+      expect(code).toBe(5);
+      const text = io.errors.join('\n');
+      expect(text).toContain(ID_A);
+      expect(text).toContain(ID_B);
+      expect(requests.some((r) => r.url.includes('/message'))).toBe(false);
+    });
+
+    it('fails NO_AGENT (exit 2) when the unique prefix names a terminal task, and sends nothing', async () => {
+      const io = captureIo();
+      const { impl, requests } = fakeFetch({
+        agents: [
+          { agentId: 'agent-a', taskId: ID_A, taskName: 'Alpha', taskStatus: 'completed' },
+          { agentId: 'agent-c', taskId: ID_C, taskName: 'Gamma', taskStatus: 'inProgress' },
+        ],
+      });
+      const code = await runReplyCli(['e468f92d', 'hi', '--json'], { env: {}, out: io.out, err: io.err, fetchImpl: impl });
+      expect(code).toBe(2);
+      expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'NO_AGENT' });
+      expect(requests.some((r) => r.url.includes('/message'))).toBe(false);
+    });
+
+    it('does not prefix-match a reference shorter than 8 characters', async () => {
+      const io = captureIo();
+      const { impl, requests } = fakeFetch({
+        agents: [{ agentId: 'agent-a', taskId: ID_A, taskName: 'Alpha', taskStatus: 'inProgress' }],
+      });
+      const code = await runReplyCli(['e468f92', 'hi', '--json'], { env: {}, out: io.out, err: io.err, fetchImpl: impl });
+      expect(code).toBe(2);
+      expect(JSON.parse(io.logs[0])).toMatchObject({ code: 'NO_AGENT' });
+      expect(requests.some((r) => r.url.includes('/message'))).toBe(false);
+    });
+
+    it('prefers an exact task name over a task-id prefix', async () => {
+      const io = captureIo();
+      const { impl, requests } = fakeFetch({
+        agents: [
+          { agentId: 'agent-a', taskId: ID_A, taskName: 'Alpha', taskStatus: 'inProgress' },
+          { agentId: 'agent-n', taskId: ID_C, taskName: 'e468f92d', taskStatus: 'inProgress' },
+        ],
+        messageResult: { ok: true, agentId: 'agent-n', delivered: true },
+      });
+      const code = await runReplyCli(['e468f92d', 'hi'], { env: {}, out: io.out, err: io.err, fetchImpl: impl });
+      expect(code).toBe(0);
+      expect(requests.filter((r) => r.url.includes('/message')).map((r) => r.url)).toEqual([
+        'http://127.0.0.1:4800/api/agents/agent-n/message',
+      ]);
+    });
+
+    it('documents prefix matching in the help text', () => {
+      expect(HELP_TEXT).toMatch(/PREFIX/);
+      expect(HELP_TEXT).toContain('first 8 characters');
+    });
+  });
+
   it('fails with NO_SERVER (exit 3) when nothing is running', async () => {
     const io = captureIo();
     const { impl } = fakeFetch({ port: -1 });
