@@ -594,6 +594,9 @@ describe('parallel-issue-batch playbook: kookr merge for every repository (#4107
     expect(content).toContain('KOOKR_MERGE_REQUIRE_REVIEW=0 kookr merge <PR> --repo "$REPO"');
     expect(content).not.toMatch(/gh pr merge\s+[\"<$][^`\n]*--delete-branch/);
     expect(content).not.toContain('--admin --delete-branch');
+    // kookr merge never passes --admin: the never-executed waiver keeps an
+    // admin fallback for branch protection that requires the unrun check.
+    expect(content).toContain('gh pr merge <PR> --repo "$REPO" --squash --admin`, then delete the head branch');
     // The mechanical pre-spawn check greps this literal in the template.
     expect(content).toContain('delete the head branch');
   });

@@ -89,7 +89,7 @@ checklist:
   - Type-check passes (if TypeScript project)
   - Created PR linking the issue with Closes #N
   - PR has a clear summary and test plan
-  - If mergeAfterImplementation is true, merged or enabled safe auto-merge after required gates
+  - If mergeAfterImplementation is true, merged with `kookr merge` after required gates
   - If running looped, wrote STOP: COMPLETE to .batch-stop when no eligible work remains
 ---
 
@@ -107,7 +107,7 @@ This playbook is delivery-pre-authorized. Once the issue is trusted and implemen
 
 Three independent toggles, all default off, add extra autonomy. The launch form remembers your last choice per playbook+project, so set them once and they persist across runs.
 
-- **Self-continuation** — `{{selfContinuation}}`. When `true` and you are NOT in Ralph loop mode, once this target reaches *any* durable terminal outcome in Phase 8 (merged, auto-merge enabled, low-value closed, automation-quarantined, or a blocker recorded) — not merge only — use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next eligible target, forwarding the same parameters (including these toggles), and only stop the chain when no eligible candidate remains (see the Phase 8 "Self-continuation handoff" and the mandatory completion gate). This produces a Ralph-like chain without the built-in loop. When `false`, finish the single target and stop. In Ralph loop mode this toggle is a no-op — the loop already chains.
+- **Self-continuation** — `{{selfContinuation}}`. When `true` and you are NOT in Ralph loop mode, once this target reaches *any* durable terminal outcome in Phase 8 (merged, low-value closed, automation-quarantined, or a blocker recorded) — not merge only — use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next eligible target, forwarding the same parameters (including these toggles), and only stop the chain when no eligible candidate remains (see the Phase 8 "Self-continuation handoff" and the mandatory completion gate). This produces a Ralph-like chain without the built-in loop. When `false`, finish the single target and stop. In Ralph loop mode this toggle is a no-op — the loop already chains.
 - **Ignore budget CI failures** — `{{ignoreBudgetCiFailures}}` (defaults to `true`: the operator does not pay for CI; local verification is the merge gate — see the repo CLAUDE.md CI policy). When `true`, treat CI checks that fail solely because CI budget/quota is unavailable (the run never executed — not a real test result) as non-blocking: do not stall the iteration or hold the PR on them, and in merge mode proceed as if those specific checks were not required. Genuine test, lint, type, or build failures still block — never merge over a real red check. When `false`, any failing required check blocks as usual. Phase 8 runs the `kookr check-verification` classifier to draw this line precisely; decide from its result, not from what CI usually does on this repository: a check with verdict `executed-red` (it ran and failed on the code) always blocks; a `never-executed` check is the only kind this toggle waives, and only after the local gate is run and recorded on the PR (`local-verified` label).
 - **Close low-value issues** — `{{closeUnworthyIssues}}`. When `true`, if after reading the issue (Phase 1) you judge it not worth implementing — obsolete, out of scope, duplicate, or net-negative — you may `gh issue close <N>` with a one-line comment explaining why, then move to the next target instead of opening a PR. When `false`, never close issues; skip and report instead.
 
@@ -725,7 +725,7 @@ If `{{mergeAfterImplementation}}` is `true`:
 
    On an advisory-review repository (step 2.5), prefix it with `KOOKR_MERGE_REQUIRE_REVIEW=0`. Fallback only where `kookr` is not on `PATH` or reports that its merge wrapper is missing: `gh pr merge <PR_NUMBER> --repo "$REPO" --squash && git push origin --delete <head-branch>`.
 
-4. If the PR is not mergeable yet because checks are still running, `kookr merge` already waits for them (up to `KOOKR_MERGE_CHECK_TIMEOUT_SECONDS`, default one hour) before merging; do not enable GitHub auto-merge with `gh pr merge --auto --delete-branch`. If the wait times out, record the pending checks and retry within the CI-rerun bound.
+4. If the PR is not mergeable yet because checks are still running, `kookr merge` already waits for them (up to `KOOKR_MERGE_CHECK_TIMEOUT_SECONDS`, default one hour) before merging; do not enable GitHub auto-merge with `gh pr merge --auto --delete-branch`. If the wait times out, record the pending checks as a blocker; a timeout is not a failed check and is not rerun.
 
 5. Release the claim only after the PR is merged, the issue is closed, or a blocker is recorded and no further agent action is possible.
 
@@ -741,7 +741,7 @@ fi
 
 If no further action is possible because external review/checks are pending, leave a concise status note in the PR only if there is new evidence, leave the claim owned so task activity supplies freshness, and stop. The next Ralph iteration will re-check the external state.
 
-**Self-continuation handoff (`{{selfContinuation}}` = `true`, non-Ralph launches).** This handoff is the *only* thing that advances the chain to the next issue, so it must run on **every** terminal outcome for this target — not only after a merge. A merge-only trigger silently kills the chain the first time a target is closed as low-value, automation-quarantined, or stalled — the exact case the operator most needs it to survive. Concretely: once this target reaches any durable terminal state — its PR merged, auto-merge enabled, the issue closed as low-value (Phase 1) or as a duplicate (Phase 2.7), the issue automation-quarantined (Phase 2.6), or a blocker recorded (Phase 9 `stalled`) — and **before** you release this task's slot, do the handoff:
+**Self-continuation handoff (`{{selfContinuation}}` = `true`, non-Ralph launches).** This handoff is the *only* thing that advances the chain to the next issue, so it must run on **every** terminal outcome for this target — not only after a merge. A merge-only trigger silently kills the chain the first time a target is closed as low-value, automation-quarantined, or stalled — the exact case the operator most needs it to survive. Concretely: once this target reaches any durable terminal state — its PR merged, the issue closed as low-value (Phase 1) or as a duplicate (Phase 2.7), the issue automation-quarantined (Phase 2.6), or a blocker recorded (Phase 9 `stalled`) — and **before** you release this task's slot, do the handoff:
 
 1. Re-derive the eligible-candidate set from durable state exactly as Phase 0 would, without making any GitHub writes. Start from the selector, then remove closed, claimed, already-PR'd and deferred issues, every `automation-blocked` issue, every issue in this task's `TRIAGE_UNRESOLVED` list, and this just-finished target. In blank shape only, also remove every issue carrying another Step 0d **Skip** label (`wontfix`, `not planned`, `invalid`, `question`). In list/filter shape the table is informational, so an explicitly selected issue with those labels still counts. A `duplicate`- or `blocked`-labelled issue that this task has not triaged still counts as eligible: the successor's Phase 2.7 resolves it.
 2. **If ≥1 eligible candidate remains,** use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next target, forwarding the same parameter values (repo, selector, merge policy, and these toggles) with a content-distinct continuation cursor. A single non-implementable, low-value, or stalled target must **never** end the chain while other eligible issues remain — skip it (in blank shape, its durable marker (closed state or `automation-blocked` label) keeps the successor from re-picking it) and hand off to the next.
@@ -856,7 +856,7 @@ Default mapping for this playbook:
 | End state | Verdict |
 |---|---|
 | Phase 7: PR successfully created or updated | `progress` (with target) |
-| Phase 8: PR merged or auto-merge enabled | `progress` (with target) |
+| Phase 8: PR merged | `progress` (with target) |
 | Phase 8: external CI/review pending — no new evidence to post | `stalled` (with target + blockers like `["ci_pending"]` or `["review_pending"]`) |
 | Phase 4: worktree collision after retries (transient — branch may free up) | `stalled` (with target + blockers `["worktree_collision"]`) |
 | Phase 4: worktree collision where the colliding branch holds unrelated stale commits | `stalled` + `permanent:true` (target won't ever resolve until operator intervenes) |

@@ -360,6 +360,8 @@ describe('implement-github-issue playbook: kookr merge for every repository (#41
     expect(content).toContain('KOOKR_MERGE_REQUIRE_REVIEW=0 kookr merge <PR> --repo "$REPO"');
     expect(content).not.toMatch(/gh pr merge\s+[\"<$][^`\n]*--delete-branch/);
     expect(content).not.toMatch(/gh pr merge\s+["<$][^`\n]*--auto/);
+    // No terminal outcome still names GitHub auto-merge.
+    expect(content).not.toMatch(/auto-merge enabled|enabled safe auto-merge/);
     // The fallback for a host without kookr deletes the branch explicitly.
     expect(content).toContain('gh pr merge <PR_NUMBER> --repo "$REPO" --squash && git push origin --delete <head-branch>');
   });
