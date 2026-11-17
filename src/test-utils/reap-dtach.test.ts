@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   findDtachPidsReferencing,
   findLingeringTestDtachPids,
@@ -166,6 +166,23 @@ describe('findLingeringTestDtachPids', () => {
         53: { cmdline: 'node /home/u/dtach-tools/run.js /tmp/tsc-a/x', env: { [TEST_RUN_ID_ENV]: MINE } },
       }),
     ).toEqual([]);
+  });
+
+  it('defaults to the run id in the environment, which the real teardown relies on', () => {
+    vi.stubEnv(TEST_RUN_ID_ENV, MINE);
+    try {
+      const pids = findLingeringTestDtachPids({
+        list: () => [proc(70, 'dtach -n /tmp/ldb-case-a/s.sock -E sh'), proc(71, 'dtach -n /tmp/ldb-case-b/s.sock -E sh')],
+        readEnviron: (pid) => ({ [TEST_RUN_ID_ENV]: pid === 70 ? MINE : LIVE_OTHER }),
+        readStartTimeMs: () => YOUNG,
+        isPidAlive: () => true,
+        now: NOW,
+        selfPid: 1,
+      });
+      expect(pids).toEqual([70]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('without a current run id, sweeps only orphans', () => {

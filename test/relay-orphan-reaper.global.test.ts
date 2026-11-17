@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { findLingeringTestRelays, reapLingeringTestRelays } from './relay-orphan-reaper.global.js';
 import { listProcessSnapshots } from '../src/adapters/proc-process-lister.js';
@@ -65,6 +65,21 @@ describe('findLingeringTestRelays', () => {
     // 17: no run id and old. Kept: 11 prod relay, 12 dtach, 13 unrelated,
     // 14 a live concurrent run (however old), 16/18 too young, 19 unknown age.
     expect(find(processes)).toEqual([10, 15, 17]);
+  });
+
+  it('defaults to the run id in the environment, which the real teardown relies on', () => {
+    vi.stubEnv(TEST_RUN_ID_ENV, MINE);
+    try {
+      const pids = findLingeringTestRelays({
+        listProcesses: () => processes,
+        readEnviron: (pid) => environ[pid] ?? null,
+        isPidAlive: (pid) => pid !== 300,
+        now: NOW,
+      });
+      expect(pids).toEqual([10, 15, 17]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('without a current run id, sweeps only orphans', () => {

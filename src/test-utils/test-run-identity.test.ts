@@ -4,6 +4,7 @@ import {
   TEST_ORPHAN_MIN_AGE_MS,
   TEST_RUN_ID_ENV,
   classifyTestProcessOwnership,
+  currentTestRunId,
   isPidAlive,
   mintTestRunId,
   ownerPidOfTestRunId,
@@ -33,6 +34,14 @@ describe('run id parsing', () => {
     expect(testRunIdFromPath('dtach -n /tmp/xkvr-12-abcdef/s.sock')).toBeNull();
     expect(testRunIdFromPath('dtach -n /tmp/tsc-x/s.sock')).toBeNull();
     expect(testRunIdFromPath('/tmp/kvr-1-aaaaaa/x/kvr-2-bbbbbb/s.sock')).toBe('2-bbbbbb');
+  });
+});
+
+describe('currentTestRunId', () => {
+  it('reads the run id the teardowns default to from the environment', () => {
+    expect(currentTestRunId({ [TEST_RUN_ID_ENV]: '7-abcdef' })).toBe('7-abcdef');
+    expect(currentTestRunId({ [TEST_RUN_ID_ENV]: 'not-an-id' })).toBeNull();
+    expect(currentTestRunId({})).toBeNull();
   });
 });
 
