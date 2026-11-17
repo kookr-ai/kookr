@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { MAX_BLOCKS, decide, isSelfContinuationTask, readBlockCount, writeBlockCount } from './chain-handoff-stop.mjs';
+import { MAX_BLOCKS, decide, endsWithQuestion, isSelfContinuationTask, readBlockCount, writeBlockCount } from './chain-handoff-stop.mjs';
 
 // Prompt lines as the real chain tasks carried them (issue #3678).
 // Hand-written successor prompt (task e553486c): a parameter list.
@@ -55,6 +55,11 @@ describe('decide', () => {
     expect(reason).toMatch(/kookr signal completion-ready --note "chain end:/);
     expect(reason).toMatch(/not finished .* do not end the turn/);
   });
+  it('tells an agent that already spawned an unlinked successor to record it, not spawn another (issue #4047)', () => {
+    const reason = decide({ event: ev(), task: chainTask() });
+    expect(reason).toMatch(/already spawned the successor without --parent-task-id, do not spawn a second one/);
+    expect(reason).toMatch(/kookr signal completion-ready --note "successor <task id> spawned"/);
+  });
   it('blocks even on a re-run after another Stop hook blocked (stop_hook_active)', () => {
     expect(decide({ event: ev({ stop_hook_active: true }), task: chainTask() })).not.toBeNull();
   });
@@ -77,6 +82,35 @@ describe('decide', () => {
   it('lets every stop through after MAX_BLOCKS blocks', () => {
     expect(decide({ event: ev(), task: chainTask(), priorBlocks: MAX_BLOCKS - 1 })).not.toBeNull();
     expect(decide({ event: ev(), task: chainTask(), priorBlocks: MAX_BLOCKS })).toBeNull();
+  });
+});
+
+describe('attended chain task asking the operator (issue #4047)', () => {
+  const ask = 'Two issues are eligible. Which one should the chain take next?\n\n1. #10\n2. #11';
+  it('lets an unflagged or attended task end its turn on a question', () => {
+    expect(decide({ event: ev({ last_assistant_message: ask }), task: chainTask() })).toBeNull();
+    expect(decide({ event: ev({ last_assistant_message: ask }), task: chainTask({ unattended: false }) })).toBeNull();
+  });
+  it('still blocks a task flagged unattended, since nobody will answer', () => {
+    expect(decide({ event: ev({ last_assistant_message: ask }), task: chainTask({ unattended: true }) })).not.toBeNull();
+  });
+  it('still blocks an unflagged task that ends without a question, or with no message', () => {
+    expect(decide({ event: ev({ last_assistant_message: 'Unit done, PR merged.' }), task: chainTask() })).not.toBeNull();
+    expect(decide({ event: ev({ last_assistant_message: '' }), task: chainTask() })).not.toBeNull();
+    expect(decide({ event: ev(), task: chainTask() })).not.toBeNull();
+  });
+});
+
+describe('endsWithQuestion', () => {
+  it('finds a question on one of the last lines, ignoring markdown after the mark', () => {
+    expect(endsWithQuestion('Should I merge now?')).toBe(true);
+    expect(endsWithQuestion('**Should I merge now?**')).toBe(true);
+    expect(endsWithQuestion('Pick one?\n- A\n- B\n')).toBe(true);
+  });
+  it('is false for statements, a question buried early, and non-strings', () => {
+    expect(endsWithQuestion('Done. The PR is merged.')).toBe(false);
+    expect(endsWithQuestion(['Why?', 'a', 'b', 'c', 'd', 'e', 'f'].join('\n'))).toBe(false);
+    expect(endsWithQuestion(undefined)).toBe(false);
   });
 });
 
@@ -110,12 +144,12 @@ describe('main (process)', () => {
 
 describe('main (process) against a stub server', () => {
   const script = path.join(import.meta.dirname, 'chain-handoff-stop.mjs');
-  const runAsync = (env) =>
+  const runAsync = (env, input = '{"session_id":"s"}') =>
     new Promise((resolve) => {
       const child = execFile('node', [script], { env: { PATH: process.env.PATH, ...env } }, (err, _out, stderr) => {
         resolve({ code: err ? err.code : 0, stderr });
       });
-      child.stdin.end('{"session_id":"s"}');
+      child.stdin.end(input);
     });
   const withServer = async (taskJson, fn) => {
     const server = createServer((_req, res) => {
@@ -142,6 +176,21 @@ describe('main (process) against a stub server', () => {
         expect(readBlockCount(id)).toBe(1);
         for (let i = 1; i < MAX_BLOCKS; i += 1) expect((await runAsync(env)).code).toBe(2);
         expect((await runAsync(env)).code).toBe(0);
+      });
+    } finally {
+      rmSync(counter(id), { force: true });
+    }
+  });
+
+  it('allows an unflagged task asking a question without spending a block (issue #4047)', async () => {
+    const id = `ask-${process.pid}-${Date.now()}`;
+    const input = JSON.stringify({ session_id: 's', last_assistant_message: 'Which issue should come next?' });
+    try {
+      await withServer(() => chainTask({ id }), async (base) => {
+        const env = { KOOKR_TASK_ID: id, KOOKR_API_BASE_URL: base };
+        expect((await runAsync(env, input)).code).toBe(0);
+        expect(readBlockCount(id)).toBe(0);
+        expect((await runAsync(env)).code).toBe(2); // a later silent stop is still blocked
       });
     } finally {
       rmSync(counter(id), { force: true });

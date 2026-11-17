@@ -226,15 +226,21 @@ task looked like a crash. The hook blocks, with an instruction, when the task:
 The instruction covers the three cases: finish an unfinished unit instead of
 ending the turn, spawn the successor with `kookr spawn -C <repository checkout>
 ... --parent-task-id "$KOOKR_TASK_ID"`, or record the stop reason with
-`kookr signal completion-ready --note "chain end: <reason>"`.
+`kookr signal completion-ready --note "chain end: <reason>"`. If the agent already
+spawned a successor without `--parent-task-id`, it records that child with
+`kookr signal completion-ready --note "successor <task id> spawned"` instead of
+spawning a second one.
 
 It does not use `stop_hook_active`, because the stop that ends the unit often
 comes right after another Stop hook blocked. Instead it blocks at most 3 times
 per task (a counter file under the temp directory). Once the task has handed
 off (a child task or a signal seen), later stops are allowed even if an operator
-message clears the signal. Known limits: any child task counts as the successor,
-and an attended chain task that ends turns to wait for the operator uses up the
-blocks. It stays silent when the
+message clears the signal. A task not flagged `unattended: true` whose last
+message ends on a question (a line ending in `?` among its last lines) is
+allowed to stop without spending a block, since an operator may be there to
+answer (issue #4047); a task flagged unattended is still blocked. Known limits:
+any child task counts as the successor, and an unflagged task that asks without
+a question mark still uses up the blocks. It stays silent when the
 agent is parked on background work and outside a Kookr task. Every error path
 allows the stop. Opt out with `KOOKR_CHAIN_HANDOFF_STOP_SKIP=1`.
 
