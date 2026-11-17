@@ -150,7 +150,7 @@ export function useLucyLive(options: UseLucyLiveOptions = {}): UseLucyLiveResult
       });
       // While Talk is on, a task's question that this tab is to speak is said in the conversation (issue #3711).
       const live = session;
-      releaseSpeaker = setLiveAskSpeaker({ say: (askId) => live.sayAsk(askId), drop: (askId) => live.dropAsk(askId) });
+      releaseSpeaker = setLiveAskSpeaker({ say: (askId, notSaid) => live.sayAsk(askId, notSaid), drop: (askId) => live.dropAsk(askId) });
       await session.start();
     })();
 

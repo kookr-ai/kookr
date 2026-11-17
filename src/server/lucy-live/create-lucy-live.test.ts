@@ -319,12 +319,38 @@ describe('createLucyLive', () => {
       ws.json({ type: 'say_ask', askId: 'a1' });
       await tick(); await tick(); await tick();
       expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
-      const said = ws.sent.filter((m) => m.type === 'sentence').map((m) => m.text).join(' ');
+      const sentences = ws.sent.filter((m) => m.type === 'sentence');
+      const said = sentences.map((m) => m.text).join(' ');
       expect(said).toContain('The task Cleanup needs your input.');
+      // What she said is noted as the browser reports hearing it, just before the next answer (#4015).
+      expect(remembered).toHaveLength(0);
+      for (const s of sentences) ws.json({ type: 'played', turnId: s.turnId, seq: s.seq, complete: true });
+      await runTurn(ws, 't2');
       expect(remembered).toHaveLength(1);
       expect(remembered[0]![2]).toBe(said);
-      await runTurn(ws, 't2');
       expect(requests[0]!.request.conversationId).toBe(remembered[0]![0]);
+    });
+
+    it('a task question waits while a launch proposal from any conversation waits for its answer (#4015)', async () => {
+      const { service } = operator([done('answered')]);
+      let proposal: { expiresAt: number; launchesAt?: number } | undefined = { expiresAt: 61_000 }; // the clock reads 1000
+      const pendingCalls: unknown[][] = [];
+      (service as unknown as { launch: Record<string, unknown> }).launch.pending = (...args: unknown[]) => { pendingCalls.push(args); return proposal; };
+      const ask = { id: 'a1', state: 'pending', taskName: 'Cleanup', question: 'When should I run it?', options: ['now', 'tonight'], allowText: false } as unknown as OperatorAskView;
+      const { ws } = setup({ getOperator: () => service, extraDeps: { getAsks: () => [ask] } });
+      ws.json({ type: 'hello', language: 'en' });
+      ws.json({ type: 'say_ask', askId: 'a1' });
+      await tick(); await tick();
+      expect(ws.sent.some((m) => m.type === 'turn_start')).toBe(false);
+      // Asked without a conversation id: a "yes" answers the one proposal on screen, whichever conversation made it.
+      expect(pendingCalls.length).toBeGreaterThan(0);
+      expect(pendingCalls.every((args) => args.length === 0)).toBe(true);
+      // A hands-off launch whose start time has passed no longer waits for an answer, even before it expires.
+      proposal = { expiresAt: 61_000, launchesAt: 900 };
+      ws.json({ type: 'speech_start', turnId: 'blip' });
+      ws.json({ type: 'speech_cancel', turnId: 'blip' }); // something ends: the question looks again
+      await tick(); await tick(); await tick();
+      expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
     });
 
     it('with an operator service that cannot launch, the helper model still answers', async () => {

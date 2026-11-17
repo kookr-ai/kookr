@@ -386,14 +386,14 @@ describe('announceAsk', () => {
   });
 
   describe('with Talk on in this tab (issue #3711)', () => {
-    const speaker = (accepts = true) => ({ say: vi.fn((_askId: string) => accepts), drop: vi.fn((_askId: string) => undefined) });
+    const speaker = (accepts = true) => ({ say: vi.fn((_askId: string, _notSaid?: () => void) => accepts), drop: vi.fn((_askId: string) => undefined) });
 
     test('the question is handed to the conversation: no clip is fetched and nothing joins her message list', async () => {
       const live = speaker();
       setLiveAskSpeaker(live);
       const fetcher = fetcherOk();
       expect(await announceAsk(ASK, { fetcher })).toBe('live');
-      expect(live.say).toHaveBeenCalledWith(ASK);
+      expect(live.say).toHaveBeenCalledWith(ASK, expect.any(Function));
       expect(fetcher).not.toHaveBeenCalled();
       expect(getClipHistory()).toHaveLength(0);
       // Still claimed, so another tab does not read it out as a clip.
@@ -429,6 +429,46 @@ describe('announceAsk', () => {
       setLiveAskSpeaker(live);
       expect(await announceLaunchReport('t9', 'finished', { fetcher: fetcherOk() })).toBe('started');
       expect(live.say).not.toHaveBeenCalled();
+    });
+
+    describe('a question the conversation gives back unsaid (issue #4015)', () => {
+      /** Hand the question over and return the call that gives it back. */
+      const handOver = async (fetcher: typeof fetch): Promise<() => void> => {
+        const live = speaker();
+        setLiveAskSpeaker(live);
+        expect(await announceAsk(ASK, { fetcher, sleep: noWait })).toBe('live');
+        return live.say.mock.calls[0]![1]!;
+      };
+
+      test('is played as a clip, by this tab, without a second claim', async () => {
+        const fetcher = fetcherOk();
+        const notSaid = await handOver(fetcher);
+        expect(fetcher).not.toHaveBeenCalled();
+        notSaid();
+        notSaid(); // given back twice: still one clip
+        await vi.waitFor(() => expect(FakeAudioContext.instances[0]?.sources[0]?.start).toHaveBeenCalledOnce());
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(getClipHistory()[0]).toMatchObject({ clipId: 'clip-ask-1' });
+        expect(JSON.parse(localStorage.getItem(SPOKEN_ASKS_STORAGE_KEY) ?? '[]')).toEqual([ASK]);
+      });
+
+      test('is not played once the question has closed', async () => {
+        const fetcher = fetcherOk();
+        const notSaid = await handOver(fetcher);
+        stopAskAnnouncement(ASK);
+        notSaid();
+        await Promise.resolve();
+        expect(fetcher).not.toHaveBeenCalled();
+      });
+
+      test('is not played after the panel went away, even when Talk stops after it', async () => {
+        const fetcher = fetcherOk();
+        const notSaid = await handOver(fetcher);
+        stopAllAskAnnouncements();
+        notSaid();
+        await Promise.resolve();
+        expect(fetcher).not.toHaveBeenCalled();
+      });
     });
 
     test('once unregistered (Talk off), questions are clips again', async () => {
