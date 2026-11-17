@@ -229,12 +229,19 @@ export function createLucyActionController(deps: LucyActionControllerDeps): Lucy
     if (entry) held.delete(conversationId);
     return entry;
   };
-  const facts = (view: LucyActionProposalView): Pick<LucyActionRecordInput, 'action' | 'proposalId' | 'taskId' | 'askId' | 'choice'> => ({
+  /** What a card is about, for the records: never the text. */
+  const facts = (view: LucyActionProposalView): Pick<LucyActionAuditRow, 'action' | 'proposalId' | 'taskId' | 'askId' | 'choice'> => ({
     action: view.kind,
     proposalId: view.id,
     taskId: view.taskId,
     ...(view.kind === 'answer' ? { askId: view.askId, choice: view.answer.kind === 'option' ? `option:${view.answer.index}` : 'text' } : {}),
   });
+  /** The text a card will send, with secrets hidden, for the interaction log only. */
+  const sentText = (view: LucyActionProposalView): { text?: string } => {
+    if (view.kind === 'reply') return { text: redactSpeechSecrets(view.text) };
+    if (view.kind === 'answer' && view.answer.kind === 'text') return { text: redactSpeechSecrets(view.answer.text) };
+    return {};
+  };
   /** The held proposal if it can still be confirmed; one that ran out of time is dropped here and its card cleared. */
   const live = (conversationId: string): Held | undefined => {
     const entry = held.get(conversationId);
@@ -278,22 +285,16 @@ export function createLucyActionController(deps: LucyActionControllerDeps): Lucy
   async function carryOut(conversationId: string, entry: Held, via: LucyActionVia): Promise<LucyActionOutcome> {
     const { view } = entry;
     const proposalId = view.id;
+    // The same facts go to the interaction log and to the audit row; only the log also holds the text.
     const base = { ...facts(view), via };
-    const auditBase = {
-      action: view.kind,
-      proposalId,
-      via,
-      taskId: view.taskId,
-      ...(view.kind === 'answer' ? { askId: view.askId, choice: view.answer.kind === 'option' ? `option:${view.answer.index}` : 'text' } : {}),
-    };
     const refuse = (reason: string): LucyActionOutcome => {
       record(conversationId, { ...base, event: 'refused', reason });
-      audit({ ...auditBase, outcome: 'refused', reason });
+      audit({ ...base, outcome: 'refused', reason });
       return finish(conversationId, { outcome: 'refused', proposalId, reason });
     };
     const done = (note?: string): LucyActionOutcome => {
-      record(conversationId, { ...base, event: 'done', ...(view.kind === 'reply' ? { text: redactSpeechSecrets(view.text) } : {}), ...(view.kind === 'answer' && view.answer.kind === 'text' ? { text: redactSpeechSecrets(view.answer.text) } : {}) });
-      audit({ ...auditBase, outcome: 'done' });
+      record(conversationId, { ...base, event: 'done', ...sentText(view) });
+      audit({ ...base, outcome: 'done' });
       return finish(conversationId, { outcome: 'done', proposalId, kind: view.kind, taskId: view.taskId, ...(note ? { note } : {}) });
     };
 
@@ -432,13 +433,7 @@ export function createLucyActionController(deps: LucyActionControllerDeps): Lucy
         ...(proposed.sessionId ? { sessionId: proposed.sessionId } : {}),
         ...(proposed.options ? { options: proposed.options } : {}),
       });
-      record(conversationId, {
-        ...facts(view),
-        event: 'proposed',
-        asked: view.asked,
-        ...(view.kind === 'reply' ? { text: redactSpeechSecrets(view.text) } : {}),
-        ...(view.kind === 'answer' && view.answer.kind === 'text' ? { text: redactSpeechSecrets(view.answer.text) } : {}),
-      });
+      record(conversationId, { ...facts(view), event: 'proposed', asked: view.asked, ...sentText(view) });
       announce({ type: 'lucy_action', conversationId, proposal: view });
       return { ok: true, proposal: view, say: readBack };
     },

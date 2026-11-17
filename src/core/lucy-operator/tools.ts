@@ -288,7 +288,10 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
   if (!isLookTool(name)) {
     return refuse(
       'Refused: not a tool she has',
-      `There is no tool called "${boardText(name, 40)}". You can only look things up, with: ${LUCY_LOOK_TOOL_NAMES.join(', ')}. You cannot change anything; tell the operator so if they asked for a change.`,
+      canAct
+        // She has tools that propose, so "you can only look" would be false here. What stays true: nothing she calls confirms a card.
+        ? `There is no tool called "${boardText(name, 40)}", and you have no tool that does that. If the operator asked for it, tell them you cannot do it. A card is confirmed by the operator, never by you.`
+        : `There is no tool called "${boardText(name, 40)}". You can only look things up, with: ${LUCY_LOOK_TOOL_NAMES.join(', ')}. You cannot change anything; tell the operator so if they asked for a change.`,
     );
   }
   const args = parseArgs(rawArguments);

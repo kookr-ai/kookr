@@ -258,6 +258,18 @@ describe('read_questions', () => {
   });
 });
 
+describe('a tool she does not have, when she may act', () => {
+  test('is refused without telling her she can only look, and reminds her that only the operator confirms a card', async () => {
+    const source = fakeSource({ tasks });
+    const outcome = await dispatchLucyTool('confirm_action', '{"id":"a1"}', source, NOW, { canAct: true });
+    expect(outcome).toMatchObject({ ok: false, summary: 'Refused: not a tool she has' });
+    expect(outcome.content).toMatch(/There is no tool called "confirm_action"/);
+    expect(outcome.content).toMatch(/A card is confirmed by the operator, never by you/);
+    expect(outcome.content).not.toMatch(/You can only look things up/);
+    expect(source.calls).toEqual({ board: 0, taskDetail: [], projects: 0 });
+  });
+});
+
 describe('read_questions when she may answer for the operator', () => {
   const asks = (list: OperatorAskView[]) => fakeSource({ tasks, board: { asks: list } });
 
