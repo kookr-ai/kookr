@@ -304,9 +304,111 @@ describe('createMergedPrByBranchProbe (issue #3578)', () => {
     const unknown = createMergedPrByBranchProbe({
       runGh: async () => ({ stdout: JSON.stringify([intoFeature]) }),
       readIntegrationBranch: async () => null,
+      readDefaultBranch: async () => null,
       deliveryBranchesOf: () => ({ defaultBranch: null, integrationBranch: 'staging' }),
     });
     await expect(unknown(makeTask())).resolves.toMatchObject({ prNumber: 60 });
+  });
+
+  // Issue #4093: the tracker has seen no tracked PR of this repository (after
+  // a restart, say), so its lookup is undefined. The probe must still reject
+  // a merge into a feature branch by reading the default branch itself.
+  describe('cold tracker cache (issue #4093)', () => {
+    const intoFeature = { number: 61, createdAt: '2026-11-10T08:00:00Z', mergedAt: '2026-11-10T09:00:00Z', headRefName: 'fix/terminal-snapshot-seed-3564', baseRefName: 'feat/parent', isCrossRepository: false };
+    const ghReturning = (rows: unknown[]) => vi.fn(async () => ({ stdout: JSON.stringify(rows) }));
+
+    it('does not count a feature-branch merge when the tracker has no entry', async () => {
+      const readDefaultBranch = vi.fn(async () => 'main');
+      const probe = createMergedPrByBranchProbe({
+        runGh: ghReturning([intoFeature]),
+        readIntegrationBranch: async () => 'staging',
+        deliveryBranchesOf: () => undefined,
+        readDefaultBranch,
+      });
+      await expect(probe(makeTask())).resolves.toBeNull();
+      expect(readDefaultBranch).toHaveBeenCalledTimes(1);
+    });
+
+    it('still counts merges into the probed default branch and the task integration branch', async () => {
+      for (const base of ['main', 'staging']) {
+        const probe = createMergedPrByBranchProbe({
+          runGh: ghReturning([{ ...intoFeature, baseRefName: base }]),
+          readIntegrationBranch: async () => 'staging',
+          readDefaultBranch: async () => 'main',
+        });
+        await expect(probe(makeTask())).resolves.toMatchObject({ prNumber: 61 });
+      }
+    });
+
+    it('fills in a tracker entry that knows only the integration branch', async () => {
+      const probe = createMergedPrByBranchProbe({
+        runGh: ghReturning([intoFeature, { ...intoFeature, number: 62, mergedAt: '2026-11-10T10:00:00Z', baseRefName: 'staging' }]),
+        readIntegrationBranch: async () => null,
+        deliveryBranchesOf: () => ({ defaultBranch: null, integrationBranch: 'staging' }),
+        readDefaultBranch: async () => 'main',
+      });
+      await expect(probe(makeTask())).resolves.toMatchObject({ prNumber: 62 });
+    });
+
+    it('does not read the default branch when the tracker knows it or no row has a base branch', async () => {
+      const readDefaultBranch = vi.fn(async () => 'main');
+      const warm = createMergedPrByBranchProbe({
+        runGh: ghReturning([intoFeature]),
+        readIntegrationBranch: async () => null,
+        deliveryBranchesOf: () => ({ defaultBranch: 'main', integrationBranch: null }),
+        readDefaultBranch,
+      });
+      await expect(warm(makeTask())).resolves.toBeNull();
+      const { baseRefName: _drop, ...noBase } = intoFeature;
+      const baseless = createMergedPrByBranchProbe({
+        runGh: ghReturning([noBase]),
+        readIntegrationBranch: async () => null,
+        readDefaultBranch,
+      });
+      await expect(baseless(makeTask())).resolves.toMatchObject({ prNumber: 61 });
+      expect(readDefaultBranch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['unknown', async () => null],
+      ['failing', async () => { throw new Error('git gone'); }],
+    ])('fails open when the default branch read is %s', async (_label, readDefaultBranch) => {
+      const probe = createMergedPrByBranchProbe({
+        runGh: ghReturning([intoFeature]),
+        readIntegrationBranch: async () => null,
+        readDefaultBranch,
+      });
+      await expect(probe(makeTask())).resolves.toMatchObject({ prNumber: 61 });
+    });
+
+    it('by default reads origin/HEAD from the task checkout, falling back to ls-remote', async () => {
+      const root = mkdtempSync(path.join(tmpdir(), 'probe-default-'));
+      const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+      try {
+        // A remote whose default branch is `trunk`, so neither answer can come from a hard-coded name.
+        const remote = path.join(root, 'remote');
+        mkdirSync(remote);
+        git(remote, 'init', '-q', '-b', 'trunk');
+        git(remote, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+
+        const withHead = path.join(root, 'with-head');
+        git(root, 'clone', '-q', remote, withHead);
+        git(withHead, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk');
+        const noHead = path.join(root, 'no-head');
+        git(root, 'clone', '-q', remote, noHead);
+        execFileSync('git', ['symbolic-ref', '-d', 'refs/remotes/origin/HEAD'], { cwd: noHead, stdio: 'ignore' });
+
+        const rows = [{ ...intoFeature, baseRefName: 'feat/parent' }, { ...intoFeature, number: 63, mergedAt: '2026-11-10T10:00:00Z', baseRefName: 'trunk' }];
+        const session = aSession({ tmuxSession: 'a', gitBranch: 'fix/terminal-snapshot-seed-3564', gitIsWorktree: true, cwd: path.join(root, 'gone') });
+        for (const cwd of [withHead, noHead]) {
+          const probe = createMergedPrByBranchProbe({ runGh: ghReturning(rows), readIntegrationBranch: async () => null });
+          // Session worktree removed: the task cwd answers. The feature-branch merge (#61) is skipped.
+          await expect(probe(makeTask({ cwd, sessions: [session] }))).resolves.toMatchObject({ prNumber: 63 });
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it('does not call gh when the task has no usable target', async () => {

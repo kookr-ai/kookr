@@ -135,8 +135,11 @@ while it does not know the default branch, the base branch is not checked. The
 hung-task, hung-suspect and provider-paused reapers share this attribution for
 their "delivered" label. The hung-suspect and provider-paused sweeps also have a
 label-only fallback that asks GitHub for a merged PR by the task's session branch
-(#3578); that fallback applies the same base-branch rule (#4077), and it too
-skips the check while the default branch is unknown.
+(#3578); that fallback applies the same base-branch rule (#4077). When the
+tracker has not seen the repository yet (after a restart, or with no tracked
+PR), the fallback reads the default branch from the task's checkout itself
+(`origin/HEAD`, else `git ls-remote`; #4093), and skips the check only when
+that read fails too.
 
 **Only opted-in tasks.** This path fires only for tasks with
 `autoCloseOnSignal` — the same population the signal path serves. An ask-first /
