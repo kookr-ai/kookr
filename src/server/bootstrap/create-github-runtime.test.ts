@@ -223,4 +223,36 @@ describe('createGitHubRuntime', () => {
       });
     });
   });
+
+  // Issue #4077: the runtime must hand the store the task records as its
+  // authorship persistence, or the evidence is lost on every restart.
+  test('restores authorship from the task records and saves new evidence back to them', () => {
+    const taskStore = new TaskStore();
+    const author = taskStore.createTask({ prompt: 'author', cwd: '/tmp' });
+    const later = taskStore.createTask({ prompt: 'later pusher', cwd: '/tmp' });
+    taskStore.addGithubAuthorship(author.id, { pushedBranches: ['kookr-ai/kookr:fix/x'], createdPrs: [] });
+
+    const { githubStateStore, githubScanner } = createGitHubRuntime({
+      taskStore,
+      githubBreaker: new CircuitBreaker({ name: 'github-test' }),
+      githubPollingIntervalSec: 30,
+      broadcastToAll: () => {},
+      onRepoHealthChanged: () => {},
+      repoHealthFetcher: async () => new Map(),
+      ghUserLoginResolver: async () => null,
+    });
+    scanners.push(githubScanner);
+
+    const pr = { owner: 'kookr-ai', repo: 'kookr', number: 7, branch: 'fix/x' };
+    githubStateStore.recordAuthorship(later.id, {
+      pushedBranches: [{ owner: 'kookr-ai', repo: 'kookr', branch: 'fix/x' }],
+      createdPrs: [],
+    });
+    expect(githubStateStore.authorshipOf(author.id, pr)).toBe('self');
+    expect(taskStore.getTask(later.id)?.githubAuthorship).toEqual({
+      pushedBranches: ['kookr-ai/kookr:fix/x'],
+      createdPrs: [],
+    });
+  });
+
 });

@@ -123,8 +123,9 @@ pushed or opened it** and this task did neither (issue #3678): the GitHub scanne
 records, per task, the branches its own `git push` reported updating and the PRs
 its own `gh pr create` printed. A task that only reviewed, commented on or merged
 another task's PR is therefore not completed when that PR merges. This evidence
-is kept in memory: when no task left any (for example after a server restart),
-the PR is judged by the other rules alone. Finally, a merged PR is excluded when
+is saved on each task record (`githubAuthorship`), so it survives a server
+restart (issue #4077); when no task left any (for example on records written
+before #4077), the PR is judged by the other rules alone. Finally, a merged PR is excluded when
 it merged into a branch that is **neither the repository's default branch nor
 its integration branch** (`.kookr/delivery-gate.json`, issue #3983), such as a
 PR stacked on another feature branch. The server reads both branches per
@@ -134,7 +135,8 @@ while it does not know the default branch, the base branch is not checked. The
 hung-task, hung-suspect and provider-paused reapers share this attribution for
 their "delivered" label. The hung-suspect and provider-paused sweeps also have a
 label-only fallback that asks GitHub for a merged PR by the task's session branch
-(#3578); that fallback does not check the base branch yet (#4077).
+(#3578); that fallback applies the same base-branch rule (#4077), and it too
+skips the check while the default branch is unknown.
 
 **Only opted-in tasks.** This path fires only for tasks with
 `autoCloseOnSignal` — the same population the signal path serves. An ask-first /
