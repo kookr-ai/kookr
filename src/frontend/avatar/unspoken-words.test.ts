@@ -7,7 +7,7 @@ import type { AskAnnouncementResult } from '../audio/ask-announcement.js';
 import { __resetLucyConversationForTests, getConversationEntries } from '../store/lucy-conversation.js';
 import { announceOrWrite, writtenAsk, writtenPermissionNotice, type WrittenWords } from './unspoken-words.js';
 
-const WORDS: WrittenWords = { text: 'Billing migration asks: Run the table rename on production now?', taskId: 't1' };
+const WORDS: WrittenWords = { id: 'ask-text:a1', text: 'Billing migration asks: Run the table rename on production now?', taskId: 't1' };
 
 /** An announcer like `announceAsk`: it POSTs for the clip through the fetcher it is given, then ends with `result`. */
 function announcer(result: AskAnnouncementResult) {
@@ -30,8 +30,19 @@ describe('announceOrWrite', () => {
     respondWith(status, { error: 'tts' });
     expect(await announceOrWrite(announcer('error'), () => WORDS)).toBe('error');
     expect(getConversationEntries()).toEqual([
-      expect.objectContaining({ kind: 'typed-lucy', status: 'done', text: WORDS.text, taskId: 't1' }),
+      expect.objectContaining({ id: 'ask-text:a1', kind: 'typed-lucy', status: 'done', text: WORDS.text, taskId: 't1' }),
     ]);
+  });
+
+  test('the same words failing in two tabs that share the thread leave one line', async () => {
+    respondWith(503, { error: 'tts' });
+    // Each tab runs its own announcement for the same question, and each ends without a clip.
+    await announceOrWrite(announcer('error'), () => WORDS);
+    await announceOrWrite(announcer('error'), () => ({ ...WORDS }));
+    expect(getConversationEntries().map((entry) => entry.text)).toEqual([WORDS.text]);
+    // Words about something else are a line of their own.
+    await announceOrWrite(announcer('error'), () => ({ id: 'permission-text:perm-1', text: 'Two more tasks are waiting for you.' }));
+    expect(getConversationEntries().map((entry) => entry.id)).toEqual(['ask-text:a1', 'permission-text:perm-1']);
   });
 
   test('no clip because the server could not be reached: her words are written', async () => {
@@ -68,7 +79,7 @@ describe('announceOrWrite', () => {
   });
 
   test('an announcer that throws counts as an error, and the words are written', async () => {
-    const result = await announceOrWrite(async () => { throw new Error('boom'); }, () => ({ text: 'A task asks: Ship it?' }));
+    const result = await announceOrWrite(async () => { throw new Error('boom'); }, () => ({ id: 'ask-text:a2', text: 'A task asks: Ship it?' }));
     expect(result).toBe('error');
     expect(getConversationEntries()).toEqual([expect.objectContaining({ text: 'A task asks: Ship it?' })]);
     expect(getConversationEntries()[0]).not.toHaveProperty('taskId');
@@ -88,7 +99,7 @@ describe('writtenAsk', () => {
   });
 
   test('says who asks and the question, without the choices', () => {
-    expect(writtenAsk(ask(), [ask()])).toEqual({ text: 'Billing migration asks: Run the table rename on production now?', taskId: 't1' });
+    expect(writtenAsk(ask(), [ask()])).toEqual({ id: 'ask-text:a1', text: 'Billing migration asks: Run the table rename on production now?', taskId: 't1' });
   });
 
   test('a task without a sayable name is "A task"; line breaks in the question become spaces', () => {
@@ -115,12 +126,12 @@ describe('writtenPermissionNotice', () => {
   const single: LucyPermissionAnnouncement = { noticeId: 'perm-1', promptIds: ['p1'], text: 'The task "Fix login" is waiting for your permission to use Bash. The command is on my card.' };
 
   test('is the server\'s sentence, about the one task it names', () => {
-    expect(writtenPermissionNotice(single, [card('p1', 't1'), card('p9', 't9')])).toEqual({ text: single.text, taskId: 't1' });
+    expect(writtenPermissionNotice(single, [card('p1', 't1'), card('p9', 't9')])).toEqual({ id: 'permission-text:perm-1', text: single.text, taskId: 't1' });
   });
 
   test('a grouped sentence points at no single task', () => {
     const grouped: LucyPermissionAnnouncement = { noticeId: 'perm-g', promptIds: ['p1', 'p2'], text: 'Two more tasks are waiting for you.' };
-    expect(writtenPermissionNotice(grouped, [card('p1', 't1'), card('p2', 't2')])).toEqual({ text: 'Two more tasks are waiting for you.' });
+    expect(writtenPermissionNotice(grouped, [card('p1', 't1'), card('p2', 't2')])).toEqual({ id: 'permission-text:perm-g', text: 'Two more tasks are waiting for you.' });
   });
 
   test('nothing is written once every prompt has been answered, or when an older server sent no sentence', () => {

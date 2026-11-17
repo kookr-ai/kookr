@@ -23,6 +23,11 @@ const MAX_WRITTEN_QUESTION_CHARS = 300;
 
 /** What is written in the thread in place of a clip. */
 export interface WrittenWords {
+  /**
+   * The thread entry's id, derived from the question or the notice. Every open tab that fails to
+   * fetch the clip builds the same one, so a thread shared between tabs gets the words once.
+   */
+  id: string;
   text: string;
   /** The task the words are about, so the thread can offer to open it. */
   taskId?: string;
@@ -37,7 +42,7 @@ export function writtenAsk(ask: OperatorAskView, asks: readonly OperatorAskView[
   const flat = ask.question.replace(/\s+/g, ' ').trim();
   if (!flat) return null;
   const question = flat.length > MAX_WRITTEN_QUESTION_CHARS ? `${flat.slice(0, MAX_WRITTEN_QUESTION_CHARS - 1).trimEnd()}…` : flat;
-  return { text: `${ask.taskName ?? 'A task'} asks: ${question}`, taskId: ask.taskId };
+  return { id: `ask-text:${ask.id}`, text: `${ask.taskName ?? 'A task'} asks: ${question}`, taskId: ask.taskId };
 }
 
 /**
@@ -51,13 +56,14 @@ export function writtenPermissionNotice(announcement: LucyPermissionAnnouncement
   const open = cards.filter((card) => announcement.promptIds.includes(card.promptId));
   if (open.length === 0) return null;
   // A sentence about one prompt is about one task; a grouped sentence is about several and points at none.
-  return { text, ...(announcement.promptIds.length === 1 ? { taskId: open[0]!.taskId } : {}) };
+  return { id: `permission-text:${announcement.noticeId}`, text, ...(announcement.promptIds.length === 1 ? { taskId: open[0]!.taskId } : {}) };
 }
 
 /**
  * Run an announcement (`announceAsk`, `announcePermissionNotice`); when it ends in `'error'` and no
  * clip was fetched, write `written()` into the thread as a message from Lucy. `written` is called
- * only then, so it sees the state at that moment and can decline with null. Never throws.
+ * only then, so it sees the state at that moment and can decline with null. Words whose id is
+ * already in the thread are not written again. Never throws.
  */
 export async function announceOrWrite(
   announce: (options: { fetcher: typeof fetch }) => Promise<AskAnnouncementResult>,
@@ -79,7 +85,7 @@ export async function announceOrWrite(
   if (result !== 'error' || clipFetched) return result;
   try {
     const words = written();
-    if (words) appendConversationEntry({ kind: 'typed-lucy', status: 'done', text: words.text, ...(words.taskId ? { taskId: words.taskId } : {}) });
+    if (words) appendConversationEntry({ id: words.id, kind: 'typed-lucy', status: 'done', text: words.text, ...(words.taskId ? { taskId: words.taskId } : {}) });
   } catch {
     // Writing is a courtesy: a failure here must not surface as an unhandled rejection.
   }

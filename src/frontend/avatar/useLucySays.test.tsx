@@ -4,9 +4,9 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import type { LucySaysMessage } from '../../shared/contracts/lucy-says.js';
-import { __resetLucyConversationForTests, getConversationEntries } from '../store/lucy-conversation.js';
+import { __resetLucyConversationForTests, appendConversationEntry, getConversationEntries } from '../store/lucy-conversation.js';
 import { __resetLucySaysForTests, handleLucySays } from '../store/lucy-says.js';
-import { useLucySaysThreadSync } from './useLucySays.js';
+import { lucySaysEntryId, useLucySaysThreadSync } from './useLucySays.js';
 
 const says = (over: Partial<LucySaysMessage> = {}): LucySaysMessage => ({
   type: 'lucy_says', id: 'says-1', kind: 'task_wants_review', text: 'Docs link audit says it is finished and wants your review.', taskIds: ['t1'], at: 1, ...over,
@@ -51,6 +51,29 @@ describe('useLucySaysThreadSync', () => {
     act(() => { handleLucySays(says({ taskIds: [] })); });
     expect(getConversationEntries()).toHaveLength(1);
     expect(getConversationEntries()[0]).not.toHaveProperty('taskId');
+  });
+
+  test('two tabs that share the thread and receive the same message leave one line', () => {
+    // A second tab: its own listener on the same message, writing into the same thread.
+    const second = document.createElement('div');
+    document.body.appendChild(second);
+    const secondRoot = createRoot(second);
+    act(() => { secondRoot.render(<Harness />); });
+    act(() => { handleLucySays(says()); });
+    act(() => { handleLucySays(says({ id: 'says-2', text: 'Docs link audit failed.', kind: 'task_failed' })); });
+    expect(getConversationEntries().map((entry) => [entry.id, entry.text])).toEqual([
+      ['says:says-1', 'Docs link audit says it is finished and wants your review.'],
+      ['says:says-2', 'Docs link audit failed.'],
+    ]);
+    act(() => secondRoot.unmount());
+    second.remove();
+  });
+
+  test('a tab that receives a message whose line is already in the shared thread adds nothing', () => {
+    // The other tab wrote it first; this tab's own store has not seen the message yet.
+    appendConversationEntry({ id: lucySaysEntryId('says-1'), kind: 'typed-lucy', status: 'done', text: says().text, taskId: 't1' });
+    act(() => { handleLucySays(says()); });
+    expect(getConversationEntries()).toHaveLength(1);
   });
 
   test('once the panel is gone nothing is written', () => {

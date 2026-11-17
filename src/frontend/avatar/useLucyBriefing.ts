@@ -71,6 +71,16 @@ function newestBriefing(): { signature: string; at: number } | null {
 }
 
 /**
+ * The thread entry id of a briefing: its signature and the time of the briefing it follows (0 for
+ * the first). Two tabs that see the same thread build the same id for the same briefing, and a
+ * briefing that follows a different one never reuses an id, even when its signature has been seen
+ * before (what waits on the operator changed and then changed back).
+ */
+export function briefingEntryId(signature: string, previousBriefingAt: number | undefined): string {
+  return `briefing:${signature}:${previousBriefingAt ?? 0}`;
+}
+
+/**
  * Fetch the briefing and write it into the thread when the rule for `occasion` says it is not a
  * repeat (see the file header). Never throws.
  */
@@ -89,6 +99,8 @@ export async function offerBriefing(occasion: BriefingOccasion, deps: OfferBrief
       : (last?.signature ?? lastWrittenSignature) === briefing.signature;
     if (repeat) return 'repeat';
     appendConversationEntry({
+      // Tabs that share one thread and decide at the same moment build the same id, so one of them writes.
+      id: briefingEntryId(briefing.signature, last?.at),
       kind: 'typed-lucy',
       status: 'done',
       text: briefing.text,

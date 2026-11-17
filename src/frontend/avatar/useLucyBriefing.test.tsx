@@ -4,9 +4,9 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { LUCY_BRIEFING_PATH } from '../../shared/contracts/lucy-briefing.js';
-import { __resetLucyConversationForTests, appendConversationEntry, getConversationEntries } from '../store/lucy-conversation.js';
+import { __resetLucyConversationForTests, appendConversationEntry, getConversationEntries, removeConversationEntries } from '../store/lucy-conversation.js';
 import type { PresenceSources } from './operator-presence.js';
-import { BRIEFING_FRESH_MS, __resetLucyBriefingForTests, offerBriefing, useLucyBriefing } from './useLucyBriefing.js';
+import { BRIEFING_FRESH_MS, __resetLucyBriefingForTests, briefingEntryId, offerBriefing, useLucyBriefing } from './useLucyBriefing.js';
 
 const MIN = 60_000;
 const START = 1_700_000_000_000;
@@ -131,6 +131,45 @@ describe('offerBriefing', () => {
     const junk = vi.fn(async () => new Response(JSON.stringify({ text: '', signature: 7 }), { status: 200 })) as unknown as typeof fetch;
     expect(await offerBriefing('opened', { fetcher: junk, now: clock })).toBe('unavailable');
     expect(getConversationEntries()).toEqual([]);
+  });
+
+  test('the entry id comes from the signature and the briefing it follows, so two tabs build the same one', async () => {
+    const server = fakeServer(WAITING);
+    await offerBriefing('opened', { fetcher: server.fetcher, now: clock });
+    const first = briefings()[0]!;
+    expect(first.id).toBe(briefingEntryId('sig-waiting', undefined));
+    expect(first.id).toBe('briefing:sig-waiting:0');
+
+    // Another tab, a moment later, that has not seen the first tab's entry yet: it builds the same id.
+    removeConversationEntries([first.id]);
+    __resetLucyBriefingForTests();
+    now += 40;
+    await offerBriefing('opened', { fetcher: server.fetcher, now: clock });
+    expect(briefings().map((entry) => entry.id)).toEqual(['briefing:sig-waiting:0']);
+  });
+
+  test('the same briefing written by another tab into the shared thread is not added a second time', async () => {
+    const server = fakeServer(WAITING);
+    await offerBriefing('opened', { fetcher: server.fetcher, now: clock });
+    // The other tab decided at the same moment and writes the entry it built, with the same id.
+    appendConversationEntry({ id: briefingEntryId('sig-waiting', undefined), kind: 'typed-lucy', status: 'done', text: WAITING.text, briefing: 'sig-waiting' });
+    expect(briefings()).toHaveLength(1);
+  });
+
+  test('what waits changes and then changes back: the third briefing has an id of its own and is written', async () => {
+    const server = fakeServer(WAITING);
+    await offerBriefing('opened', { fetcher: server.fetcher, now: clock });
+    now += 11 * MIN;
+    server.state.current = CLEAR;
+    await offerBriefing('returned', { fetcher: server.fetcher, now: clock });
+    now += 11 * MIN;
+    server.state.current = WAITING;
+    expect(await offerBriefing('returned', { fetcher: server.fetcher, now: clock })).toBe('written');
+    expect(briefings().map((entry) => entry.id)).toEqual([
+      'briefing:sig-waiting:0',
+      `briefing:sig-clear:${START}`,
+      `briefing:sig-waiting:${START + 11 * MIN}`,
+    ]);
   });
 
   test('two offers at the same moment give one briefing', async () => {

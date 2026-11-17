@@ -53,8 +53,12 @@ export type ConversationEntry =
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
-/** What a caller gives to {@link appendConversationEntry}: an entry without the fields the store fills in. */
-export type NewConversationEntry = DistributiveOmit<ConversationEntry, 'id' | 'at'> & { at?: number };
+/**
+ * What a caller gives to {@link appendConversationEntry}: an entry without the fields the store fills in.
+ * `id` is given only for something every open tab is told about (a line from the server, a briefing):
+ * the id is then derived from that thing, so the tabs agree on it and the entry is added once.
+ */
+export type NewConversationEntry = DistributiveOmit<ConversationEntry, 'id' | 'at'> & { at?: number; id?: string };
 
 const EMPTY: readonly ConversationEntry[] = Object.freeze([]);
 /** How long a burst of streamed text waits before it is written to storage. */
@@ -160,9 +164,14 @@ function newId(): string {
   return `${Date.now().toString(36)}-${idSeq}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-/** Add an entry at the bottom of the thread and return its id. */
+/**
+ * Add an entry at the bottom of the thread and return its id. When the caller gives the id and an
+ * entry with that id is already in the thread, nothing is added: the same thing was already written,
+ * by this tab or by another one that shares the thread.
+ */
 export function appendConversationEntry(entry: NewConversationEntry): string {
-  const id = newId();
+  if (entry.id !== undefined && entries.some((existing) => existing.id === entry.id)) return entry.id;
+  const id = entry.id ?? newId();
   commit([...entries, { ...entry, id, at: entry.at ?? Date.now() } as ConversationEntry], true);
   return id;
 }
