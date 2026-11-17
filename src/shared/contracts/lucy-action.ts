@@ -62,6 +62,26 @@ export type LucyActionOutcome =
   /** No pending proposal with that id (already used, replaced, or never made). */
   | { outcome: 'unknown'; proposalId: string };
 
+/** The one line the card turns into when its proposal ends: "Sent", "Closed", or why nothing was done. */
+export function describeActionOutcome(outcome: LucyActionOutcome): string {
+  switch (outcome.outcome) {
+    case 'done': {
+      const base = outcome.kind === 'close' ? 'Closed' : 'Sent';
+      // An answer recorded for a task that has ended was not typed into it: it is not called sent.
+      return outcome.note ? `${outcome.kind === 'answer' ? 'Recorded' : base}. ${outcome.note}` : base;
+    }
+    case 'refused':
+      return outcome.reason;
+    case 'declined':
+    case 'cancelled':
+      return 'Cancelled';
+    case 'expired':
+      return 'That request timed out';
+    case 'unknown':
+      return 'That request is no longer waiting';
+  }
+}
+
 export interface LucyActionRouteBody {
   conversationId: string;
   proposalId: string;

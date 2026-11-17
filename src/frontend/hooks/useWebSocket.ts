@@ -14,6 +14,7 @@ import { acknowledgeDictationLaunch, resumeDictationCorpusRetries } from '../sto
 import { handleOperatorAskResult, handleOperatorAsks } from '../store/operator-asks.js';
 import { handleLucyPermissionCards } from '../store/lucy-permission.js';
 import { handleLucyLaunch } from '../store/lucy-launch.js';
+import { handleLucyAction } from '../store/lucy-action.js';
 
 // Stale-socket callbacks are ignored silently in the controller; here we count
 // them and emit at most one compact telemetry event per window so a burst of
@@ -389,6 +390,10 @@ export function useWebSocket() {
             // Lucy's launch card, its end and the report of a task she started (issue #3676).
             case 'lucy_launch':
               handleLucyLaunch(msg);
+              break;
+            // Lucy's card for answering a question, replying to a task or closing one, and its end.
+            case 'lucy_action':
+              handleLucyAction({ conversationId: msg.conversationId, proposal: msg.proposal, outcome: msg.outcome });
               break;
             // Lucy's cards for tasks waiting on a permission prompt (issue #3932).
             case 'lucyPermissionCards':

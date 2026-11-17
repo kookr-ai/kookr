@@ -10,7 +10,9 @@
  * that read such text only chooses *which* task or question; it never supplies what is sent.
  */
 
-import type { LucyActionKind, LucyActionOutcome } from '../../shared/contracts/lucy-action.js';
+import { describeActionOutcome, type LucyActionKind, type LucyActionOutcome } from '../../shared/contracts/lucy-action.js';
+
+export { describeActionOutcome };
 import { redactSpeechSecrets } from '../task-speech-summary.js';
 import { LAUNCH_PROPOSAL_TTL_MS } from './launch-proposal.js';
 
@@ -154,25 +156,6 @@ export function sayActionOutcome(outcome: LucyActionOutcome): string {
       return ACTION_NOT_DONE;
     default:
       return '';
-  }
-}
-
-/** The one line the card turns into when its proposal ends. */
-export function describeActionOutcome(outcome: LucyActionOutcome): string {
-  switch (outcome.outcome) {
-    case 'done': {
-      const base = outcome.kind === 'close' ? 'Closed' : 'Sent';
-      return outcome.note ? `${outcome.kind === 'answer' ? 'Recorded' : base}. ${outcome.note}` : base;
-    }
-    case 'refused':
-      return outcome.reason;
-    case 'declined':
-    case 'cancelled':
-      return 'Cancelled';
-    case 'expired':
-      return 'That request timed out';
-    case 'unknown':
-      return 'That request is no longer waiting';
   }
 }
 
