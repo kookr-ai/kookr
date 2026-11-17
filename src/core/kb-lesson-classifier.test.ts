@@ -51,6 +51,42 @@ describe('classifyKbCommand', () => {
     ).toBe('lesson-write-attempt');
   });
 
+  test('a skip line whose reason mentions `kb remember` is still a skip (#4134)', () => {
+    // Whichever comes first decides: the skip line prints the marker before the
+    // reason, so a reason naming the remember command does not turn it into an
+    // attempt (which could never be confirmed — printf prints no write marker).
+    expect(
+      classifyKbCommand(
+        "printf 'No generic KB lesson: %s\\n' 'already stored as some-lesson.md (kb remember --force)'",
+      ),
+    ).toBe('lesson-skip');
+    expect(
+      classifyKbCommand("echo 'No generic KB lesson: stored earlier via kb remember --force'"),
+    ).toBe('lesson-skip');
+    expect(
+      classifyKbCommand('cat <<EOF\nNo generic KB lesson: kb remember said a similar lesson exists\nEOF'),
+    ).toBe('lesson-skip');
+    expect(
+      classifyKbCommand(
+        "printf 'No generic KB lesson: %s\\n' 'covered (kookr lesson remember not needed)'",
+      ),
+    ).toBe('lesson-skip');
+  });
+
+  test('a write whose lesson body quotes the skip marker stays a write attempt (#4134)', () => {
+    // The remember call comes first, so a suppressed write cannot pass as a skip.
+    expect(
+      classifyKbCommand(
+        "cat <<'EOF' | kb remember --lesson --title=\"t\" --stdin --yes\n## Mistake\n\nPrinted 'No generic KB lesson:' too early\nEOF",
+      ),
+    ).toBe('lesson-write-attempt');
+    expect(
+      classifyKbCommand(
+        "cat <<'EOF' | kookr lesson remember --title=\"t\" --stdin --yes\nNo generic KB lesson: quoted\nEOF",
+      ),
+    ).toBe('lesson-write');
+  });
+
   test('treats the skip marker as stronger than a `kb search` on the same line', () => {
     // The marker signals an explicit decision; a search is just lookup
     // activity. Pin the lesson-skip > kb-search precedence so a chained

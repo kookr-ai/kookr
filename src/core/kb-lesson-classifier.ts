@@ -61,16 +61,39 @@ export type LessonDecisionState =
   | 'search-only'
   | 'no-kb-activity';
 
+/**
+ * Index of the first `needle` in `command`, or `Infinity` when absent, so a
+ * missing needle never "comes first" in {@link classifyKbCommand}.
+ */
+function firstIndexOf(command: string, needle: string): number {
+  const at = command.indexOf(needle);
+  return at === -1 ? Number.POSITIVE_INFINITY : at;
+}
+
+/**
+ * Classify one shell command for the lesson decision.
+ *
+ * Skip vs. write, when a command holds both (issue #4134): whichever comes
+ * FIRST decides. A skip line prints the marker before anything else, so a
+ * reason that merely mentions `kb remember` (e.g. `printf 'No generic KB
+ * lesson: %s\n' 'already stored (kb remember --force)'`) stays a skip. A real
+ * write starts with the remember call, so a lesson body (heredoc) that quotes
+ * the marker stays a write attempt and cannot pass as a skip by accident.
+ * Known limit: a skip whose text names `kb remember` BEFORE the marker
+ * (`echo "kb remember failed; No generic KB lesson: …"`) is classed as an
+ * attempt; the canonical skip line always starts with the marker.
+ */
 export function classifyKbCommand(command: string): KbLineKind {
+  const skipAt = firstIndexOf(command, KB_LESSON_SKIP_MARKER);
   // `kookr lesson remember` is the spool-aware operator CLI (#1519). It writes
   // with `--no-check-similar` and spools on failure, so it never gets
   // similarity-suppressed — a confirmed lesson write from the command alone.
-  if (command.includes('kookr lesson remember')) return 'lesson-write';
+  if (firstIndexOf(command, 'kookr lesson remember') < skipAt) return 'lesson-write';
   // `kb remember` MAY be suppressed by the similarity guard (storing nothing),
   // so the bare command is only an *attempt* until its output confirms a real
   // write. See isGenuineKbWriteOutput + the #1538 gate scanner.
-  if (command.includes('kb remember')) return 'lesson-write-attempt';
-  if (command.includes(KB_LESSON_SKIP_MARKER)) return 'lesson-skip';
+  if (firstIndexOf(command, 'kb remember') < skipAt) return 'lesson-write-attempt';
+  if (skipAt !== Number.POSITIVE_INFINITY) return 'lesson-skip';
   if (command.includes('kb ')) return 'kb-search';
   return 'none';
 }

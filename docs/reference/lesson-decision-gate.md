@@ -26,7 +26,11 @@ This gate makes lesson authoring a **lifecycle step**, not a voluntary act.
      decision (issue #1538 loophole fix).
    - `kookr lesson remember` → **wrote-lesson** from the command alone — it runs
      with `--no-check-similar` and spools on failure, so it never suppresses.
-   - literal `No generic KB lesson:` → **explicit-skip**
+   - literal `No generic KB lesson:` → **explicit-skip**. When one command holds
+     both the marker and a remember call, whichever comes **first** decides
+     (issue #4134): the skip line prints the marker first, so a reason that
+     mentions `kb remember` (`… (kb remember --force)`) stays a skip, while a
+     write whose heredoc body quotes the marker stays a write attempt.
    - other `kb ` traffic → **search-only**
    - neither → **no-kb-activity**
 3. If the task has ≥1 session and the decision is not wrote-lesson/explicit-skip,
@@ -38,6 +42,14 @@ This gate makes lesson authoring a **lifecycle step**, not a voluntary act.
    |----------|--------|----------------|
    | At least one session log on disk | `lesson_decision_required` | Emit `kb remember` or `No generic KB lesson:` then re-signal |
    | Every session log missing (`missingLogs === sessionsScanned > 0`) | `lesson_decision_hooks_missing` | Check prune/rotation under `~/.kookr/hooks`; re-emit a decision into a live trail |
+
+   The `error` text names what the scan saw (issue #4134), e.g.
+   `Task completed without a post-task lesson decision. Hook trail: 6 kb calls;
+   2 \`kb remember\` attempts with no confirmed write; 0 skip lines.` It says
+   "no kb activity" only when the scan saw no `kb` call at all. When attempts
+   exist, the hint starts with one line: run the write alone (no pipe such as
+   `| tail` after it, nothing chained to it) and signal in a separate call, or
+   print the skip line.
 
    ```json
    {
@@ -223,8 +235,8 @@ step, so this edge is rare. `kookr lesson yield` prints the line as
 ## Detection notes
 
 - A `kb remember` write is counted from its **outcome**, not the bare
-  invocation (issue #1538). The scanner reads the command's PostToolUse
-  `tool_response` and requires either `write_performed: true` or the Kookr `kb`
+  invocation (issue #1538). The scanner reads the command's post-tool output
+  (`tool_response`, or the `error` text of a failure event, see below) and requires either `write_performed: true` or the Kookr `kb`
   shim's `KOOKR_LESSON_WRITE: recorded` marker. A similarity-suppressed or
   validation-failed attempt (`write_performed: false`, no marker) — or a
   `kb remember` with no PostToolUse outcome at all — does **not** satisfy the
@@ -239,6 +251,16 @@ step, so this edge is rare. `kookr lesson yield` prints the line as
   with the captured output under `tool_response` / `toolResponse`). Scanning only the Claude shape was the silent-bypass hole that made
   every Grok completion look like `noKbActivity` even when the agent wrote a
   lesson or printed the skip marker.
+- **Failed shell calls (issue #4134):** when the shell call exits non-zero,
+  Claude Code and Codex log `PostToolUseFailure` and Grok Build logs
+  `post_tool_use_failure`. These events have no tool response; the captured
+  output is a top-level `error` string (`"Exit code N\n<stdout+stderr>"`). The
+  scanner reads them like any post-tool line, so a `kb remember` whose write
+  marker was printed before another command in the same call failed still
+  counts. The scanner cannot recover a marker that a pipe dropped
+  (`kb remember … | tail -3`), and a write chained with
+  `kookr signal completion-ready` is scanned before its own output is logged:
+  run the write alone and signal in a separate call.
 - Session names must match `^[A-Za-z0-9_-]{1,128}$`; unsafe names are treated as
   missing logs (no path traversal out of `hooksDir`).
 - Only the live `<session>.jsonl` file is scanned (not rotated `.jsonl.N`

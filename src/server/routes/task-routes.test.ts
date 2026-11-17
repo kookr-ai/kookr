@@ -3449,6 +3449,9 @@ describe('POST /api/tasks/:id/signal', () => {
       expect(body.code).toBe('lesson_decision_required');
       expect(body.decision).toBe('no-kb-activity');
       expect(body.hint).toMatch(/kb remember/);
+      // The route passes the scan's observation through, so the reason names
+      // what the gate saw (issue #4134).
+      expect(body.error).toContain('Hook trail: 0 kb calls');
       expect(body.missingLogs).toBe(0);
       expect(body.sessionsScanned).toBe(1);
       expect(taskStore.getPendingSignal(id)).toBeUndefined();

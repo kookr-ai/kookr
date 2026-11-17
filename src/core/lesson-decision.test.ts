@@ -13,6 +13,7 @@ import {
   LESSON_DECISION_HOOKS_MISSING_HINT,
   LESSON_DECISION_REQUIRED_CODE,
   LESSON_DECISION_HINT,
+  LESSON_UNCONFIRMED_WRITE_HINT,
   resolveCompletionPath,
   resolveTaskLessonDecision,
   scanHookLogForLessonDecision,
@@ -65,6 +66,32 @@ function postToolGrok(command: string, output: string): string {
     toolName: 'run_terminal_command',
     toolInput: { command },
     toolResult: { type: 'RunTerminalCommand', Content: { content: output } },
+  });
+}
+
+/**
+ * Claude Code PostToolUseFailure Bash shape (issue #4134): a non-zero exit has
+ * no `tool_response`; the captured output is in a top-level `error` string.
+ * Modeled on a real hook log line.
+ */
+function postToolFailureBash(command: string, output: string, exitCode = 1): string {
+  return JSON.stringify({
+    hook_event_name: 'PostToolUseFailure',
+    tool_name: 'Bash',
+    tool_input: { command },
+    error: `Exit code ${exitCode}\n${output}`,
+    is_interrupt: false,
+  });
+}
+
+/** Grok Build post_tool_use_failure shape: output in `error`, like Claude's. */
+function postToolFailureGrok(command: string, output: string): string {
+  return JSON.stringify({
+    hookEventName: 'post_tool_use_failure',
+    toolName: 'run_terminal_command',
+    toolInput: { command },
+    error: output,
+    isInterrupt: false,
   });
 }
 
@@ -153,6 +180,44 @@ describe('evaluateLessonDecisionGate', () => {
     expect(v.code).toBe(LESSON_DECISION_REQUIRED_CODE);
   });
 
+  test('names the observed counts instead of claiming no kb activity (#4134)', () => {
+    const v = evaluateLessonDecisionGate({
+      sessionsScanned: 1,
+      missingLogs: 0,
+      decision: 'no-kb-activity',
+      observed: { kbCalls: 6, lessonWriteAttempts: 2, lessonSkips: 0 },
+    });
+    expect(v.allow).toBe(false);
+    expect(v.code).toBe(LESSON_DECISION_REQUIRED_CODE);
+    expect(v.reason).not.toMatch(/no kb activity/);
+    expect(v.reason).toContain('6 kb calls');
+    expect(v.reason).toContain('2 `kb remember` attempts with no confirmed write');
+    expect(v.reason).toContain('0 skip lines');
+    // Attempts exist → the one-line unconfirmed-write hint leads the hint.
+    expect(v.hint).toBe(`${LESSON_UNCONFIRMED_WRITE_HINT}\n${LESSON_DECISION_HINT}`);
+  });
+
+  test('keeps "no kb activity" only when the scan saw no kb call (#4134)', () => {
+    const v = evaluateLessonDecisionGate({
+      sessionsScanned: 1,
+      decision: 'no-kb-activity',
+      observed: { kbCalls: 0, lessonWriteAttempts: 0, lessonSkips: 0 },
+    });
+    expect(v.reason).toMatch(/no kb activity/);
+    expect(v.reason).toContain('0 kb calls; 0 `kb remember` attempts');
+    expect(v.hint).toBe(LESSON_DECISION_HINT);
+  });
+
+  test('uses singular wording for counts of one (#4134)', () => {
+    const v = evaluateLessonDecisionGate({
+      sessionsScanned: 1,
+      decision: 'search-only',
+      observed: { kbCalls: 1, lessonWriteAttempts: 1, lessonSkips: 1 },
+    });
+    expect(v.reason).toMatch(/^Task used kb search/);
+    expect(v.reason).toContain('1 kb call; 1 `kb remember` attempt with no confirmed write; 1 skip line.');
+  });
+
   test('fail-open when no sessions were scanned', () => {
     const v = evaluateLessonDecisionGate({
       sessionsScanned: 0,
@@ -236,6 +301,97 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
     expect(result.decision).toBe('wrote-lesson');
     expect(result.satisfied).toBe(true);
     expect(result.sessionsScanned).toBe(1);
+  });
+
+  test('a write confirmed in a PostToolUseFailure event counts (#4134)', async () => {
+    // The write landed, but a later command in the same shell call failed, so
+    // Claude Code logged PostToolUseFailure with the output under `error`.
+    const log = join(dir, 'hooks', 'sess-fail-ok.jsonl');
+    const cmd = "cat <<'EOF' | kb remember --lesson --title=\"t\" --stdin --yes\nbody\nEOF\nfalse";
+    writeFileSync(
+      log,
+      [preToolBash(cmd), postToolFailureBash(cmd, `KOOKR_LESSON_WRITE: recorded\n${KB_OUTPUT_WRITE_OK}`), ''].join('\n'),
+      'utf8',
+    );
+    const stats = await scanHookLogForLessonDecision(log);
+    expect(stats.lessonWrites).toBe(1);
+    expect(stats.lessonWriteAttempts).toBe(1);
+  });
+
+  test('a Grok post_tool_use_failure with a confirmed write counts (#4134)', async () => {
+    const log = join(dir, 'hooks', 'sess-grok-fail-ok.jsonl');
+    const cmd = 'kb remember --kb=agent-task-lessons --title="t" --stdin --yes && false';
+    writeFileSync(
+      log,
+      [preToolGrok(cmd), postToolFailureGrok(cmd, KB_OUTPUT_WRITE_OK), ''].join('\n'),
+      'utf8',
+    );
+    expect((await scanHookLogForLessonDecision(log)).lessonWrites).toBe(1);
+  });
+
+  test('a suppressed write in a PostToolUseFailure event still does not count (#4134)', async () => {
+    // kb exit 3: similarity guard stored nothing (real shape: shim not-recorded
+    // marker + write_performed:false, and guidance text quoting the skip line).
+    const log = join(dir, 'hooks', 'sess-fail-suppressed.jsonl');
+    const cmd = "cat <<'EOF' | kb remember --lesson --title=\"t\" --stdin --yes\nbody\nEOF";
+    const output = [
+      'KOOKR_LESSON_WRITE: not-recorded (kb exit 3)',
+      "[kookr] No lesson stored: a similar lesson already exists: x.md. printf 'No generic KB lesson: %s\\n' 'covered by x.md'",
+      KB_OUTPUT_SUPPRESSED,
+    ].join('\n');
+    writeFileSync(log, [preToolBash(cmd), postToolFailureBash(cmd, output, 3), ''].join('\n'), 'utf8');
+    const stats = await scanHookLogForLessonDecision(log);
+    expect(stats.lessonWrites).toBe(0);
+    expect(stats.lessonSkips).toBe(0);
+    expect(stats.lessonWriteAttempts).toBe(1);
+  });
+
+  test('replays the #4134 trail: the gate allows completion', async () => {
+    // Synthetic replay of the three commands from the refused task:
+    //  1. a `kb remember --force` write chained with the signal, piped through
+    //     `tail -3` (drops the write marker) and exiting non-zero;
+    //  2. a skip line whose reason mentions `kb remember --force`;
+    //  3. a skip line with a plain reason.
+    const log = join(dir, 'hooks', 'sess-4134.jsonl');
+    const write =
+      "cat <<'EOF' | kb remember --lesson --title=\"t\" --stdin --yes --force 2>&1 | tail -3\n"
+      + '## Mistake\n\nm\n\n## Why it happened\n\nw\n\n## Better next time\n\nb\nEOF\n'
+      + 'kookr signal completion-ready --note "done"';
+    const skipKb =
+      "printf 'No generic KB lesson: %s\\n' 'already recorded as some-lesson.md (kb remember --force)'";
+    const skipPlain = "printf 'No generic KB lesson: %s\\n' 'covered by some-lesson.md'";
+    writeFileSync(
+      log,
+      [
+        preToolBash('kb search "pilot guard metrics"'),
+        postToolBash('kb search "pilot guard metrics"', 'results'),
+        preToolBash(write),
+        postToolFailureBash(write, '    ]\n  }\n}\nkookr signal: server rejected the signal (HTTP 409)', 4),
+        preToolBash(skipKb),
+        postToolBash(skipKb, 'No generic KB lesson: already recorded as some-lesson.md (kb remember --force)'),
+        preToolBash(skipPlain),
+        postToolBash(skipPlain, 'No generic KB lesson: covered by some-lesson.md'),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const stats = await scanHookLogForLessonDecision(log);
+    expect(stats.lessonSkips).toBe(2);
+    expect(stats.lessonWriteAttempts).toBe(1);
+
+    const resolved = await resolveTaskLessonDecision(
+      { id: 't-4134', sessions: [{ tmuxSession: 'sess-4134' }] },
+      join(dir, 'hooks'),
+    );
+    expect(resolved.decision).toBe('explicit-skip');
+    expect(resolved.observed).toEqual({ kbCalls: 3, lessonWriteAttempts: 1, lessonSkips: 2 });
+    const gate = evaluateLessonDecisionGate({
+      sessionsScanned: resolved.sessionsScanned,
+      decision: resolved.decision,
+      missingLogs: resolved.missingLogs,
+      observed: resolved.observed,
+    });
+    expect(gate.allow).toBe(true);
   });
 
   test('a similarity-suppressed kb remember does NOT satisfy the gate (#1538 loophole)', async () => {

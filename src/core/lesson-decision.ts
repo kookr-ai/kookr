@@ -194,10 +194,18 @@ const PRE_TOOL_EVENTS = new Set([
   'pre_tool_use', // Grok Build (snake_case value)
 ]);
 
-/** Post-tool hook event names across agent runtimes (issue #1538). */
+/**
+ * Post-tool hook event names across agent runtimes (issue #1538). The failure
+ * variants (issue #4134) fire when the shell call exits non-zero — e.g. a
+ * `kb remember` chained with a command that failed. The write may still have
+ * landed, so its output is checked like any other post-tool line. Codex reuses
+ * Claude Code's `PostToolUseFailure` name.
+ */
 const POST_TOOL_EVENTS = new Set([
-  'PostToolUse', // Claude Code (PascalCase)
+  'PostToolUse', // Claude Code / Codex (PascalCase)
   'post_tool_use', // Grok Build (snake_case value)
+  'PostToolUseFailure', // Claude Code / Codex, non-zero exit
+  'post_tool_use_failure', // Grok Build, non-zero exit
 ]);
 
 /**
@@ -227,7 +235,10 @@ export function extractShellCommandFromHookLine(evt: {
 export interface ShellHookLine {
   phase: 'pre' | 'post';
   command: string;
-  /** Captured command output on a post-tool line (stdout+stderr); '' otherwise. */
+  /**
+   * Captured command output on a post-tool line (stdout+stderr, plus the
+   * failure event's `error` text); '' otherwise.
+   */
   output: string;
 }
 
@@ -274,6 +285,12 @@ function extractToolResponseText(toolResponse: unknown): string {
  * decoder's rename to `toolResponse` happens downstream and never reaches the
  * on-disk log). Reading only `toolResponse` here would silently never confirm
  * a Grok lesson write — a #1608 regression. Both raw field names are accepted.
+ *
+ * A failure event (`PostToolUseFailure` / `post_tool_use_failure`, issue
+ * #4134) has no tool response: both runtimes put the captured output in a
+ * top-level `error` string (`"Exit code N\n<stdout+stderr>"`). It is appended
+ * to the output so a write marker printed before the shell call failed still
+ * confirms the write.
  */
 export function extractShellHookLine(evt: {
   hook_event_name?: unknown;
@@ -286,6 +303,7 @@ export function extractShellHookLine(evt: {
   toolResponse?: unknown;
   toolResult?: unknown;
   tool_result?: unknown;
+  error?: unknown;
 }): ShellHookLine | null {
   const hookEvent = evt.hook_event_name ?? evt.hookEventName;
   const toolName = evt.tool_name ?? evt.toolName;
@@ -301,7 +319,10 @@ export function extractShellHookLine(evt: {
   if (isPre) return { phase: 'pre', command, output: '' };
   const rawResponse =
     evt.tool_response ?? evt.toolResponse ?? evt.toolResult ?? evt.tool_result;
-  return { phase: 'post', command, output: extractToolResponseText(rawResponse) };
+  const responseText = rawResponse === undefined ? '' : extractToolResponseText(rawResponse);
+  const errorText = typeof evt.error === 'string' ? evt.error : '';
+  const output = responseText && errorText ? `${responseText}\n${errorText}` : responseText || errorText;
+  return { phase: 'post', command, output };
 }
 
 /** Env escape hatch for hermetic tests / emergency ops. Values: `0`/`false`/`off`. */
@@ -310,6 +331,12 @@ export const LESSON_DECISION_GATE_ENV = 'KOOKR_LESSON_DECISION_GATE';
 export interface HookLogLessonStats extends LessonDecisionCounts {
   kbCalls: number;
   bashCalls: number;
+  /**
+   * `kb remember` commands seen (pre-tool), confirmed or not. With
+   * `lessonWrites === 0` every one of them stored nothing the scanner could
+   * confirm; the 409 reason names this count (issue #4134).
+   */
+  lessonWriteAttempts: number;
   exists: boolean;
   /**
    * Hook-write time (ms) of the latest PR merge command seen before the scan
@@ -319,9 +346,25 @@ export interface HookLogLessonStats extends LessonDecisionCounts {
   lastMergeAtMs?: number;
 }
 
+/**
+ * What the hook-trail scan saw, beyond the decision counts. Feeds the 409
+ * reason so an agent can tell which of its commands the gate did not count
+ * (issue #4134).
+ */
+export interface LessonDecisionObservation {
+  kbCalls: number;
+  lessonWriteAttempts: number;
+  lessonSkips: number;
+}
+
 export interface TaskLessonDecisionResult {
   decision: LessonDecisionState;
   counts: LessonDecisionCounts;
+  /**
+   * Totals across sessions. Partial when a session's scan stopped early at a
+   * confirmed write, which only happens when the gate allows anyway.
+   */
+  observed: LessonDecisionObservation;
   /** Sessions that listed a tmuxSession but had no hook log on disk. */
   missingLogs: number;
   /** Sessions considered (with a non-empty tmuxSession). */
@@ -351,6 +394,12 @@ export interface LessonDecisionGateInput {
    * logs from a missed lesson step (issue #1868). Default 0.
    */
   missingLogs?: number;
+  /**
+   * What the scan saw ({@link TaskLessonDecisionResult.observed}). When set,
+   * a refusal's reason names these counts (issue #4134); when absent the
+   * reason falls back to wording without counts.
+   */
+  observed?: LessonDecisionObservation;
 }
 
 export interface LessonDecisionGateVerdict {
@@ -489,18 +538,56 @@ export function evaluateLessonDecisionGate(
     };
   }
 
+  const observed = input.observed;
+  const attempts = observed?.lessonWriteAttempts ?? 0;
   return {
     allow: false,
     code: LESSON_DECISION_REQUIRED_CODE,
-    reason:
-      input.decision === 'search-only'
-        ? 'Task used kb search but never recorded a post-task lesson decision.'
-        : 'Task completed without a post-task lesson decision (no kb activity).',
+    reason: lessonDecisionRequiredReason(input.decision, observed),
     decision: input.decision,
-    hint: LESSON_DECISION_HINT,
+    hint: attempts > 0
+      ? `${LESSON_UNCONFIRMED_WRITE_HINT}\n${LESSON_DECISION_HINT}`
+      : LESSON_DECISION_HINT,
     missingLogs,
     sessionsScanned: input.sessionsScanned,
   };
+}
+
+/**
+ * One-line hint when the trail holds `kb remember` attempts but no confirmed
+ * write (issue #4134). A write counts only once its output shows the write
+ * landed; a pipe such as `| tail` can drop that line, and a write chained with
+ * the signal is scanned before its own output is logged.
+ */
+export const LESSON_UNCONFIRMED_WRITE_HINT =
+  `A \`kb remember\` ran but no output confirming the write was seen. Run the write alone, `
+  + `with no pipe after it and nothing chained to it, and signal in a separate call; `
+  + `or print the skip line.`;
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** 409 reason for logs present but no decision; names the counts when known. */
+function lessonDecisionRequiredReason(
+  decision: LessonDecisionState,
+  observed: LessonDecisionObservation | undefined,
+): string {
+  if (!observed) {
+    return decision === 'search-only'
+      ? 'Task used kb search but never recorded a post-task lesson decision.'
+      : 'Task completed without a post-task lesson decision (no kb activity).';
+  }
+  const head = decision === 'search-only'
+    ? 'Task used kb search but never recorded a post-task lesson decision.'
+    : observed.kbCalls > 0
+      ? 'Task completed without a post-task lesson decision.'
+      : 'Task completed without a post-task lesson decision (no kb activity).';
+  return `${head} Hook trail: `
+    + `${plural(observed.kbCalls, 'kb call', 'kb calls')}; `
+    + `${plural(observed.lessonWriteAttempts, '`kb remember` attempt', '`kb remember` attempts')} `
+    + `with no confirmed write; `
+    + `${plural(observed.lessonSkips, 'skip line', 'skip lines')}.`;
 }
 
 /** Whether the env kill-switch disables the gate. Default: enabled. */
@@ -517,6 +604,7 @@ export function emptyHookLogLessonStats(): HookLogLessonStats {
   return {
     kbCalls: 0,
     bashCalls: 0,
+    lessonWriteAttempts: 0,
     lessonWrites: 0,
     lessonSkips: 0,
     kbSearches: 0,
@@ -559,6 +647,7 @@ export async function scanHookLogForLessonDecision(
 
   let kbCalls = 0;
   let bashCalls = 0;
+  let lessonWriteAttempts = 0;
   let lessonWrites = 0;
   let lessonSkips = 0;
   let kbSearches = 0;
@@ -617,14 +706,18 @@ export async function scanHookLogForLessonDecision(
             kbSearches++;
             break;
           case 'lesson-write-attempt': // confirmed below from the post-tool output
+            lessonWriteAttempts++;
+            break;
           case 'none':
             break;
         }
       } else if (kind === 'lesson-write-attempt' && isGenuineKbWriteOutput(shell.output)) {
-        // Post-tool line: a `kb remember` whose output confirms a real write
-        // (shim marker or `write_performed: true`). A similarity-suppressed or
-        // validation-failed attempt (`write_performed: false`, no marker) does
-        // NOT reach here — the #1538 loophole fix.
+        // Post-tool line (success OR failure event, issue #4134): a `kb
+        // remember` whose output confirms a real write (shim marker or
+        // `write_performed: true`), whatever the exit code of the rest of the
+        // shell call. A similarity-suppressed or validation-failed attempt
+        // (`write_performed: false`, no marker) does NOT reach here — the
+        // #1538 loophole fix.
         lessonWrites++;
       }
       // Strongest signal already present — further lines cannot change the
@@ -639,6 +732,7 @@ export async function scanHookLogForLessonDecision(
   return {
     kbCalls,
     bashCalls,
+    lessonWriteAttempts,
     lessonWrites,
     lessonSkips,
     kbSearches,
@@ -704,6 +798,8 @@ export async function resolveTaskLessonDecision(
   let lessonWrites = 0;
   let lessonSkips = 0;
   let kbSearches = 0;
+  let kbCalls = 0;
+  let lessonWriteAttempts = 0;
   let missingLogs = 0;
   let sessionsScanned = 0;
   let lastMergeAtMs: number | undefined;
@@ -725,6 +821,8 @@ export async function resolveTaskLessonDecision(
     lessonWrites += stats.lessonWrites;
     lessonSkips += stats.lessonSkips;
     kbSearches += stats.kbSearches;
+    kbCalls += stats.kbCalls;
+    lessonWriteAttempts += stats.lessonWriteAttempts;
     if (
       stats.lastMergeAtMs !== undefined
       && (lastMergeAtMs === undefined || stats.lastMergeAtMs > lastMergeAtMs)
@@ -738,6 +836,7 @@ export async function resolveTaskLessonDecision(
   return {
     decision,
     counts,
+    observed: { kbCalls, lessonWriteAttempts, lessonSkips },
     missingLogs,
     sessionsScanned,
     satisfied: isLessonDecisionSatisfied(decision),
