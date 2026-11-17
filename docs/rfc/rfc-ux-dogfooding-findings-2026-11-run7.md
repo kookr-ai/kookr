@@ -260,6 +260,87 @@ and a push at the same time.
 
 ## Implementation (Phase 4)
 
+### Landed: the work of runs 5 and 6 (PR #4148)
+
+The operator's answer to the early push question was "Push, open PRs, merge when gates
+pass". The integration branch of run 6, brought up to today's `main`, went out as one pull
+request: **#4148, "feat(lucy): a docked chat column, three confirmed actions and a written
+briefing"**, 121 files, squash-merged into `staging` as `94f748cd8` on 18 November. The
+integration train runs the full suite there and moves `main` to it.
+
+It went out as one pull request and not as the five clusters of run 6's priority list,
+because the fixes run 6 made after merging the clusters exist only on the merged branch
+(among them the hold that stops a spoken "yes" from confirming the wrong card), so no
+single cluster is a state anyone verified.
+
+| Step | Result |
+|---|---|
+| Related tests on the merged tree | 397 files, 8,701 tests pass; `pnpm typecheck` and `pnpm build` clean |
+| Independent review, round 1 (four fresh-context parts over 20,870 diff lines) | BLOCK: nine small defects, no critical finding; the five attempts to cause an action without the operator all failed |
+| Fixes | `c4afae3c6` (expiry race, announced outcomes, focus, Open task on her own lines, briefing signature, docs, an unused export) and `5e2ff1140` (real-server tests for close, answer and reply) |
+| Round 2, fix check | PASS; 21 mutants on the fix diff, 18 killed |
+| Smoke allow-list and one doc sentence (`36693a7af`, `94405e0b5`), delta review | PASS; 9 of 9 mutants killed |
+| Fast gate on the third push | 406 related test files, 8,992 tests, and the smoke lane pass |
+| Browser specs on the final head | `e2e/avatar-panel.spec.ts` and `e2e/finding-groups.spec.ts`, 30 of 30 |
+| Follow-ups | Thirteen larger defects in one issue, #4149 |
+
+Run 6's RFC listed two checks as not done. "ESLint was not run" has no remedy: the
+repository has no ESLint (`pnpm exec eslint` fails because there is nothing to run). "The
+whole suite was not run on the merged tree" is now the integration train's job.
+
+### Cluster A: she remembers what she said, names her card's buttons, launches in Kookr (R7-F3, R7-F4; issues #4143, #4144)
+
+Branch `fix/lucy-remembers-notices` (worktree `kookr-r7-lucy-notices`), three commits, 43
+files, rebased onto `staging` after #4148 merged.
+
+**What changed.** The server keeps one small record of what she said or wrote unprompted
+(at most six items, none older than 15 minutes, each leaving as soon as what it was about
+is over). Every turn, in every conversation, shows it to the model as a labelled note
+after the board; it is never added to the history and never given to the calls that write
+a launch description, a reply or an answer. Her instructions name the permission card and
+its three buttons. The board line of a task blocked on a permission prompt says the tool,
+the command (the server's redacted copy, cut to 160 characters) and whether the card's
+buttons still work, computed on the server from the same five-minute binding the card
+uses. Every project with a folder on this machine is launchable, which is what the Launch
+dialog offers; Kookr's own project is identified by project id, never by name; and "Which
+project?" names up to three candidates, Kookr first, then the most recently used.
+
+**Before and after**, real model (`deepseek/deepseek-v4.1-flash-1017`), throwaway server,
+one task stopped on a permission prompt and six questions waiting, three runs per
+sentence, all three alike:
+
+| Operator's sentence | Before (merged build of runs 5 and 6) | After |
+|---|---|---|
+| "can you make it proceed ?" | "Which task do you mean? Several are waiting on you right now." | "The task Staging fixture refresh is blocked on a permission prompt: it wants to run `for f in fixtures/*.sql; do psql staging -f "$f"; done`. Press Approve once on the card at the top of your panel, which works for about 4 more minutes." |
+| "Approve the permission prompt of the staging fixture refresh task." | "I cannot approve permission prompts; that is not something I can do. … it needs you to approve it." | "… Its card is at the top of your panel and the buttons still work for about 4 more minutes, so press Approve once there. I cannot press it myself." |
+| The same, six minutes after the prompt (buttons timed out) | (not tried) | "… Its card is on your panel but the buttons have timed out, so you answer in the task's terminal, which I have just opened for you." (and the task is opened) |
+| "can you spawn a task to self reflect about my answer so that we can fix this interactivity problem ? …" | "Which project?" | A launch card in `kookr-ai/kookr` |
+| "start a task to tidy the changelog for the next release" (three projects) | "Which project?" | "Which project: kookr, billing-api or lucy?" |
+
+The "before" column is this run's replay (R7-F3, R7-F4); the implementer's own "before"
+runs were made on a server whose state had changed and are not used here.
+
+**Tests.** `pnpm typecheck` clean; 39 files, 1,156 tests of the Lucy core, server, routes
+and asks suites pass, with four new test files (the note's rendering and bounds, the
+record, each writer through the service to what the model was sent, and a real-server
+boot).
+
+**Left out, on purpose.** Approving through Lucy (the last slice of umbrella #3632).
+Item 3 of #4144 (a task launched from a conversation gets a pointer to that conversation).
+The briefing is not recorded, because the browser decides whether it is shown. "Recorded"
+means "reached a dashboard", not "was heard". Spoken turns were not tried against the real
+model.
+
+**The implementer also found**, on the merged build of runs 5 and 6: a request about
+Kookr itself was proposed in an unrelated project when that project was the only one
+listed (3 of 3; fixed in this cluster), and she said that approving a permission prompt
+"is done in Settings" (2 of 3; not seen in 12 runs after the change).
+
+### Cluster B: Lucy's room and a wider column (R7-F2)
+
+Branch `feat/lucy-room` (worktree `kookr-r7-lucy-room`). _Written when the implementer
+reports._
+
 ## Session log
 
 - 2026-11-17 — **Phase 1 setup.** Dashboard live at `localhost:4800` (deployed commit
@@ -317,3 +398,11 @@ and a push at the same time.
   own ten-minute limit killed, both on a host at load 25 to 62 (R7-F6). Added the three state files to the smoke
   allow-list and corrected one doc sentence (`36693a7af`, `94405e0b5`); the delta was
   reviewed and passed on `94405e0b5`. Third push started with no time limit.
+- 2026-11-18 — **Landed.** Third push passed the fast gate (406 related test files, 8,992
+  tests, smoke). Browser specs 30 of 30 on the final head. Opened #4148, filed the
+  review's thirteen larger defects as #4149, posted the round-1 BLOCK record and the final
+  PASS, and ran `kookr merge 4148`: retargeted to `staging` and squash-merged as
+  `94f748cd8`.
+- 2026-11-18 — **Cluster A reported and rebased.** The notices implementer finished
+  (three commits, real-model before/after in its report). Rebased onto `staging` with no
+  conflict; its independent review and a re-run of its tests are in progress.
