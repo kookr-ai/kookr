@@ -410,8 +410,12 @@ says out loud, and a one-line strip above it holds what is waiting on you.
   capped so the page keeps its 1000 px (a 560 px width in a 1440 px window shows as 440 px, and comes back
   in a wider window). In a window of 769 to 1319 px there is no room to take, so the column floats over the
   right side of the page, below the top bar, and the page keeps its full width. Drag
-  its left edge to change its width (320 to 560 px, or the cap), or focus the edge and press the left and right arrow
-  keys (Shift for bigger steps, Home and End for the limits); the width is remembered. On a window 768 px
+  its left edge to change its width, or focus the edge and press the left and right arrow
+  keys (Shift for bigger steps, Home and End for the limits); the width is remembered. The column can be
+  from 320 px wide up to half the window, as long as the page keeps its 1000 px: at most 560 px in a
+  1560 px window, 920 px at 1920 px and 1280 px at 2560 px (and at most 560 px while it floats over the
+  page). In a wide column the conversation and the composer stay 760 px wide at most, centred, so lines
+  remain readable. On a window 768 px
   wide or narrower it is a full-width sheet over the page instead. Minimising collapses it to a round
   bubble in the bottom-right corner, and the dashboard takes its full width back. The bubble shows an amber badge with the number of things waiting for you (findings needing your
   attention, plus questions from tasks, described below), and an amber dot

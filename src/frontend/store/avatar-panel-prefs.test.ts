@@ -4,7 +4,9 @@ const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
 import {
   AVATAR_COLUMN_DEFAULT_WIDTH,
+  AVATAR_COLUMN_MAX_VIEWPORT_SHARE,
   AVATAR_COLUMN_MAX_WIDTH,
+  AVATAR_COLUMN_OVERLAY_MAX_WIDTH,
   AVATAR_COLUMN_MIN_WIDTH,
   AVATAR_PAGE_MIN_WIDTH,
   AVATAR_PANEL_KEY,
@@ -79,7 +81,10 @@ describe('avatar-panel-prefs', () => {
     const load = (width: unknown) => loadAvatarPanelPrefs(fakeStorage({ [AVATAR_PANEL_KEY]: JSON.stringify({ enabled: true, width }) }).impl);
     expect(load(450).width).toBe(450);
     expect(load(100).width).toBe(AVATAR_COLUMN_MIN_WIDTH);
-    expect(load(5000).width).toBe(AVATAR_COLUMN_MAX_WIDTH);
+    // A wide column is a real choice now (half of a 2560 px window is 1280 px), so it is read back as saved.
+    expect(load(900).width).toBe(900);
+    expect(load(1280).width).toBe(1280);
+    expect(load(50_000).width).toBe(AVATAR_COLUMN_MAX_WIDTH);
     expect(load(412.6).width).toBe(413);
     expect(load(null)).not.toHaveProperty('width');
   });
@@ -148,7 +153,10 @@ describe('avatar-panel-prefs', () => {
     test('the default is inside the limits', () => {
       expect(AVATAR_COLUMN_DEFAULT_WIDTH).toBe(380);
       expect(AVATAR_COLUMN_MIN_WIDTH).toBe(320);
-      expect(AVATAR_COLUMN_MAX_WIDTH).toBe(560);
+      expect(AVATAR_COLUMN_OVERLAY_MAX_WIDTH).toBe(560);
+      // Only a ceiling on what is saved; what a window allows is decided by avatarColumnLayout.
+      expect(AVATAR_COLUMN_MAX_WIDTH).toBe(2560);
+      expect(AVATAR_COLUMN_MAX_VIEWPORT_SHARE).toBe(0.5);
     });
   });
 
@@ -175,14 +183,30 @@ describe('avatar-panel-prefs', () => {
       expect(avatarColumnLayout(1320, 560)).toEqual({ mode: 'docked', width: 320, maxWidth: 320 });
       expect(avatarColumnLayout(1440, undefined)).toEqual({ mode: 'docked', width: 380, maxWidth: 440 });
       expect(avatarColumnLayout(1440, 560)).toEqual({ mode: 'docked', width: 440, maxWidth: 440 });
-      expect(avatarColumnLayout(2221, 560)).toEqual({ mode: 'docked', width: 560, maxWidth: 560 });
-      expect(avatarColumnLayout(1920, 450)).toEqual({ mode: 'docked', width: 450, maxWidth: 560 });
+      expect(avatarColumnLayout(1560, 9999)).toEqual({ mode: 'docked', width: 560, maxWidth: 560 });
+      expect(avatarColumnLayout(2221, 560)).toEqual({ mode: 'docked', width: 560, maxWidth: 1110 });
+      expect(avatarColumnLayout(1920, 450)).toEqual({ mode: 'docked', width: 450, maxWidth: 920 });
+    });
+
+    test('a wide window lets the column take up to half of it, never more', () => {
+      // Below 2000 px the page's 1000 px is the limit; from there on, half the window is.
+      expect(avatarColumnLayout(1920, 9999)).toEqual({ mode: 'docked', width: 920, maxWidth: 920 });
+      expect(avatarColumnLayout(2000, 9999)).toEqual({ mode: 'docked', width: 1000, maxWidth: 1000 });
+      expect(avatarColumnLayout(2560, 9999)).toEqual({ mode: 'docked', width: 1280, maxWidth: 1280 });
+      expect(avatarColumnLayout(2561, 9999)).toEqual({ mode: 'docked', width: 1280, maxWidth: 1280 });
+      // A saved width inside the limit is used as it is, and the default stays the default.
+      expect(avatarColumnLayout(2560, 900)).toEqual({ mode: 'docked', width: 900, maxWidth: 1280 });
+      expect(avatarColumnLayout(2560, undefined)).toEqual({ mode: 'docked', width: 380, maxWidth: 1280 });
+      // However wide the window, nothing wider than the saved ceiling.
+      expect(avatarColumnLayout(8000, 9999).maxWidth).toBe(AVATAR_COLUMN_MAX_WIDTH);
     });
 
     test('whenever it is docked the page is left at least 1000 px', () => {
-      for (let viewport = 769; viewport <= 2400; viewport += 7) {
-        const layout = avatarColumnLayout(viewport, 560);
-        if (layout.mode === 'docked') expect(viewport - layout.width).toBeGreaterThanOrEqual(AVATAR_PAGE_MIN_WIDTH);
+      for (let viewport = 769; viewport <= 4000; viewport += 7) {
+        const layout = avatarColumnLayout(viewport, 9999);
+        if (layout.mode !== 'docked') continue;
+        expect(viewport - layout.width).toBeGreaterThanOrEqual(AVATAR_PAGE_MIN_WIDTH);
+        expect(layout.width).toBeLessThanOrEqual(viewport / 2);
       }
     });
   });

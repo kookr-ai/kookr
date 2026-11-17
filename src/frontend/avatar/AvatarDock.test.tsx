@@ -63,7 +63,6 @@ import {
 } from '../audio/speech-bus.js';
 import {
   AVATAR_COLUMN_DEFAULT_WIDTH,
-  AVATAR_COLUMN_MAX_WIDTH,
   AVATAR_COLUMN_MIN_WIDTH,
   AVATAR_PANEL_KEY,
   __resetAvatarPanelPrefsForTests,
@@ -359,14 +358,36 @@ describe('AvatarDock', () => {
       expect(resizer()!.getAttribute('aria-valuemax')).toBe('440');
     });
 
-    test('in a wider window the same drag can reach the full 560 px', () => {
+    test('in a 1920 px window the same drag can reach 920 px: what is left once the page has its 1000 px', () => {
       setWindowWidth(1920);
       startWith({});
       render();
       dragFrom(1500, -5000);
-      expect(savedPrefs().width).toBe(AVATAR_COLUMN_MAX_WIDTH);
-      expect(rootWidth()).toBe(`${AVATAR_COLUMN_MAX_WIDTH}px`);
-      expect(resizer()!.getAttribute('aria-valuemax')).toBe('560');
+      expect(savedPrefs().width).toBe(920);
+      expect(rootWidth()).toBe('920px');
+      expect(resizer()!.getAttribute('aria-valuemax')).toBe('920');
+    });
+
+    test('in a 2560 px window the column stops at half the window', () => {
+      setWindowWidth(2560);
+      startWith({});
+      render();
+      dragFrom(2180, -5000);
+      expect(savedPrefs().width).toBe(1280);
+      expect(dock()!.style.width).toBe('1280px');
+      expect(rootWidth()).toBe('1280px');
+      expect(resizer()!.getAttribute('aria-valuemax')).toBe('1280');
+    });
+
+    test('a wide saved width is read back as saved and shown where the window allows it', () => {
+      startWith({ width: 900 });
+      setWindowWidth(1920);
+      render();
+      expect(dock()!.style.width).toBe('900px');
+      expect(rootWidth()).toBe('900px');
+      setWindowWidth(1440);
+      expect(dock()!.style.width).toBe('440px');
+      expect(savedPrefs().width).toBe(900);
     });
 
     test('a saved width too wide for this window is capped so the page keeps 1000 px, the cap is not saved, and the wide width comes back in a wider window', () => {
@@ -416,9 +437,10 @@ describe('AvatarDock', () => {
       press('ArrowRight');
       expect(savedPrefs().width).toBe(AVATAR_COLUMN_MIN_WIDTH);
       press('End');
-      expect(savedPrefs().width).toBe(AVATAR_COLUMN_MAX_WIDTH);
-      expect(rootWidth()).toBe(`${AVATAR_COLUMN_MAX_WIDTH}px`);
-      expect(resizer()!.getAttribute('aria-valuenow')).toBe(String(AVATAR_COLUMN_MAX_WIDTH));
+      // A 2000 px window: half of it, which is also what leaves the page its 1000 px.
+      expect(savedPrefs().width).toBe(1000);
+      expect(rootWidth()).toBe('1000px');
+      expect(resizer()!.getAttribute('aria-valuenow')).toBe('1000');
     });
 
     test('End stops where the page would drop below 1000 px', () => {

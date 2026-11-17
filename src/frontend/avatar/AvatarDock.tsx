@@ -5,7 +5,7 @@
  * tasks ask the operator (described below).
  *
  * The column is as tall as the window and 380 px wide by default; its left edge can be dragged
- * (`ColumnResizer.tsx`, 320 to 560 px) and the width is remembered. The page keeps at least 1000 px: in a
+ * (`ColumnResizer.tsx`, from 320 px up to half the window) and the width is remembered. The page keeps at least 1000 px: in a
  * window too narrow for that (769 to 1319 px) the column floats over the page instead of taking room from
  * it, and a wide saved width is capped so the page keeps its 1000 px (the cap is not saved). On a window of
  * 768 px and below it is a full-width sheet over the page (`avatarColumnLayout` decides). It minimises to a round bubble in the bottom-right

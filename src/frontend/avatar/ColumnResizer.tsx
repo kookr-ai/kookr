@@ -1,6 +1,7 @@
 /**
  * The divider on the left edge of Lucy's column. Dragging it, or focusing it and pressing the arrow keys,
- * changes the column's width within its limits (320 px up to 560 px, or less where the window cannot spare that much).
+ * changes the column's width within its limits (from 320 px up to half the window, or less where the page would drop
+ * below 1000 px; 560 px at most while the column floats over the page).
  *
  * The column is docked to the right edge of the window, so its left edge is the side that moves: dragging
  * the divider to the left, or pressing ArrowLeft, makes the column wider, and the other way makes it
@@ -24,7 +25,7 @@ const DRAG_THRESHOLD_PX = 3;
 export interface ColumnResizerProps {
   /** The width the column is drawn at now. */
   width: number;
-  /** The widest the column may be in this window (the page keeps at least 1000 px); the drag and the End key stop here. */
+  /** The widest the column may be in this window (the page keeps at least 1000 px and half the window); the drag and the End key stop here. */
   maxWidth: number;
   /** The live width while dragging; not saved yet. */
   onResize: (width: number) => void;

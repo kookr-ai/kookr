@@ -1336,15 +1336,26 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await shot(page, 'resized-narrow');
   });
 
-  test('in a wide window the column can reach the full 560 px', async ({ page }) => {
+  test('in a wide window the column can take half of it, and the conversation stays a readable width', async ({ page }) => {
     await page.setViewportSize({ width: 2000, height: 900 });
     await openColumn(page, { asks: [] });
     const handle = page.getByTestId('avatar-column-resizer');
-    await expect(handle).toHaveAttribute('aria-valuemax', '560');
+    await expect(handle).toHaveAttribute('aria-valuemax', '1000');
     await handle.focus();
     await page.keyboard.press('End');
-    await expect.poll(async () => Math.round((await page.getByTestId('avatar-dock').boundingBox())!.width)).toBe(560);
-    expect(Math.round((await page.locator('.main').boundingBox())!.width)).toBe(2000 - 560);
+    await expect.poll(async () => Math.round((await page.getByTestId('avatar-dock').boundingBox())!.width)).toBe(1000);
+    expect(Math.round((await page.locator('.main').boundingBox())!.width)).toBe(2000 - 1000);
+    // The lines do not run the whole 1000 px: the conversation is 760 px of text, centred, and the composer lines up with it.
+    const dock = (await page.getByTestId('avatar-dock').boundingBox())!;
+    const hint = (await page.getByTestId('avatar-hint').boundingBox())!;
+    const input = (await page.getByTestId('avatar-typed-input').boundingBox())!;
+    const send = (await page.getByTestId('avatar-typed-send').boundingBox())!;
+    const left = hint.x - dock.x;
+    const right = dock.x + dock.width - (send.x + send.width);
+    expect(Math.abs(send.x + send.width - hint.x - 760)).toBeLessThanOrEqual(2);
+    expect(Math.abs(left - right)).toBeLessThanOrEqual(2);
+    expect(input.x).toBeGreaterThanOrEqual(hint.x);
+    await shot(page, 'widest-2000');
   });
 
   test('a saved width of 560 in a 1440 px window is shown as 440, so the page keeps 1000 px, and the saved width is not overwritten', async ({ page }) => {

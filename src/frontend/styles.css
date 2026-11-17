@@ -17211,7 +17211,8 @@ button.coordinator-chain-member:focus-visible {
 }
 
 /* --- Avatar panel (optional, off by default; see store/avatar-panel-prefs.ts) ---
-   Lucy's column: full height, docked to the right edge, 380px wide unless the operator dragged its left edge.
+   Lucy's column: full height, docked to the right edge, 380px wide unless the operator dragged its left edge
+   (up to half the window).
    The page makes room for it (`.app` has padding-right from `--lucy-column-width`, set by AvatarDock.tsx), so
    it does not cover the dashboard. At 768px and below it is a full-width sheet over the page instead. It
    minimises to a round bubble in the bottom-right corner. Sits above page content and the debug timeline (80) but
@@ -17341,7 +17342,9 @@ button.coordinator-chain-member:focus-visible {
 }
 .avatar-thread-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .avatar-thread-scroll:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
-.avatar-thread-content { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+/* Lines stay readable in a wide column: the conversation is at most 760px wide, centred, and the composer below
+   lines up with it. In a column narrower than that nothing changes. */
+.avatar-thread-content { box-sizing: border-box; width: 100%; max-width: calc(var(--lucy-reading-width, 760px) + 24px); margin: 0 auto; display: flex; flex-direction: column; gap: 10px; padding: 12px; }
 .avatar-thread-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .avatar-entry {
   display: flex;
@@ -17807,7 +17810,7 @@ button.coordinator-chain-member:focus-visible {
 .avatar-permission .avatar-launch-buttons { flex-wrap: wrap; align-items: center; }
 /* The composer: Talk, the text box (one line, growing to five) and Send in a row; the autonomy level under it.
    On a column too narrow for all three the text box and Send move to a line of their own under Talk. */
-.avatar-composer { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; border-top: 1px solid var(--border-dim); font-size: 12px; }
+.avatar-composer { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 6px max(12px, calc((100% - var(--lucy-reading-width, 760px)) / 2)); border-top: 1px solid var(--border-dim); font-size: 12px; }
 .avatar-composer-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; }
 .avatar-typed { flex: 1 1 180px; min-width: 0; display: flex; align-items: flex-end; gap: 6px; margin: 0; }
 .avatar-typed textarea {
