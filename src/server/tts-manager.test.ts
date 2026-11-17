@@ -733,6 +733,8 @@ describe('startTTS', () => {
       function stubPrunedImage(opts: { rebuildFails?: boolean } = {}) {
         let up = false;
         execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+          if (args.includes('config')) return cb(null, { stdout: `${IMAGE_NAME}\n`, stderr: '' });
+          if (args[0] === 'image') return cb(new Error(`Error response from daemon: No such image: ${IMAGE_NAME}:latest`), '', '');
           if (args.includes('--no-build')) return cb(new Error('No such image: tts-kookr-tts'), '', '');
           if (args.includes('up') && args.includes('--build')) {
             if (opts.rebuildFails) return cb(new Error('container exited with code 1'), '', '');
@@ -758,10 +760,11 @@ describe('startTTS', () => {
           const manager = await startTTS(startOpts(ttsDir));
 
           expect(manager.url).toBe('http://localhost:8004');
-          expect(dockerVerbs().filter((v) => v.startsWith('compose'))).toEqual([
+          expect(dockerVerbs().filter((v) => v.includes(' up -d'))).toEqual([
             expect.stringMatching(/ up -d --no-build$/),
             expect.stringMatching(/ up -d --build$/),
           ]);
+          expect(dockerVerbs()).toContain(`image inspect --format {{.Id}} ${IMAGE_NAME}`);
           await expect(readFile(join(ttsDir, '.kookr-tts-failed.hash'), 'utf-8')).rejects.toThrow(/ENOENT/);
           expect((await readFile(join(ttsDir, '.kookr-tts-build.hash'), 'utf-8')).trim()).toBe(failedHash);
 
@@ -800,6 +803,65 @@ describe('startTTS', () => {
           expect(dockerVerbs().filter((v) => v.includes(' up -d'))).toEqual([expect.stringMatching(/ up -d --no-build$/)]);
           expect((await readFile(failedPath, 'utf-8')).trim()).toBe(failedHash);
           expect((await readFile(join(ttsDir, '.kookr-tts-build.hash'), 'utf-8')).trim()).toBe('hash-of-older-files');
+        } finally {
+          await rm(ttsDir, { recursive: true, force: true });
+        }
+      });
+
+      /**
+       * `up --no-build` fails while the previous image is still there (issue #4038): something
+       * else holds the speech port, or docker cannot tell whether the image exists.
+       */
+      async function expectNoRebuildOverPreviousImage(
+        ttsDir: string,
+        failedHash: string,
+        lookup: (args: string[]) => { err: Error | null; stdout?: string } | null,
+      ) {
+        execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+          const answer = lookup(args);
+          if (answer) return cb(answer.err, { stdout: answer.stdout ?? '', stderr: '' });
+          if (args.includes('up')) return cb(new Error('Bind for 0.0.0.0:8004 failed: port is already allocated'), '', '');
+          cb(null, '', '');
+        });
+        vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('connection refused'); }));
+
+        await expect(startTTS(startOpts(ttsDir))).rejects.toThrow(/port is already allocated$/);
+        expect(dockerVerbs().filter((v) => v.includes(' up -d'))).toEqual([expect.stringMatching(/ up -d --no-build$/)]);
+        // The previous image keeps its name and the failed files stay remembered.
+        expect(dockerVerbs().some((v) => v.startsWith('tag ') || v.endsWith(' build'))).toBe(false);
+        expect((await readFile(join(ttsDir, '.kookr-tts-failed.hash'), 'utf-8')).trim()).toBe(failedHash);
+        expect((await readFile(join(ttsDir, '.kookr-tts-build.hash'), 'utf-8')).trim()).toBe('hash-of-older-files');
+      }
+
+      it('keeps the stamp, and does not rebuild, when up fails but the previous image is still present', async () => {
+        const ttsDir = await createTTSFixture();
+        try {
+          const failedHash = await seedPrunedRollback(ttsDir);
+          await expectNoRebuildOverPreviousImage(ttsDir, failedHash, (args) => {
+            if (args.includes('config')) return { err: null, stdout: `${IMAGE_NAME}\n` };
+            if (args[0] === 'image') return { err: null, stdout: `${OLD_IMAGE}\n` };
+            return null;
+          });
+          expect(dockerVerbs()).toContain(`image inspect --format {{.Id}} ${IMAGE_NAME}`);
+        } finally {
+          await rm(ttsDir, { recursive: true, force: true });
+        }
+      });
+
+      it.each([
+        ['compose cannot list its images', (args: string[]) =>
+          args.includes('config') ? { err: new Error('yaml: line 3: did not find expected key') } : null],
+        ['compose lists no images', (args: string[]) => (args.includes('config') ? { err: null, stdout: '\n' } : null)],
+        ['the daemon does not answer the image lookup', (args: string[]) => {
+          if (args.includes('config')) return { err: null, stdout: `${IMAGE_NAME}\n` };
+          if (args[0] === 'image') return { err: new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock') };
+          return null;
+        }],
+      ])('does not rebuild when %s', async (_label, lookup) => {
+        const ttsDir = await createTTSFixture();
+        try {
+          const failedHash = await seedPrunedRollback(ttsDir);
+          await expectNoRebuildOverPreviousImage(ttsDir, failedHash, lookup);
         } finally {
           await rm(ttsDir, { recursive: true, force: true });
         }

@@ -11,7 +11,7 @@
  * 5. Exposes the TTS HTTP URL for synthesis requests
  * 6. Restarts the previous image when a rebuild of an outdated container fails to
  *    start or fails its checks (issue #3656), and builds the current files once more when
- *    that previous image can no longer be started, e.g. after an image prune (issue #3985)
+ *    docker confirms that previous image is gone, e.g. after an image prune (issues #3985, #4038)
  * 7. Keeps a real stop() = compose down for failed-start cleanup and
  *    `pnpm prod:stop --with-sidecars` (routine SIGTERM detaches — see shutdown.ts)
  *
@@ -209,7 +209,10 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
       upFlags: knownBad || buildFailed ? ['--no-build'] : build ? ['--build'] : [],
     });
   } catch (err) {
-    if (knownBad && err instanceof ComposeUpError) {
+    // Only a missing image justifies the rebuild: if `up` failed for another reason (the port
+    // is taken, say) the previous image is still there, and rebuilding would move its name onto
+    // the files already known to fail (issue #4038).
+    if (knownBad && err instanceof ComposeUpError && (await isTTSImageMissing(composeFlags, env))) {
       return rebuildAfterPreviousImageFailed(startOpts, err, ttsDir, buildPlan.inputHash);
     }
     if (buildError !== null) {
@@ -293,10 +296,41 @@ async function rollBackToPreviousImage(
 }
 
 /**
+ * True only when docker confirms that an image the compose file runs does not exist. Any other
+ * outcome (compose cannot list its images, the daemon does not answer) counts as "not missing",
+ * so an image that may still be there is never rebuilt over.
+ */
+async function isTTSImageMissing(composeFlags: string[], env: NodeJS.ProcessEnv): Promise<boolean> {
+  let names: string[];
+  try {
+    const { stdout } = await execFileAsync('docker', ['compose', ...composeFlags, 'config', '--images'], {
+      env,
+      timeout: 30_000,
+    });
+    names = String(stdout ?? '').split(/\s+/).filter(Boolean);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[tts] Could not list the TTS compose images (${msg}); not rebuilding over the previous image`);
+    return false;
+  }
+  for (const name of names) {
+    try {
+      await execFileAsync('docker', ['image', 'inspect', '--format', '{{.Id}}', name], { env, timeout: 30_000 });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/no such image/i.test(msg)) return true;
+      console.warn(`[tts] Could not check the TTS image ${name} (${msg}); not rebuilding over it`);
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
  * `docker compose up --no-build` could not start the previous image, kept because the current
- * files failed their checks: usually the image was removed (`docker image prune -a`). Whether the
- * image still exists is not checked, so any failure of `up` itself (a port in use, say) counts. The
- * failed-build stamp only protects a previous image that can still run, so drop it and build the
+ * files failed their checks, and docker confirms the image is gone: usually it was removed
+ * (`docker image prune -a`). A failure of `up` while the image still exists (a port in use, say)
+ * does not get here (issue #4038). The failed-build stamp only protects a previous image that can still run, so drop it and build the
  * current files once (issue #3985). If that fails too, nothing is remembered and the next start
  * builds again. A previous image that starts but fails its checks is not covered: it is still
  * there, so rebuilding over it would lose it.
