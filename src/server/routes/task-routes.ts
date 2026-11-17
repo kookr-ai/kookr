@@ -148,19 +148,16 @@ function supervisorUnauthorizedResponse(c: Context) {
   return c.json({ error: 'supervisor-unauthorized' }, 401);
 }
 
-export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
+/**
+ * The task-lifecycle commands the task routes run (`POST /api/tasks/:id/complete`, delete, reopen,
+ * batch abort), built from the routes' own dependencies. Exported so the server builds one instance
+ * and hands it to every caller that completes a task over HTTP: the routes, and Lucy's close action
+ * once the operator has confirmed its card.
+ */
+export function createTaskRouteLifecycleCommands(deps: TaskRouteDeps): TaskLifecycleCommands {
   const { taskStore, monitor, adapter, hookWatcher, watchdog, broadcastToAll, serverCwd, hookIngestion } = deps;
-  // Load-based admission gates for POST /api/tasks (issue #1590 event-loop,
-  // issues #1992/#2926 data-directory byte/inode capacity). Read env once at registration
-  // (env config, like the operational-alert thresholds), unless a config was
-  // threaded explicitly (tests).
-  const admissionControlConfig = deps.admissionControlConfig ?? readAdmissionControlConfigFromEnv();
-  const diskAdmissionConfig = deps.diskAdmissionConfig ?? readDiskAdmissionConfigFromEnv();
-  const coordinatorSuppressions = deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? serverCwd);
   const auditLogPath = deps.kookrDir ? join(deps.kookrDir, 'audit.jsonl') : undefined;
-  /** Resolve the `X-Kookr-Actor` header into an attributed audit-row actor (issue #1526 Phase B). */
-  const actorFromRequest = (c: Context) => resolveLifecycleActor('api', c.req.header(ACTOR_HEADER));
-  const lifecycleCommands = new TaskLifecycleCommands({
+  return new TaskLifecycleCommands({
     taskStore,
     monitor,
     interactionLog: deps.interactionLog,
@@ -205,6 +202,22 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       });
     },
   });
+}
+
+export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
+  const { taskStore, monitor, adapter, hookWatcher, watchdog, broadcastToAll, serverCwd, hookIngestion } = deps;
+  // Load-based admission gates for POST /api/tasks (issue #1590 event-loop,
+  // issues #1992/#2926 data-directory byte/inode capacity). Read env once at registration
+  // (env config, like the operational-alert thresholds), unless a config was
+  // threaded explicitly (tests).
+  const admissionControlConfig = deps.admissionControlConfig ?? readAdmissionControlConfigFromEnv();
+  const diskAdmissionConfig = deps.diskAdmissionConfig ?? readDiskAdmissionConfigFromEnv();
+  const coordinatorSuppressions = deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? serverCwd);
+  const auditLogPath = deps.kookrDir ? join(deps.kookrDir, 'audit.jsonl') : undefined;
+  /** Resolve the `X-Kookr-Actor` header into an attributed audit-row actor (issue #1526 Phase B). */
+  const actorFromRequest = (c: Context) => resolveLifecycleActor('api', c.req.header(ACTOR_HEADER));
+  // One instance for the routes; built ahead and passed in when another caller (Lucy's close action) shares it.
+  const lifecycleCommands = deps.lifecycleCommands ?? createTaskRouteLifecycleCommands(deps);
 
   function broadcastSnapshotWithCoordinator(): void {
     broadcastToAll(createSnapshotMessage({

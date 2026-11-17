@@ -514,3 +514,46 @@ describe('hardening from review', () => {
     expect((await t.controller.confirm('c1', 'p2', 'click')).outcome).toBe('launched');
   });
 });
+
+describe('one card for all of her proposals', () => {
+  test('making a launch card tells the holder of her other cards to clear its own, once per card made', async () => {
+    let cleared = 0;
+    const controller = createLucyLaunchController({
+      getAutonomy: () => 'balanced',
+      getProjects: () => PROJECTS,
+      writeSpec: async () => INVESTIGATION,
+      checkRoom: () => null,
+      launch: async () => ({ task: { id: 'task-1' } }),
+      onHeld: () => { cleared += 1; },
+      warn: () => {},
+    });
+    await controller.propose({ conversationId: 'c1', operatorWords: WORDS });
+    expect(cleared).toBe(1);
+    // A request that makes no card clears nothing.
+    await controller.propose({ conversationId: 'c1', operatorWords: [] });
+    expect(cleared).toBe(1);
+    controller.dispose();
+  });
+
+  test('when another kind of card takes the screen, the launch card is dropped and can no longer be confirmed', async () => {
+    const t = setup();
+    await t.propose();
+    t.controller.dropPending();
+    expect(t.controller.pending('c1')).toBeUndefined();
+    expect(t.messages.at(-1)).toEqual({ type: 'lucy_launch', conversationId: 'c1', outcome: { outcome: 'cancelled', proposalId: 'p1' } });
+    expect(t.logs.at(-1)).toMatchObject({ event: 'dropped', reason: 'replaced' });
+    expect(await t.controller.confirm('c1', 'p1', 'click')).toEqual({ outcome: 'unknown', proposalId: 'p1' });
+    expect(await t.controller.handleReply('c1', 'go')).toEqual({ handled: false });
+    expect(t.launches).toHaveLength(0);
+  });
+
+  test('a hands-off launch that is counting down is stopped the same way', async () => {
+    const t = setup({ level: 'hands-off' });
+    await t.propose();
+    t.controller.dropPending();
+    // The timer that would have launched it was cleared.
+    expect(t.timers.every((timer) => !timer.live)).toBe(true);
+    expect(t.launches).toHaveLength(0);
+  });
+});
+

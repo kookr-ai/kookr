@@ -15,7 +15,10 @@ import type { LucyModelPort } from '../../core/lucy-operator/model-port.js';
 import type { LucyLookSource } from '../../core/lucy-operator/tools.js';
 import { runLucyTurn, type LucyHistoryMessage, type LucyTurnLimits, type LucyTurnSummary } from '../../core/lucy-operator/turn.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
+import type { LucyActionController } from './action-controller.js';
 import type { LucyLaunchController } from './launch-controller.js';
+import type { LucyActionOutcome } from '../../shared/contracts/lucy-action.js';
+import type { LucyLaunchOutcome } from '../../shared/contracts/lucy-launch.js';
 import { countSpokenWords, DISABLED_LUCY_INTERACTION_LOG, type LucyInteractionLog } from '../lucy-interaction-log.js';
 
 /** Earlier messages sent with a turn: ten exchanges. */
@@ -34,6 +37,11 @@ export interface LucyOperatorDeps {
   source: LucyLookSource;
   /** Present when launching is switched on (issue #3676): she may propose a launch, and "go" confirms it. */
   launch?: LucyLaunchController;
+  /**
+   * Present when she may act on existing tasks: she may propose answering a question, replying to a
+   * task or closing one, and "go" confirms the card on screen. Switched on together with launching.
+   */
+  actions?: LucyActionController;
   log?: LucyInteractionLog;
   limits?: Partial<LucyTurnLimits>;
   now?: () => number;
@@ -49,6 +57,15 @@ export interface LucyTurnContext {
 export interface LucyOperatorService {
   /** The launch proposals, when launching is on. The confirm, decline and cancel routes call it. */
   readonly launch?: LucyLaunchController;
+  /** The proposals about existing tasks (answer, reply, close), when she may act. The confirm and decline routes call it. */
+  readonly actions?: LucyActionController;
+  /**
+   * Her voice is audible until `until` (server clock), for whichever card of this conversation she is
+   * reading out: the echo guard, and a hands-off launch's cancel window, start when she has really finished.
+   */
+  noteSpeaking(conversationId: string, until: number): void;
+  /** The conversation ended (the voice socket closed): any proposal it holds is dropped, never carried out. */
+  closeConversation(conversationId: string): void;
   /** True while a turn of this conversation is running; the route answers 409 instead of starting another. */
   isBusy(conversationId: string): boolean;
   /** True while as many turns are running as are allowed at once; the route answers 429 instead of starting another. */
@@ -91,9 +108,10 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
     return conversation.messages;
   };
 
-  const remember = (conversationId: string, asked: string, answer: string, at: number): void => {
+  /** `note`: `asked` is Kookr's own note, not something the operator said, so it is never used to write a task, a reply or an answer. */
+  const remember = (conversationId: string, asked: string, answer: string, at: number, note = false): void => {
     const previous = conversations.get(conversationId)?.messages ?? [];
-    const messages = [...previous, { role: 'user' as const, content: clip(asked) }, { role: 'assistant' as const, content: clip(answer) }].slice(-MAX_HISTORY_MESSAGES);
+    const messages = [...previous, { role: 'user' as const, content: clip(asked), ...(note ? { note: true as const } : {}) }, { role: 'assistant' as const, content: clip(answer) }].slice(-MAX_HISTORY_MESSAGES);
     // Re-insert so the map's order is "least recently used first", then drop the oldest beyond the cap.
     conversations.delete(conversationId);
     conversations.set(conversationId, { messages, lastUsedAt: at });
@@ -129,10 +147,19 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
 
   return {
     launch: deps.launch,
+    actions: deps.actions,
+    noteSpeaking: (conversationId, until) => {
+      deps.launch?.noteSpeaking(conversationId, until);
+      deps.actions?.noteSpeaking(conversationId, until);
+    },
+    closeConversation: (conversationId) => {
+      deps.launch?.closeConversation(conversationId);
+      deps.actions?.closeConversation(conversationId);
+    },
     isBusy: (conversationId) => running.has(conversationId),
     atCapacity: () => running.size >= MAX_CONCURRENT_TURNS,
     rememberSaid: (conversationId, note, said) => {
-      if (said.trim()) remember(conversationId, note, said, now());
+      if (said.trim()) remember(conversationId, note, said, now(), true);
     },
 
     async *runTurn(request, signal, context) {
@@ -146,21 +173,27 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
       running.add(request.conversationId);
 
       // Confirming, declining and "ignore this, it may be my own voice" are decided here, before any
-      // model is called, so no model output and no task text can confirm a launch.
-      if (deps.launch) {
-        let handling: Awaited<ReturnType<LucyLaunchController['handleReply']>> = { handled: false };
+      // model is called, so no model output and no task text can confirm a proposal. There is one card
+      // on screen for all of her proposals, so at most one of the two holders answers; the holder of the
+      // action cards is asked first, and a sentence that only drops its card goes on to the launch holder
+      // (which also answers a request to change her freedom).
+      if (deps.actions || deps.launch) {
+        const replyContext = { input: request.input, overlapsReadBack: request.overlapsReadBack, speechStartedAt: context?.speechStartedAt };
+        let handling: { handled: false } | { handled: true; say: string; ignored?: boolean; event?: ({ type: 'action' } & LucyActionOutcome) | ({ type: 'launch' } & LucyLaunchOutcome) } = { handled: false };
         try {
-          handling = await deps.launch.handleReply(request.conversationId, request.text, {
-            input: request.input,
-            overlapsReadBack: request.overlapsReadBack,
-            speechStartedAt: context?.speechStartedAt,
-          });
+          const acted = deps.actions ? await deps.actions.handleReply(request.conversationId, request.text, replyContext) : { handled: false as const };
+          if (acted.handled) {
+            handling = { handled: true, say: acted.say, ignored: acted.ignored, ...(acted.outcome ? { event: { type: 'action', ...acted.outcome } } : {}) };
+          } else if (deps.launch) {
+            const launched = await deps.launch.handleReply(request.conversationId, request.text, replyContext);
+            if (launched.handled) handling = { handled: true, say: launched.say, ignored: launched.ignored, ...(launched.outcome ? { event: { type: 'launch', ...launched.outcome } } : {}) };
+          }
         } catch (err) {
-          warn(redactSpeechSecrets(`could not handle a reply to a launch: ${err instanceof Error ? err.message : String(err)}`));
+          warn(redactSpeechSecrets(`could not handle a reply to a proposal: ${err instanceof Error ? err.message : String(err)}`));
         }
         if (handling.handled) {
           try {
-            if (handling.outcome) yield { type: 'launch', ...handling.outcome };
+            if (handling.event) yield handling.event;
             if (handling.say) yield { type: 'text', delta: handling.say };
             const done: LucyTurnDoneEvent = {
               type: 'done',
@@ -182,7 +215,7 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
       // Filled by the loop when the turn is over, including when this generator is abandoned mid-way.
       let settled: LucyTurnSummary | undefined;
       const inner = runLucyTurn(
-        { model: deps.model, source: deps.source, launch: deps.launch, limits: deps.limits, now, warn, onSettled: (summary) => { settled = summary; } },
+        { model: deps.model, source: deps.source, launch: deps.launch, actions: deps.actions, limits: deps.limits, now, warn, onSettled: (summary) => { settled = summary; } },
         { text: request.text, conversationId: request.conversationId, spoken: request.input === 'voice', history: historyOf(request.conversationId, startedAt), signal },
       );
       try {

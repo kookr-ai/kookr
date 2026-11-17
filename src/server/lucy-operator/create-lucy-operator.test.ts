@@ -31,7 +31,11 @@ function routeDeps(overrides: Record<string, unknown> = {}) {
     },
     // The board and a task's detail must not read a terminal; only `taskOutput` does (tests that use it override these).
     adapter: { captureDisplay: async () => { throw new Error('the board and a task\'s detail must not read a terminal'); } },
-    githubStateStore: { getReferences: (taskId: string) => { asked.push(`refs:${taskId}`); return [{ type: 'pr', number: 3620 }]; } },
+    githubStateStore: {
+      getReferences: (taskId: string) => { asked.push(`refs:${taskId}`); return [{ type: 'pr', number: 3620 }]; },
+      // No pull-request state is known unless a test says so.
+      getTaskState: (taskId: string) => { asked.push(`prs:${taskId}`); return { prs: [] }; },
+    },
     getQuotaStatus: () => ({ fiveHour: null, sevenDay: { utilization: 42, resetsAt: '2026-11-15T00:00:00Z' }, updatedAt: 1 }),
     taskTailStore: { getByTaskId: async () => { throw new Error('the board and a task\'s detail must not read a saved terminal tail'); } },
     ...overrides,
@@ -73,7 +77,33 @@ describe('buildLucyLookSource', () => {
   test('a task\'s detail carries its linked pull requests', () => {
     const { deps, asked } = routeDeps();
     expect(buildLucyLookSource(deps).taskDetail('t1')).toMatchObject({ prompt: 'Write the report', references: ['PR #3620'] });
-    expect(asked).toEqual(['refs:t1']);
+    expect(asked.sort()).toEqual(['prs:t1', 'refs:t1']);
+  });
+
+  describe('delivery facts', () => {
+    const pr = (number: number, status: string, detectedFrom: string) => ({ ref: { type: 'pr', number, detectedFrom }, status });
+    const withPrs = (prs: unknown[], refs: unknown[]) => routeDeps({ githubStateStore: { getReferences: () => refs, getTaskState: () => ({ prs }) } }).deps;
+
+    test('a task\'s detail says which of its pull requests merged and which is still open', () => {
+      const deps = withPrs([pr(12, 'merged', 'kookr-s1'), pr(15, 'open', 'kookr-s1')], [{ type: 'pr', number: 12 }, { type: 'pr', number: 15 }, { type: 'issue', number: 7 }]);
+      const detail = buildLucyLookSource(deps).taskDetail('t1');
+      expect(detail?.pullRequests).toEqual([{ number: 12, status: 'merged' }, { number: 15, status: 'open' }]);
+      // Listed once, with its state: not again among the plain links.
+      expect(detail?.references).toEqual(['issue #7']);
+    });
+
+    test('a pull request that the task\'s request only cites is not presented as its delivery', () => {
+      const deps = withPrs([pr(9, 'merged', 'prompt'), pr(12, 'open', 'kookr-s1')], [{ type: 'pr', number: 9 }, { type: 'pr', number: 12 }]);
+      const detail = buildLucyLookSource(deps).taskDetail('t1');
+      expect(detail?.pullRequests).toEqual([{ number: 12, status: 'open' }]);
+      // It stays a plain link, with no "merged" beside it.
+      expect(detail?.references).toEqual(['PR #9']);
+    });
+
+    test('the board can read the same facts for the task lines it shows', () => {
+      const board = buildLucyLookSource(withPrs([pr(9, 'merged', 'prompt'), pr(12, 'merged', 'kookr-s1')], [])).board();
+      expect(board.pullRequestsOf?.('t1')).toEqual([{ number: 12, status: 'merged' }]);
+    });
   });
 
   test('only the terminal look-up reads a terminal or a saved terminal tail', async () => {

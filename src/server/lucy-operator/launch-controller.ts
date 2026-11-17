@@ -27,11 +27,14 @@ import {
   classifyReply,
   buildUnknownProjectSay,
   ECHO_TAIL_MS,
+  estimateSpeechMs,
   HANDS_OFF_CANCEL_WINDOW_MS,
   LAUNCH_PROPOSAL_TTL_MS,
+  mayBeOwnVoice,
   parseSpecDraft,
   resolveProject,
   type LaunchableProject,
+  type LucyReplyContext,
 } from '../../core/lucy-operator/launch-proposal.js';
 import type { LucyProposeResult } from '../../core/lucy-operator/launch-tool.js';
 import { isGenericTaskName, spokenTaskName } from '../../core/spoken-task-name.js';
@@ -69,6 +72,11 @@ export interface LucyLaunchControllerDeps {
   audit?(row: { taskId: string; proposalId: string; level: LucyAutonomy; via: LucyLaunchVia; project: string; kind: LucyLaunchKind; queued: boolean; duplicate: boolean }): void | Promise<void>;
   /** Told about every proposal and every outcome, so every open dashboard shows or clears the card. */
   emit?(message: LucyLaunchBroadcast): void;
+  /**
+   * Called when a new proposal is about to be held. There is one card on screen for all of her
+   * proposals, so the holder of her other cards (answer, reply, close) drops its own here.
+   */
+  onHeld?(): void;
   log?: LucyInteractionLog;
   now?: () => number;
   newId?: () => string;
@@ -115,16 +123,10 @@ const MAX_OPERATOR_WORDS = 6;
 const NEEDS_INPUT_REPEAT_MS = 5 * 60 * 1000;
 const MAX_WORDS_CHARS = 2000;
 
-/** Rough time to speak a sentence: about three words a second, plus a second for the voice to start. */
-function estimateSpeechMs(sentence: string): number {
-  const words = sentence.split(/\s+/).filter(Boolean).length;
-  return Math.round((words / 3) * 1000) + 1000;
-}
-
 export interface LucyLaunchController {
   propose(input: { conversationId: string; operatorWords: readonly string[]; spoken?: boolean; signal?: AbortSignal }): Promise<LucyProposeResult>;
   /** Called with the operator's sentence at the start of a turn, before any model. */
-  handleReply(conversationId: string, text: string, context?: { input?: 'voice' | 'typed'; overlapsReadBack?: boolean; speechStartedAt?: number }): Promise<LucyReplyHandling>;
+  handleReply(conversationId: string, text: string, context?: LucyReplyContext): Promise<LucyReplyHandling>;
   confirm(conversationId: string, proposalId: string, via: LucyLaunchVia): Promise<LucyLaunchOutcome>;
   decline(conversationId: string, proposalId: string): LucyLaunchOutcome;
   /** Stop a hands-off launch during its window. Only valid while it is held. */
@@ -138,6 +140,8 @@ export interface LucyLaunchController {
   closeConversation(conversationId: string): void;
   /** The proposal currently held for a conversation, if it can still be confirmed. */
   pending(conversationId: string): LucyLaunchProposalView | undefined;
+  /** Another kind of card took the screen: every held proposal is dropped, never launched, and its card is cleared. */
+  dropPending(): void;
   /** A task ended or needs the operator: tell its conversation if she launched it. */
   onTaskOutcome(taskId: string, outcome: { kind: 'completion_ready' | 'completed' | 'failed' | 'cancelled' | 'needs_input' }, taskLabel?: string): void;
   /** The sentence last announced for a task she launched, or undefined. The speech route says only this. */
@@ -324,6 +328,15 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
     return finish(conversationId, { outcome: 'cancelled', proposalId });
   }
 
+  function dropPending(): void {
+    for (const other of [...held.keys()]) {
+      const replaced = drop(other);
+      if (!replaced) continue;
+      record(other, { event: 'dropped', proposalId: replaced.view.id, reason: 'replaced' });
+      announce({ type: 'lucy_launch', conversationId: other, outcome: { outcome: 'cancelled', proposalId: replaced.view.id } });
+    }
+  }
+
   return {
     async propose({ conversationId, operatorWords, spoken, signal }) {
       const words = operatorWords.map((w) => redactSpeechSecrets(w).slice(0, MAX_WORDS_CHARS)).filter((w) => w.trim()).slice(-MAX_OPERATOR_WORDS);
@@ -377,11 +390,11 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       };
       // A new proposal replaces any old one, in this conversation or another: there is one operator and one card on
       // screen, so "go" can only mean the proposal that is shown.
-      for (const other of [...held.keys()]) {
-        const replaced = drop(other);
-        if (!replaced) continue;
-        record(other, { event: 'dropped', proposalId: replaced.view.id, reason: 'replaced' });
-        announce({ type: 'lucy_launch', conversationId: other, outcome: { outcome: 'cancelled', proposalId: replaced.view.id } });
+      dropPending();
+      try {
+        deps.onHeld?.();
+      } catch (err) {
+        warn(`could not clear another card: ${err instanceof Error ? err.message : String(err)}`);
       }
       const entry: Held = {
         view,
@@ -432,14 +445,10 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       }
 
       // Spoken words that began while she was still reading the proposal could be her own voice.
-      // They neither confirm nor drop it.
-      // Saying no is always safe, so a decline is heard even then; a confirmation is not.
-      if (context.input === 'voice' && classifyReply(text) !== 'decline') {
-        const startedAt = context.speechStartedAt ?? now();
-        if (context.overlapsReadBack === true || startedAt < entry.speakingUntil) {
-          record(conversationId, { event: 'ignored', proposalId: entry.view.id, level: entry.view.level, via: 'spoken', reason: 'began during the read-back' });
-          return { handled: true, say: '', ignored: true };
-        }
+      // They neither confirm nor drop it (the rule is shared with her other cards: `mayBeOwnVoice`).
+      if (mayBeOwnVoice(text, context, entry.speakingUntil, now())) {
+        record(conversationId, { event: 'ignored', proposalId: entry.view.id, level: entry.view.level, via: 'spoken', reason: 'began during the read-back' });
+        return { handled: true, say: '', ignored: true };
       }
 
       const via: LucyLaunchVia = context.input === 'voice' ? 'spoken' : 'typed';
@@ -489,6 +498,8 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
     },
 
     pending: (conversationId) => live(conversationId)?.view,
+
+    dropPending,
 
     onTaskOutcome(taskId, outcome, taskLabel) {
       const conversationId = launchedFrom.get(taskId);

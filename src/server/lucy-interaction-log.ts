@@ -4,7 +4,7 @@
  * (normally `~/.kookr/`), stays on this machine, and exists so the wording,
  * length and proactivity of her summaries can be analysed after the fact.
  *
- * Five kinds of line, all carrying `v: 1` and an ISO `ts`:
+ * Six kinds of line, all carrying `v: 1` and an ISO `ts`:
  *  - `said`: the server produced a clip (task summary or agent speak). Carries
  *    the final text, the pre-"speakable" wording when it differs, why the
  *    template wording was used when it was (`fallbackReason`), and timings.
@@ -16,6 +16,9 @@
  *    the latencies, the tokens and the cost. What the look-ups returned is not recorded.
  *  - `launch`: one step in the life of a launch proposal (issue #3676): proposed, then
  *    launched, refused, declined, cancelled, expired or dropped, with the level in force and the task id.
+ *  - `action`: one step in the life of a proposal to answer a task's question, send it a reply or
+ *    close it: proposed, then done, refused, declined, expired or dropped. Always carries
+ *    `actor: "lucy-operator"`, the task, and for a reply or a free-text answer the text sent.
  *  - `ui`: a `lucy_*` telemetry event the browser sent over the websocket.
  *    The browser is not trusted, so only the documented fields survive
  *    (see {@link sanitizeLucyUiEvent}): enums are validated, strings clamped,
@@ -34,6 +37,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { appendJsonlWithRotation, type JsonlRotationOptions } from '../core/jsonl-rotation.js';
+import { LUCY_OPERATOR_ACTOR_ID } from '../shared/contracts/lucy-launch.js';
 import type { SpeakAgentFallbackReason } from '../shared/contracts/speech.js';
 
 export const LUCY_INTERACTION_LOG_FILENAME = 'lucy-interactions.jsonl';
@@ -129,6 +133,32 @@ export interface LucyLaunchRecordInput {
   reason?: string;
 }
 
+/**
+ * One step in the life of a proposal to act on an existing task: answer its question, send it a
+ * reply, or close it (`shared/contracts/lucy-action.ts`). `proposed`, then `done`, `refused`,
+ * `declined`, `expired`, `dropped` (the operator said something else, or another card replaced it)
+ * or `ignored` (spoken words that could have been her own voice). Everything recorded here was
+ * done, or not done, by `lucy-operator` for the operator.
+ */
+export interface LucyActionRecordInput {
+  conversationId: string;
+  event: 'proposed' | 'done' | 'refused' | 'declined' | 'expired' | 'dropped' | 'ignored' | 'no_proposal';
+  /** `answer`, `reply` or `close`. */
+  action?: string;
+  proposalId?: string;
+  /** How the operator answered: `spoken`, `typed` or `click`. */
+  via?: string;
+  taskId?: string;
+  askId?: string;
+  /** For an answer: `option:<index>` or `text`. */
+  choice?: string;
+  /** The operator's own words (secrets redacted by the caller). */
+  asked?: string;
+  /** The text that will be, or was, sent: the reply or the free-text answer (secrets redacted by the caller). */
+  text?: string;
+  reason?: string;
+}
+
 /** `operator_ask`: Lucy read out a `kookr ask` question (see routes/ask-routes.ts). */
 export type LucySaidSource = 'task_summary' | 'agent_speak' | 'operator_ask' | 'permission_notice';
 
@@ -164,6 +194,8 @@ export interface LucyInteractionLog {
   recordOperatorTurn?(input: LucyOperatorTurnRecordInput): void;
   /** Record a step in the life of a launch proposal (issue #3676). Never throws. */
   recordLaunch?(input: LucyLaunchRecordInput): void;
+  /** Record a step in the life of a proposal to answer, reply to or close a task. Never throws. */
+  recordAction?(input: LucyActionRecordInput): void;
   /** Record a client `lucy_*` telemetry event as received. Never throws. */
   recordUi(sessionId: string, event: Record<string, unknown>): void;
   /** Await queued writes (tests, orderly shutdown). Never rejects. */
@@ -196,6 +228,7 @@ export const DISABLED_LUCY_INTERACTION_LOG: LucyInteractionLog = {
   recordLiveTurn: () => {},
   recordOperatorTurn: () => {},
   recordLaunch: () => {},
+  recordAction: () => {},
   recordUi: () => {},
   flush: async () => {},
 };
@@ -285,6 +318,10 @@ export function createLucyInteractionLog(options: LucyInteractionLogOptions = {}
       const picked = pickFields(input, LAUNCH_FIELDS);
       enqueue({ kind: 'launch', ...picked }, MAX_PENDING_LUCY_LINES);
     },
+    recordAction(input) {
+      const picked = pickFields(input, ACTION_FIELDS);
+      enqueue({ kind: 'action', actor: LUCY_OPERATOR_ACTOR_ID, ...picked }, MAX_PENDING_LUCY_LINES);
+    },
     recordUi(sessionId, event) {
       const clean = sanitizeLucyUiEvent(event);
       if (!clean) return;
@@ -314,6 +351,10 @@ const OPERATOR_TURN_FIELDS = [
 
 const LAUNCH_FIELDS = [
   'conversationId', 'event', 'proposalId', 'level', 'via', 'project', 'launchKind', 'asked', 'description', 'taskId', 'reason',
+] as const;
+
+const ACTION_FIELDS = [
+  'conversationId', 'event', 'action', 'proposalId', 'via', 'taskId', 'askId', 'choice', 'asked', 'text', 'reason',
 ] as const;
 
 /** Most tool names kept per operator turn (four model calls of at most four look-ups each). */

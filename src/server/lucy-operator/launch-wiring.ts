@@ -77,27 +77,41 @@ export async function lucyLaunchableProjects(deps: RouteDeps): Promise<Launchabl
   return selectLaunchableProjects(await listProjectSummaries(deps)).map((entry) => entry.project);
 }
 
+/**
+ * The one model call that writes what will be launched or sent: no tools, and the only messages it is
+ * given are the instructions and the operator's own sentences. Shared by the launch and action
+ * controllers so neither can hand it anything else.
+ */
+export function lucyWriterCall(
+  model: LucyModelPort,
+  maxOutputTokens: number,
+): (request: { system: string; operatorWords: readonly string[]; signal?: AbortSignal }) => Promise<string> {
+  return async ({ system, operatorWords, signal }) => {
+    let text = '';
+    for await (const event of model({
+      messages: [{ role: 'system', content: system }, ...operatorWords.map((content) => ({ role: 'user' as const, content }))],
+      tools: [],
+      maxOutputTokens,
+      signal,
+    })) {
+      if (event.type === 'text') text += event.delta;
+    }
+    return text;
+  };
+}
+
 export function buildLucyLaunchController(
   deps: RouteDeps,
   model: LucyModelPort,
   log: LucyInteractionLog | undefined,
+  options: { onHeld?: () => void } = {},
 ): LucyLaunchController {
   return createLucyLaunchController({
+    ...(options.onHeld ? { onHeld: options.onHeld } : {}),
     // Read here, at launch time, from the server's settings. No request can set it.
     getAutonomy: () => deps.settings?.get().lucyAutonomy ?? DEFAULT_LUCY_AUTONOMY,
     getProjects: () => lucyLaunchableProjects(deps),
-    writeSpec: async ({ system, operatorWords, signal }) => {
-      let text = '';
-      for await (const event of model({
-        messages: [{ role: 'system', content: system }, ...operatorWords.map((content) => ({ role: 'user' as const, content }))],
-        tools: [],
-        maxOutputTokens: 900,
-        signal,
-      })) {
-        if (event.type === 'text') text += event.delta;
-      }
-      return text;
-    },
+    writeSpec: lucyWriterCall(model, 900),
     checkRoom: lucyLaunchRoomCheck(deps),
     launch: (opts, server) => launchTask(deps.launchServiceDeps, opts, server),
     // The durable trail: who asked (lucy-operator), for which task, under which level, how it was confirmed.

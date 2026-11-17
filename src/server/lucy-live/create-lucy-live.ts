@@ -76,7 +76,7 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
         const conversationId = `live-${randomUUID()}`;
         // A tab closed during a read-back must not leave a hands-off launch counting down.
         ws.once('close', () => {
-          try { deps.getOperator?.()?.launch?.closeConversation(conversationId); } catch { /* shutting down */ }
+          try { deps.getOperator?.()?.closeConversation(conversationId); } catch { /* shutting down */ }
         });
         const ports: LucyLivePorts = {
           send,
@@ -92,7 +92,7 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
               temperature: 0.3,
             });
           },
-          noteAudible: (until) => deps.getOperator?.()?.launch?.noteSpeaking(conversationId, until),
+          noteAudible: (until) => deps.getOperator?.()?.noteSpeaking(conversationId, until),
           openVad: deps.vad ? () => deps.vad!.openTurn() : undefined,
           synthesize: async (text, signal) => {
             const result = await synthesize({ ttsUrl, text, voice: deps.getVoice(), signal });

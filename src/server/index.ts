@@ -3159,6 +3159,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         }
       }
     },
+    // What her confirmed actions call: the audited answer entry point the panel's buttons use, and the
+    // tracked reply delivery the reply box uses, under her own source so the dashboard shows who typed it.
+    lucyActionPorts: {
+      ...(askService
+        ? {
+            answerAsk: (input, opts) => (operatorAsksPort
+              ? operatorAsksPort.answer(input, opts)
+              : Promise.resolve({ ok: false, reason: 'not_found' } as const)),
+          }
+        : {}),
+      submitReply: (sessionId, text) => userInputDeliveries.submitMessage(sessionId, text, 'lucy_operator'),
+    },
     getLucyLiveStatus: () => lucyLiveRuntime.status(),
     supervisionService,
     delegationService: delegationRuntime.service,
@@ -4703,6 +4715,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     stopLucyNeedsInputObserver();
     // No hands-off launch may fire during shutdown.
     lucyOperatorHolder.get()?.launch?.dispose();
+    lucyOperatorHolder.get()?.actions?.dispose();
 
     // Final task-state save (dirty flush under SQLite; full rewrite under JSON)
     try {

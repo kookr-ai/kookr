@@ -224,7 +224,11 @@ describe('createLucyLive', () => {
       const requests: Array<{ request: LucyTurnRequest; context: unknown }> = [];
       const noted: number[] = [];
       const service = {
-        launch: { noteSpeaking: (_conversationId: string, until: number) => { noted.push(until); } },
+        // Talk goes to the operator conversation only while launching is on (`launch` present); what it
+        // tells about her voice and a closed socket goes to the service, which passes it to every card holder.
+        launch: {},
+        noteSpeaking: (_conversationId: string, until: number) => { noted.push(until); },
+        closeConversation: () => {},
         isBusy: () => false,
         atCapacity: () => false,
         runTurn: async function* (request: LucyTurnRequest, _signal?: AbortSignal, context?: unknown) {
@@ -249,7 +253,7 @@ describe('createLucyLive', () => {
       expect(ws.sent.filter((m) => m.type === 'sentence').map((m) => m.text)).toEqual(['I will launch an investigation in kookr: why it stops.', 'Say go to start.']);
     });
 
-    it('tells the launch controller how long her voice is audible, so the cancel window starts after the read-back', async () => {
+    it('tells the operator service how long her voice is audible, so the cancel window starts after the read-back', async () => {
       const { service, noted } = operator([{ type: 'text', delta: 'I will launch it. ' }, { type: 'text', delta: 'Say go to start.' }, done('answered')]);
       const { ws } = setup({ getOperator: () => service });
       await runTurn(ws);
@@ -273,7 +277,7 @@ describe('createLucyLive', () => {
     it('closing the socket drops that conversation\'s pending proposal', async () => {
       const closed: string[] = [];
       const { service, requests } = operator([{ type: 'text', delta: 'Okay. ' }, done('answered')]);
-      (service as unknown as { launch: Record<string, unknown> }).launch.closeConversation = (id: string) => { closed.push(id); };
+      (service as unknown as Record<string, unknown>).closeConversation = (id: string) => { closed.push(id); };
       const { ws } = setup({ getOperator: () => service });
       await runTurn(ws);
       ws.emit('close');
