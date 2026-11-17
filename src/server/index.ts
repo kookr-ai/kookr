@@ -306,6 +306,7 @@ import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import { readOperatorInbox } from './operator-inbox.js';
 import { createLucyOperatorHolder } from './lucy-operator/holder.js';
+import { needsReasonOf } from './lucy-operator/launch-controller.js';
 import { operatorNeeds } from './lucy-operator/look-source.js';
 import { createAskTaskPorts, createTelegramTaskBridge, type TelegramTaskBridge } from './telegram-task-bridge.js';
 import { AskStore } from './asks/ask-store.js';
@@ -814,7 +815,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       if (event.anomaly.type !== 'needs_input' && event.anomaly.type !== 'permission_blocked') return;
       try {
         const task = taskStore.findTaskBySession(event.agentId);
-        if (task) lucyOperatorHolder.get()?.launch?.onTaskOutcome(task.id, { kind: 'needs_input' }, task.name);
+        // What it waits for, so her report says "is waiting on a question" or "for a permission", not only "needs you".
+        const waitsFor = needsReasonOf(event.anomaly);
+        if (task) lucyOperatorHolder.get()?.launch?.onTaskOutcome(task.id, { kind: 'needs_input', ...(waitsFor ? { waitsFor } : {}) }, task.name);
       } catch (err) {
         console.warn('[lucy-launch] needs-input report failed:', err);
       }
