@@ -24,10 +24,12 @@
 // `gh` to fetch the head SHA's check runs plus the annotations of any failing
 // run, then prints the classification.
 //
-// When a check has several attempts on the head SHA (re-runs), an attempt that
-// did not pass stops counting once a later attempt succeeded after it finished
-// (see `selectDecidingRuns`); anything else, such as a re-run that never
-// executed or was skipped, leaves the earlier failure in place.
+// When a check has several attempts on the head SHA (re-runs, or a later run of
+// the same workflow for the same push or pull request), an attempt that did not
+// pass stops counting once a later attempt succeeded after it finished (see
+// `selectDecidingRuns`); anything else, such as a re-run that never executed or
+// was skipped, or an attempt whose identity is unknown, leaves the earlier
+// failure in place.
 //
 // Usage (also `kookr check-verification`, which runs this file from any repo):
 //   node scripts/check-verification.mjs <pr-number> [--repo owner/name]
@@ -179,6 +181,58 @@ export function classifyRun(run) {
   return { name, status, conclusion, verdict: 'pending', reason: 'unknown-conclusion' };
 }
 
+// A GitHub Actions check run is a job: its id is the job id, and its
+// details_url ends in /actions/runs/<run id>/job/<job id>.
+const ACTIONS_JOB_URL = /\/actions\/runs\/(\d+)\/job\/(\d+)(?:[/?#]|$)/;
+
+/** The Actions job id behind a check run, or null when it is not an Actions job. */
+function actionsJobId(run) {
+  if (!run) return null;
+  const match = typeof run.details_url === 'string' ? run.details_url.match(ACTIONS_JOB_URL) : null;
+  if (match) return match[2];
+  if (run.app && run.app.slug === 'github-actions' && run.id != null) return String(run.id);
+  return null;
+}
+
+/** The workflow run an Actions job belongs to (from its workflow_run or details_url), or null. */
+function actionsRunId(run) {
+  if (!run) return null;
+  const wr = run.workflow_run;
+  if (wr && wr.id != null && Number.isFinite(Number(wr.id))) return Number(wr.id);
+  const match = typeof run.details_url === 'string' ? run.details_url.match(ACTIONS_JOB_URL) : null;
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * What makes two workflow runs on one SHA the same check, or null when that is
+ * not known. A workflow that runs again for the same push (same branch) or the
+ * same pull request (a later `pull_request` event, e.g. the body was edited)
+ * runs the same code again in a new workflow run, so a new check suite. Every
+ * other event stays apart: `dynamic` runs (Dependabot, CodeQL) share one
+ * workflow id and event on a SHA yet check different things (three concurrent
+ * runs on kookr-ai/kookr 2b3bec44d5, all workflow 272896356), and a
+ * `workflow_dispatch` can differ by its inputs. A pull request run needs exactly
+ * one pull request on it: two pull requests that share a head branch test
+ * different merge commits, and a fork's run lists none. `workflow_run` is
+ * filled in from the Actions runs API by the CLI.
+ */
+function workflowIdentity(run) {
+  const wr = run && run.workflow_run;
+  if (!wr || wr.workflow_id == null || actionsRunId(run) == null) return null;
+  if (wr.event === 'push') {
+    return typeof wr.head_branch === 'string' && wr.head_branch ? `${wr.workflow_id}:push:${wr.head_branch}` : null;
+  }
+  if (wr.event === 'pull_request') {
+    const prs = Array.isArray(wr.pull_requests) ? wr.pull_requests : [];
+    if (prs.length !== 1) return null;
+    const pr = prs[0];
+    const base = pr && pr.base && pr.base.ref;
+    if (!pr || pr.number == null || typeof base !== 'string' || !base) return null;
+    return `${wr.workflow_id}:pull_request:${pr.number}:${base}`;
+  }
+  return null;
+}
+
 // Which attempts are the same check. A re-run of a GitHub Actions job keeps the
 // workflow run, so its new check run lands in the same check suite under the
 // same name (checked on live data for #4029: attempts 1 and 2 of
@@ -186,14 +240,19 @@ export function classifyRun(run) {
 // both in suite 82904850390). Two different workflows can share a job name on
 // one SHA (three "Dependabot" runs in separate suites in the lucy-green
 // fixture), so the suite is part of the key: a green in one workflow never
-// hides a red in another. A workflow that runs again as a new workflow run (a
-// later push or `pull_request` event on the same SHA) is a new suite, so its
-// stale failure stays red even when GitHub's rollup is green: the safe side.
-// Runs with no name (or no suite/app data) still group by whatever is present.
+// hides a red in another. When the workflow runs again as a new workflow run
+// for the same push or pull request (a new suite: kookr-ai/kookr 54fba034's
+// "Anti-drift checklist" failed in run 30568807476 and passed in run
+// 30569267543 after the PR body was edited), `workflowIdentity` replaces the
+// suite so both runs group. Without it, the stale failure stays red: the safe
+// side. Runs with no name (or no suite/app data) still group by whatever is
+// present.
 function attemptKey(run) {
   const name = run && (run.name || run.context);
   if (!name) return null;
   const app = run.app && run.app.id != null ? run.app.id : '';
+  const identity = workflowIdentity(run);
+  if (identity != null) return `${app}|wf:${identity}|${name}`;
   const suite = run.check_suite && run.check_suite.id != null ? run.check_suite.id : '';
   return `${app}|${suite}|${name}`;
 }
@@ -211,23 +270,41 @@ function isLaterAttempt(candidate, current) {
   return candidate.index > current.index;
 }
 
-// A GitHub Actions check run is a job: its id is the job id, and its
-// details_url ends in /actions/runs/<run id>/job/<job id>.
-const ACTIONS_JOB_URL = /\/actions\/runs\/\d+\/job\/(\d+)(?:[/?#]|$)/;
-
-/** The Actions job id behind a check run, or null when it is not an Actions job. */
-function actionsJobId(run) {
-  if (!run) return null;
-  const match = typeof run.details_url === 'string' ? run.details_url.match(ACTIONS_JOB_URL) : null;
-  if (match) return match[1];
-  if (run.app && run.app.slug === 'github-actions' && run.id != null) return String(run.id);
-  return null;
-}
-
 /** The workflow-run attempt (1, 2, ...) an Actions job belongs to, or null when unknown. */
 function runAttempt(run) {
   const attempt = run && run.run_attempt;
   return Number.isInteger(attempt) && attempt > 0 ? attempt : null;
+}
+
+/**
+ * Where each Actions job of one check sits: its workflow run and attempt, and
+ * how many same-named jobs share that attempt. `complete` is false when any
+ * Actions job in the group has an unknown attempt: then none of them retires,
+ * because an uncounted sibling could be the one that failed.
+ */
+function actionsPositions(group) {
+  const positions = new Map();
+  const sizes = new Map();
+  let complete = true;
+  for (const entry of group) {
+    if (!actionsJobId(entry.run)) continue;
+    const attempt = runAttempt(entry.run);
+    if (attempt == null) {
+      complete = false;
+      continue;
+    }
+    const runId = actionsRunId(entry.run);
+    const slot = `${runId == null ? '' : runId}#${attempt}`;
+    positions.set(entry, { runId, attempt, slot });
+    sizes.set(slot, (sizes.get(slot) || 0) + 1);
+  }
+  return { positions, sizes, complete };
+}
+
+/** True when Actions position `a` comes after `b`: a later workflow run, or a later attempt of the same one. */
+function isLaterPosition(a, b) {
+  if (a.runId != null && b.runId != null && a.runId !== b.runId) return a.runId > b.runId;
+  return a.attempt > b.attempt;
 }
 
 /**
@@ -240,9 +317,19 @@ function runAttempt(run) {
  * with a fixed `name:` and `max-parallel: 1`, or jobs chained with `needs:`),
  * so for GitHub Actions jobs timing is not enough: `later` must belong to a
  * later attempt of the workflow run (`run_attempt`, filled in from the jobs
- * API). An unknown attempt never retires a failure (#4029).
+ * API) or to a later workflow run of the same workflow (`workflowIdentity`).
+ *
+ * GitHub gives same-named jobs no identity of their own (no matrix values), so
+ * when the failed attempt holds several same-named jobs, a pass of one of them
+ * in a later attempt cannot say which one was re-run: re-running only the leg
+ * that passed would otherwise retire the leg that failed. So `later`'s attempt
+ * must hold at least as many same-named jobs as `earlier`'s: all of them ran
+ * again, and any of those that did not pass still counts on its own. A partial
+ * re-run of a fixed-name matrix therefore stays red (and a re-run still
+ * creating its jobs reads red, not pending, until all of them exist). An
+ * unknown attempt anywhere in the group never retires a failure (#4029).
  */
-function replacesAttempt(later, earlier) {
+function replacesAttempt(later, earlier, actions) {
   if (!later.run) return false;
   const running = later.run.status !== 'completed';
   if (!running && later.run.conclusion !== 'success') return false;
@@ -250,9 +337,11 @@ function replacesAttempt(later, earlier) {
   const b = Number(earlier.run && earlier.run.id);
   if (!Number.isFinite(a) || !Number.isFinite(b) || a <= b) return false;
   if (actionsJobId(later.run) || actionsJobId(earlier.run)) {
-    const laterAttempt = runAttempt(later.run);
-    const earlierAttempt = runAttempt(earlier.run);
-    if (laterAttempt == null || earlierAttempt == null || laterAttempt <= earlierAttempt) return false;
+    if (!actions.complete) return false;
+    const laterPos = actions.positions.get(later);
+    const earlierPos = actions.positions.get(earlier);
+    if (!laterPos || !earlierPos || !isLaterPosition(laterPos, earlierPos)) return false;
+    if (actions.sizes.get(laterPos.slot) < actions.sizes.get(earlierPos.slot)) return false;
   }
   const started = Date.parse(later.run.started_at || '');
   const finished = Date.parse((earlier.run && earlier.run.completed_at) || '');
@@ -266,7 +355,8 @@ function replacesAttempt(later, earlier) {
  * running) is dropped only when a later attempt that started after it finished
  * succeeded or is still running (then the check is pending); otherwise it
  * still counts. So a re-run that never executed, was skipped, or
- * is a same-named sibling job never hides a run that failed on the code.
+ * is a same-named sibling job never hides a run that failed on the code
+ * (see `replacesAttempt`).
  * @returns {{runs: Array<object>, superseded: number}} the deciding verdicts
  *   (in input order) and how many earlier attempts were dropped.
  */
@@ -294,10 +384,11 @@ export function selectDecidingRuns(checkRuns) {
   for (const group of order) {
     let latest = group[0];
     for (const entry of group) if (isLaterAttempt(entry, latest)) latest = entry;
+    const actions = actionsPositions(group);
     for (const entry of group) {
       const keep =
         entry === latest ||
-        (entry.verdict.verdict !== 'passed' && !group.some((other) => replacesAttempt(other, entry)));
+        (entry.verdict.verdict !== 'passed' && !group.some((other) => replacesAttempt(other, entry, actions)));
       if (keep) deciding.push(entry);
       else superseded += 1;
     }
@@ -480,6 +571,7 @@ function collectCheckRuns(repo, sha) {
     }
   }
 
+  enrichWorkflowRuns(repo, checkRuns);
   enrichActionsAttempts(repo, checkRuns);
 
   // Legacy commit statuses (Status API) are a separate required-check surface
@@ -521,6 +613,56 @@ function collectCheckRuns(repo, sha) {
   }
 
   return checkRuns;
+}
+
+/**
+ * Record the workflow run behind each Actions job whose name appears in more
+ * than one check suite of its app (the only case where `workflowIdentity` can
+ * join attempts across suites), from `actions/runs/<run id>`, once per run. A
+ * failed lookup leaves the run keyed by its suite, so a stale failure stays
+ * red. Runs before `enrichActionsAttempts`, which groups by the result.
+ */
+function enrichWorkflowRuns(repo, checkRuns) {
+  const suitesByName = new Map();
+  for (const run of checkRuns) {
+    const name = run && (run.name || run.context);
+    if (!name || !run.check_suite || run.check_suite.id == null) continue;
+    const key = `${run.app && run.app.id != null ? run.app.id : ''}|${name}`;
+    if (!suitesByName.has(key)) suitesByName.set(key, new Set());
+    suitesByName.get(key).add(run.check_suite.id);
+  }
+  const cache = new Map();
+  for (const run of checkRuns) {
+    const name = run && (run.name || run.context);
+    if (!name || run.workflow_run || !actionsJobId(run)) continue;
+    const key = `${run.app && run.app.id != null ? run.app.id : ''}|${name}`;
+    if (!suitesByName.has(key) || suitesByName.get(key).size < 2) continue;
+    const runId = actionsRunId(run);
+    if (runId == null) continue;
+    if (!cache.has(runId)) {
+      let found = null;
+      try {
+        const wr = JSON.parse(gh(['api', `repos/${repo}/actions/runs/${runId}`]));
+        // A workflow run whose suite is not this check run's own is not its run.
+        if (wr && Number(wr.id) === runId && Number(wr.check_suite_id) === Number(run.check_suite.id)) {
+          found = {
+            id: runId,
+            workflow_id: wr.workflow_id,
+            event: wr.event,
+            head_branch: wr.head_branch,
+            pull_requests: Array.isArray(wr.pull_requests)
+              ? wr.pull_requests.map((pr) => ({ number: pr && pr.number, base: { ref: pr && pr.base && pr.base.ref } }))
+              : [],
+          };
+        }
+      } catch {
+        // Unknown workflow run: this check stays keyed by its suite.
+      }
+      cache.set(runId, found);
+    }
+    const found = cache.get(runId);
+    if (found) run.workflow_run = found;
+  }
 }
 
 /**

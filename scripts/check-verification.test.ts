@@ -426,6 +426,158 @@ describe('classifyCheckRuns — re-runs of a GitHub Actions job', () => {
   });
 });
 
+// Same-named jobs of one attempt (#4029): GitHub gives them no identity of
+// their own, so a later pass retires a failure only when its attempt re-ran at
+// least as many same-named jobs as the failed attempt held.
+describe('classifyCheckRuns — same-named jobs across attempts', () => {
+  const actions = { id: 15368, slug: 'github-actions' };
+  const leg = (id: number, attempt: number | undefined, conclusion: string, startedAt: string, completedAt: string) => ({
+    id,
+    name: 'test',
+    app: actions,
+    check_suite: { id: 500 },
+    details_url: `https://github.com/o/r/actions/runs/77/job/${id}`,
+    ...(attempt === undefined ? {} : { run_attempt: attempt }),
+    status: 'completed',
+    conclusion,
+    started_at: startedAt,
+    completed_at: completedAt,
+  });
+  // Attempt 1 of a fixed-name matrix run one leg at a time: leg X fails, leg Y passes.
+  const legX1 = leg(101, 1, 'failure', '2026-11-10T10:00:00Z', '2026-11-10T10:03:00Z');
+  const legY1 = leg(102, 1, 'success', '2026-11-10T10:04:00Z', '2026-11-10T10:07:00Z');
+
+  it('keeps leg X red when only leg Y was re-run and passed', () => {
+    const legY2 = leg(201, 2, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
+    const result = classifyCheckRuns([legX1, legY1, legY2]);
+    expect(result.classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    expect(result.counts.superseded).toBe(1); // only legY1, a pass, drops out
+  });
+
+  it('is green when every leg was re-run and passed', () => {
+    const legX2 = leg(201, 2, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
+    const legY2 = leg(202, 2, 'success', '2026-11-10T11:04:00Z', '2026-11-10T11:07:00Z');
+    expect(classifyCheckRuns([legX1, legY1, legX2, legY2]).classification).toBe(CLASSIFICATIONS.EXECUTED_GREEN);
+  });
+
+  it('stays red when a full re-run fails one leg again', () => {
+    const legX2 = leg(201, 2, 'failure', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
+    const legY2 = leg(202, 2, 'success', '2026-11-10T11:04:00Z', '2026-11-10T11:07:00Z');
+    expect(classifyCheckRuns([legX1, legY1, legX2, legY2]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+  });
+
+  it('retires nothing when any job of the check has an unknown attempt', () => {
+    // Without legY1's attempt, attempt 1 would look like it held one job only.
+    const legY2 = leg(201, 2, 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z');
+    const result = classifyCheckRuns([legX1, { ...legY1, run_attempt: undefined }, legY2]);
+    expect(result.classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+  });
+});
+
+// A workflow that runs again as a new workflow run for the same push or pull
+// request (#4029). Recorded shape: kookr-ai/kookr 54fba034's "Anti-drift
+// checklist" failed in run 30568807476 (suite 82886998210) and passed in run
+// 30569267543 (suite 82888413930) after the PR body was edited.
+describe('classifyCheckRuns — a later workflow run of the same workflow', () => {
+  const actions = { id: 15368, slug: 'github-actions' };
+  type WorkflowRun = { workflow_id?: number; event?: string; head_branch?: string; pull_requests?: unknown[] };
+  const prRun: WorkflowRun = {
+    workflow_id: 306297989,
+    event: 'pull_request',
+    head_branch: 'feat',
+    pull_requests: [{ number: 1704, base: { ref: 'main' } }],
+  };
+  const job = (
+    id: number,
+    runId: number,
+    suite: number,
+    conclusion: string,
+    startedAt: string,
+    completedAt: string,
+    workflowRun: WorkflowRun | null = prRun,
+    attempt = 1,
+  ) => ({
+    id,
+    name: 'Anti-drift checklist',
+    app: actions,
+    check_suite: { id: suite },
+    details_url: `https://github.com/kookr-ai/kookr/actions/runs/${runId}/job/${id}`,
+    run_attempt: attempt,
+    ...(workflowRun ? { workflow_run: { id: runId, ...workflowRun } } : {}),
+    status: 'completed',
+    conclusion,
+    started_at: startedAt,
+    completed_at: completedAt,
+  });
+  const failed = (wr: WorkflowRun | null = prRun) =>
+    job(90959964028, 30568807476, 82886998210, 'failure', '2026-07-30T18:04:37Z', '2026-07-30T18:04:52Z', wr);
+  const passed = (wr: WorkflowRun | null = prRun) =>
+    job(90961527996, 30569267543, 82888413930, 'success', '2026-07-30T18:10:52Z', '2026-07-30T18:11:09Z', wr);
+
+  it('retires the failure when the same workflow passed later for the same pull request', () => {
+    const result = classifyCheckRuns([passed(), failed()]);
+    expect(result.classification).toBe(CLASSIFICATIONS.EXECUTED_GREEN);
+    expect(result.counts.superseded).toBe(1);
+  });
+
+  it('retires the failure when the same workflow passed later for the same branch push', () => {
+    const push = { workflow_id: 306297989, event: 'push', head_branch: 'feat', pull_requests: [] };
+    expect(classifyCheckRuns([failed(push), passed(push)]).classification).toBe(CLASSIFICATIONS.EXECUTED_GREEN);
+  });
+
+  it('keeps the failure red when the workflow run is unknown (each suite is its own check)', () => {
+    expect(classifyCheckRuns([failed(null), passed(null)]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    expect(classifyCheckRuns([failed(), passed(null)]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+  });
+
+  it('keeps runs of different workflows, events, branches or pull requests apart', () => {
+    const variants: WorkflowRun[] = [
+      { ...prRun, workflow_id: 1 },
+      { ...prRun, event: 'push' },
+      { ...prRun, pull_requests: [{ number: 1705, base: { ref: 'main' } }] },
+      { ...prRun, pull_requests: [{ number: 1704, base: { ref: 'staging' } }] },
+    ];
+    for (const variant of variants) {
+      expect(classifyCheckRuns([failed(), passed(variant)]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    }
+    const push = (branch: string) => ({ workflow_id: 306297989, event: 'push', head_branch: branch, pull_requests: [] });
+    expect(classifyCheckRuns([failed(push('main')), passed(push('other'))]).classification).toBe(
+      CLASSIFICATIONS.EXECUTED_RED,
+    );
+  });
+
+  it('does not join runs whose identity is ambiguous', () => {
+    const variants: WorkflowRun[] = [
+      // dynamic runs (Dependabot, CodeQL) share one workflow id and event yet check different things
+      { workflow_id: 272896356, event: 'dynamic', head_branch: 'main', pull_requests: [] },
+      { ...prRun, event: 'workflow_dispatch' },
+      { ...prRun, pull_requests: [] }, // a fork's run lists no pull request
+      {
+        ...prRun,
+        pull_requests: [
+          { number: 1704, base: { ref: 'main' } },
+          { number: 1705, base: { ref: 'staging' } },
+        ],
+      },
+      { ...prRun, workflow_id: undefined },
+      { workflow_id: 306297989, event: 'push', pull_requests: [] }, // no branch
+    ];
+    for (const variant of variants) {
+      expect(classifyCheckRuns([failed(variant), passed(variant)]).classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    }
+  });
+
+  it('does not let a re-run of an older workflow run retire a newer run\'s failure', () => {
+    // Run 100 failed, run 200 failed later, then run 100 was re-run (attempt 2) and passed.
+    const oldFail = job(1, 100, 500, 'failure', '2026-11-10T10:00:00Z', '2026-11-10T10:01:00Z');
+    const newFail = job(2, 200, 600, 'failure', '2026-11-10T10:10:00Z', '2026-11-10T10:11:00Z');
+    const oldRerunPass = job(3, 100, 500, 'success', '2026-11-10T10:20:00Z', '2026-11-10T10:21:00Z', prRun, 2);
+    const result = classifyCheckRuns([oldFail, newFail, oldRerunPass]);
+    expect(result.classification).toBe(CLASSIFICATIONS.EXECUTED_RED);
+    expect(result.counts.superseded).toBe(1); // oldFail is retired by its own re-run; newFail is not
+  });
+});
+
 // `kookr check-verification` (issue #3643): the same classifier, reachable from
 // any repository.
 describe('kookr check-verification', () => {
@@ -585,6 +737,102 @@ esac
 
   it('does not look up the attempt of a check that ran once', () => {
     expect(classifyWithStub({}, [101])).toEqual({ status: EXIT_CODES['executed-red'], jobLookups: [] });
+  });
+});
+
+// The CLI fills in the workflow run behind a check that appears in several
+// suites, so a later run of the same workflow can retire a stale failure (#4029).
+describe('check-verification — workflow runs from the Actions runs API', () => {
+  const prRun = (id: number, suite: number) =>
+    JSON.stringify({
+      id,
+      check_suite_id: suite,
+      workflow_id: 306297989,
+      event: 'pull_request',
+      head_branch: 'feat',
+      pull_requests: [{ number: 1704, base: { ref: 'main' } }],
+    });
+  // Returns the exit code and the workflow runs the classifier looked up.
+  function classifyWithStub(runs: Record<string, string>, suites: [number, number] = [500, 600]) {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-check-wfruns-'));
+    try {
+      const stubDir = join(dir, 'bin');
+      spawnSync('mkdir', [stubDir]);
+      const run = (id: number, runId: number, suite: number, conclusion: string, startedAt: string, completedAt: string) => ({
+        id,
+        name: 'unit',
+        app: { id: 15368, slug: 'github-actions' },
+        check_suite: { id: suite },
+        details_url: `https://github.com/caller/repo/actions/runs/${runId}/job/${id}`,
+        status: 'completed',
+        conclusion,
+        started_at: startedAt,
+        completed_at: completedAt,
+        output: { annotations_count: 0 },
+      });
+      writeFileSync(
+        join(dir, 'runs.json'),
+        JSON.stringify({
+          total_count: 2,
+          check_runs: [
+            // One suite is one workflow run, so a single suite means a single run id.
+            run(202, suites[0] === suites[1] ? 100 : 200, suites[1], 'success', '2026-11-10T11:00:00Z', '2026-11-10T11:03:00Z'),
+            run(101, 100, suites[0], 'failure', '2026-11-10T10:00:00Z', '2026-11-10T10:03:00Z'),
+          ],
+        }),
+      );
+      const runArms = Object.entries(runs)
+        .map(([id, body]) => `  "api repos/caller/repo/actions/runs/${id}") echo '${body}' ;;`)
+        .join('\n');
+      writeFileSync(
+        join(stubDir, 'gh'),
+        `#!/bin/sh
+case "$*" in
+  *actions/runs/*) printf '%s\\n' "\${*##*/}" >> "${dir}/runs.log" ;;
+esac
+case "$*" in
+  *check-runs*) cat "${dir}/runs.json" ;;
+  *"/status") echo '{"state":"pending","total_count":0,"statuses":[]}' ;;
+  "api repos/caller/repo/actions/jobs/"*) echo '{"run_attempt":1}' ;;
+${runArms}
+  *) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac
+`,
+      );
+      chmodSync(join(stubDir, 'gh'), 0o755);
+      const env = { ...process.env, PATH: `${stubDir}:${process.env.PATH ?? ''}` };
+      const result = spawnSync(process.execPath, [CLASSIFIER, '--sha', 'abc123', '--repo', 'caller/repo'], { cwd: dir, env, encoding: 'utf8' });
+      const log = join(dir, 'runs.log');
+      const runLookups = existsSync(log) ? [...new Set(readFileSync(log, 'utf8').trim().split('\n'))].sort() : [];
+      return { status: result.status, runLookups };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('is green when the same workflow passed in a later run for the same pull request', () => {
+    expect(classifyWithStub({ '100': prRun(100, 500), '200': prRun(200, 600) })).toEqual({
+      status: EXIT_CODES['executed-green'],
+      runLookups: ['100', '200'],
+    });
+  });
+
+  it('stays red when a workflow run cannot be read', () => {
+    expect(classifyWithStub({ '100': prRun(100, 500) })).toEqual({
+      status: EXIT_CODES['executed-red'],
+      runLookups: ['100', '200'],
+    });
+  });
+
+  it('stays red when the workflow run belongs to another check suite', () => {
+    expect(classifyWithStub({ '100': prRun(100, 500), '200': prRun(200, 999) }).status).toBe(
+      EXIT_CODES['executed-red'],
+    );
+  });
+
+  it('does not look up workflow runs when the check sits in one suite', () => {
+    // Same suite: the jobs API attempts (both 1) decide, and no workflow run is read.
+    expect(classifyWithStub({}, [500, 500])).toEqual({ status: EXIT_CODES['executed-red'], runLookups: [] });
   });
 });
 
