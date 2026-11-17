@@ -172,10 +172,57 @@ describe('classifyMergeTrailCommand / extractPrNumbersFromCommand', () => {
     expect(extractPrNumbersFromCommand('gh pr merge --squash | tee log 54')).toEqual([]);
     // A flag value cut off by the command end is not the argument either.
     expect(extractPrNumbersFromCommand('gh pr merge -R && echo 55')).toEqual([]);
-    // An unclosed quote: the words cannot be trusted, so no number.
+    // An unclosed quote ends the command: here the flag's value is missing.
     expect(extractPrNumbersFromCommand('gh pr merge --subject "open 56')).toEqual([]);
-    // A URL that is not a pull request.
+    expect(extractPrNumbersFromCommand("gh pr merge --squash 'open 56")).toEqual([]);
+    // A URL that is not a pull request, or a pull-request URL with junk after the number.
     expect(extractPrNumbersFromCommand('gh pr merge https://github.com/o/r/issues/57')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr merge https://github.com/o/r/pull/57abc')).toEqual([]);
+    // `&&` with no spaces still ends the command; a longer verb is not a merge.
+    expect(extractPrNumbersFromCommand('gh pr merge --squash&&echo 5')).toEqual([]);
+    expect(extractPrNumbersFromCommand('kookr merge-queue 5')).toEqual([]);
+  });
+
+  test('reads the number inside a wrapper whose quote closes after the merge', () => {
+    expect(extractPrNumbersFromCommand('bash -c "gh pr merge 12"')).toEqual([12]);
+    expect(extractPrNumbersFromCommand('bash -lc "gh pr merge 12 --squash"')).toEqual([12]);
+    expect(extractPrNumbersFromCommand("sh -c 'gh pr merge -R o/r 13'")).toEqual([13]);
+    expect(
+      extractPrNumbersFromCommand('ssh host "gh pr merge --squash https://github.com/o/r/pull/14"'),
+    ).toEqual([14]);
+    expect(extractPrNumbersFromCommand('x=`gh pr merge 15`; echo "$x"')).toEqual([15]);
+    // Words before an unclosed quote still decide the argument.
+    expect(extractPrNumbersFromCommand("gh pr merge 16 --subject 'unclosed")).toEqual([16]);
+    // A closed inner quote inside the wrapper is one word.
+    expect(
+      extractPrNumbersFromCommand(`bash -c "gh pr merge --subject 'a 1' 17"`),
+    ).toEqual([17]);
+  });
+
+  test('a line continuation is not a word', () => {
+    expect(
+      extractPrNumbersFromCommand(
+        'gh pr merge --squash --delete-branch \\\n  https://github.com/o/r/pull/62',
+      ),
+    ).toEqual([62]);
+    expect(extractPrNumbersFromCommand('gh pr merge \\\n  -R o/r \\\n  63')).toEqual([63]);
+  });
+
+  test('redirections and their targets are not the argument', () => {
+    // `2>&1` is a redirection of file descriptor 2, not PR 2.
+    expect(extractPrNumbersFromCommand('gh pr merge --squash 2>&1')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr merge --squash > log 2>&1')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr merge --squash >out.txt 3')).toEqual([3]);
+    expect(extractPrNumbersFromCommand('gh pr merge 18 >log 2>&1')).toEqual([18]);
+    expect(extractPrNumbersFromCommand('gh pr merge 19 </dev/null')).toEqual([19]);
+    // A number glued to `>` or `<` is a file descriptor: the shell passes no argument.
+    expect(extractPrNumbersFromCommand('gh pr merge 20>log')).toEqual([]);
+  });
+
+  test('a backslash escape inside double quotes stays inside the value', () => {
+    expect(
+      extractPrNumbersFromCommand('gh pr merge --subject "say \\"9\\" now" 64'),
+    ).toEqual([64]);
   });
 
   test('a merge inside a subshell still yields its argument', () => {

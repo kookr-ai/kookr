@@ -168,59 +168,93 @@ const BARE_PR_ARG_RE = /^#?(\d+)$/;
 const PR_URL_ARG_RE =
   /^https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/(?:-\/)?(?:pull|merge_requests)\/(\d+)(?:[/?#]|$)/i;
 
+/** Characters that end a simple command: the argument never comes after one. */
+const COMMAND_END_CHARS = new Set(['\n', ';', '&', '|', ')', '`']);
+
 /**
  * Split shell text into words, honouring quotes and backslashes, up to the end
- * of the simple command (`;`, `&`, `|`, `)` or a newline). Returns undefined
- * when a quote is never closed: the words cannot be trusted then.
+ * of the simple command (`;`, `&`, `|`, `)`, a backtick or a newline).
+ *
+ * - A quote that never closes also ends the command, keeping the words read so
+ *   far. The merge is then usually the last thing inside a wrapper whose own
+ *   quote closes after it: `bash -c "gh pr merge 12"`, `ssh host '…'`.
+ * - A backslash-newline is a line continuation, not a word.
+ * - A redirection (`>log`, `2>&1`, `<in`) is dropped with its target, and a
+ *   number glued to it is a file descriptor, not an argument: in
+ *   `gh pr merge --squash 2>&1` the shell passes no `2` to the command.
  */
-function wordsUntilCommandEnd(text: string): string[] | undefined {
+function wordsUntilCommandEnd(text: string): string[] {
   const words: string[] = [];
   let word = '';
   let inWord = false;
+  let dropNextWord = false;
+  const endWord = (): void => {
+    if (inWord && !dropNextWord) words.push(word);
+    if (inWord) dropNextWord = false;
+    word = '';
+    inWord = false;
+  };
   for (let i = 0; i < text.length; i++) {
     const c = text[i]!;
-    if (c === '\n' || c === ';' || c === '&' || c === '|' || c === ')') break;
+    if (COMMAND_END_CHARS.has(c)) break;
     if (c === ' ' || c === '\t' || c === '\r') {
-      if (inWord) words.push(word);
-      word = '';
-      inWord = false;
+      endWord();
       continue;
     }
-    inWord = true;
+    if (c === '\\' && text[i + 1] === '\n') {
+      i++;
+      endWord();
+      continue;
+    }
+    if (c === '<' || c === '>') {
+      if (inWord && /^\d+$/.test(word)) {
+        word = '';
+        inWord = false;
+      }
+      endWord();
+      while (i + 1 < text.length && /[<>&]/.test(text[i + 1]!)) i++;
+      dropNextWord = true;
+      continue;
+    }
     if (c === "'") {
       const end = text.indexOf("'", i + 1);
-      if (end < 0) return undefined;
+      if (end < 0) break;
+      inWord = true;
       word += text.slice(i + 1, end);
       i = end;
     } else if (c === '"') {
       let j = i + 1;
+      let quoted = '';
       for (; j < text.length && text[j] !== '"'; j++) {
         if (text[j] === '\\' && j + 1 < text.length) j++;
-        word += text[j];
+        quoted += text[j];
       }
-      if (j >= text.length) return undefined;
+      if (j >= text.length) break;
+      inWord = true;
+      word += quoted;
       i = j;
     } else if (c === '\\') {
+      inWord = true;
       if (i + 1 < text.length) word += text[++i];
     } else {
+      inWord = true;
       word += c;
     }
   }
-  if (inWord) words.push(word);
+  endWord();
   return words;
 }
 
 /**
  * The first non-flag word after a merge verb (issue #4128), skipping the value
  * of each flag in {@link MERGE_VALUE_FLAGS}. So `gh pr merge --squash <url>`
- * and `gh pr merge -R o/r 12` read the URL and 12, never `o/r`.
+ * and `gh pr merge -R o/r 12` read the URL and 12, never `o/r`. A `--` is a
+ * valueless flag here, so the word after it is the argument.
  */
 function mergeCommandArgument(afterVerb: string): string | undefined {
   const words = wordsUntilCommandEnd(afterVerb);
-  if (!words) return undefined;
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!;
-    if (w === '--') return words[i + 1];
     if (w.length > 1 && w.startsWith('-')) {
       if (MERGE_VALUE_FLAGS.has(w)) i++;
       continue;
@@ -257,9 +291,9 @@ function addPositive(nums: Set<number>, raw: string | undefined): void {
  * Any other mention is ignored — a URL in a comment, "PR #N" in a commit
  * message or `echo`, `gh pr view <n>` / `gh pr diff <n>` / `gh pr list`. Those
  * PRs belong to someone else, so the gate must not demand that they be merged.
- * When the argument is missing, is not a number or PR URL (a branch name), or
- * cannot be read (an unclosed quote), no number is returned and the gate falls
- * back to the created PR or the current branch: better than a wrong PR.
+ * When the argument is missing or is not a number or PR URL (a branch name),
+ * no number is returned and the gate falls back to the created PR or the
+ * current branch: better than a wrong PR.
  */
 export function extractPrNumbersFromCommand(command: string): number[] {
   const nums = new Set<number>();
