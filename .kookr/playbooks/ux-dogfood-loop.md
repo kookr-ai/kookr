@@ -188,6 +188,9 @@ Screenshot/automation notes that save an hour:
   brief, and post one verdict that lists every part. The Codex review lane needs
   `bubblewrap` on this host; without it the lane script exits 3 and the Claude lane is
   the one to use.
+- **Push in the background with no time limit.** The fast gate ran past ten minutes on a host at
+  load 55; a background `git push` given a ten-minute limit was killed mid-gate and reported as a
+  rejected push. Start it with `run_in_background` and no `timeout`, and wait for its notification.
 - **This repository has no ESLint.** `pnpm exec eslint` fails with `spawn eslint EACCES`
   because there is nothing to run; conventions are checked by `pnpm typecheck` and the
   design-token tests. Do not record "lint not run" as a gap.
