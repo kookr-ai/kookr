@@ -43,6 +43,8 @@ import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { __resetLastClipForTests } from '../audio/last-clip.js';
 import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
+import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
+import { __resetLucyTypedForTests } from './LucyTypedInput.js';
 
 function base(overrides: Partial<UseLucyLiveResult> = {}): UseLucyLiveResult {
   return {
@@ -81,6 +83,8 @@ describe('AvatarDock hands-free talk', () => {
   };
 
   beforeEach(() => {
+    __resetLucyConversationForTests();
+    __resetLucyTypedForTests();
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     document.body.innerHTML = '';
     localStorage.clear();
@@ -185,7 +189,7 @@ describe('AvatarDock hands-free talk', () => {
 
   test('shows what the operator said (draft muted, final normal) and Lucy’s answer in a log that is not live', () => {
     update(base({ enabled: true, status: 'ready', operatorText: 'any news on', operatorFinal: false, lucyText: '' }));
-    const region = container.querySelector<HTMLElement>('[data-testid="avatar-live"]')!;
+    const region = container.querySelector<HTMLElement>('[data-testid="avatar-thread"]')!;
     expect(region.getAttribute('role')).toBe('log');
     expect(region.getAttribute('aria-label')).toBe('Conversation with Lucy');
     expect(region.getAttribute('aria-live')).toBe('off'); // the log role would otherwise be polite
@@ -275,7 +279,7 @@ describe('AvatarDock hands-free talk', () => {
     live.current = base();
     render();
     expect(talk()!.getAttribute('aria-pressed')).toBe('false');
-    expect(container.querySelector('[data-testid="avatar-live"]')).toBeNull();
+    expect(container.querySelector('[data-testid="avatar-live-you"]')).toBeNull();
   });
 });
 
@@ -299,6 +303,8 @@ describe('AvatarDock Talk shortcut and the bubble\u2019s off control (#4010)', (
   const minimise = () => act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Minimise Lucy"]')!.click());
 
   beforeEach(() => {
+    __resetLucyConversationForTests();
+    __resetLucyTypedForTests();
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     document.body.innerHTML = '';
     localStorage.clear();

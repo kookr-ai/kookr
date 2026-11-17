@@ -1267,7 +1267,7 @@ describe('SettingsDialog tabs', () => {
   test('switching the avatar panel on always opens it, even if it was left minimised', async () => {
     await flush();
     await act(async () => {
-      updateAvatarPanelPrefs({ enabled: false, minimized: true, position: { x: 40, y: 60 } });
+      updateAvatarPanelPrefs({ enabled: false, minimized: true, width: 450 });
     });
     try {
       const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle avatar panel"]');
@@ -1283,7 +1283,7 @@ describe('SettingsDialog tabs', () => {
       expect(JSON.parse(localStorage.getItem(AVATAR_PANEL_KEY) ?? 'null')).toEqual({
         enabled: true,
         minimized: false,
-        position: { x: 40, y: 60 },
+        width: 450,
       });
       expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
 
@@ -1294,7 +1294,7 @@ describe('SettingsDialog tabs', () => {
       expect(JSON.parse(localStorage.getItem(AVATAR_PANEL_KEY) ?? 'null').enabled).toBe(false);
     } finally {
       await act(async () => {
-        updateAvatarPanelPrefs({ enabled: false, minimized: false, position: null });
+        updateAvatarPanelPrefs({ enabled: false, minimized: false, width: undefined });
       });
     }
   });

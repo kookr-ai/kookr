@@ -143,7 +143,7 @@ for an answer):
   clip), the browser holds the question until that audio has been scheduled, so that audio is never
   lost. Closing one question does not drop another held behind it; an interruption drops them all.
 - It is answered, withdrawn or expires while she reads it: she stops (`drop_ask`).
-- No clip is fetched for it, so it does not appear in her message list and has no Replay button; the
+- No clip is fetched for it, so it does not appear in her conversation thread as a spoken message and has no Replay button; the
   card carries it. If Talk is switched off or the connection drops before she says it, she does not
   say it at all; the card and Telegram still have it.
 
@@ -290,7 +290,7 @@ she says unprompted, under these rules:
   her ask again;
 - in one browser tab. With several Kookr tabs open they agree on which one speaks, and a visible tab
   goes first;
-- not with sound off in Settings or Do Not Disturb on. The clip is then kept in her message list,
+- not with sound off in Settings or Do Not Disturb on. The clip is then kept in her conversation thread,
   marked unheard, and the Replay button plays it;
 - the same when the browser refuses to start audio because you have not clicked in the page yet;
 - with Talk on, in the conversation rather than as a clip, when nothing else is going on (see

@@ -123,7 +123,7 @@ async function api(method: string, path: string, body?: unknown): Promise<{ stat
 
 async function shot(page: Page, name: string): Promise<string> {
   const file = join(out, name);
-  // The panel floats in the bottom-right corner; clip to it (and the bubble) so the card is legible.
+  // The panel is a column on the right edge; clip to it (and the bubble) so the card is legible.
   const target = page.locator('[data-testid="avatar-dock"], [data-testid="avatar-bubble"]').first();
   const box = await target.boundingBox();
   if (box) {

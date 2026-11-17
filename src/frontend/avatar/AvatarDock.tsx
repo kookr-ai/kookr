@@ -1,13 +1,29 @@
 /**
- * The optional avatar panel: a small floating window, by default in the
- * bottom-right corner, showing a 3D character who lip-syncs what Kookr says
- * aloud: the spoken summaries played by the speaker buttons on tasks, and the
- * questions tasks ask the operator (described below).
+ * The optional avatar panel: Lucy's column, docked to the right edge of the dashboard. The dashboard
+ * shrinks to make room for it instead of being covered. It shows a 3D character who lip-syncs what
+ * Kookr says aloud: the spoken summaries played by the speaker buttons on tasks, and the questions
+ * tasks ask the operator (described below).
  *
- * It can be dragged by its title bar and minimised to a round bubble. While
- * minimised the 3D view is shut down completely, and the bubble shows a still
- * image, so a minimised panel uses no GPU. Hovering or focusing the bubble
+ * The column is as tall as the window and 380 px wide by default; its left edge can be dragged
+ * (`ColumnResizer.tsx`, 320 to 560 px) and the width is remembered. The page keeps at least 1000 px: in a
+ * window too narrow for that (769 to 1319 px) the column floats over the page instead of taking room from
+ * it, and a wide saved width is capped so the page keeps its 1000 px (the cap is not saved). On a window of
+ * 768 px and below it is a full-width sheet over the page (`avatarColumnLayout` decides). It minimises to a round bubble in the bottom-right
+ * corner, which brings the page back to full width. While minimised the 3D view is shut down completely,
+ * and the bubble shows a still image, so a minimised panel uses no GPU. Hovering or focusing the bubble
  * shows a small card that spells out what its badge and dot mean.
+ *
+ * From top to bottom the column holds:
+ *  - the header: her name, what she is doing, Talk, Replay last, Minimise;
+ *  - the 3D view, always 120 px tall;
+ *  - the tray "Waiting on you" (`WaitingTray.tsx`): permission cards, the questions tasks ask the operator
+ *    (`kookr ask`, the same question that goes to Telegram; Lucy reads one out once when it arrives), and a
+ *    folded row for opinion requests from tasks that have already ended. Answering there closes the
+ *    question on Telegram too, and an answer given on Telegram turns the card into "Answered on Telegram";
+ *  - the conversation thread (`LucyThread.tsx`): what the operator typed, the Talk exchanges and every
+ *    message she said aloud, oldest first;
+ *  - the launch card, when she proposes starting a task (`LucyLaunchCard.tsx`), always whole above the box;
+ *  - the composer: the text box for typing to her (`LucyTypedInput.tsx`).
  *
  * A "Talk" button in the header switches on hands-free conversation with Lucy
  * (`lucy-live/useLucyLive.ts`): she listens through the microphone, answers out loud
@@ -17,27 +33,19 @@
  * default, `lucy_talk_toggle`) does the same from anywhere, and while Talk is on the
  * minimised bubble carries a small microphone button that switches it off in one click.
  *
- * When a task asks the operator a question (`kookr ask`, the same question that
- * goes to Telegram), Lucy reads it out once and the panel shows it as a card with
- * one button per choice (`AskCard.tsx`). Answering there closes the question on
- * Telegram too, and an answer given on Telegram turns the card into "Answered on
- * Telegram". While minimised, the bubble's badge counts the waiting questions.
+ * While minimised, the bubble's badge counts the waiting questions and findings. What she says and what is
+ * typed is still recorded into the thread (`useThreadSync.ts`), so it is there when the panel is opened.
  *
  * When a task has waited on a permission prompt for a minute, the server sends a card with the
  * command and Approve once / Deny (`LucyPermissionCard.tsx`), and Lucy says one sentence about it
  * (issue #3932). The sentence is spoken from here, so with the panel off nothing is said.
- *
- * Under the 3D view the panel lists the last few spoken messages in full (what, about
- * which task, how long ago, heard or not), each with its own Replay button. The list is
- * a keyboard-focusable scroll region, so a long message is read by scrolling, not cut off.
  *
  * This file and everything it imports (three.js, the avatar file) is loaded
  * only when the operator has switched the panel on — see the lazy import in
  * App.tsx and `store/avatar-panel-prefs.ts`.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { FocusEvent as ReactFocusEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { formatRelativeTime } from './relative-time.js';
+import type { FocusEvent as ReactFocusEvent } from 'react';
 import avatarUrl from './assets/lucy-bust.glb?url';
 import { AvatarStage, type AvatarState } from './avatar-stage.js';
 import { subscribeSpeechBus } from '../audio/speech-bus.js';
@@ -52,31 +60,30 @@ import {
   stopAskAnnouncement,
   stopPermissionNotice,
 } from '../audio/ask-announcement.js';
-import { onPermissionAnnounced, onPermissionNoticeWithdrawn, useLucyPermission } from '../store/lucy-permission.js';
-import { LucyPermissionCards, type PermissionChoiceSender } from './LucyPermissionCard.js';
+import { onPermissionAnnounced, onPermissionNoticeWithdrawn } from '../store/lucy-permission.js';
+import type { PermissionChoiceSender } from './LucyPermissionCard.js';
 import {
   askClockOffsetMs,
-  dismissOperatorAsk,
-  markAskSubmitting,
   onAskAnnounced,
   onAskClosed,
   useOperatorAsks,
   visibleOperatorAsks,
 } from '../store/operator-asks.js';
-import { AskCard, askOutcome, type AskAnswerChoice } from './AskCard.js';
+import { askOutcome, type AskAnswerChoice } from './AskCard.js';
 import { openAskLink } from './ask-links.js';
 import { LucyLaunchCard } from './LucyLaunchCard.js';
 import { LucyTypedInput } from './LucyTypedInput.js';
+import { LucyThread } from './LucyThread.js';
+import { WaitingTray } from './WaitingTray.js';
+import { ColumnResizer } from './ColumnResizer.js';
+import { useClipThreadSync, useNoticeThreadSync, useTalkThreadSync } from './useThreadSync.js';
+import { useLucyConversation } from '../store/lucy-conversation.js';
 import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
 import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
 import { formatShortcutBinding, matchesShortcutBinding, type ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 import {
-  AVATAR_BUBBLE_SIZE,
-  AVATAR_PANEL_HEIGHT,
-  AVATAR_PANEL_MARGIN,
-  AVATAR_PANEL_WIDTH,
-  clampAvatarPanelPosition,
-  defaultAvatarPanelPosition,
+  avatarColumnLayout,
+  clampAvatarColumnWidth,
   updateAvatarPanelPrefs,
   useAvatarPanelPrefs,
 } from '../store/avatar-panel-prefs.js';
@@ -87,8 +94,6 @@ const STATE_LABEL: Record<AvatarState, string> = {
   thinking: 'preparing',
   speaking: 'speaking',
 };
-const IDLE_HINT = 'Press a speaker button on a task and I will read its summary to you.';
-const LIVE_HINT = 'Talk to me \u2014 I\u2019m listening.';
 /** What the state label says while hands-free is on, from what the server reports Lucy is doing. */
 const LIVE_STATE_LABEL: Record<LucyLiveState, string> = {
   idle: 'listening',
@@ -102,10 +107,8 @@ const TALK_LABEL = `Talk to ${NAME} hands-free`;
 const TALK_STOP_LABEL = 'Stop hands-free';
 const TALK_REASON_ID = 'avatar-talk-reason';
 const REPLAY_LABEL = 'Replay last message';
-/** Re-render the "N min ago" labels this often while the message list is on screen. */
+/** Re-render the "N min ago" labels this often while the thread is on screen. */
 const RELATIVE_TIME_REFRESH_MS = 30_000;
-/** Answer presses are ignored for this long after the cards change, so a press aimed at a card that just moved cannot answer another question. */
-const ASK_PRESS_GUARD_MS = 400;
 
 /** Shown in the status region when a replay could not start; the three other results need no message. */
 const REPLAY_MUTED_TITLE = 'Sound is off in Settings';
@@ -116,14 +119,13 @@ const REPLAY_NOTICE: Partial<Record<ReplayResult, string>> = {
   error: 'The message could not be played again.',
 };
 
-function trackPanelAction(action: 'minimize' | 'restore' | 'move' | 'replay', replayedClipId?: string): void {
+function trackPanelAction(action: 'minimize' | 'restore' | 'replay', replayedClipId?: string): void {
   const clipId = replayedClipId ?? getLastClip()?.clipId;
   track({ type: 'lucy_panel_action', action, ...(clipId ? { clipId } : {}) });
 }
 
-function viewportSize(): { width: number; height: number } {
-  return { width: window.innerWidth, height: window.innerHeight };
-}
+/** The name of the CSS custom property on the page's root element that tells the dashboard how much room the open column takes. */
+export const COLUMN_WIDTH_PROPERTY = '--lucy-column-width';
 
 export interface AvatarDockProps {
   /** How many tasks are waiting for the operator; shown as a badge on the bubble. */
@@ -170,6 +172,7 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
 const findingsText = (n: number): string => `${plural(n, 'finding needs', 'findings need')} your attention`;
 const unheardText = (n: number): string => plural(n, 'unheard message', 'unheard messages');
 const questionsText = (n: number): string => `${plural(n, 'question is', 'questions are')} waiting for your answer`;
+const opinionsText = (n: number): string => `${plural(n, 'opinion', 'opinions')} wanted`;
 
 /**
  * What a screen reader hears after the header Replay button's name. That button replays only the newest
@@ -180,29 +183,6 @@ function replayDescriptionText(newestUnheard: boolean, unavailable: string | nul
   return [newestUnheard ? 'Unheard message' : null, unavailable].filter(Boolean).join('. ');
 }
 
-/** Rough height of the bubble's card at its fullest (two rows and the hint); decides whether it fits above the bubble. */
-export const BUBBLE_CARD_HEIGHT = 100;
-export const BUBBLE_CARD_WIDTH = 206;
-export const BUBBLE_CARD_GAP = 10;
-
-/**
- * Where the bubble's card goes: above the bubble with its right edge on the bubble's right edge, unless that
- * would leave the screen, in which case it drops below the bubble and/or lines up with the bubble's left edge.
- */
-function bubbleCardPlacement(
-  bubble: { x: number; y: number },
-  viewport: { width: number; height: number },
-): { above: boolean; alignLeft: boolean } {
-  return {
-    above: bubble.y - BUBBLE_CARD_GAP - BUBBLE_CARD_HEIGHT >= AVATAR_PANEL_MARGIN,
-    alignLeft: bubble.x + AVATAR_BUBBLE_SIZE - BUBBLE_CARD_WIDTH < AVATAR_PANEL_MARGIN,
-  };
-}
-
-/** The microphone button on the minimised bubble that switches Talk off; it overhangs the bubble's bottom-right edge. */
-const BUBBLE_STOP_SIZE = 22;
-const BUBBLE_STOP_OVERHANG = 5;
-
 export function AvatarDock({
   attentionCount,
   onAnswerAsk,
@@ -212,8 +192,9 @@ export function AvatarDock({
   shortcutsBlocked = false,
 }: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
-  const [viewport, setViewport] = useState(viewportSize);
-  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  // The width while the left edge is being dragged; saved only when the drag ends.
+  const [dragWidth, setDragWidth] = useState<number | null>(null);
   const [state, setState] = useState<AvatarState>('idle');
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -230,6 +211,7 @@ export function AvatarDock({
   const [cardDismissed, setCardDismissed] = useState(false);
   const lastClip = useLastClip();
   const clips = useClipHistory();
+  const entries = useLucyConversation();
   const sound = useSoundPreference();
   const live = useLucyLive({
     // "Show me the mockups" / "open the task" while a question is waiting (the server picks the target).
@@ -250,16 +232,11 @@ export function AvatarDock({
   // What a screen reader is told about questions from tasks: that one arrived (Lucy speaks the question
   // itself, so only a short notice) and how one ended (which she does not say). A new entry per event.
   const [askNotice, setAskNotice] = useState<{ seq: number; text: string } | null>(null);
-  // The control inside a question card that holds keyboard focus, and its card. A card is replaced when its
-  // question closes and removed when it is dismissed; the focused control then disappears and the browser
-  // drops focus to the top of the page. Only that case is repaired (see the effect below).
-  const focusedAskControlRef = useRef<{ element: HTMLElement; askId: string } | null>(null);
 
   const viewRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<AvatarStage | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const stateRef = useRef<AvatarState>('idle');
-  const dragRef = useRef<{ pointerId: number; dx: number; dy: number; last: { x: number; y: number } | null } | null>(null);
   const minimiseButtonRef = useRef<HTMLButtonElement | null>(null);
   const talkFocusedRef = useRef(false);
   const bubbleStopFocusedRef = useRef(false);
@@ -268,25 +245,29 @@ export function AvatarDock({
   // Set when the operator minimises or reopens, so keyboard focus can follow to the control that replaced the one they used.
   const restoreFocusRef = useRef(false);
 
-  // Keep the panel on screen when the browser window is resized.
+  // A narrow window gets the full-width sheet, a wider one the column beside the page.
   useEffect(() => {
-    const onResize = (): void => setViewport(viewportSize());
+    const onResize = (): void => setViewportWidth(window.innerWidth);
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+  // Where it sits for this window: beside the page, floating over it, or a full-width sheet (see `avatarColumnLayout`).
+  const layout = avatarColumnLayout(viewportWidth, prefs.width);
+  const sheet = layout.mode === 'sheet';
+  const docked = layout.mode === 'docked';
+  const columnWidth = dragWidth === null ? layout.width : clampAvatarColumnWidth(dragWidth, layout.maxWidth);
 
-  const panelSize = { width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT };
-  const position = clampAvatarPanelPosition(
-    dragPos ?? prefs.position ?? defaultAvatarPanelPosition(viewport, panelSize),
-    viewport,
-    panelSize,
-  );
-  // The bubble sits where the panel's bottom-right corner is, so minimising does not make it jump away.
-  const bubblePosition = clampAvatarPanelPosition(
-    { x: position.x + AVATAR_PANEL_WIDTH - AVATAR_BUBBLE_SIZE, y: position.y + AVATAR_PANEL_HEIGHT - AVATAR_BUBBLE_SIZE },
-    viewport,
-    { width: AVATAR_BUBBLE_SIZE, height: AVATAR_BUBBLE_SIZE },
-  );
+  // While the column is docked beside the page, tell the page how much room it takes: the dashboard and the
+  // overlays at the right edge stop short of it (`--lucy-column-width` in styles.css). Gone again when the
+  // column is minimised, floats over the page or is a sheet, switched off or unmounted, so the page has its full width back.
+  useLayoutEffect(() => {
+    if (prefs.minimized || !docked) return undefined;
+    const root = document.documentElement;
+    root.style.setProperty(COLUMN_WIDTH_PROPERTY, `${columnWidth}px`);
+    return () => {
+      root.style.removeProperty(COLUMN_WIDTH_PROPERTY);
+    };
+  }, [prefs.minimized, docked, columnWidth]);
 
   // Follow Kookr's speech playback.
   useEffect(() => {
@@ -309,11 +290,12 @@ export function AvatarDock({
     });
   }, []);
 
-  // Keep the "N min ago" labels current while the list is on screen: one timer, gone when the panel
-  // is minimised, closed or the list is empty.
+  // Keep the "N min ago" labels current while the thread is on screen: one timer, gone when the panel
+  // is minimised, closed or there is nothing to date.
   const [now, setNow] = useState(() => Date.now());
+  const threadHasClips = entries.some((entry) => entry.kind === 'clip');
   // Questions are kept current while minimised too: the bubble's badge counts the ones still waiting.
-  const listVisible = (!prefs.minimized && clips.length > 0) || operatorAsks.asks.length > 0;
+  const listVisible = (!prefs.minimized && (clips.length > 0 || threadHasClips)) || operatorAsks.asks.length > 0;
   useEffect(() => {
     if (!listVisible) return undefined;
     setNow(Date.now());
@@ -352,38 +334,10 @@ export function AvatarDock({
   }, []);
 
   const asks = visibleOperatorAsks(operatorAsks.asks, now + askClockOffsetMs());
-  const pendingAskCount = asks.reduce((n, ask) => (ask.state === 'pending' ? n + 1 : n), 0);
-  // A task waiting on a permission prompt is waiting for the operator too: its card gets the same room as a question.
-  const permissionCardCount = useLucyPermission().cards.length;
-  const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
-    // The list moves when a question arrives or closes: a press that lands just after it did may have been
-    // aimed at a card that is no longer under the pointer, so it is ignored (the operator presses again).
-    // A clock that stepped backwards (negative elapsed time) must not keep answers blocked.
-    const sinceChange = Date.now() - cardsChangedAtRef.current;
-    if (sinceChange >= 0 && sinceChange < ASK_PRESS_GUARD_MS) return;
-    markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
-  }, [onAnswerAsk]);
-  // After the cards change: if the control that had focus was removed with its card, put focus on what
-  // replaced the card, or on the panel when the card is gone. Two rules keep this from ever doing harm:
-  // it acts only when that control really left the page and focus fell to the document (focus the operator
-  // moved elsewhere is never taken back), and it lands on the card itself, never on an answer button, so a
-  // stray Enter or Space cannot send an answer.
-  const askSignature = asks.map((ask) => `${ask.id}:${ask.state}`).join(',');
-  // When the set of cards last changed (layout effect below), for the mis-click guard in `onAnswer`.
-  const cardsChangedAtRef = useRef(0);
-  useLayoutEffect(() => {
-    cardsChangedAtRef.current = Date.now();
-  }, [askSignature]);
-  useLayoutEffect(() => {
-    const focused = focusedAskControlRef.current;
-    if (!focused || focused.element.isConnected) return;
-    focusedAskControlRef.current = null;
-    const active = document.activeElement;
-    if (active && active !== document.body) return;
-    const dock = dockRef.current;
-    if (!dock) return;
-    (dock.querySelector<HTMLElement>(`[data-ask-id="${focused.askId}"]`) ?? dock).focus();
-  }, [askSignature]);
+  // Questions a task may still be waiting for, and opinion requests from tasks that have ended (they block nothing,
+  // so they are not "questions for you" and add nothing to the badge).
+  const pendingAskCount = asks.reduce((n, ask) => (ask.state === 'pending' && ask.taskEnded !== true ? n + 1 : n), 0);
+  const opinionCount = asks.reduce((n, ask) => (ask.state === 'pending' && ask.taskEnded === true ? n + 1 : n), 0);
 
   // A replay must not keep talking after the panel is gone.
   useEffect(() => () => stopReplay('user_stop'), []);
@@ -433,75 +387,13 @@ export function AvatarDock({
     setCardDismissed(false);
   }, [prefs.minimized]);
 
-  // Minimising swaps the window for the bubble (and back), which unmounts the button that had focus.
+  // Minimising swaps the column for the bubble (and back), which unmounts the button that had focus.
   // Move focus to its counterpart so a keyboard user is not sent back to the top of the page.
   useEffect(() => {
     if (!restoreFocusRef.current) return;
     restoreFocusRef.current = false;
     (prefs.minimized ? bubbleRef.current : minimiseButtonRef.current)?.focus();
   }, [prefs.minimized]);
-
-  // A way to move the window without dragging: each press sends it to the next corner of the viewport.
-  const moveToNextCorner = useCallback(() => {
-    const view = viewportSize();
-    const right = view.width - AVATAR_PANEL_WIDTH - AVATAR_PANEL_MARGIN;
-    const bottom = view.height - AVATAR_PANEL_HEIGHT - AVATAR_PANEL_MARGIN;
-    const corners = [
-      { x: right, y: bottom },
-      { x: AVATAR_PANEL_MARGIN, y: bottom },
-      { x: AVATAR_PANEL_MARGIN, y: AVATAR_PANEL_MARGIN },
-      { x: right, y: AVATAR_PANEL_MARGIN },
-    ].map((corner) => clampAvatarPanelPosition(corner, view));
-    const here = clampAvatarPanelPosition(
-      prefs.position ?? defaultAvatarPanelPosition(view),
-      view,
-    );
-    let nearest = 0;
-    let best = Number.POSITIVE_INFINITY;
-    corners.forEach((corner, index) => {
-      const distance = Math.hypot(corner.x - here.x, corner.y - here.y);
-      if (distance < best) {
-        best = distance;
-        nearest = index;
-      }
-    });
-    trackPanelAction('move');
-    updateAvatarPanelPrefs({ position: corners[(nearest + 1) % corners.length] });
-  }, [prefs.position]);
-
-  const onDragStart = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) return;
-      if ((event.target as HTMLElement).closest('button')) return;
-      dragRef.current = { pointerId: event.pointerId, dx: event.clientX - position.x, dy: event.clientY - position.y, last: null };
-      event.currentTarget.setPointerCapture(event.pointerId);
-      event.preventDefault();
-    },
-    [position.x, position.y],
-  );
-  const onDragMove = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      const drag = dragRef.current;
-      if (!drag || drag.pointerId !== event.pointerId) return;
-      drag.last = clampAvatarPanelPosition(
-        { x: event.clientX - drag.dx, y: event.clientY - drag.dy },
-        viewportSize(),
-      );
-      setDragPos(drag.last);
-    },
-    [],
-  );
-  const onDragEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    dragRef.current = null;
-    // Save where it was dropped. A press and release without movement is not a move.
-    if (drag.last) {
-      trackPanelAction('move');
-      updateAvatarPanelPrefs({ position: drag.last });
-    }
-    setDragPos(null);
-  }, []);
 
   // Hands-free is on and connected: the label and hint follow what the server says Lucy is doing.
   const liveReady = live.status === 'ready';
@@ -554,6 +446,10 @@ export function AvatarDock({
     if (!live.enabled) setHeardFinal(null);
     else if (live.operatorFinal && live.operatorText) setHeardFinal((previous) => ({ seq: (previous?.seq ?? 0) + 1, text: live.operatorText }));
   }, [live.enabled, live.operatorFinal, live.operatorText]);
+  // Everything said is recorded into the thread from here, which stays mounted while the panel is minimised.
+  useTalkThreadSync(live);
+  useClipThreadSync(clips);
+  useNoticeThreadSync(liveMessage, talkNoticeSeq);
   // If the Talk button disappears while it has focus, keyboard focus would fall to the page; keep it in the dock.
   useLayoutEffect(() => {
     if (!talkVisible && talkFocusedRef.current) {
@@ -569,9 +465,8 @@ export function AvatarDock({
     }
   }, [live.enabled]);
   const liveStateLabel = liveReady ? LIVE_STATE_LABEL[live.lucyState] : live.status === 'connecting' ? 'connecting' : null;
-  const showLive = live.enabled || liveMessage !== null;
   // Spoken by the always-present announcement region below (a live region must exist before its text does).
-  const connectingNotice = live.status === 'connecting' ? 'Connecting\u2026' : null;
+  const connectingNotice = live.status === 'connecting' ? 'Connecting…' : null;
   const announcement = liveMessage ?? connectingNotice;
 
   // Replay is unavailable (not hidden) when there is nothing to play, she is busy, or sound is off in Settings.
@@ -610,7 +505,7 @@ export function AvatarDock({
 
   // The bubble's card: what the badge and the dot mean. It only repeats what the bubble's label says, so it is
   // hidden from assistive technology; keyboard users get it through focus, Escape closes it.
-  const cardHasContent = attentionCount > 0 || lastClip.unheardCount > 0 || pendingAskCount > 0;
+  const cardHasContent = attentionCount > 0 || lastClip.unheardCount > 0 || pendingAskCount > 0 || opinionCount > 0;
   const cardVisible = prefs.minimized && cardHasContent && (hovered || focused) && !cardDismissed;
   useEffect(() => {
     if (!cardVisible) return undefined;
@@ -640,22 +535,22 @@ export function AvatarDock({
     const label = [
       `Open ${NAME}${activity}`,
       pendingAskCount > 0 ? questionsText(pendingAskCount) : null,
+      opinionCount > 0 ? opinionsText(opinionCount) : null,
       attentionCount > 0 ? findingsText(attentionCount) : null,
       lastClip.unheardCount > 0 ? unheardText(lastClip.unheardCount) : null,
     ]
       .filter(Boolean)
       .join('. ') + (cardHasContent ? '.' : '');
-    // One number on the bubble: everything that is waiting for the operator.
+    // One number on the bubble: everything that is waiting for the operator (opinion requests block nothing and are not in it).
     const badgeCount = attentionCount + pendingAskCount;
-    const cardPlacement = bubbleCardPlacement(bubblePosition, viewport);
-    const cardRight = bubblePosition.x + AVATAR_BUBBLE_SIZE;
     return (
       <>
+        {/* The bubble sits in the bottom-right corner (see `.avatar-bubble` in styles.css), not where a window was dragged. */}
         <button
           type="button"
           ref={bubbleRef}
           className={`avatar-bubble avatar-bubble-${state}${live.enabled ? ' avatar-bubble-live' : ''}`}
-          style={{ left: bubblePosition.x, top: bubblePosition.y, backgroundImage: still ? `url(${still})` : undefined }}
+          style={{ backgroundImage: still ? `url(${still})` : undefined }}
           onClick={open}
           onMouseEnter={onBubbleEnter}
           onMouseLeave={onBubbleLeave}
@@ -678,12 +573,6 @@ export function AvatarDock({
           <button
             type="button"
             className="avatar-bubble-stop"
-            style={{
-              left: bubblePosition.x + AVATAR_BUBBLE_SIZE - BUBBLE_STOP_SIZE + BUBBLE_STOP_OVERHANG,
-              top: bubblePosition.y + AVATAR_BUBBLE_SIZE - BUBBLE_STOP_SIZE + BUBBLE_STOP_OVERHANG,
-              width: BUBBLE_STOP_SIZE,
-              height: BUBBLE_STOP_SIZE,
-            }}
             onClick={onTalk}
             onFocus={() => { bubbleStopFocusedRef.current = true; }}
             onBlur={() => { bubbleStopFocusedRef.current = false; }}
@@ -699,24 +588,17 @@ export function AvatarDock({
           </button>
         )}
         {cardVisible && (
-          <div
-            className="avatar-bubble-card"
-            style={{
-              ...(cardPlacement.above
-                ? { bottom: viewport.height - bubblePosition.y + BUBBLE_CARD_GAP }
-                : { top: bubblePosition.y + AVATAR_BUBBLE_SIZE + BUBBLE_CARD_GAP }),
-              ...(cardPlacement.alignLeft
-                ? { left: bubblePosition.x }
-                : { right: viewport.width - cardRight }),
-              width: BUBBLE_CARD_WIDTH,
-            }}
-            aria-hidden="true"
-            data-testid="avatar-bubble-card"
-          >
+          <div className="avatar-bubble-card" aria-hidden="true" data-testid="avatar-bubble-card">
             {pendingAskCount > 0 && (
               <div className="avatar-bubble-card-row" data-testid="avatar-bubble-card-asks">
                 <span className="avatar-mark-diamond" />
                 {plural(pendingAskCount, 'question', 'questions')} for you
+              </div>
+            )}
+            {opinionCount > 0 && (
+              <div className="avatar-bubble-card-row" data-testid="avatar-bubble-card-opinions">
+                <span className="avatar-mark-ring" />
+                {opinionsText(opinionCount)}
               </div>
             )}
             {attentionCount > 0 && (
@@ -739,26 +621,31 @@ export function AvatarDock({
   }
 
   const replayTitleSuffix = newestUnheard ? ' (unheard)' : '';
-  const newestId = clips[0]?.clipId;
   return (
     <section
-      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${asks.length > 0 || permissionCardCount > 0 ? ' avatar-dock-asking' : ''}${pendingAskCount > 0 || permissionCardCount > 0 ? ' avatar-dock-ask-waiting' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
-      style={{ left: position.x, top: position.y, width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT }}
+      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${sheet ? ' avatar-dock-sheet' : ''}`}
+      style={sheet ? undefined : { width: columnWidth }}
       aria-label={`${NAME} avatar`}
       ref={dockRef}
       tabIndex={-1}
       data-testid="avatar-dock"
+      data-column-mode={layout.mode}
       data-avatar-state={state}
       data-lucy-live={live.status}
       data-avatar-loaded={loaded ? 'true' : 'false'}
     >
-      <div
-        className="avatar-dock-header"
-        onPointerDown={onDragStart}
-        onPointerMove={onDragMove}
-        onPointerUp={onDragEnd}
-        onPointerCancel={onDragEnd}
-      >
+      {!sheet && (
+        <ColumnResizer
+          width={columnWidth}
+          maxWidth={layout.maxWidth}
+          onResize={setDragWidth}
+          onCommit={(width) => {
+            setDragWidth(null);
+            updateAvatarPanelPrefs({ width });
+          }}
+        />
+      )}
+      <div className="avatar-dock-header">
         <span className="avatar-dock-name">{NAME.toUpperCase()}</span>
         <span className="avatar-dock-state" data-testid="avatar-state-label">{liveStateLabel ?? STATE_LABEL[state]}</span>
         <span className="avatar-dock-spacer" />
@@ -802,11 +689,8 @@ export function AvatarDock({
           )}
           {replayDescription && <span id={REPLAY_DESCRIPTION_ID} className="sr-only">{replayDescription}</span>}
         </button>
-        <button type="button" className="avatar-dock-button" onClick={moveToNextCorner} aria-label={`Move ${NAME} to the next corner`} title="Move to the next corner">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h12M6 4l2-2 2 2M6 12l2 2 2-2M4 6L2 8l2 2M12 6l2 2-2 2" /></svg>
-        </button>
         <button type="button" ref={minimiseButtonRef} className="avatar-dock-button" onClick={minimise} aria-label={`Minimise ${NAME}`} title="Minimise">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5" /></svg>
         </button>
       </div>
       <div className="avatar-dock-view" ref={viewRef}>
@@ -822,152 +706,33 @@ export function AvatarDock({
                 : 'Loading…'}
         </span>
       </div>
-      {/* Always present, only emptied: the Talk-unavailable reason, errors, "Connecting\u2026" and the operator's
+      {/* Always present, only emptied: the Talk-unavailable reason, errors, "Connecting…" and the operator's
           final words are announced from here. Each change is a new element so it is spoken again. */}
       <div className="sr-only" role="status" data-testid="avatar-live-announce">
         {announcement && <span key={`notice-${talkNoticeSeq}-${announcement}`}>{announcement}</span>}
         {heardFinal && <span key={`heard-${heardFinal.seq}`}>You said: {heardFinal.text}</span>}
         {askNotice && <span key={`ask-${askNotice.seq}`} data-testid="avatar-ask-announce">{askNotice.text}</span>}
       </div>
-      {asks.length > 0 && (
-        // Questions from tasks (`kookr ask`), above everything else she shows: a task is waiting on these.
-        <ol
-          className="avatar-asks"
-          // Stated because `list-style: none` makes some browsers drop the list role, and its label with it.
-          role="list"
-          onFocus={(event) => {
-            const element = event.target as HTMLElement;
-            const askId = element.closest<HTMLElement>('[data-ask-id]')?.dataset.askId;
-            focusedAskControlRef.current = askId ? { element, askId } : null;
-          }}
-          onBlur={(event) => {
-            // A control that is still in the page lost focus because the operator moved it (another field,
-            // a click on the page, another window): forget it. A control removed while focused is no longer
-            // in the page here, or never reports a blur at all; that is the case the effect above repairs.
-            if ((event.target as HTMLElement).isConnected) focusedAskControlRef.current = null;
-          }}
-          aria-label={pendingAskCount > 0 ? `Questions waiting for your answer (${pendingAskCount})` : 'Recent questions'}
-          data-testid="avatar-asks"
-        >
-          {asks.map((ask) => (
-            <AskCard
-              key={ask.id}
-              ask={ask}
-              submit={operatorAsks.submit[ask.id]}
-              nowMs={now + askClockOffsetMs()}
-              onAnswer={onAnswer}
-              onDismiss={dismissOperatorAsk}
-              onOpenTask={onOpenTask}
-            />
-          ))}
-        </ol>
-      )}
-      <LucyPermissionCards
-        {...(onPermissionChoice ? { onChoice: onPermissionChoice } : {})}
+      <WaitingTray
+        asks={asks}
+        submit={operatorAsks.submit}
+        nowMs={now + askClockOffsetMs()}
+        dockRef={dockRef}
+        {...(onAnswerAsk ? { onAnswerAsk } : {})}
         {...(onOpenTask ? { onOpenTask } : {})}
+        {...(onPermissionChoice ? { onPermissionChoice } : {})}
+      />
+      <LucyThread
+        entries={entries}
+        clips={clips}
+        nowMs={now}
+        liveReady={liveReady}
+        connecting={live.status === 'connecting'}
+        replayUnavailable={replayUnavailable}
+        replayReasonId={REPLAY_REASON_ID}
+        onReplay={onReplay}
       />
       <LucyLaunchCard />
-      {showLive && (
-        // A log, but not a live one: Lucy's answer is spoken aloud already, so it is not announced.
-        // Focusable because it scrolls.
-        <div
-          className="avatar-live"
-          role="log"
-          aria-live="off"
-          aria-label={`Conversation with ${NAME}`}
-          tabIndex={0}
-          data-testid="avatar-live"
-        >
-          {liveMessage && <p className="avatar-live-notice" data-testid="avatar-live-notice">{liveMessage}</p>}
-          {connectingNotice && <p className="avatar-live-notice">{connectingNotice}</p>}
-          {live.operatorText && (
-            <p
-              className={`avatar-live-you${live.operatorFinal ? '' : ' avatar-live-draft'}`}
-              data-testid="avatar-live-you"
-              data-final={live.operatorFinal ? 'true' : 'false'}
-            >
-              <span className="avatar-live-who">You</span> {live.operatorText}
-            </p>
-          )}
-          {live.lucyText && (
-            <p className="avatar-live-lucy" data-testid="avatar-live-lucy">
-              <span className="avatar-live-who">{NAME}</span> {live.lucyText}
-            </p>
-          )}
-        </div>
-      )}
-      {/* With messages, the list is a scroll region of its own that the keyboard can reach: the full text of a
-          long message is in the layout, so scrolling is the only way to the rest of it. */}
-      <div
-        className="avatar-dock-transcript"
-        data-testid="avatar-transcript"
-        {...(clips.length > 0 ? { role: 'region', 'aria-label': 'Recent messages', tabIndex: 0 } : {})}
-      >
-        {clips.length === 0 ? (
-          <p className="avatar-dock-hint" data-testid="avatar-hint">{liveReady ? LIVE_HINT : IDLE_HINT}</p>
-        ) : (
-          <>
-            {replayUnavailable && <span id={REPLAY_REASON_ID} className="sr-only">{replayUnavailable}</span>}
-            <ol className="avatar-msg-list" data-testid="avatar-messages">
-              {clips.map((clip) => {
-                const time = formatRelativeTime(clip.at, now);
-                const newest = clip.clipId === newestId;
-                const replayName = clip.subject ? `Replay message about ${clip.subject}, ${time}` : `Replay message, ${time}`;
-                return (
-                  <li
-                    key={clip.clipId}
-                    className={`avatar-msg${newest ? ' avatar-msg-newest' : ''}`}
-                    data-testid="avatar-message"
-                    data-clip-id={clip.clipId}
-                  >
-                    <p className="avatar-msg-text">{clip.text}</p>
-                    <div className="avatar-msg-meta">
-                      {clip.subject && (
-                        <>
-                          <span className="avatar-msg-subject">{clip.subject}</span>
-                          <span className="avatar-msg-sep" aria-hidden="true">·</span>
-                        </>
-                      )}
-                      <span className="avatar-msg-time">{time}</span>
-                      {clip.usedFallback && (
-                        // Template wording, not a model summary (issue #3631): say so, or it reads as Lucy's own words.
-                        // The tooltip reaches only mouse users, so a screen reader hears the full phrase instead of the bare word (issue #3859).
-                        <span
-                          className="avatar-msg-template"
-                          data-testid="avatar-msg-template"
-                          title="Template wording: the summary model was not used for this message"
-                        >
-                          <span aria-hidden="true">template</span>
-                          <span className="sr-only">template wording, not a model summary</span>
-                        </span>
-                      )}
-                      {!clip.heard && (
-                        <span className="avatar-msg-unheard" data-testid="avatar-msg-unheard">
-                          <span className="avatar-mark-dot" aria-hidden="true" />
-                          unheard
-                        </span>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      className="avatar-dock-button avatar-msg-replay"
-                      onClick={() => onReplay(clip.clipId)}
-                      // Same pattern as the header button: aria-disabled keeps it focusable, so focus stays here after a press.
-                      aria-disabled={replayUnavailable ? 'true' : undefined}
-                      aria-label={replayName}
-                      aria-describedby={replayUnavailable ? REPLAY_REASON_ID : undefined}
-                      title={replayUnavailable ?? replayName}
-                      data-testid="avatar-msg-replay"
-                    >
-                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v3h3" /><path d="M7 6v4l3-2z" /></svg>
-                    </button>
-                  </li>
-                );
-              })}
-            </ol>
-          </>
-        )}
-      </div>
       <LucyTypedInput />
     </section>
   );
