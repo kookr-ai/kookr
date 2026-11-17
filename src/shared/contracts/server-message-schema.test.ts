@@ -266,6 +266,11 @@ const serverMessageCases = [
     conversationId: 'c1',
     outcome: { outcome: 'launched', proposalId: 'p1', taskId: 't1', project: 'kookr' },
   }),
+  serverMessageCase({
+    type: 'lucy_action',
+    conversationId: 'c1',
+    outcome: { outcome: 'done', proposalId: 'p1', kind: 'reply', taskId: 't1' },
+  }),
 ] as const;
 
 const coveredServerMessageTypes = serverMessageCases.map((message) => message.type);

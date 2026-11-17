@@ -155,15 +155,45 @@ function normalize(text: string): string {
   return text.toLowerCase().replace(/['’]/g, '').replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/** Confirm words that only make sense for a launch: with an answer, reply or close card on screen they are a new request. */
+const LAUNCH_ONLY_CONFIRM = new Set(['launch it', 'start it']);
+
 /**
  * How a sentence answers a pending proposal. Only a whole sentence made of a confirm word counts:
  * "go and also delete the logs" is neither, so it drops the proposal and goes to Lucy as a new request.
+ * `card` is the kind of card on screen: an `action` card (answer, reply, close) is not confirmed by "launch it".
  */
-export function classifyReply(text: string): 'confirm' | 'decline' | 'other' {
+export function classifyReply(text: string, card: 'launch' | 'action' = 'launch'): 'confirm' | 'decline' | 'other' {
   const n = normalize(text);
-  if (CONFIRM.has(n)) return 'confirm';
+  if (CONFIRM.has(n)) return card === 'action' && LAUNCH_ONLY_CONFIRM.has(n) ? 'other' : 'confirm';
   if (DECLINE.has(n)) return 'decline';
   return 'other';
+}
+
+/** Rough time to speak a sentence: about three words a second, plus a second for the voice to start. */
+export function estimateSpeechMs(sentence: string): number {
+  const words = sentence.split(/\s+/).filter(Boolean).length;
+  return Math.round((words / 3) * 1000) + 1000;
+}
+
+/** What the server knows about how the operator's sentence arrived. */
+export interface LucyReplyContext {
+  input?: 'voice' | 'typed';
+  /** The browser saw the words start while she was still saying the read-back. */
+  overlapsReadBack?: boolean;
+  /** Server clock at the moment the spoken words began. */
+  speechStartedAt?: number;
+}
+
+/**
+ * The echo rule, shared by every kind of card: spoken words that began while she was still reading
+ * a proposal aloud could be her own voice coming back through the microphone, so they neither
+ * confirm the proposal nor drop it. Saying no is always safe, so a decline is heard even then.
+ * `speakingUntil` is when her read-back ends, on the server clock.
+ */
+export function mayBeOwnVoice(text: string, context: LucyReplyContext, speakingUntil: number, nowMs: number, card: 'launch' | 'action' = 'launch'): boolean {
+  if (context.input !== 'voice' || classifyReply(text, card) === 'decline') return false;
+  return context.overlapsReadBack === true || (context.speechStartedAt ?? nowMs) < speakingUntil;
 }
 
 /**

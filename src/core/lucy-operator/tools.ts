@@ -2,9 +2,11 @@
  * The tools Lucy may call in this step, and the one place where a tool call from the
  * model is turned into something the server does.
  *
- * Every tool here only looks. There is no tool that launches, replies to, closes,
- * snoozes or aborts a task, so nothing a task wrote can make her act: an instruction
- * hidden in task output can at most make her read something else.
+ * Every tool here only looks. No tool in this file launches, replies to, closes or
+ * aborts a task, so nothing a task wrote can make her act through one of them: an
+ * instruction hidden in task output can at most make her read something else. The tools
+ * that lead to a change only make a proposal the operator must confirm, and live in
+ * `launch-tool.ts` and `action-tool.ts`.
  *
  * {@link dispatchLucyTool} is the safety boundary. The model's output is untrusted too,
  * so the dispatcher, not the prompt, decides what runs:
@@ -18,7 +20,24 @@ import type { LlmFunctionTool } from '../llm-types.js';
 import { LUCY_LOOK_TOOL_NAMES, type LucyLookToolName } from '../../shared/contracts/lucy-turn.js';
 import { redactSpeechSecrets } from '../task-speech-summary.js';
 import { cleanTaskText } from './task-text.js';
-import { agoWords, askWho, boardText, buildLucyBoard, orderPendingAsks, resolveTaskRef, spokenLabel, taskHandles, type LucyBoardInput, type LucyBoardTask } from './board.js';
+import {
+  agoWords,
+  askChoiceWords,
+  askCodes,
+  askWho,
+  boardText,
+  buildLucyBoard,
+  MAX_BOARD_CHARS,
+  orderPendingAsks,
+  pullRequestWords,
+  resolveTaskRef,
+  spokenLabel,
+  taskHandles,
+  type LucyBoardInput,
+  type LucyBoardOptions,
+  type LucyBoardTask,
+  type LucyTaskPullRequest,
+} from './board.js';
 
 /** More about one task than the board shows. Every string here was written by an agent or pasted by the operator. */
 export interface LucyTaskDetail {
@@ -34,6 +53,11 @@ export interface LucyTaskDetail {
   completionSummary?: string;
   /** Pull requests or issues the task is linked to, as short references such as "PR #12". */
   references?: readonly string[];
+  /**
+   * The pull requests of the task's own work with their state on GitHub. One that is only cited
+   * in the task's request is never listed here: it is not the task's delivery.
+   */
+  pullRequests?: readonly LucyTaskPullRequest[];
 }
 
 /**
@@ -162,6 +186,11 @@ export function displayToolArgs(rawArguments: string): Record<string, unknown> {
   return shown;
 }
 
+/** The arguments of a tool call as a JSON object; null when they are anything else. An empty string is an empty object. */
+export function parseToolArgs(raw: string): Record<string, unknown> | null {
+  return parseArgs(raw);
+}
+
 function parseArgs(raw: string): Record<string, unknown> | null {
   const text = raw.trim();
   if (!text) return {};
@@ -193,18 +222,22 @@ function inWords(thenMs: number, nowMs: number): string {
  * for them in a single untrusted block. When the lists do not fit, the last questions are left out and
  * the count of those is stated, so she never takes a cut list for all of it.
  */
-function describeQuestions(board: LucyBoardInput, nowMs: number): string {
+function describeQuestions(board: LucyBoardInput, nowMs: number, canAct: boolean): string {
   const pending = orderPendingAsks(board.asks ?? []);
   if (pending.length === 0) return 'No question from a task is waiting for the operator.';
   const handles = taskHandles(board.tasks);
+  const codes = askCodes(pending);
   const facts: string[] = [];
   const written: string[] = [];
   let size = 0;
   for (const ask of pending.slice(0, MAX_QUESTION_LINES)) {
     const n = facts.length + 1;
     const state = ask.taskEnded === true ? 'its task has finished, so nothing is waiting on it' : 'its task is still running and may be waiting on it';
-    const fact = `${n}. ${askWho(ask, handles)} asked ${agoWords(ask.createdAt, nowMs)}, closes ${inWords(ask.expiresAt, nowMs)}; ${state}.`;
-    const choices = ask.options.map((o) => boardText(o, MAX_QUESTION_OPTION_CHARS)).join('; ');
+    // With `canAct` each question carries the code `propose_answer` takes, and whether it takes free text.
+    const code = canAct ? `question ${codes.get(ask.id)}, from ` : '';
+    const takes = canAct ? (ask.allowText ? '; it takes one of its choices or the operator\'s own words' : '; it takes one of its choices only') : '';
+    const fact = `${n}. ${code}${askWho(ask, handles)} asked ${agoWords(ask.createdAt, nowMs)}, closes ${inWords(ask.expiresAt, nowMs)}; ${state}${takes}.`;
+    const choices = askChoiceWords(ask.options, MAX_QUESTION_OPTION_CHARS, canAct);
     const text = `${n}. ${boardText(ask.question, MAX_QUESTION_TEXT_CHARS)} Choices: ${choices}.`;
     if (facts.length > 0 && size + fact.length + text.length + 2 > MAX_QUESTIONS_CHARS) break;
     facts.push(fact);
@@ -212,7 +245,9 @@ function describeQuestions(board: LucyBoardInput, nowMs: number): string {
     size += fact.length + text.length + 2;
   }
   const rest = pending.length - facts.length;
-  const header = `Questions waiting for the operator (${pending.length}; the operator answers them with the buttons on the card or on Telegram, never by voice, and you cannot answer them):`;
+  const header = canAct
+    ? `Questions waiting for the operator (${pending.length}; the operator answers them with the buttons on the card or on Telegram, or tells you the answer: then call propose_answer with the question's code and the number of the choice they named. Questions have no snooze):`
+    : `Questions waiting for the operator (${pending.length}; the operator answers them with the buttons on the card or on Telegram, never by voice, and you cannot answer them):`;
   const more = rest > 0 ? `\n- and ${rest} more questions not listed` : '';
   return `${header}\n${facts.join('\n')}${more}\nWhat each question says, written by the tasks:\n${untrusted(written.join('\n'), MAX_QUESTIONS_CHARS)}`;
 }
@@ -225,6 +260,9 @@ function describeTask(task: LucyBoardTask, detail: LucyTaskDetail | null, nowMs:
   if (created !== undefined && Number.isFinite(created)) facts.push(`Started: ${agoWords(created, nowMs)}`);
   if (task.attention) facts.push(`Waiting on the operator: ${boardText(task.attention, 80)}`);
   if (typeof task.costUsd === 'number' && task.costUsd > 0) facts.push(`Spent: $${task.costUsd.toFixed(2)}`);
+  // Kookr's own reading of GitHub, outside the block of task-written text: what the task delivered and whether it merged.
+  const delivery = pullRequestWords(detail?.pullRequests);
+  if (delivery) facts.push(`Pull requests from its work: ${delivery}`);
   if (detail?.references?.length) facts.push(`Linked: ${detail.references.slice(0, 6).map((r) => boardText(r, 40)).join(', ')}`);
 
   // Each part is cleaned and cut on its own, so a long request cannot push the closing summary out.
@@ -245,7 +283,8 @@ function describeTask(task: LucyBoardTask, detail: LucyTaskDetail | null, nowMs:
  * Run one tool call from the model. Never throws: a failure comes back as an outcome
  * with `ok: false`, which the loop hands to the model like any other tool answer.
  */
-export async function dispatchLucyTool(name: string, rawArguments: string, source: LucyLookSource, nowMs: number): Promise<LucyToolOutcome> {
+export async function dispatchLucyTool(name: string, rawArguments: string, source: LucyLookSource, nowMs: number, options: LucyBoardOptions = {}): Promise<LucyToolOutcome> {
+  const canAct = options.canAct === true;
   if (!isLookTool(name)) {
     return refuse(
       'Refused: not a tool she has',
@@ -258,11 +297,11 @@ export async function dispatchLucyTool(name: string, rawArguments: string, sourc
   try {
     switch (name) {
       case 'read_board':
-        return { ok: true, content: buildLucyBoard(source.board(), nowMs), summary: 'Read the board' };
+        return { ok: true, content: buildLucyBoard(source.board(), nowMs, MAX_BOARD_CHARS, options), summary: 'Read the board' };
 
       case 'read_questions': {
         const board = source.board();
-        return { ok: true, content: describeQuestions(board, nowMs), summary: `Read ${orderPendingAsks(board.asks ?? []).length} questions` };
+        return { ok: true, content: describeQuestions(board, nowMs, canAct), summary: `Read ${orderPendingAsks(board.asks ?? []).length} questions` };
       }
 
       case 'list_projects': {

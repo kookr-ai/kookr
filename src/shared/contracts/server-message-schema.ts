@@ -146,6 +146,14 @@ const lucyLaunchMessage = z.object({
   report: jsonObject.optional(),
 });
 
+// Lucy's proposals about an existing task (answer, reply, close): a card, or what became of it.
+const lucyActionMessage = z.object({
+  type: z.literal('lucy_action'),
+  conversationId: z.string(),
+  proposal: jsonObject.optional(),
+  outcome: jsonObject.optional(),
+});
+
 const updateMessage = z.object({
   type: z.literal('update'),
   agentId: z.string(),
@@ -510,6 +518,7 @@ const ServerMessageSchemaImpl = z.union([
   snapshotMessage,
   deltaMessage,
   lucyLaunchMessage,
+  lucyActionMessage,
   updateMessage,
   alertMessage,
   githubUpdateMessage,

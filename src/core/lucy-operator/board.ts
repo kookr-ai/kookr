@@ -41,6 +41,12 @@ export interface LucyBoardTask {
   attention?: string;
 }
 
+/** A pull request seen in a task's own work (never one merely cited in its request), with its state on GitHub. */
+export interface LucyTaskPullRequest {
+  number: number;
+  status: 'open' | 'closed' | 'merged' | 'draft';
+}
+
 export interface LucyQuotaWindow {
   /** Share of the quota used, 0 to 100. */
   utilization: number;
@@ -54,6 +60,17 @@ export interface LucyBoardInput {
   quota: { fiveHour: LucyQuotaWindow | null; sevenDay: LucyQuotaWindow | null } | null;
   /** Questions tasks asked the operator with `kookr ask`: all pending ones and the recently closed ones. Absent when there are none to show. */
   asks?: readonly OperatorAskView[];
+  /**
+   * The pull requests of a task's own work, read only for the task lines the board actually shows
+   * (a look-up per listed task, not per task Kookr knows). Absent when the server has no GitHub state.
+   */
+  pullRequestsOf?: (taskId: string) => readonly LucyTaskPullRequest[];
+}
+
+/** How the board and the look-ups word things that depend on what she may do. */
+export interface LucyBoardOptions {
+  /** She can propose answering a question (`propose_answer`): questions then carry a code and numbered choices. */
+  canAct?: boolean;
 }
 
 /** Longest board, in characters. The task lists are cut to fit; the totals, spend and quota never are. */
@@ -63,6 +80,9 @@ export const MAX_BOARD_WORKING = 15;
 export const MAX_BOARD_FINISHED = 6;
 export const MAX_BOARD_ASKS_PENDING = 4;
 export const MAX_BOARD_ASKS_CLOSED = 3;
+/** Pull requests named on one task line. */
+export const MAX_LISTED_PULL_REQUESTS = 6;
+const MAX_BOARD_LINE_PULL_REQUESTS = 3;
 const MAX_ASK_QUESTION_CHARS = 140;
 const MAX_ASK_OPTION_CHARS = 30;
 const MAX_ASK_ANSWER_CHARS = 60;
@@ -157,6 +177,30 @@ export function taskHandles(tasks: readonly { id: string }[]): Map<string, strin
   return result;
 }
 
+/**
+ * The code that stands for each waiting question in `propose_answer`: "q" and the first few
+ * characters of the question's id, made longer only where two would clash. Like a task's code it
+ * depends on the id alone, so a question keeps its code from one turn to the next.
+ */
+export function askCodes(asks: readonly { id: string }[]): Map<string, string> {
+  const codes = new Map<string, string>();
+  for (const [id, handle] of taskHandles(asks)) codes.set(id, `q${handle}`);
+  return codes;
+}
+
+/** "PR #12 merged, PR #15 open": Kookr's own facts about a task's pull requests, never text a task wrote. */
+export function pullRequestWords(pullRequests: readonly LucyTaskPullRequest[] | undefined, max = MAX_LISTED_PULL_REQUESTS): string {
+  const valid = (pullRequests ?? []).filter((pr) => Number.isInteger(pr.number) && pr.number > 0 && ['open', 'closed', 'merged', 'draft'].includes(pr.status));
+  const listed = valid.slice(0, max).map((pr) => `PR #${pr.number} ${pr.status}`);
+  if (valid.length > max) listed.push(`and ${valid.length - max} more`);
+  return listed.join(', ');
+}
+
+/** The choices of a question as she reads them: numbered when she can pass the number to `propose_answer`. */
+export function askChoiceWords(options: readonly string[], maxChars: number, numbered: boolean): string {
+  return options.map((o, index) => `${numbered ? `${index + 1}) ` : ''}${boardText(o, maxChars)}`).join('; ');
+}
+
 /** The task's title as it may be said aloud, or the generic name when it may not. Cleaned like everything else on the board. */
 function spokenNameOf(name: string | undefined): string {
   return spokenTaskName(redactedTaskName(name === undefined ? undefined : cleanTaskText(name)));
@@ -170,7 +214,7 @@ export function spokenLabel(task: Pick<LucyBoardTask, 'name' | 'project'>): stri
   return project ? `an unnamed task in ${project}` : 'an unnamed task';
 }
 
-function taskLine(task: LucyBoardTask, handle: string, nowMs: number, when: 'updated' | 'ended'): string {
+function taskLine(task: LucyBoardTask, handle: string, nowMs: number, when: 'updated' | 'ended', pullRequests?: readonly LucyTaskPullRequest[]): string {
   const parts: string[] = [`[${handle}] ${spokenLabel(task)}`];
   const project = boardText(task.project, 40);
   if (project) parts.push(`project ${project}`);
@@ -183,6 +227,8 @@ function taskLine(task: LucyBoardTask, handle: string, nowMs: number, when: 'upd
   }
   if (task.attention) parts.push(`waiting on the operator: ${boardText(task.attention, 60)}`);
   if (typeof task.costUsd === 'number' && task.costUsd > 0) parts.push(`spent ${dollars(task.costUsd)}`);
+  const delivery = pullRequestWords(pullRequests, MAX_BOARD_LINE_PULL_REQUESTS);
+  if (delivery) parts.push(delivery);
   return `- ${parts.join(' · ')}`;
 }
 
@@ -218,10 +264,11 @@ function askOutcome(ask: OperatorAskView, nowMs: number): string {
 
 /**
  * The questions tasks asked the operator. The text is written by a task, so it is cleaned
- * and cut like the rest of the board; she reads it as information. The answer is always
- * given with the buttons on the card or on Telegram: she cannot take one by voice.
+ * and cut like the rest of the board; she reads it as information. Without `canAct` the answer
+ * is always given with the buttons on the card or on Telegram. With it, each question carries its
+ * code and numbered choices, so she can propose the operator's answer (`propose_answer`).
  */
-function askLines(asks: readonly OperatorAskView[], handles: ReadonlyMap<string, string>, nowMs: number): string[] {
+function askLines(asks: readonly OperatorAskView[], handles: ReadonlyMap<string, string>, nowMs: number, canAct: boolean): string[] {
   const pending = orderPendingAsks(asks);
   const closed = asks
     .filter((a) => a.state !== 'pending')
@@ -231,10 +278,15 @@ function askLines(asks: readonly OperatorAskView[], handles: ReadonlyMap<string,
   if (pending.length === 0) {
     lines.push('Questions from tasks waiting for the operator: none.');
   } else {
-    lines.push(`Questions from tasks waiting for the operator (${pending.length}; they are answered with the buttons on the card in the panel or on Telegram, never by voice, and you cannot answer them):`);
+    const codes = askCodes(pending);
+    lines.push(canAct
+      ? `Questions from tasks waiting for the operator (${pending.length}; the operator answers with the buttons on the card in the panel or on Telegram, or tells you the answer and you call propose_answer with the question's code):`
+      : `Questions from tasks waiting for the operator (${pending.length}; they are answered with the buttons on the card in the panel or on Telegram, never by voice, and you cannot answer them):`);
     for (const ask of pending.slice(0, MAX_BOARD_ASKS_PENDING)) {
-      const choices = ask.options.map((o) => boardText(o, MAX_ASK_OPTION_CHARS)).join('; ');
-      lines.push(`- ${askWho(ask, handles)} asked ${agoWords(toMs(ask.createdAt), nowMs)}: ${boardText(ask.question, MAX_ASK_QUESTION_CHARS)} Choices: ${choices}.${ask.taskEnded === true ? ' Its task has finished, so nothing is waiting on it.' : ''}`);
+      const choices = askChoiceWords(ask.options, MAX_ASK_OPTION_CHARS, canAct);
+      const code = canAct ? `question ${codes.get(ask.id)} from ` : '';
+      const freeText = canAct && ask.allowText ? ' It also takes an answer in the operator\'s own words.' : '';
+      lines.push(`- ${code}${askWho(ask, handles)} asked ${agoWords(toMs(ask.createdAt), nowMs)}: ${boardText(ask.question, MAX_ASK_QUESTION_CHARS)} Choices: ${choices}.${freeText}${ask.taskEnded === true ? ' Its task has finished, so nothing is waiting on it.' : ''}`);
     }
     if (pending.length > MAX_BOARD_ASKS_PENDING) lines.push(`- and ${pending.length - MAX_BOARD_ASKS_PENDING} more questions not listed here; read_questions lists them all`);
   }
@@ -261,7 +313,7 @@ function quotaLine(label: string, window: LucyQuotaWindow | null): string | null
  * Spend and quota come first and are never cut: when the board is too long it is the
  * task lists, from the end, that give way.
  */
-export function buildLucyBoard(input: LucyBoardInput, nowMs: number, maxChars: number = MAX_BOARD_CHARS): string {
+export function buildLucyBoard(input: LucyBoardInput, nowMs: number, maxChars: number = MAX_BOARD_CHARS, options: LucyBoardOptions = {}): string {
   const handles = taskHandles(input.tasks);
   const handleOf = (task: LucyBoardTask): string => handles.get(task.id) ?? task.id;
   const byRecency = (a: LucyBoardTask, b: LucyBoardTask): number => (toMs(b.updatedAt) ?? 0) - (toMs(a.updatedAt) ?? 0);
@@ -285,10 +337,18 @@ export function buildLucyBoard(input: LucyBoardInput, nowMs: number, maxChars: n
   );
   head.push(...(quotaLines.length > 0 ? quotaLines.map((line) => `- ${line}`) : ['- Quota: not available']));
 
-  const lines: string[] = [...askLines(input.asks ?? [], handles, nowMs)];
+  const lines: string[] = [...askLines(input.asks ?? [], handles, nowMs, options.canAct === true)];
+  // Read per listed line only: a failure to read GitHub state must not cost her the board.
+  const pullRequestsOf = (task: LucyBoardTask): readonly LucyTaskPullRequest[] | undefined => {
+    try {
+      return input.pullRequestsOf?.(task.id);
+    } catch {
+      return undefined;
+    }
+  };
   const section = (title: string, tasks: readonly LucyBoardTask[], max: number, when: 'updated' | 'ended', total = tasks.length): void => {
     lines.push('', tasks.length === 0 ? `${title}: none.` : `${title} (${total}):`);
-    for (const task of tasks.slice(0, max)) lines.push(taskLine(task, handleOf(task), nowMs, when));
+    for (const task of tasks.slice(0, max)) lines.push(taskLine(task, handleOf(task), nowMs, when, pullRequestsOf(task)));
     if (total > max) lines.push(`- and ${total - Math.min(max, tasks.length)} more not listed`);
   };
 
