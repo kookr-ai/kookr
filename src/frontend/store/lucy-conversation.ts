@@ -21,8 +21,8 @@
  *
  * Several tabs share the one saved thread. A tab that hears (through the `storage` event) that another
  * tab saved takes the saved list, and keeps what only it knows: entries it added that the other tab's
- * save did not include yet, and its own newer version of an entry it is still writing (each change bumps
- * the entry's `rev`; the higher one wins). Messages every tab receives (a launch outcome, a report) are
+ * save did not include yet, its own newer version of an entry (each change bumps the entry's `rev`; the
+ * higher one wins), and the reply it is still receiving, whatever the other tab's copy of it says. Messages every tab receives (a launch outcome, a report) are
  * added with an id made from their subject, so two tabs add one entry, not two.
  *
  * What is NOT kept across a reload: a draft of the operator's speech that never became final, and an
@@ -245,7 +245,10 @@ function mergeSaved(raw: string | null): void {
       continue;
     }
     const own = mine.get(item.id);
-    if (own && (own.rev ?? 0) > (item.rev ?? 0)) {
+    // A reply this tab is still receiving is this tab's to finish, whatever the other copy says: a tab opened
+    // meanwhile has closed its own copy as "cut off", at the same revision, and may save it.
+    const receiving = own !== undefined && own.kind === 'typed-lucy' && own.status === 'pending' && addedHere.has(own.id);
+    if (own && (receiving || (own.rev ?? 0) > (item.rev ?? 0))) {
       next.push(own);
       ahead = true;
     } else {

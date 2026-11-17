@@ -274,6 +274,19 @@ describe('lucy-conversation', () => {
       expect(texts()).toEqual(['Five tasks are running.', 'theirs']);
     });
 
+    test('a tab opened while a reply is arriving here, which closed its own copy as "cut off", cannot end the reply here', () => {
+      const id = appendConversationEntry({ kind: 'typed-lucy', text: '', status: 'pending' });
+      // The new tab read the saved thread, repaired the reply that looked abandoned, and then saved (same revision).
+      otherTabSaves([{ ...saved()[0], status: 'error', text: CUT_OFF_BY_RELOAD_TEXT }, fromOther('o1', 'theirs')]);
+      expect(getConversationEntries()[0]).toMatchObject({ id, status: 'pending', text: '' });
+      updateConversationEntry(id, { text: 'Five tasks are running.', status: 'done' });
+      expect(getConversationEntries()[0]).toMatchObject({ status: 'done', text: 'Five tasks are running.' });
+      expect(texts()).toEqual(['Five tasks are running.', 'theirs']);
+      // Once it has ended here, a newer version from elsewhere is taken as usual.
+      otherTabSaves([{ ...getConversationEntries()[0], chips: ['More'], rev: 9 }, fromOther('o1', 'theirs')]);
+      expect(getConversationEntries()[0]).toMatchObject({ chips: ['More'] });
+    });
+
     test('the other tab\'s newer version of an entry replaces this tab\'s', () => {
       const id = appendConversationEntry({ kind: 'lucy', text: 'The task I started has finished.', taskId: 't9' });
       // The tab that speaks attached the clip to it (two changes there, none here).
