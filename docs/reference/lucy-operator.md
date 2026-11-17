@@ -3,9 +3,11 @@
 Lucy's operator conversation lets the operator ask a question about their tasks and get an answer
 that Lucy looked up herself. It is one HTTP endpoint, `POST /api/lucy/turn`. It is the first step of
 making Lucy the main way to run Kookr (issue #3632): she can look, and, unless `KOOKR_LUCY_LAUNCH=0`,
-she can start a task for the operator after they confirm it (see
-[Launching a task by voice or text](#launching-a-task-by-voice-or-text)). Nothing else she does changes
-a task. This page covers setup, how a turn works, what she is allowed to do, what leaves the
+she can do four things for the operator, each only after they confirm it on a card: start a task (see
+[Launching a task by voice or text](#launching-a-task-by-voice-or-text)), and, for a task that already
+exists, answer a question it asked, send it a reply, or close it once it says it is finished (see
+[Acting on an existing task](#acting-on-an-existing-task-answer-reply-close)). Nothing else she does
+changes a task. This page covers setup, how a turn works, what she is allowed to do, what leaves the
 machine, the measurements taken when it was built, and its limits.
 
 The avatar panel's hands-free talk ([Lucy live](lucy-live.md)) answers through the helper model, and
@@ -66,14 +68,25 @@ event list is in the [API reference](api.md) and in `src/shared/contracts/lucy-t
 Her reply is sent on as it is written, so the first words arrive before the rest. The model's own
 reasoning is never sent on.
 
+How long and in what shape she answers depends on how the operator spoke to her. A spoken turn
+(`input: "voice"`) is answered in one to three sentences with no list, because it is read aloud. A
+typed turn may instead be answered with a short list when the answer covers several tasks or several
+questions: one item per line, each starting with `- `, at most six items, and no other markdown. In
+both she answers in the language the operator used. The sentences the server itself writes (a
+proposal's read-back, a refusal, "Sent.") are in English, and so are the words that confirm a card.
+
+Her instructions also tell her never to point the operator at a button, a setting or a command that
+the instructions do not name, and that questions have no snooze. Before this rule she sent an
+operator to a snooze control that does not exist.
+
 ### What she can look up
 
 | Tool | What it returns |
 |---|---|
 | `read_board` | The board again, freshly built |
-| `read_task` | One task: what it was asked to do, where it runs, what it waits for, its closing summary |
+| `read_task` | One task: what it was asked to do, where it runs, what it waits for, its closing summary. When Kookr knows the state of the pull requests from the task's own work, it says so on a line of its own facts, outside the marked block of task text: `Pull requests from its work: PR #12 merged, PR #15 open`. A pull request that the task's request only cites is not listed there (it is not the task's delivery); it stays a plain link with no state. The board says the same, more briefly, on the task lines it shows |
 | `read_task_output` | What a task's terminal shows: the last 40 lines of the rendered screen (a running task), or of the tail saved when it ended |
-| `read_questions` | Every `kookr ask` question still waiting for the operator, not only the few the board shows: those whose task is still waiting first, then the one that closes soonest. Each line says who asked, how long ago, when it closes, whether its task has finished (then nothing is blocked on it, it only asks for an opinion), and the question and choices, which are task text and arrive marked as untrusted. At most 40 questions and about 8,000 characters; a cut is stated ("and N more questions not listed"). The board lists its few questions in the same order and ends with a line that points here |
+| `read_questions` | Every `kookr ask` question still waiting for the operator, not only the few the board shows: those whose task is still waiting first, then the one that closes soonest. Each line says who asked, how long ago, when it closes, whether its task has finished (then nothing is blocked on it, it only asks for an opinion), and the question and choices, which are task text and arrive marked as untrusted. At most 40 questions and about 8,000 characters; a cut is stated ("and N more questions not listed"). The board lists its few questions in the same order and ends with a line that points here. When she may act, each question also carries a short code (`qf00d`, from the question's id), its choices are numbered, and its line says whether it takes only a listed choice or also the operator's own words: that is what `propose_answer` points at |
 | `show_task` | A short confirmation; it asks the dashboard to open the task (a `screen` event in the stream) |
 | `list_projects` | The projects Kookr knows, with how many tasks are active in each. With launching on, each line also says `can launch here` or `cannot launch here (not tracked)`, and the projects she may launch in come first so the 30-line cap never hides them. When she cannot place a launch request, she names the project she understood and up to five she can launch in |
 
@@ -192,17 +205,112 @@ Any other sentence the operator says during the window drops the held launch, li
 
 ### Not built here
 
-Replying to a task, closing, relaunching, aborting, approving a permission prompt and merging are later
-slices. When they arrive, abort, approve and merge need a typed or clicked confirmation at Careful and
-Balanced, and a spoken specific "yes" at Hands-off; never "go" alone.
+Relaunching, aborting, approving a permission prompt and merging are later slices. When they arrive,
+abort, approve and merge need a typed or clicked confirmation at Careful and Balanced, and a spoken
+specific "yes" at Hands-off; never "go" alone.
+
+## Acting on an existing task: answer, reply, close
+
+On whenever launching is on (`KOOKR_LUCY_LAUNCH`, the same switch); with it off her instructions still
+say she can only look. She can propose three things for a task that already exists:
+
+| The operator says | She proposes | What happens on confirmation |
+|---|---|---|
+| "Answer the billing question with Postgres" | `propose_answer`: one of the question's listed choices, or the operator's own words when the question takes free text | The answer is recorded and typed into the task, exactly as with the buttons on the question card |
+| "Tell the billing task to rebase on main" | `propose_reply`: a message for a running task | The text is typed into the task's live session, as the dashboard's reply box does |
+| "Close the billing task" | `propose_close`: only for a task that says it is finished | The task is completed, as the dashboard's Complete button does |
+
+Each proposal is a card in the avatar panel. Its title says what and for which task ("Answer Billing
+migration", "Reply to Billing migration", "Close Billing migration"). Below it is exactly what will be
+sent, never a summary: the question and the chosen choice, or the whole text that will be typed into
+the task. The card has Send (or Close) and Cancel, says how long it still waits, and afterwards
+becomes one line: "Sent", "Closed", or the reason nothing was done.
+
+### How a proposal is made and confirmed
+
+1. The model calls one of the three tools. Its arguments are only **selectors**: which task (the code on
+   the board), which question (the code `read_questions` shows), which choice (its number). Kookr
+   checks each against the board, and again against the real task and question. Anything else the
+   model puts in the arguments is never read. A selector that points at nothing is answered with a
+   sentence of Kookr's own, and the model may correct the call or ask the operator.
+2. **Text that will be sent is never the model's.** The reply to a task, and a free-text answer, are
+   written by a separate model call that is given the operator's own messages from this conversation
+   and nothing else: not the board, not the task's name, not the question, not a look-up result, not one
+   of her own earlier replies, and not Kookr's note for a question Talk read out unprompted. If that
+   call cannot tell what to send, she asks ("What should I tell it?") and there is no card. The text
+   is put on one line, with control characters removed; a text too long to send whole is refused, not cut.
+3. Kookr holds the proposal for two minutes and she says the server's read-back sentence ("I will type
+   "Rebase on main" into "Billing migration". Say go to send."). The turn ends there.
+4. The next operator turn decides it, **before any model is called**: a whole-sentence "go" (or "yes",
+   "do it", "send it") carries it out, "no" or "cancel" drops it, and anything else drops it and is handled
+   as a new request. A click on the card uses `POST /api/lucy/action/confirm`. Confirming is not a tool.
+   "Launch it" and "start it" confirm a launch card only. Enter does not confirm an action card.
+5. At that moment Kookr checks everything again, and does nothing if the card no longer tells the truth:
+
+   | Action | Checked again on confirmation | If it changed |
+   |---|---|---|
+   | Answer | The question is still waiting, and its wording and choices are the ones on the card | "That question was already answered, so I did not send anything." |
+   | Reply | The task is still running, and the session the reply was prepared for is still its live one | "... is not running any more" or "... was restarted since I prepared that" |
+   | Close | The task still says it is finished, is not a loop, and is not closed already | "... is still working: it has not said it is finished, so I will not close it." |
+
+6. The action goes through the entry point the dashboard itself uses, so nothing is re-implemented: an
+   answer through the audited `OperatorAsksPort.answer` (the first answer wins, on either channel), a
+   reply through the tracked delivery of the reply box, a close through the lifecycle command behind
+   `POST /api/tasks/:id/complete`.
+
+A task "says it is finished" when it raised its "finished, please review" signal and has not been given
+new work since (the pending signal, or the record of it that survives the agent's last tool calls). The
+board shows only the pending signal, so she is told not to judge this herself: she calls `propose_close`
+whenever the operator asks to close a task, and Kookr decides. A task that is still working, or that
+stopped without saying so, gets a sentence instead of a card ("... is still working: it has not said it
+is finished, so I will not close it."). A task shared by a contact is never acted on.
+Closing leaves the worktree to the operator's "clean up on complete" setting, as the HTTP route does;
+the cleanup itself still refuses a worktree with uncommitted or unpushed work. A task whose last turn
+ended on a provider error is recorded as failed by Kookr's own integrity check, and she then says so
+instead of "Closed".
+
+A reply is refused while the task shows a choice prompt (a permission prompt or a question menu),
+where typed text would press Enter on the highlighted option. She says: "... is showing a choice
+prompt, so I did not type anything. Answer that on the task."
+
+### The rules that hold
+
+| Rule | How it is enforced |
+|---|---|
+| Only selectors come from the model | `resolveActionCall` reads the task code, the question code and the choice number, and nothing else; the server checks the resulting ids against the task store and the questions |
+| Text to send comes only from the operator's words | The writer call receives only the operator's messages (`operatorWordsOf`); the model that read task text is never asked for the text |
+| What is confirmed is what is sent | The card holds the final text or choice; confirmation re-checks the question, the task state and the session, and refuses on any change |
+| Only the operator confirms | "go" is read from the operator's next sentence before any model call, or comes from a click; there is no confirm tool, and a tool result or task text is never read for it |
+| Her own voice does not confirm | The same echo rule as a launch card: spoken words that began while she was still reading the proposal aloud neither confirm nor drop it. Her read-backs end on fixed words that are not a confirmation, and a choice a task named "Yes" stays in the middle of the sentence |
+| Always a confirmation, at every level | The action controller has no timer and does not read `lucyAutonomy`: at Hands-off there is still a card and no countdown |
+| One card at a time | Launch and action proposals share the screen: making one drops the other, in any conversation, so "go" can only mean the card that is shown |
+| Attributed to `lucy-operator` | See [Records](#records) |
+
+### Residual risks
+
+- The model, which reads task text, still chooses *when* to propose and *which* task, question or choice.
+  A poisoned task could make her propose closing a task, or the wrong choice, that the operator did not
+  ask for. The card says exactly what would happen and nothing happens without the operator's
+  confirmation, so read the card before saying "go". For a reply or a free-text answer there is a second
+  check: the writer sees only the operator's words and asks instead of writing when they hold no message.
+- The read-back names the task and, for an answer, the chosen choice, both written by a task. That
+  sentence is remembered as her reply for later turns, like the board she reads every turn. It is never
+  given to the writer.
+- The words that confirm are English ("go", "yes", "send it"), even when the conversation is not.
+- Hands-free talk ([Lucy live](lucy-live.md)) has an older way to answer a question by voice (it maps the
+  spoken words to a choice and reads it back). It still runs first on spoken turns; both end in the same
+  audited answer.
 
 ## What she cannot do, and why that holds
 
 Agents write the text she reads, and agents can write anything, including text that looks like an
 instruction. Three things keep such text from having an effect.
 
-- **No tool changes anything.** The look-up tools above are the whole list. None launches, replies to,
-  closes, snoozes, approves or stops a task, so there is nothing for a planted instruction to trigger.
+- **No tool changes anything by itself.** The look-up tools above launch, reply to, close, approve and
+  stop nothing. The four tools that lead to a change (`propose_launch`, `propose_answer`,
+  `propose_reply`, `propose_close`) only make a proposal that the operator must confirm, so the most a
+  planted instruction can trigger is a card. She has no tool at all to approve a permission prompt,
+  stop or abort a task, merge, or change her own permission level.
 - **Kookr, not the model, decides what runs.** Every tool call goes through one dispatcher
   (`dispatchLucyTool` in `src/core/lucy-operator/tools.ts`). A tool name that is not on the list is
   refused and nothing is called. Arguments that are not valid are refused too.
@@ -225,7 +333,8 @@ that sends what you said and the task names, and never a task's request.
 |---|---|
 | The operator's sentence and the earlier exchanges of the conversation | Every turn |
 | The board: task names, project names, states, costs, spend, quota | Every turn |
-| A task's request, folder, waiting signal, closing summary and linked pull requests | When she reads that task |
+| A task's request, folder, waiting signal, closing summary, linked pull requests and the state of its own pull requests | When she reads that task |
+| The operator's own messages of the conversation, alone, to the call that writes a reply or a free-text answer | When she proposes one |
 | The last 40 lines of a task's terminal screen, up to 3000 characters | When she reads that task's output |
 
 A task's terminal is never sent as the raw stream of characters it received. `read_task_output`
@@ -270,6 +379,15 @@ or task requests must not leave the machine, leave the setting off.
   replaced), the names of the look-ups she made, how the turn ended, the model and provider, time to
   first text, total time, tokens and cost. What the look-ups returned is not recorded. The log follows
   the existing setting **Keep a local log of Lucy's interactions**.
+- **What she did to a task.** Every step of a proposal about an existing task adds a line of kind
+  `action` to the same log, with `actor: "lucy-operator"`: proposed, then done, refused, declined,
+  expired or dropped, with the task, the question and how it was confirmed (`spoken`, `typed` or
+  `click`). For a reply or a free-text answer the line holds the text. The shared audit log
+  (`~/.kookr/audit.jsonl`) gets a `lucy.action` row for every action she carried out or was refused when
+  the operator confirmed, with actor `lucy-operator` and never the text. The entry points add their own
+  rows under the same name: `ask.dashboardAnswer` for an answer and `task.complete` for a close. A reply
+  is recorded in the task's interaction log and shown in the dashboard as typed by Lucy
+  (delivery source `lucy_operator`).
 - **Diagnostics.** `GET /api/diagnostic` reports a `lucyOperator` block, apart from the helper-model
   block: turns since the server started, per ending, with model calls, tokens, cost and average times.
 
@@ -311,15 +429,19 @@ with whole turns between 0.6 and 3.1 s.
 
 ## Limits
 
-- She answers questions only. Launching, replying, closing and the rest come with the confirmation
-  ladder described in issue #3632.
+- She looks things up, and proposes four changes the operator must confirm: starting a task, answering
+  a task's question, replying to a task, and closing a task that says it is finished. Aborting,
+  approving a permission prompt, relaunching and merging are not built.
 - No screen uses the endpoint yet, and nothing speaks her replies.
 - In conversation she does not speak first: a turn starts only when the operator asks. Outside a
   turn, she reads out a task's question, the report of a task she launched, and a task
   that has waited a minute on a permission prompt (see [Lucy live](lucy-live.md)). She also writes,
   without speaking, a briefing when her panel opens and a line when a task fails, stalls or wants a
   review (see [What she writes on her own](lucy-live.md#what-she-writes-on-her-own)).
-- She answers in English.
+- She is told to answer in the operator's language. The sentences the server writes itself (a read-back,
+  a refusal, "Sent.") and the words that confirm a card are English. The wording of the instructions
+  added with her actions on existing tasks (what she may propose, the typed list, the language, no
+  pointing at controls that do not exist) was not measured against a model.
 - Conversations are kept in memory: the last ten exchanges, for two hours, and not across a restart.
 - She reads a task's terminal only as a rendered screen: the last 40 lines, not its full history.
   A task that has ended and kept no saved tail (never captured, expired, or retention off) has no

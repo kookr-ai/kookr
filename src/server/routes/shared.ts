@@ -82,6 +82,11 @@ export interface TaskRouteDeps {
   taskStore: TaskStore;
   monitor: Monitor;
   /**
+   * The lifecycle commands the routes run, when the server built them ahead to share one instance
+   * with another caller (`createTaskRouteLifecycleCommands`). Absent: the routes build their own.
+   */
+  lifecycleCommands?: import('../use-cases/task-lifecycle-commands.js').TaskLifecycleCommands;
+  /**
    * Ready queue (issue #3933). task-routes hands it the POST /api/tasks
    * handler as its launch path; absent in minimal harnesses.
    */
@@ -518,6 +523,20 @@ export interface RouteDeps {
   lucyOperatorConfig?: import('../lucy-operator/config.js').LucyOperatorConfigResult;
   /** Sends a message to every owner dashboard connection and to no viewer (cards and reports carry the operator's words and task text). */
   emitToOwners?: (msg: ServerMessage) => void;
+  /**
+   * What Lucy's confirmed actions on an existing task call: the same entry points the dashboard uses,
+   * so an answer is audited and a reply is tracked like one the operator typed. Absent parts make
+   * her refuse that action in plain words (lightweight harnesses; no `kookr ask` service).
+   */
+  lucyActionPorts?: {
+    /** `OperatorAsksPort.answer`: records the answer, types it into the task, and writes the audit line under `actor`. */
+    answerAsk?: (
+      input: import('../../shared/contracts/asks.js').DashboardAnswerInput,
+      opts: { actor: string },
+    ) => Promise<import('../../shared/contracts/asks.js').AnswerResult>;
+    /** `UserInputDeliveryService.submitMessage` with the `lucy_operator` source. Absent: the direct input path is used. */
+    submitReply?: (sessionId: string, text: string) => Promise<unknown>;
+  };
   /**
    * Filled with the operator service when it is built, so Lucy live (created earlier, before the
    * routes) can answer Talk turns with it (issue #3676). Absent in tests.

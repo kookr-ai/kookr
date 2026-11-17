@@ -6,11 +6,14 @@
  * a stream of newline-delimited JSON (`application/x-ndjson`): one {@link LucyTurnEvent}
  * per line, in the order things happen, always ending with exactly one `done` event.
  *
- * Lucy's tools only look things up, with one exception when launching is on (issue #3676):
- * `propose_launch` makes a proposal, which the operator then confirms. A `proposal` event is a card
- * to show and changes no task; a `launch` event reports what became of a proposal.
+ * Lucy's tools only look things up, with these exceptions when launching is on (issue #3676):
+ * `propose_launch` makes a launch proposal, and `propose_answer`, `propose_reply` and `propose_close`
+ * make a proposal about an existing task (`lucy-action.ts`). The operator then confirms. A `proposal`
+ * or `action_proposal` event is a card to show and changes no task; a `launch` or `action` event
+ * reports what became of a proposal.
  */
 
+import type { LucyActionOutcome, LucyActionProposalView } from './lucy-action.js';
 import type { LucyLaunchOutcome, LucyLaunchProposalView } from './lucy-launch.js';
 
 export const LUCY_TURN_PATH = '/api/lucy/turn';
@@ -51,6 +54,13 @@ export type LucyLookToolName = (typeof LUCY_LOOK_TOOL_NAMES)[number];
 export const LUCY_PROPOSE_LAUNCH_TOOL = 'propose_launch';
 
 /**
+ * The tools that propose doing something to an existing task: answer its question, send it a reply,
+ * close it. Each only makes a proposal; the operator's confirmation carries it out.
+ */
+export const LUCY_ACTION_TOOL_NAMES = ['propose_answer', 'propose_reply', 'propose_close'] as const;
+export type LucyActionToolName = (typeof LUCY_ACTION_TOOL_NAMES)[number];
+
+/**
  * Why a turn ended:
  * - `answered`: she finished her reply.
  * - `ignored`: spoken words that could have been her own voice were left alone (she said nothing).
@@ -77,6 +87,10 @@ export type LucyTurnEvent =
   | { type: 'proposal'; proposal: LucyLaunchProposalView }
   /** What became of a proposal: launched, refused, declined, cancelled or expired. */
   | ({ type: 'launch' } & LucyLaunchOutcome)
+  /** She proposes answering a question, replying to a task or closing one: the dashboard shows the card. Nothing has been sent or closed. */
+  | { type: 'action_proposal'; proposal: LucyActionProposalView }
+  /** What became of such a proposal: done, refused, declined, cancelled or expired. */
+  | ({ type: 'action' } & LucyActionOutcome)
   /** Always the last line. */
   | {
       type: 'done';

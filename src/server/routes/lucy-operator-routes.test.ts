@@ -4,6 +4,8 @@ import { LUCY_TURN_PATH, MAX_LUCY_TURN_TEXT_CHARS, type LucyTurnEvent } from '..
 import { boardTask, fakeSource, scriptedModel, type ScriptedStep } from '../../core/lucy-operator/__fixtures__/scripted.js';
 import { createApiAuthMiddleware, type ApiAuthConfig } from '../auth.js';
 import { LUCY_LAUNCH_CANCEL_PATH, LUCY_LAUNCH_CONFIRM_PATH, LUCY_LAUNCH_DECLINE_PATH } from '../../shared/contracts/lucy-launch.js';
+import { LUCY_ACTION_CONFIRM_PATH, LUCY_ACTION_DECLINE_PATH } from '../../shared/contracts/lucy-action.js';
+import { createLucyActionController } from '../lucy-operator/action-controller.js';
 import { createLucyLaunchController } from '../lucy-operator/launch-controller.js';
 import { createLucyOperator, type LucyOperatorService } from '../lucy-operator/service.js';
 import { registerLucyOperatorRoutes, type LucyOperatorRouteDeps } from './lucy-operator-routes.js';
@@ -308,5 +310,124 @@ describe('launch routes (issue #3676)', () => {
       const { service } = serviceWith([]);
       expect((await route(appWith({ service }), REPORT_PATH, { taskId: 'task-9' })).status).toBe(404);
     });
+  });
+});
+
+describe('action routes', () => {
+  function withActions(options: { saysFinished?: boolean } = {}) {
+    const replies: Array<{ sessionId: string; text: string }> = [];
+    const closes: string[] = [];
+    const controller = createLucyActionController({
+      getTask: (taskId) => (taskId === 'aaaa1111' ? { id: 'aaaa1111', name: 'Bake-off report', status: 'inProgress', saysFinished: options.saysFinished === true, liveSessionId: 'kookr-s1' } : undefined),
+      getAsks: () => [],
+      writeText: async () => '{"text":"Rebase on main."}',
+      sendReply: async (sessionId, text) => { replies.push({ sessionId, text }); },
+      closeTask: async (taskId) => { closes.push(taskId); return { ok: true }; },
+      newId: () => 'a1',
+      warn: () => {},
+    });
+    const model = scriptedModel([{ calls: [{ name: options.saysFinished ? 'propose_close' : 'propose_reply', args: { task: 'aaaa' } }] }]);
+    const service = createLucyOperator({ model: model.port, modelName: 'test/model', source: fakeSource({ tasks: [boardTask({ id: 'aaaa1111', name: 'Bake-off report' })] }), actions: controller, warn: () => {} });
+    return { app: appWith({ service }), replies, closes };
+  }
+  const route = (app: Hono, path: string, body: unknown) =>
+    app.request(`http://localhost${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) });
+
+  test('with her actions off both routes answer 404', async () => {
+    const { service } = serviceWith([]);
+    const app = appWith({ service });
+    for (const path of [LUCY_ACTION_CONFIRM_PATH, LUCY_ACTION_DECLINE_PATH]) {
+      const res = await route(app, path, { conversationId: 'c1', proposalId: 'a1' });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({ error: 'lucy_operator_disabled' });
+    }
+    // And with her whole conversation off.
+    expect((await route(appWith(undefined), LUCY_ACTION_CONFIRM_PATH, { conversationId: 'c1', proposalId: 'a1' })).status).toBe(404);
+  });
+
+  test('a card is made by a turn and carried out by the confirm route, once', async () => {
+    const { app, replies } = withActions();
+    const turn = await lines(await post(app, { text: 'tell the report task to rebase on main', conversationId: 'c1' }));
+    expect(turn.find((e) => e.type === 'action_proposal')).toMatchObject({ proposal: { id: 'a1', kind: 'reply', text: 'Rebase on main.' } });
+    expect(replies).toEqual([]);
+
+    // The body names the card and nothing else: text or a task sent with it is not read.
+    const res = await route(app, LUCY_ACTION_CONFIRM_PATH, { conversationId: 'c1', proposalId: 'a1', text: 'rm -rf /', taskId: 'other', via: 'timer' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ outcome: 'done', proposalId: 'a1', kind: 'reply', taskId: 'aaaa1111' });
+    expect(replies).toEqual([{ sessionId: 'kookr-s1', text: 'Rebase on main.' }]);
+
+    const again = await route(app, LUCY_ACTION_CONFIRM_PATH, { conversationId: 'c1', proposalId: 'a1' });
+    expect(await again.json()).toEqual({ outcome: 'unknown', proposalId: 'a1' });
+    expect(replies).toHaveLength(1);
+  });
+
+  test('the confirm route closes a task whose card says so', async () => {
+    const { app, closes } = withActions({ saysFinished: true });
+    await lines(await post(app, { text: 'close the report task', conversationId: 'c1' }));
+    const res = await route(app, LUCY_ACTION_CONFIRM_PATH, { conversationId: 'c1', proposalId: 'a1' });
+    expect(await res.json()).toMatchObject({ outcome: 'done', kind: 'close' });
+    expect(closes).toEqual(['aaaa1111']);
+  });
+
+  test('decline drops the card and nothing is done', async () => {
+    const { app, replies } = withActions();
+    await lines(await post(app, { text: 'tell the report task to rebase on main', conversationId: 'c1' }));
+    const res = await route(app, LUCY_ACTION_DECLINE_PATH, { conversationId: 'c1', proposalId: 'a1' });
+    expect(await res.json()).toEqual({ outcome: 'declined', proposalId: 'a1' });
+    expect(replies).toEqual([]);
+    expect(await (await route(app, LUCY_ACTION_CONFIRM_PATH, { conversationId: 'c1', proposalId: 'a1' })).json()).toMatchObject({ outcome: 'unknown' });
+  });
+
+  test('a card of another conversation, or another id, is not confirmed', async () => {
+    const { app, replies } = withActions();
+    await lines(await post(app, { text: 'tell the report task to rebase on main', conversationId: 'c1' }));
+    expect(await (await route(app, LUCY_ACTION_CONFIRM_PATH, { conversationId: 'c2', proposalId: 'a1' })).json()).toMatchObject({ outcome: 'unknown' });
+    expect(await (await route(app, LUCY_ACTION_CONFIRM_PATH, { conversationId: 'c1', proposalId: 'zz' })).json()).toMatchObject({ outcome: 'unknown' });
+    expect(replies).toEqual([]);
+  });
+
+  test.each([
+    ['no proposal id', { conversationId: 'c1' }],
+    ['an empty proposal id', { conversationId: 'c1', proposalId: '' }],
+    ['a proposal id that is too long', { conversationId: 'c1', proposalId: 'x'.repeat(81) }],
+    ['a bad conversation id', { conversationId: '../x', proposalId: 'a1' }],
+    ['a body that is not an object', '"nope"'],
+    ['a body that is not JSON', 'nope'],
+  ])('refuses %s with 400, on both routes', async (_label, body) => {
+    const { app } = withActions();
+    for (const path of [LUCY_ACTION_CONFIRM_PATH, LUCY_ACTION_DECLINE_PATH]) {
+      const res = await route(app, path, body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'bad_request' });
+    }
+  });
+
+  test('like every route but the session one, they are owner only: a viewer is refused 403 and no credential 401', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const VIEWER_TOKEN = 'viewer-tok';
+    const config: ApiAuthConfig = {
+      required: true,
+      token: 'owner-secret',
+      resolveViewer: (t) => (t === VIEWER_TOKEN ? { kind: 'valid', grantId: 'g1', scope: { kind: 'all' } } : { kind: 'not-found' }),
+    };
+    const { app: inner, replies } = withActions();
+    await lines(await post(inner, { text: 'tell the report task to rebase on main', conversationId: 'c1' }));
+    const app = new Hono();
+    app.use('*', createApiAuthMiddleware(config));
+    app.route('/', inner);
+    const send = (path: string, token?: string): Promise<Response> =>
+      app.request(`http://lan.example${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ conversationId: 'c1', proposalId: 'a1' }),
+      });
+    for (const path of [LUCY_ACTION_CONFIRM_PATH, LUCY_ACTION_DECLINE_PATH]) {
+      expect((await send(path, VIEWER_TOKEN)).status).toBe(403);
+      expect((await send(path)).status).toBe(401);
+    }
+    expect(replies).toEqual([]);
+    // The owner's credential reaches the route.
+    expect(await (await send(LUCY_ACTION_CONFIRM_PATH, 'owner-secret')).json()).toMatchObject({ outcome: 'done' });
   });
 });

@@ -17,7 +17,7 @@ import { PluginMutationService } from './plugin-manager/mutation-service.js';
 import { registerScheduleRoutes } from './routes/schedule-routes.js';
 import { registerSettingsRoutes } from './routes/settings-routes.js';
 import { registerOrchestrationRoutes } from './routes/orchestration-routes.js';
-import { registerTaskRoutes } from './routes/task-routes.js';
+import { createTaskRouteLifecycleCommands, registerTaskRoutes } from './routes/task-routes.js';
 import { applyDefaultAgentUpdate } from './settings-service.js';
 import { registerSessionTransportRoutes } from './routes/session-transport-routes.js';
 import { registerIssueClaimRoutes } from './routes/issue-claim-routes.js';
@@ -173,11 +173,15 @@ export function createRoutes(deps: RouteDeps): Hono {
   // default" toggle declares its settings dependency (issue #1463) instead of
   // casting TaskRouteDeps to the full RouteDeps at the call site. `sharedDeps`
   // (a RouteDeps) satisfies the narrow SettingsMutationDeps contract.
-  registerTaskRoutes(app, {
+  const taskRouteDeps = {
     ...sharedDeps,
-    applyDefaultAgentUpdate: (agent, actorHeader) =>
+    applyDefaultAgentUpdate: (agent: Parameters<typeof applyDefaultAgentUpdate>[1], actorHeader: Parameters<typeof applyDefaultAgentUpdate>[2]) =>
       applyDefaultAgentUpdate(sharedDeps, agent, actorHeader),
-  });
+  };
+  // One instance of the lifecycle commands for every HTTP caller that completes a task: the task
+  // routes, and Lucy's close action once the operator has confirmed its card.
+  const taskLifecycleCommands = createTaskRouteLifecycleCommands(taskRouteDeps);
+  registerTaskRoutes(app, { ...taskRouteDeps, lifecycleCommands: taskLifecycleCommands });
   // Ready queue (issue #3933). Registered after task routes, which wire the
   // queue's launch path to the POST /api/tasks handler.
   registerReadyQueueRoutes(app, sharedDeps);
@@ -274,7 +278,7 @@ export function createRoutes(deps: RouteDeps): Hono {
     lucyLogPath: deps.lucyInteractionLogPath,
   });
   registerLucyLiveRoutes(app, { lucyLiveStatus: deps.lucyLiveStatus, getLucyLiveStatus: deps.getLucyLiveStatus });
-  const lucyOperator = buildLucyOperator(sharedDeps);
+  const lucyOperator = buildLucyOperator(sharedDeps, { lifecycleCommands: taskLifecycleCommands });
   registerLucyOperatorRoutes(app, { lucyOperator, speech: sharedDeps.asks?.speech });
   registerLucyBriefingRoutes(app, {
     lucyOperator,

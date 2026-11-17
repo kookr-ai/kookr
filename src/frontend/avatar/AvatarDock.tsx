@@ -81,6 +81,7 @@ import {
 import { askOutcome, type AskAnswerChoice } from './AskCard.js';
 import { openAskLink } from './ask-links.js';
 import { LucyLaunchCard } from './LucyLaunchCard.js';
+import { LucyActionCard } from './LucyActionCard.js';
 import { LucyTypedInput } from './LucyTypedInput.js';
 import { LucyThread } from './LucyThread.js';
 import { WaitingTray } from './WaitingTray.js';
@@ -762,7 +763,7 @@ export function AvatarDock({
         replayUnavailable={replayUnavailable}
         replayReasonId={REPLAY_REASON_ID}
         onReplay={onReplay}
-        pendingCards={<><LucyLaunchCard /></>}
+        pendingCards={<><LucyLaunchCard /><LucyActionCard /></>}
       />
       <LucyTypedInput leading={talkButton} />
     </section>

@@ -16,7 +16,7 @@ import type { TerminalScreenTextOptions, TerminalScreenTextResult } from '../ter
 import { projectDisplayName } from '../../core/project-identity.js';
 import { operatorAttention, type AttentionFinding, type OperatorAttentionKind } from '../../core/lucy-operator/attention.js';
 import type { BriefingNeed } from '../../core/lucy-live/briefing.js';
-import type { LucyBoardInput, LucyBoardTask } from '../../core/lucy-operator/board.js';
+import type { LucyBoardInput, LucyBoardTask, LucyTaskPullRequest } from '../../core/lucy-operator/board.js';
 import { TASK_OUTPUT_LINES } from '../../core/lucy-operator/tools.js';
 import type { LucyLookSource, LucyProjectLine, LucyTaskDetail, LucyTaskOutput } from '../../core/lucy-operator/tools.js';
 
@@ -52,6 +52,11 @@ export interface LucyLookSourceDeps {
   getQuota?: () => { fiveHour: { utilization: number; resetsAt: string } | null; sevenDay: { utilization: number; resetsAt: string } | null } | null;
   getReferences?: (taskId: string) => ReadonlyArray<{ type: 'pr' | 'issue'; number: number }>;
   /**
+   * The pull requests of a task's own work with their state on GitHub. The caller leaves out any that
+   * the task's request merely cites: those are not the task's delivery.
+   */
+  getPullRequests?: (taskId: string) => readonly LucyTaskPullRequest[];
+  /**
    * The raw terminal stream of a task: the live session's, or the tail saved when it ended.
    * Null when there is none. Never sent to the model as is: `taskOutput` renders it first.
    */
@@ -83,7 +88,8 @@ function attentionFor(task: LookTask, findings: ReturnType<LucyLookSourceDeps['g
   return attention ? ATTENTION_WORDS[attention.kind] ?? 'it needs you' : undefined;
 }
 
-function projectOf(task: LookTask): string | undefined {
+/** The display name of the project a task works in, as the board shows it. */
+export function projectOf(task: Pick<LookTask, 'projectId' | 'cwd'>): string | undefined {
   if (task.projectId) return projectDisplayName(task.projectId);
   return task.cwd ? basename(task.cwd) : undefined;
 }
@@ -145,6 +151,7 @@ export function createLucyLookSource(deps: LucyLookSourceDeps): LucyLookSource {
         lifetimeSpendUsd: typeof spend === 'number' && Number.isFinite(spend) ? spend : null,
         quota: quota ? { fiveHour: quota.fiveHour, sevenDay: quota.sevenDay } : null,
         ...(asks.length > 0 ? { asks } : {}),
+        ...(deps.getPullRequests ? { pullRequestsOf: deps.getPullRequests } : {}),
       };
     },
 
@@ -154,7 +161,12 @@ export function createLucyLookSource(deps: LucyLookSourceDeps): LucyLookSource {
       const digest = task.completionDigest;
       const summary = [...(digest?.bullets ?? []), ...(digest?.testSummary ? [`Tests: ${digest.testSummary}`] : [])].join('\n');
       const signal = task.pendingSignal;
-      const references = deps.getReferences?.(task.id).map((ref) => `${ref.type === 'pr' ? 'PR' : 'issue'} #${ref.number}`);
+      const pullRequests = deps.getPullRequests?.(task.id) ?? [];
+      // A pull request listed with its state is not repeated among the plain links.
+      const own = new Set(pullRequests.map((pr) => pr.number));
+      const references = deps.getReferences?.(task.id)
+        .filter((ref) => !(ref.type === 'pr' && own.has(ref.number)))
+        .map((ref) => `${ref.type === 'pr' ? 'PR' : 'issue'} #${ref.number}`);
       return {
         prompt: task.userPrompt ?? task.prompt,
         agentType: task.agentType,
@@ -163,6 +175,7 @@ export function createLucyLookSource(deps: LucyLookSourceDeps): LucyLookSource {
         ...(signal ? { pendingSignal: signal.note ? `${signal.kind}: ${signal.note}` : signal.kind } : {}),
         ...(summary ? { completionSummary: summary } : {}),
         ...(references && references.length > 0 ? { references } : {}),
+        ...(pullRequests.length > 0 ? { pullRequests } : {}),
       };
     },
 

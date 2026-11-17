@@ -10,7 +10,9 @@
  *  - Every answer sent from the dashboard is written to the shared audit log,
  *    accepted or refused. On a loopback server any local process can open the
  *    owner socket, so that line is the trace that a question was closed from
- *    there. It never holds the answer text.
+ *    there. It never holds the answer text. An answer Lucy sent for the operator
+ *    (after they confirmed her card) comes through here too, and its line names
+ *    her as the actor.
  */
 
 import { appendAuditRow } from '../../core/audit-log.js';
@@ -53,8 +55,12 @@ export interface OperatorAsksPort {
    * that has ended and still has a pending question flips that question's "task ended" mark.
    */
   listAfterTaskOutcome(taskId: string): OperatorAskView[] | undefined;
-  answer(input: DashboardAnswerInput): Promise<AnswerResult>;
+  /** `actor`: who sent the answer, for the audit line. Absent: the owner, with the panel's buttons. */
+  answer(input: DashboardAnswerInput, opts?: { actor?: string }): Promise<AnswerResult>;
 }
+
+/** The audit actor of an answer given with the panel's buttons. */
+export const DASHBOARD_ANSWER_ACTOR = 'owner:dashboard';
 
 export function createOperatorAsksPort(deps: OperatorAsksPortDeps): OperatorAsksPort {
   const now = deps.now ?? Date.now;
@@ -67,13 +73,13 @@ export function createOperatorAsksPort(deps: OperatorAsksPortDeps): OperatorAsks
       if (!deps.service.all().some((ask) => ask.taskId === taskId && ask.state === 'pending')) return undefined;
       return listOperatorAsks(deps.service.all(), now(), deps.taskName, deps.taskStatus);
     },
-    async answer(input) {
+    async answer(input, opts) {
       const result = await deps.service.answerFromDashboard(input);
       try {
         await appendAudit(deps.auditLogPath, {
           type: 'ask.dashboardAnswer',
           timestamp: new Date(now()).toISOString(),
-          actor: 'owner:dashboard',
+          actor: opts?.actor ?? DASHBOARD_ANSWER_ACTOR,
           askId: input.askId,
           ...(result.ask ? { taskId: result.ask.taskId } : {}),
           choice: input.optionIndex !== undefined ? `option:${input.optionIndex}` : 'text',

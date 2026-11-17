@@ -21,6 +21,7 @@ import type { ObservedActivitySnapshot } from './observed-activity.js';
 import type { TaskCompletionFeedback, TaskMetadataIntent, TaskPriorityUpdate } from './task.js';
 import type { TaskRelation } from './task-relations.js';
 import type { TelemetryEvent } from './telemetry.js';
+import type { LucyActionOutcome, LucyActionProposalView } from './lucy-action.js';
 import type { LucyLaunchOutcome, LucyLaunchProposalView, LucyLaunchReport } from './lucy-launch.js';
 import type { LucyPermissionAnnouncement, LucyPermissionCardView } from './lucy-permission.js';
 import type { LucySaysMessage } from './lucy-says.js';
@@ -423,6 +424,14 @@ export type ServerMessage =
     ))
   /** A line Lucy writes on her own about a task she did not launch (`lucy-says.ts`). Owner connections only; never sent again on reconnect. */
   | LucySaysMessage
+  /**
+   * Lucy's proposals about an existing task (answer its question, reply to it, close it), to every open
+   * owner dashboard: a card to show (`proposal`) or what became of it (`outcome`). Exactly one of the two is set.
+   */
+  | ({ type: 'lucy_action'; conversationId: string } & (
+      | { proposal: LucyActionProposalView; outcome?: undefined }
+      | { outcome: LucyActionOutcome; proposal?: undefined }
+    ))
   | { type: 'update'; agentId: string; state: AgentState }
   | {
       type: 'alert';
@@ -765,6 +774,7 @@ export const SERVER_MESSAGE_TYPES = [
   'delta',
   'lucy_launch',
   'lucy_says',
+  'lucy_action',
   'update',
   'alert',
   'githubUpdate',

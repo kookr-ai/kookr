@@ -123,6 +123,12 @@ describe('createOperatorAsksPort', () => {
     expect(JSON.stringify(appendAudit.mock.calls)).not.toContain('secret plan');
   });
 
+  it('names who sent the answer when it was not the owner pressing a button', async () => {
+    const { port: p, appendAudit } = port({ ok: true, ask: answered });
+    await p.answer({ askId: 'a1b2c3d4e5f6', optionIndex: 1 }, { actor: 'lucy-operator' });
+    expect(appendAudit).toHaveBeenCalledWith('/data/audit.jsonl', expect.objectContaining({ type: 'ask.dashboardAnswer', actor: 'lucy-operator', choice: 'option:1', outcome: 'recorded' }));
+  });
+
   it('records a refused answer too, with the reason and the button pressed', async () => {
     const { port: p, appendAudit } = port({ ok: false, reason: 'already_answered', ask: answered });
     await p.answer({ askId: 'a1b2c3d4e5f6', optionIndex: 0 });

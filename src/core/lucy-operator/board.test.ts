@@ -286,6 +286,29 @@ describe('buildLucyBoard questions from tasks', () => {
   });
 });
 
+describe('buildLucyBoard questions when she may answer for the operator', () => {
+  const base = { tasks: [boardTask({ id: 'aaaa1111', name: 'Bake-off report' })], lifetimeSpendUsd: 1, quota: null };
+
+  test('a pending question carries its code and numbered choices, and the header says how an answer is given', () => {
+    const board = buildLucyBoard({ ...base, asks: [ask({ id: 'f00dbeef0001', taskId: 'aaaa1111', taskName: 'Bake-off report' })] }, NOW, MAX_BOARD_CHARS, { canAct: true });
+    expect(board).toContain('or tells you the answer and you call propose_answer with the question\'s code');
+    expect(board).not.toMatch(/you cannot answer them/);
+    expect(board).toContain('- question qf00d from [aaaa] "Bake-off report" asked 2 minutes ago: Which database? Choices: 1) Postgres; 2) SQLite.');
+  });
+
+  test('says when a question also takes the operator\'s own words', () => {
+    const board = buildLucyBoard({ ...base, asks: [ask({ id: 'f00dbeef0001', taskId: 'aaaa1111', allowText: true })] }, NOW, MAX_BOARD_CHARS, { canAct: true });
+    expect(board).toContain('Choices: 1) Postgres; 2) SQLite. It also takes an answer in the operator\'s own words.');
+  });
+
+  test('without it the board reads as before: no code, no numbers', () => {
+    const board = buildLucyBoard({ ...base, asks: [ask({ id: 'f00dbeef0001', taskId: 'aaaa1111', allowText: true })] }, NOW);
+    expect(board).not.toContain('qf00d');
+    expect(board).toContain('Choices: Postgres; SQLite.');
+    expect(board).toMatch(/you cannot answer them/);
+  });
+});
+
 describe('buildLucyOperatorPrompt', () => {
   const prompt = buildLucyOperatorPrompt('BOARD-TEXT');
 
@@ -324,5 +347,41 @@ describe('buildLucyOperatorPrompt', () => {
 
   test('says she cannot change anything', () => {
     expect(prompt).toMatch(/You cannot change anything\./);
+  });
+
+  test('with launching on and nothing else, it still says she cannot reply to or close a task', () => {
+    expect(buildLucyOperatorPrompt('B', { canLaunch: true })).toMatch(/You cannot reply to, close, snooze, approve or stop a task/);
+  });
+
+  test('when she may act, it names the three proposals, says nothing happens until the operator confirms, and no longer says she cannot reply or answer', () => {
+    const text = buildLucyOperatorPrompt('B', { canLaunch: true, canAct: true });
+    for (const tool of ['propose_launch', 'propose_answer', 'propose_reply', 'propose_close']) expect(text).toContain(tool);
+    expect(text).toMatch(/Nothing is sent or closed until they confirm that card, and you do not confirm it/);
+    expect(text).not.toMatch(/cannot reply/i);
+    expect(text).not.toMatch(/you cannot answer it/);
+    expect(text).toMatch(/You cannot approve permission prompts, stop or abort a task, merge, or change how much you may do on your own/);
+    expect(text).toMatch(/The same goes for the code of a question/);
+  });
+
+  test('never offers a control it does not name: no snooze, and no pointing at buttons it was not told about', () => {
+    for (const options of [{}, { canLaunch: true }, { canLaunch: true, canAct: true }]) {
+      const text = buildLucyOperatorPrompt('B', options);
+      expect(text).toMatch(/Never point the operator at a button, a setting or a command unless these instructions name it/);
+      expect(text).toMatch(/Questions have no snooze/);
+    }
+    // With her actions on, "snooze" is only ever mentioned to say it does not exist.
+    expect(buildLucyOperatorPrompt('B', { canLaunch: true, canAct: true }).match(/snooze/g)).toHaveLength(1);
+  });
+
+  test('a typed turn may use a short list, a spoken one may not, and both answer in the operator\'s language', () => {
+    const typed = buildLucyOperatorPrompt('B');
+    const spoken = buildLucyOperatorPrompt('B', { spoken: true });
+    expect(typed).toMatch(/each line starting with "- ", at most six items/);
+    expect(spoken).toMatch(/No lists, no markdown, no emoji, no code/);
+    expect(spoken).not.toMatch(/short list/);
+    for (const text of [typed, spoken]) {
+      expect(text).toMatch(/one to three sentences, the first one short/);
+      expect(text).toMatch(/Answer in the language the operator used/);
+    }
   });
 });
