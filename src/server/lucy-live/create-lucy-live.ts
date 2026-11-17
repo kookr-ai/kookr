@@ -113,9 +113,14 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
           } : {}),
           noteUnprompted: (note, said) => deps.getOperator?.()?.rememberSaid?.(conversationId, note, said),
           // A "yes" answers the one proposal on screen, whichever conversation made it: a question waits for any.
+          // Her answer, reply and close cards are confirmed the same way, so a question waits for one of those too.
           launchPendingUntil: () => {
-            const proposal = deps.getOperator?.()?.launch?.pending();
-            return proposal ? (proposal.launchesAt ?? proposal.expiresAt) : undefined;
+            const operator = deps.getOperator?.();
+            const launch = operator?.launch?.pending();
+            const launchUntil = launch ? (launch.launchesAt ?? launch.expiresAt) : undefined;
+            const actionUntil = operator?.actions?.pending()?.expiresAt;
+            if (launchUntil === undefined || actionUntil === undefined) return launchUntil ?? actionUntil;
+            return Math.max(launchUntil, actionUntil);
           },
           buildBriefing: () => buildLucyLiveBriefing(deps.getTasks(), now(), deps.getAsks?.() ?? [], {
             ...(deps.getNeedsOperator ? { needs: deps.getNeedsOperator() } : {}),

@@ -126,8 +126,9 @@ and the server reads it as a turn it starts on its own (`turn_start`, then sente
 for an answer):
 
 - She waits her turn: not while you are speaking, while she is answering, while a sound is being
-  checked, or while a read-back or a launch proposal waits for your "yes" (issue #4015: a "yes" to
-  the question would otherwise confirm the launch), and not until 0.8 s after her voice ends.
+  checked, or while a read-back, a launch proposal or one of her answer, reply or close cards waits
+  for your "yes" (issue #4015: a "yes" to the question would otherwise confirm the launch or carry
+  out the action), and not until 0.8 s after her voice ends.
   Several questions are said one at a time, in the order they came.
 - If you begin to speak before her first sentence of it is sent (or while Silero is still checking a
   sound that began before it), she holds it back and says it once your turn and her answer are over. Words that began before the question reached the browser are

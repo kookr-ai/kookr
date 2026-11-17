@@ -610,6 +610,16 @@ describe('one card at a time', () => {
     expect(t.closes).toEqual(['task-1']);
   });
 
+  test('without a conversation id, pending() is the one card held in any conversation', async () => {
+    const t = setup();
+    expect(t.controller.pending()).toBeUndefined();
+    await t.propose(REPLY, undefined, 'c2');
+    expect(t.controller.pending()?.id).toBe('a1');
+    expect(t.controller.pending('another')).toBeUndefined();
+    t.advance(ACTION_PROPOSAL_TTL_MS);
+    expect(t.controller.pending()).toBeUndefined(); // expired
+  });
+
   test('a request that makes no card leaves the old card alone', async () => {
     const t = setup();
     await t.propose(REPLY);

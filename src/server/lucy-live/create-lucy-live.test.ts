@@ -357,6 +357,50 @@ describe('createLucyLive', () => {
       expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
     });
 
+    it('a task question waits while an answer, reply or close card from any conversation waits for its "yes"', async () => {
+      // Her other cards are confirmed like a launch: by a "yes" from any conversation. Read out meanwhile, a
+      // question would have its "yes" close a task or send a reply.
+      const { service } = operator([done('answered')]);
+      let card: { expiresAt: number } | undefined = { expiresAt: 31_000 }; // the clock reads 1000
+      const pendingCalls: unknown[][] = [];
+      (service as unknown as { launch: Record<string, unknown> }).launch.pending = () => undefined;
+      (service as unknown as { actions: Record<string, unknown> }).actions = { pending: (...args: unknown[]) => { pendingCalls.push(args); return card; } };
+      const ask = { id: 'a1', state: 'pending', taskName: 'Cleanup', question: 'When should I run it?', options: ['now', 'tonight'], allowText: false } as unknown as OperatorAskView;
+      const { ws } = setup({ getOperator: () => service, extraDeps: { getAsks: () => [ask] } });
+      ws.json({ type: 'hello', language: 'en' });
+      ws.json({ type: 'say_ask', askId: 'a1' });
+      await tick(); await tick();
+      expect(ws.sent.some((m) => m.type === 'turn_start')).toBe(false);
+      // Asked without a conversation id: the one card on screen, whichever conversation made it.
+      expect(pendingCalls.length).toBeGreaterThan(0);
+      expect(pendingCalls.every((args) => args.length === 0)).toBe(true);
+      // The card is settled (confirmed, declined or replaced): the question is read.
+      card = undefined;
+      ws.json({ type: 'speech_start', turnId: 'blip' });
+      ws.json({ type: 'speech_cancel', turnId: 'blip' }); // something ends: the question looks again
+      await tick(); await tick(); await tick();
+      expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
+    });
+
+    it('with both kinds of card reported waiting, the question waits for the later of the two', async () => {
+      const { service } = operator([done('answered')]);
+      let launchesAt = 900; // a hands-off launch already past its start: it no longer waits (the clock reads 1000)
+      (service as unknown as { launch: Record<string, unknown> }).launch.pending = () => ({ expiresAt: 61_000, launchesAt });
+      (service as unknown as { actions: Record<string, unknown> }).actions = { pending: () => ({ expiresAt: 31_000 }) };
+      const ask = { id: 'a1', state: 'pending', taskName: 'Cleanup', question: 'When should I run it?', options: ['now', 'tonight'], allowText: false } as unknown as OperatorAskView;
+      const { ws } = setup({ getOperator: () => service, extraDeps: { getAsks: () => [ask] } });
+      ws.json({ type: 'hello', language: 'en' });
+      ws.json({ type: 'say_ask', askId: 'a1' });
+      await tick(); await tick();
+      expect(ws.sent.some((m) => m.type === 'turn_start')).toBe(false); // the action card still waits
+      launchesAt = 500;
+      (service as unknown as { actions: Record<string, unknown> }).actions = { pending: () => undefined };
+      ws.json({ type: 'speech_start', turnId: 'blip' });
+      ws.json({ type: 'speech_cancel', turnId: 'blip' });
+      await tick(); await tick(); await tick();
+      expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
+    });
+
     it('with an operator service that cannot launch, the helper model still answers', async () => {
       const { ws } = setup({ getOperator: () => ({ launch: undefined } as unknown as LucyOperatorService) });
       await runTurn(ws);
