@@ -7,6 +7,7 @@
 
 import {
   classifyLlmProviderHttpStatus,
+  isLlmProviderEndpointUnreachable,
   type LlmClient,
   type LlmCompletionDetail,
   type LlmCompletionRequest,
@@ -241,8 +242,10 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
       if (timedOut && isAbortLike(err)) {
         throw providerFailure('network_timeout', `${providerLabel(this.provider)} request timed out after ${timeoutMs}ms`);
       }
+      // `fetch` reports every connection failure as "fetch failed"; the code
+      // on its `cause` tells a refused or unresolvable endpoint from a slow one.
       throw providerFailure(
-        'network_timeout',
+        isLlmProviderEndpointUnreachable(err) ? 'unreachable' : 'network_timeout',
         `${providerLabel(this.provider)} request failed before a response was received: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {

@@ -5,6 +5,7 @@
 import {
   ATTEMPT_BUDGET_EXHAUSTED_FINISH_REASON,
   classifyLlmProviderHttpStatus,
+  isLlmProviderEndpointUnreachable,
   LLM_PROVIDER_FAILURE_CATEGORIES,
   isLlmProviderFailureCategory,
   type HelperLlmDiagnosticsCounters,
@@ -264,8 +265,9 @@ export function classifyLlmProviderFailure(err: unknown): LlmProviderFailureCate
   );
   if (status) return status;
 
+  if (isLlmProviderEndpointUnreachable(err)) return 'unreachable';
   const code = typeof shaped?.code === 'string' ? shaped.code.toUpperCase() : '';
-  if (['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)) {
+  if (['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'EAI_AGAIN'].includes(code)) {
     return 'network_timeout';
   }
 
@@ -277,6 +279,7 @@ export function classifyLlmProviderFailure(err: unknown): LlmProviderFailureCate
   }
   if (/\b5\d\d\b|server error|bad gateway|service unavailable|gateway timeout/.test(text)) return 'server_5xx';
   if (/json|parse|malformed|invalid response|unexpected end|message content|choices/.test(text)) return 'malformed_response';
+  if (/econnrefused|enotfound/.test(text)) return 'unreachable';
   if (/timed?\s*out|timeout|network|fetch failed|socket|dns|connection/.test(text)) return 'network_timeout';
   return 'other';
 }
@@ -336,6 +339,10 @@ function shortLlmFailureReason(failure: LlmProviderFailureRecord, status: number
       return 'auth failure';
     case 'network_timeout':
       return 'network timeout';
+    case 'unreachable':
+      return 'endpoint unreachable';
+    case 'client_4xx':
+      return status === 404 ? 'not found' : 'request rejected';
     case 'server_5xx':
       return 'server error';
     case 'malformed_response':

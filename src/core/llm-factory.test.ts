@@ -223,7 +223,8 @@ describe('FallbackLlmClient.complete abort propagation', () => {
       {
         provider: 'a',
         model: 'a-model',
-        category: 'network_timeout',
+        // ENOTFOUND: the host does not resolve (issue #4042).
+        category: 'unreachable',
         message: 'fetch failed',
       },
       {
@@ -233,7 +234,7 @@ describe('FallbackLlmClient.complete abort propagation', () => {
         message: 'provider returned empty response',
       },
     ]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('category=network_timeout'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('category=unreachable'));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('category=malformed_response'));
     warn.mockRestore();
   });
@@ -370,21 +371,44 @@ describe('classifyLlmProviderFailure', () => {
     expect(classifyLlmProviderFailure(new SyntaxError('Unexpected end of JSON input'))).toBe('malformed_response');
     expect(classifyLlmProviderFailure(new Error('unclassified provider error'))).toBe('other');
   });
+
+  test('tells a refused request and an unreachable endpoint apart from transient failures (issue #4042)', () => {
+    expect(classifyLlmProviderFailure({ status: 404, message: 'No endpoints found for model' })).toBe('client_4xx');
+    expect(classifyLlmProviderFailure({ statusCode: 422, message: 'unprocessable' })).toBe('client_4xx');
+    expect(classifyLlmProviderFailure({ status: 429, message: 'slow down' })).toBe('other');
+    expect(classifyLlmProviderFailure(Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }))).toBe('unreachable');
+    expect(classifyLlmProviderFailure(Object.assign(new Error('getaddrinfo'), { code: 'ENOTFOUND' }))).toBe('unreachable');
+    expect(classifyLlmProviderFailure(
+      new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) }),
+    )).toBe('unreachable');
+    expect(classifyLlmProviderFailure(new Error('connect ECONNREFUSED 127.0.0.1:11434'))).toBe('unreachable');
+    expect(classifyLlmProviderFailure(Object.assign(new Error('reset'), { code: 'ECONNRESET' }))).toBe('network_timeout');
+    expect(classifyLlmProviderFailure(Object.assign(new Error('dns'), { code: 'EAI_AGAIN' }))).toBe('network_timeout');
+    expect(classifyLlmProviderFailure(new TypeError('fetch failed'))).toBe('network_timeout');
+  });
 });
 
 describe('classifyLlmProviderHttpStatus', () => {
-  test('maps 401/402/403/410 to the auth cooldown class and leaves 404/429 as other', () => {
+  test('maps 401/402/403/410 to the auth cooldown class, other 4xx to client_4xx, and leaves 408/425/429 as other', () => {
     expect(classifyLlmProviderHttpStatus(401)).toBe('auth');
     // 402 Payment Required (credit exhaustion) is durable — folded into the
     // auth cooldown class so a broke provider is parked, not re-hit (issue #3109).
     expect(classifyLlmProviderHttpStatus(402)).toBe('auth');
     expect(classifyLlmProviderHttpStatus(403)).toBe('auth');
     expect(classifyLlmProviderHttpStatus(410)).toBe('auth');
-    expect(classifyLlmProviderHttpStatus(404)).toBe('other');
-    // 429 stays transient (bounded by the 429-storm attempt budget), not parked.
+    // A 4xx that is not auth and not "retry later" is the provider refusing the
+    // request; it gets its own category so the namer can count it (issue #4042).
+    expect(classifyLlmProviderHttpStatus(400)).toBe('client_4xx');
+    expect(classifyLlmProviderHttpStatus(404)).toBe('client_4xx');
+    expect(classifyLlmProviderHttpStatus(422)).toBe('client_4xx');
+    expect(classifyLlmProviderHttpStatus(499)).toBe('client_4xx');
+    // 429 stays transient (bounded by the 429-storm attempt budget), not parked,
+    // and so do the other "retry later" statuses.
     expect(classifyLlmProviderHttpStatus(429)).toBe('other');
-    expect(classifyLlmProviderHttpStatus(400)).toBe('other');
+    expect(classifyLlmProviderHttpStatus(408)).toBe('other');
+    expect(classifyLlmProviderHttpStatus(425)).toBe('other');
     expect(classifyLlmProviderHttpStatus(500)).toBe('server_5xx');
+    expect(classifyLlmProviderHttpStatus(399)).toBe('other');
   });
 });
 

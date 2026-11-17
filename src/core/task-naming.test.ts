@@ -402,6 +402,92 @@ describe('generateTaskNameDetailed: why no name came back (issue #3980)', () => 
   });
 });
 
+describe('generateTaskNameDetailed: a broken provider is not mistaken for a blip (issue #4042)', () => {
+  const callsOf = (client: LlmClient) => (client.completeDetailed as ReturnType<typeof vi.fn>).mock.calls.length;
+  const httpError = (status: number) => Object.assign(new Error(`${status} provider error`), { status });
+
+  test('a model the provider withdrew (404 on every mode) is a failure', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient(() => {
+      throw httpError(404);
+    });
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'failed' });
+    // No early stop: a 4xx keeps the per-mode retry, unlike auth.
+    expect(callsOf(client)).toBe(3);
+  });
+
+  test.each([400, 422])('a %i on the plain request is a failure', async (status) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient(() => {
+      throw httpError(status);
+    });
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'failed' });
+  });
+
+  test.each([408, 425, 429])('a %i, which asks to retry later, stays transient', async (status) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient(() => {
+      throw httpError(status);
+    });
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'transient' });
+  });
+
+  test('a 4xx rejecting a structured response format does not count when the plain request fails transiently', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient((req) => {
+      throw httpError(modeOf(req) === 'plain' ? 429 : 400);
+    });
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'transient' });
+  });
+
+  test('a 4xx rejecting a structured format, then a name from the plain request, is a name', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient((req) => {
+      if (modeOf(req) !== 'plain') throw httpError(404);
+      return { text: 'Fix auth', finishReason: 'stop' };
+    });
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: 'Fix auth' });
+  });
+
+  test.each(['ECONNREFUSED', 'ENOTFOUND'])('an endpoint that fails with %s is a failure', async (code) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient(() => {
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error(code), { code }) });
+    });
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'failed' });
+  });
+
+  test.each(['ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN'])('a %s network error stays transient', async (code) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient(() => {
+      throw Object.assign(new Error('network error'), { code });
+    });
+    expect(await generateTaskNameDetailed(client, 'Fix bug', '/project')).toEqual({ name: null, failure: 'transient' });
+  });
+
+  test('through the real fallback client, a withdrawn model and a refused endpoint read as failed, a 429 as transient', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resetHelperLlmDiagnosticsForTest();
+    const fallbackOver = (err: Error) => new FallbackLlmClient([{
+      provider: 'p', model: 'p-model', complete: vi.fn(),
+      completeDetailed: vi.fn(async () => {
+        throw err;
+      }),
+    }]);
+    try {
+      expect(await generateTaskNameDetailed(fallbackOver(httpError(404)), 'Fix bug', '/project'))
+        .toEqual({ name: null, failure: 'failed' });
+      const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) });
+      expect(await generateTaskNameDetailed(fallbackOver(refused), 'Fix bug', '/project'))
+        .toEqual({ name: null, failure: 'failed' });
+      expect(await generateTaskNameDetailed(fallbackOver(httpError(429)), 'Fix bug', '/project'))
+        .toEqual({ name: null, failure: 'transient' });
+    } finally {
+      resetHelperLlmDiagnosticsForTest();
+    }
+  });
+});
+
 describe('deterministicTaskName (issue #1526 Phase C4 — no task is ever unnamed)', () => {
   test('uses the first non-empty prompt line', () => {
     expect(deterministicTaskName('\n\nFix the auth bug\nWith much more detail below', '/p'))

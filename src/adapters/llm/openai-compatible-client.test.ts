@@ -314,7 +314,7 @@ describe('OpenAiCompatibleLlmClient', () => {
     }
 
     expect(caught).toBeInstanceOf(Error);
-    expect(caught).toMatchObject({ providerFailureCategory: 'other' });
+    expect(caught).toMatchObject({ providerFailureCategory: 'client_4xx' });
     expect((caught as Error).message).toContain('Requesty request failed: 400 Bad Request');
     expect((caught as Error).message).toContain('bad request');
     expect((caught as Error).message).not.toContain(API_KEY);
@@ -386,6 +386,21 @@ describe('OpenAiCompatibleLlmClient', () => {
 
     await expect(client.complete(baseReq)).rejects.toMatchObject({
       providerFailureCategory: 'network_timeout',
+      message: expect.stringContaining('fetch failed'),
+    });
+  });
+
+  test.each(['ECONNREFUSED', 'ENOTFOUND'])('classifies a %s connection failure as an unreachable endpoint', async (code) => {
+    stubFetchError(new TypeError('fetch failed', { cause: Object.assign(new Error(code), { code }) }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'requesty',
+      apiKey: API_KEY,
+      model: 'openai/gpt-4o-mini',
+      baseUrl: 'https://router.requesty.ai/v1',
+    });
+
+    await expect(client.complete(baseReq)).rejects.toMatchObject({
+      providerFailureCategory: 'unreachable',
       message: expect.stringContaining('fetch failed'),
     });
   });
