@@ -815,20 +815,31 @@ kookr check-verification --from-file <check-runs.json> [--json]
 | `30` | `pending` | A check is still running, or was cancelled. Wait. |
 | `1` | — | Usage or runtime error. |
 
-When one check has several runs on the head (re-runs of the same job in the
-same workflow run), a run that did not pass stops counting once a later run of
-that check succeeded after it finished: a failed run followed by a successful
-re-run is green. A later run that never executed, was skipped, or overlapped the
-failure in time (a different job with the same name) does not hide it, so that
-check stays `executed-red`. For GitHub Actions jobs the later run must also
-belong to a later attempt of the workflow run (its `run_attempt`, read from the
-Actions jobs API): a same-named job of the same attempt that ran after the
-failure is a different job, not a re-run, and when the attempt cannot be read
-the failure stays red. `--from-file` reads no attempts, so there an Actions re-run
-counts only when the file's runs carry `run_attempt`. A re-run still in progress makes the check
-`pending`. Checks with the same name in different workflow runs are classified
-separately, so a failure in an earlier workflow run stays red even when a later
-run of that workflow passed.
+When one check has several runs on the head (re-runs of the same job), a run
+that did not pass stops counting once a later run of that check succeeded after
+it finished: a failed run followed by a successful re-run is green. A later run
+that never executed, was skipped, or overlapped the failure in time (a different
+job with the same name) does not hide it, so that check stays `executed-red`.
+
+For GitHub Actions jobs, the later run must also come from a later attempt of
+the workflow run (its `run_attempt`, read from the Actions jobs API) or from a
+later workflow run of the same workflow. A same-named job of the same attempt
+that ran after the failure is a different job, not a re-run. GitHub gives jobs
+that share a name (a matrix with a fixed `name:`) no identity of their own, so
+a later pass counts only when its attempt re-ran at least as many same-named
+jobs as the failed attempt held. A partial re-run of such a matrix therefore
+stays red. When any attempt cannot be read, the failure stays red. `--from-file`
+reads no attempts, so there an Actions re-run counts only when the file's runs
+carry `run_attempt`. A re-run still in progress makes the check `pending`.
+
+Checks with the same name in different workflow runs are classified separately,
+with one exception. When the same workflow ran again for the same branch push,
+or for the same pull request (the run lists exactly that one pull request), a
+later pass of that workflow retires the earlier run's failure, as GitHub's own
+check rollup does. The CLI reads the workflow behind each run from the Actions
+runs API. Any other event (for example `dynamic` Dependabot runs, which share
+one workflow on a commit yet check different things) and any run it cannot
+read keep their failure red.
 
 Without `--repo`, the PR is resolved from the git remote of the current
 directory. The npm package ships the classifier, so the verb works from an
