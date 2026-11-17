@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { appendAuditRow } from '../../core/audit-log.js';
 import { nowISO } from '../../core/interaction-log.js';
 import type { LucyModelPort } from '../../core/lucy-operator/model-port.js';
+import type { ProjectSummary } from '../../core/project-summary.js';
 import type { LaunchableProject } from '../../core/lucy-operator/launch-proposal.js';
 import { DEFAULT_LUCY_AUTONOMY, LUCY_OPERATOR_ACTOR_ID } from '../../shared/contracts/lucy-launch.js';
 import { MAX_ACTIVE_TASKS } from '../config.js';
@@ -52,43 +53,65 @@ export function lucyLaunchRoomCheck(deps: RouteDeps): () => string | null {
   };
 }
 
-/** The projects she may launch in: those the dashboard shows that have a folder on this machine. */
-export async function lucyLaunchableProjects(deps: RouteDeps): Promise<LaunchableProject[]> {
-  const summaries = await listProjectSummaries(deps);
+/**
+ * The launch rule, in one place: she may launch in a project the dashboard shows that has a folder on
+ * this machine and is tracked (or is a local one), and a folder is offered once, under the first name
+ * that has it. `list_projects` uses the same function, so what she is told matches what she may do.
+ */
+export function selectLaunchableProjects(summaries: readonly ProjectSummary[]): Array<{ summary: ProjectSummary; project: LaunchableProject }> {
   const seen = new Set<string>();
-  const projects: LaunchableProject[] = [];
+  const selected: Array<{ summary: ProjectSummary; project: LaunchableProject }> = [];
   for (const summary of summaries) {
     const cwd = summary.localPath?.trim();
     if (!cwd || !(summary.tracked === true || summary.project.startsWith('local/'))) continue;
     const name = summary.displayName.trim();
     if (!name || seen.has(cwd)) continue;
     seen.add(cwd);
-    projects.push({ name, cwd });
+    selected.push({ summary, project: { name, cwd } });
   }
-  return projects;
+  return selected;
+}
+
+/** The projects she may launch in: those the dashboard shows that have a folder on this machine. */
+export async function lucyLaunchableProjects(deps: RouteDeps): Promise<LaunchableProject[]> {
+  return selectLaunchableProjects(await listProjectSummaries(deps)).map((entry) => entry.project);
+}
+
+/**
+ * The one model call that writes what will be launched or sent: no tools, and the only messages it is
+ * given are the instructions and the operator's own sentences. Shared by the launch and action
+ * controllers so neither can hand it anything else.
+ */
+export function lucyWriterCall(
+  model: LucyModelPort,
+  maxOutputTokens: number,
+): (request: { system: string; operatorWords: readonly string[]; signal?: AbortSignal }) => Promise<string> {
+  return async ({ system, operatorWords, signal }) => {
+    let text = '';
+    for await (const event of model({
+      messages: [{ role: 'system', content: system }, ...operatorWords.map((content) => ({ role: 'user' as const, content }))],
+      tools: [],
+      maxOutputTokens,
+      signal,
+    })) {
+      if (event.type === 'text') text += event.delta;
+    }
+    return text;
+  };
 }
 
 export function buildLucyLaunchController(
   deps: RouteDeps,
   model: LucyModelPort,
   log: LucyInteractionLog | undefined,
+  options: { onHeld?: () => void } = {},
 ): LucyLaunchController {
   return createLucyLaunchController({
+    ...(options.onHeld ? { onHeld: options.onHeld } : {}),
     // Read here, at launch time, from the server's settings. No request can set it.
     getAutonomy: () => deps.settings?.get().lucyAutonomy ?? DEFAULT_LUCY_AUTONOMY,
     getProjects: () => lucyLaunchableProjects(deps),
-    writeSpec: async ({ system, operatorWords, signal }) => {
-      let text = '';
-      for await (const event of model({
-        messages: [{ role: 'system', content: system }, ...operatorWords.map((content) => ({ role: 'user' as const, content }))],
-        tools: [],
-        maxOutputTokens: 900,
-        signal,
-      })) {
-        if (event.type === 'text') text += event.delta;
-      }
-      return text;
-    },
+    writeSpec: lucyWriterCall(model, 900),
     checkRoom: lucyLaunchRoomCheck(deps),
     launch: (opts, server) => launchTask(deps.launchServiceDeps, opts, server),
     // The durable trail: who asked (lucy-operator), for which task, under which level, how it was confirmed.

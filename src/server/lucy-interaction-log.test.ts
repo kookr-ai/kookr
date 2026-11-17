@@ -480,6 +480,34 @@ describe('operator_turn records', () => {
     }
   });
 
+  it('records a step of an action on a task with only the documented fields, attributed to lucy-operator', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lucy-log-'));
+    const file = join(dir, 'l.jsonl');
+    try {
+      const log = createLucyInteractionLog({ filePath: file, now: () => new Date('2026-11-13T10:00:00.000Z') });
+      log.recordAction!({
+        conversationId: 'c1', event: 'done', action: 'reply', proposalId: 'a1', via: 'typed', taskId: 't1',
+        asked: 'tell it to rebase', text: 'Rebase on main.',
+        ...({ sessionId: 'kookr-s1', actor: 'someone-else' } as object),
+      });
+      log.recordAction!({ conversationId: 'c1', event: 'refused', action: 'answer', proposalId: 'a2', via: 'click', taskId: 't1', askId: 'q1', choice: 'option:0', reason: 'That question was already answered.' });
+      await log.flush();
+      const rows = readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(rows).toEqual([
+        {
+          v: 1, ts: '2026-11-13T10:00:00.000Z', kind: 'action', actor: 'lucy-operator', conversationId: 'c1', event: 'done', action: 'reply',
+          proposalId: 'a1', via: 'typed', taskId: 't1', asked: 'tell it to rebase', text: 'Rebase on main.',
+        },
+        {
+          v: 1, ts: '2026-11-13T10:00:00.000Z', kind: 'action', actor: 'lucy-operator', conversationId: 'c1', event: 'refused', action: 'answer',
+          proposalId: 'a2', via: 'click', taskId: 't1', askId: 'q1', choice: 'option:0', reason: 'That question was already answered.',
+        },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('writes nothing when the setting is off', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'lucy-log-operator-off-'));
     const file = join(dir, 'l.jsonl');

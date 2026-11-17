@@ -78,6 +78,9 @@ kbd {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  /* Lucy's column, when it is open beside the page, sets this on the root element (AvatarDock.tsx): everything in
+     the app, the top bar and banners included, ends where the column starts. Unset otherwise, so 0. */
+  padding-right: var(--lucy-column-width, 0px);
 }
 
 /* Skip link: visually hidden until focused so mouse users see no layout shift. */
@@ -1106,8 +1109,11 @@ kbd {
 .finding-group.turn-complete { border-left-color: var(--state-need); }
 .finding-group.stuck { border-left-color: var(--state-bad); }
 .finding-group.error { border-left-color: var(--state-bad); }
+/* One line when there is room. In a narrow list the buttons move to a second line, under the count, so the count
+   is never squeezed to one word per line on top of them. */
 .finding-group-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 10px 12px;
@@ -1124,13 +1130,19 @@ kbd {
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
-  flex: 1;
+  /* Wants about ten words' width; with less than that left on the line, the buttons wrap instead of it shrinking. */
+  flex: 1 1 10em;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .finding-group-actions {
+  flex: none;
   display: flex;
   gap: 4px;
   margin-left: auto;
+  white-space: nowrap;
 }
 .finding-identical-prompts {
   display: flex;
@@ -6433,7 +6445,7 @@ label.task-share-row {
 .quick-launch-bar {
   position: fixed;
   top: 38px;
-  left: 50%;
+  left: calc(50% - var(--lucy-column-width, 0px) / 2);
   transform: translateX(-50%);
   z-index: 150;
   display: flex;
@@ -6513,7 +6525,7 @@ label.task-share-row {
 .toasts {
   position: fixed;
   top: 90px;
-  right: 16px;
+  right: calc(16px + var(--lucy-column-width, 0px));
   z-index: 300;
   display: flex;
   flex-direction: column;
@@ -6617,7 +6629,7 @@ label.task-share-row {
 .plugin-install-banner {
   position: fixed;
   top: 90px;
-  left: 50%;
+  left: calc(50% - var(--lucy-column-width, 0px) / 2);
   transform: translateX(-50%);
   z-index: 300;
   width: calc(100% - 32px);
@@ -6698,7 +6710,7 @@ label.task-share-row {
 .achievement-toasts {
   position: fixed;
   bottom: 24px;
-  right: 24px;
+  right: calc(24px + var(--lucy-column-width, 0px));
   z-index: 150;
   display: flex;
   flex-direction: column;
@@ -15722,7 +15734,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .scheduled-tasks-hint {
   position: fixed;
   top: 52px;
-  right: 16px;
+  right: calc(16px + var(--lucy-column-width, 0px));
   z-index: 210;
   width: min(320px, calc(100vw - 32px));
   padding: 14px 16px;
@@ -16647,10 +16659,10 @@ button.coordinator-chain-member:focus-visible {
 }
 .debug-timeline-panel {
   position: fixed;
-  right: 14px;
+  right: calc(14px + var(--lucy-column-width, 0px));
   bottom: 46px;
   z-index: 80;
-  width: min(520px, calc(100vw - 28px));
+  width: min(520px, calc(100vw - 28px - var(--lucy-column-width, 0px)));
   max-height: min(520px, calc(100vh - 96px));
   display: flex;
   flex-direction: column;
@@ -17046,7 +17058,7 @@ button.coordinator-chain-member:focus-visible {
    and is never bound to a Task. */
 .hermes-lane-root {
   position: fixed;
-  right: 16px;
+  right: calc(16px + var(--lucy-column-width, 0px));
   bottom: 16px;
   z-index: 60;
   display: flex;
@@ -17199,33 +17211,54 @@ button.coordinator-chain-member:focus-visible {
 }
 
 /* --- Avatar panel (optional, off by default; see store/avatar-panel-prefs.ts) ---
-   A floating window in the corner showing a 3D character who lip-syncs spoken
-   summaries. It minimises to a round bubble. Sits above page content and the
-   debug timeline (80) but below toasts (300) and dialogs. */
+   Lucy's column: full height, docked to the right edge, 380px wide unless the operator dragged its left edge.
+   The page makes room for it (`.app` has padding-right from `--lucy-column-width`, set by AvatarDock.tsx), so
+   it does not cover the dashboard. At 768px and below it is a full-width sheet over the page instead. It
+   minimises to a round bubble in the bottom-right corner. Sits above page content and the debug timeline (80) but
+   below dialogs and menus (100) and toasts (300): a dialog centred in the window must cover the column too, not be
+   cut in half by it. The bubble stays above them (120), so Talk can always be switched off. */
 .avatar-dock {
   position: fixed;
-  z-index: 120;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.35);
   overflow: hidden;
 }
-.avatar-dock-dragging { user-select: none; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7); }
+.avatar-dock-sheet { left: 0; border-left: 0; box-shadow: none; }
+/* Floating over the page (a window too narrow to give the column room): it starts below the 38px top bar, so the
+   top bar's controls (+ Launch, search) stay reachable. It still covers the right side of the panes below. */
+.avatar-dock[data-column-mode="overlay"] { top: 38px; }
+/* The grip on the column's left edge. A thin line shows on hover and focus, like the other dividers. */
+.avatar-column-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 3;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.avatar-column-resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: transparent; }
+.avatar-column-resizer:hover::after, .avatar-column-resizer:focus-visible::after, .avatar-column-resizer.dragging::after { background: var(--teal); }
+.avatar-column-resizer:focus-visible { outline: none; }
+/* While the column is being resized the cursor stays a resize cursor and nothing is selected. */
+.avatar-column-resizing { cursor: col-resize; user-select: none; }
 .avatar-dock-header {
   flex: none;
-  height: 30px;
+  height: 36px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 6px 0 10px;
+  padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--border-dim);
-  cursor: grab;
-  touch-action: none;
 }
-.avatar-dock-dragging .avatar-dock-header { cursor: grabbing; }
 .avatar-dock-name { color: var(--text-bright); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; }
 .avatar-dock-state {
   display: inline-flex;
@@ -17254,9 +17287,11 @@ button.coordinator-chain-member:focus-visible {
   cursor: pointer;
 }
 .avatar-dock-button:hover { background: var(--bg-card); color: var(--text-bright); }
-.avatar-dock-button:focus-visible, .avatar-bubble:focus-visible, .avatar-dock-transcript:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
-.avatar-dock-transcript:focus-visible { outline-offset: -2px; }
+.avatar-dock-button:focus-visible, .avatar-bubble:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .avatar-dock-button svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+/* In the header the two buttons (Replay, Minimise) are 28px targets, with the same focus ring. */
+.avatar-dock-header .avatar-dock-button { width: 28px; height: 28px; }
+.avatar-dock-header .avatar-dock-button svg { width: 14px; height: 14px; }
 .avatar-dock-replay { position: relative; }
 .avatar-dock-button[aria-disabled="true"] { opacity: 0.6; cursor: default; }
 .avatar-dock-button[aria-disabled="true"]:hover { background: none; color: var(--text-secondary); }
@@ -17272,9 +17307,14 @@ button.coordinator-chain-member:focus-visible {
   pointer-events: none;
   animation: avatar-dock-pulse 2s ease-in-out infinite;
 }
-.avatar-dock-unheard { right: 0; top: 0; }
+.avatar-dock-unheard { right: 2px; top: 2px; }
 .avatar-bubble-unheard { left: -2px; top: -2px; width: 12px; height: 12px; }
-.avatar-dock-view { position: relative; flex: 1; min-height: 112px; background: #07050d; }
+/* The 3D view is 120px tall (72px on a window shorter than 620px). The conversation below always keeps 45% of the
+   column, so when the unfolded "Waiting on you" list needs more room than is left, the view is what gives it up:
+   its shrink factor is a thousand times the list's, so the list only starts to scroll once the view is gone. With
+   the list folded, which is how it starts, the view always has its full height. */
+.avatar-dock-view { position: relative; flex: 0 1000 auto; height: 120px; min-height: 0; overflow: hidden; background: #07050d; }
+@media (max-height: 620px) { .avatar-dock-view { height: 72px; } }
 .avatar-stage-canvas { display: block; width: 100%; height: 100%; }
 .avatar-dock-status {
   position: absolute;
@@ -17288,32 +17328,121 @@ button.coordinator-chain-member:focus-visible {
   /* It lies over the 3D view and is empty once the view is ready; it must never take clicks from it. */
   pointer-events: none;
 }
-/* The message list under the 3D view: the last few spoken messages, newest first, each in full. It takes what it
-   needs up to a cap and scrolls beyond that (keyboard-focusable). The 3D view keeps a 112px floor (#3662), so
-   when the window is short of room (the typed-input row, the live text) the list gives way first and scrolls.
-   Its large shrink factor makes it give way before the live text, which may shrink too (#4012). */
-.avatar-dock-transcript {
-  flex: 0 1000 auto;
-  min-height: 0;
-  max-height: 176px;
-  overflow-y: auto;
+/* The conversation thread: a chat, oldest at the top, newest at the bottom. It takes the room the strip and the
+   composer leave and never less than 45% of the column, and scrolls inside itself. Her bubbles are on the left,
+   the operator's on the right with a teal wash; cards waiting for a decision come after the last entry. */
+.avatar-thread {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 45%;
+  display: flex;
+  flex-direction: column;
   border-top: 1px solid var(--border-dim);
 }
-.avatar-dock-hint { margin: 0; padding: 9px 11px; font-size: 12px; color: var(--text-secondary); }
-.avatar-msg-list { list-style: none; margin: 0; padding: 0; }
-.avatar-msg {
+.avatar-thread-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.avatar-thread-scroll:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.avatar-thread-content { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.avatar-thread-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.avatar-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 88%;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--text-bright);
+}
+.avatar-entry-lucy { align-self: flex-start; align-items: flex-start; }
+.avatar-entry-you { align-self: flex-end; align-items: flex-end; }
+.avatar-entry-bubble {
+  min-width: 0;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border-dim);
+  border-radius: 8px;
+  background: var(--bg-card);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.avatar-entry-you .avatar-entry-bubble { border-color: rgba(45, 212, 191, 0.35); background: rgba(45, 212, 191, 0.10); }
+.avatar-entry-error .avatar-entry-bubble { color: var(--red); }
+.avatar-entry-time { font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--text-secondary); }
+/* A reply: paragraphs as written, and lines that began with "- " as a short list. */
+.avatar-entry-para { margin: 0; }
+.avatar-entry-para + .avatar-entry-para, .avatar-entry-list + .avatar-entry-para { margin-top: 4px; }
+.avatar-entry-list { margin: 2px 0; padding-left: 18px; list-style: disc; white-space: normal; }
+.avatar-entry-list li + li { margin-top: 2px; }
+/* What she is doing while a reply is being prepared: one quiet line with a violet dot (her colour), pulsing while it lasts. */
+.avatar-entry-doing { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; line-height: 16px; color: var(--text-secondary); }
+.avatar-entry-doing::before { content: ""; flex: none; width: 5px; height: 5px; border-radius: 50%; background: #b48cff; }
+.avatar-entry-doing-now::before { animation: avatar-dock-pulse 1.2s ease-in-out infinite; }
+/* Suggestions under her newest message, and "Open task" under a report: pills that send or open. */
+.avatar-chips, .avatar-entry-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.avatar-chip {
+  padding: 3px 10px;
+  border: 1px solid rgba(45, 212, 191, 0.4);
+  border-radius: 999px;
+  background: none;
+  color: var(--teal);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+}
+.avatar-chip:hover { border-color: var(--teal); background: rgba(45, 212, 191, 0.10); }
+.avatar-chip:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.avatar-chip[aria-disabled="true"] { opacity: 0.6; cursor: default; }
+.avatar-chip[aria-disabled="true"]:hover { border-color: rgba(45, 212, 191, 0.4); background: none; }
+/* Not said by anyone: a notice, or what became of a launch. One small line in the middle. */
+.avatar-entry-event {
+  align-self: center;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.avatar-entry-event-text { color: var(--text-bright); }
+.avatar-thread-connecting { margin: 0; font-size: 12px; text-align: center; }
+.avatar-thread-cards { display: flex; flex-direction: column; gap: 10px; }
+.avatar-thread-cards:empty { display: none; }
+/* A new entry or card arrives with a short fade and rise, never a jump. */
+@keyframes avatar-entry-in { from { opacity: 0; transform: translateY(4px); } }
+.avatar-thread-list > li, .avatar-thread-cards > *, .avatar-welcome { animation: avatar-entry-in 150ms ease-out; }
+.avatar-thread-new {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border: 1px solid var(--teal);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--teal);
+  font: inherit;
+  cursor: pointer;
+}
+.avatar-thread-new:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+/* A message she said aloud is a bubble of hers with a second line: said aloud, who it was about, how long ago,
+   and its own Replay button on the right. */
+.avatar-msg .avatar-entry-bubble {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 8px;
   row-gap: 2px;
-  padding: 6px 6px 6px 11px;
-  border-bottom: 1px solid var(--border-dim);
-  color: var(--text-secondary);
-  font-size: 12px;
+  /* Said aloud, not typed: a violet edge, the colour of her speaking state. */
+  border-left: 2px solid #b48cff;
+  white-space: normal;
 }
-.avatar-msg:last-child { border-bottom: 0; }
-.avatar-msg-newest { background: var(--bg-card); color: var(--text-bright); }
 .avatar-msg-text {
   grid-column: 1;
   margin: 0;
@@ -17325,23 +17454,31 @@ button.coordinator-chain-member:focus-visible {
   align-items: center;
   gap: 5px;
   min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-secondary);
   white-space: nowrap;
 }
 .avatar-msg-subject { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.avatar-msg-sep, .avatar-msg-time { flex: none; }
+.avatar-msg-sep, .avatar-msg-time, .avatar-msg-aloud { flex: none; }
 .avatar-msg-template { flex: none; margin-left: 3px; font-style: italic; }
 .avatar-msg-unheard { flex: none; display: inline-flex; align-items: center; gap: 4px; margin-left: 3px; color: var(--amber); }
 .avatar-msg-replay { grid-column: 2; grid-row: 1 / span 2; }
 .avatar-msg-replay:focus-visible { outline-offset: -2px; }
 /* Shapes, so "needs you" and "unheard" never rest on colour alone. */
 .avatar-mark-diamond { flex: none; width: 8px; height: 8px; border-radius: 0; background: var(--amber); transform: rotate(45deg) scale(0.86); }
+/* Opinion requests block nothing: a hollow diamond, not the filled one of "needs you". */
+.avatar-mark-ring { flex: none; width: 8px; height: 8px; border: 1px solid var(--text-secondary); border-radius: 0; transform: rotate(45deg) scale(0.86); }
 .avatar-mark-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
 /* What the minimised bubble's badge and dot mean. Placed by AvatarDock next to the bubble; purely a visual
    repeat of the bubble's label, so it must never take the pointer or the focus. */
 .avatar-bubble-card {
   position: fixed;
   z-index: 121;
+  /* Above the bubble, with its right edge on the bubble's right edge (the bubble is 58px tall, 44px up, with a 10px gap). */
+  right: 16px;
+  bottom: 112px;
+  width: 206px;
   box-sizing: border-box;
   padding: 10px 12px;
   background: var(--bg-panel);
@@ -17356,6 +17493,9 @@ button.coordinator-chain-member:focus-visible {
 .avatar-bubble-card-hint { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-dim); color: var(--text-secondary); }
 .avatar-bubble {
   position: fixed;
+  /* The bubble's place, where the window used to start out: 16px from the right, 44px from the bottom, clear of the pill below it. */
+  right: 16px;
+  bottom: 44px;
   z-index: 120;
   width: 58px;
   height: 58px;
@@ -17387,54 +17527,87 @@ button.coordinator-chain-member:focus-visible {
   text-align: center;
 }
 /* Hands-free talk (Lucy live): the Talk button, the live text area and the "microphone is open" cues. */
-.avatar-dock-talk-on { color: var(--teal); }
 .avatar-dock-live .avatar-dock-state { color: var(--teal); }
 .avatar-dock-live .avatar-dock-state::before { animation: avatar-dock-pulse 2.4s ease-in-out infinite; }
-/* The live text gives way after the message list (#4012): with a long notice or exchange and a typed reply both
-   showing, the rows that cannot shrink would overflow the window and clip the bottom of the typed form. It keeps
-   one line and scrolls. */
-.avatar-live {
-  flex: 0 1 auto;
-  min-height: 30px;
-  max-height: 84px;
-  overflow-y: auto;
-  padding: 6px 11px;
-  border-top: 1px solid var(--border-dim);
-  font-size: 12px;
-  line-height: 17px;
-  color: var(--text-bright);
-}
 .avatar-dock:focus { outline: none; }
-.avatar-live:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
-.avatar-live p { margin: 0 0 3px; overflow-wrap: anywhere; }
 .avatar-live-who { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); margin-right: 4px; }
 .avatar-live-draft { color: var(--text-muted); font-style: italic; }
 .avatar-live-notice { color: var(--text-secondary); }
-/* Questions from tasks (`kookr ask`): cards between the 3D view and the message list. A task is waiting on a
-   pending one, so the list of questions may take most of the window; the 3D view keeps a strip and the message
-   list shrinks to make room. */
-.avatar-asks {
+/* "Waiting on you": the strip under the 3D view (WaitingTray.tsx). Folded it is one line, with an amber wash when
+   something waits. Unfolded, the list under it is the column's second (and last) scrolling area: it is as tall as
+   its content while there is room, takes the 3D view's height when it needs it, and scrolls beyond that. Its
+   height is set from script and changes over 150ms, so unfolding it or opening a card moves the column smoothly. */
+.avatar-tray {
   flex: 0 1 auto;
   min-height: 0;
-  max-height: 232px;
-  overflow-y: auto;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  border-top: 1px solid var(--border-dim);
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  overflow: hidden;
 }
-.avatar-dock-asking .avatar-dock-view { min-height: 56px; }
-.avatar-dock-asking .avatar-dock-transcript { max-height: 64px; }
-/* While a question is waiting it gets all the room there is: the message list steps aside (its newest entry is
-   the same question, read aloud, and the header's Replay button still plays it) and the cards may grow until
-   only the strip of the 3D view is left. */
-.avatar-dock-ask-waiting .avatar-asks { max-height: none; }
-.avatar-dock-ask-waiting .avatar-dock-transcript { display: none; }
+.avatar-tray-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+}
+.avatar-tray-waiting .avatar-tray-head { background: rgba(251, 191, 36, 0.10); color: var(--text-bright); }
+.avatar-tray-head:hover { color: var(--text-bright); }
+.avatar-tray-head:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.avatar-tray-summary { flex: 1 1 auto; min-width: 0; }
+.avatar-tray-count { font-family: var(--font-mono); font-weight: 600; }
+.avatar-tray-waiting .avatar-tray-count { color: var(--amber); }
+.avatar-tray-opinions { color: var(--text-secondary); }
+.avatar-tray-body { flex: 0 1 auto; min-height: 0; overflow: hidden; transition: height 150ms ease; }
+/* It scrolls only once WaitingTray.tsx has found its content taller than the room it has, with its height settled:
+   no scrollbar flashes in and out while the height is on its way. */
+.avatar-tray-body[data-scrolls] { overflow-y: auto; }
+.avatar-asks { list-style: none; margin: 0; padding: 0; }
+/* A question folded to one line, and the row that folds the opinion requests. */
+.avatar-ask-row-item, .avatar-opinions { border-top: 1px solid var(--border-dim); }
+.avatar-ask-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 11px;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.avatar-ask-row:hover, .avatar-ask-toggle:hover { background: var(--bg-card); }
+.avatar-ask-row:focus-visible, .avatar-ask-toggle:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+/* One line: who asks (it gives way first, but never takes more than half), the start of the question, the time left. */
+.avatar-ask-row-who { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-bright); font-weight: 600; }
+.avatar-ask-row-question { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar-opinions-text { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
+/* Wraps as a unit: "first closes in 4 h" never breaks in the middle. */
+.avatar-opinions-first { color: var(--text-muted); white-space: nowrap; }
+/* A chevron: points right on a row that can open, down on one that is open. */
+.avatar-ask-chevron { flex: none; width: 6px; height: 6px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); }
+.avatar-ask-toggle .avatar-ask-chevron, [aria-expanded="true"] > .avatar-ask-chevron { transform: rotate(45deg); }
+.avatar-opinion-list { border-top: 1px solid var(--border-dim); }
+/* The open card's top line is the button that folds it. */
+.avatar-ask-toggle { width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .avatar-ask {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px 9px 11px;
+  gap: 5px;
+  padding: 7px 10px 7px 11px;
   border-bottom: 1px solid var(--border-dim);
   font-size: 12px;
   color: var(--text-secondary);
@@ -17469,8 +17642,8 @@ button.coordinator-chain-member:focus-visible {
 .avatar-ask-link:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
 .avatar-ask-inline-link { color: var(--teal); overflow-wrap: anywhere; }
 .avatar-ask-inline-link:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
-.avatar-ask-answers { display: flex; flex-direction: column; gap: 6px; }
-.avatar-ask-options { display: flex; flex-direction: column; gap: 4px; }
+.avatar-ask-answers { display: flex; flex-direction: column; gap: 5px; }
+.avatar-ask-options { display: flex; flex-direction: column; gap: 3px; }
 .avatar-ask-option, .avatar-ask-send {
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -17479,7 +17652,7 @@ button.coordinator-chain-member:focus-visible {
   font: inherit;
   cursor: pointer;
 }
-.avatar-ask-option { width: 100%; padding: 5px 8px; text-align: left; overflow-wrap: anywhere; }
+.avatar-ask-option { width: 100%; padding: 4px 8px; text-align: left; overflow-wrap: anywhere; }
 .avatar-ask-option:hover, .avatar-ask-send:hover { border-color: var(--teal); }
 .avatar-ask-option:focus-visible, .avatar-ask-send:focus-visible, .avatar-ask-text input:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
 .avatar-ask-option[aria-disabled="true"], .avatar-ask-send[aria-disabled="true"] { opacity: 0.6; cursor: default; border-color: var(--border); }
@@ -17508,6 +17681,11 @@ button.coordinator-chain-member:focus-visible {
    mic in the panel's header; a slash appears on hover and keyboard focus to say what a press does. */
 .avatar-bubble-stop {
   position: fixed;
+  /* On the bubble's bottom-right edge, overhanging it by 5px. */
+  right: 11px;
+  bottom: 39px;
+  width: 22px;
+  height: 22px;
   z-index: 121;
   display: grid;
   place-items: center;
@@ -17529,6 +17707,9 @@ button.coordinator-chain-member:focus-visible {
   .avatar-dock-speaking .avatar-dock-state::before,
   .avatar-dock-live .avatar-dock-state::before { animation: none; }
   .avatar-unheard-dot { animation: none; }
+  .avatar-entry-doing-now::before { animation: none; }
+  .avatar-thread-list > li, .avatar-thread-cards > *, .avatar-welcome { animation: none; }
+  .avatar-tray-body { transition: none; }
 }
 
 /* #3561 4b: the decision card docked above the reply box. */
@@ -17601,35 +17782,74 @@ button.coordinator-chain-member:focus-visible {
 .decision-card-note--attention .decision-card-note-text strong { color: var(--red); }
 .decision-card-note .action-btn { flex-shrink: 0; }
 
-/* Lucy's launch card and the typed box (issue #3676). */
-.avatar-launch { flex: 0 1 auto; min-height: 0; max-height: 232px; overflow-y: auto; border-top: 1px solid var(--border-dim); font-size: 12px; color: var(--text-secondary); }
-.avatar-launch-card { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 9px 11px; background: var(--bg-card); box-shadow: inset 2px 0 0 var(--amber); }
+/* Lucy's launch card and the composer (issue #3676). */
+/* The launch card is the last thing in the conversation thread: a card with an amber edge. It has no scroll box of
+   its own; a long description makes it taller and the thread scrolls, with Go and Cancel at its foot. */
+.avatar-launch { font-size: 12px; color: var(--text-secondary); }
+.avatar-launch-card { display: flex; flex-direction: column; gap: 6px; padding: 9px 10px; border: 1px solid var(--border); border-left: 2px solid var(--amber); border-radius: 8px; background: var(--bg-card); }
 .avatar-launch-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .avatar-launch-project { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-bright); font-weight: 600; }
 .avatar-launch-kind, .avatar-launch-level { flex: none; font-family: var(--font-mono); color: var(--text-muted); }
 .avatar-launch-level { padding: 0 4px; border: 1px solid var(--border); border-radius: 4px; }
+.avatar-launch-body { min-width: 0; }
 .avatar-launch-description { margin: 0; color: var(--text-bright); font-size: 13px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.avatar-launch-asked { margin: 0; overflow-wrap: anywhere; }
-.avatar-launch-countdown { margin: 0; color: var(--amber); }
-.avatar-launch-error { margin: 0; color: var(--red); }
-.avatar-launch-buttons { display: flex; gap: 6px; }
+.avatar-launch-asked { margin: 6px 0 0; overflow-wrap: anywhere; }
+.avatar-launch-countdown { flex: none; margin: 0; color: var(--amber); }
+.avatar-launch-error { flex: none; margin: 0; color: var(--red); }
+.avatar-launch-buttons { flex: none; display: flex; gap: 6px; }
 .avatar-launch-buttons .avatar-ask-send, .avatar-launch-buttons .avatar-launch-cancel { width: auto; padding: 5px 12px; }
 .avatar-launch-buttons .avatar-ask-send:focus-visible, .avatar-launch-cancel:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
-.avatar-launch-result { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; padding: 6px 11px; color: var(--text-bright); }
-.avatar-launch-result > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .avatar-launch-link { padding: 0; border: 0; background: none; color: var(--teal); font: inherit; cursor: pointer; text-decoration: underline; }
 .avatar-launch-link:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 /* Lucy's permission cards (issue #3932): the whole command, then Approve once / Deny. */
-.avatar-permissions { max-height: 280px; }
 .avatar-permission-tool { font-family: var(--font-mono); }
-.avatar-permission-command { margin: 0; max-height: 120px; overflow: auto; padding: 5px 7px; border: 1px solid var(--border-dim); border-radius: 4px; background: var(--bg-panel); color: var(--text-bright); font-family: var(--font-mono); font-size: 12px; line-height: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.avatar-permission-command { margin: 0; padding: 5px 7px; border: 1px solid var(--border-dim); border-radius: 4px; background: var(--bg-panel); color: var(--text-bright); font-family: var(--font-mono); font-size: 12px; line-height: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .avatar-permission .avatar-launch-buttons { flex-wrap: wrap; align-items: center; }
-.avatar-typed { flex: none; padding: 6px 11px; border-top: 1px solid var(--border-dim); font-size: 12px; }
-.avatar-typed-row { display: flex; gap: 4px; }
-.avatar-typed-row input { flex: 1 1 auto; min-width: 0; padding: 4px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-panel); color: var(--text-bright); font: inherit; }
-.avatar-typed-row input:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
-.avatar-typed-reply { margin: 6px 0 0; max-height: 72px; overflow-y: auto; color: var(--text-bright); line-height: 17px; overflow-wrap: anywhere; white-space: pre-wrap; }
-.avatar-typed-level { margin: 4px 0 0; color: var(--text-muted); }
+/* The composer: Talk, the text box (one line, growing to five) and Send in a row; the autonomy level under it.
+   On a column too narrow for all three the text box and Send move to a line of their own under Talk. */
+.avatar-composer { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; border-top: 1px solid var(--border-dim); font-size: 12px; }
+.avatar-composer-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; }
+.avatar-typed { flex: 1 1 180px; min-width: 0; display: flex; align-items: flex-end; gap: 6px; margin: 0; }
+.avatar-typed textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 31px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-bright);
+  font: inherit;
+  font-size: 13px;
+  line-height: 19px;
+  resize: none;
+  overflow-y: hidden;
+}
+.avatar-typed textarea:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+.avatar-typed .avatar-ask-send { height: 31px; padding: 0 12px; font-size: 13px; }
+.avatar-talk {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 31px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-bright);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.avatar-talk svg { flex: none; width: 14px; height: 14px; fill: none; stroke: var(--teal); stroke-width: 1.8; stroke-linecap: round; }
+.avatar-talk:hover { border-color: var(--teal); }
+.avatar-talk:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+.avatar-talk-on { border-color: var(--teal); background: rgba(45, 212, 191, 0.10); }
+.avatar-talk[aria-disabled="true"] { opacity: 0.6; cursor: default; }
+.avatar-talk[aria-disabled="true"]:hover { border-color: var(--border); }
+.avatar-typed-level { margin: 0; color: var(--text-muted); }
 
 /* UI overhaul follow-ups (#3617).
    1. Working rows: shown controls join the flow, so the meta line ends where

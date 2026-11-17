@@ -1,0 +1,349 @@
+/**
+ * "Waiting on you": the strip under Lucy's 3D view that holds everything a task is waiting on the operator
+ * for, so that fifteen questions cost one line and not fifteen full cards.
+ *
+ * Folded, which is how it starts, it is one line: "3 waiting on you · 2 opinions wanted", with an amber wash
+ * when something is waiting. Pressing it unfolds the list below; the choice is remembered until the browser
+ * tab is closed. Nothing is opened for the operator: no card is open until they press a row.
+ *
+ * Unfolded, from top to bottom:
+ *  1. permission cards (`LucyPermissionCard.tsx`), as before;
+ *  2. the questions a task may still be waiting for (`kookr ask`), the one that closes soonest first. Each is
+ *     one line (who asks, the start of the question, the time left); pressing a line opens the whole card
+ *     (`AskCard.tsx`) and folds the one that was open;
+ *  3. one folded row for opinion requests: questions whose task has already ended, so nothing is blocked on
+ *     them. Pressing it unfolds one line per question, again the one closing soonest first, and pressing a
+ *     line opens that card. Only one card is open in the whole tray;
+ *  4. questions that closed in the last few minutes, as the compact outcome row with Dismiss.
+ *
+ * The list is one scrolling area; a card never scrolls inside itself. The conversation below always keeps
+ * 45% of the column, so the list takes what is left: the 3D view above gives up its height first, and only
+ * when that is not enough does the list scroll. Its height changes over a moment, not at once, when it is
+ * unfolded or a card opens. It is not shown when there is nothing to put in it. The count in the strip is
+ * permissions plus questions a task may be waiting for: opinions are counted apart, because they block nothing.
+ *
+ * It also keeps the three rules that stop a wrong answer being sent, which moved here with the cards:
+ *  - a press on an answer is ignored for a moment after the cards change (a card closing, a row opening or
+ *    folding, the list unfolding, a permission card arriving moves buttons under the pointer);
+ *  - when the control that had keyboard focus goes away with its card, focus is put on what replaced it;
+ *  - a card that is folded away keeps the answer being typed in it.
+ */
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { RefObject } from 'react';
+import type { OperatorAskView } from '../../shared/contracts/asks.js';
+import { dismissOperatorAsk, markAskSubmitting, type AskSubmitState } from '../store/operator-asks.js';
+import { useLucyPermission } from '../store/lucy-permission.js';
+import { loadTrayExpanded, saveTrayExpanded } from '../store/avatar-panel-prefs.js';
+import { AskCard, closesInText, timeLeftText, type AskAnswerChoice } from './AskCard.js';
+import { LucyPermissionCards, type PermissionChoiceSender } from './LucyPermissionCard.js';
+
+/** Answer presses are ignored for this long after the cards change, so a press aimed at a card that just moved cannot answer another question. */
+export const ASK_PRESS_GUARD_MS = 400;
+
+/** A little longer than the 150 ms the list's height takes to change (styles.css). */
+const TRAY_SETTLE_MS = 180;
+/** On the list while its content is taller than the room it has: only then may it scroll (styles.css). */
+const SCROLLS_ATTRIBUTE = 'data-scrolls';
+/** Where the browser cannot report sizes the list's height is never measured, so it may always scroll. */
+const ALWAYS_SCROLLS = typeof ResizeObserver === 'undefined' ? { [SCROLLS_ATTRIBUTE]: '' } : {};
+
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+/** The soonest-closing question first; ties keep the order the server sent them in. */
+function byExpiry(a: OperatorAskView, b: OperatorAskView): number {
+  return a.expiresAt - b.expiresAt;
+}
+
+export interface WaitingTrayProps {
+  /** The questions to show: every pending one and the recently closed ones. */
+  asks: readonly OperatorAskView[];
+  submit: Readonly<Record<string, AskSubmitState>>;
+  /** The server's clock now, for the "N min left" labels. */
+  nowMs: number;
+  /** Send an answer over the dashboard socket; false when it could not be sent. Absent: an answer reports "not connected". */
+  onAnswerAsk?: (askId: string, choice: AskAnswerChoice) => boolean;
+  onOpenTask?: (taskId: string) => boolean;
+  onPermissionChoice?: PermissionChoiceSender;
+  /** The column itself: where keyboard focus goes when a question's card is gone and nothing replaced it. */
+  dockRef: RefObject<HTMLElement | null>;
+}
+
+export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPermissionChoice, dockRef }: WaitingTrayProps) {
+  const permissionCards = useLucyPermission().cards;
+  const permissionCount = permissionCards.length;
+  const pending = useMemo(() => asks.filter((ask) => ask.state === 'pending'), [asks]);
+  const waiting = useMemo(() => pending.filter((ask) => ask.taskEnded !== true).sort(byExpiry), [pending]);
+  const opinions = useMemo(() => pending.filter((ask) => ask.taskEnded === true).sort(byExpiry), [pending]);
+  const closed = useMemo(() => asks.filter((ask) => ask.state !== 'pending'), [asks]);
+
+  // Folded to one line until the operator unfolds it; remembered for this browser tab.
+  const [expanded, setExpanded] = useState(loadTrayExpanded);
+  // A permission prompt is the one thing that unfolds the strip by itself: a task is stopped on it and Lucy
+  // has just said "the command is on my card", so Approve and Deny must be on screen. The remembered choice
+  // is not changed, and the operator can fold it away again.
+  const seenPermissionCount = useRef(permissionCount);
+  useEffect(() => {
+    if (permissionCount > seenPermissionCount.current) setExpanded(true);
+    seenPermissionCount.current = permissionCount;
+  }, [permissionCount]);
+  // Which card is open: none until the operator presses a row. A question that arrives later never opens
+  // itself or takes the place of the open one (that would throw away a half-typed answer).
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [opinionsOpen, setOpinionsOpen] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const trayRef = useRef<HTMLElement | null>(null);
+  const toggleRef = useRef<HTMLButtonElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const scrollToRef = useRef<string | null>(null);
+
+  const pendingIds = useMemo(() => new Set(pending.map((ask) => ask.id)), [pending]);
+  // The open card went away (answered, expired): nothing is open until the operator chooses again.
+  const expandedId = chosen !== null && pendingIds.has(chosen) ? chosen : null;
+  useLayoutEffect(() => {
+    if (chosen !== null && expandedId === null) setChosen(null);
+  }, [chosen, expandedId]);
+
+  // After the cards change: a press that lands in the next moment may have been aimed at a card that is no
+  // longer under the pointer, so it is ignored (the operator presses again).
+  const cardsChangedAtRef = useRef(0);
+  // Permission cards sit above the questions in the same scroll box: one arriving or leaving moves the buttons too.
+  const signature = `${asks.map((ask) => `${ask.id}:${ask.state}`).join(',')}|${expandedId ?? ''}|${opinionsOpen ? 'o' : ''}|${permissionCards.map((card) => card.promptId).join(',')}|${expanded ? 'x' : ''}`;
+  useLayoutEffect(() => {
+    cardsChangedAtRef.current = Date.now();
+  }, [signature]);
+
+  // The control inside a card that holds keyboard focus, and its question. A card is replaced when its question
+  // closes or its row is pressed, and removed when dismissed; the focused control then disappears and the
+  // browser drops focus to the top of the page. Only that case is repaired. Two rules keep this from ever doing
+  // harm: it acts only when that control really left the page and focus fell to the document (focus the
+  // operator moved elsewhere is never taken back), and it lands on the card's top line or the card itself,
+  // never on an answer button, so a stray Enter or Space cannot send an answer.
+  const focusedControlRef = useRef<{ element: HTMLElement; askId: string } | null>(null);
+  useLayoutEffect(() => {
+    const focused = focusedControlRef.current;
+    if (!focused || focused.element.isConnected) return;
+    focusedControlRef.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const tray = trayRef.current;
+    const target = tray?.querySelector<HTMLElement>(`[data-ask-id="${focused.askId}"] [data-ask-toggle]`)
+      ?? tray?.querySelector<HTMLElement>(`[data-ask-id="${focused.askId}"]`)
+      // The list was folded away with the control in it: the strip that folded it is what is left.
+      ?? toggleRef.current
+      ?? dockRef.current;
+    target?.focus();
+  }, [signature, dockRef]);
+
+  const showOpenCard = useCallback((): void => {
+    const id = expandedId;
+    if (id === null) return;
+    trayRef.current?.querySelector<HTMLElement>(`[data-testid="avatar-ask"][data-ask-id="${id}"]`)?.scrollIntoView?.({ block: 'nearest' });
+  }, [expandedId]);
+
+  // A card the operator just opened is brought fully into view inside the tray.
+  useLayoutEffect(() => {
+    const id = scrollToRef.current;
+    if (id === null || id !== expandedId) return;
+    scrollToRef.current = null;
+    showOpenCard();
+  });
+
+  // The list is as tall as its content, and gets there over a moment (the transition is in styles.css) so that
+  // unfolding it or opening a card does not make the column jump. Its height is written here because a height of
+  // "auto" cannot be animated. Once the height has settled, two things are decided from what is really on screen:
+  // whether the list needs to scroll (only then does it get a scrollbar, so none flashes while the height is on
+  // its way), and the open card is brought whole into view in the room there now is.
+  const showOpenCardRef = useRef(showOpenCard);
+  showOpenCardRef.current = showOpenCard;
+  const shown = permissionCount > 0 || asks.length > 0;
+  useEffect(() => {
+    const body = bodyRef.current;
+    const list = listRef.current;
+    if (!shown || !body || !list || typeof ResizeObserver === 'undefined') return undefined;
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver(() => {
+      const height = `${list.offsetHeight}px`;
+      if (body.style.height !== height) body.style.height = height;
+      clearTimeout(settle);
+      settle = setTimeout(() => {
+        body.toggleAttribute(SCROLLS_ATTRIBUTE, list.offsetHeight > body.clientHeight + 1);
+        showOpenCardRef.current();
+      }, TRAY_SETTLE_MS);
+    });
+    // The list: its content changed. The box: the column gave it more or less room (a resized window, the composer growing).
+    observer.observe(list);
+    observer.observe(body);
+    return () => {
+      observer.disconnect();
+      clearTimeout(settle);
+    };
+  }, [shown]);
+
+  const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
+    // A clock that stepped backwards (negative elapsed time) must not keep answers blocked.
+    const sinceChange = Date.now() - cardsChangedAtRef.current;
+    if (sinceChange >= 0 && sinceChange < ASK_PRESS_GUARD_MS) return;
+    markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
+  }, [onAnswerAsk]);
+
+  const open = (askId: string): void => {
+    scrollToRef.current = askId;
+    setChosen(askId);
+  };
+
+  if (!shown) return null;
+
+  const waitingCount = permissionCount + waiting.length;
+  const toggle = (): void => {
+    setExpanded(!expanded);
+    saveTrayExpanded(!expanded);
+  };
+  const listLabel = waiting.length > 0
+    ? `Questions waiting for your answer (${waiting.length})`
+    : opinions.length > 0
+      ? `Opinion requests (${opinions.length})`
+      : 'Recent questions';
+
+  const renderRow = (ask: OperatorAskView, kind: 'waiting' | 'opinion') => {
+    const who = ask.taskName ? `${ask.taskName} asks` : 'A task asks';
+    return (
+      <li className={`avatar-ask-row-item${kind === 'opinion' ? ' avatar-ask-row-opinion' : ''}`} key={ask.id} data-ask-id={ask.id}>
+        <button
+          type="button"
+          className="avatar-ask-row"
+          aria-expanded="false"
+          onClick={() => open(ask.id)}
+          data-ask-toggle=""
+          data-testid="avatar-ask-row"
+        >
+          <span className={kind === 'opinion' ? 'avatar-mark-ring' : 'avatar-mark-diamond'} aria-hidden="true" />
+          <span className="avatar-ask-row-who">{who}</span>{' '}
+          <span className="avatar-ask-row-question">{ask.question}</span>
+          <span className="avatar-ask-time">{timeLeftText(ask.expiresAt, nowMs)}</span>
+          <span className="avatar-ask-chevron" aria-hidden="true" />
+        </button>
+      </li>
+    );
+  };
+
+  const renderEntry = (ask: OperatorAskView, kind: 'waiting' | 'opinion') => {
+    if (ask.id !== expandedId) return renderRow(ask, kind);
+    return (
+      <AskCard
+        key={ask.id}
+        ask={ask}
+        submit={submit[ask.id]}
+        nowMs={nowMs}
+        onAnswer={onAnswer}
+        onDismiss={dismissOperatorAsk}
+        onCollapse={() => setChosen(null)}
+        draft={{ value: drafts[ask.id] ?? '', set: (value) => setDrafts((previous) => ({ ...previous, [ask.id]: value })) }}
+        {...(onOpenTask ? { onOpenTask } : {})}
+      />
+    );
+  };
+
+  return (
+    <section
+      className={`avatar-tray${waitingCount > 0 ? ' avatar-tray-waiting' : ''}`}
+      aria-label="Waiting on you"
+      ref={trayRef}
+      data-testid="avatar-tray"
+    >
+      <button
+        type="button"
+        className="avatar-tray-head"
+        aria-expanded={expanded}
+        aria-controls="avatar-tray-body"
+        onClick={toggle}
+        ref={toggleRef}
+        data-testid="avatar-tray-toggle"
+      >
+        <span className="avatar-tray-summary">
+          <span className="avatar-tray-count" data-testid="avatar-tray-count">{waitingCount}</span> waiting on you
+          {opinions.length > 0 && (
+            <span className="avatar-tray-opinions" data-testid="avatar-tray-opinions"> · {plural(opinions.length, 'opinion', 'opinions')} wanted</span>
+          )}
+        </span>
+        <span className="avatar-ask-chevron" aria-hidden="true" />
+      </button>
+      <div
+        className="avatar-tray-body"
+        id="avatar-tray-body"
+        ref={bodyRef}
+        {...ALWAYS_SCROLLS}
+        onFocus={(event) => {
+          const element = event.target as HTMLElement;
+          const askId = element.closest<HTMLElement>('[data-ask-id]')?.dataset.askId;
+          focusedControlRef.current = askId ? { element, askId } : null;
+        }}
+        onBlur={(event) => {
+          // A control that is still in the page lost focus because the operator moved it (another field, a click on
+          // the page, another window): forget it. A control removed while focused is no longer in the page here, or
+          // never reports a blur at all; that is the case the effect above repairs.
+          if ((event.target as HTMLElement).isConnected) focusedControlRef.current = null;
+        }}
+      >
+        {/* Its natural height is what the box above is given (see the effect that measures it). */}
+        <div className="avatar-tray-list" ref={listRef}>
+          {expanded && (
+            <>
+            <LucyPermissionCards
+              {...(onPermissionChoice ? { onChoice: onPermissionChoice } : {})}
+              {...(onOpenTask ? { onOpenTask } : {})}
+            />
+            {(asks.length > 0) && (
+              <ol
+                className="avatar-asks"
+                // Stated because `list-style: none` makes some browsers drop the list role, and its label with it.
+                role="list"
+                aria-label={listLabel}
+                data-testid="avatar-asks"
+              >
+                {waiting.map((ask) => renderEntry(ask, 'waiting'))}
+                {opinions.length > 0 && (
+                  <li className="avatar-opinions" data-testid="avatar-opinions">
+                    <button
+                      type="button"
+                      className="avatar-ask-row avatar-opinions-toggle"
+                      aria-expanded={opinionsOpen}
+                      aria-controls={opinionsOpen ? 'avatar-opinion-list' : undefined}
+                      onClick={() => setOpinionsOpen((value) => !value)}
+                      data-testid="avatar-opinions-toggle"
+                    >
+                      <span className="avatar-mark-ring" aria-hidden="true" />
+                      {/* May wrap onto a second line: the whole sentence, with when the first closes, matters more than one line. */}
+                      <span className="avatar-opinions-text">
+                        {plural(opinions.length, 'opinion', 'opinions')} wanted by finished {opinions.length === 1 ? 'task' : 'tasks'}
+                        <span className="avatar-opinions-first"> · first closes in {closesInText(opinions[0].expiresAt, nowMs)}</span>
+                      </span>
+                      <span className="avatar-ask-chevron" aria-hidden="true" />
+                    </button>
+                    {opinionsOpen && (
+                      <ol className="avatar-asks avatar-opinion-list" role="list" id="avatar-opinion-list" aria-label={`Opinion requests (${opinions.length})`} data-testid="avatar-opinion-list">
+                        {opinions.map((ask) => renderEntry(ask, 'opinion'))}
+                      </ol>
+                    )}
+                  </li>
+                )}
+                {closed.map((ask) => (
+                  <AskCard
+                    key={ask.id}
+                    ask={ask}
+                    submit={submit[ask.id]}
+                    nowMs={nowMs}
+                    onAnswer={onAnswer}
+                    onDismiss={dismissOperatorAsk}
+                    {...(onOpenTask ? { onOpenTask } : {})}
+                  />
+                ))}
+              </ol>
+            )}
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}

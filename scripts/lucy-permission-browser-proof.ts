@@ -28,7 +28,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium, type Page } from '@playwright/test';
-import { AVATAR_PANEL_KEY } from '../src/frontend/store/avatar-panel-prefs.js';
+import { AVATAR_PANEL_KEY, AVATAR_TRAY_EXPANDED_KEY } from '../src/frontend/store/avatar-panel-prefs.js';
 import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
 
 const REPO = resolve(__dirname, '..');
@@ -167,10 +167,12 @@ async function main(): Promise<void> {
     };
 
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-    await context.addInitScript(([avatarKey, onboardingKey]) => {
+    await context.addInitScript(([avatarKey, onboardingKey, trayKey]) => {
       localStorage.setItem(avatarKey, JSON.stringify({ enabled: true, minimized: false, position: null }));
       localStorage.setItem(onboardingKey, 'true');
-    }, [AVATAR_PANEL_KEY, ONBOARDING_STORAGE_KEY]);
+      // The "Waiting on you" strip starts folded; this proof is about what is in it, so it starts unfolded.
+      sessionStorage.setItem(trayKey, '1');
+    }, [AVATAR_PANEL_KEY, ONBOARDING_STORAGE_KEY, AVATAR_TRAY_EXPANDED_KEY]);
     const page = await context.newPage();
     const speaks: Array<{ status: number; text?: string }> = [];
     page.on('response', async (response) => {

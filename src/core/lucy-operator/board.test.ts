@@ -253,13 +253,59 @@ describe('buildLucyBoard questions from tasks', () => {
     expect(board).not.toContain('y'.repeat(60));
   });
 
+  test('puts questions whose task is still waiting first, then the one that closes soonest', () => {
+    const board = buildLucyBoard({ ...base, asks: [
+      ask({ id: 'ended-soon', question: 'Ended soon?', taskEnded: true, expiresAt: NOW + 1 * 60_000, createdAt: NOW - 1_000 }),
+      ask({ id: 'running-late', question: 'Running late?', taskEnded: false, expiresAt: NOW + 50 * 60_000, createdAt: NOW - 2_000 }),
+      ask({ id: 'unknown', question: 'Unknown?', expiresAt: NOW + 20 * 60_000, createdAt: NOW - 3_000 }),
+      ask({ id: 'running-soon', question: 'Running soon?', taskEnded: false, expiresAt: NOW + 5 * 60_000, createdAt: NOW - 4_000 }),
+    ] }, NOW);
+    const order = board.split('\n').filter((l) => l.startsWith('- ') && l.includes(' asked ')).map((l) => /: ([\w ]+\?)/.exec(l)![1]);
+    expect(order).toEqual(['Running soon?', 'Unknown?', 'Running late?', 'Ended soon?']);
+  });
+
+  test('says on a question that its task has finished, and nothing on one whose task is waiting or unknown', () => {
+    const board = buildLucyBoard({ ...base, asks: [
+      ask({ id: 'a1', question: 'Done?', taskEnded: true }),
+      ask({ id: 'a2', question: 'Waiting?', taskEnded: false }),
+      ask({ id: 'a3', question: 'Older?' }),
+    ] }, NOW);
+    const lines = board.split('\n');
+    expect(lines.find((l) => l.includes('Done?'))).toMatch(/Choices: Postgres; SQLite\. Its task has finished, so nothing is waiting on it\.$/);
+    expect(lines.find((l) => l.includes('Waiting?'))!.endsWith('Choices: Postgres; SQLite.')).toBe(true);
+    expect(lines.find((l) => l.includes('Older?'))!.endsWith('Choices: Postgres; SQLite.')).toBe(true);
+  });
+
   test('caps the lists and says how many are not shown', () => {
     const pending = Array.from({ length: MAX_BOARD_ASKS_PENDING + 3 }, (_, i) => ask({ id: `p${i}` }));
     const closed = Array.from({ length: MAX_BOARD_ASKS_CLOSED + 2 }, (_, i) => ask({ id: `c${i}`, state: 'expired', resolvedAt: NOW }));
     const board = buildLucyBoard({ ...base, asks: [...pending, ...closed] }, NOW);
     expect(board).toContain(`(${MAX_BOARD_ASKS_PENDING + 3};`);
-    expect(board).toContain('- and 3 more questions not listed');
+    expect(board).toContain('- and 3 more questions not listed here; read_questions lists them all');
     expect(board).toContain('- and 2 more closed questions not listed');
+  });
+});
+
+describe('buildLucyBoard questions when she may answer for the operator', () => {
+  const base = { tasks: [boardTask({ id: 'aaaa1111', name: 'Bake-off report' })], lifetimeSpendUsd: 1, quota: null };
+
+  test('a pending question carries its code and numbered choices, and the header says how an answer is given', () => {
+    const board = buildLucyBoard({ ...base, asks: [ask({ id: 'f00dbeef0001', taskId: 'aaaa1111', taskName: 'Bake-off report' })] }, NOW, MAX_BOARD_CHARS, { canAct: true });
+    expect(board).toContain('or tells you the answer and you call propose_answer with the question\'s code');
+    expect(board).not.toMatch(/you cannot answer them/);
+    expect(board).toContain('- question qf00d from [aaaa] "Bake-off report" asked 2 minutes ago: Which database? Choices: 1) Postgres; 2) SQLite.');
+  });
+
+  test('says when a question also takes the operator\'s own words', () => {
+    const board = buildLucyBoard({ ...base, asks: [ask({ id: 'f00dbeef0001', taskId: 'aaaa1111', allowText: true })] }, NOW, MAX_BOARD_CHARS, { canAct: true });
+    expect(board).toContain('Choices: 1) Postgres; 2) SQLite. It also takes an answer in the operator\'s own words.');
+  });
+
+  test('without it the board reads as before: no code, no numbers', () => {
+    const board = buildLucyBoard({ ...base, asks: [ask({ id: 'f00dbeef0001', taskId: 'aaaa1111', allowText: true })] }, NOW);
+    expect(board).not.toContain('qf00d');
+    expect(board).toContain('Choices: Postgres; SQLite.');
+    expect(board).toMatch(/you cannot answer them/);
   });
 });
 
@@ -291,7 +337,53 @@ describe('buildLucyOperatorPrompt', () => {
     }
   });
 
+  test('tells her read_questions lists every waiting question, and that one whose task has finished blocks nothing', () => {
+    for (const canLaunch of [false, true]) {
+      const text = buildLucyOperatorPrompt('B', { canLaunch });
+      expect(text).toContain('read_questions');
+      expect(text).toMatch(/task having finished is only a request for the operator's opinion: nothing is blocked on it/);
+    }
+  });
+
   test('says she cannot change anything', () => {
     expect(prompt).toMatch(/You cannot change anything\./);
+  });
+
+  test('with launching on and nothing else, it still says she cannot reply to or close a task', () => {
+    expect(buildLucyOperatorPrompt('B', { canLaunch: true })).toMatch(/You cannot reply to, close, snooze, approve or stop a task/);
+  });
+
+  test('when she may act, it names the three proposals, says nothing happens until the operator confirms, and no longer says she cannot reply or answer', () => {
+    const text = buildLucyOperatorPrompt('B', { canLaunch: true, canAct: true });
+    for (const tool of ['propose_launch', 'propose_answer', 'propose_reply', 'propose_close']) expect(text).toContain(tool);
+    expect(text).toMatch(/Nothing is sent or closed until they confirm that card, and you do not confirm it/);
+    expect(text).not.toMatch(/cannot reply/i);
+    expect(text).not.toMatch(/you cannot answer it/);
+    expect(text).toMatch(/You cannot approve permission prompts, stop or abort a task, merge, or change how much you may do on your own/);
+    expect(text).toMatch(/The same goes for the code of a question/);
+  });
+
+  test('never offers a control it does not name: no snooze, and no pointing at buttons it was not told about', () => {
+    for (const options of [{}, { canLaunch: true }, { canLaunch: true, canAct: true }]) {
+      const text = buildLucyOperatorPrompt('B', options);
+      expect(text).toMatch(/Never point the operator at a button, a setting or a command unless these instructions name it/);
+      expect(text).toMatch(/Questions have no snooze/);
+    }
+    // With her actions on, "snooze" is only ever mentioned to say it does not exist.
+    expect(buildLucyOperatorPrompt('B', { canLaunch: true, canAct: true }).match(/snooze/g)).toHaveLength(1);
+  });
+
+  test('a typed turn may use a short list and answers in the operator\'s language; a spoken one may not and stays in English', () => {
+    const typed = buildLucyOperatorPrompt('B');
+    const spoken = buildLucyOperatorPrompt('B', { spoken: true });
+    expect(typed).toMatch(/each line starting with "- ", at most six items/);
+    expect(spoken).toMatch(/No lists, no markdown, no emoji, no code/);
+    expect(spoken).not.toMatch(/short list/);
+    for (const text of [typed, spoken]) {
+      expect(text).toMatch(/one to three sentences, the first one short/);
+    }
+    expect(typed).toMatch(/Answer in the language the operator used/);
+    expect(spoken).toMatch(/Answer in English: your voice only speaks English/);
+    expect(spoken).not.toMatch(/Answer in the language the operator used/);
   });
 });

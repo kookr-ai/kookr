@@ -187,6 +187,12 @@ function waitForSilence(timeoutMs: number): Promise<boolean> {
 
 export interface AnnounceAskOptions {
   fetcher?: typeof fetch;
+  /**
+   * The result was `'live'` (the hands-free conversation took the question), and the conversation then gave
+   * it back unsaid: it is being played as a clip after all, and `result` is how that ends. Not called for a
+   * question that closed meanwhile.
+   */
+  onGivenBack?: (result: Promise<AskAnnouncementResult>) => void;
   /** Test seam for the hidden-tab wait and the busy wait. */
   sleep?: (ms: number) => Promise<void>;
   busyWaitMs?: number;
@@ -357,7 +363,12 @@ async function prepareClip(askId: string, options: AnnounceAskOptions, request: 
  */
 function sayAsClip(askId: string, request: ClipRequest, options: AnnounceAskOptions): void {
   if (!liveAsks.delete(askId) || closedAsks.has(askId)) return;
-  void announceKeyed(askId, { url: request.url, ...(request.body ? { body: request.body } : {}), claimed: true }, options);
+  const result = announceKeyed(askId, { url: request.url, ...(request.body ? { body: request.body } : {}), claimed: true }, options);
+  try {
+    options.onGivenBack?.(result);
+  } catch {
+    // The caller's bookkeeping must not stop the clip.
+  }
 }
 
 /** Play a fetched clip once Lucy is silent, unless its question closed in the meantime. */

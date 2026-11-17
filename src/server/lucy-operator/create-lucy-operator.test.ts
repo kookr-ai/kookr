@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+
+const registry = vi.hoisted(() => ({ summaries: [] as unknown[] }));
+vi.mock('../routes/project-routes.js', () => ({ listProjectSummaries: async () => registry.summaries }));
+
 import { closeSharedTerminalSnapshotWorker } from '../terminal-snapshot-worker.js';
 import type { RouteDeps } from '../routes/shared.js';
 import { buildLucyLookSource, buildLucyOperator } from './create-lucy-operator.js';
@@ -27,7 +31,11 @@ function routeDeps(overrides: Record<string, unknown> = {}) {
     },
     // The board and a task's detail must not read a terminal; only `taskOutput` does (tests that use it override these).
     adapter: { captureDisplay: async () => { throw new Error('the board and a task\'s detail must not read a terminal'); } },
-    githubStateStore: { getReferences: (taskId: string) => { asked.push(`refs:${taskId}`); return [{ type: 'pr', number: 3620 }]; } },
+    githubStateStore: {
+      getReferences: (taskId: string) => { asked.push(`refs:${taskId}`); return [{ type: 'pr', number: 3620 }]; },
+      // No pull-request state is known unless a test says so.
+      getTaskState: (taskId: string) => { asked.push(`prs:${taskId}`); return { prs: [] }; },
+    },
     getQuotaStatus: () => ({ fiveHour: null, sevenDay: { utilization: 42, resetsAt: '2026-11-15T00:00:00Z' }, updatedAt: 1 }),
     taskTailStore: { getByTaskId: async () => { throw new Error('the board and a task\'s detail must not read a saved terminal tail'); } },
     ...overrides,
@@ -51,6 +59,17 @@ describe('buildLucyLookSource', () => {
     expect(board.asks?.[0]).not.toHaveProperty('nonce');
   });
 
+  test('each listed question says whether its task has ended, from the task store', () => {
+    const record = (id: string, taskId: string) => ({ id, taskId, question: 'Which database?', options: ['Postgres'], allowText: false, state: 'pending', createdAt: NOW.getTime() - 60_000, expiresAt: NOW.getTime() + 600_000, nonce: 'n', delivery: { chatId: 1, messageId: 2 } });
+    const tasks: Record<string, { name: string; status: string }> = { running: { name: 'A', status: 'inProgress' }, done: { name: 'B', status: 'completed' } };
+    const { deps } = routeDeps({
+      asks: { service: { all: () => [record('a1', 'running'), record('a2', 'done'), record('a3', 'deleted')] } },
+      taskStore: { viewTasks: () => [], getTask: (id: string) => tasks[id], getLifetimeSpendUsd: () => 0 },
+    });
+    const asks = buildLucyLookSource(deps).board().asks ?? [];
+    expect(asks.map((a) => [a.id, a.taskEnded]).sort()).toEqual([['a1', false], ['a2', true], ['a3', true]]);
+  });
+
   test('without an ask service the board has no questions', () => {
     expect(buildLucyLookSource(routeDeps().deps).board().asks).toBeUndefined();
   });
@@ -58,7 +77,33 @@ describe('buildLucyLookSource', () => {
   test('a task\'s detail carries its linked pull requests', () => {
     const { deps, asked } = routeDeps();
     expect(buildLucyLookSource(deps).taskDetail('t1')).toMatchObject({ prompt: 'Write the report', references: ['PR #3620'] });
-    expect(asked).toEqual(['refs:t1']);
+    expect(asked.sort()).toEqual(['prs:t1', 'refs:t1']);
+  });
+
+  describe('delivery facts', () => {
+    const pr = (number: number, status: string, detectedFrom: string) => ({ ref: { type: 'pr', number, detectedFrom }, status });
+    const withPrs = (prs: unknown[], refs: unknown[]) => routeDeps({ githubStateStore: { getReferences: () => refs, getTaskState: () => ({ prs }) } }).deps;
+
+    test('a task\'s detail says which of its pull requests merged and which is still open', () => {
+      const deps = withPrs([pr(12, 'merged', 'kookr-s1'), pr(15, 'open', 'kookr-s1')], [{ type: 'pr', number: 12 }, { type: 'pr', number: 15 }, { type: 'issue', number: 7 }]);
+      const detail = buildLucyLookSource(deps).taskDetail('t1');
+      expect(detail?.pullRequests).toEqual([{ number: 12, status: 'merged' }, { number: 15, status: 'open' }]);
+      // Listed once, with its state: not again among the plain links.
+      expect(detail?.references).toEqual(['issue #7']);
+    });
+
+    test('a pull request that the task\'s request only cites is not presented as its delivery', () => {
+      const deps = withPrs([pr(9, 'merged', 'prompt'), pr(12, 'open', 'kookr-s1')], [{ type: 'pr', number: 9 }, { type: 'pr', number: 12 }]);
+      const detail = buildLucyLookSource(deps).taskDetail('t1');
+      expect(detail?.pullRequests).toEqual([{ number: 12, status: 'open' }]);
+      // It stays a plain link, with no "merged" beside it.
+      expect(detail?.references).toEqual(['PR #9']);
+    });
+
+    test('the board can read the same facts for the task lines it shows', () => {
+      const board = buildLucyLookSource(withPrs([pr(9, 'merged', 'prompt'), pr(12, 'merged', 'kookr-s1')], [])).board();
+      expect(board.pullRequestsOf?.('t1')).toEqual([{ number: 12, status: 'merged' }]);
+    });
   });
 
   test('only the terminal look-up reads a terminal or a saved terminal tail', async () => {
@@ -97,6 +142,29 @@ describe('buildLucyLookSource', () => {
       const without = routeDeps({ adapter: failing, taskTailStore: { getByTaskId: async () => null } }).deps;
       expect(await buildLucyLookSource(without).taskOutput('t1')).toBeNull();
     }, 30_000);
+  });
+
+  describe('list_projects with a project registry', () => {
+    const registryDeps = () => routeDeps({ ledgerAnalytics: {}, projectConfigStore: {} }).deps;
+    const summary = (displayName: string, extra: Record<string, unknown>) => ({ project: `github.com/o/${displayName}`, displayName, activeAgents: 0, findingCount: 0, ...extra });
+
+    test('marks where she may launch when launching is on, by the same rule the launcher uses', async () => {
+      registry.summaries = [
+        summary('tracked', { localPath: '/work/tracked', tracked: true }),
+        summary('untracked', { localPath: '/work/untracked', tracked: false }),
+        summary('nopath', { tracked: true }),
+      ];
+      expect(await buildLucyLookSource(registryDeps(), { launching: true }).projects()).toEqual([
+        { name: 'tracked', activeTasks: 0, findings: 0, launchable: true },
+        { name: 'untracked', activeTasks: 0, findings: 0, launchable: false },
+        { name: 'nopath', activeTasks: 0, findings: 0, launchable: false },
+      ]);
+    });
+
+    test('says nothing about launching when it is off for this install', async () => {
+      registry.summaries = [summary('tracked', { localPath: '/work/tracked', tracked: true })];
+      expect(await buildLucyLookSource(registryDeps()).projects()).toEqual([{ name: 'tracked', activeTasks: 0, findings: 0 }]);
+    });
   });
 
   test('without a project registry, projects come from the task list', async () => {

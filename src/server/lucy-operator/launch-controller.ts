@@ -25,12 +25,16 @@ import {
   buildSpecWriterPrompt,
   buildTaskPrompt,
   classifyReply,
+  buildUnknownProjectSay,
   ECHO_TAIL_MS,
+  estimateSpeechMs,
   HANDS_OFF_CANCEL_WINDOW_MS,
   LAUNCH_PROPOSAL_TTL_MS,
+  mayBeOwnVoice,
   parseSpecDraft,
   resolveProject,
   type LaunchableProject,
+  type LucyReplyContext,
 } from '../../core/lucy-operator/launch-proposal.js';
 import type { LucyProposeResult } from '../../core/lucy-operator/launch-tool.js';
 import { isGenericTaskName, spokenTaskName } from '../../core/spoken-task-name.js';
@@ -68,6 +72,11 @@ export interface LucyLaunchControllerDeps {
   audit?(row: { taskId: string; proposalId: string; level: LucyAutonomy; via: LucyLaunchVia; project: string; kind: LucyLaunchKind; queued: boolean; duplicate: boolean }): void | Promise<void>;
   /** Told about every proposal and every outcome, so every open dashboard shows or clears the card. */
   emit?(message: LucyLaunchBroadcast): void;
+  /**
+   * Called when a new proposal is about to be held. There is one card on screen for all of her
+   * proposals, so the holder of her other cards (answer, reply, close) drops its own here.
+   */
+  onHeld?(): void;
   log?: LucyInteractionLog;
   now?: () => number;
   newId?: () => string;
@@ -112,18 +121,31 @@ const LEVEL_RANK: Record<LucyAutonomy, number> = { careful: 0, balanced: 1, 'han
 const MAX_OPERATOR_WORDS = 6;
 /** The same task is not announced as needing the operator again within this time. */
 const NEEDS_INPUT_REPEAT_MS = 5 * 60 * 1000;
-const MAX_WORDS_CHARS = 2000;
+/**
+ * A "needs the operator" report waits this long before it is sent, and is dropped if the task's end
+ * (or "done, please look") is reported meanwhile. A task that finishes often stops for input a few
+ * seconds before it signals that it is done; without the wait the operator heard "needs you" and,
+ * six seconds later, "says it is done" for the same task.
+ */
+export const NEEDS_INPUT_HOLD_MS = 8_000;
+/** What a task that needs the operator is waiting for, when Kookr knows. */
+export type LucyNeedsReason = 'question' | 'permission';
 
-/** Rough time to speak a sentence: about three words a second, plus a second for the voice to start. */
-function estimateSpeechMs(sentence: string): number {
-  const words = sentence.split(/\s+/).filter(Boolean).length;
-  return Math.round((words / 3) * 1000) + 1000;
+/**
+ * What a finding says the task is waiting for: a permission prompt, or a question it asked in its
+ * session. Undefined for any other finding (the task stopped and waits for input of some kind).
+ */
+export function needsReasonOf(anomaly: { type: string; subType?: string }): LucyNeedsReason | undefined {
+  if (anomaly.type === 'permission_blocked') return 'permission';
+  if (anomaly.type === 'needs_input' && anomaly.subType === 'ask_user_question') return 'question';
+  return undefined;
 }
+const MAX_WORDS_CHARS = 2000;
 
 export interface LucyLaunchController {
   propose(input: { conversationId: string; operatorWords: readonly string[]; spoken?: boolean; signal?: AbortSignal }): Promise<LucyProposeResult>;
   /** Called with the operator's sentence at the start of a turn, before any model. */
-  handleReply(conversationId: string, text: string, context?: { input?: 'voice' | 'typed'; overlapsReadBack?: boolean; speechStartedAt?: number }): Promise<LucyReplyHandling>;
+  handleReply(conversationId: string, text: string, context?: LucyReplyContext): Promise<LucyReplyHandling>;
   confirm(conversationId: string, proposalId: string, via: LucyLaunchVia): Promise<LucyLaunchOutcome>;
   decline(conversationId: string, proposalId: string): LucyLaunchOutcome;
   /** Stop a hands-off launch during its window. Only valid while it is held. */
@@ -140,8 +162,14 @@ export interface LucyLaunchController {
    * held in any conversation, which is the one a "yes" from any conversation answers (see `handleReply`).
    */
   pending(conversationId?: string): LucyLaunchProposalView | undefined;
-  /** A task ended or needs the operator: tell its conversation if she launched it. */
-  onTaskOutcome(taskId: string, outcome: { kind: 'completion_ready' | 'completed' | 'failed' | 'cancelled' | 'needs_input' }, taskLabel?: string): void;
+  /** Another kind of card took the screen: every held proposal is dropped, never launched, and its card is cleared. */
+  dropPending(): void;
+  /**
+   * A task ended or needs the operator: tell its conversation if she launched it. One report per event:
+   * a `needs_input` report is held for {@link NEEDS_INPUT_HOLD_MS} and dropped when the task's end follows
+   * within that time. `waitsFor` says what a task that needs the operator is waiting for, when known.
+   */
+  onTaskOutcome(taskId: string, outcome: { kind: 'completion_ready' | 'completed' | 'failed' | 'cancelled' | 'needs_input'; waitsFor?: LucyNeedsReason }, taskLabel?: string): void;
   /** The sentence last announced for a task she launched, or undefined. The speech route says only this. */
   reportText(taskId: string): string | undefined;
   /** Stop timers (shutdown, tests). */
@@ -160,6 +188,8 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
   const launchedFrom = new Map<string, string>();
   const reports = new Map<string, string>();
   const lastNeeds = new Map<string, number>();
+  /** "Needs the operator" reports waiting out {@link NEEDS_INPUT_HOLD_MS}, by task. */
+  const heldNeeds = new Map<string, { text: string; timer: unknown }>();
 
   const record = (conversationId: string, input: Omit<LucyLaunchRecordInput, 'conversationId'>): void => {
     try {
@@ -326,6 +356,15 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
     return finish(conversationId, { outcome: 'cancelled', proposalId });
   }
 
+  function dropPending(): void {
+    for (const other of [...held.keys()]) {
+      const replaced = drop(other);
+      if (!replaced) continue;
+      record(other, { event: 'dropped', proposalId: replaced.view.id, reason: 'replaced' });
+      announce({ type: 'lucy_launch', conversationId: other, outcome: { outcome: 'cancelled', proposalId: replaced.view.id } });
+    }
+  }
+
   return {
     async propose({ conversationId, operatorWords, spoken, signal }) {
       const words = operatorWords.map((w) => redactSpeechSecrets(w).slice(0, MAX_WORDS_CHARS)).filter((w) => w.trim()).slice(-MAX_OPERATOR_WORDS);
@@ -349,7 +388,7 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       if ('ambiguous' in draft) return none(draft.ambiguous, 'ambiguous');
 
       const project = resolveProject(draft.project, projects);
-      if (!project) return none('Which project is that for?', 'unknown project');
+      if (!project) return none(buildUnknownProjectSay(draft.project, projects), 'unknown project');
       // The same strict schema as the Telegram path: length caps, no extra fields, a known agent.
       const checked = TaskSpecSchema.safeParse({
         prompt: draft.description,
@@ -379,11 +418,11 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       };
       // A new proposal replaces any old one, in this conversation or another: there is one operator and one card on
       // screen, so "go" can only mean the proposal that is shown.
-      for (const other of [...held.keys()]) {
-        const replaced = drop(other);
-        if (!replaced) continue;
-        record(other, { event: 'dropped', proposalId: replaced.view.id, reason: 'replaced' });
-        announce({ type: 'lucy_launch', conversationId: other, outcome: { outcome: 'cancelled', proposalId: replaced.view.id } });
+      dropPending();
+      try {
+        deps.onHeld?.();
+      } catch (err) {
+        warn(`could not clear another card: ${err instanceof Error ? err.message : String(err)}`);
       }
       const entry: Held = {
         view,
@@ -434,14 +473,10 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       }
 
       // Spoken words that began while she was still reading the proposal could be her own voice.
-      // They neither confirm nor drop it.
-      // Saying no is always safe, so a decline is heard even then; a confirmation is not.
-      if (context.input === 'voice' && classifyReply(text) !== 'decline') {
-        const startedAt = context.speechStartedAt ?? now();
-        if (context.overlapsReadBack === true || startedAt < entry.speakingUntil) {
-          record(conversationId, { event: 'ignored', proposalId: entry.view.id, level: entry.view.level, via: 'spoken', reason: 'began during the read-back' });
-          return { handled: true, say: '', ignored: true };
-        }
+      // They neither confirm nor drop it (the rule is shared with her other cards: `mayBeOwnVoice`).
+      if (mayBeOwnVoice(text, context, entry.speakingUntil, now())) {
+        record(conversationId, { event: 'ignored', proposalId: entry.view.id, level: entry.view.level, via: 'spoken', reason: 'began during the read-back' });
+        return { handled: true, say: '', ignored: true };
       }
 
       const via: LucyLaunchVia = context.input === 'voice' ? 'spoken' : 'typed';
@@ -495,40 +530,68 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       return id === undefined ? undefined : live(id)?.view;
     },
 
+    dropPending,
+
     onTaskOutcome(taskId, outcome, taskLabel) {
       const conversationId = launchedFrom.get(taskId);
       if (!conversationId) return;
       // The name was written by an agent or pasted by the operator: it gets the same cleaning as on the board.
       const spoken = taskLabel ? spokenTaskName(redactedTaskName(taskLabel)) : '';
       const label = spoken && !isGenericTaskName(spoken) ? ` "${spoken}"` : '';
-      const text = reportSentence(outcome.kind, label);
+      const text = reportSentence(outcome.kind, label, outcome.waitsFor);
+      // The sentence is kept for the speech route only once it is sent, so a held report that is dropped is never spoken.
+      const send = (kind: LucyLaunchReport['kind'], sentence: string): void => {
+        reports.set(taskId, sentence);
+        while (reports.size > MAX_REMEMBERED_TASKS) {
+          const oldest = reports.keys().next().value;
+          if (oldest === undefined) break;
+          reports.delete(oldest);
+        }
+        announce({ type: 'lucy_launch', conversationId, report: { taskId, conversationId, kind, text: sentence } });
+      };
       if (outcome.kind === 'needs_input') {
         // The same finding is admitted again and again while a task waits: say it once.
         const last = lastNeeds.get(taskId);
         if (last !== undefined && now() - last < NEEDS_INPUT_REPEAT_MS) return;
-        lastNeeds.set(taskId, now());
-        while (lastNeeds.size > MAX_REMEMBERED_TASKS) {
-          const oldest = lastNeeds.keys().next().value;
-          if (oldest === undefined) break;
-          lastNeeds.delete(oldest);
+        const waiting = heldNeeds.get(taskId);
+        if (waiting) {
+          // Already held: a later finding that knows what the task waits for gives the better sentence.
+          if (outcome.waitsFor) waiting.text = text;
+          return;
         }
-      } else {
-        launchedFrom.delete(taskId);
-        lastNeeds.delete(taskId);
+        const entry: { text: string; timer: unknown } = { text, timer: undefined };
+        entry.timer = setTimer(() => {
+          if (heldNeeds.get(taskId) !== entry) return;
+          heldNeeds.delete(taskId);
+          if (!launchedFrom.has(taskId)) return;
+          lastNeeds.set(taskId, now());
+          while (lastNeeds.size > MAX_REMEMBERED_TASKS) {
+            const oldest = lastNeeds.keys().next().value;
+            if (oldest === undefined) break;
+            lastNeeds.delete(oldest);
+          }
+          send('needs_input', entry.text);
+        }, NEEDS_INPUT_HOLD_MS);
+        heldNeeds.set(taskId, entry);
+        return;
       }
-      reports.set(taskId, text);
-      while (reports.size > MAX_REMEMBERED_TASKS) {
-        const oldest = reports.keys().next().value;
-        if (oldest === undefined) break;
-        reports.delete(oldest);
+      // The task ended, or says it is done: that is the one report. A "needs the operator" still held is dropped.
+      const superseded = heldNeeds.get(taskId);
+      if (superseded) {
+        clearTimer(superseded.timer);
+        heldNeeds.delete(taskId);
       }
-      announce({ type: 'lucy_launch', conversationId, report: { taskId, conversationId, kind: outcome.kind === 'needs_input' ? 'needs_input' : 'finished', text } });
+      launchedFrom.delete(taskId);
+      lastNeeds.delete(taskId);
+      send('finished', text);
     },
 
     reportText: (taskId) => reports.get(taskId),
 
     dispose() {
       for (const conversationId of [...held.keys()]) drop(conversationId);
+      for (const waiting of heldNeeds.values()) clearTimer(waiting.timer);
+      heldNeeds.clear();
     },
   };
 }
@@ -547,7 +610,7 @@ function sayOutcome(outcome: LucyLaunchOutcome): string {
   }
 }
 
-function reportSentence(kind: 'completion_ready' | 'completed' | 'failed' | 'cancelled' | 'needs_input', label: string): string {
+function reportSentence(kind: 'completion_ready' | 'completed' | 'failed' | 'cancelled' | 'needs_input', label: string, waitsFor?: LucyNeedsReason): string {
   switch (kind) {
     case 'completion_ready':
       return `The task I started${label} says it is done and is waiting for you to look at it.`;
@@ -558,6 +621,9 @@ function reportSentence(kind: 'completion_ready' | 'completed' | 'failed' | 'can
     case 'cancelled':
       return `The task I started${label} was cancelled.`;
     case 'needs_input':
+      // Say what it waits for when Kookr knows; "needs you" alone sends the operator looking for the reason.
+      if (waitsFor === 'question') return `The task I started${label} is waiting on a question.`;
+      if (waitsFor === 'permission') return `The task I started${label} is waiting for a permission.`;
       return `The task I started${label} needs you.`;
   }
 }

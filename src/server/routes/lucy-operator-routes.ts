@@ -20,6 +20,7 @@ import {
   LUCY_LAUNCH_CONFIRM_PATH,
   LUCY_LAUNCH_DECLINE_PATH,
 } from '../../shared/contracts/lucy-launch.js';
+import { LUCY_ACTION_CONFIRM_PATH, LUCY_ACTION_DECLINE_PATH } from '../../shared/contracts/lucy-action.js';
 import type { LucyOperatorService } from '../lucy-operator/service.js';
 
 export interface LucyOperatorRouteDeps {
@@ -134,6 +135,31 @@ export function registerLucyOperatorRoutes(app: Hono, deps: LucyOperatorRouteDep
   app.post(LUCY_LAUNCH_CONFIRM_PATH, launchHandler('confirm'));
   app.post(LUCY_LAUNCH_DECLINE_PATH, launchHandler('decline'));
   app.post(LUCY_LAUNCH_CANCEL_PATH, launchHandler('cancel'));
+
+  // Confirm or decline a proposal to act on an existing task: answer its question, send it a reply, close it.
+  // The body is the same as for a launch, and names the conversation and the proposal and nothing else: what is
+  // sent or closed is what the server held when it made the card, checked again against the task and the question
+  // at this moment. There is no cancel route: these never run by themselves, so there is no countdown to stop.
+  const actionHandler = (act: 'confirm' | 'decline') =>
+    async (c: Context) => {
+      const controller = deps.lucyOperator?.service?.actions;
+      if (!controller) {
+        return c.json(refuse('lucy_operator_disabled', 'Lucy acting on tasks (answer, reply, close) is off on this server: Lucy\'s conversation is off, or KOOKR_LUCY_LAUNCH is set to 0.'), 404);
+      }
+      let body: unknown;
+      try {
+        body = await c.req.json();
+      } catch {
+        return c.json(refuse('bad_request', 'The request body must be JSON: { "conversationId": string, "proposalId": string }.'), 400);
+      }
+      const { conversationId, proposalId } = (typeof body === 'object' && body !== null ? body : {}) as { conversationId?: unknown; proposalId?: unknown };
+      if (typeof conversationId !== 'string' || !LUCY_CONVERSATION_ID_RE.test(conversationId) || typeof proposalId !== 'string' || !proposalId || proposalId.length > 80) {
+        return c.json(refuse('bad_request', '"conversationId" and "proposalId" are required.'), 400);
+      }
+      return c.json(act === 'confirm' ? await controller.confirm(conversationId, proposalId, 'click') : controller.decline(conversationId, proposalId));
+    };
+  app.post(LUCY_ACTION_CONFIRM_PATH, actionHandler('confirm'));
+  app.post(LUCY_ACTION_DECLINE_PATH, actionHandler('decline'));
 
   // Lucy's voice for the end of a task she launched (issue #3676). Like the ask route, the text is
   // the server's own sentence for that task; nothing the browser sends is spoken.

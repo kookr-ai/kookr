@@ -1613,6 +1613,72 @@ describe('useLucyLive', () => {
       });
     });
 
+    // Her words go into the conversation thread as they are shown (`useThreadSync.ts`). A question of which
+    // nothing was heard is said again later, or played as a clip, and each of those writes it in the thread:
+    // shown before it was heard, it would be there twice.
+    describe('a question\u2019s words are shown only once she has begun to say it', () => {
+      const QUESTION = 'The task Cleanup needs your input. When should I run it?';
+
+      test('held behind a clip it shows nothing; given back when Talk is switched off, nothing of it was ever shown', async () => {
+        const clipFetcher = vi.fn(async () => new Response('{}', { status: 503 })) as unknown as typeof fetch;
+        const ws = await talkOn();
+        await act(async () => { await announceAsk(ASK, { fetcher: clipFetcher }); });
+        const shown: string[] = [];
+        let releaseClip: () => void = () => undefined;
+        act(() => { releaseClip = clipStarted({ setVolume: () => undefined, stop: () => { releaseClip(); } }); });
+        await serverReadsIt(ws);
+        shown.push(latest.lucyText);
+        expect(sources).toHaveLength(0); // its audio waits for the clip to end
+        await act(async () => { latest.setEnabled(false); });
+        await settle();
+        shown.push(latest.lucyText);
+        expect(clipFetcher).toHaveBeenCalledOnce(); // given back: the dashboard plays it as a clip
+        expect(shown).toEqual(['', '']);
+        act(() => { releaseClip(); });
+      });
+
+      test('held behind a clip it shows nothing; once the clip ends and she starts, all of it is shown', async () => {
+        const ws = await talkOn();
+        let releaseClip: () => void = () => undefined;
+        act(() => { releaseClip = clipStarted({ setVolume: () => undefined, stop: () => { releaseClip(); } }); });
+        await serverReadsIt(ws);
+        expect(latest.lucyText).toBe('');
+        act(() => { releaseClip(); });
+        await settle();
+        expect(sources.map((s) => s.buffer!.tag)).toEqual(['lucy-ask-1:0', 'lucy-ask-1:1']);
+        expect(latest.lucyText).toBe(QUESTION);
+        // A sentence that arrives after she began is shown as it arrives, like an answer's.
+        await act(async () => { ws.receive(sentence('lucy-ask-1', 2, 'Two choices are on my card.')); });
+        await settle();
+        expect(latest.lucyText).toBe(`${QUESTION} Two choices are on my card.`);
+      });
+
+      test('cut while its first sentence was still decoding (reported unplayed, so said again later) it was never shown', async () => {
+        const ws = await talkOn();
+        holdDecoding = new Set(['lucy-ask-1:0', 'lucy-ask-1:1']);
+        await serverReadsIt(ws);
+        expect(latest.lucyText).toBe('');
+        const processor = processors[processors.length - 1];
+        for (let i = 0; i < 40 && !sent.some((m) => m.type === 'speech_start'); i++) {
+          act(() => { processor.onaudioprocess?.({ inputBuffer: { getChannelData: () => frame(-15) } }); });
+        }
+        await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: lastTurnId() }); });
+        expect(sent.filter((m) => m.type === 'turn_unplayed')).toEqual([{ type: 'turn_unplayed', turnIds: ['lucy-ask-1'] }]);
+        expect(latest.lucyText).toBe('');
+      });
+
+      test('an answer to the operator is shown as its sentences arrive, heard or not', async () => {
+        const ws = await talkOn();
+        speakTurn();
+        const id = lastTurnId();
+        holdDecoding = new Set([`${id}:0`]);
+        await act(async () => { ws.receive(sentence(id, 0, 'All good.')); });
+        await settle();
+        expect(sources).toHaveLength(0);
+        expect(latest.lucyText).toBe('All good.');
+      });
+    });
+
     test('with Talk off again the question goes back to the clip path', async () => {
       await talkOn();
       await act(async () => { latest.setEnabled(false); });

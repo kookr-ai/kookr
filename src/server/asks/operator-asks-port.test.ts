@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AnswerResult, AskChange, AskRecord, OperatorAskView } from '../../shared/contracts/asks.js';
+import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import type { Actor } from '../auth.js';
 import { createOperatorAsksPort, pushOperatorAsks, type DashboardConnectionLike } from './operator-asks-port.js';
 
@@ -15,7 +16,7 @@ function record(over: Partial<AskRecord> = {}): AskRecord {
   };
 }
 const view: OperatorAskView = {
-  id: 'a1b2c3d4e5f6', taskId: 't1', question: 'Ship it?', options: ['Yes', 'No'], allowText: true,
+  id: 'a1b2c3d4e5f6', taskId: 't1', taskEnded: false, question: 'Ship it?', options: ['Yes', 'No'], allowText: true,
   state: 'pending', createdAt: NOW - 1000, expiresAt: NOW + 60_000,
 };
 
@@ -64,11 +65,19 @@ describe('pushOperatorAsks: who is told about a question', () => {
   });
 });
 
+describe('pushOperatorAsks without a change', () => {
+  it('sends the list and announces nothing', () => {
+    const owner = socket(OWNER);
+    expect(pushOperatorAsks([owner], [view], undefined)).toBe(1);
+    expect(owner.sent).toEqual([{ type: 'operatorAsks', asks: [view], serverNow: expect.any(Number) }]);
+  });
+});
+
 describe('createOperatorAsksPort', () => {
-  function port(result: AnswerResult, appendAudit = vi.fn(async () => undefined)) {
-    const service = { all: vi.fn(() => [record()]), answerFromDashboard: vi.fn(async () => result) };
+  function port(result: AnswerResult, appendAudit = vi.fn(async () => undefined), records: AskRecord[] = [record()], statuses: Record<string, TaskStatus> = { t1: 'inProgress' }) {
+    const service = { all: vi.fn(() => records), answerFromDashboard: vi.fn(async () => result) };
     const p = createOperatorAsksPort({
-      service, taskName: (id) => (id === 't1' ? 'Fix login' : undefined), auditLogPath: '/data/audit.jsonl', now: () => NOW, appendAudit,
+      service, taskName: (id) => (id === 't1' ? 'Fix login' : undefined), taskStatus: (id) => statuses[id], auditLogPath: '/data/audit.jsonl', now: () => NOW, appendAudit,
     });
     return { port: p, service, appendAudit };
   }
@@ -77,6 +86,30 @@ describe('createOperatorAsksPort', () => {
   it('lists the questions as the dashboard shows them', () => {
     const { port: p } = port({ ok: true, ask: answered });
     expect(p.list()).toEqual([{ ...view, taskName: 'Fix login' }]);
+  });
+
+  describe('listAfterTaskOutcome: re-sending the list when a task with a waiting question ends', () => {
+    const ok = { ok: true, ask: answered } as const;
+
+    it('returns the list, with the question marked as ended, when its task has finished', () => {
+      const { port: p } = port(ok, undefined, [record()], { t1: 'completed' });
+      expect(p.listAfterTaskOutcome('t1')).toEqual([{ ...view, taskName: 'Fix login', taskEnded: true }]);
+    });
+
+    it('returns nothing when the task is still running (an outcome such as "ready for review")', () => {
+      const { port: p } = port(ok, undefined, [record()], { t1: 'inProgress' });
+      expect(p.listAfterTaskOutcome('t1')).toBeUndefined();
+    });
+
+    it('returns nothing when the task that ended has no pending question', () => {
+      const closed = record({ state: 'answered', resolvedAt: NOW });
+      expect(port(ok, undefined, [closed], { t1: 'completed' }).port.listAfterTaskOutcome('t1')).toBeUndefined();
+      expect(port(ok, undefined, [record()], { t1: 'completed', t2: 'completed' }).port.listAfterTaskOutcome('t2')).toBeUndefined();
+    });
+
+    it('returns nothing for a task that no longer exists', () => {
+      expect(port(ok, undefined, [record()], {}).port.listAfterTaskOutcome('t1')).toBeUndefined();
+    });
   });
 
   it('records an accepted answer in the audit log without the answer text', async () => {
@@ -88,6 +121,12 @@ describe('createOperatorAsksPort', () => {
       askId: 'a1b2c3d4e5f6', taskId: 't1', choice: 'text', outcome: 'recorded', taskDelivery: 'delivered',
     });
     expect(JSON.stringify(appendAudit.mock.calls)).not.toContain('secret plan');
+  });
+
+  it('names who sent the answer when it was not the owner pressing a button', async () => {
+    const { port: p, appendAudit } = port({ ok: true, ask: answered });
+    await p.answer({ askId: 'a1b2c3d4e5f6', optionIndex: 1 }, { actor: 'lucy-operator' });
+    expect(appendAudit).toHaveBeenCalledWith('/data/audit.jsonl', expect.objectContaining({ type: 'ask.dashboardAnswer', actor: 'lucy-operator', choice: 'option:1', outcome: 'recorded' }));
   });
 
   it('records a refused answer too, with the reason and the button pressed', async () => {

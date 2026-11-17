@@ -51,7 +51,7 @@ vi.mock('../audio/clip-playback.js', async (importOriginal) => {
   };
 });
 
-import { AvatarDock, BUBBLE_CARD_GAP, BUBBLE_CARD_HEIGHT, BUBBLE_CARD_WIDTH } from './AvatarDock.js';
+import { AvatarDock, COLUMN_WIDTH_PROPERTY } from './AvatarDock.js';
 import { stopReplay } from '../audio/clip-playback.js';
 import { __resetLastClipForTests, captureLastClip, markClipHeard } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
@@ -62,26 +62,26 @@ import {
   emitSpeechPlaying,
 } from '../audio/speech-bus.js';
 import {
-  AVATAR_BUBBLE_SIZE,
-  AVATAR_PANEL_HEIGHT,
+  AVATAR_COLUMN_DEFAULT_WIDTH,
+  AVATAR_COLUMN_MAX_WIDTH,
+  AVATAR_COLUMN_MIN_WIDTH,
   AVATAR_PANEL_KEY,
-  AVATAR_PANEL_MARGIN,
-  AVATAR_PANEL_WIDTH,
   __resetAvatarPanelPrefsForTests,
-  defaultAvatarPanelPosition,
 } from '../store/avatar-panel-prefs.js';
+import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
+import { __resetLucyTypedForTests } from './LucyTypedInput.js';
 
 // Stands in for the speaker button that is talking.
 const SPEAKER = { name: 'a speaker button' };
-const VIEWPORT = { width: 1024, height: 768 };
-const FAR_X = VIEWPORT.width - AVATAR_PANEL_WIDTH - AVATAR_PANEL_MARGIN;
-const FAR_Y = VIEWPORT.height - AVATAR_PANEL_HEIGHT - AVATAR_PANEL_MARGIN;
+// Wide enough to stay docked beside the page (the page keeps 1000 px; the column may then be 320 to 440 px).
+const VIEWPORT = { width: 1440, height: 900 };
+const rootWidth = (): string => document.documentElement.style.getPropertyValue(COLUMN_WIDTH_PROPERTY);
 
-function savedPrefs(): { enabled: boolean; minimized: boolean; position: { x: number; y: number } | null } {
+function savedPrefs(): { enabled: boolean; minimized: boolean; width?: number; position?: unknown } {
   return JSON.parse(localStorage.getItem(AVATAR_PANEL_KEY) ?? 'null');
 }
 
-function pointer(type: string, init: { clientX: number; clientY: number; button?: number }): Event {
+function pointer(type: string, init: { clientX: number; clientY: number; button?: number; buttons?: number }): Event {
   // jsdom's PointerEvent support varies by version; a MouseEvent carrying a pointerId is all the dock reads.
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init });
   Object.defineProperty(event, 'pointerId', { value: 1 });
@@ -107,10 +107,10 @@ describe('AvatarDock', () => {
     });
   }
 
-  function startWith(prefs: { minimized?: boolean; position?: { x: number; y: number } | null }): void {
+  function startWith(prefs: { minimized?: boolean; width?: number; position?: { x: number; y: number } | null }): void {
     localStorage.setItem(
       AVATAR_PANEL_KEY,
-      JSON.stringify({ enabled: true, minimized: false, position: null, ...prefs }),
+      JSON.stringify({ enabled: true, minimized: false, ...prefs }),
     );
     __resetAvatarPanelPrefsForTests();
   }
@@ -130,6 +130,8 @@ describe('AvatarDock', () => {
     __resetSoundPreferenceForTests();
     __resetSpeechBusForTests();
     __resetAvatarPanelPrefsForTests();
+    __resetLucyConversationForTests();
+    __resetLucyTypedForTests();
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: VIEWPORT.width });
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: VIEWPORT.height });
     // jsdom has no pointer capture.
@@ -147,25 +149,37 @@ describe('AvatarDock', () => {
     __resetSoundPreferenceForTests();
     __resetSpeechBusForTests();
     __resetAvatarPanelPrefsForTests();
+    __resetLucyConversationForTests();
+    __resetLucyTypedForTests();
+    document.documentElement.style.removeProperty(COLUMN_WIDTH_PROPERTY);
     HTMLElement.prototype.setPointerCapture = realSetPointerCapture;
     document.body.innerHTML = '';
   });
 
-  test('opens in the bottom-right corner with one 3D view and an idle hint', () => {
+  test('opens as a docked column of the default width with one 3D view and an idle hint', () => {
     startWith({});
     render();
 
-    const corner = defaultAvatarPanelPosition(VIEWPORT);
-    // Its right and bottom edges sit in the last tenth of the screen.
-    expect(corner.x + AVATAR_PANEL_WIDTH).toBeGreaterThan(VIEWPORT.width * 0.9);
-    expect(corner.y + AVATAR_PANEL_HEIGHT).toBeGreaterThan(VIEWPORT.height * 0.9);
-    expect(dock()!.style.left).toBe(`${corner.x}px`);
-    expect(dock()!.style.top).toBe(`${corner.y}px`);
+    expect(dock()!.style.width).toBe(`${AVATAR_COLUMN_DEFAULT_WIDTH}px`);
+    // Docked and full height by the stylesheet; nothing places it by coordinates any more.
+    expect(dock()!.style.left).toBe('');
+    expect(dock()!.style.top).toBe('');
+    expect(dock()!.classList.contains('avatar-dock-sheet')).toBe(false);
     expect(dock()!.getAttribute('data-avatar-state')).toBe('idle');
-    expect(hint()!.textContent).toContain('speaker button');
-    expect(container.querySelector('[aria-label="Recent messages"]')).toBeNull();
+    expect(hint()!.textContent).toContain('Hi, I’m Lucy.');
+    expect(container.querySelector('[aria-label="Conversation with Lucy"]')).not.toBeNull();
     expect(stages).toHaveLength(1);
     expect(stages[0].setState).toHaveBeenLastCalledWith('idle');
+  });
+
+  test('prefs saved by the old floating window (with a position) load without error and open the column', () => {
+    localStorage.setItem(AVATAR_PANEL_KEY, '{"enabled":true,"minimized":false,"position":{"x":1945,"y":804}}');
+    __resetAvatarPanelPrefsForTests();
+    render();
+
+    expect(dock()).not.toBeNull();
+    expect(dock()!.style.width).toBe(`${AVATAR_COLUMN_DEFAULT_WIDTH}px`);
+    expect(rootWidth()).toBe(`${AVATAR_COLUMN_DEFAULT_WIDTH}px`);
   });
 
   test('follows a spoken summary: preparing, then speaking with its text and loudness tap, then ready', () => {
@@ -267,123 +281,235 @@ describe('AvatarDock', () => {
     expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy, speaking');
   });
 
-  test('dragging the title bar moves the window and the drop position is remembered', () => {
-    startWith({ position: { x: 100, y: 100 } });
-    render();
-    const header = container.querySelector<HTMLElement>('.avatar-dock-header')!;
+  describe('the column: room on the page, resizing, sheet', () => {
+    const resizer = () => container.querySelector<HTMLElement>('[data-testid="avatar-column-resizer"]');
+    const setWindowWidth = (width: number): void => {
+      act(() => {
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+        window.dispatchEvent(new Event('resize'));
+      });
+    };
+    const dragFrom = (fromX: number, toX: number): void => {
+      act(() => { resizer()!.dispatchEvent(pointer('pointerdown', { clientX: fromX, clientY: 300 })); });
+      act(() => { window.dispatchEvent(pointer('pointermove', { clientX: toX, clientY: 300, buttons: 1 })); });
+      act(() => { window.dispatchEvent(pointer('pointerup', { clientX: toX, clientY: 300 })); });
+    };
 
-    act(() => {
-      header.dispatchEvent(pointer('pointerdown', { clientX: 150, clientY: 110 }));
-    });
-    act(() => {
-      header.dispatchEvent(pointer('pointermove', { clientX: 350, clientY: 260 }));
-    });
-    expect(dock()!.style.left).toBe('300px');
-    expect(dock()!.style.top).toBe('250px');
-    // Nothing is saved until the drop.
-    expect(savedPrefs().position).toEqual({ x: 100, y: 100 });
+    test('while open it tells the page how much room it takes; minimising, switching off and unmounting give the room back', () => {
+      startWith({});
+      render();
+      expect(rootWidth()).toBe('380px');
 
-    act(() => {
-      header.dispatchEvent(pointer('pointerup', { clientX: 350, clientY: 260 }));
-    });
-    expect(savedPrefs().position).toEqual({ x: 300, y: 250 });
-    expect(dock()!.style.left).toBe('300px');
-  });
+      act(() => button('Minimise Lucy')!.click());
+      expect(rootWidth()).toBe('');
 
-  test('pressing and releasing the title bar without moving saves nothing', () => {
-    startWith({});
-    render();
-    const header = container.querySelector<HTMLElement>('.avatar-dock-header')!;
+      act(() => bubble()!.click());
+      expect(rootWidth()).toBe('380px');
 
-    act(() => {
-      header.dispatchEvent(pointer('pointerdown', { clientX: 800, clientY: 400 }));
-    });
-    act(() => {
-      header.dispatchEvent(pointer('pointerup', { clientX: 800, clientY: 400 }));
+      act(() => root!.unmount());
+      root = null;
+      expect(rootWidth()).toBe('');
     });
 
-    // Still "never moved", so the window keeps following its default corner when the browser is resized.
-    expect(savedPrefs().position).toBeNull();
-  });
-
-  test('a drag past the edge of the screen stops at the margin', () => {
-    startWith({ position: { x: 100, y: 100 } });
-    render();
-    const header = container.querySelector<HTMLElement>('.avatar-dock-header')!;
-
-    act(() => {
-      header.dispatchEvent(pointer('pointerdown', { clientX: 150, clientY: 110 }));
-    });
-    act(() => {
-      header.dispatchEvent(pointer('pointermove', { clientX: 5000, clientY: -5000 }));
-    });
-    act(() => {
-      header.dispatchEvent(pointer('pointerup', { clientX: 5000, clientY: -5000 }));
+    test('a panel that starts minimised leaves the page its full width', () => {
+      startWith({ minimized: true });
+      render();
+      expect(rootWidth()).toBe('');
+      expect(dock()).toBeNull();
     });
 
-    expect(savedPrefs().position).toEqual({ x: FAR_X, y: AVATAR_PANEL_MARGIN });
-  });
-
-  test('the right mouse button does not start a drag', () => {
-    startWith({ position: { x: 100, y: 100 } });
-    render();
-    const header = container.querySelector<HTMLElement>('.avatar-dock-header')!;
-
-    act(() => {
-      header.dispatchEvent(pointer('pointerdown', { clientX: 150, clientY: 110, button: 2 }));
-    });
-    act(() => {
-      header.dispatchEvent(pointer('pointermove', { clientX: 400, clientY: 400 }));
+    test('a saved width is used, and kept inside the limits', () => {
+      setWindowWidth(2000);
+      startWith({ width: 450 });
+      render();
+      expect(dock()!.style.width).toBe('450px');
+      expect(rootWidth()).toBe('450px');
     });
 
-    expect(dock()!.style.left).toBe('100px');
-  });
+    test('the left edge is a separator that widens the column when dragged to the left, and the width is saved when the drag ends', () => {
+      startWith({});
+      render();
+      expect(resizer()!.getAttribute('role')).toBe('separator');
+      expect(resizer()!.getAttribute('aria-valuenow')).toBe('380');
+      expect(resizer()!.getAttribute('aria-valuemin')).toBe(String(AVATAR_COLUMN_MIN_WIDTH));
+      // A 1440 px window: the page keeps 1000 px, so the column may be at most 440.
+      expect(resizer()!.getAttribute('aria-valuemax')).toBe('440');
 
-  test('pressing a title-bar button does not start a drag', () => {
-    startWith({ position: { x: 100, y: 100 } });
-    render();
+      act(() => { resizer()!.dispatchEvent(pointer('pointerdown', { clientX: 644, clientY: 300 })); });
+      act(() => { window.dispatchEvent(pointer('pointermove', { clientX: 594, clientY: 300, buttons: 1 })); });
+      // Live while dragging, the page follows, and nothing is saved yet.
+      expect(dock()!.style.width).toBe('430px');
+      expect(rootWidth()).toBe('430px');
+      expect(savedPrefs().width).toBeUndefined();
 
-    act(() => {
-      button('Minimise Lucy')!.dispatchEvent(pointer('pointerdown', { clientX: 150, clientY: 110 }));
-    });
-    act(() => {
-      container
-        .querySelector('.avatar-dock-header')!
-        .dispatchEvent(pointer('pointermove', { clientX: 400, clientY: 400 }));
-    });
-
-    expect(dock()!.style.left).toBe('100px');
-  });
-
-  test('the move button sends the window round the four corners without dragging', () => {
-    startWith({});
-    render();
-    const seen: Array<{ x: number; y: number } | null> = [];
-    for (let i = 0; i < 4; i += 1) {
-      act(() => button('Move Lucy to the next corner')!.click());
-      seen.push(savedPrefs().position);
-    }
-
-    expect(seen).toEqual([
-      { x: AVATAR_PANEL_MARGIN, y: FAR_Y },
-      { x: AVATAR_PANEL_MARGIN, y: AVATAR_PANEL_MARGIN },
-      { x: FAR_X, y: AVATAR_PANEL_MARGIN },
-      { x: FAR_X, y: FAR_Y },
-    ]);
-    expect(dock()!.style.left).toBe(`${FAR_X}px`);
-  });
-
-  test('a window saved on a bigger screen is pulled back in when the browser shrinks', () => {
-    startWith({ position: { x: 700, y: 400 } });
-    render();
-    expect(dock()!.style.left).toBe('700px');
-
-    act(() => {
-      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
-      window.dispatchEvent(new Event('resize'));
+      act(() => { window.dispatchEvent(pointer('pointerup', { clientX: 594, clientY: 300 })); });
+      expect(savedPrefs().width).toBe(430);
+      expect(dock()!.style.width).toBe('430px');
     });
 
-    expect(dock()!.style.left).toBe(`${600 - AVATAR_PANEL_WIDTH - AVATAR_PANEL_MARGIN}px`);
+    test('dragging to the right makes it narrower, and the width stops at the limits; the widest leaves the page 1000 px', () => {
+      startWith({});
+      render();
+      dragFrom(644, 5000);
+      expect(savedPrefs().width).toBe(AVATAR_COLUMN_MIN_WIDTH);
+      dragFrom(644, -5000);
+      // A 1440 px window: the page keeps 1000 px, so 440 is as wide as the column goes.
+      expect(savedPrefs().width).toBe(440);
+      expect(rootWidth()).toBe('440px');
+      expect(resizer()!.getAttribute('aria-valuemax')).toBe('440');
+    });
+
+    test('in a wider window the same drag can reach the full 560 px', () => {
+      setWindowWidth(1920);
+      startWith({});
+      render();
+      dragFrom(1500, -5000);
+      expect(savedPrefs().width).toBe(AVATAR_COLUMN_MAX_WIDTH);
+      expect(rootWidth()).toBe(`${AVATAR_COLUMN_MAX_WIDTH}px`);
+      expect(resizer()!.getAttribute('aria-valuemax')).toBe('560');
+    });
+
+    test('a saved width too wide for this window is capped so the page keeps 1000 px, the cap is not saved, and the wide width comes back in a wider window', () => {
+      startWith({ width: 560 });
+      render();
+      expect(dock()!.style.width).toBe('440px');
+      expect(rootWidth()).toBe('440px');
+      expect(window.innerWidth - 440).toBe(1000);
+      expect(savedPrefs().width).toBe(560);
+      setWindowWidth(2000);
+      expect(dock()!.style.width).toBe('560px');
+      expect(rootWidth()).toBe('560px');
+      setWindowWidth(1320);
+      expect(dock()!.style.width).toBe('320px');
+      expect(savedPrefs().width).toBe(560);
+    });
+
+    test('a press on the edge without moving saves nothing, and the right mouse button does not drag', () => {
+      startWith({});
+      render();
+      act(() => { resizer()!.dispatchEvent(pointer('pointerdown', { clientX: 644, clientY: 300 })); });
+      act(() => { window.dispatchEvent(pointer('pointermove', { clientX: 643, clientY: 300, buttons: 1 })); });
+      act(() => { window.dispatchEvent(pointer('pointerup', { clientX: 643, clientY: 300 })); });
+      expect(savedPrefs().width).toBeUndefined();
+
+      act(() => { resizer()!.dispatchEvent(pointer('pointerdown', { clientX: 644, clientY: 300, button: 2 })); });
+      act(() => { window.dispatchEvent(pointer('pointermove', { clientX: 400, clientY: 300, buttons: 2 })); });
+      expect(dock()!.style.width).toBe('380px');
+    });
+
+    test('with the keyboard, ArrowLeft widens and ArrowRight narrows, Shift takes bigger steps, Home and End jump to the limits', () => {
+      setWindowWidth(2000);
+      startWith({});
+      render();
+      const press = (key: string, shiftKey = false): void => {
+        act(() => { resizer()!.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true })); });
+      };
+      press('ArrowLeft');
+      expect(savedPrefs().width).toBe(396);
+      press('ArrowRight');
+      press('ArrowRight');
+      expect(savedPrefs().width).toBe(364);
+      press('ArrowLeft', true);
+      expect(savedPrefs().width).toBe(412);
+      press('Home');
+      expect(savedPrefs().width).toBe(AVATAR_COLUMN_MIN_WIDTH);
+      press('ArrowRight');
+      expect(savedPrefs().width).toBe(AVATAR_COLUMN_MIN_WIDTH);
+      press('End');
+      expect(savedPrefs().width).toBe(AVATAR_COLUMN_MAX_WIDTH);
+      expect(rootWidth()).toBe(`${AVATAR_COLUMN_MAX_WIDTH}px`);
+      expect(resizer()!.getAttribute('aria-valuenow')).toBe(String(AVATAR_COLUMN_MAX_WIDTH));
+    });
+
+    test('End stops where the page would drop below 1000 px', () => {
+      startWith({}); // a 1440 px window
+      render();
+      act(() => { resizer()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })); });
+      expect(savedPrefs().width).toBe(440);
+      act(() => { resizer()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true })); });
+      expect(savedPrefs().width).toBe(440);
+    });
+
+    test('the header has no dragging and no "move to the next corner" button any more', () => {
+      startWith({});
+      render();
+      expect(button('Move Lucy to the next corner')).toBeNull();
+      act(() => {
+        container.querySelector('.avatar-dock-header')!.dispatchEvent(pointer('pointerdown', { clientX: 900, clientY: 10 }));
+      });
+      act(() => { window.dispatchEvent(pointer('pointermove', { clientX: 100, clientY: 400, buttons: 1 })); });
+      expect(dock()!.style.width).toBe('380px');
+      expect(dock()!.style.left).toBe('');
+    });
+
+    test('the mode follows the window: a sheet at 768 px and below, floating over the page from 769 to 1319 px, docked from 1320 px', () => {
+      startWith({});
+      setWindowWidth(768);
+      render();
+      expect(dock()!.getAttribute('data-column-mode')).toBe('sheet');
+      expect(dock()!.classList.contains('avatar-dock-sheet')).toBe(true);
+      expect(dock()!.style.width).toBe('');
+      expect(rootWidth()).toBe('');
+      expect(resizer()).toBeNull();
+
+      // Minimising still brings the bubble, and the page was never narrowed.
+      act(() => button('Minimise Lucy')!.click());
+      expect(bubble()).not.toBeNull();
+      expect(rootWidth()).toBe('');
+      act(() => bubble()!.click());
+
+      setWindowWidth(769);
+      expect(dock()!.getAttribute('data-column-mode')).toBe('overlay');
+      setWindowWidth(1319);
+      expect(dock()!.getAttribute('data-column-mode')).toBe('overlay');
+      setWindowWidth(1320);
+      expect(dock()!.getAttribute('data-column-mode')).toBe('docked');
+      expect(dock()!.style.width).toBe('320px');
+      expect(rootWidth()).toBe('320px');
+      setWindowWidth(1440);
+      expect(dock()!.style.width).toBe('380px');
+      expect(rootWidth()).toBe('380px');
+      expect(resizer()).not.toBeNull();
+    });
+
+    test('floating over the page (a 1280 px window): the page keeps its full width, the column keeps its width and its resizer, minimise brings the bubble', () => {
+      startWith({ width: 500 });
+      setWindowWidth(1280);
+      render();
+      expect(dock()!.getAttribute('data-column-mode')).toBe('overlay');
+      expect(dock()!.classList.contains('avatar-dock-sheet')).toBe(false);
+      expect(dock()!.style.width).toBe('500px');
+      // Nothing is taken from the page.
+      expect(rootWidth()).toBe('');
+      expect(resizer()).not.toBeNull();
+      expect(resizer()!.getAttribute('aria-valuemax')).toBe('560');
+
+      // The resizer still works; a drag is saved, and the page still gets nothing taken.
+      act(() => { resizer()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', shiftKey: true, bubbles: true, cancelable: true })); });
+      expect(savedPrefs().width).toBe(548);
+      expect(dock()!.style.width).toBe('548px');
+      expect(rootWidth()).toBe('');
+
+      act(() => button('Minimise Lucy')!.click());
+      expect(dock()).toBeNull();
+      expect(bubble()).not.toBeNull();
+      expect(rootWidth()).toBe('');
+    });
+
+    test('floating over the page, the column is never wider than the window', () => {
+      startWith({ width: 560 });
+      setWindowWidth(800);
+      render();
+      expect(dock()!.getAttribute('data-column-mode')).toBe('overlay');
+      expect(dock()!.style.width).toBe('560px');
+    });
+
+    test('the bubble has no position of its own: the stylesheet puts it in the bottom-right corner', () => {
+      startWith({ minimized: true, position: { x: 700, y: 400 } });
+      render();
+      expect(bubble()!.style.left).toBe('');
+      expect(bubble()!.style.top).toBe('');
+    });
   });
 
   test('minimising in another browser tab is followed here', () => {
@@ -395,7 +521,7 @@ describe('AvatarDock', () => {
       window.dispatchEvent(
         new StorageEvent('storage', {
           key: 'some-other-key',
-          newValue: JSON.stringify({ enabled: true, minimized: true, position: null }),
+          newValue: JSON.stringify({ enabled: true, minimized: true }),
         }),
       );
     });
@@ -405,7 +531,7 @@ describe('AvatarDock', () => {
       window.dispatchEvent(
         new StorageEvent('storage', {
           key: AVATAR_PANEL_KEY,
-          newValue: JSON.stringify({ enabled: true, minimized: true, position: null }),
+          newValue: JSON.stringify({ enabled: true, minimized: true }),
         }),
       );
     });
@@ -447,7 +573,7 @@ describe('AvatarDock', () => {
     };
     const panelActions = () => tracked.filter((e) => e.type === 'lucy_panel_action');
 
-    test('the open panel has a "Replay last message" button next to move and minimise, unavailable until there is a clip', () => {
+    test('the open panel has a "Replay last message" button next to minimise, unavailable until there is a clip', () => {
       startWith({});
       render();
 
@@ -459,7 +585,6 @@ describe('AvatarDock', () => {
       const header = container.querySelector('.avatar-dock-header')!;
       expect(Array.from(header.querySelectorAll('button')).map((b) => b.getAttribute('aria-label'))).toEqual([
         'Replay last message',
-        'Move Lucy to the next corner',
         'Minimise Lucy',
       ]);
 
@@ -704,29 +829,22 @@ describe('AvatarDock', () => {
       expect(replayButton()).not.toBeNull();
     });
 
-    test('records minimise, restore and move (button and drag) as panel actions, with the clip id once there is one', () => {
+    test('records minimise and restore as panel actions, with the clip id once there is one; resizing is not recorded', () => {
       startWith({});
       render();
-      act(() => button('Move Lucy to the next corner')!.click());
       act(() => button('Minimise Lucy')!.click());
       act(() => bubble()!.click());
       playClip();
       act(() => button('Minimise Lucy')!.click());
       act(() => bubble()!.click());
-
-      const header = container.querySelector('.avatar-dock-header')!;
-      const from = { clientX: dock()!.offsetLeft + 20, clientY: dock()!.offsetTop + 10 };
-      act(() => { header.dispatchEvent(pointer('pointerdown', from)); });
-      act(() => { header.dispatchEvent(pointer('pointermove', { clientX: from.clientX - 100, clientY: from.clientY - 60 })); });
-      act(() => { header.dispatchEvent(pointer('pointerup', { clientX: from.clientX - 100, clientY: from.clientY - 60 })); });
+      const resizer = container.querySelector<HTMLElement>('[data-testid="avatar-column-resizer"]')!;
+      act(() => { resizer.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })); });
 
       expect(panelActions()).toEqual([
-        { type: 'lucy_panel_action', action: 'move' },
         { type: 'lucy_panel_action', action: 'minimize' },
         { type: 'lucy_panel_action', action: 'restore' },
         { type: 'lucy_panel_action', action: 'minimize', clipId: 'c1' },
         { type: 'lucy_panel_action', action: 'restore', clipId: 'c1' },
-        { type: 'lucy_panel_action', action: 'move', clipId: 'c1' },
       ]);
     });
   });
@@ -858,81 +976,11 @@ describe('AvatarDock', () => {
       expect(card()).not.toBeNull();
     });
 
-    test('the card sits above the bubble with its right edge on the bubble\'s right edge', () => {
+    test('the card has no coordinates of its own: the stylesheet puts it above the bubble in the bottom-right corner', () => {
       startWith({ minimized: true });
       render(2);
       hover();
-      const bubbleLeft = parseFloat(bubble()!.style.left);
-      const bubbleTop = parseFloat(bubble()!.style.top);
-      expect(card()!.style.bottom).toBe(`${VIEWPORT.height - bubbleTop + BUBBLE_CARD_GAP}px`);
-      expect(card()!.style.right).toBe(`${VIEWPORT.width - (bubbleLeft + AVATAR_BUBBLE_SIZE)}px`);
-      expect(card()!.style.top).toBe('');
-      expect(card()!.style.left).toBe('');
-    });
-
-    test('in a tiny window it drops below the bubble and lines up with its left edge instead of leaving the screen', () => {
-      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 200 });
-      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 150 });
-      startWith({ minimized: true });
-      render(2);
-      hover();
-      const bubbleLeft = parseFloat(bubble()!.style.left);
-      const bubbleTop = parseFloat(bubble()!.style.top);
-      expect(card()!.style.top).toBe(`${bubbleTop + AVATAR_BUBBLE_SIZE + BUBBLE_CARD_GAP}px`);
-      expect(card()!.style.left).toBe(`${bubbleLeft}px`);
-      expect(card()!.style.bottom).toBe('');
-      expect(card()!.style.right).toBe('');
-    });
-
-    // The bubble is pushed into the bottom-right corner of a small window, so its position is set by the window size:
-    // the smallest window in which the card still fits above / to the left of the bubble is
-    //   height = margin + gap + card height + bubble + margin,  width = margin + card width + margin.
-    const FITS_ABOVE_HEIGHT = AVATAR_PANEL_MARGIN + BUBBLE_CARD_GAP + BUBBLE_CARD_HEIGHT + AVATAR_BUBBLE_SIZE + AVATAR_PANEL_MARGIN;
-    const FITS_RIGHT_WIDTH = AVATAR_PANEL_MARGIN + BUBBLE_CARD_WIDTH + AVATAR_PANEL_MARGIN;
-    const BIG = { width: 1024, height: 768 };
-
-    test.each([
-      ['above, right edges aligned', BIG.width, BIG.height, true, false],
-      ['below, right edges aligned', BIG.width, FITS_ABOVE_HEIGHT - 1, false, false],
-      ['above, left edges aligned', FITS_RIGHT_WIDTH - 1, BIG.height, true, true],
-      ['below, left edges aligned', FITS_RIGHT_WIDTH - 1, FITS_ABOVE_HEIGHT - 1, false, true],
-      ['above and right-aligned at exactly the margin (not one pixel less)', FITS_RIGHT_WIDTH, FITS_ABOVE_HEIGHT, true, false],
-    ])('card placement: %s', (_name, width, height, above, alignLeft) => {
-      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
-      Object.defineProperty(window, 'innerHeight', { configurable: true, value: height });
-      startWith({ minimized: true });
-      render(2);
-      hover();
-      const bubbleLeft = parseFloat(bubble()!.style.left);
-      const bubbleTop = parseFloat(bubble()!.style.top);
-      const style = card()!.style;
-      if (above) {
-        expect(bubbleTop - BUBBLE_CARD_GAP - BUBBLE_CARD_HEIGHT).toBeGreaterThanOrEqual(AVATAR_PANEL_MARGIN);
-        expect(style.bottom).toBe(`${height - bubbleTop + BUBBLE_CARD_GAP}px`);
-        expect(style.top).toBe('');
-      } else {
-        expect(bubbleTop - BUBBLE_CARD_GAP - BUBBLE_CARD_HEIGHT).toBeLessThan(AVATAR_PANEL_MARGIN);
-        expect(style.top).toBe(`${bubbleTop + AVATAR_BUBBLE_SIZE + BUBBLE_CARD_GAP}px`);
-        expect(style.bottom).toBe('');
-      }
-      if (alignLeft) {
-        expect(bubbleLeft + AVATAR_BUBBLE_SIZE - BUBBLE_CARD_WIDTH).toBeLessThan(AVATAR_PANEL_MARGIN);
-        expect(style.left).toBe(`${bubbleLeft}px`);
-        expect(style.right).toBe('');
-      } else {
-        expect(bubbleLeft + AVATAR_BUBBLE_SIZE - BUBBLE_CARD_WIDTH).toBeGreaterThanOrEqual(AVATAR_PANEL_MARGIN);
-        expect(style.right).toBe(`${width - (bubbleLeft + AVATAR_BUBBLE_SIZE)}px`);
-        expect(style.left).toBe('');
-      }
-    });
-
-    test('the exact-margin case really sits on the boundary (card edge == margin), so the test above can tell >= from >', () => {
-      Object.defineProperty(window, 'innerWidth', { configurable: true, value: FITS_RIGHT_WIDTH });
-      Object.defineProperty(window, 'innerHeight', { configurable: true, value: FITS_ABOVE_HEIGHT });
-      startWith({ minimized: true });
-      render(2);
-      expect(parseFloat(bubble()!.style.top) - BUBBLE_CARD_GAP - BUBBLE_CARD_HEIGHT).toBe(AVATAR_PANEL_MARGIN);
-      expect(parseFloat(bubble()!.style.left) + AVATAR_BUBBLE_SIZE - BUBBLE_CARD_WIDTH).toBe(AVATAR_PANEL_MARGIN);
+      for (const edge of ['top', 'left', 'right', 'bottom'] as const) expect(card()!.style[edge]).toBe('');
     });
 
     test('opening the panel while hovering does not leave the card stuck on for the next minimise', () => {
@@ -954,7 +1002,7 @@ describe('AvatarDock', () => {
     });
   });
 
-  describe('the message list', () => {
+  describe('spoken messages in the conversation thread', () => {
     const replayButtons = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="avatar-msg-replay"]'));
     const headerReplay = () => container.querySelector<HTMLButtonElement>('[data-testid="avatar-replay"]')!;
     const panelActions = () => tracked.filter((e) => e.type === 'lucy_panel_action');
@@ -973,21 +1021,45 @@ describe('AvatarDock', () => {
       vi.useRealTimers();
     });
 
-    test('shows the last three messages, newest first, as a labelled list; older ones are dropped', () => {
+    test('every spoken message is an entry of the thread, oldest first, marked as said aloud; only the last three keep audio', () => {
       startWith({});
       render();
       clip('a', 'first');
       clip('b', 'second');
       clip('c', 'third');
-      const list = container.querySelector('[role="region"][aria-label="Recent messages"] > ol')!;
-      expect(list).not.toBeNull();
-      expect(textsOf()).toEqual(['third', 'second', 'first']);
+      const log = container.querySelector('[role="log"][aria-label="Conversation with Lucy"]')!;
+      expect(log).not.toBeNull();
+      expect(log.getAttribute('aria-live')).toBe('off');
+      expect(log.querySelector('ol')).not.toBeNull();
+      expect(textsOf()).toEqual(['first', 'second', 'third']);
       expect(hint()).toBeNull();
+      expect(messages().every((li) => li.querySelector('[data-testid="avatar-msg-aloud"]')!.textContent === 'said aloud')).toBe(true);
+      expect(replayButtons()).toHaveLength(3);
 
       clip('d', 'fourth');
-      expect(textsOf()).toEqual(['fourth', 'third', 'second']);
-      expect(messages()[0].classList.contains('avatar-msg-newest')).toBe(true);
-      expect(messages()[1].classList.contains('avatar-msg-newest')).toBe(false);
+      // The oldest message lost its audio, not its text: it stays in the thread, without Replay and without an unheard marker.
+      expect(textsOf()).toEqual(['first', 'second', 'third', 'fourth']);
+      expect(replayButtons()).toHaveLength(3);
+      expect(messages()[0].querySelector('[data-testid="avatar-msg-replay"]')).toBeNull();
+      expect(messages()[0].querySelector('[data-testid="avatar-msg-unheard"]')).toBeNull();
+      expect(messages()[1].querySelector('[data-testid="avatar-msg-replay"]')).not.toBeNull();
+    });
+
+    test('a message that arrives is added once, even when the panel re-renders', () => {
+      startWith({});
+      render();
+      clip('a', 'first');
+      act(() => markClipHeard('a'));
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(textsOf()).toEqual(['first']);
+    });
+
+    test('a message that arrived while the panel was minimised is in the thread when it is opened', () => {
+      startWith({ minimized: true });
+      render();
+      clip('a', 'said while you were away');
+      act(() => bubble()!.click());
+      expect(textsOf()).toEqual(['said while you were away']);
     });
 
     test('each message has its subject and age, its full text, and "unheard" in words until it is heard', () => {
@@ -1015,7 +1087,7 @@ describe('AvatarDock', () => {
       act(() => {
         captureLastClip({ clipId: 'template', text: 'This task stopped unexpectedly.', usedFallback: true, audio: new ArrayBuffer(4), durationMs: 1000 });
       });
-      const [templateItem, modelItem] = messages();
+      const [modelItem, templateItem] = messages();
       const marker = templateItem.querySelector('[data-testid="avatar-msg-template"]')!;
       // Sighted users see the short word; a screen reader hears what it means, since the tooltip is mouse-only (issue #3859).
       expect(marker.querySelector('[aria-hidden="true"]')!.textContent).toBe('template');
@@ -1023,13 +1095,14 @@ describe('AvatarDock', () => {
       expect(modelItem.querySelector('[data-testid="avatar-msg-template"]')).toBeNull();
     });
 
-    test('a message without a subject shows only the time', () => {
+    test('a message without a subject shows only the said-aloud marker and the time', () => {
       startWith({});
       render();
       clip('a', 'No title here');
       const item = messages()[0];
       expect(item.querySelector('.avatar-msg-subject')).toBeNull();
-      expect(item.querySelector('.avatar-msg-sep')).toBeNull();
+      // Only the "said aloud" marker and the time, with one separator between them.
+      expect(item.querySelectorAll('.avatar-msg-sep')).toHaveLength(1);
       expect(item.querySelector('.avatar-msg-meta')!.textContent).toContain('just now');
       expect(item.querySelector('button')!.getAttribute('aria-label')).toBe('Replay message, just now');
     });
@@ -1050,8 +1123,8 @@ describe('AvatarDock', () => {
       act(() => vi.advanceTimersByTime(5 * 60_000));
       clip('b', 'second', 'UI refactor');
       expect(replayButtons().map((b) => b.getAttribute('aria-label'))).toEqual([
-        'Replay message about UI refactor, just now',
         'Replay message about Fix flaky test, 5 min ago',
+        'Replay message about UI refactor, just now',
       ]);
     });
 
@@ -1075,7 +1148,7 @@ describe('AvatarDock', () => {
       expect(vi.getTimerCount()).toBe(0);
       act(() => bubble()!.click());
       expect(vi.getTimerCount()).toBe(1);
-      expect(messages()[1].querySelector('.avatar-msg-time')!.textContent).toBe('1 min ago');
+      expect(messages()[0].querySelector('.avatar-msg-time')!.textContent).toBe('1 min ago');
 
       act(() => root!.unmount());
       root = null;
@@ -1088,7 +1161,7 @@ describe('AvatarDock', () => {
       clip('a', 'first');
       clip('b', 'second');
       clip('c', 'third');
-      const older = replayButtons()[2];
+      const older = replayButtons()[0];
       older.focus();
       await act(async () => {
         older.click();
@@ -1148,18 +1221,17 @@ describe('AvatarDock', () => {
       expect(bubble()!.querySelector('[data-testid="avatar-unheard-dot"]')).not.toBeNull();
     });
 
-    test('the message list is a keyboard-focusable scroll region holding the full text of a long message', () => {
+    test('the thread is a keyboard-focusable scroll region holding the full text of a long message', () => {
       startWith({});
       render();
-      expect(container.querySelector('[role="region"][aria-label="Recent messages"]')).toBeNull(); // nothing to scroll yet
+      const region = container.querySelector<HTMLElement>('[role="log"][aria-label="Conversation with Lucy"]')!;
+      expect(region).not.toBeNull(); // there from the start, with the hint in it
+      expect(region.tabIndex).toBe(0);
+      expect(region.getAttribute('data-testid')).toBe('avatar-thread');
       const long = 'A long message about the task. '.repeat(10).trim();
       clip('a', long);
-      const region = container.querySelector<HTMLElement>('[role="region"][aria-label="Recent messages"]')!;
-      expect(region).not.toBeNull();
-      expect(region.tabIndex).toBe(0);
-      expect(region.getAttribute('data-testid')).toBe('avatar-transcript');
       expect(region.querySelectorAll('ol')).toHaveLength(1);
-      expect(region.querySelector('ol')!.hasAttribute('aria-label')).toBe(false); // the region carries the name
+      expect(region.querySelector('ol')!.hasAttribute('aria-label')).toBe(false); // the log carries the name
       expect(region.querySelector('.avatar-msg-text')!.textContent).toBe(long);
       region.focus();
       expect(document.activeElement).toBe(region);
@@ -1172,7 +1244,7 @@ describe('AvatarDock', () => {
       clip('b', 'second');
       let finish!: () => void;
       replay.gate = new Promise<void>((resolve) => { finish = resolve; });
-      const [newer, older] = replayButtons();
+      const [older, newer] = replayButtons();
 
       act(() => newer.click());
       expect(replay.ids).toEqual(['b']);
@@ -1218,14 +1290,14 @@ describe('AvatarDock', () => {
       expect(container.querySelector(`#${replayButtons()[1].getAttribute('aria-describedby')}`)!.textContent).toBe('Sound is off in Settings');
     });
 
-    test('the transcript region does not duplicate the status live region', () => {
+    test('the thread does not duplicate the status live regions: the always-present ones live outside it', () => {
       startWith({});
       render();
       clip('a', 'first');
-      // Two always-present regions: the view's (replay and loading notices) and the hands-free announcements.
+      // Three always-present regions: the view's (replay and loading notices), the hands-free announcements and the composer's.
       const statuses = [...container.querySelectorAll('[role="status"]')];
-      expect(statuses).toHaveLength(2);
-      for (const status of statuses) expect(status.closest('.avatar-dock-transcript')).toBeNull();
+      expect(statuses).toHaveLength(3);
+      for (const status of statuses) expect(status.closest('.avatar-thread')).toBeNull();
     });
   });
 });

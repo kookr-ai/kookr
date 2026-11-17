@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { Hono } from 'hono';
 import { synthesize as synthesizeSpeech, TTSClientError } from '../../adapters/tts-client.js';
-import { askTaskName, buildAskSpeech, type TaskNameLookup } from '../../core/operator-asks.js';
-import { ASK_LIMITS, type AskState, type CreateAskError } from '../../shared/contracts/asks.js';
+import { askTaskName, buildAskSpeech, type TaskNameLookup, type TaskStatusLookup } from '../../core/operator-asks.js';
+import { isTerminalStatus } from '../../shared/contracts/task-status.js';
+import { ASK_LIMITS, type AskRecord, type AskState, type AskView, type CreateAskError } from '../../shared/contracts/asks.js';
 import type { SpeakAudioResponse } from '../../shared/contracts/speech.js';
 import { toAskView, type AskService } from '../asks/ask-service.js';
 import { countSpokenWords, type LucyInteractionLog } from '../lucy-interaction-log.js';
@@ -30,6 +31,9 @@ export interface AskRouteDeps {
   /** Undefined when Telegram is not configured: POST then 503s and reads are empty (flag-off behaviour). */
   service?: AskService;
   speech?: AskSpeechDeps;
+  /** Task title and status, so a listed ask can say which task asked and whether it has ended. Absent: those fields are left out. */
+  taskName?: TaskNameLookup;
+  taskStatus?: TaskStatusLookup;
 }
 
 const ASK_STATES: readonly AskState[] = ['pending', 'answered', 'expired', 'cancelled'];
@@ -60,6 +64,20 @@ function errorResponse(error: CreateAskError): { status: 400 | 404 | 409 | 422 |
  * `ws-connection-handler.ts`); both end in the same ask service.
  */
 export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
+  // A read adds which task asked (its redacted short title, when it has one) and whether that task has
+  // ended. A task that no longer exists counts as ended, the same rule the dashboard list uses.
+  const withTask = (ask: AskRecord): AskView & { taskName?: string; taskEnded?: boolean } => {
+    const view = toAskView(ask);
+    if (!deps.taskName && !deps.taskStatus) return view;
+    const name = askTaskName(deps.taskName?.(ask.taskId));
+    const status = deps.taskStatus?.(ask.taskId);
+    return {
+      ...view,
+      ...(name !== undefined ? { taskName: name } : {}),
+      ...(deps.taskStatus ? { taskEnded: status === undefined || isTerminalStatus(status) } : {}),
+    };
+  };
+
   const { service } = deps;
 
   app.post('/api/asks', async (c) => {
@@ -134,7 +152,7 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
       ...(c.req.query('taskId') ? { taskId: c.req.query('taskId') } : {}),
       ...(state ? { state: state as AskState } : {}),
     });
-    return c.json({ asks: asks.map(toAskView), limits: ASK_LIMITS });
+    return c.json({ asks: asks.map(withTask), limits: ASK_LIMITS });
   });
 
   app.get('/api/asks/:id', async (c) => {
@@ -144,7 +162,7 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
       ? await service.pollForWaiter(c.req.param('id'))
       : await service.get(c.req.param('id'));
     if (!ask) return c.json({ error: 'ask not found', code: 'not_found' }, 404);
-    return c.json({ ask: toAskView(ask) });
+    return c.json({ ask: withTask(ask) });
   });
 
   app.post('/api/asks/:id/cancel', async (c) => {
@@ -158,9 +176,10 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
     return c.json({ ask: toAskView(result.ask) });
   });
 
-  // Lucy's voice for a pending question: who is asking, the question and the
-  // choices. The dashboard calls this when a question arrives and plays the clip
-  // in the avatar panel. Read-only for the ask itself.
+  // Lucy's voice for a pending question: who is asking, the question (cut when
+  // it is long) and that the choices are on her card. The dashboard calls this
+  // when a question arrives and plays the clip in the avatar panel. Read-only
+  // for the ask itself.
   app.post('/api/asks/:id/speak', async (c) => {
     const speech = deps.speech;
     if (!service) return c.json({ error: 'ask not found', code: 'not_found' }, 404);

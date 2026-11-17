@@ -37,7 +37,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium, type Page } from '@playwright/test';
 import { startFakeTelegram } from '../src/integrations/telegram/fake-telegram-server.js';
-import { AVATAR_PANEL_KEY } from '../src/frontend/store/avatar-panel-prefs.js';
+import { AVATAR_PANEL_KEY, AVATAR_TRAY_EXPANDED_KEY } from '../src/frontend/store/avatar-panel-prefs.js';
 import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
 
 const REPO = resolve(__dirname, '..');
@@ -123,7 +123,7 @@ async function api(method: string, path: string, body?: unknown): Promise<{ stat
 
 async function shot(page: Page, name: string): Promise<string> {
   const file = join(out, name);
-  // The panel floats in the bottom-right corner; clip to it (and the bubble) so the card is legible.
+  // The panel is a column on the right edge; clip to it (and the bubble) so the card is legible.
   const target = page.locator('[data-testid="avatar-dock"], [data-testid="avatar-bubble"]').first();
   const box = await target.boundingBox();
   if (box) {
@@ -168,10 +168,12 @@ async function main(): Promise<void> {
 
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     // The avatar panel switched on, and the first-run tour marked as seen so its overlay does not cover the page.
-    await context.addInitScript(([avatarKey, onboardingKey]) => {
+    await context.addInitScript(([avatarKey, onboardingKey, trayKey]) => {
       localStorage.setItem(avatarKey, JSON.stringify({ enabled: true, minimized: false, position: null }));
       localStorage.setItem(onboardingKey, 'true');
-    }, [AVATAR_PANEL_KEY, ONBOARDING_STORAGE_KEY]);
+      // The "Waiting on you" strip starts folded; this proof is about what is in it, so it starts unfolded.
+      sessionStorage.setItem(trayKey, '1');
+    }, [AVATAR_PANEL_KEY, ONBOARDING_STORAGE_KEY, AVATAR_TRAY_EXPANDED_KEY]);
     const page = await context.newPage();
     let speakRequests = 0;
     const speakStatuses: number[] = [];
@@ -199,6 +201,8 @@ async function main(): Promise<void> {
       return r.json.ask as Rec;
     };
     const card = (id: string) => page.locator(`[data-testid="avatar-ask"][data-ask-id="${id}"]`);
+    // A waiting question is one line until the operator presses it: no card opens by itself.
+    const openQuestion = (id: string) => page.locator(`[data-ask-id="${id}"] [data-testid="avatar-ask-row"]`).click({ timeout: 15_000 });
 
     // 1. a question appears, and she reads it out
     const q1 = await ask('The migration renames two billing tables. Run it on production now?', ['Run it now', 'Run it tonight', 'Do not run it'],
@@ -214,6 +218,7 @@ async function main(): Promise<void> {
         speakStatuses[0] === 200 && logged && unheard?.reason === 'audio_suspended' && !startedUnprompted,
         `speak route -> ${speakStatuses.join(',')}; logged: ${JSON.stringify(unheard ? { type: unheard.type, reason: unheard.reason } : null)}; any clip started: ${startedUnprompted}`);
     }
+    await openQuestion(q1.id);
     await card(q1.id).waitFor({ state: 'visible', timeout: 15_000 });
     const cardText = (await card(q1.id).innerText()).replace(/\s+/g, ' ');
     record('the question appears as a card in Lucy\'s panel, with one button per choice', /asks/.test(cardText) && (await card(q1.id).getByTestId('avatar-ask-option').count()) === 3, cardText);
@@ -254,6 +259,7 @@ async function main(): Promise<void> {
 
     // 3. a question answered on Telegram
     const q2 = await ask('Squash the three fixup commits before merging?', ['Squash', 'Keep them']);
+    await openQuestion(q2.id);
     await card(q2.id).waitFor({ state: 'visible', timeout: 15_000 });
     const msg2 = fake.outbound.sendMessage.find((m) => m.text.includes('Squash the three fixup commits'));
     const kb2 = ((msg2?.reply_markup as any)?.inline_keyboard ?? []).flat() as Array<{ text: string; callback_data: string }>;

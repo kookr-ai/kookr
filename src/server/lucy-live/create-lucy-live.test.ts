@@ -224,7 +224,11 @@ describe('createLucyLive', () => {
       const requests: Array<{ request: LucyTurnRequest; context: unknown }> = [];
       const noted: number[] = [];
       const service = {
-        launch: { noteSpeaking: (_conversationId: string, until: number) => { noted.push(until); } },
+        // Talk goes to the operator conversation only while launching is on (`launch` present); what it
+        // tells about her voice and a closed socket goes to the service, which passes it to every card holder.
+        launch: {},
+        noteSpeaking: (_conversationId: string, until: number) => { noted.push(until); },
+        closeConversation: () => {},
         isBusy: () => false,
         atCapacity: () => false,
         runTurn: async function* (request: LucyTurnRequest, _signal?: AbortSignal, context?: unknown) {
@@ -249,7 +253,7 @@ describe('createLucyLive', () => {
       expect(ws.sent.filter((m) => m.type === 'sentence').map((m) => m.text)).toEqual(['I will launch an investigation in kookr: why it stops.', 'Say go to start.']);
     });
 
-    it('tells the launch controller how long her voice is audible, so the cancel window starts after the read-back', async () => {
+    it('tells the operator service how long her voice is audible, so the cancel window starts after the read-back', async () => {
       const { service, noted } = operator([{ type: 'text', delta: 'I will launch it. ' }, { type: 'text', delta: 'Say go to start.' }, done('answered')]);
       const { ws } = setup({ getOperator: () => service });
       await runTurn(ws);
@@ -273,7 +277,7 @@ describe('createLucyLive', () => {
     it('closing the socket drops that conversation\'s pending proposal', async () => {
       const closed: string[] = [];
       const { service, requests } = operator([{ type: 'text', delta: 'Okay. ' }, done('answered')]);
-      (service as unknown as { launch: Record<string, unknown> }).launch.closeConversation = (id: string) => { closed.push(id); };
+      (service as unknown as Record<string, unknown>).closeConversation = (id: string) => { closed.push(id); };
       const { ws } = setup({ getOperator: () => service });
       await runTurn(ws);
       ws.emit('close');
@@ -321,7 +325,7 @@ describe('createLucyLive', () => {
       expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
       const sentences = ws.sent.filter((m) => m.type === 'sentence');
       const said = sentences.map((m) => m.text).join(' ');
-      expect(said).toContain('The task Cleanup needs your input.');
+      expect(said).toBe('The task Cleanup needs your input: When should I run it? Two choices are on my card.');
       // What she said is noted as the browser reports hearing it, just before the next answer (#4015).
       expect(remembered).toHaveLength(0);
       for (const s of sentences) ws.json({ type: 'played', turnId: s.turnId, seq: s.seq, complete: true });
@@ -349,6 +353,50 @@ describe('createLucyLive', () => {
       proposal = { expiresAt: 61_000, launchesAt: 900 };
       ws.json({ type: 'speech_start', turnId: 'blip' });
       ws.json({ type: 'speech_cancel', turnId: 'blip' }); // something ends: the question looks again
+      await tick(); await tick(); await tick();
+      expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
+    });
+
+    it('a task question waits while an answer, reply or close card from any conversation waits for its "yes"', async () => {
+      // Her other cards are confirmed like a launch: by a "yes" from any conversation. Read out meanwhile, a
+      // question would have its "yes" close a task or send a reply.
+      const { service } = operator([done('answered')]);
+      let card: { expiresAt: number } | undefined = { expiresAt: 31_000 }; // the clock reads 1000
+      const pendingCalls: unknown[][] = [];
+      (service as unknown as { launch: Record<string, unknown> }).launch.pending = () => undefined;
+      (service as unknown as { actions: Record<string, unknown> }).actions = { pending: (...args: unknown[]) => { pendingCalls.push(args); return card; } };
+      const ask = { id: 'a1', state: 'pending', taskName: 'Cleanup', question: 'When should I run it?', options: ['now', 'tonight'], allowText: false } as unknown as OperatorAskView;
+      const { ws } = setup({ getOperator: () => service, extraDeps: { getAsks: () => [ask] } });
+      ws.json({ type: 'hello', language: 'en' });
+      ws.json({ type: 'say_ask', askId: 'a1' });
+      await tick(); await tick();
+      expect(ws.sent.some((m) => m.type === 'turn_start')).toBe(false);
+      // Asked without a conversation id: the one card on screen, whichever conversation made it.
+      expect(pendingCalls.length).toBeGreaterThan(0);
+      expect(pendingCalls.every((args) => args.length === 0)).toBe(true);
+      // The card is settled (confirmed, declined or replaced): the question is read.
+      card = undefined;
+      ws.json({ type: 'speech_start', turnId: 'blip' });
+      ws.json({ type: 'speech_cancel', turnId: 'blip' }); // something ends: the question looks again
+      await tick(); await tick(); await tick();
+      expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
+    });
+
+    it('with both kinds of card reported waiting, the question waits for the later of the two', async () => {
+      const { service } = operator([done('answered')]);
+      let launchesAt = 900; // a hands-off launch already past its start: it no longer waits (the clock reads 1000)
+      (service as unknown as { launch: Record<string, unknown> }).launch.pending = () => ({ expiresAt: 61_000, launchesAt });
+      (service as unknown as { actions: Record<string, unknown> }).actions = { pending: () => ({ expiresAt: 31_000 }) };
+      const ask = { id: 'a1', state: 'pending', taskName: 'Cleanup', question: 'When should I run it?', options: ['now', 'tonight'], allowText: false } as unknown as OperatorAskView;
+      const { ws } = setup({ getOperator: () => service, extraDeps: { getAsks: () => [ask] } });
+      ws.json({ type: 'hello', language: 'en' });
+      ws.json({ type: 'say_ask', askId: 'a1' });
+      await tick(); await tick();
+      expect(ws.sent.some((m) => m.type === 'turn_start')).toBe(false); // the action card still waits
+      launchesAt = 500;
+      (service as unknown as { actions: Record<string, unknown> }).actions = { pending: () => undefined };
+      ws.json({ type: 'speech_start', turnId: 'blip' });
+      ws.json({ type: 'speech_cancel', turnId: 'blip' });
       await tick(); await tick(); await tick();
       expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
     });

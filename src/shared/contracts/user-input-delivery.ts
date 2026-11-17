@@ -1,11 +1,13 @@
 export type UserInputDeliveryStatus = 'queued' | 'submitted_by_agent' | 'failed';
 
-export type UserInputDeliverySource = 'respond' | 'directReply' | 'github_watcher';
+/** `lucy_operator`: a reply Lucy typed for the operator after they confirmed its card (`lucy-action.ts`). */
+export type UserInputDeliverySource = 'respond' | 'directReply' | 'github_watcher' | 'lucy_operator';
 
 export const DELIVERY_SOURCE_LABEL: Record<UserInputDeliverySource, string> = {
   respond: 'You',
   directReply: 'You',
   github_watcher: 'Kookr watcher',
+  lucy_operator: 'Lucy',
 };
 
 export interface UserInputDeliverySnapshot {

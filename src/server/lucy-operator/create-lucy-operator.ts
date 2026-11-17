@@ -16,19 +16,27 @@ import type { LucyLookSource } from '../../core/lucy-operator/tools.js';
 import { renderTerminalScreenTextIsolated } from '../terminal-snapshot-worker.js';
 import { createLucyLookSource } from './look-source.js';
 import { createLucyOperator } from './service.js';
-import { buildLucyLaunchController } from './launch-wiring.js';
+import { buildLucyLaunchController, selectLaunchableProjects } from './launch-wiring.js';
+import { buildLucyActionController, type LucyActionWiring } from './action-wiring.js';
+import type { LucyActionController } from './action-controller.js';
+import type { LucyLaunchController } from './launch-controller.js';
 
 /** Connect her look-ups to the server's stores. Exported so the connections can be tested one by one. */
-export function buildLucyLookSource(deps: RouteDeps): LucyLookSource {
+export function buildLucyLookSource(deps: RouteDeps, options: { launching?: boolean } = {}): LucyLookSource {
   return createLucyLookSource({
     getTasks: () => deps.taskStore.viewTasks(),
     // `inspectActive` only reads; `getAll` would also bring expired snoozes back as a side effect.
     getFindings: () => deps.queue.inspectActive(),
     getLifetimeSpendUsd: () => deps.taskStore.getLifetimeSpendUsd(),
     // The same list the panel and the spoken briefing use, so she and the card agree on what is waiting.
-    getAsks: () => (deps.asks?.service ? listOperatorAsks(deps.asks.service.all(), Date.now(), (taskId) => deps.taskStore.getTask(taskId)?.name) : []),
+    getAsks: () => (deps.asks?.service ? listOperatorAsks(deps.asks.service.all(), Date.now(), (taskId) => deps.taskStore.getTask(taskId)?.name, (taskId) => deps.taskStore.getTask(taskId)?.status) : []),
     getQuota: () => deps.getQuotaStatus?.() ?? null,
     getReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
+    // Delivery facts: the pull requests seen in the task's own work and whether each merged. One that is
+    // only cited in the task's request (`detectedFrom === 'prompt'`) is not the task's delivery and is left out.
+    getPullRequests: (taskId) => deps.githubStateStore.getTaskState(taskId).prs
+      .filter((pr) => pr.ref.detectedFrom !== 'prompt')
+      .map((pr) => ({ number: pr.ref.number, status: pr.status })),
     readTerminalStream: async (task) => {
       const session = [...task.sessions].reverse().find((s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted');
       if (session && typeof deps.adapter.captureDisplay === 'function') {
@@ -43,22 +51,39 @@ export function buildLucyLookSource(deps: RouteDeps): LucyLookSource {
       return stored ? { text: stored.text, live: false } : null;
     },
     renderScreenText: renderTerminalScreenTextIsolated,
-    listProjects: deps.ledgerAnalytics && deps.projectConfigStore ? () => listProjectSummaries(deps) : undefined,
+    listProjects: deps.ledgerAnalytics && deps.projectConfigStore
+      ? async () => {
+        const summaries = await listProjectSummaries(deps);
+        // Only when launching is on is the marking meaningful; otherwise she is not told where she may launch.
+        if (!options.launching) return summaries;
+        const launchable = new Set(selectLaunchableProjects(summaries).map((entry) => entry.summary));
+        return summaries.map((summary) => ({ displayName: summary.displayName, activeAgents: summary.activeAgents, findingCount: summary.findingCount, launchable: launchable.has(summary) }));
+      }
+      : undefined,
   });
 }
 
-export function buildLucyOperator(deps: RouteDeps): LucyOperatorRouteDeps['lucyOperator'] {
+export function buildLucyOperator(deps: RouteDeps, wiring: LucyActionWiring = {}): LucyOperatorRouteDeps['lucyOperator'] {
   const config = deps.lucyOperatorConfig;
   if (!config || !config.enabled) return undefined;
   if (!config.ok) return { unavailableReason: config.reason };
 
   const model = createOpenRouterChatStream(config.model);
+  // Launching is a second switch: she can answer questions without ever being able to propose a task.
+  // The same switch lets her act on existing tasks (answer a question, reply, close). One card is on
+  // screen for all of her proposals, so each holder clears the other's card when it makes a new one.
+  let launch: LucyLaunchController | undefined;
+  let actions: LucyActionController | undefined;
+  if (config.launch) {
+    launch = buildLucyLaunchController(deps, model, deps.lucyInteractionLog, { onHeld: () => actions?.dropPending() });
+    actions = buildLucyActionController(deps, model, deps.lucyInteractionLog, { ...wiring, onHeld: () => launch?.dropPending() });
+  }
   const service = createLucyOperator({
     model,
     modelName: config.model.model,
-    source: buildLucyLookSource(deps),
-    // Launching is a second switch: she can answer questions without ever being able to propose a task.
-    ...(config.launch ? { launch: buildLucyLaunchController(deps, model, deps.lucyInteractionLog) } : {}),
+    source: buildLucyLookSource(deps, { launching: Boolean(config.launch) }),
+    ...(launch ? { launch } : {}),
+    ...(actions ? { actions } : {}),
     log: deps.lucyInteractionLog,
   });
   // Lucy live (Talk) is built before the routes; it finds the service here when a turn starts.

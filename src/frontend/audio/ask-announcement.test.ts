@@ -452,6 +452,28 @@ describe('announceAsk', () => {
         expect(JSON.parse(localStorage.getItem(SPOKEN_ASKS_STORAGE_KEY) ?? '[]')).toEqual([ASK]);
       });
 
+      test('tells the caller how the clip ends, so words that could not be fetched are not lost', async () => {
+        const live = speaker();
+        setLiveAskSpeaker(live);
+        const fetcher = vi.fn(async () => new Response('{}', { status: 503 })) as unknown as typeof fetch;
+        const givenBack: Array<Promise<string>> = [];
+        expect(await announceAsk(ASK, { fetcher, sleep: noWait, onGivenBack: (result) => { givenBack.push(result); } })).toBe('live');
+        expect(givenBack).toHaveLength(0);
+        live.say.mock.calls[0]![1]!();
+        expect(givenBack).toHaveLength(1);
+        expect(await givenBack[0]).toBe('error');
+        expect(fetcher).toHaveBeenCalledTimes(1);
+      });
+
+      test('a caller whose onGivenBack throws does not stop the clip', async () => {
+        const live = speaker();
+        setLiveAskSpeaker(live);
+        const fetcher = fetcherOk();
+        await announceAsk(ASK, { fetcher, sleep: noWait, onGivenBack: () => { throw new Error('caller bug'); } });
+        expect(() => live.say.mock.calls[0]![1]!()).not.toThrow();
+        await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+      });
+
       test('is not played once the question has closed', async () => {
         const fetcher = fetcherOk();
         const notSaid = await handOver(fetcher);

@@ -76,7 +76,7 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
         const conversationId = `live-${randomUUID()}`;
         // A tab closed during a read-back must not leave a hands-off launch counting down.
         ws.once('close', () => {
-          try { deps.getOperator?.()?.launch?.closeConversation(conversationId); } catch { /* shutting down */ }
+          try { deps.getOperator?.()?.closeConversation(conversationId); } catch { /* shutting down */ }
         });
         const ports: LucyLivePorts = {
           send,
@@ -92,7 +92,7 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
               temperature: 0.3,
             });
           },
-          noteAudible: (until) => deps.getOperator?.()?.launch?.noteSpeaking(conversationId, until),
+          noteAudible: (until) => deps.getOperator?.()?.noteSpeaking(conversationId, until),
           openVad: deps.vad ? () => deps.vad!.openTurn() : undefined,
           synthesize: async (text, signal) => {
             const result = await synthesize({ ttsUrl, text, voice: deps.getVoice(), signal });
@@ -113,9 +113,14 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
           } : {}),
           noteUnprompted: (note, said) => deps.getOperator?.()?.rememberSaid?.(conversationId, note, said),
           // A "yes" answers the one proposal on screen, whichever conversation made it: a question waits for any.
+          // Her answer, reply and close cards are confirmed the same way, so a question waits for one of those too.
           launchPendingUntil: () => {
-            const proposal = deps.getOperator?.()?.launch?.pending();
-            return proposal ? (proposal.launchesAt ?? proposal.expiresAt) : undefined;
+            const operator = deps.getOperator?.();
+            const launch = operator?.launch?.pending();
+            const launchUntil = launch ? (launch.launchesAt ?? launch.expiresAt) : undefined;
+            const actionUntil = operator?.actions?.pending()?.expiresAt;
+            if (launchUntil === undefined || actionUntil === undefined) return launchUntil ?? actionUntil;
+            return Math.max(launchUntil, actionUntil);
           },
           buildBriefing: () => buildLucyLiveBriefing(deps.getTasks(), now(), deps.getAsks?.() ?? [], {
             ...(deps.getNeedsOperator ? { needs: deps.getNeedsOperator() } : {}),

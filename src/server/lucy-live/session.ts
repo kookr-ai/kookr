@@ -207,8 +207,9 @@ export interface LucyLivePorts {
    */
   noteUnprompted?(note: string, said: string): void;
   /**
-   * Server clock until which a launch proposal waits for the operator's answer, or undefined when none does.
-   * A question is not read out meanwhile: the operator's "yes" to it would confirm the launch. Absent: none ever waits.
+   * Server clock until which a launch proposal, or one of her other cards (answer, reply, close), waits for the
+   * operator's answer, or undefined when none does. A question is not read out meanwhile: the operator's "yes"
+   * to it would confirm the launch or carry out the action. Absent: none ever waits.
    */
   launchPendingUntil?(): number | undefined;
   /** Fresh task status text, built for every turn. */

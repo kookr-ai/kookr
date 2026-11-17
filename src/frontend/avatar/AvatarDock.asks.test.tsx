@@ -35,6 +35,8 @@ import { __resetLastClipForTests } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
+import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
+import { __resetLucyTypedForTests } from './LucyTypedInput.js';
 import { __resetOperatorAsksForTests, handleOperatorAskResult, handleOperatorAsks } from '../store/operator-asks.js';
 
 const ASK = 'a1b2c3d4e5f6';
@@ -63,7 +65,21 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     root = createRoot(container);
     act(() => { root!.render(<AvatarDock attentionCount={props.attentionCount ?? 0} onAnswerAsk={onAnswerAsk} onOpenTask={props.onOpenTask} />); });
   };
-  const push = (asks: OperatorAskView[], announce?: string) => act(() => { handleOperatorAsks(asks, announce); });
+  /**
+   * The tray starts folded and opens no card by itself (AvatarDock.tray.test.tsx). These tests are about the cards,
+   * so each push does what the operator would do next: unfold the strip, and open the first waiting question.
+   */
+  const openFirst = () => {
+    const strip = q('avatar-tray-toggle');
+    if (strip?.getAttribute('aria-expanded') === 'false') act(() => { strip.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    if (container.querySelector('[data-testid="avatar-ask"][data-ask-state="pending"]')) return;
+    const row = q('avatar-ask-row');
+    if (row) act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  };
+  const push = (asks: OperatorAskView[], announce?: string) => {
+    act(() => { handleOperatorAsks(asks, announce); });
+    openFirst();
+  };
   // A press right after the cards changed is ignored on purpose (see the mis-click test), so a click waits it out first.
   const click = (element: Element | null | undefined) => {
     act(() => { vi.setSystemTime(Date.now() + 500); });
@@ -71,9 +87,12 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
   };
 
   beforeEach(() => {
+    __resetLucyConversationForTests();
+    __resetLucyTypedForTests();
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     document.body.innerHTML = '';
     localStorage.clear();
+    sessionStorage.clear();
     vi.clearAllMocks();
     vi.useFakeTimers({ toFake: ['Date'] });
     onAnswerAsk.mockReturnValue(true);
@@ -251,6 +270,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
         answered('telegram', { id: 'c3d4e5f6a1b2', resolvedAt: serverNow - OPERATOR_ASK_RESOLVED_VISIBLE_MS - 60_000 }),
       ], undefined, serverNow);
     });
+    openFirst();
     expect(all('avatar-ask').map((card) => card.dataset.askId)).toEqual(['b2c3d4e5f6a1']);
   });
 
@@ -303,13 +323,18 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
 
   test('the answers form one group named by its question, so two cards cannot be confused', () => {
     render();
-    push([ask(), ask({ id: 'bbbbbbbbbbbb', question: 'Second?' })]);
-    const groups = [...container.querySelectorAll('[role="group"]')];
-    expect(groups).toHaveLength(2);
-    const names = groups.map((group) => document.getElementById(group.getAttribute('aria-labelledby')!)!.textContent);
-    expect(names).toEqual(['Ship the migration now?', 'Second?']);
-    expect(groups[0].querySelector('[data-testid="avatar-ask-input"]')).not.toBeNull();
+    push([ask(), ask({ id: 'bbbbbbbbbbbb', question: 'Second?', expiresAt: Date.now() + 40 * 60_000 })]);
+    const groupName = () => {
+      const groups = [...q('avatar-tray')!.querySelectorAll('[role="group"]')];
+      expect(groups).toHaveLength(1); // one card is open at a time
+      return { group: groups[0], name: document.getElementById(groups[0].getAttribute('aria-labelledby')!)!.textContent };
+    };
+    expect(groupName().name).toBe('Ship the migration now?');
+    expect(groupName().group.querySelector('[data-testid="avatar-ask-input"]')).not.toBeNull();
     expect(q('avatar-asks')!.getAttribute('role')).toBe('list');
+
+    click(all('avatar-ask-row')[0]);
+    expect(groupName().name).toBe('Second?');
   });
 
   test('keyboard focus stays on the card when it closes under the pressed button', () => {
@@ -418,7 +443,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     expect(speech.announceAsk).not.toHaveBeenCalled();
     push([ask({ id: 'bbbbbbbbbbbb', question: 'Second?' }), ask()], 'bbbbbbbbbbbb');
     expect(speech.announceAsk).toHaveBeenCalledOnce();
-    expect(speech.announceAsk).toHaveBeenCalledWith('bbbbbbbbbbbb');
+    expect(speech.announceAsk).toHaveBeenCalledWith('bbbbbbbbbbbb', { fetcher: expect.any(Function), onGivenBack: expect.any(Function) });
   });
 
   test('a closed question can be dismissed', () => {
@@ -434,7 +459,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     const bubble = q('avatar-bubble')!;
     expect(bubble.querySelector('.avatar-bubble-badge')!.textContent).toBe('3');
     expect(bubble.getAttribute('aria-label')).toContain('1 question is waiting for your answer');
-    expect(speech.announceAsk).toHaveBeenCalledWith(ASK);
+    expect(speech.announceAsk).toHaveBeenCalledWith(ASK, { fetcher: expect.any(Function), onGivenBack: expect.any(Function) });
   });
 
   test('the time left counts down, and a closed card leaves ten minutes after it closed', () => {

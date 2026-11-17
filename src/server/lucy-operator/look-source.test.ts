@@ -91,6 +91,22 @@ describe('createLucyLookSource', () => {
     expect(projects).toEqual([{ name: 'kookr-ai/kookr', activeTasks: 3, findings: 1 }]);
   });
 
+  test('projects: carries whether she may launch there, only when the registry says so', async () => {
+    const projects = await source({
+      tasks: [],
+      listProjects: async () => [
+        { displayName: 'kookr', activeAgents: 0, findingCount: 0, launchable: true },
+        { displayName: 'other', activeAgents: 0, findingCount: 0, launchable: false },
+        { displayName: 'plain', activeAgents: 0, findingCount: 0 },
+      ],
+    }).projects();
+    expect(projects).toEqual([
+      { name: 'kookr', activeTasks: 0, findings: 0, launchable: true },
+      { name: 'other', activeTasks: 0, findings: 0, launchable: false },
+      { name: 'plain', activeTasks: 0, findings: 0 },
+    ]);
+  });
+
   test('projects: without a registry, lists the projects that have tasks', async () => {
     const projects = await source({
       tasks: [task({ id: 't1', projectId: 'local/alpha' }), task({ id: 't2', projectId: 'local/alpha', status: 'completed' }), task({ id: 't3', cwd: '/x/beta' })],

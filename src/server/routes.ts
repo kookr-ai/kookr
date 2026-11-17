@@ -17,7 +17,7 @@ import { PluginMutationService } from './plugin-manager/mutation-service.js';
 import { registerScheduleRoutes } from './routes/schedule-routes.js';
 import { registerSettingsRoutes } from './routes/settings-routes.js';
 import { registerOrchestrationRoutes } from './routes/orchestration-routes.js';
-import { registerTaskRoutes } from './routes/task-routes.js';
+import { createTaskRouteLifecycleCommands, registerTaskRoutes } from './routes/task-routes.js';
 import { applyDefaultAgentUpdate } from './settings-service.js';
 import { registerSessionTransportRoutes } from './routes/session-transport-routes.js';
 import { registerIssueClaimRoutes } from './routes/issue-claim-routes.js';
@@ -50,6 +50,9 @@ import { registerSpeechRoutes } from './routes/speech-routes.js';
 import { registerLucyLiveRoutes } from './routes/lucy-live-routes.js';
 import { registerLucyOperatorRoutes } from './routes/lucy-operator-routes.js';
 import { registerLucyPermissionRoutes } from './routes/lucy-permission-routes.js';
+import { registerLucyBriefingRoutes } from './routes/lucy-briefing-routes.js';
+import { operatorBriefingInput } from './lucy-operator/briefing-source.js';
+import { listOperatorAsks } from '../core/operator-asks.js';
 import { buildLucyOperator } from './lucy-operator/create-lucy-operator.js';
 import { registerPipelineStarvationRoutes } from './routes/pipeline-starvation-routes.js';
 import { PipelineStarvationService } from './pipeline-starvation-service.js';
@@ -170,11 +173,15 @@ export function createRoutes(deps: RouteDeps): Hono {
   // default" toggle declares its settings dependency (issue #1463) instead of
   // casting TaskRouteDeps to the full RouteDeps at the call site. `sharedDeps`
   // (a RouteDeps) satisfies the narrow SettingsMutationDeps contract.
-  registerTaskRoutes(app, {
+  const taskRouteDeps = {
     ...sharedDeps,
-    applyDefaultAgentUpdate: (agent, actorHeader) =>
+    applyDefaultAgentUpdate: (agent: Parameters<typeof applyDefaultAgentUpdate>[1], actorHeader: Parameters<typeof applyDefaultAgentUpdate>[2]) =>
       applyDefaultAgentUpdate(sharedDeps, agent, actorHeader),
-  });
+  };
+  // One instance of the lifecycle commands for every HTTP caller that completes a task: the task
+  // routes, and Lucy's close action once the operator has confirmed its card.
+  const taskLifecycleCommands = createTaskRouteLifecycleCommands(taskRouteDeps);
+  registerTaskRoutes(app, { ...taskRouteDeps, lifecycleCommands: taskLifecycleCommands });
   // Ready queue (issue #3933). Registered after task routes, which wire the
   // queue's launch path to the POST /api/tasks handler.
   registerReadyQueueRoutes(app, sharedDeps);
@@ -271,7 +278,19 @@ export function createRoutes(deps: RouteDeps): Hono {
     lucyLogPath: deps.lucyInteractionLogPath,
   });
   registerLucyLiveRoutes(app, { lucyLiveStatus: deps.lucyLiveStatus, getLucyLiveStatus: deps.getLucyLiveStatus });
-  registerLucyOperatorRoutes(app, { lucyOperator: buildLucyOperator(sharedDeps), speech: sharedDeps.asks?.speech });
+  const lucyOperator = buildLucyOperator(sharedDeps, { lifecycleCommands: taskLifecycleCommands });
+  registerLucyOperatorRoutes(app, { lucyOperator, speech: sharedDeps.asks?.speech });
+  registerLucyBriefingRoutes(app, {
+    lucyOperator,
+    // The same task list, findings and questions her board reads, so the briefing and her answers agree.
+    getInput: () => operatorBriefingInput(
+      sharedDeps.taskStore.viewTasks(),
+      sharedDeps.queue.inspectActive(),
+      sharedDeps.asks?.service
+        ? listOperatorAsks(sharedDeps.asks.service.all(), Date.now(), (taskId) => sharedDeps.taskStore.getTask(taskId)?.name, (taskId) => sharedDeps.taskStore.getTask(taskId)?.status)
+        : [],
+    ),
+  });
   registerLucyPermissionRoutes(app, {
     ...(sharedDeps.lucyPermissionNotices ? { notices: sharedDeps.lucyPermissionNotices } : {}),
     ...(sharedDeps.asks?.speech ? { speech: sharedDeps.asks.speech } : {}),

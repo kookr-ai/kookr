@@ -3,15 +3,15 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
 import {
-  AVATAR_BUBBLE_SIZE,
-  AVATAR_PANEL_HEIGHT,
+  AVATAR_COLUMN_DEFAULT_WIDTH,
+  AVATAR_COLUMN_MAX_WIDTH,
+  AVATAR_COLUMN_MIN_WIDTH,
+  AVATAR_PAGE_MIN_WIDTH,
   AVATAR_PANEL_KEY,
-  AVATAR_PANEL_MARGIN,
-  AVATAR_PANEL_WIDTH,
   DEFAULT_AVATAR_PANEL_PREFS,
   __resetAvatarPanelPrefsForTests,
-  clampAvatarPanelPosition,
-  defaultAvatarPanelPosition,
+  avatarColumnLayout,
+  clampAvatarColumnWidth,
   loadAvatarPanelPrefs,
   saveAvatarPanelPrefs,
   updateAvatarPanelPrefs,
@@ -44,7 +44,7 @@ describe('avatar-panel-prefs', () => {
 
   test('a saved choice round-trips', () => {
     const storage = fakeStorage();
-    const prefs = { enabled: true, minimized: true, position: { x: 40, y: 60 } };
+    const prefs = { enabled: true, minimized: true, width: 450 };
     expect(saveAvatarPanelPrefs(prefs, storage.impl)).toBeNull();
     expect(loadAvatarPanelPrefs(storage.impl)).toEqual(prefs);
   });
@@ -59,11 +59,29 @@ describe('avatar-panel-prefs', () => {
     expect(loadAvatarPanelPrefs(storage.impl)).toEqual(DEFAULT_AVATAR_PANEL_PREFS);
   });
 
-  test('only a literal true enables the panel; a bad position is dropped, not trusted', () => {
+  test('only a literal true enables the panel; a bad width is dropped, not trusted', () => {
     const storage = fakeStorage({
-      [AVATAR_PANEL_KEY]: JSON.stringify({ enabled: 'yes', minimized: 1, position: { x: 'left', y: 10 } }),
+      [AVATAR_PANEL_KEY]: JSON.stringify({ enabled: 'yes', minimized: 1, width: 'wide' }),
     });
-    expect(loadAvatarPanelPrefs(storage.impl)).toEqual({ enabled: false, minimized: false, position: null });
+    expect(loadAvatarPanelPrefs(storage.impl)).toEqual({ enabled: false, minimized: false });
+  });
+
+  test('prefs saved by the floating window, with a position, still load: the position is ignored and the panel opens', () => {
+    const storage = fakeStorage({
+      [AVATAR_PANEL_KEY]: '{"enabled":true,"minimized":false,"position":{"x":1945,"y":804}}',
+    });
+    const prefs = loadAvatarPanelPrefs(storage.impl);
+    expect(prefs).toEqual({ enabled: true, minimized: false });
+    expect(prefs).not.toHaveProperty('position');
+  });
+
+  test('a saved width is kept inside the limits', () => {
+    const load = (width: unknown) => loadAvatarPanelPrefs(fakeStorage({ [AVATAR_PANEL_KEY]: JSON.stringify({ enabled: true, width }) }).impl);
+    expect(load(450).width).toBe(450);
+    expect(load(100).width).toBe(AVATAR_COLUMN_MIN_WIDTH);
+    expect(load(5000).width).toBe(AVATAR_COLUMN_MAX_WIDTH);
+    expect(load(412.6).width).toBe(413);
+    expect(load(null)).not.toHaveProperty('width');
   });
 
   test('storage that throws is reported on save and ignored on load', () => {
@@ -83,15 +101,15 @@ describe('avatar-panel-prefs', () => {
       __resetAvatarPanelPrefsForTests();
 
       updateAvatarPanelPrefs({ enabled: true });
-      const next = updateAvatarPanelPrefs({ minimized: true, position: { x: 20, y: 30 } });
+      const next = updateAvatarPanelPrefs({ minimized: true, width: 500 });
 
-      expect(next).toEqual({ enabled: true, minimized: true, position: { x: 20, y: 30 } });
+      expect(next).toEqual({ enabled: true, minimized: true, width: 500 });
       expect(JSON.parse(storage.map.get(AVATAR_PANEL_KEY) ?? 'null')).toEqual(next);
     });
 
     test('a store that starts from saved prefs keeps them when one field changes', () => {
       const storage = fakeStorage({
-        [AVATAR_PANEL_KEY]: JSON.stringify({ enabled: true, minimized: false, position: { x: 5, y: 6 } }),
+        [AVATAR_PANEL_KEY]: JSON.stringify({ enabled: true, minimized: false, width: 400 }),
       });
       vi.stubGlobal('localStorage', storage.impl);
       __resetAvatarPanelPrefsForTests();
@@ -99,7 +117,7 @@ describe('avatar-panel-prefs', () => {
       expect(updateAvatarPanelPrefs({ minimized: true })).toEqual({
         enabled: true,
         minimized: true,
-        position: { x: 5, y: 6 },
+        width: 400,
       });
     });
 
@@ -114,68 +132,69 @@ describe('avatar-panel-prefs', () => {
     });
   });
 
-  describe('clampAvatarPanelPosition', () => {
-    const viewport = { width: 1200, height: 800 };
-
-    test('keeps an in-bounds position unchanged', () => {
-      expect(clampAvatarPanelPosition({ x: 300, y: 200 }, viewport)).toEqual({ x: 300, y: 200 });
+  describe('clampAvatarColumnWidth', () => {
+    test('keeps a width inside the limits unchanged and pulls others back', () => {
+      expect(clampAvatarColumnWidth(380)).toBe(380);
+      expect(clampAvatarColumnWidth(AVATAR_COLUMN_MIN_WIDTH - 1)).toBe(AVATAR_COLUMN_MIN_WIDTH);
+      expect(clampAvatarColumnWidth(AVATAR_COLUMN_MAX_WIDTH + 1)).toBe(AVATAR_COLUMN_MAX_WIDTH);
     });
 
-    test('pulls a panel dragged off any edge back inside, with a margin', () => {
-      const maxX = viewport.width - AVATAR_PANEL_WIDTH - AVATAR_PANEL_MARGIN;
-      const maxY = viewport.height - AVATAR_PANEL_HEIGHT - AVATAR_PANEL_MARGIN;
-      expect(clampAvatarPanelPosition({ x: -500, y: -500 }, viewport)).toEqual({ x: AVATAR_PANEL_MARGIN, y: AVATAR_PANEL_MARGIN });
-      expect(clampAvatarPanelPosition({ x: 5000, y: 5000 }, viewport)).toEqual({ x: maxX, y: maxY });
+    test('anything that is not a finite number is the default width', () => {
+      for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, '400', null, undefined]) {
+        expect(clampAvatarColumnWidth(bad)).toBe(AVATAR_COLUMN_DEFAULT_WIDTH);
+      }
     });
 
-    test('a position saved on a big screen is brought back on a small one', () => {
-      const small = { width: 500, height: 420 };
-      const clamped = clampAvatarPanelPosition({ x: 1700, y: 900 }, small);
-      expect(clamped.x + AVATAR_PANEL_WIDTH).toBeLessThanOrEqual(small.width);
-      expect(clamped.y + AVATAR_PANEL_HEIGHT).toBeLessThanOrEqual(small.height);
-    });
-
-    test('a viewport smaller than the panel pins it to the top-left margin instead of going negative', () => {
-      expect(clampAvatarPanelPosition({ x: 50, y: 50 }, { width: 100, height: 100 })).toEqual({
-        x: AVATAR_PANEL_MARGIN,
-        y: AVATAR_PANEL_MARGIN,
-      });
-    });
-
-    test('non-finite coordinates fall back to the far corner', () => {
-      const result = clampAvatarPanelPosition({ x: Number.NaN, y: Number.POSITIVE_INFINITY }, viewport);
-      expect(result).toEqual({
-        x: viewport.width - AVATAR_PANEL_WIDTH - AVATAR_PANEL_MARGIN,
-        y: viewport.height - AVATAR_PANEL_HEIGHT - AVATAR_PANEL_MARGIN,
-      });
-    });
-
-    test('a custom size (the bubble) is clamped by its own dimensions', () => {
-      const size = { width: AVATAR_BUBBLE_SIZE, height: AVATAR_BUBBLE_SIZE };
-      expect(clampAvatarPanelPosition({ x: 5000, y: 5000 }, viewport, size)).toEqual({
-        x: viewport.width - AVATAR_BUBBLE_SIZE - AVATAR_PANEL_MARGIN,
-        y: viewport.height - AVATAR_BUBBLE_SIZE - AVATAR_PANEL_MARGIN,
-      });
+    test('the default is inside the limits', () => {
+      expect(AVATAR_COLUMN_DEFAULT_WIDTH).toBe(380);
+      expect(AVATAR_COLUMN_MIN_WIDTH).toBe(320);
+      expect(AVATAR_COLUMN_MAX_WIDTH).toBe(560);
     });
   });
 
-  test('the default position is the bottom-right corner, fully on screen', () => {
-    const viewport = { width: 1400, height: 900 };
-    const position = defaultAvatarPanelPosition(viewport);
-    expect(position.x).toBeGreaterThan(viewport.width / 2);
-    expect(position.y).toBeGreaterThan(viewport.height / 2);
-    expect(position.x + AVATAR_PANEL_WIDTH).toBeLessThanOrEqual(viewport.width);
-    expect(position.y + AVATAR_PANEL_HEIGHT).toBeLessThanOrEqual(viewport.height);
+  describe('avatarColumnLayout: the page keeps at least 1000 px', () => {
+    test('the page minimum is 1000 px', () => {
+      expect(AVATAR_PAGE_MIN_WIDTH).toBe(1000);
+    });
+
+    test('768 px and below is a sheet over the whole window', () => {
+      expect(avatarColumnLayout(768, 450)).toEqual({ mode: 'sheet', width: 768, maxWidth: 768 });
+      expect(avatarColumnLayout(375, undefined)).toEqual({ mode: 'sheet', width: 375, maxWidth: 375 });
+    });
+
+    test('769 to 1319 px floats over the page at the saved width, clamped 320..560 and never wider than the window', () => {
+      expect(avatarColumnLayout(769, undefined)).toEqual({ mode: 'overlay', width: 380, maxWidth: 560 });
+      expect(avatarColumnLayout(1280, undefined)).toEqual({ mode: 'overlay', width: 380, maxWidth: 560 });
+      expect(avatarColumnLayout(1319, 450)).toEqual({ mode: 'overlay', width: 450, maxWidth: 560 });
+      expect(avatarColumnLayout(1319, 9999)).toEqual({ mode: 'overlay', width: 560, maxWidth: 560 });
+      expect(avatarColumnLayout(1280, 100)).toEqual({ mode: 'overlay', width: 320, maxWidth: 560 });
+    });
+
+    test('from 1320 px it is docked, and the width is capped so the page keeps 1000 px', () => {
+      expect(avatarColumnLayout(1320, undefined)).toEqual({ mode: 'docked', width: 320, maxWidth: 320 });
+      expect(avatarColumnLayout(1320, 560)).toEqual({ mode: 'docked', width: 320, maxWidth: 320 });
+      expect(avatarColumnLayout(1440, undefined)).toEqual({ mode: 'docked', width: 380, maxWidth: 440 });
+      expect(avatarColumnLayout(1440, 560)).toEqual({ mode: 'docked', width: 440, maxWidth: 440 });
+      expect(avatarColumnLayout(2221, 560)).toEqual({ mode: 'docked', width: 560, maxWidth: 560 });
+      expect(avatarColumnLayout(1920, 450)).toEqual({ mode: 'docked', width: 450, maxWidth: 560 });
+    });
+
+    test('whenever it is docked the page is left at least 1000 px', () => {
+      for (let viewport = 769; viewport <= 2400; viewport += 7) {
+        const layout = avatarColumnLayout(viewport, 560);
+        if (layout.mode === 'docked') expect(viewport - layout.width).toBeGreaterThanOrEqual(AVATAR_PAGE_MIN_WIDTH);
+      }
+    });
   });
 
-  test('switching the panel on or off is recorded once per actual change, and moving or minimising is not', () => {
+  test('switching the panel on or off is recorded once per actual change, and resizing or minimising is not', () => {
     vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
     __resetAvatarPanelPrefsForTests();
     tracked.length = 0;
 
     updateAvatarPanelPrefs({ enabled: true });
     updateAvatarPanelPrefs({ enabled: true, minimized: true });
-    updateAvatarPanelPrefs({ position: { x: 1, y: 2 } });
+    updateAvatarPanelPrefs({ width: 450 });
     updateAvatarPanelPrefs({ enabled: false });
     updateAvatarPanelPrefs({ enabled: false });
 

@@ -79,7 +79,7 @@ export function fakeSource(options: {
   tasks?: LucyBoardTask[];
   details?: Record<string, LucyTaskDetail>;
   board?: Partial<Omit<LucyBoardInput, 'tasks'>>;
-  projects?: Array<{ name: string; activeTasks: number; findings: number }>;
+  projects?: Array<{ name: string; activeTasks: number; findings: number; launchable?: boolean }>;
   /** Make the project list throw, to exercise a look-up that fails inside Kookr. */
   failProjects?: boolean;
   /** Rendered terminal output by task id; a task without an entry has none. */

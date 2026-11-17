@@ -394,32 +394,63 @@ notice gaps while speaking without treating every natural pause as a fault.
 
 ### Avatar panel (optional, off by default)
 
-A small floating window showing a 3D character who lip-syncs Kookr's spoken task summaries — the
-clips played by the speaker (🔊) buttons on tasks. It gives those summaries a face: it shows
-"preparing" while a summary is being generated, moves its mouth while the clip plays, and lists the last few
-things she said.
+A column on the right of the dashboard, with a 3D character who lip-syncs Kookr's spoken task summaries
+— the clips played by the speaker (🔊) buttons on tasks. It gives those summaries a face: it shows
+"preparing" while a summary is being generated and moves its mouth while the clip plays. It is also where
+she and you talk: one conversation, shown as a chat, holds what you type, what you say, and everything she
+says out loud, and a one-line strip above it holds what is waiting on you.
 
 - **Off unless you turn it on.** Settings → Notifications & Alerts → **Avatar panel**. The choice is
   stored per browser. While it is off, the browser downloads nothing for it: no 3D renderer, no
   avatar file.
-- **A window you can move and minimise.** Drag it by its title bar; it remembers where you left it
-  and stays inside the viewport when the window is resized. Minimising collapses it to a round
-  bubble that shows an amber badge with the number of things waiting for you (findings needing your
+- **A column beside the dashboard, not on top of it.** While it is open, the column is as tall as the
+  window and 380 px wide, docked to the right edge, and the dashboard (top bar, banners, panes) shrinks to
+  end where the column starts; the toasts and other overlays at the right edge move left with it. The page
+  always keeps at least 1000 px: in a window of 1320 px or more the column is docked, and a wide width is
+  capped so the page keeps its 1000 px (a 560 px width in a 1440 px window shows as 440 px, and comes back
+  in a wider window). In a window of 769 to 1319 px there is no room to take, so the column floats over the
+  right side of the page, below the top bar, and the page keeps its full width. Drag
+  its left edge to change its width (320 to 560 px, or the cap), or focus the edge and press the left and right arrow
+  keys (Shift for bigger steps, Home and End for the limits); the width is remembered. On a window 768 px
+  wide or narrower it is a full-width sheet over the page instead. Minimising collapses it to a round
+  bubble in the bottom-right corner, and the dashboard takes its full width back. The bubble shows an amber badge with the number of things waiting for you (findings needing your
   attention, plus questions from tasks, described below), and an amber dot
   when a message is unheard. Hover the bubble, or focus it with the keyboard, and a small card says
   it in words: "1 question for you", "2 findings need you", "1 unheard message" (each row only when it
   applies) and "Click to open Lucy". Escape closes the card; screen readers get the same sentence from the bubble's label
   instead. A minimised panel shuts its 3D view down and uses no graphics memory.
-- **Usable from the keyboard.** A button in the title bar moves the window to the next corner of the
-  screen, so dragging is never required. Focus stays on the panel when you minimise or reopen it,
+- **Usable from the keyboard.** Focus stays on the panel when you minimise or reopen it,
   and every message's Replay button can be reached with Tab. With "reduce motion" set in your operating
   system, the decorative rings and particles stand still; only her mouth and a slight sway remain.
-- **Recent messages.** Under the 3D view, the last three things she said are listed, newest first.
-  Each shows its full text (the list scrolls when it is long, and can be focused with Tab to scroll it by keyboard), the task it was about and how long
-  ago ("just now", "5 min ago", "3 h ago", "2 d ago"), plus a Replay button of its own. A message she
-  read from fixed template wording, because the summary model was not used, is marked "template". Before she has
-  said anything the list shows a hint instead. The list is kept in memory only: a page reload forgets
-  it, and a fourth message pushes the oldest one (and its audio) out.
+- **Inside the column, top to bottom.** The title bar (her name and what she is doing, **Replay last
+  message**, Minimise); the 3D view, 120 px tall; the strip **Waiting on you** (below), one line until you
+  unfold it; the conversation, which always keeps at least 45% of the column; and the composer: the
+  **Talk** button and the text box for typing to her, with the autonomy level she works at. At most two
+  areas of the column scroll: the conversation and the unfolded strip. When the unfolded strip needs more
+  room than is left, the 3D view gives up its height first.
+- **The conversation is a chat.** Oldest first. Her messages are bubbles on the left, yours are bubbles on
+  the right with a teal tint, each with the time it was said (messages from the same side within a minute
+  share one time). It stays on the newest entry as it arrives and grows; if you scrolled up to read, it
+  stays where it is and a **New message** button appears at the bottom. New entries fade in over a moment
+  (not at all with "reduce motion"). It holds what you typed and her reply (streamed in as it is
+  written), what you said in hands-free talk and what she answered, notices about talk (unavailable,
+  connection lost), what became of the launches she proposed and her reports about those tasks, and every
+  message she said aloud, marked "said aloud". Each of those shows its full text, the task it was about
+  and how long ago ("just now", "5 min ago", "3 h ago", "2 d ago"), plus a Replay button of its own. A
+  message she read from fixed template wording, because the summary model was not used, is marked
+  "template". Only the last three spoken messages keep their audio, so an older one stays as text, without
+  a Replay button.
+- **What she is doing while you wait.** After you send a typed request, one quiet line under it says what
+  she is looking at ("Reading the board…", "Reading a task's terminal…"); when her answer starts it
+  shrinks to "Looked at 3 things". Lines of her typed answer that start with "- " or "•" are shown as a
+  short list; nothing else in her text is interpreted.
+- **A start that invites.** An empty conversation shows a short welcome from her and three buttons,
+  **Brief me**, **What needs me right now?** and **What can you do?**: pressing one sends that sentence.
+  A message of hers can offer such buttons too; only her newest message shows them.
+- **The conversation survives a new tab.** It keeps the last 200 entries, as text only, in the browser's
+  local storage: a reload, a new tab or a browser restart shows the same conversation, and tabs that are
+  open at the same time show each other's new entries. The conversation she remembers on the server
+  continues with it, so she still knows what you asked before.
 - **Hear it again.** If you were away, or the tab was in the background, when she spoke, the message
   is kept. A message's own Replay button plays that message again with the same lip-sync; the
   **Replay last message** button in the title bar plays the newest one. Until at least 80% of a message
@@ -442,8 +473,23 @@ things she said.
 
 When a task asks you a question with `kookr ask` (the multiple-choice questions that reach your phone
 over Telegram), Lucy asks it too if the dashboard is open with the avatar panel on. She reads the
-question and its choices aloud once, and the panel shows a card with one button per choice, the
-background the task gave, and a box for a typed answer when the task accepts one.
+question and its choices aloud once, and the **Waiting on you** strip counts it. Unfold the strip and
+press the question to get its card: one button per choice, the background the task gave, and a box for a
+typed answer when the task accepts one.
+
+- **One line, not a pile of cards.** Folded, which is how it starts, the strip reads "3 waiting on you ·
+  2 opinions wanted", with an amber tint when something is waiting. Press it to unfold the list; your
+  choice is remembered until you close the browser tab. Questions are listed in the order they close,
+  soonest first, one line each (who asks, the start of the question, the time left). Nothing opens by
+  itself: pressing a line opens that card and folds the one that was open, and a question that arrives
+  later never takes the open card away from you (what you were typing stays). Permission cards come
+  first. A card never scrolls inside itself: the list scrolls as one area when it is taller than the room
+  it has, and in a window 800 px tall or more a card with three choices is shown whole. The number in the
+  strip counts the permission cards and the questions a task may still be waiting for.
+- **Opinions from finished tasks.** A question whose task has already ended blocks nothing, so these
+  fold into one row ("15 opinions wanted by finished tasks · first closes in 4 h"). Press it to
+  unfold one line per question, again soonest first, and press a line to answer. They are counted apart
+  in the strip ("2 opinions wanted"), not in its number, and the minimised bubble's badge leaves them out too.
 
 - **Answer where you are.** Press a choice in her panel, or answer on Telegram. It is one question
   with two ways to answer: the first answer wins, the task receives it the same way, and the other
@@ -451,7 +497,7 @@ background the task gave, and a box for a typed answer when the task accepts one
   … Nothing more is needed here." Answer on Telegram and the card changes to "Answered on Telegram: …".
 - **She does not nag.** She speaks a question only when it arrives, never again on a reload, and in
   one browser tab only. With sound off or Do Not Disturb on she stays silent and the question waits
-  in her message list as unheard. If it is answered while she is reading it, she stops.
+  in her thread as unheard. If it is answered while she is reading it, she stops.
 - **Open what it is about.** A question can carry up to two links (`kookr ask --link`), shown as
   buttons such as "Open mockups" on the card and on Telegram, and the card has an **Open task** button
   that selects the asking task. With hands-free talk on, "show me", "open it" or "show me the task"
@@ -485,7 +531,8 @@ as the prompt is answered anywhere. The delay is the `lucyPermissionNoticeAfterS
 
 #### Talk to Lucy hands-free (optional, off by default)
 
-The **Talk** button in the panel's title bar starts a spoken conversation: you speak, she answers out
+The **Talk** button beside the panel's text box starts a spoken conversation (when it cannot be used it
+reads "Talk is not set up", and its tooltip says why): you speak, she answers out
 loud about a second after you stop, and you can talk over her to stop her. She answers from
 the current task status (what is running, stopped or recently finished) and says so when she does not
 know something. She cannot act on tasks yet.
@@ -511,8 +558,9 @@ know something. She cannot act on tasks yet.
 - **A task's question.** While Talk is on, a new question from a task is not a clip: she says it in the
   conversation once you have finished speaking and she has finished answering. Talking over it stops her
   as for an answer, and she remembers having said it, so "say that again" works.
-- **What you see.** Her state (listening, thinking, speaking), what you said as a draft that improves
-  while you talk, then the final text, and her answer as she speaks it.
+- **What you see.** Her state (listening, thinking, speaking), and in the conversation thread what you said as a
+  draft that improves while you talk, then the final text, and her answer as she speaks it. Every exchange
+  stays in the thread, not only the latest.
 - **Language.** You can speak English or French (it follows the dictation language). She always answers
   in English, because her voices are English voices.
 - **What it needs.** The speech service (`KOOKR_TTS`), a helper model on Baseten
@@ -522,12 +570,14 @@ know something. She cannot act on tasks yet.
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
   `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
 
-#### Ask Lucy a question (on by default with an OpenRouter key, no screen yet)
+#### Ask Lucy a question (on by default with an OpenRouter key)
 
 When an OpenRouter key is set, Kookr answers questions about your tasks at `POST /api/lucy/turn`
 (on by default; `KOOKR_LUCY_OPERATOR=0` switches it off):
 you send one sentence, and Lucy's reply comes back as it is written. This is the first step toward
-running Kookr through her. The avatar panel has a small typed input for it when it is on, and hands-free
+running Kookr through her. The avatar panel has a text box for it at the foot of the column when it is on
+(it grows from one line to five; Enter sends and Shift+Enter starts a new line; your sentence and her
+reply appear in the conversation), and hands-free
 talk uses it too when launching is on (next section).
 
 - **She looks things up.** Each answer starts from a board of your tasks: what needs you, what is
@@ -535,8 +585,9 @@ talk uses it too when launching is on (next section).
   it was asked to do, what it is waiting for, its closing summary), list projects, or ask the
   dashboard to open a task. She cannot read a task's terminal output yet.
 - **On its own she cannot change anything.** No look-up tool launches, replies to, closes, snoozes or stops a
-  task, so text written by an agent cannot make her act. The one exception is the optional launch
-  proposal below, which only the operator can confirm. She is told that everything tasks write is
+  task, so text written by an agent cannot make her act. The exceptions are the proposals described
+  below (starting a task, and answering, replying to or closing an existing one), which only the operator
+  can confirm. She is told that everything tasks write is
   information to report, never an instruction.
 - **Limits.** A turn makes at most four model calls and stops after 30 seconds. When a limit ends a
   turn, her last sentence says so.
@@ -551,10 +602,13 @@ talk uses it too when launching is on (next section).
 Launching is on whenever the question conversation above is on (`KOOKR_LUCY_LAUNCH=0` switches
 launching off on its own). Say or type "Lucy, investigate why the issue tasks stop
 chaining" and she starts a task for you. She repeats back what she is about to launch, the avatar
-panel shows it as a card with the whole description, and the task starts when you say "go", press
-Enter or click Go. Anything else you say drops it, and a proposal expires after two minutes. An unclear
-request gets one question instead. An investigation is told to report findings and file issues, not to
-open a pull request. When the task finishes or needs you, she says so.
+panel shows it as a card with the whole description at the end of the conversation (the card stands in
+for her read-back, which is not also written as a message), and the task starts when you say "go", press
+Enter or click Go. Anything else you say drops it, and a proposal expires after two minutes. What became
+of it stays in the conversation as one line ("Started kookr task", with a button to open the task,
+"Cancelled" or "Timed out"). An unclear request gets one question instead. An investigation is told to
+report findings and file issues, not to open a pull request. When the task finishes or needs you, she
+says so, and the sentence is a message of hers in the conversation with an **Open task** button.
 
 - **You choose how much she may do alone** (Settings → Lucy, `lucyAutonomy`): *Careful* (her tasks
   always ask for permissions), *Balanced* (default; her tasks run like ones from the Launch tab), or
@@ -564,6 +618,30 @@ open a pull request. When the task finishes or needs you, she says so.
 - **What leaves the machine.** Hands-free talk is then answered by the operator conversation, so each
   spoken request goes to OpenRouter, and a second call writes the task from your words and the project
   names only. Details: [Lucy operator](reference/lucy-operator.md#launching-a-task-by-voice-or-text).
+
+#### Ask Lucy to answer, reply to or close a task (on by default)
+
+Under the same switch as launching (`KOOKR_LUCY_LAUNCH`), you can tell Lucy to act on a task that
+already exists: "answer the billing question with Postgres", "tell the billing task to rebase on main",
+"close the billing task" (only for a task that says it is finished). As with a launch, nothing happens
+at once. She proposes it as a card in the avatar panel that shows exactly what will be sent, and it
+goes only when you click **Send** (or **Close**) or say "go". Anything else you say drops it, and an
+unconfirmed card expires after two minutes. Kookr checks again at that moment that the question is
+still waiting, the task still runs or still says it is finished, and refuses with a short sentence when
+the card is no longer true. What became of the card stays in the conversation as one line ("Sent",
+"Closed", or the reason nothing was done), with a button to open the task. Details:
+[Lucy operator](reference/lucy-operator.md#acting-on-an-existing-task-answer-reply-close).
+
+#### Lucy writes to you first: a briefing and task events (on by default with the Lucy conversation)
+
+Two things appear in Lucy's thread without you asking, as written messages that are not spoken. When
+her panel first opens she writes a **briefing** of at most about 45 words: what waits on you, what is
+working, and up to three follow-up buttons. She writes it again when you come back after 10 minutes or
+more away, but only if what waits on you changed. When a task she did not launch fails, goes quiet or
+loses contact, or says it is finished and still waits for review after ten minutes, she writes one line
+about it (events close together are written as one line, at most one line every two minutes), with an
+**Open task** button. Details:
+[Lucy live](reference/lucy-live.md#what-she-writes-on-her-own).
 
 #### Interaction log (on by default, local only)
 

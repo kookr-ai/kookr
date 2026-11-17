@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { ECHO_TAIL_MS, HANDS_OFF_CANCEL_WINDOW_MS, LAUNCH_PROPOSAL_TTL_MS } from '../../core/lucy-operator/launch-proposal.js';
 import type { LucyAutonomy } from '../../shared/contracts/lucy-launch.js';
 import type { LucyLaunchRecordInput } from '../lucy-interaction-log.js';
-import { createLucyLaunchController, type LucyLaunchBroadcast, type LucyLaunchControllerDeps } from './launch-controller.js';
+import { NEEDS_INPUT_HOLD_MS, createLucyLaunchController, needsReasonOf, type LucyLaunchBroadcast, type LucyLaunchControllerDeps } from './launch-controller.js';
 
 const PROJECTS = [{ name: 'kookr', cwd: '/work/kookr' }, { name: 'research', cwd: '/work/research' }];
 const INVESTIGATION = JSON.stringify({ kind: 'investigation', project: 'kookr', description: 'Find out why the issue tasks stop chaining.' });
@@ -16,7 +16,7 @@ function setup(options: { level?: LucyAutonomy; reply?: string; room?: string | 
   const writerCalls: Array<{ system: string; operatorWords: readonly string[] }> = [];
   const logs: LucyLaunchRecordInput[] = [];
   const messages: LucyLaunchBroadcast[] = [];
-  const timers: Array<{ fn: () => void; ms: number; live: boolean }> = [];
+  const timers: Array<{ fn: () => void; ms: number; live: boolean; at: number }> = [];
   let room: string | null = options.room ?? null;
   const controller = createLucyLaunchController({
     getAutonomy: () => level,
@@ -33,7 +33,7 @@ function setup(options: { level?: LucyAutonomy; reply?: string; room?: string | 
     now: () => clock,
     newId: () => `p${++ids}`,
     warn: () => {},
-    setTimer: (fn, ms) => { timers.push({ fn, ms, live: true }); return timers.length - 1; },
+    setTimer: (fn, ms) => { timers.push({ fn, ms, live: true, at: clock + ms }); return timers.length - 1; },
     clearTimer: (h) => { timers[h as number]!.live = false; },
   });
   return {
@@ -41,6 +41,15 @@ function setup(options: { level?: LucyAutonomy; reply?: string; room?: string | 
     setLevel: (next: LucyAutonomy) => { level = next; },
     setRoom: (next: string | null) => { room = next; },
     advance: (ms: number) => { clock += ms; },
+    /** Let time pass and fire the timers that come due, as the real clock would. */
+    elapse: (ms: number) => {
+      clock += ms;
+      for (const timer of timers) {
+        if (!timer.live || timer.at > clock) continue;
+        timer.live = false;
+        timer.fn();
+      }
+    },
     propose: (words: readonly string[] = WORDS) => controller.propose({ conversationId: 'c1', operatorWords: words }),
   };
 }
@@ -106,6 +115,23 @@ describe('propose', () => {
     const result = await t.propose();
     expect(result.ok).toBe(false);
     expect(t.controller.pending('c1')).toBeUndefined();
+  });
+
+  test('a project she may not launch in is refused by name, naming where she can launch', async () => {
+    const t = setup({ reply: JSON.stringify({ kind: 'investigation', project: 'secrets', description: 'x' }) });
+    expect(await t.propose()).toEqual({ ok: false, say: 'I cannot launch in secrets. I can launch in kookr and research.', why: 'unknown project' });
+    expect(t.controller.pending('c1')).toBeUndefined();
+    expect(t.launches).toHaveLength(0);
+  });
+
+  test('the name she says back is redacted, and at most five launchable projects are named', async () => {
+    const projects = ['a1', 'b2', 'c3', 'd4', 'e5', 'f6'].map((name) => ({ name, cwd: `/work/${name}` }));
+    const t = setup({ projects, reply: JSON.stringify({ kind: 'investigation', project: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', description: 'x' }) });
+    const result = await t.propose();
+    expect(result).toMatchObject({ ok: false, why: 'unknown project' });
+    if (result.ok) return;
+    expect(result.say).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789');
+    expect(result.say).toMatch(/I can launch in a1, b2, c3, d4 and e5 and 1 more\.$/);
   });
 
   test('no projects means no proposal', async () => {
@@ -411,20 +437,120 @@ describe('the report back', () => {
     t.messages.length = 0;
     t.controller.onTaskOutcome('task-1', { kind: 'needs_input' });
     t.controller.onTaskOutcome('task-1', { kind: 'needs_input' });
-    t.advance(6 * 60 * 1000);
+    t.elapse(NEEDS_INPUT_HOLD_MS);
+    expect(t.messages).toHaveLength(1);
     t.controller.onTaskOutcome('task-1', { kind: 'needs_input' });
+    t.elapse(NEEDS_INPUT_HOLD_MS);
+    expect(t.messages).toHaveLength(1);
+    t.elapse(6 * 60 * 1000);
+    t.controller.onTaskOutcome('task-1', { kind: 'needs_input' });
+    t.elapse(NEEDS_INPUT_HOLD_MS);
     expect(t.messages).toHaveLength(2);
   });
 
-  test('needing the operator is reported, and the task is still followed to its end', async () => {
+  test('needing the operator is reported once the hold is over, and the task is still followed to its end', async () => {
     const t = setup();
     await t.propose();
     await t.controller.confirm('c1', 'p1', 'click');
     t.messages.length = 0;
     t.controller.onTaskOutcome('task-1', { kind: 'needs_input' });
+    t.elapse(NEEDS_INPUT_HOLD_MS - 1);
+    expect(t.messages).toEqual([]);
+    expect(t.controller.reportText('task-1')).toBeUndefined();
+    t.elapse(1);
+    expect(t.controller.reportText('task-1')).toBe('The task I started needs you.');
+    t.elapse(60_000);
     t.controller.onTaskOutcome('task-1', { kind: 'completion_ready' });
     t.controller.onTaskOutcome('task-1', { kind: 'completed' });
     expect(t.messages.map((m) => ('report' in m ? m.report?.kind : null))).toEqual(['needs_input', 'finished']);
+  });
+});
+
+describe('one report per finished task, and it says why', () => {
+  async function launched() {
+    const t = setup();
+    await t.propose();
+    await t.controller.confirm('c1', 'p1', 'click');
+    t.messages.length = 0;
+    return t;
+  }
+  const reports = (t: Awaited<ReturnType<typeof launched>>) => t.messages.flatMap((m) => ('report' in m && m.report ? [m.report] : []));
+
+  test('the hold is about eight seconds', () => {
+    expect(NEEDS_INPUT_HOLD_MS).toBe(8_000);
+  });
+
+  test.each(['completion_ready', 'completed', 'failed', 'cancelled'] as const)(
+    '"needs you" followed within the hold by %s gives one report, the later one', async (kind) => {
+      const t = await launched();
+      t.controller.onTaskOutcome('task-1', { kind: 'needs_input' }, 'Chaining investigation');
+      t.elapse(6_000);
+      t.controller.onTaskOutcome('task-1', { kind }, 'Chaining investigation');
+      t.elapse(60_000);
+      expect(reports(t)).toHaveLength(1);
+      expect(reports(t)[0]).toMatchObject({ taskId: 'task-1', kind: 'finished' });
+      expect(reports(t)[0]!.text).not.toContain('needs you');
+      // The speech route says only the report that was sent.
+      expect(t.controller.reportText('task-1')).toBe(reports(t)[0]!.text);
+    },
+  );
+
+  test('the dropped "needs you" is never the sentence the speech route would say', async () => {
+    const t = await launched();
+    t.controller.onTaskOutcome('task-1', { kind: 'needs_input' }, 'Chaining investigation');
+    expect(t.controller.reportText('task-1')).toBeUndefined();
+    t.controller.onTaskOutcome('task-1', { kind: 'completion_ready' }, 'Chaining investigation');
+    expect(t.controller.reportText('task-1')).toBe('The task I started "Chaining investigation" says it is done and is waiting for you to look at it.');
+    expect(t.timers.filter((timer) => timer.live)).toHaveLength(0);
+  });
+
+  test('"needs you" that outlasts the hold is sent, and the end that comes later is a second report', async () => {
+    const t = await launched();
+    t.controller.onTaskOutcome('task-1', { kind: 'needs_input' });
+    t.elapse(NEEDS_INPUT_HOLD_MS);
+    t.elapse(1);
+    t.controller.onTaskOutcome('task-1', { kind: 'completion_ready' });
+    expect(reports(t).map((report) => report.kind)).toEqual(['needs_input', 'finished']);
+  });
+
+  test.each([
+    ['question', 'The task I started "Chaining investigation" is waiting on a question.'],
+    ['permission', 'The task I started "Chaining investigation" is waiting for a permission.'],
+    [undefined, 'The task I started "Chaining investigation" needs you.'],
+  ] as const)('it says what the task waits for when known: %s', async (waitsFor, text) => {
+    const t = await launched();
+    t.controller.onTaskOutcome('task-1', { kind: 'needs_input', ...(waitsFor ? { waitsFor } : {}) }, 'Chaining investigation');
+    t.elapse(NEEDS_INPUT_HOLD_MS);
+    expect(reports(t)).toEqual([{ taskId: 'task-1', conversationId: 'c1', kind: 'needs_input', text }]);
+  });
+
+  test('a second finding during the hold that knows the reason gives the sentence; one that does not keeps the first', async () => {
+    const t = await launched();
+    t.controller.onTaskOutcome('task-1', { kind: 'needs_input' });
+    t.elapse(2_000);
+    t.controller.onTaskOutcome('task-1', { kind: 'needs_input', waitsFor: 'permission' });
+    t.elapse(2_000);
+    t.controller.onTaskOutcome('task-1', { kind: 'needs_input' });
+    t.elapse(NEEDS_INPUT_HOLD_MS);
+    expect(reports(t).map((report) => report.text)).toEqual(['The task I started is waiting for a permission.']);
+    // The hold ran from the first finding, not from the later ones.
+    expect(t.timers.filter((timer) => timer.ms === NEEDS_INPUT_HOLD_MS)).toHaveLength(1);
+  });
+
+  test('the reason is read from the finding: a permission prompt, a question asked in the session, or unknown', () => {
+    expect(needsReasonOf({ type: 'permission_blocked' })).toBe('permission');
+    expect(needsReasonOf({ type: 'needs_input', subType: 'ask_user_question' })).toBe('question');
+    expect(needsReasonOf({ type: 'needs_input', subType: 'stop' })).toBeUndefined();
+    expect(needsReasonOf({ type: 'needs_input' })).toBeUndefined();
+    expect(needsReasonOf({ type: 'stale_agent', subType: 'ask_user_question' })).toBeUndefined();
+  });
+
+  test('dispose stops a held report', async () => {
+    const t = await launched();
+    t.controller.onTaskOutcome('task-1', { kind: 'needs_input' });
+    t.controller.dispose();
+    t.elapse(NEEDS_INPUT_HOLD_MS);
+    expect(reports(t)).toEqual([]);
   });
 });
 
@@ -507,3 +633,46 @@ describe('hardening from review', () => {
     expect((await t.controller.confirm('c1', 'p2', 'click')).outcome).toBe('launched');
   });
 });
+
+describe('one card for all of her proposals', () => {
+  test('making a launch card tells the holder of her other cards to clear its own, once per card made', async () => {
+    let cleared = 0;
+    const controller = createLucyLaunchController({
+      getAutonomy: () => 'balanced',
+      getProjects: () => PROJECTS,
+      writeSpec: async () => INVESTIGATION,
+      checkRoom: () => null,
+      launch: async () => ({ task: { id: 'task-1' } }),
+      onHeld: () => { cleared += 1; },
+      warn: () => {},
+    });
+    await controller.propose({ conversationId: 'c1', operatorWords: WORDS });
+    expect(cleared).toBe(1);
+    // A request that makes no card clears nothing.
+    await controller.propose({ conversationId: 'c1', operatorWords: [] });
+    expect(cleared).toBe(1);
+    controller.dispose();
+  });
+
+  test('when another kind of card takes the screen, the launch card is dropped and can no longer be confirmed', async () => {
+    const t = setup();
+    await t.propose();
+    t.controller.dropPending();
+    expect(t.controller.pending('c1')).toBeUndefined();
+    expect(t.messages.at(-1)).toEqual({ type: 'lucy_launch', conversationId: 'c1', outcome: { outcome: 'cancelled', proposalId: 'p1' } });
+    expect(t.logs.at(-1)).toMatchObject({ event: 'dropped', reason: 'replaced' });
+    expect(await t.controller.confirm('c1', 'p1', 'click')).toEqual({ outcome: 'unknown', proposalId: 'p1' });
+    expect(await t.controller.handleReply('c1', 'go')).toEqual({ handled: false });
+    expect(t.launches).toHaveLength(0);
+  });
+
+  test('a hands-off launch that is counting down is stopped the same way', async () => {
+    const t = setup({ level: 'hands-off' });
+    await t.propose();
+    t.controller.dropPending();
+    // The timer that would have launched it was cleared.
+    expect(t.timers.every((timer) => !timer.live)).toBe(true);
+    expect(t.launches).toHaveLength(0);
+  });
+});
+

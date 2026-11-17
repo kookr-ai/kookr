@@ -8,7 +8,10 @@
  *
  * The last {@link MAX_CLIP_HISTORY} clips are kept (bounded memory: a clip that
  * falls off the end takes its audio with it), newest first, and only in memory:
- * a page reload forgets them. A clip is "heard" once the operator could actually
+ * a page reload forgets them. The text of an older clip is not lost: the avatar
+ * panel copies each clip's text into its conversation thread
+ * (`avatar/useThreadSync.ts`) when the clip arrives, where it stays without a
+ * Replay button once its audio is gone. A clip is "heard" once the operator could actually
  * have listened to it (see `clip-playback.ts`); until then the avatar panel shows
  * an "unheard" marker.
  */

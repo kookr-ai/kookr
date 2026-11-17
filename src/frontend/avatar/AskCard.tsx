@@ -10,8 +10,12 @@
  * ("Answered on Telegram: …", "You answered: …"), because the same question is also on the operator's phone and they need to
  * see that the two agree.
  *
+ * In the tray (`WaitingTray.tsx`) only one pending card is open at a time; the others are one-line rows.
+ * An open card's top line is then a button that folds it back (`onCollapse`), and the text typed into
+ * its answer box is kept by the tray (`draft`), so folding a card does not lose a half-typed answer.
+ *
  * Purely presentational: the list, the sending state and the socket live in
- * `store/operator-asks.ts` and `AvatarDock.tsx`. So do two things a card cannot
+ * `store/operator-asks.ts`, `WaitingTray.tsx` and `AvatarDock.tsx`. So do two things a card cannot
  * do for itself, because it is replaced or removed when its question closes:
  * telling a screen reader the outcome, and keeping keyboard focus in the panel.
  */
@@ -37,6 +41,10 @@ export interface AskCardProps {
    * session in the dashboard), so the card can say so. Absent: no "Open task" button.
    */
   onOpenTask?: (taskId: string) => boolean;
+  /** Present when the card sits in a list of folded rows: the card's top line then folds it back to a row. */
+  onCollapse?: () => void;
+  /** The text typed into the answer box, kept by the caller so it survives the card being folded away. */
+  draft?: { value: string; set: (value: string) => void };
 }
 
 /** Shown when "Open task" could not select the task. */
@@ -55,6 +63,14 @@ export function timeLeftText(expiresAt: number, nowMs: number): string {
   if (minutes < 1) return 'under a minute left';
   if (minutes < 120) return `${minutes} min left`;
   return `${Math.round(minutes / 60)} h left`;
+}
+
+/** "29 min", "under a minute", "4 h": how long until a question closes, without the word "left". */
+export function closesInText(expiresAt: number, nowMs: number): string {
+  const minutes = Math.floor((expiresAt - nowMs) / 60_000);
+  if (minutes < 1) return 'under a minute';
+  if (minutes < 120) return `${minutes} min`;
+  return `${Math.round(minutes / 60)} h`;
 }
 
 function chosenText(ask: OperatorAskView): string {
@@ -88,8 +104,10 @@ export function askOutcome(ask: OperatorAskView): { text: string; answered: bool
   return { text: 'The task withdrew this question', answered: false };
 }
 
-export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask }: AskCardProps) {
-  const [text, setText] = useState('');
+export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, onCollapse, draft }: AskCardProps) {
+  const [ownText, setOwnText] = useState('');
+  const text = draft ? draft.value : ownText;
+  const setText = draft ? draft.set : setOwnText;
   const [openTaskFailed, setOpenTaskFailed] = useState(false);
   const questionId = useId();
   const who = ask.taskName ? `${ask.taskName} asks` : 'A task asks';
@@ -141,13 +159,26 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask }:
     answer({ text: trimmed });
   };
 
+  const headContent = (
+    <>
+      <span className="avatar-mark-diamond" aria-hidden="true" />
+      <span className="avatar-ask-who" title={who}>{who}</span>
+      <span className="avatar-ask-time">{timeLeftText(ask.expiresAt, nowMs)}</span>
+    </>
+  );
+  // In a list of folded rows the top line is the button that folds this card back into its row.
+  const head = onCollapse ? (
+    <button type="button" className="avatar-ask-head avatar-ask-toggle" onClick={onCollapse} aria-expanded="true" data-ask-toggle="" data-testid="avatar-ask-collapse">
+      {headContent}
+      <span className="avatar-ask-chevron" aria-hidden="true" />
+    </button>
+  ) : (
+    <div className="avatar-ask-head">{headContent}</div>
+  );
+
   return (
     <li className="avatar-ask avatar-ask-pending" tabIndex={-1} data-testid="avatar-ask" data-ask-id={ask.id} data-ask-state="pending">
-      <div className="avatar-ask-head">
-        <span className="avatar-mark-diamond" aria-hidden="true" />
-        <span className="avatar-ask-who" title={who}>{who}</span>
-        <span className="avatar-ask-time">{timeLeftText(ask.expiresAt, nowMs)}</span>
-      </div>
+      {head}
       <p className="avatar-ask-question" id={questionId} data-testid="avatar-ask-question"><TextWithLinks text={ask.question} /></p>
       {ask.context && (
         <details className="avatar-ask-context">

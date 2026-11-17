@@ -146,6 +146,24 @@ const lucyLaunchMessage = z.object({
   report: jsonObject.optional(),
 });
 
+// A line Lucy writes on her own about a task she did not launch.
+const lucySaysMessage = z.object({
+  type: z.literal('lucy_says'),
+  id: z.string(),
+  kind: z.string(),
+  text: z.string(),
+  taskIds: z.array(z.string()),
+  at: z.number(),
+});
+
+// Lucy's proposals about an existing task (answer, reply, close): a card, or what became of it.
+const lucyActionMessage = z.object({
+  type: z.literal('lucy_action'),
+  conversationId: z.string(),
+  proposal: jsonObject.optional(),
+  outcome: jsonObject.optional(),
+});
+
 const updateMessage = z.object({
   type: z.literal('update'),
   agentId: z.string(),
@@ -494,7 +512,7 @@ const operatorAsksMessage = z.object({
 const lucyPermissionCardsMessage = z.object({
   type: z.literal('lucyPermissionCards'),
   cards: z.array(jsonObject),
-  announce: z.object({ noticeId: z.string(), promptIds: z.array(z.string()) }).optional(),
+  announce: z.object({ noticeId: z.string(), promptIds: z.array(z.string()), text: z.string().optional() }).optional(),
   serverNow: z.number().optional(),
 });
 
@@ -510,6 +528,8 @@ const ServerMessageSchemaImpl = z.union([
   snapshotMessage,
   deltaMessage,
   lucyLaunchMessage,
+  lucySaysMessage,
+  lucyActionMessage,
   updateMessage,
   alertMessage,
   githubUpdateMessage,

@@ -12,6 +12,7 @@
  */
 
 import type { LucyLaunchKind } from '../../shared/contracts/lucy-launch.js';
+import { redactSpeechSecrets } from '../task-speech-summary.js';
 
 /** Longest task description, in characters. Matches the Telegram path's `TaskSpecSchema`. */
 export const MAX_LAUNCH_DESCRIPTION_CHARS = 2000;
@@ -102,6 +103,26 @@ export function resolveProject(name: string, projects: readonly LaunchableProjec
   return hits.length === 1 ? hits[0]! : null;
 }
 
+/** How many launchable projects she names when she has to refuse one. */
+const MAX_NAMED_LAUNCHABLE = 5;
+
+/**
+ * What she says when the project the operator named is not one she may launch in: it says which
+ * name she understood and where she can launch, instead of only asking again. The understood name
+ * came from the model and the project names from the folders, so both are redacted and cut first.
+ */
+export function buildUnknownProjectSay(understood: string, projects: readonly LaunchableProject[]): string {
+  const clean = (text: string, max: number): string => redactSpeechSecrets(text.replace(/\s+/g, ' ').trim()).slice(0, max).trim();
+  const named = clean(understood, 40);
+  const refusal = named ? `I cannot launch in ${named}.` : 'I cannot launch there.';
+  const names = projects.map((p) => clean(p.name, 40)).filter((n) => n.length > 0);
+  if (names.length === 0) return refusal;
+  const shown = names.slice(0, MAX_NAMED_LAUNCHABLE);
+  const list = shown.length === 1 ? shown[0]! : `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
+  const more = names.length > shown.length ? ` and ${names.length - shown.length} more` : '';
+  return `${refusal} I can launch in ${list}${more}.`;
+}
+
 /**
  * What the task is told. An investigation reports and files issues but does not open a pull
  * request unless asked; this wording is added by the server, by kind, so the model cannot
@@ -134,15 +155,45 @@ function normalize(text: string): string {
   return text.toLowerCase().replace(/['’]/g, '').replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/** Confirm words that only make sense for a launch: with an answer, reply or close card on screen they are a new request. */
+const LAUNCH_ONLY_CONFIRM = new Set(['launch it', 'start it']);
+
 /**
  * How a sentence answers a pending proposal. Only a whole sentence made of a confirm word counts:
  * "go and also delete the logs" is neither, so it drops the proposal and goes to Lucy as a new request.
+ * `card` is the kind of card on screen: an `action` card (answer, reply, close) is not confirmed by "launch it".
  */
-export function classifyReply(text: string): 'confirm' | 'decline' | 'other' {
+export function classifyReply(text: string, card: 'launch' | 'action' = 'launch'): 'confirm' | 'decline' | 'other' {
   const n = normalize(text);
-  if (CONFIRM.has(n)) return 'confirm';
+  if (CONFIRM.has(n)) return card === 'action' && LAUNCH_ONLY_CONFIRM.has(n) ? 'other' : 'confirm';
   if (DECLINE.has(n)) return 'decline';
   return 'other';
+}
+
+/** Rough time to speak a sentence: about three words a second, plus a second for the voice to start. */
+export function estimateSpeechMs(sentence: string): number {
+  const words = sentence.split(/\s+/).filter(Boolean).length;
+  return Math.round((words / 3) * 1000) + 1000;
+}
+
+/** What the server knows about how the operator's sentence arrived. */
+export interface LucyReplyContext {
+  input?: 'voice' | 'typed';
+  /** The browser saw the words start while she was still saying the read-back. */
+  overlapsReadBack?: boolean;
+  /** Server clock at the moment the spoken words began. */
+  speechStartedAt?: number;
+}
+
+/**
+ * The echo rule, shared by every kind of card: spoken words that began while she was still reading
+ * a proposal aloud could be her own voice coming back through the microphone, so they neither
+ * confirm the proposal nor drop it. Saying no is always safe, so a decline is heard even then.
+ * `speakingUntil` is when her read-back ends, on the server clock.
+ */
+export function mayBeOwnVoice(text: string, context: LucyReplyContext, speakingUntil: number, nowMs: number, card: 'launch' | 'action' = 'launch'): boolean {
+  if (context.input !== 'voice' || classifyReply(text, card) === 'decline') return false;
+  return context.overlapsReadBack === true || (context.speechStartedAt ?? nowMs) < speakingUntil;
 }
 
 /**

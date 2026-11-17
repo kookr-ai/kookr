@@ -126,8 +126,9 @@ and the server reads it as a turn it starts on its own (`turn_start`, then sente
 for an answer):
 
 - She waits her turn: not while you are speaking, while she is answering, while a sound is being
-  checked, or while a read-back or a launch proposal waits for your "yes" (issue #4015: a "yes" to
-  the question would otherwise confirm the launch), and not until 0.8 s after her voice ends.
+  checked, or while a read-back, a launch proposal or one of her answer, reply or close cards waits
+  for your "yes" (issue #4015: a "yes" to the question would otherwise confirm the launch or carry
+  out the action), and not until 0.8 s after her voice ends.
   Several questions are said one at a time, in the order they came.
 - If you begin to speak before her first sentence of it is sent (or while Silero is still checking a
   sound that began before it), she holds it back and says it once your turn and her answer are over. Words that began before the question reached the browser are
@@ -152,10 +153,14 @@ for an answer):
   (and reports them with `turn_unplayed`, so they are said later). A held question's `turn_done` is
   kept and shown when the question starts, so an error in it is not lost.
 - It is answered, withdrawn or expires while she reads it: she stops (`drop_ask`).
-- No clip is fetched for it, so it does not appear in her message list and has no Replay button; the
+- No clip is fetched for it, so it does not appear in her conversation thread as a spoken message and has no Replay button; the
   card carries it. If she can no longer say it before any of it was heard (the server already has ten
   questions waiting and answers `ask_refused`, the connection drops, or Talk is switched off), the
   browser plays it as a clip after all, under the usual clip rules (issue #4015).
+- Its words are written in her conversation thread, like an answer's, but only once its first sound
+  is heard. A question of which nothing was heard is therefore in the thread once: as her words when
+  she says it later, as the clip when it is played as one, or as a written line when that clip could
+  not be fetched either.
 
 Because Silero filters the noise, the browser's own bar for a candidate while she talks is 0.15 s of
 loud sound, down from 0.3 s. Silero also guards ordinary turns: if a whole turn never contains a
@@ -273,9 +278,11 @@ the task gave (folded under "Background"), a button for each page the question l
 --link`, for example "Open mockups", which opens a new tab), an **Open task** button that selects the
 asking task in the dashboard, one button per choice, a box for a typed answer when the task accepts
 one, and how long the question stays open. URLs written in the question or its background are
-clickable. If the task cannot be shown (it has no live session in the dashboard), the card says so. Lucy reads out who is asking, the question and
-the choices. She does not read the background: it usually holds paths and numbers that are easier to
-read than to hear. While a question is waiting, the list of recent messages is hidden to make room.
+clickable. If the task cannot be shown (it has no live session in the dashboard), the card says so. Lucy says one short
+sentence, at most 25 words: who is asking, the question (cut when it is long) and that the choices are
+on her card ("The task Billing migration needs your input: Run the table rename on production now?
+Three choices are on my card."). She does not read the choices or the background: read aloud they
+made clips of 16 to 45 seconds, and the card shows them in full. While a question is waiting, the list of recent messages is hidden to make room.
 
 **One question, two places to answer.** Telegram and the panel show the same record, kept by the Kookr
 server. Whichever answer arrives first is the answer; the task gets it as the same typed line either
@@ -300,7 +307,7 @@ she says unprompted, under these rules:
   her ask again;
 - in one browser tab. With several Kookr tabs open they agree on which one speaks, and a visible tab
   goes first;
-- not with sound off in Settings or Do Not Disturb on. The clip is then kept in her message list,
+- not with sound off in Settings or Do Not Disturb on. The clip is then kept in her conversation thread,
   marked unheard, and the Replay button plays it;
 - the same when the browser refuses to start audio because you have not clicked in the page yet;
 - with Talk on, in the conversation rather than as a clip, when nothing else is going on (see
@@ -395,6 +402,43 @@ read-only shared view.
 against a throwaway server and a fake Telegram, and saves screenshots of the card in each state. With
 `--autoplay-blocked` it checks the case where the browser will not start audio because nobody has
 clicked in the page yet.
+
+## What she writes on her own
+
+Lucy writes first and speaks second. Three things appear in her thread without being asked for, as
+messages from her. None of them is spoken, and none calls a model: the server builds each sentence
+from its own records with fixed patterns, and names a task only when its title may be said aloud.
+
+**A briefing.** The first time her panel is on screen after the page loads, she writes what is waiting
+on you, in at most about 45 words: what is stopped until you act first ("Three tasks are stopped on a
+question; Billing migration's closes first. Two others are waiting for a permission."), then questions
+left by tasks that have ended ("Two finished tasks would like your opinion."), then how many tasks
+are working. When nothing needs you it is one line: "All clear: nothing needs you. Four tasks are
+working." Under it the entry carries up to three follow-up requests chosen from the state ("Walk me
+through the questions", "What should I do first?", "What finished while I was away?"). She writes it
+again when you come back after 10 minutes or more away (the tab was hidden, or nothing was typed or
+moved), but only if what waits on you changed in the meantime. A page reloaded within 30 minutes of
+the last briefing does not repeat it unless it changed. "Changed" means which tasks wait, why, and
+which questions are open; one more task that is simply working is not a change. The briefing comes
+from `GET /api/lucy/briefing` and needs Lucy's operator conversation to be on (the follow-up requests
+are turns of it); with the conversation off she writes none.
+
+**A word about a task.** When a task she did not launch fails, goes quiet or loses contact with
+Kookr, she writes one line at once: "Docs link audit failed." A task that says it is finished is
+different: Kookr closes almost every such task by itself within a few minutes, so she waits ten
+minutes and writes "Docs link audit says it is finished and wants your review." only if the task is
+then still open and still waiting. Further events within two minutes of a line are written together
+when those two minutes are over ("Two more tasks want your review: A and B."), so at most one line
+every two minutes. The same task and the same kind of event are not written twice within ten
+minutes. A task you stopped yourself is left out, and so is a task she launched: its end is reported
+in the conversation that launched it. Nothing is written again when the page reloads or reconnects,
+and what happened while no dashboard was open is not written later; the briefing covers that.
+
+**Words that could not be spoken.** A task's question and a permission notice are normally in the
+thread because their clip is. When no clip can be made (the speech service is not set up, or it
+failed), she writes the words instead: "Billing migration asks: Run the table rename on production
+now?", or the permission sentence. Nothing extra is written when a clip exists, heard or not. The same
+holds for a question the hands-free conversation gave back unsaid, whose clip is asked for later.
 
 ## Starting a task by voice
 
