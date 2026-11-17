@@ -17,8 +17,9 @@
 //     active Ralph loop (the loop chains on its own),
 //   - has no child task, and
 //   - has raised no completion signal (the recorded stop reason).
-// It stays silent while the agent is parked on its own background work, outside
-// a Kookr task, and on any error (fail open).
+// It stays silent while the agent is parked on its own background work, when a
+// task not flagged `unattended: true` ends its turn on a question to the
+// operator (issue #4047), outside a Kookr task, and on any error (fail open).
 //
 // It does not rely on `stop_hook_active`: when another Stop hook (such as
 // delivery-step-stop) blocked first, the agent's next stop carries that flag,
@@ -26,8 +27,9 @@
 // MAX_BLOCKS times per task, counted in a small file under the temp directory.
 // Once the task has handed off (child or signal seen), the counter is set to the
 // limit, so a later stop is not blocked after an operator message clears the
-// signal. Known limits: any child task counts as the successor, and an attended
-// chain task that ends turns to wait for the operator uses up the blocks.
+// signal. Known limits: any child task counts as the successor; an unflagged
+// task that asks its question without a question mark still uses up the
+// blocks; and an unflagged task that nobody watches can end on a question.
 // Opt out: KOOKR_CHAIN_HANDOFF_STOP_SKIP=1.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -58,6 +60,35 @@ export function isSelfContinuationTask(task) {
   );
 }
 
+/**
+ * True when the agent's last message ends on a question: a line ending in `?`
+ * among its last few non-empty lines, so a question followed by a short list of
+ * options still counts. Markdown emphasis and closing quotes or brackets after
+ * the `?` are ignored. A missing or empty message is not a question.
+ */
+export function endsWithQuestion(message) {
+  if (typeof message !== 'string') return false;
+  const lines = message
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-6);
+  return lines.some((line) => /\?[\s*_`'"’”)\]]*$/.test(line));
+}
+
+/**
+ * True when the agent is waiting on an operator who may be there to answer:
+ * the task is not flagged `unattended: true` and the last message asks a
+ * question (issue #4047). The flag alone is not enough: 49 of 222 real chain
+ * tasks had none, so an unflagged task that ends its turn silently is still
+ * blocked; only one that ends on a question is let through. A task flagged
+ * unattended is always blocked, since nobody will answer it.
+ */
+export function isAskingOperator(event, task) {
+  if (task?.unattended === true) return false;
+  return endsWithQuestion(event?.last_assistant_message);
+}
+
 /** True once the task spawned a child or raised a completion signal. */
 export function hasHandedOff(task) {
   if (Array.isArray(task?.childTaskIds) && task.childTaskIds.length > 0) return true;
@@ -78,6 +109,7 @@ export function decide({ event, task, priorBlocks = 0 }) {
   if (task.chain) return null;
   if (task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused') return null;
   if (hasHandedOff(task)) return null;
+  if (isAskingOperator(event, task)) return null;
   return [
     'This is a self-continuation chain task, and it is ending its turn with no successor task and no recorded stop reason.',
     'Nobody will resume this session: if it stops here, the chain breaks and the task looks like a crash.',
@@ -85,6 +117,8 @@ export function decide({ event, task, priorBlocks = 0 }) {
     '- If the unit reached a terminal outcome (merged, closed, quarantined, blocker recorded) and an eligible unit remains, spawn the successor now:',
     '  kookr spawn -C <repository checkout> --prompt-file <file> --parent-task-id "$KOOKR_TASK_ID" --unattended --json </dev/null',
     '  (-C sets the child\'s working directory and project; never spawn from the scratchpad without it.)',
+    '- If you already spawned the successor without --parent-task-id, do not spawn a second one: record the existing child instead:',
+    '  kookr signal completion-ready --note "successor <task id> spawned"',
     '- If no eligible unit remains or the chain must stop, record why: kookr signal completion-ready --note "chain end: <reason>"',
     'See the self-continuation-task skill (Handoff Procedure).',
   ].join('\n');
