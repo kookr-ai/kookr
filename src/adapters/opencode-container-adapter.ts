@@ -32,8 +32,9 @@ import { resolveSessionPolicy } from './opencode-session-policy.js';
 import type { ShelfShowRunner } from './opencode-shelf-memory.js';
 import {
   inspectOpenCodeSession, isAbsentOrEmptyDir, isMarkedTaskDir, markTaskDir, openCodeTaskDataHome, openCodeTaskDir,
-  readGateBase, readOpenCodeSessionId, removeMarkedTaskDir, touchTaskDir,
+  readGateBase, readOpenCodeSessionId, removeMarkedTaskDir, touchTaskDir, waitForTaskDirUnlocked,
 } from './opencode-task-data.js';
+import { markTaskDirLaunching } from './opencode-launching-task-dirs.js';
 import { readTaskDirUsage, recordTaskUsage, usageBeforeFreshLaunch, writeUsageBaseline } from './opencode-task-usage.js';
 import type { TerminalBackend } from './terminal-backend.js';
 
@@ -161,6 +162,7 @@ export class OpenCodeContainerAdapter {
     let ranDocker = false;
     let sessionCreated = false;
     let taskRegistered = false;
+    let releaseTaskDir: (() => void) | undefined;
     try {
       opts?.onPhase?.('session-create');
       const live = await this.liveContainerCount();
@@ -176,8 +178,15 @@ export class OpenCodeContainerAdapter {
       }
       throwIfAborted(opts?.signal);
 
-      const resuming = resume?.sessionId !== undefined && await this.canResume(taskId, resume);
       const taskDir = openCodeTaskDir(this.cfg.dataRoot, taskId);
+      // The host adapter's retention sweep shares this data root (#4085). Mark the dir before the first read, so a
+      // removal that has not made its active check yet skips it; then wait for one already past that check, so this
+      // launch sees the dir gone (and launches fresh) instead of reading or re-creating it mid-removal. Held until
+      // the launch ends: by then the session is on the task and alive, which the sweep's live-session check sees.
+      releaseTaskDir = markTaskDirLaunching(taskDir);
+      await waitForTaskDirUnlocked(taskDir);
+      throwIfAborted(opts?.signal);
+      const resuming = resume?.sessionId !== undefined && await this.canResume(taskId, resume);
       const priorGateBase = !resuming && (await isMarkedTaskDir(taskDir, taskId)) ? await readGateBase(taskDir) : undefined;
       const priorRecord = await this.readRecord(taskId);
       // Before the wipe: the usage this task already spent, carried as the new DB's baseline (#3527).
@@ -309,6 +318,7 @@ export class OpenCodeContainerAdapter {
       if (!launched) await this.abortLaunch(taskId, containerName, token, { ranDocker, sessionCreated, taskRegistered });
       throw err;
     } finally {
+      releaseTaskDir?.();
       this.launching.delete(taskId);
     }
   }

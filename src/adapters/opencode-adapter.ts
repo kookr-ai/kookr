@@ -94,6 +94,7 @@ import {
   touchTaskDir,
   waitForTaskDirUnlocked,
 } from './opencode-task-data.js';
+import { isTaskDirLaunching } from './opencode-launching-task-dirs.js';
 import { readTaskDirUsage, recordTaskUsage, usageBeforeFreshLaunch, writeUsageBaseline } from './opencode-task-usage.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
 import type { TerminalBackend } from './terminal-backend.js';
@@ -619,8 +620,11 @@ export class OpenCodeAdapter implements AgentAdapter {
         activeTaskIds: active,
         // The backend probe is awaited FIRST: the in-memory checks must be read after it, right before the removal,
         // or a resume launch that registers while the probe runs would have its data deleted under it.
+        // A container launch (OpenCodeContainerAdapter, same data root) is in none of this adapter's maps: it marks the
+        // task dir in the shared launching registry instead (#4085).
         isActive: async (id) =>
-          (await this.hasLiveSession(id)) || id === launchingTaskId || [...this.tmuxToTaskId.values()].includes(id),
+          (await this.hasLiveSession(id)) || id === launchingTaskId || [...this.tmuxToTaskId.values()].includes(id) ||
+          isTaskDirLaunching(openCodeTaskDir(this.dataRoot, id)),
         maxAgeMs: this.dataMaxAgeMs,
         doneTtlMs: this.dataDoneTtlMs,
         maxBytes: this.dataMaxBytes,
@@ -718,6 +722,9 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 
   private async cleanupFailedLaunch(tmuxName: string): Promise<void> {
+    // Like `stop`: a hook event that arrives during or after this cleanup must not re-register the session (#4085). Set
+    // before the first await; a relaunch under the same name clears it again.
+    this.rememberStopped(tmuxName);
     await this.recordSessionTokenUsage(tmuxName);
     const failedTaskId = this.tmuxToTaskId.get(tmuxName);
     const launchToken = this.launchTokens.get(tmuxName);
