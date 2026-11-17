@@ -321,4 +321,60 @@ grep -q "run 'pnpm install --frozen-lockfile' there first" <<<"$ERR" || fail "no
 assert_clean_tmp "$WORK/t12" "$R3" "no node_modules"
 ok "no node_modules: prints the install command and still runs"
 
+# ---- --timeout (issue #4122) ----------------------------------------------------
+# Every pid in $1 is dead within 2 seconds.
+assert_pids_dead() { # $1 pid file, $2 label
+  local p i
+  [ -s "$1" ] || fail "$2: the mutant never recorded its background process"
+  while IFS= read -r p; do
+    i=0
+    while kill -0 "$p" 2>/dev/null; do
+      [ "$i" -lt 20 ] || fail "$2: process $p started by the test survived the timeout"
+      sleep 0.1; i=$((i + 1))
+    done
+  done <"$1"
+}
+
+run_mc "$WORK/t13" --repo "$R" --timeout abc --file calc.sh --line 2 --from '$1 + $2' --to '$1 - $2' -- sh test.sh
+assert_rc 2 "--timeout abc"
+grep -q -- '--timeout must be a positive number of seconds' <<<"$ERR" || fail "--timeout abc: wrong message: $ERR"
+assert_clean_tmp "$WORK/t13" "$R" "--timeout abc"
+run_mc "$WORK/t13b" --repo "$R" --timeout 00 --file calc.sh --line 2 --from '$1 + $2' --to '$1 - $2' -- sh test.sh
+assert_rc 2 "--timeout 00"
+assert_clean_tmp "$WORK/t13b" "$R" "--timeout 00"
+ok "refused: a non-numeric or zero --timeout"
+
+# A baseline that hangs: exit 5, the mutant never runs, the worktree is removed.
+export RUN_LOG="$WORK/run14.log"
+START=$SECONDS
+run_mc "$WORK/t14" --repo "$R" --timeout 1 --file calc.sh --line 2 --from '$1 + $2' --to '$1 - $2' -- sh -c 'pwd >>"$RUN_LOG"; sleep 30'
+ELAPSED=$((SECONDS - START))
+assert_rc 5 "baseline timeout"
+[ "$(head -n 1 <<<"$OUT")" = timeout ] || fail "baseline timeout: first stdout line is not 'timeout': $OUT"
+grep -q 'raise --timeout' <<<"$ERR" || fail "baseline timeout: no advice to raise the limit: $ERR"
+[ "$ELAPSED" -lt 15 ] || fail "baseline timeout: took ${ELAPSED}s with --timeout 1"
+[ "$(grep -c . "$RUN_LOG")" = 1 ] || fail "baseline timeout: the mutant must not run after a timed-out baseline"
+assert_clean_tmp "$WORK/t14" "$R" "baseline timeout"
+assert_ran_in_removed_worktree "$RUN_LOG" "$R" "baseline timeout"
+ok "baseline past --timeout: exit 5 within the bound, mutant not run, worktree removed"
+
+# A mutant that hangs, in a child of the test command and in a grandchild it
+# puts in the background (as pnpm starts node): exit 6, every process is dead,
+# the worktree is removed.
+export RUN_LOG="$WORK/run15.log"
+PIDS="$WORK/mutant.pids"
+START=$SECONDS
+run_mc "$WORK/t15" --repo "$R" --timeout 2 --file calc.sh --line 2 --from 'add() {' \
+  --to "add() { sleep 30 & echo \$! >>'$PIDS'; sleep 30;" -- sh test.sh
+ELAPSED=$((SECONDS - START))
+assert_rc 6 "mutant timeout"
+[ "$(head -n 1 <<<"$OUT")" = "killed (timeout)" ] || fail "mutant timeout: first stdout line is not 'killed (timeout)': $OUT"
+[ "$ELAPSED" -lt 15 ] || fail "mutant timeout: took ${ELAPSED}s with --timeout 2"
+[ "$(grep -c . "$RUN_LOG")" = 2 ] || fail "mutant timeout: expected a baseline run and a mutant run, got $(cat "$RUN_LOG")"
+assert_pids_dead "$PIDS" "mutant timeout"
+assert_clean_tmp "$WORK/t15" "$R" "mutant timeout"
+assert_ran_in_removed_worktree "$RUN_LOG" "$R" "mutant timeout"
+[ "$(fingerprint "$R")" = "$BEFORE" ] || fail "mutant timeout: caller checkout changed"
+ok "mutant past --timeout: 'killed (timeout)', exit 6 within the bound, no process survives, worktree removed"
+
 printf '\nmutation-check: %d checks passed\n' "$PASS"
