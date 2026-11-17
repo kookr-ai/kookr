@@ -360,12 +360,14 @@ ok "baseline past --timeout: exit 5 within the bound, mutant not run, worktree r
 
 # A mutant that hangs, in a child of the test command and in a grandchild it
 # puts in the background (as pnpm starts node): exit 6, every process is dead,
-# the worktree is removed.
+# the worktree is removed. The changed line also makes the test command and
+# its children ignore SIGTERM (calc.sh is sourced by test.sh), so only the
+# watchdog's SIGKILL can end the run within the bound.
 export RUN_LOG="$WORK/run15.log"
 PIDS="$WORK/mutant.pids"
 START=$SECONDS
 run_mc "$WORK/t15" --repo "$R" --timeout 2 --file calc.sh --line 2 --from 'add() {' \
-  --to "add() { sleep 30 & echo \$! >>'$PIDS'; sleep 30;" -- sh test.sh
+  --to "trap '' TERM; add() { sleep 30 & echo \$! >>'$PIDS'; sleep 30;" -- sh test.sh
 ELAPSED=$((SECONDS - START))
 assert_rc 6 "mutant timeout"
 [ "$(head -n 1 <<<"$OUT")" = "killed (timeout)" ] || fail "mutant timeout: first stdout line is not 'killed (timeout)': $OUT"
@@ -375,6 +377,6 @@ assert_pids_dead "$PIDS" "mutant timeout"
 assert_clean_tmp "$WORK/t15" "$R" "mutant timeout"
 assert_ran_in_removed_worktree "$RUN_LOG" "$R" "mutant timeout"
 [ "$(fingerprint "$R")" = "$BEFORE" ] || fail "mutant timeout: caller checkout changed"
-ok "mutant past --timeout: 'killed (timeout)', exit 6 within the bound, no process survives, worktree removed"
+ok "mutant past --timeout that ignores SIGTERM: 'killed (timeout)', exit 6 within the bound, no process survives, worktree removed"
 
 printf '\nmutation-check: %d checks passed\n' "$PASS"
