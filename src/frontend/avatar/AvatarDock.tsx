@@ -14,18 +14,20 @@
  * shows a small card that spells out what its badge and dot mean.
  *
  * From top to bottom the column holds:
- *  - the header: her name, what she is doing, Talk, Replay last, Minimise;
- *  - the 3D view, always 120 px tall;
- *  - the tray "Waiting on you" (`WaitingTray.tsx`): permission cards, the questions tasks ask the operator
- *    (`kookr ask`, the same question that goes to Telegram; Lucy reads one out once when it arrives), and a
- *    folded row for opinion requests from tasks that have already ended. Answering there closes the
- *    question on Telegram too, and an answer given on Telegram turns the card into "Answered on Telegram";
- *  - the conversation thread (`LucyThread.tsx`): what the operator typed, the Talk exchanges and every
- *    message she said aloud, oldest first;
- *  - the launch card, when she proposes starting a task (`LucyLaunchCard.tsx`), always whole above the box;
- *  - the composer: the text box for typing to her (`LucyTypedInput.tsx`).
+ *  - the header: her name, what she is doing, Replay last, Minimise;
+ *  - the 3D view, 120 px tall (it gives up height only when an unfolded "Waiting on you" list needs the room);
+ *  - the strip "Waiting on you" (`WaitingTray.tsx`), one line until it is unfolded: permission cards, the
+ *    questions tasks ask the operator (`kookr ask`, the same question that goes to Telegram; Lucy reads one
+ *    out once when it arrives), and a folded row for opinion requests from tasks that have already ended.
+ *    Answering there closes the question on Telegram too, and an answer given on Telegram turns the card
+ *    into "Answered on Telegram";
+ *  - the conversation thread (`LucyThread.tsx`), a chat that always keeps 45% of the column: what the operator
+ *    typed, the Talk exchanges, every message she said aloud, what became of the launches she proposed and
+ *    her reports, oldest first. The launch card, when she proposes starting a task (`LucyLaunchCard.tsx`),
+ *    is the last thing in it;
+ *  - the composer: the Talk button and the text box for typing to her (`LucyTypedInput.tsx`).
  *
- * A "Talk" button in the header switches on hands-free conversation with Lucy
+ * A "Talk" button beside the text box switches on hands-free conversation with Lucy
  * (`lucy-live/useLucyLive.ts`): she listens through the microphone, answers out loud
  * and can be interrupted by speaking over her. It lives in this component, not in the
  * 3D view, so it keeps running while the panel is minimised, and it is never saved:
@@ -105,6 +107,8 @@ const LIVE_STATE_LABEL: Record<LucyLiveState, string> = {
 /** The Talk button's accessible name; constant, because `aria-pressed` carries on/off. */
 const TALK_LABEL = `Talk to ${NAME} hands-free`;
 const TALK_STOP_LABEL = 'Stop hands-free';
+/** What the Talk button shows when it cannot be used; why is in its tooltip. */
+const TALK_UNAVAILABLE_TEXT = 'Talk is not set up';
 const TALK_REASON_ID = 'avatar-talk-reason';
 const REPLAY_LABEL = 'Replay last message';
 /** Re-render the "N min ago" labels this often while the thread is on screen. */
@@ -621,6 +625,34 @@ export function AvatarDock({
   }
 
   const replayTitleSuffix = newestUnheard ? ' (unheard)' : '';
+  // Talk sits beside the text box, as a button with its name on it. When it cannot be used it says so in a few
+  // words and the whole reason is its tooltip (and, for a screen reader, its description).
+  const talkButton = talkVisible ? (
+    <>
+      <button
+        type="button"
+        className={`avatar-talk${live.enabled ? ' avatar-talk-on' : ''}`}
+        onClick={onTalk}
+        aria-pressed={live.enabled}
+        // aria-disabled, like Replay: it stays focusable so the reason can be read and pressing it can say why.
+        aria-disabled={talkUnavailable ? 'true' : undefined}
+        // Unavailable, its name is what it shows ("Talk is not set up").
+        aria-label={talkUnavailable ? undefined : TALK_LABEL}
+        onFocus={() => { talkFocusedRef.current = true; }}
+        onBlur={() => { talkFocusedRef.current = false; }}
+        aria-describedby={talkUnavailable ? TALK_REASON_ID : undefined}
+        title={talkUnavailable ?? `${live.enabled ? TALK_STOP_LABEL : TALK_LABEL}${talkShortcutHint}`}
+        data-testid="avatar-talk"
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="6" y="1.5" width="4" height="8" rx="2" />
+          <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.5M5.5 14.5h5" />
+        </svg>
+        <span>{talkUnavailable ? TALK_UNAVAILABLE_TEXT : 'Talk'}</span>
+      </button>
+      {talkUnavailable && <span id={TALK_REASON_ID} className="sr-only">{talkUnavailable}</span>}
+    </>
+  ) : null;
   return (
     <section
       className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${sheet ? ' avatar-dock-sheet' : ''}`}
@@ -649,28 +681,6 @@ export function AvatarDock({
         <span className="avatar-dock-name">{NAME.toUpperCase()}</span>
         <span className="avatar-dock-state" data-testid="avatar-state-label">{liveStateLabel ?? STATE_LABEL[state]}</span>
         <span className="avatar-dock-spacer" />
-        {talkVisible && (
-          <button
-            type="button"
-            className={`avatar-dock-button avatar-dock-talk${live.enabled ? ' avatar-dock-talk-on' : ''}`}
-            onClick={onTalk}
-            aria-pressed={live.enabled}
-            // aria-disabled, like Replay: it stays focusable so the reason can be read and pressing it can say why.
-            aria-disabled={talkUnavailable ? 'true' : undefined}
-            aria-label={TALK_LABEL}
-            onFocus={() => { talkFocusedRef.current = true; }}
-            onBlur={() => { talkFocusedRef.current = false; }}
-            aria-describedby={talkUnavailable ? TALK_REASON_ID : undefined}
-            title={talkUnavailable ?? `${live.enabled ? TALK_STOP_LABEL : TALK_LABEL}${talkShortcutHint}`}
-            data-testid="avatar-talk"
-          >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="6" y="1.5" width="4" height="8" rx="2" />
-              <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.5M5.5 14.5h5" />
-            </svg>
-            {talkUnavailable && <span id={TALK_REASON_ID} className="sr-only">{talkUnavailable}</span>}
-          </button>
-        )}
         <button
           type="button"
           className="avatar-dock-button avatar-dock-replay"
@@ -731,9 +741,9 @@ export function AvatarDock({
         replayUnavailable={replayUnavailable}
         replayReasonId={REPLAY_REASON_ID}
         onReplay={onReplay}
+        pendingCards={<><LucyLaunchCard /></>}
       />
-      <LucyLaunchCard />
-      <LucyTypedInput />
+      <LucyTypedInput leading={talkButton} />
     </section>
   );
 }

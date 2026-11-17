@@ -40,6 +40,7 @@ import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
 import { CUT_OFF_BY_RELOAD_TEXT, __reloadLucyConversationForTests, __resetLucyConversationForTests } from '../store/lucy-conversation.js';
 import { __resetOperatorAsksForTests, handleOperatorAsks } from '../store/operator-asks.js';
+import { __resetLucyLaunchForTests, handleLucyLaunch } from '../store/lucy-launch.js';
 import type { OperatorAskView } from '../../shared/contracts/asks.js';
 
 function base(overrides: Partial<UseLucyLiveResult> = {}): UseLucyLiveResult {
@@ -72,8 +73,15 @@ describe('AvatarDock: the conversation thread', () => {
   const q = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
   const all = (id: string) => [...container.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`)];
   const thread = () => q('avatar-thread')!;
-  /** What the thread shows, one string per entry, oldest first. */
-  const lines = () => [...thread().querySelectorAll('li')].map((li) => li.textContent!.replace(/\s+/g, ' ').trim());
+  /**
+   * What the thread says, one string per entry, oldest first: who speaks (the words a screen reader hears before a
+   * bubble) and the text. The time under a bubble is left out; AvatarDock.chat.test.tsx is about that.
+   */
+  const lines = () => [...thread().querySelectorAll('.avatar-thread-list > li')].map((li) => {
+    const copy = li.cloneNode(true) as HTMLElement;
+    for (const time of copy.querySelectorAll('time')) time.remove();
+    return copy.textContent!.replace(/\s+/g, ' ').trim();
+  });
   const render = () => {
     localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: false }));
     __resetAvatarPanelPrefsForTests();
@@ -85,9 +93,9 @@ describe('AvatarDock: the conversation thread', () => {
     act(() => { root!.render(<AvatarDock attentionCount={0} />); });
   };
   const typeAndSend = async (value: string) => {
-    const input = q('avatar-typed-input') as HTMLInputElement;
+    const input = q('avatar-typed-input') as HTMLTextAreaElement;
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value);
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await act(async () => { q('avatar-typed')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
@@ -103,12 +111,14 @@ describe('AvatarDock: the conversation thread', () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     document.body.innerHTML = '';
     localStorage.clear();
+    sessionStorage.clear();
     __resetLucyConversationForTests();
     __resetLucyTypedForTests();
     __resetLastClipForTests();
     __resetSoundPreferenceForTests();
     __resetSpeechBusForTests();
     __resetOperatorAsksForTests();
+    __resetLucyLaunchForTests();
     live.setEnabled = vi.fn();
     live.current = base();
     vi.stubGlobal('fetch', vi.fn(async () => new Response(ndjson('On it', '.'), { status: 200 })));
@@ -152,7 +162,7 @@ describe('AvatarDock: the conversation thread', () => {
         return new Response(ndjson('Looking', ' into it.'), { status: 200 });
       });
       render();
-      const input = q('avatar-typed-input') as HTMLInputElement;
+      const input = q('avatar-typed-input') as HTMLTextAreaElement;
       input.focus();
       await typeAndSend('investigate the chaining bug');
       expect(input.value).toBe('');
@@ -200,16 +210,19 @@ describe('AvatarDock: the conversation thread', () => {
     });
   });
 
-  describe('a page reload in the same tab', () => {
+  describe('a page reload, a new tab or a browser restart', () => {
     test('keeps the thread and the conversation id, so she still remembers the earlier turns', async () => {
       render();
       await typeAndSend('remember me');
       await settle();
       const id = typedConversationId();
-      expect(sessionStorage.getItem(LUCY_CONVERSATION_ID_KEY)).toBe(id);
-      expect(localStorage.getItem(LUCY_CONVERSATION_ID_KEY)).toBeNull();
+      // In the storage every tab of the browser shares and a restart keeps, not the per-tab one.
+      expect(localStorage.getItem(LUCY_CONVERSATION_ID_KEY)).toBe(id);
+      expect(sessionStorage.getItem(LUCY_CONVERSATION_ID_KEY)).toBeNull();
+      expect(sessionStorage.getItem('kookr:lucyConversation')).toBeNull();
 
-      // What a reload does: the module state is gone, sessionStorage stays.
+      // What a reload or a new tab does: the module state is gone (and so is sessionStorage), localStorage stays.
+      sessionStorage.clear();
       act(() => root!.unmount());
       root = null;
       __forgetLucyTypedIdInMemoryForTests();
@@ -228,7 +241,7 @@ describe('AvatarDock: the conversation thread', () => {
       render();
       act(() => { root!.unmount(); });
       root = null;
-      sessionStorage.setItem('kookr:lucyConversation', JSON.stringify([
+      localStorage.setItem('kookr:lucyConversation', JSON.stringify([
         { id: 'x1', at: 1, kind: 'typed-you', text: 'long question' },
         { id: 'x2', at: 2, kind: 'typed-lucy', text: '', status: 'pending' },
       ]));
@@ -243,7 +256,7 @@ describe('AvatarDock: the conversation thread', () => {
     test('a clip spoken while a question is pending is visible in the thread (the thread no longer hides)', () => {
       render();
       act(() => { handleOperatorAsks([ask(), ask({ id: 'b2b2b2b2b2b2', question: 'Second?', taskEnded: true })]); });
-      expect(q('avatar-asks')).not.toBeNull();
+      expect(q('avatar-tray')).not.toBeNull();
       clip('c1', 'Two tasks need you. The build is red.');
       const message = q('avatar-message')!;
       expect(message.querySelector('.avatar-msg-text')!.textContent).toBe('Two tasks need you. The build is red.');
@@ -258,7 +271,7 @@ describe('AvatarDock: the conversation thread', () => {
       await typeAndSend('then typed');
       await settle();
       clip('c2', 'Last, spoken.');
-      expect(lines().map((l) => l.replace(/said aloud.*$/, '').trim())).toEqual(['First, spoken.', 'You then typed', 'Lucy On it.', 'Last, spoken.']);
+      expect(lines().map((l) => l.replace(/said aloud.*$/, '').trim())).toEqual(['Lucy First, spoken.', 'You then typed', 'Lucy On it.', 'Lucy Last, spoken.']);
     });
   });
 
@@ -300,6 +313,41 @@ describe('AvatarDock: the conversation thread', () => {
       update(talking({ lucyText: 'The build passed. Tests too.' }));
       update(talking({ lucyText: 'Different answer.' }));
       expect(lines()).toEqual(['Lucy The build passed. Tests too.', 'Lucy Different answer.']);
+    });
+
+    test('her spoken read-back of the launch card on screen gets no bubble: the card says it; what she says next does', () => {
+      const readBack = 'I will launch an investigation in kookr: find out why issue tasks stop chaining. Say go to start.';
+      render();
+      update(talking({ operatorText: 'look into the chaining bug', operatorFinal: true }));
+      act(() => {
+        handleLucyLaunch({ type: 'lucy_launch', conversationId: 'live-1', proposal: {
+          id: 'p1', kind: 'investigation', project: 'kookr', description: 'Find out why issue tasks stop chaining.', agentType: 'claude-code',
+          asked: 'look into the chaining bug', readBack, expiresAt: Date.now() + 60_000, level: 'balanced',
+        } });
+      });
+      // Her answer arrives sentence by sentence, as she says it.
+      update(talking({ operatorText: 'look into the chaining bug', operatorFinal: true, lucyText: 'I will launch an investigation in kookr: find out why issue tasks stop chaining.' }));
+      update(talking({ operatorText: 'look into the chaining bug', operatorFinal: true, lucyText: readBack }));
+      expect(lines()).toEqual(['You look into the chaining bug']);
+      expect(q('avatar-launch-card')).not.toBeNull();
+      // The operator's sentence is right above the card, so the card does not repeat it either.
+      expect(q('avatar-launch-asked')).toBeNull();
+
+      update(talking({ operatorText: '', operatorFinal: false, lucyText: '' }));
+      update(talking({ lucyText: 'Started. I will tell you when it finishes.' }));
+      expect(lines()).toEqual(['You look into the chaining bug', 'Lucy Started. I will tell you when it finishes.']);
+    });
+
+    test('an answer that is not the read-back is a bubble as usual while a launch card is on screen', () => {
+      render();
+      act(() => {
+        handleLucyLaunch({ type: 'lucy_launch', conversationId: 'live-1', proposal: {
+          id: 'p1', kind: 'investigation', project: 'kookr', description: 'd', agentType: 'claude-code',
+          asked: 'a', readBack: 'I will launch an investigation.', expiresAt: Date.now() + 60_000, level: 'balanced',
+        } });
+      });
+      update(talking({ lucyText: 'I will not do that.' }));
+      expect(lines()).toEqual(['Lucy I will not do that.']);
     });
 
     test('a draft that never became final goes when Talk is switched off', () => {

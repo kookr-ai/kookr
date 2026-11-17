@@ -6,8 +6,11 @@
  *  - a hands-free Talk exchange: the Talk session shows only the latest transcript and the answer so far,
  *    and clears them when the next one begins, so each exchange is copied into the thread as it forms;
  *  - the spoken messages (task summaries, questions, permission notices): the clip history keeps only the
- *    last few with their audio, so each one's text is copied into the thread when it arrives;
+ *    last few with their audio, so each one's text is copied into the thread when it arrives. A sentence
+ *    she wrote into the thread first (the report of a task she started) gets its clip attached instead;
  *  - connection and "unavailable" notices from Talk.
+ *
+ * Her read-back of a launch card that is on screen is the one thing not copied: the card says it.
  *
  * These hooks run in `AvatarDock`, which stays mounted while the panel is minimised, so what is said while
  * the operator is not looking is still in the thread when they open it. They read the Talk session; they
@@ -21,6 +24,10 @@ import {
   removeConversationEntries,
   updateConversationEntry,
 } from '../store/lucy-conversation.js';
+import { isLaunchReadBack } from '../store/lucy-launch.js';
+
+/** How far back from the end of the thread a written message is looked for when its spoken clip arrives. */
+const RECENT_ENTRIES = 20;
 
 export interface TalkThreadInput {
   /** Hands-free is switched on. */
@@ -80,6 +87,8 @@ export function useTalkThreadSync({ enabled, operatorText, operatorFinal, lucyTe
       return;
     }
     const open = lucyEntry.current;
+    // Her read-back of the launch card on screen repeats the card: it gets no bubble of its own.
+    if (!open && isLaunchReadBack(lucyText, { partial: true })) return;
     // Her answer grows by whole sentences. Text that does not continue the open one is a new answer, even when the
     // empty text between the two was never seen (renders can be batched).
     if (open && lucyText.startsWith(open.text)) {
@@ -98,14 +107,27 @@ export function useTalkThreadSync({ enabled, operatorText, operatorFinal, lucyTe
  * Add each spoken message to the thread once, when it first appears in the clip history. A message that later
  * falls out of the history (it keeps only the last few, with their audio) stays in the thread as text.
  * `clips` is newest first, as the clip history gives it.
+ *
+ * A sentence she wrote into the thread first and says aloud second (the report of a task she started) is one
+ * message: the clip is attached to the written entry, which gains Replay and the unheard marker.
  */
 export function useClipThreadSync(clips: readonly ClipHistoryItem[]): void {
   useEffect(() => {
     if (clips.length === 0) return;
     const known = new Set<string>();
-    for (const entry of getConversationEntries()) if (entry.kind === 'clip') known.add(entry.clipId);
+    for (const entry of getConversationEntries()) if ((entry.kind === 'clip' || entry.kind === 'lucy') && entry.clipId) known.add(entry.clipId);
     for (const clip of [...clips].reverse()) {
       if (known.has(clip.clipId)) continue;
+      const written = getConversationEntries().slice(-RECENT_ENTRIES)
+        .find((entry) => entry.kind === 'lucy' && !entry.clipId && entry.text.trim() === clip.text.trim());
+      if (written) {
+        updateConversationEntry(written.id, {
+          clipId: clip.clipId,
+          ...(clip.subject ? { subject: clip.subject } : {}),
+          ...(clip.usedFallback ? { usedFallback: true } : {}),
+        });
+        continue;
+      }
       appendConversationEntry({
         kind: 'clip',
         clipId: clip.clipId,

@@ -65,7 +65,21 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     root = createRoot(container);
     act(() => { root!.render(<AvatarDock attentionCount={props.attentionCount ?? 0} onAnswerAsk={onAnswerAsk} onOpenTask={props.onOpenTask} />); });
   };
-  const push = (asks: OperatorAskView[], announce?: string) => act(() => { handleOperatorAsks(asks, announce); });
+  /**
+   * The tray starts folded and opens no card by itself (AvatarDock.tray.test.tsx). These tests are about the cards,
+   * so each push does what the operator would do next: unfold the strip, and open the first waiting question.
+   */
+  const openFirst = () => {
+    const strip = q('avatar-tray-toggle');
+    if (strip?.getAttribute('aria-expanded') === 'false') act(() => { strip.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    if (container.querySelector('[data-testid="avatar-ask"][data-ask-state="pending"]')) return;
+    const row = q('avatar-ask-row');
+    if (row) act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  };
+  const push = (asks: OperatorAskView[], announce?: string) => {
+    act(() => { handleOperatorAsks(asks, announce); });
+    openFirst();
+  };
   // A press right after the cards changed is ignored on purpose (see the mis-click test), so a click waits it out first.
   const click = (element: Element | null | undefined) => {
     act(() => { vi.setSystemTime(Date.now() + 500); });
@@ -78,6 +92,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     document.body.innerHTML = '';
     localStorage.clear();
+    sessionStorage.clear();
     vi.clearAllMocks();
     vi.useFakeTimers({ toFake: ['Date'] });
     onAnswerAsk.mockReturnValue(true);
@@ -255,6 +270,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
         answered('telegram', { id: 'c3d4e5f6a1b2', resolvedAt: serverNow - OPERATOR_ASK_RESOLVED_VISIBLE_MS - 60_000 }),
       ], undefined, serverNow);
     });
+    openFirst();
     expect(all('avatar-ask').map((card) => card.dataset.askId)).toEqual(['b2c3d4e5f6a1']);
   });
 
@@ -309,7 +325,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     render();
     push([ask(), ask({ id: 'bbbbbbbbbbbb', question: 'Second?', expiresAt: Date.now() + 40 * 60_000 })]);
     const groupName = () => {
-      const groups = [...container.querySelectorAll('[role="group"]')];
+      const groups = [...q('avatar-tray')!.querySelectorAll('[role="group"]')];
       expect(groups).toHaveLength(1); // one card is open at a time
       return { group: groups[0], name: document.getElementById(groups[0].getAttribute('aria-labelledby')!)!.textContent };
     };

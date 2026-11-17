@@ -166,7 +166,7 @@ describe('AvatarDock', () => {
     expect(dock()!.style.top).toBe('');
     expect(dock()!.classList.contains('avatar-dock-sheet')).toBe(false);
     expect(dock()!.getAttribute('data-avatar-state')).toBe('idle');
-    expect(hint()!.textContent).toContain('speaker button');
+    expect(hint()!.textContent).toContain('Hi, I’m Lucy.');
     expect(container.querySelector('[aria-label="Conversation with Lucy"]')).not.toBeNull();
     expect(stages).toHaveLength(1);
     expect(stages[0].setState).toHaveBeenLastCalledWith('idle');

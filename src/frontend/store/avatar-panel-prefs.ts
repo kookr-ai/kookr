@@ -131,6 +131,38 @@ export function saveAvatarPanelPrefs(
   }
 }
 
+// --- the "Waiting on you" strip: folded or unfolded, for this browser tab only ---
+
+export const AVATAR_TRAY_EXPANDED_KEY = 'kookr:lucyTrayExpanded';
+
+function getSessionStorage(): Storage | null {
+  try {
+    return typeof sessionStorage === 'undefined' ? null : sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the operator left the strip unfolded in this tab. Folded when nothing is saved or storage cannot be read. */
+export function loadTrayExpanded(): boolean {
+  try {
+    return getSessionStorage()?.getItem(AVATAR_TRAY_EXPANDED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** Remember the choice until the tab is closed (best effort). */
+export function saveTrayExpanded(expanded: boolean): void {
+  try {
+    const storage = getSessionStorage();
+    if (expanded) storage?.setItem(AVATAR_TRAY_EXPANDED_KEY, '1');
+    else storage?.removeItem(AVATAR_TRAY_EXPANDED_KEY);
+  } catch {
+    // The strip then starts folded on the next load.
+  }
+}
+
 // --- live store, shared by the settings toggle and the panel itself ---
 
 let state: AvatarPanelPrefs = loadAvatarPanelPrefs();

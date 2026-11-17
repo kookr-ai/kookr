@@ -129,6 +129,59 @@ describe('AvatarDock hands-free talk', () => {
     expect(live.setEnabled).toHaveBeenLastCalledWith(false);
   });
 
+  test('is a labelled button beside the text box, not an icon in the header', () => {
+    render();
+    const button = talk()!;
+    expect(button.textContent).toBe('Talk');
+    const composer = container.querySelector('[data-testid="avatar-composer"]')!;
+    expect(composer.contains(button)).toBe(true);
+    // In the same row as the box, before it.
+    const row = button.parentElement!;
+    expect(row.contains(container.querySelector('[data-testid="avatar-typed-input"]'))).toBe(true);
+    expect(button.compareDocumentPosition(container.querySelector('[data-testid="avatar-typed-input"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('.avatar-dock-header')!.contains(button)).toBe(false);
+    // The header keeps Replay and Minimise.
+    expect([...container.querySelectorAll('.avatar-dock-header button')].map((b) => b.getAttribute('aria-label'))).toEqual(['Replay last message', 'Minimise Lucy']);
+  });
+
+  test('unavailable, it reads "Talk is not set up": the long reason is only its tooltip and its description', () => {
+    const reason = 'Hands-free talk is not available on this server: the speech recogniser, the helper model and the speech service must all be configured.';
+    live.current = base({ serverStatus: { available: false, reason } });
+    render();
+    const button = talk()!;
+    expect(button.textContent).toBe('Talk is not set up');
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(button.title).toBe(reason);
+    // Its accessible name is what it shows; the reason is its description, in a hidden element outside the button.
+    expect(button.getAttribute('aria-label')).toBeNull();
+    const described = container.querySelector(`#${button.getAttribute('aria-describedby')}`)!;
+    expect(described.textContent).toBe(reason);
+    expect(described.classList.contains('sr-only')).toBe(true);
+    expect(button.contains(described)).toBe(false);
+    // Nothing on screen spells the reason out until the operator presses the button.
+    expect(container.querySelector('[data-testid="avatar-thread"]')!.textContent).not.toContain(reason);
+  });
+
+  test('stays when the text box is gone because typed requests are switched off on the server', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })));
+    try {
+      render();
+      const input = container.querySelector<HTMLTextAreaElement>('[data-testid="avatar-typed-input"]')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'hello');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => { container.querySelector('[data-testid="avatar-typed"]')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+      await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+      expect(container.querySelector('[data-testid="avatar-typed"]')).toBeNull();
+      expect(talk()).not.toBeNull();
+      act(() => talk()!.click());
+      expect(live.setEnabled).toHaveBeenLastCalledWith(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   test('is hidden when the server cannot be asked or says no without a reason', () => {
     live.current = base({ serverStatus: null });
     render();
@@ -170,11 +223,12 @@ describe('AvatarDock hands-free talk', () => {
     render();
     const label = () => container.querySelector('[data-testid="avatar-state-label"]')!.textContent;
     expect(label()).toBe('ready');
-    expect(container.querySelector('[data-testid="avatar-hint"]')!.textContent).toContain('speaker button');
+    const hint = () => container.querySelector('[data-testid="avatar-hint"] .avatar-entry-bubble')!.textContent;
+    expect(hint()).toContain('Hi, I’m Lucy.');
 
     update(base({ enabled: true, status: 'ready', lucyState: 'listening' }));
     expect(label()).toBe('listening');
-    expect(container.querySelector('[data-testid="avatar-hint"]')!.textContent).toBe('Talk to me — I’m listening.');
+    expect(hint()).toContain('Talk to me — I’m listening.');
     update(base({ enabled: true, status: 'ready', lucyState: 'transcribing' }));
     expect(label()).toBe('listening');
     update(base({ enabled: true, status: 'ready', lucyState: 'thinking' }));

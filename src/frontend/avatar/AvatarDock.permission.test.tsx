@@ -38,7 +38,7 @@ import { __resetLucyTypedForTests } from './LucyTypedInput.js';
 import { __resetLastClipForTests } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
-import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
+import { AVATAR_PANEL_KEY, AVATAR_TRAY_EXPANDED_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
 import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
 import { __resetLucyLaunchForTests } from '../store/lucy-launch.js';
 import { __resetLucyPermissionForTests, buildPermissionChoice, handleLucyPermissionCards } from '../store/lucy-permission.js';
@@ -79,6 +79,10 @@ describe('AvatarDock: permission cards (issue #3932)', () => {
     __resetLucyConversationForTests();
     __resetLucyTypedForTests();
     localStorage.clear();
+    // The "Waiting on you" strip starts folded; these tests are about the cards in it, so it is left unfolded,
+    // as the operator would have it after pressing the strip once.
+    sessionStorage.clear();
+    sessionStorage.setItem(AVATAR_TRAY_EXPANDED_KEY, '1');
     choice.mockClear();
     for (const fn of Object.values(speech)) fn.mockClear();
     __resetLastClipForTests(); __resetSoundPreferenceForTests(); __resetSpeechBusForTests();
@@ -102,6 +106,19 @@ describe('AvatarDock: permission cards (issue #3932)', () => {
     // The same list again (a reconnect, another card changing): nothing more is said.
     await push([card()]);
     expect(speech.announcePermissionNotice).toHaveBeenCalledTimes(1);
+  });
+
+  test('with the strip folded the cards are not on screen, and the strip counts them as waiting on you', async () => {
+    sessionStorage.clear();
+    mount();
+    await push([card(), card({ promptId: 'req-b', taskId: 't2', agentId: 'kookr-t2' })], { noticeId: 'perm-1', promptIds: ['req-aaaa', 'req-b'] });
+    expect(all('avatar-permission')).toHaveLength(0);
+    expect(q('avatar-tray-count')!.textContent).toBe('2');
+    expect(q('avatar-tray')!.classList.contains('avatar-tray-waiting')).toBe(true);
+    // She still says it, and pressing the strip shows the cards.
+    expect(speech.announcePermissionNotice).toHaveBeenCalledWith('perm-1');
+    await act(async () => { q('avatar-tray-toggle')!.click(); });
+    expect(all('avatar-permission')).toHaveLength(2);
   });
 
   test('three cards are three cards; a grouped sentence is one announcement', async () => {

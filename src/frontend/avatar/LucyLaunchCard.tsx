@@ -7,12 +7,15 @@
  * to `launchesAt`, when the server starts the task by itself, and only "Cancel" is offered.
  *
  * Enter confirms only when focus is not in a text field, a button or a link (Enter there already means
- * something else). When the proposal ends, the card turns into a one-line result; a result that started a
- * task links to it. The card also goes by itself at `expiresAt`.
+ * something else). The card also goes by itself at `expiresAt`.
  *
- * The card sits right above the composer and is never taller than 40% of the column: when the description is
- * long it scrolls inside the card, and the buttons row, the countdown and the result lines below it always stay
- * whole and on screen.
+ * The card is part of the conversation: the dock puts it at the tail of the thread (`LucyThread`'s
+ * `pendingCards`), which scrolls it into view. A long description makes the card taller and the thread scrolls;
+ * the card has no scroll box of its own. When the proposal ends the card goes and the store writes what became
+ * of it into the thread as an entry that stays ("Started kookr task", "Cancelled", "Timed out"), as it does for
+ * the report of a task she started (`store/lucy-launch.ts`).
+ *
+ * The line "You asked" is left out when the operator's sentence is the entry right above the card.
  *
  * Purely the browser half of a server rule: no level is decided or sent from here.
  */
@@ -20,11 +23,11 @@ import { useEffect, useState } from 'react';
 import {
   confirmLucyLaunch,
   declineLucyLaunch,
-  dismissLucyLaunchResult,
-  dismissLucyReport,
   expireLucyProposal,
+  sameSentence,
   useLucyLaunch,
 } from '../store/lucy-launch.js';
+import { useLucyConversation } from '../store/lucy-conversation.js';
 import { useKookrStore } from '../store/useStore.js';
 import type { LucyLaunchProposalView } from '../../shared/contracts/lucy-launch.js';
 
@@ -57,7 +60,8 @@ function secondsLeft(untilMs: number, nowMs: number): number {
 }
 
 export function LucyLaunchCard({ nowFn = Date.now }: { nowFn?: () => number } = {}) {
-  const { proposal, sending, error, result, report } = useLucyLaunch();
+  const { proposal, sending, error } = useLucyLaunch();
+  const entries = useLucyConversation();
   const [now, setNow] = useState(nowFn);
   const proposalId = proposal?.id;
   const expiresAt = proposal?.expiresAt;
@@ -99,74 +103,57 @@ export function LucyLaunchCard({ nowFn = Date.now }: { nowFn?: () => number } = 
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [proposalId, handsOff]);
 
-  if (!proposal && !result && !report) return null;
+  if (!proposal) return null;
+  // The entry right above the card; her reply still being prepared shows no bubble, so it does not count.
+  const above = [...entries].reverse().find((entry) => !(entry.kind === 'typed-lucy' && entry.status === 'pending'));
+  const askedIsAbove = above !== undefined && (above.kind === 'typed-you' || above.kind === 'talk-you') && sameSentence(above.text, proposal.asked);
   return (
-    <div className="avatar-launch" data-testid="avatar-launch">
-      {proposal && (
-        <section className="avatar-launch-card" aria-label="Task Lucy proposes to start" data-testid="avatar-launch-card">
-          <div className="avatar-launch-head">
-            <span className="avatar-mark-diamond" aria-hidden="true" />
-            <span className="avatar-launch-project" data-testid="avatar-launch-project">{proposal.project}</span>
-            <span className="avatar-launch-kind" data-testid="avatar-launch-kind">{KIND_LABEL[proposal.kind]}</span>
-            <span className="avatar-launch-level" data-testid="avatar-launch-level">{LEVEL_LABEL[proposal.level]}</span>
-          </div>
-          {/* A long description scrolls inside the card (a region the keyboard can reach); the buttons below never do. */}
-          <div className="avatar-launch-body" role="region" aria-label="Proposed task" tabIndex={0}>
-            <p className="avatar-launch-description" data-testid="avatar-launch-description">{proposal.description}</p>
+    // Keyed by the proposal, so a new proposal is a new card: the thread then brings it into view.
+    <div className="avatar-launch" data-testid="avatar-launch" key={proposal.id}>
+      <section className="avatar-launch-card" aria-label="Task Lucy proposes to start" data-testid="avatar-launch-card">
+        <div className="avatar-launch-head">
+          <span className="avatar-mark-diamond" aria-hidden="true" />
+          <span className="avatar-launch-project" data-testid="avatar-launch-project">{proposal.project}</span>
+          <span className="avatar-launch-kind" data-testid="avatar-launch-kind">{KIND_LABEL[proposal.kind]}</span>
+          <span className="avatar-launch-level" data-testid="avatar-launch-level">{LEVEL_LABEL[proposal.level]}</span>
+        </div>
+        <div className="avatar-launch-body">
+          <p className="avatar-launch-description" data-testid="avatar-launch-description">{proposal.description}</p>
+          {!askedIsAbove && (
             <p className="avatar-launch-asked" data-testid="avatar-launch-asked">
               <span className="avatar-live-who">You asked</span> {proposal.asked}
             </p>
-          </div>
-          {handsOff && proposal.launchesAt !== undefined && (
-            <p className="avatar-launch-countdown" role="timer" data-testid="avatar-launch-countdown">
-              Starts in {secondsLeft(proposal.launchesAt, now)} s unless you cancel.
-            </p>
           )}
-          {error && <p className="avatar-launch-error" role="alert" data-testid="avatar-launch-error">{error}</p>}
-          <div className="avatar-launch-buttons">
-            {!handsOff && (
-              <button
-                type="button"
-                className="avatar-ask-send"
-                onClick={() => void confirmLucyLaunch('click')}
-                aria-disabled={sending ? 'true' : undefined}
-                data-testid="avatar-launch-go"
-              >
-                Go
-              </button>
-            )}
+        </div>
+        {handsOff && proposal.launchesAt !== undefined && (
+          <p className="avatar-launch-countdown" role="timer" data-testid="avatar-launch-countdown">
+            Starts in {secondsLeft(proposal.launchesAt, now)} s unless you cancel.
+          </p>
+        )}
+        {error && <p className="avatar-launch-error" role="alert" data-testid="avatar-launch-error">{error}</p>}
+        <div className="avatar-launch-buttons">
+          {!handsOff && (
             <button
               type="button"
-              className="avatar-ask-option avatar-launch-cancel"
-              onClick={() => void declineLucyLaunch()}
+              className="avatar-ask-send"
+              onClick={() => void confirmLucyLaunch('click')}
               aria-disabled={sending ? 'true' : undefined}
-              data-testid="avatar-launch-cancel"
+              data-testid="avatar-launch-go"
             >
-              Cancel
-            </button>
-          </div>
-        </section>
-      )}
-      {result && (
-        <p className="avatar-launch-result" role="status" data-testid="avatar-launch-result">
-          <span>{result.text}</span>
-          {result.taskId && (
-            <button type="button" className="avatar-launch-link" onClick={() => openLucyTask(result.taskId!)} data-testid="avatar-launch-open">
-              Open task
+              Go
             </button>
           )}
-          <button type="button" className="avatar-launch-link" onClick={dismissLucyLaunchResult} aria-label="Dismiss">Dismiss</button>
-        </p>
-      )}
-      {report && (
-        <p className="avatar-launch-result avatar-launch-report" role="status" data-testid="avatar-launch-report">
-          <span>{report.text}</span>
-          <button type="button" className="avatar-launch-link" onClick={() => openLucyTask(report.taskId)} data-testid="avatar-launch-report-open">
-            Open task
+          <button
+            type="button"
+            className="avatar-ask-option avatar-launch-cancel"
+            onClick={() => void declineLucyLaunch()}
+            aria-disabled={sending ? 'true' : undefined}
+            data-testid="avatar-launch-cancel"
+          >
+            Cancel
           </button>
-          <button type="button" className="avatar-launch-link" onClick={dismissLucyReport} aria-label="Dismiss report">Dismiss</button>
-        </p>
-      )}
+        </div>
+      </section>
     </div>
   );
 }
