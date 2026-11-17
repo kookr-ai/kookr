@@ -102,4 +102,27 @@ describe('lucy-conversation', () => {
       setItem.mockRestore();
     }
   });
+
+  test('what Lucy writes on her own keeps its follow-ups, its task and its briefing signature across a reload', () => {
+    appendConversationEntry({ kind: 'typed-lucy', status: 'done', text: 'All clear: nothing needs you.', chips: ['What is everyone working on?'], briefing: 'sig-1' });
+    appendConversationEntry({ kind: 'typed-lucy', status: 'done', text: 'Docs link audit failed.', taskId: 't1' });
+    __reloadLucyConversationForTests();
+    expect(getConversationEntries()).toEqual([
+      expect.objectContaining({ kind: 'typed-lucy', status: 'done', chips: ['What is everyone working on?'], briefing: 'sig-1' }),
+      expect.objectContaining({ kind: 'typed-lucy', status: 'done', text: 'Docs link audit failed.', taskId: 't1' }),
+    ]);
+  });
+
+  test('a saved entry whose follow-ups, task or signature are not text is dropped on reload', () => {
+    const entry = (over: Record<string, unknown>) => ({ id: `e${Math.random()}`, at: 1, kind: 'typed-lucy', status: 'done', text: 'kept?', ...over });
+    sessionStorage.setItem(LUCY_CONVERSATION_KEY, JSON.stringify([
+      entry({ chips: 'not a list' }),
+      entry({ chips: ['fine', 42] }),
+      entry({ taskId: 7 }),
+      entry({ briefing: { no: 'object' } }),
+      entry({ text: 'kept', chips: [], taskId: 't1', briefing: 'sig' }),
+    ]));
+    __reloadLucyConversationForTests();
+    expect(getConversationEntries().map((e) => e.text)).toEqual(['kept']);
+  });
 });

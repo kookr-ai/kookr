@@ -3,7 +3,8 @@
  * it happened, in one list.
  *
  * An entry is one of:
- *  - something the operator typed, and Lucy's reply to it (`typed-you`, `typed-lucy`);
+ *  - something the operator typed, and Lucy's reply to it (`typed-you`, `typed-lucy`). A `typed-lucy`
+ *    entry that is `done` is also how she writes something on her own: a briefing, a word about a task;
  *  - the operator's words and Lucy's words in a hands-free Talk exchange (`talk-you`, `talk-lucy`);
  *  - a notice about the connection (`notice`);
  *  - a message Lucy said aloud on her own: a task summary, a question, a permission notice (`clip`).
@@ -36,7 +37,15 @@ interface EntryBase {
 export type ConversationEntry =
   | (EntryBase & { kind: 'typed-you'; text: string })
   /** `pending` until the first text arrives, `error` when `text` is the reason it failed. */
-  | (EntryBase & { kind: 'typed-lucy'; text: string; status: 'pending' | 'done' | 'error' })
+  | (EntryBase & {
+      kind: 'typed-lucy'; text: string; status: 'pending' | 'done' | 'error';
+      /** Follow-up requests offered under the message, for the operator to press. */
+      chips?: string[];
+      /** The task the message is about, so the thread can offer to open it. */
+      taskId?: string;
+      /** Set on a briefing: its signature, which changes only when what waits on the operator changes. */
+      briefing?: string;
+    })
   | (EntryBase & { kind: 'talk-you'; text: string; final: boolean })
   | (EntryBase & { kind: 'talk-lucy'; text: string })
   | (EntryBase & { kind: 'notice'; text: string })
@@ -74,7 +83,10 @@ function isEntry(value: unknown): value is ConversationEntry {
     case 'notice':
       return true;
     case 'typed-lucy':
-      return entry.status === 'pending' || entry.status === 'done' || entry.status === 'error';
+      return (entry.status === 'pending' || entry.status === 'done' || entry.status === 'error')
+        && (entry.chips === undefined || (Array.isArray(entry.chips) && entry.chips.every((chip) => typeof chip === 'string')))
+        && (entry.taskId === undefined || typeof entry.taskId === 'string')
+        && (entry.briefing === undefined || typeof entry.briefing === 'string');
     case 'talk-you':
       return typeof entry.final === 'boolean';
     case 'clip':
