@@ -28,16 +28,19 @@ FAILURES=0
 
 # Print "file:line: text" for each pipe into a quiet grep. A line ending in `|`
 # or `\` is joined to the next so a split pipeline is still seen. Comment lines
-# are skipped. awk with [ \t] (not [[:space:]]) keeps this portable to mawk.
+# are dropped before the join: bash never continues a comment, so one that ends
+# in `|` or `\` must not swallow the next line, and one that sits inside a split
+# pipeline must not break it. awk with [ \t] (not [[:space:]]) keeps this
+# portable to mawk.
 scan() {
   awk '
     FNR == 1 { prev = "" }
     {
+      if ($0 ~ /^[ \t]*#/) next
       line = prev $0
       if (line ~ /\\$/) { sub(/\\$/, "", line); prev = line " "; next }
       if (line ~ /\|[ \t]*$/) { prev = line " "; next }
       prev = ""
-      if (line ~ /^[ \t]*#/) next
       if (line ~ /(^|[^|])\|[ \t]*(command[ \t]+)?[ef]?grep([ \t]+-[^ \t]*)*[ \t]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([ \t]|$)/)
         print FILENAME ":" FNR ": " line
     }
@@ -68,10 +71,19 @@ printf '%s' "\$x" $P egrep --quiet foo
 printf '%s' "\$x" $P command grep --silent foo
 printf '%s' "\$x" $P
   grep -q foo
-printf '%s' "\$x" \\
-  $P grep -qi foo
+printf '%s' "\$x" $P \\
+  grep -qi foo
+printf '%s' "\$x" $P grep \\
+  -q foo
+# a comment that ends in a pipe $P
+printf '%s' "\$x" $P grep -q after-pipe-comment
+# a comment that ends in a backslash \\
+printf '%s' "\$x" $P grep -q after-backslash-comment
+printf '%s' "\$x" $P
+  # a comment inside a split pipeline
+  grep -q foo
 EOF
-want_bad=9
+want_bad=13
 got_bad=$(scan "$TMP/bad.sh" | wc -l | tr -d ' ')
 if [ "$got_bad" = "$want_bad" ]; then
   printf 'PASS: scan flags every unsafe pipe-into-grep-q form (%s)\n' "$got_bad"
@@ -88,6 +100,7 @@ printf '%s' "\$x" $P grep -c foo
 printf '%s' "\$x" $P grep -o 'q' $P head -1
 printf '%s' "\$x" $P grep foo $P sort
 grep -q foo file.txt $P$P true
+cmd $P$P grep -q foo file.txt
 # printf '%s' "\$x" $P grep -q foo   (a comment)
 EOF
 good_hits=$(scan "$TMP/good.sh")
