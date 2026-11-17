@@ -250,3 +250,17 @@ answer is "its buttons have timed out, I am opening the task", followed by openi
   permission task waiting: her briefing and her written notice name the task, and "can you
   make it proceed ?" typed under them still gets "Which task do you mean?" (R7-F3). The
   card's buttons had timed out (R7-F5).
+- 2026-11-17 — **Landing runs 5 and 6: checks and review started.** On the merged tree
+  (`feat/lucy-column-and-actions` @ `72f1ccd73`): `pnpm typecheck` and `pnpm build` clean;
+  the tests related to the diff pass (`vitest run --changed origin/main`: 397 files, 8,701
+  tests). The Codex review lane is unusable on this host (no `bubblewrap`), so the review
+  runs on the Claude lane, split in four fresh-context parts because the diff is 20,870
+  lines: actions, unprompted speech, the column's frontend, and a lint-level pass over
+  everything.
+- 2026-11-17 — **Phase 4 started, in parallel with the review.** Two Explore agents mapped
+  the change sites (layout modes, shortcuts, URL parameters, the one-tab speech claim; the
+  conversation store, every unprompted path, the permission card, launching and how the
+  server knows its own project). Claimed issues #4143 and #4144. Two worktrees, one
+  implementer each, both cut from the landing branch because their files exist only there:
+  `kookr-r7-lucy-room` (`feat/lucy-room`, R7-F2) and `kookr-r7-lucy-notices`
+  (`fix/lucy-remembers-notices`, R7-F3 and R7-F4).
