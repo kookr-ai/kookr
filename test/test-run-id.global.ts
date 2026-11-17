@@ -21,14 +21,23 @@
 // `src/test-utils/test-run-identity.ts`. teardown() restores `TMPDIR` and
 // deletes the run temp directory, so what tests leave in `os.tmpdir()` no
 // longer accumulates in /tmp.
+//
+// A Vitest process that is killed or crashes never reaches teardown(), so its
+// run temp directory would stay forever. The first setup() therefore also
+// sweeps sibling run temp directories left by dead runs (issue #4123), with the
+// same rule the reapers apply to processes: the owner pid embedded in the id
+// has exited AND the directory is older than the orphan threshold. Other test
+// runs on the host may be live, so a directory whose owner is alive is never
+// touched, and any error leaves the directory in place.
 
-import { mkdirSync, rmSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 import {
   TEST_RUN_ID_ENV,
   TEST_RUN_TMPDIR_PREFIX,
+  classifyTestProcessOwnership,
   isTestRunId,
   mintTestRunId,
 } from '../src/test-utils/test-run-identity.js';
@@ -46,6 +55,68 @@ export interface StartTestRunOptions {
   /** Directory to create the run temp directory in (default: `env.TMPDIR`, else `os.tmpdir()`). */
   baseTmpDir?: string;
   runId?: string;
+  /** Passed to {@link sweepDeadRunTmpDirs}; for tests. */
+  sweep?: Omit<SweepDeadRunTmpDirsOptions, 'ownRunId'>;
+}
+
+export interface SweepDeadRunTmpDirsOptions {
+  /** Run id of the caller. Its directory is never removed. */
+  ownRunId: string;
+  now?: number;
+  isPidAlive?: (pid: number) => boolean;
+  /** Default: `TEST_ORPHAN_MIN_AGE_MS`, the reapers' threshold. */
+  minAgeMs?: number;
+}
+
+/**
+ * Remove the run temp directories in `base` that a dead run left behind: the
+ * Vitest process named by the id has exited, and the directory has not changed
+ * for the orphan threshold. Its modification time is used as its age, which
+ * never reads older than the directory really is. A recycled pid reads as
+ * alive, which keeps the directory longer. Never throws: a directory another
+ * run's sweep removes first, or one that cannot be read or removed, is skipped.
+ *
+ * Returns the paths it removed.
+ */
+export function sweepDeadRunTmpDirs(base: string, options: SweepDeadRunTmpDirsOptions): string[] {
+  const now = options.now ?? Date.now();
+  let names: string[];
+  try {
+    names = readdirSync(base);
+  } catch {
+    return [];
+  }
+  const removed: string[] = [];
+  for (const name of names) {
+    if (!name.startsWith(TEST_RUN_TMPDIR_PREFIX)) continue;
+    const runId = name.slice(TEST_RUN_TMPDIR_PREFIX.length);
+    if (!isTestRunId(runId) || runId === options.ownRunId) continue;
+    const dir = join(base, name);
+    let mtimeMs: number;
+    try {
+      const stat = lstatSync(dir);
+      if (!stat.isDirectory()) continue;
+      mtimeMs = stat.mtimeMs;
+    } catch {
+      continue;
+    }
+    const verdict = classifyTestProcessOwnership({
+      ownerRunId: runId,
+      currentRunId: options.ownRunId,
+      startTimeMs: mtimeMs,
+      now,
+      isPidAlive: options.isPidAlive,
+      minOrphanAgeMs: options.minAgeMs,
+    });
+    if (verdict !== 'orphan') continue;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      removed.push(dir);
+    } catch {
+      // best-effort: never fail setup over another run's leftovers
+    }
+  }
+  return removed;
 }
 
 /**
@@ -72,7 +143,9 @@ export function startTestRun(env: NodeJS.ProcessEnv, options: StartTestRunOption
   env[TEST_RUN_ID_ENV] = runId;
 
   if ((options.platform ?? process.platform) === 'linux') {
-    const dir = join(runTmpBase(options.baseTmpDir || env.TMPDIR || tmpdir()), `${TEST_RUN_TMPDIR_PREFIX}${runId}`);
+    const base = runTmpBase(options.baseTmpDir || env.TMPDIR || tmpdir());
+    sweepDeadRunTmpDirs(base, { ...options.sweep, ownRunId: runId });
+    const dir = join(base, `${TEST_RUN_TMPDIR_PREFIX}${runId}`);
     try {
       mkdirSync(dir, { mode: 0o700 });
       state.runTmpDir = dir;
