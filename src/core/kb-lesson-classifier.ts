@@ -24,7 +24,9 @@
  * Detection is deliberately permissive: the marker can appear in `echo`,
  * `printf`, heredocs, or chained shell — we only require the literal
  * substring. The same is true of the remember commands, which agents sometimes
- * pipe stdin from `cat <<EOF`.
+ * pipe stdin from `cat <<EOF`; only when a command holds BOTH the marker and a
+ * remember mention does it matter whether the remember call actually runs
+ * (issue #4134, see {@link classifyKbCommand}).
  */
 
 export const KB_LESSON_SKIP_MARKER = 'No generic KB lesson:';
@@ -62,38 +64,51 @@ export type LessonDecisionState =
   | 'no-kb-activity';
 
 /**
- * Index of the first `needle` in `command`, or `Infinity` when absent, so a
- * missing needle never "comes first" in {@link classifyKbCommand}.
+ * A remember call in COMMAND position: at the start of the command or right
+ * after a shell operator (`|`, `&`, `;`, newline, `$(`, backtick), with an
+ * optional path prefix (`~/bin/kb remember`). Text inside a skip line's reason
+ * (`'… (kb remember --force)'`, `'… via kb remember'`) is not in command
+ * position, so it does not turn the skip into a write (issue #4134).
  */
-function firstIndexOf(command: string, needle: string): number {
-  const at = command.indexOf(needle);
-  return at === -1 ? Number.POSITIVE_INFINITY : at;
-}
+const KB_REMEMBER_INVOCATION_RE = /(?:^|[|&;\n`]|\$\()\s*(?:[\w.~/-]*\/)?kb\s+remember\b/;
+const KOOKR_LESSON_REMEMBER_INVOCATION_RE =
+  /(?:^|[|&;\n`]|\$\()\s*(?:[\w.~/-]*\/)?kookr\s+lesson\s+remember\b/;
 
 /**
  * Classify one shell command for the lesson decision.
  *
- * Skip vs. write, when a command holds both (issue #4134): whichever comes
- * FIRST decides. A skip line prints the marker before anything else, so a
- * reason that merely mentions `kb remember` (e.g. `printf 'No generic KB
- * lesson: %s\n' 'already stored (kb remember --force)'`) stays a skip. A real
- * write starts with the remember call, so a lesson body (heredoc) that quotes
- * the marker stays a write attempt and cannot pass as a skip by accident.
- * Known limit: a skip whose text names `kb remember` BEFORE the marker
- * (`echo "kb remember failed; No generic KB lesson: …"`) is classed as an
- * attempt; the canonical skip line always starts with the marker.
+ * Skip vs. write, when a command holds the skip marker (issue #4134): it is a
+ * write (attempt) only when a remember call actually RUNS in it — in command
+ * position, see {@link KB_REMEMBER_INVOCATION_RE}. So a skip line whose reason
+ * mentions `kb remember` stays a skip, while a write whose lesson body quotes
+ * the marker stays a write attempt wherever the body sits (`cat <<EOF | kb
+ * remember`, `printf '…marker…' | kb remember`, `cat f | kb remember`). A
+ * suppressed write can therefore not pass as a skip. Without the marker the
+ * substring rules below apply unchanged.
+ * Known limit: a remember call behind a wrapper (`timeout 60 kb remember`) in
+ * a command that also prints the marker is read as a skip.
  */
 export function classifyKbCommand(command: string): KbLineKind {
-  const skipAt = firstIndexOf(command, KB_LESSON_SKIP_MARKER);
+  const hasSkipMarker = command.includes(KB_LESSON_SKIP_MARKER);
   // `kookr lesson remember` is the spool-aware operator CLI (#1519). It writes
   // with `--no-check-similar` and spools on failure, so it never gets
   // similarity-suppressed — a confirmed lesson write from the command alone.
-  if (firstIndexOf(command, 'kookr lesson remember') < skipAt) return 'lesson-write';
+  if (
+    hasSkipMarker
+      ? KOOKR_LESSON_REMEMBER_INVOCATION_RE.test(command)
+      : command.includes('kookr lesson remember')
+  ) {
+    return 'lesson-write';
+  }
   // `kb remember` MAY be suppressed by the similarity guard (storing nothing),
   // so the bare command is only an *attempt* until its output confirms a real
   // write. See isGenuineKbWriteOutput + the #1538 gate scanner.
-  if (firstIndexOf(command, 'kb remember') < skipAt) return 'lesson-write-attempt';
-  if (skipAt !== Number.POSITIVE_INFINITY) return 'lesson-skip';
+  if (
+    hasSkipMarker ? KB_REMEMBER_INVOCATION_RE.test(command) : command.includes('kb remember')
+  ) {
+    return 'lesson-write-attempt';
+  }
+  if (hasSkipMarker) return 'lesson-skip';
   if (command.includes('kb ')) return 'kb-search';
   return 'none';
 }

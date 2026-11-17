@@ -52,9 +52,9 @@ describe('classifyKbCommand', () => {
   });
 
   test('a skip line whose reason mentions `kb remember` is still a skip (#4134)', () => {
-    // Whichever comes first decides: the skip line prints the marker before the
-    // reason, so a reason naming the remember command does not turn it into an
-    // attempt (which could never be confirmed — printf prints no write marker).
+    // The remember text sits in the reason, not in command position, so it is
+    // not a write attempt (which could never be confirmed — printf prints no
+    // write marker).
     expect(
       classifyKbCommand(
         "printf 'No generic KB lesson: %s\\n' 'already stored as some-lesson.md (kb remember --force)'",
@@ -67,17 +67,36 @@ describe('classifyKbCommand', () => {
       classifyKbCommand('cat <<EOF\nNo generic KB lesson: kb remember said a similar lesson exists\nEOF'),
     ).toBe('lesson-skip');
     expect(
+      classifyKbCommand("echo 'kb remember refused it; No generic KB lesson: covered by x.md'"),
+    ).toBe('lesson-skip');
+    expect(
       classifyKbCommand(
         "printf 'No generic KB lesson: %s\\n' 'covered (kookr lesson remember not needed)'",
       ),
     ).toBe('lesson-skip');
   });
 
-  test('a write whose lesson body quotes the skip marker stays a write attempt (#4134)', () => {
-    // The remember call comes first, so a suppressed write cannot pass as a skip.
+  test('a write whose lesson body quotes the skip marker stays a write, wherever the body sits (#4134)', () => {
+    // A suppressed write must never pass as a skip: the remember call runs, so
+    // the command is a write attempt whether its body comes before or after it.
     expect(
       classifyKbCommand(
         "cat <<'EOF' | kb remember --lesson --title=\"t\" --stdin --yes\n## Mistake\n\nPrinted 'No generic KB lesson:' too early\nEOF",
+      ),
+    ).toBe('lesson-write-attempt');
+    expect(
+      classifyKbCommand(
+        "printf '## Mistake\\n\\nPrinted No generic KB lesson: before checking\\n' | kb remember --lesson --title=t --stdin --yes",
+      ),
+    ).toBe('lesson-write-attempt');
+    expect(
+      classifyKbCommand(
+        "cat > /tmp/l.md <<'X'\n## Mistake\n\nNo generic KB lesson: printed too early\nX\ncat /tmp/l.md|kb remember --lesson --stdin --yes",
+      ),
+    ).toBe('lesson-write-attempt');
+    expect(
+      classifyKbCommand(
+        "printf 'No generic KB lesson: x\\n' > /tmp/l.md; ~/bin/kb remember --stdin --yes < /tmp/l.md",
       ),
     ).toBe('lesson-write-attempt');
     expect(

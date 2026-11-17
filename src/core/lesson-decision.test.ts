@@ -216,6 +216,8 @@ describe('evaluateLessonDecisionGate', () => {
     });
     expect(v.reason).toMatch(/^Task used kb search/);
     expect(v.reason).toContain('1 kb call; 1 `kb remember` attempt with no confirmed write; 1 skip line.');
+    // A single unconfirmed attempt already earns the one-line hint.
+    expect(v.hint).toBe(`${LESSON_UNCONFIRMED_WRITE_HINT}\n${LESSON_DECISION_HINT}`);
   });
 
   test('fail-open when no sessions were scanned', () => {
@@ -344,6 +346,34 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
     expect(stats.lessonWrites).toBe(0);
     expect(stats.lessonSkips).toBe(0);
     expect(stats.lessonWriteAttempts).toBe(1);
+  });
+
+  test('a suppressed write whose piped body quotes the skip marker does not pass the gate (#4134)', async () => {
+    const log = join(dir, 'hooks', 'sess-piped-marker.jsonl');
+    const cmd =
+      "printf '## Mistake\\n\\nPrinted No generic KB lesson: before checking\\n' | kb remember --lesson --title=t --stdin --yes";
+    writeFileSync(
+      log,
+      [
+        preToolBash(cmd),
+        postToolFailureBash(cmd, `KOOKR_LESSON_WRITE: not-recorded (kb exit 3)\n${KB_OUTPUT_SUPPRESSED}`, 3),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const resolved = await resolveTaskLessonDecision(
+      { id: 't-piped', sessions: [{ tmuxSession: 'sess-piped-marker' }] },
+      join(dir, 'hooks'),
+    );
+    expect(resolved.counts.lessonSkips).toBe(0);
+    expect(resolved.counts.lessonWrites).toBe(0);
+    const gate = evaluateLessonDecisionGate({
+      sessionsScanned: resolved.sessionsScanned,
+      decision: resolved.decision,
+      missingLogs: resolved.missingLogs,
+      observed: resolved.observed,
+    });
+    expect(gate.allow).toBe(false);
   });
 
   test('replays the #4134 trail: the gate allows completion', async () => {

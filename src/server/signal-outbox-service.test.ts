@@ -272,12 +272,21 @@ describe('SignalOutboxService', () => {
       kind: 'completion_ready',
     }));
 
-    const svc = new SignalOutboxService({ taskStore: store, spoolDir, kookrDir });
+    const logs: string[] = [];
+    const svc = new SignalOutboxService({
+      taskStore: store,
+      spoolDir,
+      kookrDir,
+      log: (msg) => logs.push(msg),
+    });
     const result = await svc.tick();
     expect(result.drained.permanentFailed).toBe(1);
     expect(result.drained.delivered).toBe(0);
     expect(store.getPendingSignal(task.id)).toBeUndefined();
     expect(await readPendingSignals(spoolDir)).toHaveLength(0);
+    // The drain passes the scan's observation to the gate, so the drop reason
+    // names what the hook trail held (issue #4134).
+    expect(logs.some((m) => m.includes('drop completion_ready') && m.includes('Hook trail: 0 kb calls'))).toBe(true);
   });
 
   test('allows completion_ready drain after Grok-shaped lesson skip (issue #1608)', async () => {

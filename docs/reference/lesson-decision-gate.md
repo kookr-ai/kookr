@@ -26,11 +26,14 @@ This gate makes lesson authoring a **lifecycle step**, not a voluntary act.
      decision (issue #1538 loophole fix).
    - `kookr lesson remember` → **wrote-lesson** from the command alone — it runs
      with `--no-check-similar` and spools on failure, so it never suppresses.
-   - literal `No generic KB lesson:` → **explicit-skip**. When one command holds
-     both the marker and a remember call, whichever comes **first** decides
-     (issue #4134): the skip line prints the marker first, so a reason that
-     mentions `kb remember` (`… (kb remember --force)`) stays a skip, while a
-     write whose heredoc body quotes the marker stays a write attempt.
+   - literal `No generic KB lesson:` → **explicit-skip**. When a command holds
+     both the marker and a remember mention, it is a write (attempt) only if
+     the remember call actually **runs**: at the start of the command or right
+     after a shell operator (`|`, `&`, `;`, newline, `$(`, backtick), issue
+     #4134. So a reason that mentions `kb remember` (`… (kb remember --force)`)
+     stays a skip, while a write whose body quotes the marker
+     (`cat <<EOF | kb remember`, `printf '…' | kb remember`, `cat f | kb remember`)
+     stays a write attempt and cannot pass as a skip.
    - other `kb ` traffic → **search-only**
    - neither → **no-kb-activity**
 3. If the task has ≥1 session and the decision is not wrote-lesson/explicit-skip,
@@ -248,7 +251,8 @@ step, so this edge is rare. `kookr lesson yield` prints the line as
   Grok Build writes camelCase (`hookEventName: pre_tool_use`,
   `toolName: run_terminal_command`, `toolInput.command`). The scanner accepts
   both, for pre- and post-tool events alike (`PostToolUse` / `post_tool_use`,
-  with the captured output under `tool_response` / `toolResponse`). Scanning only the Claude shape was the silent-bypass hole that made
+  with the captured output under `tool_response` / `toolResponse`). Scanning
+  only the Claude shape was the silent-bypass hole that made
   every Grok completion look like `noKbActivity` even when the agent wrote a
   lesson or printed the skip marker.
 - **Failed shell calls (issue #4134):** when the shell call exits non-zero,
