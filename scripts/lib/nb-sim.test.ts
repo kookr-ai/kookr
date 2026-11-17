@@ -71,11 +71,12 @@ describe('predictMove (pure model)', () => {
     expect(p.evicted?.id).toBe('t2'); // lowest score 1, stalest of the two
     expect(p.docked).toMatchObject({ id: 't1', from: 5, to: 4 }); // first surviving line in file order
     applyMove(store, 'a', 't', 'm1', 4);
+    // Since agent-notebook 0.9.0 the docked line moves to the end, after the newcomer.
     expect(store.get('t')!.map((e) => [e.id, e.score])).toEqual([
-      ['t1', 4],
       ['t3', 1],
       ['t4', 3],
       ['m1', 9],
+      ['t1', 4],
     ]);
     expect(store.get('a')).toEqual([]);
   });

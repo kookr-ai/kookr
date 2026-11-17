@@ -185,12 +185,13 @@ describe('migrate-notebook-slugs: --apply', { timeout: 120_000 }, () => {
     writeShelf(dir, 'code-review@agent-notebook', L([1, 'weak'], [5, 'strong']));
     commitAll(dir);
     const { result, text } = run(dir, { apply: true, cap: 4 });
-    // strong (+5) moves first: evicts the lowest (t3) and docks the stalest survivor (t4: 4 -> 3).
+    // strong (+5) moves first: evicts the lowest (t3) and docks the stalest survivor
+    // (t4: 4 -> 3), which goes to the end of the file.
     expect(readLessons(dir, `code-review@${CANON}`)).toEqual([
-      [3, 't4'],
       [5, 't5'],
       [6, 't6'],
       [5, 'strong'],
+      [3, 't4'],
     ]);
     // weak (+1) is below the full target's minimum (+3): refused, still on its legacy shelf.
     expect(readLessons(dir, 'code-review@agent-notebook')).toEqual([[1, 'weak']]);
@@ -222,11 +223,11 @@ describe('migrate-notebook-slugs: --apply', { timeout: 120_000 }, () => {
     writeShelf(dir, 'code-review@agent-notebook', L([1, 'weak a'], [3, 'strong'], [1, 'weak b']));
     commitAll(dir);
     run(dir, { apply: true, cap: 3 });
-    // 'strong' (+3) evicts n3 and ages n1 (9 -> 8); the +1 lessons are below the new minimum (+3).
+    // 'strong' (+3) evicts n3 and ages n1 (9 -> 8, moved to the end); the +1 lessons are below the new minimum (+3).
     expect(readLessons(dir, `code-review@${CANON}`)).toEqual([
-      [8, 'n1'],
       [9, 'n2'],
       [3, 'strong'],
+      [8, 'n1'],
     ]);
     expect(readLessons(dir, 'code-review@agent-notebook').map(([, t]) => t).sort()).toEqual(['weak a', 'weak b']);
   });
@@ -252,11 +253,12 @@ describe('migrate-notebook-slugs: --apply', { timeout: 120_000 }, () => {
     commitAll(dir);
     const { result } = run(dir, { apply: true, cap: 4, forceLow: true });
     expect(result.ok).toBe(true);
+    // weak evicts t3 and docks t4 (4 -> 3), which goes to the end of the file.
     expect(readLessons(dir, `code-review@${CANON}`)).toEqual([
-      [3, 't4'],
       [5, 't5'],
       [6, 't6'],
       [1, 'weak'],
+      [3, 't4'],
     ]);
     expect(fileExists(dir, 'code-review@agent-notebook')).toBe(false);
   });
@@ -642,12 +644,15 @@ describe('migrate-notebook-slugs: --apply guards', { timeout: 120_000 }, () => {
 
   test('a victim that merely TIES the mover once its aging is undone is refused (single uninterrupted run)', () => {
     const dir = store();
-    writeShelf(dir, `code-review@${CANON}`, L([3, 'alpha'], [2, 'bravo'], [2, 'charlie'])); // alpha is the least recently touched
+    // Cap 2, so alpha is the only line left to age: since agent-notebook 0.9.0 an aged
+    // line moves to the end, and with a larger shelf a different, unaged line would be
+    // the next victim and the guard would not be exercised.
+    writeShelf(dir, `code-review@${CANON}`, L([3, 'alpha'], [2, 'bravo'])); // alpha is the least recently touched
     writeShelf(dir, 'code-review@agent-notebook', L([3, 'in one'], [3, 'in two']));
     commitAll(dir);
-    run(dir, { apply: true, cap: 3 });
+    run(dir, { apply: true, cap: 2 });
     // 'in one' evicts bravo (+2) and ages alpha to +2; 'in two' would then evict alpha, which was +3 when the run began: refused.
-    expect(readLessons(dir, `code-review@${CANON}`).map(([, t]) => t).sort()).toEqual(['alpha', 'charlie', 'in one']);
+    expect(readLessons(dir, `code-review@${CANON}`).map(([, t]) => t).sort()).toEqual(['alpha', 'in one']);
     expect(readLessons(dir, 'code-review@agent-notebook')).toEqual([[3, 'in two']]);
   });
 
