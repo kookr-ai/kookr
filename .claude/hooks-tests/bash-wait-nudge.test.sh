@@ -88,5 +88,26 @@ check "gh issue view --json comments is silent" silent 'gh issue view 2765 --jso
 check "gh issue view without --comments is silent" silent 'gh issue view 2765'
 check "gh pr view --comments is silent" silent 'gh pr view 5 --comments'
 
+# #4121: `-c` is gh's short form of --comments; only the gh segment's own -c counts.
+check "gh issue view -c warns without blocking" warns 'gh issue view 4121 -c'
+check "gh issue view -R repo -c 2>&1 warns" warns 'gh issue view 12 -R o/r -c 2>&1'
+check "gh issue view -c after 2>&1 warns" warns 'gh issue view 12 2>&1 -c'
+check "gh issue view -wc (combined short flags) warns" warns 'gh issue view 7 -wc'
+check "gh issue view -cw (combined short flags) warns" warns 'gh issue view 7 -cw'
+check "second gh issue view -c on the line warns" warns 'gh issue view 1 -R o/r; gh issue view 2 -c'
+check "gh -c nudge suggests --json title,body,comments" says 'gh issue view 1 -c' '--json title,body,comments'
+check "gh issue view -c --json is silent" silent 'gh issue view 4121 -c --json title,body,comments'
+check "grep -c after gh issue view is silent" silent 'gh issue view 5 --json body && grep -c x f'
+check "grep -c after plain gh issue view is silent" silent 'gh issue view 5 | grep -c x'
+check "git -c before gh issue view is silent" silent 'git -c core.pager=cat log -1; gh issue view 5'
+check "bash -c wrapping a later command is silent" silent "gh issue view 5; bash -c 'echo hi'"
+check "gh issue view -R with a c-prefixed value is silent" silent 'gh issue view 5 -R cool/repo'
+check "gh pr view -c is silent" silent 'gh pr view 5 -c'
+check "git -c after gh issue view is silent" silent 'gh issue view 5 && git -c k=v log'
+check "grep -c on the next line is silent" silent $'gh issue view 5\ngrep -c x f'
+check "gh issue view -c on a later line warns" warns $'echo hi\ngh issue view 5 -c'
+check "sort -c after a gh issue view process substitution is silent" silent 'diff <(gh issue view 5) <(sort -c f)'
+check "grep -c after a gh issue view command substitution is silent" silent 'x=`gh issue view 5` && grep -c y f'
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

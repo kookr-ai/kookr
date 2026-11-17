@@ -108,9 +108,9 @@ blocks. It adds a short suggestion to the agent's context in four cases:
 - `pkill -f PATTERN`. The agent's own shell has PATTERN in its command line,
   so pkill kills that shell too. The nudge suggests killing by PID, or
   stopping a background task by its id.
-- `gh issue view N --comments` without `--json`. When its output is not a
-  terminal it prints only the comments, and nothing for an issue without
-  comments. The nudge suggests `gh issue view N --json title,body,comments`.
+- `gh issue view N --comments` (or its short form `-c`) without `--json`.
+  When its output is not a terminal it prints only the comments, and nothing
+  for an issue without comments. The nudge suggests `gh issue view N --json title,body,comments`.
 
 Safe forms stay silent. Set `KOOKR_BASH_WAIT_NUDGE_SKIP=1` to turn it off.
 
