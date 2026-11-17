@@ -263,9 +263,11 @@ the task gave (folded under "Background"), a button for each page the question l
 --link`, for example "Open mockups", which opens a new tab), an **Open task** button that selects the
 asking task in the dashboard, one button per choice, a box for a typed answer when the task accepts
 one, and how long the question stays open. URLs written in the question or its background are
-clickable. If the task cannot be shown (it has no live session in the dashboard), the card says so. Lucy reads out who is asking, the question and
-the choices. She does not read the background: it usually holds paths and numbers that are easier to
-read than to hear. While a question is waiting, the list of recent messages is hidden to make room.
+clickable. If the task cannot be shown (it has no live session in the dashboard), the card says so. Lucy says one short
+sentence, at most 25 words: who is asking, the question (cut when it is long) and that the choices are
+on her card ("The task Billing migration needs your input: Run the table rename on production now?
+Three choices are on my card."). She does not read the choices or the background: read aloud they
+made clips of 16 to 45 seconds, and the card shows them in full. While a question is waiting, the list of recent messages is hidden to make room.
 
 **One question, two places to answer.** Telegram and the panel show the same record, kept by the Kookr
 server. Whichever answer arrives first is the answer; the task gets it as the same typed line either

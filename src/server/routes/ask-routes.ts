@@ -176,9 +176,10 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
     return c.json({ ask: toAskView(result.ask) });
   });
 
-  // Lucy's voice for a pending question: who is asking, the question and the
-  // choices. The dashboard calls this when a question arrives and plays the clip
-  // in the avatar panel. Read-only for the ask itself.
+  // Lucy's voice for a pending question: who is asking, the question (cut when
+  // it is long) and that the choices are on her card. The dashboard calls this
+  // when a question arrives and plays the clip in the avatar panel. Read-only
+  // for the ask itself.
   app.post('/api/asks/:id/speak', async (c) => {
     const speech = deps.speech;
     if (!service) return c.json({ error: 'ask not found', code: 'not_found' }, 404);

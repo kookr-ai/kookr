@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { OPERATOR_ASK_MAX_LISTED, OPERATOR_ASK_RESOLVED_VISIBLE_MS, type AskRecord } from '../shared/contracts/asks.js';
 import type { TaskStatus } from '../shared/contracts/task-status.js';
-import { askTaskName, buildAskSpeech, listOperatorAsks, toOperatorAskView } from './operator-asks.js';
+import {
+  MAX_ASK_SPEECH_QUESTION_WORDS,
+  MAX_ASK_SPEECH_WORDS,
+  askTaskName,
+  buildAskSpeech,
+  listOperatorAsks,
+  toOperatorAskView,
+} from './operator-asks.js';
 
 const NOW = 2_000_000_000_000;
 
@@ -152,20 +159,34 @@ describe('listOperatorAsks task state', () => {
 });
 
 describe('buildAskSpeech', () => {
-  it('says who asks, the question and the choices', () => {
-    expect(buildAskSpeech(ask({ options: ['Yes', 'No', 'Later'] }), 'Fix login'))
-      .toBe('The task Fix login needs your input. Ship it? You can answer: Yes, No, or Later.');
+  const wordCount = (text: string): number => text.split(/\s+/).filter(Boolean).length;
+
+  it('says who asks and what about in one sentence, and that the choices are on her card', () => {
+    expect(buildAskSpeech(ask({ question: 'Run the table rename on production now?', options: ['Yes', 'No', 'Later'] }), 'Billing migration'))
+      .toBe('The task Billing migration needs your input: Run the table rename on production now? Three choices are on my card.');
+  });
+
+  it('never reads the choices out', () => {
+    const spoken = buildAskSpeech(ask({ options: ['Deploy to Frankfurt', 'Deploy to Dublin'] }), 'Fix login');
+    expect(spoken).toBe('The task Fix login needs your input: Ship it? Two choices are on my card.');
+    expect(spoken).not.toMatch(/Frankfurt|Dublin/);
   });
 
   it('uses a generic opener without a task name and ends an unpunctuated question', () => {
     expect(buildAskSpeech(ask({ question: 'Pick a region' }), undefined))
-      .toBe('A task needs your input. Pick a region. You can answer: Yes or No.');
+      .toBe('A task needs your input: Pick a region. Two choices are on my card.');
+  });
+
+  it('counts the choices in words, and says where to answer when there is only a text box', () => {
+    expect(buildAskSpeech(ask({ options: ['A', 'B', 'C', 'D'] }), undefined)).toMatch(/Four choices are on my card\.$/);
+    expect(buildAskSpeech(ask({ options: ['A'] }), undefined)).toMatch(/One choice is on my card\.$/);
+    expect(buildAskSpeech(ask({ options: [] }), undefined)).toBe('A task needs your input: Ship it? You can answer on my card.');
   });
 
   it('never reads the background context', () => {
     const spoken = buildAskSpeech(ask({ context: 'See /srv/app/src/server/index.ts line 4268' }), 'Fix login');
     expect(spoken).not.toContain('index');
-    expect(spoken).toBe('The task Fix login needs your input. Ship it? You can answer: Yes or No.');
+    expect(spoken).toBe('The task Fix login needs your input: Ship it? Two choices are on my card.');
   });
 
   it('does not read a secret or a path out loud', () => {
@@ -175,7 +196,47 @@ describe('buildAskSpeech', () => {
     expect(spoken).not.toContain('sk-ant-api03');
     expect(spoken).not.toContain('/srv/app');
     // The rest of the sentence survives the redaction.
-    expect(spoken).toMatch(/^A task needs your input\. Use the key/);
-    expect(spoken).toMatch(/You can answer: Yes or No\.$/);
+    expect(spoken).toMatch(/^A task needs your input: Use the key/);
+    expect(spoken).toMatch(/Two choices are on my card\.$/);
+  });
+
+  it('keeps the sentences of a long question that fit, and says the rest is on the card', () => {
+    const spoken = buildAskSpeech(ask({
+      question: 'The rename is ready. It touches the two billing tables and the nightly report that reads them, so it needs a quiet hour. Run it now?',
+      options: ['Now', 'Tonight', 'Never'],
+    }), 'Fix login');
+    expect(spoken).toBe('The task Fix login needs your input: The rename is ready. The rest and three choices are on my card.');
+  });
+
+  it('cuts a long single sentence between two words', () => {
+    const spoken = buildAskSpeech(ask({
+      question: 'Should I rebase the branch onto staging before pushing and then open the pull request against staging or keep it against main?',
+    }), 'Fix login');
+    expect(spoken).toBe('The task Fix login needs your input: Should I rebase the branch onto staging before pushing… The rest and two choices are on my card.');
+    expect(wordCount(spoken)).toBe(MAX_ASK_SPEECH_WORDS);
+  });
+
+  it('reads at most 18 words of the question, even when nobody is named', () => {
+    const question = `${Array.from({ length: 30 }, (_unused, i) => `word${'abcdefghijklmnopqrstuvwxyzabcd'[i]}`).join(' ')}?`;
+    const spoken = buildAskSpeech(ask({ question }), undefined);
+    const read = spoken.slice('A task needs your input: '.length, spoken.indexOf('…'));
+    expect(wordCount(read)).toBeLessThanOrEqual(MAX_ASK_SPEECH_QUESTION_WORDS);
+    expect(wordCount(spoken)).toBeLessThanOrEqual(MAX_ASK_SPEECH_WORDS);
+  });
+
+  it.each([
+    ['a short name', 'Fix login'],
+    ['a name of six words', 'Move the billing tables to Postgres'],
+    ['no name', undefined],
+  ])('never goes over 25 words, whatever the length of the question and the choices: %s', (_label, name) => {
+    const long = 'Please decide whether the migration should run now on production or later tonight after the backup has finished and the nightly report is done';
+    for (const question of [long, `${long}. ${long}?`, 'Short one. Another short one. ' + long]) {
+      for (const options of [['Yes', 'No'], ['A very long first choice that would take seconds to read', 'B', 'C', 'D']]) {
+        const spoken = buildAskSpeech(ask({ question, options }), name);
+        expect(wordCount(spoken)).toBeLessThanOrEqual(MAX_ASK_SPEECH_WORDS);
+        expect(spoken).toMatch(/on my card\.$/);
+        expect(spoken).not.toContain('very long first choice');
+      }
+    }
   });
 });

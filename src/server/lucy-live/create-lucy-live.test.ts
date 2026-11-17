@@ -320,7 +320,7 @@ describe('createLucyLive', () => {
       await tick(); await tick(); await tick();
       expect(ws.sent.find((m) => m.type === 'turn_start')).toMatchObject({ askId: 'a1' });
       const said = ws.sent.filter((m) => m.type === 'sentence').map((m) => m.text).join(' ');
-      expect(said).toContain('The task Cleanup needs your input.');
+      expect(said).toBe('The task Cleanup needs your input: When should I run it? Two choices are on my card.');
       expect(remembered).toHaveLength(1);
       expect(remembered[0]![2]).toBe(said);
       await runTurn(ws, 't2');

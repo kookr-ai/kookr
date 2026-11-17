@@ -968,7 +968,7 @@ describe('ask routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body).toMatchObject({
-        text: 'The task Fix login needs your input. Ship it? You can answer: Yes or No.',
+        text: 'The task Fix login needs your input: Ship it? Two choices are on my card.',
         audioBase64: 'UklGRg==', mimeType: 'audio/wav', durationMs: 1234, subject: 'Fix login', cached: false, usedFallback: false,
       });
       expect(body.clipId).toMatch(/^[0-9a-f-]{36}$/);
