@@ -22,6 +22,8 @@ export default defineConfig({
     passWithNoTests: true,
     testTimeout: 30_000,
     globalSetup: [
+      // First: the reapers below only reap this run's processes (issue #4109).
+      './test/test-run-id.global.ts',
       './test/git-repo-guard.global.ts',
       './test/relay-orphan-reaper.global.ts',
       './test/dtach-master-reaper.global.ts',
