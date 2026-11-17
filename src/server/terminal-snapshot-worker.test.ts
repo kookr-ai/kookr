@@ -157,6 +157,45 @@ describe('isolated screen-snapshot seeds (issue #3564)', { timeout: 30_000 }, ()
     expect(await worker.snapshot(encode('again\r\n'), { ...geometry, sessionKey: 'crashes' })).toMatchObject({ reason: 'backoff' });
   });
 
+  it('answers live jobs as restarting, not failed, while a retired thread terminates (issue #4067)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let exited!: () => void;
+    const terminated = new Promise<number>((resolve) => { exited = () => resolve(0); });
+    const worker = newWorker({ backoffMs: 60_000 });
+    await warmUp(worker);
+    const thread = (worker as unknown as { worker: Worker }).worker;
+    const terminate = vi.spyOn(thread, 'terminate').mockImplementation(() => terminated);
+    thread.emit('error', new Error('parser handler threw'));
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(worker.restarting).toBe(true);
+    expect(await worker.live({ op: 'drop', sessionKey: 'other' }, new Uint8Array(0), 2000))
+      .toMatchObject({ kind: 'unavailable', reason: 'restarting' });
+
+    // Once the old thread has exited, the next job starts a fresh one.
+    terminate.mockRestore();
+    void thread.terminate();
+    exited();
+    await terminated;
+    await vi.waitFor(() => expect(worker.restarting).toBe(false));
+    await vi.waitFor(async () => {
+      expect(await worker.live({ op: 'drop', sessionKey: 'other' }, new Uint8Array(0), 2000)).toMatchObject({ kind: 'done' });
+    }, { timeout: 20_000, interval: 100 });
+
+    // A closed worker is not restarting, even while its thread is still terminating: it refuses for good.
+    let closedExit!: () => void;
+    const live = (worker as unknown as { worker: Worker }).worker;
+    vi.spyOn(live, 'terminate').mockImplementation(() => new Promise<number>((resolve) => { closedExit = () => resolve(0); }));
+    const closing = worker.close();
+    expect(worker.restarting).toBe(false);
+    vi.mocked(live.terminate).mockRestore();
+    void live.terminate();
+    closedExit();
+    await closing;
+    expect(worker.restarting).toBe(false);
+    expect(await worker.live({ op: 'drop', sessionKey: 'other' }, new Uint8Array(0), 2000))
+      .toMatchObject({ kind: 'unavailable', reason: 'failed' });
+  });
+
   it('does not kill a worker whose reply was already waiting when this thread finally got to the deadline', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const terminate = vi.spyOn(Worker.prototype, 'terminate');

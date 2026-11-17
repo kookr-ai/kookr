@@ -20,10 +20,14 @@ type WorkerJob =
   | { job: 'text'; options: TerminalScreenTextOptions }
   | { job: 'live'; options: LiveScreenJob };
 
-/** How a live-model job ends when the worker could not run it: refused here, or the thread was retired. */
+/**
+ * How a live-model job ends when the worker could not run it: refused here, or
+ * the thread was retired. `restarting`: the retired thread is still being
+ * terminated, so no new one can start yet; the job is worth sending again soon.
+ */
 export type LiveScreenWorkerResult =
   | LiveScreenJobResult
-  | { kind: 'unavailable'; reason: StreamingAttachSnapshotUnavailableReason; elapsedMs: number };
+  | { kind: 'unavailable'; reason: StreamingAttachSnapshotUnavailableReason | 'restarting'; elapsedMs: number };
 
 interface Pending {
   bytes: number;
@@ -108,6 +112,8 @@ export class TerminalSnapshotWorker {
 
   get pendingBytes(): number { return this.retainedBytes; }
   get pendingJobs(): number { return this.pending.size; }
+  /** A retired thread is still terminating: jobs are refused until it has exited, then a new one starts. */
+  get restarting(): boolean { return this.stopping !== null && !this.closed; }
 
   private start(): Worker | null {
     if (this.closed || this.stopping) return null;
@@ -159,6 +165,9 @@ export class TerminalSnapshotWorker {
    * session off. Unlike a snapshot, an empty payload is a valid job.
    */
   live(job: LiveScreenJob, bytes: Uint8Array, deadlineMs: number): Promise<LiveScreenWorkerResult> {
+    // Not `failed`: the caller may retry as soon as the old thread is gone (issue #4067).
+    // A session backing off is refused as such first: it is not worth retrying soon.
+    if (this.restarting && !this.isBackingOff(job.sessionKey)) return Promise.resolve({ kind: 'unavailable', reason: 'restarting', elapsedMs: 0 });
     return this.submit(bytes, { job: 'live', options: job }, deadlineMs) as Promise<LiveScreenWorkerResult>;
   }
 
