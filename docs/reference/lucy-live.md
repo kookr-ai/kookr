@@ -126,7 +126,8 @@ and the server reads it as a turn it starts on its own (`turn_start`, then sente
 for an answer):
 
 - She waits her turn: not while you are speaking, while she is answering, while a sound is being
-  checked, or while a read-back waits for your "yes", and not until 0.8 s after her voice ends.
+  checked, or while a read-back or a launch proposal waits for your "yes" (issue #4015: a "yes" to
+  the question would otherwise confirm the launch), and not until 0.8 s after her voice ends.
   Several questions are said one at a time, in the order they came.
 - If you begin to speak before her first sentence of it is sent (or while Silero is still checking a
   sound that began before it), she holds it back and says it once your turn and her answer are over. Words that began before the question reached the browser are
@@ -137,15 +138,24 @@ for an answer):
 - It enters the conversation history as something she said unprompted (the operator's side of that
   exchange is a note saying nobody spoke), so "say that again" or "which task was that?" work. In the
   history the helper model gets, only what the browser reported playing is kept, and a question nobody
-  heard is left out. When launching is on, the operator conversation answers instead, and it keeps every
-  sentence of the question that was sent, marked "(interrupted)" if she was cut off.
+  heard is left out. When launching is on, the operator conversation answers instead, and it is told the
+  same thing: what the browser reported playing, marked "(interrupted)" if she was cut off, given to it
+  just before the next answer (when those reports are in), and nothing for a question nobody heard
+  (issue #4015).
+- If the browser played none of it (it ignored the `turn_start` because you had just begun to speak, or
+  an interruption dropped it while it was held or still being decoded), it says so with
+  `turn_unplayed`, and the server says the question again after your turn, whatever it had already
+  sent of it.
 - If her earlier audio is still waiting to play when the question starts (an answer held behind a
   clip), the browser holds the question until that audio has been scheduled, so that audio is never
-  lost. Closing one question does not drop another held behind it; an interruption drops them all.
+  lost. Closing one question does not drop another held behind it; an interruption drops them all
+  (and reports them with `turn_unplayed`, so they are said later). A held question's `turn_done` is
+  kept and shown when the question starts, so an error in it is not lost.
 - It is answered, withdrawn or expires while she reads it: she stops (`drop_ask`).
 - No clip is fetched for it, so it does not appear in her conversation thread as a spoken message and has no Replay button; the
-  card carries it. If Talk is switched off or the connection drops before she says it, she does not
-  say it at all; the card and Telegram still have it.
+  card carries it. If she can no longer say it before any of it was heard (the server already has ten
+  questions waiting and answers `ask_refused`, the connection drops, or Talk is switched off), the
+  browser plays it as a clip after all, under the usual clip rules (issue #4015).
 
 Because Silero filters the noise, the browser's own bar for a candidate while she talks is 0.15 s of
 loud sound, down from 0.3 s. Silero also guards ordinary turns: if a whole turn never contains a

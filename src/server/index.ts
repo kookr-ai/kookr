@@ -183,7 +183,12 @@ import {
   TASK_ARCHIVE_DIRNAME,
 } from './use-cases/task-archive.js';
 import { readTranscriptCaptureConfig } from './use-cases/transcript-capture-config.js';
-import { runTranscriptCaptureSweep, runTranscriptRetentionSweep } from './use-cases/capture-transcript-sweep.js';
+import {
+  OPENCODE_TRANSCRIPT_CAPTURE_INTERVAL_MS,
+  runTranscriptCaptureSweep,
+  runTranscriptRetentionSweep,
+  selectCaptureSession,
+} from './use-cases/capture-transcript-sweep.js';
 import { runTranscriptBackfill } from './use-cases/transcript-backfill.js';
 import { hasCompleteSnapshot } from './use-cases/transcript-store.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
@@ -593,6 +598,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     maxBytes: taskTailConfig.maxBytes,
   });
   let taskTailPurgeTimer: ReturnType<typeof setInterval> | undefined;
+  let opencodeTranscriptCaptureTimer: ReturnType<typeof setInterval> | undefined;
   if (taskTailConfig.purgeIntervalMs > 0) {
     // First sweep after one interval (not at boot) so startup stays light.
     taskTailPurgeTimer = setInterval(() => {
@@ -3788,7 +3794,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const transcriptsDir = join(kookrDir, 'transcripts');
   const transcriptHooksDir = join(kookrDir, 'hooks');
   // Coarse 'own-repos' heuristic: capture a task only when the cwd of the session
-  // the sweep captures (newest claude-code session) is the server checkout or
+  // the sweep captures (selectCaptureSession: the newest session when it is an
+  // opencode one, else the newest claude-code session) is the server checkout or
   // under the parent dir of the server checkout (so sibling dirs of the checkout
   // are admitted too). External contribution worktrees outside that tree are
   // excluded. Over-exclusion is the safe direction for a privacy control; an
@@ -3796,10 +3803,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const ownRepoRoot = dirname(serverCwd);
   const transcriptScopeAllows = transcriptCaptureConfig.scope === 'own-repos'
     ? (task: import('../core/tasks.js').Task): boolean => {
-        const claudeSessions = task.sessions.filter((s) => s.agentType === 'claude-code');
-        const cwd = claudeSessions.length > 0
-          ? claudeSessions.reduce((a, b) => (b.createdAt > a.createdAt ? b : a)).cwd
-          : undefined;
+        const cwd = selectCaptureSession(task)?.session.cwd;
         return !!cwd && (cwd === serverCwd || cwd.startsWith(`${ownRepoRoot}/`));
       }
     : undefined;
@@ -3823,6 +3827,32 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         `[transcript-capture] backfill: scanned ${s.scanned}, captured ${s.captured}, skipped ${s.skipped}, errors ${s.errors}`,
       ))
       .catch((err) => console.warn('[transcript-capture] backfill failed:', err));
+    // opencode keeps a task's conversation only in its per-task data dir, which the
+    // opencode retention sweep deletes about a day after the task ends (issue #3537).
+    // The maintenance tick runs only every 24h by default, so capture opencode tasks
+    // on their own short tick; the maintenance tick still covers them as a backstop.
+    opencodeTranscriptCaptureTimer = setInterval(() => {
+      void runTranscriptCaptureSweep({
+        tasks: taskStore.listTasks(),
+        hooksDir: transcriptHooksDir,
+        transcriptsDir,
+        providers: ['opencode'],
+        config: {
+          scope: transcriptCaptureConfig.scope,
+          maxTasksPerTick: transcriptCaptureConfig.maxTasksPerTick,
+          graceMs: transcriptCaptureConfig.graceMs,
+        },
+        ...(transcriptScopeAllows ? { scopeAllows: transcriptScopeAllows } : {}),
+      }).then((summary) => {
+        if (summary.captured > 0 || summary.errors > 0) {
+          console.log(
+            `[transcript-capture] opencode sweep: captured ${summary.captured}, ` +
+              `candidates ${summary.candidates}, vendorAbsent ${summary.vendorAbsent}, errors ${summary.errors}`,
+          );
+        }
+      });
+    }, OPENCODE_TRANSCRIPT_CAPTURE_INTERVAL_MS);
+    opencodeTranscriptCaptureTimer.unref?.();
   }
 
   const maintenancePruneConfig = {
@@ -4719,6 +4749,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     if (isClosed) return;
     isClosed = true;
 
+    if (opencodeTranscriptCaptureTimer) {
+      clearInterval(opencodeTranscriptCaptureTimer);
+      opencodeTranscriptCaptureTimer = undefined;
+    }
     if (taskTailPurgeTimer) {
       clearInterval(taskTailPurgeTimer);
       taskTailPurgeTimer = undefined;

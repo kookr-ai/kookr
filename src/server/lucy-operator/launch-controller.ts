@@ -157,8 +157,11 @@ export interface LucyLaunchController {
   noteSpeaking(conversationId: string, until: number): void;
   /** The conversation ended (the voice socket closed): its pending proposal is dropped, never launched. */
   closeConversation(conversationId: string): void;
-  /** The proposal currently held for a conversation, if it can still be confirmed. */
-  pending(conversationId: string): LucyLaunchProposalView | undefined;
+  /**
+   * The proposal currently held for a conversation, if it can still be confirmed. Without an id: the one proposal
+   * held in any conversation, which is the one a "yes" from any conversation answers (see `handleReply`).
+   */
+  pending(conversationId?: string): LucyLaunchProposalView | undefined;
   /** Another kind of card took the screen: every held proposal is dropped, never launched, and its card is cleared. */
   dropPending(): void;
   /**
@@ -522,7 +525,10 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       announce({ type: 'lucy_launch', conversationId, proposal: entry.view });
     },
 
-    pending: (conversationId) => live(conversationId)?.view,
+    pending: (conversationId) => {
+      const id = conversationId ?? held.keys().next().value;
+      return id === undefined ? undefined : live(id)?.view;
+    },
 
     dropPending,
 

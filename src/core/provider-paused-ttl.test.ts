@@ -15,6 +15,7 @@ import {
   type ProviderPausedTtlCandidateOutcome,
   type ProviderResetState,
   isAccountLevelProviderPauseDetail,
+  isFirstPartyProviderPauseDetail,
 } from './provider-paused-ttl.js';
 import { aSession, aTask } from './__fixtures__/task-builders.js';
 
@@ -716,5 +717,35 @@ describe('isAccountLevelProviderPauseDetail (issue #4050)', () => {
     undefined,
   ])('is false for %s', (detail) => {
     expect(isAccountLevelProviderPauseDetail(detail)).toBe(false);
+  });
+});
+
+describe('isFirstPartyProviderPauseDetail (issues #4050, #4082)', () => {
+  it.each([
+    'stop_failure:billing_error',
+    'stop_failure:authentication_failed',
+    'stop_failure:quota_exceeded',
+    'stop_failure:rate_limit',
+    'stop_failure:rate_limit_error',
+  ])('is true for first-party %s', (detail) => {
+    expect(isFirstPartyProviderPauseDetail(detail)).toBe(true);
+  });
+
+  it.each([
+    // Text matched in the stop_failure message, not the error code.
+    'stop_failure_message:rate_limit',
+    'stop_failure_message:billing_error',
+    'error_event',
+    'text_surface',
+    'tool_result',
+    'anomaly:api_error',
+    'stop_failure:',
+    'stop_failure:rate_limit_extra',
+    'stop_failure:rate',
+    'xstop_failure:rate_limit',
+    '',
+    undefined,
+  ])('is false for %s', (detail) => {
+    expect(isFirstPartyProviderPauseDetail(detail)).toBe(false);
   });
 });

@@ -30,7 +30,9 @@
  *  - Hands-free Talk is on in the tab that speaks the question (and sound is on, Do Not Disturb
  *    off): she says it in the conversation instead of as a clip ({@link setLiveAskSpeaker}), so
  *    talking over it stops her and she remembers having said it. No clip is fetched and nothing is
- *    added to her message list; the card carries the question. Launch reports and permission
+ *    added to her message list; the card carries the question. If the conversation gives it back
+ *    before she said any of it (its queue was full, the connection dropped, Talk was switched off),
+ *    it is played as a clip after all, under the rules above. Launch reports and permission
  *    notices still go through the clip path.
  *
  * The audio goes through the remembered-clip path (`last-clip.ts` and
@@ -74,8 +76,11 @@ const BUSY_WAIT_MS = 45_000;
 
 /** Says a question in the hands-free conversation; registered while Talk is on in this tab. */
 export interface LiveAskSpeaker {
-  /** Take the question; false when the conversation cannot (not connected), and the clip is played instead. */
-  say(askId: string): boolean;
+  /**
+   * Take the question; false when the conversation cannot (not connected), and the clip is played instead.
+   * `notSaid` gives it back later, when the conversation can no longer say it and has said none of it.
+   */
+  say(askId: string, notSaid: () => void): boolean;
   /** The question closed: do not say it, or stop saying it. */
   drop(askId: string): void;
 }
@@ -209,6 +214,8 @@ interface ClipRequest {
   body?: Record<string, unknown>;
   /** A task's question: with Talk on it is said in the conversation instead. */
   live?: boolean;
+  /** This tab already claimed it (the conversation gave it back): no hidden-tab wait, no second claim. */
+  claimed?: boolean;
 }
 
 /**
@@ -279,11 +286,12 @@ async function prepareClip(askId: string, options: AnnounceAskOptions, request: 
   // A tab that is hidden, or that the browser will not let start audio yet, lets the others go first:
   // if it claimed the question at once, a tab that could have spoken it would stand down for nothing.
   const hidden = typeof document !== 'undefined' && document.visibilityState !== 'visible';
-  if (hidden || !pageMayStartAudio()) await wait(HIDDEN_TAB_DELAY_MS);
+  if (!request.claimed && (hidden || !pageMayStartAudio())) await wait(HIDDEN_TAB_DELAY_MS);
   if (closedAsks.has(askId)) return 'cancelled';
-  if (!(await claim(askId))) return 'other-tab';
+  if (!request.claimed && !(await claim(askId))) return 'other-tab';
   // Talk is on here: the conversation says it. Sound off or Do Not Disturb keep the clip path, which leaves it unheard.
-  if (request.live && liveSpeaker && getSoundPreferenceState().enabled && !getDndState().enabled && liveSpeaker.say(askId)) {
+  const notSaid = (): void => sayAsClip(askId, request, options);
+  if (request.live && liveSpeaker && getSoundPreferenceState().enabled && !getDndState().enabled && liveSpeaker.say(askId, notSaid)) {
     liveAsks.add(askId);
     if (liveAsks.size > 200) liveAsks.delete(liveAsks.values().next().value as string);
     return 'live';
@@ -343,6 +351,15 @@ async function prepareClip(askId: string, options: AnnounceAskOptions, request: 
   return { clipId: clip.clipId };
 }
 
+/**
+ * The conversation gave back a question it was handed and said none of it: play it as a clip, as if Talk had
+ * been off. This tab claimed it already, so it skips the claim; a question closed meanwhile is not played.
+ */
+function sayAsClip(askId: string, request: ClipRequest, options: AnnounceAskOptions): void {
+  if (!liveAsks.delete(askId) || closedAsks.has(askId)) return;
+  void announceKeyed(askId, { url: request.url, ...(request.body ? { body: request.body } : {}), claimed: true }, options);
+}
+
 /** Play a fetched clip once Lucy is silent, unless its question closed in the meantime. */
 async function playClip(askId: string, clipId: string, options: AnnounceAskOptions): Promise<AskAnnouncementResult> {
   const wait = options.sleep ?? sleep;
@@ -389,7 +406,8 @@ export function stopAskAnnouncement(askId: string): void {
  * message list (the panel's own unmount stops anything currently playing).
  */
 export function stopAllAskAnnouncements(): void {
-  for (const key of [...inFlight]) stopAskAnnouncement(key);
+  // Questions handed to the conversation too: Talk may stop after the panel and give them back for a clip.
+  for (const key of [...inFlight, ...liveAsks]) stopAskAnnouncement(key);
 }
 
 export function __resetAskAnnouncementForTests(): void {

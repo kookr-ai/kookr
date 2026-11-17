@@ -25,11 +25,16 @@
  *    answer that is ready while a clip plays waits for the clip to end (issue #3672).
  * 6. Reads out a task's question in the conversation when the dashboard hands it over
  *    ({@link LucyLiveSession.sayAsk}): the server starts that turn itself (`turn_start`) when she
- *    is free, and from then on it plays, ducks and stops exactly like an answer.
+ *    is free, and from then on it plays, ducks and stops exactly like an answer. A question of which
+ *    nothing was heard (ignored because the operator had begun to speak, or cut before its audio
+ *    started) is reported with `turn_unplayed`, so the server says it again later. One she can no
+ *    longer say at all (the server refused it, the connection dropped, Talk was switched off) is
+ *    given back to the dashboard, which plays it as a clip.
  */
 import {
   LUCY_LIVE_SAMPLE_RATE,
   LUCY_LIVE_WS_PATH,
+  MAX_UNPLAYED_TURNS,
   type LucyLiveClientMessage,
   type LucyLiveLanguage,
   type LucyLiveOpenTarget,
@@ -169,6 +174,7 @@ interface Duck extends CandidateTiming {
 }
 
 type SentenceMessage = Extract<LucyLiveServerMessage, { type: 'sentence' }>;
+type TurnDoneMessage = Extract<LucyLiveServerMessage, { type: 'turn_done' }>;
 
 /** A sentence that has been handed to the audio engine. */
 interface ScheduledSentence {
@@ -205,7 +211,14 @@ export class LucyLiveSession {
    * behind a clip, or still being decoded). The server cannot see clips, so it may start one too early:
    * each waits here, with its sentences, until everything queued before it has been scheduled.
    */
-  private heldTurns: Array<{ turnId: string; askId: string; sentences: SentenceMessage[] }> = [];
+  private heldTurns: Array<{ turnId: string; askId: string; sentences: SentenceMessage[]; done?: TurnDoneMessage }> = [];
+  /** Some audio of the current question has been heard (it reached the head of her queue). */
+  private currentAskHeard = false;
+  /**
+   * Questions handed over with {@link sayAsk} of which nothing has been heard yet, with the call that gives each
+   * back to the dashboard when she can no longer say it.
+   */
+  private readonly handedAsks = new Map<string, () => void>();
   /** Id of the microphone turn being sent (differs from `currentTurnId` while a possible interruption is being checked). */
   private micTurnId: string | null = null;
   /** A possible interruption awaiting the server's verdict; Lucy is ducked meanwhile. */
@@ -315,26 +328,46 @@ export class LucyLiveSession {
     for (const t of this.stream?.getTracks() ?? []) t.stop();
     this.stream = null;
     this.detachSocket();
+    // Talk is off: questions she has not begun to say go back to the dashboard, which plays them as clips.
+    this.giveBackAsks();
   }
 
   /**
    * Hand the waiting question `askId` to the conversation, to be said when she is free. False when the
-   * conversation is not connected: the caller then plays it as a clip.
+   * conversation is not connected: the caller then plays it as a clip. `notSaid` is called if she can no
+   * longer say it before any of it was heard: the server refused it, the connection dropped, or Talk was
+   * switched off.
    */
-  sayAsk(askId: string): boolean {
+  sayAsk(askId: string, notSaid?: () => void): boolean {
     if (this.stopped || !this.ready || this.ws?.readyState !== WS_OPEN) return false;
+    this.handedAsks.set(askId, notSaid ?? (() => undefined));
     this.send({ type: 'say_ask', askId });
     return true;
+  }
+
+  /** She can no longer say `askId` (or, with none, any question handed to her): give it back to the dashboard. */
+  private giveBackAsks(askId?: string): void {
+    const ids = askId === undefined ? [...this.handedAsks.keys()] : [askId];
+    for (const id of ids) {
+      const notSaid = this.handedAsks.get(id);
+      if (!this.handedAsks.delete(id)) continue;
+      try {
+        notSaid?.();
+      } catch {
+        // The dashboard's fallback must not break the conversation.
+      }
+    }
   }
 
   /** The question `askId` closed: stop reading it out now if she is, and tell the server not to say it. */
   dropAsk(askId: string): void {
     if (this.stopped) return;
+    this.handedAsks.delete(askId);
     // Other questions held behind this one stay: only this question is closed.
     const stillHeld = this.heldTurns.filter((held) => held.askId !== askId);
     if (this.currentAskId === askId) {
       this.currentAskId = null;
-      const cut = this.cutPlayback();
+      const cut = this.cutPlayback({ keepHeld: true });
       emitSpeechIdle(this.busOwner);
       for (const sentence of cut) {
         this.send({ type: 'played', turnId: sentence.turnId, seq: sentence.seq, complete: false });
@@ -418,6 +451,8 @@ export class LucyLiveSession {
     this.ws = null;
     this.lucyState = 'idle';
     this.awaitingAnswer = null; // the server forgot that turn with the connection
+    // So did it the questions it was waiting to say: they go back to the dashboard, which plays them as clips.
+    this.giveBackAsks();
     if (this.reconnectsUsed >= 1) {
       this.options.onFatal('error', 'Lost the connection to Lucy. Turn hands-free off and on to try again.');
       return;
@@ -448,9 +483,12 @@ export class LucyLiveSession {
         }
         break;
       case 'turn_start':
-        // The operator has just begun to speak in a turn of their own: the server sees that and holds
-        // the question back, so its sentences are not played here.
-        if (this.sending && !this.duck) break;
+        // The operator has just begun to speak in a turn of their own: its sentences are not played here.
+        // The server may already have sent one before it saw their speech_start, so say that none was heard.
+        if (this.sending && !this.duck) {
+          this.send({ type: 'turn_unplayed', turnIds: [message.turnId] });
+          break;
+        }
         if (this.heldTurns.length > 0 || this.pending.size > 0 || this.decoding.size > 0) {
           this.heldTurns.push({ turnId: message.turnId, askId: message.askId, sentences: [] });
           break;
@@ -467,19 +505,16 @@ export class LucyLiveSession {
         else this.onSentence(message);
         break;
       }
-      case 'turn_done':
+      case 'turn_done': {
         if (message.turnId === this.awaitingAnswer) this.awaitingAnswer = null;
-        if (message.turnId !== this.currentTurnId) break;
-        // Sentence numbers are contiguous and arrive before `turn_done`, so a missing one is
-        // still being decoded: it will fill the gap, and nothing is skipped here.
-        this.options.onView({
-          lastTurnEnd: message.end,
-          ...(message.end === 'error'
-            ? { errorMessage: message.reason ?? 'Lucy hit a problem with that turn. Please try again.' }
-            : {}),
-        });
-        if (message.end === 'error') this.errorShown = true;
-        this.settleBus();
+        // A held question's end is shown when it starts, after its sentences.
+        const held = this.heldTurns.find((turn) => turn.turnId === message.turnId);
+        if (held) held.done = message;
+        else this.onTurnDone(message);
+        break;
+      }
+      case 'ask_refused':
+        this.giveBackAsks(message.askId);
         break;
       case 'speech_confirmed':
         this.onConfirmed(message.turnId);
@@ -509,6 +544,20 @@ export class LucyLiveSession {
         }
         break;
     }
+  }
+
+  private onTurnDone(message: TurnDoneMessage): void {
+    if (message.turnId !== this.currentTurnId) return;
+    // Sentence numbers are contiguous and arrive before `turn_done`, so a missing one is
+    // still being decoded: it will fill the gap, and nothing is skipped here.
+    this.options.onView({
+      lastTurnEnd: message.end,
+      ...(message.end === 'error'
+        ? { errorMessage: message.reason ?? 'Lucy hit a problem with that turn. Please try again.' }
+        : {}),
+    });
+    if (message.end === 'error') this.errorShown = true;
+    this.settleBus();
   }
 
   // -------------------------------------------------------------------------
@@ -624,6 +673,7 @@ export class LucyLiveSession {
   private beginServerTurn(turnId: string, askId: string): void {
     this.currentTurnId = turnId;
     this.currentAskId = askId;
+    this.currentAskHeard = false;
     this.endedAt = null;
     this.firstAudioSeen = true; // no "end of speech to first audio" timing: nobody spoke
     this.playGeneration += 1;
@@ -953,6 +1003,7 @@ export class LucyLiveSession {
     if (!next) return;
     this.beginServerTurn(next.turnId, next.askId);
     for (const sentence of next.sentences) this.onSentence(sentence);
+    if (next.done) this.onTurnDone(next.done);
   }
 
   private schedule(turnId: string, seq: number, buffer: AudioBuffer): void {
@@ -982,6 +1033,11 @@ export class LucyLiveSession {
   /** Tell the speech bus this sentence is the one being heard, so the avatar's mouth follows its loudness. */
   private announce(sentence: ScheduledSentence): void {
     sentence.announced = true;
+    if (this.currentAskId !== null && sentence.turnId === this.currentTurnId) {
+      // She has begun to say the question: from now on it is hers to finish or be cut off, never given back.
+      this.currentAskHeard = true;
+      this.handedAsks.delete(this.currentAskId);
+    }
     emitSpeechPlaying(this.busOwner, this.audioContext(), sentence.source);
   }
 
@@ -997,10 +1053,15 @@ export class LucyLiveSession {
 
   /**
    * Stop every sound now and forget what was queued. Returns the sentences that had begun
-   * playing, so the caller can report them as heard only in part.
+   * playing, so the caller can report them as heard only in part. Questions of which nothing was
+   * heard (the current one, and those held behind it unless `keepHeld`) are reported to the server
+   * with `turn_unplayed`, so it says them again.
    */
-  private cutPlayback(): ScheduledSentence[] {
+  private cutPlayback({ keepHeld = false }: { keepHeld?: boolean } = {}): ScheduledSentence[] {
     const heard = this.active.filter((s) => s.announced);
+    const unplayed = this.currentAskId !== null && this.currentTurnId !== null && !this.currentAskHeard ? [this.currentTurnId] : [];
+    if (!keepHeld) unplayed.push(...this.heldTurns.map((held) => held.turnId));
+    if (unplayed.length > 0) this.send({ type: 'turn_unplayed', turnIds: unplayed.slice(0, MAX_UNPLAYED_TURNS) });
     for (const sentence of this.active) {
       sentence.source.onended = null;
       try {
@@ -1017,9 +1078,9 @@ export class LucyLiveSession {
     this.active = [];
     this.pending.clear();
     this.decoding.clear();
-    // A question held behind what was cut goes too: an interruption ends it on the server (barge-in or the
-    // operator's confirmed turn). {@link dropAsk} keeps the other held questions when it cuts one.
-    this.heldTurns = [];
+    // A question held behind what was cut goes too; the server, told above, says it again later.
+    // {@link dropAsk} keeps the other held questions when it cuts one.
+    if (!keepHeld) this.heldTurns = [];
     this.playHead = 0;
     this.playGeneration += 1;
     return heard;

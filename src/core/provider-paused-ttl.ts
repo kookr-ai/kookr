@@ -71,9 +71,10 @@ export const PROVIDER_RESET_HOLD_GRACE_MS = 15 * 60_000;
  *   no reset was seen during this pause (issue #3574). The quota contradicts
  *   the pause classification, which is then most likely a false positive (a
  *   working task that read rate-limit text), so the reclaim holds the task.
- *   Never produced for a pause backed by account-level evidence
- *   ({@link isAccountLevelProviderPauseDetail}, issue #4050): a billing,
- *   auth or quota stop_failure is real whatever the windows show.
+ *   Never produced for a pause backed by a first-party stop_failure
+ *   ({@link isFirstPartyProviderPauseDetail}): a billing, auth or quota error
+ *   (issue #4050) or a rate limit (issue #4082) that the agent's own CLI
+ *   reported is real whatever the windows show.
  * - `none` — nothing to go on, or nothing pending: no quota source at all (the
  *   poller is disabled), or a reset seen earlier in this pause has passed.
  */
@@ -98,18 +99,52 @@ const ACCOUNT_LEVEL_STOP_ERRORS: ReadonlySet<string> = new Set([
 
 /**
  * Whether a provider-pause detail (`classifyProviderPause().detail`) is
- * first-party, account-level evidence that the healthy-quota hold must not
- * override (issue #4050).
+ * first-party, account-level evidence (issue #4050): a billing, auth or quota
+ * error that the 5-hour and 7-day windows cannot show.
  *
- * Only an exact `stop_failure:<error>` with a billing, auth or quota error
- * counts. `stop_failure_message:*`, `error_event`, `text_surface`,
- * `tool_result` and `anomaly:api_error` come from free text, and
- * `stop_failure:rate_limit*` is the kind of pause the windows do describe, so
- * those keep the #3574 hold. An absent detail keeps it too.
+ * Only an exact `stop_failure:<error>` with one of those errors counts.
+ * `stop_failure_message:*`, `error_event`, `text_surface`, `tool_result` and
+ * `anomaly:api_error` come from free text. A first-party
+ * `stop_failure:rate_limit*` is not account-level, but it also turns the
+ * #3574 hold off: see {@link isFirstPartyProviderPauseDetail} (issue #4082).
  */
 export function isAccountLevelProviderPauseDetail(detail: string | undefined): boolean {
   if (detail === undefined || !detail.startsWith('stop_failure:')) return false;
   return ACCOUNT_LEVEL_STOP_ERRORS.has(detail.slice('stop_failure:'.length));
+}
+
+/**
+ * `stop_failure.error` values the agent's own CLI reports when a request hit a
+ * rate limit (issue #4082). Claude Code sends `rate_limit` both for the 5-hour
+ * and the weekly usage limit ("You've hit your 5-hour limit · resets ...").
+ */
+const RATE_LIMIT_STOP_ERRORS: ReadonlySet<string> = new Set([
+  'rate_limit',
+  'rate_limit_error',
+]);
+
+/**
+ * Whether a provider-pause detail is a first-party `stop_failure` the
+ * healthy-quota hold (#3574) must not override: an account-level error
+ * ({@link isAccountLevelProviderPauseDetail}, issue #4050) or an exact
+ * `stop_failure:rate_limit` / `stop_failure:rate_limit_error` (issue #4082).
+ *
+ * The rate limit counts because it is the CLI's own report about its own
+ * requests, not text the agent read (the #3574 false positive came from tool
+ * output). A healthy snapshot later in such a pause does not contradict it:
+ * the quota poller often stays in backoff for the whole pause, so the first
+ * healthy snapshot it gets can come after the window has rolled over. A
+ * rate limit outside the 5-hour and 7-day windows does not show in the
+ * snapshot either.
+ *
+ * Text-based details (`stop_failure_message:*`, `error_event`,
+ * `text_surface`, `tool_result`, `anomaly:api_error`) and an absent detail
+ * still get the hold.
+ */
+export function isFirstPartyProviderPauseDetail(detail: string | undefined): boolean {
+  if (isAccountLevelProviderPauseDetail(detail)) return true;
+  if (detail === undefined || !detail.startsWith('stop_failure:')) return false;
+  return RATE_LIMIT_STOP_ERRORS.has(detail.slice('stop_failure:'.length));
 }
 
 /**
@@ -409,8 +444,9 @@ export interface SelectExpiredProviderPausedTasksOpts {
    *   unknown; the hard bound still does, #2423);
    * - `quota_healthy` and still under the 6h max → skip
    *   `skipped_provider_quota_healthy`, on the soft AND hard path (issue #3574).
-   *   The caller must not report it for a pause backed by account-level
-   *   evidence ({@link isAccountLevelProviderPauseDetail}, issue #4050);
+   *   The caller must not report it for a pause backed by a first-party
+   *   stop_failure ({@link isFirstPartyProviderPauseDetail}, issues #4050
+   *   and #4082);
    * - `none` / omitted → today's soft/hard behavior.
    */
   getProviderResetState?: (task: Task) => ProviderResetState | undefined;
@@ -526,8 +562,8 @@ export function effectiveProviderPausedStartMs(
  * - reset unresolved and still under hard TTL →
  *   `skipped_provider_reset_unresolved` (issue #3562);
  * - quota healthy (no exhausted window) and under the 6h max →
- *   `skipped_provider_quota_healthy` (issue #3574; never for account-level
- *   pause evidence, issue #4050);
+ *   `skipped_provider_quota_healthy` (issue #3574; never for a first-party
+ *   stop_failure, issues #4050 and #4082);
  * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
  *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
  * - otherwise selected (oldest-paused first).
@@ -629,8 +665,9 @@ export function selectExpiredProviderPausedTasks(
     // #3574: a healthy quota poller with no exhausted window contradicts the
     // pause — it is most likely a working task that read rate-limit text. Hold
     // past the hard TTL too, so a quiet false positive is not reclaimed at 2h,
-    // but only up to the 6h max: a healthy snapshot cannot rule out an
-    // account-level billing hold, and nothing may hold a slot forever (#2079).
+    // but only up to the 6h max: a text-only pause can still be real (its
+    // window may have rolled over while the poller backed off, #4082), and
+    // nothing may hold a slot forever (#2079).
     if (resetState?.kind === 'quota_healthy' && pausedForMs < MAX_PROVIDER_PAUSED_HARD_TTL_MS) {
       skips.skipped_provider_quota_healthy += 1;
       outcomes.push({

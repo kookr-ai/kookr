@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Task } from '../../core/tasks.js';
-import { runTranscriptCaptureSweep, runTranscriptRetentionSweep } from './capture-transcript-sweep.js';
+import { runTranscriptCaptureSweep, runTranscriptRetentionSweep, selectCaptureSession } from './capture-transcript-sweep.js';
 
 const NOW = new Date('2026-06-01T00:00:00Z');
 
@@ -74,6 +74,89 @@ describe('runTranscriptCaptureSweep', () => {
       ...base, tasks, config: { scope: 'all', maxTasksPerTick: 10 }, capture, resolvePointer: ptr, hasSnapshot: async () => false,
     });
     expect(s).toEqual({ candidates: 5, captured: 1, alreadyCaptured: 1, vendorAbsent: 1, errors: 2 });
+  });
+});
+
+describe('runTranscriptCaptureSweep: opencode tasks (issue #3537)', () => {
+  const base = { hooksDir: 'h', transcriptsDir: 't', now: () => NOW, opencodeDataRoot: '/ocdata' };
+  const ok = () => vi.fn(async () => ({ outcome: 'captured' as const, messageCount: 1, bytes: 1 }));
+  function oc(id: string, ageMin: number, extra: Partial<Record<string, unknown>> = {}): Task {
+    const t = new Date(NOW.getTime() - ageMin * 60_000);
+    return {
+      id, status: 'completed', createdAt: t, updatedAt: t,
+      sessions: [{ tmuxSession: `s-${id}`, agentType: 'opencode', claudeSessionId: `ses_${id}`, createdAt: t, ...extra }],
+    } as unknown as Task;
+  }
+
+  it('captures from the task DB under the route key (tmuxSession) with the opencode session id', async () => {
+    const captureOpenCode = ok();
+    const capture = vi.fn();
+    const s = await runTranscriptCaptureSweep({
+      ...base, tasks: [oc('a', 100)], config: { scope: 'all', maxTasksPerTick: 5 },
+      capture, captureOpenCode, fileExists: () => true, hasSnapshot: async () => false,
+    });
+    expect(capture).not.toHaveBeenCalled();
+    expect(captureOpenCode).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'a', sessionId: 's-a', opencodeSessionId: 'ses_a', dbPath: '/ocdata/a/data/opencode/opencode.db',
+    }));
+    expect(s).toEqual({ candidates: 1, captured: 1, alreadyCaptured: 0, vendorAbsent: 0, errors: 0 });
+  });
+
+  it('skips a task whose DB is gone without spending a cap slot, and skips captured ones', async () => {
+    const captureOpenCode = ok();
+    const s = await runTranscriptCaptureSweep({
+      ...base, tasks: [oc('gone', 300), oc('done', 200), oc('live', 100)], config: { scope: 'all', maxTasksPerTick: 1 },
+      captureOpenCode, fileExists: (p) => !p.includes('/gone/'), hasSnapshot: async (_d, id) => id === 'done',
+    });
+    expect(captureOpenCode.mock.calls.map((c) => (c as unknown[])[0]).map((p) => (p as { taskId: string }).taskId)).toEqual(['live']);
+    expect(s.candidates).toBe(1);
+  });
+
+  it('captures the opencode session when it is the newest, even if the task also ran claude-code', async () => {
+    const old = new Date(NOW.getTime() - 300 * 60_000);
+    const task = oc('mix', 100);
+    task.sessions.unshift({ tmuxSession: 's-claude', agentType: 'claude-code', createdAt: old } as never);
+    const captureOpenCode = ok();
+    const capture = vi.fn();
+    await runTranscriptCaptureSweep({
+      ...base, tasks: [task], config: { scope: 'all', maxTasksPerTick: 5 },
+      capture, captureOpenCode, fileExists: () => true, resolvePointer: ptr, hasSnapshot: async () => false,
+    });
+    expect(capture).not.toHaveBeenCalled();
+    expect(captureOpenCode).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's-mix' }));
+  });
+
+  it('providers limits the tick to opencode; scope and grace still apply', async () => {
+    const captureOpenCode = ok();
+    const capture = ok();
+    const common = { ...base, capture, captureOpenCode, fileExists: () => true, resolvePointer: ptr, hasSnapshot: async () => false };
+    await runTranscriptCaptureSweep({
+      ...common, tasks: [mk('cl', 'completed', 's-cl', 100), oc('o', 100), oc('fresh', 5)], providers: ['opencode'],
+      config: { scope: 'all', maxTasksPerTick: 5, graceMs: 600_000 },
+    });
+    expect(capture).not.toHaveBeenCalled();
+    expect(captureOpenCode.mock.calls.map((c) => (c as unknown[])[0]).map((p) => (p as { taskId: string }).taskId)).toEqual(['o']);
+    await runTranscriptCaptureSweep({ ...common, tasks: [oc('o2', 100)], config: { scope: 'own-repos', maxTasksPerTick: 5 }, scopeAllows: () => false });
+    await runTranscriptCaptureSweep({ ...common, tasks: [oc('o3', 100)], config: { scope: 'off', maxTasksPerTick: 5 } });
+    expect(captureOpenCode).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('selectCaptureSession', () => {
+  it('prefers the newest session when it is opencode, else the newest claude-code session', () => {
+    const at = (m: number) => new Date(NOW.getTime() - m * 60_000);
+    const t = (sessions: unknown[]) => ({ sessions } as unknown as Task);
+    expect(selectCaptureSession(t([
+      { tmuxSession: 'c1', agentType: 'claude-code', createdAt: at(10) },
+      { tmuxSession: 'o1', agentType: 'opencode', createdAt: at(5) },
+    ]))).toMatchObject({ provider: 'opencode', session: { tmuxSession: 'o1' } });
+    expect(selectCaptureSession(t([
+      { tmuxSession: 'o1', agentType: 'opencode', createdAt: at(10) },
+      { tmuxSession: 'c1', agentType: 'claude-code', createdAt: at(8) },
+      { tmuxSession: 'x1', agentType: 'codex-cli', createdAt: at(5) },
+    ]))).toMatchObject({ provider: 'claude-code', session: { tmuxSession: 'c1' } });
+    expect(selectCaptureSession(t([{ tmuxSession: 'x1', agentType: 'codex-cli', createdAt: at(5) }]))).toBeUndefined();
+    expect(selectCaptureSession(t([]))).toBeUndefined();
   });
 });
 

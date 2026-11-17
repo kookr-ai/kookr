@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Task } from '../core/tasks.js';
+import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import { aSession, aTask } from '../core/__fixtures__/task-builders.js';
 import {
   reclaimAgedProviderPausedTasks,
@@ -1202,6 +1203,7 @@ describe('healthy-quota hold vs. pause evidence kind (issue #4050)', () => {
     task: Task;
     capacity?: boolean;
     getProviderPauseDetail?: (task: Task) => string | undefined;
+    getLiveness?: (task: Task) => HungTaskLivenessEvidence | undefined;
     now?: Date;
     source?: ProviderResetSource;
   }) {
@@ -1217,6 +1219,7 @@ describe('healthy-quota hold vs. pause evidence kind (issue #4050)', () => {
         metrics,
         getProviderResetSource: () => opts.source ?? healthyQuota,
         ...(opts.getProviderPauseDetail ? { getProviderPauseDetail: opts.getProviderPauseDetail } : {}),
+        ...(opts.getLiveness ? { getLiveness: opts.getLiveness } : {}),
       },
       {
         now: opts.now ?? NOW,
@@ -1235,20 +1238,23 @@ describe('healthy-quota hold vs. pause evidence kind (issue #4050)', () => {
     return { task, tracker };
   }
 
-  const ACCOUNT_LEVEL = [
+  // Account-level errors (issue #4050) and first-party rate limits (issue #4082).
+  const FIRST_PARTY = [
     'stop_failure:billing_error',
     'stop_failure:authentication_failed',
     'stop_failure:quota_exceeded',
+    'stop_failure:rate_limit',
+    'stop_failure:rate_limit_error',
   ];
 
-  it.each(ACCOUNT_LEVEL)('reclaims %s at the soft TTL when capacity allows, healthy quota or not', async (detail) => {
+  it.each(FIRST_PARTY)('reclaims %s at the soft TTL when capacity allows, healthy quota or not', async (detail) => {
     const { task, tracker } = pausedFor(SOFT + MIN);
     const { result, metrics } = await sweep({ task, tracker, getProviderPauseDetail: () => detail });
     expect(result.reclaimedTaskIds).toEqual(['task-1']);
     expect(metrics.getSnapshot().skippedProviderQuotaHealthy).toBe(0);
   });
 
-  it.each(ACCOUNT_LEVEL)('reclaims %s at the hard TTL without spare capacity', async (detail) => {
+  it.each(FIRST_PARTY)('reclaims %s at the hard TTL without spare capacity', async (detail) => {
     const under = pausedFor(TTL_MS - MIN);
     const held = await sweep({ ...under, capacity: false, getProviderPauseDetail: () => detail });
     expect(held.result.reclaimedTaskIds).toEqual([]);
@@ -1260,16 +1266,15 @@ describe('healthy-quota hold vs. pause evidence kind (issue #4050)', () => {
   });
 
   it.each([
-    'stop_failure:rate_limit',
-    'stop_failure:rate_limit_error',
     'stop_failure_message:billing_error',
+    'stop_failure_message:rate_limit',
     'stop_failure_message:unknown',
     'error_event',
     'text_surface',
     'tool_result',
     'anomaly:api_error',
     undefined,
-  ])('keeps the #3574 hold past the hard TTL for rate-limit or text evidence (%s)', async (detail) => {
+  ])('keeps the #3574 hold past the hard TTL for text evidence (%s)', async (detail) => {
     const { task, tracker } = pausedFor(TTL_MS + 10 * MIN);
     const { result, metrics } = await sweep({ task, tracker, getProviderPauseDetail: () => detail });
     expect(result.reclaimedTaskIds).toEqual([]);
@@ -1298,7 +1303,7 @@ describe('healthy-quota hold vs. pause evidence kind (issue #4050)', () => {
     }
   });
 
-  it('remembers account-level evidence for the pause when a later event masks it', async () => {
+  it('remembers first-party evidence for the pause when a later event masks it', async () => {
     const { task, tracker } = pausedFor(SOFT - MIN);
     let detail = 'stop_failure:billing_error';
     const getProviderPauseDetail = () => detail;
@@ -1320,15 +1325,15 @@ describe('healthy-quota hold vs. pause evidence kind (issue #4050)', () => {
     expect(result.reclaimedTaskIds).toEqual(['task-1']);
   });
 
-  it('forgets account-level evidence when the pause ends, so a later text pause is held again', async () => {
+  it('forgets first-party evidence when the pause ends, so a later text pause is held again', async () => {
     const task = makePausedTask();
     const tracker = new ProviderPausedStartTracker();
     tracker.observe(task, true, nowMs - (TTL_MS + 20 * MIN));
-    tracker.latchAccountLevelEvidence(task.id);
-    expect(tracker.hasAccountLevelEvidence(task.id)).toBe(true);
+    tracker.latchFirstPartyEvidence(task.id);
+    expect(tracker.hasFirstPartyEvidence(task.id)).toBe(true);
 
     tracker.observe(task, false, nowMs - (TTL_MS + 15 * MIN));
-    expect(tracker.hasAccountLevelEvidence(task.id)).toBe(false);
+    expect(tracker.hasFirstPartyEvidence(task.id)).toBe(false);
 
     tracker.observe(task, true, nowMs - (TTL_MS + 10 * MIN));
     const { result } = await sweep({ task, tracker, getProviderPauseDetail: () => 'text_surface' });
@@ -1370,8 +1375,121 @@ describe('healthy-quota hold vs. pause evidence kind (issue #4050)', () => {
 
   it('does not latch evidence for a task with no pause start', () => {
     const tracker = new ProviderPausedStartTracker();
-    tracker.latchAccountLevelEvidence('task-1');
-    expect(tracker.hasAccountLevelEvidence('task-1')).toBe(false);
+    tracker.latchFirstPartyEvidence('task-1');
+    expect(tracker.hasFirstPartyEvidence('task-1')).toBe(false);
+  });
+
+  describe('a rate-limit pause the poller only saw in backoff (issue #4082)', () => {
+    const PAUSE_START_MS = nowMs - 10 * MIN;
+    const backoff: ProviderResetSource = { quota: null, pollerState: 'backoff' };
+    // After the 5-hour window rolled over: low usage, a new reset 5h ahead,
+    // refreshed at `atMs`.
+    const rolledOver = (atMs: number): ProviderResetSource => ({
+      quota: {
+        fiveHour: { utilization: 2, resetsAt: new Date(atMs + 5 * 60 * MIN).toISOString() },
+        sevenDay: { utilization: 41, resetsAt: new Date(atMs + 4 * 24 * 60 * MIN).toISOString() },
+        updatedAt: atMs,
+      },
+      pollerState: 'healthy',
+    });
+
+    /**
+     * Tick A: the pause is 10 min old, the poller is in backoff, and the
+     * detail is `firstDetail`. Tick B at `laterMs`: the poller has recovered
+     * and reads the rolled-over window, and the detail is `laterDetail`.
+     */
+    async function backoffThenRollover(opts: {
+      firstDetail: string;
+      laterDetail: string;
+      laterMs: number;
+      capacity: boolean;
+    }) {
+      const task = makePausedTask();
+      const tracker = new ProviderPausedStartTracker();
+      tracker.observe(task, true, PAUSE_START_MS);
+      let detail = opts.firstDetail;
+      const getProviderPauseDetail = () => detail;
+      const first = await sweep({
+        task,
+        tracker,
+        capacity: opts.capacity,
+        getProviderPauseDetail,
+        source: backoff,
+      });
+      expect(first.result.reclaimedTaskIds).toEqual([]);
+      expect(first.result.selection?.outcomes[0]?.outcome).toBe('skipped_under_ttl');
+
+      detail = opts.laterDetail;
+      return sweep({
+        task,
+        tracker,
+        capacity: opts.capacity,
+        getProviderPauseDetail,
+        now: new Date(opts.laterMs),
+        source: rolledOver(opts.laterMs),
+      });
+    }
+
+    it.each(['stop_failure:rate_limit', 'stop_failure:rate_limit_error'])(
+      'reclaims %s at the hard TTL once the window has rolled over',
+      async (detail) => {
+        const { result, metrics } = await backoffThenRollover({
+          firstDetail: detail,
+          laterDetail: detail,
+          laterMs: PAUSE_START_MS + TTL_MS + 10 * MIN,
+          capacity: false,
+        });
+        expect(result.reclaimedTaskIds).toEqual(['task-1']);
+        expect(metrics.getSnapshot().skippedProviderQuotaHealthy).toBe(0);
+      },
+    );
+
+    it('reclaims it at the soft TTL when capacity allows', async () => {
+      const { result } = await backoffThenRollover({
+        firstDetail: 'stop_failure:rate_limit',
+        laterDetail: 'stop_failure:rate_limit',
+        laterMs: PAUSE_START_MS + SOFT + MIN,
+        capacity: true,
+      });
+      expect(result.reclaimedTaskIds).toEqual(['task-1']);
+    });
+
+    it('still reclaims it when later rate-limit text masks the stop_failure', async () => {
+      const { result } = await backoffThenRollover({
+        firstDetail: 'stop_failure:rate_limit',
+        laterDetail: 'text_surface',
+        laterMs: PAUSE_START_MS + TTL_MS + 10 * MIN,
+        capacity: false,
+      });
+      expect(result.reclaimedTaskIds).toEqual(['task-1']);
+    });
+
+    it('keeps the #3574 hold for the same sequence when the only evidence is text', async () => {
+      const { result } = await backoffThenRollover({
+        firstDetail: 'text_surface',
+        laterDetail: 'text_surface',
+        laterMs: PAUSE_START_MS + TTL_MS + 10 * MIN,
+        capacity: false,
+      });
+      expect(result.reclaimedTaskIds).toEqual([]);
+      expect(result.selection?.outcomes[0]?.outcome).toBe('skipped_provider_quota_healthy');
+    });
+
+    it('does not reclaim a working agent whose old rate-limit stop_failure is still in the window', async () => {
+      const { task, tracker } = pausedFor(TTL_MS + 10 * MIN);
+      const { result } = await sweep({
+        task,
+        tracker,
+        getProviderPauseDetail: () => 'stop_failure:rate_limit',
+        getLiveness: () => ({
+          lastHookEventAt: nowMs - 2 * MIN,
+          lastPaneChangeAt: 0,
+          lastTokenActivityAt: 0,
+        }),
+      });
+      expect(result.reclaimedTaskIds).toEqual([]);
+      expect(result.selection?.outcomes[0]?.outcome).toBe('skipped_under_ttl');
+    });
   });
 });
 

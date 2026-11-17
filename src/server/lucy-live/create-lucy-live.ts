@@ -112,6 +112,11 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
             },
           } : {}),
           noteUnprompted: (note, said) => deps.getOperator?.()?.rememberSaid?.(conversationId, note, said),
+          // A "yes" answers the one proposal on screen, whichever conversation made it: a question waits for any.
+          launchPendingUntil: () => {
+            const proposal = deps.getOperator?.()?.launch?.pending();
+            return proposal ? (proposal.launchesAt ?? proposal.expiresAt) : undefined;
+          },
           buildBriefing: () => buildLucyLiveBriefing(deps.getTasks(), now(), deps.getAsks?.() ?? [], {
             ...(deps.getNeedsOperator ? { needs: deps.getNeedsOperator() } : {}),
             ...(deps.getTrainHealth ? { train: deps.getTrainHealth() } : {}),
