@@ -222,7 +222,8 @@ describe('AvatarDock hands-free talk', () => {
     expect(announce().textContent).toBe('You said: and tests?');
     expect(announce().firstElementChild).not.toBe(first);
     update(base());
-    expect(announce().textContent).toBe('');
+    // Switching off drops the operator's words; only the off notice is left (#4058).
+    expect(announce().textContent).toBe('Hands-free off');
   });
 
   test('announces Connecting…, errors and the Talk-unavailable reason', () => {
@@ -430,6 +431,61 @@ describe('AvatarDock Talk shortcut and the bubble\u2019s off control (#4010)', (
     act(() => setSoundEnabled(false));
     act(() => stop()!.click());
     expect(live.setEnabled).toHaveBeenLastCalledWith(false);
+  });
+
+  // #4058: the shortcut works while minimised, so the screen-reader region must be there too, and be the
+  // same element on both sides of minimise/restore (a region created with text already inside is not reliably read).
+  const announce = () => container.querySelector<HTMLElement>('[data-testid="avatar-live-announce"]');
+
+  test('one announcement region survives minimise and restore, and says when the shortcut switches Talk on and off', () => {
+    render();
+    const region = announce()!;
+    expect(region.getAttribute('role')).toBe('status');
+    expect(region.textContent).toBe('');
+    minimise();
+    expect(bubble()).not.toBeNull();
+    expect(announce()).toBe(region);
+
+    press();
+    expect(live.setEnabled).toHaveBeenLastCalledWith(true);
+    render(base({ enabled: true, status: 'connecting' }));
+    expect(announce()).toBe(region);
+    expect(region.textContent).toBe('Connecting…');
+    render(base({ enabled: true, status: 'ready' }));
+    expect(region.textContent).toBe('Hands-free on, listening');
+
+    press();
+    expect(live.setEnabled).toHaveBeenLastCalledWith(false);
+    render(base());
+    expect(announce()).toBe(region);
+    expect(region.textContent).toBe('Hands-free off');
+
+    act(() => bubble()!.click());
+    expect(bubble()).toBeNull();
+    expect(announce()).toBe(region);
+  });
+
+  test('announces a hands-free error while minimised', () => {
+    render(base({ enabled: true, status: 'ready' }));
+    minimise();
+    render(base({ enabled: true, status: 'error', errorMessage: 'Microphone permission denied' }));
+    expect(bubble()).not.toBeNull();
+    expect(announce()!.textContent).toBe('Microphone permission denied');
+  });
+
+  test('does not announce the state the dock mounts in', () => {
+    render(base({ enabled: true, status: 'ready' }));
+    expect(announce()!.textContent).toBe('');
+  });
+
+  test('the Talk-unavailable reason opened by the shortcut lands in the same region', () => {
+    render(base({ serverStatus: { available: false, reason: 'No speech recogniser configured' } }));
+    minimise();
+    const region = announce()!;
+    press();
+    expect(bubble()).toBeNull();
+    expect(announce()).toBe(region);
+    expect(region.textContent).toBe('No speech recogniser configured');
   });
 
   test('hands keyboard focus to the bubble when the off control disappears', () => {
