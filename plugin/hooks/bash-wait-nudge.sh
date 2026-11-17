@@ -9,8 +9,9 @@
 #      log is lost and the exit code is masked.
 #  (c) `pkill -f PATTERN`: the agent's own shell has PATTERN in its command
 #      line, so pkill kills the shell running it (and other tasks' processes).
-#  (d) `gh issue view N --comments` without `--json`: off a terminal it prints
-#      only the comments (nothing at all for an issue without comments).
+#  (d) `gh issue view N --comments` (or `-c`) without `--json`: off a terminal
+#      it prints only the comments (nothing at all for an issue without
+#      comments).
 # On a match the hook adds a one-paragraph suggestion to the agent's context.
 # Safe forms stay silent. Every failure path exits 0 with no output.
 # Opt out: KOOKR_BASH_WAIT_NUDGE_SKIP=1.
@@ -51,10 +52,27 @@ if [ -z "$msg" ] && [[ "$cmd" =~ $PKILL_RE ]]; then
   msg="pkill nudge: \`pkill -f PATTERN\` also matches the shell running this command (its command line contains PATTERN), so it kills itself and can kill other tasks' processes. Kill by PID instead: start the job with \`cmd & echo \$!\` and run \`kill <PID>\`, or stop a background Bash task by its task id (TaskStop)."
 fi
 
-# (d) gh issue view --comments without --json. The --json check covers the
-# whole command, not just the gh segment: a false silence beats a false nudge.
+# gh_view_short_c: 0 when a `gh issue view` segment of $cmd holds `-c` (the
+# short form of --comments), alone or in a combined short-flag token such as
+# `-wc` / `-cw` (gh parses bool short flags left to right). Only the text from
+# `gh issue view` to the next `;`, `|`, `&`, `)`, backtick or newline is
+# searched, so the `-c` of `grep -c`, `git -c` or `bash -c` elsewhere on the
+# line does not count.
+gh_view_short_c() {
+  local rest="$cmd" seg
+  while [[ "$rest" =~ $GH_VIEW_RE ]]; do
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+    seg="${rest//>&/>}"                  # keep `2>&1` from ending the segment
+    seg="${seg%%[;|&)\`$'\n']*}"
+    [[ " $seg " =~ [[:space:]]-w*c[^[:space:]]*[[:space:]] ]] && return 0
+  done
+  return 1
+}
+
+# (d) gh issue view --comments (or -c) without --json. The --json check covers
+# the whole command, not just the gh segment: a false silence beats a false nudge.
 if [ -z "$msg" ] && [[ "$cmd" =~ $GH_VIEW_RE ]] \
-  && [[ "$cmd" =~ [[:space:]]--comments([[:space:]=]|$) ]] \
+  && { [[ "$cmd" =~ [[:space:]]--comments([[:space:]=]|$) ]] || gh_view_short_c; } \
   && ! [[ "$cmd" =~ [[:space:]]--json([[:space:]=]|$) ]]; then
   msg="gh nudge: \`gh issue view N --comments\` prints only the comments when its output is not a terminal (nothing at all, exit 0, for an issue without comments), so the issue body is missing. Use \`gh issue view N --json title,body,comments\` to get the body and the comments."
 fi
