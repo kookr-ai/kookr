@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   classifyMergeTrailCommand,
+  createGhMergedAtVerifier,
   evaluateMergeRequiredGate,
+  extractCreatedPrNumbersFromOutput,
   evidenceFromTrail,
   extractPrNumbersFromCommand,
   isMergeRequiredGateEnabled,
@@ -23,6 +25,15 @@ function preToolBash(command: string): string {
     hook_event_name: 'PreToolUse',
     tool_name: 'Bash',
     tool_input: { command },
+  });
+}
+
+function postToolBash(command: string, stdout: string): string {
+  return JSON.stringify({
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Bash',
+    tool_input: { command },
+    tool_response: { stdout, stderr: '' },
   });
 }
 
@@ -112,16 +123,47 @@ describe('classifyMergeTrailCommand / extractPrNumbersFromCommand', () => {
     ).toBe('pr-blocker');
   });
 
-  test('extracts PR numbers from URLs and gh/pnpm merge args', () => {
-    expect(
-      extractPrNumbersFromCommand(
-        'open https://github.com/kookr-ai/kookr/pull/1836 and done',
-      ),
-    ).toEqual([1836]);
+  test('extracts PR numbers from merge-command arguments', () => {
     expect(extractPrNumbersFromCommand('gh pr merge 99 --squash')).toEqual([99]);
     expect(extractPrNumbersFromCommand('pnpm merge 12')).toEqual([12]);
     expect(extractPrNumbersFromCommand('kookr merge 13 --repo o/r')).toEqual([13]);
-    expect(extractPrNumbersFromCommand('see PR #7 for context')).toEqual([7]);
+    expect(extractPrNumbersFromCommand('bash scripts/kookr-merge.sh 14')).toEqual([14]);
+    expect(
+      extractPrNumbersFromCommand('gh pr merge https://github.com/o/r/pull/15 --squash'),
+    ).toEqual([15]);
+    expect(
+      extractPrNumbersFromCommand('kookr merge 16 && gh pr merge 17'),
+    ).toEqual([16, 17]);
+  });
+
+  // Issue #4126: before, every URL and every "PR #N" in any command counted
+  // as a PR the task had to merge. A mention is not ownership.
+  test('ignores read-only and prose mentions of other PRs', () => {
+    expect(
+      extractPrNumbersFromCommand('open https://github.com/kookr-ai/kookr/pull/1836 and done'),
+    ).toEqual([]);
+    expect(extractPrNumbersFromCommand('see PR #7 for context')).toEqual([]);
+    expect(extractPrNumbersFromCommand('git commit -m "follow-up to pull request 8"')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr view 9 --json state')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr diff 9')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr list --state open')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr create --body "see PR #9"')).toEqual([]);
+  });
+
+  test('reads the opened PR number from gh pr create output only', () => {
+    expect(
+      extractCreatedPrNumbersFromOutput(
+        'gh pr create --fill',
+        'Creating pull request\nhttps://github.com/o/r/pull/21\n',
+      ),
+    ).toEqual([21]);
+    expect(
+      extractCreatedPrNumbersFromOutput(
+        'gh pr view 9 --json url',
+        'https://github.com/o/r/pull/9',
+      ),
+    ).toEqual([]);
+    expect(extractCreatedPrNumbersFromOutput('gh pr create --fill', '')).toEqual([]);
   });
 });
 
@@ -279,6 +321,11 @@ describe('resolveTaskMergeEvidence / resolveMergeRequiredGate', () => {
     writeFileSync(join(hooksDir, `${session}.jsonl`), `${lines.join('\n')}\n`, 'utf8');
   }
 
+  /** Write raw hook lines (pre and post) as one session log. */
+  function writeRawLog(session: string, lines: string[]) {
+    writeFileSync(join(hooksDir, `${session}.jsonl`), `${lines.join('\n')}\n`, 'utf8');
+  }
+
   test('scans create + merge across sessions', async () => {
     writeLog('s1', ['gh pr create --title "x"']);
     writeLog('s2', ['gh pr merge 10 --squash --delete-branch']);
@@ -292,7 +339,10 @@ describe('resolveTaskMergeEvidence / resolveMergeRequiredGate', () => {
   });
 
   test('rejects completion path for merge-authority task with open unmerged PR', async () => {
-    writeLog('sess', ['gh pr create --fill', 'echo https://github.com/o/r/pull/99']);
+    writeRawLog('sess', [
+      preToolBash('gh pr create --fill'),
+      postToolBash('gh pr create --fill', 'https://github.com/o/r/pull/99\n'),
+    ]);
     const verdict = await resolveMergeRequiredGate(
       {
         prompt: MERGE_CONTRACT_PROMPT,
@@ -353,9 +403,12 @@ describe('resolveTaskMergeEvidence / resolveMergeRequiredGate', () => {
   });
 
   test('live verifyMerged can satisfy without a merge command', async () => {
-    writeLog('sess', ['gh pr create --fill', 'echo PR #55 ready']);
+    writeRawLog('sess', [
+      preToolBash('gh pr create --fill'),
+      postToolBash('gh pr create --fill', 'https://github.com/o/r/pull/55\n'),
+    ]);
     const verifyMerged = async (nums: number[]) => {
-      expect(nums).toContain(55);
+      expect(nums).toEqual([55]);
       return { allMerged: true, checked: nums.length };
     };
     const verdict = await resolveMergeRequiredGate(
@@ -423,5 +476,107 @@ describe('resolveTaskMergeEvidence / resolveMergeRequiredGate', () => {
     expect(seen).toEqual([]);
     expect(verdict.allow).toBe(false);
     expect(verdict.code).toBe(MERGE_REQUIRED_CODE);
+  });
+
+  // --- Issue #4126 acceptance criteria -----------------------------------
+
+  /** Live verifier stub: only the PR numbers in `merged` are merged. */
+  function stubVerifier(merged: number[]) {
+    const calls: number[][] = [];
+    const verifyMerged = async (nums: number[]) => {
+      calls.push([...nums]);
+      if (nums.length === 0) return { allMerged: false, checked: 1 };
+      return { allMerged: nums.every((n) => merged.includes(n)), checked: nums.length };
+    };
+    return { calls, verifyMerged };
+  }
+
+  test('#4126 AC1: create + merge 10 + look at open PR 9 passes when 10 is merged', async () => {
+    writeLog('sess', [
+      'gh pr create --fill',
+      'gh pr view 9',
+      'gh pr diff 9',
+      // What really pulled foreign numbers in before the fix:
+      'echo "background: PR #9 edits the same test file"',
+      'gh pr comment 9 --body "see https://github.com/o/r/pull/9"',
+      'kookr merge 10 --repo o/r',
+    ]);
+    const { calls, verifyMerged } = stubVerifier([10]);
+    const verdict = await resolveMergeRequiredGate(
+      { mergeRequired: true, sessions: [{ tmuxSession: 'sess' }] },
+      hooksDir,
+      { verifyMerged },
+    );
+    expect(calls).toEqual([[10]]);
+    expect(verdict.allow).toBe(true);
+    expect(verdict.evidence?.prNumbers).toEqual([10]);
+  });
+
+  test('#4126 AC2: create + merge 10 is still refused while 10 is open', async () => {
+    writeLog('sess', ['gh pr create --fill', 'kookr merge 10 --repo o/r']);
+    const { calls, verifyMerged } = stubVerifier([]);
+    const verdict = await resolveMergeRequiredGate(
+      { mergeRequired: true, sessions: [{ tmuxSession: 'sess' }] },
+      hooksDir,
+      { verifyMerged },
+    );
+    expect(calls).toEqual([[10]]);
+    expect(verdict.allow).toBe(false);
+    expect(verdict.code).toBe(MERGE_REQUIRED_CODE);
+    expect(verdict.prNumbers).toEqual([10]);
+  });
+
+  test('#4126 AC3: create with no number falls back to the current-branch check', async () => {
+    writeLog('sess', ['gh pr create --fill', 'gh pr view 9']);
+    const { calls, verifyMerged } = stubVerifier([9]);
+    const verdict = await resolveMergeRequiredGate(
+      { mergeRequired: true, sessions: [{ tmuxSession: 'sess' }] },
+      hooksDir,
+      { verifyMerged },
+    );
+    // Asked about the current branch ([]), never about the foreign PR 9.
+    expect(calls).toEqual([[]]);
+    expect(verdict.allow).toBe(false);
+    expect(verdict.code).toBe(MERGE_REQUIRED_CODE);
+  });
+
+  test('post-tool lines add the created PR number without double-counting commands', async () => {
+    writeRawLog('sess', [
+      preToolBash('gh pr create --fill'),
+      postToolBash('gh pr create --fill', 'https://github.com/o/r/pull/31\n'),
+      preToolBash('gh pr merge 31 --squash'),
+      postToolBash('gh pr merge 31 --squash', 'Merged https://github.com/o/r/pull/32'),
+    ]);
+    const trail = await resolveTaskMergeEvidence(
+      { sessions: [{ tmuxSession: 'sess' }] },
+      hooksDir,
+    );
+    expect(trail.prCreateCommands).toBe(1);
+    expect(trail.prMergeCommands).toBe(1);
+    expect(trail.prNumbers).toEqual([31]);
+  });
+});
+
+describe('createGhMergedAtVerifier', () => {
+  test('with no PR numbers, asks gh about the current branch', async () => {
+    const seen: string[][] = [];
+    const exec = (async (_cmd: string, args: string[]) => {
+      seen.push(args);
+      return { stdout: JSON.stringify({ number: 3, mergedAt: null }), stderr: '' };
+    }) as unknown as NonNullable<Parameters<typeof createGhMergedAtVerifier>[0]>['exec'];
+    const verify = createGhMergedAtVerifier({ exec });
+    expect(await verify([])).toEqual({ allMerged: false, checked: 1 });
+    expect(seen).toEqual([['pr', 'view', '--json', 'number,mergedAt']]);
+  });
+
+  test('with PR numbers, checks only those numbers', async () => {
+    const seen: string[][] = [];
+    const exec = (async (_cmd: string, args: string[]) => {
+      seen.push(args);
+      return { stdout: JSON.stringify({ mergedAt: '2026-11-17T08:11:23Z' }), stderr: '' };
+    }) as unknown as NonNullable<Parameters<typeof createGhMergedAtVerifier>[0]>['exec'];
+    const verify = createGhMergedAtVerifier({ exec });
+    expect(await verify([10])).toEqual({ allMerged: true, checked: 1 });
+    expect(seen).toEqual([['pr', 'view', '10', '--json', 'mergedAt']]);
   });
 });

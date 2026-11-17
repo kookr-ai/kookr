@@ -18,7 +18,7 @@
  *     playbook/contract opt-in so OSS playbooks are not forced to merge
  *     upstream.
  *
- * Detection reuses {@link extractShellCommandFromHookLine} / hook-log scanning
+ * Detection reuses {@link extractShellHookLine} / hook-log scanning
  * from `lesson-decision.ts`.
  */
 
@@ -27,7 +27,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import {
-  extractShellCommandFromHookLine,
+  extractShellHookLine,
   hookLogPath,
   type HookLogScanOptions,
   type TaskSessionLike,
@@ -141,7 +141,15 @@ export type MergeTrailSignal =
 
 const PR_URL_RE =
   /https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/(?:-\/)?(?:pull|merge_requests)\/(\d+)/gi;
-const PR_NUMBER_EXPLICIT_RE = /\b(?:PR|pull request)\s*#?(\d+)\b/gi;
+
+/**
+ * The PR argument of a merge command: `gh pr merge <n|url>`,
+ * `pnpm merge <n>`, `kookr merge <n>`, `kookr-merge.sh <n>`.
+ */
+const MERGE_COMMAND_ARG_RE =
+  /\b(?:gh\s+pr\s+merge|pnpm\s+merge|kookr\s+merge|kookr-merge\.sh)\s+(?:#?(\d+)\b|(https?:\/\/\S+))/gi;
+
+const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/i;
 
 /**
  * Classify one shell command for merge-gate evidence.
@@ -150,32 +158,48 @@ const PR_NUMBER_EXPLICIT_RE = /\b(?:PR|pull request)\s*#?(\d+)\b/gi;
 export function classifyMergeTrailCommand(command: string): MergeTrailSignal {
   if (command.includes(PR_BLOCKER_MARKER)) return 'pr-blocker';
   if (isPrMergeCommand(command)) return 'pr-merge';
-  if (/\bgh\s+pr\s+create\b/i.test(command)) return 'pr-create';
+  if (GH_PR_CREATE_RE.test(command)) return 'pr-create';
   return 'none';
 }
 
-/** Extract PR numbers referenced in a shell command (URL or "PR #N"). */
+function addPositive(nums: Set<number>, raw: string | undefined): void {
+  if (raw === undefined) return;
+  const n = parseInt(raw, 10);
+  if (Number.isFinite(n) && n > 0) nums.add(n);
+}
+
+/**
+ * PR numbers this command merges (issue #4126): the argument of
+ * `gh pr merge <n|url>` / `pnpm merge <n>` / `kookr merge <n>` /
+ * `kookr-merge.sh <n>`.
+ *
+ * Any other mention is ignored — a URL in a comment, "PR #N" in a commit
+ * message or `echo`, `gh pr view <n>` / `gh pr diff <n>` / `gh pr list`. Those
+ * PRs belong to someone else, so the gate must not demand that they be merged.
+ */
 export function extractPrNumbersFromCommand(command: string): number[] {
   const nums = new Set<number>();
-  for (const match of command.matchAll(PR_URL_RE)) {
-    const n = parseInt(match[1]!, 10);
-    if (Number.isFinite(n) && n > 0) nums.add(n);
+  for (const match of command.matchAll(MERGE_COMMAND_ARG_RE)) {
+    addPositive(nums, match[1]);
+    if (match[2]) {
+      for (const url of match[2].matchAll(PR_URL_RE)) addPositive(nums, url[1]);
+    }
   }
-  for (const match of command.matchAll(PR_NUMBER_EXPLICIT_RE)) {
-    const n = parseInt(match[1]!, 10);
-    if (Number.isFinite(n) && n > 0) nums.add(n);
-  }
-  // `gh pr merge 123` / `pnpm merge 123` / `kookr merge 123` / `gh pr create` with no number yet.
-  const ghMerge = command.match(/\bgh\s+pr\s+merge\s+(\d+)\b/i);
-  if (ghMerge) {
-    const n = parseInt(ghMerge[1]!, 10);
-    if (Number.isFinite(n) && n > 0) nums.add(n);
-  }
-  const pnpmMerge = command.match(/\b(?:pnpm|kookr)\s+merge\s+(\d+)\b/i);
-  if (pnpmMerge) {
-    const n = parseInt(pnpmMerge[1]!, 10);
-    if (Number.isFinite(n) && n > 0) nums.add(n);
-  }
+  return [...nums];
+}
+
+/**
+ * PR numbers a `gh pr create` command opened, read from its output (gh prints
+ * the new PR's URL). Returns [] for any other command, and never reads the
+ * create command's own text: a `--body` citing another PR is not this task's PR.
+ */
+export function extractCreatedPrNumbersFromOutput(
+  command: string,
+  output: string,
+): number[] {
+  if (!GH_PR_CREATE_RE.test(command) || !output) return [];
+  const nums = new Set<number>();
+  for (const match of output.matchAll(PR_URL_RE)) addPositive(nums, match[1]);
   return [...nums];
 }
 
@@ -183,7 +207,10 @@ export interface MergeTrailEvidence {
   prCreateCommands: number;
   prMergeCommands: number;
   prBlockerCommands: number;
-  /** PR numbers observed in shell commands (create/merge/view/URL). */
+  /**
+   * PR numbers this task opened or merged: `gh pr create` output URLs and
+   * merge-command arguments. Read-only mentions are excluded (issue #4126).
+   */
   prNumbers: number[];
   /** True when any session log existed on disk. */
   hasLogs: boolean;
@@ -246,8 +273,17 @@ export async function scanHookLogForMergeEvidence(
       } catch {
         continue;
       }
-      const cmd = extractShellCommandFromHookLine(evt);
-      if (cmd === null) continue;
+      const shell = extractShellHookLine(evt);
+      if (shell === null) continue;
+      if (shell.phase === 'post') {
+        // Post lines only contribute the URL `gh pr create` printed; every
+        // count below comes from pre lines so nothing is counted twice.
+        for (const n of extractCreatedPrNumbersFromOutput(shell.command, shell.output)) {
+          prNumbers.add(n);
+        }
+        continue;
+      }
+      const cmd = shell.command;
 
       for (const n of extractPrNumbersFromCommand(cmd)) prNumbers.add(n);
 
