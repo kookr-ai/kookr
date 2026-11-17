@@ -207,6 +207,12 @@ export interface LucyLivePorts {
    */
   noteUnprompted?(note: string, said: string): void;
   /**
+   * The browser reported playing the first part of the question `askId`, which she read out unprompted.
+   * Called once per reading, at that moment, so the server's record of what she said unprompted has it
+   * before the operator's next sentence, in whichever conversation that comes (issue #4143).
+   */
+  heardUnprompted?(askId: string): void;
+  /**
    * Server clock until which a launch proposal, or one of her other cards (answer, reply, close), waits for the
    * operator's answer, or undefined when none does. A question is not read out meanwhile: the operator's "yes"
    * to it would confirm the launch or carry out the action. Absent: none ever waits.
@@ -701,7 +707,16 @@ export class LucyLiveSession {
     // The browser says it stopped the read-back before its end: nothing it said can be confirmed.
     if (!complete && this.proposal?.turnId === turnId) this.proposal = null;
     const entry = this.memory.find((m) => m.turnId === turnId);
-    if (entry) entry.played.set(seq, complete);
+    if (!entry) return;
+    const first = entry.played.size === 0;
+    entry.played.set(seq, complete);
+    if (first && entry.askId !== undefined) {
+      try {
+        this.ports.heardUnprompted?.(entry.askId);
+      } catch (err) {
+        this.ports.warn(`lucy-live: recording the question she read failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   private onSpeechEnd(turnId: string): void {

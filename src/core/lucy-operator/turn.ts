@@ -3,8 +3,8 @@
  * looking things up on the way when she needs to (issue #3660).
  *
  * How a turn runs:
- * 1. The model gets her instructions, a fresh board, the earlier turns and the new
- *    sentence.
+ * 1. The model gets her instructions, a fresh board, a note of what she told the operator
+ *    without being asked in the last few minutes, the earlier turns and the new sentence.
  * 2. It either answers, and the turn is over, or asks for look-ups. Each look-up goes
  *    through `dispatchLucyTool`, and its answer is added to the conversation. A call to a
  *    tool that proposes a change (`propose_launch`, `propose_answer`, `propose_reply`,
@@ -23,6 +23,7 @@
 import type { LucyTurnDoneEvent, LucyTurnEnd, LucyTurnEvent } from '../../shared/contracts/lucy-turn.js';
 import { redactSpeechSecrets } from '../task-speech-summary.js';
 import { boardText, buildLucyBoard, MAX_BOARD_CHARS } from './board.js';
+import { buildUnpromptedNote, type LucyUnpromptedSaid } from './unprompted.js';
 import { LucyModelError, type LucyChatMessage, type LucyModelPort, type LucyToolCall } from './model-port.js';
 import { buildLucyOperatorPrompt, LUCY_CAP_SENTENCES } from './prompt.js';
 import { dispatchLucyTool, displayToolArgs, LUCY_LOOK_TOOLS, type LucyLookSource, type LucyToolOutcome } from './tools.js';
@@ -98,6 +99,13 @@ export interface LucyTurnInput {
    */
   spoken?: boolean;
   history: readonly LucyHistoryMessage[];
+  /**
+   * What she said or wrote to the operator without being asked, lately (a permission notice, a task's
+   * question read out, a line about a task, a launch report). Shown to the model next to the board on
+   * this turn only: it is never added to the history, and never given to the writers of a task, a
+   * reply or an answer.
+   */
+  unprompted?: readonly LucyUnpromptedSaid[];
   /** Aborting it (the client went away) ends the turn with `aborted`. */
   signal?: AbortSignal;
 }
@@ -201,8 +209,15 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
     const boardOptions = { canAct: Boolean(actions) };
     const offered = [...LUCY_LOOK_TOOLS, ...(deps.launch ? [LUCY_PROPOSE_LAUNCH] : []), ...(actions ? LUCY_ACTION_TOOLS : [])];
     let board: string;
+    let unprompted = '';
     try {
-      board = buildLucyBoard(deps.source.board(), startedAt, MAX_BOARD_CHARS, boardOptions);
+      const boardInput = deps.source.board();
+      board = buildLucyBoard(boardInput, startedAt, MAX_BOARD_CHARS, boardOptions);
+      try {
+        unprompted = buildUnpromptedNote(input.unprompted, startedAt, boardInput.tasks);
+      } catch {
+        // The note is a help, not a need: a turn is never lost over it.
+      }
     } catch (err) {
       deps.warn?.(redactSpeechSecrets(`could not build the board: ${err instanceof Error ? err.message : String(err)}`));
       const result = end('error', 'Kookr could not read the task list.');
@@ -210,7 +225,7 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
       return result;
     }
     const messages: LucyChatMessage[] = [
-      { role: 'system', content: buildLucyOperatorPrompt(board, { canLaunch: Boolean(deps.launch), canAct: Boolean(actions), spoken: input.spoken === true }) },
+      { role: 'system', content: buildLucyOperatorPrompt(board, { canLaunch: Boolean(deps.launch), canAct: Boolean(actions), spoken: input.spoken === true, unprompted }) },
       // The question and the remembered exchanges leave the machine too, so they get the same
       // secret hiding as the board and the look-ups (a key pasted into a question is not sent on).
       ...input.history.map((message) => ({ role: message.role, content: redactSpeechSecrets(message.content) })),

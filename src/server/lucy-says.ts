@@ -110,6 +110,11 @@ export interface LucySaysNotifierDeps {
   isOwnLaunch?: (taskId: string) => boolean;
   /** Asked when a window closes, and when a held "wants review" comes due: is this still true of the task? Absent means yes. */
   stillTrue?: (event: LucyTaskEvent) => boolean;
+  /**
+   * Called once for each line that reached a dashboard, with the tasks it is about, so her next turn
+   * knows what she just wrote (issue #4143). Must not throw; a failure is ignored.
+   */
+  onWritten?: (written: { id: string; text: string; tasks: Array<{ id: string; name?: string }> }) => void;
   now?: () => number;
   newId?: () => string;
   setTimer?: (fn: () => void, ms: number) => unknown;
@@ -275,6 +280,15 @@ export class LucySaysNotifier {
       console.warn('[lucy-says] push threw (ignored):', err instanceof Error ? err.message : String(err));
     }
     if (reached === 0) return;
+    try {
+      const tasks = line.taskIds.map((id) => {
+        const name = events.find((event) => event.taskId === id)?.taskName;
+        return { id, ...(name ? { name } : {}) };
+      });
+      this.deps.onWritten?.({ id: message.id, text: line.text, tasks });
+    } catch (err) {
+      console.warn('[lucy-says] onWritten threw (ignored):', err instanceof Error ? err.message : String(err));
+    }
     for (const event of events) this.remember(keyOf(event), nowMs);
     this.windowOpen = true;
     this.windowTimer = this.setTimer(() => this.closeWindow(), LUCY_SAYS_GROUP_WINDOW_MS);

@@ -29,6 +29,7 @@ import {
   buildLucyBoard,
   MAX_BOARD_CHARS,
   orderPendingAsks,
+  permissionWords,
   pullRequestWords,
   resolveTaskRef,
   spokenLabel,
@@ -258,7 +259,7 @@ function describeTask(task: LucyBoardTask, detail: LucyTaskDetail | null, nowMs:
   if (detail?.agentType) facts.push(`Agent: ${boardText(detail.agentType, 40)}`);
   const created = detail?.createdAt === undefined ? undefined : new Date(detail.createdAt).getTime();
   if (created !== undefined && Number.isFinite(created)) facts.push(`Started: ${agoWords(created, nowMs)}`);
-  if (task.attention) facts.push(`Waiting on the operator: ${boardText(task.attention, 80)}`);
+  if (task.attention) facts.push(`Waiting on the operator: ${[boardText(task.attention, 80), ...permissionWords(task.permission, nowMs)].join('; ')}`);
   if (typeof task.costUsd === 'number' && task.costUsd > 0) facts.push(`Spent: $${task.costUsd.toFixed(2)}`);
   // Kookr's own reading of GitHub, outside the block of task-written text: what the task delivered and whether it merged.
   const delivery = pullRequestWords(detail?.pullRequests);

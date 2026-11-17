@@ -123,6 +123,12 @@ export function buildLucyLaunchController(
     }),
     // Owners only: a read-only viewer must not see the operator's words or the task description.
     emit: (message: LucyLaunchBroadcast) => deps.emitToOwners?.(message),
+    // Her report on a task she launched is something she says unprompted: her next turn is shown it.
+    onReport: (report) => deps.lucyUnprompted?.record({
+      key: `launch:${report.taskId}`,
+      text: report.text,
+      tasks: [{ id: report.taskId, ...(report.taskName ? { name: report.taskName } : {}) }],
+    }),
     log,
   });
 }

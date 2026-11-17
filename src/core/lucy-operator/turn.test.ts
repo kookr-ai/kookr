@@ -34,6 +34,37 @@ function setup(steps: ScriptedStep[], options: Parameters<typeof fakeSource>[0] 
 }
 
 describe('runLucyTurn', () => {
+  test('what she said unprompted is in her instructions after the board, for this turn only, and never reaches the writer of a task (issue #4143)', async () => {
+    const { deps, model } = setup([{ calls: [{ name: 'propose_launch' }] }]);
+    const writerSaw: string[][] = [];
+    deps.launch = { propose: async (input) => { writerSaw.push([...input.operatorWords]); return { ok: false, say: 'Which project?', why: 'ambiguous' }; } };
+    const notice = 'The task "Bake-off report" is waiting for your permission to use Bash. The command is on my card.';
+
+    const { summary } = await run(deps, {
+      text: 'start a task to look into it',
+      conversationId: 'c1',
+      unprompted: [{ text: notice, at: NOW - 40_000, tasks: [{ id: 'aaaa1111-0000', name: 'Bake-off report' }], fresh: true }],
+    });
+
+    const messages = model.requests[0]!.messages;
+    const system = (messages[0] as { content: string }).content;
+    expect(system).toContain(`- 40 seconds ago (NEW), about [aaaa] "Bake-off report": ${notice}`);
+    expect(system.indexOf('What you told the operator without being asked')).toBeGreaterThan(system.indexOf('Most recently finished'));
+    // Not an earlier exchange: the only other message is the operator's sentence.
+    expect(messages.slice(1)).toEqual([{ role: 'user', content: 'start a task to look into it' }]);
+    // The task writer is given the operator's own words and nothing she said.
+    expect(writerSaw).toEqual([['start a task to look into it']]);
+    expect(summary.answer).toBe('Which project?');
+  });
+
+  test('with nothing said unprompted her instructions end with the board', async () => {
+    const { deps, model } = setup([{ text: 'Hi.' }]);
+    await run(deps, { text: 'hello', unprompted: [] });
+    const system = (model.requests[0]!.messages[0] as { content: string }).content;
+    expect(system).not.toContain('What you told the operator without being asked');
+    expect(system.trimEnd().endsWith('Most recently finished: none.')).toBe(true);
+  });
+
   test('a direct answer: text is streamed in order and the turn ends answered after one model call', async () => {
     const { deps, model } = setup([{ text: ['Two tasks ', 'are running.'], provider: 'Cohere', usage: { inputTokens: 900, outputTokens: 12, costUsd: 0.0002 } }]);
 

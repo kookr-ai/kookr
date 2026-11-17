@@ -25,7 +25,9 @@ function harness(opts: { ownLaunches?: string[] } = {}) {
   const noLongerTrue = new Set<string>();
   const timers: Array<{ at: number; fn: () => void; cancelled: boolean }> = [];
   const sent: LucySaysMessage[] = [];
+  const written: Array<{ id: string; text: string; tasks: Array<{ id: string; name?: string }> }> = [];
   const notifier = new LucySaysNotifier({
+    onWritten: (line) => { written.push(line); },
     push: (message) => { if (dashboards > 0) sent.push(message); return dashboards; },
     isOwnLaunch: (taskId) => (opts.ownLaunches ?? []).includes(taskId),
     stillTrue: (event) => !noLongerTrue.has(`${event.taskId}:${event.kind}`),
@@ -48,7 +50,7 @@ function harness(opts: { ownLaunches?: string[] } = {}) {
   }
   const note = (taskId: string, kind: LucyTaskEventKind, taskName?: string): void => notifier.note({ taskId, kind, ...(taskName ? { taskName } : {}) });
   return {
-    notifier, sent, note, advance,
+    notifier, sent, written, note, advance,
     texts: () => sent.map((message) => message.text),
     setDashboards: (n: number) => { dashboards = n; },
     resolve: (taskId: string, kind: LucyTaskEventKind) => noLongerTrue.add(`${taskId}:${kind}`),
@@ -331,6 +333,23 @@ describe('LucySaysNotifier', () => {
     expect(h.pendingTimers()).toBe(0);
     h.note('t1', 'failed', 'A');
     expect(h.texts()).toEqual(['A failed.']);
+  });
+
+  test('each line that reached a dashboard is reported with its tasks, so her next turn knows what she wrote (issue #4143)', () => {
+    const h = harness();
+    h.note('t1', 'failed', 'Docs link audit');
+    h.note('t2', 'failed', 'A');
+    h.note('t3', 'stalled');
+    h.advance(LUCY_SAYS_GROUP_WINDOW_MS);
+    expect(h.written).toEqual([
+      { id: 'says-1', text: 'Docs link audit failed.', tasks: [{ id: 't1', name: 'Docs link audit' }] },
+      { id: 'says-2', text: 'A failed. A task has gone quiet.', tasks: [{ id: 't2', name: 'A' }, { id: 't3' }] },
+    ]);
+    // A line nobody received was not written, so it is not reported.
+    h.setDashboards(0);
+    h.advance(LUCY_SAYS_GROUP_WINDOW_MS);
+    h.note('t4', 'failed', 'B');
+    expect(h.written).toHaveLength(2);
   });
 
   test('nothing is replayed: a line that reached no dashboard is dropped, opens no window and is not sent later', () => {

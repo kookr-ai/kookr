@@ -241,6 +241,50 @@ describe('buildLucyOperator', () => {
     on?.service?.launch?.dispose();
   });
 
+  test('every turn is shown what she said unprompted, read from the server\'s record for that conversation (issue #4143)', async () => {
+    const script = scriptedModel([{ text: 'Press Approve once.' }]);
+    wired.model = script.port;
+    const asked: Array<string | undefined> = [];
+    const deps = {
+      ...routeDeps(false),
+      taskStore: { viewTasks: () => [task()], getTask: () => task(), getLifetimeSpendUsd: () => 0 },
+      lucyUnprompted: {
+        record: () => {},
+        recent: (conversationId?: string) => {
+          asked.push(conversationId);
+          return [{ text: 'The task "Billing migration" is waiting for your permission to use Bash. The command is on my card.', at: Date.now() - 20_000, tasks: [{ id: 't1', name: 'Billing migration' }] }];
+        },
+      },
+    } as unknown as RouteDeps;
+    const service = buildLucyOperator(deps)!.service!;
+    for await (const _ of service.runTurn({ text: 'can you make it proceed ?', conversationId: 'typed-1' })) { /* to the end */ }
+    expect(asked).toEqual(['typed-1']);
+    const system = (script.requests[0]!.messages[0] as { content: string }).content;
+    expect(system).toMatch(/- 20 seconds ago \(NEW\), about \[t1\] "Billing migration": The task "Billing migration" is waiting for your permission to use Bash\./);
+  });
+
+  test('the board reads the permission cards from the notifier, so she knows what a blocked task wants to run and whether its buttons work', async () => {
+    const script = scriptedModel([{ text: 'Press Approve once.' }]);
+    wired.model = script.port;
+    const detectedAt = new Date(Date.now() - 60_000).toISOString();
+    const deps = {
+      ...routeDeps(false),
+      taskStore: { viewTasks: () => [task()], getTask: () => task(), getLifetimeSpendUsd: () => 0 },
+      queue: { inspectActive: () => [{ agentId: 'kookr-s1', anomaly: { type: 'permission_blocked', explanation: 'Permission request pending for tool: Bash' } }] },
+      lucyPermissionNotices: {
+        notice: () => undefined,
+        list: () => [{
+          promptId: 'p1', taskId: 't1', agentId: 'kookr-s1', taskName: 'Billing migration', toolName: 'Bash', command: 'psql staging -f fixtures/a.sql', since: Date.now() - 60_000,
+          permissionRequest: { requestId: 'p1', toolName: 'Bash', toolInputHash: 'h', detectedAt, ttlMs: 5 * 60_000 }, approveKey: '1', denyKey: '3',
+        }],
+      },
+    } as unknown as RouteDeps;
+    const service = buildLucyOperator(deps)!.service!;
+    for await (const _ of service.runTurn({ text: 'approve it', conversationId: 'typed-1' })) { /* to the end */ }
+    const system = (script.requests[0]!.messages[0] as { content: string }).content;
+    expect(system).toMatch(/waiting on the operator: it is blocked on a permission · the prompt asks to use Bash · it wants to run: psql staging -f fixtures\/a\.sql · its card is on your panel and Approve once and Deny work for about [34] more minutes/);
+  });
+
   test('the two holders clear each other\'s card, so only one is ever waiting', async () => {
     const spec = JSON.stringify({ kind: 'investigation', project: 'kookr', description: 'Find out why issue tasks stop chaining.' });
     wired.model = scriptedModel([{ text: spec }, { text: spec }]).port;

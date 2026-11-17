@@ -149,6 +149,22 @@ describe('buildLucyLaunchController', () => {
     }
   });
 
+  test('her report on a task she launched goes into the record of what she said unprompted (issue #4143)', async () => {
+    summaries.list = projects;
+    const recorded: unknown[] = [];
+    const { controller, result } = await propose(deps({ lucyUnprompted: { record: (entry: unknown) => recorded.push(entry), recent: () => [] } }));
+    if (!result.ok) throw new Error('no proposal');
+    await controller.confirm('c1', result.proposal.id, 'click');
+    expect(recorded).toEqual([]);
+    controller.onTaskOutcome('task-7', { kind: 'completed' }, 'Chaining investigation');
+    controller.dispose();
+    expect(recorded).toEqual([{
+      key: 'launch:task-7',
+      text: 'The task I started "Chaining investigation" has finished.',
+      tasks: [{ id: 'task-7', name: 'Chaining investigation' }],
+    }]);
+  });
+
   test('every proposal and outcome is sent to the owner dashboards only', async () => {
     summaries.list = projects;
     const sent: unknown[] = [];

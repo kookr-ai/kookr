@@ -24,6 +24,7 @@ import type { SileroVad } from '../../adapters/lucy-live/silero-vad.js';
 import type { LucyOperatorService } from '../lucy-operator/service.js';
 import type { LucyTurnEvent, LucyTurnRequest } from '../../shared/contracts/lucy-turn.js';
 import type { OperatorAskView } from '../../shared/contracts/asks.js';
+import type { LucyUnpromptedEntry } from '../lucy-unprompted.js';
 
 const SECRET = 'sk-1234567890abcdefghijklmnop';
 const CONFIG: LucyLiveConfig = {
@@ -333,6 +334,33 @@ describe('createLucyLive', () => {
       expect(remembered).toHaveLength(1);
       expect(remembered[0]![2]).toBe(said);
       expect(requests[0]!.request.conversationId).toBe(remembered[0]![0]);
+    });
+
+    it('a task question she reads out goes into the server\'s record as soon as it is heard, marked as held by this conversation (issue #4143)', async () => {
+      const { service, requests } = operator([{ type: 'text', delta: 'Okay. ' }, done('answered')]);
+      const recorded: LucyUnpromptedEntry[] = [];
+      let state = 'pending';
+      const ask = () => ({ id: 'a1', state, taskId: 'task-9', taskName: 'Cleanup', question: 'When should I run it?', options: ['now', 'tonight'], allowText: false }) as unknown as OperatorAskView;
+      const { ws } = setup({ getOperator: () => service, extraDeps: { getAsks: () => [ask()], unprompted: { record: (entry) => { recorded.push(entry); } } } });
+      ws.json({ type: 'hello', language: 'en' });
+      ws.json({ type: 'say_ask', askId: 'a1' });
+      await tick(); await tick(); await tick();
+      const sentences = ws.sent.filter((m) => m.type === 'sentence');
+      // Sent but not yet reported as played: she has not been heard.
+      expect(recorded).toEqual([]);
+      for (const s of sentences) ws.json({ type: 'played', turnId: s.turnId, seq: s.seq, complete: true });
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({
+        key: 'ask:a1',
+        text: 'The task Cleanup needs your input: When should I run it? Two choices are on my card.',
+        tasks: [{ id: 'task-9', name: 'Cleanup' }],
+      });
+      expect(recorded[0]!.stillOpen?.()).toBe(true);
+      state = 'answered';
+      expect(recorded[0]!.stillOpen?.()).toBe(false);
+      // The conversation it is marked with is the one her spoken turns run in.
+      await runTurn(ws, 't2');
+      expect(recorded[0]!.inConversation).toBe(requests[0]!.request.conversationId);
     });
 
     it('a task question waits while a launch proposal from any conversation waits for its answer (#4015)', async () => {

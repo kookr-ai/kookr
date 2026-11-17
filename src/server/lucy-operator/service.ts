@@ -4,7 +4,9 @@
  * the records.
  *
  * What is remembered between turns is small on purpose: the operator's sentence and
- * what she said back. What her look-ups returned is never kept, so task text read in
+ * what she said back. What she said without being asked (a permission notice, a question
+ * read out) is not kept here: it comes from one record for the whole server and is shown
+ * next to the board on each turn (`unprompted`). What her look-ups returned is never kept, so task text read in
  * one turn cannot steer a later one. Conversations live in memory, are capped in
  * length and number, and are forgotten after two hours of silence or a restart.
  */
@@ -14,6 +16,7 @@ import { recordLucyOperatorTurn } from '../../core/lucy-operator/diagnostics.js'
 import type { LucyModelPort } from '../../core/lucy-operator/model-port.js';
 import type { LucyLookSource } from '../../core/lucy-operator/tools.js';
 import { runLucyTurn, type LucyHistoryMessage, type LucyTurnLimits, type LucyTurnSummary } from '../../core/lucy-operator/turn.js';
+import type { LucyUnpromptedSaid } from '../../core/lucy-operator/unprompted.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
 import type { LucyActionController } from './action-controller.js';
 import type { LucyLaunchController } from './launch-controller.js';
@@ -43,6 +46,12 @@ export interface LucyOperatorDeps {
    */
   actions?: LucyActionController;
   log?: LucyInteractionLog;
+  /**
+   * What she said or wrote without being asked, lately, for a turn of this conversation (issue #4143).
+   * One record for the whole server, because a notice is said to the operator and not to a conversation;
+   * the conversation id only lets the record leave out what that conversation already has in its history.
+   */
+  unprompted?: (conversationId: string) => ReadonlyArray<LucyUnpromptedSaid & { inHistory?: true }>;
   limits?: Partial<LucyTurnLimits>;
   now?: () => number;
   warn?: (message: string) => void;
@@ -85,6 +94,8 @@ export interface LucyOperatorService {
 interface Conversation {
   messages: LucyHistoryMessage[];
   lastUsedAt: number;
+  /** When she last answered the operator here; a note added by `rememberSaid` does not move it. */
+  lastReplyAt?: number;
 }
 
 function clip(text: string): string {
@@ -113,11 +124,35 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
     const previous = conversations.get(conversationId)?.messages ?? [];
     const messages = [...previous, { role: 'user' as const, content: clip(asked), ...(note ? { note: true as const } : {}) }, { role: 'assistant' as const, content: clip(answer) }].slice(-MAX_HISTORY_MESSAGES);
     // Re-insert so the map's order is "least recently used first", then drop the oldest beyond the cap.
+    const lastReplyAt = note ? conversations.get(conversationId)?.lastReplyAt : at;
     conversations.delete(conversationId);
-    conversations.set(conversationId, { messages, lastUsedAt: at });
+    conversations.set(conversationId, { messages, lastUsedAt: at, ...(lastReplyAt !== undefined ? { lastReplyAt } : {}) });
     for (const id of conversations.keys()) {
       if (conversations.size <= MAX_CONVERSATIONS) break;
       if (!running.has(id)) conversations.delete(id);
+    }
+  };
+
+  /**
+   * Her unprompted words for this turn. An item this conversation already holds in its history (Talk
+   * read a question out here) is left out, so it is never shown twice. The others are marked `fresh`
+   * when nothing was said in this conversation since: neither a reply of hers nor such a question.
+   */
+  const unpromptedFor = (conversationId: string, at: number): LucyUnpromptedSaid[] => {
+    if (!deps.unprompted) return [];
+    try {
+      const conversation = conversations.get(conversationId);
+      const all = deps.unprompted(conversationId);
+      const lastHere = Math.max(
+        conversation && at - conversation.lastUsedAt <= CONVERSATION_TTL_MS ? conversation.lastReplyAt ?? 0 : 0,
+        ...all.filter((item) => item.inHistory === true).map((item) => item.at),
+      );
+      return all
+        .filter((item) => item.inHistory !== true)
+        .map(({ text, at: saidAt, tasks }) => ({ text, at: saidAt, tasks, fresh: saidAt > lastHere }));
+    } catch (err) {
+      warn(`could not read what she said unprompted: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
     }
   };
 
@@ -216,7 +251,7 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
       let settled: LucyTurnSummary | undefined;
       const inner = runLucyTurn(
         { model: deps.model, source: deps.source, launch: deps.launch, actions: deps.actions, limits: deps.limits, now, warn, onSettled: (summary) => { settled = summary; } },
-        { text: request.text, conversationId: request.conversationId, spoken: request.input === 'voice', history: historyOf(request.conversationId, startedAt), signal },
+        { text: request.text, conversationId: request.conversationId, spoken: request.input === 'voice', history: historyOf(request.conversationId, startedAt), unprompted: unpromptedFor(request.conversationId, startedAt), signal },
       );
       try {
         yield* inner;

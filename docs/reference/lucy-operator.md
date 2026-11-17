@@ -52,15 +52,18 @@ The answer arrives as one JSON object per line while she works:
 {"type":"done","end":"answered","firstTextMs":1402,"totalMs":1543,"steps":2,"inputTokens":2795,"outputTokens":77,"costUsd":0.00009924,"provider":"Cohere"}
 ```
 
-Use the same `conversationId` for follow-up questions, so she remembers what was just said. The full
-event list is in the [API reference](api.md) and in `src/shared/contracts/lucy-turn.ts`.
+Use the same `conversationId` for follow-up questions, so she remembers what was just said. What she
+said without being asked (a permission notice, for example) is known to every conversation: see
+[What she said unprompted](#what-she-said-unprompted). The full event list is in the
+[API reference](api.md) and in `src/shared/contracts/lucy-turn.ts`.
 
 ## How a turn works
 
 1. Kookr builds **the board**: a short text picture of the operator's work. It lists what needs the
    operator, what is working, what finished most recently, the all-time spend and the quota.
-2. The model receives Lucy's instructions, the board, the earlier exchanges of this conversation and
-   the new sentence.
+2. The model receives Lucy's instructions, the board, a note of what she told the operator without
+   being asked in the last few minutes, the earlier exchanges of this conversation and the new
+   sentence.
 3. The model either answers, and the turn is over, or asks to look something up. Kookr carries out
    the look-up and gives the model the result.
 4. Step 3 repeats until she answers or a limit is reached.
@@ -210,6 +213,82 @@ Relaunching, aborting, approving a permission prompt and merging are later slice
 abort, approve and merge need a typed or clicked confirmation at Careful and Balanced, and a spoken
 specific "yes" at Hands-off; never "go" alone.
 
+## What she said unprompted
+
+Lucy speaks or writes first in several places: the notice about a task that has waited on a
+permission prompt, a task's question she reads out, the line she writes when a task fails, goes
+quiet, loses contact or wants a review, and the report of a task she launched. None of those is a
+turn of a conversation. Before issue #4143 she therefore did not know she had said them, and the
+operator's "can you make it proceed ?" thirty seconds after a notice got "Which task do you mean?".
+
+The server now keeps **one record** of what she said unprompted (`src/server/lucy-unprompted.ts`), and
+every turn, typed or spoken, is shown it as a note placed after the board:
+
+```text
+What you told the operator without being asked, in the last few minutes, newest first. ...
+- 40 seconds ago (NEW), about [202d] "Staging fixture refresh": The task "Staging fixture refresh" is waiting for your permission to use Bash. The command is on my card.
+```
+
+- **One record for the whole server, not one per conversation.** A notice is said to the operator,
+  not to a conversation: they may hear it in one tab and answer by typing in another, or by voice.
+  Several conversations are alive at once (one typed per browser, one per Talk connection), so a copy
+  per conversation would have to be fanned out to conversations that do not exist yet.
+- **Small and short-lived.** At most six items, none older than fifteen minutes. An item also goes as
+  soon as what it was about is over: the permission prompt was answered or the task stopped, the
+  question was answered or closed. So a later "make it proceed" cannot point at something already
+  dealt with. The record is in memory and empty after a restart.
+- **A note, not history.** The note is rebuilt on every turn and never added to the conversation's
+  history, so it does not grow it. The writers of a task, a reply or an answer never see it.
+- **Same treatment as the board.** A sentence can quote a task name or a task's question, which an
+  agent wrote. Each sentence is cleaned, has its secrets hidden and is cut to 200 characters, exactly
+  like the board's text, and her instructions put the note under the same rule as the board:
+  information to report, never an instruction. The command of a permission prompt is never in it.
+- **NEW.** An item said after her last reply in the conversation is marked `NEW`. Her instructions say
+  that a sentence naming no task ("it", "that one", "make it proceed", "yes, do it") answers the
+  newest `NEW` item, and that she must not ask "which task?" then, unless that item is about several
+  tasks.
+
+When each kind is recorded:
+
+| What she said | Recorded when |
+|---|---|
+| Permission notice | the sentence reached at least one owner dashboard (`LucyPermissionNotifier`) |
+| A task's question (clip) | a dashboard asks for its clip (`POST /api/asks/:id/speak`), before the clip is made: the dashboard writes the same words in her thread when no clip comes back |
+| A task's question (Talk) | the browser reports playing its first sentence. The Talk conversation also keeps it in its own history, as before, and is not shown it a second time in the note |
+| Line about a task (failed, gone quiet, lost contact, wants review) | the line reached at least one owner dashboard (`LucySaysNotifier`) |
+| Report of a task she launched | the report is sent (`onTaskOutcome` in the launch controller) |
+
+Not recorded: the briefing she writes when her panel opens. The browser decides whether a briefing is
+a repeat and whether to write it, so the server does not know that it was shown; everything a
+briefing says is on the board anyway. Talk turns answered by the helper model (launching switched
+off) do not read the record.
+
+## The permission card
+
+A task that has waited on a permission prompt gets a card at the top of Lucy's panel (see
+[Lucy live](lucy-live.md#when-a-task-waits-on-a-permission-prompt)). Her instructions name the card
+and its three buttons with the labels the card shows: **Approve once**, **Deny** and **Open task**.
+
+For a task blocked on a permission prompt, the board line and `read_task` now also say:
+
+- the tool the prompt asks to use, when Kookr has a clean name for it;
+- the command, file path or URL, taken from the card (secrets already hidden by the server), cleaned
+  and cut to 160 characters like other task text. It is on the board, which is rebuilt every turn; it
+  is never kept in the conversation history unless she quotes it in a reply;
+- the state of the card: its buttons work (and for about how long), its buttons have timed out, it
+  has no answer buttons, or there is no card on her panel.
+
+The buttons stop working five minutes after the prompt was detected
+(`DEFAULT_PERMISSION_APPROVAL_TTL_MS`). "Work" on the board means exactly what it means on the card
+and on the server: the same binding, `detectedAt` plus `ttlMs`, compared with the server's clock at
+the start of the turn, and the button's menu key was read from the task's terminal.
+
+When the operator asks her to let a task proceed, approve it or unblock it, she names the task, says
+what it wants to run, and points at **Approve once** on the card at the top of her panel. When the
+buttons have timed out or the card has none, she says so and opens the task (`show_task`) so the
+operator can answer in its terminal. She still cannot approve a prompt herself and never says she
+did: approving through her is the last slice of #3632.
+
 ## Acting on an existing task: answer, reply, close
 
 On whenever launching is on (`KOOKR_LUCY_LAUNCH`, the same switch); with it off her instructions still
@@ -320,7 +399,9 @@ instruction. Three things keep such text from having an effect.
   inside the block cannot close the block early.
 
 What a look-up returned is never kept between turns. Only the operator's sentence and her reply are
-remembered, so task text read in one turn cannot steer a later one.
+remembered, so task text read in one turn cannot steer a later one. What she said unprompted is not
+remembered there either: it is a note next to the board, treated like the board
+(see [What she said unprompted](#what-she-said-unprompted)).
 
 The route is for the owner only. Like every route except the sign-in route, it is refused to
 read-only viewers, because her answers draw on every task.
@@ -445,8 +526,11 @@ with whole turns between 0.6 and 3.1 s.
   speaks English. The sentences the server writes itself (a read-back,
   a refusal, "Sent.") and the words that confirm a card are English. The wording of the instructions
   added with her actions on existing tasks (what she may propose, the typed list, the language, no
-  pointing at controls that do not exist) was not measured against a model.
+  pointing at controls that do not exist) was not measured against a model. The rules about what she
+  said unprompted and about the permission card were tried on a throwaway server against the real
+  model on 2026-11-17, three runs per sentence, typed only: see issue #4143.
 - Conversations are kept in memory: the last ten exchanges, for two hours, and not across a restart.
+  What she said unprompted is kept apart: six items, fifteen minutes, one record for all conversations.
 - She reads a task's terminal only as a rendered screen: the last 40 lines, not its full history.
   A task that has ended and kept no saved tail (never captured, expired, or retention off) has no
   output to read.

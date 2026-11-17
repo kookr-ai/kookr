@@ -10,6 +10,7 @@ import type { TaskStatus as ContractTaskStatus } from '../../shared/contracts/ta
 import { registerAskRoutes } from '../routes/ask-routes.js';
 import { ASK_WAIT_ATTACHED_MS, ASK_WAIT_FALLBACK_MS, AskService } from './ask-service.js';
 import { AskStore } from './ask-store.js';
+import type { LucyUnpromptedEntry } from '../lucy-unprompted.js';
 
 interface Harness {
   dir: string;
@@ -946,6 +947,7 @@ describe('ask routes', () => {
     function speakApp(over: { ttsUrl?: string; synthesize?: ReturnType<typeof vi.fn> } = {}) {
       const synthesize = over.synthesize ?? vi.fn(async () => ({ audioBase64: 'UklGRg==', durationMs: 1234, generationTimeMs: 50 }));
       const recordSaid = vi.fn();
+      const unprompted: LucyUnpromptedEntry[] = [];
       const app = new Hono();
       registerAskRoutes(app, {
         service: h.service,
@@ -954,10 +956,11 @@ describe('ask routes', () => {
           getVoice: () => 'af_heart',
           taskName: (id) => (id === 't1' ? 'Fix login' : undefined),
           lucyLog: { recordSaid, recordLiveTurn: vi.fn(), recordUi: vi.fn(), flush: async () => undefined },
+          unprompted: { record: (entry) => { unprompted.push(entry); } },
           synthesize: synthesize as never,
         },
       });
-      return { app, synthesize, recordSaid };
+      return { app, synthesize, recordSaid, unprompted };
     }
     const speak = (app: Hono, id: string) => app.request(`/api/asks/${id}/speak`, { method: 'POST' });
 
@@ -975,6 +978,27 @@ describe('ask routes', () => {
       expect(synthesize).toHaveBeenCalledWith(expect.objectContaining({ ttsUrl: 'http://tts.test', voice: 'af_heart', text: body.text, timeoutMs: 30_000 }));
       expect(recordSaid).toHaveBeenCalledWith(expect.objectContaining({ clipId: body.clipId, source: 'operator_ask', taskId: 't1', text: body.text }));
       expect(h.store.get(ask.id)?.state).toBe('pending');
+    });
+
+    it('records the question as something Lucy said unprompted, even when no clip can be made, until it is answered (issue #4143)', async () => {
+      const ask = await createOk();
+      // No speech service: the route answers 503 and the dashboard writes the words in her thread instead.
+      const silent = speakApp({ ttsUrl: undefined });
+      expect((await speak(silent.app, ask.id)).status).toBe(503);
+      expect(silent.unprompted).toHaveLength(1);
+      expect(silent.unprompted[0]).toMatchObject({
+        key: `ask:${ask.id}`,
+        text: 'The task Fix login needs your input: Ship it? Two choices are on my card.',
+        tasks: [{ id: 't1', name: 'Fix login' }],
+      });
+      expect(silent.unprompted[0]!.stillOpen?.()).toBe(true);
+
+      // A question nobody is about to hear (unknown, or closed) is not recorded.
+      expect((await speak(silent.app, 'ffffffffffff')).status).toBe(404);
+      await h.service.answerFromDashboard({ askId: ask.id, optionIndex: 0 });
+      expect(silent.unprompted[0]!.stillOpen?.()).toBe(false);
+      expect((await speak(silent.app, ask.id)).status).toBe(409);
+      expect(silent.unprompted).toHaveLength(1);
     });
 
     it('tries once more when the speech service times out, as it does while loading a voice for the first time', async () => {

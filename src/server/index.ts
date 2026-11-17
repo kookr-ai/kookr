@@ -54,6 +54,7 @@ import {
 import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { PermissionPromptWaitAlerter } from './permission-prompt-wait-alert.js';
 import { LucyPermissionNotifier, pushLucyPermissionCards } from './lucy-permission-notice.js';
+import { createLucyUnpromptedLog } from './lucy-unprompted.js';
 import { DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS } from '../shared/contracts/lucy-permission.js';
 import { LUCY_OPERATOR_ACTOR_ID } from '../shared/contracts/lucy-launch.js';
 import { LucySaysNotifier, pushLucySays, taskEventForFinding, taskEventForOutcome, taskEventStillTrue } from './lucy-says.js';
@@ -2530,7 +2531,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Lucy speaks up when a task has waited a minute on a permission prompt
   // (issue #3932): a card with the command and Approve once / Deny on her
   // panel, and one sentence. Owner dashboards only, on connect and on change.
+  // What Lucy says or writes without being asked (a permission notice, a question read out, a line
+  // about a task, a launch report) is recorded here, once for the whole server, and shown to her on her
+  // next turn in any conversation, so "make it proceed" has something to point at (issue #4143).
+  const lucyUnprompted = createLucyUnpromptedLog();
+
   const lucyPermissionNotifier = new LucyPermissionNotifier({
+    onSaid: (said) => lucyUnprompted.record({ key: `permission:${said.noticeId}`, text: said.text, tasks: said.tasks, stillOpen: said.stillOpen }),
     push: (cards, announce) => pushLucyPermissionCards(connectionRegistry.snapshotDashboardConnections(), cards, announce),
     getAnomaly: (sessionId) => queue.getAnomaly(sessionId),
     getAgentEvents: (sessionId) => monitor.getAgentEvents(sessionId),
@@ -2543,6 +2550,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Held, grouped and rate-limited in the notifier; owner dashboards only; never sent again on
   // reconnect. Nothing is spoken.
   const lucySaysNotifier = new LucySaysNotifier({
+    onWritten: (written) => lucyUnprompted.record({ key: `says:${written.id}`, text: written.text, tasks: written.tasks }),
     push: (message) => pushLucySays(connectionRegistry.snapshotDashboardConnections(), message),
     // A task she launched is reported by the launch controller, in the conversation that asked for it.
     isOwnLaunch: (taskId) => taskStore.getTask(taskId)?.metadata?.launchActorId === LUCY_OPERATOR_ACTOR_ID,
@@ -3161,6 +3169,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             : Promise.resolve({ ok: false, reason: 'not_found' } as const)),
           getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
           log: lucyInteractionLog,
+          unprompted: lucyUnprompted,
           // Talk turns go to the operator conversation only when launching is switched on.
           getOperator: () => lucyOperatorHolder.get(),
         }),
@@ -3226,6 +3235,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     faaAckReaperMetrics,
     hungTaskReaperMetrics,
     lucyPermissionNotices: lucyPermissionNotifier,
+    lucyUnprompted,
     asks: {
       service: askService,
       // Lucy reads a pending question aloud in the avatar panel (POST /api/asks/:id/speak).
@@ -3234,6 +3244,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
         taskName: (taskId) => taskStore.getTask(taskId)?.name,
         lucyLog: lucyInteractionLog,
+        unprompted: lucyUnprompted,
       },
       taskName: (taskId) => taskStore.getTask(taskId)?.name,
       taskStatus: (taskId) => taskStore.getTask(taskId)?.status,

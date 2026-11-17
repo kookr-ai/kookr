@@ -49,6 +49,17 @@ describe('dispatchLucyTool', () => {
     expect(outcome.content).toContain('[aaaa] "Bake-off report"');
   });
 
+  test('read_task says what a permission prompt wants to run and whether its card\'s buttons still work, like the board (issue #4143)', async () => {
+    const blocked = boardTask({
+      id: 'cccc3333', name: 'Staging fixture refresh', attention: 'it is blocked on a permission',
+      permission: { tool: 'Bash', command: 'psql staging -f fixtures/a.sql', card: { approve: true, deny: true, buttonsUntil: NOW + 2 * 60_000 } },
+    });
+    const live = await dispatchLucyTool('read_task', '{"task":"cccc"}', fakeSource({ tasks: [blocked] }), NOW);
+    expect(live.content).toContain('Waiting on the operator: it is blocked on a permission; the prompt asks to use Bash; it wants to run: psql staging -f fixtures/a.sql; its card is on your panel and Approve once and Deny work for about 2 more minutes');
+    const late = await dispatchLucyTool('read_task', '{"task":"cccc"}', fakeSource({ tasks: [blocked] }), NOW + 2 * 60_000 + 1);
+    expect(late.content).toContain('its card is on your panel but the buttons have timed out: it is answered in the task\'s terminal');
+  });
+
   test('read_task separates Kookr\'s facts from what agents wrote, and hides secrets', async () => {
     const source = fakeSource({
       tasks,

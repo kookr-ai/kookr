@@ -529,6 +529,14 @@ questions: one tab, nothing aloud with sound off, Do Not Disturb or quiet hours.
 as the prompt is answered anywhere. The delay is the `lucyPermissionNoticeAfterSeconds` setting
 (default 60; 0 turns it off). Needs no Telegram; her voice needs the speech service.
 
+She remembers what she just told you. Answer the notice with "can you make it proceed ?", typed or
+spoken, and she knows which task you mean: she names it, says what it wants to run and points you at
+**Approve once** on her card. The buttons stop working five minutes after the prompt appeared; she
+then says so and opens the task so you can answer in its terminal. She cannot approve a prompt
+herself. The same memory covers a question she read out, a line she wrote about a task that failed or
+went quiet, and the report of a task she launched: the last six, for fifteen minutes.
+Details: [What she said unprompted](reference/lucy-operator.md#what-she-said-unprompted).
+
 #### Talk to Lucy hands-free (optional, off by default)
 
 The **Talk** button beside the panel's text box starts a spoken conversation (when it cannot be used it
@@ -583,7 +591,7 @@ talk uses it too when launching is on (next section).
 - **She looks things up.** Each answer starts from a board of your tasks: what needs you, what is
   working, what just finished, spend and quota. When that is not enough she can read one task (what
   it was asked to do, what it is waiting for, its closing summary), list projects, or ask the
-  dashboard to open a task. She cannot read a task's terminal output yet.
+  dashboard to open a task. She can also read what a task's terminal shows now (its last 40 lines).
 - **On its own she cannot change anything.** No look-up tool launches, replies to, closes, snoozes or stops a
   task, so text written by an agent cannot make her act. The exceptions are the proposals described
   below (starting a task, and answering, replying to or closing an existing one), which only the operator
