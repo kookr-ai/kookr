@@ -215,7 +215,7 @@ the buttons work for as long as the prompt does. Until then Lucy must know wheth
 buttons are live before she points at them (see R7-F3): with dead buttons the useful
 answer is "its buttons have timed out, I am opening the task", followed by opening it.
 
-### R7-F6. The push gate rejected a reviewed branch twice because the host was busy (process) — severity: medium
+### R7-F6. Two pushes of a reviewed branch were rejected on a busy host (process) — severity: medium
 
 **Evidence.** The landing branch was pushed with the related tests green (397 files, 8,701
 tests) and a passing review. The repository's fast pre-push gate rejected it twice:
@@ -224,10 +224,13 @@ tests) and a passing review. The repository's fast pre-push gate rejected it twi
    unexpected state … new file: achievements.json, resource-watchdog-audit.jsonl,
    resource-watchdog.state.json". The related-tests lane had passed (405 files, 8,939
    tests).
-2. Second push (load average 55 to 62): the related-tests lane was killed after its time
-   limit ("Terminated"), with time-outs in five server test files that this branch does
-   not touch (`diagnostics-routes`, `settings-api`, `idempotency-routes`,
-   `integrations/telegram/index`, `index.test.ts` at 294 s).
+2. Second push (load average 55 to 62): the related-tests lane was killed ten minutes
+   in ("Terminated"), before it could finish or re-run anything. By then five server test
+   files that this branch does not touch had a timed-out test each (`diagnostics-routes`,
+   `settings-api`, `idempotency-routes`, `integrations/telegram/index`, `index.test.ts`
+   at 294 s). The kill was mine: the push ran as a background command with a ten-minute
+   limit, and the gate needed longer on that host. The first push had finished inside the
+   same limit only because the host was half as busy.
 
 The load came from this run's own agents (four reviewers running mutation checks, two
 implementers running tests and browsers) on top of the fleet's (the integration train's
@@ -240,14 +243,16 @@ outside Vitest the watchdog still switches itself on under pressure
 (`buildResourceWatchdogConfig`, `src/server/index.ts:2114-2124`); with 20 or more dtach
 sessions on the host it writes its two files and launches an investigation task inside the
 smoke server (`src/server/resource-watchdog-service.ts:464-518`), and that task's prompt
-unlocks an achievement. (2) The gate's time limit is fixed; a run that takes four minutes
-on an idle host does not finish on one at load 55.
+unlocks an achievement. (2) The gate has no time limit of its own, and the
+playbook's notebook already says to push in the background and wait for the notification;
+I added a ten-minute limit to that background command, which is shorter than the gate on a
+host at load 55.
 
 **Suggested fix.** Allow the three files (done on the landing branch, with tests), and set
 `KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0` in the smoke environment so the watchdog is really
-off there (follow-up issue). For this playbook: do not run reviewers' mutation checks,
-implementers' test runs and a push at the same time; push when the load average is below
-about 20, and say so in the playbook.
+off there (follow-up issue). For this playbook: push in the background with no time limit and wait for
+its notification, and avoid running reviewers' mutation checks, implementers' test runs
+and a push at the same time.
 
 ## Things that worked well (keep-list)
 
@@ -308,7 +313,7 @@ about 20, and say so in the playbook.
   mutants on that part, 44 killed). Two patch agents fixed all nine (`c4afae3c6`,
   `5e2ff1140`); round 2, a fix check, passed on `5e2ff1140` (21 mutants, 18 killed, three
   test nits left). Eleven larger defects go into one follow-up issue.
-- 2026-11-18 — **Landing: two rejected pushes.** The smoke lane, then a timed-out test
-  lane, both on a host at load 25 to 62 (R7-F6). Added the three state files to the smoke
+- 2026-11-18 — **Landing: two rejected pushes.** The smoke lane, then a test lane that my
+  own ten-minute limit killed, both on a host at load 25 to 62 (R7-F6). Added the three state files to the smoke
   allow-list and corrected one doc sentence (`36693a7af`, `94405e0b5`); the delta was
-  reviewed and passed on `94405e0b5`. Third push waits for the load to drop.
+  reviewed and passed on `94405e0b5`. Third push started with no time limit.
