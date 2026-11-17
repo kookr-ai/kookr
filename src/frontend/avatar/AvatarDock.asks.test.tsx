@@ -443,7 +443,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     expect(speech.announceAsk).not.toHaveBeenCalled();
     push([ask({ id: 'bbbbbbbbbbbb', question: 'Second?' }), ask()], 'bbbbbbbbbbbb');
     expect(speech.announceAsk).toHaveBeenCalledOnce();
-    expect(speech.announceAsk).toHaveBeenCalledWith('bbbbbbbbbbbb', { fetcher: expect.any(Function) });
+    expect(speech.announceAsk).toHaveBeenCalledWith('bbbbbbbbbbbb', { fetcher: expect.any(Function), onGivenBack: expect.any(Function) });
   });
 
   test('a closed question can be dismissed', () => {
@@ -459,7 +459,7 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     const bubble = q('avatar-bubble')!;
     expect(bubble.querySelector('.avatar-bubble-badge')!.textContent).toBe('3');
     expect(bubble.getAttribute('aria-label')).toContain('1 question is waiting for your answer');
-    expect(speech.announceAsk).toHaveBeenCalledWith(ASK, { fetcher: expect.any(Function) });
+    expect(speech.announceAsk).toHaveBeenCalledWith(ASK, { fetcher: expect.any(Function), onGivenBack: expect.any(Function) });
   });
 
   test('the time left counts down, and a closed card leaves ten minutes after it closed', () => {

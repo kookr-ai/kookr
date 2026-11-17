@@ -12,6 +12,12 @@
  * audio blocked by the browser, or a clip that failed to play): that clip is in her message list
  * and its text is already in the thread, so a second entry would say the same thing twice. Whether
  * a clip was fetched is seen through the `fetcher` the announcement functions accept.
+ *
+ * With Talk on, a question is handed to the hands-free conversation and no clip is asked for. If the
+ * conversation gives it back unsaid (issue #4015), it is played as a clip after all, later; the same
+ * rule is applied to how that clip ends, so a question whose late clip could not be fetched is written
+ * too. Her words in the conversation and that clip cannot both be in the thread: the conversation
+ * shows a question's words only once she has begun to say it, and from then on it is never given back.
  */
 import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import type { LucyPermissionAnnouncement, LucyPermissionCardView } from '../../shared/contracts/lucy-permission.js';
@@ -59,14 +65,21 @@ export function writtenPermissionNotice(announcement: LucyPermissionAnnouncement
   return { id: `permission-text:${announcement.noticeId}`, text, ...(announcement.promptIds.length === 1 ? { taskId: open[0]!.taskId } : {}) };
 }
 
+/** What {@link announceOrWrite} hands the announcement function; `announceAsk` and `announcePermissionNotice` accept it as it is. */
+export interface AnnounceOrWriteOptions {
+  fetcher: typeof fetch;
+  onGivenBack: (result: Promise<AskAnnouncementResult>) => void;
+}
+
 /**
  * Run an announcement (`announceAsk`, `announcePermissionNotice`); when it ends in `'error'` and no
  * clip was fetched, write `written()` into the thread as a message from Lucy. `written` is called
  * only then, so it sees the state at that moment and can decline with null. Words whose id is
- * already in the thread are not written again. Never throws.
+ * already in the thread are not written again. The same is done when a question the hands-free
+ * conversation took is given back and its late clip ends in `'error'` unfetched. Never throws.
  */
 export async function announceOrWrite(
-  announce: (options: { fetcher: typeof fetch }) => Promise<AskAnnouncementResult>,
+  announce: (options: AnnounceOrWriteOptions) => Promise<AskAnnouncementResult>,
   written: () => WrittenWords | null,
 ): Promise<AskAnnouncementResult> {
   let clipFetched = false;
@@ -76,18 +89,24 @@ export async function announceOrWrite(
     if (response.ok) clipFetched = true;
     return response;
   };
+  const writeIfUnspoken = (result: AskAnnouncementResult): void => {
+    if (result !== 'error' || clipFetched) return;
+    try {
+      const words = written();
+      if (words) appendConversationEntry({ id: words.id, kind: 'typed-lucy', status: 'done', text: words.text, ...(words.taskId ? { taskId: words.taskId } : {}) });
+    } catch {
+      // Writing is a courtesy: a failure here must not surface as an unhandled rejection.
+    }
+  };
+  const onGivenBack = (later: Promise<AskAnnouncementResult>): void => {
+    void later.then(writeIfUnspoken, () => writeIfUnspoken('error'));
+  };
   let result: AskAnnouncementResult;
   try {
-    result = await announce({ fetcher });
+    result = await announce({ fetcher, onGivenBack });
   } catch {
     result = 'error';
   }
-  if (result !== 'error' || clipFetched) return result;
-  try {
-    const words = written();
-    if (words) appendConversationEntry({ id: words.id, kind: 'typed-lucy', status: 'done', text: words.text, ...(words.taskId ? { taskId: words.taskId } : {}) });
-  } catch {
-    // Writing is a courtesy: a failure here must not surface as an unhandled rejection.
-  }
+  writeIfUnspoken(result);
   return result;
 }

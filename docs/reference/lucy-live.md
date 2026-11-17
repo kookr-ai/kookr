@@ -158,7 +158,8 @@ for an answer):
   browser plays it as a clip after all, under the usual clip rules (issue #4015).
 - Its words are written in her conversation thread, like an answer's, but only once its first sound
   is heard. A question of which nothing was heard is therefore in the thread once: as her words when
-  she says it later, or as the clip when it is played as one.
+  she says it later, as the clip when it is played as one, or as a written line when that clip could
+  not be fetched either.
 
 Because Silero filters the noise, the browser's own bar for a candidate while she talks is 0.15 s of
 loud sound, down from 0.3 s. Silero also guards ordinary turns: if a whole turn never contains a
@@ -435,7 +436,8 @@ and what happened while no dashboard was open is not written later; the briefing
 **Words that could not be spoken.** A task's question and a permission notice are normally in the
 thread because their clip is. When no clip can be made (the speech service is not set up, or it
 failed), she writes the words instead: "Billing migration asks: Run the table rename on production
-now?", or the permission sentence. Nothing extra is written when a clip exists, heard or not.
+now?", or the permission sentence. Nothing extra is written when a clip exists, heard or not. The same
+holds for a question the hands-free conversation gave back unsaid, whose clip is asked for later.
 
 ## Starting a task by voice
 

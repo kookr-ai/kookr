@@ -69,6 +69,53 @@ describe('announceOrWrite', () => {
     },
   );
 
+  // Talk took the question (`'live'`), then gave it back unsaid: it is played as a clip after all (issue #4015).
+  describe('a question the hands-free conversation took and then gave back', () => {
+    /** An announcer like `announceAsk` with Talk on: it ends `'live'` at once; `giveBack()` then runs the clip path. */
+    function liveAnnouncer(clipResult: AskAnnouncementResult) {
+      let giveBack: () => Promise<void> = async () => undefined;
+      const announce = async ({ fetcher, onGivenBack }: { fetcher: typeof fetch; onGivenBack: (result: Promise<AskAnnouncementResult>) => void }): Promise<AskAnnouncementResult> => {
+        giveBack = async () => {
+          const result = fetcher('/api/asks/a1/speak', { method: 'POST' }).then(() => clipResult, () => clipResult);
+          onGivenBack(result);
+          await result;
+          await Promise.resolve();
+        };
+        return 'live';
+      };
+      return { announce, giveBack: () => giveBack() };
+    }
+
+    test('its clip cannot be fetched: her words are written, once', async () => {
+      respondWith(503, { error: 'tts' });
+      const { announce, giveBack } = liveAnnouncer('error');
+      expect(await announceOrWrite(announce, () => WORDS)).toBe('live');
+      expect(getConversationEntries()).toEqual([]); // she is to say it: nothing is written yet
+      await giveBack();
+      expect(getConversationEntries().map((entry) => entry.text)).toEqual([WORDS.text]);
+    });
+
+    test('its clip was fetched: nothing is written, whether it played or not, because the clip writes its own entry', async () => {
+      respondWith(200, { clipId: 'c1', text: 'spoken text', audioBase64: 'UklGRg==' });
+      for (const clipResult of ['started', 'muted', 'error'] as const) {
+        const written = vi.fn(() => WORDS);
+        const { announce, giveBack } = liveAnnouncer(clipResult);
+        await announceOrWrite(announce, written);
+        await giveBack();
+        expect(written).not.toHaveBeenCalled();
+      }
+      expect(getConversationEntries()).toEqual([]);
+    });
+
+    test('the question closed before its clip failed: nothing is written', async () => {
+      respondWith(503);
+      const { announce, giveBack } = liveAnnouncer('error');
+      await announceOrWrite(announce, () => null);
+      await giveBack();
+      expect(getConversationEntries()).toEqual([]);
+    });
+  });
+
   test('the words are asked for only after the failure, and a null answer writes nothing', async () => {
     respondWith(503);
     let closed = false;
