@@ -121,7 +121,7 @@ One Ralph iteration should advance exactly one issue by one durable step:
 - Claim or resume the picked issue.
 - Continue an existing branch/PR for that issue if present.
 - Otherwise implement the next missing step, verify, and open the PR.
-- If `mergeAfterImplementation` is `true`, merge only when branch protection, CI, and review policy allow it, or enable auto-merge when the repository supports it.
+- If `mergeAfterImplementation` is `true`, merge only when branch protection, CI, and review policy allow it, with `kookr merge <PR> --repo "$REPO"` (it waits for running checks and deletes the head branch).
 - Release the issue claim when the issue is complete for this playbook's merge policy.
 
 Completion: Phase 0 writes `STOP: COMPLETE` to `.batch-stop` when no candidate from `{{issueSelector}}` is eligible. The Ralph `stopPredicate` in the frontmatter reads that file and terminates the loop cleanly.
@@ -702,7 +702,7 @@ If `{{mergeAfterImplementation}}` is `true`:
 
    **Repo-policy split — pick one lane, do not mix them:**
    - **Hard gate (`kookr-ai/kookr`):** never degrade to zero review. The reviewer BLOCKs on any confirmed correctness/safety finding; fix each (then re-review for a fresh `pass`) or explicitly rebut it before the merge is allowed. Round 1 is the one full review; every re-review after a BLOCK is a short fix check on the diff since the blocked head, where a new non-critical finding on an unchanged line is a follow-up and, after two BLOCKs, only critical findings block; round 1 blocks on critical findings and small defects, and the small defects are fixed inside the PR. Nits stay in the verdict comment, never filed or fixed on request; only larger defects go into at most one issue per PR, with a checklist, filed through `kookr emission plan` and the logged dedupe (`independent-merge-review` §4a). Enforcement is deterministic: `kookr merge` (below) refuses to merge (exit code 4) unless the latest verdict is `pass` with a matching `review-head-sha`. The `review-skipped-timeout` label is telemetry only and never bypasses review; retry until the default 10 correction/review attempts are exhausted, then record a concrete blocker. Set `KOOKR_MERGE_REQUIRE_REVIEW=0` only for a human-driven manual merge, never for an autonomous one. Do not weaken this repo's merge wrapper.
-   - **Advisory (repo `CLAUDE.md` / `AGENTS.md` documents that independent review is advisory, e.g. Lucy #3606):** still post the verdict when the reviewer returns. Timeout, missing, or BLOCK never become a task blocker or merge refusal. Merge after local gates (`gh pr merge`). Do not stall the task waiting for review capacity. If a Kookr-managed session's global merge hook still denies bare `gh pr merge`, `KOOKR_MERGE_REQUIRE_REVIEW=0 gh pr merge` is authorized on that advisory autonomous merge — it is the repo opt-out, not a human-merge exception.
+   - **Advisory (repo `CLAUDE.md` / `AGENTS.md` documents that independent review is advisory, e.g. Lucy #3606):** still post the verdict when the reviewer returns. Timeout, missing, or BLOCK never become a task blocker or merge refusal. Merge after local gates with `KOOKR_MERGE_REQUIRE_REVIEW=0 kookr merge <PR> --repo "$REPO"`: the variable skips only the wrapper's review-verdict gate (the repo opt-out, not a human-merge exception); the wrapper still waits for checks, classifies them, and deletes the head branch through the API. Do not stall the task waiting for review capacity. Where `kookr` is not on `PATH`, use the step 3 fallback.
 
    Classify: if `"$REPO"` is `kookr-ai/kookr` → hard; else if `grep -qiE 'independent review is advisory' CLAUDE.md AGENTS.md` → advisory; else hard.
 3. If the PR is mergeable now, merge using the repository's expected method. In `kookr-ai/kookr`, prefer the repository merge wrapper:
@@ -717,19 +717,17 @@ If `{{mergeAfterImplementation}}` is `true`:
 
    With a fast pre-push gate and an integration branch (Phase 6), `kookr merge` retargets the PR to the integration branch and merges it there. That merge is the terminal state for this task: the linked issue stays open until the integration train promotes the change to `main`, so do not wait for it to close or treat it as a missed auto-close.
 
-   For other repositories, use the repository's expected merge command, for example:
+   Use the same wrapper for every other repository: `kookr merge` works from any directory and, after GitHub confirms the merge, deletes the head branch through the GitHub API. Do not use `gh pr merge --delete-branch` from a linked worktree: it merges the PR, then fails its local clean-up, so the task sees an error after a successful merge and the remote branch can survive.
 
    ```bash
-   gh pr merge <PR_NUMBER> --repo "$REPO" --squash --delete-branch
+   kookr merge <PR_NUMBER> --repo "$REPO"
    ```
 
-4. If the PR is not mergeable yet but auto-merge is supported and safe, enable it:
+   On an advisory-review repository (step 2.5), prefix it with `KOOKR_MERGE_REQUIRE_REVIEW=0`. Fallback only where `kookr` is not on `PATH` or reports that its merge wrapper is missing: `gh pr merge <PR_NUMBER> --repo "$REPO" --squash && git push origin --delete <head-branch>`.
 
-   ```bash
-   gh pr merge <PR_NUMBER> --repo "$REPO" --squash --auto --delete-branch
-   ```
+4. If the PR is not mergeable yet because checks are still running, `kookr merge` already waits for them (up to `KOOKR_MERGE_CHECK_TIMEOUT_SECONDS`, default one hour) before merging; do not enable GitHub auto-merge with `gh pr merge --auto --delete-branch`. If the wait times out, record the pending checks and retry within the CI-rerun bound.
 
-5. Release the claim only after the PR is merged, the issue is closed, or auto-merge is enabled and no further agent action is possible.
+5. Release the claim only after the PR is merged, the issue is closed, or a blocker is recorded and no further agent action is possible.
 
 Release completed claims when possible (only when the API is available and a claim was actually acquired):
 
