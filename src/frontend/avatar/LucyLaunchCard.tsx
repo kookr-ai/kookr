@@ -138,9 +138,11 @@ export function LucyLaunchCard({ nowFn = Date.now }: { nowFn?: () => number } = 
               className="avatar-ask-send"
               onClick={() => void confirmLucyLaunch('click')}
               aria-disabled={sending ? 'true' : undefined}
+              aria-busy={sending ? 'true' : undefined}
               data-testid="avatar-launch-go"
             >
-              Go
+              {/* A launch takes 10 to 20 seconds: say that it is under way, a dimmed "Go" reads as a dead button. */}
+              {sending ? 'Starting…' : 'Go'}
             </button>
           )}
           <button

@@ -260,6 +260,22 @@ describe('AvatarDock: Lucy launch card and typed input', () => {
     expect('level' in calls[0]!.body).toBe(false);
   });
 
+  test('while the launch is under way Go reads "Starting…" and is marked busy, then the card gives way to the outcome', async () => {
+    mount();
+    await showCard();
+    let finish!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementation((input) => (String(input) === '/api/lucy/launch/confirm'
+      ? new Promise<Response>((resolve) => { finish = resolve; })
+      : Promise.resolve(new Response('{}', { status: 200 }))));
+    await act(async () => { q('avatar-launch-go')!.click(); });
+    await flush();
+    expect(q('avatar-launch-go')!.textContent).toBe('Starting…');
+    expect(q('avatar-launch-go')!.getAttribute('aria-busy')).toBe('true');
+    await act(async () => { finish(new Response(JSON.stringify({ outcome: 'launched', proposalId: 'p1', taskId: 't-new', project: 'billing-api' }), { status: 200 })); });
+    await flush();
+    expect(q('avatar-launch-go')).toBeNull();
+  });
+
   test('Enter confirms with via enter, but not while typing in a text field', async () => {
     mount();
     await showCard();
