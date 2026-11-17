@@ -292,6 +292,12 @@ describe('which events are worth a word', () => {
     }
   });
 
+  test('a task that has said it is finished is not then reported as gone quiet', () => {
+    expect(taskEventForFinding('stale_agent', 'completion_ready')).toBeUndefined();
+    expect(taskEventForFinding('hook_disconnected', 'completion_ready')).toBeUndefined();
+    expect(taskEventForFinding('stale_agent', 'help')).toBe('stalled');
+  });
+
   test('a failure and "finished, please review", among the outcomes; not a task the operator stopped or a restart cut off', () => {
     expect(taskEventForOutcome('completion_ready')).toBe('wants_review');
     expect(taskEventForOutcome('failed')).toBe('failed');
@@ -316,6 +322,8 @@ describe('which events are worth a word', () => {
     expect(taskEventStillTrue({ kind: 'stalled' }, { status: 'inProgress', sessions }, finding('stale_agent'))).toBe(true);
     expect(taskEventStillTrue({ kind: 'stalled' }, { status: 'inProgress', sessions }, finding('needs_input'))).toBe(false);
     expect(taskEventStillTrue({ kind: 'stalled' }, { status: 'terminated', sessions }, finding('stale_agent'))).toBe(false);
+    // It said it is finished while the event waited in the window.
+    expect(taskEventStillTrue({ kind: 'stalled' }, { status: 'inProgress', sessions, pendingSignal: { kind: 'completion_ready' } }, finding('stale_agent'))).toBe(false);
     expect(taskEventStillTrue({ kind: 'lost_contact' }, { status: 'inProgress', sessions }, finding('hook_disconnected'))).toBe(true);
     expect(taskEventStillTrue({ kind: 'lost_contact' }, { status: 'inProgress', sessions }, finding())).toBe(false);
     expect(taskEventStillTrue({ kind: 'failed' }, undefined, finding())).toBe(false);

@@ -2544,11 +2544,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   const stopLucySaysObserver = queue.addObserver({
     admitted: (event) => {
-      const kind = taskEventForFinding(event.anomaly.type);
-      if (!kind) return;
+      if (!taskEventForFinding(event.anomaly.type)) return;
       try {
         const task = taskStore.findTaskBySession(event.agentId);
-        if (task && !isTerminalStatus(task.status)) lucySaysNotifier.note({ taskId: task.id, taskName: task.name, kind });
+        const kind = task && !isTerminalStatus(task.status) ? taskEventForFinding(event.anomaly.type, task.pendingSignal?.kind) : undefined;
+        if (task && kind) lucySaysNotifier.note({ taskId: task.id, taskName: task.name, kind });
       } catch (err) {
         console.warn('[lucy-says] finding note failed:', err);
       }

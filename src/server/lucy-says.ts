@@ -47,8 +47,13 @@ export interface LucyTaskEvent {
   kind: LucyTaskEventKind;
 }
 
-/** The finding that makes a task "gone quiet" or "lost contact"; undefined for every other finding. */
-export function taskEventForFinding(anomalyType: string): LucyTaskEventKind | undefined {
+/**
+ * The finding that makes a task "gone quiet" or "lost contact"; undefined for every other finding.
+ * Also undefined for a task that has said it is finished (`pendingSignalKind` is `completion_ready`):
+ * it is quiet because it is waiting for its review, which she has already written about.
+ */
+export function taskEventForFinding(anomalyType: string, pendingSignalKind?: string): LucyTaskEventKind | undefined {
+  if (pendingSignalKind === 'completion_ready') return undefined;
   if (anomalyType === 'stale_agent') return 'stalled';
   if (anomalyType === 'hook_disconnected') return 'lost_contact';
   return undefined;
@@ -85,7 +90,10 @@ export function taskEventStillTrue(
   if (!task) return false;
   if (event.kind === 'failed') return task.status === 'terminated';
   if (task.status === 'completed' || task.status === 'terminated' || task.status === 'cancelled') return false;
-  if (event.kind === 'wants_review') return task.pendingSignal?.kind === 'completion_ready';
+  const wantsReview = task.pendingSignal?.kind === 'completion_ready';
+  if (event.kind === 'wants_review') return wantsReview;
+  // It said it is finished while the event waited: quiet is expected now.
+  if (wantsReview) return false;
   const wanted = event.kind === 'stalled' ? 'stale_agent' : 'hook_disconnected';
   return task.sessions.some((session) => findingOf(session.tmuxSession) === wanted);
 }
