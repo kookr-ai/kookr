@@ -52,8 +52,9 @@ while [ $# -gt 0 ]; do
 done
 
 # Resolve the base ref: explicit override, else the repo's default branch
-# (main/master, remote-tracking preferred). Falls through to staged content
-# only when none resolve (fresh/detached checkout).
+# (main/master, remote-tracking preferred). When none resolve, the fallback
+# below classifies HEAD vs the working tree, or staged content alone when HEAD
+# is unborn (fresh repo).
 if [ -z "$BASE_REF" ]; then
   for candidate in origin/main main origin/master master; do
     if git rev-parse --verify -q "$candidate" >/dev/null 2>&1; then

@@ -117,6 +117,21 @@ assert_rc0 "untracked"
 assert_field SPECIALISTS "correctness" "untracked"
 assert_field COUNT "1" "untracked"
 
+# --- No base ref resolves (develop-only repo): unstaged edits still count ---
+repo="$TMPDIR/no-base"
+git init -q -b develop "$repo"
+git -C "$repo" config user.email "test@example.com"
+git -C "$repo" config user.name "test"
+mkdir -p "$repo/src/core"
+printf 'const merge = 1\n' > "$repo/src/core/pr-merge-command.ts"
+git -C "$repo" add src/core/pr-merge-command.ts
+git -C "$repo" commit -q -m "base"
+printf 'const extra = 2\n' >> "$repo/src/core/pr-merge-command.ts"
+run_select "$repo"
+assert_rc0 "no-base"
+assert_field SPECIALISTS "correctness,lint-like,test" "no-base"
+assert_field COUNT "3" "no-base"
+
 # --- Acceptance 2: clean tree stdout is byte-identical -----------------------
 repo="$TMPDIR/clean-empty"; setup_repo "$repo"
 run_select "$repo"
