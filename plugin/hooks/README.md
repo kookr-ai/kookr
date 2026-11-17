@@ -236,8 +236,10 @@ comes right after another Stop hook blocked. Instead it blocks at most 3 times
 per task (a counter file under the temp directory). Once the task has handed
 off (a child task or a signal seen), later stops are allowed even if an operator
 message clears the signal. A task not flagged `unattended: true` whose last
-message ends on a question (a line ending in `?` among its last lines) is
-allowed to stop without spending a block, since an operator may be there to
+message ends on a question (its last line ends in `?`, or that line is
+followed only by a short option list; a summary bullet ending in `?` or an
+offer such as "Want me to continue with the next issue?" does not count,
+issue #4089) is allowed to stop without spending a block, since an operator may be there to
 answer (issue #4047); a task flagged unattended is still blocked. Known limits:
 any child task counts as the successor, and an unflagged task that asks without
 a question mark still uses up the blocks. It stays silent when the
