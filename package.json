@@ -62,6 +62,7 @@
     "generate-build-info": "node --import tsx scripts/generate-build-info.ts",
     "build:server": "tsc",
     "build:relay": "tsc -p tsconfig.relay.json",
+    "typecheck": "tsc --noEmit --incremental false && pnpm check:e2e && pnpm check:frontend",
     "check:e2e": "tsc -p tsconfig.e2e.json",
     "check:frontend": "node --import tsx scripts/check-frontend-types.ts",
     "build:frontend": "vite build",
