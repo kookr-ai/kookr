@@ -593,6 +593,11 @@ export function AvatarDock({
   // Spoken by the always-present announcement region below (a live region must exist before its text does).
   const connectingNotice = live.status === 'connecting' ? 'Connecting\u2026' : null;
   const announcement = liveMessage ?? connectingNotice;
+  // An error, a reason or "Connecting…" replaces the on/off notice for good: kept, it would come back as a
+  // new element when that message clears and be read a second time.
+  useEffect(() => {
+    if (announcement) setTalkStateNotice(null);
+  }, [announcement]);
 
   // Replay is unavailable (not hidden) when there is nothing to play, she is busy, or sound is off in Settings.
   const replayUnavailable = !lastClip.hasClip

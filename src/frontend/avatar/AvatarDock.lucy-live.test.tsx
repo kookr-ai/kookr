@@ -473,6 +473,17 @@ describe('AvatarDock Talk shortcut and the bubble\u2019s off control (#4010)', (
     expect(announce()!.textContent).toBe('Microphone permission denied');
   });
 
+  test('an on/off notice replaced by another message is not read again when that message clears', () => {
+    render(base({ enabled: true, status: 'ready' }));
+    minimise();
+    render(base());
+    expect(announce()!.textContent).toBe('Hands-free off');
+    render(base({ errorMessage: 'Microphone permission denied' }));
+    expect(announce()!.textContent).toBe('Microphone permission denied');
+    render(base());
+    expect(announce()!.textContent).toBe('');
+  });
+
   test('does not announce the state the dock mounts in', () => {
     render(base({ enabled: true, status: 'ready' }));
     expect(announce()!.textContent).toBe('');
