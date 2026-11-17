@@ -10,7 +10,8 @@ unbounded or rotting. Design rationale: [`docs/rfc/rfc-self-improving-agent-flee
 a single lesson of at most **200 characters**, each with a vote **score**. Eviction
 is recency-aware and a full shelf **always admits a newcomer**: when full, `nb add`
 evicts the **lowest-scored** line (ties: stalest), then docks the stalest
-survivor one point. There is no "rejected, notebook full" dead end. A shelf is tiny
+survivor one point and moves it to the end of the file, so the next add docks the
+next quiet lesson in turn (since 0.9.0). There is no "rejected, notebook full" dead end. A shelf is tiny
 by construction, so it is read **whole** — no retrieval, no embeddings. The cap,
 the vote, and that eviction rule are the entire mechanism; `nb list` is the index
 of shelves.

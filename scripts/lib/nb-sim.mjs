@@ -6,9 +6,9 @@
 // always admits it. When the target shelf is full (NB_MAX_LINES, default 50) `nb`
 // makes room by (1) evicting the LOWEST-scored line of the target (ties: the
 // stalest, i.e. earliest in the file), and (2) docking one point from the
-// stalest surviving line. So moving a weak lesson into a full shelf can throw away
-// a better one. This module copies those rules from agent-notebook (written against 0.7.0; the
-// eviction and ageing rules are the same in 0.8.0, whose other refusals it does not model)
+// stalest surviving line and moving it to the end of the file (since 0.9.0). So
+// moving a weak lesson into a full shelf can throw away a better one. This module
+// copies those rules from agent-notebook 0.9.0 (it does not model nb's other refusals)
 // (`dist/notebook.js` `enforceCap` and `move`); the test file replays random
 // stores through the REAL `nb` binary and asserts the model agrees, so a future
 // `nb` that changes the rules fails loudly instead of silently mis-planning.
@@ -150,6 +150,9 @@ function admit(entries, newcomer, cap) {
   if (pos !== -1) {
     docked = { id: kept[pos].id, text: kept[pos].text, from: kept[pos].score, to: kept[pos].score - 1 };
     kept[pos].score -= 1;
+    // Since agent-notebook 0.9.0 the docked line moves to the end of the file,
+    // after the newcomer, so the next admission docks the next line in turn.
+    kept.push(...kept.splice(pos, 1));
   }
   // `evicted` is the first line dropped (all `nb move --json` reports); a target that
   // is already OVER the cap loses several at once, listed in `evictedAll`.
