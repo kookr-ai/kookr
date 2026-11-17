@@ -109,7 +109,11 @@ Issue #3676. On by default whenever the operator conversation is on; `KOOKR_LUCY
 types "Lucy, investigate why the issue tasks stop chaining". She repeats back what she is about to
 launch, the dashboard shows it as a card, and the task starts when the operator says "go", presses
 Enter or clicks Go. When the task finishes or needs the operator, she says so in the conversation that
-launched it, and the card links to the task.
+launched it, and the card links to the task. A task that needs the operator is reported with what it
+waits for when Kookr knows it ("The task I started is waiting on a question.", "... is waiting for a
+permission."). That report is held for 8 seconds and dropped if the task's end, or its "done, please
+look", arrives meanwhile: a task that stops for input a moment before it signals that it is done is
+reported once, as done.
 
 ### How a proposal is made and confirmed
 
@@ -312,7 +316,9 @@ with whole turns between 0.6 and 3.1 s.
 - No screen uses the endpoint yet, and nothing speaks her replies.
 - In conversation she does not speak first: a turn starts only when the operator asks. Outside a
   turn, she reads out a task's question, the report of a task she launched, and a task
-  that has waited a minute on a permission prompt (see [Lucy live](lucy-live.md)).
+  that has waited a minute on a permission prompt (see [Lucy live](lucy-live.md)). She also writes,
+  without speaking, a briefing when her panel opens and a line when a task fails, stalls or wants a
+  review (see [What she writes on her own](lucy-live.md#what-she-writes-on-her-own)).
 - She answers in English.
 - Conversations are kept in memory: the last ten exchanges, for two hours, and not across a restart.
 - She reads a task's terminal only as a rendered screen: the last 40 lines, not its full history.

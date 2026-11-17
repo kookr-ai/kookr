@@ -388,6 +388,40 @@ against a throwaway server and a fake Telegram, and saves screenshots of the car
 `--autoplay-blocked` it checks the case where the browser will not start audio because nobody has
 clicked in the page yet.
 
+## What she writes on her own
+
+Lucy writes first and speaks second. Three things appear in her thread without being asked for, as
+messages from her. None of them is spoken, and none calls a model: the server builds each sentence
+from its own records with fixed patterns, and names a task only when its title may be said aloud.
+
+**A briefing.** The first time her panel is on screen after the page loads, she writes what is waiting
+on you, in at most about 45 words: what is stopped until you act first ("Three tasks are stopped on a
+question; Billing migration's closes first. Two others are waiting for a permission."), then questions
+left by tasks that have ended ("Two finished tasks would like your opinion."), then how many tasks
+are working. When nothing needs you it is one line: "All clear: nothing needs you. Four tasks are
+working." Under it the entry carries up to three follow-up requests chosen from the state ("Walk me
+through the questions", "What should I do first?", "What finished while I was away?"). She writes it
+again when you come back after 10 minutes or more away (the tab was hidden, or nothing was typed or
+moved), but only if what waits on you changed in the meantime. A page reloaded within 30 minutes of
+the last briefing does not repeat it unless it changed. "Changed" means which tasks wait, why, and
+which questions are open; one more task that is simply working is not a change. The briefing comes
+from `GET /api/lucy/briefing` and needs Lucy's operator conversation to be on (the follow-up requests
+are turns of it); with the conversation off she writes none.
+
+**A word about a task.** When a task she did not launch fails, goes quiet, loses contact with Kookr,
+or says it is finished and wants your review, she writes one line: "Docs link audit says it is
+finished and wants your review." Further events within the next two minutes are written together
+when those two minutes are over ("Two more tasks want your review: A and B."), so at most one line
+every two minutes. The same task and the same kind of event are not written twice within ten
+minutes. A task you stopped yourself is left out, and so is a task she launched: its end is reported
+in the conversation that launched it. Nothing is written again when the page reloads or reconnects,
+and what happened while no dashboard was open is not written later; the briefing covers that.
+
+**Words that could not be spoken.** A task's question and a permission notice are normally in the
+thread because their clip is. When no clip can be made (the speech service is not set up, or it
+failed), she writes the words instead: "Billing migration asks: Run the table rename on production
+now?", or the permission sentence. Nothing extra is written when a clip exists, heard or not.
+
 ## Starting a task by voice
 
 With launching on (the default whenever Lucy's operator conversation is on; `KOOKR_LUCY_LAUNCH=0` turns it off), a hands-free turn is answered by Lucy's
