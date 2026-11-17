@@ -215,6 +215,40 @@ the buttons work for as long as the prompt does. Until then Lucy must know wheth
 buttons are live before she points at them (see R7-F3): with dead buttons the useful
 answer is "its buttons have timed out, I am opening the task", followed by opening it.
 
+### R7-F6. The push gate rejected a reviewed branch twice because the host was busy (process) — severity: medium
+
+**Evidence.** The landing branch was pushed with the related tests green (397 files, 8,701
+tests) and a passing review. The repository's fast pre-push gate rejected it twice:
+
+1. First push (load average 25 to 37): the smoke lane failed with "`~/.kookr` contains
+   unexpected state … new file: achievements.json, resource-watchdog-audit.jsonl,
+   resource-watchdog.state.json". The related-tests lane had passed (405 files, 8,939
+   tests).
+2. Second push (load average 55 to 62): the related-tests lane was killed after its time
+   limit ("Terminated"), with time-outs in five server test files that this branch does
+   not touch (`diagnostics-routes`, `settings-api`, `idempotency-routes`,
+   `integrations/telegram/index`, `index.test.ts` at 294 s).
+
+The load came from this run's own agents (four reviewers running mutation checks, two
+implementers running tests and browsers) on top of the fleet's (the integration train's
+full suite, a benchmark, three `kb doctor` processes).
+
+**Root cause.** (1) `scripts/local-only-smoke-files.ts` allows local state files by exact
+name, and three files the server writes on purpose were missing. The delta reviewer traced
+why they appear only on a busy host: the smoke run switches the resource watchdog off, but
+outside Vitest the watchdog still switches itself on under pressure
+(`buildResourceWatchdogConfig`, `src/server/index.ts:2114-2124`); with 20 or more dtach
+sessions on the host it writes its two files and launches an investigation task inside the
+smoke server (`src/server/resource-watchdog-service.ts:464-518`), and that task's prompt
+unlocks an achievement. (2) The gate's time limit is fixed; a run that takes four minutes
+on an idle host does not finish on one at load 55.
+
+**Suggested fix.** Allow the three files (done on the landing branch, with tests), and set
+`KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0` in the smoke environment so the watchdog is really
+off there (follow-up issue). For this playbook: do not run reviewers' mutation checks,
+implementers' test runs and a push at the same time; push when the load average is below
+about 20, and say so in the playbook.
+
 ## Things that worked well (keep-list)
 
 ## Suggested priority order
@@ -264,3 +298,17 @@ answer is "its buttons have timed out, I am opening the task", followed by openi
   implementer each, both cut from the landing branch because their files exist only there:
   `kookr-r7-lucy-room` (`feat/lucy-room`, R7-F2) and `kookr-r7-lucy-notices`
   (`fix/lucy-remembers-notices`, R7-F3 and R7-F4).
+- 2026-11-18 — **Landing runs 5 and 6: review rounds.** Round 1 (four parts, head
+  `72f1ccd73`): no critical finding; nine small defects blocked (a card's expiry timer
+  racing a confirmation in flight; outcomes no longer announced to a screen reader and
+  focus lost when a card goes away; five unpinned lines in the browser; no Open task
+  button on her own lines; a briefing signature that ignored why a task waits; three false
+  doc sentences; one unused export; the three actions tested only against fakes; the
+  confirm route's "click" unpinned). The actions reviewer's five security probes held (56
+  mutants on that part, 44 killed). Two patch agents fixed all nine (`c4afae3c6`,
+  `5e2ff1140`); round 2, a fix check, passed on `5e2ff1140` (21 mutants, 18 killed, three
+  test nits left). Eleven larger defects go into one follow-up issue.
+- 2026-11-18 — **Landing: two rejected pushes.** The smoke lane, then a timed-out test
+  lane, both on a host at load 25 to 62 (R7-F6). Added the three state files to the smoke
+  allow-list and corrected one doc sentence (`36693a7af`, `94405e0b5`); the delta was
+  reviewed and passed on `94405e0b5`. Third push waits for the load to drop.
