@@ -95,7 +95,7 @@ terminal or CI context, where no plugin is loaded at all.
 ## Bash Wait Nudge
 
 `bash-wait-nudge.sh` is a `PreToolUse` hook on `Bash` that only nudges, never
-blocks. It adds a short suggestion to the agent's context in two cases:
+blocks. It adds a short suggestion to the agent's context in four cases:
 
 - a `while`/`until` loop that calls `pgrep -f`. The loop's own shell matches the
   pattern, so the loop never ends. The nudge points to `kookr-wait.sh`.
@@ -103,6 +103,14 @@ blocks. It adds a short suggestion to the agent's context in two cases:
   piped into `tail` or `head` with no `tee`, `pipefail` or `PIPESTATUS`. That
   throws away the full log and hides the exit code. The nudge suggests
   `cmd 2>&1 | tee "$LOG" | tail -40; echo "exit=${PIPESTATUS[0]}"`.
+  `git push` counts as a gate command: it runs the pre-push tests, and a cut
+  log hides the name of the test that failed.
+- `pkill -f PATTERN`. The agent's own shell has PATTERN in its command line,
+  so pkill kills that shell too. The nudge suggests killing by PID, or
+  stopping a background task by its id.
+- `gh issue view N --comments` without `--json`. When its output is not a
+  terminal it prints only the comments, and nothing for an issue without
+  comments. The nudge suggests `gh issue view N --json title,body,comments`.
 
 Safe forms stay silent. Set `KOOKR_BASH_WAIT_NUDGE_SKIP=1` to turn it off.
 
