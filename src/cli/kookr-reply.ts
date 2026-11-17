@@ -15,8 +15,10 @@
  *
  * Resolution: GET /api/snapshot lists live agents; this matches the one whose
  * `taskId` or `taskName` equals the given ref (exact match), excluding any
- * whose `taskStatus` is already terminal. Zero matches is a NO_AGENT user
- * error; more than one is AMBIGUOUS_AGENT (parallel to `kookr stop`'s
+ * whose `taskStatus` is already terminal. A ref of 8+ characters that matches
+ * no task exactly may also be a unique task-id prefix (issue #4112, see
+ * `task-ref-match.ts`); a prefix of several task ids is AMBIGUOUS_AGENT and
+ * nothing is sent. Zero matches is a NO_AGENT user error; more than one is AMBIGUOUS_AGENT (parallel to `kookr stop`'s
  * AMBIGUOUS_PORT) and requires the caller to disambiguate rather than guess.
  *
  * Delivery: POST /api/agents/:agentId/message  { input: string }
@@ -36,6 +38,7 @@ import {
   EXIT_USER_ERROR,
   resolveStopBaseUrl,
 } from './kookr-stop.js';
+import { matchTaskRef, MIN_TASK_ID_PREFIX_LENGTH } from './task-ref-match.js';
 
 const PORTS_TO_TRY = [4800, 4801] as const;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -48,7 +51,11 @@ Usage:
 
 Resolves the task's live agent from the running Kookr instance and posts the
 reply as terminal input, attributed to the "cli" actor. The task is matched
-by exact taskId or exact taskName among currently live agents.
+by exact taskId or exact taskName among currently live agents. A ref of at
+least ${MIN_TASK_ID_PREFIX_LENGTH} characters that matches neither is also accepted as a task-id
+PREFIX (e.g. the first ${MIN_TASK_ID_PREFIX_LENGTH} characters of the id) when exactly one listed
+task id starts with it; a prefix of several task ids fails (exit 5), lists
+them, and sends nothing.
 
 Reply text is taken from the second positional argument; when omitted it is
 read from stdin (piped input only — an interactive stdin with no positional
@@ -71,7 +78,8 @@ Exit codes:
   0  Success (reply delivered).                2  User error (incl. no live agent, or reply
                                                   refused: the agent shows a choice dialog).
   3  No server reachable.                       4  Server/HTTP error delivering the reply.
-  5  Ambiguous port, or more than one live agent matched the task.
+  5  Ambiguous port, more than one live agent matched the task, or a task-id
+     prefix matched several task ids.
 `;
 
 export interface ParsedReplyArgs {
@@ -281,10 +289,33 @@ export async function runReplyCli(argv: string[], io: ReplyCliIo = {}): Promise<
   }
 
   const taskRef = args.taskRef;
-  const candidates = snapshotBody.filter(
-    (agent) =>
-      (agent.taskId === taskRef || agent.taskName === taskRef) &&
-      (agent.taskStatus === undefined || !isTerminalStatus(agent.taskStatus)),
+  const match = matchTaskRef(snapshotBody, taskRef);
+  if (match.kind === 'ambiguous-prefix') {
+    // Never guess which task a shared prefix meant: this would type into a live agent.
+    const candidateList = match.agents.map((c) => ({
+      agentId: c.agentId,
+      taskId: c.taskId,
+      taskName: c.taskName,
+      taskStatus: c.taskStatus,
+    }));
+    const message = `task-id prefix '${taskRef}' matches ${match.taskIds.length} tasks. Pass more characters of the taskId to disambiguate; no reply was sent.`;
+    if (args.json) {
+      emitJson(out, {
+        ok: false,
+        code: 'AMBIGUOUS_AGENT',
+        message,
+        details: { taskRef, matchedBy: 'prefix', candidates: candidateList },
+      });
+    } else {
+      err.error(`kookr reply: ${message}`);
+      for (const c of candidateList) {
+        err.error(`  ${c.taskId ?? '?'}  ${c.taskName ?? ''}  ${c.taskStatus ?? ''}`);
+      }
+    }
+    return EXIT_AMBIGUOUS;
+  }
+  const candidates = (match.kind === 'none' ? [] : match.agents).filter(
+    (agent) => agent.taskStatus === undefined || !isTerminalStatus(agent.taskStatus),
   );
 
   if (candidates.length === 0) {

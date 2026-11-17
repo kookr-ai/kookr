@@ -1890,6 +1890,13 @@ kookr reply t-1 "approved, continue" --json         # machine-readable envelope
 `GET /api/snapshot`; agents whose task is already in a terminal status are excluded.
 Resolution is all-or-nothing rather than a guess:
 
+- **Task-id prefix.** A reference of at least 8 characters that matches no
+  `taskId` or `taskName` exactly is also tried as a task-id prefix, so the first
+  eight characters of an id work. It resolves only when exactly one task id in the
+  snapshot starts with it (terminal tasks count, so a prefix shared with a
+  finished task is not unique). A prefix of several task ids is `AMBIGUOUS_AGENT`
+  (exit `5`) with `details.matchedBy: "prefix"`: nothing is sent, and each
+  candidate's `taskId` is listed so the caller can pass a longer prefix.
 - **Zero** live agents match → `NO_AGENT` (exit `2`, a user error): the task is not
   running, so there is nothing to reply to.
 - **More than one** live agent matches the same reference → `AMBIGUOUS_AGENT`
@@ -2099,8 +2106,13 @@ never mislabeled as hung.
 
 **Task resolution.** The reference is matched by exact `taskId` **or** `taskName`
 against `GET /api/snapshot`; a live match is preferred when a name is shared with
-history, and more than one live match is `AMBIGUOUS_TASK` (exit `5`). A task absent
-from the live snapshot (terminal or aged out) still resolves by id through the
+history, and more than one live match is `AMBIGUOUS_TASK` (exit `5`). A reference
+of at least 8 characters that matches no `taskId` or `taskName` exactly is also
+tried as a task-id prefix (for example the first eight characters of an id): it
+resolves when exactly one task id in the snapshot starts with it, and a prefix of
+several task ids is `AMBIGUOUS_TASK` (exit `5`) with `details.matchedBy: "prefix"`,
+listing each candidate's `taskId`. A task absent
+from the live snapshot (terminal or aged out) still resolves by its full id through the
 transcript endpoint and its last message is shown in full; its run-state then
 reads `unknown`, since the live run-state signals come only from the snapshot.
 

@@ -9,6 +9,7 @@ import {
   PEEK_HELP_TEXT,
   runPeekCli,
 } from './kookr-peek.js';
+import { matchTaskRef } from './task-ref-match.js';
 
 function captureIo() {
   const logs: string[] = [];
@@ -418,10 +419,133 @@ describe('runPeekCli', () => {
     expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'AMBIGUOUS_TASK' });
   });
 
+  describe('task-id prefix (issue #4112)', () => {
+    const ID_A = 'e468f92d-1111-4aaa-8aaa-000000000001';
+    const ID_B = 'e468f92d-2222-4bbb-8bbb-000000000002';
+    const ID_C = '7c0ffee0-3333-4ccc-8ccc-000000000003';
+
+    it('shows the one task whose id starts with the first 8 characters', async () => {
+      const io = captureIo();
+      const { impl, requests } = fakeFetch({
+        agents: [
+          { agentId: 'a1', taskId: ID_A, taskName: 'Alpha', taskStatus: 'inProgress', turnState: 'running' },
+          { agentId: 'a3', taskId: ID_C, taskName: 'Gamma', taskStatus: 'inProgress' },
+        ],
+        transcript: { taskId: ID_A, source: 'stored', messages: [{ kind: 'text', role: 'assistant', text: 'alpha says hi' }] },
+      });
+      const code = await runPeekCli(['e468f92d', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+      expect(code).toBe(0);
+      const env = JSON.parse(io.logs[0]);
+      expect(env.details.taskId).toBe(ID_A);
+      expect(env.details.lastAssistantMessage).toBe('alpha says hi');
+      expect(requests.some((r) => r.url.includes(`/api/tasks/${ID_A}/transcript`))).toBe(true);
+    });
+
+    it('fails AMBIGUOUS_TASK (exit 5) when the prefix matches several task ids, naming them, and reads no transcript', async () => {
+      const io = captureIo();
+      const { impl, requests } = fakeFetch({
+        agents: [
+          { agentId: 'a1', taskId: ID_A, taskName: 'Alpha', taskStatus: 'inProgress' },
+          { agentId: 'a2', taskId: ID_B, taskName: 'Beta', taskStatus: 'completed' },
+          { agentId: 'a3', taskId: ID_C, taskName: 'Gamma', taskStatus: 'inProgress' },
+        ],
+      });
+      const code = await runPeekCli(['e468f92d'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+      expect(code).toBe(5);
+      const text = io.errors.join('\n');
+      expect(text).toContain('matches 2 tasks');
+      expect(text).toContain(ID_A);
+      expect(text).toContain(ID_B);
+      expect(text).not.toContain(ID_C);
+      expect(requests.some((r) => r.url.includes('/transcript'))).toBe(false);
+    });
+
+    it('lists the prefix candidates in the --json envelope', async () => {
+      const io = captureIo();
+      const { impl } = fakeFetch({
+        agents: [
+          { agentId: 'a1', taskId: ID_A, taskName: 'Alpha', taskStatus: 'inProgress' },
+          { agentId: 'a2', taskId: ID_B, taskName: 'Beta', taskStatus: 'inProgress' },
+        ],
+      });
+      const code = await runPeekCli(['e468f92d', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+      expect(code).toBe(5);
+      const env = JSON.parse(io.logs[0]);
+      expect(env).toMatchObject({ ok: false, code: 'AMBIGUOUS_TASK', details: { taskRef: 'e468f92d', matchedBy: 'prefix' } });
+      expect(env.details.candidates.map((c: { taskId: string }) => c.taskId)).toEqual([ID_A, ID_B]);
+    });
+
+    it('still resolves a full id and a task name exactly', async () => {
+      for (const ref of [ID_A, 'Alpha']) {
+        const io = captureIo();
+        const { impl } = fakeFetch({
+          agents: [
+            { agentId: 'a1', taskId: ID_A, taskName: 'Alpha', taskStatus: 'inProgress' },
+            { agentId: 'a2', taskId: ID_B, taskName: 'Beta', taskStatus: 'inProgress' },
+          ],
+          transcript: { taskId: ID_A, source: 'stored', messages: [] },
+        });
+        const code = await runPeekCli([ref, '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+        expect(code).toBe(0);
+        expect(JSON.parse(io.logs[0]).details.taskId).toBe(ID_A);
+      }
+    });
+
+    it('does not prefix-match a reference shorter than 8 characters', async () => {
+      const io = captureIo();
+      const { impl, requests } = fakeFetch({
+        agents: [{ agentId: 'a1', taskId: ID_A, taskName: 'Alpha', taskStatus: 'inProgress' }],
+        transcriptStatus: 404,
+      });
+      const code = await runPeekCli(['e468f92', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+      expect(code).toBe(2);
+      expect(JSON.parse(io.logs[0])).toMatchObject({ code: 'NO_TASK' });
+      expect(requests.some((r) => r.url.includes('/api/tasks/e468f92/transcript'))).toBe(true);
+    });
+
+    it('documents prefix matching in the help text', () => {
+      expect(PEEK_HELP_TEXT).toMatch(/PREFIX/);
+      expect(PEEK_HELP_TEXT).toContain('first 8 characters');
+    });
+  });
+
   it('reports no server reachable (exit 3)', async () => {
     const io = captureIo();
     const code = await runPeekCli(['t1', '--json'], { env: {}, out: io.out, err: io.err, fetchImpl: (async () => { throw new Error('down'); }) as unknown as typeof fetch });
     expect(code).toBe(3);
     expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'NO_SERVER' });
+  });
+});
+
+describe('matchTaskRef (shared by kookr peek and kookr reply)', () => {
+  const agents = [
+    { taskId: 'aaaaaaaa-1', taskName: 'one' },
+    { taskId: 'aaaaaaaa-2', taskName: 'two' },
+    { taskId: 'bbbbbbbb-1', taskName: 'aaaaaaaa' },
+    { taskName: 'no-id' },
+  ];
+
+  it('matches a task name exactly before trying a prefix', () => {
+    expect(matchTaskRef(agents, 'aaaaaaaa')).toEqual({ kind: 'exact', agents: [agents[2]] });
+  });
+
+  it('resolves a unique prefix of 8+ characters', () => {
+    expect(matchTaskRef(agents, 'bbbbbbbb')).toEqual({ kind: 'prefix', taskId: 'bbbbbbbb-1', agents: [agents[2]] });
+    expect(matchTaskRef(agents, 'aaaaaaaa-2')).toEqual({ kind: 'exact', agents: [agents[1]] });
+  });
+
+  it('reports a shared prefix as ambiguous with every matching id', () => {
+    const m = matchTaskRef(agents, 'aaaaaaaa-');
+    expect(m).toEqual({ kind: 'ambiguous-prefix', taskIds: ['aaaaaaaa-1', 'aaaaaaaa-2'], agents: [agents[0], agents[1]] });
+  });
+
+  it('dedupes several agents of one task into a single prefix match', () => {
+    const twoSessions = [{ taskId: 'cccccccc-1' }, { taskId: 'cccccccc-1' }];
+    expect(matchTaskRef(twoSessions, 'cccccccc')).toMatchObject({ kind: 'prefix', taskId: 'cccccccc-1' });
+  });
+
+  it('ignores references shorter than 8 characters and unmatched prefixes', () => {
+    expect(matchTaskRef(agents, 'bbbbbbb')).toEqual({ kind: 'none' });
+    expect(matchTaskRef(agents, 'zzzzzzzz')).toEqual({ kind: 'none' });
   });
 });

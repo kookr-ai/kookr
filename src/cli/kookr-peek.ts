@@ -39,6 +39,7 @@ import {
   EXIT_USER_ERROR,
   resolveStopBaseUrl,
 } from './kookr-stop.js';
+import { matchTaskRef, MIN_TASK_ID_PREFIX_LENGTH } from './task-ref-match.js';
 
 const PORTS_TO_TRY = [4800, 4801] as const;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -58,6 +59,11 @@ hand-rolling curl + truncation. Prints:
 Read it before concluding a task is idle or stalled: a deliberate pause
 ("awaiting-operator") looks identical to a hang from a heartbeat, but says so
 in its own words at the end of its last message.
+
+The task is matched by exact taskId or exact taskName. A ref of at least
+${MIN_TASK_ID_PREFIX_LENGTH} characters that matches neither is also accepted as a task-id
+PREFIX (e.g. the first ${MIN_TASK_ID_PREFIX_LENGTH} characters of the id) when exactly one listed
+task id starts with it; a prefix of several task ids fails (exit 5) and lists them.
 
 Options:
   --max-chars <N>   Cap the last message (and each reply after it) to N chars,
@@ -80,7 +86,8 @@ wins, else KOOKR_PORT, else the default ports ${PORTS_TO_TRY.join(' / ')} are pr
 Exit codes:
   0  Success.                                  2  User error (incl. no such task).
   3  No server reachable.                       4  Server/HTTP error.
-  5  Ambiguous port, or more than one task matched the ref.`;
+  5  Ambiguous port, more than one task matched the ref, or a task-id
+     prefix matched several task ids.`;
 
 export interface ParsedPeekArgs {
   taskRef?: string;
@@ -407,7 +414,18 @@ export async function runPeekCli(argv: string[], io: PeekCliIo = {}): Promise<nu
       else err.error(`kookr peek: ${message}`);
       return EXIT_SERVER_ERROR;
     }
-    const matches = body.filter((a) => a.taskId === taskRef || a.taskName === taskRef);
+    const match = matchTaskRef(body, taskRef);
+    if (match.kind === 'ambiguous-prefix') {
+      const candidates = match.agents.map((c) => ({ agentId: c.agentId, taskId: c.taskId, taskName: c.taskName, taskStatus: c.taskStatus }));
+      const message = `task-id prefix '${taskRef}' matches ${match.taskIds.length} tasks. Pass more characters of the taskId to disambiguate.`;
+      if (args.json) emitJson(out, { ok: false, code: 'AMBIGUOUS_TASK', message, details: { taskRef, matchedBy: 'prefix', candidates } });
+      else {
+        err.error(`kookr peek: ${message}`);
+        for (const c of candidates) err.error(`  ${c.taskId ?? '?'}  ${c.taskName ?? ''}  ${c.taskStatus ?? ''}`);
+      }
+      return EXIT_AMBIGUOUS;
+    }
+    const matches = match.kind === 'none' ? [] : match.agents;
     // Prefer a live (non-terminal) match; a name may be shared with history.
     const live = matches.filter((a) => a.taskStatus === undefined || !isTerminalStatus(a.taskStatus));
     const pool = live.length > 0 ? live : matches;
@@ -431,7 +449,7 @@ export async function runPeekCli(argv: string[], io: PeekCliIo = {}): Promise<nu
   }
 
   // The transcript endpoint is keyed by task id. Use the resolved agent's id
-  // when the ref was a name; otherwise fall back to the ref (it is an id, or a
+  // when the ref was a name or a task-id prefix; otherwise fall back to the ref (it is an id, or a
   // terminal/aged task absent from the live snapshot).
   const taskId = agent?.taskId ?? taskRef;
 
