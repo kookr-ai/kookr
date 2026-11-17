@@ -60,61 +60,89 @@ git -C "$repo" add src/index.ts
 git -C "$repo" commit -q -m "change"
 bash "$REPO_ROOT/scripts/write-review-state-marker.sh" \
   --repo-root "$repo" --status approved --specialists "test" --key "feature" >/dev/null
-: > "$repo/pnpm.log"
 
-# A FIFO whose write end a background `sleep` holds open and never writes to:
-# the hook's stdin is a pipe (not a terminal) that sends nothing and never
-# reaches end of input, like an agent's background shell.
-fifo="$TMPDIR/stdin.fifo"
-mkfifo "$fifo"
-sleep 600 > "$fifo" &
-HOLDER_PID=$!
+ZERO_SHA="0000000000000000000000000000000000000000"
+UPDATE_SHA="1111111111111111111111111111111111111111"
 
-out_file="$TMPDIR/hook.out"
-start=$(date +%s)
-(cd "$repo" && PNPM_LOG="$repo/pnpm.log" PATH="$repo/bin:$PATH" exec bash "$HOOK") \
-  < "$fifo" > "$out_file" 2>&1 &
-HOOK_PID=$!
+# Run the hook with stdin connected to a FIFO whose write end a background
+# writer holds open forever after writing $2 (possibly nothing): the hook's
+# stdin is a pipe, not a terminal, and never reaches end of input, like an
+# agent's background shell. Asserts the hook finishes within DEADLINE_S, prints
+# the timeout notice, skips the delete-only fast path and runs the full gate.
+run_open_stdin_case() {
+  local name="$1"
+  local stdin_data="$2"
+  local fifo="$TMPDIR/$name.fifo"
+  local out_file="$TMPDIR/$name.out"
+  local start hook_status elapsed out lane
 
-while kill -0 "$HOOK_PID" 2>/dev/null; do
-  if [ $(( $(date +%s) - start )) -ge "$DEADLINE_S" ]; then
-    printf 'FAIL: hook still running after %ss with an open, silent stdin pipe\n' "$DEADLINE_S" >&2
-    cat "$out_file" >&2
+  : > "$repo/pnpm.log"
+  mkfifo "$fifo"
+  if [ -n "$stdin_data" ]; then
+    { printf '%s\n' "$stdin_data"; exec sleep 600; } > "$fifo" &
+  else
+    sleep 600 > "$fifo" &
+  fi
+  HOLDER_PID=$!
+
+  start=$(date +%s)
+  (cd "$repo" && PNPM_LOG="$repo/pnpm.log" PATH="$repo/bin:$PATH" exec bash "$HOOK") \
+    < "$fifo" > "$out_file" 2>&1 &
+  HOOK_PID=$!
+
+  while kill -0 "$HOOK_PID" 2>/dev/null; do
+    if [ $(( $(date +%s) - start )) -ge "$DEADLINE_S" ]; then
+      printf 'FAIL(%s): hook still running after %ss with an open stdin pipe\n' "$name" "$DEADLINE_S" >&2
+      cat "$out_file" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  hook_status=0
+  wait "$HOOK_PID" || hook_status=$?
+  HOOK_PID=""
+  elapsed=$(( $(date +%s) - start ))
+  kill "$HOLDER_PID" 2>/dev/null || true
+  HOLDER_PID=""
+  out=$(cat "$out_file")
+
+  if [ "$hook_status" -ne 0 ]; then
+    printf 'FAIL(%s): hook exited %s (expected 0 from the stubbed gate)\n' "$name" "$hook_status" >&2
+    printf '%s\n' "$out" >&2
     exit 1
   fi
-  sleep 1
-done
-hook_status=0
-wait "$HOOK_PID" || hook_status=$?
-HOOK_PID=""
-elapsed=$(( $(date +%s) - start ))
-out=$(cat "$out_file")
 
-if [ "$hook_status" -ne 0 ]; then
-  printf 'FAIL: hook exited %s (expected 0 from the stubbed gate)\n' "$hook_status" >&2
-  printf '%s\n' "$out" >&2
-  exit 1
-fi
-
-# The hook must have waited out its read bound, not skipped it.
-if ! grep -q "no ref list on stdin within" <<<"$out"; then
-  printf 'FAIL: timeout notice not printed\n' >&2
-  printf '%s\n' "$out" >&2
-  exit 1
-fi
-
-# It fell through to the full gate rather than the delete-only fast path.
-if grep -q "delete-only push" <<<"$out"; then
-  printf 'FAIL: open stdin took the delete-only fast path\n' >&2
-  exit 1
-fi
-for lane in "build:server" "test"; do
-  if ! grep -Fxq "$lane" "$repo/pnpm.log"; then
-    printf 'FAIL: expected gate lane "pnpm %s" to run\n' "$lane" >&2
-    printf '%s\n' '--- pnpm.log ---' >&2
-    cat "$repo/pnpm.log" >&2
+  # The hook must have waited out its read bound, not skipped it.
+  if ! grep -q "no ref list on stdin within" <<<"$out"; then
+    printf 'FAIL(%s): timeout notice not printed\n' "$name" >&2
+    printf '%s\n' "$out" >&2
     exit 1
   fi
-done
 
-printf 'PASS: open, silent stdin pipe — hook ran the full gate after its read bound (%ss total)\n' "$elapsed"
+  # It fell through to the full gate rather than the delete-only fast path.
+  if grep -q "delete-only push" <<<"$out"; then
+    printf 'FAIL(%s): open stdin took the delete-only fast path\n' "$name" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  for lane in "build:server" "test"; do
+    if ! grep -Fxq "$lane" "$repo/pnpm.log"; then
+      printf 'FAIL(%s): expected gate lane "pnpm %s" to run\n' "$name" "$lane" >&2
+      printf '%s\n' '--- pnpm.log ---' >&2
+      cat "$repo/pnpm.log" >&2
+      exit 1
+    fi
+  done
+
+  printf 'PASS(%s): hook ran the full gate after its read bound (%ss total)\n' "$name" "$elapsed"
+}
+
+# --- Case 1: the pipe stays open and sends nothing -------------------------
+run_open_stdin_case "silent" ""
+
+# --- Case 2: a delete line arrives, then the pipe stays open ----------------
+# The list may be incomplete (a later line could be an update), so the hook
+# must discard it on timeout and run the gate, not take the delete-only path.
+run_open_stdin_case "partial-delete" "(delete) $ZERO_SHA refs/heads/feature $UPDATE_SHA"
+
+printf 'PASS: an open stdin pipe never hangs the hook or skips the gate\n'
