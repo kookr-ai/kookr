@@ -4,7 +4,17 @@ import { expect, it } from 'vitest';
 import { FAKE_MARKER } from './leak-state.js';
 import { moduleState } from './module-state.js';
 
-const TIMER_GLOBALS = ['setTimeout', 'clearTimeout', 'setInterval', 'setImmediate', 'queueMicrotask', 'Date'];
+// The same list as TIMER_GLOBALS in test/shared-worker-reset.setup.ts.
+const TIMER_GLOBALS = [
+  'setTimeout',
+  'clearTimeout',
+  'setInterval',
+  'clearInterval',
+  'setImmediate',
+  'clearImmediate',
+  'queueMicrotask',
+  'Date',
+];
 
 export function expectCleanState(): void {
   it('timer globals and Date are the real ones', () => {
