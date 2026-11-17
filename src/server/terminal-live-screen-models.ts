@@ -60,6 +60,8 @@ const DESYNC_COOLDOWN_MS = 30_000;
 /** A session blamed for stalling the worker is not modelled again for this long, doubling per repeat. */
 const STALL_COOLDOWN_MS = 60_000;
 const MAX_STALL_COOLDOWN_MS = 60 * 60_000;
+/** How often the installed registry logs its stats, when they changed (issue #4067). */
+export const LIVE_SCREEN_STATS_LOG_MS = 5 * 60_000;
 /** Bytes per emulator cell (xterm stores three 32-bit words per cell) plus fixed overhead per model. */
 const CELL_BYTES = 12;
 const MODEL_OVERHEAD_BYTES = 64 * 1024;
@@ -95,6 +97,8 @@ export interface LiveScreenWorkerPort {
   live(job: LiveScreenJob, bytes: Uint8Array, deadlineMs: number): Promise<LiveScreenWorkerResult>;
   readonly pendingBytes: number;
   readonly pendingJobs: number;
+  /** The retired thread is still terminating: jobs sent now are refused, so wait for the next output. */
+  readonly restarting: boolean;
   close(): Promise<void>;
 }
 
@@ -104,6 +108,11 @@ export interface LiveScreenModelsOptions {
   /** Build the worker; `onRetire` must be called when the thread is retired. Tests inject a fake. */
   createWorker?: (onRetire: (culprit: string | undefined) => void) => LiveScreenWorkerPort;
   now?: () => number;
+  /**
+   * Log a stats line this often, skipping intervals in which nothing changed.
+   * Off when absent or 0. `installLiveScreenModelsFromEnv` turns it on.
+   */
+  statsLogMs?: number;
 }
 
 export interface LiveScreenModelsStats {
@@ -165,6 +174,9 @@ export class LiveScreenModels implements TerminalRingObserver, LiveScreenSeedSou
   private generation = 0;
   private closed = false;
   private readonly counters = { bootstraps: 0, evictions: 0, desyncs: 0, workerRetires: 0 };
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
+  /** The stats the last log line showed, and when: the next line reports the change since. */
+  private lastLogged: { stats: LiveScreenModelsStats; at: number } | null = null;
 
   constructor(options: LiveScreenModelsOptions = {}) {
     this.budgetBytes = options.budgetBytes ?? DEFAULT_LIVE_SCREEN_BUDGET_BYTES;
@@ -176,12 +188,39 @@ export class LiveScreenModels implements TerminalRingObserver, LiveScreenSeedSou
       maxRetainedBytes: WORKER_MAX_RETAINED_BYTES,
       onRetire,
     });
+    if (options.statsLogMs && options.statsLogMs > 0) {
+      this.lastLogged = { stats: this.stats(), at: this.now() };
+      this.statsTimer = setInterval(() => this.logStats(), options.statsLogMs);
+      this.statsTimer.unref?.();
+    }
   }
 
   stats(): LiveScreenModelsStats {
     let models = 0;
     for (const state of this.sessions.values()) if (state.modelled) models++;
     return { models, estimatedBytes: this.estimatedBytes, budgetBytes: this.budgetBytes, ...this.counters };
+  }
+
+  /**
+   * One line for operators: models and estimated memory against the budget
+   * (pressure), and how many bootstraps, evictions, desyncs and worker retires
+   * happened since the last line (thrash). Nothing is logged when nothing
+   * changed, so an idle host stays quiet.
+   */
+  logStats(): void {
+    const stats = this.stats();
+    const at = this.now();
+    const last = this.lastLogged;
+    if (last && (Object.keys(stats) as Array<keyof LiveScreenModelsStats>).every((key) => stats[key] === last.stats[key])) return;
+    const mib = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
+    const percent = stats.budgetBytes > 0 ? Math.round((stats.estimatedBytes / stats.budgetBytes) * 100) : 0;
+    const delta = (key: 'bootstraps' | 'evictions' | 'desyncs' | 'workerRetires') =>
+      `${key}=+${stats[key] - (last?.stats[key] ?? 0)} (total ${stats[key]})`;
+    const window = last ? ` over the last ${Math.round((at - last.at) / 1000)} s` : '';
+    console.log(`[terminal-live-screen] stats${window}: models=${stats.models}`
+      + ` estimated=${mib(stats.estimatedBytes)}/${mib(stats.budgetBytes)} MiB (${percent}% of budget)`
+      + ` ${delta('bootstraps')} ${delta('evictions')} ${delta('desyncs')} ${delta('workerRetires')}`);
+    this.lastLogged = { stats, at };
   }
 
   // ── PTY data path ────────────────────────────────────────────────────────
@@ -273,6 +312,9 @@ export class LiveScreenModels implements TerminalRingObserver, LiveScreenSeedSou
     const ring = this.ring;
     if (!ring || state.modelled || this.closed) return;
     if (this.now() < state.retryAfter || this.bootstrapsInFlight >= MAX_BOOTSTRAPS_IN_FLIGHT) return;
+    // The retired thread is still terminating and would refuse the job. No
+    // cool-down: the session's next output tries again (issue #4067).
+    if (this.worker.restarting) return;
     // Output never evicts (see the module comment); an attach does. Checked
     // before the ring is copied: this runs on every chunk of a session that
     // does not fit.
@@ -303,7 +345,9 @@ export class LiveScreenModels implements TerminalRingObserver, LiveScreenSeedSou
       if (generation !== this.generation) return;
       this.bootstrapsInFlight--;
       if (result.kind === 'unavailable' && incarnation === state.incarnation) {
-        this.invalidate(state, `bootstrap ${result.reason}`, DESYNC_COOLDOWN_MS);
+        // Refused only because the old thread was still terminating: retry on the next output.
+        if (result.reason === 'restarting') this.invalidate(state, 'restarting', 0);
+        else this.invalidate(state, `bootstrap ${result.reason}`, DESYNC_COOLDOWN_MS);
       }
     });
   }
@@ -374,7 +418,7 @@ export class LiveScreenModels implements TerminalRingObserver, LiveScreenSeedSou
     state.modelled = false;
     this.estimatedBytes -= state.estimateBytes;
     state.estimateBytes = 0;
-    if (reason !== 'evicted' && reason !== 'disposed') {
+    if (reason !== 'evicted' && reason !== 'disposed' && reason !== 'restarting') {
       this.counters.desyncs++;
       console.warn(`[terminal-live-screen] dropped the screen model of ${state.id} (${reason}); its attaches replay the ring meanwhile`);
     }
@@ -407,6 +451,8 @@ export class LiveScreenModels implements TerminalRingObserver, LiveScreenSeedSou
     this.closed = true;
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = null;
+    if (this.statsTimer) clearInterval(this.statsTimer);
+    this.statsTimer = null;
     this.sessions.clear();
     this.dirty.clear();
     await this.worker.close();
@@ -442,7 +488,7 @@ export function installLiveScreenModelsFromEnv(env: NodeJS.ProcessEnv = process.
     console.log('[terminal-live-screen] off (KOOKR_TERMINAL_LIVE_SCREEN); attaches replay the ring');
     return null;
   }
-  installed = new LiveScreenModels({ budgetBytes: liveScreenBudgetFromEnv(env) });
+  installed = new LiveScreenModels({ budgetBytes: liveScreenBudgetFromEnv(env), statsLogMs: LIVE_SCREEN_STATS_LOG_MS });
   console.log(`[terminal-live-screen] on: budget ${liveScreenBudgetFromEnv(env)} bytes`);
   return installed;
 }

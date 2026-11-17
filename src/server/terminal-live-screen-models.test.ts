@@ -23,6 +23,8 @@ class FakeWorker implements LiveScreenWorkerPort {
   readonly models = new LiveScreenModelSet();
   readonly jobs: Array<{ job: LiveScreenJob; bytes: number }> = [];
   refuse: LiveScreenWorkerResult | null = null;
+  /** What the real worker reports while a retired thread is still terminating. */
+  restarting = false;
   private queue: Promise<unknown> = Promise.resolve();
   constructor(readonly onRetire: (culprit: string | undefined) => void) {}
   get pendingBytes() { return 0; }
@@ -70,7 +72,7 @@ class FakeRing implements TerminalRingReader {
 }
 
 const live: LiveScreenModels[] = [];
-function setup(options: { budgetBytes?: number; flushMs?: number } = {}) {
+function setup(options: { budgetBytes?: number; flushMs?: number; statsLogMs?: number } = {}) {
   let worker!: FakeWorker;
   let now = 1_000;
   const models = new LiveScreenModels({
@@ -78,6 +80,7 @@ function setup(options: { budgetBytes?: number; flushMs?: number } = {}) {
     flushMs: options.flushMs ?? 10_000,
     createWorker: (onRetire) => (worker = new FakeWorker(onRetire)),
     now: () => now,
+    statsLogMs: options.statsLogMs,
   });
   live.push(models);
   return { models, worker, ring: new FakeRing(models), advance: (ms: number) => { now += ms; } };
@@ -224,6 +227,47 @@ describe('LiveScreenModels (issue #3564, step 2)', () => {
     expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('not modelled again for 120 s'));
   });
 
+  it('retries a session on its next output, not after a cool-down, while the retired thread terminates (issue #4067)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { models, worker, ring } = setup();
+    ring.emit('s', 'x');
+    await seedOf(models, 's');
+    worker.retire(undefined);
+    worker.restarting = true;
+    const capture = vi.spyOn(ring, 'captureStreamSnapshot');
+    const resetsBefore = worker.ops('reset').length;
+    ring.emit('s', 'during the restart');
+    // Not even sent: the ring is not copied for a job the worker would refuse.
+    expect(capture).not.toHaveBeenCalled();
+    expect(worker.ops('reset')).toHaveLength(resetsBefore);
+    worker.restarting = false;
+    ring.emit('s', 'after it'); // no advance(): no cool-down was applied
+    expect(worker.ops('reset')).toHaveLength(resetsBefore + 1);
+    expect(await seedOf(models, 's')).toMatchObject({ kind: 'seed' });
+    expect(models.stats()).toMatchObject({ models: 1, desyncs: 0 });
+  });
+
+  it('a bootstrap refused as restarting is retried on the next output; one that failed cools down', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { models, worker, ring, advance } = setup();
+    worker.refuse = { kind: 'unavailable', reason: 'restarting', elapsedMs: 0 };
+    ring.emit('s', 'x');
+    await Promise.resolve();
+    expect(models.stats()).toMatchObject({ models: 0, desyncs: 0, estimatedBytes: 0 });
+    expect(warn).not.toHaveBeenCalled();
+    worker.refuse = { kind: 'unavailable', reason: 'failed', elapsedMs: 0 };
+    ring.emit('s', 'y');
+    expect(worker.ops('reset')).toHaveLength(2);
+    await Promise.resolve();
+    expect(models.stats()).toMatchObject({ models: 0, desyncs: 1 });
+    worker.refuse = null;
+    ring.emit('s', 'z');
+    expect(worker.ops('reset')).toHaveLength(2); // the failure's 30 s cool-down holds
+    advance(30_001);
+    ring.emit('s', 'z');
+    expect(worker.ops('reset')).toHaveLength(3);
+  });
+
   it('ignores answers from a worker that was retired since the job was sent', async () => {
     const { models, worker, ring } = setup();
     ring.emit('s', 'x');
@@ -248,6 +292,49 @@ describe('LiveScreenModels (issue #3564, step 2)', () => {
     ring.emit('s', 'x');
     expect(worker.jobs).toHaveLength(0);
     expect(await seedOf(models, 's')).toMatchObject({ kind: 'unavailable', reason: 'closed' });
+  });
+});
+
+describe('live screen stats log line (issue #4067)', () => {
+  it('logs pressure and the change since the last line, and stays quiet when nothing changed', async () => {
+    vi.useFakeTimers(); // before setup arms the interval
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { models, ring, advance } = setup({ budgetBytes: 4 * ONE_MODEL, statsLogMs: 60_000 });
+    vi.advanceTimersByTime(60_000);
+    expect(log).not.toHaveBeenCalled(); // nothing happened yet
+
+    ring.emit('a', 'a');
+    ring.emit('b', 'b');
+    advance(60_000);
+    vi.advanceTimersByTime(60_000);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.lastCall?.[0]).toMatch(/^\[terminal-live-screen\] stats over the last 60 s: models=2 estimated=[\d.]+\/[\d.]+ MiB \(50% of budget\) bootstraps=\+2 \(total 2\) evictions=\+0 \(total 0\) desyncs=\+0 \(total 0\) workerRetires=\+0 \(total 0\)$/);
+
+    advance(60_000);
+    vi.advanceTimersByTime(60_000);
+    expect(log).toHaveBeenCalledTimes(1); // unchanged: no line
+
+    models.onRingAppend('a', encode('y'), { epoch: 'e', start: 99, end: 100, geometryRevision: 1, cols: 80, rows: 24 }, ring);
+    advance(60_000);
+    vi.advanceTimersByTime(60_000);
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(log.mock.lastCall?.[0]).toContain('over the last 120 s: models=1');
+    expect(log.mock.lastCall?.[0]).toContain('(25% of budget) bootstraps=+0 (total 2) evictions=+0 (total 0) desyncs=+1 (total 1)');
+
+    await models.close();
+    ring.emit('c', 'c');
+    vi.advanceTimersByTime(120_000);
+    expect(log).toHaveBeenCalledTimes(2); // a closed registry stops logging
+  });
+
+  it('is off unless asked for', () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { ring } = setup();
+    ring.emit('a', 'a');
+    vi.advanceTimersByTime(60 * 60_000);
+    expect(log).not.toHaveBeenCalled();
   });
 });
 
