@@ -136,6 +136,123 @@ describe('classifyMergeTrailCommand / extractPrNumbersFromCommand', () => {
     ).toEqual([16, 17]);
   });
 
+  // Issue #4128: a flag between the merge verb and its argument used to hide
+  // the number, so the gate asked about the current branch instead.
+  test('skips flags between the merge verb and its argument', () => {
+    // A flag with no value before a URL or a number.
+    expect(
+      extractPrNumbersFromCommand('gh pr merge --squash https://github.com/o/r/pull/41'),
+    ).toEqual([41]);
+    expect(extractPrNumbersFromCommand('gh pr merge -s -d 42')).toEqual([42]);
+    expect(extractPrNumbersFromCommand('gh pr merge --admin --squash #43')).toEqual([43]);
+    // A flag with a value: the value is not the argument.
+    expect(extractPrNumbersFromCommand('gh pr merge -R o/r 12')).toEqual([12]);
+    expect(extractPrNumbersFromCommand('gh pr merge --repo o/r --squash 44')).toEqual([44]);
+    expect(extractPrNumbersFromCommand('gh pr merge --repo=o/r 45')).toEqual([45]);
+    expect(extractPrNumbersFromCommand('kookr merge --repo o/r 46')).toEqual([46]);
+    expect(extractPrNumbersFromCommand('bash scripts/kookr-merge.sh --repo o/r -- 47')).toEqual([47]);
+    // A value that is all digits (a SHA, a subject) is skipped as a value.
+    expect(
+      extractPrNumbersFromCommand('gh pr merge --match-head-commit 1234567 --squash 48'),
+    ).toEqual([48]);
+    expect(
+      extractPrNumbersFromCommand('gh pr merge --subject "Release 42 now" --squash 49'),
+    ).toEqual([49]);
+    expect(extractPrNumbersFromCommand("gh pr merge -t 'fix 7' -b 8 50")).toEqual([50]);
+  });
+
+  test('reads no number when the first non-flag word is not a PR', () => {
+    // Numberless merge: the gate falls back to the created PR / current branch.
+    expect(extractPrNumbersFromCommand('gh pr merge --squash --delete-branch')).toEqual([]);
+    // A branch name is the argument; a later number is not.
+    expect(extractPrNumbersFromCommand('gh pr merge my-branch 51')).toEqual([]);
+    // The argument ends at the end of the simple command.
+    expect(extractPrNumbersFromCommand('gh pr merge --squash && gh pr view 52')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr merge --squash; echo 53')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr merge --squash | tee log 54')).toEqual([]);
+    // A flag value cut off by the command end is not the argument either.
+    expect(extractPrNumbersFromCommand('gh pr merge -R && echo 55')).toEqual([]);
+    // An unclosed quote ends the command: here the flag's value is missing.
+    expect(extractPrNumbersFromCommand('gh pr merge --subject "open 56')).toEqual([]);
+    expect(extractPrNumbersFromCommand("gh pr merge --squash 'open 56")).toEqual([]);
+    // A URL that is not a pull request, or a pull-request URL with junk after the number.
+    expect(extractPrNumbersFromCommand('gh pr merge https://github.com/o/r/issues/57')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr merge https://github.com/o/r/pull/57abc')).toEqual([]);
+    // `&&` with no spaces still ends the command; a longer verb is not a merge.
+    expect(extractPrNumbersFromCommand('gh pr merge --squash&&echo 5')).toEqual([]);
+    expect(extractPrNumbersFromCommand('kookr merge-queue 5')).toEqual([]);
+  });
+
+  test('reads the number inside a wrapper whose quote closes after the merge', () => {
+    expect(extractPrNumbersFromCommand('bash -c "gh pr merge 12"')).toEqual([12]);
+    expect(extractPrNumbersFromCommand('bash -lc "gh pr merge 12 --squash"')).toEqual([12]);
+    expect(extractPrNumbersFromCommand("sh -c 'gh pr merge -R o/r 13'")).toEqual([13]);
+    expect(
+      extractPrNumbersFromCommand('ssh host "gh pr merge --squash https://github.com/o/r/pull/14"'),
+    ).toEqual([14]);
+    expect(extractPrNumbersFromCommand('x=`gh pr merge 15`; echo "$x"')).toEqual([15]);
+    // Words before an unclosed quote still decide the argument.
+    expect(extractPrNumbersFromCommand("gh pr merge 16 --subject 'unclosed")).toEqual([16]);
+    // A closed inner quote inside the wrapper is one word.
+    expect(
+      extractPrNumbersFromCommand(`bash -c "gh pr merge --subject 'a 1' 17"`),
+    ).toEqual([17]);
+    expect(
+      extractPrNumbersFromCommand(`sh -c 'gh pr merge --subject "fix 9" 18'`),
+    ).toEqual([18]);
+  });
+
+  test('escaped quotes inside a wrapper fall back instead of reading a value word', () => {
+    // The inner `\"…\"` is quoted one level deeper than this parser reads, so
+    // a word of the quoted value must not be taken for the argument.
+    expect(
+      extractPrNumbersFromCommand('bash -c "gh pr merge --subject \\"fix 9 now\\" 12"'),
+    ).toEqual([]);
+    expect(
+      extractPrNumbersFromCommand('ssh host "gh pr merge --body \\"closes #5 too\\" 12"'),
+    ).toEqual([]);
+    expect(
+      extractPrNumbersFromCommand('bash -c "gh pr merge --subject \\"fix 9\\" 12"'),
+    ).toEqual([]);
+  });
+
+  test('a line continuation is not a word', () => {
+    expect(
+      extractPrNumbersFromCommand(
+        'gh pr merge --squash --delete-branch \\\n  https://github.com/o/r/pull/62',
+      ),
+    ).toEqual([62]);
+    expect(extractPrNumbersFromCommand('gh pr merge \\\n  -R o/r \\\n  63')).toEqual([63]);
+    // The shell deletes a backslash-newline, so mid-word it joins the word.
+    expect(extractPrNumbersFromCommand('gh pr merge --squash 31\\\n2')).toEqual([312]);
+  });
+
+  test('redirections and their targets are not the argument', () => {
+    // `2>&1` is a redirection of file descriptor 2, not PR 2.
+    expect(extractPrNumbersFromCommand('gh pr merge --squash 2>&1')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr merge --squash > log 2>&1')).toEqual([]);
+    expect(extractPrNumbersFromCommand('gh pr merge --squash >out.txt 3')).toEqual([3]);
+    // `>&2` is one redirection: its `&` does not end the command.
+    expect(extractPrNumbersFromCommand('gh pr merge --squash >&2 34')).toEqual([34]);
+    expect(extractPrNumbersFromCommand('gh pr merge 18 >log 2>&1')).toEqual([18]);
+    expect(extractPrNumbersFromCommand('gh pr merge 19 </dev/null')).toEqual([19]);
+    // A number glued to `>` or `<` is a file descriptor: the shell passes no argument.
+    expect(extractPrNumbersFromCommand('gh pr merge 20>log')).toEqual([]);
+  });
+
+  test('a backslash escape inside double quotes stays inside the value', () => {
+    expect(
+      extractPrNumbersFromCommand('gh pr merge --subject "say \\"9\\" now" 64'),
+    ).toEqual([64]);
+  });
+
+  test('a merge inside a subshell still yields its argument', () => {
+    expect(extractPrNumbersFromCommand('(cd ../wt && gh pr merge --squash 58)')).toEqual([58]);
+    expect(
+      extractPrNumbersFromCommand('gh pr merge -R o/r --squash 59 && kookr merge --repo o/r 60'),
+    ).toEqual([59, 60]);
+  });
+
   // Issue #4126: before, every URL and every "PR #N" in any command counted
   // as a PR the task had to merge. A mention is not ownership.
   test('ignores read-only and prose mentions of other PRs', () => {
@@ -554,6 +671,82 @@ describe('resolveTaskMergeEvidence / resolveMergeRequiredGate', () => {
     expect(trail.prCreateCommands).toBe(1);
     expect(trail.prMergeCommands).toBe(1);
     expect(trail.prNumbers).toEqual([31]);
+  });
+
+  test('#4128: a merge with a flag before its URL is checked by number, not by branch', async () => {
+    // No create output captured, so the merge argument is the only number.
+    writeLog('sess', [
+      'gh pr create --fill',
+      'gh pr merge --squash https://github.com/o/r/pull/61',
+    ]);
+    const { calls, verifyMerged } = stubVerifier([61]);
+    const verdict = await resolveMergeRequiredGate(
+      { mergeRequired: true, sessions: [{ tmuxSession: 'sess' }] },
+      hooksDir,
+      { verifyMerged },
+    );
+    expect(calls).toEqual([[61]]);
+    expect(verdict.allow).toBe(true);
+  });
+
+  // #4128 item 2: Codex and OpenCode write Claude-shaped PostToolUse lines
+  // (tool_name "Bash", tool_input.command, tool_response) through the same
+  // hook writer, so the opened PR number is read from their output too.
+  test('#4128: reads the created PR from a Codex-shaped post-tool line', async () => {
+    writeRawLog('sess', [
+      JSON.stringify({
+        session_id: 'codex-session',
+        turn_id: 'turn-1',
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'gh pr create --fill' },
+        tool_use_id: 'tu-1',
+      }),
+      JSON.stringify({
+        session_id: 'codex-session',
+        turn_id: 'turn-1',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'gh pr create --fill' },
+        tool_response: { output: 'https://github.com/o/r/pull/62\n', exit_code: 0 },
+        tool_use_id: 'tu-1',
+      }),
+    ]);
+    const trail = await resolveTaskMergeEvidence({ sessions: [{ tmuxSession: 'sess' }] }, hooksDir);
+    expect(trail.prCreateCommands).toBe(1);
+    expect(trail.prNumbers).toEqual([62]);
+  });
+
+  test('#4128: reads the created PR from an OpenCode-shaped post-tool line', async () => {
+    // The OpenCode plugin maps `bash` to "Bash" and logs the output as a string.
+    writeRawLog('sess', [
+      JSON.stringify({
+        session_id: 'oc-session',
+        hook_event_name: 'PreToolUse',
+        cwd: '/work',
+        transcript_path: '',
+        tool_name: 'Bash',
+        tool_input: { command: 'gh pr create --fill', description: 'open PR' },
+      }),
+      JSON.stringify({
+        session_id: 'oc-session',
+        hook_event_name: 'PostToolUse',
+        cwd: '/work',
+        transcript_path: '',
+        tool_name: 'Bash',
+        tool_input: { command: 'gh pr create --fill', description: 'open PR' },
+        tool_response: 'https://github.com/o/r/pull/63\n',
+      }),
+    ]);
+    const { calls, verifyMerged } = stubVerifier([63]);
+    const verdict = await resolveMergeRequiredGate(
+      { mergeRequired: true, sessions: [{ tmuxSession: 'sess' }] },
+      hooksDir,
+      { verifyMerged },
+    );
+    // Asked about the opened PR, not about the current branch.
+    expect(calls).toEqual([[63]]);
+    expect(verdict.allow).toBe(true);
   });
 });
 
