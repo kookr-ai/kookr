@@ -346,6 +346,8 @@ export class LiveScreenModels implements TerminalRingObserver, LiveScreenSeedSou
       this.bootstrapsInFlight--;
       if (result.kind === 'unavailable' && incarnation === state.incarnation) {
         // Refused only because the old thread was still terminating: retry on the next output.
+        // The `restarting` check above runs in the same tick as the send, so this is a backstop
+        // for a worker port that starts restarting between the two.
         if (result.reason === 'restarting') this.invalidate(state, 'restarting', 0);
         else this.invalidate(state, `bootstrap ${result.reason}`, DESYNC_COOLDOWN_MS);
       }

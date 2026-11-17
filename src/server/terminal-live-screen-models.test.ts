@@ -3,7 +3,10 @@ import type { TerminalRingReader } from '../adapters/terminal-ring-observer.js';
 import type { TerminalStreamSnapshot } from '../shared/terminal-stream.js';
 import { LiveScreenModelSet, type LiveScreenJob } from './terminal-live-screen.js';
 import {
+  closeInstalledLiveScreenModels,
   estimateLiveScreenModelBytes,
+  installLiveScreenModelsFromEnv,
+  LIVE_SCREEN_STATS_LOG_MS,
   liveScreenBudgetFromEnv,
   liveScreenEnabledFromEnv,
   LiveScreenModels,
@@ -326,6 +329,20 @@ describe('live screen stats log line (issue #4067)', () => {
     ring.emit('c', 'c');
     vi.advanceTimersByTime(120_000);
     expect(log).toHaveBeenCalledTimes(2); // a closed registry stops logging
+  });
+
+  it('is on for the models the process installs', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const setInterval = vi.spyOn(globalThis, 'setInterval');
+    try {
+      expect(installLiveScreenModelsFromEnv({})).not.toBeNull();
+      expect(setInterval).toHaveBeenCalledWith(expect.any(Function), LIVE_SCREEN_STATS_LOG_MS);
+      expect(LIVE_SCREEN_STATS_LOG_MS).toBe(5 * 60_000);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('[terminal-live-screen] on: budget'));
+    } finally {
+      await closeInstalledLiveScreenModels();
+    }
   });
 
   it('is off unless asked for', () => {
