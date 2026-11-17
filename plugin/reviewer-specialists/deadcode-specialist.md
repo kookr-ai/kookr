@@ -21,6 +21,7 @@ You have two inputs:
       grep -rn "symbolName" {repoDir}/{relevant-directories}/ --include="*.ts" --include="*.tsx" --include="*.go" -l
       ```
    c. If the symbol was added by the PR but has no consumers → dead code
+   d. **For a new interface field or union member, search for code that reads it**, not only for the exported type. A grep for the type name finds the interface and the code that writes the field, so a field that is set and never read looks used. Example: the PR adds `retryCount?: number` to `TaskState` and sets it in `scheduler.ts`; grep `\.retryCount\b` and destructuring `{ retryCount` for reads. If every hit is an assignment, the field is dead. For a union member (`| 'paused'`), look for a `case 'paused'` or `=== 'paused'` that handles it.
 
 3. Also check if the PR's changes **orphaned** existing code:
    - Did the PR remove a call to a function that's still defined?

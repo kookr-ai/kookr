@@ -51,7 +51,20 @@ Mark each occurrence:
 - Assumed mental model ("matches existing event_seen pattern" with no what/why)
 - "Concise" that is actually cryptic
 
-### 4. Produce the report
+### 4. Rules you always apply
+
+These hold on every review, PR body or doc. Each one is a finding when it fails.
+
+1. **Verification shorthand needs a one-line legend, or is cut.** Verdict tags, exit codes and gate names mean nothing to a cold reader. The `accessible-findings` skill states this for authors (sections "Element-specific checklists", headline claim: replace term-of-art shorthand with the plain statement; and "Glossing", project/process vocabulary). Example: "Gate: `exit 10`, verdict `PASS@a1b2c3`" needs "exit 10 means CI never ran; `PASS@<sha>` is the reviewer's approval of that commit", or the line goes.
+2. **An assurance word needs a stated basis.** "Verified", "well tested", "safe" and "no regressions" say nothing until the body says how. Example: "Verified locally" fails; "Ran `pnpm vitest run src/core/foo.test.ts`: 14 passed" passes.
+3. **"Results recorded below" is checked.** When a test plan says the output is below, look for it. Example: the plan says "results below" and the body ends at the checklist with no output: flag it as a missing result, not a style nit.
+4. **A metric is defined at first use, with the denominator of each ratio.** Example: "hit rate 0.82" fails; "hit rate 0.82 (82 of 100 replayed tasks reused a cached pack)" passes.
+5. **Stated counts match what the body lists.** Count the items yourself. The `accessible-findings` skill states this for authors (section "Self-check before you finish", accuracy pass: does every summary sentence match its own numbers). Example: "Three changes:" followed by four bullets, or "adds 5 tests" when the test plan names 4, is a finding.
+6. **The Summary stands alone.** It may not point at something the reader cannot see from there. Example: "Fixes the race described above" in the first paragraph, "see the thread", or "as discussed" with no link or restatement is a finding; restate the race in one sentence.
+7. **Check Risk, Evidence and Test-plan sections for undefined terms separately from the Summary.** Authors gloss the Summary and stop. Example: the Summary explains "lease", but the Risk section introduces "reaper sweep" with no gloss: that is its own finding.
+8. **Explain the repository's own process words, and idioms borrowed from the pattern a PR mirrors, once in the body.** Example: "Leaf of #3639, retires notebook entries on the next train" needs one line each for "leaf", "notebook entry" and "train"; "same shape as the `event_seen` guard" needs one line on what that guard does.
+
+### 5. Produce the report
 
 Use this exact shape:
 

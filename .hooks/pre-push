@@ -34,8 +34,44 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 # with no refspec input — in both cases we fall through to the full gate,
 # preserving existing behavior. A missing/malformed sha field also falls
 # through (fail-safe: run the gate rather than skip it).
+#
+# The read is bounded (issue #4108). Git writes the ref list and closes the
+# pipe at once, but a hook run by hand from an agent's background shell gets a
+# stdin pipe that stays open and never sends anything, so a plain `cat` waited
+# until the tool timed out. Each line read waits at most
+# PRE_PUSH_STDIN_TIMEOUT_S seconds (whole seconds: bash 3.2 on stock macOS has
+# no fractional `read -t`, and macOS has no `timeout`). If a read times out,
+# the list may be incomplete, so it is discarded and the hook falls through to
+# the full gate, as it does when stdin is a terminal.
+#
+# Bash 4+ returns a status above 128 when `read -t` times out; bash 3.2
+# returns 1, the same as end of input. So a failed read that took the whole
+# bound also counts as a timeout. Mistaking a late end of input for a timeout
+# only runs the full gate, which is the safe direction.
+PRE_PUSH_STDIN_TIMEOUT_S=3
 if [ ! -t 0 ]; then
-  REFSPEC_INPUT=$(cat)
+  REFSPEC_INPUT=""
+  while :; do
+    refspec_line=""
+    read_started=$SECONDS
+    IFS= read -r -t "$PRE_PUSH_STDIN_TIMEOUT_S" refspec_line
+    read_status=$?
+    if [ "$read_status" -eq 0 ]; then
+      REFSPEC_INPUT="$REFSPEC_INPUT$refspec_line
+"
+      continue
+    fi
+    if [ "$read_status" -gt 128 ] \
+      || [ $((SECONDS - read_started)) -ge "$PRE_PUSH_STDIN_TIMEOUT_S" ]; then
+      # Timed out: nothing (more) arrived and the pipe is still open.
+      echo "[pre-push] no ref list on stdin within ${PRE_PUSH_STDIN_TIMEOUT_S}s — running the full gate"
+      REFSPEC_INPUT=""
+    elif [ -n "$refspec_line" ]; then
+      # End of input after a last line with no trailing newline.
+      REFSPEC_INPUT="$REFSPEC_INPUT$refspec_line"
+    fi
+    break
+  done
   if [ -n "$REFSPEC_INPUT" ]; then
     DELETE_ONLY=1
     HAVE_REFSPEC=0

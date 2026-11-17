@@ -34,8 +34,9 @@ to merge upstream.
 
 ## Evidence
 
-Scanned from PreToolUse shell commands in `~/.kookr/hooks/<tmuxSession>.jsonl`
-(Claude `Bash` + Grok `run_terminal_command` shapes):
+Scanned from PreToolUse shell commands (plus the PostToolUse output of `gh pr create`) in `~/.kookr/hooks/<tmuxSession>.jsonl`
+(Claude `Bash` + Grok `run_terminal_command` shapes; the Codex and OpenCode
+adapters log the Claude shape, PostToolUse output included):
 
 | Signal | Detection |
 |--------|-----------|
@@ -44,7 +45,28 @@ Scanned from PreToolUse shell commands in `~/.kookr/hooks/<tmuxSession>.jsonl`
 | Blocker (waives merge) | literal `PR-BLOCKER:` (e.g. `printf 'PR-BLOCKER: …'`) |
 | Live verification | `gh pr view <n> --json mergedAt` — non-null `mergedAt` preferred over trail merge intent |
 
-When live check is available for the PR numbers in the trail, it **wins** over a
+### Which pull requests are checked
+
+The live check asks only about the pull requests the task itself opened or
+merged (issue #4126):
+
+- the URL that `gh pr create` printed (read from the PostToolUse output);
+- the argument of `gh pr merge <n|url>`, `kookr merge <n>`, `pnpm merge <n>`
+  or `kookr-merge.sh <n>`: the first word after the command that is not a
+  flag. Flags before it are skipped, along with the value of a flag that takes
+  one (`-R`/`--repo`, `-t`/`--subject`, `-b`/`--body`, `-F`/`--body-file`,
+  `-A`/`--author-email`, `--match-head-commit`), so `gh pr merge --squash <url>`
+  and `gh pr merge -R owner/repo <n>` both name the right pull request. If that
+  word is not a number or pull-request URL (a branch name, say), no number is
+  taken from the command.
+
+When neither gives a number, the check falls back to the pull request of the
+current branch (`gh pr view --json number,mergedAt`). A number seen only in a
+read-only command — `gh pr view`, `gh pr diff`, `gh pr list`, a URL or
+"PR #N" in a comment, commit message or `echo` — is not checked, so looking at
+another open pull request never blocks completion.
+
+When live check is available for those PR numbers, it **wins** over a
 PreToolUse merge command (a failed merge attempt must not green-light
 completion). When `gh` is unavailable, trail merge commands are the hermetic
 fallback.

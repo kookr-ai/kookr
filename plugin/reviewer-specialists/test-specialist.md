@@ -51,6 +51,10 @@ Before reporting ANY finding about test behavior, re-read the exact test code:
 
 Drop any finding that fails verification.
 
+## Checking that a test catches a regression
+
+When you doubt that a test would fail if the code it protects broke, check it with `mutation-check.sh` (in the kookr-toolkit plugin: `plugin/scripts/mutation-check.sh` in the kookr repository, `${CLAUDE_PLUGIN_ROOT}/scripts/mutation-check.sh` in an installed plugin). Never edit a file in `{repoDir}` to try it. The script makes the one-line change in a throwaway git worktree, runs the test before and after, and removes the worktree. Example: `bash plugin/scripts/mutation-check.sh --file src/limits.ts --line 17 --from 'n < MAX' --to 'n <= MAX' --vitest src/limits.test.ts`. `survived` (exit 1) means the test does not catch that change: report it with the exact change. Exit 3 means the test already failed before the change. Each test run is limited by `--timeout SECONDS` (default 300): `timeout` (exit 5) means the test ran past it before the change, so rerun with a larger `--timeout`; `killed (timeout)` (exit 6) means the change made the test hang, which counts as a kill only when a hang is what the change should cause. `--help` lists the other options.
+
 ## Temp directories
 
 Create any scratch directory with `mktemp -d "<scratchpad>/<name>.XXXXXX"` (the session scratchpad directory, or `/tmp` when there is none), note the path it prints, and remove it by that literal path, for example `rm -rf /tmp/claude-1000/<session>/scratchpad/mut.ab12cd`. Never run `rm -r` on a path built from a variable or a command substitution (`rm -rf "$(cat f)"`, `rm -rf "$DIR"`): Claude Code asks a human before running it even in bypass mode, so an unattended task stalls until someone answers (issue #3867).

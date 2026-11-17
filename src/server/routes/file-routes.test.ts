@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, onTestFinished, vi } fro
 import { Hono } from 'hono';
 import { mkdtempSync, writeFileSync, rmSync, symlinkSync, statSync } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { registerFileRoutes } from './file-routes.js';
 import type { FileRouteDeps } from './shared.js';
@@ -229,7 +229,10 @@ describe('file routes', () => {
     });
 
     test('403 for a path that traverses outside the root', async () => {
-      const res = await mkApp({ serverCwd: root }).request(metaUrl(join(root, '..', '..', 'etc', 'passwd')));
+      // Climb all the way to the filesystem root so the target is /etc/passwd
+      // however deep the temp dir is (a run temp dir adds a level, #4109).
+      const up = root.split(sep).filter(Boolean).map(() => '..');
+      const res = await mkApp({ serverCwd: root }).request(metaUrl(join(root, ...up, 'etc', 'passwd')));
       expect(res.status).toBe(403);
       expect((await res.json()).error).toBe('forbidden');
     });

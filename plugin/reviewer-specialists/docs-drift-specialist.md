@@ -31,6 +31,7 @@ If the repo lacks a given doc kind, skip it silently — absence is not drift.
    ```
 3. Check whether **this same PR already updated** the doc. If the diff touches both the code and the doc consistently, there is no drift — do not flag it. Only report docs left stale (or newly-required docs never written).
 4. For requirements and system-models specifically, verify the *direction*: did the PR make a `todo`/`partial` requirement true (Status should advance), or break a `done` one (Status should regress and the change likely needs rework, not just a doc edit)?
+5. **For a PR that only changes documentation, open each test the prose cites and confirm it asserts what the prose says.** With no code change, the risk is a doc that claims more than the code does. A file that exists with a matching name is not enough. Example: the doc says "covered by `src/core/lease.test.ts` (rejects an expired lease)"; open that file and find a test that creates an expired lease and expects a rejection. If the test only checks a fresh lease, flag the claim as unsupported.
 
 ## Severity
 

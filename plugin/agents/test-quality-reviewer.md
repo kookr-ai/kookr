@@ -130,11 +130,19 @@ Test passes → Good.
 
 Static reasoning about "what wrong result would still pass this assertion?" is reliable for obvious tautologies, but it is error-prone for **loose bounds** — `< N`, `>= 0`, `toContain(...)`, `.length > 0`, off-by-one caps, truncation thresholds. Do not guess whether such a test catches the bug: **prove it by mutation.**
 
-1. Copy the source file(s) under test to a scratch directory made with `mktemp -d "<scratchpad>/mut.XXXXXX"` (the session scratchpad, or `/tmp` when there is none) — never edit the files under review. Note the path `mktemp` prints.
-2. Inject the *specific* bug the test claims to guard against: flip the comparison, return a wrong constant, drop the guard clause, shift the cap by one.
-3. Run only that test against the mutated copy.
-4. Confirm it **fails**. If the test still passes, the mutant *survived* — the test does not actually catch that regression, and that survival is your finding (cite the exact mutation you applied).
-5. Discard the scratch copy by its literal path (`rm -rf /tmp/claude-1000/<session>/scratchpad/mut.ab12cd`). Never `rm -r` a path built from a variable or a command substitution (`rm -rf "$(cat f)"`, `rm -rf "$DIR"`): Claude Code asks a human before running it even in bypass mode, so an unattended task stalls until someone answers (issue #3867).
+Run the check with `mutation-check.sh`, which the kookr-toolkit plugin ships: `plugin/scripts/mutation-check.sh` in the kookr repository, `${CLAUDE_PLUGIN_ROOT}/scripts/mutation-check.sh` in an installed plugin (find it with `ls ~/.claude/plugins/cache/*/kookr-toolkit/*/scripts/mutation-check.sh` when that variable is unset). Never edit, `sed` or `git checkout` a file in the checkout under review, and do not build a scratch copy by hand: a partial copy misses directories the test config imports, and the author may be editing or pushing from that checkout.
+
+1. Pick the *specific* bug the test claims to guard against: flip the comparison, return a wrong constant, drop the guard clause, shift the cap by one. Note the line number and the exact text you will replace on that line.
+2. Run the script with that one-line change and only that test, for example:
+   `bash plugin/scripts/mutation-check.sh --file src/limits.ts --line 17 --from 'n < MAX' --to 'n <= MAX' --vitest src/limits.test.ts`
+   It creates a git worktree of `HEAD` in a new temp directory, runs the test there once unchanged, makes the change, runs it again, and removes the worktree. Add `--with-uncommitted` to include the author's uncommitted edits. Use `-- <test command>` instead of `--vitest` for any other runner.
+3. Read the result:
+   - `killed` (exit 0): the test fails with the change. The script prints the failed assertion; check it is the assertion you expected, not a crash or a syntax error.
+   - `survived` (exit 1): the test still passes, so it does not catch that regression. That is your finding; cite the exact change (file, line, `--from`, `--to`).
+   - exit 2: the script refused the change (empty or out-of-range line, `--from` not on that line or on it twice). Fix the arguments; the test did not run.
+   - exit 3: the test already fails before the change, so this check proves nothing. Report that instead.
+   - `timeout` (exit 5): the test ran past the time limit (`--timeout SECONDS`, default 300) before the change, so this check proves nothing. Rerun with a larger `--timeout`.
+   - `killed (timeout)` (exit 6): the test passed before the change and ran past the time limit after it; the script stopped it and every process it started. Count it as a kill only when a hang is what the change should cause (a flipped loop condition, for example). Otherwise the test did not fail on an assertion, so say so in your finding.
 
 A loose `< N` bound or a single oversized-input truncation test very often survives an off-by-one mutant that an exact `toBe` / exact-cap-and-cap+1 pair would have killed. When a cheap mutation run is available, prefer it over a confident-sounding static verdict.
 
@@ -142,7 +150,7 @@ A loose `< N` bound or a single oversized-input truncation test very often survi
 
 ## Constraints
 
-- **Read-only on the files under review** — do NOT modify any file in the repo being reviewed. The mutation check above works on a throwaway *copy*; the originals are never touched. Report findings only.
+- **Read-only on the files under review** — do NOT modify any file in the repo being reviewed. The mutation check above runs in a throwaway git worktree that `mutation-check.sh` creates and removes; the originals are never touched. Report findings only.
 - **Be specific** — reference exact test names, line numbers, and the specific problem.
 - **Provide fix direction** — for each finding, briefly say what a better test would look like (1 sentence).
 - **Don't nitpick style** — naming conventions, formatting, import order are irrelevant.

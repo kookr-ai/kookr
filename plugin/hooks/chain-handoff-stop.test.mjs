@@ -182,9 +182,11 @@ describe('main (process)', () => {
 
 describe('main (process) against a stub server', () => {
   const script = path.join(import.meta.dirname, 'chain-handoff-stop.mjs');
+  // TMPDIR passes through so the hook writes its block counter where
+  // readBlockCount() looks: the test run points TMPDIR at a run temp dir (#4109).
   const runAsync = (env, input = '{"session_id":"s"}') =>
     new Promise((resolve) => {
-      const child = execFile('node', [script], { env: { PATH: process.env.PATH, ...env } }, (err, _out, stderr) => {
+      const child = execFile('node', [script], { env: { PATH: process.env.PATH, ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}), ...env } }, (err, _out, stderr) => {
         resolve({ code: err ? err.code : 0, stderr });
       });
       child.stdin.end(input);

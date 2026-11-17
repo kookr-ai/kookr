@@ -62,5 +62,52 @@ check "wait accepts a leading-zero interval" bash -c "'$WAIT' --file '$TMP/none'
 check "wait rejects missing target" bash -c "'$WAIT' --pid 2>/dev/null; [ \$? -eq 2 ]"
 check "wait rejects non-numeric timeout" bash -c "'$WAIT' --pid 1 --timeout x 2>/dev/null; [ \$? -eq 2 ]"
 
+# #4110: pkill -f, git push piped to tail/head, gh issue view --comments without --json.
+# warns(): a nudge with exit 0 and no permission decision (never blocks).
+warns() { local out rc=0; out=$(run "$1") || rc=$?; [ "$rc" -eq 0 ] && [ -n "$out" ] \
+  && jq -e '(.hookSpecificOutput.additionalContext|test("nudge")) and (.hookSpecificOutput.permissionDecision == null)' >/dev/null 2>&1 <<<"$out" \
+  && ! grep -q deny <<<"$out"; }
+check "pkill -f warns without blocking" warns 'pkill -f "node server.js"'
+check "pkill -9 -f warns" warns 'pkill -9 -f vitest'
+check "pkill -fi warns" warns 'sleep 1; pkill -fi codex'
+check "pkill --full warns" warns 'pkill --full "pnpm dev"'
+check "pkill nudge suggests killing by PID" says 'pkill -f x' 'kill <PID>'
+check "pkill without -f is silent" silent 'pkill node'
+check "kill by PID is silent" silent 'kill 12345'
+check "git push | tail warns without blocking" warns 'git push origin HEAD 2>&1 | tail -20'
+check "git push | head warns" warns 'git push -u origin feat/x | head -5'
+check "git -C dir push | tail warns" warns 'git -C ../wt push 2>&1 | tail -30'
+check "git push nudge suggests tee" says 'git push 2>&1 | tail -5' 'tee'
+check "git push without a pipe is silent" silent 'git push origin HEAD'
+check "git push piped through tee is silent" silent 'git push origin HEAD 2>&1 | tee "$LOG" | tail -20'
+check "gh issue view --comments warns without blocking" warns 'gh issue view 2765 --comments'
+check "gh issue view -R repo --comments warns" warns 'gh issue view 12 -R o/r --comments 2>&1'
+check "gh nudge suggests --json title,body,comments" says 'gh issue view 1 --comments' '--json title,body,comments'
+check "gh issue view --comments --json is silent" silent 'gh issue view 2765 --comments --json title,body,comments'
+check "gh issue view --json comments is silent" silent 'gh issue view 2765 --json comments'
+check "gh issue view without --comments is silent" silent 'gh issue view 2765'
+check "gh pr view --comments is silent" silent 'gh pr view 5 --comments'
+
+# #4121: `-c` is gh's short form of --comments; only the gh segment's own -c counts.
+check "gh issue view -c warns without blocking" warns 'gh issue view 4121 -c'
+check "gh issue view -R repo -c 2>&1 warns" warns 'gh issue view 12 -R o/r -c 2>&1'
+check "gh issue view -c after 2>&1 warns" warns 'gh issue view 12 2>&1 -c'
+check "gh issue view -wc (combined short flags) warns" warns 'gh issue view 7 -wc'
+check "gh issue view -cw (combined short flags) warns" warns 'gh issue view 7 -cw'
+check "second gh issue view -c on the line warns" warns 'gh issue view 1 -R o/r; gh issue view 2 -c'
+check "gh -c nudge suggests --json title,body,comments" says 'gh issue view 1 -c' '--json title,body,comments'
+check "gh issue view -c --json is silent" silent 'gh issue view 4121 -c --json title,body,comments'
+check "grep -c after gh issue view is silent" silent 'gh issue view 5 --json body && grep -c x f'
+check "grep -c after plain gh issue view is silent" silent 'gh issue view 5 | grep -c x'
+check "git -c before gh issue view is silent" silent 'git -c core.pager=cat log -1; gh issue view 5'
+check "bash -c wrapping a later command is silent" silent "gh issue view 5; bash -c 'echo hi'"
+check "gh issue view -R with a c-prefixed value is silent" silent 'gh issue view 5 -R cool/repo'
+check "gh pr view -c is silent" silent 'gh pr view 5 -c'
+check "git -c after gh issue view is silent" silent 'gh issue view 5 && git -c k=v log'
+check "grep -c on the next line is silent" silent $'gh issue view 5\ngrep -c x f'
+check "gh issue view -c on a later line warns" warns $'echo hi\ngh issue view 5 -c'
+check "sort -c after a gh issue view process substitution is silent" silent 'diff <(gh issue view 5) <(sort -c f)'
+check "grep -c after a gh issue view command substitution is silent" silent 'x=`gh issue view 5` && grep -c y f'
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

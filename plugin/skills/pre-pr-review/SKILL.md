@@ -298,7 +298,7 @@ nothing to review." Run the deterministic helper to get the selection and the
 gating rationale:
 
 ```bash
-plugin/skills/pre-pr-review/select-specialists.sh           # keys off origin/main..HEAD
+plugin/skills/pre-pr-review/select-specialists.sh           # merge-base(origin/main) vs working tree (uncommitted tracked edits count)
 plugin/skills/pre-pr-review/select-specialists.sh --base main
 plugin/skills/pre-pr-review/select-specialists.sh --force   # escape hatch: full 5-panel
 ```

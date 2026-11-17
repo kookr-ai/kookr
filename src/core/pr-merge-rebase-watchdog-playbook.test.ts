@@ -123,3 +123,14 @@ describe('pr-merge-rebase-watchdog playbook', () => {
     expect(pb.body).toContain('completion-ready');
   });
 });
+
+describe('pr-merge-rebase-watchdog playbook: kookr merge for every repository (#4107)', () => {
+  const content = readFileSync(join(import.meta.dirname, '..', '..', 'plugin', 'playbooks', 'pr-merge-rebase-watchdog.md'), 'utf-8');
+
+  test('merges with kookr merge --repo everywhere and keeps a fallback without kookr', () => {
+    expect(content).toContain('kookr merge "$N" --repo "$REPO"   # every repository');
+    expect(content).not.toMatch(/gh pr merge\s+[\"<$][^`\n]*--delete-branch/);
+    expect(content).toMatch(/exits 4[\s\S]*awaiting review verdict/);
+    expect(content).toContain('git push origin --delete "$BR"');
+  });
+});
