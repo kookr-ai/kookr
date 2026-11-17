@@ -16,11 +16,13 @@
 #   4. links each node_modules directory the caller has (top level and one
 #      level down), or prints the install command when there is none;
 #   5. runs the test command; if it is not green, stops with exit 3, because
-#      a failure after the change would mean nothing;
+#      a failure after the change would mean nothing (exit 5 if it hit the
+#      time limit instead);
 #   6. changes exactly one line, addressed by number, and refuses an address
 #      that is empty, out of range, or whose text does not match --from;
-#   7. reruns the test and prints `killed` (with the failure lines) or
-#      `survived`;
+#   7. reruns the test and prints `killed` (with the failure lines),
+#      `survived`, or `killed (timeout)` when the change made it run past the
+#      time limit;
 #   8. removes the worktree and the scratch directory, also on failure or on
 #      Ctrl-C.
 #
@@ -37,6 +39,10 @@
 #                       must not contain a newline)
 #   --repo DIR          the caller's checkout (default: current directory)
 #   --rev REV           commit to check out in the worktree (default: HEAD)
+#   --timeout SECONDS   time limit for each of the two test runs (default 300).
+#                       When it is reached, the test command and every process
+#                       it started get SIGTERM, then SIGKILL 2 seconds later
+#                       (a process that moved to a new process group escapes)
 #   --with-uncommitted  also apply the caller's uncommitted changes to tracked
 #                       files and copy its untracked, non-ignored files
 #   --vitest FILE...    run `node_modules/.bin/vitest run` on FILE... with a
@@ -52,6 +58,10 @@
 #   2  refused    bad arguments, or the change does not address one line
 #   3  red        the test already fails before the change
 #   4  setup      not a git repository, worktree or patch could not be made
+#   5  timeout    the test ran past --timeout before the change: raise the limit
+#   6  killed (timeout)  the test passed before the change and ran past
+#                 --timeout after it. The change made the test hang: that is a
+#                 kill only when a hang is what the change should cause
 #
 # The caller's checkout is never written to: the worktree lives outside it, and
 # `git status` there is the same before and after. (git records the worktree
@@ -82,6 +92,7 @@ REPO_ARG="."
 REV="HEAD"
 WITH_UNCOMMITTED=0
 MODE=""
+TIMEOUT=300
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -91,6 +102,7 @@ while [ "$#" -gt 0 ]; do
     --to) [ "$#" -ge 2 ] || die_usage "--to needs text (it may be empty)"; TO="$2"; TO_SET=1; shift 2 ;;
     --repo) [ "$#" -ge 2 ] || die_usage "--repo needs a directory"; REPO_ARG="$2"; shift 2 ;;
     --rev) [ "$#" -ge 2 ] || die_usage "--rev needs a revision"; REV="$2"; shift 2 ;;
+    --timeout) [ "$#" -ge 2 ] || die_usage "--timeout needs a number of seconds"; TIMEOUT="$2"; shift 2 ;;
     --with-uncommitted) WITH_UNCOMMITTED=1; shift ;;
     --vitest) MODE=vitest; shift; break ;;
     --) MODE=command; shift; break ;;
@@ -117,6 +129,12 @@ NL='
 case "$TO" in *"$NL"*) die_usage "--to contains a newline: the change must stay on one line" ;; esac
 case "$FROM" in *"$NL"*) die_usage "--from contains a newline: it must be text from one line" ;; esac
 [ "$FROM" != "$TO" ] || die_usage "--from and --to are the same: that change would do nothing"
+case "$TIMEOUT" in
+  ''|*[!0-9]*) die_usage "--timeout must be a positive number of seconds, got '$TIMEOUT'" ;;
+esac
+# Strip leading zeros: the shell would read 08 as a bad octal number.
+while :; do case "$TIMEOUT" in 0?*) TIMEOUT=${TIMEOUT#0} ;; *) break ;; esac; done
+[ "$TIMEOUT" != 0 ] || die_usage "--timeout must be a positive number of seconds, got 0"
 
 REPO=$(git -C "$REPO_ARG" rev-parse --show-toplevel 2>/dev/null) || die_setup "not a git checkout: $REPO_ARG"
 REPO=$(cd "$REPO" && pwd -P) || die_setup "cannot enter $REPO"
@@ -164,8 +182,31 @@ SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/mutation-check.XXXXXX") || die_setup "mktem
 SCRATCH=$(cd "$SCRATCH" && pwd -P) || die_setup "cannot enter the scratch directory"
 WT="$SCRATCH/wt"
 WT_ADDED=0
+RUN_PID=""
+WATCHDOG_PID=""
+
+# Each test run is a process group of its own (see run_test); signal the whole
+# group, so the children the test command started (pnpm starts node) go too.
+stop_run() {
+  if [ -n "$WATCHDOG_PID" ]; then
+    kill -KILL -- "-$WATCHDOG_PID" 2>/dev/null
+    wait "$WATCHDOG_PID" 2>/dev/null
+    WATCHDOG_PID=""
+  fi
+  local i
+  if [ -n "$RUN_PID" ]; then
+    kill -KILL -- "-$RUN_PID" 2>/dev/null
+    wait "$RUN_PID" 2>/dev/null
+    # Members of the group that were not children of this shell may take a
+    # moment to die; wait up to 2 seconds before the worktree is removed.
+    i=0
+    while [ "$i" -lt 20 ] && kill -0 -- "-$RUN_PID" 2>/dev/null; do sleep 0.1 2>/dev/null || sleep 1; i=$((i + 1)); done
+    RUN_PID=""
+  fi
+}
 
 cleanup() {
+  stop_run
   if [ "$WT_ADDED" -eq 1 ]; then
     git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
   fi
@@ -337,8 +378,48 @@ failure_excerpt() { # $1 = log file
   fi
 }
 
-note "baseline: running the test on the unchanged copy"
-if ! (cd "$WT" && "$@") >"$SCRATCH/baseline.log" 2>&1 </dev/null; then
+# run_test LOG CMD ARG... — run the test command from the worktree root with
+# output to LOG, bounded by $TIMEOUT seconds. Returns the command's status, or
+# 124 when it ran out of time.
+#
+# Portable to bash 3.2 and BSD userland (there is no `timeout` command on
+# macOS): `set -m` puts the background job in a process group of its own, whose
+# id is its pid. A watchdog, in its own group too, sleeps for the limit, leaves
+# a marker file, and signals the test's group: SIGTERM, then SIGKILL 2 seconds
+# later. A process that moves itself to another group (setsid) escapes this.
+run_test() {
+  local log="$1" status
+  shift
+  rm -f "$SCRATCH/timed-out"
+  set -m
+  (cd "$WT" && exec "$@") >"$log" 2>&1 </dev/null &
+  RUN_PID=$!
+  (
+    sleep "$TIMEOUT"
+    : >"$SCRATCH/timed-out"
+    kill -TERM -- "-$RUN_PID" 2>/dev/null
+    sleep 2
+    kill -KILL -- "-$RUN_PID" 2>/dev/null
+  ) </dev/null >/dev/null 2>&1 &
+  WATCHDOG_PID=$!
+  set +m
+  wait "$RUN_PID" 2>/dev/null
+  status=$?
+  if [ -e "$SCRATCH/timed-out" ]; then status=124; fi
+  stop_run
+  return "$status"
+}
+
+note "baseline: running the test on the unchanged copy (time limit ${TIMEOUT}s)"
+run_test "$SCRATCH/baseline.log" "$@"
+BASE_STATUS=$?
+if [ "$BASE_STATUS" -eq 124 ]; then
+  printf 'timeout\n'
+  tail -n 25 "$SCRATCH/baseline.log" | sed 's/^/  /'
+  note "the test ran past --timeout ${TIMEOUT}s before any change; raise --timeout (exit 5)"
+  exit 5
+fi
+if [ "$BASE_STATUS" -ne 0 ]; then
   printf 'red\n'
   failure_excerpt "$SCRATCH/baseline.log" | sed 's/^/  /'
   note "the test fails before any change, so a failure after the change would prove nothing (exit 3)"
@@ -347,10 +428,18 @@ fi
 
 cp "$MUTANT" "$TARGET" || die_setup "could not write the mutant"
 note "mutant: $FILE:$LINE  '$FROM' -> '$TO'"
-if (cd "$WT" && "$@") >"$SCRATCH/mutant.log" 2>&1 </dev/null; then
+run_test "$SCRATCH/mutant.log" "$@"
+MUT_STATUS=$?
+if [ "$MUT_STATUS" -eq 0 ]; then
   printf 'survived\n'
   note "the test still passes with the change: it does not catch this regression"
   exit 1
+fi
+if [ "$MUT_STATUS" -eq 124 ]; then
+  printf 'killed (timeout)\n'
+  tail -n 25 "$SCRATCH/mutant.log" | sed 's/^/  /'
+  note "the test ran past --timeout ${TIMEOUT}s with the change (exit 6): it hangs rather than failing an assertion"
+  exit 6
 fi
 printf 'killed\n'
 failure_excerpt "$SCRATCH/mutant.log" | sed 's/^/  /'

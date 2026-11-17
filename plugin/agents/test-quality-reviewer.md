@@ -141,6 +141,8 @@ Run the check with `mutation-check.sh`, which the kookr-toolkit plugin ships: `p
    - `survived` (exit 1): the test still passes, so it does not catch that regression. That is your finding; cite the exact change (file, line, `--from`, `--to`).
    - exit 2: the script refused the change (empty or out-of-range line, `--from` not on that line or on it twice). Fix the arguments; the test did not run.
    - exit 3: the test already fails before the change, so this check proves nothing. Report that instead.
+   - `timeout` (exit 5): the test ran past the time limit (`--timeout SECONDS`, default 300) before the change, so this check proves nothing. Rerun with a larger `--timeout`.
+   - `killed (timeout)` (exit 6): the test passed before the change and ran past the time limit after it; the script stopped it and every process it started. Count it as a kill only when a hang is what the change should cause (a flipped loop condition, for example). Otherwise the test did not fail on an assertion, so say so in your finding.
 
 A loose `< N` bound or a single oversized-input truncation test very often survives an off-by-one mutant that an exact `toBe` / exact-cap-and-cap+1 pair would have killed. When a cheap mutation run is available, prefer it over a confident-sounding static verdict.
 
