@@ -86,7 +86,8 @@ export const FindingGroup = React.memo(function FindingGroup({ type, agents, sel
       >
         <span className="finding-group-toggle">{expanded ? '▾' : '▸'}</span>
         <span className={`finding-severity ${cls}`}>{severityLabel(headerAgent)}</span>
-        <span className="finding-group-label">
+        {/* The whole sentence is the tooltip too: in a very narrow list it ends in an ellipsis. */}
+        <span className="finding-group-label" title={`${agents.length} agents ${groupLabel(type)}`}>
           {agents.length} agents {groupLabel(type)}
         </span>
         <span className="finding-group-actions">

@@ -117,6 +117,36 @@ test.describe('Finding Groups — duplicate anomaly grouping', () => {
     await expect(page.locator('.finding-group .finding-card')).toHaveCount(0);
   });
 
+  test('in a narrow list the group\'s count stays on one line and never runs over its buttons', async ({ page, request }) => {
+    await setupPermissionGroup(page, request, 3);
+    const header = page.locator('.finding-group-header');
+    for (const width of [1440, 1280, 1100, 1000]) {
+      await page.setViewportSize({ width, height: 720 });
+      const boxes = await header.evaluate((el) => {
+        const rect = (node: Element) => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, height: r.height }; };
+        return {
+          header: rect(el),
+          label: rect(el.querySelector('.finding-group-label')!),
+          buttons: [...el.querySelectorAll('.finding-group-actions button')].map(rect),
+        };
+      });
+      const at = `at ${width} px (row ${Math.round(boxes.header.right - boxes.header.left)} px wide)`;
+      // "3 agents blocked on permission" on one line, not one word per line.
+      expect(boxes.label.height, `the count is one line ${at}`).toBeLessThanOrEqual(22);
+      expect(boxes.buttons).toHaveLength(2);
+      for (const button of boxes.buttons) {
+        // Each button's own text is on one line, and the button is inside the row.
+        expect(button.height, `a button is one line ${at}`).toBeLessThanOrEqual(28);
+        expect(button.right, `a button ends inside the row ${at}`).toBeLessThanOrEqual(boxes.header.right + 0.5);
+        // The count does not lie on top of it: they are side by side, or the buttons are on the line below.
+        const overlapX = Math.min(boxes.label.right, button.right) - Math.max(boxes.label.left, button.left);
+        const overlapY = Math.min(boxes.label.bottom, button.bottom) - Math.max(boxes.label.top, button.top);
+        expect(overlapX > 1 && overlapY > 1, `the count overlaps a button ${at}`).toBe(false);
+      }
+    }
+    await expect(page.locator('.finding-group-label')).toHaveAttribute('title', '3 agents blocked on permission');
+  });
+
   test('"Respond to All" opens detail panel with banner', async ({ page, request }) => {
     await setupPermissionGroup(page, request, 3);
 

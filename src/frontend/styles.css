@@ -1109,8 +1109,11 @@ kbd {
 .finding-group.turn-complete { border-left-color: var(--state-need); }
 .finding-group.stuck { border-left-color: var(--state-bad); }
 .finding-group.error { border-left-color: var(--state-bad); }
+/* One line when there is room. In a narrow list the buttons move to a second line, under the count, so the count
+   is never squeezed to one word per line on top of them. */
 .finding-group-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 10px 12px;
@@ -1127,13 +1130,19 @@ kbd {
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
-  flex: 1;
+  /* Wants about ten words' width; with less than that left on the line, the buttons wrap instead of it shrinking. */
+  flex: 1 1 10em;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .finding-group-actions {
+  flex: none;
   display: flex;
   gap: 4px;
   margin-left: auto;
+  white-space: nowrap;
 }
 .finding-identical-prompts {
   display: flex;
