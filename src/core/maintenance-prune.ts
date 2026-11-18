@@ -1157,6 +1157,14 @@ async function planOperatorSignalRemovals({
 /**
  * Drop marker entries for files we just removed so the delivered map does not
  * grow unbounded after the spool files themselves are gone.
+ *
+ * Besides the plain `<fileName>` entry, the delivery service records a partial
+ * delivery (one channel done, another still owed) as `<channel>:<fileName>`
+ * lane keys. A file pruned while still partly delivered leaves those behind,
+ * so any `<prefix>:<fileName>` key is dropped too. The channel list lives in
+ * the observability layer, so we match any colon-free prefix instead of
+ * importing it; signal file names are sanitized to `[a-z0-9._-]`, so a key
+ * with a colon is never another file's plain entry.
  */
 async function scrubOperatorSignalMarker(
   dataDir: string,
@@ -1172,10 +1180,13 @@ async function scrubOperatorSignalMarker(
   } catch {
     return;
   }
+  const removed = new Set(removedFileNames);
   let changed = false;
-  for (const name of removedFileNames) {
-    if (name in marker) {
-      delete marker[name];
+  for (const key of Object.keys(marker)) {
+    const colon = key.indexOf(':');
+    const fileName = colon === -1 ? key : key.slice(colon + 1);
+    if (removed.has(fileName)) {
+      delete marker[key];
       changed = true;
     }
   }
