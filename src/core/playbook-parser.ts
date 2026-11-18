@@ -171,8 +171,28 @@ function extractFrontmatter(content: string): { frontmatter: string; body: strin
 }
 
 /**
+ * Frontmatter list blocks whose items are objects (`- key: value` plus
+ * indented continuation lines). Every other list block (`checklist`,
+ * `repo-tags`, `dependencies`, ...) holds plain strings, so a colon inside one
+ * of its items is prose, not a key (issue #4139).
+ */
+const OBJECT_LIST_KEYS: ReadonlySet<string> = new Set(['parameters']);
+
+/**
+ * Whether a list item under `blockKey` starts an object. Only an unquoted
+ * `key: value` item with a bare key, in a block that holds objects, does; any
+ * other item is kept as a string. A quoted item is always a string.
+ */
+function isObjectListItem(blockKey: string, itemContent: string): boolean {
+  if (!OBJECT_LIST_KEYS.has(blockKey)) return false;
+  if (itemContent.startsWith('"') || itemContent.startsWith("'")) return false;
+  return /^\w[\w-]*:(\s|$)/.test(itemContent);
+}
+
+/**
  * Minimal YAML-like frontmatter parser.
- * Handles: scalar values, arrays of strings (- item), arrays of objects (- key: val).
+ * Handles: scalar values, arrays of strings (- item), arrays of objects (- key: val)
+ * in the blocks listed in {@link OBJECT_LIST_KEYS}.
  * Does NOT handle the full YAML spec — only the fixed playbook schema.
  */
 function parseFrontmatter(text: string): Record<string, unknown> {
@@ -248,7 +268,7 @@ function parseFrontmatter(text: string): Record<string, unknown> {
         const itemContent = itemMatch[2].trim();
 
         // Check if this is a simple string or start of an object
-        if (itemContent.includes(':')) {
+        if (isObjectListItem(key, itemContent)) {
           // Object item: collect all indented key: value pairs
           const obj: Record<string, string | boolean> = {};
           const firstKv = itemContent.match(/^(\w[\w-]*):\s*(.*)/);

@@ -49,6 +49,79 @@ describe('parsePlaybook', () => {
     expect(pb.body).toContain('{{version}}');
   });
 
+  test('keeps checklist items that contain a colon as strings (#4139)', () => {
+    const pb = parsePlaybook(`---
+name: Colon checklist
+checklist:
+  - plain
+  - with colon: after
+  - "quoted: after"
+  - Note: bare key followed by prose
+  - If running looped, wrote STOP: COMPLETE to .batch-stop
+---
+Body.
+`, 'colon.md', '/project');
+
+    expect(pb.checklist).toEqual([
+      'plain',
+      'with colon: after',
+      'quoted: after',
+      'Note: bare key followed by prose',
+      'If running looped, wrote STOP: COMPLETE to .batch-stop',
+    ]);
+  });
+
+  test('keeps colon-bearing repo-tags and dependencies items as strings (#4139)', () => {
+    const pb = parsePlaybook(`---
+name: Colon lists
+repo-tags:
+  - lang: typescript
+dependencies:
+  - kb
+---
+Body.
+`, 'colon-lists.md', '/project');
+
+    expect(pb.repoTags).toEqual(['lang: typescript']);
+    expect(pb.dependencies).toEqual(['kb']);
+  });
+
+  test('parameters still parse as objects, including nested options (#4139)', () => {
+    const pb = parsePlaybook(`---
+name: Object block
+parameters:
+  - name: mode
+    description: "Mode: pick one"
+    type: select
+    options:
+      - label: Live
+        value: live
+      - label: Dry run
+        value: dry
+  - name: note
+    description: Free text
+checklist:
+  - done: really
+---
+Body.
+`, 'object-block.md', '/project');
+
+    expect(pb.parameters).toEqual([
+      {
+        name: 'mode',
+        description: 'Mode: pick one',
+        required: false,
+        type: 'select',
+        options: [
+          { label: 'Live', value: 'live' },
+          { label: 'Dry run', value: 'dry' },
+        ],
+      },
+      { name: 'note', description: 'Free text', required: false },
+    ]);
+    expect(pb.checklist).toEqual(['done: really']);
+  });
+
   test('parses a minimal playbook with only name', () => {
     const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/project');
 
