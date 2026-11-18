@@ -68,6 +68,10 @@ vi.mock('./components/CommandPalette.js', () => ({
     props.actions.map((action) => React.createElement('button', { key: action.id, 'data-command': action.id, onClick: action.run }, action.id)),
   ),
 }));
+// The real Diagnostics panel loads stats that the stubbed fetch cannot give; only where it renders matters here.
+vi.mock('./components/OperationsPanel.js', () => ({
+  OperationsPanel: () => React.createElement('div', { className: 'dialog-overlay', 'data-testid': 'operations-panel' }),
+}));
 vi.mock('./components/DetailPanel.js', () => ({
   DetailPanel: () => React.createElement('div', { 'data-testid': 'detail-panel' }),
 }));
@@ -235,7 +239,7 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
       return element!.closest('[inert]');
     };
     const dashboardParts = ['[data-testid="skip-to-content"]', '[data-testid="top-bar"]', '#main-content', '[data-testid="findings-panel"]'];
-    const liveParts = ['.operations-popover-shell', '[data-testid="command-palette"]', '[data-testid="toast-live-polite"]', '[data-testid="toast-live-assertive"]', '[data-testid="mock-dock"]'];
+    const liveParts = ['[data-testid="operations-panel"]', '[data-testid="command-palette"]', '[data-testid="toast-live-polite"]', '[data-testid="toast-live-assertive"]', '[data-testid="mock-dock"]'];
 
     // Not covered: nothing is inert.
     for (const selector of [...dashboardParts, ...liveParts]) expect(inertAncestor(selector), selector).toBeNull();
