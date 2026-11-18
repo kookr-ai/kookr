@@ -22,7 +22,7 @@ checklist:
   - (implement=true) Mapped code with parallel Explore agents before writing fixes
   - (implement=true) One fresh worktree per priority cluster, based on origin/main (or on the integration branch of unlanded work it must stack on, said in the RFC)
   - (implement=true) Each cluster has tests added, targeted vitest + typecheck green, conventional commit
-  - Asked the user before pushing any branch or opening any PR
+  - Pushed, opened and merged the RFC (and, with implement=true, the fix branches) through the normal delivery cycle, without asking whether to push
 ---
 
 ## Objective
@@ -49,16 +49,12 @@ the first run of this loop) — match its format and depth.
   that changes files existing only on an earlier run's unlanded branch is cut
   from that branch (see "A rerun on the same panel" in the automation notes),
   and the RFC says so.
-- **Ask before push/PR, and ask early.** Commit freely in worktrees; pushing and
-  opening PRs needs an explicit user go-ahead. This playbook is the named exception
-  to the repository's "do not ask whether to push or merge" rule (`CLAUDE.md`).
-  Do not leave that question for the final report: two runs in a row ended with
-  "the push question is with the operator", the tasks completed, and nothing was pushed, so the operator re-ran
-  the loop on a dashboard that still had every finding. As soon as there is
-  something to show, send one `kookr ask` (no `--wait`, `--timeout 1d` so it
-  outlives a long run) with a link to real screenshots and two or three options ("Push and open the PRs", "Push, open PRs,
-  merge when gates pass", "Keep it local"), and carry on. Asked that way, the
-  question was answered in 27 seconds. No answer means no push.
+- **Deliver like every other task.** Push, open pull requests and merge once the
+  gates pass, following the repository's delivery cycle (`CLAUDE.md`, "Complete the
+  delivery cycle"). Do not ask whether to push or merge (operator decision, 18 Nov
+  2026, #4156). Two runs that held their push for an answer left the question in their final
+  report and pushed nothing, so the operator re-ran the loop on a dashboard that still had every
+  finding.
 - Commits end with: `Co-Authored-By: <the assistant's model name> <noreply@anthropic.com>`
 
 ## Phase 1 — Setup
@@ -75,7 +71,8 @@ the first run of this loop) — match its format and depth.
    branch is deleted on the remote too, so also check
    `gh pr list --state merged --head <branch>`), the live dashboard still shows
    what that run measured, and landing those fixes is worth more than finding the same things
-   again: ask about them first (see "Ask before push/PR, and ask early").
+   again: land them first (push, pull request, merge, as in "Deliver like every other
+   task").
    Before reporting a branch as unpushed, read the latest run's findings document
    (`docs/rfc/rfc-ux-dogfooding-findings-*.md`, the highest run number, on `origin/main`
    or on the newest `rfc/ux-dogfooding-*` branch). It says where earlier branches went:
@@ -83,8 +80,8 @@ the first run of this loop) — match its format and depth.
    cluster branches, for example, were merged into its integration branch, and run 7's
    document says that branch went out as one pull request (#4148) under another name.
    A branch the document covers that way (its run's work is named as landed, or the
-   pull request that carried it is named as merged) is not unpushed work: do not ask
-   about it.
+   pull request that carried it is named as merged) is not unpushed work: leave it
+   alone.
 
 ## Phase 2 — Dogfood with a running RFC
 
@@ -231,10 +228,12 @@ implementation ticket; one without is just a complaint.
 
 ## Phase 3 — Commit the RFC and decide
 
-Commit the RFC in its worktree (`docs(rfc): ...`). Report the findings summary
-to the user. The `implement` parameter of this run is **{{implement}}**. If it is
-not 'true', stop here and ask, through `kookr ask`, whether to push the RFC
-branch and/or proceed to implementation.
+Commit the RFC in its worktree (`docs(rfc): ...`), push it and open its pull
+request; it stays open for the Phase 4 log and Phase 5 lessons, and is merged in
+Phase 5. Report the findings summary to the user. The `implement` parameter of
+this run is **{{implement}}**. If it is not 'true', go straight to Phase 5 (which
+merges the RFC's pull request), then ask, through `kookr ask` (no `--wait`),
+whether to proceed to implementation.
 
 ## Phase 4 — Implementation fan-out (implement=true)
 
@@ -254,15 +253,16 @@ branch and/or proceed to implementation.
    add regression tests, run targeted `pnpm exec vitest run <files>` plus the
    repo typecheck, commit conventionally, and **not push**.
 4. Review each agent's diff and test results yourself before reporting.
-5. Report all branches + commits to the user and ask which to push/PR, through
-   `kookr ask` if that question has not been answered yet.
+5. Push each verified branch, open its pull request and merge it once the gates
+   pass (the delivery cycle; do not ask). Report the branches, pull requests and
+   their final state.
 
 ## Phase 5 — Close the loop
 
 - If the session surfaced lessons about *this playbook's process itself*,
   update this playbook in the same PR as the RFC.
-- Signal completion when the deliverables are committed and the push/PR
-  question has been asked through `kookr ask` (and, if the operator said yes,
-  the branches are pushed and the pull requests are open or merged):
-  `kookr signal completion-ready --note "..."`. A question that exists only in
-  the final report does not count as asked.
+- Merge the RFC's pull request once the gates pass (the delivery cycle; do not
+  ask).
+- Signal completion when the deliverables are pushed and their pull requests are
+  merged, or a concrete blocker is recorded on them:
+  `kookr signal completion-ready --note "..."`.
