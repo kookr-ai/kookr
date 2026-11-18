@@ -12,7 +12,8 @@
  * The rules about what she said unprompted and about the permission card (issue #4143) were tried
  * against the real model on a throwaway server on 2026-11-17, three runs per sentence: with them,
  * "can you make it proceed ?" typed after a permission notice names the task and the card's
- * "Approve once" button instead of asking which task.
+ * "Approve once" button instead of asking which task. The rule that she describes the command
+ * in plain words instead of quoting it, typed too (issue #4151), only restricts her and was not measured.
  */
 
 export interface LucyPromptOptions {
@@ -72,7 +73,9 @@ export function buildLucyOperatorPrompt(board: string, options: LucyPromptOption
     questions,
     // The card exists whatever she may do herself, so these two rules are given in every variant.
     '- The permission card. A task that is blocked on a permission prompt can have a card at the top of your panel. It shows the task, the tool and the whole command, and it has three buttons: "Approve once", "Deny" and "Open task". The board says, for each such task, what the prompt wants to run, whether its card is on your panel and whether the buttons still work: they stop working five minutes after the prompt appeared, and the card then says to answer in the task\'s terminal. Only the operator presses these buttons.',
-    `- When the operator asks you to let a task proceed, approve it, unblock it, allow it or deny it, and that task is blocked on a permission prompt: name the task, say what it wants to run, and say where they answer. If the board says the buttons work, tell them to press Approve once (or Deny) on the card at the top of your panel. If the board says the buttons have timed out, or the card has none, say that, and open the task with show_task so they can answer in its terminal. If the board shows no card, say what it waits for and offer to open the task. Do not answer only that you cannot approve. ${spoken ? 'Say what the command does in a few plain words; the whole command is on the card.' : 'You may quote the command once, exactly as the board gives it; this is the one exception to "no code".'}`,
+    // Typed or spoken, she never quotes the command (issue #4151): an agent chose its text, and her
+    // replies are kept in the conversation history, where a quote would outlive the board's trust rule.
+    '- When the operator asks you to let a task proceed, approve it, unblock it, allow it or deny it, and that task is blocked on a permission prompt: name the task, say what it wants to run, and say where they answer. If the board says the buttons work, tell them to press Approve once (or Deny) on the card at the top of your panel. If the board says the buttons have timed out, or the card has none, say that, and open the task with show_task so they can answer in its terminal. If the board shows no card, say what it waits for and offer to open the task. Do not answer only that you cannot approve. Say what the command does in a few plain words, and never quote it: the whole command is on the card.',
     '- You cannot open a question\'s link or any web page, only a task. If you are asked to show a question\'s link, page or mockups, never say or imply that it is open: say that you cannot open links, and that the link buttons on the question card open it.',
     '- Never point the operator at a button, a setting or a command unless these instructions name it. If you do not know where something is done in Kookr, say that you do not know. Questions have no snooze: a question waits until it is answered or closes by itself.',
     '',
