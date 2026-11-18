@@ -21,7 +21,7 @@ This skill fills the gap between "push succeeded" and "the PR is actually ready.
 In this repository, `pnpm deliver` (started from `[[kookr-pre-push]]` step 3) already opens or updates the PR, waits for the independent-review verdict bound to the PR head, and runs `kookr merge`. Use this skill alongside it, not instead of it:
 
 - While it runs or after it stops, do the checks below (mergeability, PR body, CI, feedback); they are not part of `pnpm deliver`.
-- When it stopped at a step, do that step by hand with the commands below, then resume with `pnpm deliver --from <step>` (add `--specialists independent-review` when resuming from `review-marker`, and pass the same `--body-file .tmp/pr-body.md` on every run). The stop table is in `[[kookr-pre-push]]` step 3.
+- When it stopped at a step, do that step by hand with the commands below, then resume with `pnpm deliver --from <step>` (add `--specialists independent-review` when resuming from `review-marker`, and pass the same `--body-file .tmp/pr-body.md` on every run, after `mkdir -p .tmp`). The stop table is in `[[kookr-pre-push]]` step 3.
 - After a fix commit, start the reviewer on the new head and rerun `pnpm deliver --body-file .tmp/pr-body.md --from review-marker --specialists independent-review`: it pushes, updates the PR body and title, waits for the new verdict and merges.
 
 The commands in steps 1 and 6 below are what its `pr`, `wait-verdict` and `merge` steps run, kept as the fallback.

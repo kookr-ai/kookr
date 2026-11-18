@@ -543,20 +543,21 @@ Updating a stale PR often means merging the base branch back in (`git merge --no
 # kookr-ai/kookr only. Pass --specialists whenever the range includes review-marker, and the
 # same --body-file on every run: the default body file is in the system temp directory, which
 # `kookr pr-checklist verify` refuses to read ("outside the repository root"); .tmp/ is git-ignored.
-D="pnpm deliver --repo $REPO --body-file .tmp/pr-body.md"
-$D --specialists independent-review --dry-run      # print the plan, run nothing
-$D --specialists independent-review --to push      # markers, PR body, push
+mkdir -p .tmp   # pnpm deliver does not create the body file's directory
+deliver() { pnpm deliver --repo "$REPO" --body-file .tmp/pr-body.md "$@"; }
+deliver --specialists independent-review --dry-run      # print the plan, run nothing
+deliver --specialists independent-review --to push      # markers, PR body, push
 #   The first run stops at pr-body: `kookr pr-checklist scaffold` leaves TODO rows that
 #   `verify` rejects. Edit .tmp/pr-body.md: replace each TODO, write the summary and test
 #   plan, add the `Closes #<TARGET>` line (or `Refs #<TARGET>` for an incident, see below)
 #   and the attribution line. Then resume:
-$D --from pr-body --to push
+deliver --from pr-body --to push
 # The guard below, right before the PR is created. Skip it when the branch already has an
 # open PR: step `pr` then only updates that PR, and the guard would abort on it.
 if [ -z "$(gh pr list --repo "$REPO" --head "$(git rev-parse --abbrev-ref HEAD)" --state open --json number -q '.[0].number // empty')" ]; then
   pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" "<TARGET>" || exit 1
 fi
-$D --from pr --to pr --title "<type>: <short description>"   # gh pr create (or gh pr edit on the open PR); the title defaults to the last commit subject
+deliver --from pr --to pr --title "<type>: <short description>"   # gh pr create (or gh pr edit on the open PR); the title defaults to the last commit subject
 ```
 
 Where it stops and what to do (fix that one step, by hand with the command it names if needed, then resume from it):

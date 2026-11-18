@@ -93,11 +93,12 @@ This is intentionally earlier than the `gh pr create` hook. The hook is the back
 `pnpm deliver` (issue #4180, `scripts/deliver.ts`; reference: `docs/reference/cli.md`, "`pnpm deliver`") runs the delivery steps of the current branch in order and stops at the first one that fails or needs a decision. It never starts a reviewer and never posts a verdict, so start the independent reviewer on HEAD (step 2) first, then:
 
 ```bash
+mkdir -p .tmp   # pnpm deliver does not create the body file's directory
 pnpm deliver --dry-run --specialists independent-review --body-file .tmp/pr-body.md   # print the plan, run nothing
 pnpm deliver --specialists independent-review --body-file .tmp/pr-body.md             # run every step
 ```
 
-**Pass `--body-file .tmp/pr-body.md`.** The default body file, `<tmp>/kookr-deliver-<branch>.md` in the system temp directory, is outside the worktree, and `kookr pr-checklist verify` only reads body files inside it, so a run without `--body-file` always stops at `pr-body` with `body file … is outside the repository root`. `.tmp/` is git-ignored, so the file does not change the commit the markers are bound to.
+**Pass `--body-file .tmp/pr-body.md`.** The default body file, `<tmp>/kookr-deliver-<branch>.md` in the system temp directory, is outside the worktree, and `kookr pr-checklist verify` only reads body files inside it, so a run without `--body-file` always stops at `pr-body` with `body file … is outside the repository root`. `.tmp/` is git-ignored, so the file does not change the commit the markers are bound to. Create it first (`mkdir -p .tmp`): `pnpm deliver` does not, and without it the `pr-body` step crashes with `ENOENT` instead of stopping cleanly.
 
 | Step | What it runs |
 | --- | --- |

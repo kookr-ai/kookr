@@ -23,6 +23,8 @@ describe('pnpm deliver is the default delivery path (issue #4181)', () => {
     expect(text).toMatch(/--from (review-marker|pr-body|wait-verdict|merge)/);
     // The default body file is outside the worktree, where `kookr pr-checklist verify` refuses to read it.
     expect(text).toContain('--body-file .tmp/pr-body.md');
+    // pnpm deliver writes the body file without creating its directory.
+    expect(text).toContain('mkdir -p .tmp');
   });
 
   test('the pre-push skill lists every pnpm deliver step, in order, and a stop row per step that can stop', () => {
