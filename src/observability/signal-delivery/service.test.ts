@@ -17,6 +17,7 @@ function okFetch() {
 function baseConfig(overrides: Partial<SignalDeliveryConfig> = {}): SignalDeliveryConfig {
   return {
     discord: { webhookUrl: 'https://discord/webhook' },
+    telegramSignals: 'all',
     dryRun: false,
     pollIntervalMs: 15_000,
     minSendIntervalMs: 60_000,
@@ -188,7 +189,7 @@ describe('SignalDeliveryService — failure handling', () => {
     expect(r2.delivered).toEqual(['k.json']);
   });
 
-  test('marks a partial success delivered (no duplicate re-post)', async () => {
+  test('a partial success is not re-posted to the channel that took it', async () => {
     const dir = await tempDir();
     const fetchImpl = vi.fn(async (url: string) =>
       url.includes('discord') ? new Response(null, { status: 204 }) : new Response('x', { status: 500 }));
@@ -197,11 +198,11 @@ describe('SignalDeliveryService — failure handling', () => {
     const svc = new SignalDeliveryService({ dir, config, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => new Date(0), log: () => {} });
 
     const r = await svc.tick();
-    expect(r.delivered).toEqual(['k.json']); // discord ok → delivered despite telegram fail
+    expect(r.delivered).toEqual(['k.json']); // discord ok → delivered there despite telegram fail
     const calls = fetchImpl.mock.calls.length;
     const r2 = await svc.tick();
     expect(r2.delivered).toEqual([]);
-    expect(fetchImpl.mock.calls.length).toBe(calls); // no re-post
+    expect(fetchImpl.mock.calls.length).toBe(calls); // no re-post (telegram is backing off)
   });
 });
 
@@ -508,5 +509,241 @@ describe('formatBatch', () => {
     expect(msg).toContain('behind');
     expect(msg).toContain('7 commits');
     expect(msg).toContain('🚨');
+  });
+});
+
+describe('SignalDeliveryService — Telegram gets decisions only', () => {
+  const TELEGRAM = { botToken: 't', chatId: 'c' };
+  const telegramOnly = (level: 'decisions' | 'all' = 'decisions') =>
+    baseConfig({ discord: undefined, telegram: TELEGRAM, telegramSignals: level });
+  const calls = (fetchImpl: ReturnType<typeof okFetch>) =>
+    (fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>).map(([url, init]) => {
+      const body = JSON.parse(String(init.body)) as { text?: string; content?: string };
+      return { url, text: body.text ?? body.content ?? '' };
+    });
+  const sentText = (fetchImpl: ReturnType<typeof okFetch>, call: number): string => calls(fetchImpl)[call]!.text;
+
+  test('status alerts, clears and notices never reach a Telegram-only install', async () => {
+    const dir = await tempDir();
+    const fetchImpl = okFetch();
+    await writeOperatorSignal(dir, { key: 'train:halted', kind: 'alert', source: 'integration-train', title: 'halted' });
+    await writeOperatorSignal(dir, { key: 'smoke:clear', kind: 'clear', source: 'prod_smoke_tick', title: 'recovered' });
+    await writeOperatorSignal(dir, { key: 'train:bypass', kind: 'info', source: 'integration-train', title: 'bypassed' });
+
+    const svc = new SignalDeliveryService({ dir, config: telegramOnly(), fetchImpl, now: () => new Date(0), log: () => {} });
+    const r = await svc.tick();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(r.delivered).toEqual([]);
+    expect(r.withheld).toEqual(['smoke-clear.json', 'train-bypass.json', 'train-halted.json']);
+    expect(r.pending).toBe(0);
+    expect(svc.status().pending).toBe(0);
+
+    // Acknowledged once: neither a later tick nor a switch to `all` replays them.
+    expect((await svc.tick()).withheld).toBeUndefined();
+    const all = new SignalDeliveryService({ dir, config: telegramOnly('all'), fetchImpl, now: () => new Date(0), log: () => {} });
+    await all.tick();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('a permission-prompt wait and an agent self-report still page Telegram; their clears do not', async () => {
+    const dir = await tempDir();
+    const fetchImpl = okFetch();
+    await writeOperatorSignal(dir, { key: 'op:permission_prompt:t1:alert', kind: 'alert', source: 'permission_prompt_wait', title: 'waits on Bash' });
+    await writeOperatorSignal(dir, { key: 'op:self-report:a1:alert', kind: 'alert', source: 'agent_self_report', title: 'prompt unusable' });
+    await writeOperatorSignal(dir, { key: 'op:permission_prompt:t0:clear', kind: 'clear', source: 'permission_prompt_wait', title: 'answered' });
+
+    const svc = new SignalDeliveryService({ dir, config: telegramOnly(), fetchImpl, now: () => new Date(0), log: () => {} });
+    const r = await svc.tick();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const text = sentText(fetchImpl, 0);
+    expect(text).toContain('waits on Bash');
+    expect(text).toContain('prompt unusable');
+    expect(text).not.toContain('answered');
+    expect(r.delivered).toHaveLength(2);
+    expect(r.withheld).toEqual(['op-permission_prompt-t0-clear.json']);
+  });
+
+  test('with Discord too, Discord gets every signal and Telegram only the decision', async () => {
+    const dir = await tempDir();
+    const fetchImpl = okFetch();
+    await writeOperatorSignal(dir, { key: 'train', kind: 'alert', source: 'integration-train', title: 'train halted' });
+    await writeOperatorSignal(dir, { key: 'perm', kind: 'alert', source: 'permission_prompt_wait', title: 'waits on Bash' });
+
+    const config = baseConfig({ telegram: TELEGRAM, telegramSignals: 'decisions' });
+    const svc = new SignalDeliveryService({ dir, config, fetchImpl, now: () => new Date(0), log: () => {} });
+    const r = await svc.tick();
+    expect(r.delivered).toEqual(['perm.json', 'train.json']);
+    expect(r.withheld).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const discord = calls(fetchImpl).find((c) => c.url === 'https://discord/webhook')!.text;
+    const telegram = calls(fetchImpl).find((c) => c.url.includes('/sendMessage'))!.text;
+    expect(discord).toContain('train halted');
+    expect(discord).toContain('waits on Bash');
+    expect(telegram).toContain('waits on Bash');
+    expect(telegram).not.toContain('train halted');
+  });
+
+  test('with Discord too, a batch of status signals posts to Discord only', async () => {
+    const dir = await tempDir();
+    const fetchImpl = okFetch();
+    await writeOperatorSignal(dir, { key: 'train', kind: 'alert', source: 'integration-train', title: 'train halted' });
+
+    const config = baseConfig({ telegram: TELEGRAM, telegramSignals: 'decisions' });
+    const svc = new SignalDeliveryService({ dir, config, fetchImpl, now: () => new Date(0), log: () => {} });
+    expect((await svc.tick()).delivered).toEqual(['train.json']);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]![0]).toBe('https://discord/webhook');
+  });
+
+  test('a status signal is acknowledged even while the send interval holds decisions back', async () => {
+    const dir = await tempDir();
+    const fetchImpl = okFetch();
+    const clock = new Clock(0);
+    const svc = new SignalDeliveryService({ dir, config: telegramOnly(), fetchImpl, now: clock.now, log: () => {} });
+    await writeOperatorSignal(dir, { key: 'perm1', kind: 'alert', source: 'permission_prompt_wait', title: 'first' });
+    await svc.tick();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    clock.advance(1_000);
+    await writeOperatorSignal(dir, { key: 'perm2', kind: 'alert', source: 'permission_prompt_wait', title: 'second' });
+    await writeOperatorSignal(dir, { key: 'train', kind: 'alert', source: 'integration-train', title: 'halted' });
+    const held = await svc.tick();
+    expect(held.throttled).toBe(true);
+    expect(held.pending).toBe(1);
+    expect(held.withheld).toEqual(['train.json']);
+    expect(svc.status().pending).toBe(1);
+    expect((await loadDeliveredMarker(dir))['train.json']).toBeDefined();
+  });
+
+  test('KOOKR_SIGNAL_TELEGRAM_LEVEL=all keeps the full stream on Telegram', async () => {
+    const dir = await tempDir();
+    const fetchImpl = okFetch();
+    await writeOperatorSignal(dir, { key: 'train', kind: 'alert', source: 'integration-train', title: 'train halted' });
+    const svc = new SignalDeliveryService({ dir, config: telegramOnly('all'), fetchImpl, now: () => new Date(0), log: () => {} });
+    expect((await svc.tick()).delivered).toEqual(['train.json']);
+    expect(sentText(fetchImpl, 0)).toContain('train halted');
+  });
+
+  test('dry-run logs the Telegram batch without the status signals', async () => {
+    const dir = await tempDir();
+    const fetchImpl = okFetch();
+    const log = vi.fn();
+    await writeOperatorSignal(dir, { key: 'train', kind: 'alert', source: 'integration-train', title: 'train halted' });
+    await writeOperatorSignal(dir, { key: 'perm', kind: 'alert', source: 'permission_prompt_wait', title: 'waits on Bash' });
+    const config = baseConfig({ discord: undefined, telegram: TELEGRAM, telegramSignals: 'decisions', dryRun: true });
+    const svc = new SignalDeliveryService({ dir, config, fetchImpl, now: () => new Date(0), log });
+    await svc.tick();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const dry = log.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('DRY-RUN'));
+    expect(dry).toHaveLength(1);
+    expect(dry[0]).toContain('waits on Bash');
+    expect(dry[0]).not.toContain('train halted');
+  });
+
+  test('dry-run with both channels: the Telegram line leaves the status signal out, the Discord line keeps it', async () => {
+    const dir = await tempDir();
+    const log = vi.fn();
+    await writeOperatorSignal(dir, { key: 'train', kind: 'alert', source: 'integration-train', title: 'train halted' });
+    await writeOperatorSignal(dir, { key: 'perm', kind: 'alert', source: 'permission_prompt_wait', title: 'waits on Bash' });
+    const config = baseConfig({ telegram: TELEGRAM, telegramSignals: 'decisions', dryRun: true });
+    const svc = new SignalDeliveryService({ dir, config, fetchImpl: okFetch(), now: () => new Date(0), log });
+    await svc.tick();
+    const dry = log.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('DRY-RUN'));
+    const discord = dry.find((m) => m.includes('to discord'))!;
+    const telegram = dry.find((m) => m.includes('to telegram'))!;
+    expect(discord).toContain('train halted');
+    expect(discord).toContain('waits on Bash');
+    expect(telegram).toContain('waits on Bash');
+    expect(telegram).not.toContain('train halted');
+  });
+});
+
+describe('SignalDeliveryService — each channel delivers and backs off on its own', () => {
+  const TELEGRAM = { botToken: 't', chatId: 'c' };
+  /** Discord answers `discordStatus`, Telegram answers `telegramStatus`; both can be changed between ticks. */
+  function routedFetch(state: { discord: number; telegram: number }) {
+    return vi.fn(async (url: string) => {
+      const status = url.includes('/sendMessage') ? state.telegram : state.discord;
+      return new Response(status === 204 ? null : status < 300 ? JSON.stringify({ ok: true }) : 'down', { status });
+    });
+  }
+  const urls = (fetchImpl: ReturnType<typeof routedFetch>) => fetchImpl.mock.calls.map((c) => String(c[0]));
+
+  test('Discord down, Telegram up: the status signal stays pending for Discord and is retried there, not lost', async () => {
+    const dir = await tempDir();
+    const clock = new Clock(0);
+    const state = { discord: 500, telegram: 200 };
+    const fetchImpl = routedFetch(state);
+    const config = baseConfig({ telegram: TELEGRAM, telegramSignals: 'decisions' });
+    const svc = new SignalDeliveryService({ dir, config, fetchImpl: fetchImpl as unknown as typeof fetch, now: clock.now, log: () => {} });
+    await writeOperatorSignal(dir, { key: 'train', kind: 'alert', source: 'integration-train', title: 'train halted' });
+    await writeOperatorSignal(dir, { key: 'perm', kind: 'alert', source: 'permission_prompt_wait', title: 'waits on Bash' });
+
+    const r1 = await svc.tick();
+    expect(r1.delivered).toEqual(['perm.json']); // Telegram took the decision
+    expect(r1.pending).toBe(2); // both still owed to Discord
+    const marker = await loadDeliveredMarker(dir);
+    expect(marker['train.json']).toBeUndefined();
+    expect(marker['perm.json']).toBeUndefined();
+    expect(marker['telegram:perm.json']).toBeDefined();
+
+    state.discord = 204;
+    clock.advance(120_000);
+    const r2 = await svc.tick();
+    expect(r2.delivered).toEqual(['perm.json', 'train.json']);
+    expect(r2.pending).toBe(0);
+    // Telegram is not sent the decision a second time.
+    expect(urls(fetchImpl).filter((u) => u.includes('/sendMessage'))).toHaveLength(1);
+    // Settled on every channel: plain entries (read by maintenance-prune), no per-channel leftovers.
+    const settled = await loadDeliveredMarker(dir);
+    expect(Object.keys(settled).sort()).toEqual(['perm.json', 'train.json']);
+  });
+
+  test('Discord down: its back-off never holds a decision page off a healthy Telegram', async () => {
+    const dir = await tempDir();
+    const clock = new Clock(0);
+    const fetchImpl = routedFetch({ discord: 500, telegram: 200 });
+    const config = baseConfig({ telegram: TELEGRAM, telegramSignals: 'decisions' });
+    const svc = new SignalDeliveryService({ dir, config, fetchImpl: fetchImpl as unknown as typeof fetch, now: clock.now, log: () => {} });
+    await writeOperatorSignal(dir, { key: 'train', kind: 'alert', source: 'integration-train', title: 'train halted' });
+    await svc.tick(); // Discord fails: Discord backs off
+    expect(svc.status().consecutiveFailures).toBe(1);
+    expect(svc.status().nextAttemptAt).toBeDefined();
+
+    clock.advance(5_000); // still inside Discord's back-off window
+    await writeOperatorSignal(dir, { key: 'perm', kind: 'alert', source: 'permission_prompt_wait', title: 'waits on Bash' });
+    const r = await svc.tick();
+    expect(r.backoff).toBe(true); // Discord is held
+    expect(r.delivered).toEqual(['perm.json']); // Telegram is not
+    expect(urls(fetchImpl).filter((u) => u.includes('/sendMessage'))).toHaveLength(1);
+  });
+
+  test('Telegram down, Discord up: the decision stays owed to Telegram and reaches it once Telegram recovers', async () => {
+    const dir = await tempDir();
+    const clock = new Clock(0);
+    const state = { discord: 204, telegram: 500 };
+    const fetchImpl = routedFetch(state);
+    const config = baseConfig({ telegram: TELEGRAM, telegramSignals: 'decisions' });
+    const svc = new SignalDeliveryService({ dir, config, fetchImpl: fetchImpl as unknown as typeof fetch, now: clock.now, log: () => {} });
+    await writeOperatorSignal(dir, { key: 'perm', kind: 'alert', source: 'permission_prompt_wait', title: 'waits on Bash' });
+
+    expect((await svc.tick()).pending).toBe(1);
+    state.telegram = 200;
+    clock.advance(120_000);
+    const r = await svc.tick();
+    expect(r.pending).toBe(0);
+    expect(urls(fetchImpl).filter((u) => u.includes('discord'))).toHaveLength(1); // no Discord re-post
+    expect(urls(fetchImpl).filter((u) => u.includes('/sendMessage'))).toHaveLength(2);
+  });
+
+  test('a marker written before per-channel delivery still dedups after the upgrade', async () => {
+    const dir = await tempDir();
+    const fetchImpl = routedFetch({ discord: 204, telegram: 200 });
+    const { fileName, signal } = await writeOperatorSignal(dir, { key: 'perm', kind: 'alert', source: 'permission_prompt_wait', title: 'x' });
+    await writeFile(join(dir, DELIVERED_MARKER_FILE), JSON.stringify({ [fileName]: signal.createdAt }), 'utf8');
+    const config = baseConfig({ telegram: TELEGRAM, telegramSignals: 'decisions' });
+    const svc = new SignalDeliveryService({ dir, config, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => new Date(0), log: () => {} });
+    expect((await svc.tick()).pending).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

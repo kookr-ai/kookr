@@ -714,7 +714,7 @@ kookr/
 │   ├── pr-checklist/                      # PR Checklist Contract engine (rfc-pr-checklist-contract)
 │   │   └── adapters/                      #   gh/git adapters for the checklist engine
 │   ├── observability/                     # Cross-cutting observability
-│   │   └── signal-delivery/               #   Operator-signal outbox → Discord/Telegram push (issue #1716)
+│   │   └── signal-delivery/               #   Operator-signal outbox → Discord (all) / Telegram (decisions only) push (issue #1716)
 │   ├── test-utils/                        # Shared test helpers (e.g. dtach reaper)
 │   │
 │   └── frontend/                          # SPA (React + Vite — ADR-002)

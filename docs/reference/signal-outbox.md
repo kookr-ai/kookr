@@ -82,5 +82,6 @@ Server detectors write that folder only when an alert channel resolves:
 the Telegram bot owner's private chat when `KOOKR_TELEGRAM_ALLOWED_USERS` holds
 exactly one user and no other channel is set. `KOOKR_SIGNAL_DELIVERY=0` (set
 for every test server) turns this off, and a rejected `KOOKR_TELEGRAM_API_URL`
-turns Telegram alerts off (issue #3952). `GET /api/health` reports the result
-as `alertDestination`.
+turns Telegram alerts off (issue #3952). Telegram gets only the alerts an
+agent is waiting on the operator for, unless `KOOKR_SIGNAL_TELEGRAM_LEVEL=all`.
+`GET /api/health` reports the result as `alertDestination`.
