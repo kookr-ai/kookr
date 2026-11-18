@@ -139,6 +139,43 @@ flagged "echo -en cluster flagged" 'echo -en "x"'             'echo -e/-n'
 flagged "echo -ne cluster flagged" 'echo -ne "x"'             'echo -e/-n'
 allowed "declare -a not flagged" 'declare -a myarr'
 
+# --- bare `timeout` with no fallback (issue #4178) --------------------------
+flagged "bare timeout flagged"      'timeout 5 gh auth status'                  "bare 'timeout'"
+flagged "timeout in \$() flagged"   'x=$(timeout "$T" gh api user)'             "bare 'timeout'"
+flagged "if ! timeout flagged"      'if ! timeout "$AUTH_TIMEOUT" gh auth status; then exit 0; fi' "bare 'timeout'"
+flagged "timeout -k option flagged" '  timeout -k 1 5 cmd'                      "bare 'timeout'"
+allowed "timeout variable not flagged"      'timeout=5; local_timeout="$timeout"'
+allowed "--connect-timeout not flagged"     'curl --connect-timeout 5 https://example.com'
+allowed "timeout in prose not flagged"      'echo "request timeout after 5s"'
+allowed "timeout portability-ok suppresses" 'timeout 5 cmd  # portability-ok: linux-only path'
+allowed "timeout behind a fallback helper" "$(printf '%s\n' \
+  'run_with_timeout() {' \
+  '  if command -v timeout >/dev/null 2>&1; then timeout "$1" "${@:2}";' \
+  '  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$1" "${@:2}";' \
+  '  else "${@:2}"; fi' \
+  '}')"
+# The fixed hook must pass the timeout rule. Only that rule is asserted: the
+# hook has an unrelated, already-guarded `stat -c ... || stat -f` line.
+case_fixed_hook_timeout_clean() {
+  local repo; repo=$(make_repo)
+  (
+    cd "$repo"; git checkout -q -b feature
+    cp "$REPO_ROOT/hooks/oss-stale-scout-gate.sh" new.sh
+    git add . >/dev/null; git commit -q -m "fixed hook"
+  )
+  local out
+  out=$(cd "$repo" && bash check-shell-portability.sh main 2>&1) || true
+  if grep -q "bare 'timeout'" <<<"$out"; then
+    FAIL=$((FAIL + 1)); FAILED_CASES+=("fixed hook passes the timeout rule")
+    printf 'FAIL: fixed hook passes the timeout rule\n' >&2
+    printf '      output:\n%s\n' "$out" | sed 's/^/        /' >&2
+  else
+    PASS=$((PASS + 1)); printf 'PASS: fixed hook passes the timeout rule\n'
+  fi
+  rm -rf "$repo"
+}
+case_fixed_hook_timeout_clean
+
 # --- portability-ok opt-out -------------------------------------------------
 allowed "portability-ok suppresses" 'grep -P "x" file  # portability-ok: linux-only path'
 

@@ -169,6 +169,71 @@ if [ -n "$ADDED" ]; then
     'echo -e/-n (incl. -en/-ne): not portable (literal under POSIX /bin/sh). Use printf.'
 fi
 
+# --- bare `timeout` with no fallback (issue #4178) ---------------------------
+# macOS ships no GNU `timeout` (Homebrew installs it as `gtimeout`). A bare call
+# exits 127 there, which a caller can mistake for the wrapped command failing.
+# A call counts as having a fallback when its file probes for the binary
+# (`command -v timeout`, `has_command gtimeout`, ...) — the usual
+# timeout → gtimeout → no-limit helper. This rule needs to know which file a
+# line came from, so it reads the diff (or tree) itself instead of $ADDED.
+# Matches `timeout` in command position followed by a duration or an option:
+# `timeout 5 cmd`, `$(timeout "$T" cmd)`, `if ! timeout -k 1 5 cmd`.
+# Each record is `file<TAB>line`, so the line start is the TAB, not `^`.
+TAB=$(printf '\t')
+TIMEOUT_CALL_RE="(${TAB}|[;&|(!{]|(then|do|else|if|exec|while|until)[[:space:]])[[:space:]]*timeout[[:space:]]+(-[-a-zA-Z]|[0-9]|\"?[\$])"
+TIMEOUT_PROBE_RE='(command[[:space:]]+-v|type|which|has_command)[[:space:]]+g?timeout'
+
+if [ -n "$BASE" ]; then
+  # `file<TAB>line` for every added line, from the unified diff's +++ headers.
+  # Explicit prefixes: a user's diff.noprefix / diff.mnemonicPrefix would
+  # otherwise change the `+++ b/` header the file lookup relies on.
+  ADDED_WITH_FILE=$( { git diff --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ \
+      "$BASE...HEAD" -- \
+      "${PATHS[@]}" \
+      ':(exclude)*.md' \
+      ':(exclude)*check-shell-portability.sh' \
+      ':(exclude)*check-shell-portability.test.sh' \
+    | awk '/^\+\+\+ /{ f=substr($0, 5); sub(/^b\//, "", f); next }
+           /^\+/{ printf "%s\t%s\n", f, substr($0, 2) }'; } || true )
+else
+  ADDED_WITH_FILE=$( { git grep -I --full-name -e . -- \
+      "${PATHS[@]}" \
+      ':(exclude)*.md' \
+      ':(exclude)*check-shell-portability.sh' \
+      ':(exclude)*check-shell-portability.test.sh' \
+    | sed "s/:/$TAB/"; } || true )
+fi
+
+TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+timeout_hits=""
+if [ -n "$ADDED_WITH_FILE" ]; then
+  candidates=$( printf '%s\n' "$ADDED_WITH_FILE" \
+    | grep -vE 'portability-ok' \
+    | grep -E "$TIMEOUT_CALL_RE" \
+    || true )
+  if [ -n "$candidates" ]; then
+    while IFS= read -r hit; do
+      hit_file=${hit%%"$TAB"*}
+      # The file has a timeout/gtimeout probe → the call sits in a fallback helper.
+      if [ -f "$TOPLEVEL/$hit_file" ] && grep -qE "$TIMEOUT_PROBE_RE" "$TOPLEVEL/$hit_file"; then
+        continue
+      fi
+      timeout_hits="${timeout_hits}${hit_file}: ${hit#*"$TAB"}
+"
+    done <<EOF
+$candidates
+EOF
+  fi
+fi
+if [ -n "$timeout_hits" ]; then
+  FOUND=1
+  echo "  ✗ bare 'timeout' call with no fallback: macOS has no GNU timeout (Homebrew names"
+  echo "    it gtimeout), so the call exits 127. Use a helper that tries timeout, then"
+  echo "    gtimeout, then runs the command without a limit (see hooks/oss-stale-scout-gate.sh)."
+  printf '%s' "$timeout_hits" | sed 's/^/      /'
+  echo
+fi
+
 if [ "$FOUND" -eq 0 ]; then
   echo "check-shell-portability: no GNU-only / bash-4-only idioms in added lines."
   exit 0
