@@ -1304,7 +1304,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
   /** The question's links, then "Open task" when the dashboard has a URL a phone can open. */
   function askLinks(ask: AskRecord): Array<{ text: string; url: string }> {
     const links = (ask.links ?? []).map((l) => ({ text: l.label ?? DEFAULT_ASK_LINK_LABEL, url: l.url }));
-    if (deps.dashboardUrlConfigured) links.push({ text: 'Open task', url: dashboardTaskUrl(deps.dashboardBaseUrl, ask.taskId) });
+    if (deps.dashboardUrlConfigured && ask.system === undefined) links.push({ text: 'Open task', url: dashboardTaskUrl(deps.dashboardBaseUrl, ask.taskId) });
     return links;
   }
 
@@ -1336,7 +1336,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         // chat that was removed from the allowlist can no longer answer.
         const chatId = operatorChatFor(ask.taskId);
         if (chatId === undefined) throw new Error('no Telegram chat to send the question to');
-        const lines = [`❓ Task ${ask.taskId} asks:`, '', ask.question];
+        const lines = [ask.system !== undefined ? '❓ Kookr asks:' : `❓ Task ${ask.taskId} asks:`, '', ask.question];
         if (ask.context) lines.push('', ask.context);
         if (ask.allowText) lines.push('', 'Or reply to this message with text.');
         const choices: InlineKeyboardButton[][] = ask.options.map((label, i) => [{ text: label, callback_data: callbackData(i) }]);

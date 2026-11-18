@@ -1215,3 +1215,46 @@ describe('AskService.answerFromDashboard (Lucy) and channel sync', () => {
     expect((await h.service.answerFromDashboard({ askId: ok.id, optionIndex: 0 })).ok).toBe(true);
   });
 });
+
+describe('AskService.createSystem (issue #4215)', () => {
+  const systemInput = { system: 'interrupted-tasks', question: 'Resume 2 tasks?', options: ['Resume', 'Leave stopped'], allowText: false };
+
+  it('asks without a task: no task check, a synthetic task id, and the system recorded', async () => {
+    const r = await h.service.createSystem(systemInput);
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    expect(r.ask).toMatchObject({ taskId: 'system:interrupted-tasks', system: 'interrupted-tasks', state: 'pending' });
+    expect(r.ask.sessionId).toBeUndefined();
+    expect(h.notifier.sendAsk).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a malformed system name', async () => {
+    const r = await h.service.createSystem({ ...systemInput, system: 'Bad Name!' });
+    expect(r.ok).toBe(false);
+  });
+
+  it('records the answer, types nothing, and tells listeners which option was chosen', async () => {
+    const changes: Array<{ kind: string; label?: string }> = [];
+    h.service.onChange((c) => changes.push({ kind: c.kind, ...(c.ask.answer?.kind === 'option' ? { label: c.ask.answer.label } : {}) }));
+    const r = await h.service.createSystem(systemInput);
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const result = await tap(r.ask, 0);
+    expect(result.ok).toBe(true);
+    expect(h.deliver).not.toHaveBeenCalled();
+    expect(h.store.get(r.ask.id)).toMatchObject({ state: 'answered', taskDelivery: 'skipped' });
+    expect(changes).toContainEqual({ kind: 'resolved', label: 'Resume' });
+    expect(h.notifier.finalizeAsk.mock.calls.at(-1)?.[1]).toContain('Recorded. Kookr acts on it.');
+  });
+
+  it('cancel closes the Telegram message with the given note', async () => {
+    const r = await h.service.createSystem(systemInput);
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    await h.service.cancel(r.ask.id, 'No answer in time: 2 resumed.');
+    expect(h.store.get(r.ask.id)?.state).toBe('cancelled');
+    expect(h.notifier.finalizeAsk.mock.calls.at(-1)?.[1]).toContain('No answer in time: 2 resumed.');
+  });
+
+  it('the task-facing create still refuses an unknown task id', async () => {
+    const r = await h.service.create({ ...base, taskId: 'system:interrupted-tasks' });
+    expect(r).toEqual({ ok: false, error: { code: 'unknown_task' } });
+  });
+});

@@ -8,7 +8,8 @@ import {
   type AdapterLaunchOptions,
   type AgentAdapter,
 } from '../adapters/agent-adapter.js';
-import { buildResumeContext } from './resume-context.js';
+import { buildResumeContext, describeReopenResume } from './resume-context.js';
+import type { InterruptedTaskEntry } from './interrupted-tasks/interrupted-tasks-service.js';
 import { replayRecordedLoadout } from './plugin-manager/loadout-store.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import { hashPrompt } from './hash-prompt.js';
@@ -76,7 +77,16 @@ export interface CrashRecoveryResult {
   relaunched: CrashRecoveryEntry[];
   skipped: CrashRecoverySkip[];
   failed: CrashRecoveryFailure[];
+  /**
+   * Tasks that passed every recovery guard but were left stopped for the operator to decide on
+   * (`parkForOperator`, issue #4215). Each also appears in `skipped`, with
+   * {@link PARKED_FOR_OPERATOR_REASON}, so receipts and dispositions record why nothing relaunched.
+   */
+  parked?: InterruptedTaskEntry[];
 }
+
+/** The `skipped` reason of a task parked for the operator's resume decision (issue #4215). */
+export const PARKED_FOR_OPERATOR_REASON = 'awaiting the operator\'s resume decision';
 
 export interface CrashRecoveryOptions {
   /** Shared provider circuit used to gate automatic recovery launches. */
@@ -87,6 +97,12 @@ export interface CrashRecoveryOptions {
   getLaunchTimeoutMs?: () => number;
   /** Force durable task state at crash-sensitive pre-launch boundaries. */
   flushTasks?: () => Promise<void>;
+  /**
+   * Leave each recoverable task stopped and report it in `parked` instead of relaunching it, so the
+   * operator is asked first (issue #4215). Only a task reconcile already moved to a terminal state
+   * is parked; one still in progress is relaunched as before, since nothing else would pick it up.
+   */
+  parkForOperator?: boolean;
 }
 
 /** How recently a session must have been relaunched to be considered a rapid crash-loop (ms). */
@@ -284,6 +300,20 @@ export async function recoverCrashedSessions(
         sessionId: tmuxName,
         reason: `CWD does not exist: ${originalCwd}`,
       });
+      continue;
+    }
+
+    // Ask the operator first (issue #4215): record the task, leave it stopped, relaunch nothing.
+    // Every guard above still applies, so a parked task is one recovery would have relaunched.
+    if (options.parkForOperator && isTerminalStatus(task.status)) {
+      const report = await describeReopenResume(task, { activeRalphLoop: false });
+      (result.parked ??= []).push({
+        taskId: task.id,
+        name: task.name ?? task.id,
+        mode: report.mode === 'resume' ? 'resume' : 'fresh',
+        ...(report.mode !== 'resume' ? { reason: report.reason } : {}),
+      });
+      result.skipped.push({ taskId: task.id, sessionId: tmuxName, reason: PARKED_FOR_OPERATOR_REASON });
       continue;
     }
 

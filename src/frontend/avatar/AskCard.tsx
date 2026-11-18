@@ -110,7 +110,7 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, o
   const setText = draft ? draft.set : setOwnText;
   const [openTaskFailed, setOpenTaskFailed] = useState(false);
   const questionId = useId();
-  const who = ask.taskName ? `${ask.taskName} asks` : 'A task asks';
+  const who = ask.system ? 'Kookr asks' : ask.taskName ? `${ask.taskName} asks` : 'A task asks';
   // The server only accepts https links; this guards against an old or hand-edited record all the same.
   const links = (ask.links ?? []).filter((link) => isOpenableUrl(link.url));
 
@@ -186,7 +186,7 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, o
           <p><TextWithLinks text={ask.context} /></p>
         </details>
       )}
-      {(links.length > 0 || onOpenTask) && (
+      {(links.length > 0 || (onOpenTask && !ask.system)) && (
         // What the question is about, one click away: the pages it links to, and the task that asked.
         <div className="avatar-ask-links">
           {links.map((link, index) => (
@@ -202,7 +202,7 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, o
               {link.label ?? DEFAULT_ASK_LINK_LABEL}
             </a>
           ))}
-          {onOpenTask && (
+          {onOpenTask && !ask.system && (
             <button
               type="button"
               className="avatar-ask-link"

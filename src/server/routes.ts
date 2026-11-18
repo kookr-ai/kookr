@@ -22,6 +22,7 @@ import { applyDefaultAgentUpdate } from './settings-service.js';
 import { registerSessionTransportRoutes } from './routes/session-transport-routes.js';
 import { registerIssueClaimRoutes } from './routes/issue-claim-routes.js';
 import { registerAskRoutes } from './routes/ask-routes.js';
+import { registerInterruptedTasksRoutes } from './routes/interrupted-tasks-routes.js';
 import { registerOperatorInboxRoutes } from './routes/operator-inbox-routes.js';
 import { registerEnvironmentBlockerRoutes } from './routes/environment-blocker-routes.js';
 import { registerSelfReportRoutes } from './routes/self-report-routes.js';
@@ -182,6 +183,11 @@ export function createRoutes(deps: RouteDeps): Hono {
   // routes, and Lucy's close action once the operator has confirmed its card.
   const taskLifecycleCommands = createTaskRouteLifecycleCommands(taskRouteDeps);
   registerTaskRoutes(app, { ...taskRouteDeps, lifecycleCommands: taskLifecycleCommands });
+  if (sharedDeps.interruptedTasks) {
+    sharedDeps.interruptedTasks.bindReopen((taskId) =>
+      taskLifecycleCommands.reopenTask(taskId, { actor: { source: 'api', actorId: 'kookr:interrupted-tasks' } }));
+    registerInterruptedTasksRoutes(app, { service: sharedDeps.interruptedTasks.service, taskStore: sharedDeps.taskStore });
+  }
   // Ready queue (issue #3933). Registered after task routes, which wire the
   // queue's launch path to the POST /api/tasks handler.
   registerReadyQueueRoutes(app, sharedDeps);

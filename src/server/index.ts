@@ -198,6 +198,9 @@ import { createIntegrationTrainMonitorFromEnv } from './integration-train-monito
 import { createRepoPathResolver } from './pr-delivery-tracker.js';
 import { createDeployConvergenceControllerFromEnv } from './deploy-convergence-controller.js';
 import { isTerminalStatus } from '../core/task-status.js';
+import { InterruptedTasksService, resolveInterruptedTasksPolicy } from './interrupted-tasks/interrupted-tasks-service.js';
+import { createInterruptedTasksAskPort, interruptedChoiceFromAsk } from './interrupted-tasks/interrupted-tasks-ask.js';
+import type { TaskLifecycleCommandResult } from './use-cases/task-lifecycle-commands.js';
 import { GhUmbrellaChainClient } from '../adapters/github-umbrella-chain-client.js';
 import {
   buildUmbrellaChainProjectInventory,
@@ -1371,6 +1374,38 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       // A broken ask store must never stop Kookr from starting: asks are simply unavailable.
       console.warn('[asks] disabled — could not open the ask store:', err);
     }
+  }
+
+  // Interrupted tasks (issue #4215): after a crash or reboot, ask the operator before resuming the
+  // tasks it killed, and resume them anyway when nobody answers in time. The Reopen command is bound
+  // by the routes once they exist; the batch is parked after startup recovery, once asks are up.
+  const interruptedTasksPolicy = resolveInterruptedTasksPolicy(process.env);
+  let reopenForInterruptedTasks: ((taskId: string) => Promise<TaskLifecycleCommandResult>) | undefined;
+  const interruptedTasks = new InterruptedTasksService({
+    filePath: join(kookrDir, 'interrupted-tasks.json'),
+    timeoutMs: interruptedTasksPolicy.timeoutMs,
+    reopenTask: async (taskId) => {
+      if (!reopenForInterruptedTasks) return { ok: false, detail: 'the server is not ready to relaunch tasks yet' };
+      const result = await reopenForInterruptedTasks(taskId);
+      if (result.outcome !== 'reopened') return { ok: false, detail: 'error' in result ? result.error : result.outcome };
+      return {
+        ok: true,
+        mode: result.resume.mode,
+        ...('reason' in result.resume && result.resume.reason ? { detail: result.resume.reason } : {}),
+      };
+    },
+    isTaskTerminal: (taskId) => {
+      const task = taskStore.getTask(taskId);
+      return task !== undefined && isTerminalStatus(task.status);
+    },
+    ...(askService ? { ask: createInterruptedTasksAskPort(askService) } : {}),
+  });
+  if (askService) {
+    askService.onChange((change) => {
+      if (change.kind !== 'resolved') return;
+      const choice = interruptedChoiceFromAsk(change.ask);
+      if (choice) void interruptedTasks.answerFromAsk(change.ask.id, choice);
+    });
   }
 
   // Environment-blocker registry (issue #1690). A durable, shared record of
@@ -3193,6 +3228,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   }
 
   const app = createRoutes({
+    interruptedTasks: {
+      service: interruptedTasks,
+      bindReopen: (reopen) => { reopenForInterruptedTasks = reopen; },
+    },
     lucyInteractionLog,
     lucyInteractionLogPath,
     lucyOperatorConfig,
@@ -4583,6 +4622,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       dispositionLedgerPath: join(kookrDir, 'disposition.jsonl'),
       staleOpenLaunchTaskIds,
       getLaunchTimeoutMs,
+      parkInterruptedForOperator: interruptedTasksPolicy.mode === 'ask',
     });
     await promotePendingStartupTasks({
       taskStore,
@@ -4714,6 +4754,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     askNotifierHolder = telegramHandle.ask;
     askBridgeHolder = telegramTaskBridge;
     await askService.start();
+  }
+  // After asks are up, so the question can be sent: re-arm a batch an earlier process left pending,
+  // then park what this boot's crash recovery left stopped (issue #4215).
+  try {
+    await interruptedTasks.start();
+    const parked = startupRecoverySummary?.parked ?? [];
+    if (parked.length > 0) await interruptedTasks.park(parked, 'restart');
+  } catch (err) {
+    console.error('[interrupted-tasks] could not start or park the interrupted tasks:', err);
   }
   onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;
   permissionCardHolder = telegramHandle?.permissionCard;
@@ -4883,6 +4932,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     if (telegramHandle) {
       try { await telegramHandle.stop(); } catch (err) { console.warn('[telegram] stop failed:', err); }
     }
+    interruptedTasks.stop();
     if (askService) {
       try { await askService.stop(); } catch (err) { console.warn('[asks] stop failed:', err); }
     }

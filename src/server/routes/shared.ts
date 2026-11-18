@@ -376,6 +376,14 @@ export interface RouteDeps {
   issueClaims?: import('./issue-claim-routes.js').IssueClaimRouteDeps;
   /** `kookr ask` service (rfc-kookr-ask); undefined when Telegram is not configured. */
   asks?: import('./ask-routes.js').AskRouteDeps;
+  /**
+   * Interrupted-task batches (issue #4215). `bindReopen` receives the routes' own Reopen command,
+   * which is what a batch decision runs for each task.
+   */
+  interruptedTasks?: {
+    service: import('./interrupted-tasks-routes.js').InterruptedTasksRouteDeps['service'];
+    bindReopen: (reopen: (taskId: string) => Promise<import('../use-cases/task-lifecycle-commands.js').TaskLifecycleCommandResult>) => void;
+  };
   /** Lucy's permission notices (issue #3932): the speak route reads their sentences. */
   lucyPermissionNotices?: Pick<import('../lucy-permission-notice.js').LucyPermissionNotifier, 'notice' | 'list'>;
   /** What Lucy said or wrote without being asked, lately; each of her turns is shown it (issue #4143). */

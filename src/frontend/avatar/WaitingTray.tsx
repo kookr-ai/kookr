@@ -220,7 +220,7 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
       : 'Recent questions';
 
   const renderRow = (ask: OperatorAskView, kind: 'waiting' | 'opinion') => {
-    const who = ask.taskName ? `${ask.taskName} asks` : 'A task asks';
+    const who = ask.system ? 'Kookr asks' : ask.taskName ? `${ask.taskName} asks` : 'A task asks';
     return (
       <li className={`avatar-ask-row-item${kind === 'opinion' ? ' avatar-ask-row-opinion' : ''}`} key={ask.id} data-ask-id={ask.id}>
         <button

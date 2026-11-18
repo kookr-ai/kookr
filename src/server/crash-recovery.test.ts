@@ -7,7 +7,8 @@ import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { reconcile } from './reconciliation.js';
-import { recoverCrashedSessions } from './crash-recovery.js';
+import { PARKED_FOR_OPERATOR_REASON, recoverCrashedSessions } from './crash-recovery.js';
+import { isTerminalStatus } from '../core/task-status.js';
 import { buildStartupRecoveryHealthSummary } from './routes/diagnostics-routes.js';
 import { buildTaskLaunchIntent } from '../core/task-launch-intent.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
@@ -1835,6 +1836,32 @@ describe('Crash Recovery', () => {
     const updatedTask = taskStore.getTask(task.id)!;
     const newSession = updatedTask.sessions.find((s) => s.tmuxSession === result.relaunched[0].newSessionId)!;
     expect(newSession.resumedFromCrash).toBe(true);
+  });
+
+  test('parkForOperator: a recoverable task is reported for the operator and not relaunched (#4215)', async () => {
+    const cwdResume = join(tempDir, 'project-park-resume');
+    const cwdFresh = join(tempDir, 'project-park-fresh');
+    const transcriptPath = join(tempDir, 'transcripts', 'session-park.jsonl');
+    await mkdir(join(tempDir, 'transcripts'), { recursive: true });
+    await writeFile(transcriptPath, '{"type":"user","content":"hello"}\n', 'utf-8');
+    const resumable = await setupCrashedTask('Refactor auth', cwdResume, { claudeSessionId: 'session-park', transcriptPath });
+    const fresh = await setupCrashedTask('Fix the bug', cwdFresh);
+    const launchSpy = vi.spyOn(adapter, 'launch');
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(result.relaunched).toEqual([]);
+    expect(result.parked).toEqual(expect.arrayContaining([
+      { taskId: resumable.id, name: expect.any(String), mode: 'resume' },
+      { taskId: fresh.id, name: expect.any(String), mode: 'fresh', reason: expect.any(String) },
+    ]));
+    expect(result.skipped.filter((s) => s.reason === PARKED_FOR_OPERATOR_REASON).map((s) => s.taskId).sort())
+      .toEqual([resumable.id, fresh.id].sort());
+    // Left stopped, as reconcile left them: no capacity taken, nothing for a reaper to act on.
+    expect(isTerminalStatus(taskStore.getTask(resumable.id)!.status)).toBe(true);
+    expect(isTerminalStatus(taskStore.getTask(fresh.id)!.status)).toBe(true);
   });
 
   test('fresh fallback: no claudeSessionId persisted (agent crashed before SessionStart)', async () => {

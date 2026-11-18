@@ -37,10 +37,11 @@ export function askTaskName(rawName: string | undefined): string | undefined {
 }
 
 export function toOperatorAskView(ask: AskRecord, taskName: TaskNameLookup, taskStatus: TaskStatusLookup): OperatorAskView {
-  const name = askTaskName(taskName(ask.taskId));
-  // A task that is gone counts as ended: nothing can be waiting on its answer.
-  const status = taskStatus(ask.taskId);
-  const taskEnded = status === undefined || isTerminalStatus(status);
+  const name = ask.system !== undefined ? undefined : askTaskName(taskName(ask.taskId));
+  // A task that is gone counts as ended: nothing can be waiting on its answer. Kookr's own
+  // questions have no task, and Kookr is always waiting on them.
+  const status = ask.system !== undefined ? undefined : taskStatus(ask.taskId);
+  const taskEnded = ask.system === undefined && (status === undefined || isTerminalStatus(status));
   // A closed ask always carries the time it closed, worked out here once, so the browser and Lucy's
   // briefing never have to guess it from other fields.
   const resolvedAt = ask.state === 'pending' ? undefined : closedAt(ask);
@@ -48,6 +49,7 @@ export function toOperatorAskView(ask: AskRecord, taskName: TaskNameLookup, task
     id: ask.id,
     taskId: ask.taskId,
     ...(name !== undefined ? { taskName: name } : {}),
+    ...(ask.system !== undefined ? { system: ask.system } : {}),
     taskEnded,
     question: ask.question,
     ...(ask.context !== undefined ? { context: ask.context } : {}),
@@ -158,9 +160,15 @@ function cutQuestion(question: string, maxWords: number): string | undefined {
  * question fewer. Made speakable (no markdown, paths or ids read out letter by letter) and with
  * secrets redacted, before it is cut, so a cut never splits a secret into two harmless-looking halves.
  */
-export function buildAskSpeech(ask: Pick<AskRecord, 'question' | 'options' | 'allowText'>, taskName: string | undefined): string {
+export function buildAskSpeech(
+  ask: Pick<AskRecord, 'question' | 'options' | 'allowText' | 'system'>,
+  taskName: string | undefined,
+): string {
   // The speakable rewrite ends its text with a full stop; the colon that follows replaces it.
-  const who = makeSpeakable(redactSpeechSecrets(taskName ? `The task ${taskName} needs your input` : 'A task needs your input'))
+  const asker = ask.system !== undefined
+    ? 'Kookr needs your input'
+    : taskName ? `The task ${taskName} needs your input` : 'A task needs your input';
+  const who = makeSpeakable(redactSpeechSecrets(asker))
     .replace(/[.!?…\s]+$/u, '');
   const question = makeSpeakable(redactSpeechSecrets(ask.question)).replace(/\s+/g, ' ').trim();
   const optionCount = ask.options.length;

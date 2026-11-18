@@ -122,6 +122,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--json', '-h', '--help'],
   },
   {
+    // Tasks a crash or reboot interrupted (#4215); keep in sync with src/cli/kookr-interrupted.ts.
+    name: 'interrupted',
+    subcommands: ['status', 'ask', 'decide'],
+    flags: ['--batch', '--json', '-h', '--help'],
+  },
+  {
     // Agent -> operator multiple-choice question over Telegram (RFC kookr-ask);
     // keep in sync with src/cli/kookr-ask.ts.
     name: 'ask',
@@ -510,6 +516,8 @@ function renderBashCompletion(): string {
   const abortFlags = flagsFor('abort');
   const queueSubcommands = subcommandsFor('queue');
   const queueFlags = flagsFor('queue');
+  const interruptedSubcommands = subcommandsFor('interrupted');
+  const interruptedFlags = flagsFor('interrupted');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
   const reopenFlags = flagsFor('reopen');
@@ -665,6 +673,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${queueSubcommands} ${queueFlags}" -- "\${cur}") )
       else
         COMPREPLY=( $(compgen -W "${queueFlags}" -- "\${cur}") )
+      fi
+      ;;
+    interrupted)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${interruptedSubcommands} ${interruptedFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${interruptedFlags}" -- "\${cur}") )
       fi
       ;;
     open)
@@ -933,6 +948,8 @@ function renderZshCompletion(): string {
   const abortFlags = flagsFor('abort');
   const queueSubcommands = subcommandsFor('queue');
   const queueFlags = flagsFor('queue');
+  const interruptedSubcommands = subcommandsFor('interrupted');
+  const interruptedFlags = flagsFor('interrupted');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
   const reopenFlags = flagsFor('reopen');
@@ -1044,6 +1061,13 @@ _kookr()
         compadd -- ${queueSubcommands} ${queueFlags}
       else
         compadd -- ${queueFlags}
+      fi
+      ;;
+    interrupted)
+      if (( CURRENT == 3 )); then
+        compadd -- ${interruptedSubcommands} ${interruptedFlags}
+      else
+        compadd -- ${interruptedFlags}
       fi
       ;;
     open)

@@ -44,6 +44,8 @@ import {
   type AskState,
   type AskView,
   type CreateAskInput,
+  type CreateSystemAskInput,
+  systemAskTaskId,
   type CreateAskResult,
   type DashboardAnswerInput,
 } from '../../shared/contracts/asks.js';
@@ -263,12 +265,30 @@ export class AskService {
   // ------------------------------------------------------------------- create
 
   async create(input: CreateAskInput): Promise<CreateAskResult> {
+    return this.createAsk(input, undefined);
+  }
+
+  /**
+   * Ask the operator on Kookr's own behalf (issue #4215): no task asks, so there is no task to check
+   * and nothing to type the answer into. The asking component hears the answer, the expiry or the
+   * cancellation through {@link onChange} (`resolved`, with `ask.system` set). Only server code calls
+   * this; the HTTP route keeps going through {@link create}, so a task cannot pose as Kookr.
+   */
+  async createSystem(input: CreateSystemAskInput): Promise<CreateAskResult> {
+    if (!/^[a-z0-9-]{1,40}$/.test(input.system)) return invalid('system must be 1..40 lowercase letters, digits or dashes');
+    const { system, ...rest } = input;
+    return this.createAsk({ ...rest, taskId: systemAskTaskId(system) }, system);
+  }
+
+  private async createAsk(input: CreateAskInput, system: string | undefined): Promise<CreateAskResult> {
     const notifier = this.deps.getNotifier();
     if (!notifier) return { ok: false, error: { code: 'not_configured' } };
 
-    const status = this.deps.taskStatus(input.taskId);
-    if (status === undefined) return { ok: false, error: { code: 'unknown_task' } };
-    if (isTerminalStatus(status)) return { ok: false, error: { code: 'terminal_task' } };
+    if (system === undefined) {
+      const status = this.deps.taskStatus(input.taskId);
+      if (status === undefined) return { ok: false, error: { code: 'unknown_task' } };
+      if (isTerminalStatus(status)) return { ok: false, error: { code: 'terminal_task' } };
+    }
 
     const key = input.idempotencyKey;
     if (key !== undefined) {
@@ -340,10 +360,11 @@ export class AskService {
     if (safeContext !== context) redacted.push('context');
 
     const createdAt = this.now();
-    const sessionId = this.deps.liveSession?.(input.taskId);
+    const sessionId = system === undefined ? this.deps.liveSession?.(input.taskId) : undefined;
     const ask: AskRecord = {
       id: randomBytes(6).toString('hex'),
       taskId: input.taskId,
+      ...(system !== undefined ? { system } : {}),
       question: safeQuestion,
       ...(safeContext !== undefined ? { context: safeContext } : {}),
       options,
@@ -451,12 +472,12 @@ export class AskService {
 
   // ------------------------------------------------------------------- cancel
 
-  async cancel(id: string): Promise<{ ok: true; ask: AskRecord } | { ok: false; reason: 'not_found' | 'not_pending' }> {
+  async cancel(id: string, note?: string): Promise<{ ok: true; ask: AskRecord } | { ok: false; reason: 'not_found' | 'not_pending' }> {
     const ask = this.deps.store.get(id);
     if (!ask) return { ok: false, reason: 'not_found' };
     if (!this.transition(id, 'cancelled', 'cancelled')) return { ok: false, reason: 'not_pending' };
     const done = this.deps.store.get(id) as AskRecord;
-    await this.finalize(done, '🚫 Cancelled by the asking task.');
+    await this.finalize(done, note ?? (done.system ? '🚫 Withdrawn by Kookr.' : '🚫 Cancelled by the asking task.'));
     return { ok: true, ask: done };
   }
 
@@ -685,6 +706,7 @@ export class AskService {
 
   /** Why an answer must not be typed into the asking task now, or undefined when it may be. */
   private notTypedReason(ask: AskRecord): string | undefined {
+    if (ask.system !== undefined) return 'Kookr acts on it.';
     const status = this.deps.taskStatus(ask.taskId);
     if (status === undefined || isTerminalStatus(status)) return 'The task has ended, so nothing was typed into it.';
     if (this.replacedByFreshSession(ask)) return 'The task was relaunched in a new session since it asked, so nothing was typed into it.';
