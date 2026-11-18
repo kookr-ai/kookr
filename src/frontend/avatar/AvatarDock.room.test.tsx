@@ -4,7 +4,7 @@
 // address), what the switch must not disturb (the 3D view, a half-typed message, the live region), where
 // keyboard focus goes, "Open task" leaving it, and the side rail that replaces the folded strip.
 
-import { act } from 'react';
+import { act, useEffect, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -57,7 +57,6 @@ import {
   setAvatarRoom,
   updateAvatarPanelPrefs,
   useAvatarPageCovered,
-  useAvatarRoomShown,
 } from '../store/avatar-panel-prefs.js';
 import { __resetLucyConversationForTests, appendConversationEntry } from '../store/lucy-conversation.js';
 import { __resetLucyPermissionForTests, handleLucyPermissionCards } from '../store/lucy-permission.js';
@@ -249,9 +248,9 @@ describe('AvatarDock: Lucy’s room', () => {
       ]);
     });
 
-    test('the dock tells the store the room is on screen while it is, and stops when it leaves, unmounts or the panel goes off', () => {
-      // A probe beside the REAL dock (App's own test uses a stand-in): this is what the dashboard's shortcuts read.
-      const Probe = (): React.ReactElement => <i data-testid="shown">{String(useAvatarRoomShown())}</i>;
+    test('the dock tells the store it covers the page while the room is on screen, and stops when it leaves, unmounts or the panel goes off', () => {
+      // A probe beside the REAL dock (App's own test uses a stand-in): this is what the dashboard's shortcuts and its inert state read.
+      const Probe = (): React.ReactElement => <i data-testid="shown">{String(useAvatarPageCovered())}</i>;
       const shown = (): string | undefined => q('shown')?.textContent ?? undefined;
       start();
       root = createRoot(container);
@@ -1038,6 +1037,30 @@ describe('AvatarDock: Lucy’s room', () => {
       act(() => { share.focus(); });
       setWindowWidth(600);
       expect(mode()).toBe('sheet');
+      expect(document.activeElement).toBe(composer());
+    });
+
+    test('the same, when the dashboard swaps its desktop panes for its mobile ones at that width and the focused one is gone', () => {
+      // App renders its panes in a different tree at 768 px and narrower, in the same commit that brings up her
+      // sheet: the button that had focus is unmounted before the dock looks, and focus is on the page itself.
+      const Panes = (): React.ReactElement => {
+        const [narrow, setNarrow] = useState(() => window.innerWidth <= 768);
+        useEffect(() => {
+          const onResize = (): void => setNarrow(window.innerWidth <= 768);
+          window.addEventListener('resize', onResize);
+          return () => window.removeEventListener('resize', onResize);
+        }, []);
+        const task = <button data-testid="task-card">Task</button>;
+        return narrow ? <section>{task}</section> : <main>{task}</main>;
+      };
+      start();
+      root = createRoot(container);
+      act(() => { root!.render(<><Panes /><AvatarDock attentionCount={0} roomShortcut={ROOM_SHORTCUT} /></>); });
+      const card = q<HTMLButtonElement>('task-card')!;
+      act(() => { card.focus(); });
+      setWindowWidth(600);
+      expect(mode()).toBe('sheet');
+      expect(card.isConnected).toBe(false);
       expect(document.activeElement).toBe(composer());
     });
 

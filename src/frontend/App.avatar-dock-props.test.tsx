@@ -32,12 +32,8 @@ vi.mock('./avatar/AvatarDock.js', async () => {
       const room = prefs.useAvatarRoom();
       react.useLayoutEffect(() => {
         if (!room) return undefined;
-        prefs.setAvatarRoomShown(true);
         prefs.setAvatarPageCovered(true);
-        return () => {
-          prefs.setAvatarRoomShown(false);
-          prefs.setAvatarPageCovered(false);
-        };
+        return () => prefs.setAvatarPageCovered(false);
       }, [room]);
       return react.createElement('section', { 'data-testid': 'mock-dock' });
     },

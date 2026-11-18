@@ -112,7 +112,6 @@ import {
   leaveAvatarRoomToShowTask,
   setAvatarRoom,
   setAvatarPageCovered,
-  setAvatarRoomShown,
   updateAvatarPanelPrefs,
   useAvatarPanelPrefs,
   useAvatarRoom,
@@ -218,6 +217,12 @@ export interface AvatarDockProps {
 
 /** A dialog, live and holding the keyboard: focus in it is never taken away from the operator. */
 const DIALOG_SELECTOR = '.dialog-overlay, [aria-modal="true"]';
+
+/** Whether keyboard focus is on something of the page under her: not nowhere, not in her dock, not in a dialog. */
+function focusIsInPage(dock: HTMLElement | null): boolean {
+  const active = document.activeElement;
+  return active !== null && active !== document.body && !dock?.contains(active) && !active.closest(DIALOG_SELECTOR);
+}
 
 const REPLAY_DESCRIPTION_ID = 'avatar-replay-description';
 /** Why the per-message Replay buttons are unavailable; they point at this text while they are. */
@@ -331,9 +336,16 @@ export function AvatarDock({
   // Set when the operator minimises or reopens, so keyboard focus can follow to the control that replaced the one they used.
   const restoreFocusRef = useRef(false);
 
+  // Where focus was when the window was last resized, read before React re-renders anything. At 768 px the
+  // dashboard swaps its desktop panes for its mobile ones (App.tsx) in the same commit that brings up her sheet,
+  // so by the time the sheet is on screen the element that had focus is gone and focus is on the page itself.
+  const resizeFocusRef = useRef(false);
   // A narrow window gets the full-width sheet, a wider one the column beside the page.
   useEffect(() => {
-    const onResize = (): void => setViewportWidth(window.innerWidth);
+    const onResize = (): void => {
+      resizeFocusRef.current = focusIsInPage(dockRef.current);
+      setViewportWidth(window.innerWidth);
+    };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
@@ -529,12 +541,6 @@ export function AvatarDock({
     // Only a change of `room` moves focus; `prefs.minimized` is read as it is at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room]);
-  // Tell the dashboard the room is on screen (not merely saved), so it holds its shortcuts back only then.
-  useLayoutEffect(() => {
-    if (!inRoom) return undefined;
-    setAvatarRoomShown(true);
-    return () => setAvatarRoomShown(false);
-  }, [inRoom]);
   // Tell the dashboard when she covers all of it (the room, or the full-width sheet while open), so it goes inert.
   const coversPage = inRoom || (sheet && !minimized);
   // While she covers the page, focus left in the dashboard under her (or dropped to the page when a dialog over
@@ -545,14 +551,14 @@ export function AvatarDock({
     if (!dock || (active && (dock.contains(active) || active.closest(DIALOG_SELECTOR)))) return;
     (dock.querySelector<HTMLTextAreaElement>('.avatar-typed textarea') ?? dock).focus();
   };
-  // Read before the dashboard goes inert: was focus on something in it? Only then is it moved, so a page that
-  // loads with the sheet open (a phone) does not pop the on-screen keyboard by itself.
+  // Read before the dashboard goes inert: was focus on something in it, now or when the resize that brought her
+  // up began? Only then is it moved, so a page that loads with the sheet open (a phone) does not pop the
+  // on-screen keyboard by itself.
   const focusInPageRef = useRef(false);
   useLayoutEffect(() => {
     if (!coversPage) return undefined;
-    const active = document.activeElement;
-    focusInPageRef.current = active !== null && active !== document.body
-      && !dockRef.current?.contains(active) && !active.closest(DIALOG_SELECTOR);
+    focusInPageRef.current = focusIsInPage(dockRef.current) || resizeFocusRef.current;
+    resizeFocusRef.current = false;
     setAvatarPageCovered(true);
     return () => setAvatarPageCovered(false);
   }, [coversPage]);
