@@ -60,7 +60,9 @@
 # id of the exact file versions the PR changes. The gate then accepts a pass whose
 # head SHA moved as long as the PR's current id still equals it. A rebase keeps the
 # id only when the new base did not touch the files the PR changes; otherwise the
-# reviewer must re-review.
+# reviewer must re-review. Exception: docs/reference/environment-variables.md,
+# api.md and cli.md are bound by the PR's own changed lines, so a base that only
+# added other rows there keeps the id (see the header of scripts/review-patch-id.sh).
 #
 # Every run that reaches GitHub ends with a `kookr-merge: summary:` block
 # (issue #3913): on success, what merged where, why, and what the integration
@@ -394,7 +396,7 @@ require_review_verdict() {
       ;;
     *)
       echo "kookr-merge: BLOCKED by the independent-review gate: ${decision#block:}" >&2
-      echo "kookr-merge: the latest reviewer verdict must be 'pass' with review-head-sha equal to the current head ($head_sha), or with review-patch-id equal to the id of the exact file versions the PR currently changes (it survives a rebase only when the base did not touch those files)." >&2
+      echo "kookr-merge: the latest reviewer verdict must be 'pass' with review-head-sha equal to the current head ($head_sha), or with review-patch-id equal to the id of the exact file versions the PR currently changes (it survives a rebase only when the base did not touch those files; docs/reference/environment-variables.md, api.md and cli.md are bound by the PR's own changed lines instead, see the header of scripts/review-patch-id.sh)." >&2
       echo "kookr-merge: '$KOOKR_REVIEW_TIMEOUT_LABEL' is telemetry only and cannot bypass review." >&2
       echo "kookr-merge: run the independent-merge-review skill, or set KOOKR_MERGE_REQUIRE_REVIEW=0 for a manual merge." >&2
       local why
