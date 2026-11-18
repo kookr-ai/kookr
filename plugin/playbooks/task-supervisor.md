@@ -129,5 +129,5 @@ A parked wait that outlives those 45 minutes is treated as silent again.
 ## Notebook
 
 Your notebook role is `kookr-task-supervisor`. At the start run `nb show kookr-task-supervisor`
-and start from those lessons. At the end vote the lessons you used (`nb vote ... +1` or `-1`),
+and start from those lessons. At the end, before `kookr signal completion-ready`, vote the lessons you used (`nb vote ... +1` or `-1`),
 remove any no longer true, and add at most a few one-line lessons you confirmed this run.

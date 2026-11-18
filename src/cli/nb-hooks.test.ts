@@ -22,7 +22,7 @@ beforeEach(() => {
   process.env.NB_DIR = dir;
 });
 afterEach(() => {
-  for (const k of ['NB_DIR', 'NB_RETRO_DISABLED', 'NB_RETRO_TTL_DAYS', 'KOOKR_REPO_SLUG']) {
+  for (const k of ['NB_DIR', 'NB_RETRO_DISABLED', 'NB_RETRO_TTL_DAYS', 'KOOKR_REPO_SLUG', 'KOOKR_TASK_ID']) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -38,6 +38,7 @@ describe('nb-retro Stop/SubagentStop hook', () => {
     delete base.KOOKR_REPO_SLUG;
     delete base.NB_RETRO_TTL_DAYS;
     delete base.NB_RETRO_DISABLED;
+    delete base.KOOKR_TASK_ID;
     return { ...base, ...env };
   }
 
@@ -177,6 +178,31 @@ describe('nb-retro Stop/SubagentStop hook', () => {
     expect(r.err).toContain('(here: acme-widgets)');
     const bare = runRetro({ NB_DIR: dir }, { session_id: 'sess-noslug' });
     expect(bare.err).not.toContain('(here:');
+  });
+
+  test('in a Kookr task the nudge ends by telling the task to re-signal completion-ready last (#4141)', () => {
+    const r = runRetro({ NB_DIR: dir, KOOKR_TASK_ID: 'task-123' }, { session_id: 'sess-task' });
+    expect(r.code).toBe(2);
+    const lines = r.err.trimEnd().split('\n');
+    const last = lines[lines.length - 1];
+    expect(last).toContain('kookr signal completion-ready');
+    expect(last).toMatch(/already run/);
+    expect(last).toMatch(/LAST call/);
+    // The rest of the retrospective text is the same as outside a task.
+    const bare = runRetro({ NB_DIR: dir }, { session_id: 'sess-notask' });
+    expect(lines.slice(0, -1).join('\n')).toBe(bare.err.trimEnd());
+  });
+
+  test('outside a Kookr task (KOOKR_TASK_ID unset or blank) the nudge does not mention the completion signal', () => {
+    for (const [sid, env] of [
+      ['sess-unset', { NB_DIR: dir }],
+      ['sess-blank', { NB_DIR: dir, KOOKR_TASK_ID: '  ' }],
+    ] as const) {
+      const r = runRetro(env, { session_id: sid });
+      expect(r.code).toBe(2);
+      expect(r.err).not.toContain('completion-ready');
+      expect(r.err.trimEnd().endsWith("this reminder won't repeat this session.")).toBe(true);
+    }
   });
 
   test('claims the sentinel atomically: N hooks racing on one session id yield exactly one nudge', async () => {
