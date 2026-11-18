@@ -142,6 +142,36 @@ quotes and heredocs are not commands, so a commit message that mentions
 `kookr merge <PR> --repo <owner/name>`, which always runs the merge wrapper of
 the deployed production checkout. `kookr merge` itself is always allowed.
 
+## Closes Keyword Guard
+
+`closes-keyword-guard.sh` is a `PreToolUse` hook on `Bash` (issue #4185) that
+checks the body of a `gh pr create` or `gh pr edit` for a closing reference
+GitHub will ignore. GitHub closes an issue on merge only when a closing keyword
+(`close`, `fix`, `resolve` and their forms, followed by `#N` or
+`owner/repo#N`) is written as plain text. Inside inline code or a fenced code
+block it is ignored, and an inline `(#N)` reference closes nothing.
+
+- A closing keyword that appears only inside code is denied. The denial prints
+  the bare form to write instead. When the branch names an issue
+  (`issue-<N>`), only that issue's keyword is checked, so a quoted `git log`
+  line about another issue passes.
+- When the branch names an issue and the body mentions `#N` only as `(#N)`, the
+  command is allowed and the agent gets a warning that suggests `Closes #N`.
+
+The scanned text is every heredoc body in the command, the quoted value of
+`--body`/`-b`, and the `--body-file`/`-F` file when it already exists (a
+relative path is looked up in the `--head` branch's worktree, then in the
+directory the command runs in, following `cd`). The command is found after
+`then`, `do` or `{`, and inside a `$( … )` substitution such as
+`URL="$(gh pr create …)"`. `gh pr edit <N>` takes no issue from the
+checked-out branch, since that branch may not be PR N's, so every closing
+keyword in code is checked and no `(#N)` warning is given. The title and
+chained commands are not scanned. The check used to live in the user-level
+`hooks/pr-workflow-gate.sh` (issue #3642); it moved here because Kookr starts
+its agents with `--setting-sources ''`, which skips user-level hooks but still
+loads plugin hooks from `--plugin-dir`. It fails open: a crash or a missing
+`node` allows the command, and a crash is logged to `~/.kookr/hook-errors.log`.
+
 ## Pull-Request Delivery Note
 
 `pr-create-delivery-note.sh` is a `PostToolUse` hook on `Bash` (issue #3913).
