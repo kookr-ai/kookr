@@ -1313,7 +1313,7 @@ describe('promotePendingTasks', () => {
       'pending-1',
       'Fix the bug in auth',
       '/workspace/project',
-      { sessionId: 'sess-resumable' },
+      { sessionId: 'sess-resumable', continuationMessage: expect.stringContaining('[Kookr] Your previous session ended unexpectedly') },
       expect.objectContaining({ onSessionCreated: expect.any(Function) }),
     );
   });

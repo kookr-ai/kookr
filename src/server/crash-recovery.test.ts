@@ -1829,7 +1829,7 @@ describe('Crash Recovery', () => {
     expect(calledTaskId).toBe(task.id);
     expect(calledPrompt).toBe('Refactor auth');
     expect(calledCwd).toBe(cwd);
-    expect(calledResume).toEqual({ sessionId: 'session-abc', transcriptPath });
+    expect(calledResume).toEqual({ sessionId: 'session-abc', transcriptPath, continuationMessage: expect.any(String) });
 
     // New session is marked resumedFromCrash
     const updatedTask = taskStore.getTask(task.id)!;
@@ -1947,7 +1947,7 @@ describe('Crash Recovery', () => {
     expect(result.relaunched[0].mode).toBe('fresh');
     expect(result.relaunched[0].fallbackReason).toBe('agent type does not support resume');
     expect(codexLaunches).toHaveLength(1);
-    expect(codexLaunches[0].resume).toEqual({ sessionId: 'codex-session-uuid', transcriptPath: undefined });
+    expect(codexLaunches[0].resume).toMatchObject({ sessionId: 'codex-session-uuid' });
 
     // Codex session not marked resumedFromCrash
     const updatedTask = taskStore.getTask(task.id)!;

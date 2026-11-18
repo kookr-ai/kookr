@@ -23,6 +23,7 @@ import type {
   PreflightResult,
   ResumeContext,
 } from './agent-adapter.js';
+import { DEFAULT_RESUME_CONTINUATION_MESSAGE } from './agent-adapter.js';
 import { probeAgentBinary, type ProbeExecRunner } from './probe-agent-binary.js';
 import { extractRawHookHeader, parseHookEvent, HookParseError, type RawHookHeader } from '../core/hook-parser.js';
 import {
@@ -497,12 +498,21 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // Phase instrumentation (issue #1589): agent-boot covers readiness and the
     // initial-prompt delivery/submit-confirmation loop below.
     opts?.onPhase?.('agent-boot');
-    // Durable record of the initial-prompt delivery outcome (#2792). Stays
-    // undefined for the resume path (no fresh delivery occurs); set once
-    // delivery is confirmed/assumed for a fresh launch and attached to the
-    // registered session below so remote recovery/diagnosis can read it.
+    // Durable record of the initial-prompt delivery outcome (#2792), attached
+    // to the registered session below so remote recovery/diagnosis can read it.
+    //
+    // A resumed conversation gets the same delivery as a fresh one, with the
+    // continuation message as its text. It needs both halves of it: the
+    // startup-dialog guard (a resume under --dangerously-skip-permissions opens
+    // on the "Bypass Permissions mode" dialog, whose default is "No, exit"),
+    // and a message to submit (without one the agent idles at the composer).
+    // Before this, a resumed session emitted no hook and was reaped as a
+    // first-hook miss.
     let promptDelivery: PromptDeliveryHealth | undefined;
-    if (!useResume) {
+    const deliveredText = useResume
+      ? (resume!.continuationMessage ?? DEFAULT_RESUME_CONTINUATION_MESSAGE)
+      : prompt;
+    {
       // Register a deferred BEFORE delivery so a fast UserPromptSubmit hook
       // is not missed. The resolver fires from `injectHookEvent` on the
       // first parent UserPromptSubmit for this session — Claude Code's own
@@ -517,7 +527,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         // deliverInitialPromptToSession.
         const awaitSubmit = (timeoutMs: number) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false);
         let deliveryResult = await raceAgainstLaunchAbort(
-          deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+          deliverInitialPromptToSession(this.backend, tmuxName, deliveredText, {
             inputWriter: this.inputWriter,
             bracketedPaste: this.promptBracketedPaste,
             waitForReady: this.promptBracketedPaste,
@@ -548,7 +558,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           // confirmation loop so the fallback cannot silently strand text in
           // the composer.
           deliveryResult = await raceAgainstLaunchAbort(
-            deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+            deliverInitialPromptToSession(this.backend, tmuxName, deliveredText, {
               inputWriter: this.inputWriter,
               bracketedPaste: false,
               awaitSubmit,
@@ -594,7 +604,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         // UserPromptSubmit) and is not evidence of loss.
         const received = normalizeUserPromptNewlines(submittedPrompt ?? '').trim();
         if (received.length > 0) {
-          const sent = normalizeUserPromptNewlines(stripBracketedPasteMarkers(prompt)).trim();
+          const sent = normalizeUserPromptNewlines(stripBracketedPasteMarkers(deliveredText)).trim();
           if (received.length < sent.length) {
             throw new InitialPromptTruncatedError(tmuxName, sent.length, received.length);
           }
@@ -624,7 +634,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       throw new LaunchAbortedError(tmuxName);
     }
     // Phase instrumentation (issue #1589): ack — the prompt was acknowledged
-    // (or resume needs none); register the session.
+    // (the task prompt, or the continuation message on resume); register the session.
     opts?.onPhase?.('ack');
     // Register session with task store
     this.taskStore.addSession(taskId, {
