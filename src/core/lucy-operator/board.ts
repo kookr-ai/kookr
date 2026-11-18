@@ -242,10 +242,11 @@ export function spokenLabel(task: Pick<LucyBoardTask, 'name' | 'project'>): stri
 }
 
 /**
- * What she is told about a permission prompt, as short phrases: the tool, the command, and whether
- * its card is on her panel with buttons that still answer it. The buttons count as working only while
- * the server would still accept a press, so she never points the operator at a button that is not
- * there or no longer does anything.
+ * What she is told about a permission prompt, as short phrases: the tool, whether its card is on her
+ * panel with buttons that still answer it, and last the command. The buttons count as working only
+ * while the server would still accept a press, so she never points the operator at a button that is
+ * not there or no longer does anything. The command is an agent's text, so it goes after the card
+ * phrase: a command that imitates that phrase cannot come before the real one.
  */
 export function permissionWords(permission: LucyBoardPermission | undefined, nowMs: number): string[] {
   if (!permission) return [];
@@ -253,10 +254,10 @@ export function permissionWords(permission: LucyBoardPermission | undefined, now
   const tool = boardText(permission.tool, 40);
   if (tool) words.push(`the prompt asks to use ${tool}`);
   const command = boardText(permission.command, MAX_PERMISSION_COMMAND_CHARS);
-  if (command) words.push(`it wants to run: ${command}`);
+  const commandWords = command ? [`it wants to run: ${command}`] : [];
   const card = permission.card;
   if (!card) {
-    words.push('no card for it on your panel');
+    words.push('no card for it on your panel', ...commandWords);
     return words;
   }
   const buttons = [...(card.approve ? ['Approve once'] : []), ...(card.deny ? ['Deny'] : [])];
@@ -269,6 +270,7 @@ export function permissionWords(permission: LucyBoardPermission | undefined, now
     const left = minutes >= 1 ? `about ${minutes} more ${minutes === 1 ? 'minute' : 'minutes'}` : 'less than a minute more';
     words.push(`its card is on your panel and ${buttons.join(' and ')} ${buttons.length === 1 ? 'works' : 'work'} for ${left}`);
   }
+  words.push(...commandWords);
   return words;
 }
 

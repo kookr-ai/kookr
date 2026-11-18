@@ -59,10 +59,9 @@ describe('server boot: what Lucy said unprompted reaches her next turn', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  test('a question she read out and a line she wrote are both in the instructions of the next typed turn', { timeout: 30_000 }, async () => {
-    const model = scriptedModel([{ text: 'It asked whether to ship.' }]);
-    wired.model = model.port;
-    server = await createKookrServerInternal({
+  /** A real server whose operator conversation is a script. `livenessIntervalMs` is how often the liveness tick (which evaluates permission prompts) runs. */
+  async function boot(livenessIntervalMs = 600_000, terminalBackend = new FakeTerminalBackend()): Promise<KookrServerInternal> {
+    return createKookrServerInternal({
       port: 0,
       host: '127.0.0.1',
       kookrDir: tempDir,
@@ -72,11 +71,17 @@ describe('server boot: what Lucy said unprompted reaches her next turn', () => {
       serverCwd: '/test/cwd',
       frontendDir: join(tempDir, 'frontend'),
       saveIntervalMs: 600_000,
-      livenessIntervalMs: 600_000,
-      terminalBackend: new FakeTerminalBackend(),
+      livenessIntervalMs,
+      terminalBackend,
       claudeDir: join(tempDir, 'claude'),
       lucyOperatorConfig: { enabled: true, ok: true, warnings: [], launch: false, model: { apiKey: 'k', model: 'm', baseUrl: 'http://127.0.0.1:9', providers: [], reasoning: 'medium' } },
     });
+  }
+
+  test('a question she read out and a line she wrote are both in the instructions of the next typed turn', { timeout: 30_000 }, async () => {
+    const model = scriptedModel([{ text: 'It asked whether to ship.' }]);
+    wired.model = model.port;
+    server = await boot();
     const port = (server.httpServer.address() as { port: number }).port;
     const base = `http://127.0.0.1:${port}`;
     const asking = server.taskStore.createTask('Fix login', tempDir);
@@ -123,5 +128,54 @@ describe('server boot: what Lucy said unprompted reaches her next turn', () => {
       '- just now (NEW), about "Docs link audit": Docs link audit has gone quiet.',
     ]);
     expect(model.requests[0]!.messages.slice(1)).toEqual([{ role: 'user', content: 'what was that?' }]);
+  });
+
+  test('a permission notice she spoke is in the instructions of the next typed turn', { timeout: 60_000 }, async () => {
+    const model = scriptedModel([{ text: 'Yes, it is waiting on Bash.' }]);
+    wired.model = model.port;
+    // The liveness tick evaluates permission prompts: run it often so the test polls instead of sleeping.
+    // Its session is alive in the terminal backend, or the tick would fail the task as lost.
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 'kookr-blocked', command: 'agent', args: [] });
+    server = await boot(200, backend);
+    const port = (server.httpServer.address() as { port: number }).port;
+    const blocked = server.taskStore.createTask('Staging fixture refresh', tempDir);
+    const session = 'kookr-blocked';
+    server.taskStore.addSession(blocked.id, { tmuxSession: session, agentType: 'claude-code', cwd: tempDir, createdAt: new Date() });
+
+    // The notice counts as said only when it reached an owner dashboard.
+    const received: Array<Record<string, unknown>> = [];
+    ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    ws.on('message', (data) => {
+      try { received.push(JSON.parse(String(data)) as Record<string, unknown>); } catch { /* not JSON */ }
+    });
+    await new Promise<void>((resolve, reject) => { ws!.once('open', () => resolve()); ws!.once('error', reject); });
+    await expect.poll(() => received.some((m) => m.type === 'operatorAsks'), { timeout: 20_000 }).toBe(true);
+
+    // A prompt that has waited two minutes, past the default of one: the card is built and she speaks.
+    // Queued first, with the time it was first seen, so the monitor's own finding keeps that time.
+    server.queue.enqueue(session, {
+      agentId: session, type: 'permission_blocked', severity: 'warning',
+      explanation: 'Agent is blocked on permission for tool: Bash', detectedAt: new Date(Date.now() - 120_000),
+    });
+    server.monitor.processEvents(session, [{ type: 'permission_request', sessionId: session, toolName: 'Bash', toolInput: { command: 'psql staging -f fixtures/seed.sql' } }]);
+
+    const sentence = 'The task "Staging fixture refresh" is waiting for your permission to use Bash. The command is on my card.';
+    await expect.poll(() => JSON.stringify(received.filter((m) => m.type !== 'resourceStatus' && m.type !== 'snapshot')), { timeout: 30_000 }).toContain('announce');
+
+    const turn = await fetch(`http://127.0.0.1:${port}/api/lucy/turn`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'can you make it proceed ?', conversationId: 'typed-boot-permission', input: 'typed' }),
+    });
+    expect(turn.status).toBe(200);
+    await turn.text();
+
+    expect(model.requests).toHaveLength(1);
+    const system = (model.requests[0]!.messages[0] as { content: string }).content;
+    const note = system.slice(system.indexOf('What you told the operator without being asked'));
+    expect(note.split('\n').slice(1).map((line) => line.replace(/^- (a moment|\d+ seconds?) ago/, '- just now').replace(/\[[a-z0-9]+\] /g, ''))).toEqual([
+      `- just now (NEW), about "Staging fixture refresh": ${sentence}`,
+    ]);
   });
 });

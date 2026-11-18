@@ -62,6 +62,27 @@ describe('createLucyUnpromptedLog', () => {
     expect(log.recent()).toEqual([{ text: 'The task Deploy needs your input: ship it?', at: T0, tasks: [{ id: 't1' }] }]);
   });
 
+  test('a key said again after fifteen minutes with no read in between is a new item, not pruned in the same call', () => {
+    const { log, at } = setup();
+    log.record({ key: 'launch:t1', text: 'The task I started needs your input.', tasks: [{ id: 't1' }] });
+    at(MAX_UNPROMPTED_AGE_MS + 60_000);
+    log.record({ key: 'launch:t1', text: 'The task I started needs your input.', tasks: [{ id: 't1' }] });
+    expect(log.recent()).toEqual([{ text: 'The task I started needs your input.', at: T0 + MAX_UNPROMPTED_AGE_MS + 60_000, tasks: [{ id: 't1' }] }]);
+  });
+
+  test('a different sentence under the same key is a new saying, at the time it was said', () => {
+    const { log, at } = setup();
+    log.record({ key: 'launch:t1', text: 'The task I started needs your input.', tasks: [{ id: 't1' }], inConversation: 'live-1' });
+    at(5 * 60_000);
+    log.record({ key: 'launch:t1', text: 'The task I started has finished.', tasks: [{ id: 't1' }] });
+    expect(log.recent('live-1')).toEqual([{ text: 'The task I started has finished.', at: T0 + 5 * 60_000, tasks: [{ id: 't1' }] }]);
+    // And it lives its own fifteen minutes.
+    at(5 * 60_000 + MAX_UNPROMPTED_AGE_MS);
+    expect(log.recent()).toHaveLength(1);
+    at(5 * 60_000 + MAX_UNPROMPTED_AGE_MS + 1);
+    expect(log.recent()).toEqual([]);
+  });
+
   test('a conversation that already holds an item in its history is told so; the others are not', () => {
     const { log, at } = setup();
     log.record({ key: 'ask:q1', text: 'The task Deploy needs your input: ship it?', tasks: [{ id: 't1' }], inConversation: 'live-1' });

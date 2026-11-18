@@ -77,8 +77,13 @@ export function createLucyUnpromptedLog(options: { now?: () => number } = {}): L
         const text = entry.text.trim();
         if (!entry.key || !text) return;
         const at = now();
-        const previous = items.find((item) => item.key === entry.key);
-        // Said again: one item, at its first time, known to every conversation that noted it.
+        // Prune first: an item already past its time or closed is not "the same thing said again".
+        prune(at);
+        const found = items.find((item) => item.key === entry.key);
+        // Only the same sentence is the same saying: it keeps its first time and every conversation that
+        // noted it. A different sentence under the key (a launch report that now says "has finished")
+        // is a new saying, at the time it is said now.
+        const previous = found?.text === text ? found : undefined;
         const conversations = new Set(previous?.conversations ?? []);
         if (entry.inConversation) conversations.add(entry.inConversation);
         items = items.filter((item) => item.key !== entry.key);

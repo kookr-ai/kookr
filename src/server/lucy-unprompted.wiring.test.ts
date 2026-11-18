@@ -217,6 +217,23 @@ describe('what Lucy said unprompted reaches her next turn (issue #4143)', () => 
   });
 });
 
+describe('a launch report that follows an earlier one about the same task', () => {
+  test('"has finished" after "needs your input" is a new saying: NEW and shown at its own time', async () => {
+    const w = world();
+    const key = 'launch:dddd4444';
+    const tasks = [{ id: 'dddd4444', name: 'Chaining investigation' }];
+    w.log.record({ key, text: 'The task I started "Chaining investigation" needs your input.', tasks });
+    w.at(60 * SEC);
+    await w.turn('typed-1', 'what is it?');
+    w.at(6 * 60 * SEC);
+    w.log.record({ key, text: 'The task I started "Chaining investigation" has finished.', tasks });
+    w.at(6 * 60 * SEC + 10 * SEC);
+    await w.turn('typed-1', 'open it');
+    expect(w.system(1)).toContain('- 10 seconds ago (NEW), about "Chaining investigation" (no longer on the board): The task I started "Chaining investigation" has finished.');
+    expect(w.system(1)).not.toContain('needs your input');
+  });
+});
+
 describe('a question Talk read out (the hands-free path) is not shown twice', () => {
   const QUESTION = 'The task Billing migration needs your input: Run it on production now? Three choices are on my card.';
   /** Talk read the question in `live-1`: the record gets it when it is heard, the history just before the next answer. */

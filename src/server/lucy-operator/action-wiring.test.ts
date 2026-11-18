@@ -282,7 +282,7 @@ describe('buildLucyOperator', () => {
     const service = buildLucyOperator(deps)!.service!;
     for await (const _ of service.runTurn({ text: 'approve it', conversationId: 'typed-1' })) { /* to the end */ }
     const system = (script.requests[0]!.messages[0] as { content: string }).content;
-    expect(system).toMatch(/waiting on the operator: it is blocked on a permission · the prompt asks to use Bash · it wants to run: psql staging -f fixtures\/a\.sql · its card is on your panel and Approve once and Deny work for about [34] more minutes/);
+    expect(system).toMatch(/waiting on the operator: it is blocked on a permission · the prompt asks to use Bash · its card is on your panel and Approve once and Deny work for about [34] more minutes · it wants to run: psql staging -f fixtures\/a\.sql/);
   });
 
   test('the two holders clear each other\'s card, so only one is ever waiting', async () => {

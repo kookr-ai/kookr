@@ -55,7 +55,7 @@ describe('dispatchLucyTool', () => {
       permission: { tool: 'Bash', command: 'psql staging -f fixtures/a.sql', card: { approve: true, deny: true, buttonsUntil: NOW + 2 * 60_000 } },
     });
     const live = await dispatchLucyTool('read_task', '{"task":"cccc"}', fakeSource({ tasks: [blocked] }), NOW);
-    expect(live.content).toContain('Waiting on the operator: it is blocked on a permission; the prompt asks to use Bash; it wants to run: psql staging -f fixtures/a.sql; its card is on your panel and Approve once and Deny work for about 2 more minutes');
+    expect(live.content).toContain('Waiting on the operator: it is blocked on a permission; the prompt asks to use Bash; its card is on your panel and Approve once and Deny work for about 2 more minutes; it wants to run: psql staging -f fixtures/a.sql');
     const late = await dispatchLucyTool('read_task', '{"task":"cccc"}', fakeSource({ tasks: [blocked] }), NOW + 2 * 60_000 + 1);
     expect(late.content).toContain('its card is on your panel but the buttons have timed out: it is answered in the task\'s terminal');
   });

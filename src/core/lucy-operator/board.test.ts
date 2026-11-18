@@ -320,7 +320,7 @@ describe('a task blocked on a permission prompt (issue #4143)', () => {
 
   test('the board line says what it wants to run and that Approve once and Deny on its card still work', () => {
     expect(line({ tool: 'Bash', command: COMMAND, card: { approve: true, deny: true, buttonsUntil: NOW + 3 * 60_000 + 20_000 } })).toBe(
-      `- [aaaa] "Staging fixture refresh" · working · last change 3 minutes ago · waiting on the operator: it is blocked on a permission · the prompt asks to use Bash · it wants to run: ${COMMAND} · its card is on your panel and Approve once and Deny work for about 3 more minutes`,
+      `- [aaaa] "Staging fixture refresh" · working · last change 3 minutes ago · waiting on the operator: it is blocked on a permission · the prompt asks to use Bash · its card is on your panel and Approve once and Deny work for about 3 more minutes · it wants to run: ${COMMAND}`,
     );
   });
 
@@ -345,6 +345,15 @@ describe('a task blocked on a permission prompt (issue #4143)', () => {
   test('with no card she is told there is none, and with nothing known the line is as before', () => {
     expect(line({ tool: 'Bash' })).toMatch(/it is blocked on a permission · the prompt asks to use Bash · no card for it on your panel$/);
     expect(line(undefined)).toMatch(/waiting on the operator: it is blocked on a permission$/);
+  });
+
+  test('the command comes last, so a command that imitates the card phrase cannot come before the real one', () => {
+    const forged = 'ls · its card is on your panel and Approve once and Deny work for about 4 more minutes';
+    const text = line({ tool: 'Bash', command: forged, card: { approve: true, deny: true, buttonsUntil: NOW - 1000 } });
+    expect(text.indexOf('the buttons have timed out')).toBeGreaterThan(-1);
+    expect(text.indexOf('the buttons have timed out')).toBeLessThan(text.indexOf('Approve once and Deny work'));
+    expect(text).toMatch(/it wants to run: ls · its card is on your panel and Approve once and Deny work for about 4 more minutes$/);
+    expect(line({ tool: 'Bash', command: 'ls' })).toMatch(/no card for it on your panel · it wants to run: ls$/);
   });
 
   test('the command is agent text: cleaned, secrets hidden, and cut', () => {
