@@ -423,7 +423,7 @@ Lucy writes first and speaks second. Three things appear in her thread without b
 messages from her. None of them is spoken, and none calls a model: the server builds each sentence
 from its own records with fixed patterns, and names a task only when its title may be said aloud.
 
-The lines about a task (failed, gone quiet, lost contact, wants review) are also kept, for fifteen
+The lines about a task (failed, gone quiet, lost contact, over budget, wants review) are also kept, for fifteen
 minutes, in the server's record of what she said unprompted, so she knows what "it" means when you
 answer one ([What she said unprompted](lucy-operator.md#what-she-said-unprompted)). The briefing is
 not: the browser decides whether to write it, so the server does not know it was shown.

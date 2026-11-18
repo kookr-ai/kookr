@@ -289,7 +289,7 @@ When each kind is recorded:
 | Permission notice | the sentence reached at least one owner dashboard (`LucyPermissionNotifier`) |
 | A task's question (clip) | a dashboard asks for its clip (`POST /api/asks/:id/speak`), before the clip is made: the dashboard writes the same words in her thread when no clip comes back |
 | A task's question (Talk) | the browser reports playing its first sentence. The Talk conversation also keeps it in its own history, as before, and is not shown it a second time in the note |
-| Line about a task (failed, gone quiet, lost contact, wants review) | the line reached at least one owner dashboard (`LucySaysNotifier`) |
+| Line about a task (failed, gone quiet, lost contact, over budget, wants review) | the line reached at least one owner dashboard (`LucySaysNotifier`) |
 | Report of a task she launched | the report is sent (`onTaskOutcome` in the launch controller) |
 
 Not recorded: the briefing she writes when her panel opens. The browser decides whether a briefing is
