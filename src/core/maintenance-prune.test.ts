@@ -994,6 +994,37 @@ describe('planAndPruneMaintenance', () => {
     expect(marker['keep-me.json']).toBe(daysAgo(1));
   });
 
+  test('live prune also scrubs per-channel lane keys of a pruned, partly delivered signal', async () => {
+    await writeTasks([]);
+    const createdAt = daysAgo(40);
+    // 40 days old: past the undelivered default (30), so it is pruned even
+    // though only one channel delivered it (a lane key, no plain entry).
+    const aged = await writeOperatorSignal('stuck-alert.json', { createdAt, mtimeDaysAgo: 40 });
+    const keptCreatedAt = daysAgo(1);
+    const kept = await writeOperatorSignal('fresh-alert.json', {
+      createdAt: keptCreatedAt,
+      mtimeDaysAgo: 1,
+    });
+    const markerPath = await writeDeliveredMarker({
+      'stuck-alert.json': 'stale-occurrence',
+      'discord:stuck-alert.json': createdAt,
+      'telegram:stuck-alert.json': createdAt,
+      'discord:fresh-alert.json': keptCreatedAt,
+      'keep-me.json': daysAgo(1),
+    });
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.removed.map((r) => r.path)).toContain(aged);
+    expect(await exists(aged)).toBe(false);
+    expect(await exists(kept)).toBe(true);
+    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as Record<string, string>;
+    expect(marker).toEqual({
+      'discord:fresh-alert.json': keptCreatedAt,
+      'keep-me.json': daysAgo(1),
+    });
+  });
+
   test('keeps undelivered signals under the longer undelivered cap', async () => {
     await writeTasks([]);
     // 14 days old: past delivered default (7) but under undelivered default (30).
