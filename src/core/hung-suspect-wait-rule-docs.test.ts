@@ -25,6 +25,6 @@ describe('hung-suspect silence limit wording (issue #4140)', () => {
     expect(text).toMatch(new RegExp(`${defaultMin}\\s+minutes\\s+by\\s+default,\\s+${maxMin}\\s+at\\s+most`));
     expect(text).toMatch(/open,\s+unmerged\s+pull\s+request\s+is\s+exempt/);
     expect(text).toMatch(/under\s+about\s+ten\s+minutes/);
-    expect(text).toMatch(/to\s+a\s+file/);
+    expect(text).toMatch(/(result|verdict|finds)\s+to\s+a\s+file/);
   });
 });

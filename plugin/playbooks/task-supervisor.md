@@ -99,6 +99,11 @@ events, pane changes, tokens) for longer than the operator setting `hungSuspectT
 25 minutes by default, 60 at most. A task that holds an open, unmerged pull request is exempt.
 The rule applies to you and to every worker you supervise.
 
+One case is excused for longer. A turn that ends while its own `run_in_background` command is
+still running counts as parked, and the watchdog excuses a parked task for up to 45 minutes
+(a fixed watchdog limit, not a setting). That is why the single self-wake timer above is safe.
+A parked wait that outlives those 45 minutes is treated as silent again.
+
 - **Your own waits.** When you wait on work you started yourself (a check, a script, a
   fetch), keep each wait under about ten minutes so that a turn happens. Never wait in one
   long call. Run the work in the background, have it write its result to a file, and read

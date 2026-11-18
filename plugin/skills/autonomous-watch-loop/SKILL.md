@@ -88,8 +88,11 @@ launched against a 404 burns hours before anyone notices.
 itself. Kookr terminates a task that is in progress and has shown no activity
 on any channel (hook events, pane changes, tokens) for longer than the operator
 setting `hungSuspectTtlMinutes`: 25 minutes by default, 60 at most. A task that
-holds an open, unmerged pull request is exempt. A watcher that sleeps for an
-hour in one call, or a turn that waits on it with no end, loses the task.
+holds an open, unmerged pull request is exempt. A turn that ends while its own
+`run_in_background` command is still running counts as parked and is excused
+for up to 45 minutes (a fixed watchdog limit, not a setting). A watcher that
+sleeps for an hour in one call, or a turn that waits on it with no end, loses
+the task.
 
 - Keep each wait under about ten minutes so that a turn happens.
 - Run the watcher in the background and have it write what it finds to a

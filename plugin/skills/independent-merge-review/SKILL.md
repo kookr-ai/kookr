@@ -674,7 +674,7 @@ file with the toolkit helper
 `--file "$LOG.exit"`, both with an explicit `--timeout`), or on the background
 task's completion notification.
 
-Keep each wait under about ten minutes (`--timeout 600` or less), and wait
+Keep each wait under about ten minutes (`--timeout 540` or less), and wait
 again if the reviewer has not finished. Kookr terminates a task that is in
 progress and has shown no activity on any channel for longer than the operator
 setting `hungSuspectTtlMinutes`: 25 minutes by default, 60 at most. A task that
