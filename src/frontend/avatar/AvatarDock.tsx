@@ -336,6 +336,8 @@ export function AvatarDock({
   // while rendering, so the very first frame of the new layout already carries it.
   const roomSwitchRef = useRef<{ room: boolean; switched: boolean }>({ room, switched: false });
   if (roomSwitchRef.current.room !== room) roomSwitchRef.current = { room, switched: true };
+  // As the bubble there is nothing to animate, and the switch is over: opening her again later is not one.
+  if (minimized) roomSwitchRef.current.switched = false;
   const roomSwitch = roomSwitchRef.current.switched ? (room ? 'enter' : 'leave') : undefined;
 
   // While the column is docked beside the page, tell the page how much room it takes: the dashboard and the

@@ -318,6 +318,25 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(mode()).toBe('room');
       expect(dock()!.hasAttribute('data-room-switch')).toBe(false);
     });
+
+    test('after a visit to the room, minimising and opening her again is not a switch: nothing plays', () => {
+      start();
+      render();
+      click(toggle());
+      click(toggle());
+      expect(dock()!.getAttribute('data-room-switch')).toBe('leave');
+      click(container.querySelector('button[aria-label="Minimise Lucy"]'));
+      click(bubble());
+      expect(mode()).toBe('docked');
+      expect(dock()!.hasAttribute('data-room-switch')).toBe(false);
+      // From the bubble into the room by the shortcut is a switch, and the way back to the bubble ends it.
+      click(container.querySelector('button[aria-label="Minimise Lucy"]'));
+      pressRoomShortcut();
+      expect(dock()!.getAttribute('data-room-switch')).toBe('enter');
+      pressRoomShortcut();
+      click(bubble());
+      expect(dock()!.hasAttribute('data-room-switch')).toBe(false);
+    });
   });
 
   describe('the page under the room', () => {

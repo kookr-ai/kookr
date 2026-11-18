@@ -1621,6 +1621,44 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     expect(await page.evaluate(() => sessionStorage.getItem('kookr:lucyRoom'))).toBeNull();
   });
 
+  test('Lucy\'s room: a conversation long enough to scroll stays on its newest entry when she takes the window and when she gives it back', async ({ page }) => {
+    const lines = Array.from({ length: 40 }, (_, n) => `- Step ${n + 1}: check the invoices table before the rename runs on production`);
+    await page.route('**/api/lucy/turn', (route) => route.fulfill({
+      contentType: 'application/x-ndjson',
+      body: turnBody({ type: 'text', delta: `Here is the whole plan:\n${lines.join('\n')}` }),
+    }));
+    await openColumn(page, { asks: [] });
+    const thread = page.getByTestId('avatar-thread');
+    const fromBottom = () => thread.evaluate((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight));
+    const overflow = () => thread.evaluate((el) => el.scrollHeight - el.clientHeight);
+    await page.getByTestId('avatar-typed-input').fill('Give me the whole plan');
+    await page.getByTestId('avatar-typed-input').press('Enter');
+    await expect(page.getByTestId('avatar-entry-list').locator('li')).toHaveCount(40);
+    expect(await overflow()).toBeGreaterThan(200);
+    await expect.poll(fromBottom).toBeLessThanOrEqual(24);
+
+    // Into the room: the lines are wider and fewer, the thread still overflows, and it is still on its last line.
+    await page.getByTestId('avatar-room-toggle').click();
+    await expect(page.getByTestId('avatar-dock')).toHaveAttribute('data-column-mode', 'room');
+    expect(await overflow()).toBeGreaterThan(200);
+    await expect.poll(fromBottom).toBeLessThanOrEqual(24);
+    await expectVisible(page.getByTestId('avatar-entry-list').locator('li').last(), 'the last line of her answer, in the room');
+    // The bubbles sit exactly over the composer although the thread has a scrollbar now.
+    // (Polled: both are still sliding in for a moment after the switch.)
+    await expect.poll(async () => {
+      const reply = (await page.getByTestId('avatar-typed-reply').boundingBox())!;
+      const input = (await page.getByTestId('avatar-typed-input').boundingBox())!;
+      return Math.abs(reply.x - input.x);
+    }).toBeLessThanOrEqual(1);
+
+    // And back to the column.
+    await page.getByTestId('avatar-room-toggle').click();
+    await expect(page.getByTestId('avatar-dock')).toHaveAttribute('data-column-mode', 'docked');
+    expect(await overflow()).toBeGreaterThan(200);
+    await expect.poll(fromBottom).toBeLessThanOrEqual(24);
+    await expectVisible(page.getByTestId('avatar-entry-list').locator('li').last(), 'the last line of her answer, in the column');
+  });
+
   test('Lucy\'s room by address and by shortcut: /?lucy=room switches a panel that is off on and opens the room, and Alt+Shift+L goes back and forth', async ({ page }) => {
     await withoutWebGL(page);
     await page.addInitScript((key) => {
