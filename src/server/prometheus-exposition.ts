@@ -148,6 +148,8 @@ export interface PrometheusExpositionSnapshot {
     skippedUnderTtl?: number;
     skippedExemptAnomaly?: number;
     skippedProviderPaused?: number;
+    /** Supervisor skipped: next supervision wake is scheduled (issue #4162). */
+    skippedSupervisionWakeScheduled?: number;
     /** Cumulative sweep passes that threw before completing (issue #2897). */
     sweepFailuresTotal?: number;
     /** Epoch-ms of the most recent sweep failure; null once cleared (issue #2897). */
@@ -894,6 +896,7 @@ function appendHungSuspectReclaimMetrics(
         skippedUnderTtl?: number;
         skippedExemptAnomaly?: number;
         skippedProviderPaused?: number;
+        skippedSupervisionWakeScheduled?: number;
         sweepFailuresTotal?: number;
         lastFailureAtMs?: number | null;
       }
@@ -951,6 +954,11 @@ function appendHungSuspectReclaimMetrics(
       'kookr_hung_suspect_ttl_reclaim_skipped_total',
       { reason: 'provider_paused' },
       snapshot.skippedProviderPaused ?? 0,
+    ),
+    metricLine(
+      'kookr_hung_suspect_ttl_reclaim_skipped_total',
+      { reason: 'supervision_wake_scheduled' },
+      snapshot.skippedSupervisionWakeScheduled ?? 0,
     ),
     // Issue #2897: bounded sweep-failure signal. The counter never resets; the
     // timestamp gauge is 0 once a later successful pass cleared the error. No

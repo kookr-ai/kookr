@@ -142,6 +142,7 @@ function hungReclaimSnap(
     skippedUnderTtl: 0,
     skippedNoLiveness: 0,
     skippedProviderPaused: 0,
+    skippedSupervisionWakeScheduled: 0,
     lastCandidatesConsidered: 0,
     lastOutcomes: [],
     ...partial,
@@ -1432,6 +1433,7 @@ describe('kookr doctor --json', () => {
         skippedUnderTtl: 2,
         skippedNoLiveness: 0,
         skippedProviderPaused: 0,
+        skippedSupervisionWakeScheduled: 3,
         lastCandidatesConsidered: 4,
         lastOutcomes: [
           { taskId: 'a', outcome: 'skipped_open_pr_failsafe', silentForMs: 1_000_000 },
@@ -1445,6 +1447,7 @@ describe('kookr doctor --json', () => {
       hungSuspectCount: 4,
       reclaimedTotal: 0,
       skippedOpenPrFailsafe: 8,
+      skippedSupervisionWakeScheduled: 3,
       lastCandidatesConsidered: 4,
       lastOutcomes: [
         { outcome: 'skipped_open_pr_failsafe' },

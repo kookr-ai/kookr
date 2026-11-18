@@ -1072,6 +1072,9 @@ function summarizeHungSuspectTtlReclaim(health) {
   const skippedProviderPaused = nonNegIntFloor(
     /** @type {{ skippedProviderPaused?: unknown }} */ (block).skippedProviderPaused,
   );
+  const skippedSupervisionWakeScheduled = nonNegIntFloor(
+    /** @type {{ skippedSupervisionWakeScheduled?: unknown }} */ (block).skippedSupervisionWakeScheduled,
+  );
   const lastCandidatesConsidered = nonNegIntFloor(
     /** @type {{ lastCandidatesConsidered?: unknown }} */ (block).lastCandidatesConsidered,
   );
@@ -1106,6 +1109,7 @@ function summarizeHungSuspectTtlReclaim(health) {
     + skippedUnderTtl
     + skippedExemptAnomaly
     + skippedProviderPaused
+    + skippedSupervisionWakeScheduled
     > 0;
   const candidatesElevated = lastCandidatesConsidered > 0 || reclaimAttempted > 0;
   const residualElevated =
@@ -1123,6 +1127,7 @@ function summarizeHungSuspectTtlReclaim(health) {
    *   skippedUnderTtl: number,
    *   skippedExemptAnomaly: number,
    *   skippedProviderPaused: number,
+   *   skippedSupervisionWakeScheduled: number,
    *   lastCandidatesConsidered: number,
    *   hungSuspect?: number,
    *   residualClasses?: Record<string, number>,
@@ -1137,6 +1142,7 @@ function summarizeHungSuspectTtlReclaim(health) {
     skippedUnderTtl,
     skippedExemptAnomaly,
     skippedProviderPaused,
+    skippedSupervisionWakeScheduled,
     lastCandidatesConsidered,
   };
   if (typeof hungSuspect === 'number') summary.hungSuspect = hungSuspect;
@@ -1592,6 +1598,7 @@ function renderReport({ port, health, agents, readiness, degraded }) {
         ` openPrUnknown=${hungReclaim.skippedOpenPrUnknown}` +
         ` underTtl=${hungReclaim.skippedUnderTtl}` +
         ` providerPaused=${hungReclaim.skippedProviderPaused}` +
+        ` supervisionWake=${hungReclaim.skippedSupervisionWakeScheduled}` +
         ` noLiveness=${hungReclaim.skippedNoLiveness}` +
         ` exemptAnomaly=${hungReclaim.skippedExemptAnomaly}` +
         residualPart,

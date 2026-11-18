@@ -104,6 +104,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
               skippedUnderTtl: hungSuspectReclaim.skippedUnderTtl,
               skippedExemptAnomaly: hungSuspectReclaim.skippedExemptAnomaly,
               skippedProviderPaused: hungSuspectReclaim.skippedProviderPaused,
+              skippedSupervisionWakeScheduled: hungSuspectReclaim.skippedSupervisionWakeScheduled,
               sweepFailuresTotal: hungSuspectReclaim.sweepFailuresTotal,
               lastFailureAtMs: hungSuspectReclaim.lastFailureAtMs,
             },
