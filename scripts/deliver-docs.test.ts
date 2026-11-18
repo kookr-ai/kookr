@@ -56,6 +56,8 @@ describe('pnpm deliver is the default delivery path (issue #4181)', () => {
     const guard = block.indexOf('pr_create_guard');
     expect(guard).toBeGreaterThan(block.indexOf('--to push'));
     expect(guard).toBeLessThan(block.indexOf('--from pr --to pr'));
+    // A resumed run that only updates the open PR must not hit the guard, which aborts on an open PR.
+    expect(block.slice(block.indexOf('--to push'), guard)).toContain('--state open');
     // Phase 8 resumes it for the verdict wait and the merge, and keeps the wrapper as the fallback.
     const phase8 = text.slice(text.indexOf('## Phase 8:'), text.indexOf('## Phase 8.5:'));
     expect(phase8).toContain('pnpm deliver --repo "$REPO" --body-file .tmp/pr-body.md --from wait-verdict');

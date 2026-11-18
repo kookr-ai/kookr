@@ -551,7 +551,11 @@ $D --specialists independent-review --to push      # markers, PR body, push
 #   plan, add the `Closes #<TARGET>` line (or `Refs #<TARGET>` for an incident, see below)
 #   and the attribution line. Then resume:
 $D --from pr-body --to push
-pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" "<TARGET>" || exit 1   # the guard below, right before the PR is created
+# The guard below, right before the PR is created. Skip it when the branch already has an
+# open PR: step `pr` then only updates that PR, and the guard would abort on it.
+if [ -z "$(gh pr list --repo "$REPO" --head "$(git rev-parse --abbrev-ref HEAD)" --state open --json number -q '.[0].number // empty')" ]; then
+  pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" "<TARGET>" || exit 1
+fi
 $D --from pr --to pr                               # gh pr create (or gh pr edit on the open PR)
 ```
 
