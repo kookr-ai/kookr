@@ -2,43 +2,44 @@
  * SignalDeliveryService — the delivery bridge for operator signals (issue #1716).
  *
  * Tails the operator-signal outbox on a short interval and pushes newly-spooled
- * signals to the configured channels (Discord / Telegram). The guarantees that
- * matter:
- *  - **At-least-once, no duplicate re-post.** Each delivered occurrence is
- *    recorded in the persisted `.delivered.json` marker (file name → the
- *    delivered signal's `createdAt`), so a daemon restart never re-posts an
- *    already-delivered occurrence — while a genuine re-emit (same key, fresh
- *    `createdAt`) does re-deliver. The one exception to no-duplicate is a crash
- *    *between* a successful POST and the marker save, which can re-post that
- *    batch once on restart (an inherent outbox trade-off).
- *  - **≤1 message per minute.** Every eligible tick drains *all* pending signals
- *    into a single batched message, and outbound sends are spaced by
- *    `minSendIntervalMs`.
- *  - **Telegram gets decisions only** (by default). Telegram's batch keeps just
- *    the signals an agent is waiting on the operator for (decision-signals.ts);
- *    Discord's batch keeps everything. A signal no configured channel takes is
+ * signals to the configured channels (Discord / Telegram). Each channel is its
+ * own lane: it has its own batch, send spacing, back-off and delivered record,
+ * so one channel's outage never holds back or loses the other's signals. The
+ * guarantees that matter:
+ *  - **At-least-once per channel, no duplicate re-post.** Each delivered
+ *    occurrence is recorded in the persisted `.delivered.json` marker, so a
+ *    daemon restart never re-posts an already-delivered occurrence — while a
+ *    genuine re-emit (same key, fresh `createdAt`) does re-deliver. A plain
+ *    `<file name> → createdAt` entry means every channel is done with that
+ *    occurrence (maintenance-prune reads it). While only some channels have it,
+ *    the marker holds `<channel>:<file name>` entries instead, and only the
+ *    missing channels retry. A crash *between* a successful POST and the marker
+ *    save can re-post that batch once on restart (an inherent outbox trade-off).
+ *  - **≤1 message per minute per channel.** Every eligible tick drains *all*
+ *    of a channel's pending signals into one batched message, and its sends are
+ *    spaced by `minSendIntervalMs`.
+ *  - **Telegram gets decisions only** (by default). Telegram takes just the
+ *    signals an agent is waiting on the operator for (decision-signals.ts);
+ *    Discord takes everything. A signal no configured channel takes is
  *    acknowledged without a send, so it never waits behind the throttle.
- *  - **Dry-run.** With `dryRun`, the batch is formatted and logged but never
+ *  - **Dry-run.** With `dryRun`, each batch is formatted and logged but never
  *    POSTed; entries are still marked delivered so the log does not loop.
  *
- * Partial-failure policy: a batch is marked delivered when *at least one*
- * channel accepts it. This trades a possible single-channel miss (logged) for a
- * hard no-duplicate-repost guarantee, which is the property the incident that
- * motivated this issue actually needed.
- *
- * Failure back-off & health (issue #3046): when *every* channel rejects a batch,
- * the service no longer re-POSTs it every poll interval. Instead it spaces the
- * next attempt with capped exponential back-off (honoring a 429 `Retry-After` as
- * a lower bound); the first success resets the counter and resumes normal
- * cadence. {@link SignalDeliveryService.status} exposes a sync, secret-free
- * health snapshot (configured / consecutiveFailures / pending / last send /
- * last failure) so a silently-failing bridge is visible on GET `/api/health`.
+ * Failure back-off & health (issue #3046): when a channel rejects its batch,
+ * the service no longer re-POSTs it every poll interval. Instead it spaces that
+ * channel's next attempt with capped exponential back-off (honoring a 429
+ * `Retry-After` as a lower bound); the channel's first success resets it.
+ * {@link SignalDeliveryService.status} exposes a sync, secret-free health
+ * snapshot (configured / consecutiveFailures / pending / last send / last
+ * failure, the worst channel winning) so a silently-failing bridge is visible
+ * on GET `/api/health`.
  */
 
 import {
   deliverToDiscord,
   deliverToTelegram,
   type ChannelDeliveryResult,
+  type ChannelName,
 } from './channels.js';
 import type { SignalDeliveryConfig } from './config.js';
 import { sendsToTelegram } from './decision-signals.js';
@@ -69,6 +70,7 @@ export interface SignalDeliveryTickResult {
    * a revoked webhook / 429 / network fault no longer produces a retry storm.
    */
   backoff: boolean;
+  /** Signals at least one channel accepted this tick (another may still owe them). */
   delivered: string[];
   /**
    * Signals no configured channel takes (a status signal on a Telegram-only
@@ -88,7 +90,7 @@ export interface SignalDeliveryTickResult {
 export interface SignalDeliveryStatus {
   /** True when at least one channel (Discord / Telegram) is configured. */
   configured: boolean;
-  /** Consecutive all-channel failures since the last success (0 when healthy). */
+  /** Consecutive failures of the worst channel since its last success (0 when healthy). */
   consecutiveFailures: number;
   /** Readable signals pending as of the most recent tick; excludes unreadable files. */
   pending: number;
@@ -102,7 +104,7 @@ export interface SignalDeliveryStatus {
   lastScanError?: string;
   /** ISO time of the last successful delivery, or null. */
   lastSendAt: string | null;
-  /** ISO time of the last all-channel failure, or null. */
+  /** ISO time of the last failed send on any channel, or null. */
   lastFailureAt: string | null;
   /** Last failure summary (channel:error, …). Absent when healthy. */
   lastError?: string;
@@ -116,22 +118,36 @@ const KIND_EMOJI: Record<OperatorSignalKind, string> = {
   info: 'ℹ️',
 };
 
+/** One outbound channel with its own batch, spacing, back-off and delivered record. */
+interface ChannelLane {
+  readonly name: ChannelName;
+  /** Whether this channel takes the signal at all (Telegram: decisions only, by default). */
+  takes: (signal: OperatorSignal) => boolean;
+  deliver: (text: string) => Promise<ChannelDeliveryResult>;
+  lastSendAt: number | null;
+  // Failure back-off state (issue #3046), per channel: after a failed send the
+  // next attempt is spaced by capped exponential back-off (or an honored
+  // Retry-After) instead of re-POSTing every poll; a success resets it.
+  consecutiveFailures: number;
+  lastFailureAt: number | null;
+  lastError: string | null;
+  nextAttemptAt: number | null;
+}
+
+/** Marker key recording that `channel` delivered `fileName` while another channel has not yet. */
+function laneKey(channel: ChannelName, fileName: string): string {
+  return `${channel}:${fileName}`;
+}
+
 export class SignalDeliveryService {
   private timer: ReturnType<typeof setInterval> | null = null;
   private bootTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
-  private lastSendAt: number | null = null;
-  // Failure back-off state (issue #3046). On an all-channel failure the next
-  // attempt is spaced by capped exponential back-off (or an honored Retry-After)
-  // instead of re-POSTing every poll; a single success resets all of it.
-  private consecutiveFailures = 0;
-  private lastFailureAt: number | null = null;
-  private lastError: string | null = null;
-  private nextAttemptAt: number | null = null;
   private lastPending = 0;
   private scanFailures = 0;
   private scanFailedFiles = 0;
   private lastScanFailureAt: string | null = null;
+  private readonly lanes: ChannelLane[];
   private readonly dir: string;
   private readonly config: SignalDeliveryConfig;
   private readonly fetchImpl: typeof fetch;
@@ -144,6 +160,26 @@ export class SignalDeliveryService {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.now = opts.now ?? (() => new Date());
     this.log = opts.log ?? ((msg) => console.log(msg));
+    const fresh = { lastSendAt: null, consecutiveFailures: 0, lastFailureAt: null, lastError: null, nextAttemptAt: null };
+    const { discord, telegram, telegramSignals } = this.config;
+    this.lanes = [
+      ...(discord
+        ? [{
+          name: 'discord' as const,
+          takes: () => true,
+          deliver: (text: string) => deliverToDiscord(discord, text, { fetchImpl: this.fetchImpl }),
+          ...fresh,
+        }]
+        : []),
+      ...(telegram
+        ? [{
+          name: 'telegram' as const,
+          takes: (signal: OperatorSignal) => sendsToTelegram(signal, telegramSignals),
+          deliver: (text: string) => deliverToTelegram(telegram, text, { fetchImpl: this.fetchImpl }),
+          ...fresh,
+        }]
+        : []),
+    ];
   }
 
   start(): void {
@@ -191,34 +227,43 @@ export class SignalDeliveryService {
 
   /**
    * Delivery-bridge health snapshot (issue #3046). Sync in-memory read only —
-   * never scans the outbox — so GET `/api/health` can project it cheaply.
+   * never scans the outbox — so GET `/api/health` can project it cheaply. With
+   * two channels the worst one wins: the most consecutive failures, the latest
+   * send and failure, every failing channel's error, the earliest retry.
    */
   status(): SignalDeliveryStatus {
+    const nowMs = this.now().getTime();
+    const latest = (values: Array<number | null>): number | null =>
+      values.reduce<number | null>((max, v) => (v !== null && (max === null || v > max) ? v : max), null);
+    const lastSendAt = latest(this.lanes.map((l) => l.lastSendAt));
+    const lastFailureAt = latest(this.lanes.map((l) => l.lastFailureAt));
+    const errors = this.lanes.filter((l) => l.lastError).map((l) => l.lastError as string);
     // Only surface nextAttemptAt while it is still in the future — a past value
     // no longer suppresses an attempt, so reporting it would misdescribe the
     // gate. consecutiveFailures remains the durable unhealthy signal.
-    const isSuppressing =
-      this.nextAttemptAt !== null && this.nextAttemptAt > this.now().getTime();
+    const suppressing = this.lanes
+      .map((l) => l.nextAttemptAt)
+      .filter((t): t is number => t !== null && t > nowMs);
     return {
-      configured: Boolean(this.config.discord || this.config.telegram),
-      consecutiveFailures: this.consecutiveFailures,
+      configured: this.lanes.length > 0,
+      consecutiveFailures: Math.max(0, ...this.lanes.map((l) => l.consecutiveFailures)),
       pending: this.lastPending,
       scanFailures: this.scanFailures,
       scanFailedFiles: this.scanFailedFiles,
       lastScanFailureAt: this.lastScanFailureAt,
       ...(this.scanFailedFiles > 0 ? { lastScanError: 'Unable to read one or more signal files' } : {}),
-      lastSendAt: this.lastSendAt !== null ? new Date(this.lastSendAt).toISOString() : null,
-      lastFailureAt: this.lastFailureAt !== null ? new Date(this.lastFailureAt).toISOString() : null,
-      ...(this.lastError ? { lastError: this.lastError } : {}),
-      ...(isSuppressing ? { nextAttemptAt: new Date(this.nextAttemptAt as number).toISOString() } : {}),
+      lastSendAt: lastSendAt !== null ? new Date(lastSendAt).toISOString() : null,
+      lastFailureAt: lastFailureAt !== null ? new Date(lastFailureAt).toISOString() : null,
+      ...(errors.length > 0 ? { lastError: errors.join(', ') } : {}),
+      ...(suppressing.length > 0 ? { nextAttemptAt: new Date(Math.min(...suppressing)).toISOString() } : {}),
     };
   }
 
   private async runTick(): Promise<SignalDeliveryTickResult> {
     const files = await listSignalFiles(this.dir);
-    const delivered = await loadDeliveredMarker(this.dir);
+    const marker = await loadDeliveredMarker(this.dir);
 
-    // A signal is pending when its CURRENT occurrence has not been delivered.
+    // A signal is undelivered when its CURRENT occurrence is not settled.
     // Dedup is keyed on (file name → delivered `createdAt`), not file name
     // alone: emitters reuse a stable key and OVERWRITE the file when the same
     // condition re-fires (a flapping alert, or the 6h liveness re-emit), which
@@ -238,7 +283,7 @@ export class SignalDeliveryService {
         continue;
       }
       if (!signal) continue;
-      if (delivered[fileName] === signal.createdAt) continue;
+      if (marker[fileName] === signal.createdAt) continue;
       undelivered.push({ fileName, signal });
     }
 
@@ -246,132 +291,118 @@ export class SignalDeliveryService {
     this.scanFailures += scanFailedFiles;
     if (scanFailedFiles > 0) this.lastScanFailureAt = this.now().toISOString();
 
+    const laneDone = (lane: ChannelLane, { fileName, signal }: { fileName: string; signal: OperatorSignal }): boolean =>
+      !lane.takes(signal) || marker[laneKey(lane.name, fileName)] === signal.createdAt;
+    let markerChanged = false;
+    /** Settle every signal all channels are done with: one plain entry replaces the per-channel ones. */
+    const settle = (): Array<{ fileName: string; signal: OperatorSignal }> => {
+      const settled = undelivered.filter((p) => marker[p.fileName] !== p.signal.createdAt && this.lanes.every((l) => laneDone(l, p)));
+      for (const { fileName, signal } of settled) {
+        marker[fileName] = signal.createdAt;
+        for (const lane of this.lanes) delete marker[laneKey(lane.name, fileName)];
+        markerChanged = true;
+      }
+      return settled;
+    };
+
     // A signal no channel takes is not waiting on any send: acknowledge it now,
     // before the back-off and throttle gates, so it never counts as pending and
     // a later switch to `all` does not replay it.
-    const pending = undelivered.filter((p) => this.takenByAnyChannel(p.signal));
-    const withheld = undelivered.filter((p) => !this.takenByAnyChannel(p.signal));
+    const withheld = settle();
     if (withheld.length > 0) {
-      for (const { fileName, signal } of withheld) delivered[fileName] = signal.createdAt;
-      await saveDeliveredMarker(this.dir, delivered);
       this.log(
         `[signal-delivery] kept ${withheld.length} status signal(s) off Telegram `
           + `(it gets decisions only; KOOKR_SIGNAL_TELEGRAM_LEVEL=all sends everything): `
           + withheld.map((p) => p.signal.source).join(', '),
       );
     }
-    const withheldField = withheld.length > 0 ? { withheld: withheld.map((p) => p.fileName) } : {};
-    this.lastPending = pending.length;
-
-    if (pending.length === 0) {
-      return { pending: 0, throttled: false, backoff: false, delivered: [], ...withheldField, channelResults: [] };
-    }
 
     const nowMs = this.now().getTime();
-
-    // Failure back-off gate (issue #3046). While a back-off window is open the
-    // batch is NOT re-POSTed — this is what replaces the every-poll retry storm
-    // against a failing endpoint. Signals stay pending; the window is cleared by
-    // the first success.
-    if (this.nextAttemptAt !== null && nowMs < this.nextAttemptAt) {
-      return { pending: pending.length, throttled: false, backoff: true, delivered: [], ...withheldField, channelResults: [] };
+    const channelResults: ChannelDeliveryResult[] = [];
+    const deliveredNow = new Set<string>();
+    let throttled = false;
+    let backoff = false;
+    for (const lane of this.lanes) {
+      const batch = undelivered.filter((p) => marker[p.fileName] !== p.signal.createdAt && !laneDone(lane, p));
+      if (batch.length === 0) continue;
+      // Failure back-off gate (issue #3046). While this channel's back-off
+      // window is open its batch is NOT re-POSTed — this is what replaces the
+      // every-poll retry storm against a failing endpoint. The other channel
+      // is not held back.
+      if (lane.nextAttemptAt !== null && nowMs < lane.nextAttemptAt) {
+        backoff = true;
+        continue;
+      }
+      if (lane.lastSendAt !== null && nowMs - lane.lastSendAt < this.config.minSendIntervalMs) {
+        throttled = true;
+        continue;
+      }
+      const message = formatBatch(batch.map((p) => p.signal));
+      let result: ChannelDeliveryResult | null = null;
+      if (this.config.dryRun) {
+        this.log(`[signal-delivery] DRY-RUN would deliver to ${lane.name}:\n${message}`);
+      } else {
+        result = await lane.deliver(message);
+        channelResults.push(result);
+      }
+      if (result && !result.ok) {
+        this.registerFailure(lane, nowMs, result);
+        const waitMs = lane.nextAttemptAt !== null ? Math.max(0, lane.nextAttemptAt - nowMs) : 0;
+        this.log(
+          `[signal-delivery] ${lane.name} failed (${lane.lastError}); ${batch.length} signal(s) stay pending for it, `
+            + `backing off ${Math.round(waitMs / 1000)}s (failure #${lane.consecutiveFailures})`,
+        );
+        continue;
+      }
+      // Success: clear this channel's back-off immediately so recovery is never delayed.
+      lane.consecutiveFailures = 0;
+      lane.lastError = null;
+      lane.nextAttemptAt = null;
+      lane.lastSendAt = nowMs;
+      for (const { fileName, signal } of batch) {
+        marker[laneKey(lane.name, fileName)] = signal.createdAt;
+        deliveredNow.add(fileName);
+      }
+      markerChanged = true;
+      this.log(`[signal-delivery] delivered ${batch.length} signal(s) via ${this.config.dryRun ? 'dry-run ' : ''}${lane.name}`);
     }
 
-    if (this.lastSendAt !== null && nowMs - this.lastSendAt < this.config.minSendIntervalMs) {
-      return { pending: pending.length, throttled: true, backoff: false, delivered: [], ...withheldField, channelResults: [] };
-    }
+    settle();
+    if (markerChanged) await saveDeliveredMarker(this.dir, marker);
 
-    const channelResults = await this.send(pending.map((s) => s.signal));
-    const anySuccess = this.config.dryRun || channelResults.some((r) => r.ok);
-
-    if (!anySuccess) {
-      const errs = channelResults.map((r) => `${r.channel}:${r.error ?? 'fail'}`).join(', ');
-      this.registerFailure(nowMs, errs, channelResults);
-      const waitMs = this.nextAttemptAt !== null ? Math.max(0, this.nextAttemptAt - nowMs) : 0;
-      this.log(
-        `[signal-delivery] all channels failed (${errs}); ${pending.length} signal(s) stay pending, `
-          + `backing off ${Math.round(waitMs / 1000)}s (failure #${this.consecutiveFailures})`,
-      );
-      return { pending: pending.length, throttled: false, backoff: false, delivered: [], ...withheldField, channelResults };
-    }
-
-    // Success: clear any back-off immediately so recovery is never delayed.
-    this.consecutiveFailures = 0;
-    this.lastError = null;
-    this.nextAttemptAt = null;
-    this.lastSendAt = nowMs;
-    this.lastPending = 0;
-    const deliveredNames: string[] = [];
-    for (const { fileName, signal } of pending) {
-      delivered[fileName] = signal.createdAt;
-      deliveredNames.push(fileName);
-    }
-    await saveDeliveredMarker(this.dir, delivered);
-
-    const failed = channelResults.filter((r) => !r.ok);
-    const okChannels = channelResults.filter((r) => r.ok).map((r) => r.channel).join('+') || (this.config.dryRun ? 'dry-run' : 'none');
-    this.log(
-      `[signal-delivery] delivered ${pending.length} signal(s) via ${okChannels}`
-        + (failed.length ? ` (failed: ${failed.map((r) => `${r.channel}:${r.error ?? 'fail'}`).join(', ')})` : ''),
-    );
-
-    return { pending: 0, throttled: false, backoff: false, delivered: deliveredNames, ...withheldField, channelResults };
+    const pending = undelivered.filter((p) => marker[p.fileName] !== p.signal.createdAt).length;
+    this.lastPending = pending;
+    return {
+      pending,
+      throttled,
+      backoff,
+      delivered: undelivered.filter((p) => deliveredNow.has(p.fileName)).map((p) => p.fileName),
+      ...(withheld.length > 0 ? { withheld: withheld.map((p) => p.fileName) } : {}),
+      channelResults,
+    };
   }
 
   /**
-   * Record an all-channel failure and schedule the next attempt (issue #3046).
+   * Record a failed send on `lane` and schedule its next attempt (issue #3046).
    * Spacing is capped exponential back-off from the base window, doubling per
    * consecutive failure; a `Retry-After` from a 429 raises it (as a lower bound)
    * but is itself capped so a hostile value cannot stall recovery indefinitely.
    */
-  private registerFailure(nowMs: number, errs: string, results: readonly ChannelDeliveryResult[]): void {
-    this.consecutiveFailures += 1;
-    this.lastFailureAt = nowMs;
-    this.lastError = errs;
+  private registerFailure(lane: ChannelLane, nowMs: number, result: ChannelDeliveryResult): void {
+    lane.consecutiveFailures += 1;
+    lane.lastFailureAt = nowMs;
+    lane.lastError = `${lane.name}:${result.error ?? 'fail'}`;
 
-    const exponent = this.consecutiveFailures - 1;
+    const exponent = lane.consecutiveFailures - 1;
     // Cap the exponent before shifting so 2 ** exponent cannot overflow to Infinity.
     const cappedExponent = Math.min(exponent, 30);
     const backoffMs = Math.min(
       this.config.backoffBaseMs * 2 ** cappedExponent,
       this.config.backoffMaxMs,
     );
-    const retryAfterMs = results.reduce<number>(
-      (max, r) => (typeof r.retryAfterMs === 'number' ? Math.max(max, r.retryAfterMs) : max),
-      0,
-    );
+    const retryAfterMs = typeof result.retryAfterMs === 'number' ? result.retryAfterMs : 0;
     const waitMs = Math.max(backoffMs, Math.min(retryAfterMs, this.config.backoffMaxMs));
-    this.nextAttemptAt = nowMs + waitMs;
-  }
-
-  /** The signals of `signals` that Telegram takes at the configured level. */
-  private forTelegram(signals: readonly OperatorSignal[]): OperatorSignal[] {
-    return signals.filter((s) => sendsToTelegram(s, this.config.telegramSignals));
-  }
-
-  private takenByAnyChannel(signal: OperatorSignal): boolean {
-    if (this.config.discord) return true;
-    return Boolean(this.config.telegram) && sendsToTelegram(signal, this.config.telegramSignals);
-  }
-
-  /** Discord gets every signal; Telegram only those its level lets through, and no message when none is left. */
-  private async send(signals: readonly OperatorSignal[]): Promise<ChannelDeliveryResult[]> {
-    const telegramSignals = this.config.telegram ? this.forTelegram(signals) : [];
-    if (this.config.dryRun) {
-      if (this.config.discord) this.log(`[signal-delivery] DRY-RUN would deliver to discord:\n${formatBatch(signals)}`);
-      if (telegramSignals.length > 0) {
-        this.log(`[signal-delivery] DRY-RUN would deliver to telegram:\n${formatBatch(telegramSignals)}`);
-      }
-      return [];
-    }
-    const jobs: Array<Promise<ChannelDeliveryResult>> = [];
-    if (this.config.discord) {
-      jobs.push(deliverToDiscord(this.config.discord, formatBatch(signals), { fetchImpl: this.fetchImpl }));
-    }
-    if (this.config.telegram && telegramSignals.length > 0) {
-      jobs.push(deliverToTelegram(this.config.telegram, formatBatch(telegramSignals), { fetchImpl: this.fetchImpl }));
-    }
-    return Promise.all(jobs);
+    lane.nextAttemptAt = nowMs + waitMs;
   }
 
   private unref(timer: ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>): void {

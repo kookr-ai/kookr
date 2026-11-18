@@ -808,7 +808,7 @@ function summarizeSchedulesPausedByFailure(health) {
 
 // Alert destination (issue #3924). /api/health publishes `alertDestination`
 // ({ channels, label, reason? }) saying where server alerts leave the machine:
-// "Telegram (owner chat)", "Telegram (configured chat)", "Discord", or
+// "Telegram (owner chat, decisions only)", "Telegram (configured chat)", "Discord", or
 // "nowhere outside the dashboard". Shown on every human report, because
 // "nowhere" is the case an operator cannot otherwise notice. Null when an older
 // server does not publish the field (no line is printed then).

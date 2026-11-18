@@ -45,7 +45,7 @@ export const DEFAULT_DELIVERY_MIN_SEND_INTERVAL_MS = 60_000;
 /** Initial delivery shortly after boot so a pre-existing spool does not wait a full interval. */
 export const DEFAULT_DELIVERY_BOOT_DELAY_MS = 5_000;
 /**
- * First back-off window after an all-channel delivery failure (issue #3046).
+ * First back-off window after a channel fails to deliver (issue #3046).
  * A revoked webhook / bad token / 429 / network fault would otherwise re-POST
  * the same batch every poll interval forever; the window doubles per consecutive
  * failure from this base and is capped at {@link DEFAULT_DELIVERY_BACKOFF_MAX_MS}.
@@ -64,7 +64,7 @@ export interface SignalDeliveryConfig {
   pollIntervalMs: number;
   minSendIntervalMs: number;
   bootDelayMs: number;
-  /** Base back-off window after an all-channel failure (issue #3046). */
+  /** Base back-off window after a channel fails to deliver (issue #3046). */
   backoffBaseMs: number;
   /** Cap for the back-off window and any honored `Retry-After` (issue #3046). */
   backoffMaxMs: number;
@@ -80,7 +80,7 @@ export type AlertChannelKind = 'telegram_configured_chat' | 'telegram_owner_chat
  */
 export interface AlertDestination {
   channels: AlertChannelKind[];
-  /** e.g. "Telegram (owner chat)", "Discord", or "nowhere outside the dashboard". */
+  /** e.g. "Telegram (owner chat, decisions only)", "Discord", or "nowhere outside the dashboard". */
   label: string;
   reason?: string;
 }
