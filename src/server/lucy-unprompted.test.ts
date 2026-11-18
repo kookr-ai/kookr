@@ -58,7 +58,7 @@ describe('createLucyUnpromptedLog', () => {
     const { log, at } = setup();
     log.record({ key: 'ask:q1', text: 'The task Deploy needs your input: ship it?', tasks: [{ id: 't1' }] });
     at(20_000);
-    log.record({ key: 'ask:q1', text: 'The task Deploy needs your input: ship it?', tasks: [{ id: 't1' }] });
+    log.record({ key: 'ask:q1', text: 'The task Deploy needs your input: ship it?', tasks: [{ id: 't1' }], sameSaying: true });
     expect(log.recent()).toEqual([{ text: 'The task Deploy needs your input: ship it?', at: T0, tasks: [{ id: 't1' }] }]);
   });
 
@@ -83,12 +83,20 @@ describe('createLucyUnpromptedLog', () => {
     expect(log.recent()).toEqual([]);
   });
 
+  test('the same words recorded again without sameSaying are a new saying: new time, no conversation marks', () => {
+    const { log, at } = setup();
+    log.record({ key: 'launch:t1', text: 'The task I started needs your input.', tasks: [{ id: 't1' }], inConversation: 'live-1' });
+    at(5 * 60_000);
+    log.record({ key: 'launch:t1', text: 'The task I started needs your input.', tasks: [{ id: 't1' }] });
+    expect(log.recent('live-1')).toEqual([{ text: 'The task I started needs your input.', at: T0 + 5 * 60_000, tasks: [{ id: 't1' }] }]);
+  });
+
   test('a conversation that already holds an item in its history is told so; the others are not', () => {
     const { log, at } = setup();
     log.record({ key: 'ask:q1', text: 'The task Deploy needs your input: ship it?', tasks: [{ id: 't1' }], inConversation: 'live-1' });
     at(1000);
     // The clip route records the same question again, without a conversation: the mark is kept.
-    log.record({ key: 'ask:q1', text: 'The task Deploy needs your input: ship it?', tasks: [{ id: 't1' }] });
+    log.record({ key: 'ask:q1', text: 'The task Deploy needs your input: ship it?', tasks: [{ id: 't1' }], sameSaying: true });
     expect(log.recent('live-1')).toEqual([expect.objectContaining({ inHistory: true })]);
     expect(log.recent('typed-1')).toEqual([expect.not.objectContaining({ inHistory: true })]);
     expect(log.recent()).toEqual([expect.not.objectContaining({ inHistory: true })]);

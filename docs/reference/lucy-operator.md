@@ -264,10 +264,10 @@ What you told the operator without being asked, in the last few minutes, newest 
   Several conversations are alive at once (one typed per browser, one per Talk connection), so a copy
   per conversation would have to be fanned out to conversations that do not exist yet.
 - **Small and short-lived.** At most six items, none older than fifteen minutes, counted from when the
-  sentence was said. A sentence said again keeps its first time only when it is the very same
-  sentence (a clip asked for twice); a different sentence about the same thing, such as a launch
-  report that first says the task needs input and later that it has finished, is a new item, said now
-  and marked `NEW`, and it replaces the earlier one. An item also goes as
+  sentence was said. A question's clip asked for twice, or a question both read by Talk and fetched
+  as a clip, is one saying and keeps its first time. Everything else is a new saying, said now and
+  marked `NEW`, even with the same words: a launch report that says "needs your input" again after
+  five minutes, or later says "has finished", replaces the earlier item. An item also goes as
   soon as what it was about is over: the permission prompt was answered or the task stopped, the
   question was answered or closed. So a later "make it proceed" cannot point at something already
   dealt with. The record is in memory and empty after a restart.
@@ -308,12 +308,15 @@ For a task blocked on a permission prompt, the board line and `read_task` now al
 - the tool the prompt asks to use, when Kookr has a clean name for it;
 - the state of the card: its buttons work (and for about how long), its buttons have timed out, it
   has no answer buttons, or there is no card on her panel;
-- last on the line, the command, file path or URL, taken from the card (secrets already hidden by the server), cleaned
-  and cut to 160 characters like other task text. It is on the board, which is rebuilt every turn, and
-  never in the record of what she said unprompted. A typed reply of hers may quote it, as her
-  instructions allow, and her replies are kept in the conversation history like any other reply. It
-  comes after the state of the card because it is an agent's text: a command that imitates the card's
-  wording cannot come before the real one.
+- the command, file path or URL, taken from the card (secrets already hidden by the server), cleaned
+  and cut to 160 characters like other task text. It is on the board, which is rebuilt every turn,
+  and never in the record of what she said unprompted. A typed reply of hers may quote it, as her
+  instructions allow, and her replies are kept in the conversation history like any other reply.
+
+The command is an agent's text, so it comes last: on the board line after everything else (the state
+of the card, the cost and the pull requests), and in `read_task` last on the "Waiting on the
+operator" line. A command that imitates the card's wording therefore cannot come before the real
+one.
 
 The buttons stop working five minutes after the prompt was detected
 (`DEFAULT_PERMISSION_APPROVAL_TTL_MS`). "Work" on the board means exactly what it means on the card

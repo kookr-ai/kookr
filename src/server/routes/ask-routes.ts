@@ -199,6 +199,7 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
     const text = buildAskSpeech(ask, taskName);
     speech?.unprompted?.record({
       key: `ask:${ask.id}`,
+      sameSaying: true,
       text,
       tasks: [{ id: ask.taskId, ...(taskName ? { name: taskName } : {}) }],
       stillOpen: () => service.all().some((other) => other.id === ask.id && other.state === 'pending'),

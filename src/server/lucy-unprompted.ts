@@ -34,6 +34,13 @@ export interface LucyUnpromptedEntry {
    * in it and noted it, `noteUnprompted`). That conversation is not shown the item a second time.
    */
   inConversation?: string;
+  /**
+   * This record is the same saying as the one already held under the key (a clip fetched again, a
+   * question both read by Talk and fetched as a clip), not a new one. Only then does an identical
+   * sentence keep its first time and its conversation marks. Absent: a record is a new saying at the
+   * current time, even with the same words (a launch report repeated while the task still waits).
+   */
+  sameSaying?: boolean;
 }
 
 /** An item as a turn reads it. `inHistory`: this conversation already has it in its history. */
@@ -80,10 +87,10 @@ export function createLucyUnpromptedLog(options: { now?: () => number } = {}): L
         // Prune first: an item already past its time or closed is not "the same thing said again".
         prune(at);
         const found = items.find((item) => item.key === entry.key);
-        // Only the same sentence is the same saying: it keeps its first time and every conversation that
-        // noted it. A different sentence under the key (a launch report that now says "has finished")
-        // is a new saying, at the time it is said now.
-        const previous = found?.text === text ? found : undefined;
+        // Only a writer that says so, with the same sentence, has the same saying: it keeps its first time
+        // and every conversation that noted it. Anything else under the key (a launch report that now says
+        // "has finished", or says "needs your input" again) is a new saying, at the time it is said now.
+        const previous = entry.sameSaying && found?.text === text ? found : undefined;
         const conversations = new Set(previous?.conversations ?? []);
         if (entry.inConversation) conversations.add(entry.inConversation);
         items = items.filter((item) => item.key !== entry.key);

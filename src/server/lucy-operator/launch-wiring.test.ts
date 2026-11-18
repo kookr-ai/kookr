@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -224,8 +224,13 @@ describe('buildLucyLaunchController', () => {
       const { controller, result } = await propose(deps({ kookrDir: dir, settings: { get: () => ({ lucyAutonomy: 'careful' }) } }));
       if (!result.ok) throw new Error('no proposal');
       await controller.confirm('c1', result.proposal.id, 'enter');
-      await vi.waitFor(() => expect(existsSync(join(dir, 'audit.jsonl'))).toBe(true));
-      const row = JSON.parse(readFileSync(join(dir, 'audit.jsonl'), 'utf8').trim()) as Record<string, unknown>;
+      // The row is written off the request path: wait for a complete, parseable one, not just the file.
+      let row: Record<string, unknown> = {};
+      await vi.waitFor(() => {
+        const text = readFileSync(join(dir, 'audit.jsonl'), 'utf8');
+        expect(text.endsWith('\n')).toBe(true);
+        row = JSON.parse(text.trim()) as Record<string, unknown>;
+      });
       expect(row).toMatchObject({
         type: 'task.launch', actor: 'lucy-operator', taskId: 'task-7', proposalId: result.proposal.id,
         level: 'careful', via: 'enter', project: 'kookr', kind: 'investigation', queued: false, duplicate: false,

@@ -241,23 +241,26 @@ export function spokenLabel(task: Pick<LucyBoardTask, 'name' | 'project'>): stri
   return project ? `an unnamed task in ${project}` : 'an unnamed task';
 }
 
+/** The command of a permission prompt as a phrase: an agent's text, cleaned, secrets hidden and cut. */
+export function permissionCommandWords(permission: LucyBoardPermission | undefined): string | undefined {
+  const command = boardText(permission?.command, MAX_PERMISSION_COMMAND_CHARS);
+  return command ? `it wants to run: ${command}` : undefined;
+}
+
 /**
- * What she is told about a permission prompt, as short phrases: the tool, whether its card is on her
- * panel with buttons that still answer it, and last the command. The buttons count as working only
- * while the server would still accept a press, so she never points the operator at a button that is
- * not there or no longer does anything. The command is an agent's text, so it goes after the card
- * phrase: a command that imitates that phrase cannot come before the real one.
+ * What she is told about a permission prompt, as short phrases, without the command: the tool, and
+ * whether its card is on her panel with buttons that still answer it. The buttons count as working
+ * only while the server would still accept a press, so she never points the operator at a button that
+ * is not there or no longer does anything.
  */
-export function permissionWords(permission: LucyBoardPermission | undefined, nowMs: number): string[] {
+export function permissionStateWords(permission: LucyBoardPermission | undefined, nowMs: number): string[] {
   if (!permission) return [];
   const words: string[] = [];
   const tool = boardText(permission.tool, 40);
   if (tool) words.push(`the prompt asks to use ${tool}`);
-  const command = boardText(permission.command, MAX_PERMISSION_COMMAND_CHARS);
-  const commandWords = command ? [`it wants to run: ${command}`] : [];
   const card = permission.card;
   if (!card) {
-    words.push('no card for it on your panel', ...commandWords);
+    words.push('no card for it on your panel');
     return words;
   }
   const buttons = [...(card.approve ? ['Approve once'] : []), ...(card.deny ? ['Deny'] : [])];
@@ -270,8 +273,16 @@ export function permissionWords(permission: LucyBoardPermission | undefined, now
     const left = minutes >= 1 ? `about ${minutes} more ${minutes === 1 ? 'minute' : 'minutes'}` : 'less than a minute more';
     words.push(`its card is on your panel and ${buttons.join(' and ')} ${buttons.length === 1 ? 'works' : 'work'} for ${left}`);
   }
-  words.push(...commandWords);
   return words;
+}
+
+/**
+ * The state phrases and then the command, for a place where they are the last thing said (`read_task`
+ * puts them on a line of their own). The board line puts the command after everything else instead.
+ */
+export function permissionWords(permission: LucyBoardPermission | undefined, nowMs: number): string[] {
+  const command = permissionCommandWords(permission);
+  return [...permissionStateWords(permission, nowMs), ...(command ? [command] : [])];
 }
 
 function taskLine(task: LucyBoardTask, handle: string, nowMs: number, when: 'updated' | 'ended', pullRequests?: readonly LucyTaskPullRequest[]): string {
@@ -285,10 +296,13 @@ function taskLine(task: LucyBoardTask, handle: string, nowMs: number, when: 'upd
   } else {
     parts.push(STATUS_WORDS[task.status], `last change ${agoWords(toMs(task.updatedAt), nowMs)}`);
   }
-  if (task.attention) parts.push(`waiting on the operator: ${boardText(task.attention, 60)}`, ...permissionWords(task.permission, nowMs));
+  if (task.attention) parts.push(`waiting on the operator: ${boardText(task.attention, 60)}`, ...permissionStateWords(task.permission, nowMs));
   if (typeof task.costUsd === 'number' && task.costUsd > 0) parts.push(`spent ${dollars(task.costUsd)}`);
   const delivery = pullRequestWords(pullRequests, MAX_BOARD_LINE_PULL_REQUESTS);
   if (delivery) parts.push(delivery);
+  // Last on the line: the command is an agent's text, so nothing after it can be taken for Kookr's own words.
+  const command = task.attention ? permissionCommandWords(task.permission) : undefined;
+  if (command) parts.push(command);
   return `- ${parts.join(' · ')}`;
 }
 

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
@@ -199,8 +199,13 @@ describe('the trail', () => {
     try {
       const h = harness({ extra: { kookrDir: dir } });
       const outcome = await confirmed(h, { kind: 'reply', taskId: 't1' });
-      await vi.waitFor(() => expect(existsSync(join(dir, 'audit.jsonl'))).toBe(true));
-      const row = JSON.parse(readFileSync(join(dir, 'audit.jsonl'), 'utf8').trim()) as Record<string, unknown>;
+      // The row is written off the request path: wait for a complete, parseable one, not just the file.
+      let row: Record<string, unknown> = {};
+      await vi.waitFor(() => {
+        const text = readFileSync(join(dir, 'audit.jsonl'), 'utf8');
+        expect(text.endsWith('\n')).toBe(true);
+        row = JSON.parse(text.trim()) as Record<string, unknown>;
+      });
       expect(row).toMatchObject({ type: 'lucy.action', actor: 'lucy-operator', action: 'reply', taskId: 't1', via: 'click', outcome: 'done', proposalId: outcome.proposalId });
       expect(typeof row.timestamp).toBe('string');
       expect(JSON.stringify(row)).not.toContain('Rebase');

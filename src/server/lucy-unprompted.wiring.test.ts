@@ -234,6 +234,23 @@ describe('a launch report that follows an earlier one about the same task', () =
   });
 });
 
+describe('a launch report repeated word for word', () => {
+  test('"needs your input" said again five minutes later, with a reply in between, is NEW the second time', async () => {
+    const w = world();
+    const key = 'launch:dddd4444';
+    const text = 'The task I started "Chaining investigation" needs your input.';
+    const tasks = [{ id: 'dddd4444', name: 'Chaining investigation' }];
+    w.log.record({ key, text, tasks });
+    w.at(60 * SEC);
+    await w.turn('typed-1', 'what about the other task?');
+    w.at(5 * 60 * SEC + 10 * SEC);
+    w.log.record({ key, text, tasks });
+    w.at(5 * 60 * SEC + 30 * SEC);
+    await w.turn('typed-1', 'open it');
+    expect(w.system(1)).toContain(`- 20 seconds ago (NEW), about "Chaining investigation" (no longer on the board): ${text}`);
+  });
+});
+
 describe('a question Talk read out (the hands-free path) is not shown twice', () => {
   const QUESTION = 'The task Billing migration needs your input: Run it on production now? Three choices are on my card.';
   /** Talk read the question in `live-1`: the record gets it when it is heard, the history just before the next answer. */

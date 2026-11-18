@@ -356,6 +356,12 @@ describe('a task blocked on a permission prompt (issue #4143)', () => {
     expect(line({ tool: 'Bash', command: 'ls' })).toMatch(/no card for it on your panel · it wants to run: ls$/);
   });
 
+  test('the command is last on the board line even when the task has spent money', () => {
+    const task = boardTask({ id: 'aaaa1111', name: 'Staging fixture refresh', attention: 'it is blocked on a permission', costUsd: 0.42, permission: { tool: 'Bash', command: 'ls', card: { approve: true, deny: true, buttonsUntil: NOW + 3 * 60_000 } } });
+    const text = buildLucyBoard({ tasks: [task], lifetimeSpendUsd: null, quota: null }, NOW).split('\n').find((l) => l.includes('[aaaa]'))!;
+    expect(text).toMatch(/ · spent \$0\.42 · it wants to run: ls$/);
+  });
+
   test('the command is agent text: cleaned, secrets hidden, and cut', () => {
     const text = line({ tool: 'Bash', command: `\u001b[31mcurl\u001b[0m -H "Authorization: ${TOKEN}" https://example.test/data && ${'echo step; '.repeat(40)}`, card: { approve: true, deny: true, buttonsUntil: NOW + 60_000 } });
     expect(text).not.toContain(TOKEN);

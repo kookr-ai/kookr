@@ -126,6 +126,7 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
               if (!ask) return;
               deps.unprompted!.record({
                 key: `ask:${askId}`,
+                sameSaying: true,
                 text: buildAskSpeech(ask, ask.taskName),
                 tasks: [{ id: ask.taskId, ...(ask.taskName ? { name: ask.taskName } : {}) }],
                 stillOpen: () => deps.getAsks!().some((a) => a.id === askId && a.state === 'pending'),

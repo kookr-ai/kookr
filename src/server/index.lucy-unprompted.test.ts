@@ -152,6 +152,8 @@ describe('server boot: what Lucy said unprompted reaches her next turn', () => {
     await new Promise<void>((resolve, reject) => { ws!.once('open', () => resolve()); ws!.once('error', reject); });
     await expect.poll(() => received.some((m) => m.type === 'operatorAsks'), { timeout: 20_000 }).toBe(true);
 
+    const sentence = 'The task "Staging fixture refresh" is waiting for your permission to use Bash. The command is on my card.';
+
     // A prompt that has waited two minutes, past the default of one: the card is built and she speaks.
     // Queued first, with the time it was first seen, so the monitor's own finding keeps that time.
     server.queue.enqueue(session, {
@@ -160,8 +162,7 @@ describe('server boot: what Lucy said unprompted reaches her next turn', () => {
     });
     server.monitor.processEvents(session, [{ type: 'permission_request', sessionId: session, toolName: 'Bash', toolInput: { command: 'psql staging -f fixtures/seed.sql' } }]);
 
-    const sentence = 'The task "Staging fixture refresh" is waiting for your permission to use Bash. The command is on my card.';
-    await expect.poll(() => JSON.stringify(received.filter((m) => m.type !== 'resourceStatus' && m.type !== 'snapshot')), { timeout: 30_000 }).toContain('announce');
+    await expect.poll(() => received.some((m) => m.type === 'lucyPermissionCards' && (m.announce as { text?: string } | undefined)?.text === sentence), { timeout: 30_000 }).toBe(true);
 
     const turn = await fetch(`http://127.0.0.1:${port}/api/lucy/turn`, {
       method: 'POST',
