@@ -440,7 +440,9 @@ says out loud, and a one-line strip above it holds what is waiting on you.
   and brings the column back, so the task is on screen beside her (also when she was a minimised bubble
   before the room). While the room covers the dashboard, the
   dashboard's own keyboard shortcuts do nothing (so a stray Enter cannot act on a task you cannot see); Ctrl+K
-  and her own two shortcuts still work. The room belongs to one browser tab: it is remembered until the tab is
+  and her own two shortcuts still work. The dashboard underneath is also inert while she covers it, in the room
+  and as the open full-width sheet of a narrow window: Tab cannot reach it and screen readers skip it, while
+  the command palette, notifications, Diagnostics and Settings stay usable. The room belongs to one browser tab: it is remembered until the tab is
   closed and survives a reload, and it does not switch your other tabs, so the dashboard can stay in one
   window while she has another. Opening **`/?lucy=room`** starts a tab in the room whatever the saved
   preferences say, also when she was minimised, and switches the panel on if it was off; the parameter is

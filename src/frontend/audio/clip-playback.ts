@@ -16,7 +16,7 @@
  * telemetry events.
  */
 import { track } from '../telemetry.js';
-import { getAvatarPanelPrefs } from '../store/avatar-panel-prefs.js';
+import { getAvatarPanelPrefs, getAvatarRoom } from '../store/avatar-panel-prefs.js';
 import { getSoundPreferenceState } from './sound-preference.js';
 import { emitSpeechIdle, emitSpeechPlaying } from './speech-bus.js';
 import { getClip, getLastClip, markClipHeard } from './last-clip.js';
@@ -51,7 +51,8 @@ function tabVisible(): boolean {
 function panelState(): 'open' | 'minimized' | 'off' {
   const prefs = getAvatarPanelPrefs();
   if (!prefs.enabled) return 'off';
-  return prefs.minimized ? 'minimized' : 'open';
+  // In her room she is open whatever the shared "minimised" choice says, as the dock shows her (AvatarDock.tsx).
+  return prefs.minimized && !getAvatarRoom() ? 'minimized' : 'open';
 }
 
 /** Report that a clip arrived but the operator did not get to hear it. */

@@ -369,6 +369,24 @@ export function useAvatarRoomShown(): boolean {
   return useSyncExternalStore(subscribe, () => roomShown, () => false);
 }
 
+/**
+ * Whether Lucy covers the whole dashboard in this tab right now: her room, or the full-width sheet of a narrow
+ * window. The dock reports it while it renders either, like `setAvatarRoomShown`. While it is true the dashboard
+ * underneath is `inert` (App.tsx), so Tab cannot reach a control nobody can see and a screen reader does not
+ * read it. Unlike the room flag it does not hold back the dashboard's shortcuts.
+ */
+let pageCovered = false;
+
+export function setAvatarPageCovered(on: boolean): void {
+  if (pageCovered === on) return;
+  pageCovered = on;
+  emit();
+}
+
+export function useAvatarPageCovered(): boolean {
+  return useSyncExternalStore(subscribe, () => pageCovered, () => false);
+}
+
 /** React binding: re-renders when this tab enters or leaves the room. */
 export function useAvatarRoom(): boolean {
   return useSyncExternalStore(subscribe, getAvatarRoom, () => false);
@@ -398,5 +416,6 @@ export function __resetAvatarPanelPrefsForTests(): void {
   state = loadAvatarPanelPrefs();
   room = loadAvatarRoom();
   roomShown = false;
+  pageCovered = false;
   listeners.clear();
 }

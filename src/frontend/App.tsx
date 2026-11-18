@@ -86,7 +86,7 @@ import {
 } from '../shared/contracts/shortcut-bindings.js';
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
-import { applyAvatarRoomAddress, useAvatarPanelPrefs, useAvatarRoomShown } from './store/avatar-panel-prefs.js';
+import { applyAvatarRoomAddress, useAvatarPageCovered, useAvatarPanelPrefs, useAvatarRoomShown } from './store/avatar-panel-prefs.js';
 import { buildAnswerAskMessage, type AskAnswerChoice } from './store/operator-asks.js';
 import { AvatarErrorBoundary } from './avatar/AvatarErrorBoundary.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
@@ -492,6 +492,8 @@ export function App() {
   // Lucy's room covers the dashboard only while her dock says it is on screen: a saved flag whose dock crashed
   // or is still loading, or that is left over while her panel is off, covers nothing.
   const lucyRoomOpen = useAvatarRoomShown();
+  // Lucy covers the whole dashboard (her room, or the full-width sheet): it goes inert underneath her.
+  const lucyCoversDashboard = useAvatarPageCovered();
   useEffect(() => {
     // Optional Long Task API observer (debug/?longtask=1). Measured snapshot /
     // xterm spans sample independently of this flag.
@@ -1757,51 +1759,177 @@ export function App() {
 
   return (
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}${isViewer ? ' app-read-only' : ''}`}>
-      <a href="#main-content" className="skip-link" data-testid="skip-to-content">
-        Skip to content
-      </a>
-      <ReadOnlyBanner />
-      <SafeModeBanner />
-      <DrainModeBanner />
-      <ConnectionBanner />
-      <SweepProgress />
-      <SweepReport send={send} />
-      <TopBar
-        findings={findings.length}
-        currentIndex={currentFindingIndex}
-        totalFindings={findings.length}
-        onFocusQueue={() => {
-          // Focus the finding the queue indicator names: the currently selected
-          // finding if one is active, otherwise the first waiting finding.
-          const target = queueFocusTarget(findings, selectedAgentId, Boolean(selectedAgent?.anomaly));
-          if (target) selectAgent(target.agentId, target.taskId);
-        }}
-        compact={isMobileViewport}
-        onLaunch={() => openBlankLaunch('button')}
-        readOnly={isViewer}
-        onCommandPalette={() => setShowCommandPalette(true)}
-        onOpenPluginManager={() => openModal('pluginManager')}
-        scheduleHintActive={scheduleHintActive}
-        onOperations={toggleOperations}
-        operationsOpen={showOperations}
-        onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
-        coordinatorFindingsOpen={showCoordinatorFindings}
-        terminalFocusMode={terminalFocusMode}
-        terminalFocusAvailable={wideDetailActive}
-        terminalFocusTriggerRef={terminalFocusTriggerRef}
-        onTerminalFocusToggle={() => {
-          track({ type: 'shortcut_used', key: 'TopBar Terminal Focus', action: 'toggle_terminal_focus', context: 'click' });
-          toggleTerminalFocusMode();
-        }}
-        shortcutBindings={shortcutBindings}
-        usage={renderUsage('system')}
-        onShowShortcuts={() => openModal('shortcuts')}
-        onOpenCapacity={openSettingsAtMaxActiveTasks}
-        onOpenLiveFriction={openLiveFrictionDiagnostics}
-        onOpenDiagnostics={openDiagnostics}
-        onOpenSchedules={() => openModal('schedules')}
-      />
-      <HermesFleetObservedLane />
+      {/* The dashboard itself. While Lucy covers it (her room, or the full-width sheet of a narrow window) it is
+          inert: Tab cannot reach a control nobody can see, Enter or Space cannot act on a task that is out of sight,
+          and a screen reader does not read it. Everything App renders above her stays outside this wrapper and live:
+          Diagnostics, App's own dialogs, the command palette, the toasts and her own dock (a dialog opened from inside
+          a dashboard component is still inside it: #4166). `display: contents` keeps the
+          wrapper out of the layout, so the `.app` flex column lays out its children as before. */}
+      <div className="app-dashboard" data-testid="app-dashboard" style={{ display: 'contents' }} inert={lucyCoversDashboard}>
+        <a href="#main-content" className="skip-link" data-testid="skip-to-content">
+          Skip to content
+        </a>
+        <ReadOnlyBanner />
+        <SafeModeBanner />
+        <DrainModeBanner />
+        <ConnectionBanner />
+        <SweepProgress />
+        <SweepReport send={send} />
+        <TopBar
+          findings={findings.length}
+          currentIndex={currentFindingIndex}
+          totalFindings={findings.length}
+          onFocusQueue={() => {
+            // Focus the finding the queue indicator names: the currently selected
+            // finding if one is active, otherwise the first waiting finding.
+            const target = queueFocusTarget(findings, selectedAgentId, Boolean(selectedAgent?.anomaly));
+            if (target) selectAgent(target.agentId, target.taskId);
+          }}
+          compact={isMobileViewport}
+          onLaunch={() => openBlankLaunch('button')}
+          readOnly={isViewer}
+          onCommandPalette={() => setShowCommandPalette(true)}
+          onOpenPluginManager={() => openModal('pluginManager')}
+          scheduleHintActive={scheduleHintActive}
+          onOperations={toggleOperations}
+          operationsOpen={showOperations}
+          onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
+          coordinatorFindingsOpen={showCoordinatorFindings}
+          terminalFocusMode={terminalFocusMode}
+          terminalFocusAvailable={wideDetailActive}
+          terminalFocusTriggerRef={terminalFocusTriggerRef}
+          onTerminalFocusToggle={() => {
+            track({ type: 'shortcut_used', key: 'TopBar Terminal Focus', action: 'toggle_terminal_focus', context: 'click' });
+            toggleTerminalFocusMode();
+          }}
+          shortcutBindings={shortcutBindings}
+          usage={renderUsage('system')}
+          onShowShortcuts={() => openModal('shortcuts')}
+          onOpenCapacity={openSettingsAtMaxActiveTasks}
+          onOpenLiveFriction={openLiveFrictionDiagnostics}
+          onOpenDiagnostics={openDiagnostics}
+          onOpenSchedules={() => openModal('schedules')}
+        />
+        <HermesFleetObservedLane />
+        {isMobileViewport ? (
+          <>
+            {projectSidebar}
+            <div className="mobile-dashboard-tabs" data-testid="mobile-dashboard-tabs">
+              <button
+                type="button"
+                data-testid="mobile-tab-findings"
+                className={`mobile-dashboard-tab${mobileTab === 'findings' ? ' active' : ''}`}
+                onClick={() => setMobileTab('findings')}
+              >
+                Findings
+                <span className="mobile-dashboard-badge">{findings.length}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="mobile-tab-task"
+                className={`mobile-dashboard-tab${mobileTab === 'task' ? ' active' : ''}`}
+                onClick={() => setMobileTab('task')}
+              >
+                Task
+                <span className="mobile-dashboard-badge">{selectedAgent ? 1 : 0}</span>
+              </button>
+            </div>
+            <main id="main-content" tabIndex={-1} className="main main-mobile">
+              {mobileTab === 'findings' && projectDetailDrawer}
+              {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
+              {mobileTab === 'findings' ? findingsPanel : detailPanel}
+            </main>
+            {mobileTab === 'findings' && (
+              <div className="mobile-quick-actions" data-testid="mobile-quick-actions">
+                <button
+                  type="button"
+                  className="mobile-action-btn"
+                  data-testid="mobile-action-next-finding"
+                  disabled={findings.length === 0}
+                  onClick={() => {
+                    track({ type: 'shortcut_used', key: 'Mobile Next Finding', action: 'next_bottleneck', context: 'touch' });
+                    nextBottleneck();
+                    setMobileTab('task');
+                  }}
+                >
+                  Next finding
+                </button>
+                <button
+                  type="button"
+                  className="mobile-action-btn"
+                  data-testid="mobile-action-prev-task"
+                  disabled={filteredAgents.length === 0}
+                  onClick={() => {
+                    track({ type: 'shortcut_used', key: 'Mobile Prev Task', action: 'previous_task', context: 'touch' });
+                    previousTask();
+                    setMobileTab('task');
+                  }}
+                >
+                  Prev task
+                </button>
+                <button
+                  type="button"
+                  className="mobile-action-btn"
+                  data-testid="mobile-action-next-task"
+                  disabled={filteredAgents.length === 0}
+                  onClick={() => {
+                    track({ type: 'shortcut_used', key: 'Mobile Next Task', action: 'next_task', context: 'touch' });
+                    nextTask();
+                    setMobileTab('task');
+                  }}
+                >
+                  Next task
+                </button>
+                {!isViewer && (
+                  <button
+                    type="button"
+                    className="mobile-action-btn mobile-action-btn-primary"
+                    data-testid="mobile-action-launch"
+                    onClick={() => openBlankLaunch('mobile_action')}
+                  >
+                    Launch
+                  </button>
+                )}
+              </div>
+            )}
+          </>
+        ) : (
+          <main
+            id="main-content"
+            tabIndex={-1}
+            ref={mainRef}
+            className={`main${isResizingSplit ? ' main-resizing' : ''}${isResizingNav ? ' main-resizing-nav' : ''}`}
+            style={{
+              ...(findingsWidth != null ? { '--findings-panel-width': `${findingsWidth}px` } : {}),
+              ...(navWidth != null ? { '--nav-width': `${navWidth}px` } : {}),
+            } as React.CSSProperties}
+          >
+            {projectSidebar}
+            {!terminalFocusActive && (
+              <NavResizer
+                width={navWidth ?? DEFAULT_NAV_WIDTH}
+                onResizeStateChange={setIsResizingNav}
+                onResize={setNavWidth}
+                onCommit={commitNavWidth}
+                onReset={resetNavWidth}
+              />
+            )}
+            {projectDetailDrawer}
+            {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
+            {findingsPanel}
+            {!terminalFocusActive && selectedAgentShowsSplit && (
+              <FindingsResizer
+                containerRef={mainRef}
+                onResizeStateChange={setIsResizingSplit}
+                onResize={setFindingsWidth}
+                onCommit={commitFindingsWidth}
+              />
+            )}
+            {detailPanel}
+          </main>
+        )}
+      </div>
+      {/* Diagnostics is a dialog over the page: outside the dashboard wrapper, so it stays live while Lucy covers the page. */}
       {showOperations && (
         <div className="operations-popover-shell" ref={operationsPopoverRef}>
           <Suspense fallback={null}>
@@ -1815,123 +1943,6 @@ export function App() {
             />
           </Suspense>
         </div>
-      )}
-      {isMobileViewport ? (
-        <>
-          {projectSidebar}
-          <div className="mobile-dashboard-tabs" data-testid="mobile-dashboard-tabs">
-            <button
-              type="button"
-              data-testid="mobile-tab-findings"
-              className={`mobile-dashboard-tab${mobileTab === 'findings' ? ' active' : ''}`}
-              onClick={() => setMobileTab('findings')}
-            >
-              Findings
-              <span className="mobile-dashboard-badge">{findings.length}</span>
-            </button>
-            <button
-              type="button"
-              data-testid="mobile-tab-task"
-              className={`mobile-dashboard-tab${mobileTab === 'task' ? ' active' : ''}`}
-              onClick={() => setMobileTab('task')}
-            >
-              Task
-              <span className="mobile-dashboard-badge">{selectedAgent ? 1 : 0}</span>
-            </button>
-          </div>
-          <main id="main-content" tabIndex={-1} className="main main-mobile">
-            {mobileTab === 'findings' && projectDetailDrawer}
-            {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
-            {mobileTab === 'findings' ? findingsPanel : detailPanel}
-          </main>
-          {mobileTab === 'findings' && (
-            <div className="mobile-quick-actions" data-testid="mobile-quick-actions">
-              <button
-                type="button"
-                className="mobile-action-btn"
-                data-testid="mobile-action-next-finding"
-                disabled={findings.length === 0}
-                onClick={() => {
-                  track({ type: 'shortcut_used', key: 'Mobile Next Finding', action: 'next_bottleneck', context: 'touch' });
-                  nextBottleneck();
-                  setMobileTab('task');
-                }}
-              >
-                Next finding
-              </button>
-              <button
-                type="button"
-                className="mobile-action-btn"
-                data-testid="mobile-action-prev-task"
-                disabled={filteredAgents.length === 0}
-                onClick={() => {
-                  track({ type: 'shortcut_used', key: 'Mobile Prev Task', action: 'previous_task', context: 'touch' });
-                  previousTask();
-                  setMobileTab('task');
-                }}
-              >
-                Prev task
-              </button>
-              <button
-                type="button"
-                className="mobile-action-btn"
-                data-testid="mobile-action-next-task"
-                disabled={filteredAgents.length === 0}
-                onClick={() => {
-                  track({ type: 'shortcut_used', key: 'Mobile Next Task', action: 'next_task', context: 'touch' });
-                  nextTask();
-                  setMobileTab('task');
-                }}
-              >
-                Next task
-              </button>
-              {!isViewer && (
-                <button
-                  type="button"
-                  className="mobile-action-btn mobile-action-btn-primary"
-                  data-testid="mobile-action-launch"
-                  onClick={() => openBlankLaunch('mobile_action')}
-                >
-                  Launch
-                </button>
-              )}
-            </div>
-          )}
-        </>
-      ) : (
-        <main
-          id="main-content"
-          tabIndex={-1}
-          ref={mainRef}
-          className={`main${isResizingSplit ? ' main-resizing' : ''}${isResizingNav ? ' main-resizing-nav' : ''}`}
-          style={{
-            ...(findingsWidth != null ? { '--findings-panel-width': `${findingsWidth}px` } : {}),
-            ...(navWidth != null ? { '--nav-width': `${navWidth}px` } : {}),
-          } as React.CSSProperties}
-        >
-          {projectSidebar}
-          {!terminalFocusActive && (
-            <NavResizer
-              width={navWidth ?? DEFAULT_NAV_WIDTH}
-              onResizeStateChange={setIsResizingNav}
-              onResize={setNavWidth}
-              onCommit={commitNavWidth}
-              onReset={resetNavWidth}
-            />
-          )}
-          {projectDetailDrawer}
-          {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
-          {findingsPanel}
-          {!terminalFocusActive && selectedAgentShowsSplit && (
-            <FindingsResizer
-              containerRef={mainRef}
-              onResizeStateChange={setIsResizingSplit}
-              onResize={setFindingsWidth}
-              onCommit={commitFindingsWidth}
-            />
-          )}
-          {detailPanel}
-        </main>
       )}
       <Toasts />
       <DestructiveUndoToasts

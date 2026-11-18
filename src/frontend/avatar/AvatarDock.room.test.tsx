@@ -56,6 +56,7 @@ import {
   getAvatarRoom,
   setAvatarRoom,
   updateAvatarPanelPrefs,
+  useAvatarPageCovered,
   useAvatarRoomShown,
 } from '../store/avatar-panel-prefs.js';
 import { __resetLucyConversationForTests, appendConversationEntry } from '../store/lucy-conversation.js';
@@ -271,6 +272,41 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(shown()).toBe('true');
       act(() => { updateAvatarPanelPrefs({ enabled: false }); });
       expect(shown()).toBe('false');
+    });
+
+    test('the dock says it covers the whole page in the room and as the open full-width sheet, and nowhere else (#4154)', () => {
+      // What makes the dashboard inert underneath her (App.tsx). The docked column and the overlay leave the page in sight.
+      const Probe = (): React.ReactElement => <i data-testid="covered">{String(useAvatarPageCovered())}</i>;
+      const covered = (): string | undefined => q('covered')?.textContent ?? undefined;
+      const withProbe = <><Probe /><AvatarDock attentionCount={0} roomShortcut={ROOM_SHORTCUT} /></>;
+      start();
+      root = createRoot(container);
+      act(() => { root!.render(withProbe); });
+      expect(mode()).toBe('docked');
+      expect(covered()).toBe('false');
+      click(toggle());
+      expect(mode()).toBe('room');
+      expect(covered()).toBe('true');
+      click(toggle());
+      expect(covered()).toBe('false');
+
+      setWindowWidth(1200);
+      expect(mode()).toBe('overlay');
+      expect(covered()).toBe('false');
+
+      setWindowWidth(600);
+      expect(mode()).toBe('sheet');
+      expect(covered()).toBe('true');
+      // Minimised to the bubble, the page is in sight again.
+      act(() => { updateAvatarPanelPrefs({ minimized: true }); });
+      expect(bubble()).not.toBeNull();
+      expect(covered()).toBe('false');
+      act(() => { updateAvatarPanelPrefs({ minimized: false }); });
+      expect(covered()).toBe('true');
+
+      // The dock goes away (switched off, crashed): nothing covers the page.
+      act(() => { root!.render(<Probe />); });
+      expect(covered()).toBe('false');
     });
 
     test('a key pressed in the middle of IME composition does not flip the room', () => {

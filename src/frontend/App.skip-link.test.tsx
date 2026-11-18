@@ -111,9 +111,12 @@ describe('App skip-to-content landmark (issue #1869)', () => {
     expect(skip?.classList.contains('skip-link')).toBe(true);
     expect(skip?.textContent?.trim()).toBe('Skip to content');
 
-    // First element in the app shell (before TopBar chrome / banners).
+    // First element in the app shell (before TopBar chrome / banners). The dashboard sits in a layout-free
+    // wrapper that goes inert while Lucy covers it (#4154), so the skip link is that wrapper's first child.
     const app = container.querySelector('.app');
-    expect(app?.firstElementChild).toBe(skip);
+    const dashboard = app?.firstElementChild;
+    expect(dashboard?.getAttribute('data-testid')).toBe('app-dashboard');
+    expect(dashboard?.firstElementChild).toBe(skip);
 
     const main = container.querySelector<HTMLElement>('#main-content');
     expect(main).toBeTruthy();
