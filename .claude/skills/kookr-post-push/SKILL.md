@@ -21,8 +21,8 @@ This skill fills the gap between "push succeeded" and "the PR is actually ready.
 In this repository, `pnpm deliver` (started from `[[kookr-pre-push]]` step 3) already opens or updates the PR, waits for the independent-review verdict bound to the PR head, and runs `kookr merge`. Use this skill alongside it, not instead of it:
 
 - While it runs or after it stops, do the checks below (mergeability, PR body, CI, feedback); they are not part of `pnpm deliver`.
-- When it stopped at a step, do that step by hand with the commands below, then resume with `pnpm deliver --from <step>` (add `--specialists independent-review` when resuming from `review-marker`, and pass the same `--body-file .tmp/pr-body.md` on every run, after `mkdir -p .tmp`). The stop table is in `[[kookr-pre-push]]` step 3.
-- After a fix commit, start the reviewer on the new head and rerun `pnpm deliver --body-file .tmp/pr-body.md --from review-marker --specialists independent-review`: it pushes, updates the PR body and title, waits for the new verdict and merges.
+- When it stopped at a step, do that step by hand with the commands below, then resume with `pnpm deliver --from <step>` (add `--specialists independent-review` when resuming from `review-marker`). The stop table is in `[[kookr-pre-push]]` step 3.
+- After a fix commit, start the reviewer on the new head and rerun `pnpm deliver --from review-marker --specialists independent-review`: it pushes, updates the PR body and title, waits for the new verdict and merges.
 
 The commands in steps 1 and 6 below are what its `pr`, `wait-verdict` and `merge` steps run, kept as the fallback.
 
@@ -36,7 +36,7 @@ If the branch already has a PR:
 gh pr view --json number,url,mergeable,mergeStateStatus,reviewDecision
 ```
 
-If the PR does not exist yet, `pnpm deliver` creates it in its `pr` step. Only when that step stopped, create or update it by hand via [[kookr-pr-lifecycle]], then resume with `pnpm deliver --body-file .tmp/pr-body.md --from wait-verdict`.
+If the PR does not exist yet, `pnpm deliver` creates it in its `pr` step. Only when that step stopped, create or update it by hand via [[kookr-pr-lifecycle]], then resume with `pnpm deliver --from wait-verdict`.
 
 **Listing PRs for the post-merge rebase scan:** use `gh prs` (alias: `pr list --limit 200`) or pass `--limit 200` explicitly — the bare `gh pr list` default of 30 silently truncates and misses PRs in busy repos. Set the alias once with `gh alias set prs 'pr list --limit 200'` (older gh versions without `--clobber`: `gh alias delete prs 2>/dev/null; gh alias set prs 'pr list --limit 200'`).
 
@@ -58,7 +58,7 @@ Typical Kookr checklist items:
 
 Do not add a "full suite passes" or `pnpm verify` item: nobody runs those per pull request here. The integration train runs `pnpm verify` on `staging` after the merge.
 
-Keep the PR body current: edit the `pnpm deliver` body file (`.tmp/pr-body.md`) and rerun `pnpm deliver --body-file .tmp/pr-body.md --from pr-body --to pr`, or use the `[[kookr-pr-lifecycle]]` REST-update flow. Do not leave stale unchecked items behind.
+Keep the PR body current: edit the `pnpm deliver` body file (`.tmp/kookr-deliver-<branch>.md`) and rerun `pnpm deliver --from pr-body --to pr`, or use the `[[kookr-pr-lifecycle]]` REST-update flow. Do not leave stale unchecked items behind.
 
 Also re-read the PR title and summary against the **current** branch diff after every follow-up push:
 
@@ -112,7 +112,7 @@ integration branch is configured.
 
 If it exits 3 with `PR #<n> conflicts with <base>`, rebase on `origin/<base>`,
 start a new review if the diff changed, and rerun
-`pnpm deliver --body-file .tmp/pr-body.md --from review-marker --specialists independent-review` (or push and
+`pnpm deliver --from review-marker --specialists independent-review` (or push and
 run `kookr merge` again by hand).
 
 Read the `kookr-merge: summary:` block at the end of the output (#3913). On
