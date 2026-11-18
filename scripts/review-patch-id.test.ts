@@ -254,6 +254,168 @@ describe('review-patch-id.sh (local refs)', () => {
   });
 });
 
+describe('review-patch-id.sh line-bound reference pages (#3798)', () => {
+  const PAGE = 'docs/reference/api.md';
+  const rows = Array.from({ length: 30 }, (_, i) => `| GET /r${i} | route ${i} |`);
+  const page = (r: string[]) => `# API\n\n| Route | What |\n| --- | --- |\n${r.join('\n')}\n`;
+  const withRow = (r: string[], at: number, row: string) => [...r.slice(0, at), row, ...r.slice(at)];
+
+  /** main has the page; feature adds `prRow` near the end. */
+  function setup(path = PAGE, prRow = '| POST /mine | the PR row |') {
+    const repo = makeRepo();
+    mkdirSync(join(repo, 'docs/reference'), { recursive: true });
+    commitFile(repo, path, page(rows));
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    commitFile(repo, path, page(withRow(rows, 25, prRow)));
+    return repo;
+  }
+  function rebaseOntoBaseRow(repo: string, path = PAGE) {
+    git(repo, 'checkout', '-q', 'main');
+    commitFile(repo, path, page(withRow(rows, 3, '| PUT /theirs | another PR row |')));
+    git(repo, 'checkout', '-q', 'feature');
+    git(repo, 'rebase', '-q', 'main');
+  }
+  const idOf = (repo: string) => {
+    const r = run(repo, ['main', 'feature']);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/^[0-9a-f]{40}$/);
+    return r.stdout;
+  };
+
+  it.each(['docs/reference/environment-variables.md', 'docs/reference/api.md', 'docs/reference/cli.md'])(
+    'keeps the id of a PR adding a row to %s after a rebase onto a base that added a different row',
+    (path) => {
+      const repo = setup(path);
+      const before = idOf(repo);
+      rebaseOntoBaseRow(repo, path);
+      expect(idOf(repo)).toBe(before);
+    },
+  );
+
+  it('prints the same id when run from a subdirectory', () => {
+    const repo = setup();
+    const fromRoot = idOf(repo);
+    mkdirSync(join(repo, 'sub'), { recursive: true });
+    const r = run(join(repo, 'sub'), ['main', 'feature']);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toBe(fromRoot);
+  });
+
+  it('ignores GIT_DIFF_OPTS and diff.relative', () => {
+    const repo = setup();
+    const plain = idOf(repo);
+    const r = run(repo, ['main', 'feature'], { GIT_DIFF_OPTS: '--unified=5' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toBe(plain);
+    git(repo, 'config', 'diff.relative', 'true');
+    mkdirSync(join(repo, 'sub'), { recursive: true });
+    const sub = run(join(repo, 'sub'), ['main', 'feature']);
+    expect(sub.status, sub.stderr).toBe(0);
+    expect(sub.stdout).toBe(plain);
+  });
+
+  it('fails rather than bind an allow-listed page whose diff shows no line (binary diff attribute)', () => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, 'docs/reference'), { recursive: true });
+    commitFile(repo, '.gitattributes', '*.md -diff\n');
+    commitFile(repo, PAGE, page(rows));
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    commitFile(repo, PAGE, page(withRow(rows, 25, '| POST /mine | r |')));
+    const r = run(repo, ['main', 'feature']);
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('keeps the id when the PR\'s row lands at another place in the page (accepted trade-off)', () => {
+    // Documents the operator's choice: content and order of the changed lines
+    // are bound, their position is not.
+    expect(idOf(setup())).toBe(idOf((() => {
+      const repo = makeRepo();
+      mkdirSync(join(repo, 'docs/reference'), { recursive: true });
+      commitFile(repo, PAGE, page(rows));
+      git(repo, 'checkout', '-q', '-b', 'feature');
+      commitFile(repo, PAGE, page(withRow(rows, 5, '| POST /mine | the PR row |')));
+      return repo;
+    })()));
+  });
+
+  it('changes the id when the content of the PR\'s own added row changes', () => {
+    const a = idOf(setup(PAGE, '| POST /mine | the PR row |'));
+    const b = idOf(setup(PAGE, '| POST /mine | the PR row  |'));
+    expect(a).not.toBe(b);
+  });
+
+  it('changes the id when the PR also removes a line', () => {
+    const repo = setup();
+    const before = idOf(repo);
+    const r = withRow(rows, 25, '| POST /mine | the PR row |');
+    r.splice(10, 1);
+    commitFile(repo, PAGE, page(r));
+    expect(idOf(repo)).not.toBe(before);
+  });
+
+  it('still changes the id when the PR also changes another file the base touched', () => {
+    const repo = setup();
+    commitFile(repo, 'base.txt', 'one\ntwo\nthree\nfour\n');
+    const before = idOf(repo);
+    git(repo, 'checkout', '-q', 'main');
+    commitFile(repo, 'base.txt', 'zero\none\ntwo\nthree\n');
+    commitFile(repo, PAGE, page(withRow(rows, 3, '| PUT /theirs | another PR row |')));
+    git(repo, 'checkout', '-q', 'feature');
+    git(repo, 'rebase', '-q', 'main');
+    expect(idOf(repo)).not.toBe(before);
+  });
+
+  it('keeps the blob-level binding for a file outside the exact allow-list', () => {
+    // Same shape, a path that only resembles the allow-listed ones.
+    const path = 'docs/reference/api-extra.md';
+    const repo = setup(path);
+    const before = idOf(repo);
+    rebaseOntoBaseRow(repo, path);
+    expect(idOf(repo)).not.toBe(before);
+  });
+
+  it('keeps the blob-level binding when the PR adds an allow-listed page (status A)', () => {
+    const repo = makeRepo();
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    mkdirSync(join(repo, 'docs/reference'), { recursive: true });
+    commitFile(repo, PAGE, page(rows));
+    const blobLevel = git(repo, 'diff-tree', '-r', '--no-commit-id', '--full-index', '--no-renames', 'main', 'feature');
+    const expected = spawnSync('git', ['hash-object', '--stdin'], { input: `${blobLevel}\n`, encoding: 'utf8' }).stdout.trim();
+    expect(idOf(repo)).toBe(expected);
+  });
+
+  it('keeps the blob-level binding when an allow-listed page holds a NUL byte', () => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, 'docs/reference'), { recursive: true });
+    // Diff it as text, so only the NUL check keeps the blob line.
+    commitFile(repo, '.gitattributes', '*.md text diff\n');
+    commitFile(repo, PAGE, Buffer.from(`${page(rows)}x\0y\n`));
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    commitFile(repo, PAGE, Buffer.from(`${page(withRow(rows, 25, '| POST /mine | r |'))}x\0y\n`));
+    const before = idOf(repo);
+    git(repo, 'checkout', '-q', 'main');
+    const theirs = withRow(rows, 3, '| PUT /theirs | r |');
+    commitFile(repo, PAGE, Buffer.from(`${page(theirs)}x\0y\n`));
+    // What a rebase would produce (git refuses to merge a file with a NUL).
+    git(repo, 'checkout', '-q', '-B', 'feature', 'main');
+    commitFile(repo, PAGE, Buffer.from(`${page(withRow(theirs, 26, '| POST /mine | r |'))}x\0y\n`));
+    expect(idOf(repo)).not.toBe(before);
+  });
+
+  it('keeps the blob-level binding on a mode change of an allow-listed page', () => {
+    const repo = setup();
+    const before = idOf(repo);
+    chmodSync(join(repo, PAGE), 0o755);
+    git(repo, 'add', PAGE);
+    git(repo, 'commit', '-q', '-m', 'chmod');
+    const after = idOf(repo);
+    expect(after).not.toBe(before);
+    rebaseOntoBaseRow(repo);
+    expect(idOf(repo)).not.toBe(after);
+  });
+});
+
 describe('review-patch-id.sh --pr', () => {
   function setup() {
     const repo = makeRepo();
