@@ -12,14 +12,36 @@
 # i.e. one raw line per changed path: old mode, new mode, old blob id, new blob
 # id, status and path. Blob ids are content hashes, so ANY change to ANY byte of
 # ANY file the PR touches changes the id (whitespace, NUL bytes, binary files,
-# modes, renames, and the same edit made at a different place in a file).
-# Rename detection is off, so the output never depends on similarity scores.
+# modes, renames, and the same edit made at a different place in a file),
+# except that for the three line-bound pages below the same changed lines made
+# at a different place in the page keep the id. Rename detection is off, so the output never depends on similarity scores.
 #
-# Trade-off, stated plainly: the id survives a rebase ONLY when the new base did
-# not change any file the PR also touches. If it did, the PR's "old" blob for
+# Trade-off, stated plainly: outside the three line-bound pages below, the id
+# survives a rebase ONLY when the new base did not change any file the PR also
+# touches. If it did, the PR's "old" blob for
 # that file differs, the id changes, and the reviewer must re-review. That fails
 # closed on purpose; a rebase onto a base that changed only other files keeps
 # the id.
+#
+# One exception, for three shared reference pages (#3798): an explicit list of
+# exact paths, nothing pattern-based (LINE_BOUND_PATHS below):
+#   docs/reference/environment-variables.md, docs/reference/api.md,
+#   docs/reference/cli.md
+# Most pull requests that add an environment variable, an API route or a CLI
+# command add a row to one of them, so nearly every rebase onto a moved base
+# changed the PR's "old" blob there and voided a passed review even when the
+# two PRs shared no line. For these paths only, the change-list line carries,
+# in place of the old/new blob ids, the hash of the PR's own changed lines for
+# that file: every added and removed line, with its content and in order, but
+# without line numbers, hunk headers or unchanged context
+#   git diff -U0 <merge-base> <head> -- <path>, minus the header and `@@` lines
+# So a rebase onto a base that added a different row elsewhere in the page
+# keeps the id, and any change to the PR's own rows changes it. The cost, which
+# the operator accepted: the same rows moved to another place in the page keep
+# the id. The exception applies only to a plain text edit of one of these
+# files (status M, mode 100644 on both sides, no NUL byte in either version);
+# an add, delete, rename, mode change or binary content keeps the blob-level
+# line, which fails closed. Every other path keeps the blob-level binding.
 #
 # Neither common alternative is used. `git patch-id` strips all whitespace and
 # sees no binary content, so a re-indent, a removed space inside a string or a
@@ -47,6 +69,80 @@ Usage: review-patch-id.sh <base-ref> [<head-ref>]
 USAGE
 }
 
+# Paths whose change-list line is bound to the PR's own changed lines instead
+# of blob ids (see the header). Exact repository-relative paths only.
+LINE_BOUND_PATHS=(
+  docs/reference/environment-variables.md
+  docs/reference/api.md
+  docs/reference/cli.md
+)
+
+is_line_bound_path() {
+  local p
+  for p in "${LINE_BOUND_PATHS[@]}"; do
+    [[ "$1" == "$p" ]] && return 0
+  done
+  return 1
+}
+
+# blob_is_nul_free <oid> — true only when the blob was read and holds no NUL
+# byte. A read error answers false, which keeps the blob-level line.
+blob_is_nul_free() {
+  local size stripped
+  size="$(git cat-file -s "$1")" || return 1
+  stripped="$(set -o pipefail; git cat-file blob "$1" | LC_ALL=C tr -d '\000' | LC_ALL=C wc -c | tr -d ' ')" || return 1
+  [[ -n "$size" && "$size" == "$stripped" ]]
+}
+
+# changed_lines_id <base> <head> <path> — print the hash of the added and
+# removed lines of <path> between the two commits (content and order only).
+# The diff options (and GIT_DIFF_OPTS) are pinned so user config and the
+# environment cannot change the output, and the
+# pathspec is anchored at the top of the tree (diff-tree prints root-relative
+# paths; the script may run from a subdirectory).
+changed_lines_id() {
+  local id empty
+  empty="$(git hash-object --stdin </dev/null)" || return 1
+  id="$(set -o pipefail
+    GIT_DIFF_OPTS= git -c diff.noprefix=false -c diff.mnemonicPrefix=false diff \
+      --no-color --no-ext-diff --no-textconv --no-renames --no-relative \
+      --diff-algorithm=myers --indent-heuristic -U0 --inter-hunk-context=0 \
+      "$1" "$2" -- ":(top,literal)$3" \
+      | awk 'body && !/^@@/ { print } /^@@/ { body = 1 }' \
+      | git hash-object --stdin)" || return 1
+  # The hash of empty input (SHA-1 or SHA-256 repo): no changed line was seen,
+  # e.g. a diff attribute made git call the file binary. Refuse rather than
+  # bind every version of the page to the same id.
+  [[ -n "$id" && "$id" != "$empty" ]] || return 1
+  printf '%s\n' "$id"
+}
+
+# change_list <merge-base> <head> — the raw change list, with each eligible
+# line-bound entry rewritten as `:100644 100644 <lines-id> <lines-id> M<TAB>path`
+# (the old and new blob slots both hold the changed-lines id). Every other line
+# is passed through byte for byte, so the id of a PR that touches none of the
+# line-bound paths is the same as before this exception existed.
+# Without -z, diff-tree prints one line per path (it quotes any odd byte in a
+# path, and a path cannot hold a NUL), so reading it line by line is lossless.
+change_list() {
+  local mb="$1" head="$2" line meta path old_mode new_mode old_oid new_oid status lid
+  while IFS= read -r line; do
+    meta="${line%%$'\t'*}"
+    path="${line#*$'\t'}"
+    if [[ "$meta" != "$line" ]] && is_line_bound_path "$path"; then
+      read -r old_mode new_mode old_oid new_oid status <<<"${meta#:}"
+      if [[ "$old_mode" == 100644 && "$new_mode" == 100644 && "$status" == M ]] \
+        && blob_is_nul_free "$old_oid" && blob_is_nul_free "$new_oid"; then
+        lid="$(changed_lines_id "$mb" "$head" "$path")" \
+          || { echo "review-patch-id: could not hash the changed lines of $path" >&2; return 1; }
+        printf ':100644 100644 %s %s M\t%s\n' "$lid" "$lid" "$path"
+        continue
+      fi
+    fi
+    printf '%s\n' "$line"
+  done
+}
+
 # patch_id <base> <head> — print the id; non-zero on an empty diff or a git failure.
 patch_id() {
   local base="$1" head="$2" mb id
@@ -59,9 +155,9 @@ patch_id() {
     return 1
   fi
   # The change list is piped straight into the hash and never held in a shell
-  # variable (bash drops NUL bytes from a variable; paths may hold odd bytes).
-  # pipefail makes a failing git fail the whole pipeline.
-  id="$(set -o pipefail; "${list_cmd[@]}" | git hash-object --stdin)" \
+  # variable as a whole. pipefail makes a failing git (or a failing
+  # changed-lines hash) fail the whole pipeline.
+  id="$(set -o pipefail; "${list_cmd[@]}" | change_list "$mb" "$head" | git hash-object --stdin)" \
     || { echo "review-patch-id: could not hash the changes between $mb and $head" >&2; return 1; }
   printf '%s\n' "$id"
 }
