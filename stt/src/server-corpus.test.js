@@ -104,6 +104,8 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
+// This first test pays the cold import of server.js (~1.5s idle);
+// on a loaded integration-train host that exceeded the 5s default (#4146 revert).
 test('saves full original PCM once with final text despite rolling-window trimming', async () => {
   vi.stubEnv('STT_MAX_BUFFER_SECONDS', '2');
   vi.stubEnv('MAX_WINDOW_SIZE', '1');
@@ -139,7 +141,7 @@ test('saves full original PCM once with final text despite rolling-window trimmi
   expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
   expect(wav.readUInt32LE(24)).toBe(16000);
   expect(wav.subarray(44)).toEqual(audio);
-});
+}, 30_000);
 
 test('disabled collection writes nothing and preserves transcription', async () => {
   vi.stubEnv('KOOKR_STT_CORPUS', 'false');
