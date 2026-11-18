@@ -31,7 +31,9 @@
 # Known misses: the scan matches the flags-first style these suites use, so
 # `grep PATTERN -q`, `/usr/bin/grep -q`, `| { grep -q; }` and a long option that
 # takes a separate argument before -q (`grep --regexp x -q`) slip past it. So
-# does a pipe after a backslash continuation that ends inside a quoted string
+# does a pipeline whose first line ends in a comment after the pipe
+# (`cmd | # note`, then `grep -q x` on the next line), and a pipe after a
+# backslash continuation that ends inside a quoted string
 # when the next line starts with `#`:
 #   echo "foo\
 #   #bar" | grep -q bar
@@ -51,9 +53,10 @@ FAILURES=0
 # or `\` is joined to the next so a split pipeline is still seen. Comment lines
 # are dropped before the join: bash never continues a comment, so one that ends
 # in `|` or `\` must not swallow the next line, and one that sits inside a split
-# pipeline must not break it. Before the quiet flag, an -e or -f cluster takes
-# the next word as its argument, so `grep -e -q` (a search for -q) is not read
-# as quiet, nor is `-eq` (-e with pattern q). awk with [ \t] (not [[:space:]])
+# pipeline must not break it. Before the quiet flag, the first e or f in an
+# option cluster takes the rest of the cluster, or else the next word, as its
+# argument, so `grep -e -q` (a search for -q) is not read as quiet, nor is `-eq`
+# (-e with pattern q); `grep -edone -q` still is. awk with [ \t] (not [[:space:]])
 # keeps this portable to mawk; LC_ALL=C keeps the letter ranges case-exact.
 scan() {
   LC_ALL=C awk '
@@ -65,7 +68,7 @@ scan() {
       if (line ~ /\|[ \t]*$/) { prev = line " "; next }
       prev = ""
       if (line ~ /#[ \t]*pipe-into-grep-q:[ \t]*ok[ \t]*$/) next
-      if (line ~ /(^|[^|])\|[ \t]*(command[ \t]+)?[ef]?grep([ \t]+(-[A-Za-z]*[ef][ \t]+[^ \t]+|--[A-Za-z][^ \t]*|-([A-Za-dg-z]|[A-Za-z][^ \t]*[^ef \t])))*[ \t]+(-[A-Za-dg-z]*q[A-Za-z]*|--quiet|--silent)([ \t]|$)/)
+      if (line ~ /(^|[^|])\|[ \t]*(command[ \t]+)?[ef]?grep([ \t]+(-[A-Za-dg-z0-9]*[ef]([ \t]+)?[^ \t]+|--[A-Za-z][^ \t]*|-[A-Za-dg-z0-9]+))*[ \t]+(-[A-Za-dg-z0-9]*q[A-Za-z]*|--quiet|--silent)([ \t]|$)/)
         print FILENAME ":" FNR ": " line
     }
   ' "$@"
@@ -112,8 +115,12 @@ printf '%s' "\$x" $P grep -F --line-regexp -e foo -qi
 printf '%s' "\$x" $P grep -m1 -q foo
 printf '%s' "\$x" $P grep -A2 -q foo
 printf '%s' "\$x" $P grep -e"\$re" -q
+printf '%s' "\$x" $P grep -edone -q
+printf '%s' "\$x" $P grep -fe -q
+printf '%s' "\$x" $P grep -5 -q foo
+printf '%s' "\$x" $P grep -e -x -q
 EOF
-want_bad=18
+want_bad=22
 got_bad=$(scan "$TMP/bad.sh" | wc -l | tr -d ' ')
 if [ "$got_bad" = "$want_bad" ]; then
   printf 'PASS: scan flags every unsafe pipe-into-grep-q form (%s)\n' "$got_bad"
