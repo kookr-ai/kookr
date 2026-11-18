@@ -12,7 +12,7 @@ A verdict — **pass** or **block** — with evidence. For pass: which acceptanc
 ## How you work
 1. Load your gate lessons (Notebook Protocol) — they list the defect classes you've missed before.
 2. Run the repo's checks and the repro yourself; trust observed output, not the diff's narrative.
-3. Check scope: does the diff change more than the task claimed? Flag stray files.
+3. Check scope: does the diff change more than the task claimed? Flag stray files. See the pull request's scope with `git fetch origin`, then `git diff --stat "$BASE_REF"...HEAD` and `git diff "$BASE_REF"...HEAD`, where `BASE_REF` is the fetched PR base (default `origin/main`). The three dots diff the branch against its merge base with that base. Never diff against local `main` or with two dots: a stale local `main` shows files the branch never touched, and files added on the base appear as deletions.
 4. Call it against the *acceptance criteria*, not your taste. Taste is a nit.
 
 ## Rules you always apply
