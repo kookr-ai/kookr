@@ -109,7 +109,7 @@ pnpm deliver --specialists independent-review --body-file .tmp/pr-body.md       
 | `wait-verdict` | waits (default 1800 seconds) for an independent-review verdict comment bound to the PR head |
 | `merge` | `kookr merge <PR>`, which retargets the PR to `staging` and merges it there |
 
-Add `--to pr` to stop once the PR is open (for example when the PR is not yours to merge), and `--repo kookr-ai/kookr` when `gh` cannot infer the repository.
+Add `--to pr` to stop once the PR is open (for example when the PR is not yours to merge), and `--repo kookr-ai/kookr` when `gh` cannot infer the repository. The PR title defaults to the subject of the last commit; pass `--title "<type>(<scope>): <summary>"` when the branch has more than one commit.
 
 **When it stops.** The last line names the step (`deliver: ✖ stopped at <step>: …`) and what to do. Fix that one step, by hand if needed, then resume from it with `--from <step>`, passing the same `--body-file` on every run and the same `--specialists` value whenever the range includes `review-marker`:
 

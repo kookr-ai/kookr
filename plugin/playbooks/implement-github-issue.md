@@ -556,7 +556,7 @@ $D --from pr-body --to push
 if [ -z "$(gh pr list --repo "$REPO" --head "$(git rev-parse --abbrev-ref HEAD)" --state open --json number -q '.[0].number // empty')" ]; then
   pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" "<TARGET>" || exit 1
 fi
-$D --from pr --to pr                               # gh pr create (or gh pr edit on the open PR)
+$D --from pr --to pr --title "<type>: <short description>"   # gh pr create (or gh pr edit on the open PR); the title defaults to the last commit subject
 ```
 
 Where it stops and what to do (fix that one step, by hand with the command it names if needed, then resume from it):
