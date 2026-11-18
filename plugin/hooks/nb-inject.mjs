@@ -66,6 +66,8 @@ const PREAMBLE =
   `index again and open another shelf.\n` +
   `At the end you will be asked for a short retrospective on the shelves you opened — vote the ` +
   `lessons that helped, \`nb rm\` any that were wrong, and \`nb add\` at most one new lesson (or none). ` +
+  `Even if you opened no shelf, add it to a shelf from this index if one fits; create a new shelf only ` +
+  `if none does. ` +
   `Vote by the \`<id>\` \`nb show\` prints at the start of each line, not a fuzzy text query (a ` +
   `non-unique query errors; the tool then prints the candidate ids). A new lesson is one line, ≤200 ` +
   `characters — an over-length \`nb add\` is rejected, not truncated.\n\n`;

@@ -106,6 +106,10 @@ describe('nb-retro Stop/SubagentStop hook', () => {
     // otherwise an empty store (or a repo with no shelf yet) never gets one.
     expect(r.err).not.toMatch(/skip it entirely/);
     expect(r.err).toMatch(/if you opened none, skip them, but step 5 still applies/);
+    // ...and that first lesson goes on a fitting existing shelf, not an invented synonym
+    // shelf (issue #4203): a new shelf only when no shelf in the session index fits.
+    expect(r.err).toMatch(/shelf from the session index \(`nb list` shows it\) if one fits/);
+    expect(r.err).toMatch(/create a new shelf \(it is created on its first add\) only if none does/);
   });
 
   test('NB_RETRO_DISABLED opts out (always allows the stop)', () => {

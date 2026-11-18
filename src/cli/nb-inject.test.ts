@@ -68,6 +68,10 @@ describe('nb-inject SessionStart hook', () => {
     expect(r.out).toContain('not a fuzzy text query'); // the vote-by-id rationale
     expect(r.out).toContain('one line, ≤200 characters'); // tight: not satisfied by e.g. ≤2000
     expect(r.out).toContain('rejected, not truncated');
+    // A session that opened no shelf reuses a fitting indexed shelf for its first lesson
+    // rather than inventing a synonym shelf (issue #4203).
+    expect(r.out).toContain('Even if you opened no shelf, add it to a shelf from this index if one fits');
+    expect(r.out).toContain('create a new shelf only if none does');
     expect(r.out).toContain('code-review'); // the index itself, from `nb list`
     expect(r.out).toContain('patch-author');
     expect(r.out).toContain('review a diff'); // the description surfaces

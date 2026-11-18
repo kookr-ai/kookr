@@ -112,7 +112,8 @@ process.stderr.write(
   `Before finishing, run the agent-notebook retrospective on the shelves you opened this task ` +
     `(one pass, then stop). Steps 1-4 apply only to shelves you opened; if you opened none, skip ` +
     `them, but step 5 still applies: a task that taught something a future agent would need may ` +
-    `seed a first lesson (the shelf is created on its first add):\n` +
+    `seed a first lesson. Put it on a shelf from the session index (\`nb list\` shows it) if one ` +
+    `fits; create a new shelf (it is created on its first add) only if none does:\n` +
     `  1. nb vote <shelf> <id1,id2,…> +1   the lessons that actually helped ` +
     `(an <id> is the short token at the start of each \`nb show\` line; several ids at once is fine)\n` +
     `  2. nb vote <shelf> <id1,id2,…> -1   the lessons that misled you or wasted your time ` +
