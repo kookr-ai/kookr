@@ -997,4 +997,88 @@ description: Nothing to do
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  // Issue #4142: a same-named file in another tier is ignored without notice.
+  describe('when another tier holds a copy of the same file', () => {
+    const PROJECT_COPY = '---\nname: Goal Supervisor\n---\n\nProject rules.\n';
+
+    async function launchWithUserCopy(userCopy: string) {
+      const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+      const userDir = await mkdtemp(join(tmpdir(), 'kookr-user-'));
+      // An empty temp dir is not a plugin tree, so the host plugin stays out.
+      const emptyPlugin = await mkdtemp(join(tmpdir(), 'kookr-no-plugin-'));
+      const saved = { user: process.env.KOOKR_USER_PLAYBOOKS_DIR, plugin: process.env.KOOKR_PLUGIN_DIR };
+      process.env.KOOKR_USER_PLAYBOOKS_DIR = userDir;
+      process.env.KOOKR_PLUGIN_DIR = emptyPlugin;
+      try {
+        await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+        await writeFile(join(cwd, '.kookr', 'playbooks', 'goal-supervisor.md'), PROJECT_COPY);
+        await writeFile(join(userDir, 'goal-supervisor.md'), userCopy);
+        const launch = await preparePlaybookLaunch({ cwd, playbookPath: 'goal-supervisor.md', parameterValues: {} });
+        return {
+          prompt: launch.prompt,
+          projectPath: join(cwd, '.kookr', 'playbooks', 'goal-supervisor.md'),
+          userPath: join(userDir, 'goal-supervisor.md'),
+        };
+      } finally {
+        if (saved.user === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+        else process.env.KOOKR_USER_PLAYBOOKS_DIR = saved.user;
+        if (saved.plugin === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+        else process.env.KOOKR_PLUGIN_DIR = saved.plugin;
+        await Promise.all([cwd, userDir, emptyPlugin].map((dir) => rm(dir, { recursive: true, force: true })));
+      }
+    }
+
+    it('names the different copy in the header and says it does not run', async () => {
+      const { prompt, projectPath, userPath } = await launchWithUserCopy(PROJECT_COPY.replace('Project', 'Stale'));
+      expect(prompt).toBe(
+        '> _Kookr playbook context — you are executing the **Goal Supervisor** playbook '
+        + `(scope: project). Its definition file is at \`${projectPath}\`. `
+        + 'If asked to modify this playbook, edit that file. '
+        + `Another tier holds a different copy of this playbook, which this task does not run: \`${userPath}\` (scope: user)._`
+        + '\n\nProject rules.',
+      );
+    });
+
+    it('names a different repository copy when a user-scope launch runs the user copy', async () => {
+      // The issue's evidence case: a schedule pinned to the user copy while the
+      // repository holds an edited one. The project tier must be read from the
+      // launch's source cwd, not from the user playbooks dir.
+      const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+      const userDir = await mkdtemp(join(tmpdir(), 'kookr-user-'));
+      const emptyPlugin = await mkdtemp(join(tmpdir(), 'kookr-no-plugin-'));
+      const saved = { user: process.env.KOOKR_USER_PLAYBOOKS_DIR, plugin: process.env.KOOKR_PLUGIN_DIR };
+      process.env.KOOKR_USER_PLAYBOOKS_DIR = userDir;
+      process.env.KOOKR_PLUGIN_DIR = emptyPlugin;
+      try {
+        const projectPath = join(cwd, '.kookr', 'playbooks', 'goal-supervisor.md');
+        await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+        await writeFile(projectPath, PROJECT_COPY);
+        await writeFile(join(userDir, 'goal-supervisor.md'), PROJECT_COPY.replace('Project', 'Stale'));
+        const launch = await preparePlaybookLaunch({
+          cwd,
+          playbookPath: 'goal-supervisor.md',
+          parameterValues: {},
+          scope: 'user',
+        });
+        expect(launch.prompt).toContain('(scope: user)');
+        expect(launch.prompt).toContain(
+          `Another tier holds a different copy of this playbook, which this task does not run: \`${projectPath}\` (scope: project)._`,
+        );
+        expect(launch.prompt.endsWith('Stale rules.')).toBe(true);
+      } finally {
+        if (saved.user === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+        else process.env.KOOKR_USER_PLAYBOOKS_DIR = saved.user;
+        if (saved.plugin === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+        else process.env.KOOKR_PLUGIN_DIR = saved.plugin;
+        await Promise.all([cwd, userDir, emptyPlugin].map((dir) => rm(dir, { recursive: true, force: true })));
+      }
+    });
+
+    it('says nothing about an identical copy', async () => {
+      const { prompt } = await launchWithUserCopy(PROJECT_COPY);
+      expect(prompt).not.toContain('Another tier');
+      expect(prompt).toMatch(/edit that file\._\n\nProject rules\.$/);
+    });
+  });
 });

@@ -9,6 +9,8 @@ import { detectRepoTags, repoTagsAllow } from './repo-tags.js';
 const PROJECT_PLAYBOOKS_SUBDIR = '.kookr/playbooks';
 const PLUGIN_PLAYBOOKS_SUBDIR = 'playbooks';
 const MAX_PLAYBOOK_DIR_CACHE_ENTRIES = 128;
+/** Tier precedence on an id collision: project > user > plugin. */
+const TIER_ORDER: Record<PlaybookScope, number> = { project: 0, user: 1, plugin: 2 };
 
 type PlaybookFileSignature = {
   filename: string;
@@ -68,35 +70,8 @@ export async function discoverPlaybooks(
   cwd: string,
   options: { includeShadowed?: boolean } = {},
 ): Promise<Playbook[]> {
-  const projectDir = join(cwd, PROJECT_PLAYBOOKS_SUBDIR);
-  const userDir = userPlaybooksDir();
-  const pluginDir = pluginPlaybooksDir();
-
-  // Build the scan list, skipping any tier whose dir collides with another to
-  // avoid double-reading identical files when paths overlap (e.g. a user runs
-  // Kookr inside their home dir and projectDir == userDir).
-  const seen = new Set<string>();
-
-  const projectPlaybooksPromise = scanPlaybooksDirCached(projectDir, cwd, 'project');
-  seen.add(projectDir);
-
-  let userPlaybooksPromise: Promise<Playbook[]> = Promise.resolve([]);
-  if (!seen.has(userDir)) {
-    userPlaybooksPromise = scanPlaybooksDirCached(userDir, userDir, 'user');
-    seen.add(userDir);
-  }
-  let pluginPlaybooksPromise: Promise<Playbook[]> = Promise.resolve([]);
-  if (pluginDir !== undefined && !seen.has(pluginDir)) {
-    pluginPlaybooksPromise = scanPlaybooksDirCached(pluginDir, pluginDir, 'plugin');
-    seen.add(pluginDir);
-  }
-
-  const [projectPlaybooks, userPlaybooks, pluginPlaybooks, repoTags] = await Promise.all([
-    projectPlaybooksPromise,
-    userPlaybooksPromise,
-    pluginPlaybooksPromise,
-    detectRepoTags(cwd),
-  ]);
+  const [tiers, repoTags] = await Promise.all([scanPlaybookTiers(cwd), detectRepoTags(cwd)]);
+  const { project: projectPlaybooks, user: userPlaybooks, plugin: pluginPlaybooks } = tiers;
 
   const visiblePluginPlaybooks = pluginPlaybooks.filter((playbook) => repoTagsAllow(playbook.repoTags, repoTags));
 
@@ -104,9 +79,8 @@ export async function discoverPlaybooks(
   // immutable source identity even when a higher-precedence tier now shadows
   // the same id. Ordinary discovery keeps the winner-only catalog below.
   if (options.includeShadowed) {
-    const scopeOrder: Record<PlaybookScope, number> = { project: 0, user: 1, plugin: 2 };
     return [...projectPlaybooks, ...userPlaybooks, ...visiblePluginPlaybooks]
-      .sort((a, b) => a.id.localeCompare(b.id) || scopeOrder[a.scope] - scopeOrder[b.scope]);
+      .sort((a, b) => a.id.localeCompare(b.id) || TIER_ORDER[a.scope] - TIER_ORDER[b.scope]);
   }
 
   // Merge with project > user > plugin precedence by id. Plugin-tier
@@ -120,6 +94,104 @@ export async function discoverPlaybooks(
   for (const pb of projectPlaybooks) byId.set(pb.id, pb);
 
   return Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
+}
+
+interface ScannedPlaybookTiers {
+  project: Playbook[];
+  user: Playbook[];
+  plugin: Playbook[];
+  dirs: Record<PlaybookScope, string | undefined>;
+}
+
+/**
+ * Scan the three tiers without merging or filtering them. A tier whose
+ * directory is the same as a higher tier's (e.g. a user runs Kookr inside
+ * their home dir and projectDir == userDir) is skipped, so the same file is
+ * never read twice and never compared with itself.
+ */
+async function scanPlaybookTiers(cwd: string): Promise<ScannedPlaybookTiers> {
+  const projectDir = join(cwd, PROJECT_PLAYBOOKS_SUBDIR);
+  const userDir = userPlaybooksDir();
+  const pluginDir = pluginPlaybooksDir();
+  const seen = new Set<string>([projectDir]);
+
+  const projectPromise = scanPlaybooksDirCached(projectDir, cwd, 'project');
+  let userPromise: Promise<Playbook[]> = Promise.resolve([]);
+  let scannedUserDir: string | undefined;
+  if (!seen.has(userDir)) {
+    userPromise = scanPlaybooksDirCached(userDir, userDir, 'user');
+    seen.add(userDir);
+    scannedUserDir = userDir;
+  }
+  let pluginPromise: Promise<Playbook[]> = Promise.resolve([]);
+  let scannedPluginDir: string | undefined;
+  if (pluginDir !== undefined && !seen.has(pluginDir)) {
+    pluginPromise = scanPlaybooksDirCached(pluginDir, pluginDir, 'plugin');
+    seen.add(pluginDir);
+    scannedPluginDir = pluginDir;
+  }
+
+  const [project, user, plugin] = await Promise.all([projectPromise, userPromise, pluginPromise]);
+  return {
+    project,
+    user,
+    plugin,
+    dirs: { project: projectDir, user: scannedUserDir, plugin: scannedPluginDir },
+  };
+}
+
+/** One copy of a playbook file in one tier. */
+export interface PlaybookTierCopy {
+  scope: PlaybookScope;
+  filePath: string;
+  /** `sha256:<hex>` of the raw file, as recorded in a task's playbook source identity. */
+  sourceDigest: string | undefined;
+}
+
+/**
+ * A playbook file name (its id) held by more than one tier (issue #4142).
+ * Only the first copy (highest precedence: project > user > plugin) runs;
+ * the others are ignored without notice.
+ */
+export interface PlaybookTierShadow {
+  id: string;
+  /** Every copy, highest precedence first. `copies[0]` is the one that runs. */
+  copies: PlaybookTierCopy[];
+  /** True when at least two copies have different content. */
+  contentDiffers: boolean;
+}
+
+/**
+ * Find every playbook id that exists in more than one tier, and whether the
+ * copies differ. Reads the tiers before the plugin `repo-tags` filter: a user
+ * copy of a tagged plugin playbook still shadows it wherever the plugin copy
+ * is visible, so it is reported in every checkout. The project tier is read
+ * from `cwd`, so the result depends on the checkout it is run in.
+ */
+export async function findPlaybookTierShadows(cwd: string): Promise<PlaybookTierShadow[]> {
+  const { project, user, plugin, dirs } = await scanPlaybookTiers(cwd);
+  const byId = new Map<string, PlaybookTierCopy[]>();
+  for (const playbook of [...project, ...user, ...plugin]) {
+    const dir = dirs[playbook.scope];
+    if (dir === undefined) continue;
+    const copies = byId.get(playbook.id) ?? [];
+    copies.push({ scope: playbook.scope, filePath: join(dir, playbook.id), sourceDigest: playbook.sourceDigest });
+    byId.set(playbook.id, copies);
+  }
+
+  const shadows: PlaybookTierShadow[] = [];
+  for (const [id, copies] of byId) {
+    if (copies.length < 2) continue;
+    copies.sort((a, b) => TIER_ORDER[a.scope] - TIER_ORDER[b.scope]);
+    shadows.push({ id, copies, contentDiffers: copiesDiffer(copies) });
+  }
+  return shadows.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function copiesDiffer(copies: PlaybookTierCopy[]): boolean {
+  // A missing digest is unknown, not different: never flag on it.
+  const digests = new Set(copies.map((copy) => copy.sourceDigest).filter((digest) => digest !== undefined));
+  return digests.size > 1;
 }
 
 async function scanPlaybooksDirCached(

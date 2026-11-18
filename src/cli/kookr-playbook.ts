@@ -13,7 +13,11 @@
  * read-only: there is no `run` / `launch` subverb here.
  */
 
-import { discoverPlaybooks } from '../core/playbook-discovery.js';
+import {
+  discoverPlaybooks,
+  findPlaybookTierShadows,
+  type PlaybookTierShadow,
+} from '../core/playbook-discovery.js';
 import type { Playbook, PlaybookScope } from '../core/playbook.js';
 
 export const EXIT_OK = 0;
@@ -28,7 +32,10 @@ Usage:
 
 list  Print available playbooks (name · scope · description) resolved from the
       project (\`<cwd>/.kookr/playbooks\`), user (\`~/.kookr/playbooks\`), and
-      plugin tiers. Read-only.
+      plugin tiers. Read-only. When the same file name exists in more than
+      one tier, the line ends with the other tiers, and says so when their
+      contents differ: only the highest tier's copy runs
+      (project > user > plugin).
 
 Options:
   --json       Print one machine-readable JSON envelope to stdout.
@@ -46,6 +53,13 @@ interface PlaybookListRow {
   name: string;
   scope: PlaybookScope;
   description: string;
+  /**
+   * Every tier holding a file with this id, highest precedence first, so
+   * `tiers[0]` is `scope` (issue #4142). One entry when no other tier has it.
+   */
+  tiers: PlaybookScope[];
+  /** True when another tier's copy has different content from the one that runs. */
+  tierContentDiffers: boolean;
 }
 
 export interface PlaybookCliIo {
@@ -55,6 +69,13 @@ export interface PlaybookCliIo {
   cwd?: string;
   /** Override discovery (tests). Defaults to the filesystem `discoverPlaybooks`. */
   discover?: (cwd: string) => Promise<Playbook[]>;
+  /**
+   * Override the cross-tier comparison (tests). Defaults to the filesystem
+   * `findPlaybookTierShadows`, except when `discover` is injected: then it
+   * defaults to "no other copies", so an injected catalog never mixes with
+   * the files on the host.
+   */
+  findTierShadows?: (cwd: string) => Promise<PlaybookTierShadow[]>;
 }
 
 interface ResolvedIo {
@@ -62,6 +83,7 @@ interface ResolvedIo {
   err: { error: (...args: unknown[]) => void };
   cwd: string;
   discover: (cwd: string) => Promise<Playbook[]>;
+  findTierShadows: (cwd: string) => Promise<PlaybookTierShadow[]>;
 }
 
 interface ParsedPlaybookArgs {
@@ -95,18 +117,27 @@ function parsePlaybookArgs(argv: string[]): ParsedPlaybookArgs {
   return out;
 }
 
-function toRow(playbook: Playbook): PlaybookListRow {
+function toRow(playbook: Playbook, shadow: PlaybookTierShadow | undefined): PlaybookListRow {
+  const tiers = shadow ? shadow.copies.map((copy) => copy.scope) : [playbook.scope];
   return {
     id: playbook.id,
     name: playbook.name,
     scope: playbook.scope,
     description: playbook.description,
+    tiers,
+    tierContentDiffers: shadow?.contentDiffers ?? false,
   };
 }
 
 function formatPlaybookLine(row: PlaybookListRow): string {
   const description = row.description.trim() || '(no description)';
-  return `${row.name} · ${row.scope} · ${description}`;
+  const line = `${row.name} · ${row.scope} · ${description}`;
+  const others = row.tiers.filter((tier) => tier !== row.scope);
+  if (others.length === 0) return line;
+  const state = row.tierContentDiffers
+    ? `different content; only the ${row.scope} copy runs`
+    : 'identical';
+  return `${line} · also in ${others.join(', ')} (${state})`;
 }
 
 function emitJson(
@@ -122,6 +153,8 @@ export async function runPlaybookCli(argv: string[], io: PlaybookCliIo = {}): Pr
     err: io.err ?? console,
     cwd: io.cwd ?? process.cwd(),
     discover: io.discover ?? ((cwd: string) => discoverPlaybooks(cwd)),
+    findTierShadows: io.findTierShadows
+      ?? (io.discover ? async () => [] : (cwd: string) => findPlaybookTierShadows(cwd)),
   };
 
   const args = parsePlaybookArgs(argv);
@@ -176,8 +209,12 @@ export async function runPlaybookCli(argv: string[], io: PlaybookCliIo = {}): Pr
   // inside the envelope contract the other list commands honor rather than
   // letting it escape to the dispatcher's plain-text top-level catch.
   let playbooks: Playbook[];
+  let shadows: PlaybookTierShadow[];
   try {
-    playbooks = await resolved.discover(resolved.cwd);
+    [playbooks, shadows] = await Promise.all([
+      resolved.discover(resolved.cwd),
+      resolved.findTierShadows(resolved.cwd),
+    ]);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     const message = `failed to read playbook directories: ${detail}`;
@@ -194,7 +231,8 @@ export async function runPlaybookCli(argv: string[], io: PlaybookCliIo = {}): Pr
     return EXIT_DISCOVERY_ERROR;
   }
 
-  const rows = playbooks.map(toRow);
+  const shadowById = new Map(shadows.map((shadow) => [shadow.id, shadow]));
+  const rows = playbooks.map((playbook) => toRow(playbook, shadowById.get(playbook.id)));
 
   if (args.json) {
     emitJson(resolved.out, {

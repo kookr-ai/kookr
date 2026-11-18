@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { parsePlaybook, interpolateParameters } from '../../core/playbook-parser.js';
 import { readEvolutionConfig } from '../../core/evolution-config.js';
 import { userPlaybooksDir, pluginPlaybooksDir } from '../../core/playbook-discovery.js';
-import { isPathInside } from '../../core/playbook-paths.js';
+import { isPathInside, resolvePlaybookInScope } from '../../core/playbook-paths.js';
 import { getProjectId, projectDisplayName, projectIdFromRepoSpecifier } from '../../core/project-identity.js';
 import type { AgentSelection } from '../../core/agent-types.js';
 import type { PlaybookParameter, PlaybookScope } from '../../core/playbook.js';
@@ -155,7 +155,14 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
     ),
     effectiveCwd,
   );
-  const prompt = `${playbookContextHeader(playbook, filePath)}\n\n${body}`;
+  const otherTierCopies = await differingCopiesInOtherTiers(
+    input.playbookPath,
+    scope,
+    normalized.playbookSourceCwd,
+    filePath,
+    content,
+  );
+  const prompt = `${playbookContextHeader(playbook, filePath, otherTierCopies)}\n\n${body}`;
 
   // Derive project ID from the first parameter with source: tracked-projects.
   // Project-drawer launches can also send an explicit projectId. Accept it
@@ -249,6 +256,7 @@ export function playbookDefaultsLaunchOpt(
 function playbookContextHeader(
   playbook: Pick<Playbook, 'name' | 'scope'>,
   filePath: string,
+  otherTierCopies: readonly OtherTierCopy[] = [],
 ): string {
   // The name is author-controlled and lands inside markdown emphasis next to a
   // code span. A backtick or newline in it would close the span early and let
@@ -258,8 +266,53 @@ function playbookContextHeader(
   return (
     `> _Kookr playbook context — you are executing the **${name}** playbook `
     + `(scope: ${playbook.scope}). Its definition file is at \`${filePath}\`. `
-    + `If asked to modify this playbook, edit that file._`
+    + `If asked to modify this playbook, edit that file.${otherTierCopiesNote(otherTierCopies)}_`
   );
+}
+
+interface OtherTierCopy {
+  scope: PlaybookScope;
+  filePath: string;
+}
+
+/**
+ * Issue #4142: a file of the same name in another tier is ignored without
+ * notice, so an edit to it changes nothing for this task. Say so in the header
+ * when that copy differs, so the agent does not edit or trust the wrong file.
+ */
+function otherTierCopiesNote(copies: readonly OtherTierCopy[]): string {
+  if (copies.length === 0) return '';
+  const list = copies.map((copy) => `\`${copy.filePath}\` (scope: ${copy.scope})`).join(', ');
+  return ` Another tier holds a different copy of this playbook, which this task does not run: ${list}.`;
+}
+
+/**
+ * Find copies of the same playbook file in the other two tiers whose content
+ * differs from the one being launched. Read-only and best effort: any read
+ * error drops that tier, so it can never fail a launch.
+ */
+async function differingCopiesInOtherTiers(
+  playbookPath: string,
+  scope: PlaybookScope,
+  projectCwd: string,
+  filePath: string,
+  content: string,
+): Promise<OtherTierCopy[]> {
+  const copies: OtherTierCopy[] = [];
+  for (const other of ['project', 'user', 'plugin'] as const) {
+    if (other === scope) continue;
+    try {
+      const resolved = resolvePlaybookInScope(playbookPath, other, projectCwd);
+      // Two tiers can share a directory (Kookr run from the home dir).
+      if (!resolved || resolve(resolved.filePath) === resolve(filePath)) continue;
+      if (await readFile(resolved.filePath, 'utf-8') !== content) {
+        copies.push({ scope: other, filePath: resolved.filePath });
+      }
+    } catch {
+      // Unreadable copy: nothing to report.
+    }
+  }
+  return copies;
 }
 
 async function validatePlaybookLaunchCapabilities(

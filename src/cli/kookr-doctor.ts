@@ -37,6 +37,7 @@ import {
 import { DEFAULT_DTACH_PRESSURE_SOFT_BOUND } from '../core/resource-watchdog-eval.js';
 import type { ResourceWatchdogHealthSnapshot } from '../core/resource-watchdog-types.js';
 import { checkPipelineStarvationState } from './doctor-pipeline-starvation-state.js';
+import { findPlaybookTierShadows, type PlaybookTierShadow } from '../core/playbook-discovery.js';
 
 type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
 type DoctorStatus = 'ok' | 'warn' | 'fail';
@@ -403,6 +404,13 @@ interface RunDoctorDeps {
    * runs.
    */
   readServerDotenv?: (cwd: string) => string | null;
+  /**
+   * Optional override for the cross-tier playbook comparison (issue #4142).
+   * Defaults to {@link findPlaybookTierShadows} on the doctor cwd. Tests
+   * inject a fixture so the host's user and plugin playbooks never leak into
+   * hermetic runs.
+   */
+  findPlaybookTierShadows?: (cwd: string) => Promise<PlaybookTierShadow[]>;
 }
 
 const HELP_TEXT = `kookr doctor — run launch preflight checks.
@@ -437,6 +445,7 @@ hooks.replay-checkpoints (advisory warn when hookReplayCheckpoints sessionCount/
 ops.pipeline-starvation-state (bounded read-only advisory for malformed, unreadable, unsupported or foreign recovery ledgers),
 ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert),
 ops.maintenance-prune (advisory warn when scheduled data-dir prune is off),
+playbooks.tier-copies (advisory warn when a playbook file name exists in two tiers with different content),
 and agent.grok-auth (advisory WARN when grok is on PATH; required FAIL when
 KOOKR_GROK_BIN is set and launch-scoped auth is missing, invalid, or expired).
 `;
@@ -603,6 +612,11 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkPipelineStarvationState(deps.pipelineStarvationStateDir));
   checks.push(checkProdSmokeTick(env, deps.readProdSmokeTickAlert));
   checks.push(await checkMaintenancePruneSchedule(env, deps.probeMaintenancePruneTimer));
+  const playbookTierCheck = await checkPlaybookTierCopies(
+    cwd,
+    deps.findPlaybookTierShadows ?? findPlaybookTierShadows,
+  );
+  if (playbookTierCheck) checks.push(playbookTierCheck);
 
   const status = aggregateStatus(checks);
   return {
@@ -3150,6 +3164,59 @@ function launchDependencyCheckFromFinding(id: string, label: string, finding: La
     summary: finding.summary,
     detail: finding.detail,
     recommendedAction: finding.recommendedAction,
+  };
+}
+
+/**
+ * Advisory check (issue #4142): WARN when a playbook file name exists in more
+ * than one tier (project `<cwd>/.kookr/playbooks`, user `~/.kookr/playbooks`,
+ * plugin) and the copies differ. Only the highest tier's copy runs; the others
+ * are ignored without notice, so an edit to the ignored copy changes nothing.
+ * Identical copies are reported in the OK summary only. The project tier is
+ * read from the doctor's cwd. A discovery error skips the check (returns null):
+ * this check must never fail doctor.
+ */
+async function checkPlaybookTierCopies(
+  cwd: string,
+  findShadows: (cwd: string) => Promise<PlaybookTierShadow[]>,
+): Promise<DoctorCheck | null> {
+  let shadows: PlaybookTierShadow[];
+  try {
+    shadows = await findShadows(cwd);
+  } catch {
+    return null;
+  }
+  const id = 'playbooks.tier-copies';
+  const label = 'Playbook tier copies';
+  const differing = shadows.filter((shadow) => shadow.contentDiffers);
+  if (differing.length === 0) {
+    const identical = shadows.length;
+    return okCheck(
+      id,
+      label,
+      'runtime',
+      identical === 0
+        ? 'No playbook file name exists in more than one tier'
+        : `${identical} playbook(s) exist in more than one tier with identical content`,
+      false,
+    );
+  }
+  const names = differing.map((shadow) => {
+    const [winner, ...ignored] = shadow.copies;
+    return `${shadow.id} (${winner!.scope} runs; ${ignored.map((copy) => copy.scope).join(', ')} ignored)`;
+  });
+  const files = differing.map((shadow) => shadow.copies.map((copy) => `${copy.scope}: ${copy.filePath}`).join(' vs '));
+  return {
+    id,
+    label,
+    category: 'runtime',
+    status: 'warn',
+    required: false,
+    summary: `${differing.length} playbook(s) have a different copy in another tier: ${names.join(', ')}`,
+    detail: `${files.join('; ')}. Project tier read from ${join(cwd, '.kookr', 'playbooks')}.`,
+    recommendedAction:
+      'Keep one copy of each playbook: delete the copy you no longer maintain, or make the copies identical. '
+      + 'Only the first tier runs (project > user > plugin); `kookr playbook list` shows every tier.',
   };
 }
 

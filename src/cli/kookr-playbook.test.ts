@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -143,10 +143,19 @@ describe('kookr playbook list', () => {
       message: '3 playbook(s).',
       details: {
         playbooks: [
-          { id: 'create-mr.md', name: 'create-mr', scope: 'project', description: 'Open a merge request' },
-          { id: 'triage.md', name: 'triage', scope: 'user', description: 'Triage the backlog' },
+          {
+            id: 'create-mr.md', name: 'create-mr', scope: 'project', description: 'Open a merge request',
+            tiers: ['project'], tierContentDiffers: false,
+          },
+          {
+            id: 'triage.md', name: 'triage', scope: 'user', description: 'Triage the backlog',
+            tiers: ['user'], tierContentDiffers: false,
+          },
           // the projection preserves the raw description; only the human line trims it
-          { id: 'oss-bug-fix.md', name: 'oss-bug-fix', scope: 'plugin', description: '   ' },
+          {
+            id: 'oss-bug-fix.md', name: 'oss-bug-fix', scope: 'plugin', description: '   ',
+            tiers: ['plugin'], tierContentDiffers: false,
+          },
         ],
       },
     });
@@ -271,8 +280,65 @@ describe('kookr playbook list (real discovery, no injection)', () => {
     const payload = JSON.parse(io.logs[0]!);
     expect(payload.ok).toBe(true);
     expect(payload.details.playbooks).toEqual([
-      { id: 'alpha.md', name: 'Alpha', scope: 'user', description: 'First by id' },
-      { id: 'zebra.md', name: 'Zebra', scope: 'user', description: 'Last by id' },
+      { id: 'alpha.md', name: 'Alpha', scope: 'user', description: 'First by id', tiers: ['user'], tierContentDiffers: false },
+      { id: 'zebra.md', name: 'Zebra', scope: 'user', description: 'Last by id', tiers: ['user'], tierContentDiffers: false },
     ]);
+  });
+
+  // Issue #4142 acceptance: the same file name in the user tier and the plugin
+  // tier is marked when the contents differ, and not marked when they match.
+  describe('a playbook in the user tier and the plugin tier', () => {
+    let pluginRoot: string;
+    let pluginPlaybooks: string;
+    const USER_COPY = '---\nname: Goal Supervisor\ndescription: Supervise\n---\nUser body.\n';
+    const PLUGIN_COPY = '---\nname: Goal Supervisor\ndescription: Supervise\n---\nPlugin body.\n';
+
+    beforeEach(async () => {
+      pluginRoot = await mkdtemp(join(tmpdir(), 'kookr-pb-plugin-tree-'));
+      await mkdir(join(pluginRoot, '.claude-plugin'), { recursive: true });
+      await writeFile(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fake', version: '0.0.0' }));
+      pluginPlaybooks = join(pluginRoot, 'playbooks');
+      await mkdir(pluginPlaybooks, { recursive: true });
+      process.env.KOOKR_PLUGIN_DIR = pluginRoot;
+    });
+
+    afterEach(async () => {
+      await rm(pluginRoot, { recursive: true, force: true });
+    });
+
+    it('marks different content in text and in the --json fields', async () => {
+      await writeFile(join(userDir, 'goal-supervisor.md'), USER_COPY);
+      await writeFile(join(pluginPlaybooks, 'goal-supervisor.md'), PLUGIN_COPY);
+
+      const text = captureIo();
+      expect(await runPlaybookCli(['list'], { ...text, cwd: projectDir })).toBe(EXIT_OK);
+      expect(text.logs).toEqual([
+        'Goal Supervisor · user · Supervise · also in plugin (different content; only the user copy runs)',
+      ]);
+
+      const json = captureIo();
+      expect(await runPlaybookCli(['list', '--json'], { ...json, cwd: projectDir })).toBe(EXIT_OK);
+      expect(JSON.parse(json.logs[0]!).details.playbooks).toEqual([
+        {
+          id: 'goal-supervisor.md', name: 'Goal Supervisor', scope: 'user', description: 'Supervise',
+          tiers: ['user', 'plugin'], tierContentDiffers: true,
+        },
+      ]);
+    });
+
+    it('shows identical copies without the different-content mark', async () => {
+      await writeFile(join(userDir, 'goal-supervisor.md'), USER_COPY);
+      await writeFile(join(pluginPlaybooks, 'goal-supervisor.md'), USER_COPY);
+
+      const text = captureIo();
+      expect(await runPlaybookCli(['list'], { ...text, cwd: projectDir })).toBe(EXIT_OK);
+      expect(text.logs).toEqual(['Goal Supervisor · user · Supervise · also in plugin (identical)']);
+
+      const json = captureIo();
+      expect(await runPlaybookCli(['list', '--json'], { ...json, cwd: projectDir })).toBe(EXIT_OK);
+      expect(JSON.parse(json.logs[0]!).details.playbooks[0]).toMatchObject({
+        tiers: ['user', 'plugin'], tierContentDiffers: false,
+      });
+    });
   });
 });
