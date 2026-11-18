@@ -371,9 +371,9 @@ export function useAvatarRoomShown(): boolean {
 
 /**
  * Whether Lucy covers the whole dashboard in this tab right now: her room, or the full-width sheet of a narrow
- * window. The dock reports it while it renders either, like `setAvatarRoomShown`. While it is true the dashboard
- * underneath is `inert` (App.tsx), so Tab cannot reach a control nobody can see and a screen reader does not
- * read it. Unlike the room flag it does not hold back the dashboard's shortcuts.
+ * window. The dock reports it while it renders either, like `setAvatarRoomShown`. While it is true the dashboard's
+ * shortcuts are held back and the dashboard underneath is `inert` (App.tsx), so Tab cannot reach a control nobody
+ * can see and a screen reader does not read it (unless a dialog of its own is open on top of her: #4166).
  */
 let pageCovered = false;
 

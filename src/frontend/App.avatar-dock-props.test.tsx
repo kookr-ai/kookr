@@ -3,8 +3,9 @@
 // App hands Lucy's panel the Talk shortcut and tells it when global shortcuts are blocked (#4010, #4058).
 // AvatarDock's own tests pass these props by hand, so without this file deleting either prop in App stays green.
 // It also covers what only App can do for "Lucy's room": read `/?lucy=room` before the first paint, pass the
-// room's shortcut, keep the dashboard's own shortcuts quiet while the room covers it, and make the dashboard
-// inert under her while leaving the dialogs, the palette and the toasts live (#4154).
+// room's shortcut, keep the dashboard's own shortcuts quiet while she covers it (room or sheet), and make the dashboard
+// inert under her while leaving the dialogs, the palette and the toasts live (#4154), also a dialog that a
+// dashboard component has open (#4166).
 
 import React from 'react';
 import { act } from 'react';
@@ -13,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App.js';
 import type { AvatarDockProps } from './avatar/AvatarDock.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
-import { AVATAR_PANEL_KEY, AVATAR_ROOM_KEY, __resetAvatarPanelPrefsForTests, getAvatarRoom, setAvatarRoom } from './store/avatar-panel-prefs.js';
+import { AVATAR_PANEL_KEY, AVATAR_ROOM_KEY, __resetAvatarPanelPrefsForTests, getAvatarRoom, setAvatarPageCovered, setAvatarRoom } from './store/avatar-panel-prefs.js';
 import { __resetViewerSessionForTests } from './viewer-session.js';
 import { detectShortcutPlatform, getDefaultShortcutBindings } from '../shared/contracts/shortcut-bindings.js';
 
@@ -316,5 +317,96 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
     await renderApp();
     expect(dock.props).toBeNull();
     expect(getAvatarRoom()).toBe(false);
+  });
+
+  describe('dialogs and focus while she covers the page (#4166)', () => {
+    /** The full-width sheet of a narrow window, as the real dock reports it: it covers the page, with no room. */
+    const coverAsSheet = async (on: boolean) => {
+      await act(async () => { setAvatarPageCovered(on); });
+      await flush();
+    };
+    /** A dialog that a component inside the dashboard renders (Share task), with a button in it. */
+    const openShareDialog = async (marker: 'class' | 'aria-modal' = 'class') => {
+      const overlay = document.createElement('div');
+      if (marker === 'class') overlay.className = 'dialog-overlay';
+      else overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('data-testid', 'share-dialog');
+      overlay.appendChild(document.createElement('button'));
+      await act(async () => { container.querySelector('[data-testid="findings-panel"]')!.appendChild(overlay); });
+      await flush();
+      return overlay;
+    };
+    const closeShareDialog = async (overlay: HTMLElement) => {
+      await act(async () => { overlay.remove(); });
+      await flush();
+    };
+    const topBarInert = () => container.querySelector('[data-testid="top-bar"]')!.closest('[inert]') !== null;
+
+    test('the full-width sheet holds the dashboard’s shortcuts back, as the room does', async () => {
+      await renderApp();
+      await select('ag1');
+      await coverAsSheet(true);
+      const escape = await press({ key: 'Escape' });
+      expect(selected()).toBe('ag1');
+      expect(escape.defaultPrevented).toBe(false);
+      expect(dock.props!.shortcutsBlocked).toBe(false);
+
+      await coverAsSheet(false);
+      await press({ key: 'Escape' });
+      expect(selected()).toBeNull();
+    });
+
+    test('a dialog of a dashboard component keeps the dashboard live while she covers it, and it goes inert once the dialog closes', async () => {
+      await renderApp();
+      for (const marker of ['class', 'aria-modal'] as const) {
+        const share = await openShareDialog(marker);
+        // The sheet comes up under the open dialog (a resize): its buttons must keep working.
+        await coverAsSheet(true);
+        expect(share.closest('[inert]'), marker).toBeNull();
+        expect(topBarInert(), marker).toBe(false);
+        expect(dock.props!.dialogOpen, marker).toBe(true);
+
+        await closeShareDialog(share);
+        expect(topBarInert(), marker).toBe(true);
+        expect(dock.props!.dialogOpen, marker).toBe(false);
+        await coverAsSheet(false);
+        expect(topBarInert(), marker).toBe(false);
+      }
+    });
+
+    test('the dock can ask whether a dashboard component has a dialog open; App’s own dialogs are not one', async () => {
+      await renderApp();
+      const ask = dock.props!.dashboardDialogOpen!;
+      expect(ask()).toBe(false);
+      // Diagnostics is App's own dialog, outside the dashboard: the room may still be entered over it.
+      await click('[data-testid="mock-operations"]');
+      expect(container.querySelector('[data-testid="operations-panel"]')).not.toBeNull();
+      expect(ask()).toBe(false);
+      await click('[data-testid="mock-operations"]');
+      const share = await openShareDialog();
+      expect(ask()).toBe(true);
+      await closeShareDialog(share);
+      expect(ask()).toBe(false);
+    });
+
+    test('tells the dock while a dialog is open over the page, so it can take focus back when the last one closes', async () => {
+      await renderApp();
+      expect(dock.props!.dialogOpen).toBe(false);
+      await click('[data-testid="mock-operations"]');
+      expect(dock.props!.dialogOpen).toBe(true);
+      // The palette opened over Diagnostics: still a dialog open.
+      await click('[data-testid="mock-palette"]');
+      await click('[data-testid="mock-operations"]');
+      expect(container.querySelector('[data-testid="operations-panel"]')).toBeNull();
+      expect(dock.props!.dialogOpen).toBe(true);
+      await press({ key: 'k', ctrlKey: true });
+      expect(container.querySelector('[data-testid="command-palette"]')).toBeNull();
+      expect(dock.props!.dialogOpen).toBe(false);
+      // A modal of App's (the bug report).
+      await click('[data-testid="mock-palette"]');
+      await click('[data-command="bug-report"]');
+      await press({ key: 'k', ctrlKey: true });
+      expect(dock.props!.dialogOpen).toBe(true);
+    });
   });
 });
