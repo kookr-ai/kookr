@@ -204,6 +204,7 @@ import {
   UmbrellaChainAdvancer,
   UMBRELLA_CHAIN_ADVANCER_STALE_MS,
   umbrellaChainAdvancerModeFromEnv,
+  umbrellaChainBlockedAlertThresholdMsFromEnv,
 } from './use-cases/umbrella-chain-advancer.js';
 import { RelaunchArbiter } from './relaunch-arbiter.js';
 import { ProviderResetScheduler, resolveProviderResetMs, buildProviderResumeLaunch } from './provider-reset-scheduler.js';
@@ -3663,6 +3664,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       },
       remote: new GhUmbrellaChainClient(),
       mode: umbrellaChainAdvancerMode,
+      // Issue #4188: a ledger blocked past the threshold raises one operational
+      // alert on the same channel as every detector (sink, dashboard, outbox, ops card).
+      blockedAlertThresholdMs: umbrellaChainBlockedAlertThresholdMsFromEnv(),
+      emitAlert: bindOperationalAlertSink(operationalAlertSink, (alert) => {
+        detectorBroadcast(alert);
+        noteOpsStatusAlert(alert);
+      }),
       launch: async (options) => {
         const result = await launchTask(launchServiceDeps, {
           ...options,

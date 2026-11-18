@@ -21,12 +21,20 @@ import {
   type ReviewGateAuditStatus,
 } from '../review-gate-audit.js';
 import { UmbrellaChainClaimStore } from '../umbrella-chain-claim-store.js';
+import { OPERATIONAL_ALERT_AGENT_ID } from '../operational-alert-rules.js';
+import type { ServerMessage } from '../../shared/contracts/messages.js';
 
 export type UmbrellaChainAdvancerMode = 'off' | 'observe' | 'spawn';
 
 export const UMBRELLA_CHAIN_ADVANCER_INTERVAL_MS = 60_000;
 export const UMBRELLA_CHAIN_ADVANCER_GRACE_MS = 5 * 60_000;
 export const UMBRELLA_CHAIN_ADVANCER_STALE_MS = 60 * 60_000;
+/** Default age after which a blocked ledger raises an operational alert (issue #4188). */
+export const UMBRELLA_CHAIN_BLOCKED_ALERT_THRESHOLD_MS = 2 * 60 * 60_000;
+/** Operational-alert metric for a ledger blocked past the threshold. */
+export const UMBRELLA_CHAIN_BLOCKED_ALERT_METRIC = 'umbrella_chain_blocked';
+
+type AlertMessage = Extract<ServerMessage, { type: 'alert' }>;
 
 export interface UmbrellaChainAdvancerLogger {
   info?(message: string): void;
@@ -110,6 +118,13 @@ export interface UmbrellaChainAdvancerDeps {
   intervalMs?: number;
   graceMs?: number;
   staleMs?: number;
+  /**
+   * Age of `blockedSince` past which one operational alert is raised per
+   * (chain, blockedSince) episode. `0` or less disables the alert (issue #4188).
+   */
+  blockedAlertThresholdMs?: number;
+  /** Operational-alert emitter (dashboard, `operational-alerts.jsonl`, operator outbox). */
+  emitAlert?: (alert: AlertMessage) => void;
   now?: () => Date;
   logger?: UmbrellaChainAdvancerLogger;
 }
@@ -233,6 +248,7 @@ export class UmbrellaChainAdvancer {
   private readonly intervalMs: number;
   private readonly graceMs: number;
   private readonly staleMs: number;
+  private readonly blockedAlertThresholdMs: number;
   private readonly now: () => Date;
   private readonly logger: UmbrellaChainAdvancerLogger;
   private readonly claimStore: Pick<UmbrellaChainClaimStore, 'claim' | 'finalize' | 'release' | 'get'>;
@@ -243,6 +259,10 @@ export class UmbrellaChainAdvancer {
   private lastTickError: string | null = null;
   private tickCount = 0;
   private readonly chains = new Map<string, MutableChainHealth>();
+  /** Chain key → the `blockedSince` episode already alerted, with what was said. */
+  private readonly blockedAlerts = new Map<string, { blockedSince: string; chainId: string; repo: string; issueNumber: number }>();
+  /** Chain keys whose ledger was read during the current sweep. */
+  private readonly sweptChainKeys = new Set<string>();
 
   constructor(deps: UmbrellaChainAdvancerDeps) {
     this.deps = deps;
@@ -251,6 +271,7 @@ export class UmbrellaChainAdvancer {
     this.intervalMs = deps.intervalMs ?? UMBRELLA_CHAIN_ADVANCER_INTERVAL_MS;
     this.graceMs = deps.graceMs ?? UMBRELLA_CHAIN_ADVANCER_GRACE_MS;
     this.staleMs = deps.staleMs ?? UMBRELLA_CHAIN_ADVANCER_STALE_MS;
+    this.blockedAlertThresholdMs = deps.blockedAlertThresholdMs ?? UMBRELLA_CHAIN_BLOCKED_ALERT_THRESHOLD_MS;
     this.now = deps.now ?? (() => new Date());
     this.logger = deps.logger ?? console;
     this.claimStore = deps.claimStore ?? new UmbrellaChainClaimStore(deps.kookrDir);
@@ -319,6 +340,8 @@ export class UmbrellaChainAdvancer {
   private async scanAll(): Promise<void> {
     let scanned = 0;
     const projects = await this.resolveProjects();
+    this.sweptChainKeys.clear();
+    const failedRepos = new Set<string>();
     for (const project of projects) {
       try {
         const baseBranch = project.baseBranch ?? this.baseBranch;
@@ -331,6 +354,7 @@ export class UmbrellaChainAdvancer {
           await this.scanIssue(issue, project, baseBranch);
         }
       } catch (error) {
+        failedRepos.add(normalizeGithubRepo(project.repo));
         const reason = `project-scan-error:${messageOf(error)}`;
         this.logger.warn?.(`[umbrella-chain-advancer] skipping ${project.repo}: ${reason}`);
         this.emit(project, {
@@ -344,6 +368,7 @@ export class UmbrellaChainAdvancer {
         });
       }
     }
+    this.recoverUnsweptBlockedAlerts(failedRepos);
     this.logger.info?.(`[umbrella-chain-advancer] tick-summary ${JSON.stringify({ projects: projects.length, issues: scanned })}`);
   }
 
@@ -798,7 +823,10 @@ export class UmbrellaChainAdvancer {
     reviewAudit?: UmbrellaChainHealth['reviewAudit'],
   ): void {
     const now = this.now();
-    this.chains.set(this.chainHealthKey(project.repo, ledger.issueNumber), {
+    const chainKey = this.chainHealthKey(project.repo, ledger.issueNumber);
+    this.sweptChainKeys.add(chainKey);
+    this.checkBlockedAlert(chainKey, project, ledger, now.getTime());
+    this.chains.set(chainKey, {
       issueNumber: ledger.issueNumber,
       repo: project.repo,
       chainId: ledger.chainId,
@@ -812,6 +840,62 @@ export class UmbrellaChainAdvancer {
       ...(reviewAudit ? { reviewAudit } : {}),
       lastSeenAtMs: now.getTime(),
     });
+  }
+
+  /**
+   * Raise one operational alert when the ledger's `blockedSince` is older than
+   * the threshold, and a matching recovery when that block ends (issue #4188).
+   *
+   * Every scan path that reads a valid ledger ends in {@link recordHealth}, so
+   * this is the single evaluation point. Deduplication is per
+   * (chain, blockedSince): a later sweep of the same block stays silent, while
+   * a new block (a new `blockedSince`) can alert again. The state is in memory,
+   * so a server restart may re-announce a block that is still open once.
+   */
+  private checkBlockedAlert(
+    chainKey: string,
+    project: UmbrellaChainProject,
+    ledger: PhaseLedger,
+    nowMs: number,
+  ): void {
+    if (!this.deps.emitAlert) return;
+    const previous = this.blockedAlerts.get(chainKey);
+    const blockedSince = ledger.blockedReason !== undefined ? ledger.blockedSince : undefined;
+    if (previous && previous.blockedSince === blockedSince) return;
+    if (previous) {
+      this.blockedAlerts.delete(chainKey);
+      this.safeEmitAlert(buildBlockedRecoveryAlert(chainKey, previous, blockedSince !== undefined ? 'reblocked' : 'cleared'));
+    }
+    if (blockedSince === undefined || this.blockedAlertThresholdMs <= 0) return;
+    const sinceMs = Date.parse(blockedSince);
+    if (!Number.isFinite(sinceMs)) return;
+    const ageMs = nowMs - sinceMs;
+    if (ageMs < this.blockedAlertThresholdMs) return;
+    const episode = { blockedSince, chainId: ledger.chainId, repo: project.repo, issueNumber: ledger.issueNumber };
+    this.blockedAlerts.set(chainKey, episode);
+    this.safeEmitAlert(buildBlockedAlert(chainKey, episode, ledger.blockedReason!, ageMs, this.blockedAlertThresholdMs));
+  }
+
+  /**
+   * Recover alerted blocks whose chain was not read this sweep (issue closed,
+   * ledger now malformed, or project no longer configured), so a `fired` alert
+   * never stays open forever. Chains of a project whose scan failed are kept:
+   * their block may still be open.
+   */
+  private recoverUnsweptBlockedAlerts(failedRepos: ReadonlySet<string>): void {
+    for (const [chainKey, episode] of [...this.blockedAlerts]) {
+      if (this.sweptChainKeys.has(chainKey) || failedRepos.has(normalizeGithubRepo(episode.repo))) continue;
+      this.blockedAlerts.delete(chainKey);
+      this.safeEmitAlert(buildBlockedRecoveryAlert(chainKey, episode, 'unswept'));
+    }
+  }
+
+  private safeEmitAlert(alert: AlertMessage): void {
+    try {
+      this.deps.emitAlert?.(alert);
+    } catch (error) {
+      this.logger.warn?.(`[umbrella-chain-advancer] blocked-ledger alert failed: ${messageOf(error)}`);
+    }
   }
 
   private recordMalformedHealth(project: UmbrellaChainProject, issueNumber: number, reason: string): void {
@@ -867,6 +951,70 @@ export class UmbrellaChainAdvancer {
   }
 }
 
+function blockedAlertKey(chainKey: string, blockedSince: string): string {
+  return `umbrella_chain:blocked:${chainKey}:${blockedSince}`;
+}
+
+function formatAge(ms: number): string {
+  const totalMinutes = Math.floor(ms / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+function buildBlockedAlert(
+  chainKey: string,
+  episode: { blockedSince: string; chainId: string; repo: string; issueNumber: number },
+  reason: string,
+  ageMs: number,
+  thresholdMs: number,
+): AlertMessage {
+  const age = formatAge(ageMs);
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Umbrella chain ${episode.chainId} (${episode.repo}#${episode.issueNumber}) blocked for ${age}: ${reason}`,
+    details:
+      `The phase ledger of umbrella issue ${episode.repo}#${episode.issueNumber} (chain ${episode.chainId}) ` +
+      `has been blocked with reason "${reason}" since ${episode.blockedSince} (${age}), longer than the ` +
+      `${formatAge(thresholdMs)} threshold. The chain will not advance until the block is resolved: inspect ` +
+      'the issue ledger and its phase PRs, fix the cause, then let the next advancer sweep continue. ' +
+      'This alert is raised once per block and clears when the block ends (issue #4188).',
+    severity: 'warning',
+    operationalAlert: {
+      key: blockedAlertKey(chainKey, episode.blockedSince),
+      metric: UMBRELLA_CHAIN_BLOCKED_ALERT_METRIC,
+      state: 'fired',
+    },
+  };
+}
+
+function buildBlockedRecoveryAlert(
+  chainKey: string,
+  episode: { blockedSince: string; chainId: string; repo: string; issueNumber: number },
+  cause: 'cleared' | 'reblocked' | 'unswept',
+): AlertMessage {
+  const details = {
+    cleared: 'The phase ledger no longer records a block, so the chain can advance again (issue #4188).',
+    reblocked: 'The block this alert reported has ended; the ledger now records a different block, which is tracked separately (issue #4188).',
+    unswept: 'The last advancer sweep did not record this chain as blocked (for example the umbrella issue was closed, its ledger became unreadable, its project is no longer configured, or a review correction was launched for it), so this block alert is closed. A block that is still open will alert again (issue #4188).',
+  }[cause];
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: cause === 'unswept'
+      ? `Closed: umbrella chain ${episode.chainId} (${episode.repo}#${episode.issueNumber}) block alert, chain not seen blocked in the last sweep`
+      : `Recovered: umbrella chain ${episode.chainId} (${episode.repo}#${episode.issueNumber}) block since ${episode.blockedSince} ended`,
+    details,
+    severity: 'info',
+    operationalAlert: {
+      key: blockedAlertKey(chainKey, episode.blockedSince),
+      metric: UMBRELLA_CHAIN_BLOCKED_ALERT_METRIC,
+      state: 'recovered',
+    },
+  };
+}
+
 export function isUmbrellaChainAdvancerMode(value: string | undefined): value is UmbrellaChainAdvancerMode {
   return value === 'off' || value === 'observe' || value === 'spawn';
 }
@@ -883,4 +1031,17 @@ export function umbrellaChainAdvancerModeFromEnv(env: NodeJS.ProcessEnv = proces
   const value = env.KOOKR_UMBRELLA_CHAIN_ADVANCER?.trim().toLowerCase();
   if (!value) return DEFAULT_UMBRELLA_CHAIN_ADVANCER_MODE;
   return isUmbrellaChainAdvancerMode(value) ? value : 'off';
+}
+
+/**
+ * Threshold for the blocked-ledger alert (issue #4188), from
+ * `KOOKR_UMBRELLA_CHAIN_BLOCKED_ALERT_MINUTES`. Unset, blank or invalid keeps
+ * the 2-hour default; `0` or a negative number disables the alert.
+ */
+export function umbrellaChainBlockedAlertThresholdMsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.KOOKR_UMBRELLA_CHAIN_BLOCKED_ALERT_MINUTES?.trim();
+  if (!raw) return UMBRELLA_CHAIN_BLOCKED_ALERT_THRESHOLD_MS;
+  const minutes = Number(raw);
+  if (!Number.isFinite(minutes)) return UMBRELLA_CHAIN_BLOCKED_ALERT_THRESHOLD_MS;
+  return minutes <= 0 ? 0 : Math.round(minutes * 60_000);
 }
