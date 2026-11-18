@@ -92,6 +92,22 @@ Kookr normally wakes you; you do not wake yourself.
 - If you are a fresh episode (the brief starts with "You are a fresh episode of supervision"), the
   previous supervisor stopped: re-read every target before acting, since you carry none of its memory.
 
+## Silent tasks are terminated
+
+Kookr terminates a task that is in progress and has shown no activity on any channel (hook
+events, pane changes, tokens) for longer than the operator setting `hungSuspectTtlMinutes`:
+25 minutes by default, 60 at most. A task that holds an open, unmerged pull request is exempt.
+The rule applies to you and to every worker you supervise.
+
+- **Your own waits.** When you wait on work you started yourself (a check, a script, a
+  fetch), keep each wait under about ten minutes so that a turn happens. Never wait in one
+  long call. Run the work in the background, have it write its result to a file, and read
+  that file in short checks. This does not change the wake rules above: do not arm timers
+  while `wakesEnabled` is `true`.
+- **Workers.** A worker that sits in one long wait (a background reviewer, a long build, CI)
+  can be terminated before it opens its pull request. If you see one doing that, tell it to
+  wait in steps of under ten minutes and to poll a result file instead.
+
 ## Deadline and finish
 
 - At the mandate deadline (the absolute time in the brief), stop steering. Write a short,

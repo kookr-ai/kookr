@@ -82,6 +82,21 @@ done
 Verify every endpoint and predicate **before** arming the watcher. A loop
 launched against a 404 burns hours before anyone notices.
 
+### Silence limit inside Kookr
+
+"Silence means healthy" applies to what the operator hears, not to the task
+itself. Kookr terminates a task that is in progress and has shown no activity
+on any channel (hook events, pane changes, tokens) for longer than the operator
+setting `hungSuspectTtlMinutes`: 25 minutes by default, 60 at most. A task that
+holds an open, unmerged pull request is exempt. A watcher that sleeps for an
+hour in one call, or a turn that waits on it with no end, loses the task.
+
+- Keep each wait under about ten minutes so that a turn happens.
+- Run the watcher in the background and have it write what it finds to a
+  file. Each turn reads that file and acts only if it holds something.
+- A turn that reads the file and finds nothing is a keep-alive, not a report.
+  It sends the operator nothing, so it does not break Rule 1.
+
 ## Rule 2 — Investigate Before Escalating
 
 Finding an anomaly is the start of your work, not the end of it. Walk the
@@ -152,7 +167,9 @@ Autonomy is bounded by reversibility, not by confidence.
 ## Anti-Patterns
 
 - Hourly "nothing changed" turns. Nine content-free pings is a broken watcher,
-  not diligence.
+  not diligence. (Silent keep-alive turns that read the result file are fine;
+  see "Silence limit inside Kookr".)
+- One wait longer than ten minutes. Kookr can terminate the silent task.
 - Loading a tool you never call. If `TaskOutput` is in your belt and something
   is stuck, use it.
 - Reporting an anomaly and moving on, then re-reporting "unchanged" for hours.
