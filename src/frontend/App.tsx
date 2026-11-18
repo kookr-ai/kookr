@@ -86,7 +86,7 @@ import {
 } from '../shared/contracts/shortcut-bindings.js';
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
-import { applyAvatarRoomAddress, useAvatarPanelPrefs, useAvatarRoom } from './store/avatar-panel-prefs.js';
+import { applyAvatarRoomAddress, useAvatarPanelPrefs, useAvatarRoomShown } from './store/avatar-panel-prefs.js';
 import { buildAnswerAskMessage, type AskAnswerChoice } from './store/operator-asks.js';
 import { AvatarErrorBoundary } from './avatar/AvatarErrorBoundary.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
@@ -489,9 +489,9 @@ export function App() {
   // once, before the panel's preferences are, so the first paint is already the room.
   useState(() => applyAvatarRoomAddress());
   const avatarPanelEnabled = useAvatarPanelPrefs().enabled;
-  // Lucy's room covers the dashboard in this tab. A flag left over while her panel is off changes nothing.
-  const lucyRoom = useAvatarRoom();
-  const lucyRoomOpen = avatarPanelEnabled && lucyRoom;
+  // Lucy's room covers the dashboard only while her dock says it is on screen: a saved flag whose dock crashed
+  // or is still loading, or that is left over while her panel is off, covers nothing.
+  const lucyRoomOpen = useAvatarRoomShown();
   useEffect(() => {
     // Optional Long Task API observer (debug/?longtask=1). Measured snapshot /
     // xterm spans sample independently of this flag.

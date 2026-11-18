@@ -246,6 +246,17 @@ describe('AvatarDock: Lucy’s room', () => {
       ]);
     });
 
+    test('a key pressed in the middle of IME composition does not flip the room', () => {
+      start();
+      render();
+      pressRoomShortcut({ isComposing: true });
+      expect(mode()).toBe('docked');
+      pressRoomShortcut();
+      expect(mode()).toBe('room');
+      pressRoomShortcut({ isComposing: true });
+      expect(mode()).toBe('room');
+    });
+
     test('Alt+L alone (Quick launch) and Alt+Shift+M (Talk) do not touch the room', () => {
       start();
       render();
@@ -503,6 +514,37 @@ describe('AvatarDock: Lucy’s room', () => {
       pressRoomShortcut();
       expect(mode()).toBe('docked');
       expect(document.activeElement).toBe(composer());
+    });
+
+    test('leaving the room in a window where she is a full-width sheet (no Expand button) puts focus on Minimise, not on the page', () => {
+      start();
+      render();
+      click(toggle());
+      expect(mode()).toBe('room');
+      toggle()!.focus();
+      setWindowWidth(700);
+      expect(mode()).toBe('room');
+      click(toggle());
+      expect(mode()).toBe('sheet');
+      expect(toggle()).toBeNull();
+      expect(document.activeElement).toBe(container.querySelector('button[aria-label="Minimise Lucy"]'));
+    });
+
+    test('leaving the room by the shortcut with a dialog open keeps focus in the dialog, and so does entering', () => {
+      start();
+      render();
+      const overlay = document.createElement('div');
+      overlay.className = 'dialog-overlay';
+      const input = document.createElement('input');
+      overlay.appendChild(input);
+      document.body.appendChild(overlay);
+      input.focus();
+      pressRoomShortcut();
+      expect(mode()).toBe('room');
+      expect(document.activeElement).toBe(input);
+      pressRoomShortcut();
+      expect(mode()).toBe('docked');
+      expect(document.activeElement).toBe(input);
     });
 
     test('a page that loads in the room starts with focus in the text box', () => {

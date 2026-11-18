@@ -423,7 +423,7 @@ says out loud, and a one-line strip above it holds what is waiting on you.
   it in words: "1 question for you", "2 findings need you", "1 unheard message" (each row only when it
   applies) and "Click to open Lucy". Escape closes the card; screen readers get the same sentence from the bubble's label
   instead. A minimised panel shuts its 3D view down and uses no graphics memory.
-- **Lucy's room: she takes the whole window.** The column's title bar has an **Expand** button; press it,
+- **Lucy's room: she takes the whole window.** The column's title bar has an **Expand** button (the full-width sheet of a narrow window has none, and the shortcut still works there); press it,
   or **Alt+Shift+L** (**Cmd+Ctrl+Shift+L** on macOS; rebindable in Settings, and it works from anywhere, text
   boxes and a minimised bubble included), and she covers the dashboard, which stays loaded underneath. The
   same button, now **Back to dashboard**, or the same key brings the column back. From 1100 px wide the room

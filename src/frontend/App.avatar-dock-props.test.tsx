@@ -16,14 +16,26 @@ import { AVATAR_PANEL_KEY, AVATAR_ROOM_KEY, __resetAvatarPanelPrefsForTests, get
 import { __resetViewerSessionForTests } from './viewer-session.js';
 import { detectShortcutPlatform, getDefaultShortcutBindings } from '../shared/contracts/shortcut-bindings.js';
 
-const dock = vi.hoisted(() => ({ props: null as Partial<AvatarDockProps> | null }));
+const dock = vi.hoisted(() => ({ props: null as Partial<AvatarDockProps> | null, throws: false }));
 
-vi.mock('./avatar/AvatarDock.js', () => ({
-  AvatarDock: (props: Partial<AvatarDockProps>) => {
-    dock.props = props;
-    return null;
-  },
-}));
+// Stands in for the real dock: like it, it tells the store when the room is on screen, and only then.
+vi.mock('./avatar/AvatarDock.js', async () => {
+  const react = await import('react');
+  const prefs = await import('./store/avatar-panel-prefs.js');
+  return {
+    AvatarDock: (props: Partial<AvatarDockProps>) => {
+      if (dock.throws) throw new Error('the dock broke');
+      dock.props = props;
+      const room = prefs.useAvatarRoom();
+      react.useLayoutEffect(() => {
+        if (!room) return undefined;
+        prefs.setAvatarRoomShown(true);
+        return () => prefs.setAvatarRoomShown(false);
+      }, [room]);
+      return null;
+    },
+  };
+});
 
 vi.mock('./hooks/useWebSocket.js', () => ({
   useWebSocket: () => ({ send: () => true }),
@@ -204,6 +216,23 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
     await flush();
     await press({ key: 'Escape' });
     expect(selected()).toBeNull();
+  });
+
+  test('when the dock is not on screen (it threw) a room flag left in the tab does not take the dashboard’s shortcuts away', async () => {
+    sessionStorage.setItem(AVATAR_ROOM_KEY, '1');
+    __resetAvatarPanelPrefsForTests();
+    dock.throws = true;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await renderApp();
+      expect(container.querySelector('[data-testid="top-bar"]')).not.toBeNull();
+      expect(dock.props).toBeNull();
+      await select('ag1');
+      await press({ key: 'Escape' });
+      expect(selected()).toBeNull();
+    } finally {
+      dock.throws = false;
+    }
   });
 
   test('a room flag left over in a tab whose panel is switched off changes nothing', async () => {

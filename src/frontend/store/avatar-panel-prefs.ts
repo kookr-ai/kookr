@@ -286,6 +286,11 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   window.addEventListener('storage', (event: StorageEvent) => {
     if (event.key !== AVATAR_PANEL_KEY) return;
     state = parsePrefs(event.newValue);
+    // Switched off elsewhere: the room goes with the panel here too (see updateAvatarPanelPrefs).
+    if (!state.enabled && room) {
+      room = false;
+      saveAvatarRoom(false);
+    }
     emit();
   });
 }
@@ -347,6 +352,23 @@ export function leaveAvatarRoomToShowTask(): void {
   setAvatarRoom(false);
 }
 
+/**
+ * Whether Lucy's room is actually on screen in this tab: the dock reports it while it renders the room. The
+ * saved flag alone is not enough (the dock may have crashed, or its chunk may still be loading), and the
+ * dashboard's shortcuts are held back only while the room really covers it.
+ */
+let roomShown = false;
+
+export function setAvatarRoomShown(on: boolean): void {
+  if (roomShown === on) return;
+  roomShown = on;
+  emit();
+}
+
+export function useAvatarRoomShown(): boolean {
+  return useSyncExternalStore(subscribe, () => roomShown, () => false);
+}
+
 /** React binding: re-renders when this tab enters or leaves the room. */
 export function useAvatarRoom(): boolean {
   return useSyncExternalStore(subscribe, getAvatarRoom, () => false);
@@ -375,5 +397,6 @@ export function applyAvatarRoomAddress(): boolean {
 export function __resetAvatarPanelPrefsForTests(): void {
   state = loadAvatarPanelPrefs();
   room = loadAvatarRoom();
+  roomShown = false;
   listeners.clear();
 }

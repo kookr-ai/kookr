@@ -111,6 +111,7 @@ import {
   clampAvatarColumnWidth,
   leaveAvatarRoomToShowTask,
   setAvatarRoom,
+  setAvatarRoomShown,
   updateAvatarPanelPrefs,
   useAvatarPanelPrefs,
   useAvatarRoom,
@@ -498,16 +499,25 @@ export function AvatarDock({
     if (room === was) return;
     // Talk moved between the composer and the header, as a new button: the old one can no longer hold focus.
     talkFocusedRef.current = false;
+    // A dialog (the command palette, Settings) is open and holds focus: do not pull it out from under the operator.
+    if (document.activeElement?.closest('.dialog-overlay')) return;
     const composer = dockRef.current?.querySelector<HTMLTextAreaElement>('.avatar-typed textarea') ?? null;
     if (room) {
       (composer ?? dockRef.current)?.focus();
       return;
     }
     if (composer !== null && document.activeElement === composer) return;
-    (prefs.minimized ? bubbleRef.current : roomButtonRef.current)?.focus();
+    // Back to the button that opens the room; the full-width sheet has none, so the minimise button, then the dock.
+    (prefs.minimized ? bubbleRef.current : (roomButtonRef.current ?? minimiseButtonRef.current ?? dockRef.current))?.focus();
     // Only a change of `room` moves focus; `prefs.minimized` is read as it is at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room]);
+  // Tell the dashboard the room is on screen (not merely saved), so it holds its shortcuts back only then.
+  useLayoutEffect(() => {
+    if (!inRoom) return undefined;
+    setAvatarRoomShown(true);
+    return () => setAvatarRoomShown(false);
+  }, [inRoom]);
   const toggleRoom = useCallback(() => setAvatarRoom(!room), [room]);
 
   // Hands-free is on and connected: the label and hint follow what the server says Lucy is doing.

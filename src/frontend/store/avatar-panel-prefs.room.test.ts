@@ -101,6 +101,16 @@ describe('Lucy’s room in the preferences store', () => {
       expect(getAvatarRoom()).toBe(true);
     });
 
+    test('another tab switching the panel off takes this tab out of the room, so switching it on again starts as the column', () => {
+      startWith({ enabled: true, minimized: false }, '1');
+      window.dispatchEvent(new StorageEvent('storage', { key: AVATAR_PANEL_KEY, newValue: JSON.stringify({ enabled: false, minimized: false }) }));
+      expect(getAvatarPanelPrefs().enabled).toBe(false);
+      expect(getAvatarRoom()).toBe(false);
+      expect(sessionStorage.getItem(AVATAR_ROOM_KEY)).not.toBe('1');
+      updateAvatarPanelPrefs({ enabled: true });
+      expect(getAvatarRoom()).toBe(false);
+    });
+
     test('storage that cannot be read means the column; storage that refuses the write still switches this page', () => {
       vi.stubGlobal('sessionStorage', {
         getItem: () => { throw new Error('blocked'); },
