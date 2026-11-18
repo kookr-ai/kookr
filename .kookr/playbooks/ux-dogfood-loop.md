@@ -50,9 +50,10 @@ the first run of this loop) — match its format and depth.
   from that branch (see "A rerun on the same panel" in the automation notes),
   and the RFC says so.
 - **Ask before push/PR, and ask early.** Commit freely in worktrees; pushing and
-  opening PRs needs an explicit user go-ahead. Do not leave that question for the
-  final report: two runs in a row ended with "the push question is with the
-  operator", the tasks completed, and nothing was pushed, so the operator re-ran
+  opening PRs needs an explicit user go-ahead. This playbook is the named exception
+  to the repository's "do not ask whether to push or merge" rule (`CLAUDE.md`).
+  Do not leave that question for the final report: two runs in a row ended with
+  "the push question is with the operator", the tasks completed, and nothing was pushed, so the operator re-ran
   the loop on a dashboard that still had every finding. As soon as there is
   something to show, send one `kookr ask` (no `--wait`, `--timeout 1d` so it
   outlives a long run) with a link to real screenshots and two or three options ("Push and open the PRs", "Push, open PRs,
@@ -75,6 +76,15 @@ the first run of this loop) — match its format and depth.
    `gh pr list --state merged --head <branch>`), the live dashboard still shows
    what that run measured, and landing those fixes is worth more than finding the same things
    again: ask about them first (see "Ask before push/PR, and ask early").
+   Before reporting a branch as unpushed, read the latest run's findings document
+   (`docs/rfc/rfc-ux-dogfooding-findings-*.md`, the highest run number, on `origin/main`
+   or on the newest `rfc/ux-dogfooding-*` branch). It says where earlier branches went:
+   work often lands under another head, which the two checks above cannot see. Run 6's
+   cluster branches, for example, were merged into its integration branch, and run 7's
+   document says that branch went out as one pull request (#4148) under another name.
+   A branch the document covers that way (its run's work is named as landed, or the
+   pull request that carried it is named as merged) is not unpushed work: do not ask
+   about it.
 
 ## Phase 2 — Dogfood with a running RFC
 
