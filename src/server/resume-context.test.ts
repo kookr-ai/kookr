@@ -3,8 +3,10 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { SessionInfo, Task } from '../core/tasks.js';
+import { DEFAULT_RESUME_CONTINUATION_MESSAGE } from '../adapters/agent-adapter.js';
 import {
   buildResumeContext,
+  buildResumeContinuationMessage,
   buildTaskResumeContext,
   describeReopenResume,
   hasResumableSession,
@@ -35,7 +37,7 @@ describe('buildResumeContext', () => {
     const { resumeContext, fallbackReason } = await buildResumeContext(
       session({ tmuxSession: 'a', claudeSessionId: 'sess-1' }),
     );
-    expect(resumeContext).toEqual({ sessionId: 'sess-1' });
+    expect(resumeContext).toEqual({ sessionId: 'sess-1', continuationMessage: expect.any(String) });
     expect(fallbackReason).toBeUndefined();
   });
 
@@ -70,6 +72,7 @@ describe('buildResumeContext', () => {
     expect(resumeContext).toEqual({
       sessionId: 'ses_abc',
       transcriptPath: '/does/not/exist.jsonl',
+      continuationMessage: expect.any(String),
     });
     expect(fallbackReason).toBeUndefined();
   });
@@ -82,10 +85,31 @@ describe('buildResumeContext', () => {
       const { resumeContext } = await buildResumeContext(
         session({ tmuxSession: 'a', claudeSessionId: 'sess-1', transcriptPath }),
       );
-      expect(resumeContext).toEqual({ sessionId: 'sess-1', transcriptPath });
+      expect(resumeContext).toEqual({ sessionId: 'sess-1', transcriptPath, continuationMessage: expect.any(String) });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('buildResumeContinuationMessage', () => {
+  test('names the working directory and branch the agent had before the interruption', () => {
+    const msg = buildResumeContinuationMessage({ cwd: '/repo-wt', gitBranch: 'feat/x', lastTurnState: 'running' });
+    expect(msg).toContain(DEFAULT_RESUME_CONTINUATION_MESSAGE);
+    expect(msg).toContain('/repo-wt (branch feat/x)');
+    expect(msg).not.toContain('waiting for an answer');
+  });
+
+  test('an agent that was waiting for the operator is told to ask again, not to proceed', () => {
+    const msg = buildResumeContinuationMessage({ cwd: '/repo', lastTurnState: 'waiting_for_input' });
+    expect(msg).toContain('Ask your question again and keep waiting');
+    expect(msg).toContain('working in /repo.');
+  });
+
+  test('buildResumeContext carries the message built from the resumed session', async () => {
+    const s = session({ tmuxSession: 'a', claudeSessionId: 'sess-1', cwd: '/wt', gitBranch: 'b1' });
+    const { resumeContext } = await buildResumeContext(s);
+    expect(resumeContext?.continuationMessage).toBe(buildResumeContinuationMessage(s));
   });
 });
 
@@ -127,7 +151,7 @@ describe('buildTaskResumeContext', () => {
       session({ tmuxSession: 'new', claudeSessionId: 'sess-new' }),
     ]);
     const { resumeContext, fallbackReason } = await buildTaskResumeContext(task);
-    expect(resumeContext).toEqual({ sessionId: 'sess-new' });
+    expect(resumeContext).toEqual({ sessionId: 'sess-new', continuationMessage: expect.any(String) });
     expect(fallbackReason).toBeUndefined();
   });
 

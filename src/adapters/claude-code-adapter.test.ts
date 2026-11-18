@@ -9,6 +9,7 @@ import { DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
 import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
+import { DEFAULT_RESUME_CONTINUATION_MESSAGE } from './agent-adapter.js';
 
 // Mock getGitInfo so we can control whether it returns data
 vi.mock('./git-info.js', async (importOriginal) => {
@@ -902,6 +903,154 @@ describe('ClaudeCodeAdapter', () => {
     const sessions = taskStore.getTask(task.id)!.sessions;
     expect(sessions.find((s) => s.tmuxSession === resumed)?.resumedConversationId).toBe('00000000-0000-0000-0000-000000000002');
     expect(sessions.find((s) => s.tmuxSession === fresh)?.resumedConversationId).toBeUndefined();
+  });
+
+  test('a resumed bypass launch accepts the Bypass Permissions dialog, then submits the continuation message', async () => {
+    // Regression: a resume skipped the startup-dialog guard and sent no
+    // message, so the session sat on the dialog (default "No, exit"), emitted
+    // no hook and was reaped as a first-hook miss after every host reboot.
+    const writes: Uint8Array[] = [];
+    const origWrite = backend.writeInput.bind(backend);
+    backend.writeInput = async (id, data, meta) => {
+      writes.push(data);
+      return origWrite(id, data, meta);
+    };
+    const resumeAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      bypassAllPermissions: true,
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 2_000,
+      promptReadyPollMs: 10,
+      promptReadySettleMs: 0,
+      promptSubmitConfirmTimeoutMs: 200,
+      promptSubmitRetries: 0,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = resumeAdapter.launch(task.id, 'Fix bug', '/cwd', {
+      sessionId: '00000000-0000-0000-0000-000000000003',
+      continuationMessage: 'Resumed after a host reboot: re-check state, then continue.',
+    });
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const sessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(
+      sessionId,
+      '\x1b[?2004hWARNING: Claude Code running in Bypass Permissions mode\n❯ No, exit\n  Yes, I accept',
+    );
+    const isDown = (w: Uint8Array) => w.length === 3 && w[0] === 0x1b && w[1] === 0x5b && w[2] === 0x42;
+    await vi.waitFor(() => expect(writes.some(isDown)).toBe(true), { timeout: 2_000 });
+    backend.emit(sessionId, COMPOSER_READY_PANE);
+    resumeAdapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-bbbbbbbbbbbb',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Resumed after a host reboot: re-check state, then continue.',
+    }));
+    await launchPromise;
+
+    const written = backend.getWrittenText(sessionId);
+    expect(written).toContain('Resumed after a host reboot: re-check state, then continue.');
+    // The original task prompt is already in the resumed conversation; it must not be re-sent.
+    expect(written).not.toContain('Fix bug');
+    const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+    expect(session.resumedConversationId).toBe('00000000-0000-0000-0000-000000000003');
+    expect(session.promptDelivery?.status).toBe('confirmed');
+  });
+
+  test('a resumed launch whose bracketed paste never confirms falls back to the continuation message, not the task prompt', async () => {
+    const resumeAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptReadySettleMs: 0,
+      promptSubmitConfirmTimeoutMs: 500,
+      promptSubmitRetries: 0,
+    });
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = resumeAdapter.launch(task.id, 'Original task brief', '/cwd', {
+      sessionId: '00000000-0000-0000-0000-000000000005',
+      continuationMessage: 'Carry on',
+    });
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const sessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(sessionId, COMPOSER_READY_PANE);
+    // The bracketed paste times out unconfirmed; the plain fallback write follows.
+    await vi.waitFor(() => expect(writeSeqSpy).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    resumeAdapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-cccccccccccc',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Carry on',
+    }));
+    await launchPromise;
+    expect(backend.getWrittenText(sessionId)).toBe('\x1b[200~Carry on\x1b[201~\rCarry on\r');
+  });
+
+  test('a resumed launch checks the confirmed text against the continuation message, not the longer task prompt', async () => {
+    // The integrity check (#2977) must compare against what was sent. Compared
+    // with the task brief, a resume whose brief is longer than the message
+    // would fail as "truncated" and kill the resumed session.
+    const resumeAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 0,
+      promptReadySettleMs: 0,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const longBrief = 'Implement the feature end to end. '.repeat(20);
+    const task = taskStore.createTask('long brief', '/cwd');
+    const launchPromise = resumeAdapter.launch(task.id, longBrief, '/cwd', {
+      sessionId: '00000000-0000-0000-0000-000000000006',
+      continuationMessage: 'Resumed: carry on',
+    });
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const sessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(sessionId, COMPOSER_READY_PANE);
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+    const hook = (event: Record<string, unknown>) => resumeAdapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-eeeeeeeeeeee',
+      transcript_path: '/tmp/claude/transcripts/resumed.jsonl',
+      cwd: '/cwd',
+      ...event,
+    }));
+    hook({ hook_event_name: 'SessionStart', source: 'resume' });
+    hook({ hook_event_name: 'UserPromptSubmit', prompt: 'Resumed: carry on' });
+    await launchPromise;
+    const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+    expect(session.promptDelivery?.status).toBe('confirmed');
+  });
+
+  test('a resumed launch whose continuation message arrives cut short fails as truncated', async () => {
+    const resumeAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 0,
+      promptReadySettleMs: 0,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('brief', '/cwd');
+    const launchPromise = resumeAdapter.launch(task.id, 'Fix bug', '/cwd', {
+      sessionId: '00000000-0000-0000-0000-000000000007',
+      continuationMessage: 'Resumed after a reboot: re-check state, then carry on',
+    });
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const sessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(sessionId, COMPOSER_READY_PANE);
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+    const hook = (event: Record<string, unknown>) => resumeAdapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-ffffffffffff',
+      transcript_path: '/tmp/claude/transcripts/resumed-cut.jsonl',
+      cwd: '/cwd',
+      ...event,
+    }));
+    hook({ hook_event_name: 'SessionStart', source: 'resume' });
+    hook({ hook_event_name: 'UserPromptSubmit', prompt: 'Resumed aftercarry on' });
+    await expect(launchPromise).rejects.toThrow(InitialPromptTruncatedError);
+  });
+
+  test('a resumed launch without a continuation message sends the default one', async () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd', {
+      sessionId: '00000000-0000-0000-0000-000000000004',
+    });
+    const written = backend.getWrittenText(sessionId);
+    expect(written).toContain(DEFAULT_RESUME_CONTINUATION_MESSAGE);
+    expect(written).not.toContain('Fix bug');
   });
 
   test('resumed launches with bypassAllPermissions still include both bypass flags before --resume', async () => {

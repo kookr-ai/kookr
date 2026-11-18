@@ -21,7 +21,7 @@
  */
 import { access } from 'node:fs/promises';
 import type { SessionInfo, Task } from '../core/tasks.js';
-import type { ResumeContext } from '../adapters/agent-adapter.js';
+import { DEFAULT_RESUME_CONTINUATION_MESSAGE, type ResumeContext } from '../adapters/agent-adapter.js';
 import type { ReopenResumeReport } from '../shared/contracts/supervisor-actions.js';
 
 async function fileExists(path: string): Promise<boolean> {
@@ -85,9 +85,35 @@ export async function buildResumeContext(
     resumeContext: {
       sessionId: session.claudeSessionId,
       ...(session.transcriptPath ? { transcriptPath: session.transcriptPath } : {}),
+      continuationMessage: buildResumeContinuationMessage(session),
     },
     fallbackReason: undefined,
   };
+}
+
+/**
+ * The first message typed into a resumed conversation. Without one the agent
+ * sits idle at the composer. The message names what the interruption destroyed
+ * and where the work lives: the relaunch starts in the task's original cwd,
+ * which is often not the worktree the agent had moved to. An agent that was
+ * waiting for the operator is told to ask again, not to proceed on its own.
+ */
+export function buildResumeContinuationMessage(
+  session: Pick<SessionInfo, 'cwd' | 'gitBranch' | 'lastTurnState'>,
+): string {
+  const lines = [DEFAULT_RESUME_CONTINUATION_MESSAGE];
+  const where = session.gitBranch ? `${session.cwd} (branch ${session.gitBranch})` : session.cwd;
+  lines.push(
+    `Before this you were working in ${where}. This session may start elsewhere: ` +
+      'cd back there before you edit or run anything.',
+  );
+  if (session.lastTurnState === 'waiting_for_input') {
+    lines.push(
+      'You were waiting for an answer from the operator. Ask your question again and keep waiting; ' +
+        'do not proceed on your own.',
+    );
+  }
+  return lines.join('\n\n');
 }
 
 /**

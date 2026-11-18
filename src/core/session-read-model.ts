@@ -134,8 +134,9 @@ export interface SessionInfo {
   crashRecovered?: boolean;
   /**
    * How the initial prompt was delivered to this session at launch (#2792).
-   * Absent on resumed sessions (no fresh delivery occurs) and on sessions
-   * launched before this field existed.
+   * On a resumed Claude Code session it records the delivery of the
+   * continuation message (#4213). Absent on resumed sessions of adapters that
+   * send nothing on resume, and on sessions launched before this field existed.
    */
   promptDelivery?: PromptDeliveryHealth;
   /** How many times this session chain has been relaunched (0 = original). */

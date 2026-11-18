@@ -39,7 +39,24 @@ export interface ResumeContext {
    *  pre-flight (e.g., file exists). Optional — when missing, adapters that
    *  support resume rely on the agent CLI to validate the sessionId. */
   transcriptPath?: string;
+  /**
+   * First message typed into the resumed conversation. A resumed agent gets no
+   * prompt of its own, so without this it sits idle at the composer. It also
+   * tells the agent what the interruption destroyed (background shells,
+   * timers, locks) and where its work lives. Only the Claude Code adapter
+   * delivers it today, sending {@link DEFAULT_RESUME_CONTINUATION_MESSAGE}
+   * when this is absent; other resume-capable adapters (opencode) ignore it.
+   */
+  continuationMessage?: string;
 }
+
+/** Continuation sent to a resumed conversation when the caller supplied none. */
+export const DEFAULT_RESUME_CONTINUATION_MESSAGE =
+  '[Kookr] This conversation was resumed in a new process: the previous one ended (a host restart, a ' +
+  'crash, or the task was stopped and then reopened). Background shells, monitors, timers and subprocesses ' +
+  'from before are gone, and locks held by dead processes are stale. Re-check the real state (working ' +
+  'directory, git status, PRs, running jobs) instead of trusting your last messages, then continue the ' +
+  'task where you left off.';
 
 /**
  * Per-launch options that don't fit the resume concept. Currently carries the
