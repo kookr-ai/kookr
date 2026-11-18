@@ -21,6 +21,11 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Defines probe_codex_plugin_dir and _probe_run_with_timeout. The latter bounds
+# a command with GNU timeout, Homebrew gtimeout, a perl alarm, or no limit, so
+# probes still work on stock macOS, which ships no GNU timeout (issue #4194).
+. "$REPO_ROOT/scripts/lib/probe-codex-plugin-dir.sh"
+
 # ANSI colors only when stdout is a TTY. Stripped output stays clean for
 # pipes, CI logs, and copy-paste into issues.
 if [ -t 1 ]; then
@@ -283,7 +288,7 @@ if command -v docker >/dev/null 2>&1; then
   # without asking for output we don't need. Bound the wait: a hung daemon
   # (common on Linux when dockerd is stopped but the CLI still resolves)
   # would otherwise stall doctor and any test that shells out to it.
-  if timeout 3 docker info >/dev/null 2>&1; then
+  if _probe_run_with_timeout 3 docker info >/dev/null 2>&1; then
     print_row "Docker" "$DOCKER_VERSION" "OK"
     DOCKER_OK=1
   else
@@ -333,11 +338,11 @@ fi
 # see scripts/lib/probe-codex-plugin-dir.sh for the shared contract.
 # Passing the repo .env probes the binary a server started here would use.
 # ---------------------------------------------------------------------------
-. "$REPO_ROOT/scripts/lib/probe-codex-plugin-dir.sh"
+# (probe-codex-plugin-dir.sh is sourced near the top of this script.)
 probe_codex_plugin_dir "$REPO_ROOT/.env"
 CODEX_VERSION_DISPLAY="unknown"
 if [ "$PROBE_RESULT" != "not-installed" ]; then
-  CODEX_VERSION_DISPLAY="$(timeout 2 "$PROBE_CODEX_BIN" --version 2>/dev/null \
+  CODEX_VERSION_DISPLAY="$(_probe_run_with_timeout 2 "$PROBE_CODEX_BIN" --version 2>/dev/null \
     | head -n1 | awk '{print $NF}' 2>/dev/null || echo unknown)"
   [ -z "$CODEX_VERSION_DISPLAY" ] && CODEX_VERSION_DISPLAY="unknown"
 fi

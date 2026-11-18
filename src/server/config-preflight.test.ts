@@ -1,6 +1,8 @@
 import { constants } from 'node:fs';
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -561,4 +563,55 @@ describe('startup and doctor wiring', () => {
       stdout: expect.stringContaining('startup config'),
     });
   }, 30_000);
+
+  // Issue #4194: stock macOS ships no GNU `timeout` (Homebrew names it
+  // `gtimeout`). A bare `timeout 3 docker info` then exits 127 and doctor
+  // reported a running Docker daemon and a working codex as down. Simulate
+  // that host with a PATH that mirrors this one minus timeout/gtimeout.
+  it('doctor probes docker and codex on a host with no timeout/gtimeout', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kookr-doctor-no-timeout-'));
+    try {
+      const bin = join(root, 'bin');
+      await mkdir(bin);
+      await writeFile(
+        join(bin, 'docker'),
+        '#!/bin/sh\ncase "$1" in\n  --version) echo "Docker version 99.1.2, build stub" ;;\n  info) exit 0 ;;\n  *) exit 1 ;;\nesac\n',
+      );
+      await writeFile(
+        join(bin, 'codex'),
+        '#!/bin/sh\ncase "$1" in\n  --help) echo "  --plugin-dir <DIR>" ;;\n  --version) echo "codex-cli 77.8.9" ;;\n  *) exit 1 ;;\nesac\n',
+      );
+      await chmod(join(bin, 'docker'), 0o755);
+      await chmod(join(bin, 'codex'), 0o755);
+      const linked = new Set(['docker', 'codex', 'timeout', 'gtimeout']);
+      for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+        if (!dir) continue;
+        let entries: string[];
+        try {
+          entries = await readdir(dir);
+        } catch {
+          continue;
+        }
+        for (const name of entries) {
+          if (linked.has(name)) continue;
+          linked.add(name);
+          await symlink(join(dir, name), join(bin, name));
+        }
+      }
+
+      const result = await execFileAsync('bash', ['scripts/doctor.sh'], {
+        cwd: process.cwd(),
+        env: { ...process.env, PATH: bin, KOOKR_CODEX_BIN: join(bin, 'codex') },
+        timeout: 60_000,
+      }).catch((err: { stdout?: string }) => ({ stdout: err.stdout ?? '' }));
+
+      const dockerRow = result.stdout.split('\n').find((line) => line.includes('Docker') && line.includes('99.1.2'));
+      expect(dockerRow).toBeDefined();
+      expect(dockerRow).toContain('OK');
+      expect(result.stdout).not.toContain('daemon not running');
+      expect(result.stdout).toContain('77.8.9');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
