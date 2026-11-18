@@ -2,7 +2,12 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm, utimes } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { discoverPlaybooks, userPlaybooksDir, pluginPlaybooksDir } from './playbook-discovery.js';
+import {
+  discoverPlaybooks,
+  findPlaybookTierShadows,
+  userPlaybooksDir,
+  pluginPlaybooksDir,
+} from './playbook-discovery.js';
 
 const fsReadTracker = vi.hoisted(() => ({ readFileCalls: 0 }));
 
@@ -415,6 +420,96 @@ describe('discoverPlaybooks', () => {
     } finally {
       await rm(dir, { recursive: true });
     }
+  });
+
+  // Issue #4142: a playbook file name held by two tiers runs one copy and
+  // silently ignores the other.
+  describe('findPlaybookTierShadows', () => {
+    const OTHER_PLAYBOOK = VALID_PLAYBOOK.replace('Do the thing.', 'Do another thing.');
+
+    test('reports a user copy that differs from the plugin copy, user copy first', async () => {
+      await writeFile(join(isolatedUserDir, 'dup.md'), OTHER_PLAYBOOK);
+      await writeFile(join(isolatedPluginPlaybooksDir, 'dup.md'), VALID_PLAYBOOK);
+      await writeFile(join(isolatedPluginPlaybooksDir, 'plugin-only.md'), VALID_PLAYBOOK);
+      const dir = await createTempProject();
+      try {
+        const shadows = await findPlaybookTierShadows(dir);
+        expect(shadows).toHaveLength(1);
+        expect(shadows[0]).toMatchObject({
+          id: 'dup.md',
+          contentDiffers: true,
+          copies: [
+            { scope: 'user', filePath: join(isolatedUserDir, 'dup.md') },
+            { scope: 'plugin', filePath: join(isolatedPluginPlaybooksDir, 'dup.md') },
+          ],
+        });
+        expect(shadows[0].copies[0].sourceDigest).toMatch(/^sha256:/);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    });
+
+    test('lists identical copies without marking them as different', async () => {
+      await writeFile(join(isolatedUserDir, 'dup.md'), VALID_PLAYBOOK);
+      await writeFile(join(isolatedPluginPlaybooksDir, 'dup.md'), VALID_PLAYBOOK);
+      const dir = await createTempProject();
+      try {
+        const shadows = await findPlaybookTierShadows(dir);
+        expect(shadows.map((shadow) => [shadow.id, shadow.contentDiffers])).toEqual([['dup.md', false]]);
+        expect(shadows[0].copies.map((copy) => copy.scope)).toEqual(['user', 'plugin']);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    });
+
+    test('orders a three-tier collision project > user > plugin and flags any differing pair', async () => {
+      const dir = await createTempProject();
+      const projectDir = join(dir, '.kookr', 'playbooks');
+      await mkdir(projectDir, { recursive: true });
+      await writeFile(join(projectDir, 'dup.md'), VALID_PLAYBOOK);
+      await writeFile(join(isolatedUserDir, 'dup.md'), VALID_PLAYBOOK);
+      await writeFile(join(isolatedPluginPlaybooksDir, 'dup.md'), OTHER_PLAYBOOK);
+      try {
+        const [shadow] = await findPlaybookTierShadows(dir);
+        expect(shadow.copies.map((copy) => copy.scope)).toEqual(['project', 'user', 'plugin']);
+        expect(shadow.copies[0].filePath).toBe(join(projectDir, 'dup.md'));
+        expect(shadow.contentDiffers).toBe(true);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    });
+
+    test('still reports a plugin copy that repo-tags hide from this checkout', async () => {
+      // The user copy shadows the plugin copy in every checkout where the
+      // plugin copy is visible, so the comparison must not depend on the cwd's tags.
+      await writeFile(join(isolatedUserDir, 'tagged.md'), VALID_PLAYBOOK);
+      await writeFile(
+        join(isolatedPluginPlaybooksDir, 'tagged.md'),
+        OTHER_PLAYBOOK.replace('description: A test playbook', 'description: A test playbook\nrepo-tags: [github]'),
+      );
+      const dir = await createTempProject();
+      try {
+        const visible = await discoverPlaybooks(dir, { includeShadowed: true });
+        expect(visible.map((playbook) => playbook.scope)).toEqual(['user']);
+        const shadows = await findPlaybookTierShadows(dir);
+        expect(shadows.map((shadow) => [shadow.id, shadow.contentDiffers])).toEqual([['tagged.md', true]]);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    });
+
+    test('does not compare a directory with itself when the project tier is the user tier', async () => {
+      const dir = await createTempProject();
+      const projectDir = join(dir, '.kookr', 'playbooks');
+      await mkdir(projectDir, { recursive: true });
+      await writeFile(join(projectDir, 'same.md'), VALID_PLAYBOOK);
+      process.env.KOOKR_USER_PLAYBOOKS_DIR = projectDir;
+      try {
+        expect(await findPlaybookTierShadows(dir)).toEqual([]);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    });
   });
 });
 

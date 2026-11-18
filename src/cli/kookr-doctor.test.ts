@@ -105,6 +105,9 @@ const hermeticOps = {
   // and hermetic (group/other bits are clear on both a file and a directory).
   statFile: async () => ({ mode: 0o600 }),
   platform: 'linux' as NodeJS.Platform,
+  // No playbook copies in other tiers, so the host's ~/.kookr/playbooks and the
+  // installed plugin never leak into hermetic runs (issue #4142).
+  findPlaybookTierShadows: async () => [],
 };
 
 function hostStaleSnap(
@@ -3750,5 +3753,98 @@ describe('checkPluginFleet', () => {
     }));
     expect(c.status).toBe('warn');
     expect(c.detail).toContain('did not load');
+  });
+});
+
+// Issue #4142: a playbook file name held by two tiers runs one copy and
+// ignores the other without notice.
+describe('kookr doctor playbooks.tier-copies (issue #4142)', () => {
+  const baseDeps = () => ({
+    env: { ...opsOkEnv },
+    commandRunner: commandRunner(happyFixtures()),
+    access: async () => {},
+    now: () => new Date('2026-11-18T00:00:00.000Z'),
+    ...hermeticOps,
+  });
+
+  function withTierDirs(differ: boolean): { cwd: string; userDir: string; pluginPlaybooks: string; restore: () => void } {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-doctor-tiers-'));
+    const cwd = join(root, 'project');
+    const userDir = join(root, 'user');
+    const pluginRoot = join(root, 'plugin');
+    const pluginPlaybooks = join(pluginRoot, 'playbooks');
+    mkdirSync(cwd);
+    mkdirSync(userDir);
+    mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true });
+    mkdirSync(pluginPlaybooks);
+    writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fake', version: '0.0.0' }));
+    const copy = '---\nname: Goal Supervisor\n---\nUser body.\n';
+    writeFileSync(join(userDir, 'goal-supervisor.md'), copy);
+    writeFileSync(join(pluginPlaybooks, 'goal-supervisor.md'), differ ? copy.replace('User', 'Plugin') : copy);
+    const saved = { user: process.env.KOOKR_USER_PLAYBOOKS_DIR, plugin: process.env.KOOKR_PLUGIN_DIR };
+    process.env.KOOKR_USER_PLAYBOOKS_DIR = userDir;
+    process.env.KOOKR_PLUGIN_DIR = pluginRoot;
+    return {
+      cwd,
+      userDir,
+      pluginPlaybooks,
+      restore: () => {
+        if (saved.user === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+        else process.env.KOOKR_USER_PLAYBOOKS_DIR = saved.user;
+        if (saved.plugin === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+        else process.env.KOOKR_PLUGIN_DIR = saved.plugin;
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it('WARNs (advisory, exit 0) when the user and plugin copies differ', async () => {
+    const tiers = withTierDirs(true);
+    try {
+      // No injected comparison: exercise the real discovery wiring on the doctor cwd.
+      const deps = { ...baseDeps(), cwd: tiers.cwd, findPlaybookTierShadows: undefined };
+      const report = await buildDoctorJsonReport(deps);
+      const check = report.checks.find((c) => c.id === 'playbooks.tier-copies');
+      expect(check).toMatchObject({
+        status: 'warn',
+        required: false,
+        summary: '1 playbook(s) have a different copy in another tier: goal-supervisor.md (user runs; plugin ignored)',
+      });
+      expect(check?.detail).toContain(join(tiers.userDir, 'goal-supervisor.md'));
+      expect(check?.detail).toContain(join(tiers.pluginPlaybooks, 'goal-supervisor.md'));
+      expect(check?.recommendedAction).toContain('kookr playbook list');
+      expect(report.ok).toBe(true);
+      expect(report.status).toBe('warn');
+
+      const out = { log: vi.fn(), error: vi.fn() };
+      expect(await runDoctorCli([], { ...deps, out })).toBe(0);
+    } finally {
+      tiers.restore();
+    }
+  });
+
+  it('stays OK when the copies are identical', async () => {
+    const tiers = withTierDirs(false);
+    try {
+      const report = await buildDoctorJsonReport({ ...baseDeps(), cwd: tiers.cwd, findPlaybookTierShadows: undefined });
+      expect(report.checks.find((c) => c.id === 'playbooks.tier-copies')).toMatchObject({
+        status: 'ok',
+        summary: '1 playbook(s) exist in more than one tier with identical content',
+      });
+      expect(report.status).toBe('ok');
+    } finally {
+      tiers.restore();
+    }
+  });
+
+  it('skips the check instead of failing doctor when the playbook directories cannot be read', async () => {
+    const report = await buildDoctorJsonReport({
+      ...baseDeps(),
+      findPlaybookTierShadows: async () => {
+        throw new Error('EACCES');
+      },
+    });
+    expect(report.checks.some((c) => c.id === 'playbooks.tier-copies')).toBe(false);
+    expect(report.status).toBe('ok');
   });
 });
