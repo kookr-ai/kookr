@@ -101,7 +101,7 @@ Implement GitHub issues end-to-end. In standard launch mode, handle the specifie
 
 If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask. When the choice is one the operator should see — a visible UI change, or a reversible decision with real trade-offs — use the opinion request flow (`asking-the-operator` skill, "Unattended tasks"; `ui-mockup-variants` for UI): publish the material, link it on the issue and later on the PR, each with the `needs-operator-opinion` label, send one `kookr ask` without `--wait`, and carry on with the recommended option; from then on, start every comment you post on that item with `<!-- kookr:automation -->`. Only a hard-to-undo choice (data migration, deletion, external side effect) stops there, with the request open.
 
-This playbook is delivery-pre-authorized. Once the issue is trusted and implementable, complete the delivery cycle end-to-end without pausing after each stage: implement, verify, commit, run the repo pre-push workflow, push, run the mandatory pre-`gh pr create` duplicate-guard (Phase 7: abort if the issue is already CLOSED or the head branch already has an open/recently-merged PR), create or update the PR, report the PR URL, and merge when `{{mergeAfterImplementation}}` allows it. If you show a diff or plan and receive approval, treat that as approval to finish the full cycle. Ask at most once only when the delivery policy is genuinely ambiguous or a required safety gate blocks automation.
+This playbook is delivery-pre-authorized. Once the issue is trusted and implementable, complete the delivery cycle end-to-end without pausing after each stage: implement, verify, commit, run the repo pre-push workflow, push, run the mandatory pre-`gh pr create` duplicate-guard (Phase 7: abort if the issue is already CLOSED or the head branch already has an open/recently-merged PR), create or update the PR, report the PR URL, and merge when `{{mergeAfterImplementation}}` allows it. When `"$REPO"` is `kookr-ai/kookr`, the push, PR and merge steps run through that repository's `pnpm deliver` command (Phase 7); other repositories use the individual commands. If you show a diff or plan and receive approval, treat that as approval to finish the full cycle. Ask at most once only when the delivery policy is genuinely ambiguous or a required safety gate blocks automation.
 
 ## Optional run modes
 
@@ -525,6 +525,8 @@ Fix any failures before proceeding.
 
 Before pushing or creating a PR, run the repo delivery pre-push workflow (`kookr-pre-push` when available). In a repository with that workflow (Kookr itself, for example), this includes the targeted tests for changed files (plus the full suite only when the repository has no fast pre-push gate, see above), the review for non-trivial changes (with a fast pre-push gate, the one independent review started at the first commit; otherwise the reviewer specialists), and the SHA-bound `.review-state/<branch-key>.json` marker. Do not stop after verification to ask whether to push when this playbook already pre-authorized delivery.
 
+When `"$REPO"` is `kookr-ai/kookr`, do not write the marker, push and open the PR by hand: after the targeted tests pass and the independent reviewer is started on HEAD, Phase 7 delivers the branch with `pnpm deliver`, which writes the markers itself.
+
 ### Resolving conflicts when you sync the base branch into the PR
 
 Updating a stale PR often means merging the base branch back in (`git merge --no-edit origin/<base>`), which can conflict. The practice that keeps the PR intact:
@@ -535,7 +537,40 @@ Updating a stale PR often means merging the base branch back in (`git merge --no
 
 ## Phase 7: Create or Update Pull Request
 
-Commit and push the verified branch, then create a PR targeting the appropriate base branch, or update the existing PR with new evidence.
+**In `kookr-ai/kookr`: deliver with `pnpm deliver` (the default there).** That repository has a `pnpm deliver` script (`scripts/deliver.ts`; reference: `docs/reference/cli.md`, "`pnpm deliver`") that runs its delivery steps in order: `review-marker`, `pr-gate-marker`, `pr-body`, `push`, `pr`, `wait-verdict`, `merge`. It stops at the first step that fails or needs a decision, prints `deliver: ✖ stopped at <step>: …` with what to do, and resumes with `--from <step>`. It never starts a reviewer, so start the independent reviewer on HEAD before the first run (Phase 6). It does not run the duplicate-guard, set the assignee or copy the Idea Scout labels, so this phase splits the run around those steps. The command exists only in `kookr-ai/kookr`; every other repository skips this block and follows the rest of Phase 7.
+
+```bash
+# kookr-ai/kookr only. Pass --specialists whenever the range includes review-marker, and the
+# same --body-file on every run: the default body file is in the system temp directory, which
+# `kookr pr-checklist verify` refuses to read ("outside the repository root"); .tmp/ is git-ignored.
+mkdir -p .tmp   # pnpm deliver does not create the body file's directory
+deliver() { pnpm deliver --repo "$REPO" --body-file .tmp/pr-body.md "$@"; }
+deliver --specialists independent-review --dry-run      # print the plan, run nothing
+deliver --specialists independent-review --to push      # markers, PR body, push
+#   The first run stops at pr-body: `kookr pr-checklist scaffold` leaves TODO rows that
+#   `verify` rejects. Edit .tmp/pr-body.md: replace each TODO, write the summary and test
+#   plan, add the `Closes #<TARGET>` line (or `Refs #<TARGET>` for an incident, see below)
+#   and the attribution line. Then resume:
+deliver --from pr-body --to push
+# The guard below, right before the PR is created. Skip it when the branch already has an
+# open PR: step `pr` then only updates that PR, and the guard would abort on it.
+if [ -z "$(gh pr list --repo "$REPO" --head "$(git rev-parse --abbrev-ref HEAD)" --state open --json number -q '.[0].number // empty')" ]; then
+  pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" "<TARGET>" || exit 1
+fi
+deliver --from pr --to pr --title "<type>: <short description>"   # gh pr create (or gh pr edit on the open PR); the title defaults to the last commit subject
+```
+
+Where it stops and what to do (fix that one step, by hand with the command it names if needed, then resume from it):
+
+- **`review-marker`, exit 4:** the reviewer input is missing; start the reviewer on HEAD and pass `--specialists independent-review` (or `--bypass-reason "<why>"` for a trivial change).
+- **`pr-body`:** edit `.tmp/pr-body.md`, then `--from pr-body`.
+- **`push`:** the repo hook rejected the push; fix the rule it names (`kookr-pre-push`, "Rules a push can fail on"). A fix commit moves HEAD, so start the reviewer on the new head and resume with `--from review-marker --specialists independent-review`.
+- **`pr`:** fix the `gh` error, or create the PR by hand with the `gh pr create --body-file <body file>` command below, then go on.
+- **`wait-verdict` / `merge`** (Phase 8, step 3).
+
+Then run the assignee and Idea Scout label steps at the end of this phase. Phase 8 runs the remaining `wait-verdict` and `merge` steps when `{{mergeAfterImplementation}}` is `true`.
+
+**Other repositories** (and `kookr-ai/kookr` only for a step where `pnpm deliver` stopped): commit and push the verified branch, then create a PR targeting the appropriate base branch, or update the existing PR with new evidence.
 
 **Pre-`gh pr create` duplicate-guard (mandatory).** Run this immediately before
 `gh pr create`. It aborts with a non-zero exit (no PR is created) if the issue
@@ -705,7 +740,17 @@ If `{{mergeAfterImplementation}}` is `true`:
    - **Advisory (repo `CLAUDE.md` / `AGENTS.md` documents that independent review is advisory, e.g. Lucy #3606):** still post the verdict when the reviewer returns. Timeout, missing, or BLOCK never become a task blocker or merge refusal. Merge after local gates with `KOOKR_MERGE_REQUIRE_REVIEW=0 kookr merge <PR> --repo "$REPO"`: the variable skips only the wrapper's review-verdict gate (the repo opt-out, not a human-merge exception); the wrapper still waits for checks, classifies them, and deletes the head branch through the API. Do not stall the task waiting for review capacity. Where `kookr` is not on `PATH`, use the step 3 fallback.
 
    Classify: if `"$REPO"` is `kookr-ai/kookr` → hard; else if `grep -qiE 'independent review is advisory' CLAUDE.md AGENTS.md` → advisory; else hard.
-3. If the PR is mergeable now, merge using the repository's expected method. In `kookr-ai/kookr`, prefer the repository merge wrapper:
+3. If the PR is mergeable now, merge using the repository's expected method. In `kookr-ai/kookr`, resume `pnpm deliver` (Phase 7): its `wait-verdict` step waits for the independent-review verdict bound to the PR head, and its `merge` step runs the repository merge wrapper, `kookr merge`:
+
+   ```bash
+   pnpm deliver --repo "$REPO" --body-file .tmp/pr-body.md --from wait-verdict   # kookr-ai/kookr only
+   ```
+
+   - **Stopped at `wait-verdict`, exit 4:** the verdict is a BLOCK. Fix or rebut the findings (step 2.5), commit, start the fix-check review on the new head, then `pnpm deliver --repo "$REPO" --body-file .tmp/pr-body.md --from review-marker --specialists independent-review`.
+   - **Stopped at `wait-verdict`, exit 3:** no verdict for the PR head within `--wait-timeout` (default 1800 seconds). Check the reviewer, then `--from wait-verdict`. A `pass` bound only through `review-patch-id` after a rebase is not recognized by this step; resume with `--from merge`, since `kookr merge` accepts it.
+   - **Stopped at `merge`:** read the `kookr-merge: summary:` block, act on it as described below, then `--from merge` (or run `kookr merge` by hand).
+
+   By hand, when `pnpm deliver` stopped at `merge`, the wrapper is:
 
    ```bash
    kookr merge <PR_NUMBER> --repo "$REPO"   # from your own worktree

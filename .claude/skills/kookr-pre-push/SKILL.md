@@ -11,6 +11,8 @@ related: pre-pr-review, kookr-post-push, kookr-pr-lifecycle, pr-review-triage, g
 
 Use this before every non-trivial `git push` in Kookr. This skill does not replace existing checks. It sequences the checks that already exist so the branch is ready for push and for `gh pr create`.
 
+**In this repository, deliver with `pnpm deliver`** (Workflow step 3): once the branch is committed, its targeted tests pass and the independent reviewer is running on HEAD, one command writes the review and PR gate markers, checks the PR body, pushes, opens or updates the PR, waits for the verdict and merges. Run the individual commands (steps 4 and 5) only to finish a step where `pnpm deliver` stopped.
+
 ## What Is Already Enforced
 
 - **Repo git hook (`.hooks/pre-push`)**: `git push` automatically runs every rule in [Rules a push can fail on](#rules-a-push-can-fail-on), cheap static checks first. `package.json` installs the hook via `prepare -> git config core.hooksPath .hooks`. Bundled — runs for every contributor.
@@ -28,7 +30,7 @@ Check these before you push: each one is cheaper to satisfy up front than to lea
 1. **No `.review-state/*.json` in the index.** Review markers stay local-only.
 2. **No reserved test identity as the repo committer** (`hooks/git-identity-guard.sh`, e.g. `test@example.com`).
 3. **Dependencies install.** With no `node_modules`, the hook runs `pnpm install --frozen-lockfile`; an install failure rejects the push.
-4. **Review-gate marker** (non-trivial diffs only): `.review-state/<branch>.json` exists, its `sha` equals HEAD, and it is either `approved` with a producer token or `bypass` with a `reason`. See Workflow step 3.
+4. **Review-gate marker** (non-trivial diffs only): `.review-state/<branch>.json` exists, its `sha` equals HEAD, and it is either `approved` with a producer token or `bypass` with a `reason`. See Workflow step 4.
 5. **Plugin checks** (when a `plugin/` directory exists). These run before any type-check or test lane, so a missed bump costs seconds, not a full run:
    - no hardcoded absolute home path (`/home/<user>/git/kookr`) under `plugin/`;
    - `hooks/skill-placement-gate.sh`: `.claude/skills/` and `.claude/agents/` names start with `kookr-`, `plugin/` skill and agent names do not, no name collides between `.claude/` and `plugin/`, and every `subagent_type` is qualified as `kookr-toolkit:<name>`;
@@ -80,13 +82,51 @@ For any branch that you expect to push for review or turn into a PR, run [[pre-p
 
 In this repo, that means:
 - Run the targeted tests for the files you touched (`pnpm exec vitest run <files>`), plus any `pnpm verify`-only check from the list above that your diff touches. Do not run the full `pnpm test` or `pnpm verify`: the push runs the fast gate and the integration train runs the full suite.
-- Run **one review pass** (issue #3792, `[[pre-pr-review]]` §8 "One review pass"): at the first commit, start the `[[independent-merge-review]]` reviewer on that head in the background, then push while it works. That single fresh-context reviewer covers what the correctness, test and lint-like specialists covered; do not also run the specialist panel. Docs-only and test-only diffs get the lint-level pass alone.
+- Run **one review pass** (issue #3792, `[[pre-pr-review]]` §8 "One review pass"): at the first commit, start the `[[independent-merge-review]]` reviewer on that head in the background, then deliver with `pnpm deliver` (step 3), which pushes, while it works. That single fresh-context reviewer covers what the correctness, test and lint-like specialists covered; do not also run the specialist panel. Docs-only and test-only diffs get the lint-level pass alone.
 - When the verdict is a BLOCK, fix and re-review on a new head. That re-review is a fix check, not a second full review: the reviewer gets the BLOCK and the diff since the blocked head, confirms each finding is fixed, and reviews only the changed lines. A new non-critical finding on a line that did not change is a follow-up. After two blocked rounds, only correctness, data-loss and security findings keep blocking. Round 1 blocks on critical findings and small defects, and the small defects are fixed inside the PR. Nits stay in the verdict comment, never filed or fixed on request; only larger defects go into at most one issue per PR, with a checklist, filed through `kookr emission plan` and the logged dedupe, linked from the verdict (`[[independent-merge-review]]` §4a).
-- Create the PR gate state file only after the mandatory checks pass
+- Create the PR gate state file only after the mandatory checks pass (`pnpm deliver` writes it in its `pr-gate-marker` step)
 
 This is intentionally earlier than the `gh pr create` hook. The hook is the backstop; this skill is the normal path.
 
-### 3. Write the review-gate marker
+### 3. Deliver with `pnpm deliver` (the default here)
+
+`pnpm deliver` (issue #4180, `scripts/deliver.ts`; reference: `docs/reference/cli.md`, "`pnpm deliver`") runs the delivery steps of the current branch in order and stops at the first one that fails or needs a decision. It never starts a reviewer and never posts a verdict, so start the independent reviewer on HEAD (step 2) first, then:
+
+```bash
+mkdir -p .tmp   # pnpm deliver does not create the body file's directory
+pnpm deliver --dry-run --specialists independent-review --body-file .tmp/pr-body.md   # print the plan, run nothing
+pnpm deliver --specialists independent-review --body-file .tmp/pr-body.md             # run every step
+```
+
+**Pass `--body-file .tmp/pr-body.md`.** The default body file, `<tmp>/kookr-deliver-<branch>.md` in the system temp directory, is outside the worktree, and `kookr pr-checklist verify` only reads body files inside it, so a run without `--body-file` always stops at `pr-body` with `body file … is outside the repository root`. `.tmp/` is git-ignored, so the file does not change the commit the markers are bound to. Create it first (`mkdir -p .tmp`): `pnpm deliver` does not, and without it the `pr-body` step crashes with `ENOENT` instead of stopping cleanly.
+
+| Step | What it runs |
+| --- | --- |
+| `review-marker` | `scripts/write-review-state-marker.sh --status approved --specialists <roles>` (or `--status bypass --reason <text>` with `--bypass-reason`) |
+| `pr-gate-marker` | `scripts/write-pr-gate-marker.sh` |
+| `pr-body` | `kookr pr-checklist scaffold` into the body file (only when that file does not exist yet), then `kookr pr-checklist verify --pr-body <file>` |
+| `push` | `git push --set-upstream origin <branch>`, so `.hooks/pre-push` runs every rule above |
+| `pr` | `gh pr edit` on the branch's open PR, or `gh pr create` when there is none |
+| `wait-verdict` | waits (default 1800 seconds) for an independent-review verdict comment bound to the PR head |
+| `merge` | `kookr merge <PR>`, which retargets the PR to `staging` and merges it there |
+
+Add `--to pr` to stop once the PR is open (for example when the PR is not yours to merge), and `--repo kookr-ai/kookr` when `gh` cannot infer the repository. The PR title defaults to the subject of the last commit; pass `--title "<type>(<scope>): <summary>"` when the branch has more than one commit.
+
+**When it stops.** The last line names the step (`deliver: ✖ stopped at <step>: …`) and what to do. Fix that one step, by hand if needed, then resume from it with `--from <step>`, passing the same `--body-file` on every run and the same `--specialists` value whenever the range includes `review-marker`:
+
+| Stop | What to do |
+| --- | --- |
+| `review-marker`, exit 4 | Start the reviewer on HEAD, then pass `--specialists independent-review`, or `--bypass-reason "<why>"` for a trivial change (step 4). |
+| `pr-body`, non-zero | The scaffold leaves `TODO` rows that `verify` rejects. Edit the file it names (write the summary, test plan and `Closes #<issue>` line too), then `pnpm deliver --from pr-body`. |
+| `push`, non-zero | The repo hook rejected the push: fix the rule it names ([Rules a push can fail on](#rules-a-push-can-fail-on)). A fix commit moves HEAD, so start the reviewer on the new head and resume with `--from review-marker`. |
+| `pr`, non-zero | Fix the `gh` error, then `--from pr`. |
+| `wait-verdict`, exit 4 | The verdict is a BLOCK. Fix or rebut the findings, commit, start the fix-check review on the new head, then `pnpm deliver --from review-marker --specialists independent-review`. |
+| `wait-verdict`, exit 3 | No verdict for the PR head within `--wait-timeout`. Check the reviewer, then `--from wait-verdict`. A `pass` bound only through `review-patch-id` after a rebase is not recognized here; resume with `--from merge`, since `kookr merge` accepts it. |
+| `merge`, non-zero | Read the `kookr-merge: summary:` block and run the command it names ([[kookr-post-push]] step 6), then `--from merge`. |
+
+### 4. Write the review-gate marker (what `pnpm deliver`'s `review-marker` step runs)
+
+Run this by hand only when `pnpm deliver` stopped here, or to understand that step.
 
 The repo's `.hooks/pre-push` blocks any push of non-trivial source changes that does not have a SHA-bound review marker at `.review-state/<branch>.json` (slashes in branch names flattened to underscores). The hook checks the marker before the fast gate, while the review runs in parallel with that gate, so the marker cannot mean "review passed". It attests that the one independent review was **started** for the *current* HEAD, not a stale earlier commit. The merge-time verdict is the gate: `kookr merge` refuses without a `pass` bound to the exact head.
 
@@ -114,24 +154,25 @@ The reason field is mandatory for bypass markers — the hook rejects bypass mar
 
 Every new commit (including amend) shifts the SHA and invalidates the marker. Start the review on the new head and re-write the marker after every amend.
 
-### 4. Push and let the repo hook re-check
+### 5. Push and let the repo hook re-check (what `pnpm deliver`'s `push` step runs)
 
-Push normally:
+`pnpm deliver` pushes for you. When it stopped at `push` and you finish by hand, push normally:
 
 ```bash
 git push --set-upstream origin "$(git rev-parse --abbrev-ref HEAD)"
 ```
 
-Expect `.hooks/pre-push` to re-run every check in [Rules a push can fail on](#rules-a-push-can-fail-on), including the review-gate marker from step 3.
+Expect `.hooks/pre-push` to re-run every check in [Rules a push can fail on](#rules-a-push-can-fail-on), including the review-gate marker from step 4.
 
 Do not bypass the hook. If it fails, fix the issue and push again.
 
-### 5. Report milestone status explicitly
+### 6. Report milestone status explicitly
 
 Before you tell the user "push succeeded", "looks good", or "open a PR", report the delivery milestones in plain language:
 
 - `pre-pr-review`: run / skipped, with reason
 - independent review: started on which head (full or lint-level pass) / skipped, with reason
+- `pnpm deliver`: the last step it finished, or where it stopped and why
 - repo pre-push hook: passed / failed, and whether it ran the fast gate (and how many related test files) or the full lanes
 - branch state: pushed / needs another push
 - next step: create PR / run `[[kookr-post-push]]` / fix blockers
@@ -167,4 +208,5 @@ These checks live here (not in the global PR gate) because they apply **before**
 
 - `[[pre-pr-review]]` is the enforced pre-PR gate and the place where the reviewer specialists live
 - `.hooks/pre-push` is the enforced push-time verification
+- `pnpm deliver` (step 3) runs the marker, push, PR, verdict-wait and merge steps of this skill and of [[kookr-post-push]] in order
 - `[[kookr-post-push]]` starts after the branch is on GitHub and continues through PR follow-through, including the `kookr merge <PR>` wrapper that retargets the PR to `staging` and merges it there (issue #29, #3788)
