@@ -983,4 +983,137 @@ describe('AvatarDock: Lucy’s room', () => {
     expect(mode()).toBe('room');
     expect(document.activeElement).toBe(composer());
   });
+
+  describe('a dialog of the dashboard, and focus left under her (#4166)', () => {
+    /** A control of the dashboard under her, outside the dock (in App it sits in the wrapper that goes inert). */
+    const pageButton = (): HTMLButtonElement => {
+      const button = document.createElement('button');
+      button.textContent = 'Share task';
+      document.body.appendChild(button);
+      return button;
+    };
+    /** A dialog over the page, as a dashboard component or App renders one. */
+    /** App re-rendering the same dock with new props (`render` mounts a new one). */
+    const rerender = (props: Partial<AvatarDockProps>): void => {
+      act(() => { root!.render(<AvatarDock attentionCount={0} roomShortcut={ROOM_SHORTCUT} {...props} />); });
+    };
+    const dialogButton = (): HTMLButtonElement => {
+      const overlay = document.createElement('div');
+      overlay.className = 'dialog-overlay';
+      const button = document.createElement('button');
+      button.textContent = 'Copy link';
+      overlay.appendChild(button);
+      document.body.appendChild(overlay);
+      return button;
+    };
+
+    test('the room is not entered while a dashboard component has a dialog open, and is left whatever is open', () => {
+      start();
+      let dialogOpen = true;
+      render({ dashboardDialogOpen: () => dialogOpen });
+      const field = dialogButton();
+      act(() => { field.focus(); });
+
+      pressRoomShortcut();
+      expect(mode()).toBe('docked');
+      expect(getAvatarRoom()).toBe(false);
+      click(toggle());
+      expect(mode()).toBe('docked');
+      // The dialog keeps the keyboard.
+      expect(document.activeElement).toBe(field);
+
+      dialogOpen = false;
+      pressRoomShortcut();
+      expect(mode()).toBe('room');
+      // Leaving is never refused.
+      dialogOpen = true;
+      pressRoomShortcut();
+      expect(mode()).toBe('docked');
+    });
+
+    test('a resize that brings up the open sheet moves focus from the dashboard to her text box', () => {
+      start();
+      render();
+      const share = pageButton();
+      act(() => { share.focus(); });
+      setWindowWidth(600);
+      expect(mode()).toBe('sheet');
+      expect(document.activeElement).toBe(composer());
+    });
+
+    test('the sheet takes no focus that was nowhere (a phone opening the page) or in a dialog', () => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
+      start();
+      render();
+      expect(mode()).toBe('sheet');
+      expect(document.activeElement).toBe(document.body);
+      act(() => root?.unmount());
+
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1920 });
+      render();
+      const field = dialogButton();
+      act(() => { field.focus(); });
+      setWindowWidth(600);
+      expect(mode()).toBe('sheet');
+      expect(document.activeElement).toBe(field);
+    });
+
+    test('reopened as the sheet from the bubble, focus goes to the minimise button as before, not the text box', () => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
+      start({ minimized: true });
+      render();
+      click(bubble());
+      expect(mode()).toBe('sheet');
+      expect(document.activeElement?.getAttribute('aria-label')).toBe('Minimise Lucy');
+    });
+
+    test('when the last dialog closes while she covers the page and focus went back under her, she takes it', () => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
+      start();
+      render({ dialogOpen: true });
+      expect(mode()).toBe('sheet');
+      // Diagnostics, opened from the top bar, sends focus back to its trigger: in the inert dashboard.
+      const trigger = pageButton();
+      act(() => { trigger.focus(); });
+      rerender({ dialogOpen: false });
+      expect(document.activeElement).toBe(composer());
+
+      // Focus dropped to the page: the same.
+      rerender({ dialogOpen: true });
+      act(() => { (document.activeElement as HTMLElement).blur(); });
+      expect(document.activeElement).toBe(document.body);
+      rerender({ dialogOpen: false });
+      expect(document.activeElement).toBe(composer());
+    });
+
+    test('a dialog closing leaves focus alone when it is in the dock, in another dialog, or when she does not cover the page', () => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
+      start();
+      render({ dialogOpen: true });
+      const minimise = container.querySelector<HTMLButtonElement>('[aria-label="Minimise Lucy"]')!;
+      act(() => { minimise.focus(); });
+      rerender({ dialogOpen: false });
+      expect(document.activeElement).toBe(minimise);
+
+      // From the palette to Diagnostics: one dialog follows another, and the second holds focus.
+      rerender({ dialogOpen: true });
+      const diagnostics = dialogButton();
+      act(() => { diagnostics.focus(); });
+      rerender({ dialogOpen: true });
+      expect(document.activeElement).toBe(diagnostics);
+      // A dialog App does not count is still open and has the keyboard: it keeps it.
+      rerender({ dialogOpen: false });
+      expect(document.activeElement).toBe(diagnostics);
+      act(() => root?.unmount());
+
+      // Beside the page (the docked column) the dashboard is in sight: focus stays where it went back to.
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1920 });
+      render({ dialogOpen: true });
+      expect(mode()).toBe('docked');
+      const trigger = pageButton();
+      act(() => { trigger.focus(); });
+      rerender({ dialogOpen: false });
+      expect(document.activeElement).toBe(trigger);
+    });
+  });
 });

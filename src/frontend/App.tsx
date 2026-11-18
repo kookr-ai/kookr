@@ -1,4 +1,4 @@
-import React, { Suspense, useState, useEffect, useMemo, useCallback, useReducer, useRef } from 'react';
+import React, { Suspense, useState, useEffect, useLayoutEffect, useMemo, useCallback, useReducer, useRef } from 'react';
 import { isLiveChainTip } from '../shared/contracts/playbook-chain.js';
 import { lazyWithReload } from './lazy-with-reload.js';
 import { useShallow } from 'zustand/react/shallow';
@@ -86,7 +86,7 @@ import {
 } from '../shared/contracts/shortcut-bindings.js';
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
-import { applyAvatarRoomAddress, useAvatarPageCovered, useAvatarPanelPrefs, useAvatarRoomShown } from './store/avatar-panel-prefs.js';
+import { applyAvatarRoomAddress, useAvatarPageCovered, useAvatarPanelPrefs } from './store/avatar-panel-prefs.js';
 import { buildAnswerAskMessage, type AskAnswerChoice } from './store/operator-asks.js';
 import { AvatarErrorBoundary } from './avatar/AvatarErrorBoundary.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
@@ -172,6 +172,9 @@ type LaunchInitialTab = 'manual' | 'playbooks';
 
 const MOBILE_BREAKPOINT_PX = 768;
 const WIDE_DETAIL_BREAKPOINT_PX = 1200;
+// An open dialog rendered by a component inside the dashboard: the shared `.dialog-overlay`, or a modal of its own
+// (the sweep report's confirm, the dependency editor) that only says `aria-modal`.
+const DASHBOARD_DIALOG_SELECTOR = '.dialog-overlay, [aria-modal="true"]';
 // Horizontal space (project sidebar + divider + minimum terminal viewport)
 // reserved when the findings panel is resized, so the terminal can never be
 // squeezed to an unusable width on narrow desktops.
@@ -489,11 +492,34 @@ export function App() {
   // once, before the panel's preferences are, so the first paint is already the room.
   useState(() => applyAvatarRoomAddress());
   const avatarPanelEnabled = useAvatarPanelPrefs().enabled;
-  // Lucy's room covers the dashboard only while her dock says it is on screen: a saved flag whose dock crashed
-  // or is still loading, or that is left over while her panel is off, covers nothing.
-  const lucyRoomOpen = useAvatarRoomShown();
-  // Lucy covers the whole dashboard (her room, or the full-width sheet): it goes inert underneath her.
+  // Lucy covers the whole dashboard (her room, or the full-width sheet of a narrow window) only while her dock says
+  // so: a saved room flag whose dock crashed or is still loading, or that is left over while her panel is off,
+  // covers nothing. While she covers it the dashboard's shortcuts are held back and it goes inert underneath her.
   const lucyCoversDashboard = useAvatarPageCovered();
+  // A dialog opened by a component inside the dashboard (Share task, a confirm, the dependency editor...) is
+  // painted above her dock. Her room is not entered while one is open (the dock asks `dashboardDialogOpen`), but the
+  // sheet can still come up under it (a resize, the Talk shortcut). The dashboard then stays live until that
+  // dialog closes, so its buttons keep working: an inert dialog on top of her would be a dead end (#4166).
+  const dashboardRef = useRef<HTMLDivElement>(null);
+  const dashboardDialogOpen = useCallback(
+    () => dashboardRef.current?.querySelector(DASHBOARD_DIALOG_SELECTOR) != null,
+    [],
+  );
+  const [dialogOverLucy, setDialogOverLucy] = useState(false);
+  useLayoutEffect(() => {
+    const wrapper = dashboardRef.current;
+    if (!lucyCoversDashboard || !wrapper) {
+      setDialogOverLucy(false);
+      return undefined;
+    }
+    const check = (): void => setDialogOverLucy(wrapper.querySelector(DASHBOARD_DIALOG_SELECTOR) !== null);
+    check();
+    // Only nodes added or removed matter, and only while she covers the page; the check is one query.
+    const observer = new MutationObserver(check);
+    observer.observe(wrapper, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [lucyCoversDashboard]);
+  const dashboardInert = lucyCoversDashboard && !dialogOverLucy;
   useEffect(() => {
     // Optional Long Task API observer (debug/?longtask=1). Measured snapshot /
     // xterm spans sample independently of this flag.
@@ -1021,10 +1047,10 @@ export function App() {
       if ((showOperations || modalBlocksShortcuts) && e.key !== 'Escape') {
         return;
       }
-      // Lucy's room covers the dashboard: a key pressed there must not act on a task that is out of sight
-      // (bare Enter advancing, Alt+End completing, Escape deselecting and taking focus out of her text box).
-      // Her own shortcuts (Talk, the room) are handled in AvatarDock and keep working.
-      if (lucyRoomOpen) {
+      // Lucy covers the dashboard (her room, or the full-width sheet): a key pressed there must not act on a task
+      // that is out of sight (bare Enter advancing, Alt+End completing, Escape deselecting and taking focus out of
+      // her text box). Her own shortcuts (Talk, the room) are handled in AvatarDock and keep working.
+      if (lucyCoversDashboard) {
         return;
       }
       if (matchesShortcutAction(e, shortcutBindings, 'next_bottleneck')) {
@@ -1247,7 +1273,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, modalBlocksShortcuts, lucyRoomOpen, showOperations, openModal, toggleModal, openCompleteConfirmation, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive, selectedAgent]);
+  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, modalBlocksShortcuts, lucyCoversDashboard, showOperations, openModal, toggleModal, openCompleteConfirmation, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive, selectedAgent]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
@@ -1762,10 +1788,10 @@ export function App() {
       {/* The dashboard itself. While Lucy covers it (her room, or the full-width sheet of a narrow window) it is
           inert: Tab cannot reach a control nobody can see, Enter or Space cannot act on a task that is out of sight,
           and a screen reader does not read it. Everything App renders above her stays outside this wrapper and live:
-          Diagnostics, App's own dialogs, the command palette, the toasts and her own dock (a dialog opened from inside
-          a dashboard component is still inside it: #4166). `display: contents` keeps the
-          wrapper out of the layout, so the `.app` flex column lays out its children as before. */}
-      <div className="app-dashboard" data-testid="app-dashboard" style={{ display: 'contents' }} inert={lucyCoversDashboard}>
+          Diagnostics, App's own dialogs, the command palette, the toasts and her own dock. A dialog opened from inside
+          a dashboard component is inside it, so the dashboard stays live while one is open (`dialogOverLucy`, #4166).
+          `display: contents` keeps the wrapper out of the layout, so the `.app` flex column lays out its children as before. */}
+      <div ref={dashboardRef} className="app-dashboard" data-testid="app-dashboard" style={{ display: 'contents' }} inert={dashboardInert}>
         <a href="#main-content" className="skip-link" data-testid="skip-to-content">
           Skip to content
         </a>
@@ -1965,6 +1991,8 @@ export function App() {
               talkShortcut={shortcutBindings.lucy_talk_toggle}
               roomShortcut={shortcutBindings.lucy_room_toggle}
               shortcutsBlocked={showOperations || modalBlocksShortcuts}
+              dialogOpen={showOperations || showCommandPalette || activeModal !== null || dialogOverLucy}
+              dashboardDialogOpen={dashboardDialogOpen}
             />
           </Suspense>
         </AvatarErrorBoundary>

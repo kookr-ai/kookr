@@ -203,7 +203,21 @@ export interface AvatarDockProps {
   roomShortcut?: ShortcutBinding;
   /** True while a dialog that swallows the dashboard's shortcuts is open: the Talk and room shortcuts then do nothing. */
   shortcutsBlocked?: boolean;
+  /**
+   * True while a dialog is open over the page (Diagnostics, the command palette, Settings, a dialog of a dashboard
+   * component). When the last one closes while she covers the page and focus went back to the dashboard under
+   * her, or nowhere, she takes it, as the room does on entering.
+   */
+  dialogOpen?: boolean;
+  /**
+   * Whether a dashboard component has a dialog of its own open right now. Her room is not entered while one is:
+   * the dialog is painted above her and is not hers to close.
+   */
+  dashboardDialogOpen?: () => boolean;
 }
+
+/** A dialog, live and holding the keyboard: focus in it is never taken away from the operator. */
+const DIALOG_SELECTOR = '.dialog-overlay, [aria-modal="true"]';
 
 const REPLAY_DESCRIPTION_ID = 'avatar-replay-description';
 /** Why the per-message Replay buttons are unavailable; they point at this text while they are. */
@@ -241,6 +255,8 @@ export function AvatarDock({
   talkShortcut,
   roomShortcut,
   shortcutsBlocked = false,
+  dialogOpen = false,
+  dashboardDialogOpen,
 }: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
   // "Lucy's room": she has the whole window, in this browser tab only.
@@ -521,12 +537,49 @@ export function AvatarDock({
   }, [inRoom]);
   // Tell the dashboard when she covers all of it (the room, or the full-width sheet while open), so it goes inert.
   const coversPage = inRoom || (sheet && !minimized);
+  // While she covers the page, focus left in the dashboard under her (or dropped to the page when a dialog over
+  // her closed) goes to her text box, else the dock. Not when it is in the dock already, or in a live dialog.
+  const takeFocusFromPage = (): void => {
+    const dock = dockRef.current;
+    const active = document.activeElement;
+    if (!dock || (active && (dock.contains(active) || active.closest(DIALOG_SELECTOR)))) return;
+    (dock.querySelector<HTMLTextAreaElement>('.avatar-typed textarea') ?? dock).focus();
+  };
+  // Read before the dashboard goes inert: was focus on something in it? Only then is it moved, so a page that
+  // loads with the sheet open (a phone) does not pop the on-screen keyboard by itself.
+  const focusInPageRef = useRef(false);
   useLayoutEffect(() => {
     if (!coversPage) return undefined;
+    const active = document.activeElement;
+    focusInPageRef.current = active !== null && active !== document.body
+      && !dockRef.current?.contains(active) && !active.closest(DIALOG_SELECTOR);
     setAvatarPageCovered(true);
     return () => setAvatarPageCovered(false);
   }, [coversPage]);
-  const toggleRoom = useCallback(() => setAvatarRoom(!room), [room]);
+  // She just came to cover the page: entering the room (which already moved focus, above), or a resize or a
+  // reopen that brought up the full-width sheet.
+  useEffect(() => {
+    if (!coversPage || !focusInPageRef.current) return;
+    focusInPageRef.current = false;
+    takeFocusFromPage();
+    // Only the start of the cover moves focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coversPage]);
+  // The last dialog over the page closed while she covers it. It sends focus back where it came from, which may
+  // be in the inert dashboard (Diagnostics opened from its top bar, a Share dialog the sheet came up under).
+  const wasDialogOpenRef = useRef(dialogOpen);
+  useEffect(() => {
+    const was = wasDialogOpenRef.current;
+    wasDialogOpenRef.current = dialogOpen;
+    if (was && !dialogOpen && coversPage) takeFocusFromPage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dialogOpen]);
+  // A dialog of a dashboard component is open (Share task, a confirm): it is painted above her and must stay
+  // usable, so the room is not entered under it. Leaving the room is always allowed.
+  const toggleRoom = useCallback(() => {
+    if (!room && dashboardDialogOpen?.()) return;
+    setAvatarRoom(!room);
+  }, [room, dashboardDialogOpen]);
 
   // Hands-free is on and connected: the label and hint follow what the server says Lucy is doing.
   const liveReady = live.status === 'ready';
