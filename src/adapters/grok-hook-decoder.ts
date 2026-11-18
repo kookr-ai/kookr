@@ -282,13 +282,24 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
     case 'permission_denied':
       // Normalized into the same AgentEvent Claude Code's PermissionRequest
       // hook produces, so the shared anomaly detector / watchdog mark the
-      // session `permission_blocked` (see GROK_KNOWN_HOOK_EVENTS doc). No
-      // POC-A payload capture exists for this event (it did not fire in the
-      // headless runs), so every field is decoded defensively with the same
-      // camelCase keys the other tool events carry.
+      // session `permission_blocked` (see GROK_KNOWN_HOOK_EVENTS doc).
       //
-      // Bypass mode is the exception: the tool was rejected (hook/policy)
-      // and the agent continues. That is a completed deny, not a wait.
+      // Observed contract (issue #4189): 283 real payloads from Grok sessions
+      // of 2026-08-12 → 08-18, all in `bypassPermissions`, redacted in
+      // docs/poc/009-grok-build-basic-supervision/fixtures/permission-denied.bypass.redacted.json.
+      // Keys: hookEventName, sessionId, cwd, workspaceRoot, timestamp,
+      // transcriptPath, permissionMode, toolName, toolUseId, toolInput,
+      // toolInputTruncated — the same camelCase shape as the other tool
+      // events. The interactive (non-bypass) menu has never been captured, so
+      // the `permission_request` branch below is still unverified and its
+      // fields are decoded defensively.
+      //
+      // `toolInputTruncated` is ignored on purpose: `toolInput` is passed
+      // through verbatim, and no AgentEvent field carries a truncation flag.
+      // It was `false` in every capture; a `true` payload has never been seen.
+      //
+      // Bypass mode: the tool was rejected (hook/policy) and the agent
+      // continues. That is a completed deny, not a wait.
       if (isGrokBypassPermissionMode(str(parsed.permissionMode))) {
         return {
           type: 'tool_error',

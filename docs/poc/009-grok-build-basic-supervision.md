@@ -120,6 +120,18 @@ Initial live turns returned **HTTP 403** at `cli-chat-proxy.grok.com/v1/response
 6. **Build allowlisting:** only `0.2.93 / f00f96316d / linux-x86_64 / glibc 2.35` is `tested`. Other builds/platforms (incl. macOS) are unqualified and may run **only** inside the POC runner. Qualification derives solely from `grok-build-compatibility.v1.json` (CI-enforced).
 7. **Access:** chat requires a console.x.ai entitlement; surface the 403 as an actionable launch-readiness diagnostic, not a crash.
 
+## Addendum (2026-11-18): observed `permission_denied` contract, bypass mode only
+
+The headless finding above (row 3, constraint 4) still holds: `PermissionDenied` did not fire for rule or hook denials in headless `-p`, so it is not a reliable block signal there. Later Kookr-launched Grok sessions **did** emit it. The host's Kookr hook logs (`~/.kookr/hooks/*.jsonl.gz`) held **283** `permission_denied` events from 2026-08-12 to 2026-08-18 (issue #4189). The Grok build that produced them is unknown: the payload does not carry it. The build installed on 2026-11-18 is 1.0.35, which did not necessarily produce them.
+
+- **Keys** (all 283): `hookEventName, sessionId, cwd, workspaceRoot, timestamp, transcriptPath, permissionMode, toolName, toolUseId, toolInput, toolInputTruncated`. This is the same camelCase shape as the other tool events.
+- **Mode:** every event had `permissionMode: "bypassPermissions"`. The decoder maps a bypass `permission_denied` to a completed `tool_error`, because the tool was rejected and the agent kept going. It is not mapped to a permission wait.
+- **Tools:** 277 `run_terminal_command{command, description}`, 5 `run_terminal_command{command, description, timeout}` and 1 `grep{pattern, path}`.
+- **`toolInputTruncated`:** `false` in every capture. No hook event of any type in the logs had `true`, so the shape of a truncated input is unknown. The decoder ignores the flag on purpose and passes `toolInput` through unchanged.
+- **Fixture:** one redacted sample of each tool shape is in `fixtures/permission-denied.bypass.redacted.json`. `src/adapters/grok-hook-decoder.test.ts` decodes the samples.
+
+**Still unverified:** a `permission_denied` from the interactive permission menu (any mode other than bypass) has never been captured. The decoder's mapping of that case to `permission_request` uses a synthetic payload. It remains a POC-B follow-up (below). To collect payloads again, run `zcat ~/.kookr/hooks/*.jsonl.gz | grep -a '"permission_denied"'`. The `-a` flag is needed because without it `grep` stops printing at the first line it thinks is binary.
+
 ## Reproduce
 
 ```bash
@@ -141,4 +153,4 @@ npx vitest run scripts/grok-build-compatibility-manifest.test.ts scripts/grok-bu
 
 ## POC-B follow-ups (not blockers)
 
-Model aliases, semantic resume, transcript/usage/cost, MCP discovery, wider skill/agent invocation, interactive user-driven permission-deny signal shape, `subagent_stop` drain timing, macOS, and one deliberate CLI upgrade — each graduates independently per RFC Phase 0B and must not block the constrained first slice.
+Model aliases, semantic resume, transcript/usage/cost, MCP discovery, wider skill/agent invocation, interactive user-driven permission-deny signal shape (only bypass-mode `permission_denied` has been captured, see the 2026-11-18 addendum), `subagent_stop` drain timing, macOS, and one deliberate CLI upgrade — each graduates independently per RFC Phase 0B and must not block the constrained first slice.
