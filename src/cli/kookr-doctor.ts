@@ -130,6 +130,8 @@ export interface HungSuspectReclaimProbeSnapshot {
   skippedUnderTtl: number;
   skippedNoLiveness: number;
   skippedProviderPaused: number;
+  /** Supervisors held because their next supervision wake is scheduled (issue #4162). */
+  skippedSupervisionWakeScheduled: number;
   lastCandidatesConsidered: number;
   /** Last reclaim pass outcomes (`outcome` strings from hung-suspect-ttl). */
   lastOutcomes: Array<{ outcome: string }>;
@@ -2353,6 +2355,7 @@ export function parseHungSuspectReclaimHealthBody(
       skippedUnderTtl?: unknown;
       skippedNoLiveness?: unknown;
       skippedProviderPaused?: unknown;
+      skippedSupervisionWakeScheduled?: unknown;
       lastCandidatesConsidered?: unknown;
       lastOutcomes?: unknown;
     };
@@ -2372,6 +2375,7 @@ export function parseHungSuspectReclaimHealthBody(
   const skippedUnderTtl = nonNegInt(reclaim.skippedUnderTtl);
   const skippedNoLiveness = nonNegInt(reclaim.skippedNoLiveness);
   const skippedProviderPaused = nonNegInt(reclaim.skippedProviderPaused);
+  const skippedSupervisionWakeScheduled = nonNegInt(reclaim.skippedSupervisionWakeScheduled);
   const lastCandidatesConsidered = nonNegInt(reclaim.lastCandidatesConsidered);
 
   if (
@@ -2401,6 +2405,7 @@ export function parseHungSuspectReclaimHealthBody(
     skippedUnderTtl: skippedUnderTtl ?? 0,
     skippedNoLiveness: skippedNoLiveness ?? 0,
     skippedProviderPaused: skippedProviderPaused ?? 0,
+    skippedSupervisionWakeScheduled: skippedSupervisionWakeScheduled ?? 0,
     lastCandidatesConsidered: lastCandidatesConsidered ?? 0,
     lastOutcomes,
   };

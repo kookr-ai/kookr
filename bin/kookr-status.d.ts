@@ -235,6 +235,7 @@ export interface HealthLike {
     skippedUnderTtl?: number;
     skippedExemptAnomaly?: number;
     skippedProviderPaused?: number;
+    skippedSupervisionWakeScheduled?: number;
     lastCandidatesConsidered?: number;
     lastOutcomes?: ReadonlyArray<{ taskId?: string; outcome?: string }>;
     lastAttemptedTaskIds?: ReadonlyArray<string>;
@@ -470,6 +471,7 @@ export interface HungSuspectTtlReclaimSummary {
   skippedUnderTtl: number;
   skippedExemptAnomaly: number;
   skippedProviderPaused: number;
+  skippedSupervisionWakeScheduled: number;
   lastCandidatesConsidered: number;
   /** capacity.byClass.hungSuspect when present on the same health payload. */
   hungSuspect?: number;

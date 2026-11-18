@@ -142,6 +142,7 @@ print("inProgress", sum(1 for t in tasks if t.get("status")=="inProgress"))
 | `skippedNoLiveness` | No watchdog liveness timestamps (never invent silence-since-epoch) |
 | `skippedExemptAnomaly` | Legacy (#2045). After #2072 always 0 on new processes — past-TTL silence reclaims long-silent `needs_input` / `permission_blocked` (stuckReason already labels them `hung_suspect`) |
 | `skippedProviderPaused` | Billing/quota pause (#1667) hold-for-resume |
+| `skippedSupervisionWakeScheduled` | Supervisor whose next supervision wake is scheduled (#4162) — idle by design, not hung |
 | `lastCandidatesConsidered` | HungSuspect candidates on the most recent sweep pass |
 | `lastOutcomes` | Last pass: `{ taskId, outcome, silentForMs? }[]` (#2072 task-id audit) |
 | `lastAttemptedTaskIds` | Last pass: task ids selected for terminate |

@@ -4104,6 +4104,7 @@ describe('diagnostics routes', () => {
         skippedUnderTtl: 0,
         skippedExemptAnomaly: 0,
         skippedProviderPaused: 0,
+        skippedSupervisionWakeScheduled: 0,
         lastCandidatesConsidered: 0,
         lastOutcomes: [],
         lastAttemptedTaskIds: [],
@@ -4120,6 +4121,7 @@ describe('diagnostics routes', () => {
           skipped_under_ttl: 1,
           skipped_exempt_anomaly: 0,
           skipped_provider_paused: 0,
+          skipped_supervision_wake_scheduled: 2,
         },
         outcomes: [
           { taskId: 't-selected', outcome: 'selected', silentForMs: 1_600_000 },
@@ -4141,6 +4143,7 @@ describe('diagnostics routes', () => {
         skippedOpenPrConfirmed: 1,
         skippedOpenPrUnknown: 0,
         skippedUnderTtl: 1,
+        skippedSupervisionWakeScheduled: 2,
         lastCandidatesConsidered: 5,
         lastAttemptedTaskIds: ['t-selected'],
         lastOutcomes: [

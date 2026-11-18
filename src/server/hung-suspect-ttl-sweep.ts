@@ -55,8 +55,9 @@ export interface HungSuspectTtlReclaimMetricsSnapshot {
   skippedProviderPaused: number;
   /**
    * Supervisors left alone because their next supervision wake is scheduled
-   * (issue #4162). Not yet exported to `/metrics` or doctor; the per-task
-   * outcome also appears in {@link lastOutcomes}.
+   * (issue #4162). Exported on `/api/health`, `/metrics`, doctor and
+   * `kookr status` (issue #4171); the per-task outcome also appears in
+   * {@link lastOutcomes}.
    */
   skippedSupervisionWakeScheduled: number;
   /** Last selection pass: how many hungSuspect candidates were considered. */

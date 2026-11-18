@@ -1340,6 +1340,7 @@ describe('kookr-status renderReport', () => {
         skippedUnderTtl: 3,
         skippedExemptAnomaly: 0,
         skippedProviderPaused: 5,
+        skippedSupervisionWakeScheduled: 2,
         lastCandidatesConsidered: 4,
         lastOutcomes: [
           { taskId: 'a', outcome: 'skipped_open_pr_failsafe' },
@@ -1353,7 +1354,7 @@ describe('kookr-status renderReport', () => {
     expect(out).toContain(
       'Hung-suspect reclaim: reclaimedTotal=0 hungSuspect=4  reclaimAttempted=0  candidates=4'
         + '  skips openPr=12 openPrConfirmed=8 openPrUnknown=4 underTtl=3 providerPaused=5'
-        + ' noLiveness=0 exemptAnomaly=0'
+        + ' supervisionWake=2 noLiveness=0 exemptAnomaly=0'
         + '  residual=skipped_open_pr_failsafe=2,skipped_under_ttl=1',
     );
   });
@@ -2609,6 +2610,7 @@ describe('kookr-status summarizeHungSuspectTtlReclaim (issue #2229)', () => {
           skippedUnderTtl: 3.2,
           skippedExemptAnomaly: 0,
           skippedProviderPaused: 5.9,
+          skippedSupervisionWakeScheduled: 2.6,
           lastCandidatesConsidered: 4.1,
           lastOutcomes: [
             { taskId: 'a', outcome: 'skipped_open_pr_failsafe' },
@@ -2629,6 +2631,7 @@ describe('kookr-status summarizeHungSuspectTtlReclaim (issue #2229)', () => {
       skippedUnderTtl: 3,
       skippedExemptAnomaly: 0,
       skippedProviderPaused: 5,
+      skippedSupervisionWakeScheduled: 2,
       lastCandidatesConsidered: 4,
       hungSuspect: 4,
       residualClasses: {
@@ -2657,8 +2660,22 @@ describe('kookr-status summarizeHungSuspectTtlReclaim (issue #2229)', () => {
       skippedUnderTtl: 0,
       skippedExemptAnomaly: 0,
       skippedProviderPaused: 0,
+      skippedSupervisionWakeScheduled: 0,
       lastCandidatesConsidered: 3,
     });
+  });
+
+  it('elevates on a supervision-wake skip alone (issue #4171)', () => {
+    expect(
+      summarizeHungSuspectTtlReclaim({
+        hungSuspectTtlReclaim: {
+          reclaimedTotal: 0,
+          reclaimAttempted: 0,
+          skippedSupervisionWakeScheduled: 3,
+          lastCandidatesConsidered: 0,
+        },
+      }),
+    ).toMatchObject({ reclaimedTotal: 0, skippedSupervisionWakeScheduled: 3 });
   });
 });
 
@@ -4039,6 +4056,7 @@ describe('kookr-status main (integration-style)', () => {
         skippedUnderTtl: 3,
         skippedExemptAnomaly: 0,
         skippedProviderPaused: 5,
+        skippedSupervisionWakeScheduled: 2,
         lastCandidatesConsidered: 4,
         lastOutcomes: [
           { taskId: 'a', outcome: 'skipped_open_pr_failsafe' },
@@ -4062,6 +4080,7 @@ describe('kookr-status main (integration-style)', () => {
       skippedUnderTtl: 3,
       skippedExemptAnomaly: 0,
       skippedProviderPaused: 5,
+      skippedSupervisionWakeScheduled: 2,
       lastCandidatesConsidered: 4,
       hungSuspect: 4,
       residualClasses: { skipped_open_pr_failsafe: 2 },

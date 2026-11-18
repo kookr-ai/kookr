@@ -67,6 +67,28 @@ describe('metrics routes', () => {
     expect(lines).toContain(`${metric}{reason="awaiting_provider_reset"} 1`);
   });
 
+  test('scrapes the hungSuspect supervision-wake skip under its own reason label (issue #4171)', async () => {
+    const hungSuspectTtlReclaimMetrics = new HungSuspectTtlReclaimMetrics();
+    hungSuspectTtlReclaimMetrics.recordSelection({
+      candidatesConsidered: 4,
+      skips: {
+        skipped_no_liveness: 0,
+        skipped_open_pr_confirmed: 0,
+        skipped_open_pr_unknown: 0,
+        skipped_under_ttl: 0,
+        skipped_exempt_anomaly: 0,
+        skipped_provider_paused: 1,
+        skipped_supervision_wake_scheduled: 3,
+      },
+    });
+    const res = await mkApp({ hungSuspectTtlReclaimMetrics }).request('/metrics');
+    expect(res.status).toBe(200);
+    const lines = (await res.text()).split('\n');
+    const metric = 'kookr_hung_suspect_ttl_reclaim_skipped_total';
+    expect(lines).toContain(`${metric}{reason="supervision_wake_scheduled"} 3`);
+    expect(lines).toContain(`${metric}{reason="provider_paused"} 1`);
+  });
+
   test('scrapes the boot-deprioritized launch counter without recording attempts', async () => {
     const { AgentBootLatencyMonitor } = await import('../../core/agent-boot-latency.js');
     const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 1 });
