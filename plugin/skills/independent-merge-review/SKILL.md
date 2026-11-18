@@ -672,7 +672,18 @@ pattern, so it matches itself and never exits. Wait on a PID or an exit-marker
 file with the toolkit helper
 (`${CLAUDE_PLUGIN_ROOT}/hooks/kookr-wait.sh --pid <PID>` or
 `--file "$LOG.exit"`, both with an explicit `--timeout`), or on the background
-task's completion notification. When capturing test output, keep the full log:
+task's completion notification.
+
+Keep each wait under about ten minutes (`--timeout 540` or less), and wait
+again if the reviewer has not finished. Kookr terminates a task that is in
+progress and has shown no activity on any channel for longer than the operator
+setting `hungSuspectTtlMinutes`: 25 minutes by default, 60 at most. A task that
+holds an open, unmerged pull request is exempt, but with a fast pre-push gate the
+reviewer starts before the pull request exists, so that wait is not covered.
+Have the reviewer write its verdict to a file and poll that file: each wait
+that returns counts as activity.
+
+When capturing test output, keep the full log:
 `cmd 2>&1 | tee "$LOG" | tail -40; echo "exit=${PIPESTATUS[0]}"`.
 
 ### 6. Correction budget and periodic reflection
