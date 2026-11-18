@@ -12,7 +12,6 @@ import {
   isExecutionReceiptNotFoundError,
   isGenuineExecutionFailure,
   nextConsecutiveFailures,
-  shouldAutoPauseForConsecutiveFailures,
   ScheduleService,
   type ScheduleLedgerEnrichment,
 } from './schedule-service.js';
@@ -866,15 +865,29 @@ describe('nextConsecutiveFailures', () => {
   });
 });
 
-describe('shouldAutoPauseForConsecutiveFailures (issue #2353)', () => {
-  it('pauses only when enabled and streak is at/over a positive threshold', () => {
-    expect(shouldAutoPauseForConsecutiveFailures(3, 3, true)).toBe(true);
-    expect(shouldAutoPauseForConsecutiveFailures(2, 3, true)).toBe(false);
-    expect(shouldAutoPauseForConsecutiveFailures(5, 3, false)).toBe(false);
-    expect(shouldAutoPauseForConsecutiveFailures(5, 0, true)).toBe(false);
-    expect(shouldAutoPauseForConsecutiveFailures(5, -1, true)).toBe(false);
+/**
+ * Park a schedule in the LEGACY fail-closed `consecutive_failures` hold of
+ * issue #2353. Since issue #4186 the daemon never writes this state itself (a
+ * failing schedule is slowed down, not paused), but holds persisted before
+ * #4186 still exist, so re-arm / bulk recovery / re-enable must keep handling
+ * them. Applied on top of whatever state the test's real failures produced.
+ */
+function seedLegacyFailureHold(
+  store: ScheduleStore,
+  scheduleId: string,
+  heldAt = new Date().toISOString(),
+): void {
+  // A pre-#4186 hold never carried cadence decay.
+  const { failureBackoff: _legacyHasNoBackoff, ...current } = store.get(scheduleId)!;
+  store.replace({
+    ...current,
+    enabled: false,
+    stopReason: 'consecutive_failures',
+    operatorHold: true,
+    holdSource: 'daemon',
+    heldAt,
   });
-});
+}
 
 describe('describeScheduleTerminalReason (issue #3157)', () => {
   it('renders the reason code, adding the provider only for provider_failure', () => {
@@ -899,29 +912,17 @@ describe('describeScheduleTerminalReason (issue #3157)', () => {
       3,
       3,
       undefined,
-      true,
-      { reasonCode: 'timeout' },
-    );
-    expect(alert.summary).toContain('auto-paused');
-    expect(alert.summary).toContain('(last failure: timeout)');
-    expect(alert.details).toContain('classified as timeout');
-    // No terminalReason → no reason clause (back-compat with legacy fires).
-    const bare = buildScheduleFailureAlert({ id: 's1', name: 'Belt' }, 3, 3, undefined, true);
-    expect(bare.summary).not.toContain('last failure:');
-    expect(bare.details).not.toContain('classified as');
-    // The reason suffix is folded into the non-auto-paused warning branch too,
-    // not just the auto-paused one.
-    const warning = buildScheduleFailureAlert(
-      { id: 's1', name: 'Belt' },
-      3,
-      3,
-      undefined,
-      false,
       { reasonCode: 'provider_failure', provider: 'grok-build' },
     );
-    expect(warning.summary).toContain('has failed 3 consecutive runs (last failure: provider_failure (grok-build))');
-    expect(warning.summary).not.toContain('auto-paused');
-    expect(warning.details).toContain('classified as provider_failure (grok-build)');
+    expect(alert.summary).toBe('Schedule "Belt" has failed 3 consecutive runs (last failure: provider_failure (grok-build))');
+    expect(alert.details).toContain('classified as provider_failure (grok-build)');
+    // Issue #4186: the alert says the schedule is slowed, never paused.
+    expect(alert.details).toContain('stays enabled');
+    expect(alert.summary).not.toContain('auto-paused');
+    // No terminalReason → no reason clause (back-compat with legacy fires).
+    const bare = buildScheduleFailureAlert({ id: 's1', name: 'Belt' }, 3, 3);
+    expect(bare.summary).not.toContain('last failure:');
+    expect(bare.details).not.toContain('classified as');
   });
 });
 
@@ -1075,9 +1076,9 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
     }
   });
 
-  // ---- issue #3157: classified auto-pause page + recovery on every re-enable ----
+  // ---- issue #3157: classified failure page + recovery on every re-enable ----
 
-  it('the terminal-path auto-pause alert names the classified failure reason (issue #3157)', async () => {
+  it('the terminal-path failure alert names the classified failure reason, without claiming a pause (issues #3157, #4186)', async () => {
     const { service, store, alerts, cleanup } = alertServiceHarness(2, (taskId) =>
       taskId === 'task-timeout'
         ? { reasonCode: 'timeout', source: 'watchdog', at: '2026-01-01T09:06:00.000Z' }
@@ -1092,13 +1093,18 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       });
 
       // One dispatch failure, then a genuine timeout crash crosses the threshold
-      // of 2 and fail-closed pauses on the terminal path.
-      await pauseByFailures(service, store, schedule.id, 'task-timeout');
+      // of 2 on the terminal path. Since #4186 that slows the schedule down
+      // instead of pausing it.
+      await failToThreshold(service, store, schedule.id, 'task-timeout');
 
-      expect(store.get(schedule.id)!.enabled).toBe(false);
+      const after = store.get(schedule.id)!;
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
+      expect(after.failureBackoff?.level).toBe(2);
       const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
       expect(fired).toHaveLength(1);
-      expect(fired[0].summary).toContain('auto-paused');
+      expect(fired[0].summary).toContain('has failed 2 consecutive runs');
+      expect(fired[0].summary).not.toContain('auto-paused');
       // The offline operator now learns WHY the belt died, not just the count.
       expect(fired[0].summary).toContain('(last failure: timeout)');
       expect(fired[0].details).toContain('classified as timeout');
@@ -1167,10 +1173,11 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
   });
 
   /**
-   * Drive a schedule to a fail-closed `consecutive_failures` pause via the
-   * terminal path (threshold 2: one dispatch failure + one genuine timeout).
+   * Drive a schedule's failure streak to 2 (the threshold these tests use) via
+   * the terminal path: one dispatch failure + one genuine timeout. Fires the
+   * `schedule:failures` alert; since #4186 it no longer pauses the schedule.
    */
-  async function pauseByFailures(service: ScheduleService, store: ScheduleStore, scheduleId: string, taskId: string): Promise<void> {
+  async function failToThreshold(service: ScheduleService, store: ScheduleStore, scheduleId: string, taskId: string): Promise<void> {
     await failOnce(service, store, scheduleId, '2026-01-01T09:00:00.000Z');
     const receipt = await service.reserveExecution(store.get(scheduleId)!, 'cron', '2026-01-01T09:05:00.000Z');
     await service.markExecutionAccepted(scheduleId, receipt.id, taskId, false);
@@ -1186,9 +1193,10 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
         playbook: { path: 'daily.md', parameters: {} },
         cwd: '/tmp',
       });
-      await pauseByFailures(service, store, schedule.id, 'task-a');
-      expect(store.get(schedule.id)!.enabled).toBe(false);
+      await failToThreshold(service, store, schedule.id, 'task-a');
       expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
+      // A hold left over from before #4186 (the daemon no longer writes one).
+      seedLegacyFailureHold(store, schedule.id);
 
       await service.setEnabled(schedule.id, true);
 
@@ -1218,12 +1226,13 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
         playbook: { path: 'daily.md', parameters: {} },
         cwd: '/tmp',
       });
-      // Three launch_error failures cross threshold 3 and fail-closed pause.
+      // Three launch_error failures cross threshold 3 and fire the alert; the
+      // pause itself is a legacy hold seeded below (#4186: no daemon pause).
       await failOnce(service, store, schedule.id, '2026-08-12T12:30:00.000Z');
       await failOnce(service, store, schedule.id, '2026-08-12T12:45:00.000Z');
       await failOnce(service, store, schedule.id, '2026-08-12T13:00:00.000Z');
-      expect(store.get(schedule.id)!.enabled).toBe(false);
       expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
+      seedLegacyFailureHold(store, schedule.id);
       stampLastEvaluatedAt(store, schedule.id, '2026-08-12T13:00:00.000Z');
 
       const result = await service.rearmTransientFailureHolds(true, '2026-08-13T08:34:00.000Z');
@@ -1247,8 +1256,9 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
         playbook: { path: 'daily.md', parameters: {} },
         cwd: '/tmp',
       });
-      await pauseByFailures(service, store, schedule.id, 'task-b');
-      expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
+      await failToThreshold(service, store, schedule.id, 'task-b');
+      expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
+      seedLegacyFailureHold(store, schedule.id);
 
       const result = await service.recoverConsecutiveFailureHolds();
       expect(result.recovered.map((r) => r.id)).toEqual([schedule.id]);
@@ -1462,55 +1472,68 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       }
       // Counter still maintained even without an alert sink.
       expect(store.get(schedule.id)!.consecutiveFailures).toBe(5);
-      // Auto-pause (issue #2353) still applies with the default threshold of 3.
-      expect(store.get(schedule.id)!.enabled).toBe(false);
-      expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
+      // Cadence decay (issue #4186) applies without a sink, and past the default
+      // threshold of 3 it never turns into the old #2353 pause.
+      const after = store.get(schedule.id)!;
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
+      expect(after.failureBackoff?.level).toBe(5);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('auto-pauses the schedule when consecutiveFailures reaches the threshold (issue #2353)', async () => {
+  it('slows the schedule down instead of pausing it when consecutiveFailures reaches the threshold (issue #4186, was #2353)', async () => {
     const { service, store, alerts, cleanup } = alertServiceHarness(3);
     try {
       const schedule = store.create({
-        name: 'AutoPauseSchedule',
+        name: 'BackoffSchedule',
         cron: '* * * * *',
         playbook: { path: 'daily.md', parameters: {} },
         cwd: '/tmp',
       });
 
       await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      expect(store.get(schedule.id)!.failureBackoff?.level).toBe(1);
       await failOnce(service, store, schedule.id, '2026-01-01T09:05:00.000Z');
       expect(store.get(schedule.id)!.enabled).toBe(true);
-      expect(store.get(schedule.id)!.stopReason).toBeUndefined();
+      expect(store.get(schedule.id)!.failureBackoff?.level).toBe(2);
 
       await failOnce(service, store, schedule.id, '2026-01-01T09:10:00.000Z');
-      const paused = store.get(schedule.id)!;
-      expect(paused.enabled).toBe(false);
-      expect(paused.stopReason).toBe('consecutive_failures');
-      expect(paused.operatorHold).toBe(true);
-      expect(paused.consecutiveFailures).toBe(3);
+      const slowed = store.get(schedule.id)!;
+      // Crossing the threshold no longer parks the schedule (#2353 removed)…
+      expect(slowed.enabled).toBe(true);
+      expect(slowed.stopReason).toBeUndefined();
+      expect(slowed.operatorHold).toBeUndefined();
+      expect(slowed.holdSource).toBeUndefined();
+      expect(slowed.heldAt).toBeUndefined();
+      expect(slowed.consecutiveFailures).toBe(3);
+      // …it doubles the gap per failure instead: 1-minute cron × 2^3, anchored
+      // at the failed fire's own slot.
+      expect(slowed.failureBackoff).toEqual({ level: 3, notBefore: '2026-01-01T09:18:00.000Z' });
 
-      const status = service.getStatusSnapshot();
-      expect(status.schedulesPausedByFailure).toEqual([
-        {
-          id: schedule.id,
-          name: 'AutoPauseSchedule',
-          consecutiveFailures: 3,
-        },
-      ]);
+      expect(service.getStatusSnapshot().schedulesPausedByFailure).toBeUndefined();
 
       const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
       expect(fired).toHaveLength(1);
-      expect(fired[0].summary).toContain('auto-paused');
-      expect(fired[0].details).toContain('stopReason=consecutive_failures');
+      expect(fired[0].summary).toContain('has failed 3 consecutive runs');
+      expect(fired[0].summary).not.toContain('auto-paused');
+      expect(fired[0].details).not.toContain('stopReason=consecutive_failures');
 
-      // Further failures while paused do not re-alert and do not re-enable.
+      // Further failures do not re-alert; they keep the schedule armed and
+      // raise the backoff level with the streak.
       await failOnce(service, store, schedule.id, '2026-01-01T09:15:00.000Z');
       expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
-      expect(store.get(schedule.id)!.enabled).toBe(false);
+      expect(store.get(schedule.id)!.enabled).toBe(true);
       expect(store.get(schedule.id)!.consecutiveFailures).toBe(4);
+      expect(store.get(schedule.id)!.failureBackoff?.level).toBe(4);
+
+      // The first successful run ends the streak and its cadence decay.
+      const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:30:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-ok', false);
+      await service.recordTaskTerminalOutcome('task-ok', 'completed');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(0);
+      expect(store.get(schedule.id)!.failureBackoff).toBeUndefined();
     } finally {
       cleanup();
     }
@@ -1526,8 +1549,8 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
         cwd: '/tmp',
       });
 
-      // Three consecutive failures — the exact streak that fail-closes an
-      // ordinary schedule (#2353).
+      // Three consecutive failures — the exact streak that slows an ordinary
+      // schedule down (#4186; it fail-closed it under #2353).
       await failOnce(service, store, watchdog.id, '2026-01-01T09:00:00.000Z');
       await failOnce(service, store, watchdog.id, '2026-01-01T09:05:00.000Z');
       await failOnce(service, store, watchdog.id, '2026-01-01T09:10:00.000Z');
@@ -1541,6 +1564,8 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       // Counter is still maintained and it still alerts out-of-fleet (#1665) —
       // the alert just does not claim it was paused.
       expect(after.consecutiveFailures).toBe(3);
+      // Nor is it slowed down (#4186): it keeps its configured cadence.
+      expect(after.failureBackoff).toBeUndefined();
       const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
       expect(fired).toHaveLength(1);
       expect(fired[0].summary).not.toContain('auto-paused');
@@ -1550,7 +1575,7 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
     }
   });
 
-  it('regression: a fleet cascade parks the general fleet but never the merge watchdog (issue #2530)', async () => {
+  it('regression: a fleet cascade slows the general fleet but never the merge watchdog (issues #2530, #4186)', async () => {
     const { service, store, cleanup } = alertServiceHarness(3);
     try {
       const general = ['Cross-Repo Orchestrator', 'Queue Feeder', 'Incident Sentinel'].map((name, i) =>
@@ -1577,18 +1602,23 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
         }
       }
 
-      // Fail-closed for the general fleet is unchanged.
+      // The general fleet stays armed but backs off (#4186 replaced the #2353
+      // fail-closed pause with cadence decay).
       for (const s of general) {
-        const parked = store.get(s.id)!;
-        expect(parked.enabled).toBe(false);
-        expect(parked.stopReason).toBe('consecutive_failures');
-        expect(parked.operatorHold).toBe(true);
+        const slowed = store.get(s.id)!;
+        expect(slowed.enabled).toBe(true);
+        expect(slowed.stopReason).toBeUndefined();
+        expect(slowed.operatorHold).toBeUndefined();
+        expect(slowed.failureBackoff?.level).toBe(3);
       }
 
-      // The recovery floor holds: the merge watchdog is still enabled…
+      // The recovery floor holds: the merge watchdog is still enabled and keeps
+      // its configured cadence…
       const wd = store.get(watchdog.id)!;
       expect(wd.enabled).toBe(true);
       expect(wd.operatorHold).toBeUndefined();
+      expect(wd.consecutiveFailures).toBe(3);
+      expect(wd.failureBackoff).toBeUndefined();
 
       // …and can still land a PR: a subsequent fire reserves, accepts, and
       // completes, clearing its own streak.
@@ -1603,37 +1633,7 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
     }
   });
 
-  it('enforceFailureAutoPauses skips the bootstrap-critical merge watchdog (issue #2530)', async () => {
-    const { service, store, cleanup } = alertServiceHarness(3);
-    try {
-      // Pre-existing high counters (e.g. persisted from before the fix), both
-      // still enabled — exactly what enforceFailureAutoPauses sweeps.
-      const general = store.create({
-        name: 'General',
-        cron: '* * * * *',
-        playbook: { path: 'general.md', parameters: {} },
-        cwd: '/tmp',
-      });
-      const watchdog = store.create({
-        name: 'PR Merge/Rebase Watchdog',
-        cron: '* * * * *',
-        playbook: { path: 'pr-merge-rebase-watchdog.md', parameters: {} },
-        cwd: '/tmp',
-      });
-      store.replace({ ...store.get(general.id)!, consecutiveFailures: 5 });
-      store.replace({ ...store.get(watchdog.id)!, consecutiveFailures: 5 });
-
-      const paused = await service.enforceFailureAutoPauses();
-      expect(paused).toBe(1);
-      expect(store.get(general.id)!.enabled).toBe(false);
-      expect(store.get(watchdog.id)!.enabled).toBe(true);
-      expect(store.get(watchdog.id)!.operatorHold).toBeUndefined();
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('re-enable clears the consecutive-failure counter and stopReason (issue #2353)', async () => {
+  it('re-enable of a legacy hold clears the consecutive-failure counter and stopReason (issues #2353, #4186)', async () => {
     const { service, store, cleanup } = alertServiceHarness(2);
     try {
       const schedule = store.create({
@@ -1645,9 +1645,10 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
 
       await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
       await failOnce(service, store, schedule.id, '2026-01-01T09:05:00.000Z');
-      expect(store.get(schedule.id)!.enabled).toBe(false);
-      expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
       expect(store.get(schedule.id)!.consecutiveFailures).toBe(2);
+      // A hold persisted before #4186 (the daemon no longer writes one).
+      seedLegacyFailureHold(store, schedule.id);
+      expect(service.getStatusSnapshot().schedulesPausedByFailure?.map((s) => s.id)).toEqual([schedule.id]);
 
       const resumed = await service.setEnabled(schedule.id, true);
       expect(resumed.enabled).toBe(true);
@@ -1656,67 +1657,46 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       expect(resumed.operatorHold).toBeUndefined();
       expect(service.getStatusSnapshot().schedulesPausedByFailure).toBeUndefined();
 
-      // A single new failure after re-enable starts the streak over (does not
-      // immediately re-pause at the old counter).
+      // A single new failure after re-enable starts the streak over (backoff
+      // level 1, not the old counter).
       await failOnce(service, store, schedule.id, '2026-01-01T09:10:00.000Z');
       expect(store.get(schedule.id)!.enabled).toBe(true);
       expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+      expect(store.get(schedule.id)!.failureBackoff?.level).toBe(1);
+
+      // An operator re-enable also drops the cadence decay (#4186).
+      await service.setEnabled(schedule.id, true);
+      expect(store.get(schedule.id)!.failureBackoff).toBeUndefined();
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(0);
     } finally {
       cleanup();
     }
   });
 
-  it('persists consecutive_failures stopReason across store reload (issue #2353)', async () => {
+  it('persists the failure backoff, not a pause, across store reload (issue #4186, was #2353)', async () => {
     const { service, store, dir, cleanup } = alertServiceHarness(2);
     try {
       const schedule = store.create({
-        name: 'PersistPause',
+        name: 'PersistBackoff',
         cron: '* * * * *',
         playbook: { path: 'daily.md', parameters: {} },
         cwd: '/tmp',
       });
       await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
       await failOnce(service, store, schedule.id, '2026-01-01T09:05:00.000Z');
+      const backoff = store.get(schedule.id)!.failureBackoff;
+      expect(backoff?.level).toBe(2);
       await store.persist();
 
       const reloaded = new ScheduleStore(dir);
       await reloaded.load();
       const row = reloaded.get(schedule.id)!;
-      expect(row.enabled).toBe(false);
-      expect(row.stopReason).toBe('consecutive_failures');
+      expect(row.enabled).toBe(true);
+      expect(row.stopReason).toBeUndefined();
+      expect(row.operatorHold).toBeUndefined();
       expect(row.consecutiveFailures).toBe(2);
-      expect(row.operatorHold).toBe(true);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('enforceFailureAutoPauses parks schedules already over the threshold (issue #2353)', async () => {
-    const { service, store, alerts, cleanup } = alertServiceHarness(3);
-    try {
-      const schedule = store.create({
-        name: 'PreExistingThrash',
-        cron: '* * * * *',
-        playbook: { path: 'daily.md', parameters: {} },
-        cwd: '/tmp',
-      });
-      // Simulate a pre-#2353 persisted streak that never auto-paused.
-      store.replace({
-        ...store.get(schedule.id)!,
-        consecutiveFailures: 7,
-        lastRunStatus: 'failed',
-      });
-      expect(store.get(schedule.id)!.enabled).toBe(true);
-
-      const paused = await service.enforceFailureAutoPauses();
-      expect(paused).toBe(1);
-      expect(store.get(schedule.id)!.enabled).toBe(false);
-      expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
-      expect(store.get(schedule.id)!.operatorHold).toBe(true);
-      expect(alerts.some((a) => a.summary.includes('auto-paused'))).toBe(true);
-
-      // Idempotent: second enforce does nothing.
-      expect(await service.enforceFailureAutoPauses()).toBe(0);
+      // A restart keeps the slowed cadence.
+      expect(row.failureBackoff).toEqual(backoff);
     } finally {
       cleanup();
     }
@@ -1755,7 +1735,7 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       });
 
       // Three consecutive provider/boot failures on claude-code — the exact
-      // streak that fail-closes an ordinary schedule.
+      // streak that backs an ordinary schedule off (#4186).
       await failOnProvider(service, store, sentinel.id, '2026-09-09T11:11:00.000Z', 'claude-code');
       await failOnProvider(service, store, sentinel.id, '2026-09-09T11:41:00.000Z', 'claude-code');
       await failOnProvider(service, store, sentinel.id, '2026-09-09T12:11:00.000Z', 'claude-code');
@@ -1766,6 +1746,8 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       expect(after.operatorHold).toBeUndefined();
       expect(after.stopReason).toBeUndefined();
       expect(after.consecutiveFailures).toBe(3);
+      // Recovery-critical: no cadence decay either (#4186) — its liveness gates recovery.
+      expect(after.failureBackoff).toBeUndefined();
       // The backoff: the boot-broken provider is remembered for the next fire.
       expect(after.recentProviderFailures?.map((f) => f.provider)).toEqual(['claude-code']);
       // An operational alert is recorded (out-of-fleet visibility): the
@@ -1783,7 +1765,7 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
     }
   });
 
-  it('a general (default-policy) schedule still fail-closes on the same streak (issue #3085 AC4)', async () => {
+  it('a general (default-policy) schedule gets cadence decay, not a pause, on the same streak (issues #3085 AC4, #4186)', async () => {
     const { service, store, cleanup } = alertServiceHarness(3);
     try {
       const general = store.create({
@@ -1797,9 +1779,13 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       await failOnProvider(service, store, general.id, '2026-09-09T11:41:00.000Z', 'claude-code');
       await failOnProvider(service, store, general.id, '2026-09-09T12:11:00.000Z', 'claude-code');
       const after = store.get(general.id)!;
-      expect(after.enabled).toBe(false);
-      expect(after.stopReason).toBe('consecutive_failures');
-      expect(after.operatorHold).toBe(true);
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
+      expect(after.operatorHold).toBeUndefined();
+      expect(after.consecutiveFailures).toBe(3);
+      // Unlike the recovery-critical sentinel above, it is slowed: 30-minute
+      // gap × 2^3 = 4 h from the 12:11 slot.
+      expect(after.failureBackoff).toEqual({ level: 3, notBefore: '2026-09-09T16:11:00.000Z' });
       // General schedules do not maintain provider-failure memory.
       expect(after.recentProviderFailures).toBeUndefined();
     } finally {
@@ -2117,7 +2103,7 @@ describe('ScheduleService overlap-skip vs consecutiveFailures (issue #2458)', ()
     }
   });
 
-  it('real consecutive dispatch_failed / launch_error still trip the #2353 pause', async () => {
+  it('real consecutive dispatch_failed / launch_error still count and back the schedule off (issue #4186, was the #2353 pause)', async () => {
     const { service, store, cleanup } = overlapHarness();
     try {
       const schedule = store.create({
@@ -2132,11 +2118,12 @@ describe('ScheduleService overlap-skip vs consecutiveFailures (issue #2458)', ()
         await service.markExecutionOutcome(schedule.id, receipt.id, 'dispatch_failed', 'launch_error', 'boom');
       }
 
-      const paused = store.get(schedule.id)!;
-      expect(paused.enabled).toBe(false);
-      expect(paused.stopReason).toBe('consecutive_failures');
-      expect(paused.operatorHold).toBe(true);
-      expect(paused.consecutiveFailures).toBe(3);
+      const slowed = store.get(schedule.id)!;
+      expect(slowed.consecutiveFailures).toBe(3);
+      expect(slowed.failureBackoff?.level).toBe(3);
+      expect(slowed.enabled).toBe(true);
+      expect(slowed.stopReason).toBeUndefined();
+      expect(slowed.operatorHold).toBeUndefined();
     } finally {
       cleanup();
     }
@@ -2371,7 +2358,7 @@ describe('ScheduleService restart reconciliation vs consecutiveFailures (issue #
     }
   });
 
-  it('a genuine reaped hang (timeout) reconciled after restart STILL counts and fail-closes at 3 (breaker preserved)', async () => {
+  it('a genuine reaped hang (timeout) reconciled after restart STILL counts and backs off at 3 (issue #4186, breaker preserved)', async () => {
     // The excuse is scoped to `unknown` (ambiguous, host-freeze-shaped). A
     // `timeout` means the hung-task reaper actively caught a run past the silence
     // threshold — real hang-thrash (#2353) that must still trip even across
@@ -2391,9 +2378,10 @@ describe('ScheduleService restart reconciliation vs consecutiveFailures (issue #
       }
       const after = store.get(schedule.id)!;
       expect(after.consecutiveFailures).toBe(3);
-      expect(after.enabled).toBe(false);
-      expect(after.stopReason).toBe('consecutive_failures');
-      expect(after.operatorHold).toBe(true);
+      expect(after.failureBackoff?.level).toBe(3);
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
+      expect(after.operatorHold).toBeUndefined();
     } finally {
       cleanup();
     }
@@ -2453,8 +2441,8 @@ describe('ScheduleService restart reconciliation vs consecutiveFailures (issue #
       expect(after.enabled).toBe(true);
       expect(after.stopReason).toBeUndefined();
       expect(after.operatorHold).toBeUndefined();
-      // No fail-closed auto-pause alert fired for the outage.
-      expect(alerts.some((a) => a.summary.includes('auto-paused'))).toBe(false);
+      // No failure alert fired for the outage (the streak never crossed it).
+      expect(alerts.filter((a) => a.operationalAlert?.key?.startsWith('schedule:failures:'))).toEqual([]);
     } finally {
       cleanup();
     }
@@ -2515,7 +2503,7 @@ describe('ScheduleService restart reconciliation vs consecutiveFailures (issue #
     }
   });
 
-  it('a LIVE cancel carrying a genuine failure reason (timeout) still counts and fail-closes at 3', async () => {
+  it('a LIVE cancel carrying a genuine failure reason (timeout) still counts and backs off at 3 (issue #4186)', async () => {
     // The live path sees a task that died during normal operation. Post-#2521 it
     // counts only when the terminationReason marks a genuine execution fault (here
     // `timeout` hang-thrash) — a bare cancel with no reason is a lifecycle stop and
@@ -2539,8 +2527,9 @@ describe('ScheduleService restart reconciliation vs consecutiveFailures (issue #
 
       const after = store.get(schedule.id)!;
       expect(after.consecutiveFailures).toBe(3);
-      expect(after.enabled).toBe(false);
-      expect(after.stopReason).toBe('consecutive_failures');
+      expect(after.failureBackoff?.level).toBe(3);
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
       expect(after.latestExecution?.reasonCode).toBe('none');
       expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
     } finally {
@@ -2604,8 +2593,8 @@ describe('ScheduleService transient-failure re-arm (issue #2459)', () => {
       await failLaunch(service, store, schedule.id, '2026-08-12T12:30:00.000Z');
       await failLaunch(service, store, schedule.id, '2026-08-12T12:45:00.000Z');
       await failLaunch(service, store, schedule.id, '2026-08-12T13:00:00.000Z');
-      expect(store.get(schedule.id)!.enabled).toBe(false);
-      expect(store.get(schedule.id)!.operatorHold).toBe(true);
+      // The daemon no longer pauses (#4186); re-arm still lifts a legacy hold.
+      seedLegacyFailureHold(store, schedule.id);
       stampLastEvaluatedAt(store, schedule.id, '2026-08-12T13:00:00.000Z');
 
       const noArg = await service.rearmTransientFailureHolds();
@@ -2655,9 +2644,9 @@ describe('ScheduleService transient-failure re-arm (issue #2459)', () => {
         await service.recordTaskTerminalOutcome(`task-timeout-${i}`, 'cancelled', 'timeout');
       }
 
+      // A legacy hold (#4186: the daemon no longer pauses) over a genuine streak.
+      seedLegacyFailureHold(store, schedule.id);
       const paused = store.get(schedule.id)!;
-      expect(paused.enabled).toBe(false);
-      expect(paused.stopReason).toBe('consecutive_failures');
       expect(paused.consecutiveFailures).toBe(3);
       expect(paused.latestExecution?.outcome).toBe('cancelled');
 
@@ -2692,12 +2681,12 @@ describe('ScheduleService transient-failure re-arm (issue #2459)', () => {
           const receipt = await service.reserveExecution(store.get(id)!, 'cron', at);
           await service.markExecutionOutcome(id, receipt.id, 'dispatch_failed', 'launch_error', 'boom');
         }
+        seedLegacyFailureHold(store, id);
         stampLastEvaluatedAt(store, id, '2026-08-12T13:00:00.000Z');
       }
       store.replace({
         ...store.get(exhausted.id)!,
         remainingTriggers: 0,
-        stopReason: 'consecutive_failures',
       });
 
       const result = await service.rearmTransientFailureHolds(true, '2026-08-13T08:34:00.000Z');
@@ -2730,6 +2719,7 @@ describe('ScheduleService transient-failure re-arm (issue #2459)', () => {
         const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
         await service.markExecutionOutcome(schedule.id, receipt.id, 'dispatch_failed', 'launch_error', 'boom');
       }
+      seedLegacyFailureHold(store, schedule.id);
       stampLastEvaluatedAt(store, schedule.id, '2026-08-12T13:00:00.000Z');
       const result = await service.rearmTransientFailureHolds();
       expect(result.rearmed).toEqual([]);
@@ -2777,7 +2767,7 @@ describe('ScheduleService hold provenance + bulk recovery (issue #2520)', () => 
     return schedule.id;
   }
 
-  it('tags a live #2353 auto-pause as daemon-sourced with a heldAt (issue #2520)', async () => {
+  it('a live failure cascade no longer sets a daemon hold; the schedule stays armed with backoff (issue #4186, was #2520 tagging)', async () => {
     const { service, store, cleanup } = harness(3);
     try {
       const schedule = store.create({
@@ -2786,20 +2776,24 @@ describe('ScheduleService hold provenance + bulk recovery (issue #2520)', () => 
         playbook: { path: 'daily.md', parameters: {} },
         cwd: '/tmp',
       });
-      // Three genuine live failures (reaped hangs) — a real #2353 cascade. Post
-      // #2521 a reason-less cancel no longer counts, so the terminals must carry a
-      // genuine terminationReason to build the auto-pause this test asserts.
+      // Three genuine live failures (reaped hangs) — the streak that built a
+      // #2353 daemon hold before #4186. Post #2521 a reason-less cancel no
+      // longer counts, so the terminals carry a genuine terminationReason.
       for (const [i, at] of ['2026-08-14T00:00:00.000Z', '2026-08-14T00:05:00.000Z', '2026-08-14T00:10:00.000Z'].entries()) {
         const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
         await service.markExecutionAccepted(schedule.id, receipt.id, `task-${i}`, false);
         await service.recordTaskTerminalOutcome(`task-${i}`, 'cancelled', 'timeout');
       }
-      const paused = store.get(schedule.id)!;
-      expect(paused.enabled).toBe(false);
-      expect(paused.stopReason).toBe('consecutive_failures');
-      expect(paused.operatorHold).toBe(true);
-      expect(paused.holdSource).toBe('daemon');
-      expect(typeof paused.heldAt).toBe('string');
+      const after = store.get(schedule.id)!;
+      expect(after.consecutiveFailures).toBe(3);
+      expect(after.failureBackoff?.level).toBe(3);
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
+      expect(after.operatorHold).toBeUndefined();
+      expect(after.holdSource).toBeUndefined();
+      expect(after.heldAt).toBeUndefined();
+      // Nothing for bulk recovery to find.
+      expect(service.listConsecutiveFailureHoldsBefore()).toEqual([]);
     } finally {
       cleanup();
     }
@@ -2922,6 +2916,8 @@ describe('ScheduleService hold provenance + bulk recovery (issue #2520)', () => 
         await service.markExecutionAccepted(victim.id, receipt.id, `victim-${i}`, false);
         await service.recordTaskTerminalOutcome(`victim-${i}`, 'cancelled', 'timeout');
       }
+      // The hold itself is legacy state (#4186: the daemon no longer pauses).
+      seedLegacyFailureHold(store, victim.id);
       expect(store.get(victim.id)!.holdSource).toBe('daemon');
       expect(store.get(victim.id)!.latestExecution?.reasonCode).toBe('none');
 
@@ -3202,9 +3198,13 @@ describe('ScheduleService archive (issue #2981)', () => {
       expect(restored.enabled).toBe(true);
       expect(restored.stopReason).toBeUndefined();
 
+      // …and it gets no cadence decay (#4186): it cannot fire anyway.
+      expect(closed.failureBackoff).toBeUndefined();
+
       // Positive control: the identical run on a LIVE schedule does page and
-      // does park — so the assertions above pin the archived guard, not a
-      // mis-wired threshold or a classifier that stopped counting `timeout`.
+      // does back off (#4186; it no longer parks) — so the assertions above pin
+      // the archived guard, not a mis-wired threshold or a classifier that
+      // stopped counting `timeout`.
       const live = store.create({
         name: 'Live Failing',
         cron: '* * * * *',
@@ -3216,8 +3216,10 @@ describe('ScheduleService archive (issue #2981)', () => {
       await service.recordTaskTerminalOutcome('task-live', 'cancelled', 'timeout');
 
       expect(alerts).toHaveLength(1);
-      expect(store.get(live.id)!.enabled).toBe(false);
-      expect(store.get(live.id)!.stopReason).toBe('consecutive_failures');
+      expect(alerts[0].summary).toContain('has failed 1 consecutive runs');
+      expect(store.get(live.id)!.failureBackoff?.level).toBe(1);
+      expect(store.get(live.id)!.enabled).toBe(true);
+      expect(store.get(live.id)!.stopReason).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

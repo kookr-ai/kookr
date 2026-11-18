@@ -11,6 +11,7 @@ import {
   isTransientFailureRearmReason,
   listCriticalSchedulesToRearm,
   playbookBasename,
+  resolveExecutionReasonCode,
   type CriticalRearmScheduleView,
   type TransientFailureRearmView,
 } from './critical-schedule-rearm.js';
@@ -492,5 +493,41 @@ describe('listCriticalSchedulesToRearm', () => {
     ];
     const toRearm = listCriticalSchedulesToRearm(fleet);
     expect(toRearm.map((s) => s.id)).toEqual(['m-ok', 'z-product']);
+  });
+});
+
+describe('resolveExecutionReasonCode (issue #4186)', () => {
+  it('falls back to terminalReason.reasonCode when the execution reason is none', () => {
+    expect(resolveExecutionReasonCode({
+      reasonCode: 'none',
+      terminalReason: { reasonCode: 'timeout' },
+    })).toBe('timeout');
+  });
+
+  it('prefers the execution reason when it is set', () => {
+    expect(resolveExecutionReasonCode({
+      reasonCode: 'launch_error',
+      terminalReason: { reasonCode: 'timeout' },
+    })).toBe('launch_error');
+  });
+
+  it('keeps none when there is no terminal reason, and undefined without an execution', () => {
+    expect(resolveExecutionReasonCode({ reasonCode: 'none' })).toBe('none');
+    expect(resolveExecutionReasonCode(undefined)).toBeUndefined();
+  });
+
+  it('feeds a timeout-classified run into the transient re-arm decision as not transient', () => {
+    const latestReasonCode = resolveExecutionReasonCode({
+      reasonCode: 'none',
+      terminalReason: { reasonCode: 'timeout' },
+    });
+    expect(decideTransientFailureRearm(
+      {
+        id: 's', name: 's', enabled: false, stopReason: 'consecutive_failures',
+        latestReasonCode, lastEvaluatedAt: '2026-01-01T00:00:00.000Z',
+      },
+      true,
+      '2026-01-02T00:00:00.000Z',
+    )).toEqual({ rearm: false, reason: 'not_transient_reason' });
   });
 });

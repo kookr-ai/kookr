@@ -9,6 +9,7 @@ import {
   ScheduleValidationError,
   hasScheduleLoopConfig,
   isTriggerLimitExhausted,
+  nextScheduledRunFor,
   scheduleResolutionSignature,
   resolveScheduleAgentSelection,
   providersToAvoid,
@@ -497,15 +498,12 @@ export class ScheduleRunner {
     this.refreshPlaybookResolution();
     this.deps.service.recordRunnerStarted(catchUpMode);
 
-    // Fail-closed auto-pause (issue #2353) MUST complete before catch-up so a
-    // schedule already at consecutiveFailures ≥ N cannot re-dispatch on the
-    // first post-deploy catch-up pass. Enforce is awaited inside the same
-    // background work unit as catch-up (start itself stays sync).
-    // Label stays "Catch-up" (trackBackgroundWork union); enforce runs first
-    // so pre-existing thrash schedules cannot fire on the catch-up pass.
+    // A failing schedule is slowed down rather than paused (issue #4186), so
+    // there is no fail-closed pause to enforce before catch-up any more: its
+    // persisted failure backoff already keeps catch-up from firing it early.
+    // Label stays "Catch-up" (trackBackgroundWork union).
     this.trackBackgroundWork('Catch-up', (async () => {
-      await this.deps.service.enforceFailureAutoPauses();
-      // After enforce, lift leftover transient launch_error / overlap holds
+      // Lift leftover transient launch_error / overlap holds
       // once the daemon is healthy (issue #2459). Must run before catch-up
       // so a recovered residual fuse can fire the missed slot.
       await this.deps.service.rearmTransientFailureHolds();
@@ -2260,11 +2258,13 @@ function nextTickCursorId(deferred: Schedule[]): string | undefined {
   return deferred.length > 0 ? deferred[0]!.id : undefined;
 }
 
+/**
+ * Next cron occurrence this schedule may fire. Honors an active failure
+ * backoff (issue #4186): the occurrences inside the backoff window are skipped,
+ * not left due, so neither the tick nor startup catch-up burst-fires them.
+ */
 function computeNextRunFor(schedule: Schedule): Date | null {
-  const after = schedule.lastScheduledFor
-    ? new Date(schedule.lastScheduledFor)
-    : new Date(schedule.createdAt);
-  return nextRun(schedule.cron, after);
+  return nextScheduledRunFor(schedule);
 }
 
 /** Floor/ceiling/fallback for the per-schedule provider-avoidance window (issue #3085). */

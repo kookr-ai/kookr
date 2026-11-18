@@ -128,6 +128,16 @@ describe('kookr schedule resolveId / formatScheduleLine', () => {
     );
   });
 
+  it('renders the failure backoff of a slowed schedule (issue #4186)', () => {
+    expect(formatScheduleLine({
+      ...SCHEDULE_A,
+      failureBackoff: { level: 3, notBefore: '2026-07-29T07:00:00.000Z' },
+    })).toBe(
+      'sched-a  enabled   Nightly drain  cron="0 3 * * *"  next=2026-07-29T03:00:00.000Z  triggers=4/10'
+      + '  backoff=L3(not before 2026-07-29T07:00:00.000Z)',
+    );
+  });
+
   it('renders a disabled schedule with no next run', () => {
     expect(formatScheduleLine(SCHEDULE_B)).toBe('sched-b  disabled  Hourly smoke  cron="0 * * * *"  next=-');
   });

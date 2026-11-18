@@ -329,7 +329,7 @@ describe('schedulesPausedByFailure surfaces the last classified reason', () => {
     try {
       const schedule = createSchedule(store, 'PausedJob');
 
-      // Drive two genuine timeout failures to cross the fail-closed threshold (2).
+      // Drive two genuine timeout failures to cross the failure threshold (2).
       for (const at of ['2026-08-28T09:00:00.000Z', '2026-08-28T09:05:00.000Z']) {
         const task = taskStore.createTask({ prompt: 'x', cwd: '/tmp', agentType: 'grok-build' });
         taskStore.startTask(task.id);
@@ -339,11 +339,22 @@ describe('schedulesPausedByFailure surfaces the last classified reason', () => {
         await service.recordTaskTerminalOutcome(task.id, 'cancelled', 'timeout');
       }
 
-      const paused = store.get(schedule.id)!;
-      // Threshold behavior itself is unchanged (issue #2877 keeps counting as-is).
-      expect(paused.consecutiveFailures).toBe(2);
-      expect(paused.enabled).toBe(false);
-      expect(paused.stopReason).toBe('consecutive_failures');
+      const failing = store.get(schedule.id)!;
+      // Counting is unchanged (issue #2877), but since issue #4186 the streak
+      // slows the schedule down instead of pausing it.
+      expect(failing.consecutiveFailures).toBe(2);
+      expect(failing.enabled).toBe(true);
+      expect(failing.failureBackoff?.level).toBe(2);
+      expect(service.getStatusSnapshot().schedulesPausedByFailure).toBeUndefined();
+
+      // A hold persisted before #4186 is still listed with its last reason.
+      store.replace({
+        ...failing,
+        enabled: false,
+        stopReason: 'consecutive_failures',
+        operatorHold: true,
+        holdSource: 'daemon',
+      });
 
       const snapshot = service.getStatusSnapshot();
       const row = snapshot.schedulesPausedByFailure?.find((r) => r.id === schedule.id);
