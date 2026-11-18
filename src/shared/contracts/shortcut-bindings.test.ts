@@ -62,6 +62,33 @@ describe('shortcut bindings', () => {
     expect(help).toContain('lucy_talk_toggle');
   });
 
+  test('gives Lucy\u2019s room a key of its own next to Talk\u2019s, clear of Quick launch on Alt+L', () => {
+    const defaults = getDefaultShortcutBindings('default');
+    const mac = getDefaultShortcutBindings('mac');
+    expect(formatShortcutBinding(defaults.lucy_room_toggle)).toBe('Alt+Shift+L');
+    expect(formatShortcutBinding(mac.lucy_room_toggle)).toBe('Cmd+Ctrl+Shift+L');
+    expect(findShortcutConflicts(defaults)).toEqual([]);
+    expect(findShortcutConflicts(mac)).toEqual([]);
+
+    const altShiftL = { key: 'L', code: 'KeyL', altKey: true, shiftKey: true };
+    const altL = { key: 'l', code: 'KeyL', altKey: true };
+    const altShiftM = { key: 'M', code: 'KeyM', altKey: true, shiftKey: true };
+    expect(matchesShortcutAction(altShiftL, defaults, 'lucy_room_toggle')).toBe(true);
+    expect(matchesShortcutAction(altShiftL, defaults, 'quick_launch')).toBe(false);
+    expect(matchesShortcutAction(altL, defaults, 'lucy_room_toggle')).toBe(false);
+    expect(matchesShortcutAction(altL, defaults, 'quick_launch')).toBe(true);
+    expect(matchesShortcutAction(altShiftM, defaults, 'lucy_room_toggle')).toBe(false);
+    const cmdCtrlShiftL = { key: 'L', code: 'KeyL', metaKey: true, ctrlKey: true, shiftKey: true };
+    expect(matchesShortcutAction(cmdCtrlShiftL, mac, 'lucy_room_toggle')).toBe(true);
+    expect(matchesShortcutAction(cmdCtrlShiftL, mac, 'quick_launch')).toBe(false);
+
+    // Listed in the shortcuts help and in Settings, where it can be rebound.
+    const help = getShortcutHelpGroups(defaults).flatMap((group) => group.shortcuts.map((shortcut) => shortcut.id));
+    expect(help).toContain('lucy_room_toggle');
+    const action = SHORTCUT_ACTIONS.find((candidate) => candidate.id === 'lucy_room_toggle');
+    expect(action).toMatchObject({ label: 'Lucy\u2019s room', context: 'when Lucy\u2019s panel is on' });
+  });
+
   test('detects mac platforms without requiring tests to run on macOS', () => {
     expect(detectShortcutPlatform('MacIntel')).toBe('mac');
     expect(detectShortcutPlatform('Linux x86_64')).toBe('default');

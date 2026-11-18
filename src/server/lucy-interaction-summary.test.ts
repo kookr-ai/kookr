@@ -73,6 +73,15 @@ describe('summarizeLucyInteractionLines', () => {
     expect(s.ui.panelActions).toEqual({ minimize: 2, move: 1 });
   });
 
+  it('counts entering and leaving Lucy\u2019s room by name', () => {
+    const s = summarizeLucyInteractionLines([
+      ui({ type: 'lucy_panel_action', action: 'expand' }),
+      ui({ type: 'lucy_panel_action', action: 'collapse' }),
+      ui({ type: 'lucy_panel_action', action: 'expand' }),
+    ], { days: 7, now: NOW });
+    expect(s.ui.panelActions).toEqual({ expand: 2, collapse: 1 });
+  });
+
   it('counts a question Lucy read out by herself as a started clip, and its replay as a replay', () => {
     const s = summarizeLucyInteractionLines([
       said('q', { source: 'operator_ask' }),

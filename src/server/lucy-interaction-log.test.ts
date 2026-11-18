@@ -247,6 +247,15 @@ describe('LucyInteractionLog hardening (client-controlled input)', () => {
     ]);
   });
 
+  it('records entering and leaving Lucy\u2019s room under their own names, not as "other"', async () => {
+    const log = createLucyInteractionLog({ filePath: file, now });
+    log.recordUi('s1', { ...base, type: 'lucy_panel_action', action: 'expand' });
+    log.recordUi('s1', { ...base, type: 'lucy_panel_action', action: 'collapse' });
+    log.recordUi('s1', { ...base, type: 'lucy_panel_action', action: 'fullscreen' });
+    await log.flush();
+    expect(events().map((event) => event.action)).toEqual(['expand', 'collapse', 'other']);
+  });
+
   it('drops events whose type is not a documented lucy_ type', async () => {
     const log = createLucyInteractionLog({ filePath: file, now });
     log.recordUi('s1', { ...base, type: 'lucy_made_up', clipId: 'c' });

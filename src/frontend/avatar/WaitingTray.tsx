@@ -22,6 +22,12 @@
  * unfolded or a card opens. It is not shown when there is nothing to put in it. The count in the strip is
  * permissions plus questions a task may be waiting for: opinions are counted apart, because they block nothing.
  *
+ * In Lucy's room (`rail`) the same tray is the side rail beside the conversation, and it has the room to show
+ * things whole: it cannot be folded, every permission card and every question a task is waiting for is an
+ * open card, and only the opinion requests stay folded under their one line. It scrolls by itself, its height
+ * is not animated, and when nothing waits (opinion requests block nothing, so they do not count) it says so in
+ * one quiet line instead of disappearing, so the rail keeps its place. The fold the operator chose for the strip is left alone and comes back with the column.
+ *
  * It also keeps the three rules that stop a wrong answer being sent, which moved here with the cards:
  *  - a press on an answer is ignored for a moment after the cards change (a card closing, a row opening or
  *    folding, the list unfolding, a permission card arriving moves buttons under the pointer);
@@ -66,9 +72,11 @@ export interface WaitingTrayProps {
   onPermissionChoice?: PermissionChoiceSender;
   /** The column itself: where keyboard focus goes when a question's card is gone and nothing replaced it. */
   dockRef: RefObject<HTMLElement | null>;
+  /** True in Lucy's room, where the tray is the side rail: always unfolded, cards open, never hidden. */
+  rail?: boolean;
 }
 
-export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPermissionChoice, dockRef }: WaitingTrayProps) {
+export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPermissionChoice, dockRef, rail = false }: WaitingTrayProps) {
   const permissionCards = useLucyPermission().cards;
   const permissionCount = permissionCards.length;
   const pending = useMemo(() => asks.filter((ask) => ask.state === 'pending'), [asks]);
@@ -108,7 +116,8 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
   // longer under the pointer, so it is ignored (the operator presses again).
   const cardsChangedAtRef = useRef(0);
   // Permission cards sit above the questions in the same scroll box: one arriving or leaving moves the buttons too.
-  const signature = `${asks.map((ask) => `${ask.id}:${ask.state}`).join(',')}|${expandedId ?? ''}|${opinionsOpen ? 'o' : ''}|${permissionCards.map((card) => card.promptId).join(',')}|${expanded ? 'x' : ''}`;
+  // Entering or leaving the room lays everything out again, so it counts as a change too.
+  const signature = `${asks.map((ask) => `${ask.id}:${ask.state}`).join(',')}|${expandedId ?? ''}|${opinionsOpen ? 'o' : ''}|${permissionCards.map((card) => card.promptId).join(',')}|${expanded ? 'x' : ''}|${rail ? 'r' : ''}`;
   useLayoutEffect(() => {
     cardsChangedAtRef.current = Date.now();
   }, [signature]);
@@ -156,11 +165,13 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
   // its way), and the open card is brought whole into view in the room there now is.
   const showOpenCardRef = useRef(showOpenCard);
   showOpenCardRef.current = showOpenCard;
-  const shown = permissionCount > 0 || asks.length > 0;
+  // The rail in Lucy's room is always there; the strip only while something is in it.
+  const shown = rail || permissionCount > 0 || asks.length > 0;
   useEffect(() => {
     const body = bodyRef.current;
     const list = listRef.current;
-    if (!shown || !body || !list || typeof ResizeObserver === 'undefined') return undefined;
+    // The rail has the height the room gives it and scrolls by itself (styles.css): nothing to measure.
+    if (!shown || rail || !body || !list || typeof ResizeObserver === 'undefined') return undefined;
     let settle: ReturnType<typeof setTimeout> | undefined;
     const observer = new ResizeObserver(() => {
       const height = `${list.offsetHeight}px`;
@@ -177,8 +188,11 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
     return () => {
       observer.disconnect();
       clearTimeout(settle);
+      // Nothing measured may stay behind: the rail must not inherit the strip's height.
+      body.style.height = '';
+      body.removeAttribute(SCROLLS_ATTRIBUTE);
     };
-  }, [shown]);
+  }, [shown, rail]);
 
   const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
     // A clock that stepped backwards (negative elapsed time) must not keep answers blocked.
@@ -228,7 +242,9 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
   };
 
   const renderEntry = (ask: OperatorAskView, kind: 'waiting' | 'opinion') => {
-    if (ask.id !== expandedId) return renderRow(ask, kind);
+    // In the rail a question a task is waiting for is always an open card, and has no line to fold back to.
+    const alwaysOpen = rail && kind === 'waiting';
+    if (!alwaysOpen && ask.id !== expandedId) return renderRow(ask, kind);
     return (
       <AskCard
         key={ask.id}
@@ -237,7 +253,7 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
         nowMs={nowMs}
         onAnswer={onAnswer}
         onDismiss={dismissOperatorAsk}
-        onCollapse={() => setChosen(null)}
+        {...(alwaysOpen ? {} : { onCollapse: () => setChosen(null) })}
         draft={{ value: drafts[ask.id] ?? '', set: (value) => setDrafts((previous) => ({ ...previous, [ask.id]: value })) }}
         {...(onOpenTask ? { onOpenTask } : {})}
       />
@@ -246,28 +262,39 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
 
   return (
     <section
-      className={`avatar-tray${waitingCount > 0 ? ' avatar-tray-waiting' : ''}`}
+      className={`avatar-tray${waitingCount > 0 ? ' avatar-tray-waiting' : ''}${rail ? ' avatar-tray-rail' : ''}`}
       aria-label="Waiting on you"
       ref={trayRef}
       data-testid="avatar-tray"
     >
-      <button
-        type="button"
-        className="avatar-tray-head"
-        aria-expanded={expanded}
-        aria-controls="avatar-tray-body"
-        onClick={toggle}
-        ref={toggleRef}
-        data-testid="avatar-tray-toggle"
-      >
-        <span className="avatar-tray-summary">
-          <span className="avatar-tray-count" data-testid="avatar-tray-count">{waitingCount}</span> waiting on you
-          {opinions.length > 0 && (
-            <span className="avatar-tray-opinions" data-testid="avatar-tray-opinions"> · {plural(opinions.length, 'opinion', 'opinions')} wanted</span>
+      {rail ? (
+        // The rail cannot be folded, so its top line is a title, not a button.
+        <div className="avatar-tray-title" data-testid="avatar-tray-title">
+          <h2 className="avatar-tray-heading">Waiting on you</h2>
+          {waitingCount > 0 && (
+            // The number alone means nothing to a screen reader; the unit is said, not shown.
+            <span className="avatar-tray-count" data-testid="avatar-tray-count">{waitingCount}<span className="sr-only"> waiting</span></span>
           )}
-        </span>
-        <span className="avatar-ask-chevron" aria-hidden="true" />
-      </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="avatar-tray-head"
+          aria-expanded={expanded}
+          aria-controls="avatar-tray-body"
+          onClick={toggle}
+          ref={toggleRef}
+          data-testid="avatar-tray-toggle"
+        >
+          <span className="avatar-tray-summary">
+            <span className="avatar-tray-count" data-testid="avatar-tray-count">{waitingCount}</span> waiting on you
+            {opinions.length > 0 && (
+              <span className="avatar-tray-opinions" data-testid="avatar-tray-opinions"> · {plural(opinions.length, 'opinion', 'opinions')} wanted</span>
+            )}
+          </span>
+          <span className="avatar-ask-chevron" aria-hidden="true" />
+        </button>
+      )}
       <div
         className="avatar-tray-body"
         id="avatar-tray-body"
@@ -287,7 +314,11 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
       >
         {/* Its natural height is what the box above is given (see the effect that measures it). */}
         <div className="avatar-tray-list" ref={listRef}>
-          {expanded && (
+          {/* Opinion requests block nothing, so with only those left nothing is waiting either. */}
+          {rail && waitingCount === 0 && (
+            <p className="avatar-tray-empty" data-testid="avatar-tray-empty">Nothing is waiting on you.</p>
+          )}
+          {(expanded || rail) && (
             <>
             <LucyPermissionCards
               {...(onPermissionChoice ? { onChoice: onPermissionChoice } : {})}

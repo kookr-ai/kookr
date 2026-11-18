@@ -140,8 +140,8 @@ describe('AvatarDock hands-free talk', () => {
     expect(row.contains(container.querySelector('[data-testid="avatar-typed-input"]'))).toBe(true);
     expect(button.compareDocumentPosition(container.querySelector('[data-testid="avatar-typed-input"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(container.querySelector('.avatar-dock-header')!.contains(button)).toBe(false);
-    // The header keeps Replay and Minimise.
-    expect([...container.querySelectorAll('.avatar-dock-header button')].map((b) => b.getAttribute('aria-label'))).toEqual(['Replay last message', 'Minimise Lucy']);
+    // The header keeps Replay and Minimise, with Expand (named by the word on it) between them.
+    expect([...container.querySelectorAll('.avatar-dock-header button')].map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['Replay last message', 'Expand', 'Minimise Lucy']);
   });
 
   test('unavailable, it reads "Talk is not set up": the long reason is only its tooltip and its description', () => {

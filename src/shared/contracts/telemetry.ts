@@ -49,7 +49,8 @@ export const TELEMETRY_EVENT_TYPES = [
    * - lucy_clip_started: { clipId, trigger: 'click' | 'replay' | 'ask', panelState: 'open' | 'minimized' | 'off', tabVisible: boolean }
    * - lucy_clip_ended: { clipId, endedBy: 'finished' | 'user_stop' | 'superseded' | 'barge_in', playedMs, totalMs } (`barge_in`: the operator talked over it with Talk on)
    * - lucy_clip_unheard: { clipId, reason: 'muted' | 'dnd' | 'audio_suspended' | 'error' }
-   * - lucy_panel_action: { action: 'enable' | 'disable' | 'minimize' | 'restore' | 'move' | 'replay', clipId?: string }
+   * - lucy_panel_action: { action: 'enable' | 'disable' | 'minimize' | 'restore' | 'move' | 'replay' | 'expand' | 'collapse', clipId?: string }
+   *   (`expand` / `collapse`: she was given the whole window, "Lucy's room", or went back to the column)
    * - lucy_live_timing: { kind: 'end_to_first_audio' | 'barge_in_duck' | 'barge_in_stop' | 'barge_in_rejected', ms: number }, measured in the browser during hands-free talk
    */
   'lucy_clip_started',

@@ -5,7 +5,7 @@
  * tasks ask the operator (described below).
  *
  * The column is as tall as the window and 380 px wide by default; its left edge can be dragged
- * (`ColumnResizer.tsx`, 320 to 560 px) and the width is remembered. The page keeps at least 1000 px: in a
+ * (`ColumnResizer.tsx`, from 320 px up to half the window) and the width is remembered. The page keeps at least 1000 px: in a
  * window too narrow for that (769 to 1319 px) the column floats over the page instead of taking room from
  * it, and a wide saved width is capped so the page keeps its 1000 px (the cap is not saved). On a window of
  * 768 px and below it is a full-width sheet over the page (`avatarColumnLayout` decides). It minimises to a round bubble in the bottom-right
@@ -13,8 +13,19 @@
  * and the bubble shows a still image, so a minimised panel uses no GPU. Hovering or focusing the bubble
  * shows a small card that spells out what its badge and dot mean.
  *
+ * "Lucy's room" is the fourth layout: she takes the whole window and covers the dashboard, which stays mounted
+ * underneath. The header's Expand button enters it and, as "Back to dashboard", leaves it; so does a keyboard
+ * shortcut (Alt+Shift+L by default, `lucy_room_toggle`), also from the minimised bubble. From 1100 px wide the
+ * room is a slim header (name and state, Talk, Replay last, Back to dashboard), the conversation in the middle
+ * (at most 760 px, centred, the composer under it) and a side rail on the right with the 3D view above what
+ * waits on the operator as whole cards; narrower, it is the column's own stack at full width. It is the same
+ * element with the same children in the same places, laid out again by the stylesheet, so the switch unmounts
+ * nothing: the 3D view keeps running, a half-typed message and the scroll position stay. The room belongs to
+ * one browser tab (`store/avatar-panel-prefs.ts`): it is open there whatever the shared "minimised" choice
+ * says, does not set `--lucy-column-width`, and "Open task" from inside it leaves it so the task is on screen.
+ *
  * From top to bottom the column holds:
- *  - the header: her name, what she is doing, Replay last, Minimise;
+ *  - the header: her name, what she is doing, Replay last, Expand, Minimise;
  *  - the 3D view, 120 px tall (it gives up height only when an unfolded "Waiting on you" list needs the room);
  *  - the strip "Waiting on you" (`WaitingTray.tsx`), one line until it is unfolded: permission cards, the
  *    questions tasks ask the operator (`kookr ask`, the same question that goes to Telegram; Lucy reads one
@@ -52,8 +63,8 @@
  * only when the operator has switched the panel on — see the lazy import in
  * App.tsx and `store/avatar-panel-prefs.ts`.
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { FocusEvent as ReactFocusEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, FocusEvent as ReactFocusEvent } from 'react';
 import avatarUrl from './assets/lucy-bust.glb?url';
 import { AvatarStage, type AvatarState } from './avatar-stage.js';
 import { subscribeSpeechBus } from '../audio/speech-bus.js';
@@ -96,9 +107,14 @@ import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
 import { formatShortcutBinding, matchesShortcutBinding, type ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 import {
   avatarColumnLayout,
+  avatarThreadIsCentred,
   clampAvatarColumnWidth,
+  leaveAvatarRoomToShowTask,
+  setAvatarRoom,
+  setAvatarRoomShown,
   updateAvatarPanelPrefs,
   useAvatarPanelPrefs,
+  useAvatarRoom,
 } from '../store/avatar-panel-prefs.js';
 
 const NAME = 'Lucy';
@@ -125,6 +141,13 @@ const TALK_ON_NOTICE = 'Hands-free on, listening';
 const TALK_OFF_NOTICE = 'Hands-free off';
 const TALK_REASON_ID = 'avatar-talk-reason';
 const REPLAY_LABEL = 'Replay last message';
+/** The one button that gives her the whole window and brings the dashboard back; what it says is its name. */
+const ROOM_ENTER_LABEL = 'Expand';
+const ROOM_LEAVE_LABEL = 'Back to dashboard';
+const ROOM_ENTER_TITLE = `Give ${NAME} the whole window`;
+/** What the panel is called as a region of the page, in the column and in the room. */
+const COLUMN_REGION_LABEL = `${NAME} avatar`;
+const ROOM_REGION_LABEL = `${NAME}\u2019s room`;
 /** Re-render the "N min ago" labels this often while the thread is on screen. */
 const RELATIVE_TIME_REFRESH_MS = 30_000;
 
@@ -144,6 +167,9 @@ function trackPanelAction(action: 'minimize' | 'restore' | 'replay', replayedCli
 
 /** The name of the CSS custom property on the page's root element that tells the dashboard how much room the open column takes. */
 export const COLUMN_WIDTH_PROPERTY = '--lucy-column-width';
+
+/** On the room's own element: how wide its side rail is, for the stylesheet's grid. */
+const RAIL_WIDTH_PROPERTY = '--lucy-rail-width';
 
 export interface AvatarDockProps {
   /** How many tasks are waiting for the operator; shown as a badge on the bubble. */
@@ -169,7 +195,12 @@ export interface AvatarDockProps {
    * dictation's key). Without it there is no shortcut.
    */
   talkShortcut?: ShortcutBinding;
-  /** True while a dialog that swallows the dashboard's shortcuts is open: the Talk shortcut then does nothing. */
+  /**
+   * The key that gives her the whole window ("Lucy's room") or brings the dashboard back, from anywhere, text
+   * boxes included. With the panel minimised it opens her in the room. Without it there is no shortcut.
+   */
+  roomShortcut?: ShortcutBinding;
+  /** True while a dialog that swallows the dashboard's shortcuts is open: the Talk and room shortcuts then do nothing. */
   shortcutsBlocked?: boolean;
 }
 
@@ -207,9 +238,15 @@ export function AvatarDock({
   onOpenTask,
   onPermissionChoice,
   talkShortcut,
+  roomShortcut,
   shortcutsBlocked = false,
 }: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
+  // "Lucy's room": she has the whole window, in this browser tab only.
+  const room = useAvatarRoom();
+  // In the room she is open whatever the "minimised" choice says: that choice is shared by every tab (the
+  // dashboard in another window may keep her as a bubble), the room belongs to this one.
+  const minimized = prefs.minimized && !room;
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   // The width while the left edge is being dragged; saved only when the drag ends.
   const [dragWidth, setDragWidth] = useState<number | null>(null);
@@ -231,11 +268,21 @@ export function AvatarDock({
   const clips = useClipHistory();
   const entries = useLucyConversation();
   const sound = useSoundPreference();
+  // "Open task" from a card or by voice. The room covers the dashboard, so a task that was selected from
+  // inside it is shown by leaving the room: the task is then on screen with her column beside it.
+  const openTask = useMemo(() => {
+    if (!onOpenTask) return undefined;
+    return (taskId: string): boolean => {
+      const opened = onOpenTask(taskId);
+      if (opened) leaveAvatarRoomToShowTask();
+      return opened;
+    };
+  }, [onOpenTask]);
   const live = useLucyLive({
     // "Show me the mockups" / "open the task" while a question is waiting (the server picks the target).
     onOpen: (target) => {
       if (target.kind === 'link') return openAskLink(target.url);
-      return onOpenTask?.(target.taskId) ? 'opened' : 'unavailable';
+      return openTask?.(target.taskId) ? 'opened' : 'unavailable';
     },
   });
   const operatorAsks = useOperatorAsks();
@@ -259,6 +306,7 @@ export function AvatarDock({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const stateRef = useRef<AvatarState>('idle');
   const minimiseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const roomButtonRef = useRef<HTMLButtonElement | null>(null);
   const talkFocusedRef = useRef(false);
   const bubbleStopFocusedRef = useRef(false);
   const dockRef = useRef<HTMLElement | null>(null);
@@ -272,23 +320,39 @@ export function AvatarDock({
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
-  // Where it sits for this window: beside the page, floating over it, or a full-width sheet (see `avatarColumnLayout`).
-  const layout = avatarColumnLayout(viewportWidth, prefs.width);
+  // Where it sits for this window: the whole window (her room), beside the page, floating over it, or a
+  // full-width sheet (see `avatarColumnLayout`).
+  const layout = avatarColumnLayout(viewportWidth, prefs.width, room);
+  const inRoom = layout.mode === 'room';
+  // The room's side rail (her 3D view above what waits on the operator), from 1100 px; narrower it is one column.
+  const rail = layout.mode === 'room' && layout.rail;
   const sheet = layout.mode === 'sheet';
   const docked = layout.mode === 'docked';
   const columnWidth = dragWidth === null ? layout.width : clampAvatarColumnWidth(dragWidth, layout.maxWidth);
+  // Wide enough for the conversation to be a centred reading column (styles.css keeps it centred over the
+  // composer then, whether or not it scrolls). A column of the usual width is not, and is laid out as before.
+  const centredThread = avatarThreadIsCentred(layout.mode === 'room' ? layout : { ...layout, width: columnWidth });
+  // For the short animation of the switch (styles.css): which way it went. Nothing is set until the operator
+  // switches, so a page that loads in the room, or never enters it, animates nothing. Kept in a ref and read
+  // while rendering, so the very first frame of the new layout already carries it.
+  const roomSwitchRef = useRef<{ room: boolean; switched: boolean }>({ room, switched: false });
+  if (roomSwitchRef.current.room !== room) roomSwitchRef.current = { room, switched: true };
+  // As the bubble there is nothing to animate, and the switch is over: opening her again later is not one.
+  if (minimized) roomSwitchRef.current.switched = false;
+  const roomSwitch = roomSwitchRef.current.switched ? (room ? 'enter' : 'leave') : undefined;
 
   // While the column is docked beside the page, tell the page how much room it takes: the dashboard and the
   // overlays at the right edge stop short of it (`--lucy-column-width` in styles.css). Gone again when the
   // column is minimised, floats over the page or is a sheet, switched off or unmounted, so the page has its full width back.
+  // In her room it is not set either: the room covers the page instead of taking room from it.
   useLayoutEffect(() => {
-    if (prefs.minimized || !docked) return undefined;
+    if (minimized || !docked) return undefined;
     const root = document.documentElement;
     root.style.setProperty(COLUMN_WIDTH_PROPERTY, `${columnWidth}px`);
     return () => {
       root.style.removeProperty(COLUMN_WIDTH_PROPERTY);
     };
-  }, [prefs.minimized, docked, columnWidth]);
+  }, [minimized, docked, columnWidth]);
 
   // Follow Kookr's speech playback.
   useEffect(() => {
@@ -316,7 +380,7 @@ export function AvatarDock({
   const [now, setNow] = useState(() => Date.now());
   const threadHasClips = entries.some((entry) => entry.kind === 'clip');
   // Questions are kept current while minimised too: the bubble's badge counts the ones still waiting.
-  const listVisible = (!prefs.minimized && (clips.length > 0 || threadHasClips)) || operatorAsks.asks.length > 0;
+  const listVisible = (!minimized && (clips.length > 0 || threadHasClips)) || operatorAsks.asks.length > 0;
   useEffect(() => {
     if (!listVisible) return undefined;
     setNow(Date.now());
@@ -370,9 +434,10 @@ export function AvatarDock({
   // A replay must not keep talking after the panel is gone.
   useEffect(() => () => stopReplay('user_stop'), []);
 
-  // The 3D view exists only while the panel is open.
+  // The 3D view exists only while the panel is open. Entering or leaving the room does not rebuild it: its
+  // element keeps its place in the tree and only its size changes, which the stage follows by itself.
   useLayoutEffect(() => {
-    if (prefs.minimized) return undefined;
+    if (minimized) return undefined;
     const container = viewRef.current;
     if (!container) return undefined;
     setLoaded(false);
@@ -392,7 +457,7 @@ export function AvatarDock({
       stage.dispose();
       if (stageRef.current === stage) stageRef.current = null;
     };
-  }, [prefs.minimized]);
+  }, [minimized]);
 
   const minimise = useCallback(() => {
     const image = stageRef.current?.snapshot();
@@ -413,15 +478,47 @@ export function AvatarDock({
     setHovered(false);
     setFocused(false);
     setCardDismissed(false);
-  }, [prefs.minimized]);
+  }, [minimized]);
 
   // Minimising swaps the column for the bubble (and back), which unmounts the button that had focus.
   // Move focus to its counterpart so a keyboard user is not sent back to the top of the page.
   useEffect(() => {
     if (!restoreFocusRef.current) return;
     restoreFocusRef.current = false;
-    (prefs.minimized ? bubbleRef.current : minimiseButtonRef.current)?.focus();
-  }, [prefs.minimized]);
+    (minimized ? bubbleRef.current : minimiseButtonRef.current)?.focus();
+  }, [minimized]);
+
+  // Her room. Entering it covers the dashboard, so keyboard focus goes to the text box: that is what the room
+  // is for. Leaving it, focus goes back to the button that opens it (the bubble, when she was minimised
+  // before), unless the operator is in the middle of typing to her: the text box is the same one in the
+  // column, and what is typed in it stays.
+  const wasRoomRef = useRef(false);
+  useEffect(() => {
+    const was = wasRoomRef.current;
+    wasRoomRef.current = room;
+    if (room === was) return;
+    // Talk moved between the composer and the header, as a new button: the old one can no longer hold focus.
+    talkFocusedRef.current = false;
+    // A dialog (the command palette, Settings) is open and holds focus: do not pull it out from under the operator.
+    if (document.activeElement?.closest('.dialog-overlay')) return;
+    const composer = dockRef.current?.querySelector<HTMLTextAreaElement>('.avatar-typed textarea') ?? null;
+    if (room) {
+      (composer ?? dockRef.current)?.focus();
+      return;
+    }
+    if (composer !== null && document.activeElement === composer) return;
+    // Back to the button that opens the room; the full-width sheet has none, so the minimise button, then the dock.
+    (prefs.minimized ? bubbleRef.current : (roomButtonRef.current ?? minimiseButtonRef.current ?? dockRef.current))?.focus();
+    // Only a change of `room` moves focus; `prefs.minimized` is read as it is at that moment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room]);
+  // Tell the dashboard the room is on screen (not merely saved), so it holds its shortcuts back only then.
+  useLayoutEffect(() => {
+    if (!inRoom) return undefined;
+    setAvatarRoomShown(true);
+    return () => setAvatarRoomShown(false);
+  }, [inRoom]);
+  const toggleRoom = useCallback(() => setAvatarRoom(!room), [room]);
 
   // Hands-free is on and connected: the label and hint follow what the server says Lucy is doing.
   const liveReady = live.status === 'ready';
@@ -450,7 +547,7 @@ export function AvatarDock({
     // Hidden button: the server could not be asked, so there is nothing to switch on and no reason to give.
     if (!talkVisible) return;
     if (talkShortcut) track({ type: 'shortcut_used', key: formatShortcutBinding(talkShortcut), action: 'lucy_talk_toggle', context: 'global' });
-    if (talkUnavailable && prefs.minimized) {
+    if (talkUnavailable && minimized) {
       // The reason is only shown in the open panel, so open it; focus moves only if it was on the bubble.
       restoreFocusRef.current = document.activeElement === bubbleRef.current;
       trackPanelAction('restore');
@@ -469,6 +566,24 @@ export function AvatarDock({
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [talkShortcut, shortcutsBlocked]);
+  const roomShortcutHint = roomShortcut ? ` (${formatShortcutBinding(roomShortcut)})` : '';
+  // The room's shortcut presses the Expand / Back to dashboard button, also while she is minimised (it then
+  // opens her in the room). In a ref for the same reason as Talk's.
+  const roomShortcutRef = useRef<() => void>(() => {});
+  roomShortcutRef.current = () => {
+    if (roomShortcut) track({ type: 'shortcut_used', key: formatShortcutBinding(roomShortcut), action: 'lucy_room_toggle', context: 'global' });
+    toggleRoom();
+  };
+  useEffect(() => {
+    if (!roomShortcut || shortcutsBlocked) return undefined;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.repeat || event.isComposing || !matchesShortcutBinding(event, roomShortcut)) return;
+      event.preventDefault();
+      roomShortcutRef.current();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [roomShortcut, shortcutsBlocked]);
   const liveMessage = talkNotice ?? live.errorMessage;
   // Only changes are announced, never the state the dock mounts in.
   const wasReadyRef = useRef(liveReady);
@@ -493,7 +608,7 @@ export function AvatarDock({
   useClipThreadSync(clips);
   useNoticeThreadSync(liveMessage, talkNoticeSeq);
   // She writes first: a briefing when the panel is first shown, and when the operator comes back to changed work.
-  useLucyBriefing({ shown: !prefs.minimized });
+  useLucyBriefing({ shown: !minimized });
   // A word about a task she did not launch (it failed, went quiet, wants a review): written, not spoken.
   useLucySaysThreadSync();
   // If the Talk button disappears while it has focus, keyboard focus would fall to the page; keep it in the dock.
@@ -557,7 +672,7 @@ export function AvatarDock({
   // The bubble's card: what the badge and the dot mean. It only repeats what the bubble's label says, so it is
   // hidden from assistive technology; keyboard users get it through focus, Escape closes it.
   const cardHasContent = attentionCount > 0 || lastClip.unheardCount > 0 || pendingAskCount > 0 || opinionCount > 0;
-  const cardVisible = prefs.minimized && cardHasContent && (hovered || focused) && !cardDismissed;
+  const cardVisible = minimized && cardHasContent && (hovered || focused) && !cardDismissed;
   useEffect(() => {
     if (!cardVisible) return undefined;
     const onKey = (event: KeyboardEvent): void => {
@@ -595,7 +710,7 @@ export function AvatarDock({
     </div>
   );
 
-  if (prefs.minimized) {
+  if (minimized) {
     const activity = state !== 'idle' ? `, ${STATE_LABEL[state]}` : liveReady ? ', listening' : '';
     const label = [
       `Open ${NAME}${activity}`,
@@ -716,19 +831,27 @@ export function AvatarDock({
     </>
   ) : null;
   const panelView = (
+    // One element in every layout, with its children at the same places: the room is laid out by the stylesheet
+    // (grid areas on `data-column-mode="room"`), so entering or leaving it unmounts nothing — not the 3D view,
+    // not a half-typed message, not the scroll position of the conversation.
     <section
-      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${sheet ? ' avatar-dock-sheet' : ''}`}
-      style={sheet ? undefined : { width: columnWidth }}
-      aria-label={`${NAME} avatar`}
+      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${sheet ? ' avatar-dock-sheet' : ''}${inRoom ? ' avatar-dock-room' : ''}${centredThread ? ' avatar-dock-centred' : ''}`}
+      // The rail's width is decided in one place (`avatarRoomRailWidth`) and handed to the stylesheet.
+      style={layout.mode === 'room'
+        ? (layout.rail ? { [RAIL_WIDTH_PROPERTY]: `${layout.railWidth}px` } as CSSProperties : undefined)
+        : sheet ? undefined : { width: columnWidth }}
+      aria-label={inRoom ? ROOM_REGION_LABEL : COLUMN_REGION_LABEL}
       ref={dockRef}
       tabIndex={-1}
       data-testid="avatar-dock"
       data-column-mode={layout.mode}
+      data-room-rail={inRoom ? (rail ? 'true' : 'false') : undefined}
+      data-room-switch={roomSwitch}
       data-avatar-state={state}
       data-lucy-live={live.status}
       data-avatar-loaded={loaded ? 'true' : 'false'}
     >
-      {!sheet && (
+      {!sheet && !inRoom && (
         <ColumnResizer
           width={columnWidth}
           maxWidth={layout.maxWidth}
@@ -743,6 +866,8 @@ export function AvatarDock({
         <span className="avatar-dock-name">{NAME.toUpperCase()}</span>
         <span className="avatar-dock-state" data-testid="avatar-state-label">{liveStateLabel ?? STATE_LABEL[state]}</span>
         <span className="avatar-dock-spacer" />
+        {/* In the room Talk is up here, beside Replay; in the column it sits beside the text box. */}
+        {inRoom && talkButton}
         <button
           type="button"
           className="avatar-dock-button avatar-dock-replay"
@@ -761,9 +886,30 @@ export function AvatarDock({
           )}
           {replayDescription && <span id={REPLAY_DESCRIPTION_ID} className="sr-only">{replayDescription}</span>}
         </button>
-        <button type="button" ref={minimiseButtonRef} className="avatar-dock-button" onClick={minimise} aria-label={`Minimise ${NAME}`} title="Minimise">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5" /></svg>
-        </button>
+        {/* The same button in both layouts, so keyboard focus stays on it across the switch. A full-width sheet
+            already is the whole window, so it has no Expand. */}
+        {(inRoom || !sheet) && (
+          <button
+            type="button"
+            ref={roomButtonRef}
+            className="avatar-room-toggle"
+            onClick={toggleRoom}
+            title={`${inRoom ? ROOM_LEAVE_LABEL : ROOM_ENTER_TITLE}${roomShortcutHint}`}
+            data-testid="avatar-room-toggle"
+          >
+            {inRoom ? (
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 2.5v4h4M6.5 13.5v-4h-4M9.5 6.5l4-4M6.5 9.5l-4 4" /></svg>
+            ) : (
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5l-4.5 4.5M2.5 13.5l4.5-4.5" /></svg>
+            )}
+            <span>{inRoom ? ROOM_LEAVE_LABEL : ROOM_ENTER_LABEL}</span>
+          </button>
+        )}
+        {!inRoom && (
+          <button type="button" ref={minimiseButtonRef} className="avatar-dock-button" onClick={minimise} aria-label={`Minimise ${NAME}`} title="Minimise">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5" /></svg>
+          </button>
+        )}
       </div>
       <div className="avatar-dock-view" ref={viewRef}>
         {/* Always present and never hidden, only emptied: screen readers announce text added to a live
@@ -783,8 +929,9 @@ export function AvatarDock({
         submit={operatorAsks.submit}
         nowMs={now + askClockOffsetMs()}
         dockRef={dockRef}
+        rail={rail}
         {...(onAnswerAsk ? { onAnswerAsk } : {})}
-        {...(onOpenTask ? { onOpenTask } : {})}
+        {...(openTask ? { onOpenTask: openTask } : {})}
         {...(onPermissionChoice ? { onPermissionChoice } : {})}
       />
       <LucyThread
@@ -798,7 +945,7 @@ export function AvatarDock({
         onReplay={onReplay}
         pendingCards={<><LucyLaunchCard /><LucyActionCard /></>}
       />
-      <LucyTypedInput leading={talkButton} />
+      <LucyTypedInput leading={inRoom ? null : talkButton} roomy={inRoom} />
     </section>
   );
   return <>{panelView}{announcer}</>;
