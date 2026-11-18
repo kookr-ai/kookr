@@ -197,7 +197,9 @@ that runs its `.mjs`) run for every session:
   incorrect, `nb merge`/`split` redundant or overloaded entries, and `nb add` at
   most one new lesson (aim ~150 characters; the text also carries the placement
   rule: `<situation>@<slug>` unless the lesson is true in another repo, never
-  `fleet-global` directly) — then allows the stop. Sentinels older than
+  `fleet-global` directly) — then allows the stop. A session that opened no shelf
+  skips the vote/remove/merge steps but may still add one lesson, so a repo or
+  situation with no shelf yet can get its first one from a top-level session. Sentinels older than
   `NB_RETRO_TTL_DAYS` (default 7) are pruned; an event with no `session_id`
   shares one sentinel, so it is nudged at most once per TTL window.
   No-op when `NB_RETRO_DISABLED` is set (operator opt-out).

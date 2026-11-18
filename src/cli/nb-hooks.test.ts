@@ -102,6 +102,10 @@ describe('nb-retro Stop/SubagentStop hook', () => {
     expect(r.err).toMatch(/nb merge/);
     expect(r.err).toMatch(/split/);
     expect(r.err).toMatch(/shelf/); // kookr vocabulary
+    // A session that opened no shelf must still be allowed to seed a first lesson;
+    // otherwise an empty store (or a repo with no shelf yet) never gets one.
+    expect(r.err).not.toMatch(/skip it entirely/);
+    expect(r.err).toMatch(/if you opened none, skip them, but step 5 still applies/);
   });
 
   test('NB_RETRO_DISABLED opts out (always allows the stop)', () => {
