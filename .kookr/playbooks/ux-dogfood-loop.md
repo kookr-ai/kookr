@@ -22,7 +22,7 @@ checklist:
   - (implement=true) Mapped code with parallel Explore agents before writing fixes
   - (implement=true) One fresh worktree per priority cluster, based on origin/main (or on the integration branch of unlanded work it must stack on, said in the RFC)
   - (implement=true) Each cluster has tests added, targeted vitest + typecheck green, conventional commit
-  - Pushed, opened and merged the RFC and fix branches through the normal delivery cycle, without asking whether to push
+  - Pushed, opened and merged the RFC (and, with implement=true, the fix branches) through the normal delivery cycle, without asking whether to push
 ---
 
 ## Objective
@@ -52,8 +52,8 @@ the first run of this loop) — match its format and depth.
 - **Deliver like every other task.** Push, open pull requests and merge once the
   gates pass, following the repository's delivery cycle (`CLAUDE.md`, "Complete the
   delivery cycle"). Do not ask whether to push or merge (operator decision, 18 Nov
-  2026, #4156). Two runs that asked first left the question in their final report and
-  pushed nothing, so the operator re-ran the loop on a dashboard that still had every
+  2026, #4156). Two runs that held their push for an answer left the question in their final
+  report and pushed nothing, so the operator re-ran the loop on a dashboard that still had every
   finding.
 - Commits end with: `Co-Authored-By: <the assistant's model name> <noreply@anthropic.com>`
 
@@ -228,11 +228,12 @@ implementation ticket; one without is just a complaint.
 
 ## Phase 3 — Commit the RFC and decide
 
-Commit the RFC in its worktree (`docs(rfc): ...`), push it, open its pull request
-and merge it once the gates pass. Report the findings summary to the user. The
-`implement` parameter of this run is **{{implement}}**. If it is not 'true', stop
-here and ask, through `kookr ask` (no `--wait`), whether to proceed to
-implementation.
+Commit the RFC in its worktree (`docs(rfc): ...`), push it and open its pull
+request; it stays open for the Phase 4 log and Phase 5 lessons, and is merged in
+Phase 5. Report the findings summary to the user. The `implement` parameter of
+this run is **{{implement}}**. If it is not 'true', go straight to Phase 5 (which
+merges the RFC's pull request), then ask, through `kookr ask` (no `--wait`),
+whether to proceed to implementation.
 
 ## Phase 4 — Implementation fan-out (implement=true)
 
@@ -260,6 +261,8 @@ implementation.
 
 - If the session surfaced lessons about *this playbook's process itself*,
   update this playbook in the same PR as the RFC.
+- Merge the RFC's pull request once the gates pass (the delivery cycle; do not
+  ask).
 - Signal completion when the deliverables are pushed and their pull requests are
   merged, or a concrete blocker is recorded on them:
   `kookr signal completion-ready --note "..."`.
