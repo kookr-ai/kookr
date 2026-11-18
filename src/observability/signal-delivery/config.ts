@@ -18,6 +18,10 @@
  * fails the check switches Telegram alerts off instead of falling back to the
  * public API (issue #3952).
  *
+ * Telegram gets only the alerts an agent is waiting on the operator for
+ * (`KOOKR_SIGNAL_TELEGRAM_LEVEL`, default `decisions`; see decision-signals.ts).
+ * Discord still gets every signal.
+ *
  * `KOOKR_SIGNAL_DELIVERY=0` switches alert delivery off entirely (no outbox
  * writes, no delivery service). Test servers start with it off, so a test that
  * sets a Telegram token never spools into the operator's HOME outbox or posts
@@ -32,6 +36,7 @@ import { validateWebhookUrl } from '../../integrations/webhook/index.js';
 import { parseAllowedUserIds } from '../../integrations/telegram/allowed-users.js';
 import { validateTelegramApiUrl } from '../../integrations/telegram/telegram-api-url.js';
 import type { DiscordChannelConfig, TelegramChannelConfig } from './channels.js';
+import { DEFAULT_TELEGRAM_SIGNAL_LEVEL, type TelegramSignalLevel } from './decision-signals.js';
 
 /** Default poll cadence: signals are time-sensitive but batched to ≤1 msg/min. */
 export const DEFAULT_DELIVERY_POLL_INTERVAL_MS = 15_000;
@@ -52,6 +57,8 @@ export const DEFAULT_DELIVERY_BACKOFF_MAX_MS = 900_000;
 export interface SignalDeliveryConfig {
   discord?: DiscordChannelConfig;
   telegram?: TelegramChannelConfig;
+  /** Which signals Telegram gets: only decisions (default) or all of them. Discord always gets all. */
+  telegramSignals: TelegramSignalLevel;
   /** When true, format and log but never POST. */
   dryRun: boolean;
   pollIntervalMs: number;
@@ -82,6 +89,12 @@ const CHANNEL_LABELS: Record<AlertChannelKind, string> = {
   telegram_configured_chat: 'Telegram (configured chat)',
   telegram_owner_chat: 'Telegram (owner chat)',
   discord: 'Discord',
+};
+
+/** Telegram labels when it gets decisions only, so settings and `kookr status` say what reaches the phone. */
+const DECISIONS_ONLY_LABELS: Record<Exclude<AlertChannelKind, 'discord'>, string> = {
+  telegram_configured_chat: 'Telegram (configured chat, decisions only)',
+  telegram_owner_chat: 'Telegram (owner chat, decisions only)',
 };
 
 export const NO_ALERT_DESTINATION_LABEL = 'nowhere outside the dashboard';
@@ -202,12 +215,15 @@ export function resolveSignalDeliveryFromEnv(
     noDestinationReason = `KOOKR_TELEGRAM_API_URL is invalid (${telegramApiUrlError})`;
   }
 
+  const telegramSignals = readTelegramSignalLevel(env.KOOKR_SIGNAL_TELEGRAM_LEVEL, logger);
   const channels: AlertChannelKind[] = [
     ...(telegramKind ? [telegramKind] : []),
     ...(discord ? (['discord'] as const) : []),
   ];
+  const channelLabel = (c: AlertChannelKind): string =>
+    (telegramSignals === 'decisions' && c !== 'discord' ? DECISIONS_ONLY_LABELS[c] : CHANNEL_LABELS[c]);
   const destination: AlertDestination = channels.length > 0
-    ? { channels, label: channels.map((c) => CHANNEL_LABELS[c]).join(' + ') }
+    ? { channels, label: channels.map(channelLabel).join(' + ') }
     : {
         channels,
         label: NO_ALERT_DESTINATION_LABEL,
@@ -219,6 +235,7 @@ export function resolveSignalDeliveryFromEnv(
   const config: SignalDeliveryConfig = {
     ...(discord ? { discord } : {}),
     ...(telegram ? { telegram } : {}),
+    telegramSignals,
     dryRun: env.KOOKR_SIGNAL_DELIVERY_DRY_RUN === '1',
     pollIntervalMs: parsePositiveInt(env.KOOKR_SIGNAL_DELIVERY_POLL_MS, DEFAULT_DELIVERY_POLL_INTERVAL_MS),
     minSendIntervalMs: parsePositiveInt(
@@ -267,6 +284,21 @@ function resolveOwnerChatFallback(
   }
   const [owner] = allowed;
   return { chatId: String(owner) };
+}
+
+/** `decisions` unless the operator asked for `all`; an unknown value warns and keeps the default. */
+function readTelegramSignalLevel(
+  raw: string | undefined,
+  logger: Pick<Console, 'warn'>,
+): TelegramSignalLevel {
+  const v = raw?.trim().toLowerCase();
+  if (!v) return DEFAULT_TELEGRAM_SIGNAL_LEVEL;
+  if (v === 'all' || v === 'decisions') return v;
+  logger.warn(
+    `[signal-delivery] ignoring unknown KOOKR_SIGNAL_TELEGRAM_LEVEL=${JSON.stringify(raw)} (use decisions or all); `
+      + `Telegram gets ${DEFAULT_TELEGRAM_SIGNAL_LEVEL} only`,
+  );
+  return DEFAULT_TELEGRAM_SIGNAL_LEVEL;
 }
 
 function isTruthyEnvFlag(raw: string | undefined): boolean {

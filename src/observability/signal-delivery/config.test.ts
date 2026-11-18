@@ -171,7 +171,7 @@ describe('owner-chat fallback and alert destination (issue #3924)', () => {
       silent,
     );
     expect(config?.telegram).toEqual({ botToken: 'TOK', chatId: '4242' });
-    expect(destination).toEqual({ channels: ['telegram_owner_chat'], label: 'Telegram (owner chat)' });
+    expect(destination).toEqual({ channels: ['telegram_owner_chat'], label: 'Telegram (owner chat, decisions only)' });
     // The legacy reader sees the same channel.
     expect(readSignalDeliveryConfigFromEnv(
       env({ KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '4242' }),
@@ -210,7 +210,7 @@ describe('owner-chat fallback and alert destination (issue #3924)', () => {
     expect(config?.telegram).toEqual({ botToken: 'TOK', chatId: '-100777' });
     expect(destination).toEqual({
       channels: ['telegram_configured_chat'],
-      label: 'Telegram (configured chat)',
+      label: 'Telegram (configured chat, decisions only)',
     });
   });
 
@@ -269,7 +269,7 @@ describe('owner-chat fallback and alert destination (issue #3924)', () => {
     );
     expect(destination).toEqual({
       channels: ['telegram_configured_chat', 'discord'],
-      label: 'Telegram (configured chat) + Discord',
+      label: 'Telegram (configured chat, decisions only) + Discord',
     });
   });
 
@@ -364,5 +364,42 @@ describe('Telegram Bot API host and the delivery kill switch (issue #3952)', () 
   test.each(['1', 'on', ''])('KOOKR_SIGNAL_DELIVERY=%j leaves delivery on', (value) => {
     const { config } = resolveSignalDeliveryFromEnv(env({ ...OWNER, KOOKR_SIGNAL_DELIVERY: value }), silent);
     expect(config?.telegram?.chatId).toBe('4242');
+  });
+});
+
+describe('KOOKR_SIGNAL_TELEGRAM_LEVEL', () => {
+  const owner = { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '4242' };
+
+  test('Telegram gets decisions only by default, and the destination says so', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(owner as NodeJS.ProcessEnv, silent);
+    expect(config?.telegramSignals).toBe('decisions');
+    expect(destination.label).toBe('Telegram (owner chat, decisions only)');
+  });
+
+  test('`all` (any case, padded) restores the full stream and the plain label', () => {
+    const { config, destination } = resolveSignalDeliveryFromEnv(
+      { ...owner, KOOKR_SIGNAL_TELEGRAM_LEVEL: ' ALL ' } as NodeJS.ProcessEnv,
+      silent,
+    );
+    expect(config?.telegramSignals).toBe('all');
+    expect(destination.label).toBe('Telegram (owner chat)');
+  });
+
+  test('an unknown value warns and keeps decisions only', () => {
+    const warn = vi.fn();
+    const { config } = resolveSignalDeliveryFromEnv(
+      { ...owner, KOOKR_SIGNAL_TELEGRAM_LEVEL: 'everything' } as NodeJS.ProcessEnv,
+      { warn },
+    );
+    expect(config?.telegramSignals).toBe('decisions');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('KOOKR_SIGNAL_TELEGRAM_LEVEL'));
+  });
+
+  test('the Discord label never says decisions only', () => {
+    const { destination } = resolveSignalDeliveryFromEnv(
+      { KOOKR_DISCORD_WEBHOOK_URL: VALID_DISCORD_URL } as NodeJS.ProcessEnv,
+      silent,
+    );
+    expect(destination.label).toBe('Discord');
   });
 });

@@ -14,6 +14,10 @@
  *  - **≤1 message per minute.** Every eligible tick drains *all* pending signals
  *    into a single batched message, and outbound sends are spaced by
  *    `minSendIntervalMs`.
+ *  - **Telegram gets decisions only** (by default). Telegram's batch keeps just
+ *    the signals an agent is waiting on the operator for (decision-signals.ts);
+ *    Discord's batch keeps everything. A signal no configured channel takes is
+ *    acknowledged without a send, so it never waits behind the throttle.
  *  - **Dry-run.** With `dryRun`, the batch is formatted and logged but never
  *    POSTed; entries are still marked delivered so the log does not loop.
  *
@@ -37,6 +41,7 @@ import {
   type ChannelDeliveryResult,
 } from './channels.js';
 import type { SignalDeliveryConfig } from './config.js';
+import { sendsToTelegram } from './decision-signals.js';
 import {
   loadDeliveredMarker,
   listSignalFiles,
@@ -65,6 +70,12 @@ export interface SignalDeliveryTickResult {
    */
   backoff: boolean;
   delivered: string[];
+  /**
+   * Signals no configured channel takes (a status signal on a Telegram-only
+   * install that gets decisions only). They are acknowledged without a send.
+   * Absent when there were none.
+   */
+  withheld?: string[];
   channelResults: ChannelDeliveryResult[];
 }
 
@@ -214,7 +225,7 @@ export class SignalDeliveryService {
     // stamps a fresh `createdAt`. Comparing `createdAt` lets that re-emit
     // re-deliver, while a restart with an unchanged file stays deduped. Invalid
     // / partially-written files read as null and are simply skipped this tick.
-    const pending: Array<{ fileName: string; signal: OperatorSignal }> = [];
+    const undelivered: Array<{ fileName: string; signal: OperatorSignal }> = [];
     let scanFailedFiles = 0;
     for (const fileName of files) {
       let signal: OperatorSignal | null;
@@ -228,16 +239,32 @@ export class SignalDeliveryService {
       }
       if (!signal) continue;
       if (delivered[fileName] === signal.createdAt) continue;
-      pending.push({ fileName, signal });
+      undelivered.push({ fileName, signal });
     }
 
     this.scanFailedFiles = scanFailedFiles;
     this.scanFailures += scanFailedFiles;
     if (scanFailedFiles > 0) this.lastScanFailureAt = this.now().toISOString();
+
+    // A signal no channel takes is not waiting on any send: acknowledge it now,
+    // before the back-off and throttle gates, so it never counts as pending and
+    // a later switch to `all` does not replay it.
+    const pending = undelivered.filter((p) => this.takenByAnyChannel(p.signal));
+    const withheld = undelivered.filter((p) => !this.takenByAnyChannel(p.signal));
+    if (withheld.length > 0) {
+      for (const { fileName, signal } of withheld) delivered[fileName] = signal.createdAt;
+      await saveDeliveredMarker(this.dir, delivered);
+      this.log(
+        `[signal-delivery] kept ${withheld.length} status signal(s) off Telegram `
+          + `(it gets decisions only; KOOKR_SIGNAL_TELEGRAM_LEVEL=all sends everything): `
+          + withheld.map((p) => p.signal.source).join(', '),
+      );
+    }
+    const withheldField = withheld.length > 0 ? { withheld: withheld.map((p) => p.fileName) } : {};
     this.lastPending = pending.length;
 
     if (pending.length === 0) {
-      return { pending: 0, throttled: false, backoff: false, delivered: [], channelResults: [] };
+      return { pending: 0, throttled: false, backoff: false, delivered: [], ...withheldField, channelResults: [] };
     }
 
     const nowMs = this.now().getTime();
@@ -247,15 +274,14 @@ export class SignalDeliveryService {
     // against a failing endpoint. Signals stay pending; the window is cleared by
     // the first success.
     if (this.nextAttemptAt !== null && nowMs < this.nextAttemptAt) {
-      return { pending: pending.length, throttled: false, backoff: true, delivered: [], channelResults: [] };
+      return { pending: pending.length, throttled: false, backoff: true, delivered: [], ...withheldField, channelResults: [] };
     }
 
     if (this.lastSendAt !== null && nowMs - this.lastSendAt < this.config.minSendIntervalMs) {
-      return { pending: pending.length, throttled: true, backoff: false, delivered: [], channelResults: [] };
+      return { pending: pending.length, throttled: true, backoff: false, delivered: [], ...withheldField, channelResults: [] };
     }
 
-    const message = formatBatch(pending.map((s) => s.signal));
-    const channelResults = await this.send(message);
+    const channelResults = await this.send(pending.map((s) => s.signal));
     const anySuccess = this.config.dryRun || channelResults.some((r) => r.ok);
 
     if (!anySuccess) {
@@ -266,7 +292,7 @@ export class SignalDeliveryService {
         `[signal-delivery] all channels failed (${errs}); ${pending.length} signal(s) stay pending, `
           + `backing off ${Math.round(waitMs / 1000)}s (failure #${this.consecutiveFailures})`,
       );
-      return { pending: pending.length, throttled: false, backoff: false, delivered: [], channelResults };
+      return { pending: pending.length, throttled: false, backoff: false, delivered: [], ...withheldField, channelResults };
     }
 
     // Success: clear any back-off immediately so recovery is never delayed.
@@ -289,7 +315,7 @@ export class SignalDeliveryService {
         + (failed.length ? ` (failed: ${failed.map((r) => `${r.channel}:${r.error ?? 'fail'}`).join(', ')})` : ''),
     );
 
-    return { pending: 0, throttled: false, backoff: false, delivered: deliveredNames, channelResults };
+    return { pending: 0, throttled: false, backoff: false, delivered: deliveredNames, ...withheldField, channelResults };
   }
 
   /**
@@ -318,17 +344,32 @@ export class SignalDeliveryService {
     this.nextAttemptAt = nowMs + waitMs;
   }
 
-  private async send(message: string): Promise<ChannelDeliveryResult[]> {
+  /** The signals of `signals` that Telegram takes at the configured level. */
+  private forTelegram(signals: readonly OperatorSignal[]): OperatorSignal[] {
+    return signals.filter((s) => sendsToTelegram(s, this.config.telegramSignals));
+  }
+
+  private takenByAnyChannel(signal: OperatorSignal): boolean {
+    if (this.config.discord) return true;
+    return Boolean(this.config.telegram) && sendsToTelegram(signal, this.config.telegramSignals);
+  }
+
+  /** Discord gets every signal; Telegram only those its level lets through, and no message when none is left. */
+  private async send(signals: readonly OperatorSignal[]): Promise<ChannelDeliveryResult[]> {
+    const telegramSignals = this.config.telegram ? this.forTelegram(signals) : [];
     if (this.config.dryRun) {
-      this.log(`[signal-delivery] DRY-RUN would deliver:\n${message}`);
+      if (this.config.discord) this.log(`[signal-delivery] DRY-RUN would deliver to discord:\n${formatBatch(signals)}`);
+      if (telegramSignals.length > 0) {
+        this.log(`[signal-delivery] DRY-RUN would deliver to telegram:\n${formatBatch(telegramSignals)}`);
+      }
       return [];
     }
     const jobs: Array<Promise<ChannelDeliveryResult>> = [];
     if (this.config.discord) {
-      jobs.push(deliverToDiscord(this.config.discord, message, { fetchImpl: this.fetchImpl }));
+      jobs.push(deliverToDiscord(this.config.discord, formatBatch(signals), { fetchImpl: this.fetchImpl }));
     }
-    if (this.config.telegram) {
-      jobs.push(deliverToTelegram(this.config.telegram, message, { fetchImpl: this.fetchImpl }));
+    if (this.config.telegram && telegramSignals.length > 0) {
+      jobs.push(deliverToTelegram(this.config.telegram, formatBatch(telegramSignals), { fetchImpl: this.fetchImpl }));
     }
     return Promise.all(jobs);
   }

@@ -9,6 +9,7 @@
 export * from './operator-signal.js';
 export * from './channels.js';
 export * from './config.js';
+export * from './decision-signals.js';
 export * from './service.js';
 export * from './emit-transition.js';
 export * from './liveness.js';

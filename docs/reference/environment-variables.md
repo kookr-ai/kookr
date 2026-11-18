@@ -441,14 +441,30 @@ as its chat id). An explicit `KOOKR_SIGNAL_TELEGRAM_CHAT_ID` always wins. With
 several allowed users, an empty allowlist, Discord already set, or
 `KOOKR_REMOTE_CHAT_DISABLED=1` (the Telegram panic switch, also set by demo and
 harness servers), nothing is added. `/api/health` (`alertDestination`), `kookr status` (`Alerts:` line) and
-Settings → Notifications & Alerts say where alerts go: `Telegram (owner chat)`,
-`Telegram (configured chat)`, `Discord`, or `nowhere outside the dashboard`. In
+Settings → Notifications & Alerts say where alerts go: `Telegram (owner chat, decisions only)`,
+`Telegram (configured chat, decisions only)`, `Discord`, or `nowhere outside the dashboard`
+(without `, decisions only` when `KOOKR_SIGNAL_TELEGRAM_LEVEL=all`). In
 the last case the server logs one warning at start-up with the reason. The
 destination is read once at start-up, so restart Kookr after changing these
 variables.
 
+**Telegram gets decisions only.** Telegram is the operator's phone, so by
+default it gets only the alerts where an agent is stuck until the operator acts:
+a task waiting minutes on a permission prompt (`permission_prompt_wait`, the
+fallback when the Approve / Deny card could not be sent) and an agent that
+stopped because its instructions are unusable (`agent_self_report`). Status
+signals no longer go to Telegram. That covers the integration train halting or
+recovering, smoke ticks, starvation, paused schedules, queue and occupancy
+alerts, deploy lag, liveness, and every "Recovered" or info notice. They still
+reach the dashboard, `operational-alerts.jsonl`, the outbox and Discord. On a
+Telegram-only install they are marked handled without a send, so switching to
+`all` later does not replay them. `kookr ask` questions, their reminders, and
+the permission card are sent by the Telegram integration directly and are not
+affected. The list lives in `src/observability/signal-delivery/decision-signals.ts`.
+
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
+| `KOOKR_SIGNAL_TELEGRAM_LEVEL` | `decisions` | `decisions`, `all` | Which operator signals Telegram gets. `decisions`: only alerts an agent is waiting on the operator for (see above). `all`: every signal, as before. Discord always gets every signal. An unknown value logs a warning and keeps `decisions`. |
 | `KOOKR_DISCORD_WEBHOOK_URL` | unset | Public HTTP or HTTPS Discord incoming-webhook URL | Enables Discord delivery of operator signals. Same host safety policy as `KOOKR_WEBHOOK_URL`: rejected (Discord channel disabled, warning logged) when the host is localhost, private/CGNAT/link-local, a cloud-metadata hostname, or the URL embeds credentials. Lab LAN mocks can opt in with `KOOKR_WEBHOOK_ALLOW_PRIVATE` (metadata/link-local still blocked). Operator-supplied local config; do not commit shared secrets. |
 | `KOOKR_SIGNAL_TELEGRAM_CHAT_ID` | unset | Numeric Telegram chat ID | Enables Telegram delivery of operator signals to this chat (reuses `KOOKR_TELEGRAM_BOT_TOKEN`). Independent of the inbound remote-chat allowlist. When unset, alerts fall back to the single allowed user's private chat (see the owner-chat fallback above). |
 | `KOOKR_SIGNAL_DELIVERY` | on when unset | `0`/`false`/`no`/`off` to disable (kill switch) | Master switch for operator-alert delivery (issue #3952). Off: detectors never write the operator-signal outbox, the delivery service is not built, and `alertDestination` reports `nowhere outside the dashboard` with the reason. Test servers (Vitest, Playwright child servers, local-only smoke) start with it off so a test that sets a Telegram token never sends or spools alerts; a test of delivery sets it itself. |

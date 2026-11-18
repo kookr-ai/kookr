@@ -1049,8 +1049,8 @@ describe('diagnostics routes', () => {
     // Real resolver output for each of the four cases the issue names, so the
     // health field is pinned to what the server wiring actually publishes.
     const cases: Array<[string, Record<string, string>, string]> = [
-      ['owner chat', { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '4242' }, 'Telegram (owner chat)'],
-      ['configured chat', { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_SIGNAL_TELEGRAM_CHAT_ID: '-1001' }, 'Telegram (configured chat)'],
+      ['owner chat', { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '4242' }, 'Telegram (owner chat, decisions only)'],
+      ['configured chat', { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_SIGNAL_TELEGRAM_CHAT_ID: '-1001' }, 'Telegram (configured chat, decisions only)'],
       ['Discord', { KOOKR_DISCORD_WEBHOOK_URL: 'https://discord.com/api/webhooks/1/abc' }, 'Discord'],
       ['nowhere', { KOOKR_TELEGRAM_BOT_TOKEN: 'TOK', KOOKR_TELEGRAM_ALLOWED_USERS: '1,2' }, 'nowhere outside the dashboard'],
     ];
