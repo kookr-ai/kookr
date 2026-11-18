@@ -191,6 +191,15 @@ Screenshot/automation notes that save an hour:
 - **Push in the background with no time limit.** The fast gate ran past ten minutes on a host at
   load 55; a background `git push` given a ten-minute limit was killed mid-gate and reported as a
   rejected push. Start it with `run_in_background` and no `timeout`, and wait for its notification.
+- **Clusters stacked on an unmerged branch: rebase them when their base lands.** Once the
+  base pull request is squash-merged, `git rebase --onto origin/staging <old-base-head>
+  <cluster-branch>` moves each cluster onto the merged commit (three of three applied
+  with no conflict in run 7), then reinstall dependencies before running anything: the
+  integration branch may carry a dependency bump the old base did not have.
+- **Implementers' throwaway servers leave stand-in agents behind.** An implementer told to
+  kill only the process it started stops its server and leaves the `dtach` and stand-in
+  agent processes of its test tasks. Ask for their process ids in the report and stop
+  them by id.
 - **This repository has no ESLint.** `pnpm exec eslint` fails with `spawn eslint EACCES`
   because there is nothing to run; conventions are checked by `pnpm typecheck` and the
   design-token tests. Do not record "lint not run" as a gap.

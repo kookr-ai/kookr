@@ -1,6 +1,6 @@
 # RFC: UX Dogfooding Findings — November 2026 (run 7: Lucy's panel, a room of her own)
 
-- **Status**: Draft (living document, updated after every finding)
+- **Status**: Findings recorded and acted on. #4148, #4150 and #4153 are merged; R7-F5, R7-F8 and the follow-up issues #4149, #4151 and #4154 are open.
 - **Author**: Claude (Fable 5.2), dogfooding session on the operator's live dashboard
 - **Date**: 2026-11-17
 - **Base**: `origin/main` @ `5e371d14e` (worktree `kookr-dogfood-202611-run7`)
@@ -40,19 +40,21 @@ seconds: "Push, open PRs, merge when gates pass". So this run did three things.
 
 1. **Landed runs 5 and 6.** One pull request, #4148, after an independent review in four
    parts (nine small defects fixed, no critical finding, every attempt to cause an action
-   without the operator failed). It is on `main`.
+   without the operator failed). It is on `main`, and production updated itself to it
+   during this run.
 2. **Measured what the landed column still lacks**, against the brief's new sentence and
    against the operator's own failed requests of the day: eight findings (R7-F1 to R7-F8).
-3. **Built two clusters on top**: Lucy's room, a full-window view, with a wider side
-   column (#4153); and Lucy knowing what she just said, naming the buttons on her own
-   permission card, and being able to start a task in Kookr's own project (#4150, closing
-   #4143 and #4144).
+3. **Built and merged two clusters on top**: Lucy's room, a full-window view, with a
+   wider side column (#4153); and Lucy knowing what she just said, naming the buttons on
+   her own permission card, and being able to start a task in Kookr's own project (#4150,
+   closing #4143 and #4144). Both are merged into `staging`, where the integration train
+   runs the full suite before moving `main`.
 
 Against the brief:
 
 | The brief asks for | State after this run |
 |---|---|
-| A panel that is not too small: "its own full side panel or even entire window" | The docked column can take up to half the window, and the room gives her the whole window, also as a window of her own on a second screen (#4153, in review). |
+| A panel that is not too small: "its own full side panel or even entire window" | The docked column can take up to half the window, and the room gives her the whole window, also as a window of her own on a second screen (#4153, merged). |
 | A nice chat | Landed in #4148: bubbles with times, a line that says what she is doing, lists, a conversation shared by every tab. In the room it gets a reading column of its own. |
 | Proactive, and speaking only to add value | Landed in #4148: a written briefing on opening and on return, one line when a task fails, stalls or wants review, questions announced in one sentence. Still open: nothing new is spoken, and R7-F5. |
 | Useful actions | Landed in #4148: answer a task's question, reply to a task, close a finished task, each behind a card. #4150 makes "can you make it proceed?" work up to the last step: she names the task, the command and the Approve once button. Pressing it for the operator is the last slice of #3632 and is not built. |
@@ -337,11 +339,11 @@ threshold, as the grouped row's header was made to in run 6 (J-F14).
 
 ## Suggested priority order
 
-1. **Lucy's room and the "Open task" fix** (R7-F2, R7-F7). #4153, in review. The fix
-   alone is worth landing: without it a permission prompt older than five minutes has no
+1. **Lucy's room and the "Open task" fix** (R7-F2, R7-F7). #4153, merged. The fix alone
+   was worth landing: without it a permission prompt older than five minutes had no
    working control on her card.
-2. **She knows what she just said, and can launch in Kookr** (R7-F3, R7-F4). #4150, in
-   review, closes #4143 and #4144.
+2. **She knows what she just said, and can launch in Kookr** (R7-F3, R7-F4). #4150,
+   merged, closes #4143 and #4144.
 3. **Buttons that last as long as the prompt** (R7-F5). Renew the card's five-minute
    binding while the task's terminal still shows the same prompt. Not started. After
    #4150 she at least says the buttons have timed out and opens the task.
@@ -391,8 +393,15 @@ whole suite was not run on the merged tree" is now the integration train's job.
 
 ### Cluster A: she remembers what she said, names her card's buttons, launches in Kookr (R7-F3, R7-F4; issues #4143, #4144)
 
-Branch `fix/lucy-remembers-notices` (worktree `kookr-r7-lucy-notices`), three commits, 43
-files, rebased onto `staging` after #4148 merged.
+Pull request **#4150**, squash-merged into `staging` as `6ef60c8f4` (branch
+`fix/lucy-remembers-notices`, 43 files, rebased onto `staging` after #4148 merged). Its
+review took three rounds: round 1 blocked on a second sentence under one record entry
+keeping the first one's time, and on the untested line that hands a permission notice to
+the record; round 2 on a repeated launch report still shown as old, and on a doc claim
+about where the command sits on the line; round 3 passed. The same fix commit steadied
+three tests that read an audit file as soon as it existed (one had failed once in the
+room branch's push gate). One larger follow-up is #4151: she may quote the command in a
+typed reply, and her replies are kept in the conversation's history.
 
 **What changed.** The server keeps one small record of what she said or wrote unprompted
 (at most six items, none older than 15 minutes, each leaving as soon as what it was about
@@ -439,8 +448,16 @@ listed (3 of 3; fixed in this cluster), and she said that approving a permission
 
 ### Cluster B: Lucy's room and a wider column (R7-F2, R7-F7)
 
-Branch `feat/lucy-room` (worktree `kookr-r7-lucy-room`), four commits, 26 files, rebased
-onto `staging` after #4148 merged.
+Pull request **#4153**, squash-merged into `staging` as `39c2d5448` (branch
+`feat/lucy-room`, 26 files, rebased onto `staging` after #4148 merged). Its review took
+three rounds: round 1 blocked on five small defects (the dashboard's keys were held back
+on the saved flag and not on the room being on screen, so a panel that failed to render
+left them dead; another tab switching the panel off left this tab's room flag set; focus
+lost when leaving on a narrow window; focus pulled out of an open dialog; one untested
+guard); round 2 on the missing test of the real panel's "room shown" report; round 3
+passed. Two larger follow-ups are in #4154: the dashboard under the room can still be
+reached with Tab, and a clip that starts in a room entered from the bubble is logged as
+"minimized". Screenshots: https://claude.ai/artifact/RXsdFs1v1UzZus39DbYyXu (owner-only).
 
 **Lucy's room.** A fourth layout beside the sheet, the floating column and the docked
 column: she covers the whole window, and the dashboard stays mounted underneath. From
@@ -563,3 +580,16 @@ sheet today. At 2560 px the reading column leaves 640 px of margin on each side.
 - 2026-11-18 — **The train.** `staging` holds #4148; the integration train is still busy
   with an unrelated dependency bump (#4146) that it reverted as the cause of a red run, so
   `main` has not moved yet.
+- 2026-11-18 — **Cluster A merged.** Round 2 of #4150's review blocked on two more small
+  defects; fixed (`d99ef200b`), round 3 passed, `kookr merge 4150` squash-merged it into
+  `staging` as `6ef60c8f4`.
+- 2026-11-18 — **Cluster B merged.** #4153 opened (fast gate: 368 related test files,
+  one audit test flaky on its first run; browser specs 34 of 34). Round 1 blocked on five
+  small defects, round 2 on one test gap, round 3 passed; `kookr merge 4153`
+  squash-merged it into `staging` as `39c2d5448`. Follow-ups filed as #4154.
+- 2026-11-18 — **Deployed.** The train promoted #4148 to `main`, and production updated
+  itself to a `main` that contains it while this run was still working.
+- 2026-11-18 — **Phase 5.** Playbook lessons of this run are in this branch (ask the push
+  question early, look for unpushed work first, review a large stack in parts, push in the
+  background with no time limit, rebase stacked clusters onto `staging` once their base
+  has merged). Stopped the throwaway servers and their stand-in agents.
