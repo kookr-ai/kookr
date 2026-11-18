@@ -305,7 +305,13 @@ export async function recoverCrashedSessions(
 
     // Ask the operator first (issue #4215): record the task, leave it stopped, relaunch nothing.
     // Every guard above still applies, so a parked task is one recovery would have relaunched.
-    if (options.parkForOperator && isTerminalStatus(task.status)) {
+    // A running Ralph loop is not parked: Ralph's startup reconcile, which runs right after this, closes
+    // the loop of a task left stopped with no live session, so it is relaunched at once as before.
+    if (options.parkForOperator && isTerminalStatus(task.status) && task.ralphLoop?.status !== 'running') {
+      // The same-pass bookkeeping the relaunch path does: a second dead session of this task, or
+      // another task with the same prompt, is then skipped as a duplicate instead of parked again.
+      relaunchedTaskIds.add(task.id);
+      relaunchedPromptHashes.add(promptHash);
       const report = await describeReopenResume(task, { activeRalphLoop: false });
       (result.parked ??= []).push({
         taskId: task.id,

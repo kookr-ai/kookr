@@ -41,7 +41,10 @@ beforeEach(async () => {
       reopened.push(taskId);
       return { ok: true, mode: taskId === 't-fresh' ? 'not_resumable' : 'resume' };
     },
-    isTaskTerminal: (taskId) => tasks.get(taskId)?.status === 'terminated',
+    taskSnapshot: (taskId) => {
+      const task = tasks.get(taskId);
+      return task ? { status: String(task.status), sessions: task.sessions?.length ?? 0 } : undefined;
+    },
     log: () => undefined,
   });
   await service.start();

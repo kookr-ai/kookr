@@ -33,6 +33,18 @@ export interface InterruptedTaskEntry {
   mode: InterruptedTaskMode;
   /** Why a `fresh` task cannot resume its conversation. */
   reason?: string;
+  /**
+   * The task as it was when parked, stamped by the service. A decision acts on the task only while it
+   * is still exactly this: if the operator acknowledged, cancelled or relaunched it meanwhile (even a
+   * relaunch that has since ended again), it is skipped rather than relaunched behind their back.
+   */
+  parkedAs?: InterruptedTaskSnapshot;
+}
+
+/** What identifies a parked task's state: its status and how many sessions it has had. */
+export interface InterruptedTaskSnapshot {
+  status: string;
+  sessions: number;
 }
 
 export type InterruptedBatchChoice = 'resume' | 'resume_all' | 'leave';
@@ -74,6 +86,11 @@ export interface InterruptedTasksAskPort {
   raise(batch: InterruptedBatch): Promise<{ askId: string } | { error: string }>;
   /** Close a still-open question once the batch was decided another way. */
   close(askId: string, outcomeText: string): Promise<void>;
+  /**
+   * The choice an already-answered question stands for, else undefined. Used at start-up for an
+   * answer given while this service could not yet hear it (during a restart).
+   */
+  answerOf?(askId: string): InterruptedBatchChoice | undefined;
 }
 
 export interface InterruptedTasksServiceDeps {
@@ -85,10 +102,16 @@ export interface InterruptedTasksServiceDeps {
    * conversation when one is recoverable, else restarts from the prompt.
    */
   reopenTask: (taskId: string) => Promise<{ ok: boolean; mode?: string; detail?: string }>;
-  /** True while the task is still terminal, i.e. nobody relaunched it meanwhile. */
-  isTaskTerminal: (taskId: string) => boolean;
+  /** The task's current status and session count, or undefined when the task is gone. */
+  taskSnapshot: (taskId: string) => InterruptedTaskSnapshot | undefined;
+  /**
+   * Whether the task's conversation can still be resumed now. Checked before a `resume` decision
+   * relaunches a task parked as resumable: if its conversation vanished meanwhile, Reopen would
+   * restart it from the prompt, which only an explicit `resume_all` may do. Absent: not re-checked.
+   */
+  canResume?: (taskId: string) => Promise<boolean>;
   ask?: InterruptedTasksAskPort;
-  /** Told about every decided batch (log line, interaction log, alert). */
+  /** Told about every decided batch. */
   onDecided?: (batch: InterruptedBatch) => void;
   now?: () => number;
   log?: (message: string) => void;
@@ -105,6 +128,7 @@ export class InterruptedTasksService {
   private timer: NodeJS.Timeout | null = null;
   /** Serializes every read-modify-write of the batch file. */
   private chain: Promise<unknown> = Promise.resolve();
+  private loaded = false;
 
   constructor(private readonly deps: InterruptedTasksServiceDeps) {
     this.now = deps.now ?? Date.now;
@@ -114,22 +138,31 @@ export class InterruptedTasksService {
   }
 
   /**
-   * Load the batch file and re-arm (or decide) a batch left pending by an earlier process. A pending
-   * batch with no question yet (its question could not be raised, or was lost) gets one now.
+   * Read the batch file. Every operation waits for it, so a batch an earlier process left pending is
+   * never overwritten or missed, whatever runs first; call it early anyway, before the routes serve.
+   */
+  load(): Promise<void> {
+    return this.serialize(() => this.ensureLoaded());
+  }
+
+  /**
+   * Take up a batch an earlier process left pending, once the operator channels are up: apply an
+   * answer given while this process could not hear it, ask the question if it was never asked, and
+   * arm the deadline (deciding at once when it passed while Kookr was down).
    */
   start(): Promise<void> {
     return this.serialize(async () => {
-      const loaded = await readJsonFile<InterruptedTasksFile | undefined>(this.deps.filePath, undefined, {
-        quarantineCorrupt: true,
-        warningPrefix: 'interrupted-tasks',
-      }).catch((err: unknown) => {
-        this.log(`[interrupted-tasks] could not read ${this.deps.filePath}: ${errorText(err)}`);
-        return undefined;
-      });
-      this.file = loaded && Array.isArray(loaded.batches) ? loaded : { batches: [] };
+      await this.ensureLoaded();
       const batch = this.pending();
-      if (batch && batch.askId === undefined && batch.deadlineAt > this.now()) await this.raiseAsk(batch);
-    }).then(() => this.armOrExpire());
+      if (!batch) return undefined;
+      const answered = batch.askId !== undefined ? this.deps.ask?.answerOf?.(batch.askId) : undefined;
+      if (answered) return { batchId: batch.id, choice: answered };
+      if (batch.askId === undefined && batch.deadlineAt > this.now()) await this.raiseAsk(batch);
+      return undefined;
+    }).then(async (answered) => {
+      if (answered) await this.decide(answered.batchId, answered.choice, 'operator', { fromAsk: true });
+      this.armOrExpire();
+    });
   }
 
   stop(): void {
@@ -154,12 +187,18 @@ export class InterruptedTasksService {
   park(entries: InterruptedTaskEntry[], source: InterruptedBatch['source']): Promise<InterruptedBatch | undefined> {
     if (entries.length === 0) return Promise.resolve(undefined);
     return this.serialize(async () => {
+      await this.ensureLoaded();
       const now = this.now();
+      const stamped = entries.map((entry) => ({ ...entry, parkedAs: this.deps.taskSnapshot(entry.taskId) }));
       let batch = this.pending();
       const previousAskId = batch?.askId;
       if (batch) {
         const known = new Set(batch.tasks.map((t) => t.taskId));
-        for (const entry of entries) if (!known.has(entry.taskId)) batch.tasks.push(entry);
+        for (const entry of stamped) {
+          if (known.has(entry.taskId)) continue;
+          known.add(entry.taskId);
+          batch.tasks.push(entry);
+        }
         batch.deadlineAt = now + this.deps.timeoutMs;
         delete batch.askId;
       } else {
@@ -169,7 +208,7 @@ export class InterruptedTasksService {
           createdAt: now,
           deadlineAt: now + this.deps.timeoutMs,
           state: 'pending',
-          tasks: dedupeEntries(entries),
+          tasks: dedupeEntries(stamped),
         };
         this.file.batches.push(batch);
       }
@@ -189,17 +228,24 @@ export class InterruptedTasksService {
 
   /** The operator answered the batch's question. Unknown or already-decided asks are ignored. */
   answerFromAsk(askId: string, choice: InterruptedBatchChoice): Promise<InterruptedBatch | undefined> {
-    const batch = this.file.batches.find((b) => b.askId === askId);
-    if (!batch) return Promise.resolve(undefined);
-    return this.decide(batch.id, choice, 'operator');
+    return this.serialize(async () => {
+      await this.ensureLoaded();
+      return this.file.batches.find((b) => b.askId === askId)?.id;
+    }).then((batchId) => (batchId ? this.decide(batchId, choice, 'operator', { fromAsk: true }) : undefined));
   }
 
   /**
    * Apply a decision to a pending batch, once: a second decision (the timer
    * racing an answer, two channels answering) finds it decided and does nothing.
    */
-  decide(batchId: string, choice: InterruptedBatchChoice, by: 'operator' | 'timeout'): Promise<InterruptedBatch | undefined> {
+  decide(
+    batchId: string,
+    choice: InterruptedBatchChoice,
+    by: 'operator' | 'timeout',
+    opts: { fromAsk?: boolean } = {},
+  ): Promise<InterruptedBatch | undefined> {
     return this.serialize(async () => {
+      await this.ensureLoaded();
       const batch = this.file.batches.find((b) => b.id === batchId);
       if (!batch || batch.state !== 'pending') return undefined;
       batch.state = 'decided';
@@ -211,8 +257,12 @@ export class InterruptedTasksService {
       }
       this.pruneDecided();
       await this.persist();
-      if (by === 'timeout' && batch.askId) {
-        await this.closeAsk(batch.askId, `No answer in time: ${summarizeOutcomes(batch)}.`);
+      // Decided any way but by answering the question (the deadline, the CLI): close the question,
+      // so Telegram, the dashboard and Lucy stop asking something already settled.
+      if (batch.askId && !opts.fromAsk) {
+        await this.closeAsk(batch.askId, by === 'timeout'
+          ? `No answer in time: ${summarizeOutcomes(batch)}.`
+          : `Decided from the terminal (${choice}): ${summarizeOutcomes(batch)}.`);
       }
       this.log(`[interrupted-tasks] batch ${batch.id} decided (${choice}, by ${by}): ${summarizeOutcomes(batch)}`);
       try {
@@ -233,8 +283,13 @@ export class InterruptedTasksService {
     if (entry.mode === 'fresh' && choice !== 'resume_all') {
       return { taskId, outcome: 'left_stopped', detail: `no conversation to resume (${entry.reason ?? 'unknown reason'})` };
     }
-    if (!this.deps.isTaskTerminal(taskId)) {
-      return { taskId, outcome: 'skipped', detail: 'task is no longer stopped (already relaunched or removed)' };
+    const now = this.deps.taskSnapshot(taskId);
+    if (!now) return { taskId, outcome: 'skipped', detail: 'task no longer exists' };
+    if (entry.parkedAs && (now.status !== entry.parkedAs.status || now.sessions !== entry.parkedAs.sessions)) {
+      return { taskId, outcome: 'skipped', detail: 'task changed since it was parked (relaunched, acknowledged or cancelled)' };
+    }
+    if (choice === 'resume' && this.deps.canResume && !(await this.deps.canResume(taskId).catch(() => false))) {
+      return { taskId, outcome: 'left_stopped', detail: 'its conversation can no longer be resumed' };
     }
     try {
       const result = await this.deps.reopenTask(taskId);
@@ -262,6 +317,19 @@ export class InterruptedTasksService {
       });
     }, wait);
     this.timer.unref?.();
+  }
+
+  private async ensureLoaded(): Promise<void> {
+    if (this.loaded) return;
+    const loaded = await readJsonFile<InterruptedTasksFile | undefined>(this.deps.filePath, undefined, {
+      quarantineCorrupt: true,
+      warningPrefix: 'interrupted-tasks',
+    }).catch((err: unknown) => {
+      this.log(`[interrupted-tasks] could not read ${this.deps.filePath}: ${errorText(err)}`);
+      return undefined;
+    });
+    this.file = loaded && Array.isArray(loaded.batches) ? loaded : { batches: [] };
+    this.loaded = true;
   }
 
   private async raiseAsk(batch: InterruptedBatch): Promise<void> {

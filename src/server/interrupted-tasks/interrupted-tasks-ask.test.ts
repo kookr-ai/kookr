@@ -21,7 +21,7 @@ describe('buildInterruptedTasksQuestion', () => {
     expect(q.question).toBe('Kookr restarted and found 1 interrupted task. Resume it?');
     expect(q.options).toEqual(['Resume', 'Leave stopped']);
     expect(q.context).toContain('• Fix the parser: continues its conversation');
-    expect(q.context).toContain('With no answer in 10 min, the 1 task with a conversation resume.');
+    expect(q.context).toContain('With no answer in 10 min, the task with a conversation resumes.');
   });
 
   test('adds the restart option, and says what happens to each task, when some cannot resume', () => {
@@ -61,6 +61,7 @@ describe('createInterruptedTasksAskPort', () => {
         return { ok: true, ask: { id: 'x1' } as never, deduped: false, redacted: [] };
       },
       cancel: async () => undefined,
+      all: () => [],
     }, () => NOW);
     expect(await port.raise(batch([{ taskId: 'a', name: 'A', mode: 'resume' }], 7))).toEqual({ askId: 'x1' });
     expect(calls[0]).toMatchObject({ system: INTERRUPTED_TASKS_SYSTEM, allowText: false, timeoutSec: 7 * 60 });
@@ -70,6 +71,7 @@ describe('createInterruptedTasksAskPort', () => {
     const port = createInterruptedTasksAskPort({
       createSystem: async () => ({ ok: false, error: { code: 'not_configured' } }),
       cancel: async () => undefined,
+      all: () => [],
     }, () => NOW);
     expect(await port.raise(batch([{ taskId: 'a', name: 'A', mode: 'resume' }]))).toEqual({ error: 'not_configured' });
   });

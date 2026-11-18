@@ -19,6 +19,7 @@ export const INTERRUPTED_CHOICE_LABELS: Record<InterruptedBatchChoice, string> =
 export interface InterruptedTasksAskService {
   createSystem(input: CreateSystemAskInput): Promise<CreateAskResult>;
   cancel(id: string, note?: string): Promise<unknown>;
+  all(): AskRecord[];
 }
 
 export function createInterruptedTasksAskPort(
@@ -46,6 +47,10 @@ export function createInterruptedTasksAskPort(
     async close(askId, outcomeText) {
       await asks.cancel(askId, outcomeText);
     },
+    answerOf(askId) {
+      const ask = asks.all().find((a) => a.id === askId);
+      return ask ? interruptedChoiceFromAsk(ask) : undefined;
+    },
   };
 }
 
@@ -68,7 +73,7 @@ export function buildInterruptedTasksQuestion(
   lines.push('');
   lines.push(
     resumable.length > 0
-      ? `With no answer in ${minutes} min, the ${plural(resumable.length, 'task')} with a conversation resume.`
+      ? `With no answer in ${minutes} min, ${resumable.length === 1 ? 'the task with a conversation resumes' : `the ${resumable.length} tasks with a conversation resume`}.`
       : `With no answer in ${minutes} min, nothing is restarted.`,
   );
   const options = [INTERRUPTED_CHOICE_LABELS.resume];

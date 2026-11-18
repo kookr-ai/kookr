@@ -200,6 +200,7 @@ import { createDeployConvergenceControllerFromEnv } from './deploy-convergence-c
 import { isTerminalStatus } from '../core/task-status.js';
 import { InterruptedTasksService, resolveInterruptedTasksPolicy } from './interrupted-tasks/interrupted-tasks-service.js';
 import { createInterruptedTasksAskPort, interruptedChoiceFromAsk } from './interrupted-tasks/interrupted-tasks-ask.js';
+import { describeReopenResume } from './resume-context.js';
 import type { TaskLifecycleCommandResult } from './use-cases/task-lifecycle-commands.js';
 import { GhUmbrellaChainClient } from '../adapters/github-umbrella-chain-client.js';
 import {
@@ -1394,12 +1395,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         ...('reason' in result.resume && result.resume.reason ? { detail: result.resume.reason } : {}),
       };
     },
-    isTaskTerminal: (taskId) => {
+    taskSnapshot: (taskId) => {
       const task = taskStore.getTask(taskId);
-      return task !== undefined && isTerminalStatus(task.status);
+      return task ? { status: task.status, sessions: task.sessions.length } : undefined;
+    },
+    canResume: async (taskId) => {
+      const task = taskStore.getTask(taskId);
+      return task !== undefined && (await describeReopenResume(task, { activeRalphLoop: false })).mode === 'resume';
     },
     ...(askService ? { ask: createInterruptedTasksAskPort(askService) } : {}),
   });
+  // Read the batch file now, before the routes serve and Telegram polls, so an early answer or
+  // `kookr interrupted ask` sees a batch an earlier process left pending.
+  await interruptedTasks.load();
   if (askService) {
     askService.onChange((change) => {
       if (change.kind !== 'resolved') return;

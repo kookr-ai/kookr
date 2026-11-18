@@ -118,7 +118,10 @@ export function formatBatch(batch: Batch, nowMs: number): string {
   const lines: string[] = [];
   if (batch.state === 'pending') {
     const minutes = Math.max(0, Math.round((batch.deadlineAt - nowMs) / 60_000));
-    lines.push(`Batch ${batch.id} (${batch.source}): waiting for your answer; resumes in ${minutes} min without one.`);
+    const atDeadline = batch.tasks.some((t) => t.mode === 'resume')
+      ? `the tasks with a conversation resume in ${minutes} min without one`
+      : `nothing restarts without one (deadline in ${minutes} min)`;
+    lines.push(`Batch ${batch.id} (${batch.source}): waiting for your answer; ${atDeadline}.`);
   } else {
     const d = batch.decision!;
     lines.push(`Batch ${batch.id} (${batch.source}): decided "${d.choice}" by ${d.by} at ${new Date(d.at).toISOString()}.`);

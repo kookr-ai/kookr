@@ -1864,6 +1864,35 @@ describe('Crash Recovery', () => {
     expect(isTerminalStatus(taskStore.getTask(fresh.id)!.status)).toBe(true);
   });
 
+  test('parkForOperator: two tasks with the same prompt are parked once, like the relaunch path (#4215)', async () => {
+    const first = await setupCrashedTask('Identical prompt text', join(tempDir, 'dup-a'));
+    const second = await setupCrashedTask('Identical prompt text', join(tempDir, 'dup-b'));
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    expect(result.parked).toHaveLength(1);
+    expect([first.id, second.id]).toContain(result.parked![0]!.taskId);
+    expect(result.skipped.map((s) => s.reason)).toContain('duplicate prompt already running or relaunched');
+  });
+
+  test('parkForOperator: a task with a running Ralph loop is not parked; it takes the normal recovery path (#4215)', async () => {
+    const cwd = join(tempDir, 'ralph-park');
+    const task = await setupCrashedTask('Loop prompt', cwd);
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = {
+      prompt: 'Loop prompt',
+      iterationCap: 3,
+      currentIteration: 1,
+      status: 'running',
+    } as NonNullable<ReturnType<typeof taskStore.getTask>>['ralphLoop'];
+    const reconcileResult = await reconcile(taskStore, terminal);
+    // Reconcile exempts running loops from termination; cover a loop task that is stopped anyway.
+    if (taskStore.getTask(task.id)!.status !== 'terminated') taskStore.terminateTask(task.id);
+    expect(taskStore.getTask(task.id)!.ralphLoop?.status).toBe('running');
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    // Parking would leave it stopped, and Ralph's startup reconcile closes the loop of a stopped task.
+    expect(result.parked ?? []).toEqual([]);
+    expect(result.skipped.map((s) => s.reason)).not.toContain(PARKED_FOR_OPERATOR_REASON);
+  });
+
   test('fresh fallback: no claudeSessionId persisted (agent crashed before SessionStart)', async () => {
     const cwd = join(tempDir, 'project-no-session');
     const task = await setupCrashedTask('Fix the bug', cwd);
