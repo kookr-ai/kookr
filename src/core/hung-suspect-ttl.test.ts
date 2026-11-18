@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   listExpiredHungSuspectTasks,
   selectExpiredHungSuspectTasks,
@@ -466,6 +466,7 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
       skipped_under_ttl: 1,
       skipped_exempt_anomaly: 0,
       skipped_provider_paused: 1,
+      skipped_supervision_wake_scheduled: 0,
     });
     // Task-id outcomes cover every candidate (issue #2072 audit).
     expect(sel.outcomes).toHaveLength(6);
@@ -528,5 +529,55 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
       isHoldingOpenPr: () => false,
     });
     expect(pastTtl.expired).toHaveLength(1);
+  });
+});
+
+describe('selectExpiredHungSuspectTasks supervisor-wake exemption (issue #4162)', () => {
+  const base = {
+    now: NOW,
+    ttlMs: TTL_MS,
+    isHungSuspect: alwaysHung,
+    getLiveness: () => silentFor(TTL_MS + 60_000),
+    isHoldingOpenPr: () => false as const,
+  };
+
+  it('skips a past-TTL task the predicate reports as waiting on a scheduled wake', () => {
+    const supervisor = hungTask({ id: 'supervisor' });
+    const sel = selectExpiredHungSuspectTasks([supervisor], {
+      ...base,
+      isAwaitingScheduledWake: () => true,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips).toEqual({ ...emptyHungSuspectReclaimSkipCounts(), skipped_supervision_wake_scheduled: 1 });
+    expect(sel.outcomes).toEqual([
+      { taskId: 'supervisor', outcome: 'skipped_supervision_wake_scheduled', silentForMs: TTL_MS + 60_000 },
+    ]);
+  });
+
+  it('only a definite true exempts: false, undefined and an omitted predicate all select', () => {
+    for (const isAwaitingScheduledWake of [() => false, () => undefined, undefined]) {
+      const task = hungTask({ id: 'idle' });
+      const sel = selectExpiredHungSuspectTasks([task], { ...base, isAwaitingScheduledWake });
+      expect(sel.expired.map((e) => e.task.id)).toEqual(['idle']);
+    }
+  });
+
+  it('is only consulted past the TTL, so under-TTL silence is still counted as under-TTL', () => {
+    const exempt = vi.fn(() => true);
+    const sel = selectExpiredHungSuspectTasks([hungTask({ id: 'young' })], {
+      ...base,
+      getLiveness: () => silentFor(TTL_MS - 60_000),
+      isAwaitingScheduledWake: exempt,
+    });
+    expect(sel.skips.skipped_under_ttl).toBe(1);
+    expect(exempt).not.toHaveBeenCalled();
+  });
+
+  it('exempts only the supervisor; other past-TTL tasks in the same pass are still selected', () => {
+    const sel = selectExpiredHungSuspectTasks(
+      [hungTask({ id: 'supervisor' }), hungTask({ id: 'worker' })],
+      { ...base, isAwaitingScheduledWake: (task) => task.id === 'supervisor' },
+    );
+    expect(sel.expired.map((e) => e.task.id)).toEqual(['worker']);
   });
 });

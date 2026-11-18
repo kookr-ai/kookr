@@ -123,6 +123,22 @@ describe('liveness tick wires delivery probes into the TTL reapers (issue #3578)
       clearAllTimers(handles);
     }
   });
+
+  test('the hungSuspect reaper receives the supervisor-wake exemption (issue #4162)', async () => {
+    vi.useFakeTimers();
+    const isSupervisorAwaitingScheduledWake = vi.fn(() => true);
+
+    const handles = startLifecycleTimers(wiringDeps({ isSupervisorAwaitingScheduledWake }));
+    try {
+      await vi.advanceTimersByTimeAsync(60);
+
+      expect(hungSuspectCalls.length).toBeGreaterThan(0);
+      expect((hungSuspectCalls[0] as { isAwaitingScheduledWake?: unknown }).isAwaitingScheduledWake)
+        .toBe(isSupervisorAwaitingScheduledWake);
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
 });
 
 describe('liveness tick wires the quota poller into the provider-paused reaper (issue #3562)', () => {

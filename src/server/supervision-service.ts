@@ -38,6 +38,7 @@ import {
   DEFAULT_POLICY_CONFIG,
   MINUTE_MS,
   decide,
+  nextHeartbeatMs,
   nextWake,
   type PolicyConfig,
   type SupervisionAction,
@@ -71,6 +72,13 @@ export const SUPERVISION_SETTLE_MS = MINUTE_MS;
 /** A task terminated for a recoverable reason this recently may still be relaunched by crash recovery. */
 export const SUPERVISION_RECOVERY_GRACE_MS = 2 * MINUTE_MS;
 const DEFAULT_HEARTBEAT_MIN = 45;
+/**
+ * How long past its due time a scheduled wake still protects an idle supervisor
+ * from the hungSuspect TTL reclaim (issue #4162): the ticks the policy allows
+ * before it calls a wake undeliverable. The wake is typed on the first
+ * supervision tick after it is due, which may run after the liveness tick.
+ */
+export const SUPERVISION_WAKE_GRACE_MS = DEFAULT_POLICY_CONFIG.undeliverableTicks * SUPERVISION_TICK_INTERVAL_MS;
 
 /** Same truthiness as `isSelfAdvancingDisabled`: set and not one of the explicit "off" spellings. */
 export function isSupervisionWakeDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -88,6 +96,30 @@ export function resolveHeartbeatMs(env: NodeJS.ProcessEnv = process.env): number
 }
 
 type WakeKind = 'heartbeat' | 'deadline' | 'final';
+
+/**
+ * True when `taskId` is the current supervisor of `state` and Kookr still owes
+ * it a wake that is not overdue by more than `graceMs` (issue #4162). Such a
+ * supervisor ends its turn idle on purpose (the playbook forbids self-armed
+ * timers while wakes are enabled), so the hungSuspect TTL must not reclaim it
+ * before the wake arrives. Whether wakes are enabled is the caller's check.
+ *
+ * Once the deadline or "targets finished" wake has been delivered no further
+ * wake comes: the supervisor must recap and signal, so it is not exempt.
+ */
+export function isAwaitingScheduledWake(
+  state: SupervisionState,
+  taskId: string,
+  nowMs: number,
+  config: PolicyConfig = DEFAULT_POLICY_CONFIG,
+  graceMs: number = SUPERVISION_WAKE_GRACE_MS,
+): boolean {
+  if (state.endedAt !== undefined || state.supervisorTaskId !== taskId) return false;
+  if (state.deadlineWakeDeliveredAt || state.deadlineWakeAttemptedAt || state.finalWakeDeliveredAt) return false;
+  const deadlineMs = Date.parse(state.deadlineAt);
+  const dueMs = Math.min(nextHeartbeatMs(state, config), Number.isNaN(deadlineMs) ? Number.POSITIVE_INFINITY : deadlineMs);
+  return nowMs <= dueMs + graceMs;
+}
 
 function hhmm(iso: string): string {
   const d = new Date(iso);
@@ -527,6 +559,29 @@ export class SupervisionService {
       return this.alertOperator(state, 'restart-failed');
     }
     return this.completeEpisode(state, newId, now, true);
+  }
+
+  /**
+   * hungSuspect TTL exemption predicate (issue #4162): true only when `taskId`
+   * supervises an active mandate, the last tick found wakes allowed for it, and
+   * its next wake is scheduled (see {@link isAwaitingScheduledWake}). A gated
+   * supervisor arms its own background timer instead (background park), so it
+   * gets no exemption here. Synchronous, read-only, and never throws: an error
+   * means "not exempt" so the reclaim sweep keeps running.
+   */
+  isSupervisorAwaitingScheduledWake(taskId: string): boolean {
+    try {
+      // The kill switch or a drain may have flipped since the last tick recorded the gate.
+      if (this.globallyGated()) return false;
+      const nowMs = this.now().getTime();
+      const cfg = this.policyConfig(true);
+      return listSupervisionStates(this.deps.dataDir).some((state) =>
+        this.gateByProject.get(state.supervisionId) === true
+        && isAwaitingScheduledWake(state, taskId, nowMs, cfg));
+    } catch (err) {
+      this.log(`wake-exemption check failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
   }
 
   // ---- operator end + status ----

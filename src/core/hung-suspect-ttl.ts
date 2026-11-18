@@ -28,6 +28,12 @@ import type { HungTaskLivenessEvidence } from './hung-task-reaper.js';
  * unmerged PR must NEVER be terminated out from under it — that PR is the
  * actual deliverable. See {@link ListExpiredHungSuspectTasksOpts.isHoldingOpenPr}.
  *
+ * Supervisor-wake exemption (issue #4162): an attached-task supervisor with
+ * wakes enabled ends its turn idle and waits for Kookr's heartbeat wake
+ * (45 min by default) — longer than this TTL. While its next wake is
+ * scheduled it is exempt. See
+ * {@link ListExpiredHungSuspectTasksOpts.isAwaitingScheduledWake}.
+ *
  * Skip-reason breakdown (issue #2045): every hungSuspect candidate that is
  * not selected is counted under exactly one skip reason so operators can see
  * why `reclaimedTotal` stays 0 (under-TTL after redeploy, open-PR fail-safe,
@@ -78,7 +84,8 @@ export type HungSuspectReclaimSkipReason =
   | 'skipped_open_pr_unknown'
   | 'skipped_under_ttl'
   | 'skipped_exempt_anomaly'
-  | 'skipped_provider_paused';
+  | 'skipped_provider_paused'
+  | 'skipped_supervision_wake_scheduled';
 
 export const HUNG_SUSPECT_RECLAIM_SKIP_REASONS: readonly HungSuspectReclaimSkipReason[] = [
   'skipped_no_liveness',
@@ -87,6 +94,7 @@ export const HUNG_SUSPECT_RECLAIM_SKIP_REASONS: readonly HungSuspectReclaimSkipR
   'skipped_under_ttl',
   'skipped_exempt_anomaly',
   'skipped_provider_paused',
+  'skipped_supervision_wake_scheduled',
 ] as const;
 
 export type HungSuspectReclaimSkipCounts = Record<HungSuspectReclaimSkipReason, number>;
@@ -99,6 +107,7 @@ export function emptyHungSuspectReclaimSkipCounts(): HungSuspectReclaimSkipCount
     skipped_under_ttl: 0,
     skipped_exempt_anomaly: 0,
     skipped_provider_paused: 0,
+    skipped_supervision_wake_scheduled: 0,
   };
 }
 
@@ -187,6 +196,19 @@ export interface ListExpiredHungSuspectTasksOpts {
    * Not widened by #2072 (open-PR fail-safe stays).
    */
   isHoldingOpenPr?: (task: Task) => boolean | undefined;
+  /**
+   * Supervisor-wake exemption (issue #4162). Returns `true` when the task is
+   * the current supervisor of an active task supervision whose next Kookr
+   * wake is scheduled and not yet overdue, with wakes enabled. Such a
+   * supervisor is idle by design between wakes, and the heartbeat interval
+   * (45 min by default) is longer than this TTL.
+   *
+   * Unlike {@link isHoldingOpenPr}, this is NOT fail-safe: only a definite
+   * `true` exempts. Omitted, `false` or `undefined` leave the task
+   * reclaimable, so a supervisor whose wakes are off or overdue, and every
+   * other task, keep the normal TTL.
+   */
+  isAwaitingScheduledWake?: (task: Task) => boolean | undefined;
 }
 
 /**
@@ -205,6 +227,8 @@ export interface ListExpiredHungSuspectTasksOpts {
  * - provider pause → `skipped_provider_paused`;
  * - missing / all-zero liveness → `skipped_no_liveness`;
  * - silence under TTL → `skipped_under_ttl`;
+ * - supervisor waiting on a scheduled Kookr wake (`isAwaitingScheduledWake`
+ *   returns `true`) → `skipped_supervision_wake_scheduled` (issue #4162);
  * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
  *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
  * - otherwise selected (including long-silent needs_input / permission_blocked
@@ -259,6 +283,18 @@ export function selectExpiredHungSuspectTasks(
     if (silentForMs < ttlMs) {
       skips.skipped_under_ttl += 1;
       outcomes.push({ taskId: task.id, outcome: 'skipped_under_ttl', silentForMs });
+      continue;
+    }
+
+    // Issue #4162: a supervisor idling until its next scheduled wake is
+    // silent by design. Only a definite `true` exempts.
+    if (opts.isAwaitingScheduledWake?.(task) === true) {
+      skips.skipped_supervision_wake_scheduled += 1;
+      outcomes.push({
+        taskId: task.id,
+        outcome: 'skipped_supervision_wake_scheduled',
+        silentForMs,
+      });
       continue;
     }
 

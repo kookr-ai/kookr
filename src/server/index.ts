@@ -4331,6 +4331,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getFinishedAwaitingAckSoftTtlMs,
       getCapacityAllowsFinishedAwaitingAckEarlyReclaim,
       isTaskHoldingOpenPr,
+      // Issue #4162: an idle supervisor waiting for its next wake is not hung.
+      isSupervisorAwaitingScheduledWake: (task) => supervisionService.isSupervisorAwaitingScheduledWake(task.id),
       finishedAwaitingAckTtlReclaimMetrics,
       getHungSuspectTtlMs,
       hungSuspectTtlReclaimMetrics,

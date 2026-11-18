@@ -99,6 +99,11 @@ events, pane changes, tokens) for longer than the operator setting `hungSuspectT
 25 minutes by default, 60 at most. A task that holds an open, unmerged pull request is exempt.
 The rule applies to you and to every worker you supervise.
 
+While `wakesEnabled` is `true`, you are exempt between wakes: Kookr leaves its supervisor alone
+until a few minutes after its next scheduled wake, so ending your turn idle is safe. That
+exemption stops once the deadline or "targets finished" wake has reached you, and whenever
+wakes are disabled, so after those wakes recap and signal completion-ready promptly.
+
 One case is excused for longer. A turn that ends while its own `run_in_background` command is
 still running counts as parked, and the watchdog excuses a parked task for up to 45 minutes
 (a fixed watchdog limit, not a setting). That is why the single self-wake timer above is safe.

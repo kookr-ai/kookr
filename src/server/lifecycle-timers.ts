@@ -307,6 +307,13 @@ export interface TimerDeps {
    */
   isTaskHoldingOpenPr?: (task: Task) => boolean | undefined;
   /**
+   * Supervisor-wake exemption for the hungSuspect TTL reclaim (issue #4162),
+   * backed by `SupervisionService.isSupervisorAwaitingScheduledWake`. True only
+   * for a supervisor idling until its next scheduled wake. Absent ⇒ no task is
+   * exempt on this ground.
+   */
+  isSupervisorAwaitingScheduledWake?: (task: Task) => boolean;
+  /**
    * Optional counters for the finishedAwaitingAck TTL reclaim (#1884),
    * meta auto-complete (#2070), skip-reason breakdown (#2084), and
    * capacity-pressure soft reclaim (#2355), exposed via `/metrics` + `/api/health`.
@@ -2158,6 +2165,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             // (issue #1667 / independent review PR #1955).
             isProviderPaused: isTaskProviderPaused,
             isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+            isAwaitingScheduledWake: deps.isSupervisorAwaitingScheduledWake,
             resolveMergedPr: deps.resolveMergedPr,
             resolveMergedPrByBranch: deps.resolveMergedPrByBranch,
             metrics: deps.hungSuspectTtlReclaimMetrics,
