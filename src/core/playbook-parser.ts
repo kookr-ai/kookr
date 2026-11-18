@@ -103,7 +103,7 @@ export function parsePlaybook(
     scope,
     name: meta.name,
     description: typeof meta.description === 'string' ? meta.description : '',
-    parameters: parseParameters(meta.parameters),
+    parameters: parseParameters(meta.parameters, relativePath),
     checklist: parseStringArray(meta.checklist),
     tags,
     ...(loop.value ? { loop: loop.value } : {}),
@@ -510,10 +510,23 @@ function parseOptionalNumber(
   return { ok: true, value: Number(text) };
 }
 
-function parseParameters(raw: unknown): PlaybookParameter[] {
+/**
+ * Parse the `parameters` block. Every list item must be a `key: value` mapping
+ * (`- name: mode`). Any other item (`- name:mode`, a bare word, a quoted
+ * string) is a fatal parse error naming the item: the frontmatter parser stops
+ * the list at such an item, so continuing would silently drop every parameter
+ * after it (#4160).
+ */
+function parseParameters(raw: unknown, relativePath: string): PlaybookParameter[] {
   if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+  const badIndex = raw.findIndex((item) => !isPlainRecord(item));
+  if (badIndex !== -1) {
+    throw new PlaybookParseError(
+      `Playbook "${relativePath}": parameters item ${badIndex + 1} is not a "key: value" mapping: ` +
+        `${JSON.stringify(raw[badIndex])} (write "- name: value", with a space after the colon)`,
+    );
+  }
+  return (raw as Record<string, unknown>[])
     .map((item) => {
       const gatedBy = parseParameterGatedBy(item.gatedBy);
       return {

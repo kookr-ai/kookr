@@ -122,6 +122,42 @@ Body.
     expect(pb.checklist).toEqual(['done: really']);
   });
 
+  test.each([
+    ['a key with no space after the colon', '- name:mode'],
+    ['a bare word', '- mode'],
+    ['a quoted key: value pair', '- "name: mode"'],
+  ])('rejects a parameters item that is %s instead of dropping the rest (#4160)', (_label, item) => {
+    const content = `---
+name: Bad parameter item
+parameters:
+  ${item}
+    description: First
+  - name: second
+    description: Second
+---
+Body.
+`;
+    expect(() => parsePlaybook(content, 'bad-param.md', '/project')).toThrow(PlaybookParseError);
+    expect(() => parsePlaybook(content, 'bad-param.md', '/project')).toThrow(
+      /Playbook "bad-param\.md": parameters item 1 is not a "key: value" mapping/,
+    );
+  });
+
+  test('names the position of the offending parameters item (#4160)', () => {
+    const content = `---
+name: Bad second item
+parameters:
+  - name: first
+    description: First
+  - name:second
+---
+Body.
+`;
+    expect(() => parsePlaybook(content, 'bad-second.md', '/project')).toThrow(
+      'Playbook "bad-second.md": parameters item 2 is not a "key: value" mapping: "name:second"',
+    );
+  });
+
   test('parses a minimal playbook with only name', () => {
     const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/project');
 
