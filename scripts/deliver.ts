@@ -24,8 +24,7 @@
 //   N   a step's command failed; N is that command's own exit code
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -73,7 +72,8 @@ Options:
   --specialists <list>    Review roles that ran, for the approved review marker
                           (for example: independent-review).
   --bypass-reason <text>  Write a bypass review marker with this reason instead.
-  --body-file <path>      PR body file (default: <tmp>/kookr-deliver-<branch>.md).
+  --body-file <path>      PR body file (default: .tmp/kookr-deliver-<branch>.md in the
+                          repository root, git-ignored).
   --title <text>          PR title (default: subject of the last commit).
   --base <branch>         PR base branch (default: main).
   --repo <owner/name>     Repository for gh and kookr merge (default: the current one).
@@ -187,6 +187,7 @@ export interface DeliverDeps {
    * returns stdout instead of streaming it to the terminal; stderr always streams.
    */
   run(cmd: string, args: string[], opts?: { capture?: boolean }): RunResult;
+  /** Write a file, creating its parent directory when it does not exist. */
   writeFile(path: string, content: string): void;
   fileExists(path: string): boolean;
   sleep(ms: number): Promise<void>;
@@ -208,7 +209,11 @@ export function realDeps(): DeliverDeps {
       }
       return { code: r.status ?? 1, stdout: r.stdout ?? '' };
     },
-    writeFile: (path, content) => writeFileSync(path, content),
+    writeFile(path, content) {
+      // A fresh worktree has no `.tmp/` yet (issue #4200).
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content);
+    },
     fileExists: (path) => existsSync(path),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),
@@ -264,8 +269,14 @@ function sanitize(branch: string): string {
   return branch.replace(/[^A-Za-z0-9.-]/g, '_');
 }
 
-function bodyFilePath(opts: DeliverOptions, branch: string): string {
-  return opts.bodyFile ?? join(tmpdir(), `kookr-deliver-${sanitize(branch)}.md`);
+/**
+ * The PR body file. The default sits in the repository's git-ignored `.tmp/`:
+ * inside the worktree, because `kookr pr-checklist verify` only reads body files
+ * there (issue #4200), and ignored by git, so it does not change the commit the
+ * markers are bound to. `branch` is null in a dry run, which prints a placeholder.
+ */
+export function bodyFilePath(opts: DeliverOptions, cmds: Commands, branch: string | null): string {
+  return opts.bodyFile ?? join(cmds.repoRoot, '.tmp', `kookr-deliver-${branch === null ? P_BRANCH : sanitize(branch)}.md`);
 }
 
 function show(cmd: string, args: string[]): string {
@@ -359,7 +370,7 @@ export const STEPS: readonly Step[] = [
   {
     name: 'pr-body',
     plan(opts, cmds) {
-      const file = opts.bodyFile ?? join(tmpdir(), `kookr-deliver-${P_BRANCH}.md`);
+      const file = bodyFilePath(opts, cmds, null);
       return [
         `${show(...kookr(cmds, 'pr-checklist', 'scaffold', '--base', opts.base))} > ${file}   (only if ${file} does not exist)`,
         show(...kookr(cmds, 'pr-checklist', 'verify', '--pr-body', file, '--base', opts.base)),
@@ -368,7 +379,7 @@ export const STEPS: readonly Step[] = [
     async execute(ctx) {
       const branch = resolveBranch(ctx);
       if (!branch) return noBranch('pr-body');
-      const file = bodyFilePath(ctx.opts, branch);
+      const file = bodyFilePath(ctx.opts, ctx.cmds, branch);
       if (ctx.deps.fileExists(file)) {
         // An existing body is the one being edited after an earlier stop: keep it.
         ctx.deps.log(`deliver: PR body ${file} exists — verifying it as is`);
@@ -401,8 +412,8 @@ export const STEPS: readonly Step[] = [
   },
   {
     name: 'pr',
-    plan(opts) {
-      const file = opts.bodyFile ?? join(tmpdir(), `kookr-deliver-${P_BRANCH}.md`);
+    plan(opts, cmds) {
+      const file = bodyFilePath(opts, cmds, null);
       const title = opts.title ?? '<last commit subject>';
       return [
         `${show('gh', ['pr', 'list', '--head', P_BRANCH, '--state', 'open', ...repoArgs(opts)])}   (find the open PR)`,
@@ -413,7 +424,7 @@ export const STEPS: readonly Step[] = [
     async execute(ctx) {
       const branch = resolveBranch(ctx);
       if (!branch) return noBranch('pr');
-      const file = bodyFilePath(ctx.opts, branch);
+      const file = bodyFilePath(ctx.opts, ctx.cmds, branch);
       if (!ctx.deps.fileExists(file)) {
         return { ok: false, code: EXIT_NEEDS_DECISION, message: `step pr: PR body ${file} is missing — run --from pr-body first` };
       }
@@ -547,7 +558,15 @@ export async function deliver(
   const ctx: RunContext = { opts, deps, cmds };
   for (const step of selectSteps(opts)) {
     deps.log(`deliver: ▶ ${step.name}`);
-    const outcome = await step.execute(ctx);
+    let outcome: StepOutcome;
+    try {
+      outcome = await step.execute(ctx);
+    } catch (error) {
+      // An unexpected throw (a file write, say) ends the run like a failed step,
+      // with the usual stop line, not an uncaught stack trace.
+      const reason = error instanceof Error ? error.message : String(error);
+      outcome = { ok: false, code: 1, message: `step ${step.name} threw: ${reason}` };
+    }
     if (!outcome.ok) {
       deps.log(`deliver: ✖ stopped at ${step.name}: ${outcome.message}`);
       return outcome.code;

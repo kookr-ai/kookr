@@ -829,8 +829,11 @@ them in sequence.
 - **The PR body is kept between runs.** The scaffold leaves `TODO` rows that
   `verify` rejects, so the first run usually stops at `pr-body`. Edit the file
   it names, then resume with `--from pr-body`. The default file is
-  `<tmp>/kookr-deliver-<branch>.md`, outside the worktree, so it does not
-  change the commit the markers are bound to. `--body-file` picks another path.
+  `.tmp/kookr-deliver-<branch>.md` in the repository root: inside the
+  worktree, where `kookr pr-checklist verify` reads body files, and
+  git-ignored, so it does not change the commit the markers are bound to.
+  `pnpm deliver` creates `.tmp/` when it is missing. `--body-file` picks
+  another path.
 - **`wait-verdict` only waits.** Since #3792 the reviewer posts its own verdict
   comment. A `pass` whose `review-head-sha` equals the PR head lets the run go
   on to `merge`. A `block` for that head, or one that names no head, stops the

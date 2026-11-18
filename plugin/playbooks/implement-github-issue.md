@@ -540,15 +540,13 @@ Updating a stale PR often means merging the base branch back in (`git merge --no
 **In `kookr-ai/kookr`: deliver with `pnpm deliver` (the default there).** That repository has a `pnpm deliver` script (`scripts/deliver.ts`; reference: `docs/reference/cli.md`, "`pnpm deliver`") that runs its delivery steps in order: `review-marker`, `pr-gate-marker`, `pr-body`, `push`, `pr`, `wait-verdict`, `merge`. It stops at the first step that fails or needs a decision, prints `deliver: ✖ stopped at <step>: …` with what to do, and resumes with `--from <step>`. It never starts a reviewer, so start the independent reviewer on HEAD before the first run (Phase 6). It does not run the duplicate-guard, set the assignee or copy the Idea Scout labels, so this phase splits the run around those steps. The command exists only in `kookr-ai/kookr`; every other repository skips this block and follows the rest of Phase 7.
 
 ```bash
-# kookr-ai/kookr only. Pass --specialists whenever the range includes review-marker, and the
-# same --body-file on every run: the default body file is in the system temp directory, which
-# `kookr pr-checklist verify` refuses to read ("outside the repository root"); .tmp/ is git-ignored.
-mkdir -p .tmp   # pnpm deliver does not create the body file's directory
-deliver() { pnpm deliver --repo "$REPO" --body-file .tmp/pr-body.md "$@"; }
+# kookr-ai/kookr only. Pass --specialists whenever the range includes review-marker. The PR
+# body file is .tmp/kookr-deliver-<branch>.md in the worktree (git-ignored; created if missing).
+deliver() { pnpm deliver --repo "$REPO" "$@"; }
 deliver --specialists independent-review --dry-run      # print the plan, run nothing
 deliver --specialists independent-review --to push      # markers, PR body, push
 #   The first run stops at pr-body: `kookr pr-checklist scaffold` leaves TODO rows that
-#   `verify` rejects. Edit .tmp/pr-body.md: replace each TODO, write the summary and test
+#   `verify` rejects. Edit the body file it names: replace each TODO, write the summary and test
 #   plan, add the `Closes #<TARGET>` line (or `Refs #<TARGET>` for an incident, see below)
 #   and the attribution line. Then resume:
 deliver --from pr-body --to push
@@ -563,7 +561,7 @@ deliver --from pr --to pr --title "<type>: <short description>"   # gh pr create
 Where it stops and what to do (fix that one step, by hand with the command it names if needed, then resume from it):
 
 - **`review-marker`, exit 4:** the reviewer input is missing; start the reviewer on HEAD and pass `--specialists independent-review` (or `--bypass-reason "<why>"` for a trivial change).
-- **`pr-body`:** edit `.tmp/pr-body.md`, then `--from pr-body`.
+- **`pr-body`:** edit the body file it names (`.tmp/kookr-deliver-<branch>.md`), then `--from pr-body`.
 - **`push`:** the repo hook rejected the push; fix the rule it names (`kookr-pre-push`, "Rules a push can fail on"). A fix commit moves HEAD, so start the reviewer on the new head and resume with `--from review-marker --specialists independent-review`.
 - **`pr`:** fix the `gh` error, or create the PR by hand with the `gh pr create --body-file <body file>` command below, then go on.
 - **`wait-verdict` / `merge`** (Phase 8, step 3).
@@ -743,10 +741,10 @@ If `{{mergeAfterImplementation}}` is `true`:
 3. If the PR is mergeable now, merge using the repository's expected method. In `kookr-ai/kookr`, resume `pnpm deliver` (Phase 7): its `wait-verdict` step waits for the independent-review verdict bound to the PR head, and its `merge` step runs the repository merge wrapper, `kookr merge`:
 
    ```bash
-   pnpm deliver --repo "$REPO" --body-file .tmp/pr-body.md --from wait-verdict   # kookr-ai/kookr only
+   pnpm deliver --repo "$REPO" --from wait-verdict   # kookr-ai/kookr only
    ```
 
-   - **Stopped at `wait-verdict`, exit 4:** the verdict is a BLOCK. Fix or rebut the findings (step 2.5), commit, start the fix-check review on the new head, then `pnpm deliver --repo "$REPO" --body-file .tmp/pr-body.md --from review-marker --specialists independent-review`.
+   - **Stopped at `wait-verdict`, exit 4:** the verdict is a BLOCK. Fix or rebut the findings (step 2.5), commit, start the fix-check review on the new head, then `pnpm deliver --repo "$REPO" --from review-marker --specialists independent-review`.
    - **Stopped at `wait-verdict`, exit 3:** no verdict for the PR head within `--wait-timeout` (default 1800 seconds). Check the reviewer, then `--from wait-verdict`. A `pass` bound only through `review-patch-id` after a rebase is not recognized by this step; resume with `--from merge`, since `kookr merge` accepts it.
    - **Stopped at `merge`:** read the `kookr-merge: summary:` block, act on it as described below, then `--from merge` (or run `kookr merge` by hand).
 

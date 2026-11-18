@@ -1,3 +1,9 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, test } from 'vitest';
 
 import {
@@ -6,8 +12,10 @@ import {
   EXIT_OK,
   STEP_NAMES,
   UsageError,
+  bodyFilePath,
   deliver,
   parseArgs,
+  realDeps,
   verdictState,
   type Commands,
   type DeliverDeps,
@@ -259,6 +267,61 @@ describe('pnpm deliver run', () => {
     const { deps, calls } = fakeDeps({ bodyExists: true });
     expect(await deliver(opts('--from', 'pr-gate-marker', '--to', 'push'), deps, CMDS)).toBe(EXIT_OK);
     expect(calls.filter(isStepCall)).toEqual(['write-pr-gate-marker.sh', 'kookr pr-checklist verify', 'git push --set-upstream']);
+  });
+});
+
+describe('default PR body file (issue #4200)', () => {
+  const REAL_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const DEFAULT_BODY = '/repo/.tmp/kookr-deliver-feat_x.md';
+
+  test('without --body-file, pr-body scaffolds and verifies a file inside the repository root', async () => {
+    const { deps, writes, argvOf } = fakeDeps();
+    const code = await deliver(parseArgs(['--from', 'pr-body', '--to', 'pr-body']), deps, CMDS);
+    expect(code).toBe(EXIT_OK);
+    expect(writes).toEqual([DEFAULT_BODY]);
+    expect(argvOf('kookr pr-checklist verify')).toContain(DEFAULT_BODY);
+    const rel = relative(CMDS.repoRoot, DEFAULT_BODY);
+    expect(rel.startsWith('..') || isAbsolute(rel)).toBe(false);
+  });
+
+  test('the default path is inside the real checkout and git-ignored, so it never changes the commit', () => {
+    const file = bodyFilePath(parseArgs([]), { bash: 'bash', node: 'node', repoRoot: REAL_ROOT }, 'fix/issue-1');
+    const rel = relative(REAL_ROOT, file);
+    expect(rel).toBe(join('.tmp', 'kookr-deliver-fix_issue-1.md'));
+    // `git check-ignore` exits 0 when the path is ignored and throws otherwise.
+    expect(() => execFileSync('git', ['check-ignore', '-q', rel], { cwd: REAL_ROOT })).not.toThrow();
+  });
+
+  test('--dry-run prints the in-repo default body file', async () => {
+    const logs: string[] = [];
+    const { deps } = fakeDeps();
+    deps.log = (l) => logs.push(l);
+    await deliver(parseArgs(['--dry-run', '--from', 'pr-body', '--to', 'pr']), deps, CMDS);
+    const text = logs.join('\n');
+    expect(text).toContain('--pr-body /repo/.tmp/kookr-deliver-<current-branch>.md');
+    expect(text).toContain('--body-file /repo/.tmp/kookr-deliver-<current-branch>.md');
+  });
+
+  test('the real writeFile creates the missing parent directory (fresh worktree, no .tmp/)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deliver-test-'));
+    try {
+      const file = join(dir, '.tmp', 'nested', 'body.md');
+      realDeps().writeFile(file, '## Summary\n');
+      expect(readFileSync(file, 'utf-8')).toBe('## Summary\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a step that throws stops the run with a stop line instead of an uncaught error', async () => {
+    const { deps, calls, logs } = fakeDeps();
+    deps.writeFile = () => {
+      throw new Error("ENOENT: no such file or directory, open '/repo/.tmp/x.md'");
+    };
+    const code = await deliver(opts('--from', 'pr-body'), deps, CMDS);
+    expect(code).toBe(1);
+    expect(calls).not.toContain('kookr pr-checklist verify');
+    expect(logs.at(-1)).toBe("deliver: ✖ stopped at pr-body: step pr-body threw: ENOENT: no such file or directory, open '/repo/.tmp/x.md'");
   });
 });
 
