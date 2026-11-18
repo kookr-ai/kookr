@@ -3,7 +3,7 @@
  * Runs the real script against throwaway git repos; the PR mode additionally
  * uses a stub `gh` and a bare origin that carries refs/pull/<n>/head.
  */
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -495,5 +495,42 @@ describe('review-patch-id.sh --pr', () => {
     const r = run(repo, ['--pr', '8'], { PATH: `${stub}:${process.env.PATH}` });
     expect(r.status).not.toBe(0);
     expect(r.stdout).toBe('');
+  });
+});
+
+// #4205: the places that explain when a passed review survives a rebase must
+// name the line-bound reference pages, or a reader expects a re-review the gate
+// no longer asks for. Reads the list from the script so the two cannot drift.
+describe('review-patch-id line-bound pages are documented', () => {
+  const script = readFileSync(SCRIPT, 'utf8');
+  const listBody = /LINE_BOUND_PATHS=\(([^)]*)\)/.exec(script)?.[1] ?? '';
+  const paths = listBody.split(/\s+/).filter(Boolean);
+  const basename = (p: string) => p.split('/').pop() ?? p;
+
+  it('reads a non-empty list from the script', () => {
+    expect(paths).toContain('docs/reference/environment-variables.md');
+    expect(paths.length).toBe(3);
+  });
+
+  it('the KOOKR_MERGE_REQUIRE_REVIEW row names every line-bound page', () => {
+    const doc = readFileSync(join(process.cwd(), 'docs/reference/environment-variables.md'), 'utf8');
+    const row = doc.split('\n').find((l) => l.startsWith('| `KOOKR_MERGE_REQUIRE_REVIEW`')) ?? '';
+    for (const p of paths) expect(row).toContain(p);
+  });
+
+  it('the skill "Delta re-review after a PASS" section names every line-bound page', () => {
+    const skill = readFileSync(
+      join(process.cwd(), 'plugin/skills/independent-merge-review/SKILL.md'),
+      'utf8',
+    );
+    const section = skill.split('## Delta re-review after a PASS')[1]?.split('\n## ')[0] ?? '';
+    for (const p of paths) expect(section).toContain(p);
+  });
+
+  it('the kookr-merge.sh refusal message names every line-bound page', () => {
+    const merge = readFileSync(join(process.cwd(), 'scripts/kookr-merge.sh'), 'utf8');
+    const refusal = merge.split('\n').find((l) => l.includes('the latest reviewer verdict must be')) ?? '';
+    for (const p of paths) expect(refusal).toContain(basename(p));
+    expect(refusal).toContain('scripts/review-patch-id.sh');
   });
 });

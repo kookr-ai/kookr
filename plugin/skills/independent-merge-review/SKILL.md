@@ -132,7 +132,11 @@ produces a different sha, so the old PASS no longer applies — even when the
 content looks unchanged — and `kookr merge` refuses it. One exception: when the
 PASS carries `review-patch-id:` and a rebase left every file the PR changes
 untouched, the patch id still matches and `kookr merge` accepts the PASS with no
-new review. Do not request one: a later head with the same `review-patch-id` as
+new review. The three shared reference pages `docs/reference/environment-variables.md`,
+`docs/reference/api.md` and `docs/reference/cli.md` are an exception: the id binds
+them by the PR's own changed lines, not by the whole file, so a rebase onto a base
+that added different rows to one of them also keeps the id (see the header of
+`scripts/review-patch-id.sh`). Do not request one: a later head with the same `review-patch-id` as
 the latest PASS is already reviewed. After any other change,
 run a new review for the new head (a full review, or the delta review below
 when it qualifies). Never re-post or edit an old PASS with the new sha.
