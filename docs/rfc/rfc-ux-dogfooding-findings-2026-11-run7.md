@@ -2,7 +2,7 @@
 
 - **Status**: Findings recorded and acted on. #4148, #4150 and #4153 are merged; R7-F5, R7-F8 and the follow-up issues #4149, #4151 and #4154 are open.
 - **Author**: Claude (Fable 5.2), dogfooding session on the operator's live dashboard
-- **Date**: 2026-11-17
+- **Date**: 2026-11-17 to 2026-11-18 (all clock times below are UTC)
 - **Base**: `origin/main` @ `5e371d14e` (worktree `kookr-dogfood-202611-run7`)
 - **Focus** (operator's brief): the same brief as run 6 ("Lucy's panel needs a full
   overhaul, end goal Lucy as helpful as Jarvis: proactive, speaks only to add value, a nice
@@ -14,8 +14,9 @@
   clusters, merged on the local branch `feat/lucy-jarvis-integration` (43 commits, about
   15,400 added lines over 121 files). **None of it was pushed**, so the operator's
   dashboard still runs the old floating window, and this run's brief describes that old
-  window. Their RFCs are on local branches too (`rfc/ux-dogfooding-202611-run5`,
-  `rfc/ux-dogfooding-202611-run6`). This run does not re-measure what they measured.
+  window. Their RFCs were on local branches too (`rfc/ux-dogfooding-202611-run5`,
+  `rfc/ux-dogfooding-202611-run6`); both documents are published with this one, unchanged,
+  as `rfc-ux-dogfooding-findings-2026-11-run5.md` and `...-run6.md` in this directory. This run does not re-measure what they measured.
 - **Method**:
   1. Read what the operator did with Lucy since run 6 ended, from
      `~/.kookr/lucy-interactions.jsonl`.
@@ -62,7 +63,7 @@ Against the brief:
 
 ## What changed since run 6
 
-Run 6 ended at 04:19 UTC on 17 November. From then until this run started (21:37 UTC),
+Run 6 ended at 04:19 UTC on 17 November (its task record's `finishedAt`). From then until this run started (21:37 UTC),
 `~/.kookr/lucy-interactions.jsonl` shows:
 
 - **The operator started typing to Lucy.** Run 6 counted zero typed turns in six days. Today
@@ -103,6 +104,12 @@ Phase 4 step 5 "ask which to push/PR"). A finished task's report is one of about
 a day on this install (run 6 measured 94 finished signals in 24 hours), and a completed
 task cannot be answered into. The question is never refused; it is never seen.
 
+The repository's `CLAUDE.md` says the opposite of the playbook for the operator's own
+repositories ("Do not ask whether to push or merge. Standing policy grants that Jean-owned
+merge default"). The playbook's rule is the stricter of the two and both runs followed
+it, as did this one. Which of the two should apply to this playbook is the operator's
+decision; this run only changed when and how the playbook asks.
+
 **Suggested fix.** In the playbook: ask the push question as soon as there is something to
 show, with `kookr ask`, a link to real screenshots and two or three options, and carry on
 without waiting; a rerun whose previous run left unpushed branches asks about those
@@ -110,7 +117,7 @@ branches in Phase 1. Done in this run and written into the playbook (Phase 5).
 
 ### R7-F2. On the built column, Lucy's widest setting is 560 px, and she has no window of her own (panel) — severity: high
 
-**Evidence.** Measured on the merged build (`feat/lucy-column-and-actions`, throwaway
+**Evidence.** Measured on the merged build (`feat/lucy-column-and-actions` (the integration branch `feat/lucy-jarvis-run7`, renamed for the pull request), throwaway
 server) with the column's resize handle dragged as far as it goes:
 
 | Window | Default column | Widest column | Share of the window |
@@ -241,10 +248,11 @@ the buttons work for as long as the prompt does. Until then Lucy must know wheth
 buttons are live before she points at them (see R7-F3): with dead buttons the useful
 answer is "its buttons have timed out, I am opening the task", followed by opening it.
 
-### R7-F6. Two pushes of a reviewed branch were rejected on a busy host (process) — severity: medium
+### R7-F6. Two pushes of a reviewed branch failed on a busy host: the gate rejected one, my own time limit killed the other (process) — severity: medium
 
 **Evidence.** The landing branch was pushed with the related tests green (397 files, 8,701
-tests) and a passing review. The repository's fast pre-push gate rejected it twice:
+tests) and a passing review. Two pushes in a row then failed in the repository's fast
+pre-push gate:
 
 1. First push (load average 25 to 37): the smoke lane failed with "`~/.kookr` contains
    unexpected state … new file: achievements.json, resource-watchdog-audit.jsonl,
@@ -270,7 +278,8 @@ outside Vitest the watchdog still switches itself on under pressure
 sessions on the host it writes its two files and launches an investigation task inside the
 smoke server (`src/server/resource-watchdog-service.ts:464-518`), and that task's prompt
 unlocks an achievement. (2) The gate has no time limit of its own, and the
-playbook's notebook already says to push in the background and wait for the notification;
+lesson notebook this playbook's runs keep (a shared list of one-line lessons from earlier
+runs) already says to push in the background and wait for the notification;
 I added a ten-minute limit to that background command, which is shorter than the gate on a
 host at load 55.
 
@@ -309,7 +318,7 @@ the wider maximum of this run makes it reachable in a 1920 px window. Not re-che
 build without the column.
 
 **Suggested fix.** Let the top bar's findings label shorten ("7 waiting") below a width
-threshold, as the grouped row's header was made to in run 6 (J-F14).
+threshold. Run 6 fixed a similar overlap in the grouped row's header (J-F14).
 
 ## Things that worked well (keep-list)
 
@@ -368,7 +377,7 @@ Talk never having been switched on in any of these runs.
 The operator's answer to the early push question was "Push, open PRs, merge when gates
 pass". The integration branch of run 6, brought up to today's `main`, went out as one pull
 request: **#4148, "feat(lucy): a docked chat column, three confirmed actions and a written
-briefing"**, 121 files, squash-merged into `staging` as `94f748cd8` on 18 November. The
+briefing"**, 126 files, squash-merged into `staging` as `94f748cd8` at 23:36 on 17 November. The
 integration train runs the full suite there and moves `main` to it.
 
 It went out as one pull request and not as the five clusters of run 6's priority list,
@@ -385,7 +394,7 @@ single cluster is a state anyone verified.
 | Smoke allow-list and one doc sentence (`36693a7af`, `94405e0b5`), delta review | PASS; 9 of 9 mutants killed |
 | Fast gate on the third push | 406 related test files, 8,992 tests, and the smoke lane pass |
 | Browser specs on the final head | `e2e/avatar-panel.spec.ts` and `e2e/finding-groups.spec.ts`, 30 of 30 |
-| Follow-ups | Thirteen larger defects in one issue, #4149 |
+| Follow-ups | Twelve larger defects in one issue, #4149 (ten from round 1, two from the delta review) |
 
 Run 6's RFC listed two checks as not done. "ESLint was not run" has no remedy: the
 repository has no ESLint (`pnpm exec eslint` fails because there is nothing to run). "The
@@ -394,7 +403,7 @@ whole suite was not run on the merged tree" is now the integration train's job.
 ### Cluster A: she remembers what she said, names her card's buttons, launches in Kookr (R7-F3, R7-F4; issues #4143, #4144)
 
 Pull request **#4150**, squash-merged into `staging` as `6ef60c8f4` (branch
-`fix/lucy-remembers-notices`, 43 files, rebased onto `staging` after #4148 merged). Its
+`fix/lucy-remembers-notices`, 44 files, rebased onto `staging` after #4148 merged). Its
 review took three rounds: round 1 blocked on a second sentence under one record entry
 keeping the first one's time, and on the untested line that hands a permission notice to
 the record; round 2 on a repeated launch report still shown as old, and on a doc claim
@@ -556,14 +565,14 @@ sheet today. At 2560 px the reading column leaves 640 px of margin on each side.
   confirm route's "click" unpinned). The actions reviewer's five security probes held (56
   mutants on that part, 44 killed). Two patch agents fixed all nine (`c4afae3c6`,
   `5e2ff1140`); round 2, a fix check, passed on `5e2ff1140` (21 mutants, 18 killed, three
-  test nits left). Eleven larger defects go into one follow-up issue.
-- 2026-11-18 — **Landing: two rejected pushes.** The smoke lane, then a test lane that my
-  own ten-minute limit killed, both on a host at load 25 to 62 (R7-F6). Added the three state files to the smoke
+  test nits left). Ten larger defects go into one follow-up issue.
+- 2026-11-18 — **Landing: two failed pushes.** The gate's smoke lane rejected the first;
+  my own ten-minute limit killed the second in its test lane, both on a host at load 25 to 62 (R7-F6). Added the three state files to the smoke
   allow-list and corrected one doc sentence (`36693a7af`, `94405e0b5`); the delta was
   reviewed and passed on `94405e0b5`. Third push started with no time limit.
 - 2026-11-18 — **Landed.** Third push passed the fast gate (406 related test files, 8,992
   tests, smoke). Browser specs 30 of 30 on the final head. Opened #4148, filed the
-  review's thirteen larger defects as #4149, posted the round-1 BLOCK record and the final
+  review's twelve larger defects as #4149, posted the round-1 BLOCK record and the final
   PASS, and ran `kookr merge 4148`: retargeted to `staging` and squash-merged as
   `94f748cd8`.
 - 2026-11-18 — **Cluster A reported and rebased.** The notices implementer finished

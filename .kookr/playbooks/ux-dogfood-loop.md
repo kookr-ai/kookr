@@ -20,7 +20,7 @@ checklist:
   - Root-caused high-severity findings to exact file/line in the codebase
   - Committed the RFC with severity/evidence/fix per finding and a priority order
   - (implement=true) Mapped code with parallel Explore agents before writing fixes
-  - (implement=true) One fresh worktree per priority cluster, based on origin/main
+  - (implement=true) One fresh worktree per priority cluster, based on origin/main (or on the integration branch of unlanded work it must stack on, said in the RFC)
   - (implement=true) Each cluster has tests added, targeted vitest + typecheck green, conventional commit
   - Asked the user before pushing any branch or opening any PR
 ---
@@ -45,14 +45,17 @@ the first run of this loop) — match its format and depth.
   defaults there — that is the supervisor's own working copy.
 - **Fetch before branching**: local `main` is routinely stale and the running
   dashboard tracks `origin/main`. Base everything on `origin/main` so fixes
-  diff cleanly against what is actually deployed.
+  diff cleanly against what is actually deployed. The one exception: a cluster
+  that changes files existing only on an earlier run's unlanded branch is cut
+  from that branch (see "A rerun on the same panel" in the automation notes),
+  and the RFC says so.
 - **Ask before push/PR, and ask early.** Commit freely in worktrees; pushing and
   opening PRs needs an explicit user go-ahead. Do not leave that question for the
   final report: two runs in a row ended with "the push question is with the
   operator", the tasks completed, and nothing was pushed, so the operator re-ran
   the loop on a dashboard that still had every finding. As soon as there is
-  something to show, send one `kookr ask` (no `--wait`) with a link to real
-  screenshots and two or three options ("Push and open the PRs", "Push, open PRs,
+  something to show, send one `kookr ask` (no `--wait`, `--timeout 1d` so it
+  outlives a long run) with a link to real screenshots and two or three options ("Push and open the PRs", "Push, open PRs,
   merge when gates pass", "Keep it local"), and carry on. Asked that way, the
   question was answered in 27 seconds. No answer means no push.
 - Commits end with: `Co-Authored-By: <the assistant's model name> <noreply@anthropic.com>`
@@ -67,8 +70,10 @@ the first run of this loop) — match its format and depth.
 4. **Look for work earlier runs left unpushed** before measuring anything:
    `git branch --list 'rfc/ux-dogfooding-*'` and the fix branches their RFCs name,
    checked against `git ls-remote --heads origin`. If a previous run built fixes
-   that never reached the remote, the live dashboard still shows what that run
-   measured, and landing those fixes is worth more than finding the same things
+   that never reached the remote and were never merged (a merged pull request's
+   branch is deleted on the remote too, so also check
+   `gh pr list --state merged --head <branch>`), the live dashboard still shows
+   what that run measured, and landing those fixes is worth more than finding the same things
    again: ask about them first (see "Ask before push/PR, and ask early").
 
 ## Phase 2 — Dogfood with a running RFC
@@ -149,14 +154,15 @@ Screenshot/automation notes that save an hour:
   launch cards there are real decisions (mirrored to Telegram): measure them with read-only
   DOM probes, never click an answer, Send or Dismiss. Exercise those flows on a throwaway
   server seeded through `POST /api/asks` (`scripts/ask-lucy-browser-proof.ts` shows how).
-- **A second dashboard tab speaks.** With Lucy's panel on, every open tab plays her clips,
-  so a probe tab talks over the operator. Close it as soon as the measurements are taken,
+- **A second dashboard tab speaks.** Lucy's clips play in one tab per browser profile, and
+  a Playwright probe is another profile, so a probe tab talks over the operator. Close it as soon as the measurements are taken,
   and never switch Talk on there (it opens the operator's microphone).
 - **Headless Chromium may never paint on this host** (no `requestAnimationFrame`, every
   click and screenshot waits forever). Run Playwright headed under a virtual display:
   `xvfb-run -a -s "-screen 0 1600x1000x24" pnpm exec playwright test <spec> --headed --workers=1`.
-- **`origin/main` moves while you work.** Review a branch with the three-dot diff
-  (`git diff origin/main...HEAD`); the two-dot diff shows other people's merges as your
+- **`origin/main` moves while you work.** Review a branch with the three-dot diff against
+  its base (`git diff origin/main...HEAD`, or `origin/staging...HEAD` for a cluster rebased
+  onto the integration branch); the two-dot diff shows other people's merges as your
   deletions.
 - **Explore agents cannot write files**, and a closing hook can replace their last message
   with a notebook note. Ask for the map "in your final message", and if it comes back empty,
@@ -169,10 +175,10 @@ Screenshot/automation notes that save an hour:
 - **The operator's history is evidence.** `~/.kookr/lucy-interactions.jsonl` records what
   Lucy said (`kind: said`), what the panel did with each clip (`kind: ui`, joined on
   `clipId`: started, ended, unheard and why) and every panel action. Count before you
-  theorise: "62% of her unprompted clips were never played" came from that file.
+  theorise: "62% of the task questions she read out were never played" came from that file.
 - **A throwaway server needs a fake Telegram for task questions** (`POST /api/asks` answers
   503 without one): start `startFakeTelegram()` from
-  `src/integrations/telegram/fake-telegram-server.js` and pass its URL as
+  `src/integrations/telegram/fake-telegram-server.ts` and pass its URL as
   `KOOKR_TELEGRAM_API_URL`, as `scripts/ask-lucy-browser-proof.ts` does.
 - **Never print `.env`.** A `grep` with a `sed` redaction leaked three API keys into this
   session's transcript when the pattern did not match. List names only
@@ -183,8 +189,8 @@ Screenshot/automation notes that save an hour:
 - **Ask implementers to write their report to a file as well as their last message**; the
   closing hook can replace the message.
 - **Landing a large stack: review it in parts.** One reviewer cannot read 15,000 lines
-  in the review's time budget. Split the diff by area (one `git diff origin/main...HEAD --
-  <files>` file per area), give each area its own fresh-context reviewer with the same
+  in the review's time budget. Split the diff by area (one three-dot diff against the
+  branch's base, limited to that area's files, per area), give each area its own fresh-context reviewer with the same
   brief, and post one verdict that lists every part. The Codex review lane needs
   `bubblewrap` on this host; without it the lane script exits 3 and the Claude lane is
   the one to use.
@@ -192,8 +198,9 @@ Screenshot/automation notes that save an hour:
   load 55; a background `git push` given a ten-minute limit was killed mid-gate and reported as a
   rejected push. Start it with `run_in_background` and no `timeout`, and wait for its notification.
 - **Clusters stacked on an unmerged branch: rebase them when their base lands.** Once the
-  base pull request is squash-merged, `git rebase --onto origin/staging <old-base-head>
-  <cluster-branch>` moves each cluster onto the merged commit (three of three applied
+  base pull request is squash-merged, `git fetch` and then, in each cluster's own worktree,
+  `git rebase --onto origin/staging <old-base-head> <cluster-branch>` moves the cluster onto
+  the merged commit (three of three applied
   with no conflict in run 7), then reinstall dependencies before running anything: the
   integration branch may carry a dependency bump the old base did not have.
 - **Implementers' throwaway servers leave stand-in agents behind.** An implementer told to
@@ -216,8 +223,8 @@ implementation ticket; one without is just a complaint.
 
 Commit the RFC in its worktree (`docs(rfc): ...`). Report the findings summary
 to the user. The `implement` parameter of this run is **{{implement}}**. If it is
-not 'true', stop here and ask whether to push the RFC branch and/or proceed to
-implementation.
+not 'true', stop here and ask, through `kookr ask`, whether to push the RFC
+branch and/or proceed to implementation.
 
 ## Phase 4 — Implementation fan-out (implement=true)
 
@@ -226,7 +233,9 @@ implementation.
    conventions, and adjacent prior art (this repo has many near-miss branches —
    check `git log --oneline --all | grep -i <topic>` before re-inventing).
 2. **One worktree per cluster**, named for the lead finding
-   (`../kookr-f12-launch-ux -b fix/launch-cwd-validation origin/main`), then
+   (`../kookr-f12-launch-ux -b fix/launch-cwd-validation origin/main`, or the
+   unlanded integration branch in place of `origin/main` when the cluster must
+   stack on it), then
    `pnpm install --prefer-offline` in each (the pnpm store makes this fast).
 3. **Parallel implementation subagents**, one per cluster, each instructed to:
    read the actual files first (mapped line numbers drift), follow existing
@@ -235,7 +244,8 @@ implementation.
    add regression tests, run targeted `pnpm exec vitest run <files>` plus the
    repo typecheck, commit conventionally, and **not push**.
 4. Review each agent's diff and test results yourself before reporting.
-5. Report all branches + commits to the user and ask which to push/PR.
+5. Report all branches + commits to the user and ask which to push/PR, through
+   `kookr ask` if that question has not been answered yet.
 
 ## Phase 5 — Close the loop
 
