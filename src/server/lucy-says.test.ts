@@ -1,7 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
+import { BudgetChecker } from '../core/budget-checker.js';
 import { LUCY_SAYS_GROUP_WINDOW_MS, LUCY_SAYS_REPEAT_MS, LUCY_SAYS_REVIEW_HOLD_MS, type LucySaysMessage } from '../shared/contracts/lucy-says.js';
 import {
   LucySaysNotifier,
+  type LucySaysTask,
   groupedEventSentence,
   pushLucySays,
   singleEventSentence,
@@ -63,6 +65,7 @@ describe('the sentences', () => {
     ['failed', 'Docs link audit failed.', 'A task failed.'],
     ['stalled', 'Docs link audit has gone quiet.', 'A task has gone quiet.'],
     ['lost_contact', 'Kookr lost contact with Docs link audit.', 'Kookr lost contact with a task.'],
+    ['over_budget', 'Docs link audit has gone over its budget.', 'A task has gone over its budget.'],
     ['wants_review', 'Docs link audit says it is finished and wants your review.', 'A task says it is finished and wants your review.'],
   ] as const)('one event, %s: names the task, or says "a task" when its title may not be said', (kind, named, unnamed) => {
     expect(singleEventSentence({ kind, taskName: 'Docs link audit' })).toBe(named);
@@ -78,6 +81,7 @@ describe('the sentences', () => {
     expect(groupedEventSentence('failed', events('failed', 'A', 'B', 'C'))).toBe('Three more tasks failed: A, B and C.');
     expect(groupedEventSentence('stalled', events('stalled', 'A', 'B'))).toBe('Two more tasks have gone quiet: A and B.');
     expect(groupedEventSentence('lost_contact', events('lost_contact', 'A', 'B'))).toBe('Kookr lost contact with two more tasks: A and B.');
+    expect(groupedEventSentence('over_budget', events('over_budget', 'A', 'B'))).toBe('Two more tasks have gone over their budget: A and B.');
   });
 
   test('at most three tasks are named; the rest, and the ones with no sayable name, are counted', () => {
@@ -94,6 +98,20 @@ describe('the sentences', () => {
     ]);
     expect(line).toEqual({ text: 'C failed. Two more tasks want your review: A and B.', kind: 'several', taskIds: ['f1', 'r1', 'r2'] });
   });
+
+  test('going over budget is told after going quiet and before a review, and never with an amount', () => {
+    const line = windowLine([
+      { taskId: 'r1', kind: 'wants_review', taskName: 'A' },
+      { taskId: 'b1', kind: 'over_budget', taskName: 'B' },
+      { taskId: 'q1', kind: 'stalled', taskName: 'C' },
+    ]);
+    expect(line).toEqual({
+      text: 'C has gone quiet. B has gone over its budget. A says it is finished and wants your review.',
+      kind: 'several',
+      taskIds: ['q1', 'b1', 'r1'],
+    });
+    expect(line.text).not.toMatch(/\$|\d/);
+  });
 });
 
 describe('LucySaysNotifier', () => {
@@ -107,6 +125,7 @@ describe('LucySaysNotifier', () => {
     ['failed', 'task_failed', 'Docs link audit failed.'],
     ['stalled', 'task_stalled', 'Docs link audit has gone quiet.'],
     ['lost_contact', 'task_lost_contact', 'Kookr lost contact with Docs link audit.'],
+    ['over_budget', 'task_over_budget', 'Docs link audit has gone over its budget.'],
   ] as const)('a first %s event is written at once, as one sentence naming the task', (kind, wireKind, text) => {
     const h = harness();
     h.note('t1', kind, 'Docs link audit');
@@ -406,6 +425,73 @@ describe('LucySaysNotifier', () => {
     expect(h.texts()).toEqual(['A failed.']);
   });
 
+  describe('going over budget', () => {
+    test('a warning and then the critical breach on the same task within ten minutes give one line', () => {
+      const h = harness();
+      h.note('t1', 'over_budget', 'Docs link audit');
+      h.advance(4 * MIN);
+      h.note('t1', 'over_budget', 'Docs link audit');
+      h.advance(LUCY_SAYS_GROUP_WINDOW_MS);
+      expect(h.texts()).toEqual(['Docs link audit has gone over its budget.']);
+    });
+
+    test('the critical breach while the warning still waits in a window adds nothing', () => {
+      const h = harness();
+      h.note('t0', 'failed', 'A');
+      h.note('t1', 'over_budget', 'B');
+      h.note('t1', 'over_budget', 'B');
+      h.advance(LUCY_SAYS_GROUP_WINDOW_MS);
+      expect(h.texts()).toEqual(['A failed.', 'B has gone over its budget.']);
+      expect(h.sent[1]).toMatchObject({ kind: 'task_over_budget', taskIds: ['t1'] });
+    });
+
+    test('several breaches in a window are one grouped line, leaving out a task that ended before it closed', () => {
+      const tasks = new Map<string, LucySaysTask>([
+        ['t1', { status: 'inProgress', sessions: [] }],
+        ['t2', { status: 'inProgress', sessions: [], pendingSignal: { kind: 'completion_ready' } }],
+        ['t3', { status: 'inProgress', sessions: [] }],
+        ['t4', { status: 'inProgress', sessions: [] }],
+      ]);
+      const sent: LucySaysMessage[] = [];
+      const timers: Array<() => void> = [];
+      const notifier = new LucySaysNotifier({
+        push: (message) => { sent.push(message); return 1; },
+        stillTrue: (event) => taskEventStillTrue(event, tasks.get(event.taskId), () => undefined),
+        newId: () => `says-${sent.length + 1}`,
+        setTimer: (fn) => { timers.push(fn); return fn; },
+        clearTimer: () => {},
+      });
+      notifier.note({ taskId: 't1', kind: 'over_budget', taskName: 'Docs link audit' });
+      notifier.note({ taskId: 't2', kind: 'over_budget', taskName: 'A' });
+      notifier.note({ taskId: 't3', kind: 'over_budget', taskName: 'B' });
+      notifier.note({ taskId: 't4', kind: 'over_budget', taskName: 'C' });
+      tasks.set('t4', { status: 'completed', sessions: [] });
+      timers.shift()!();
+      expect(sent.map((message) => message.text)).toEqual([
+        'Docs link audit has gone over its budget.',
+        'Two more tasks have gone over their budget: A and B.',
+      ]);
+      expect(sent[1]).toMatchObject({ kind: 'task_over_budget', taskIds: ['t2', 't3'] });
+    });
+
+    test('after a restart a task already over budget is reported once more (the budget checker forgets too)', () => {
+      const lines = (checker: BudgetChecker, notifier: LucySaysNotifier, costs: readonly number[]) => {
+        for (const cost of costs) {
+          const anomaly = checker.check('t1', 's1', cost, undefined, 5);
+          const kind = anomaly ? taskEventForFinding(anomaly.type) : undefined;
+          if (kind) notifier.note({ taskId: 't1', taskName: 'Docs link audit', kind });
+        }
+      };
+      const before = harness();
+      lines(new BudgetChecker(5), before.notifier, [6, 12, 13]);
+      expect(before.texts()).toEqual(['Docs link audit has gone over its budget.']);
+      // A restart: both the checker and the notifier start empty, and the first scan sees $13.
+      const after = harness();
+      lines(new BudgetChecker(5), after.notifier, [13, 14]);
+      expect(after.texts()).toEqual(['Docs link audit has gone over its budget.']);
+    });
+  });
+
   test('a push that throws is survived and counts as reaching nobody', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const notifier = new LucySaysNotifier({ push: () => { throw new Error('socket gone'); }, setTimer: () => { throw new Error('no window may open'); } });
@@ -415,7 +501,8 @@ describe('LucySaysNotifier', () => {
 });
 
 describe('which events are worth a word', () => {
-  test('only a task that went quiet or lost contact, among the findings', () => {
+  test('only a task that went quiet, lost contact or went over its budget, among the findings', () => {
+    expect(taskEventForFinding('budget_exceeded')).toBe('over_budget');
     expect(taskEventForFinding('stale_agent')).toBe('stalled');
     expect(taskEventForFinding('hook_disconnected')).toBe('lost_contact');
     for (const other of ['needs_input', 'permission_blocked', 'repeated_error', 'merge_conflict', 'hook_missing', 'api_error']) {
@@ -427,6 +514,11 @@ describe('which events are worth a word', () => {
     expect(taskEventForFinding('stale_agent', 'completion_ready')).toBeUndefined();
     expect(taskEventForFinding('hook_disconnected', 'completion_ready')).toBeUndefined();
     expect(taskEventForFinding('stale_agent', 'help')).toBe('stalled');
+  });
+
+  test('going over budget is reported even for a task that has said it is finished: the money is spent', () => {
+    expect(taskEventForFinding('budget_exceeded', 'completion_ready')).toBe('over_budget');
+    expect(taskEventForFinding('budget_exceeded', 'help')).toBe('over_budget');
   });
 
   test('a failure and "finished, please review", among the outcomes; not a task the operator stopped or a restart cut off', () => {
@@ -458,6 +550,18 @@ describe('which events are worth a word', () => {
     expect(taskEventStillTrue({ kind: 'lost_contact' }, { status: 'inProgress', sessions }, finding('hook_disconnected'))).toBe(true);
     expect(taskEventStillTrue({ kind: 'lost_contact' }, { status: 'inProgress', sessions }, finding())).toBe(false);
     expect(taskEventStillTrue({ kind: 'failed' }, undefined, finding())).toBe(false);
+  });
+
+  test('going over budget stays true while the task is open, finding or not, signal or not', () => {
+    const sessions = [{ tmuxSession: 's1' }];
+    const none = () => undefined;
+    expect(taskEventStillTrue({ kind: 'over_budget' }, { status: 'inProgress', sessions }, none)).toBe(true);
+    expect(taskEventStillTrue({ kind: 'over_budget' }, { status: 'inProgress', sessions, pendingSignal: { kind: 'completion_ready' } }, none)).toBe(true);
+    expect(taskEventStillTrue({ kind: 'over_budget' }, { status: 'inProgress', sessions }, () => 'hook_disconnected')).toBe(true);
+    for (const status of ['completed', 'terminated', 'cancelled']) {
+      expect(taskEventStillTrue({ kind: 'over_budget' }, { status, sessions }, () => 'budget_exceeded')).toBe(false);
+    }
+    expect(taskEventStillTrue({ kind: 'over_budget' }, undefined, none)).toBe(false);
   });
 });
 

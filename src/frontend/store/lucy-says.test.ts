@@ -17,6 +17,14 @@ describe('lucy-says store', () => {
     expect(listener).toHaveBeenCalledWith(says());
   });
 
+  test('passes on a line about a task that went over its budget', () => {
+    const listener = vi.fn();
+    onLucySays(listener);
+    const line = says({ kind: 'task_over_budget', text: 'Docs link audit has gone over its budget.' });
+    handleLucySays(line);
+    expect(listener).toHaveBeenCalledWith(line);
+  });
+
   test('a line that arrives twice is passed on once', () => {
     const listener = vi.fn();
     onLucySays(listener);

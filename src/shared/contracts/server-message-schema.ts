@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { LAUNCH_DEPENDENCIES } from './playbook.js';
 import { AGENT_SELECTIONS, AGENT_TYPES } from './agent-types.js';
+import { LUCY_SAYS_KINDS } from './lucy-says.js';
 
 /**
  * Runtime validators for the ServerMessage discriminated union.
@@ -150,7 +151,7 @@ const lucyLaunchMessage = z.object({
 const lucySaysMessage = z.object({
   type: z.literal('lucy_says'),
   id: z.string(),
-  kind: z.string(),
+  kind: z.enum(LUCY_SAYS_KINDS),
   text: z.string(),
   taskIds: z.array(z.string()),
   at: z.number(),

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { ServerMessageSchema } from './server-message-schema.js';
 import { SERVER_MESSAGE_TYPES, type ServerMessage } from './messages.js';
+import { LUCY_SAYS_KINDS } from './lucy-says.js';
 
 function serverMessageCase<T extends ServerMessage>(message: T): T {
   return message;
@@ -290,6 +291,12 @@ describe('ServerMessageSchema', () => {
     expect(new Set(coveredServerMessageTypes).size).toBe(coveredServerMessageTypes.length);
   });
 
+  test.each(LUCY_SAYS_KINDS)('accepts a lucy_says line of kind %s', (kind) => {
+    expect(ServerMessageSchema.safeParse({
+      type: 'lucy_says', id: 'says-1', kind, text: 'Docs link audit has gone over its budget.', taskIds: ['t1'], at: 1790000000000,
+    }).success).toBe(true);
+  });
+
   test('accepts partial playbook capability records', () => {
     const result = ServerMessageSchema.safeParse(serverMessageCase({
       type: 'playbooks',
@@ -401,6 +408,10 @@ describe('ServerMessageSchema', () => {
           resetsAt: '2026-06-11T00:00:00.000Z',
         },
       },
+    },
+    {
+      name: 'lucy_says with a kind no server writes',
+      message: { type: 'lucy_says', id: 'says-1', kind: 'task_on_fire', text: 'A.', taskIds: [], at: 1 },
     },
     {
       name: 'diagnosticReport without required report fields',

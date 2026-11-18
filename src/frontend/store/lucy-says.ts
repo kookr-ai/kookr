@@ -1,6 +1,7 @@
 /**
  * The lines Lucy writes on her own about tasks she did not launch (`lucy_says`): a task failed,
- * went quiet, lost contact, or says it is finished and wants a review.
+ * went quiet, lost contact, went over its budget, or says it is finished and wants a review. The
+ * kind is not checked here: a line of a kind this bundle does not know yet is still written.
  *
  * The server decides what is worth a line and words it; this store only passes each line on, once,
  * to whoever listens. The avatar panel listens and writes it into her thread
