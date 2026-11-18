@@ -2547,7 +2547,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
 
   // Lucy writes a word in her thread when something happens to a task she did not launch: it failed,
-  // went quiet, lost contact, or said it is finished and still waits for a review ten minutes later.
+  // went quiet, lost contact, went over its budget, or said it is finished and still waits for a
+  // review ten minutes later.
   // Held, grouped and rate-limited in the notifier; owner dashboards only; never sent again on
   // reconnect. Nothing is spoken.
   const lucySaysNotifier = new LucySaysNotifier({

@@ -1,10 +1,10 @@
 /**
  * Lucy writes a word when something happens to a task she did not launch.
  *
- * Four events are worth one: a task failed, a task went quiet (`stale_agent`), Kookr lost contact
- * with a task (`hook_disconnected`), and a task says it is finished and wants a review
- * (`completion_ready`). Each becomes one line in her thread on every open owner dashboard
- * (`lucy_says`). Nothing is spoken.
+ * Five events are worth one: a task failed, a task went quiet (`stale_agent`), Kookr lost contact
+ * with a task (`hook_disconnected`), a task went over its spend warning (`budget_exceeded`), and a
+ * task says it is finished and wants a review (`completion_ready`). Each becomes one line in her
+ * thread on every open owner dashboard (`lucy_says`). Nothing is spoken.
  *
  * The rules that keep this from being a stream of noise, all decided here so every tab agrees:
  *
@@ -24,6 +24,14 @@
  *   ten minutes.
  * - A task she launched herself is left out: the launch controller reports it, in the conversation
  *   that asked for it.
+ * - Going over budget is one line per task. The budget checker raises its finding at the project's
+ *   warning threshold and again at twice it; the second, inside the ten minutes, is the same kind
+ *   for the same task and adds nothing. The line never says an amount: the briefing and the findings
+ *   panel carry the numbers. A snoozed task's finding never reaches the attention queue, so it gets
+ *   no line. The budget checker's memory, like this one, is lost on a server restart: a running task
+ *   already over budget is reported once more on the first token scan after start (one line, or one
+ *   grouped line for several), which is still true and is kept on purpose rather than hidden by a
+ *   quiet period that would also hide a real first breach.
  * - Nothing is kept for later. A line is sent to the dashboards open at that moment; a dashboard
  *   that connects or reloads afterwards is sent nothing, and a line that reached nobody is dropped
  *   without opening a window (the briefing she writes when the panel opens covers that case).
@@ -44,7 +52,7 @@ import {
 import type { Actor } from './auth.js';
 
 /** What happened to a task. */
-export type LucyTaskEventKind = 'failed' | 'lost_contact' | 'stalled' | 'wants_review';
+export type LucyTaskEventKind = 'failed' | 'lost_contact' | 'stalled' | 'over_budget' | 'wants_review';
 
 export interface LucyTaskEvent {
   taskId: string;
@@ -53,11 +61,13 @@ export interface LucyTaskEvent {
 }
 
 /**
- * The finding that makes a task "gone quiet" or "lost contact"; undefined for every other finding.
- * Also undefined for a task that has said it is finished (`pendingSignalKind` is `completion_ready`):
- * it is quiet because it is waiting for its review, which she has already written about.
+ * The finding that makes a task "over budget", "gone quiet" or "lost contact"; undefined for every
+ * other finding. Going over budget counts even for a task that has said it is finished: the money is
+ * spent either way. The two others do not count for such a task (`pendingSignalKind` is
+ * `completion_ready`): it is quiet because it is waiting for its review, which she writes about.
  */
 export function taskEventForFinding(anomalyType: string, pendingSignalKind?: string): LucyTaskEventKind | undefined {
+  if (anomalyType === 'budget_exceeded') return 'over_budget';
   if (pendingSignalKind === 'completion_ready') return undefined;
   if (anomalyType === 'stale_agent') return 'stalled';
   if (anomalyType === 'hook_disconnected') return 'lost_contact';
@@ -84,7 +94,8 @@ export interface LucySaysTask {
 
 /**
  * Whether an event that waited in a window is still true when the window closes: the task is still
- * failed (not resumed), still waiting for its review, or still has the finding on one of its
+ * failed (not resumed), still open after going over budget (the money stays spent; only a finished
+ * task is no longer news), still waiting for its review, or still has the finding on one of its
  * sessions. `findingOf` gives the type of the finding raised on a session, if any.
  */
 export function taskEventStillTrue(
@@ -95,6 +106,7 @@ export function taskEventStillTrue(
   if (!task) return false;
   if (event.kind === 'failed') return task.status === 'terminated';
   if (task.status === 'completed' || task.status === 'terminated' || task.status === 'cancelled') return false;
+  if (event.kind === 'over_budget') return true;
   const wantsReview = task.pendingSignal?.kind === 'completion_ready';
   if (event.kind === 'wants_review') return wantsReview;
   // It said it is finished while the event waited: quiet is expected now.
@@ -122,11 +134,12 @@ export interface LucySaysNotifierDeps {
 }
 
 /** The order kinds are told in a grouped line: the worst news first. */
-const KIND_ORDER: readonly LucyTaskEventKind[] = ['failed', 'lost_contact', 'stalled', 'wants_review'];
+const KIND_ORDER: readonly LucyTaskEventKind[] = ['failed', 'lost_contact', 'stalled', 'over_budget', 'wants_review'];
 const WIRE_KIND: Record<LucyTaskEventKind, LucySaysKind> = {
   failed: 'task_failed',
   lost_contact: 'task_lost_contact',
   stalled: 'task_stalled',
+  over_budget: 'task_over_budget',
   wants_review: 'task_wants_review',
 };
 /** At most this many tasks are named in a grouped line; the others are counted. */
@@ -148,6 +161,8 @@ export function singleEventSentence(event: Pick<LucyTaskEvent, 'taskName' | 'kin
       return `${name ?? 'A task'} has gone quiet.`;
     case 'lost_contact':
       return `Kookr lost contact with ${name ?? 'a task'}.`;
+    case 'over_budget':
+      return `${name ?? 'A task'} has gone over its budget.`;
     case 'wants_review':
       return `${name ?? 'A task'} says it is finished and wants your review.`;
   }
@@ -175,6 +190,8 @@ export function groupedEventSentence(kind: LucyTaskEventKind, events: readonly L
       return `${capital(count)} more tasks have gone quiet${names}.`;
     case 'lost_contact':
       return `Kookr lost contact with ${count} more tasks${names}.`;
+    case 'over_budget':
+      return `${capital(count)} more tasks have gone over their budget${names}.`;
     case 'wants_review':
       return `${capital(count)} more tasks want your review${names}.`;
   }
