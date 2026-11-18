@@ -9,6 +9,9 @@ import {
   phaseClaimKey,
   legacyPhaseClaimKey,
   umbrellaChainAdvancerModeFromEnv,
+  umbrellaChainBlockedAlertThresholdMsFromEnv,
+  UMBRELLA_CHAIN_BLOCKED_ALERT_THRESHOLD_MS,
+  type UmbrellaChainAdvancerDeps,
   type UmbrellaChainAdvancerLogger,
 } from './umbrella-chain-advancer.js';
 import type { UmbrellaChainRemote, UmbrellaIssue } from '../../adapters/github-umbrella-chain-client.js';
@@ -55,6 +58,8 @@ function makeHarness(ledger: PhaseLedger, options: {
   }[];
   legacyClaimRepo?: string | null;
   reclaimableClaims?: Set<string>;
+  emitAlert?: UmbrellaChainAdvancerDeps['emitAlert'];
+  blockedAlertThresholdMs?: number;
 } = {}) {
   const events: string[] = [];
   const calls: string[] = [];
@@ -142,6 +147,8 @@ function makeHarness(ledger: PhaseLedger, options: {
     },
     ...(options.terminalTasks ? { isTaskTerminal: (taskId: string) => options.terminalTasks!.has(taskId) } : {}),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.emitAlert ? { emitAlert: options.emitAlert } : {}),
+    ...(options.blockedAlertThresholdMs !== undefined ? { blockedAlertThresholdMs: options.blockedAlertThresholdMs } : {}),
     isReviewTaskIndependent: () => true,
     launch: async (launchOptions) => {
       launchSawClaim = claims.has(launchOptions.idempotencyKey);
@@ -1051,6 +1058,128 @@ describe('UmbrellaChainAdvancer', () => {
     expect(fresh.chains[0]?.status).toBe('eligible');
     const stale = harness.advancer.getHealthSnapshot(base.getTime() + fresh.staleThresholdMs + 1);
     expect(stale.chains[0]?.status).toBe('stale');
+  });
+});
+
+describe('blocked-ledger operational alert (issue #4188)', () => {
+  type Alert = Parameters<NonNullable<UmbrellaChainAdvancerDeps['emitAlert']>>[0];
+  const HOUR = 60 * 60_000;
+  const blockedSince = '2026-11-18T08:00:00.000Z';
+  const blockedLedger = (since = blockedSince) => makeLedger({ blockedReason: 'gate-red', blockedSince: since });
+
+  function setup(ledger: PhaseLedger, nowIso: string, extra: { blockedAlertThresholdMs?: number; mode?: 'observe' | 'spawn'; reachable?: Set<number> } = {}) {
+    const alerts: Alert[] = [];
+    let now = new Date(nowIso);
+    const harness = makeHarness(ledger, {
+      mode: extra.mode ?? 'observe',
+      now: () => now,
+      emitAlert: (alert) => alerts.push(alert),
+      ...(extra.reachable ? { reachable: extra.reachable } : {}),
+      ...(extra.blockedAlertThresholdMs !== undefined ? { blockedAlertThresholdMs: extra.blockedAlertThresholdMs } : {}),
+    });
+    return { harness, alerts, setNow: (iso: string) => { now = new Date(iso); } };
+  }
+
+  test('a ledger blocked past the threshold raises exactly one alert naming chain, issue, reason and age', async () => {
+    const { harness, alerts } = setup(blockedLedger(), '2026-11-18T11:30:00.000Z');
+    await harness.advancer.sweep();
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(1);
+    const [alert] = alerts;
+    expect(alert).toMatchObject({
+      type: 'alert',
+      severity: 'warning',
+      operationalAlert: { metric: 'umbrella_chain_blocked', state: 'fired' },
+    });
+    expect(alert!.operationalAlert!.key).toContain(blockedSince);
+    expect(alert!.summary).toContain('chain:kookr-ai/kookr:2711');
+    expect(alert!.summary).toContain('kookr-ai/kookr#2711');
+    expect(alert!.summary).toContain('gate-red');
+    expect(alert!.summary).toContain('3h 30m');
+  });
+
+  test('a ledger blocked for less than the threshold raises no alert', async () => {
+    const { harness, alerts } = setup(blockedLedger(), '2026-11-18T09:59:00.000Z');
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(0);
+  });
+
+  test('a ledger that is not blocked raises no alert', async () => {
+    const { harness, alerts } = setup(makeLedger(), '2026-11-18T11:30:00.000Z');
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(0);
+  });
+
+  test('a block crossing the threshold between sweeps alerts on the first sweep past it', async () => {
+    const { harness, alerts, setNow } = setup(blockedLedger(), '2026-11-18T09:00:00.000Z');
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(0);
+    setNow('2026-11-18T10:00:00.000Z');
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(1);
+  });
+
+  test('a dependency block stamped by the advancer alerts once it has aged past the threshold', async () => {
+    const { harness, alerts, setNow } = setup(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], status: 'in-flight', prNumber: 10, taskId: 'owner-1' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), '2026-11-18T08:00:00.000Z', { mode: 'spawn', reachable: new Set() });
+    await harness.advancer.sweep();
+    expect(harness.issue.body).toContain('"blockedSince": "2026-11-18T08:00:00.000Z"');
+    expect(alerts).toHaveLength(0);
+    setNow('2026-11-18T10:00:00.000Z');
+    await harness.advancer.sweep();
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.summary).toContain('dependency-unmerged');
+  });
+
+  test('a new block (new blockedSince) raises a new alert and recovers the old one', async () => {
+    const { harness, alerts, setNow } = setup(blockedLedger(), '2026-11-18T11:00:00.000Z');
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(1);
+    const firstKey = alerts[0]!.operationalAlert!.key;
+
+    // The block clears: one recovery for the alerted episode.
+    harness.issue.body = `# Umbrella\n\n${serializePhaseLedgerBlock(makeLedger())}\n`;
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(2);
+    expect(alerts[1]!.operationalAlert).toMatchObject({ key: firstKey, state: 'recovered' });
+
+    // A later block with a new blockedSince alerts again under a new key.
+    harness.issue.body = `# Umbrella\n\n${serializePhaseLedgerBlock(blockedLedger('2026-11-18T12:00:00.000Z'))}\n`;
+    setNow('2026-11-18T14:30:00.000Z');
+    await harness.advancer.sweep();
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(3);
+    expect(alerts[2]!.operationalAlert).toMatchObject({ state: 'fired' });
+    expect(alerts[2]!.operationalAlert!.key).not.toBe(firstKey);
+  });
+
+  test('a threshold of 0 disables the alert', async () => {
+    const { harness, alerts } = setup(blockedLedger(), '2026-11-19T08:00:00.000Z', { blockedAlertThresholdMs: 0 });
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(0);
+  });
+
+  test('a throwing emitter does not fail the sweep', async () => {
+    const harness = makeHarness(blockedLedger(), {
+      now: () => new Date('2026-11-18T11:00:00.000Z'),
+      emitAlert: () => { throw new Error('sink down'); },
+    });
+    await harness.advancer.sweep();
+    expect(harness.advancer.getHealthSnapshot().lastTickError).toBeNull();
+    expect(harness.events.some((line) => line.includes('blocked-ledger alert failed: sink down'))).toBe(true);
+  });
+
+  test('threshold env: default 2 h, minutes when set, non-positive disables, invalid keeps default', () => {
+    expect(UMBRELLA_CHAIN_BLOCKED_ALERT_THRESHOLD_MS).toBe(2 * HOUR);
+    expect(umbrellaChainBlockedAlertThresholdMsFromEnv({})).toBe(2 * HOUR);
+    expect(umbrellaChainBlockedAlertThresholdMsFromEnv({ KOOKR_UMBRELLA_CHAIN_BLOCKED_ALERT_MINUTES: '30' })).toBe(30 * 60_000);
+    expect(umbrellaChainBlockedAlertThresholdMsFromEnv({ KOOKR_UMBRELLA_CHAIN_BLOCKED_ALERT_MINUTES: '0' })).toBe(0);
+    expect(umbrellaChainBlockedAlertThresholdMsFromEnv({ KOOKR_UMBRELLA_CHAIN_BLOCKED_ALERT_MINUTES: 'soon' })).toBe(2 * HOUR);
   });
 });
 
