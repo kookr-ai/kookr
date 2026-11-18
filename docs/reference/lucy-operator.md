@@ -310,8 +310,9 @@ For a task blocked on a permission prompt, the board line and `read_task` now al
   has no answer buttons, or there is no card on her panel;
 - the command, file path or URL, taken from the card (secrets already hidden by the server), cleaned
   and cut to 160 characters like other task text. It is on the board, which is rebuilt every turn,
-  and never in the record of what she said unprompted. A typed reply of hers may quote it, as her
-  instructions allow, and her replies are kept in the conversation history like any other reply.
+  and never in the record of what she said unprompted. Her instructions tell her to describe the
+  command in a few plain words and never quote it, typed or spoken (issue #4151), because her
+  replies are kept in the conversation history like any other reply.
 
 The command is an agent's text, so it comes last: on the board line after everything else (the state
 of the card, the cost and the pull requests), and in `read_task` last on the "Waiting on the

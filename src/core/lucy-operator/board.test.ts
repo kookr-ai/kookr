@@ -469,10 +469,15 @@ describe('buildLucyOperatorPrompt', () => {
       // Every "you cannot approve" rule ends by sending her to the card rules.
       expect(text).toMatch(/A permission prompt is the exception in how you answer/);
     }
-    expect(buildLucyOperatorPrompt('B')).toMatch(/You may quote the command once, exactly as the board gives it/);
-    const spoken = buildLucyOperatorPrompt('B', { spoken: true });
-    expect(spoken).toMatch(/Say what the command does in a few plain words/);
-    expect(spoken).not.toMatch(/You may quote the command once/);
+  });
+
+  test('never lets her quote a permission prompt\'s command, typed or spoken, so no agent-chosen text reaches her stored replies', () => {
+    for (const options of [{}, { spoken: true }, { canLaunch: true, canAct: true }, { canLaunch: true, canAct: true, spoken: true }]) {
+      const text = buildLucyOperatorPrompt('B', options);
+      expect(text).toMatch(/Say what the command does in a few plain words, and never quote it: the whole command is on the card\./);
+      expect(text).not.toMatch(/quote the command once/);
+      expect(text).not.toMatch(/exception to "no code"/);
+    }
   });
 
   test('tells her that a sentence naming no task answers the newest thing she said unprompted, without asking which task', () => {
