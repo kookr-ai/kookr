@@ -34,7 +34,8 @@ export interface InterruptedTaskEntry {
   /** Why a `fresh` task cannot resume its conversation. */
   reason?: string;
   /**
-   * The task as it was when parked, stamped by the service. A decision acts on the task only while it
+   * The task as it was when chosen for parking: set by the caller when it chose the task, else
+   * stamped by the service when parked. A decision acts on the task only while it
    * is still exactly this: if the operator acknowledged, cancelled or relaunched it meanwhile (even a
    * relaunch that has since ended again), it is skipped rather than relaunched behind their back.
    */
@@ -189,7 +190,9 @@ export class InterruptedTasksService {
     return this.serialize(async () => {
       await this.ensureLoaded();
       const now = this.now();
-      const stamped = entries.map((entry) => ({ ...entry, parkedAs: this.deps.taskSnapshot(entry.taskId) }));
+      // Keep a baseline the caller took when it chose the task (crash recovery does, before the
+      // operator could touch it); otherwise take it now.
+      const stamped = entries.map((entry) => ({ ...entry, parkedAs: entry.parkedAs ?? this.deps.taskSnapshot(entry.taskId) }));
       let batch = this.pending();
       const previousAskId = batch?.askId;
       if (batch) {

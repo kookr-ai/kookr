@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { InterruptedTasksService } from '../server/interrupted-tasks/interrupted-tasks-service.js';
 import { registerInterruptedTasksRoutes } from '../server/routes/interrupted-tasks-routes.js';
 import type { Task } from '../core/tasks.js';
-import { parseInterruptedArgs, runInterruptedCli } from './kookr-interrupted.js';
+import { formatBatch, parseInterruptedArgs, runInterruptedCli } from './kookr-interrupted.js';
 
 /**
  * The CLI end to end: `runInterruptedCli` → the real routes → a real service
@@ -110,6 +110,17 @@ describe('kookr interrupted', () => {
   test('ask with only unknown tasks reports the refusal', async () => {
     expect(await run('ask', 'nope')).toBe(2);
     expect(errors.join('\n')).toContain('no task can be parked');
+  });
+});
+
+describe('formatBatch', () => {
+  const pendingBatch = (modes: Array<'resume' | 'fresh'>) => ({
+    id: 'b1', source: 'restart', state: 'pending' as const, deadlineAt: 10 * 60_000,
+    tasks: modes.map((mode, i) => ({ taskId: `t${i}`, name: `T${i}`, mode })),
+  });
+  test('says what happens at the deadline: a resume, or nothing when no task can resume', () => {
+    expect(formatBatch(pendingBatch(['resume', 'fresh']), 0)).toContain('the tasks with a conversation resume in 10 min without one');
+    expect(formatBatch(pendingBatch(['fresh']), 0)).toContain('nothing restarts without one (deadline in 10 min)');
   });
 });
 

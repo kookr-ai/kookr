@@ -1854,8 +1854,8 @@ describe('Crash Recovery', () => {
     expect(launchSpy).not.toHaveBeenCalled();
     expect(result.relaunched).toEqual([]);
     expect(result.parked).toEqual(expect.arrayContaining([
-      { taskId: resumable.id, name: expect.any(String), mode: 'resume' },
-      { taskId: fresh.id, name: expect.any(String), mode: 'fresh', reason: expect.any(String) },
+      { taskId: resumable.id, name: expect.any(String), mode: 'resume', parkedAs: { status: 'terminated', sessions: 1 } },
+      { taskId: fresh.id, name: expect.any(String), mode: 'fresh', reason: expect.any(String), parkedAs: { status: 'terminated', sessions: 1 } },
     ]));
     expect(result.skipped.filter((s) => s.reason === PARKED_FOR_OPERATOR_REASON).map((s) => s.taskId).sort())
       .toEqual([resumable.id, fresh.id].sort());

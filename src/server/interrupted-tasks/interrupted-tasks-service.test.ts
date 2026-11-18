@@ -186,6 +186,31 @@ describe('InterruptedTasksService', () => {
     expect(h.decided[0]?.decision?.outcomes[0]).toMatchObject({ outcome: 'skipped' });
   });
 
+  test('a task cancelled between crash recovery choosing it and the park is not relaunched (baseline from recovery)', async () => {
+    const h = harness();
+    await h.service.start();
+    // Crash recovery took the baseline while the task was terminated; the operator cancelled it
+    // before the batch was parked, once asks were up.
+    h.tasks.set(RESUMABLE.taskId, { status: 'cancelled', sessions: 1 });
+    await h.service.park([{ ...RESUMABLE, parkedAs: { status: 'terminated', sessions: 1 } }], 'restart');
+    h.clock.now += 10 * MIN;
+    h.fireDue();
+    await settle(h);
+    expect(h.reopened).toEqual([]);
+    expect(h.decided[0]?.decision?.outcomes[0]?.outcome).toBe('skipped');
+  });
+
+  test('a task merged into a pending batch and cancelled meanwhile is not relaunched', async () => {
+    const h = harness();
+    await h.service.start();
+    await h.service.park([RESUMABLE], 'restart');
+    await h.service.park([FRESH], 'operator');
+    h.tasks.set(FRESH.taskId, { status: 'cancelled', sessions: 1 });
+    const decided = await h.service.answerFromAsk('ask-2', 'resume_all');
+    expect(h.reopened).toEqual([RESUMABLE.taskId]);
+    expect(decided?.decision?.outcomes.find((o) => o.taskId === FRESH.taskId)?.outcome).toBe('skipped');
+  });
+
   test('a task relaunched by hand that has since stopped again is not relaunched a second time', async () => {
     const h = harness();
     await h.service.start();
@@ -214,7 +239,7 @@ describe('InterruptedTasksService', () => {
     await fromCli.service.decide(batch!.id, 'leave', 'operator');
     expect(fromCli.closed).toEqual([{ askId: 'ask-1', text: 'Decided from the terminal (leave): 1 left stopped.' }]);
 
-    const fromAsk = harness();
+    const fromAsk = harness({}, { filePath: join(dir, 'from-ask.json') });
     await fromAsk.service.start();
     await fromAsk.service.park([RESUMABLE], 'restart');
     await fromAsk.service.answerFromAsk('ask-1', 'leave');

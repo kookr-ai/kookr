@@ -64,6 +64,7 @@ export function registerInterruptedTasksRoutes(app: Hono, deps: InterruptedTasks
         name: task.name ?? task.id,
         mode: report.mode === 'resume' ? 'resume' : 'fresh',
         ...(report.mode !== 'resume' ? { reason: report.reason } : {}),
+        parkedAs: { status: task.status, sessions: task.sessions.length },
       });
     }
     if (entries.length === 0) return c.json({ error: 'no task can be parked', refused }, 409);

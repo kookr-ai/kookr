@@ -318,6 +318,9 @@ export async function recoverCrashedSessions(
         name: task.name ?? task.id,
         mode: report.mode === 'resume' ? 'resume' : 'fresh',
         ...(report.mode !== 'resume' ? { reason: report.reason } : {}),
+        // The baseline a decision compares against, taken now: the operator may acknowledge or
+        // cancel the task in the window before the batch is parked, once asks are up.
+        parkedAs: { status: task.status, sessions: task.sessions.length },
       });
       result.skipped.push({ taskId: task.id, sessionId: tmuxName, reason: PARKED_FOR_OPERATOR_REASON });
       continue;
