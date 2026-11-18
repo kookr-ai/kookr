@@ -411,7 +411,7 @@ The **docs-drift-specialist** runs on every non-trivial PR — not only doc-touc
 
 Each specialist expects:
 - `{repoDir}` — path to the full repo checkout (the worktree)
-- PR context: `git diff main..HEAD` output and list of changed files
+- PR context: the branch diff against its merge base with the fetched PR base — `git fetch origin`, then `git diff "$BASE_REF"...HEAD` and `git diff --stat "$BASE_REF"...HEAD` (`BASE_REF` as in the scope check above, default `origin/main`). Never diff against local `main`: in a task checkout it can be hundreds of commits behind, and a two-dot diff then shows files the branch never touched, or files added on the base as deletions.
 
 #### Layer 2: Architecture Agents (kookr-toolkit plugin agents)
 
@@ -435,7 +435,7 @@ Use when the change touches module boundaries, imports, or public APIs:
 | State / workflow logic | + state-machine-verifier, failure-mode-analyst |
 
 **How to run:**
-1. Prepare context: `git diff main..HEAD` and `git diff main..HEAD --stat`, then run `select-specialists.sh` (see *Diff-adaptive panel selection* above) to decide the panel and capture the gating rationale.
+1. Prepare context: `git fetch origin`, then `git diff "$BASE_REF"...HEAD` and `git diff --stat "$BASE_REF"...HEAD` (three dots, against the fetched base; see the PR context bullet above), then run `select-specialists.sh` (see *Diff-adaptive panel selection* above) to decide the panel and capture the gating rationale.
 
    **Use a review context pack when one exists (cold-start saver).** This applies
    only to the panel; with one review pass (above) there is no panel and the

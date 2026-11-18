@@ -43,3 +43,34 @@ describe('pre-pr-review skill §8 per-lane model (RFC #3415)', () => {
     expect(section8).toMatch(/must stay blind to the implementer/i);
   });
 });
+
+/**
+ * Issue #4138: reviewers are handed the branch diff. A two-dot diff against a
+ * stale local `main` shows files the branch never touched (or base additions as
+ * deletions), so both files must name the three-dot diff against the fetched base.
+ */
+describe('review diff uses the fetched base with three dots (#4138)', () => {
+  const root = join(import.meta.dirname, '..', '..', 'plugin');
+  const skill = readFileSync(join(root, 'skills', 'pre-pr-review', 'SKILL.md'), 'utf-8');
+  const verifier = readFileSync(join(root, 'agents', 'change-verifier.md'), 'utf-8');
+  // A diff whose left side is local `main` (two or three dots), e.g. `git diff main..HEAD`.
+  const localMainDiff = /git diff[^`\n]*(?<![\w/])main\.\.\.?HEAD/;
+
+  test('pre-pr-review never diffs against local main or with two dots', () => {
+    expect(skill).not.toMatch(/(?<!\.)\.\.HEAD/);
+    expect(skill).not.toMatch(localMainDiff);
+  });
+
+  test('pre-pr-review builds the specialist context from the fetched base', () => {
+    expect(skill).toMatch(/PR context:[^\n]*`git fetch origin`[^\n]*`git diff "\$BASE_REF"\.\.\.HEAD`/);
+    expect(skill).toMatch(/Prepare context: `git fetch origin`, then `git diff "\$BASE_REF"\.\.\.HEAD` and `git diff --stat "\$BASE_REF"\.\.\.HEAD`/);
+  });
+
+  test('change-verifier names the three-dot diff against the fetched base for scope', () => {
+    const scope = verifier.split('\n').find((l) => l.includes('Check scope')) ?? '';
+    expect(scope).toMatch(/`git fetch origin`/);
+    expect(scope).toMatch(/`git diff "\$BASE_REF"\.\.\.HEAD`/);
+    expect(verifier).not.toMatch(/(?<!\.)\.\.HEAD/);
+    expect(verifier).not.toMatch(localMainDiff);
+  });
+});
