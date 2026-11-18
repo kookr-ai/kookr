@@ -93,15 +93,17 @@ This is intentionally earlier than the `gh pr create` hook. The hook is the back
 `pnpm deliver` (issue #4180, `scripts/deliver.ts`; reference: `docs/reference/cli.md`, "`pnpm deliver`") runs the delivery steps of the current branch in order and stops at the first one that fails or needs a decision. It never starts a reviewer and never posts a verdict, so start the independent reviewer on HEAD (step 2) first, then:
 
 ```bash
-pnpm deliver --dry-run --specialists independent-review   # print the plan, run nothing
-pnpm deliver --specialists independent-review             # run every step
+pnpm deliver --dry-run --specialists independent-review --body-file .tmp/pr-body.md   # print the plan, run nothing
+pnpm deliver --specialists independent-review --body-file .tmp/pr-body.md             # run every step
 ```
+
+**Pass `--body-file .tmp/pr-body.md`.** The default body file, `<tmp>/kookr-deliver-<branch>.md` in the system temp directory, is outside the worktree, and `kookr pr-checklist verify` only reads body files inside it, so a run without `--body-file` always stops at `pr-body` with `body file … is outside the repository root`. `.tmp/` is git-ignored, so the file does not change the commit the markers are bound to.
 
 | Step | What it runs |
 | --- | --- |
 | `review-marker` | `scripts/write-review-state-marker.sh --status approved --specialists <roles>` (or `--status bypass --reason <text>` with `--bypass-reason`) |
 | `pr-gate-marker` | `scripts/write-pr-gate-marker.sh` |
-| `pr-body` | `kookr pr-checklist scaffold` into `<tmp>/kookr-deliver-<branch>.md` (only when that file does not exist yet), then `kookr pr-checklist verify --pr-body <file>` |
+| `pr-body` | `kookr pr-checklist scaffold` into the body file (only when that file does not exist yet), then `kookr pr-checklist verify --pr-body <file>` |
 | `push` | `git push --set-upstream origin <branch>`, so `.hooks/pre-push` runs every rule above |
 | `pr` | `gh pr edit` on the branch's open PR, or `gh pr create` when there is none |
 | `wait-verdict` | waits (default 1800 seconds) for an independent-review verdict comment bound to the PR head |
@@ -109,12 +111,12 @@ pnpm deliver --specialists independent-review             # run every step
 
 Add `--to pr` to stop once the PR is open (for example when the PR is not yours to merge), and `--repo kookr-ai/kookr` when `gh` cannot infer the repository.
 
-**When it stops.** The last line names the step (`deliver: ✖ stopped at <step>: …`) and what to do. Fix that one step, by hand if needed, then resume from it with `--from <step>`, passing the same `--specialists` value whenever the range includes `review-marker`:
+**When it stops.** The last line names the step (`deliver: ✖ stopped at <step>: …`) and what to do. Fix that one step, by hand if needed, then resume from it with `--from <step>`, passing the same `--body-file` on every run and the same `--specialists` value whenever the range includes `review-marker`:
 
 | Stop | What to do |
 | --- | --- |
 | `review-marker`, exit 4 | Start the reviewer on HEAD, then pass `--specialists independent-review`, or `--bypass-reason "<why>"` for a trivial change (step 4). |
-| `pr-body`, non-zero | The scaffold leaves `TODO` rows that `verify` rejects. Edit the file it names, then `pnpm deliver --from pr-body`. |
+| `pr-body`, non-zero | The scaffold leaves `TODO` rows that `verify` rejects. Edit the file it names (write the summary, test plan and `Closes #<issue>` line too), then `pnpm deliver --from pr-body`. |
 | `push`, non-zero | The repo hook rejected the push: fix the rule it names ([Rules a push can fail on](#rules-a-push-can-fail-on)). A fix commit moves HEAD, so start the reviewer on the new head and resume with `--from review-marker`. |
 | `pr`, non-zero | Fix the `gh` error, then `--from pr`. |
 | `wait-verdict`, exit 4 | The verdict is a BLOCK. Fix or rebut the findings, commit, start the fix-check review on the new head, then `pnpm deliver --from review-marker --specialists independent-review`. |

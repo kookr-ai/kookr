@@ -21,6 +21,8 @@ describe('pnpm deliver is the default delivery path (issue #4181)', () => {
     const text = read(path);
     expect(text).toContain('pnpm deliver');
     expect(text).toMatch(/--from (review-marker|pr-body|wait-verdict|merge)/);
+    // The default body file is outside the worktree, where `kookr pr-checklist verify` refuses to read it.
+    expect(text).toContain('--body-file .tmp/pr-body.md');
   });
 
   test('the pre-push skill lists every pnpm deliver step, in order, and a stop row per step that can stop', () => {
@@ -56,7 +58,7 @@ describe('pnpm deliver is the default delivery path (issue #4181)', () => {
     expect(guard).toBeLessThan(block.indexOf('--from pr --to pr'));
     // Phase 8 resumes it for the verdict wait and the merge, and keeps the wrapper as the fallback.
     const phase8 = text.slice(text.indexOf('## Phase 8:'), text.indexOf('## Phase 8.5:'));
-    expect(phase8).toContain('pnpm deliver --repo "$REPO" --from wait-verdict');
+    expect(phase8).toContain('pnpm deliver --repo "$REPO" --body-file .tmp/pr-body.md --from wait-verdict');
     expect(phase8).toContain('kookr merge <PR_NUMBER> --repo "$REPO"');
   });
 });
