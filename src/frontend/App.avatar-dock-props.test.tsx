@@ -18,7 +18,8 @@ import { detectShortcutPlatform, getDefaultShortcutBindings } from '../shared/co
 
 const dock = vi.hoisted(() => ({ props: null as Partial<AvatarDockProps> | null, throws: false }));
 
-// Stands in for the real dock: like it, it tells the store when the room is on screen, and only then.
+// Stands in for the real dock: like it, it tells the store when the room is on screen, and only then. (It keys
+// that on the saved flag; the real dock's own report is pinned in AvatarDock.room.test.tsx, next to a probe.)
 vi.mock('./avatar/AvatarDock.js', async () => {
   const react = await import('react');
   const prefs = await import('./store/avatar-panel-prefs.js');

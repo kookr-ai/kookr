@@ -55,6 +55,8 @@ import {
   __resetAvatarPanelPrefsForTests,
   getAvatarRoom,
   setAvatarRoom,
+  updateAvatarPanelPrefs,
+  useAvatarRoomShown,
 } from '../store/avatar-panel-prefs.js';
 import { __resetLucyConversationForTests, appendConversationEntry } from '../store/lucy-conversation.js';
 import { __resetLucyPermissionForTests, handleLucyPermissionCards } from '../store/lucy-permission.js';
@@ -244,6 +246,31 @@ describe('AvatarDock: Lucy’s room', () => {
         { type: 'shortcut_used', key: 'Alt+Shift+L', action: 'lucy_room_toggle', context: 'global' },
         { type: 'shortcut_used', key: 'Alt+Shift+L', action: 'lucy_room_toggle', context: 'global' },
       ]);
+    });
+
+    test('the dock tells the store the room is on screen while it is, and stops when it leaves, unmounts or the panel goes off', () => {
+      // A probe beside the REAL dock (App's own test uses a stand-in): this is what the dashboard's shortcuts read.
+      const Probe = (): React.ReactElement => <i data-testid="shown">{String(useAvatarRoomShown())}</i>;
+      const shown = (): string | undefined => q('shown')?.textContent ?? undefined;
+      start();
+      root = createRoot(container);
+      act(() => { root!.render(<><Probe /><AvatarDock attentionCount={0} roomShortcut={ROOM_SHORTCUT} /></>); });
+      expect(shown()).toBe('false');
+      click(toggle());
+      expect(mode()).toBe('room');
+      expect(shown()).toBe('true');
+      click(toggle());
+      expect(mode()).toBe('docked');
+      expect(shown()).toBe('false');
+      click(toggle());
+      expect(shown()).toBe('true');
+      act(() => { root!.render(<Probe />); });
+      expect(shown()).toBe('false');
+      // Switched off while in the room.
+      act(() => { root!.render(<><Probe /><AvatarDock attentionCount={0} roomShortcut={ROOM_SHORTCUT} /></>); });
+      expect(shown()).toBe('true');
+      act(() => { updateAvatarPanelPrefs({ enabled: false }); });
+      expect(shown()).toBe('false');
     });
 
     test('a key pressed in the middle of IME composition does not flip the room', () => {
