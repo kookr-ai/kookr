@@ -3,7 +3,7 @@ import { open, readFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AgentSelection } from './agent-types.js';
 import { DEFAULT_AGENT_TYPE, normalizeAgentSelection } from './agent-types.js';
-import { isValidCron, nextRun, describeCron } from './cron.js';
+import { isValidCron, nextRun, describeCron, minimumCronIntervalMs } from './cron.js';
 import type { PlaybookScope } from './playbook.js';
 import type { TokenUsage } from './usage-types.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
@@ -180,9 +180,10 @@ export const FAILURE_BACKOFF_MAX_INTERVAL_MS = 6 * 60 * 60_000;
  * #4186), or `undefined` when there is nothing to slow down (no failure, an
  * unparseable cron, or a cron already slower than the cap).
  *
- * The interval is the cron's own gap at `anchor` multiplied by
- * 2^consecutiveFailures, capped at 6 h and never shorter than the cron gap, so
- * a schedule that already runs less often than every 6 h is never sped up.
+ * The interval is the cron's shortest gap multiplied by 2^consecutiveFailures,
+ * capped at 6 h, so a schedule that already runs less often than every 6 h is
+ * never sped up. The shortest gap (not the gap after `anchor`) keeps a
+ * clustered cron such as business hours from losing its backoff overnight.
  * `anchor` is the occurrence the failed fire was scheduled for, so fires stay
  * spaced from each other rather than from when the failure was noticed.
  */
@@ -192,11 +193,8 @@ export function computeFailureBackoff(
   anchor: Date,
 ): ScheduleFailureBackoff | undefined {
   if (!(consecutiveFailures > 0)) return undefined;
-  const first = nextRun(cron, anchor);
-  const second = first ? nextRun(cron, first) : null;
-  if (!first || !second) return undefined;
-  const cadenceMs = second.getTime() - first.getTime();
-  if (!(cadenceMs > 0) || cadenceMs >= FAILURE_BACKOFF_MAX_INTERVAL_MS) return undefined;
+  const cadenceMs = minimumCronIntervalMs(cron);
+  if (cadenceMs === null || !(cadenceMs > 0) || cadenceMs >= FAILURE_BACKOFF_MAX_INTERVAL_MS) return undefined;
   // 2^level overflows to Infinity for a huge streak; Math.min still caps it.
   const delayMs = Math.min(cadenceMs * 2 ** consecutiveFailures, FAILURE_BACKOFF_MAX_INTERVAL_MS);
   return {

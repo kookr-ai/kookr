@@ -912,29 +912,17 @@ describe('describeScheduleTerminalReason (issue #3157)', () => {
       3,
       3,
       undefined,
-      true,
-      { reasonCode: 'timeout' },
-    );
-    expect(alert.summary).toContain('auto-paused');
-    expect(alert.summary).toContain('(last failure: timeout)');
-    expect(alert.details).toContain('classified as timeout');
-    // No terminalReason → no reason clause (back-compat with legacy fires).
-    const bare = buildScheduleFailureAlert({ id: 's1', name: 'Belt' }, 3, 3, undefined, true);
-    expect(bare.summary).not.toContain('last failure:');
-    expect(bare.details).not.toContain('classified as');
-    // The reason suffix is folded into the non-auto-paused warning branch too,
-    // not just the auto-paused one.
-    const warning = buildScheduleFailureAlert(
-      { id: 's1', name: 'Belt' },
-      3,
-      3,
-      undefined,
-      false,
       { reasonCode: 'provider_failure', provider: 'grok-build' },
     );
-    expect(warning.summary).toContain('has failed 3 consecutive runs (last failure: provider_failure (grok-build))');
-    expect(warning.summary).not.toContain('auto-paused');
-    expect(warning.details).toContain('classified as provider_failure (grok-build)');
+    expect(alert.summary).toBe('Schedule "Belt" has failed 3 consecutive runs (last failure: provider_failure (grok-build))');
+    expect(alert.details).toContain('classified as provider_failure (grok-build)');
+    // Issue #4186: the alert says the schedule is slowed, never paused.
+    expect(alert.details).toContain('stays enabled');
+    expect(alert.summary).not.toContain('auto-paused');
+    // No terminalReason → no reason clause (back-compat with legacy fires).
+    const bare = buildScheduleFailureAlert({ id: 's1', name: 'Belt' }, 3, 3);
+    expect(bare.summary).not.toContain('last failure:');
+    expect(bare.details).not.toContain('classified as');
   });
 });
 

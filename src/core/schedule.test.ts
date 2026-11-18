@@ -1676,6 +1676,15 @@ describe('failure backoff (issue #4186)', () => {
     expect(computeFailureBackoff('0 0 * * *', 5, anchor)).toBeUndefined();
   });
 
+  it('keeps backing off a clustered cron at the end of its active window', () => {
+    // Hourly 09:00-17:00: the gap after 16:00 is overnight, but the cadence
+    // is still hourly, so the backoff must survive the night.
+    const lastFire = new Date('2026-11-18T16:00:00.000Z');
+    const backoff = computeFailureBackoff('0 9-17 * * *', 2, lastFire);
+    expect(backoff).toBeDefined();
+    expect(Date.parse(backoff!.notBefore) - lastFire.getTime()).toBe(4 * HOUR);
+  });
+
   it('nextScheduledRunFor skips cron occurrences before notBefore and keeps one landing on it', () => {
     const base = {
       cron: '*/30 * * * *',

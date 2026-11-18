@@ -118,6 +118,36 @@ describe('schedule cadence decay (issue #4186)', () => {
     expect(service.listResponse().schedules[0]!.nextRunAt).toBe(new Date(first.getTime() + HOUR).toISOString());
   });
 
+  it('a successful cheap probe also clears the backoff', async () => {
+    const { id } = createSchedule();
+    await fireAt(id, 'timeout');
+    expect(store.get(id)!.failureBackoff).toBeDefined();
+    const schedule = store.get(id)!;
+    const due = nextScheduledRunFor(schedule)!;
+    vi.setSystemTime(due);
+    const receipt = await service.reserveExecution(schedule, 'cron', due.toISOString());
+    await service.markProbeCompleted(id, receipt.id, { reasonCode: 'probe_quiet' });
+    expect(store.get(id)!.failureBackoff).toBeUndefined();
+    expect(store.get(id)!.consecutiveFailures).toBe(0);
+  });
+
+  it('a failed manual run (no cron slot) counts its backoff from the failure time', async () => {
+    const { id } = createSchedule();
+    const cronFire = await fireAt(id, 'timeout'); // level 1, lastScheduledFor = cronFire
+    // Three hours later an operator runs it by hand; it times out too.
+    vi.setSystemTime(cronFire.getTime() + 3 * HOUR);
+    const receipt = await service.reserveExecution(store.get(id)!, 'manual');
+    await service.markExecutionAccepted(id, receipt.id, 'manual-task', false);
+    vi.setSystemTime(cronFire.getTime() + 3 * HOUR + 20 * MIN);
+    await service.recordTaskTerminalOutcome('manual-task', 'cancelled', 'timeout');
+
+    const backoff = store.get(id)!.failureBackoff!;
+    expect(backoff.level).toBe(2);
+    // 2 h from the manual failure, not from the earlier cron slot (which
+    // would already have elapsed and left the schedule at full speed).
+    expect(Date.parse(backoff.notBefore)).toBe(cronFire.getTime() + 5 * HOUR + 20 * MIN);
+  });
+
   it('persists the backoff so it survives a restart', async () => {
     const { id } = createSchedule();
     await fireAt(id, 'timeout');

@@ -48,9 +48,9 @@ import { ScheduleValidator, validateCron } from './schedule-validator.js';
 import { OPERATIONAL_ALERT_AGENT_ID } from './operational-alert-rules.js';
 
 /**
- * Default per-schedule consecutive-failure alert + auto-pause threshold
- * (issue #1665 alert, issue #2353 fail-closed pause). One setting drives both:
- * the first time the streak crosses N the schedule alerts and is paused.
+ * Default per-schedule consecutive-failure alert threshold (issue #1665): the
+ * first time the streak crosses N the schedule alerts. Before issue #4186 the
+ * same crossing also paused it (issue #2353); it is now slowed down instead.
  */
 export const DEFAULT_SCHEDULE_FAILURE_ALERT_THRESHOLD = 3;
 
@@ -121,8 +121,8 @@ export function describeScheduleTerminalReason(
  * the moment the consecutive-failure streak crosses the threshold, one `info`
  * recovery alert when a later `completed` run clears a firing streak. Keyed per
  * schedule id so distinct failing schedules don't collide on one alert key.
- * When auto-pause is engaged (issue #2353) the details mention that the
- * schedule was disabled until an operator re-enables it. The classified terminal
+ * The details say the schedule keeps running at a slowed cadence (issue #4186).
+ * The classified terminal
  * reason (issue #3157), when known, is folded into the summary and details so an
  * offline operator learns WHY the belt died.
  */
@@ -131,35 +131,30 @@ export function buildScheduleFailureAlert(
   consecutiveFailures: number,
   threshold: number,
   lastMessage?: string,
-  autoPaused = false,
   terminalReason?: Pick<ScheduleTerminalReason, 'reasonCode' | 'provider'>,
 ): Extract<ServerMessage, { type: 'alert' }> {
   const detail = lastMessage ? ` Last error: ${lastMessage}.` : '';
   // Surface the classified failure reason (issue #3157) so an offline operator
   // learns WHY the belt died (timeout / provider outage / OOM) from the page
-  // itself, not just "auto-paused after N failures".
+  // itself, not just "failed N runs".
   const reasonLabel = describeScheduleTerminalReason(terminalReason);
   const reasonSuffix = reasonLabel ? ` (last failure: ${reasonLabel})` : '';
   const classification = reasonLabel
     ? ` The most recent failure was classified as ${reasonLabel}.`
     : '';
-  const pauseNote = autoPaused
-    ? ` The schedule has been auto-paused (enabled=false, stopReason=consecutive_failures) ` +
-      'to stop thrashing capacity; re-enable it after inspecting the loop to clear the ' +
-      'counter and resume fires.'
-    : ' A run that completes successfully resets the counter and clears this alert. ' +
-      'This alert is raised once per failing episode.';
+  const slowNote =
+    ' The schedule stays enabled but each further failure doubles the gap to its next fire ' +
+    '(up to one fire every 6 h, issue #4186). A run that completes successfully resets the ' +
+    'counter and the cadence, and clears this alert. This alert is raised once per failing episode.';
   return {
     type: 'alert',
     agentId: OPERATIONAL_ALERT_AGENT_ID,
-    summary: autoPaused
-      ? `Schedule "${schedule.name}" auto-paused after ${consecutiveFailures} consecutive failures${reasonSuffix}`
-      : `Schedule "${schedule.name}" has failed ${consecutiveFailures} consecutive runs${reasonSuffix}`,
+    summary: `Schedule "${schedule.name}" has failed ${consecutiveFailures} consecutive runs${reasonSuffix}`,
     details:
       `Schedule "${schedule.name}" (${schedule.id}) has now failed ${consecutiveFailures} ` +
       `consecutive runs, crossing the threshold of ${threshold} ` +
       '(scheduleFailureAlertThreshold setting).' +
-      `${detail}${classification}${pauseNote}`,
+      `${detail}${classification}${slowNote}`,
     severity: 'warning',
     operationalAlert: {
       key: `schedule:failures:${schedule.id}`,
@@ -581,7 +576,7 @@ export class ScheduleService {
     if (threshold <= 0) return;
 
     if (priorCount < threshold && nextCount >= threshold) {
-      this.emitAlert(buildScheduleFailureAlert(previous, nextCount, threshold, lastMessage, false, terminalReason));
+      this.emitAlert(buildScheduleFailureAlert(previous, nextCount, threshold, lastMessage, terminalReason));
     } else if (priorCount >= threshold && nextCount === 0) {
       this.emitAlert(buildScheduleFailureRecoveryAlert(previous));
     }
@@ -627,7 +622,8 @@ export class ScheduleService {
    *   (×2 per failure, capped at 6 h — see {@link computeFailureBackoff}),
    *   anchored at the latest cron occurrence the schedule has evaluated (the
    *   failed fire's own `scheduledFor`, or a later overlap-skipped occurrence
-   *   when the run outlived several slots), else at the failure time;
+   *   when the run outlived several slots); a manual run, which has no cron
+   *   slot, is anchored at the failure time;
    * - an outcome that carries the streak forward unchanged keeps the backoff.
    *
    * Recovery-critical schedules (#2530 / #3085) keep their configured cadence:
@@ -645,6 +641,10 @@ export class ScheduleService {
       return { failureBackoff: undefined };
     }
     if (!failed) return { failureBackoff: schedule.failureBackoff };
+    // A manual run has no cron slot: count the backoff from the failure.
+    if (!scheduledFor) {
+      return { failureBackoff: computeFailureBackoff(schedule.cron, consecutiveFailures, now) };
+    }
     const anchorMs = Math.max(
       ...[scheduledFor, schedule.lastScheduledFor]
         .map((iso) => (iso ? Date.parse(iso) : NaN))

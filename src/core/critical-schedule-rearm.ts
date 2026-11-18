@@ -27,9 +27,9 @@
  *
  * The sub-tier is a strict subset of the critical allowlist. Two protections
  * distinguish it from an ordinary critical schedule:
- *  1. It is never auto-paused by a `consecutive_failures` streak (see the
- *     service-side `autoPausePatch`) — it stays enabled and alerts instead of
- *     disabling, so the merge watchdog is always alive to land a fix.
+ *  1. It is never paused or slowed by a `consecutive_failures` streak (see the
+ *     service-side `failureBackoffPatch`, issue #4186) — it stays enabled at
+ *     its cadence and alerts, so the merge watchdog is always alive to land a fix.
  *  2. If it is *already* parked in a cascade-origin `consecutive_failures`
  *     `operatorHold` (from persisted pre-fix state or another disable path),
  *     {@link decideCriticalScheduleRearm} re-arms it *through* that hold —
