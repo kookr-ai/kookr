@@ -118,6 +118,29 @@ describe('schedule cadence decay (issue #4186)', () => {
     expect(service.listResponse().schedules[0]!.nextRunAt).toBe(new Date(first.getTime() + HOUR).toISOString());
   });
 
+  it('an outcome that is not a failure keeps the backoff (operator cancel, overlap skip)', async () => {
+    const { id } = createSchedule();
+    const first = await fireAt(id, 'timeout');
+    const backoff = store.get(id)!.failureBackoff;
+    expect(backoff?.level).toBe(1);
+
+    // An operator cancels a manual run: a lifecycle stop, not a failure.
+    vi.setSystemTime(first.getTime() + 25 * MIN);
+    const manual = await service.reserveExecution(store.get(id)!, 'manual');
+    await service.markExecutionAccepted(id, manual.id, 'cancelled-by-operator', false);
+    await service.recordTaskTerminalOutcome('cancelled-by-operator', 'cancelled');
+    expect(store.get(id)!.consecutiveFailures).toBe(1);
+    expect(store.get(id)!.failureBackoff).toEqual(backoff);
+
+    // A cron slot skipped because the previous run is still active.
+    const due = nextScheduledRunFor(store.get(id)!)!;
+    vi.setSystemTime(due);
+    const skip = await service.reserveExecution(store.get(id)!, 'cron', due.toISOString());
+    await service.markExecutionOutcome(id, skip.id, 'skipped_active', 'previous_run_active', 'Previous run still active');
+    expect(store.get(id)!.consecutiveFailures).toBe(1);
+    expect(store.get(id)!.failureBackoff).toEqual(backoff);
+  });
+
   it('a successful cheap probe also clears the backoff', async () => {
     const { id } = createSchedule();
     await fireAt(id, 'timeout');
