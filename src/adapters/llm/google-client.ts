@@ -12,19 +12,13 @@ import type { LlmClient, LlmCompletionRequest } from '../../core/llm-types.js';
 
 const DEFAULT_MODEL = 'gemini-3-flash-preview';
 
-// The Gemini Developer API version this client calls. `@google/genai` 3.x
-// changed its default from `v1beta` to `v1`, and `v1` does not serve `-preview`
-// models: the default model above answers 404 there. Naming the version here
-// keeps requests on `v1beta` whatever the SDK's default is.
-export const GEMINI_API_VERSION = 'v1beta';
-
 export class GoogleLlmClient implements LlmClient {
   readonly provider = 'google';
   readonly model: string;
   private client: GoogleGenAI;
 
   constructor(apiKey: string, model = DEFAULT_MODEL) {
-    this.client = new GoogleGenAI({ apiKey, apiVersion: GEMINI_API_VERSION });
+    this.client = new GoogleGenAI({ apiKey });
     this.model = model;
   }
 
