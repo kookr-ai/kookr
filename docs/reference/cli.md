@@ -833,7 +833,8 @@ them in sequence.
   change the commit the markers are bound to. `--body-file` picks another path.
 - **`wait-verdict` only waits.** Since #3792 the reviewer posts its own verdict
   comment. A `pass` whose `review-head-sha` equals the PR head lets the run go
-  on to `merge`. A `block` for that head stops the run (exit `4`). An older
+  on to `merge`. A `block` for that head, or one that names no head, stops the
+  run (exit `4`). An older
   verdict, or no verdict at all, keeps it waiting until `--wait-timeout`
   (default 1800 seconds; `0` checks once), then it stops before `kookr merge`
   (exit `3`). A `pass` bound only through `review-patch-id` after a rebase is

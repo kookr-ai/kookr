@@ -18,7 +18,8 @@
 // Exit codes:
 //   0   every selected step finished
 //   3   stopped: no independent-review verdict for the current head (before merge)
-//   4   stopped: a step needs a decision (BLOCK verdict, missing review input)
+//   4   stopped: a step needs a decision (BLOCK verdict, missing review input,
+//       no branch or PR to work on)
 //   64  usage error
 //   N   a step's command failed; N is that command's own exit code
 
@@ -131,11 +132,12 @@ export function parseArgs(argv: string[]): DeliverOptions {
     const eq = raw.startsWith('--') ? raw.indexOf('=') : -1;
     const flag = eq > 0 ? raw.slice(0, eq) : raw;
     const takeValue = (): string => {
-      if (eq > 0) return raw.slice(eq + 1);
-      const next = args[i + 1];
-      if (next === undefined || next.startsWith('--')) throw new UsageError(`${flag} needs a value`);
-      i++;
-      return next;
+      const value = eq > 0 ? raw.slice(eq + 1) : args[i + 1];
+      if (value === undefined || value === '' || (eq < 0 && value.startsWith('--'))) {
+        throw new UsageError(`${flag} needs a value`);
+      }
+      if (eq < 0) i++;
+      return value;
     };
     switch (flag) {
       case '--dry-run': opts.dryRun = true; break;
@@ -441,7 +443,7 @@ export const STEPS: readonly Step[] = [
     async execute(ctx) {
       const pr = resolvePr(ctx);
       if (!pr) {
-        return { ok: false, code: EXIT_NO_VERDICT, message: 'step wait-verdict: no open PR for this branch (pass --pr <number>)' };
+        return { ok: false, code: EXIT_NEEDS_DECISION, message: 'step wait-verdict: no open PR for this branch (pass --pr <number>)' };
       }
       const { opts, deps } = ctx;
       const deadline = deps.now() + opts.waitTimeoutSec * 1000;
@@ -494,7 +496,8 @@ export type VerdictState =
  * Classify `gh pr view --json comments,commits` output with the same decision
  * table `kookr merge` uses (evaluateMergeReviewGate), except that a BLOCK bound
  * to an older head means "wait": after a fix is pushed, the old BLOCK stays the
- * latest verdict until the reviewer posts on the new head.
+ * latest verdict until the reviewer posts on the new head. A BLOCK that names no
+ * head cannot be tied to an older one, so it stops the run like a current one.
  */
 export function verdictState(viewJson: string): VerdictState {
   let view: { comments?: Array<{ body?: string; createdAt?: string }>; commits?: Array<{ oid?: string }> };
@@ -508,7 +511,7 @@ export function verdictState(viewJson: string): VerdictState {
   const comments: ReviewComment[] = (view.comments ?? []).map((c) => ({ body: c.body ?? '', createdAt: c.createdAt }));
   const gate = evaluateMergeReviewGate({ comments, labels: [], headSha: head });
   if (gate.allowed) return { kind: 'pass', head };
-  if (gate.code === 'sticky-block' || (gate.code === 'blocked-finding' && gate.verdict?.headSha === head)) {
+  if (gate.code === 'sticky-block' || (gate.code === 'blocked-finding' && (gate.verdict?.headSha === head || !gate.verdict?.headSha))) {
     return { kind: 'block', reason: `independent-review verdict is BLOCK for head ${head.slice(0, 12)}` };
   }
   return { kind: 'wait', reason: gate.code };

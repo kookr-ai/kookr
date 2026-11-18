@@ -48,6 +48,7 @@ interface FakeOptions {
 
 function fakeDeps(o: FakeOptions = {}) {
   const calls: string[] = [];
+  const argvs: string[][] = [];
   const writes: string[] = [];
   const logs: string[] = [];
   const files = new Set<string>(o.bodyExists ? [BODY] : []);
@@ -58,6 +59,7 @@ function fakeDeps(o: FakeOptions = {}) {
     run(cmd, args): RunResult {
       const l = label(cmd, args);
       calls.push(l);
+      argvs.push([cmd, ...args]);
       const code = o.codes?.[l] ?? 0;
       let stdout = '';
       if (l === 'git rev-parse --abbrev-ref') stdout = 'feat/x\n';
@@ -81,7 +83,9 @@ function fakeDeps(o: FakeOptions = {}) {
     now: () => clock,
     log: (line) => logs.push(line),
   };
-  return { deps, calls, writes, logs };
+  /** Full argv of the first recorded call whose label is `l`. */
+  const argvOf = (l: string) => argvs[calls.indexOf(l)];
+  return { deps, calls, writes, logs, argvOf };
 }
 
 function opts(...argv: string[]) {
@@ -141,17 +145,30 @@ describe('pnpm deliver --dry-run', () => {
 
 describe('pnpm deliver run', () => {
   test('runs the seven steps in order and merges after a PASS for the PR head', async () => {
-    const { deps, calls, writes } = fakeDeps();
+    const { deps, calls, writes, argvOf } = fakeDeps();
     const code = await deliver(opts(), deps, CMDS);
     expect(code).toBe(EXIT_OK);
     expect(calls.filter(isStepCall)).toEqual(STEP_CALLS);
     expect(writes).toEqual([BODY]);
+    expect(argvOf('kookr pr-checklist verify')).toEqual([
+      'node', '/repo/bin/kookr.js', 'pr-checklist', 'verify', '--pr-body', BODY, '--base', 'main',
+    ]);
+    expect(argvOf('git push --set-upstream')).toEqual(['git', 'push', '--set-upstream', 'origin', 'feat/x']);
+    expect(argvOf('gh pr create')).toEqual([
+      'gh', 'pr', 'create', '--base', 'main', '--head', 'feat/x', '--title', 'feat(x): do it', '--body-file', BODY,
+    ]);
+    expect(argvOf('gh pr view')).toEqual(['gh', 'pr', 'view', '42', '--json', 'comments,commits']);
+    expect(argvOf('kookr merge 42')).toEqual(['node', '/repo/bin/kookr.js', 'merge', '42']);
   });
 
   test('updates the open PR instead of creating one, and keeps an existing body file', async () => {
-    const { deps, calls, writes } = fakeDeps({ existingPr: '42\n', bodyExists: true });
-    const code = await deliver(opts(), deps, CMDS);
+    const { deps, calls, writes, argvOf } = fakeDeps({ existingPr: '42\n', bodyExists: true });
+    const code = await deliver(opts('--title', 'my title', '--repo', 'o/r'), deps, CMDS);
     expect(code).toBe(EXIT_OK);
+    expect(argvOf('gh pr edit')).toEqual([
+      'gh', 'pr', 'edit', '42', '--title', 'my title', '--body-file', BODY, '--repo', 'o/r',
+    ]);
+    expect(argvOf('kookr merge 42')).toEqual(['node', '/repo/bin/kookr.js', 'merge', '42', '--repo', 'o/r']);
     expect(calls).toContain('gh pr edit');
     expect(calls).not.toContain('gh pr create');
     expect(calls).not.toContain('kookr pr-checklist scaffold');
@@ -198,6 +215,19 @@ describe('pnpm deliver run', () => {
     expect(calls).toEqual([['bash', '/repo/scripts/write-review-state-marker.sh', '--status', 'bypass', '--reason', 'typo only']]);
   });
 
+  test('step pr stops without calling gh when the PR body file is missing', async () => {
+    const { deps, calls, logs } = fakeDeps();
+    expect(await deliver(opts('--from', 'pr'), deps, CMDS)).toBe(EXIT_NEEDS_DECISION);
+    expect(calls.filter((c) => c.startsWith('gh '))).toEqual([]);
+    expect(logs.at(-1)).toContain(`stopped at pr: step pr: PR body ${BODY} is missing`);
+  });
+
+  test.each(['wait-verdict', 'merge'])('--from %s with no open PR stops with exit 4 before merging', async (from) => {
+    const { deps, calls } = fakeDeps();
+    expect(await deliver(opts('--from', from), deps, CMDS)).toBe(EXIT_NEEDS_DECISION);
+    expect(calls).not.toContain('kookr merge 42');
+  });
+
   test('a missing verdict stops before kookr merge once the wait times out', async () => {
     const { deps, calls, logs } = fakeDeps({ views: [prView([])] });
     const code = await deliver(opts('--wait-timeout', '30'), deps, CMDS);
@@ -233,6 +263,11 @@ describe('pnpm deliver run', () => {
 });
 
 describe('verdictState', () => {
+  test('a BLOCK that names no head stops the run', () => {
+    const view = prView([{ body: '<!-- kookr-independent-review -->\nkookr-review-verdict: block\n', createdAt: '2026-11-18T01:00:00Z' }]);
+    expect(verdictState(view).kind).toBe('block');
+  });
+
   test('an old BLOCK followed by no verdict on the new head means wait, not stop', () => {
     expect(verdictState(prView([verdictComment('block', OLD_HEAD, '2026-11-18T01:00:00Z')])).kind).toBe('wait');
   });
@@ -254,6 +289,8 @@ describe('parseArgs', () => {
     [['--pr', 'abc']],
     [['--wait-timeout']],
     [['--bogus']],
+    [['--body-file=']],
+    [['--title', '']],
   ])('rejects %j', (argv) => {
     expect(() => parseArgs(argv)).toThrow(UsageError);
   });
