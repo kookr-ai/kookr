@@ -111,6 +111,7 @@ import {
   clampAvatarColumnWidth,
   leaveAvatarRoomToShowTask,
   setAvatarRoom,
+  setAvatarPageCovered,
   setAvatarRoomShown,
   updateAvatarPanelPrefs,
   useAvatarPanelPrefs,
@@ -518,6 +519,13 @@ export function AvatarDock({
     setAvatarRoomShown(true);
     return () => setAvatarRoomShown(false);
   }, [inRoom]);
+  // Tell the dashboard when she covers all of it (the room, or the full-width sheet while open), so it goes inert.
+  const coversPage = inRoom || (sheet && !minimized);
+  useLayoutEffect(() => {
+    if (!coversPage) return undefined;
+    setAvatarPageCovered(true);
+    return () => setAvatarPageCovered(false);
+  }, [coversPage]);
   const toggleRoom = useCallback(() => setAvatarRoom(!room), [room]);
 
   // Hands-free is on and connected: the label and hint follow what the server says Lucy is doing.

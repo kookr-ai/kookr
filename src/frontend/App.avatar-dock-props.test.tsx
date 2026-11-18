@@ -3,7 +3,8 @@
 // App hands Lucy's panel the Talk shortcut and tells it when global shortcuts are blocked (#4010, #4058).
 // AvatarDock's own tests pass these props by hand, so without this file deleting either prop in App stays green.
 // It also covers what only App can do for "Lucy's room": read `/?lucy=room` before the first paint, pass the
-// room's shortcut, and keep the dashboard's own shortcuts quiet while the room covers it.
+// room's shortcut, keep the dashboard's own shortcuts quiet while the room covers it, and make the dashboard
+// inert under her while leaving the dialogs, the palette and the toasts live (#4154).
 
 import React from 'react';
 import { act } from 'react';
@@ -31,9 +32,13 @@ vi.mock('./avatar/AvatarDock.js', async () => {
       react.useLayoutEffect(() => {
         if (!room) return undefined;
         prefs.setAvatarRoomShown(true);
-        return () => prefs.setAvatarRoomShown(false);
+        prefs.setAvatarPageCovered(true);
+        return () => {
+          prefs.setAvatarRoomShown(false);
+          prefs.setAvatarPageCovered(false);
+        };
       }, [room]);
-      return null;
+      return react.createElement('section', { 'data-testid': 'mock-dock' });
     },
   };
 });
@@ -217,6 +222,48 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
     await flush();
     await press({ key: 'Escape' });
     expect(selected()).toBeNull();
+  });
+
+  test('while Lucy covers the dashboard it is inert, and the dialogs, the palette, the toasts and her dock stay live (#4154)', async () => {
+    await renderApp();
+    // Diagnostics and the command palette open, as an operator may have them when she takes the window.
+    await click('[data-testid="mock-operations"]');
+    await click('[data-testid="mock-palette"]');
+    const inertAncestor = (selector: string): Element | null => {
+      const element = document.querySelector(selector);
+      expect(element, selector).not.toBeNull();
+      return element!.closest('[inert]');
+    };
+    const dashboardParts = ['[data-testid="skip-to-content"]', '[data-testid="top-bar"]', '#main-content', '[data-testid="findings-panel"]'];
+    const liveParts = ['.operations-popover-shell', '[data-testid="command-palette"]', '[data-testid="toast-live-polite"]', '[data-testid="toast-live-assertive"]', '[data-testid="mock-dock"]'];
+
+    // Not covered: nothing is inert.
+    for (const selector of [...dashboardParts, ...liveParts]) expect(inertAncestor(selector), selector).toBeNull();
+
+    await act(async () => { setAvatarRoom(true); });
+    await flush();
+    for (const selector of dashboardParts) expect(inertAncestor(selector), selector).not.toBeNull();
+    for (const selector of liveParts) expect(inertAncestor(selector), selector).toBeNull();
+    // The wrapper takes no part in the layout: `.app` lays out the dashboard's parts as before.
+    const wrapper = container.querySelector<HTMLElement>('[data-testid="app-dashboard"]')!;
+    expect(wrapper.style.display).toBe('contents');
+
+    await act(async () => { setAvatarRoom(false); });
+    await flush();
+    for (const selector of dashboardParts) expect(inertAncestor(selector), selector).toBeNull();
+  });
+
+  test('a room flag whose dock is not on screen leaves the dashboard live', async () => {
+    sessionStorage.setItem(AVATAR_ROOM_KEY, '1');
+    __resetAvatarPanelPrefsForTests();
+    dock.throws = true;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await renderApp();
+      expect(container.querySelector('[data-testid="top-bar"]')!.closest('[inert]')).toBeNull();
+    } finally {
+      dock.throws = false;
+    }
   });
 
   test('when the dock is not on screen (it threw) a room flag left in the tab does not take the dashboard’s shortcuts away', async () => {

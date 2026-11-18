@@ -17,7 +17,7 @@ import {
 import { __resetLastClipForTests, captureLastClip, getClip, getLastClip, getLastClipSnapshot, markClipHeard } from './last-clip.js';
 import { __resetSpeechBusForTests, subscribeSpeechBus, type SpeechBusEvent } from './speech-bus.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from './sound-preference.js';
-import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
+import { AVATAR_PANEL_KEY, AVATAR_ROOM_KEY, __resetAvatarPanelPrefsForTests, setAvatarRoom } from '../store/avatar-panel-prefs.js';
 
 let now = 0;
 let visibility: DocumentVisibilityState = 'visible';
@@ -191,6 +191,25 @@ describe('beginClipPlayback: heard rules and telemetry', () => {
     __resetAvatarPanelPrefsForTests();
     beginClipPlayback({ clipId: 'c1', totalMs: 1000, trigger: 'replay' });
     expect(ofType('lucy_clip_started')[2]).toMatchObject({ panelState: 'open' });
+  });
+
+  test('in her room she is open, even when the shared choice is "minimised" (#4154)', () => {
+    localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: true }));
+    __resetAvatarPanelPrefsForTests();
+    try {
+      // Entered from the minimised bubble: the room shows her open, and the saved choice stays "minimised".
+      setAvatarRoom(true);
+      beginClipPlayback({ clipId: 'c1', totalMs: 1000, trigger: 'ask' });
+      expect(ofType('lucy_clip_started')[0]).toMatchObject({ trigger: 'ask', panelState: 'open' });
+
+      // Back out of the room she is the bubble again.
+      setAvatarRoom(false);
+      beginClipPlayback({ clipId: 'c1', totalMs: 1000, trigger: 'replay' });
+      expect(ofType('lucy_clip_started')[1]).toMatchObject({ panelState: 'minimized' });
+    } finally {
+      sessionStorage.removeItem(AVATAR_ROOM_KEY);
+      __resetAvatarPanelPrefsForTests();
+    }
   });
 });
 
