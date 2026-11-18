@@ -79,7 +79,19 @@ export interface MainDeps {
 export function parseArgs(argv: string[]): ParsedArgs;
 export function resolveId(raw: string | null | undefined): string | null;
 export function requestJson(args: RequestJsonArgs): Promise<RequestJsonResult>;
-export function formatScheduleLine(schedule: ScheduleLike): string;
+/** ROI rollup row from GET /api/schedules/rollups (issue #4187) — partial. */
+export interface ScheduleRollupLike {
+  scheduleId?: string;
+  measuredFires?: number;
+  merged?: number;
+  artifacts?: number;
+  /** Server-derived low-yield verdict (issue #4187). */
+  lowYield?: boolean;
+  lowYieldHint?: string;
+  [k: string]: unknown;
+}
+
+export function formatScheduleLine(schedule: ScheduleLike, rollup?: ScheduleRollupLike): string;
 /** Cascade-origin held schedules: disabled + stopReason=consecutive_failures (#2531). */
 export function selectCascadeHeld(schedules: unknown): ScheduleLike[];
 export function main(deps?: MainDeps): Promise<void>;

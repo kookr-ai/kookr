@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, unlinkSync, readFileSyn
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore, type Schedule, type ScheduleExecutionLedgerEntry, type ScheduleExecutionOutcome } from './schedule.js';
-import { computeScheduleRollup, rollupsEqual, type ScheduleRollup } from './schedule-rollup.js';
+import {
+  assessScheduleYield,
+  computeScheduleRollup,
+  LOW_YIELD_MIN_MEASURED_FIRES,
+  rollupsEqual,
+  type ScheduleRollup,
+} from './schedule-rollup.js';
 
 // ---------------------------------------------------------------------------
 // Invariant gate (issue #1584 / #1539). The materialized rollup touches durable
@@ -536,5 +542,59 @@ describe('rollupsEqual', () => {
   });
   test('detects a live-verified divergence', () => {
     expect(rollupsEqual(base, { ...base, liveVerified: 1 })).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Low-yield flag (issue #4187): >= 20 measured fires with merged + artifacts == 0.
+// Built from real ledger rows through computeScheduleRollup, so the threshold is
+// exercised against the same counts the API serves.
+// ---------------------------------------------------------------------------
+describe('assessScheduleYield (issue #4187)', () => {
+  const NOW = '2026-11-18T00:00:00.000Z';
+  function ledger(
+    id: string,
+    measured: number,
+    opts: { unmeasured?: number; artifactsOn?: number; mergedOn?: number } = {},
+  ): ScheduleExecutionLedgerEntry[] {
+    const rows: ScheduleExecutionLedgerEntry[] = [];
+    for (let i = 0; i < measured; i++) {
+      const row = makeEntry(id, i, true, i === opts.artifactsOn ? 1 : 0);
+      rows.push(i === opts.mergedOn ? { ...row, mergeCommit: `sha-${i}` } : row);
+    }
+    for (let i = 0; i < (opts.unmeasured ?? 0); i++) rows.push(makeEntry(id, measured + i, false, 0));
+    return rows;
+  }
+  const assess = (rows: ScheduleExecutionLedgerEntry[]) =>
+    assessScheduleYield(computeScheduleRollup({ id: 's', executionLedger: rows }, NOW));
+
+  test('threshold is 20 measured fires', () => {
+    expect(LOW_YIELD_MIN_MEASURED_FIRES).toBe(20);
+  });
+
+  test('19 measured fires with no output is not flagged', () => {
+    expect(assess(ledger('s', 19)).lowYield).toBe(false);
+  });
+
+  test('20 measured fires with no output is flagged, with the counts', () => {
+    expect(assess(ledger('s', 20))).toEqual({ scheduleId: 's', lowYield: true, fires: 20, merged: 0, artifacts: 0 });
+  });
+
+  test('20 measured fires with one merged PR is not flagged', () => {
+    const verdict = assess(ledger('s', 20, { mergedOn: 7 }));
+    expect(verdict.merged).toBe(1);
+    expect(verdict.lowYield).toBe(false);
+  });
+
+  test('20 measured fires with one artifact is not flagged', () => {
+    const verdict = assess(ledger('s', 20, { artifactsOn: 3 }));
+    expect(verdict.artifacts).toBe(1);
+    expect(verdict.lowYield).toBe(false);
+  });
+
+  test('unmeasured fires (skips, failed dispatches) do not count toward the threshold', () => {
+    const verdict = assess(ledger('s', 19, { unmeasured: 100 }));
+    expect(verdict.fires).toBe(19);
+    expect(verdict.lowYield).toBe(false);
   });
 });

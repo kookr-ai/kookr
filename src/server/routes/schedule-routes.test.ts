@@ -174,6 +174,39 @@ describe('schedule routes', () => {
       expect(byId.get(b.id)!.fires).toBe(0);
     });
 
+    test('rollup endpoints carry the read-time low-yield flag (issue #4187)', async () => {
+      const a = await seedSchedule(service, tempDir, 'A');
+      const res = await mkApp({ scheduleService: service }).request('/api/schedules/rollups');
+      const row = (await res.json()).rollups.find((r: { scheduleId: string }) => r.scheduleId === a.id);
+      expect(row.lowYield).toBe(false);
+      expect(row).not.toHaveProperty('lowYieldHint');
+      const one = await mkApp({ scheduleService: service }).request(`/api/schedules/${a.id}/rollup`);
+      expect((await one.json()).lowYield).toBe(false);
+    });
+
+    test('rollup endpoints flag >= 20 measured zero-output fires as low-yield (issue #4187)', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      const id = schedule.id;
+      store.replace({
+        ...store.get(id)!,
+        executionLedger: Array.from({ length: 20 }, (_, i) => {
+          const at = `2026-02-01T${String(i).padStart(2, '0')}:00:00.000Z`;
+          return {
+            id: `${id}:cron:${i}`, scheduleId: id, trigger: 'cron' as const, decision: 'cron_due' as const,
+            evaluatedAt: at, completedAt: at, outcome: 'completed' as const,
+            tokenUsage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.01 },
+          };
+        }),
+      });
+      const app = mkApp({ scheduleService: service });
+      const row = (await (await app.request('/api/schedules/rollups')).json()).rollups
+        .find((r: { scheduleId: string }) => r.scheduleId === id);
+      const one = await (await app.request(`/api/schedules/${id}/rollup`)).json();
+      for (const body of [row, one]) {
+        expect(body).toMatchObject({ measuredFires: 20, merged: 0, artifacts: 0, lowYield: true, lowYieldHint: 'consider slowing or disabling' });
+      }
+    });
+
     test('GET /api/schedules/rollups returns empty when scheduling is not configured', async () => {
       const res = await mkApp({}).request('/api/schedules/rollups');
       expect(res.status).toBe(200);

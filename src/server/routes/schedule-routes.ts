@@ -9,6 +9,7 @@ import {
   type UpdateScheduleDefinitionInput,
 } from "../../core/schedule.js";
 import type { PlaybookScope } from "../../core/playbook.js";
+import { assessScheduleYield, LOW_YIELD_HINT, type ScheduleRollup } from "../../core/schedule-rollup.js";
 import type { RouteDeps } from "./shared.js";
 
 function fieldErrorsFrom(err: unknown): Record<string, string> | undefined {
@@ -58,6 +59,15 @@ function scheduleRunErrorResponse(error: string): { code: ScheduleRunErrorCode; 
   }
 }
 
+/**
+ * Decorate a rollup with its read-time low-yield verdict (issue #4187). The
+ * flag is derived here, never stored, and nothing in the scheduler reads it.
+ */
+function withYield(rollup: ScheduleRollup): ScheduleRollup & { lowYield: boolean; lowYieldHint?: string } {
+  const { lowYield } = assessScheduleYield(rollup);
+  return { ...rollup, lowYield, ...(lowYield ? { lowYieldHint: LOW_YIELD_HINT } : {}) };
+}
+
 export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
   app.get("/api/schedules", (c) => {
     if (!deps.scheduleService) {
@@ -80,14 +90,14 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
   // they stay O(1)/O(n) and never hang the way an on-request scan can.
   app.get("/api/schedules/rollups", (c) => {
     if (!deps.scheduleService) return c.json({ rollups: [] });
-    return c.json({ rollups: deps.scheduleService.listRollups() });
+    return c.json({ rollups: deps.scheduleService.listRollups().map(withYield) });
   });
 
   app.get("/api/schedules/:id/rollup", (c) => {
     if (!deps.scheduleService) return c.json({ error: "Scheduling not configured" }, 500);
     const rollup = deps.scheduleService.getRollup(c.req.param("id"));
     if (!rollup) return c.json({ error: "Schedule not found" }, 404);
-    return c.json(rollup);
+    return c.json(withYield(rollup));
   });
 
   app.post("/api/schedules", async (c) => {
