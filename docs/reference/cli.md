@@ -794,6 +794,66 @@ merge failed; `2` usage error; `3` checks failed, the PR conflicts with its base
 branch (rebase on `origin/<base>` and push), or never-executed checks without
 the recorded local gate; `4` blocked by the independent-review gate.
 
+## `pnpm deliver`
+
+Run the delivery steps of the current branch in order, from a Kookr checkout
+(issue #4180). This is a repository script, not a `kookr` verb: the markers and
+hooks it writes are specific to this repository.
+
+```bash
+pnpm deliver --dry-run --specialists independent-review   # print the plan, run nothing
+pnpm deliver --specialists independent-review             # run every step
+pnpm deliver --from wait-verdict                          # resume after a stop
+```
+
+The steps, in order. The run stops at the first step that fails or needs a
+decision, and prints that step's name:
+
+| Step | What it runs |
+| --- | --- |
+| `review-marker` | `scripts/write-review-state-marker.sh --status approved --specialists <roles>`, or `--status bypass --reason <text>` |
+| `pr-gate-marker` | `scripts/write-pr-gate-marker.sh` |
+| `pr-body` | `kookr pr-checklist scaffold` into the body file (only when the file does not exist yet), then `kookr pr-checklist verify --pr-body <file>` |
+| `push` | `git push --set-upstream origin <branch>` |
+| `pr` | `gh pr edit` on the branch's open PR, or `gh pr create` when there is none |
+| `wait-verdict` | polls `gh pr view <PR> --json comments,commits` until an independent-review verdict comment is bound to the PR head |
+| `merge` | `kookr merge <PR>` |
+
+Each step's script or command still works on its own; `pnpm deliver` only runs
+them in sequence.
+
+- **The review marker needs an explicit input.** The marker is signed and states
+  that the independent review was started on HEAD. `pnpm deliver` never starts a
+  reviewer, so without `--specialists <roles>` (normally `independent-review`)
+  or `--bypass-reason <text>` it stops at the first step.
+- **The PR body is kept between runs.** The scaffold leaves `TODO` rows that
+  `verify` rejects, so the first run usually stops at `pr-body`. Edit the file
+  it names, then resume with `--from pr-body`. The default file is
+  `<tmp>/kookr-deliver-<branch>.md`, outside the worktree, so it does not
+  change the commit the markers are bound to. `--body-file` picks another path.
+- **`wait-verdict` only waits.** Since #3792 the reviewer posts its own verdict
+  comment. A `pass` whose `review-head-sha` equals the PR head lets the run go
+  on to `merge`. A `block` for that head, or one that names no head, stops the
+  run (exit `4`). An older
+  verdict, or no verdict at all, keeps it waiting until `--wait-timeout`
+  (default 1800 seconds; `0` checks once), then it stops before `kookr merge`
+  (exit `3`). A `pass` bound only through `review-patch-id` after a rebase is
+  not recognized here; `kookr merge` accepts it, so resume with `--from merge`.
+- **`--dry-run`** prints the steps with their arguments and does nothing else:
+  it calls neither `git` nor `gh` and writes no file. Values that would need one
+  of those calls (the branch, the PR number) print as placeholders.
+
+Options: `--from <step>` / `--to <step>` select a range of steps;
+`--title` (default: the last commit subject), `--base` (default `main`; with an
+integration branch configured, `kookr merge` retargets the PR), `--repo`,
+`--pr` (default: the open PR of the branch), `--body-file`, `--wait-timeout`,
+`--poll-interval` (default 30 seconds).
+
+Exit codes: `0` every selected step finished; `3` no verdict for the PR head,
+stopped before the merge; `4` a step needs a decision (no review-marker input,
+a `block` verdict, no branch or PR to work on); `64` usage error; any other code
+is the exit code of the step command that failed.
+
 ## `kookr check-verification`
 
 Classify the GitHub check runs on a pull request's head commit, from any
