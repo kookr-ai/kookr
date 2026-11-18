@@ -1761,8 +1761,9 @@ export function App() {
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}${isViewer ? ' app-read-only' : ''}`}>
       {/* The dashboard itself. While Lucy covers it (her room, or the full-width sheet of a narrow window) it is
           inert: Tab cannot reach a control nobody can see, Enter or Space cannot act on a task that is out of sight,
-          and a screen reader does not read it. Everything that paints above her stays outside this wrapper and live:
-          Diagnostics, the dialogs, the command palette, the toasts and her own dock. `display: contents` keeps the
+          and a screen reader does not read it. Everything App renders above her stays outside this wrapper and live:
+          Diagnostics, App's own dialogs, the command palette, the toasts and her own dock (a dialog opened from inside
+          a dashboard component is still inside it: #4166). `display: contents` keeps the
           wrapper out of the layout, so the `.app` flex column lays out its children as before. */}
       <div className="app-dashboard" data-testid="app-dashboard" style={{ display: 'contents' }} inert={lucyCoversDashboard}>
         <a href="#main-content" className="skip-link" data-testid="skip-to-content">
