@@ -1040,6 +1040,41 @@ description: Nothing to do
       );
     });
 
+    it('names a different repository copy when a user-scope launch runs the user copy', async () => {
+      // The issue's evidence case: a schedule pinned to the user copy while the
+      // repository holds an edited one. The project tier must be read from the
+      // launch's source cwd, not from the user playbooks dir.
+      const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+      const userDir = await mkdtemp(join(tmpdir(), 'kookr-user-'));
+      const emptyPlugin = await mkdtemp(join(tmpdir(), 'kookr-no-plugin-'));
+      const saved = { user: process.env.KOOKR_USER_PLAYBOOKS_DIR, plugin: process.env.KOOKR_PLUGIN_DIR };
+      process.env.KOOKR_USER_PLAYBOOKS_DIR = userDir;
+      process.env.KOOKR_PLUGIN_DIR = emptyPlugin;
+      try {
+        const projectPath = join(cwd, '.kookr', 'playbooks', 'goal-supervisor.md');
+        await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+        await writeFile(projectPath, PROJECT_COPY);
+        await writeFile(join(userDir, 'goal-supervisor.md'), PROJECT_COPY.replace('Project', 'Stale'));
+        const launch = await preparePlaybookLaunch({
+          cwd,
+          playbookPath: 'goal-supervisor.md',
+          parameterValues: {},
+          scope: 'user',
+        });
+        expect(launch.prompt).toContain('(scope: user)');
+        expect(launch.prompt).toContain(
+          `Another tier holds a different copy of this playbook, which this task does not run: \`${projectPath}\` (scope: project)._`,
+        );
+        expect(launch.prompt.endsWith('Stale rules.')).toBe(true);
+      } finally {
+        if (saved.user === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+        else process.env.KOOKR_USER_PLAYBOOKS_DIR = saved.user;
+        if (saved.plugin === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+        else process.env.KOOKR_PLUGIN_DIR = saved.plugin;
+        await Promise.all([cwd, userDir, emptyPlugin].map((dir) => rm(dir, { recursive: true, force: true })));
+      }
+    });
+
     it('says nothing about an identical copy', async () => {
       const { prompt } = await launchWithUserCopy(PROJECT_COPY);
       expect(prompt).not.toContain('Another tier');
