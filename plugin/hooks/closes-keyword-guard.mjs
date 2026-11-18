@@ -187,18 +187,52 @@ function isDir(p) {
   try { return statSync(p).isDirectory(); } catch { return false; }
 }
 
+// Words that can stand before a command without being one: `then gh pr
+// create`, `{ gh pr create; }`, `! gh pr create`.
+const LEADING_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!']);
+
+/** Bodies of the `$( … )` command substitutions inside one word. */
+export function substitutions(word) {
+  const bodies = [];
+  let i = word.indexOf('$(');
+  while (i !== -1) {
+    let depth = 1;
+    let j = i + 2;
+    while (j < word.length && depth > 0) {
+      if (word[j] === '(') depth++;
+      else if (word[j] === ')') depth--;
+      j++;
+    }
+    bodies.push(word.slice(i + 2, depth === 0 ? j - 1 : j));
+    i = word.indexOf('$(', j);
+  }
+  return bodies;
+}
+
 /**
  * Finds the `gh pr create` / `gh pr edit` in a command. Returns its words and
  * the working directory it runs in (the event's cwd, following `cd`/`pushd`),
- * or null when there is none.
+ * or null when there is none. Looks inside `$( … )` substitutions too, so
+ * `URL="$(gh pr create …)"` is checked.
  */
-export function findPrCommand(command, cwd) {
+export function findPrCommand(command, cwd, depth = 0) {
   // Both splits: a `#` comment with an apostrophe (`# don't ...`) opens a
   // quote in the plain split and would hide the command that follows it.
   for (const commands of bothSplits(command)) {
     let dir = cwd;
     for (const words of commands) {
-      const w = stripPrefixes(words);
+      // Substitutions first: `URL="$(gh pr create …)"` is an assignment word
+      // that stripPrefixes drops.
+      if (depth < 3) {
+        for (const word of words) {
+          for (const body of substitutions(word)) {
+            const inner = findPrCommand(body, isDir(dir) ? dir : cwd, depth + 1);
+            if (inner) return inner;
+          }
+        }
+      }
+      let w = stripPrefixes(words);
+      while (w.length > 0 && LEADING_KEYWORDS.has(w[0])) w = stripPrefixes(w.slice(1));
       if (w.length === 0) continue;
       if (w[0] === 'cd' || w[0] === 'pushd') {
         const target = w.slice(1).find((a) => !a.startsWith('-'));
@@ -216,6 +250,22 @@ export function findPrCommand(command, cwd) {
   return null;
 }
 
+// `gh pr edit` flags that take no value.
+const EDIT_BOOLEAN_FLAGS = new Set(['--remove-milestone', '-h', '--help']);
+
+/** True when `gh pr edit` names a pull request (number, URL or branch). */
+function editHasSelector(words) {
+  for (let i = 3; i < words.length; i++) {
+    const a = words[i];
+    if (a.startsWith('-')) {
+      if (!a.includes('=') && !EDIT_BOOLEAN_FLAGS.has(a)) i++;
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 /**
  * Decides on one Bash command. Returns { deny: reason }, { warn: message }, or
  * null to allow silently.
@@ -227,10 +277,14 @@ export function decide(command, cwd) {
 
   // The head branch: `--head [user:]branch` on `gh pr create`, else the
   // branch checked out where the command runs.
+  // `gh pr edit <N>` edits a pull request whose branch we do not know, so
+  // no branch issue: every closing keyword in code is checked, no warning.
   let branch = sub === 'create' ? flagValue(words, ['--head', '-H']) : null;
   const headGiven = branch !== null;
   if (branch !== null) {
     branch = branch.slice(branch.lastIndexOf(':') + 1).replace(/^refs\/heads\//, '');
+  } else if (sub === 'edit' && editHasSelector(words)) {
+    branch = null;
   } else if (isDir(dir)) {
     branch = run('git', ['-C', dir, 'symbolic-ref', '--short', '-q', 'HEAD'], dir);
   }

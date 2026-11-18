@@ -161,8 +161,12 @@ block it is ignored, and an inline `(#N)` reference closes nothing.
 The scanned text is every heredoc body in the command, the quoted value of
 `--body`/`-b`, and the `--body-file`/`-F` file when it already exists (a
 relative path is looked up in the `--head` branch's worktree, then in the
-directory the command runs in, following `cd`). The title and chained
-commands are not scanned. The check used to live in the user-level
+directory the command runs in, following `cd`). The command is found after
+`then`, `do` or `{`, and inside a `$( … )` substitution such as
+`URL="$(gh pr create …)"`. `gh pr edit <N>` takes no issue from the
+checked-out branch, since that branch may not be PR N's, so every closing
+keyword in code is checked and no `(#N)` warning is given. The title and
+chained commands are not scanned. The check used to live in the user-level
 `hooks/pr-workflow-gate.sh` (issue #3642); it moved here because Kookr starts
 its agents with `--setting-sources ''`, which skips user-level hooks but still
 loads plugin hooks from `--plugin-dir`. It fails open: a crash or a missing

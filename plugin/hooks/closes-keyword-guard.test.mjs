@@ -169,8 +169,36 @@ ${create(`--body-file ${f}`)}`), 'Closes #12');
     const repo = join(root, 'edit-repo');
     mkdirSync(repo);
     git(repo, 'init', '-q', '--initial-branch=feat/issue-12-edit');
-    expectDeny(hook("gh pr edit 5 --body 'Done: `Closes #12`'", repo), 'Closes #12');
-    expect(hook("gh pr edit 5 --body 'Fix (#12)'", repo).verdict).toBe('warn');
+    expectDeny(hook("gh pr edit --body 'Done: `Closes #12`'", repo), 'Closes #12');
+    expect(hook("gh pr edit --body 'Fix (#12)'", repo).verdict).toBe('warn');
+  });
+
+  it('gh pr edit <N> does not take the issue from the checked-out branch', () => {
+    const repo = join(root, 'edit-sel-repo');
+    mkdirSync(repo);
+    git(repo, 'init', '-q', '--initial-branch=feat/issue-12-other');
+    // PR 77 is not the checkout's branch: its code-only closer is still denied,
+    // and no warning names issue #12.
+    expectDeny(hook("gh pr edit 77 --body 'Done: `Closes #77`'", repo), 'Closes #77');
+    expect(hook("gh pr edit 77 --body 'Fix (#12)'", repo).verdict).toBe('allow');
+  });
+
+  it('a relative --body-file is found in the --head branch worktree', () => {
+    const main = join(root, 'wt-main');
+    mkdirSync(main);
+    git(main, 'init', '-q', '--initial-branch=main');
+    git(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'base');
+    const wt = join(root, 'wt-linked');
+    git(main, 'worktree', 'add', '-q', '-b', 'feat/issue-12-wt', wt);
+    writeFileSync(join(wt, 'body.md'), 'Summary\n\n`Closes #12`\n');
+    expectDeny(hook('gh pr create --head feat/issue-12-wt --title t --body-file body.md', main), 'Closes #12');
+  });
+
+  it('gh pr create inside a quoted command substitution, an if, or braces → deny', () => {
+    const body = "--body '`Closes #12`'";
+    expectDeny(hook(`PR_URL="$(${create(body)})"`), 'Closes #12');
+    expectDeny(hook(`if true; then ${create(body)}; fi`), 'Closes #12');
+    expectDeny(hook(`{ ${create(body)}; }`), 'Closes #12');
   });
 
   it('a branch without an issue number checks every closing keyword in code', () => {
@@ -186,8 +214,8 @@ ${create(`--body-file ${f}`)}`), 'Closes #12');
     git(repo, 'init', '-q', '--initial-branch=feat/issue-12-cdvar');
     // Branch issue #12 is known, so the (#12)-only body still gets its warning
     // and a quoted other issue in a fence passes.
-    expect(hook(`cd "$WT" && gh pr edit 5 --body 'Fix (#12)'`, repo).verdict).toBe('warn');
-    expect(hook(`cd "$WT" && gh pr edit 5 --body "$(cat <<'EOF'
+    expect(hook(`cd "$WT" && gh pr edit --body 'Fix (#12)'`, repo).verdict).toBe('warn');
+    expect(hook(`cd "$WT" && gh pr edit --body "$(cat <<'EOF'
 Closes #12
 \`\`\`
 fix: resolve #77 crash
