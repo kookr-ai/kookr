@@ -174,6 +174,70 @@ describe('parseGrokHookEvent — POC-A fixtures', () => {
   });
 });
 
+const PERMISSION_DENIED_FIXTURE = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../docs/poc/009-grok-build-basic-supervision/fixtures/permission-denied.bypass.redacted.json',
+);
+const permissionDenied = (
+  JSON.parse(readFileSync(PERMISSION_DENIED_FIXTURE, 'utf8')) as {
+    events: Record<string, Record<string, unknown>>;
+  }
+).events;
+
+describe('parseGrokHookEvent — real permission_denied captures (issue #4189)', () => {
+  it('pins the captured key set on every redacted sample', () => {
+    const keys = [
+      'hookEventName', 'sessionId', 'cwd', 'workspaceRoot', 'timestamp', 'transcriptPath',
+      'permissionMode', 'toolName', 'toolUseId', 'toolInput', 'toolInputTruncated',
+    ];
+    expect(Object.keys(permissionDenied).length).toBeGreaterThan(0);
+    for (const payload of Object.values(permissionDenied)) {
+      expect(Object.keys(payload)).toEqual(keys);
+      expect(payload.hookEventName).toBe('permission_denied');
+      expect(payload.permissionMode).toBe(GROK_BYPASS_PERMISSION_MODE);
+      expect(payload.toolInputTruncated).toBe(false);
+    }
+  });
+
+  it.each(Object.keys(permissionDenied))(
+    'decodes the bypass %s capture into a completed tool_error, not a wait',
+    (key) => {
+      const payload = permissionDenied[key];
+      const e = parseGrokHookEvent(JSON.stringify(payload));
+      expect(e).toEqual({
+        type: 'tool_error',
+        sessionId: payload.sessionId,
+        toolName: payload.toolName,
+        toolInput: payload.toolInput,
+        toolUseId: payload.toolUseId,
+        error: 'permission_denied',
+        isInterrupt: false,
+        cwd: payload.cwd,
+      });
+    },
+  );
+
+  it('keeps the captured tool-use id and Grok-native tool name', () => {
+    const e = parseGrokHookEvent(JSON.stringify(permissionDenied.run_terminal_command));
+    expect(e).toMatchObject({
+      type: 'tool_error',
+      toolName: 'run_terminal_command',
+      toolUseId: 'call-<TOOL_USE_UUID_1>-112',
+      toolInput: { command: '<COMMAND>', description: '<DESCRIPTION>' },
+    });
+  });
+
+  it('ignores toolInputTruncated: true on purpose (synthetic — never observed in a capture)', () => {
+    // Derived from a real capture by flipping the flag. The decoder passes
+    // toolInput through verbatim and has no truncation field, so the decoded
+    // event must be identical to the untruncated one.
+    const base = permissionDenied.run_terminal_command;
+    const truncated = parseGrokHookEvent(JSON.stringify({ ...base, toolInputTruncated: true }));
+    expect(truncated).toEqual(parseGrokHookEvent(JSON.stringify(base)));
+    expect(truncated).not.toHaveProperty('toolInputTruncated');
+  });
+});
+
 describe('parseGrokHookEvent — robustness', () => {
   it('throws HookParseError on malformed JSON', () => {
     expect(() => parseGrokHookEvent('{not json')).toThrow(HookParseError);
@@ -190,9 +254,9 @@ describe('parseGrokHookEvent — robustness', () => {
   });
 
   it('decodes permission_denied into permission_request (2026-07-24 incident: was dropped, hiding a 33h permission-stuck task)', () => {
-    // No POC-A payload capture exists for permission_denied (it did not fire
-    // in the headless runs), so the shape mirrors the camelCase tool-event
-    // conventions of every other captured Grok payload.
+    // Non-bypass path: no real capture exists (the interactive menu is still
+    // unverified; real captures are all bypass, see the fixture-backed tests
+    // below), so this synthetic payload uses the observed camelCase keys.
     const e = parseGrokHookEvent(JSON.stringify({
       hookEventName: 'permission_denied',
       sessionId: 's1',

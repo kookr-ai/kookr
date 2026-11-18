@@ -1,0 +1,55 @@
+{
+  "schema": "grok-hook-payload-samples.redacted",
+  "note": "Real Grok `permission_denied` hook payloads (issue #4189), redacted. Source: the host's Kookr hook logs (~/.kookr/hooks/*.jsonl.gz), which held 283 permission_denied events captured 2026-08-12 -> 2026-08-18 from Kookr-launched Grok sessions. Every one ran in permissionMode \"bypassPermissions\" and had toolInputTruncated:false. Tool mix: 277 run_terminal_command{command,description}, 5 run_terminal_command{command,description,timeout}, 1 grep{pattern,path}; one sample of each shape is kept below. Grok build at capture time: unknown (the hook payload does not carry it; the build installed on 2026-11-18 is 1.0.35, which did not necessarily produce these). Redaction: session ids, tool-use uuids, cwd/workspace/transcript paths, commands, descriptions, grep pattern and path are placeholders; every key, key order, value type, timestamp, tool name, permissionMode, the numeric timeout and the toolUseId call-<uuid>-<n> layout are real. Not captured: a non-bypass (interactive permission menu) permission_denied and any toolInputTruncated:true payload - both remain unverified. Collect: zcat ~/.kookr/hooks/*.jsonl.gz | grep -a '\"permission_denied\"' (grep -a: without it grep stops at the first binary-looking line).",
+  "events": {
+    "run_terminal_command": {
+      "hookEventName": "permission_denied",
+      "sessionId": "<SESSION_ID_1>",
+      "cwd": "<REPO>",
+      "workspaceRoot": "<REPO>/",
+      "timestamp": "2026-08-17T23:15:41.579538331+00:00",
+      "transcriptPath": "<TMP>/kookr-grok-<TASK>/.grok/sessions/<ENC_CWD>/<SESSION_ID_1>/updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "run_terminal_command",
+      "toolUseId": "call-<TOOL_USE_UUID_1>-112",
+      "toolInput": {
+        "command": "<COMMAND>",
+        "description": "<DESCRIPTION>"
+      },
+      "toolInputTruncated": false
+    },
+    "run_terminal_command[timeout]": {
+      "hookEventName": "permission_denied",
+      "sessionId": "<SESSION_ID_2>",
+      "cwd": "<REPO>",
+      "workspaceRoot": "<REPO>/",
+      "timestamp": "2026-08-17T10:27:44.440375575+00:00",
+      "transcriptPath": "<TMP>/kookr-grok-<TASK>/.grok/sessions/<ENC_CWD>/<SESSION_ID_2>/updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "run_terminal_command",
+      "toolUseId": "call-<TOOL_USE_UUID_2>-132",
+      "toolInput": {
+        "command": "<COMMAND>",
+        "description": "<DESCRIPTION>",
+        "timeout": 300000
+      },
+      "toolInputTruncated": false
+    },
+    "grep": {
+      "hookEventName": "permission_denied",
+      "sessionId": "<SESSION_ID_3>",
+      "cwd": "<REPO>",
+      "workspaceRoot": "<REPO>/",
+      "timestamp": "2026-08-18T02:28:27.351391416+00:00",
+      "transcriptPath": "<TMP>/kookr-grok-<TASK>/.grok/sessions/<ENC_CWD>/<SESSION_ID_3>/updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "grep",
+      "toolUseId": "call-<TOOL_USE_UUID_3>-8",
+      "toolInput": {
+        "pattern": "<PATTERN>",
+        "path": "<REPO>/<PATH>"
+      },
+      "toolInputTruncated": false
+    }
+  }
+}
