@@ -1158,6 +1158,18 @@ describe('blocked-ledger operational alert (issue #4188)', () => {
     expect(alerts[2]!.operationalAlert!.key).not.toBe(firstKey);
   });
 
+  test('an alerted chain that is no longer swept (issue closed) gets a recovery', async () => {
+    const { harness, alerts } = setup(blockedLedger(), '2026-11-18T11:00:00.000Z');
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(1);
+    harness.issue.body = 'closed: no ledger here';
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(2);
+    expect(alerts[1]!.operationalAlert).toMatchObject({ key: alerts[0]!.operationalAlert!.key, state: 'recovered' });
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(2);
+  });
+
   test('a threshold of 0 disables the alert', async () => {
     const { harness, alerts } = setup(blockedLedger(), '2026-11-19T08:00:00.000Z', { blockedAlertThresholdMs: 0 });
     await harness.advancer.sweep();
@@ -1179,6 +1191,7 @@ describe('blocked-ledger operational alert (issue #4188)', () => {
     expect(umbrellaChainBlockedAlertThresholdMsFromEnv({})).toBe(2 * HOUR);
     expect(umbrellaChainBlockedAlertThresholdMsFromEnv({ KOOKR_UMBRELLA_CHAIN_BLOCKED_ALERT_MINUTES: '30' })).toBe(30 * 60_000);
     expect(umbrellaChainBlockedAlertThresholdMsFromEnv({ KOOKR_UMBRELLA_CHAIN_BLOCKED_ALERT_MINUTES: '0' })).toBe(0);
+    expect(umbrellaChainBlockedAlertThresholdMsFromEnv({ KOOKR_UMBRELLA_CHAIN_BLOCKED_ALERT_MINUTES: '-5' })).toBe(0);
     expect(umbrellaChainBlockedAlertThresholdMsFromEnv({ KOOKR_UMBRELLA_CHAIN_BLOCKED_ALERT_MINUTES: 'soon' })).toBe(2 * HOUR);
   });
 });
