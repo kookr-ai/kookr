@@ -997,13 +997,13 @@ function buildBlockedRecoveryAlert(
   const details = {
     cleared: 'The phase ledger no longer records a block, so the chain can advance again (issue #4188).',
     reblocked: 'The block this alert reported has ended; the ledger now records a different block, which is tracked separately (issue #4188).',
-    unswept: 'The advancer no longer reads this chain (the umbrella issue was closed, its ledger became unreadable, or its project is no longer configured), so this block alert is closed (issue #4188).',
+    unswept: 'The last advancer sweep did not record this chain as blocked (for example the umbrella issue was closed, its ledger became unreadable, its project is no longer configured, or a review correction was launched for it), so this block alert is closed. A block that is still open will alert again (issue #4188).',
   }[cause];
   return {
     type: 'alert',
     agentId: OPERATIONAL_ALERT_AGENT_ID,
     summary: cause === 'unswept'
-      ? `Closed: umbrella chain ${episode.chainId} (${episode.repo}#${episode.issueNumber}) is no longer swept`
+      ? `Closed: umbrella chain ${episode.chainId} (${episode.repo}#${episode.issueNumber}) block alert, chain not seen blocked in the last sweep`
       : `Recovered: umbrella chain ${episode.chainId} (${episode.repo}#${episode.issueNumber}) block since ${episode.blockedSince} ended`,
     details,
     severity: 'info',

@@ -60,6 +60,8 @@ function makeHarness(ledger: PhaseLedger, options: {
   reclaimableClaims?: Set<string>;
   emitAlert?: UmbrellaChainAdvancerDeps['emitAlert'];
   blockedAlertThresholdMs?: number;
+  /** When it returns true, `listOpenIssues` throws (a transient GitHub failure). */
+  listFails?: () => boolean;
 } = {}) {
   const events: string[] = [];
   const calls: string[] = [];
@@ -75,6 +77,7 @@ function makeHarness(ledger: PhaseLedger, options: {
   const remote: UmbrellaChainRemote = {
     async listOpenIssues(repo) {
       calls.push(`list:${repo}`);
+      if (options.listFails?.()) throw new Error('repository unavailable');
       return [{ number: issue.number }];
     },
     async getIssue(repo, number) {
@@ -1168,6 +1171,23 @@ describe('blocked-ledger operational alert (issue #4188)', () => {
     expect(alerts[1]!.operationalAlert).toMatchObject({ key: alerts[0]!.operationalAlert!.key, state: 'recovered' });
     await harness.advancer.sweep();
     expect(alerts).toHaveLength(2);
+  });
+
+  test('a transient scan failure neither recovers nor re-fires the alert', async () => {
+    const alerts: Alert[] = [];
+    let fail = false;
+    const harness = makeHarness(blockedLedger(), {
+      now: () => new Date('2026-11-18T11:00:00.000Z'),
+      emitAlert: (alert) => alerts.push(alert),
+      listFails: () => fail,
+    });
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(1);
+    fail = true;
+    await harness.advancer.sweep();
+    fail = false;
+    await harness.advancer.sweep();
+    expect(alerts).toHaveLength(1);
   });
 
   test('a threshold of 0 disables the alert', async () => {
