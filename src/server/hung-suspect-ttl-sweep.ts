@@ -53,6 +53,12 @@ export interface HungSuspectTtlReclaimMetricsSnapshot {
    */
   skippedExemptAnomaly: number;
   skippedProviderPaused: number;
+  /**
+   * Supervisors left alone because their next supervision wake is scheduled
+   * (issue #4162). Not yet exported to `/metrics` or doctor; the per-task
+   * outcome also appears in {@link lastOutcomes}.
+   */
+  skippedSupervisionWakeScheduled: number;
   /** Last selection pass: how many hungSuspect candidates were considered. */
   lastCandidatesConsidered: number;
   /**
@@ -202,6 +208,7 @@ export class HungSuspectTtlReclaimMetrics {
     this.skips.skipped_under_ttl += selection.skips.skipped_under_ttl;
     this.skips.skipped_exempt_anomaly += selection.skips.skipped_exempt_anomaly;
     this.skips.skipped_provider_paused += selection.skips.skipped_provider_paused;
+    this.skips.skipped_supervision_wake_scheduled += selection.skips.skipped_supervision_wake_scheduled;
     const outcomes = selection.outcomes ?? [];
     this.lastOutcomes = outcomes.slice(0, MAX_LAST_OUTCOMES).map((o) => ({ ...o }));
     this.lastAttemptedTaskIds = outcomes
@@ -222,6 +229,7 @@ export class HungSuspectTtlReclaimMetrics {
       skippedUnderTtl: this.skips.skipped_under_ttl,
       skippedExemptAnomaly: this.skips.skipped_exempt_anomaly,
       skippedProviderPaused: this.skips.skipped_provider_paused,
+      skippedSupervisionWakeScheduled: this.skips.skipped_supervision_wake_scheduled,
       lastCandidatesConsidered: this.lastCandidatesConsidered,
       lastOutcomes: this.lastOutcomes.map((o) => ({ ...o })),
       lastAttemptedTaskIds: [...this.lastAttemptedTaskIds],
@@ -267,6 +275,11 @@ export interface ReclaimHungSuspectTasksDeps {
    * candidate is treated as a possible PR hold and left alone.
    */
   isHoldingOpenPr?: (task: Task) => boolean | undefined;
+  /**
+   * Supervisor-wake exemption (issue #4162) — see `core/hung-suspect-ttl.ts`.
+   * Only `true` exempts; omitted ⇒ no task is exempt on this ground.
+   */
+  isAwaitingScheduledWake?: (task: Task) => boolean | undefined;
   /**
    * Delivery attribution for needs-human vs obsolete disposition (same as
    * the hung-task reaper's resolveMergedPr). Absent ⇒ plain terminated /
@@ -430,6 +443,7 @@ export async function reclaimAgedHungSuspectTasks(
     getQueuedAnomalyType: deps.getQueuedAnomalyType,
     isProviderPaused: deps.isProviderPaused,
     isHoldingOpenPr: deps.isHoldingOpenPr,
+    isAwaitingScheduledWake: deps.isAwaitingScheduledWake,
   });
 
   deps.metrics?.recordSelection(selection);

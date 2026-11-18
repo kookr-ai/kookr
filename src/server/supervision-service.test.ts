@@ -11,11 +11,18 @@ import {
   type SupervisionState,
 } from '../core/supervision/supervision-files.js';
 import type { AgentEvent } from '../core/types.js';
+import { Watchdog } from '../core/watchdog.js';
+import { AttentionQueue } from '../core/attention-queue.js';
+import { DEFAULT_HUNG_SUSPECT_TTL_MS, selectExpiredHungSuspectTasks } from '../core/hung-suspect-ttl.js';
+import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import {
   SUPERVISION_SETTLE_MS,
+  SUPERVISION_WAKE_GRACE_MS,
   SupervisionService,
   formatWakeLine,
+  isAwaitingScheduledWake,
   isSupervisionWakeDisabled,
+  resolveHeartbeatMs,
   type SupervisionServiceDeps,
 } from './supervision-service.js';
 
@@ -847,5 +854,143 @@ describe('status', () => {
   it('get() is undefined for unknown or path-like ids', () => {
     expect(h.make().get('nope')).toBeUndefined();
     expect(h.make().get('../x')).toBeUndefined();
+  });
+});
+
+describe('hungSuspect TTL vs supervision wakes (issue #4162)', () => {
+  /**
+   * Runs one hungSuspect TTL selection pass over the store at `nowMs` through
+   * the real watchdog defaults, the real `resolveTaskAttentionSignals` →
+   * `isTaskHungSuspect` classification and the real selector with the default
+   * TTL. `exempt` is the predicate the server wires (or none, as on main before
+   * this fix). No open PR: the task store has no PR refs (`no_pr_refs` ⇒ false).
+   */
+  function selectAt(
+    watchdog: Watchdog,
+    nowMs: number,
+    exempt?: (taskId: string) => boolean,
+  ) {
+    const queue = new AttentionQueue();
+    return selectExpiredHungSuspectTasks(h.store.getAllTasks(), {
+      now: new Date(nowMs),
+      ttlMs: DEFAULT_HUNG_SUSPECT_TTL_MS,
+      isHungSuspect: (task) => resolveTaskAttentionSignals(task, { queue, watchdog }, nowMs).hungSuspect,
+      getLiveness: (task) => resolveTaskAttentionSignals(task, { queue, watchdog }, nowMs).liveness,
+      isHoldingOpenPr: () => false,
+      ...(exempt ? { isAwaitingScheduledWake: (task) => exempt(task.id) } : {}),
+    });
+  }
+
+  /** A supervisor whose turn ended idle (plain Stop, no background park) at T0, wakes enabled. */
+  async function idleSupervisor(env: NodeJS.ProcessEnv = {}) {
+    const sv = h.liveTask('supervisor', 'kookr-sv');
+    h.seed({ supervisorTaskId: sv, nextHeartbeatAt: new Date(T0 + resolveHeartbeatMs({})).toISOString() });
+    const watchdog = new Watchdog();
+    watchdog.registerAgent('kookr-sv', T0, T0);
+    watchdog.recordEvents('kookr-sv', [{ type: 'stop', sessionId: 'kookr-sv' } as AgentEvent], T0);
+    const svc = settledService({ env });
+    await svc.tick(); // records the wake gate for this supervision; nothing is due yet
+    expect(h.sendInput).not.toHaveBeenCalled();
+    return { sv, watchdog, svc };
+  }
+
+  it('confirms the bug: without the exemption an idle supervisor is selected at the 25-min TTL, 20 min before its 45-min heartbeat', async () => {
+    const { sv, watchdog, svc } = await idleSupervisor();
+    expect(svc.get('sup-1')?.wakesEnabled).toBe(true);
+    const heartbeatAt = Date.parse(svc.get('sup-1')!.nextWake!.at);
+    expect(heartbeatAt - T0).toBe(45 * MIN);
+
+    const at = T0 + DEFAULT_HUNG_SUSPECT_TTL_MS;
+    expect(at).toBeLessThan(heartbeatAt);
+    const sel = selectAt(watchdog, at);
+    expect(sel.expired.map((e) => e.task.id)).toEqual([sv]);
+    expect(sel.outcomes).toEqual([{ taskId: sv, outcome: 'selected', silentForMs: 25 * MIN }]);
+  });
+
+  it('with the exemption the idle supervisor is kept until its wake (plus grace), and is reclaimable after', async () => {
+    const { sv, watchdog, svc } = await idleSupervisor();
+    const exempt = (id: string) => svc.isSupervisorAwaitingScheduledWake(id);
+
+    for (const offset of [25 * MIN, 44 * MIN, 45 * MIN, 45 * MIN + SUPERVISION_WAKE_GRACE_MS]) {
+      h.clock.t = T0 + offset;
+      const sel = selectAt(watchdog, h.clock.t, exempt);
+      expect(sel.expired).toEqual([]);
+      expect(sel.outcomes).toEqual([{ taskId: sv, outcome: 'skipped_supervision_wake_scheduled', silentForMs: offset }]);
+      expect(sel.skips.skipped_supervision_wake_scheduled).toBe(1);
+    }
+
+    // The wake never landed (still silent past due + grace): the TTL applies again.
+    h.clock.t = T0 + 45 * MIN + SUPERVISION_WAKE_GRACE_MS + 1;
+    expect(selectAt(watchdog, h.clock.t, exempt).expired.map((e) => e.task.id)).toEqual([sv]);
+  });
+
+  it('a non-supervision idle task is still selected at the TTL', async () => {
+    const { sv, watchdog, svc } = await idleSupervisor();
+    const worker = h.liveTask('plain worker', 'kookr-worker');
+    watchdog.registerAgent('kookr-worker', T0, T0);
+    watchdog.recordEvents('kookr-worker', [{ type: 'stop', sessionId: 'kookr-worker' } as AgentEvent], T0);
+    h.clock.t = T0 + DEFAULT_HUNG_SUSPECT_TTL_MS;
+    const sel = selectAt(watchdog, h.clock.t, (id) => svc.isSupervisorAwaitingScheduledWake(id));
+    expect(sel.expired.map((e) => e.task.id)).toEqual([worker]);
+    expect(sel.outcomes).toContainEqual(expect.objectContaining({ taskId: sv, outcome: 'skipped_supervision_wake_scheduled' }));
+  });
+
+  it('a supervisor whose wakes are disabled is not exempt (it must arm its own timer instead)', async () => {
+    const { sv, watchdog, svc } = await idleSupervisor({ KOOKR_SUPERVISION_WAKE_DISABLED: '1' });
+    expect(svc.get('sup-1')?.wakesEnabled).toBe(false);
+    h.clock.t = T0 + DEFAULT_HUNG_SUSPECT_TTL_MS;
+    expect(svc.isSupervisorAwaitingScheduledWake(sv)).toBe(false);
+    expect(selectAt(watchdog, h.clock.t, (id) => svc.isSupervisorAwaitingScheduledWake(id)).expired.map((e) => e.task.id)).toEqual([sv]);
+  });
+
+  it('is not exempt before any tick has recorded the wake gate (unknown is not enabled)', () => {
+    const sv = h.liveTask('supervisor', 'kookr-sv');
+    h.seed({ supervisorTaskId: sv });
+    expect(settledService().isSupervisorAwaitingScheduledWake(sv)).toBe(false);
+  });
+
+  it('is not exempt when the project gate closed on the last tick', async () => {
+    const sv = h.liveTask('supervisor', 'kookr-sv');
+    h.seed({ supervisorTaskId: sv });
+    const svc = settledService({ isAutomationEnabled: () => false });
+    await svc.tick();
+    expect(svc.isSupervisorAwaitingScheduledWake(sv)).toBe(false);
+  });
+
+  it('never throws: an unreadable data dir means not exempt', () => {
+    const svc = h.make({ dataDir: '/nonexistent/kookr-4162', getStartupReadyAtMs: () => T0 - SUPERVISION_SETTLE_MS - MIN });
+    expect(svc.isSupervisorAwaitingScheduledWake('any')).toBe(false);
+  });
+});
+
+describe('isAwaitingScheduledWake (issue #4162)', () => {
+  const base: SupervisionState = {
+    supervisionId: 'sup-1',
+    targets: [{ taskId: 'w', name: 'w' }],
+    goals: [],
+    deadlineAt: new Date(T0 + 240 * MIN).toISOString(),
+    createdAt: new Date(T0).toISOString(),
+    supervisorTaskId: 'sv',
+    nextHeartbeatAt: new Date(T0 + 45 * MIN).toISOString(),
+  };
+
+  it('only the current supervisor of an active mandate is exempt', () => {
+    expect(isAwaitingScheduledWake(base, 'sv', T0 + 30 * MIN)).toBe(true);
+    expect(isAwaitingScheduledWake(base, 'other', T0 + 30 * MIN)).toBe(false);
+    expect(isAwaitingScheduledWake({ ...base, endedAt: new Date(T0).toISOString() }, 'sv', T0 + 30 * MIN)).toBe(false);
+  });
+
+  it('the due time is the earlier of the heartbeat and the deadline, plus the grace', () => {
+    const early = { ...base, deadlineAt: new Date(T0 + 20 * MIN).toISOString() };
+    expect(isAwaitingScheduledWake(early, 'sv', T0 + 20 * MIN + SUPERVISION_WAKE_GRACE_MS)).toBe(true);
+    expect(isAwaitingScheduledWake(early, 'sv', T0 + 20 * MIN + SUPERVISION_WAKE_GRACE_MS + 1)).toBe(false);
+    expect(isAwaitingScheduledWake(base, 'sv', T0 + 45 * MIN + SUPERVISION_WAKE_GRACE_MS + 1)).toBe(false);
+  });
+
+  it('no further wake is owed once the deadline or final wake was delivered or attempted', () => {
+    const at = T0 + 30 * MIN;
+    expect(isAwaitingScheduledWake({ ...base, deadlineWakeDeliveredAt: new Date(T0).toISOString() }, 'sv', at)).toBe(false);
+    expect(isAwaitingScheduledWake({ ...base, deadlineWakeAttemptedAt: new Date(T0).toISOString() }, 'sv', at)).toBe(false);
+    expect(isAwaitingScheduledWake({ ...base, finalWakeDeliveredAt: new Date(T0).toISOString() }, 'sv', at)).toBe(false);
   });
 });

@@ -777,12 +777,41 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
         skipped_under_ttl: 0,
         skipped_exempt_anomaly: 0,
         skipped_provider_paused: 0,
+        skipped_supervision_wake_scheduled: 0,
       },
     });
     const snap = metrics.getSnapshot();
     expect(snap.skippedOpenPrConfirmed).toBe(1);
     expect(snap.skippedOpenPrUnknown).toBe(2);
     expect(snap.skippedOpenPrFailsafe).toBe(3);
+  });
+
+  it('issue #4162: a supervisor waiting on a scheduled wake is not terminated, the skip is counted, and other tasks still are', async () => {
+    const supervisor = makeHungTask({ id: 'supervisor', sessions: [aSession({ tmuxSession: 'kookr-sv', lastStatus: 'inProgress' })] });
+    const worker = makeHungTask({ id: 'worker', sessions: [aSession({ tmuxSession: 'kookr-w', lastStatus: 'inProgress' })] });
+    const taskStore = makeMockTaskStore([supervisor, worker]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new HungSuspectTtlReclaimMetrics();
+    const result = await reclaimAgedHungSuspectTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        isHungSuspect: () => true,
+        getLiveness: () => silentFor(TTL_MS + 60_000),
+        isHoldingOpenPr: () => false,
+        isAwaitingScheduledWake: (task) => task.id === 'supervisor',
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+    expect(result.reclaimedTaskIds).toEqual(['worker']);
+    expect(taskStore.terminateTask).not.toHaveBeenCalledWith('supervisor', expect.anything());
+    expect(metrics.getSnapshot()).toMatchObject({
+      skippedSupervisionWakeScheduled: 1,
+      lastOutcomes: expect.arrayContaining([
+        expect.objectContaining({ taskId: 'supervisor', outcome: 'skipped_supervision_wake_scheduled' }),
+      ]),
+    });
   });
 
   it('issue #2897: a post-terminate throw (broadcast) keeps the reclaimed task terminated — no rollback', async () => {
