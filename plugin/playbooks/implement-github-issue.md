@@ -793,6 +793,8 @@ Before writing the verdict in Phase 9 (or before your final answer in single-sho
   printf 'No generic KB lesson: %s\n' '<one-line reason>'
   ```
 
+**Notebook retrospective first.** If you opened any notebook shelf (`nb show`), run its retrospective (`nb vote` / `nb rm` / `nb add`) here too, **before** `kookr signal completion-ready`. Any tool call after the signal other than `kookr signal` counts as resumed work and clears the pending signal, so the signal must be your last call (issue #4141). If the stop hook asks for the retrospective after you have already signalled, do it and then run `kookr signal completion-ready` again.
+
 The completion gate accepts the skip exactly like a write, so one call settles the decision. Do **not** signal completion-ready with a silent no-decision — even for mechanical iterations, print the skip marker. The `pnpm kb:usage` report and `kookr lesson yield` classify tasks by the strongest signal in their hook log; running both forms in one iteration is fine and counts as **wrote-lesson**.
 
 ## Phase 9: Report verdict to the engine

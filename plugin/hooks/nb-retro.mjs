@@ -97,6 +97,17 @@ try {
 // often a subagent that never saw that index — receives the one nudge.
 const slug = (process.env.KOOKR_REPO_SLUG ?? '').trim();
 const slugHint = slug ? ` (here: ${slug})` : '';
+// Inside a Kookr task (issue #4141): the server treats any tool call other than
+// `kookr signal` as resumed work and clears a pending completion signal. A task that
+// signalled completion-ready and then stopped would have its signal cleared by the very
+// nb votes this hook asks for, and would sit "in progress". So tell it to re-signal
+// last. Outside a Kookr task there is no signal to lose and the text is unchanged.
+const kookrTaskId = (process.env.KOOKR_TASK_ID ?? '').trim();
+const resignalHint = kookrTaskId
+  ? `Kookr task: if you had already run \`kookr signal completion-ready\` before this reminder, ` +
+    `run it again (same --note) as your LAST call, after the retrospective: any other tool call, ` +
+    `nb included, clears a pending completion signal.\n`
+  : '';
 process.stderr.write(
   `Before finishing, run the agent-notebook retrospective on the shelves you opened this task ` +
     `(one pass, then stop; skip it entirely if you opened none):\n` +
@@ -114,6 +125,7 @@ process.stderr.write(
     `would be true in another repo, then add it to the unscoped <situation> shelf instead. ` +
     `Never write fleet-global directly.\n` +
     `Do not pad to hit a quota: "nothing new worth storing" is a valid outcome. ` +
-    `When done, finish as you normally would; this reminder won't repeat this session.\n`,
+    `When done, finish as you normally would; this reminder won't repeat this session.\n` +
+    resignalHint,
 );
 process.exit(2);
