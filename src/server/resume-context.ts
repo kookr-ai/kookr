@@ -104,7 +104,7 @@ export function buildResumeContinuationMessage(
   const lines = [DEFAULT_RESUME_CONTINUATION_MESSAGE];
   const where = session.gitBranch ? `${session.cwd} (branch ${session.gitBranch})` : session.cwd;
   lines.push(
-    `Before the interruption you were working in ${where}. This session may start elsewhere: ` +
+    `Before this you were working in ${where}. This session may start elsewhere: ` +
       'cd back there before you edit or run anything.',
   );
   if (session.lastTurnState === 'waiting_for_input') {

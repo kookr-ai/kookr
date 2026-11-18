@@ -1947,7 +1947,7 @@ describe('Crash Recovery', () => {
     expect(result.relaunched[0].mode).toBe('fresh');
     expect(result.relaunched[0].fallbackReason).toBe('agent type does not support resume');
     expect(codexLaunches).toHaveLength(1);
-    expect(codexLaunches[0].resume).toMatchObject({ sessionId: 'codex-session-uuid' });
+    expect(codexLaunches[0].resume).toEqual({ sessionId: 'codex-session-uuid', transcriptPath: undefined, continuationMessage: expect.any(String) });
 
     // Codex session not marked resumedFromCrash
     const updatedTask = taskStore.getTask(task.id)!;
