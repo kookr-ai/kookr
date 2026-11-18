@@ -257,3 +257,18 @@ describe('buildAskSpeech', () => {
     }
   });
 });
+
+describe('Kookr\'s own questions (issue #4215)', () => {
+  const systemAsk = () => ask({ taskId: 'system:interrupted-tasks', system: 'interrupted-tasks', question: 'Resume 2 interrupted tasks?' });
+
+  it('are never shown as the question of an ended task, and carry the system name', () => {
+    const view = toOperatorAskView(systemAsk(), names, statuses);
+    expect(view.taskEnded).toBe(false);
+    expect(view.system).toBe('interrupted-tasks');
+    expect(view.taskName).toBeUndefined();
+  });
+
+  it('Lucy says Kookr asks, not a task', () => {
+    expect(buildAskSpeech(systemAsk(), undefined)).toMatch(/^Kookr needs your input: Resume 2 interrupted tasks\?/);
+  });
+});

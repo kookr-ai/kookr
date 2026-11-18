@@ -7,7 +7,8 @@ import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { reconcile } from './reconciliation.js';
-import { recoverCrashedSessions } from './crash-recovery.js';
+import { PARKED_FOR_OPERATOR_REASON, recoverCrashedSessions } from './crash-recovery.js';
+import { isTerminalStatus } from '../core/task-status.js';
 import { buildStartupRecoveryHealthSummary } from './routes/diagnostics-routes.js';
 import { buildTaskLaunchIntent } from '../core/task-launch-intent.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
@@ -1835,6 +1836,61 @@ describe('Crash Recovery', () => {
     const updatedTask = taskStore.getTask(task.id)!;
     const newSession = updatedTask.sessions.find((s) => s.tmuxSession === result.relaunched[0].newSessionId)!;
     expect(newSession.resumedFromCrash).toBe(true);
+  });
+
+  test('parkForOperator: a recoverable task is reported for the operator and not relaunched (#4215)', async () => {
+    const cwdResume = join(tempDir, 'project-park-resume');
+    const cwdFresh = join(tempDir, 'project-park-fresh');
+    const transcriptPath = join(tempDir, 'transcripts', 'session-park.jsonl');
+    await mkdir(join(tempDir, 'transcripts'), { recursive: true });
+    await writeFile(transcriptPath, '{"type":"user","content":"hello"}\n', 'utf-8');
+    const resumable = await setupCrashedTask('Refactor auth', cwdResume, { claudeSessionId: 'session-park', transcriptPath });
+    const fresh = await setupCrashedTask('Fix the bug', cwdFresh);
+    const launchSpy = vi.spyOn(adapter, 'launch');
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(result.relaunched).toEqual([]);
+    expect(result.parked).toEqual(expect.arrayContaining([
+      { taskId: resumable.id, name: expect.any(String), mode: 'resume', parkedAs: { status: 'terminated', sessions: 1 } },
+      { taskId: fresh.id, name: expect.any(String), mode: 'fresh', reason: expect.any(String), parkedAs: { status: 'terminated', sessions: 1 } },
+    ]));
+    expect(result.skipped.filter((s) => s.reason === PARKED_FOR_OPERATOR_REASON).map((s) => s.taskId).sort())
+      .toEqual([resumable.id, fresh.id].sort());
+    // Left stopped, as reconcile left them: no capacity taken, nothing for a reaper to act on.
+    expect(isTerminalStatus(taskStore.getTask(resumable.id)!.status)).toBe(true);
+    expect(isTerminalStatus(taskStore.getTask(fresh.id)!.status)).toBe(true);
+  });
+
+  test('parkForOperator: two tasks with the same prompt are parked once, like the relaunch path (#4215)', async () => {
+    const first = await setupCrashedTask('Identical prompt text', join(tempDir, 'dup-a'));
+    const second = await setupCrashedTask('Identical prompt text', join(tempDir, 'dup-b'));
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    expect(result.parked).toHaveLength(1);
+    expect([first.id, second.id]).toContain(result.parked![0]!.taskId);
+    expect(result.skipped.map((s) => s.reason)).toContain('duplicate prompt already running or relaunched');
+  });
+
+  test('parkForOperator: a task with a running Ralph loop is not parked; it takes the normal recovery path (#4215)', async () => {
+    const cwd = join(tempDir, 'ralph-park');
+    const task = await setupCrashedTask('Loop prompt', cwd);
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = {
+      prompt: 'Loop prompt',
+      iterationCap: 3,
+      currentIteration: 1,
+      status: 'running',
+    } as NonNullable<ReturnType<typeof taskStore.getTask>>['ralphLoop'];
+    const reconcileResult = await reconcile(taskStore, terminal);
+    // Reconcile exempts running loops from termination; cover a loop task that is stopped anyway.
+    if (taskStore.getTask(task.id)!.status !== 'terminated') taskStore.terminateTask(task.id);
+    expect(taskStore.getTask(task.id)!.ralphLoop?.status).toBe('running');
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    // Parking would leave it stopped, and Ralph's startup reconcile closes the loop of a stopped task.
+    expect(result.parked ?? []).toEqual([]);
+    expect(result.skipped.map((s) => s.reason)).not.toContain(PARKED_FOR_OPERATOR_REASON);
   });
 
   test('fresh fallback: no claudeSessionId persisted (agent crashed before SessionStart)', async () => {

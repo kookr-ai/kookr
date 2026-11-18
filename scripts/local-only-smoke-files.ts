@@ -59,6 +59,9 @@ export function assertKookrDiff(before: FileSnapshot, after: FileSnapshot): void
       // (resource-watchdog-state.ts and resource-watchdog-audit.ts), so only on a loaded host.
       || entry === 'resource-watchdog.state.json'
       || entry === 'resource-watchdog-audit.jsonl'
+      // The smoke restart kills its task, so startup recovery parks it for the operator's resume
+      // decision (issue #4215): interrupted-tasks-service.ts writes the batch here.
+      || entry === 'interrupted-tasks.json'
       || /^tasks\.json\.pre-sqlite-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/.test(entry)
     )) return true;
     return entry === 'tasks.json'

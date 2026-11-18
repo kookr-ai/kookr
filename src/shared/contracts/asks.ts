@@ -42,6 +42,12 @@ export interface AskRecord {
   options: string[];
   /** Pages to open from the question (`kookr ask --link`). Absent on asks without links and on older records. */
   links?: AskLink[];
+  /**
+   * Set when Kookr itself asks, not a task (issue #4215): the server component that asked, such as
+   * `interrupted-tasks`. `taskId` is then the synthetic `system:<component>`, no task exists, the
+   * answer is never typed anywhere, and the component reacts to it through the service's listeners.
+   */
+  system?: string;
   /** Whether a free-text reply to the Telegram message counts as an answer. */
   allowText: boolean;
   state: AskState;
@@ -247,6 +253,17 @@ export const ASK_LIMITS = {
   retentionMs: 7 * 24 * 60 * 60 * 1000,
 } as const;
 
+/** A question Kookr itself asks the operator (issue #4215); see {@link AskRecord.system}. */
+export interface CreateSystemAskInput extends Omit<CreateAskInput, 'taskId' | 'idempotencyKey'> {
+  /** The server component asking, e.g. `interrupted-tasks`. Lowercase letters, digits and dashes. */
+  system: string;
+}
+
+/** The synthetic task id a system ask carries in `AskRecord.taskId`. */
+export function systemAskTaskId(system: string): string {
+  return `system:${system}`;
+}
+
 export interface CreateAskInput {
   taskId: string;
   question: string;
@@ -344,6 +361,8 @@ export interface OperatorAskView {
   taskId: string;
   /** Short, redacted task title for display; absent when the task has no usable title. */
   taskName?: string;
+  /** Set when Kookr itself asks (see {@link AskRecord.system}): show "Kookr asks" and no "Open task". */
+  system?: string;
   /**
    * True when the task that asked has ended (completed, terminated or cancelled) or no longer exists:
    * nothing is waiting on the answer. Absent from older servers, which is read as "a task may be waiting".

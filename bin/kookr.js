@@ -16,6 +16,7 @@ Usage:
   kookr open [taskId] [--json]  Open the running dashboard in your browser (deep-link to a task).
   kookr reply <taskId|name> "<text>" [--json]  Deliver a terminal reply to a task's live agent.
   kookr reopen <taskId> [--json]  Reopen a terminal task; reports whether it resumes its conversation.
+  kookr interrupted status|ask|decide [--json]  Tasks a crash or reboot interrupted: show, ask about, or resume them.
   kookr ask --question "<text>" --option "<label>" ... [--wait] [--json]  Ask the operator a multiple-choice question (Telegram).
   kookr supervise <taskRef...> [--goal <text>]... [--until <+Nh|HH:MM>] [--print-brief] [--json]  Attach a supervisor task to running tasks.
   kookr supervision status|end [id] [--json]  Show attached supervisions (health, next wake), or end one.
@@ -63,7 +64,7 @@ Options:
   -v, --version                 Print the installed Kookr version.
   -h, --help                    Show this help.
 
-Use --json for one machine-readable output envelope with: spawn, stop, queue, open, reply, reopen, ask, supervise, supervision status, peek, status, doctor,
+Use --json for one machine-readable output envelope with: spawn, stop, queue, open, reply, reopen, interrupted, ask, supervise, supervision status, peek, status, doctor,
 signal, ralph, issue, schedule, playbook, chain, drain, resume, brief, ops digest, ops timers, github, opinion, logs, containers,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
@@ -136,6 +137,13 @@ async function main({
   // dashboard's Reopen button, over POST /api/tasks/:id/reopen.
   if (command === 'reopen') {
     await runReopenCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
+  // Tasks a crash or reboot interrupted (issue #4215): the batches the server
+  // parked for the operator's resume decision, over /api/interrupted-tasks.
+  if (command === 'interrupted') {
+    await runInterruptedCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
   }
 
@@ -787,6 +795,21 @@ async function runReopenCommand(argv, { env = process.env, out = console, err = 
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runReopenCli(argv, { env, out, err });
+}
+
+async function runInterruptedCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-interrupted.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-interrupted.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] interrupted module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runInterruptedCli(argv, { env, out, err });
 }
 
 async function runAskCommand(argv, { env = process.env, out = console, err = console } = {}) {

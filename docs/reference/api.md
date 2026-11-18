@@ -757,6 +757,41 @@ Error responses:
   `error`.
 - Remote-owned `shared:` ids return `403`.
 
+### Interrupted tasks: `/api/interrupted-tasks`
+
+After a crash or reboot, startup recovery leaves the tasks it would have
+relaunched stopped and parks them in one batch, then asks the operator once
+whether to resume them (issue #4215; `KOOKR_INTERRUPTED_TASKS=auto` restores
+the old relaunch-at-once behaviour). The question is a Kookr-originated ask
+(`AskRecord.system = "interrupted-tasks"`): it reaches Telegram, the dashboard
+card and Lucy. The batch lives in `<data dir>/interrupted-tasks.json` and
+survives a restart.
+
+- `GET /api/interrupted-tasks` returns `{ "batches": [...] }`: the pending
+  batch, if any, and the 20 most recently decided ones. Each task in a batch
+  carries `mode`: `resume` (it continues its conversation) or `fresh` (it has
+  none and can only restart from its prompt).
+- `POST /api/interrupted-tasks/ask` with `{ "taskIds": [...] }` (1–50 ids)
+  parks already-stopped tasks and asks about them. Running or unknown tasks are
+  returned in `refused`. A batch already pending absorbs the new tasks, and its
+  question is sent again. Returns `{ "batch", "refused" }`, or `409` when no
+  task could be parked.
+- `POST /api/interrupted-tasks/:batchId/decide` with
+  `{ "choice": "resume" | "resume_all" | "leave" }` decides a pending batch:
+  - `resume` reopens the tasks with a conversation (`POST /api/tasks/:id/reopen`
+    semantics, so each continues its conversation) and leaves the others stopped.
+  - `resume_all` also restarts the others from their original prompt.
+  - `leave` relaunches nothing.
+
+  Returns `{ "batch" }` with one outcome per task, or `404` when no pending
+  batch has that id.
+
+With no answer by the deadline (`KOOKR_INTERRUPTED_TASKS_TIMEOUT_MIN`, default
+10), the batch is decided as `resume`, never `resume_all`. A restart from the
+original prompt re-grants whatever that prompt authorized, so it needs an
+explicit yes. Both POSTs are supervisor-gated like `/reopen`. The CLI is
+`kookr interrupted status|ask|decide`.
+
 ### `POST /api/tasks/:id/signal`
 
 Raise a non-blocking agent → user signal for a task. The motivating case is

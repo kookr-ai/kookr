@@ -284,6 +284,8 @@ handshake and does not automatically nudge the agent to recover a screen.
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_AUTO_RELAUNCH` | enabled | `false` to disable | Disables startup crash recovery and automatic relaunch/resume of tasks marked completed by reconciliation. |
+| `KOOKR_INTERRUPTED_TASKS` | `ask` | `ask` or `auto` | What startup crash recovery does with the tasks it would relaunch (issue #4215). `ask`: leave them stopped, ask the operator once (Telegram, dashboard card, Lucy) whether to resume them, and resume the ones with a conversation when the timeout passes with no answer. `auto`: relaunch them at once, without asking. See `kookr interrupted --help`. |
+| `KOOKR_INTERRUPTED_TASKS_TIMEOUT_MIN` | `10` | 1–1440 | Minutes the operator has to answer the interrupted-tasks question before the tasks with a conversation resume. |
 | `KOOKR_AUTO_CATCHUP` | unset | Any non-empty value | Now redundant (auto is the default since #1900); still honored so existing opt-in configs keep working. Formerly the opt-in for automatic schedule catch-up. |
 | `KOOKR_MANUAL_CATCHUP` | unset | Any non-empty value | Opts out of automatic catch-up back to the pre-#1900 behavior: missed startup runs are recorded in the execution ledger for manual Run Now recovery instead of auto-firing. |
 | `KOOKR_NO_CATCHUP` | unset | Any non-empty value | Legacy kill switch for startup catch-up. Takes precedence over `KOOKR_MANUAL_CATCHUP`/`KOOKR_AUTO_CATCHUP`; future cron ticks still run. |

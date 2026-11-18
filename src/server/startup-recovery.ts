@@ -77,6 +77,11 @@ interface StartupRecoveryDeps {
   staleOpenLaunchTaskIds?: string[];
   /** Live adapter-launch timeout used by crash recovery. */
   getLaunchTimeoutMs?: () => number;
+  /**
+   * Park recoverable tasks for the operator's decision instead of relaunching them (issue #4215).
+   * The parked tasks come back in the summary's `parked`; the caller raises the question.
+   */
+  parkInterruptedForOperator?: boolean;
 }
 
 interface PromotePendingStartupTasksDeps {
@@ -162,6 +167,7 @@ export async function runStartupRecoveryPhase({
   dispositionLedgerPath,
   staleOpenLaunchTaskIds = [],
   getLaunchTimeoutMs,
+  parkInterruptedForOperator,
 }: StartupRecoveryDeps): Promise<StartupRecoverySummary | null> {
   let startupRecoverySummary: StartupRecoverySummary | null = null;
   // LaunchDependencyAdmission is process-local, while parked launch intents
@@ -358,6 +364,7 @@ export async function runStartupRecoveryPhase({
       dependencyPreflightRunner: lifecycleDeps.dependencyPreflightRunner,
       getLaunchTimeoutMs: getLaunchTimeoutMs ?? lifecycleDeps.getLaunchTimeoutMs,
       flushTasks: lifecycleDeps.flushTasks,
+      parkForOperator: parkInterruptedForOperator,
     });
     crashRecoveryResult = recoveryResult;
 
