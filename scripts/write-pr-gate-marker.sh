@@ -9,7 +9,8 @@
 #   bash scripts/write-pr-gate-marker.sh --repo kookr --branch feat/x
 #
 # Options:
-#   --repo NAME       Bare repo name used in the state key (default: remote)
+#   --repo NAME       Repo name used in the state key (default: remote);
+#                     an owner/name slug keeps only the part after the last /
 #   --branch BRANCH   Branch name (default: current branch; / → - in key)
 #   --sha SHA         Bind token to this sha (default: HEAD)
 #   --cwd DIR         Git cwd for defaults
@@ -28,7 +29,7 @@ CWD=""
 STATE_DIR="${KOOKR_PR_GATE_STATE_DIR:-/dev/shm}"
 
 usage() {
-  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
 }
 
@@ -52,6 +53,12 @@ done
 if [ -z "$CWD" ]; then
   CWD=$(pwd)
 fi
+
+# Match pr-workflow-gate.sh key derivation: it reads `-R owner/name` and keys
+# on the bare name only, so `--repo kookr-ai/kookr` must write the same file
+# as `--repo kookr` (issue #4179). Without this the owner became a missing
+# directory in the state-file path and the write failed.
+REPO_NAME="${REPO_NAME##*/}"
 
 if [ -z "$REPO_NAME" ]; then
   REMOTE_URL=$(git -C "$CWD" config --get remote.origin.url 2>/dev/null || true)
