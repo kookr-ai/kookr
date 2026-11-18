@@ -32,7 +32,31 @@
 
 ## Summary
 
-_Written at the end of the run._
+The most important finding of this run is not about Lucy. Runs 5 and 6 had already
+replaced the window this run was asked to overhaul, and none of it had reached the
+operator, because both runs left "may I push?" in their final report. Asked at the start
+of this run, through `kookr ask` with screenshots, the question was answered in 27
+seconds: "Push, open PRs, merge when gates pass". So this run did three things.
+
+1. **Landed runs 5 and 6.** One pull request, #4148, after an independent review in four
+   parts (nine small defects fixed, no critical finding, every attempt to cause an action
+   without the operator failed). It is on `main`.
+2. **Measured what the landed column still lacks**, against the brief's new sentence and
+   against the operator's own failed requests of the day: eight findings (R7-F1 to R7-F8).
+3. **Built two clusters on top**: Lucy's room, a full-window view, with a wider side
+   column (#4153); and Lucy knowing what she just said, naming the buttons on her own
+   permission card, and being able to start a task in Kookr's own project (#4150, closing
+   #4143 and #4144).
+
+Against the brief:
+
+| The brief asks for | State after this run |
+|---|---|
+| A panel that is not too small: "its own full side panel or even entire window" | The docked column can take up to half the window, and the room gives her the whole window, also as a window of her own on a second screen (#4153, in review). |
+| A nice chat | Landed in #4148: bubbles with times, a line that says what she is doing, lists, a conversation shared by every tab. In the room it gets a reading column of its own. |
+| Proactive, and speaking only to add value | Landed in #4148: a written briefing on opening and on return, one line when a task fails, stalls or wants review, questions announced in one sentence. Still open: nothing new is spoken, and R7-F5. |
+| Useful actions | Landed in #4148: answer a task's question, reply to a task, close a finished task, each behind a card. #4150 makes "can you make it proceed?" work up to the last step: she names the task, the command and the Approve once button. Pressing it for the operator is the last slice of #3632 and is not built. |
+| A smooth interface | The switch between column and room rebuilds nothing. "Open task" on her cards, which opened nothing on `main`, is fixed in #4153 (R7-F7). |
 
 ## What changed since run 6
 
@@ -287,7 +311,53 @@ threshold, as the grouped row's header was made to in run 6 (J-F14).
 
 ## Things that worked well (keep-list)
 
+- **Asking the push question early, with something to look at.** Twenty-seven seconds to
+  an answer that two finished runs never got.
+- **Replaying the operator's own failed sentences.** "can you make it proceed ?" and the
+  self-reflection request, taken word for word from `~/.kookr/lucy-interactions.jsonl`,
+  were better tests than anything invented: both failed on the merged build of runs 5 and
+  6, and both are the before/after of cluster A.
+- **Her status answer is good.** "Give me a status of every running task, one by one."
+  got eight look-ups and a correct paragraph per task in 8.8 s on the live dashboard. What
+  was wrong with it was the four-line window it was shown in.
+- **The action design held under attack.** The actions reviewer tried five ways to cause
+  an action without the operator (agent text reaching what is sent, a confirm without the
+  operator, a stale or replaced card, a viewer calling the routes, races) and all five
+  failed; 44 of 56 mutants on that part were killed before any fix.
+- **Review in parts found real things.** Nine small defects in runs 5 and 6 that the
+  runs' own verification had not: a "timed out" line left in the thread after a reply
+  that was in fact sent, outcomes no longer announced to a screen reader, the three
+  actions tested only against fakes.
+- **The implementers looked at their own screenshots.** The room's implementer changed
+  five things after reading its own PNGs, and found on the way that "Open task" on her
+  cards had never worked (R7-F7).
+- **The merge wrapper and the train.** `kookr merge` retargeted, checked the verdict and
+  merged in one command; the train found and reverted an unrelated bad dependency bump
+  that was ahead of #4148 without help.
+
 ## Suggested priority order
+
+1. **Lucy's room and the "Open task" fix** (R7-F2, R7-F7). #4153, in review. The fix
+   alone is worth landing: without it a permission prompt older than five minutes has no
+   working control on her card.
+2. **She knows what she just said, and can launch in Kookr** (R7-F3, R7-F4). #4150, in
+   review, closes #4143 and #4144.
+3. **Buttons that last as long as the prompt** (R7-F5). Renew the card's five-minute
+   binding while the task's terminal still shows the same prompt. Not started. After
+   #4150 she at least says the buttons have timed out and opens the task.
+4. **Approve through Lucy** (the last slice of #3632). With R7-F3 and R7-F5 done, "make
+   it proceed" stops one press short: a confirmation card for the approval, behind its
+   own setting, is the natural next action. Not started; it needs the operator's
+   decision on the setting.
+5. **The review follow-ups** (#4149, #4151, #4154): among them a task she launched that
+   goes quiet and is reported by nobody, the dashboard that stays reachable with Tab
+   under the room, and the smoke check's watchdog that switches itself on.
+6. **Process** (R7-F1, R7-F6): in the playbook, done in this branch.
+7. **Small layout** (R7-F8): the top bar at the page's 1000 px minimum.
+
+Carried over from run 6 and still open: her voice path (the nine-second wait, the
+per-project mute), questions without Telegram, a conversation owned by the server, and
+Talk never having been switched on in any of these runs.
 
 ## Implementation (Phase 4)
 
