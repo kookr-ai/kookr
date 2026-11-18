@@ -30,6 +30,8 @@ export function buildLucyLookSource(deps: RouteDeps, options: { launching?: bool
     getLifetimeSpendUsd: () => deps.taskStore.getLifetimeSpendUsd(),
     // The same list the panel and the spoken briefing use, so she and the card agree on what is waiting.
     getAsks: () => (deps.asks?.service ? listOperatorAsks(deps.asks.service.all(), Date.now(), (taskId) => deps.taskStore.getTask(taskId)?.name, (taskId) => deps.taskStore.getTask(taskId)?.status) : []),
+    // The cards on her panel, so the board says what a blocked task wants to run and whether its buttons still work.
+    getPermissionCards: () => deps.lucyPermissionNotices?.list() ?? [],
     getQuota: () => deps.getQuotaStatus?.() ?? null,
     getReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
     // Delivery facts: the pull requests seen in the task's own work and whether each merged. One that is
@@ -85,6 +87,8 @@ export function buildLucyOperator(deps: RouteDeps, wiring: LucyActionWiring = {}
     ...(launch ? { launch } : {}),
     ...(actions ? { actions } : {}),
     log: deps.lucyInteractionLog,
+    // One record for the whole server of what she said without being asked; every turn is shown it.
+    ...(deps.lucyUnprompted ? { unprompted: (conversationId: string) => deps.lucyUnprompted!.recent(conversationId) } : {}),
   });
   // Lucy live (Talk) is built before the routes; it finds the service here when a turn starts.
   deps.lucyOperatorHolder?.set(service);

@@ -529,6 +529,14 @@ questions: one tab, nothing aloud with sound off, Do Not Disturb or quiet hours.
 as the prompt is answered anywhere. The delay is the `lucyPermissionNoticeAfterSeconds` setting
 (default 60; 0 turns it off). Needs no Telegram; her voice needs the speech service.
 
+She remembers what she just told you. Answer the notice with "can you make it proceed ?", typed or
+spoken, and she knows which task you mean: she names it, says what it wants to run and points you at
+**Approve once** on her card. The buttons stop working five minutes after the prompt appeared; she
+then says so and opens the task so you can answer in its terminal. She cannot approve a prompt
+herself. The same memory covers a question she read out, a line she wrote about a task that failed or
+went quiet, and the report of a task she launched: the last six, for fifteen minutes.
+Details: [What she said unprompted](reference/lucy-operator.md#what-she-said-unprompted).
+
 #### Talk to Lucy hands-free (optional, off by default)
 
 The **Talk** button beside the panel's text box starts a spoken conversation (when it cannot be used it
@@ -583,7 +591,7 @@ talk uses it too when launching is on (next section).
 - **She looks things up.** Each answer starts from a board of your tasks: what needs you, what is
   working, what just finished, spend and quota. When that is not enough she can read one task (what
   it was asked to do, what it is waiting for, its closing summary), list projects, or ask the
-  dashboard to open a task. She cannot read a task's terminal output yet.
+  dashboard to open a task. She can also read what a task's terminal shows now (its last 40 lines).
 - **On its own she cannot change anything.** No look-up tool launches, replies to, closes, snoozes or stops a
   task, so text written by an agent cannot make her act. The exceptions are the proposals described
   below (starting a task, and answering, replying to or closing an existing one), which only the operator
@@ -606,7 +614,11 @@ panel shows it as a card with the whole description at the end of the conversati
 for her read-back, which is not also written as a message), and the task starts when you say "go", press
 Enter or click Go. Anything else you say drops it, and a proposal expires after two minutes. What became
 of it stays in the conversation as one line ("Started kookr task", with a button to open the task,
-"Cancelled" or "Timed out"). An unclear request gets one question instead. An investigation is told to
+"Cancelled" or "Timed out"). An unclear request gets one question instead; when it is the project
+that is unclear, the question names up to three ("Which project: kookr, kb-scout-evol or
+earnings-watch?"). She can launch in every project that has a folder on this machine, as the Launch
+dialog can, including Kookr's own: "fix this problem with you" or "with the dashboard" goes to Kookr's
+own project, which the server identifies by its repository, never by a name. An investigation is told to
 report findings and file issues, not to open a pull request. When the task finishes or needs you, she
 says so, and the sentence is a message of hers in the conversation with an **Open task** button.
 
@@ -616,8 +628,8 @@ says so, and the sentence is a message of hers in the conversation with an **Ope
   "cancel"). She cannot change this setting, and only your own words start anything: text written by
   agents never does.
 - **What leaves the machine.** Hands-free talk is then answered by the operator conversation, so each
-  spoken request goes to OpenRouter, and a second call writes the task from your words and the project
-  names only. Details: [Lucy operator](reference/lucy-operator.md#launching-a-task-by-voice-or-text).
+  spoken request goes to OpenRouter, and a second call writes the task from your words, the project
+  names and which of them is Kookr itself, and nothing else. Details: [Lucy operator](reference/lucy-operator.md#launching-a-task-by-voice-or-text).
 
 #### Ask Lucy to answer, reply to or close a task (on by default)
 

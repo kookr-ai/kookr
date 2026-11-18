@@ -20,6 +20,7 @@ import { openableVoiceAsks } from '../../core/lucy-live/open-intent.js';
 import { buildAskSpeech } from '../../core/operator-asks.js';
 import { redactSpeechSecrets } from '../../core/task-speech-summary.js';
 import { countSpokenWords, DISABLED_LUCY_INTERACTION_LOG, type LucyInteractionLog } from '../lucy-interaction-log.js';
+import type { LucyUnpromptedLog } from '../lucy-unprompted.js';
 import type { AnswerResult, DashboardAnswerInput, OperatorAskView } from '../../shared/contracts/asks.js';
 import type { LucyLiveConfig } from './config.js';
 import { LucyLiveSession, type LucyLivePorts } from './session.js';
@@ -52,6 +53,11 @@ export interface LucyLiveDeps {
    * Read when each turn starts, because the service is built after Lucy live.
    */
   getOperator?: () => LucyOperatorService | undefined;
+  /**
+   * The server's record of what Lucy said unprompted (issue #4143). A question Talk reads out goes in
+   * as soon as the browser reports playing it, so a typed turn that follows knows about it too.
+   */
+  unprompted?: Pick<LucyUnpromptedLog, 'record'>;
   log?: LucyInteractionLog;
   warn?: (message: string) => void;
   now?: () => number;
@@ -112,6 +118,22 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
             },
           } : {}),
           noteUnprompted: (note, said) => deps.getOperator?.()?.rememberSaid?.(conversationId, note, said),
+          // The same question also goes into the record every conversation reads. It is marked as held by
+          // this conversation, whose history gets it through `noteUnprompted`, so it is not shown here twice.
+          ...(deps.unprompted && deps.getAsks ? {
+            heardUnprompted: (askId: string) => {
+              const ask = deps.getAsks!().find((a) => a.id === askId);
+              if (!ask) return;
+              deps.unprompted!.record({
+                key: `ask:${askId}`,
+                sameSaying: true,
+                text: buildAskSpeech(ask, ask.taskName),
+                tasks: [{ id: ask.taskId, ...(ask.taskName ? { name: ask.taskName } : {}) }],
+                stillOpen: () => deps.getAsks!().some((a) => a.id === askId && a.state === 'pending'),
+                inConversation: conversationId,
+              });
+            },
+          } : {}),
           // A "yes" answers the one proposal on screen, whichever conversation made it: a question waits for any.
           // Her answer, reply and close cards are confirmed the same way, so a question waits for one of those too.
           launchPendingUntil: () => {

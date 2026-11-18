@@ -26,6 +26,7 @@ import {
   buildTaskPrompt,
   classifyReply,
   buildUnknownProjectSay,
+  buildWhichProjectSay,
   ECHO_TAIL_MS,
   estimateSpeechMs,
   HANDS_OFF_CANCEL_WINDOW_MS,
@@ -72,6 +73,12 @@ export interface LucyLaunchControllerDeps {
   audit?(row: { taskId: string; proposalId: string; level: LucyAutonomy; via: LucyLaunchVia; project: string; kind: LucyLaunchKind; queued: boolean; duplicate: boolean }): void | Promise<void>;
   /** Told about every proposal and every outcome, so every open dashboard shows or clears the card. */
   emit?(message: LucyLaunchBroadcast): void;
+  /**
+   * Called once for each report she makes about a task she launched ("The task I started has
+   * finished."), so her next turn in any conversation knows what she just said (issue #4143).
+   * A failure here is ignored.
+   */
+  onReport?(report: { taskId: string; taskName?: string; text: string }): void;
   /**
    * Called when a new proposal is about to be held. There is one card on screen for all of her
    * proposals, so the holder of her other cards (answer, reply, close) drops its own here.
@@ -385,6 +392,9 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
       }
       const draft = parseSpecDraft(reply);
       if (!draft) return none('I could not make a task out of that. Could you say it again?', 'unreadable draft');
+      // The question about the project is the server's own sentence: it names the likely projects, from
+      // the project list and never from anything the writer wrote.
+      if ('askProject' in draft) return none(buildWhichProjectSay(projects), 'ambiguous');
       if ('ambiguous' in draft) return none(draft.ambiguous, 'ambiguous');
 
       const project = resolveProject(draft.project, projects);
@@ -548,6 +558,11 @@ export function createLucyLaunchController(deps: LucyLaunchControllerDeps): Lucy
           reports.delete(oldest);
         }
         announce({ type: 'lucy_launch', conversationId, report: { taskId, conversationId, kind, text: sentence } });
+        try {
+          deps.onReport?.({ taskId, ...(taskLabel ? { taskName: taskLabel } : {}), text: sentence });
+        } catch (err) {
+          warn(`could not note a launch report: ${err instanceof Error ? err.message : String(err)}`);
+        }
       };
       if (outcome.kind === 'needs_input') {
         // The same finding is admitted again and again while a task waits: say it once.

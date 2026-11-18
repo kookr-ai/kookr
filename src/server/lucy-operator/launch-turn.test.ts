@@ -70,10 +70,18 @@ describe('a request to start work', () => {
   });
 
   test('an unclear request gets one question and no card', async () => {
-    const { service, launches } = setup([{ calls: [{ name: 'propose_launch' }] }], { writer: () => '{"ambiguous":"Which project?"}' });
+    const { service, launches } = setup([{ calls: [{ name: 'propose_launch' }] }], { writer: () => '{"ambiguous":"What exactly should I fix?"}' });
     const events = await drain(service.runTurn({ text: 'fix the thing', conversationId: 'c1' }));
     expect(events.map((e) => e.type)).toEqual(['tool_call', 'tool_result', 'text', 'done']);
-    expect(said(events)).toBe('Which project?');
+    expect(said(events)).toBe('What exactly should I fix?');
+    expect(launches).toHaveLength(0);
+  });
+
+  test('an unclear project gets the question with the projects she can launch in, in the server\'s words (issue #4144)', async () => {
+    const { service, launches } = setup([{ calls: [{ name: 'propose_launch' }] }], { writer: () => '{"ask":"project"}' });
+    const events = await drain(service.runTurn({ text: 'fix the thing', conversationId: 'c1' }));
+    expect(events.map((e) => e.type)).toEqual(['tool_call', 'tool_result', 'text', 'done']);
+    expect(said(events)).toBe('Which project? The only one I can launch in is kookr.');
     expect(launches).toHaveLength(0);
   });
 

@@ -38,7 +38,10 @@ interface Session {
   pane: string;
 }
 
-function harness(opts: { afterMs?: number } = {}) {
+type Said = Parameters<NonNullable<ConstructorParameters<typeof LucyPermissionNotifier>[0]['onSaid']>>[0];
+
+function harness(opts: { afterMs?: number; onSaidThrows?: boolean } = {}) {
+  const said: Said[] = [];
   let nowMs = T0;
   let dashboards = 1;
   let afterMs = opts.afterMs;
@@ -51,6 +54,10 @@ function harness(opts: { afterMs?: number } = {}) {
     capturePane: async (id) => sessions.get(id)?.pane ?? '',
     getAfterMs: () => afterMs ?? 60 * SEC,
     now: () => nowMs,
+    onSaid: (entry) => {
+      said.push(entry);
+      if (opts.onSaidThrows) throw new Error('record gone');
+    },
   });
   /** A task whose session is blocked on a Bash prompt first seen at `sinceMs`. */
   function block(taskId: string, sinceMs: number, command = 'rm -rf build', pane = BASH_PANE): PermissionPromptWait {
@@ -64,6 +71,7 @@ function harness(opts: { afterMs?: number } = {}) {
   }
   return {
     notifier,
+    said,
     pushes,
     sessions,
     block,
@@ -76,6 +84,68 @@ function harness(opts: { afterMs?: number } = {}) {
     settle: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
   };
 }
+
+describe('LucyPermissionNotifier tells the server what she said (issue #4143)', () => {
+  test('one call per sentence that reached a dashboard: the sentence and the task, never the command', async () => {
+    const h = harness();
+    const w = h.block('a', T0, LONG_COMMAND);
+    h.at(60 * SEC);
+    h.notifier.evaluate([w]);
+    await h.settle();
+    for (const t of [65, 120, 300]) {
+      h.at(t * SEC);
+      h.notifier.evaluate([w]);
+      await h.settle();
+    }
+    expect(h.said).toHaveLength(1);
+    expect(h.said[0]).toMatchObject({
+      noticeId: h.announcements()[0]!.noticeId,
+      text: 'The task "Fix the a build" is waiting for your permission to use Bash. The command is on my card.',
+      tasks: [{ id: 'a', name: 'Fix the a build' }],
+    });
+    expect(JSON.stringify(h.said)).not.toContain('git push');
+    expect(JSON.stringify(h.said)).not.toContain(TOKEN);
+  });
+
+  test('it stays open while the prompt waits and closes when the prompt is answered', async () => {
+    const h = harness();
+    const w = h.block('a', T0);
+    h.at(60 * SEC);
+    h.notifier.evaluate([w]);
+    await h.settle();
+    expect(h.said[0]!.stillOpen()).toBe(true);
+    h.at(70 * SEC);
+    h.notifier.evaluate([]);
+    expect(h.said[0]!.stillOpen()).toBe(false);
+  });
+
+  test('a sentence nobody received is not reported; it is, once a dashboard gets it', async () => {
+    const h = harness();
+    h.setDashboards(0);
+    const w = h.block('a', T0);
+    h.at(60 * SEC);
+    h.notifier.evaluate([w]);
+    await h.settle();
+    expect(h.said).toEqual([]);
+    h.setDashboards(1);
+    h.at(65 * SEC);
+    h.notifier.evaluate([w]);
+    await h.settle();
+    expect(h.said).toHaveLength(1);
+  });
+
+  test('a record that throws does not stop the notice or make her say it twice', async () => {
+    const h = harness({ onSaidThrows: true });
+    const w = h.block('a', T0);
+    for (const t of [60, 65, 200]) {
+      h.at(t * SEC);
+      h.notifier.evaluate([w]);
+      await h.settle();
+    }
+    expect(h.announcements()).toHaveLength(1);
+    expect(h.said).toHaveLength(1);
+  });
+});
 
 describe('LucyPermissionNotifier', () => {
   test('a prompt that waits 60 s gets one card and one sentence; later ticks and a reconnect say nothing more', async () => {

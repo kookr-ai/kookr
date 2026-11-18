@@ -14,9 +14,10 @@ import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TerminalScreenTextOptions, TerminalScreenTextResult } from '../terminal-screen-text.js';
 import { projectDisplayName } from '../../core/project-identity.js';
-import { operatorAttention, type AttentionFinding, type OperatorAttentionKind } from '../../core/lucy-operator/attention.js';
+import { cleanToolName, operatorAttention, type AttentionFinding, type OperatorAttention, type OperatorAttentionKind } from '../../core/lucy-operator/attention.js';
 import type { BriefingNeed } from '../../core/lucy-live/briefing.js';
-import type { LucyBoardInput, LucyBoardTask, LucyTaskPullRequest } from '../../core/lucy-operator/board.js';
+import type { LucyBoardInput, LucyBoardPermission, LucyBoardTask, LucyTaskPullRequest } from '../../core/lucy-operator/board.js';
+import type { LucyPermissionCardView } from '../../shared/contracts/lucy-permission.js';
 import { TASK_OUTPUT_LINES } from '../../core/lucy-operator/tools.js';
 import type { LucyLookSource, LucyProjectLine, LucyTaskDetail, LucyTaskOutput } from '../../core/lucy-operator/tools.js';
 
@@ -49,6 +50,12 @@ export interface LucyLookSourceDeps {
   getLifetimeSpendUsd?: () => number;
   /** Questions tasks asked the operator (`kookr ask`): the pending ones and the recently closed. */
   getAsks?: () => readonly OperatorAskView[];
+  /**
+   * The permission cards on her panel right now (`LucyPermissionNotifier.list()`), so the board can say
+   * what a blocked task wants to run and whether the card's buttons still answer it. Absent: the board
+   * only says that the task is blocked on a permission, and for which tool when Kookr knows.
+   */
+  getPermissionCards?: () => readonly LucyPermissionCardView[];
   getQuota?: () => { fiveHour: { utilization: number; resetsAt: string } | null; sevenDay: { utilization: number; resetsAt: string } | null } | null;
   getReferences?: (taskId: string) => ReadonlyArray<{ type: 'pr' | 'issue'; number: number }>;
   /**
@@ -83,9 +90,34 @@ const ATTENTION_WORDS: Record<OperatorAttentionKind, string> = {
   budget_exceeded: 'it went over its budget',
 };
 
-function attentionFor(task: LookTask, findings: ReturnType<LucyLookSourceDeps['getFindings']>): string | undefined {
-  const attention = operatorAttention(task, findings);
+function attentionWords(attention: OperatorAttention | undefined): string | undefined {
   return attention ? ATTENTION_WORDS[attention.kind] ?? 'it needs you' : undefined;
+}
+
+function attentionFor(task: LookTask, findings: ReturnType<LucyLookSourceDeps['getFindings']>): string | undefined {
+  return attentionWords(operatorAttention(task, findings));
+}
+
+/**
+ * What the board is told about a task's permission prompt: the tool (from the finding, or from the
+ * card), and, when a card for it is on her panel, the command and until when its buttons answer. The
+ * limit is the binding's own (`detectedAt` plus `ttlMs`), the one the server checks a press against
+ * and the card's `permissionButtonsLive` reads, so she, the card and the server agree.
+ */
+export function permissionFacts(attention: OperatorAttention, card: LucyPermissionCardView | undefined): LucyBoardPermission {
+  const tool = attention.tool ?? cleanToolName(card?.toolName);
+  if (!card) return { ...(tool ? { tool } : {}) };
+  const binding = card.permissionRequest;
+  const buttonsUntil = binding ? Date.parse(binding.detectedAt) + binding.ttlMs : NaN;
+  return {
+    ...(tool ? { tool } : {}),
+    ...(card.command ? { command: card.command } : {}),
+    card: {
+      approve: Boolean(binding && card.approveKey),
+      deny: Boolean(binding && card.denyKey),
+      ...(Number.isFinite(buttonsUntil) ? { buttonsUntil } : {}),
+    },
+  };
 }
 
 /** The display name of the project a task works in, as the board shows it. */
@@ -94,8 +126,10 @@ export function projectOf(task: Pick<LookTask, 'projectId' | 'cwd'>): string | u
   return task.cwd ? basename(task.cwd) : undefined;
 }
 
-function toBoardTask(task: LookTask, findings: ReturnType<LucyLookSourceDeps['getFindings']>): LucyBoardTask {
-  const attention = attentionFor(task, findings);
+function toBoardTask(task: LookTask, findings: ReturnType<LucyLookSourceDeps['getFindings']>, cards: readonly LucyPermissionCardView[] = []): LucyBoardTask {
+  const waiting = operatorAttention(task, findings);
+  const attention = attentionWords(waiting);
+  const permission = waiting?.kind === 'permission_blocked' ? permissionFacts(waiting, cards.find((card) => card.taskId === task.id)) : undefined;
   const costUsd = task.tokenUsage?.costUsd;
   return {
     id: task.id,
@@ -108,6 +142,7 @@ function toBoardTask(task: LookTask, findings: ReturnType<LucyLookSourceDeps['ge
     ...(projectOf(task) ? { project: projectOf(task) } : {}),
     ...(typeof costUsd === 'number' && Number.isFinite(costUsd) ? { costUsd } : {}),
     ...(attention ? { attention } : {}),
+    ...(permission ? { permission } : {}),
   };
 }
 
@@ -146,8 +181,14 @@ export function createLucyLookSource(deps: LucyLookSourceDeps): LucyLookSource {
       const quota = deps.getQuota?.() ?? null;
       const spend = deps.getLifetimeSpendUsd?.();
       const asks = deps.getAsks?.() ?? [];
+      let cards: readonly LucyPermissionCardView[] = [];
+      try {
+        cards = deps.getPermissionCards?.() ?? [];
+      } catch {
+        // The board is still worth having without the card facts.
+      }
       return {
-        tasks: deps.getTasks().map((task) => toBoardTask(task, findings)),
+        tasks: deps.getTasks().map((task) => toBoardTask(task, findings, cards)),
         lifetimeSpendUsd: typeof spend === 'number' && Number.isFinite(spend) ? spend : null,
         quota: quota ? { fiveHour: quota.fiveHour, sevenDay: quota.sevenDay } : null,
         ...(asks.length > 0 ? { asks } : {}),

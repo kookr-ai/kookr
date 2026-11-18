@@ -27,6 +27,11 @@
  * are read from the pane; a button whose option is not on screen is left out, and a prompt seen only
  * on the pane (no hook event, so nothing to bind to) gets a card without buttons.
  *
+ * Each sentence that reached a dashboard is also handed to `onSaid`, which the server connects to the
+ * record of what she said unprompted: her next turn, typed or spoken, then knows which task a reply
+ * such as "make it proceed" is about (issue #4143). Only the sentence and the tasks are handed over,
+ * never the command.
+ *
  * State lives in process memory, like the page's.
  */
 import { createHash } from 'node:crypto';
@@ -65,6 +70,12 @@ export interface LucyPermissionNotifierDeps {
   capturePane: (sessionId: string) => Promise<string>;
   /** Live setting in milliseconds; 0 turns the notices off. Defaults to 60 s. */
   getAfterMs?: () => number;
+  /**
+   * Called once for each sentence that reached a dashboard, so her next turn knows what she just said
+   * (issue #4143). `stillOpen` is false once every prompt the sentence was about has been answered or
+   * is gone. Must not throw; a failure is ignored.
+   */
+  onSaid?: (said: { noticeId: string; text: string; tasks: Array<{ id: string; name?: string }>; stillOpen: () => boolean }) => void;
   now?: () => number;
 }
 
@@ -279,6 +290,16 @@ export class LucyPermissionNotifier {
     if (this.push({ noticeId, promptIds, text }) === 0) return; // Nobody heard it: said once a dashboard is open.
     for (const ep of unspoken) ep.spoken = true;
     this.lastSpokenAt = nowMs;
+    try {
+      this.deps.onSaid?.({
+        noticeId,
+        text,
+        tasks: cards.map((card) => ({ id: card.taskId, ...(card.taskName ? { name: card.taskName } : {}) })),
+        stillOpen: () => this.notice(noticeId)?.open === true,
+      });
+    } catch (err) {
+      console.warn('[lucy-permission] onSaid threw (ignored):', err instanceof Error ? err.message : String(err));
+    }
   }
 
   private push(announce: LucyPermissionAnnouncement | undefined): number {

@@ -142,7 +142,9 @@ for an answer):
   heard is left out. When launching is on, the operator conversation answers instead, and it is told the
   same thing: what the browser reported playing, marked "(interrupted)" if she was cut off, given to it
   just before the next answer (when those reports are in), and nothing for a question nobody heard
-  (issue #4015).
+  (issue #4015). The question also goes into the server's record of what she said unprompted, as soon
+  as the browser reports playing its first sentence, so a typed turn that follows knows about it too
+  (issue #4143). The Talk conversation, which has it in its own history, is not shown it twice.
 - If the browser played none of it (it ignored the `turn_start` because you had just begun to speak, or
   an interruption dropped it while it was held or still being decoded), it says so with
   `turn_unplayed`, and the server says the question again after your turn, whatever it had already
@@ -209,7 +211,9 @@ What is never sent:
   the spoken summaries, and terminal codes are removed.
 
 She can tell you what waits and why; she cannot answer a permission prompt or review a task. The
-dashboard does that.
+dashboard does that. When launching is on, the operator conversation answers her spoken turns: it
+knows the permission card on her panel and points you at its **Approve once** button
+(see [the permission card](lucy-operator.md#the-permission-card)).
 
 Measured against the real helper model with `scripts/measure-lucy-needs-operator.ts` (ten questions
 such as "what needs me?", "is anything stuck?" and "is the train running?", over three made-up
@@ -341,6 +345,14 @@ more the card arrives after the 5-minute button limit, so it never has buttons).
 the sentence waits: she says it once one is. The
 3-minute page to your phone and the Telegram card (issue #3925) are separate and unchanged.
 
+She remembers that she said it (issue #4143). Each sentence that reached a dashboard goes into the
+server's record of what she said unprompted, and her next turn in any conversation, typed or spoken,
+is shown it. So "can you make it proceed ?" after the notice is understood as being about that task:
+she names it, says what it wants to run, and points at **Approve once** on the card, or, once the
+buttons have timed out, says so and opens the task. The record holds the sentence and the task, never
+the command, and the item goes when the prompt is answered. See
+[What she said unprompted](lucy-operator.md#what-she-said-unprompted).
+
 **Hands-free talk.** With Talk on, the status Lucy answers from also lists the questions that are
 waiting and the ones closed in the last 10 minutes, with where the answer came from. Ask her "does
 anything need me?" and she can tell you.
@@ -408,6 +420,11 @@ clicked in the page yet.
 Lucy writes first and speaks second. Three things appear in her thread without being asked for, as
 messages from her. None of them is spoken, and none calls a model: the server builds each sentence
 from its own records with fixed patterns, and names a task only when its title may be said aloud.
+
+The lines about a task (failed, gone quiet, lost contact, wants review) are also kept, for fifteen
+minutes, in the server's record of what she said unprompted, so she knows what "it" means when you
+answer one ([What she said unprompted](lucy-operator.md#what-she-said-unprompted)). The briefing is
+not: the browser decides whether to write it, so the server does not know it was shown.
 
 **A briefing.** The first time her panel is on screen after the page loads, she writes what is waiting
 on you, in at most about 45 words: what is stopped until you act first ("Three tasks are stopped on a

@@ -7,6 +7,7 @@ import { ASK_LIMITS, type AskRecord, type AskState, type AskView, type CreateAsk
 import type { SpeakAudioResponse } from '../../shared/contracts/speech.js';
 import { toAskView, type AskService } from '../asks/ask-service.js';
 import { countSpokenWords, type LucyInteractionLog } from '../lucy-interaction-log.js';
+import type { LucyUnpromptedLog } from '../lucy-unprompted.js';
 
 /**
  * How long one attempt at speaking a question may take, twice the speech client's usual limit. A
@@ -23,6 +24,12 @@ export interface AskSpeechDeps {
   getVoice: () => string;
   taskName: TaskNameLookup;
   lucyLog?: LucyInteractionLog;
+  /**
+   * The record of what Lucy said unprompted (issue #4143). A question whose clip a dashboard asks for
+   * is one of those: it is recorded when the request arrives, because the dashboard writes the words
+   * in her thread when no clip can be made.
+   */
+  unprompted?: Pick<LucyUnpromptedLog, 'record'>;
   /** Test seam; production calls the speech service. */
   synthesize?: typeof synthesizeSpeech;
 }
@@ -186,10 +193,19 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
     const ask = await service.get(c.req.param('id'));
     if (!ask) return c.json({ error: 'ask not found', code: 'not_found' }, 404);
     if (ask.state !== 'pending') return c.json({ error: 'ask is no longer pending', code: 'not_pending' }, 409);
+    // A dashboard asks for this clip only when it is about to say the question, and it writes the same
+    // words in her thread when no clip comes back. So she has said it from here on, whatever follows.
+    const taskName = speech ? askTaskName(speech.taskName(ask.taskId)) : undefined;
+    const text = buildAskSpeech(ask, taskName);
+    speech?.unprompted?.record({
+      key: `ask:${ask.id}`,
+      sameSaying: true,
+      text,
+      tasks: [{ id: ask.taskId, ...(taskName ? { name: taskName } : {}) }],
+      stillOpen: () => service.all().some((other) => other.id === ask.id && other.state === 'pending'),
+    });
     if (!speech?.ttsUrl) return c.json({ error: 'the speech service is not configured', code: 'tts_not_configured' }, 503);
 
-    const taskName = askTaskName(speech.taskName(ask.taskId));
-    const text = buildAskSpeech(ask, taskName);
     const voice = speech.getVoice();
     const startedAt = Date.now();
     const synthesize = speech.synthesize ?? synthesizeSpeech;

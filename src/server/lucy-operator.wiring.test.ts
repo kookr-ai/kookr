@@ -216,8 +216,9 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
     fetch(`${baseUrl}/api/lucy/action/confirm`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ conversationId: 'wiring', proposalId }) });
   const auditRows = async (type: string): Promise<Array<Record<string, unknown>>> => {
     const path = join(tempDir, 'audit.jsonl');
+    // Only whole lines count: a row still being written has no newline yet.
     const read = (): Array<Record<string, unknown>> => (existsSync(path)
-      ? readFileSync(path, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.type === type)
+      ? readFileSync(path, 'utf8').split('\n').slice(0, -1).filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.type === type)
       : []);
     // The audit log is written off the request path.
     await expect.poll(() => read().length, { timeout: 5000 }).toBeGreaterThan(0);

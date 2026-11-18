@@ -63,7 +63,11 @@ function toMs(value: TimeValue | undefined): number | undefined {
  * looks like a secret.
  */
 export function permissionToolName(explanation: string | undefined): string | undefined {
-  const raw = explanation ? HOOK_PERMISSION_EXPLANATION.exec(explanation)?.[1] : undefined;
+  return cleanToolName(explanation ? HOOK_PERMISSION_EXPLANATION.exec(explanation)?.[1] : undefined);
+}
+
+/** A tool name that may be quoted: it looks like one and does not look like a secret. Otherwise undefined. */
+export function cleanToolName(raw: string | undefined): string | undefined {
   if (!raw || !TOOL_NAME.test(raw)) return undefined;
   return redactSpeechSecrets(raw) === raw ? raw : undefined;
 }

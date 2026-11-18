@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { appendAuditRow } from '../../core/audit-log.js';
 import { nowISO } from '../../core/interaction-log.js';
 import type { LucyModelPort } from '../../core/lucy-operator/model-port.js';
+import { getProjectId } from '../../core/project-identity.js';
 import type { ProjectSummary } from '../../core/project-summary.js';
 import type { LaunchableProject } from '../../core/lucy-operator/launch-proposal.js';
 import { DEFAULT_LUCY_AUTONOMY, LUCY_OPERATOR_ACTOR_ID } from '../../shared/contracts/lucy-launch.js';
@@ -53,28 +54,73 @@ export function lucyLaunchRoomCheck(deps: RouteDeps): () => string | null {
   };
 }
 
+/** When a task was last started in the project, from the tasks Kookr holds for it; undefined when it holds none. */
+function lastUsedAt(summary: ProjectSummary): number | undefined {
+  const starts = (summary.recentTasks ?? [])
+    .map((task) => (task.startedAt ? Date.parse(task.startedAt) : NaN))
+    .filter((ms) => Number.isFinite(ms));
+  return starts.length > 0 ? Math.max(...starts) : undefined;
+}
+
 /**
- * The launch rule, in one place: she may launch in a project the dashboard shows that has a folder on
- * this machine and is tracked (or is a local one), and a folder is offered once, under the first name
- * that has it. `list_projects` uses the same function, so what she is told matches what she may do.
+ * The launch rule, in one place: she may launch in every project the dashboard shows that has a
+ * folder on this machine, which is what the dashboard's Launch dialog offers as a working folder
+ * (`trackedProjectPaths` in `LaunchTaskDialog.tsx`: every project with a `localPath`, whether or not
+ * it is tracked). Before issue #4144 only tracked projects passed, which left out Kookr's own
+ * repository on an install where most tasks run there. A folder is offered once, under the first
+ * name that has it. `list_projects` uses the same function, so what she is told matches what she may do.
+ *
+ * `ownProjectId` is the id of the repository this server runs from. The project with that id is
+ * marked as Kookr itself. Ids are compared, never names or folders: production runs from a
+ * `kookr-prod` worktree whose recorded folder is the parent clone.
  */
-export function selectLaunchableProjects(summaries: readonly ProjectSummary[]): Array<{ summary: ProjectSummary; project: LaunchableProject }> {
-  const seen = new Set<string>();
-  const selected: Array<{ summary: ProjectSummary; project: LaunchableProject }> = [];
+export function selectLaunchableProjects(summaries: readonly ProjectSummary[], ownProjectId?: string): Array<{ summary: ProjectSummary; project: LaunchableProject }> {
+  const byFolder = new Map<string, { summary: ProjectSummary; project: LaunchableProject }>();
   for (const summary of summaries) {
     const cwd = summary.localPath?.trim();
-    if (!cwd || !(summary.tracked === true || summary.project.startsWith('local/'))) continue;
     const name = summary.displayName.trim();
-    if (!name || seen.has(cwd)) continue;
-    seen.add(cwd);
-    selected.push({ summary, project: { name, cwd } });
+    if (!cwd || !name) continue;
+    const own = ownProjectId !== undefined && summary.project === ownProjectId;
+    const used = lastUsedAt(summary);
+    const existing = byFolder.get(cwd);
+    if (existing) {
+      // The folder is already offered under another name: it keeps that name, and what is known of it is merged.
+      if (own) existing.project.own = true;
+      if (used !== undefined && (existing.project.lastUsedAt === undefined || used > existing.project.lastUsedAt)) existing.project.lastUsedAt = used;
+      continue;
+    }
+    byFolder.set(cwd, { summary, project: { name, cwd, ...(own ? { own: true as const } : {}), ...(used !== undefined ? { lastUsedAt: used } : {}) } });
   }
-  return selected;
+  return [...byFolder.values()];
+}
+
+/** Server folder -> the id of the repository it belongs to, once it is known for certain. */
+const ownProjectIds = new Map<string, string>();
+
+/**
+ * The id of the repository this server runs from (`github.com/kookr-ai/kookr`), read from its git
+ * remote. Undefined when it cannot be known for certain: `getProjectId` falls back to
+ * `local/<folder name>` when there is no remote or git fails, and a folder name proves nothing.
+ * Only a certain answer is remembered, so a failure is tried again on the next launch request.
+ */
+export async function kookrOwnProjectId(serverCwd: string | undefined, resolve: (cwd: string) => Promise<string> = getProjectId): Promise<string | undefined> {
+  if (!serverCwd) return undefined;
+  const known = ownProjectIds.get(serverCwd);
+  if (known) return known;
+  try {
+    const id = await resolve(serverCwd);
+    if (!id || id.startsWith('local/')) return undefined;
+    ownProjectIds.set(serverCwd, id);
+    return id;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The projects she may launch in: those the dashboard shows that have a folder on this machine. */
-export async function lucyLaunchableProjects(deps: RouteDeps): Promise<LaunchableProject[]> {
-  return selectLaunchableProjects(await listProjectSummaries(deps)).map((entry) => entry.project);
+export async function lucyLaunchableProjects(deps: RouteDeps, resolveOwn: (cwd: string) => Promise<string> = getProjectId): Promise<LaunchableProject[]> {
+  const [summaries, ownProjectId] = await Promise.all([listProjectSummaries(deps), kookrOwnProjectId(deps.serverCwd, resolveOwn)]);
+  return selectLaunchableProjects(summaries, ownProjectId).map((entry) => entry.project);
 }
 
 /**
@@ -123,6 +169,12 @@ export function buildLucyLaunchController(
     }),
     // Owners only: a read-only viewer must not see the operator's words or the task description.
     emit: (message: LucyLaunchBroadcast) => deps.emitToOwners?.(message),
+    // Her report on a task she launched is something she says unprompted: her next turn is shown it.
+    onReport: (report) => deps.lucyUnprompted?.record({
+      key: `launch:${report.taskId}`,
+      text: report.text,
+      tasks: [{ id: report.taskId, ...(report.taskName ? { name: report.taskName } : {}) }],
+    }),
     log,
   });
 }

@@ -43,6 +43,8 @@ interface H {
   asks: Map<string, string>;
   histories: Array<readonly ChatTurn[]>;
   noted: Array<[string, string]>;
+  /** Questions the session reported as heard (`heardUnprompted`), in order. */
+  heard: string[];
   clock: { t: number };
   /** When set, synthesis waits for it: lets a test act before her first sentence is sent. */
   hold: { gate: Promise<void> | null; after: number; perCall?: Array<Promise<void> | undefined> };
@@ -58,7 +60,7 @@ interface H {
 
 function harness(opts: { vad?: boolean; voiceAnswers?: boolean; noAskSpeech?: boolean } = {}): H {
   const h = {
-    sent: [], ears: [], vads: [], asks: new Map([['a1', QUESTION]]), histories: [], noted: [], clock: { t: 10_000 },
+    sent: [], ears: [], vads: [], asks: new Map([['a1', QUESTION]]), histories: [], noted: [], heard: [], clock: { t: 10_000 },
     hold: { gate: null, after: 0 }, synthSignals: [], match: { next: { kind: 'none' } }, overlaps: [], launchUntil: undefined, launchChecks: 0,
   } as unknown as H;
   const ports: LucyLivePorts = {
@@ -82,6 +84,7 @@ function harness(opts: { vad?: boolean; voiceAnswers?: boolean; noAskSpeech?: bo
     buildBriefing: () => 'BRIEFING',
     ...(opts.noAskSpeech ? {} : { askSpeech: (askId: string) => h.asks.get(askId) }),
     noteUnprompted: (note, said) => h.noted.push([note, said]),
+    heardUnprompted: (askId) => h.heard.push(askId),
     launchPendingUntil: () => { h.launchChecks += 1; return h.launchUntil; },
     ...(opts.voiceAnswers ? {
       pendingAsks: () => [CHOICE],
@@ -332,6 +335,21 @@ describe('LucyLiveSession: a task question read out unprompted (#3711)', () => {
     expect(h.noted).toEqual([[UNPROMPTED_ASK_NOTE, QUESTION]]);
   });
 
+  it('reports a question as heard at the first sentence the browser played, once, before any later turn (issue #4143)', async () => {
+    const h = harness();
+    h.session.handleMessage({ type: 'say_ask', askId: 'a1' });
+    await flush();
+    const turnId = turnStarts(h)[0].turnId;
+    expect(h.heard).toEqual([]);
+    h.session.handleMessage({ type: 'played', turnId, seq: 0, complete: true });
+    // Known at once: a typed turn in another conversation may come before this one's next answer.
+    expect(h.heard).toEqual(['a1']);
+    expect(h.noted).toEqual([]);
+    h.session.handleMessage({ type: 'played', turnId, seq: 0, complete: true });
+    h.session.handleMessage({ type: 'played', turnId, seq: 1, complete: true });
+    expect(h.heard).toEqual(['a1']);
+  });
+
   it('a question the browser never reported playing is left out of the history', async () => {
     const h = harness();
     h.session.handleMessage({ type: 'say_ask', askId: 'a1' });
@@ -340,6 +358,7 @@ describe('LucyLiveSession: a task question read out unprompted (#3711)', () => {
     await operatorSays(h, 'Anything new?', 'op1');
     expect(h.histories[0]).toEqual([]);
     expect(h.noted).toEqual([]); // nor is the operator conversation told of it (#4015)
+    expect(h.heard).toEqual([]); // nor the server's record of what she said
   });
 
   it('a read-back waiting for its yes keeps the floor until its window closes', async () => {

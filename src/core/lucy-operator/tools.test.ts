@@ -49,6 +49,17 @@ describe('dispatchLucyTool', () => {
     expect(outcome.content).toContain('[aaaa] "Bake-off report"');
   });
 
+  test('read_task says what a permission prompt wants to run and whether its card\'s buttons still work, like the board (issue #4143)', async () => {
+    const blocked = boardTask({
+      id: 'cccc3333', name: 'Staging fixture refresh', attention: 'it is blocked on a permission',
+      permission: { tool: 'Bash', command: 'psql staging -f fixtures/a.sql', card: { approve: true, deny: true, buttonsUntil: NOW + 2 * 60_000 } },
+    });
+    const live = await dispatchLucyTool('read_task', '{"task":"cccc"}', fakeSource({ tasks: [blocked] }), NOW);
+    expect(live.content).toContain('Waiting on the operator: it is blocked on a permission; the prompt asks to use Bash; its card is on your panel and Approve once and Deny work for about 2 more minutes; it wants to run: psql staging -f fixtures/a.sql');
+    const late = await dispatchLucyTool('read_task', '{"task":"cccc"}', fakeSource({ tasks: [blocked] }), NOW + 2 * 60_000 + 1);
+    expect(late.content).toContain('its card is on your panel but the buttons have timed out: it is answered in the task\'s terminal');
+  });
+
   test('read_task separates Kookr\'s facts from what agents wrote, and hides secrets', async () => {
     const source = fakeSource({
       tasks,
@@ -180,7 +191,7 @@ describe('list_projects with launching on', () => {
     const outcome = await dispatchLucyTool('list_projects', '{}', fakeSource({ projects: many }), NOW);
     const lines = outcome.content.split('\n');
     expect(lines[1]).toBe(`- p${MAX_PROJECT_LINES + 4}: 0 active, 0 waiting on the operator, can launch here`);
-    expect(lines[2]).toBe('- p0: 0 active, 0 waiting on the operator, cannot launch here (not tracked)');
+    expect(lines[2]).toBe('- p0: 0 active, 0 waiting on the operator, cannot launch here (no folder of its own on this machine)');
     expect(lines.at(-1)).toBe('- and 5 more not listed');
   });
 

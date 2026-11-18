@@ -39,6 +39,31 @@ export interface LucyBoardTask {
   costUsd?: number;
   /** Why the task is waiting on the operator, as a short phrase Kookr produced; absent when it is not. */
   attention?: string;
+  /** Set for a task blocked on a permission prompt: what the prompt asks for, and its card on her panel. */
+  permission?: LucyBoardPermission;
+}
+
+/**
+ * A permission prompt as she is told about it. The tool name and the command come from the agent's
+ * own request, so they are cleaned and cut like every other task text before they reach the board.
+ */
+export interface LucyBoardPermission {
+  /** The tool the prompt asks to use (`Bash`), when Kookr knows a clean name for it. */
+  tool?: string;
+  /** The command, file path or URL the prompt shows, secrets already hidden by the server. */
+  command?: string;
+  /** The card for this prompt on her panel (issue #3932); absent when there is none. */
+  card?: {
+    /** The card can show "Approve once" (the menu key was read from the task's terminal). */
+    approve: boolean;
+    /** The card can show "Deny". */
+    deny: boolean;
+    /**
+     * Until when the card's buttons answer the prompt, in epoch milliseconds: the same limit the
+     * server applies to a press. Absent when no button could be bound to this prompt.
+     */
+    buttonsUntil?: number;
+  };
 }
 
 /** A pull request seen in a task's own work (never one merely cited in its request), with its state on GitHub. */
@@ -86,6 +111,8 @@ const MAX_BOARD_LINE_PULL_REQUESTS = 3;
 const MAX_ASK_QUESTION_CHARS = 140;
 const MAX_ASK_OPTION_CHARS = 30;
 const MAX_ASK_ANSWER_CHARS = 60;
+/** Longest command of a permission prompt quoted on the board, in characters. The card shows all of it. */
+export const MAX_PERMISSION_COMMAND_CHARS = 160;
 const MIN_HANDLE_CHARS = 4;
 
 const STATUS_WORDS: Record<TaskStatus, string> = {
@@ -214,6 +241,50 @@ export function spokenLabel(task: Pick<LucyBoardTask, 'name' | 'project'>): stri
   return project ? `an unnamed task in ${project}` : 'an unnamed task';
 }
 
+/** The command of a permission prompt as a phrase: an agent's text, cleaned, secrets hidden and cut. */
+export function permissionCommandWords(permission: LucyBoardPermission | undefined): string | undefined {
+  const command = boardText(permission?.command, MAX_PERMISSION_COMMAND_CHARS);
+  return command ? `it wants to run: ${command}` : undefined;
+}
+
+/**
+ * What she is told about a permission prompt, as short phrases, without the command: the tool, and
+ * whether its card is on her panel with buttons that still answer it. The buttons count as working
+ * only while the server would still accept a press, so she never points the operator at a button that
+ * is not there or no longer does anything.
+ */
+export function permissionStateWords(permission: LucyBoardPermission | undefined, nowMs: number): string[] {
+  if (!permission) return [];
+  const words: string[] = [];
+  const tool = boardText(permission.tool, 40);
+  if (tool) words.push(`the prompt asks to use ${tool}`);
+  const card = permission.card;
+  if (!card) {
+    words.push('no card for it on your panel');
+    return words;
+  }
+  const buttons = [...(card.approve ? ['Approve once'] : []), ...(card.deny ? ['Deny'] : [])];
+  if (buttons.length === 0 || card.buttonsUntil === undefined) {
+    words.push('its card is on your panel without answer buttons: it is answered in the task\'s terminal');
+  } else if (nowMs > card.buttonsUntil) {
+    words.push('its card is on your panel but the buttons have timed out: it is answered in the task\'s terminal');
+  } else {
+    const minutes = Math.floor((card.buttonsUntil - nowMs) / 60_000);
+    const left = minutes >= 1 ? `about ${minutes} more ${minutes === 1 ? 'minute' : 'minutes'}` : 'less than a minute more';
+    words.push(`its card is on your panel and ${buttons.join(' and ')} ${buttons.length === 1 ? 'works' : 'work'} for ${left}`);
+  }
+  return words;
+}
+
+/**
+ * The state phrases and then the command, for a place where they are the last thing said (`read_task`
+ * puts them on a line of their own). The board line puts the command after everything else instead.
+ */
+export function permissionWords(permission: LucyBoardPermission | undefined, nowMs: number): string[] {
+  const command = permissionCommandWords(permission);
+  return [...permissionStateWords(permission, nowMs), ...(command ? [command] : [])];
+}
+
 function taskLine(task: LucyBoardTask, handle: string, nowMs: number, when: 'updated' | 'ended', pullRequests?: readonly LucyTaskPullRequest[]): string {
   const parts: string[] = [`[${handle}] ${spokenLabel(task)}`];
   const project = boardText(task.project, 40);
@@ -225,10 +296,13 @@ function taskLine(task: LucyBoardTask, handle: string, nowMs: number, when: 'upd
   } else {
     parts.push(STATUS_WORDS[task.status], `last change ${agoWords(toMs(task.updatedAt), nowMs)}`);
   }
-  if (task.attention) parts.push(`waiting on the operator: ${boardText(task.attention, 60)}`);
+  if (task.attention) parts.push(`waiting on the operator: ${boardText(task.attention, 60)}`, ...permissionStateWords(task.permission, nowMs));
   if (typeof task.costUsd === 'number' && task.costUsd > 0) parts.push(`spent ${dollars(task.costUsd)}`);
   const delivery = pullRequestWords(pullRequests, MAX_BOARD_LINE_PULL_REQUESTS);
   if (delivery) parts.push(delivery);
+  // Last on the line: the command is an agent's text, so nothing after it can be taken for Kookr's own words.
+  const command = task.attention ? permissionCommandWords(task.permission) : undefined;
+  if (command) parts.push(command);
   return `- ${parts.join(' · ')}`;
 }
 
