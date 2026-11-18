@@ -18,7 +18,8 @@
 //   kookr schedule list --archived [--json]                  (issue #2981)
 //
 // Endpoints wrapped:
-//   list                    GET   /api/schedules
+//   list                    GET   /api/schedules (+ GET /api/schedules/rollups for the
+//                           low-yield flag, best-effort — issue #4187)
 //   list --archived         GET   /api/schedules/archived    (#2981)
 //   run <id>                POST  /api/schedules/:id/run
 //   enable <id>             PATCH /api/schedules/:id   {"enabled": true}
@@ -271,7 +272,18 @@ function formatInactiveReason(schedule) {
   return '';
 }
 
-function formatScheduleLine(schedule) {
+// Low-yield flag (issue #4187). The server derives `lowYield` from the
+// schedule's ROI rollup (>= 20 measured fires with no merged PR and no
+// artifact); the CLI only renders it. Recommend-only — nothing here changes
+// cadence; the operator decides whether to slow or disable the schedule.
+function formatLowYield(rollup) {
+  if (!rollup || rollup.lowYield !== true) return '';
+  const n = (v) => (Number.isFinite(v) ? v : 0);
+  const hint = typeof rollup.lowYieldHint === 'string' && rollup.lowYieldHint ? rollup.lowYieldHint : 'consider slowing or disabling';
+  return `  low-yield(fires=${n(rollup.measuredFires)} merged=${n(rollup.merged)} artifacts=${n(rollup.artifacts)}; ${hint})`;
+}
+
+function formatScheduleLine(schedule, rollup) {
   const id = schedule?.id ?? '?';
   // Archived (issue #2981) is a retired-but-retained state distinct from a live
   // enabled/disabled toggle — label it explicitly so it reads unambiguously.
@@ -284,7 +296,7 @@ function formatScheduleLine(schedule) {
     const remaining = typeof schedule.remainingTriggers === 'number' ? schedule.remainingTriggers : schedule.maxTriggers;
     triggers = `  triggers=${remaining}/${schedule.maxTriggers}`;
   }
-  return `${id}  ${state}  ${name}  cron="${cron}"  next=${next}${triggers}${formatInactiveReason(schedule)}`;
+  return `${id}  ${state}  ${name}  cron="${cron}"  next=${next}${triggers}${formatInactiveReason(schedule)}${formatLowYield(rollup)}`;
 }
 
 // Cascade-origin held schedules (issue #2531): disabled AND parked by the
@@ -367,6 +379,23 @@ function serverError({ args, out, err, exit, status, json, text }) {
 
 // ---------- verb handlers ----------
 
+// Best-effort read of the ROI rollups for the low-yield flag (issue #4187).
+// Any failure — old server without the route, non-200, timeout, bad body —
+// yields no flags and leaves the list output and exit code unchanged.
+async function fetchRollupsById(baseUrl) {
+  const byId = new Map();
+  try {
+    const { status, json } = await requestJson({ baseUrl, method: 'GET', path: `${API_PATH}/rollups` });
+    if (status !== 200 || !Array.isArray(json?.rollups)) return byId;
+    for (const rollup of json.rollups) {
+      if (rollup && typeof rollup.scheduleId === 'string') byId.set(rollup.scheduleId, rollup);
+    }
+  } catch {
+    // best-effort: no flags
+  }
+  return byId;
+}
+
 async function handleList({ args, env, out, err, exit }) {
   // `list --archived` reads the archived collection (issue #2981); plain `list`
   // reads the active fleet (archived schedules are excluded there by design).
@@ -380,6 +409,8 @@ async function handleList({ args, env, out, err, exit }) {
 
   const schedules = Array.isArray(json?.schedules) ? json.schedules : [];
   const statusSnapshot = json?.status ?? {};
+  // Archived schedules no longer fire, so only the live list carries yield flags.
+  const rollups = args.archived ? new Map() : await fetchRollupsById(outcome.baseUrl);
   if (args.json) {
     return exitJson({
       out,
@@ -388,7 +419,14 @@ async function handleList({ args, env, out, err, exit }) {
       ok: true,
       code: 'OK',
       message: `${schedules.length} schedule(s).`,
-      details: { schedules, status: statusSnapshot },
+      details: {
+        schedules,
+        status: statusSnapshot,
+        // Additive (issue #4187): flagged schedules only, so details.schedules is untouched.
+        lowYield: [...rollups.values()]
+          .filter((r) => r.lowYield === true)
+          .map((r) => ({ scheduleId: r.scheduleId, fires: r.measuredFires, merged: r.merged, artifacts: r.artifacts })),
+      },
     });
   }
   // GET /api/schedules returns 200 with an empty list even when the schedule
@@ -402,7 +440,7 @@ async function handleList({ args, env, out, err, exit }) {
     out.log('No schedules.');
     return exit(EXIT_OK);
   }
-  for (const schedule of schedules) out.log(formatScheduleLine(schedule));
+  for (const schedule of schedules) out.log(formatScheduleLine(schedule, rollups.get(schedule?.id)));
   return exit(EXIT_OK);
 }
 

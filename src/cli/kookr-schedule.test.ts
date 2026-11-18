@@ -352,6 +352,73 @@ describe('kookr schedule list', () => {
   });
 });
 
+describe('kookr schedule list — low-yield flag (issue #4187)', () => {
+  function routedFetch(rollupsResponse: () => Response) {
+    return vi.fn(async (url: string) => {
+      if (url.endsWith('/api/schedules/rollups')) return rollupsResponse();
+      return jsonResponse({ revision: 1, schedules: [SCHEDULE_A, SCHEDULE_B], status: {} }, 200);
+    });
+  }
+  const FLAGGED = {
+    scheduleId: 'sched-a', fires: 31, measuredFires: 20, merged: 0, artifacts: 0,
+    lowYield: true, lowYieldHint: 'consider slowing or disabling',
+  };
+  const HEALTHY = { scheduleId: 'sched-b', fires: 40, measuredFires: 25, merged: 1, artifacts: 0, lowYield: false };
+
+  it('appends the flag with fires/merged/artifacts and the hint to a flagged schedule only', async () => {
+    const fetchMock = routedFetch(() => jsonResponse({ rollups: [FLAGGED, HEALTHY] }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['list'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    expect(io.logs).toEqual([
+      'sched-a  enabled   Nightly drain  cron="0 3 * * *"  next=2026-07-29T03:00:00.000Z  triggers=4/10  low-yield(fires=20 merged=0 artifacts=0; consider slowing or disabling)',
+      'sched-b  disabled  Hourly smoke  cron="0 * * * *"  next=-',
+    ]);
+    // Read-only: list never writes anything back (recommend-only).
+    for (const [, init] of fetchMock.mock.calls as unknown as [string, RequestInit][]) expect(init.method).toBe('GET');
+  });
+
+  it('lists unflagged when the rollups route fails (best-effort)', async () => {
+    vi.stubGlobal('fetch', routedFetch(() => jsonResponse({ error: 'nope' }, 500)));
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['list'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    expect(io.logs).toHaveLength(2);
+    expect(io.logs.join('\n')).not.toContain('low-yield');
+  });
+
+  it('lists unflagged when the rollups request throws', async () => {
+    vi.stubGlobal('fetch', routedFetch(() => { throw new Error('socket hang up'); }));
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['list'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    expect(io.logs.join('\n')).not.toContain('low-yield');
+  });
+
+  it('adds flagged schedules under details.lowYield with --json, leaving details.schedules unchanged', async () => {
+    vi.stubGlobal('fetch', routedFetch(() => jsonResponse({ rollups: [FLAGGED, HEALTHY] }, 200)));
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['list', '--json'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    const payload = JSON.parse(io.logs[0]);
+    expect(payload.details.schedules).toEqual([SCHEDULE_A, SCHEDULE_B]);
+    expect(payload.details.lowYield).toEqual([{ scheduleId: 'sched-a', fires: 20, merged: 0, artifacts: 0 }]);
+  });
+
+  it('does not fetch rollups for list --archived', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ schedules: [], status: {} }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['list', '--archived'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(fetchMock.mock.calls.map((c) => String((c as unknown[])[0]))).toEqual(['http://127.0.0.1:4800/api/schedules/archived']);
+  });
+});
+
 describe('kookr schedule run', () => {
   it('POSTs to the run route and reports the task id', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ ok: true, taskId: 'task-123' }, 200));

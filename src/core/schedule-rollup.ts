@@ -145,6 +145,48 @@ export function computeScheduleRollup(
 }
 
 /**
+ * Low-yield threshold (issue #4187): a schedule needs at least this many
+ * MEASURED fires (fires carrying a joined `tokenUsage`, i.e. fires that actually
+ * ran an agent) in the rollup window before a zero-output record means anything.
+ * Skipped / coalesced / failed-dispatch fires spend nothing and are not counted,
+ * so a schedule that never really ran is never flagged.
+ */
+export const LOW_YIELD_MIN_MEASURED_FIRES = 20;
+
+/** Operator hint shown next to a low-yield flag. Recommend-only: nothing acts on it. */
+export const LOW_YIELD_HINT = 'consider slowing or disabling';
+
+/** Read-time yield verdict for one schedule rollup (issue #4187). */
+export interface ScheduleYieldAssessment {
+  scheduleId: string;
+  /** True when measured fires >= {@link LOW_YIELD_MIN_MEASURED_FIRES} and merged + artifacts == 0. */
+  lowYield: boolean;
+  /** Measured fires in the window (the threshold's denominator). */
+  fires: number;
+  merged: number;
+  artifacts: number;
+}
+
+/**
+ * Flag dead automation from a rollup (issue #4187). Pure and derived at read
+ * time — never persisted, so it adds nothing to the rollup's on-disk shape or
+ * its reconcile-on-load equality. Recommend-only: the scheduler never reads
+ * this; the operator decides whether to slow or disable the schedule.
+ */
+export function assessScheduleYield(
+  rollup: Pick<ScheduleRollup, 'scheduleId' | 'measuredFires' | 'merged' | 'artifacts'>,
+): ScheduleYieldAssessment {
+  const fires = rollup.measuredFires;
+  return {
+    scheduleId: rollup.scheduleId,
+    lowYield: fires >= LOW_YIELD_MIN_MEASURED_FIRES && rollup.merged + rollup.artifacts === 0,
+    fires,
+    merged: rollup.merged,
+    artifacts: rollup.artifacts,
+  };
+}
+
+/**
  * Value-equality of two rollups, ignoring `updatedAt` (a fresh recompute always
  * carries a newer timestamp; that alone must not read as "stale"). Used to
  * decide whether a persisted rollup can be trusted or must be reconciled.
