@@ -28,6 +28,22 @@ PR_LIST_TIMEOUT="${STALE_SCOUT_PR_LIST_TIMEOUT:-3}"
 
 mkdir -p "$KOOKR_DIR" 2>/dev/null || true
 
+# Portable timeout (issue #4178). macOS has no GNU `timeout`; Homebrew's
+# coreutils installs it as `gtimeout`. Calling a bare `timeout` there exits
+# 127, which the auth check below read as "gh auth failed" and failed open, so
+# the gate never ran on a Mac. Use `timeout`, else `gtimeout`, else run the
+# command with no time limit: a slow gh call is better than no gate at all.
+TIMEOUT_BIN=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+run_with_timeout() {
+  local secs="$1"
+  shift
+  if [ -n "$TIMEOUT_BIN" ]; then
+    "$TIMEOUT_BIN" "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
 fail_open() {
   local msg="${1:-unknown error}"
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) stale-scout-gate: $msg" \
@@ -312,7 +328,7 @@ if [ -n "${GH_HOST:-}" ] && [ "$GH_HOST" != "github.com" ]; then
   log_warning "GH_HOST=$GH_HOST is non-github.com — fail-open"
   exit 0
 fi
-if ! timeout "$AUTH_TIMEOUT" "$GH_BIN" auth status -h github.com >/dev/null 2>&1; then
+if ! run_with_timeout "$AUTH_TIMEOUT" "$GH_BIN" auth status -h github.com >/dev/null 2>&1; then
   log_warning "gh auth status failed — fail-open"
   exit 0
 fi
@@ -323,9 +339,9 @@ if [ -n "$EFFECTIVE_CWD" ] && [ -d "$EFFECTIVE_CWD" ]; then
   BRANCH=$(git -C "$EFFECTIVE_CWD" symbolic-ref -q --short HEAD 2>/dev/null) || BRANCH=""
 fi
 if [ -n "$BRANCH" ]; then
-  LOGIN=$(timeout "$AUTH_TIMEOUT" "$GH_BIN" api user --jq .login 2>/dev/null) || LOGIN=""
+  LOGIN=$(run_with_timeout "$AUTH_TIMEOUT" "$GH_BIN" api user --jq .login 2>/dev/null) || LOGIN=""
   HEAD_QUAL="${LOGIN:+${LOGIN}:}${BRANCH}"
-  EXISTING=$(timeout "$PR_LIST_TIMEOUT" "$GH_BIN" pr list \
+  EXISTING=$(run_with_timeout "$PR_LIST_TIMEOUT" "$GH_BIN" pr list \
     --repo "${TARGET_OWNER}/${TARGET_REPO}" \
     --head "$HEAD_QUAL" \
     --state open \
@@ -355,7 +371,7 @@ CLOSED_STATE_REASON=""
 ALL_OPEN=1
 while IFS=$'\t' read -r o r n; do
   [ -z "$n" ] && continue
-  RESP=$(timeout "$REST_TIMEOUT" "$GH_BIN" api "repos/${o}/${r}/issues/${n}" 2>/dev/null) || {
+  RESP=$(run_with_timeout "$REST_TIMEOUT" "$GH_BIN" api "repos/${o}/${r}/issues/${n}" 2>/dev/null) || {
     log_warning "REST query failed for ${o}/${r}#${n}"
     continue
   }
@@ -383,7 +399,7 @@ fi
 
 # --- 12. Closed: query closing PR via GraphQL, client-side sort mergedAt DESC ---
 GRAPHQL_QUERY="query { repository(owner: \"${CLOSED_OWNER}\", name: \"${CLOSED_REPO}\") { issue(number: ${CLOSED_ISSUE}) { closedByPullRequestsReferences(first: 100, includeClosedPrs: true) { nodes { number state title mergedAt url } } } } }"
-GRAPHQL_RESP=$(timeout "$REST_TIMEOUT" "$GH_BIN" api graphql -f query="$GRAPHQL_QUERY" 2>/dev/null) || GRAPHQL_RESP=""
+GRAPHQL_RESP=$(run_with_timeout "$REST_TIMEOUT" "$GH_BIN" api graphql -f query="$GRAPHQL_QUERY" 2>/dev/null) || GRAPHQL_RESP=""
 
 CLOSING_PR=""
 CLOSING_PR_URL=""

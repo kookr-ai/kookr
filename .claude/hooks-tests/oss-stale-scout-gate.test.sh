@@ -24,7 +24,8 @@ FAILED_CASES=()
 # cleanup, changes another run's results.
 STALE_SCOUT_STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/stale-scout-state.XXXXXX")
 export STALE_SCOUT_STATE_DIR
-trap 'rm -rf "$STALE_SCOUT_STATE_DIR"' EXIT
+NO_TIMEOUT_BIN=""
+trap 'rm -rf "$STALE_SCOUT_STATE_DIR" ${NO_TIMEOUT_BIN:+"$NO_TIMEOUT_BIN"}' EXIT
 
 run_case() {
   local name="$1"
@@ -51,7 +52,7 @@ run_case() {
   [ -n "$setup" ] && eval "$setup"
 
   local out
-  out=$(printf '%s' "$payload" | bash "$HOOK" 2>&1) || true
+  out=$(printf '%s' "$payload" | PATH="${CASE_PATH:-$PATH}" bash "$HOOK" 2>&1) || true
 
   local got="allow"
   if grep -q '"permissionDecision": "deny"' <<<"$out"; then
@@ -406,6 +407,94 @@ run_worktree_body_file_case \
   missing \
   missing \
   "body-file cwd resolution failed"
+
+# 23-27. No GNU `timeout` on PATH (macOS without coreutils, issue #4178).
+# Before the fix the hook called a bare `timeout`, which exited 127; the auth
+# check read that as "gh auth failed" and failed open, so nothing was blocked.
+# Build a PATH equal to the real one, except that every directory holding a
+# `timeout` or `gtimeout` is replaced by a symlink mirror of it without them.
+# Only those few directories are mirrored, so this stays fast on long PATHs.
+NO_TIMEOUT_BIN=$(mktemp -d "${TMPDIR:-/tmp}/stale-scout-no-timeout.XXXXXX")
+NO_TIMEOUT_PATH=""
+_i=0
+IFS=: read -r -a _path_dirs <<<"$PATH"
+for _d in "${_path_dirs[@]}"; do
+  [ -d "$_d" ] || continue
+  if [ -e "$_d/timeout" ] || [ -e "$_d/gtimeout" ]; then
+    _i=$((_i + 1))
+    mkdir "$NO_TIMEOUT_BIN/$_i"
+    ln -s "$_d"/* "$NO_TIMEOUT_BIN/$_i/" 2>/dev/null || true
+    rm -f "$NO_TIMEOUT_BIN/$_i/timeout" "$NO_TIMEOUT_BIN/$_i/gtimeout"
+    _d="$NO_TIMEOUT_BIN/$_i"
+  fi
+  NO_TIMEOUT_PATH="${NO_TIMEOUT_PATH:+$NO_TIMEOUT_PATH:}$_d"
+done
+REAL_TIMEOUT=$(command -v timeout || true)
+if PATH="$NO_TIMEOUT_PATH" command -v timeout >/dev/null 2>&1 \
+  || PATH="$NO_TIMEOUT_PATH" command -v gtimeout >/dev/null 2>&1; then
+  printf 'setup error: could not hide timeout/gtimeout from PATH\n' >&2
+  exit 1
+fi
+
+CASE_PATH="$SHIM_DIR:$NO_TIMEOUT_BIN:$NO_TIMEOUT_PATH"
+run_case "23: no timeout/gtimeout, closed by other PR → still block" closed-by-other \
+  "$(mk_payload testowner/testrepo 'Fixes #1')" \
+  deny '#9001'
+run_case "24: no timeout/gtimeout, closed manually → still block" closed-manually \
+  "$(mk_payload testowner/testrepo 'Closes #1')" \
+  deny 'Closing PR could not be identified'
+run_case "25: no timeout/gtimeout, closed not_planned → still block" closed-not-planned \
+  "$(mk_payload testowner/testrepo 'Resolves #1')" \
+  deny 'not_planned'
+run_case "25b: no timeout/gtimeout, multi-issue second closed → still block" second-closed \
+  "$(mk_payload testowner/testrepo $'Fixes #1\nCloses #2')" \
+  deny '#555'
+run_case "25c: no timeout/gtimeout, multi-issue first closed → still block" first-closed \
+  "$(mk_payload testowner/testrepo $'Fixes #1\nCloses #2')" \
+  deny '#777'
+run_case "25d: no timeout/gtimeout, cross-repo ref → still block" cross-repo \
+  "$(mk_payload testowner/testrepo 'Fixes otherowner/otherrepo#42')" \
+  deny 'otherowner/otherrepo#42'
+run_case "25e: no timeout/gtimeout, URL ref → still block" cross-repo \
+  "$(mk_payload testowner/testrepo 'Related to https://github.com/otherowner/otherrepo/issues/42')" \
+  deny '#999'
+run_case "25f: no timeout/gtimeout, keyword 'fix: #1' → still block" closed-by-other \
+  "$(mk_payload testowner/testrepo 'fix: #1')" \
+  deny
+run_case "25g: no timeout/gtimeout, graphql fail → still block" closed-graphql-fails \
+  "$(mk_payload testowner/testrepo 'Fixes #1')" \
+  deny 'Closing PR could not be identified'
+run_case "25h: no timeout/gtimeout, graphql out-of-order → still block" out-of-order \
+  "$(mk_payload testowner/testrepo 'Fixes #1')" \
+  deny '#2000'
+run_case "26: no timeout/gtimeout, open issue → allow" open-issue \
+  "$(mk_payload testowner/testrepo 'Fixes #1')" \
+  allow
+
+# 27. Only Homebrew's `gtimeout` present → the hook uses it and still blocks.
+# The wrapper records that it ran, then defers to the real timeout (or runs the
+# command directly where this host has none).
+GTIMEOUT_MARKER="$NO_TIMEOUT_BIN/.gtimeout-used"
+cat > "$NO_TIMEOUT_BIN/gtimeout" <<EOF
+#!/usr/bin/env bash
+: > "$GTIMEOUT_MARKER"
+if [ -n "$REAL_TIMEOUT" ]; then exec "$REAL_TIMEOUT" "\$@"; fi
+shift
+exec "\$@"
+EOF
+chmod +x "$NO_TIMEOUT_BIN/gtimeout"
+run_case "27: gtimeout only, closed by other PR → block" closed-by-other \
+  "$(mk_payload testowner/testrepo 'Fixes #1')" \
+  deny '#9001'
+if [ -f "$GTIMEOUT_MARKER" ]; then
+  PASS=$((PASS + 1))
+  printf '  [OK]   %s\n' "27b: gtimeout was used as the fallback"
+else
+  FAIL=$((FAIL + 1))
+  FAILED_CASES+=("27b: gtimeout was used as the fallback")
+  printf '  [FAIL] %s\n' "27b: gtimeout was used as the fallback"
+fi
+unset CASE_PATH
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then
