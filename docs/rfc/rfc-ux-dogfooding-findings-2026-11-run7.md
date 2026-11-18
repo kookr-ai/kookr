@@ -254,6 +254,37 @@ off there (follow-up issue). For this playbook: push in the background with no t
 its notification, and avoid running reviewers' mutation checks, implementers' test runs
 and a push at the same time.
 
+### R7-F7. "Open task" on Lucy's cards opens nothing (actions) — severity: high
+
+**Evidence.** Found by the room implementer while wiring "Open task" out of the room, and
+present on `origin/main`: pressing **Open task** on a question card or a permission card
+in Lucy's panel selects the task and then clears the selection. The card reports success
+and no task is shown. It is the button R7-F5's card falls back to when its Approve
+buttons have timed out ("Answer it in the task's terminal"), so on `main` a permission
+prompt older than five minutes has no working control on her card at all.
+
+**Root cause.** `openAskingTask` in `src/frontend/App.tsx` calls `selectAgent(agentId,
+taskId)` and then `selectProject(null)` to close the project drawer; `selectProject`
+clears the selected task. It dates from #3955. `selectRecentTask` in the same file (the
+project drawer's recent-task row) has the same order and no test; it was not confirmed in
+a browser.
+
+**Suggested fix.** Close the drawer first, then select. Done on `feat/lucy-room`
+(`fix(lucy): "Open task" in Lucy's panel leaves the task selected`), with a test at the
+App level. `selectRecentTask` is left for its own change.
+
+### R7-F8. At the page's 1000 px minimum the top bar's findings count runs into "System" (layout, not Lucy) — severity: low
+
+**Evidence.** With five to seven findings waiting, "N findings waiting" wraps onto two
+lines when the page is 1060 px wide and overlaps "System" at 1000 px
+(`/tmp/kookr-ux-shots/r7/room/column-default-1440.png`,
+`column-widest-1920.png`). The docked column is what narrows the page to that width, so
+the wider maximum of this run makes it reachable in a 1920 px window. Not re-checked on a
+build without the column.
+
+**Suggested fix.** Let the top bar's findings label shorten ("7 waiting") below a width
+threshold, as the grouped row's header was made to in run 6 (J-F14).
+
 ## Things that worked well (keep-list)
 
 ## Suggested priority order
@@ -336,10 +367,55 @@ Kookr itself was proposed in an unrelated project when that project was the only
 listed (3 of 3; fixed in this cluster), and she said that approving a permission prompt
 "is done in Settings" (2 of 3; not seen in 12 runs after the change).
 
-### Cluster B: Lucy's room and a wider column (R7-F2)
+### Cluster B: Lucy's room and a wider column (R7-F2, R7-F7)
 
-Branch `feat/lucy-room` (worktree `kookr-r7-lucy-room`). _Written when the implementer
-reports._
+Branch `feat/lucy-room` (worktree `kookr-r7-lucy-room`), four commits, 26 files, rebased
+onto `staging` after #4148 merged.
+
+**Lucy's room.** A fourth layout beside the sheet, the floating column and the docked
+column: she covers the whole window, and the dashboard stays mounted underneath. From
+1100 px wide the room has a slim header, the conversation in a centred reading column of
+at most 760 px with a larger composer under it, and a side rail (400 to 520 px) holding
+her 3D view at about 280 px tall above what waits on the operator: permission cards
+first, then every question a task waits for as an open card, then opinion requests folded
+under one line. Below 1100 px it is one column. An **Expand** button in the column's
+header enters it and **Back to dashboard** leaves it; a rebindable shortcut does the same
+(Alt+Shift+L, Cmd+Ctrl+Shift+L on macOS); `/?lucy=room` opens the dashboard with her in
+the room and is then removed from the address. The room is kept per browser tab, so the
+dashboard can stay in one window and Lucy in another on a second screen. Nothing is
+unmounted by the switch: the 3D view is not rebuilt, a half-typed message stays, and the
+briefing is not asked for again. "Open task" on a card leaves the room, so the task is
+visible beside her column.
+
+**A wider column.** The docked column may take what is left once the page has its
+1000 px, up to half the window: 560 px at 1560, 920 px at 1920, 1280 px at 2560. In a
+wide column the conversation and composer stay 760 px wide, centred.
+
+**Also in this cluster.** The "Open task" fix (R7-F7); while the room covers the
+dashboard, the dashboard's own keys (Enter, Escape, the Alt shortcuts) do nothing, so
+they cannot act on a task that is out of sight; two panel actions, `expand` and
+`collapse`, are recorded, so the next run can count how the room is used.
+
+**Seen in a browser** (throwaway server, real model, 24 screenshots in
+`/tmp/kookr-ux-shots/r7/room/` at 2560, 1920, 1440, 1000 and 420 px wide): the room with
+a permission prompt and six questions waiting, after two typed turns with list answers,
+with nothing waiting, and the column at its new widest. The implementer changed five
+things after looking at its own screenshots: a short conversation now sits at the foot,
+beside the composer; bubbles and composer share the same edges when the thread scrolls;
+the rail keeps its width when its scrollbar appears; entering is a 180 ms fade of the
+conversation, with no wipe that would show the dashboard resizing underneath; with only
+opinion requests left the rail says "Nothing is waiting on you." above them.
+
+**Tests.** `pnpm typecheck` clean; 29 files, 694 tests of the avatar, preferences,
+shortcut, telemetry, settings and design-token suites pass, 61 of them new for the room;
+four new browser tests (enter, type, rail and leave; the address and the shortcut; Open
+task; scroll position across the switch); seven mutations of the new behaviour each fail
+a test.
+
+**Not verified.** The switch animation frame by frame, a real GPU (the screenshots are
+software-rendered), the macOS shortcut on a Mac, a screen reader. The dashboard under the
+room has its keys blocked but can still be reached with Tab, as under the full-width
+sheet today. At 2560 px the reading column leaves 640 px of margin on each side.
 
 ## Session log
 
@@ -406,3 +482,14 @@ reports._
 - 2026-11-18 — **Cluster A reported and rebased.** The notices implementer finished
   (three commits, real-model before/after in its report). Rebased onto `staging` with no
   conflict; its independent review and a re-run of its tests are in progress.
+- 2026-11-18 — **Cluster A reviewed.** #4150 opened for #4143 and #4144 (fast gate: 59
+  related test files, 1,545 tests, smoke). Round 1 of its review blocked on two small
+  defects (a second sentence under one record key kept the first one's time; the line
+  that hands a permission notice to the record had no test); a patch agent is fixing them.
+  One larger follow-up filed as #4151.
+- 2026-11-18 — **Cluster B reported.** The room implementer finished (four commits, 24
+  screenshots, R7-F7 and R7-F8 found on the way). Rebased onto `staging` with no conflict;
+  its independent review and a re-run of its tests and browser specs are in progress.
+- 2026-11-18 — **The train.** `staging` holds #4148; the integration train is still busy
+  with an unrelated dependency bump (#4146) that it reverted as the cause of a red run, so
+  `main` has not moved yet.
