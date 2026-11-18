@@ -571,6 +571,7 @@ export class SupervisionService {
    */
   isSupervisorAwaitingScheduledWake(taskId: string): boolean {
     try {
+      // The kill switch or a drain may have flipped since the last tick recorded the gate.
       if (this.globallyGated()) return false;
       const nowMs = this.now().getTime();
       const cfg = this.policyConfig(true);
