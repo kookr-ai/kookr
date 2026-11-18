@@ -404,6 +404,12 @@ export interface Schedule {
    * increment it (issue #2458). Drives the fail-closed auto-pause (issue #2353).
    */
   consecutiveFailures?: number;
+  /**
+   * Cadence decay from the current failure streak (issue #4186): backoff level
+   * and the time before which the schedule will not fire. Absent when the
+   * schedule runs at its configured cadence. Mirrors `core/schedule`.
+   */
+  failureBackoff?: { level: number; notBefore: string };
   lastScheduledFor?: string;
   lastCronEvaluatedAt?: string;
   latestExecution?: ScheduleLatestExecutionStatus;

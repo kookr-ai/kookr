@@ -1175,7 +1175,7 @@ Returns the full sanitized config object for that project.
 | Endpoint | Description |
 | --- | --- |
 | `GET /api/playbooks?cwd=&targetCwd=` | Discover playbooks from `cwd`; optional `targetCwd` filters frontmatter-pinned entries against a distinct task target. The schedule catalog may include multiple resources with the same `id`; distinguish them by `id`, `scope`, `sourceCwd`, and `sourceDigest`. |
-| `GET /api/schedules` | List scheduled tasks |
+| `GET /api/schedules` | List scheduled tasks. A schedule slowed down by consecutive failures carries `failureBackoff: { level, notBefore }` (issue #4186), and its `nextRunAt` is the first cron time at or after `notBefore`. |
 | `POST /api/schedules` | Create a scheduled task |
 | `POST /api/schedules/preview` | Preview next-run timestamps for a candidate schedule |
 | `PATCH /api/schedules/:id` | Update a schedule |

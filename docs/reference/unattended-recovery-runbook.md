@@ -277,6 +277,17 @@ PY
 
 ## 3a. Fail-closed schedule pauses
 
+> **Since issue #4186 the daemon no longer pauses a failing schedule.** Each
+> consecutive genuine failure (timeouts included) doubles the gap to its next
+> fire — for example 30 min → 1 h → 2 h → 4 h — capped at 6 h, and the schedule
+> stays enabled. Its first successful run (or an operator `enable`) restores the
+> configured cadence. `kookr schedule list` marks a slowed schedule
+> `backoff=L<level>(not before <time>)`, and `GET /api/schedules` carries the
+> same `failureBackoff: { level, notBefore }` with `nextRunAt` already pushed
+> past it. Recovery-critical schedules keep their configured cadence. This
+> section still applies to `consecutive_failures` holds persisted before that
+> change: they stay parked until recovered as below.
+
 **Symptom.** Unattended schedules stop firing and stay stopped. Health lists
 them under `schedules.schedulesPausedByFailure` (issue #2353). Discord pages
 `schedules:paused:residual` once **three or more** are parked (issue #2426).
@@ -405,10 +416,10 @@ budget. A change to any of those conditions cancels the pending retry.
 Exhaustion is written to the post-recovery result and log. An audit-only failure
 after a successful enable is reported separately and never repeats the enable.
 
-**What is NOT changed.** The general fleet's fail-closed behavior is
-**unchanged** — every non-member schedule still auto-pauses on a
-`consecutive_failures` streak and still requires operator `kookr schedule
-enable`, exactly as section 3a describes. A **genuine operator park** of a
+**What is NOT changed.** The general fleet is not covered by this floor. Since
+issue #4186 a non-member schedule is no longer auto-paused on a
+`consecutive_failures` streak; it is slowed down instead (section 3a), while a
+member keeps its configured cadence. A **genuine operator park** of a
 bootstrap member (`holdSource=operator`, a manual disable, or any hold whose
 `stopReason` is not `consecutive_failures`) is still respected and will **not**
 be auto-re-armed. Trigger exhaustion also takes precedence over the bootstrap

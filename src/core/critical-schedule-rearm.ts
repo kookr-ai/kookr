@@ -293,6 +293,23 @@ export interface TransientFailureRearmView {
   lastEvaluatedAt?: string;
 }
 
+/**
+ * The reason code that classifies a schedule's latest execution (issue #4186).
+ * A run that reached its task records `reasonCode: 'none'` on the execution and
+ * keeps the classified cause (e.g. `timeout`) on `terminalReason.reasonCode`;
+ * reading only the former left such runs unclassified. Prefer the execution's
+ * own code, and fall back to the terminal reason when it is `'none'` or absent.
+ */
+export function resolveExecutionReasonCode(
+  latestExecution:
+    | { reasonCode?: string; terminalReason?: { reasonCode?: string } }
+    | undefined,
+): string | undefined {
+  const own = latestExecution?.reasonCode;
+  if (own && own !== 'none') return own;
+  return latestExecution?.terminalReason?.reasonCode ?? own;
+}
+
 export function isTransientFailureRearmReason(
   reasonCode: string | undefined,
 ): reasonCode is TransientFailureRearmReasonCode {

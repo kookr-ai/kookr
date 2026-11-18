@@ -66,6 +66,20 @@ describe('evaluateScheduleLiveness (issue #2694)', () => {
     expect(stale[0].maxGapMs).toBe(HOUR);
   });
 
+  it('does NOT flag a schedule waiting out a failure backoff, but does once the backoff has long passed (issue #4186)', () => {
+    // Last fire 6h+ ago (over the 6h floor), slowed until 5 min ago.
+    const slowed = schedule({
+      executionLedger: [entry('cancelled', NOW - 6 * HOUR - 60_000)],
+      failureBackoff: { level: 4, notBefore: new Date(NOW - 5 * 60_000).toISOString() },
+    });
+    expect(evaluateScheduleLiveness([slowed], NOW, DEFAULT_STALE_SCHEDULE_FLOOR_MS)).toEqual([]);
+    const stuck = schedule({
+      executionLedger: [entry('cancelled', NOW - 20 * HOUR)],
+      failureBackoff: { level: 4, notBefore: new Date(NOW - 14 * HOUR).toISOString() },
+    });
+    expect(evaluateScheduleLiveness([stuck], NOW, DEFAULT_STALE_SCHEDULE_FLOOR_MS)).toHaveLength(1);
+  });
+
   it('does NOT flag a schedule that fired within its cadence', () => {
     const healthy = schedule({
       executionLedger: [entry('completed', NOW - 30 * 60_000)], // 30m ago

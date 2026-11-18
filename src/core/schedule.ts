@@ -95,9 +95,10 @@ export type ScheduleLastRunStatus = 'completed' | 'cancelled' | 'failed' | 'skip
 /**
  * Declarative failure policy for a schedule (issue #3085).
  *
- * - `default` (or absent) — the general fleet's fail-closed behavior: a
- *   `consecutiveFailures` streak crossing `scheduleFailureAlertThreshold`
- *   auto-pauses the schedule (issue #2353).
+ * - `default` (or absent) — the general fleet's behavior: each consecutive
+ *   failure slows the schedule down (cadence decay, issue #4186 — see
+ *   {@link ScheduleFailureBackoff}) and it stays armed. Before #4186 a streak
+ *   crossing `scheduleFailureAlertThreshold` auto-paused it (issue #2353).
  * - `recovery_critical` — a project recovery sentinel whose liveness must
  *   survive sparse provider/boot failures. Declaring it makes recovery
  *   criticality DATA rather than a hard-coded allowlist (the bootstrap set of
@@ -154,6 +155,81 @@ export const PROVIDER_BOOT_FAILURE_REASON_CODES = ['launch_error', 'session_gone
 /** True when a reason code attributes a failed fire to a provider launch/boot failure (issue #3085). */
 export function isProviderBootFailureReason(reasonCode: string | undefined): boolean {
   return (PROVIDER_BOOT_FAILURE_REASON_CODES as readonly string[]).includes(reasonCode ?? '');
+}
+
+/**
+ * Cadence decay after consecutive failures (issue #4186). Instead of parking a
+ * failing schedule until a human re-enables it, each consecutive genuine
+ * failure doubles the gap to its next fire — 30 min → 1 h → 2 h → 4 h — capped
+ * at {@link FAILURE_BACKOFF_MAX_INTERVAL_MS}, and the schedule stays armed. The
+ * first successful run clears it. Persisted on the schedule so a restart keeps
+ * the slowed cadence. Absent ⇒ no backoff (the configured cron cadence).
+ */
+export interface ScheduleFailureBackoff {
+  /** Backoff level: the consecutive-failure count that set it (≥ 1). */
+  level: number;
+  /** ISO time before which the runner must not fire this schedule on cron. */
+  notBefore: string;
+}
+
+/** Longest gap cadence decay may impose between two fires (issue #4186). */
+export const FAILURE_BACKOFF_MAX_INTERVAL_MS = 6 * 60 * 60_000;
+
+/**
+ * Backoff to persist after a failure streak of `consecutiveFailures` (issue
+ * #4186), or `undefined` when there is nothing to slow down (no failure, an
+ * unparseable cron, or a cron already slower than the cap).
+ *
+ * The interval is the cron's own gap at `anchor` multiplied by
+ * 2^consecutiveFailures, capped at 6 h and never shorter than the cron gap, so
+ * a schedule that already runs less often than every 6 h is never sped up.
+ * `anchor` is the occurrence the failed fire was scheduled for, so fires stay
+ * spaced from each other rather than from when the failure was noticed.
+ */
+export function computeFailureBackoff(
+  cron: string,
+  consecutiveFailures: number,
+  anchor: Date,
+): ScheduleFailureBackoff | undefined {
+  if (!(consecutiveFailures > 0)) return undefined;
+  const first = nextRun(cron, anchor);
+  const second = first ? nextRun(cron, first) : null;
+  if (!first || !second) return undefined;
+  const cadenceMs = second.getTime() - first.getTime();
+  if (!(cadenceMs > 0) || cadenceMs >= FAILURE_BACKOFF_MAX_INTERVAL_MS) return undefined;
+  // 2^level overflows to Infinity for a huge streak; Math.min still caps it.
+  const delayMs = Math.min(cadenceMs * 2 ** consecutiveFailures, FAILURE_BACKOFF_MAX_INTERVAL_MS);
+  return {
+    level: Math.floor(consecutiveFailures),
+    notBefore: new Date(anchor.getTime() + delayMs).toISOString(),
+  };
+}
+
+/**
+ * Next cron occurrence the runner may fire for this schedule: the first cron
+ * time after its watermark (`lastScheduledFor`, else `createdAt`) that is also
+ * at or after an active {@link ScheduleFailureBackoff.notBefore} (issue #4186).
+ * Skipping the occurrences inside the backoff window, instead of leaving them
+ * due, keeps the schedule from burst-firing its missed slots once the window
+ * ends or a restart runs catch-up.
+ */
+export function nextScheduledRunFor(
+  schedule: Pick<Schedule, 'cron' | 'lastScheduledFor' | 'createdAt' | 'failureBackoff'>,
+): Date | null {
+  let afterMs = Date.parse(schedule.lastScheduledFor ?? schedule.createdAt);
+  const notBeforeMs = schedule.failureBackoff ? Date.parse(schedule.failureBackoff.notBefore) : NaN;
+  // `nextRun` returns the first occurrence strictly after `after`, so step back
+  // 1 ms to keep an occurrence that lands exactly on `notBefore`.
+  if (Number.isFinite(notBeforeMs) && notBeforeMs - 1 > afterMs) afterMs = notBeforeMs - 1;
+  return nextRun(schedule.cron, new Date(afterMs));
+}
+
+function normalizeFailureBackoff(raw: unknown): ScheduleFailureBackoff | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { level, notBefore } = raw as Record<string, unknown>;
+  if (typeof level !== 'number' || !Number.isFinite(level) || level < 1) return undefined;
+  if (typeof notBefore !== 'string' || Number.isNaN(Date.parse(notBefore))) return undefined;
+  return { level: Math.floor(level), notBefore };
 }
 
 const SCHEDULE_LAST_RUN_STATUSES: ReadonlySet<string> = new Set([
@@ -695,10 +771,17 @@ export interface Schedule {
    * `dispatch_failed` launch or a cancelled/timeout run; reset to 0 on a
    * `completed` run. Overlap-skips (`skipped_active` / `previous_run_active`)
    * do not increment it (issue #2458). Drives the per-schedule failure alert
-   * and the fail-closed auto-pause (issue #2353 — see `ScheduleService`).
+   * and cadence decay (issue #4186 — see `failureBackoff`). Before #4186 it
+   * also drove the fail-closed auto-pause (issue #2353).
    * Absent until the schedule has recorded its first terminal run.
    */
   consecutiveFailures?: number;
+  /**
+   * Cadence decay from the current failure streak (issue #4186). Set on each
+   * genuine failure of a non-recovery-critical schedule, cleared by the first
+   * success or an operator re-enable. See {@link ScheduleFailureBackoff}.
+   */
+  failureBackoff?: ScheduleFailureBackoff;
   /** Cron watermark — used for cadence computation, not UI status. */
   lastScheduledFor?: string;
   lastCronEvaluatedAt?: string;
@@ -1559,6 +1642,11 @@ function normalizeSchedule(raw: unknown): Schedule | null {
       && candidate.consecutiveFailures > 0
       ? { consecutiveFailures: Math.floor(candidate.consecutiveFailures) }
       : {}),
+    // Cadence decay (issue #4186). Schedules persisted before it have none.
+    ...(() => {
+      const backoff = normalizeFailureBackoff(candidate.failureBackoff);
+      return backoff ? { failureBackoff: backoff } : {};
+    })(),
     ...(typeof candidate.lastScheduledFor === 'string' ? { lastScheduledFor: candidate.lastScheduledFor } : {}),
     ...(typeof candidate.lastCronEvaluatedAt === 'string' ? { lastCronEvaluatedAt: candidate.lastCronEvaluatedAt } : {}),
     ...(candidate.latestExecution ? { latestExecution: normalizeLatestExecution(candidate.latestExecution) } : {}),
@@ -1942,10 +2030,10 @@ function enrichSchedule(
   s: Schedule,
   playbookResolution: PlaybookResolutionState = 'unknown',
 ): ScheduleResponse {
-  const after = s.lastScheduledFor ? new Date(s.lastScheduledFor) : new Date(s.createdAt);
   // Archived schedules never fire (issue #2981), so they have no next run even
-  // if they were archived while still enabled.
-  const next = s.enabled && !s.archived && !isTriggerLimitExhausted(s) ? nextRun(s.cron, after) : null;
+  // if they were archived while still enabled. An active failure backoff
+  // (issue #4186) pushes the next run past its `notBefore`.
+  const next = s.enabled && !s.archived && !isTriggerLimitExhausted(s) ? nextScheduledRunFor(s) : null;
   const effectiveNext = next && next.getTime() <= Date.now()
     ? nextRun(s.cron, new Date())
     : next;

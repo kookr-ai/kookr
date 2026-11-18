@@ -283,6 +283,16 @@ function formatLowYield(rollup) {
   return `  low-yield(fires=${n(rollup.measuredFires)} merged=${n(rollup.merged)} artifacts=${n(rollup.artifacts)}; ${hint})`;
 }
 
+// Cadence decay (issue #4186): a failing schedule stays enabled but fires less
+// often. Show the backoff level and the time it may fire again so a slowed
+// schedule is visible; `next=` already accounts for the backoff.
+function formatFailureBackoff(schedule) {
+  const backoff = schedule?.failureBackoff;
+  if (!backoff || !Number.isFinite(backoff.level) || backoff.level < 1) return '';
+  const until = typeof backoff.notBefore === 'string' ? `(not before ${backoff.notBefore})` : '';
+  return `  backoff=L${backoff.level}${until}`;
+}
+
 function formatScheduleLine(schedule, rollup) {
   const id = schedule?.id ?? '?';
   // Archived (issue #2981) is a retired-but-retained state distinct from a live
@@ -296,7 +306,7 @@ function formatScheduleLine(schedule, rollup) {
     const remaining = typeof schedule.remainingTriggers === 'number' ? schedule.remainingTriggers : schedule.maxTriggers;
     triggers = `  triggers=${remaining}/${schedule.maxTriggers}`;
   }
-  return `${id}  ${state}  ${name}  cron="${cron}"  next=${next}${triggers}${formatInactiveReason(schedule)}${formatLowYield(rollup)}`;
+  return `${id}  ${state}  ${name}  cron="${cron}"  next=${next}${triggers}${formatFailureBackoff(schedule)}${formatInactiveReason(schedule)}${formatLowYield(rollup)}`;
 }
 
 // Cascade-origin held schedules (issue #2531): disabled AND parked by the

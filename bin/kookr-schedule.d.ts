@@ -53,6 +53,8 @@ export interface ScheduleLike {
   stopReason?: string;
   /** Consecutive failed fires behind a `consecutive_failures` auto-pause (issue #2353). */
   consecutiveFailures?: number;
+  /** Cadence decay from a failure streak (issue #4186); absent at normal cadence. */
+  failureBackoff?: { level: number; notBefore: string };
   /** Schedule is held off (issue #2520); see {@link holdSource}. */
   operatorHold?: boolean;
   /** Who set the hold (issue #2520): absent on legacy holds, read as `operator`. */

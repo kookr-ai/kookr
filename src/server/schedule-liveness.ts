@@ -278,6 +278,10 @@ function lastActivityMs(schedule: Schedule): number | null {
   consider(schedule.lastCronEvaluatedAt);
   consider(schedule.lastScheduledFor);
   consider(schedule.lastRunAt);
+  // A failure backoff (issue #4186) is a planned quiet window: measure silence
+  // from the time the schedule may fire again, so a slowed schedule is not
+  // reported dark while it waits.
+  consider(schedule.failureBackoff?.notBefore);
   consider(schedule.createdAt);
 
   return latest === Number.NEGATIVE_INFINITY ? null : latest;

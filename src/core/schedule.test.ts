@@ -15,6 +15,9 @@ import {
   recordProviderFailure,
   clearProviderFailure,
   providersToAvoid,
+  computeFailureBackoff,
+  nextScheduledRunFor,
+  FAILURE_BACKOFF_MAX_INTERVAL_MS,
   MAX_LEDGER_ENTRIES,
   MAX_RECENT_PROVIDER_FAILURES,
   type ScheduleExecutionLedgerEntry,
@@ -1650,5 +1653,74 @@ describe('ScheduleStore failurePolicy + provider memory persistence (issue #3085
     expect(reloaded.get('s1')!.recentProviderFailures).toEqual([
       { provider: 'claude-code', at: '2026-09-09T11:00:00.000Z' },
     ]);
+  });
+});
+
+describe('failure backoff (issue #4186)', () => {
+  const HOUR = 3_600_000;
+  const anchor = new Date('2026-11-18T08:00:00.000Z');
+
+  it('doubles the cron gap per consecutive failure and caps it at 6 h', () => {
+    const delays = [1, 2, 3, 4, 10, 2000].map((n) => {
+      const b = computeFailureBackoff('*/30 * * * *', n, anchor)!;
+      return Date.parse(b.notBefore) - anchor.getTime();
+    });
+    expect(delays).toEqual([1 * HOUR, 2 * HOUR, 4 * HOUR, 6 * HOUR, 6 * HOUR, 6 * HOUR]);
+    expect(FAILURE_BACKOFF_MAX_INTERVAL_MS).toBe(6 * HOUR);
+    expect(computeFailureBackoff('*/30 * * * *', 3, anchor)?.level).toBe(3);
+  });
+
+  it('is absent with no failure, an unparseable cron, or a cron already slower than the cap', () => {
+    expect(computeFailureBackoff('*/30 * * * *', 0, anchor)).toBeUndefined();
+    expect(computeFailureBackoff('not a cron', 2, anchor)).toBeUndefined();
+    expect(computeFailureBackoff('0 0 * * *', 5, anchor)).toBeUndefined();
+  });
+
+  it('nextScheduledRunFor skips cron occurrences before notBefore and keeps one landing on it', () => {
+    const base = {
+      cron: '*/30 * * * *',
+      createdAt: '2026-11-18T00:00:00.000Z',
+      lastScheduledFor: '2026-11-18T08:00:00.000Z',
+    };
+    expect(nextScheduledRunFor(base)?.toISOString()).toBe('2026-11-18T08:30:00.000Z');
+    expect(nextScheduledRunFor({
+      ...base,
+      failureBackoff: { level: 2, notBefore: '2026-11-18T10:00:00.000Z' },
+    })?.toISOString()).toBe('2026-11-18T10:00:00.000Z');
+    // A backoff that already elapsed changes nothing.
+    expect(nextScheduledRunFor({
+      ...base,
+      failureBackoff: { level: 1, notBefore: '2026-11-18T07:00:00.000Z' },
+    })?.toISOString()).toBe('2026-11-18T08:30:00.000Z');
+  });
+
+  it('loads a persisted backoff, drops a malformed one, and treats a legacy row as having none', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'schedule-backoff-load-'));
+    try {
+      const row = (id: string, extra: Record<string, unknown>) => ({
+        id,
+        name: id,
+        cron: '*/30 * * * *',
+        playbook: { path: 'x.md', parameters: {} },
+        cwd: '/tmp',
+        enabled: true,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        executionLedger: [],
+        ...extra,
+      });
+      await writeFile(join(dir, 'schedules.json'), JSON.stringify([
+        row('ok', { consecutiveFailures: 2, failureBackoff: { level: 2, notBefore: '2026-11-18T10:00:00.000Z' } }),
+        row('bad', { failureBackoff: { level: 'x', notBefore: 'nope' } }),
+        row('legacy', {}),
+      ]), 'utf-8');
+      const store = new ScheduleStore(dir);
+      await store.load();
+      expect(store.get('ok')?.failureBackoff).toEqual({ level: 2, notBefore: '2026-11-18T10:00:00.000Z' });
+      expect(store.get('bad')?.failureBackoff).toBeUndefined();
+      expect(store.get('legacy')?.failureBackoff).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

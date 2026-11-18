@@ -18,6 +18,8 @@ import {
   type ScheduleStatusSnapshot,
   type ScheduleTerminalReason,
   type UpdateScheduleDefinitionInput,
+  type ScheduleFailureBackoff,
+  computeFailureBackoff,
   isTriggerLimitExhausted,
   isProviderBootFailureReason,
   pruneExecutionLedger,
@@ -38,6 +40,7 @@ import type { TokenUsage } from '../core/usage-types.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 import {
   decideTransientFailureRearm,
+  resolveExecutionReasonCode,
   isRecoveryCriticalSchedule,
 } from '../core/critical-schedule-rearm.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
@@ -66,20 +69,6 @@ export function nextConsecutiveFailures(
 ): number {
   if (status === 'completed') return 0;
   return (previous ?? 0) + 1;
-}
-
-/**
- * Whether a streak of consecutive failures should fail-closed pause the
- * schedule (issue #2353). Pure helper for tests and the service write paths.
- */
-export function shouldAutoPauseForConsecutiveFailures(
-  consecutiveFailures: number,
-  threshold: number,
-  currentlyEnabled: boolean,
-): boolean {
-  if (!currentlyEnabled) return false;
-  if (!(threshold > 0) || !Number.isFinite(threshold)) return false;
-  return consecutiveFailures >= Math.floor(threshold);
 }
 
 /**
@@ -569,8 +558,8 @@ export class ScheduleService {
    * is the freshly-persisted counter (from {@link nextConsecutiveFailures}).
    * Fires once on the healthy→failing edge (streak crosses the threshold) and
    * once on the failing→healthy edge (a `completed` run resets a firing streak).
-   * `autoPaused` folds the issue #2353 fail-closed pause into the same edge
-   * alert so operators get one signal, not two.
+   * A failing schedule is slowed down, not paused (issue #4186), so the alert
+   * never reports an auto-pause.
    *
    * Never fires for an archived schedule (issue #2981): a retired loop closes
    * out the bookkeeping of a run that was already in flight, but silently — it
@@ -580,7 +569,6 @@ export class ScheduleService {
     previous: Schedule,
     nextCount: number,
     lastMessage?: string,
-    autoPaused = false,
     terminalReason?: Pick<ScheduleTerminalReason, 'reasonCode' | 'provider'>,
   ): void {
     if (!this.emitAlert) return;
@@ -593,14 +581,9 @@ export class ScheduleService {
     if (threshold <= 0) return;
 
     if (priorCount < threshold && nextCount >= threshold) {
-      this.emitAlert(buildScheduleFailureAlert(previous, nextCount, threshold, lastMessage, autoPaused, terminalReason));
+      this.emitAlert(buildScheduleFailureAlert(previous, nextCount, threshold, lastMessage, false, terminalReason));
     } else if (priorCount >= threshold && nextCount === 0) {
       this.emitAlert(buildScheduleFailureRecoveryAlert(previous));
-    } else if (autoPaused && priorCount >= threshold && nextCount >= threshold) {
-      // Enforce path: schedule was already over threshold but still enabled
-      // (e.g. pre-#2353 persisted state). Emit once so the operator learns it
-      // was parked, even though the counter edge already fired historically.
-      this.emitAlert(buildScheduleFailureAlert(previous, nextCount, threshold, lastMessage, true, terminalReason));
     }
   }
 
@@ -635,53 +618,41 @@ export class ScheduleService {
   }
 
   /**
-   * Patch applied when a failure streak crosses the auto-pause threshold
-   * (issue #2353). Parks the schedule (`enabled: false`) with
-   * `stopReason: consecutive_failures` and `operatorHold: true` so critical
-   * recovery re-arm cannot re-enable a known-dead loop. Empty when no pause.
+   * Cadence-decay patch after a terminal outcome (issue #4186), replacing the
+   * fail-closed auto-pause of issue #2353: a failing schedule stays armed and
+   * fires less often instead of going dark until a human re-enables it.
    *
-   * Recovery-critical exception (issues #2530 / #3085): a recovery-critical
-   * schedule is NEVER auto-paused. This covers both the hard-coded bootstrap
-   * sub-tier (the PR merge/rebase watchdog, #2530) and any schedule that
-   * DECLARES `failurePolicy: recovery_critical` (#3085) — recovery criticality
-   * as data, not a name allowlist. Its liveness gates recovery, so disabling it
-   * can sever the very recovery path a cascade needs. It stays enabled and
-   * relies on the edge-triggered failure alert (#1665) for out-of-fleet
-   * visibility, backing off (steering its next fire off the boot-broken
-   * provider) on its normal cron cadence rather than fail-closed disable. The
-   * general fleet's fail-closed behavior is unchanged.
+   * - streak reset (`consecutiveFailures === 0`) → backoff cleared;
+   * - a NEW genuine failure (`failed`) → backoff recomputed for the streak
+   *   (×2 per failure, capped at 6 h — see {@link computeFailureBackoff}),
+   *   anchored at the latest cron occurrence the schedule has evaluated (the
+   *   failed fire's own `scheduledFor`, or a later overlap-skipped occurrence
+   *   when the run outlived several slots), else at the failure time;
+   * - an outcome that carries the streak forward unchanged keeps the backoff.
+   *
+   * Recovery-critical schedules (#2530 / #3085) keep their configured cadence:
+   * their liveness gates recovery, so they are neither paused nor slowed. An
+   * archived schedule cannot fire, so it gets no backoff either.
    */
-  private autoPausePatch(
+  private failureBackoffPatch(
     schedule: Schedule,
     consecutiveFailures: number,
-  ): Partial<Pick<Schedule, 'enabled' | 'stopReason' | 'operatorHold' | 'holdSource' | 'heldAt'>> {
-    // An archived schedule is retired: it cannot fire, so there is nothing to
-    // fail-close (issue #2981). Parking it would also silently rewrite the
-    // enabled/hold state `unarchive()` promises to restore, turning a loop that
-    // was archived healthy-but-idle into one that comes back disabled with a
-    // daemon hold. The streak still counts, so if it is un-archived while over
-    // threshold `enforceFailureAutoPauses` parks it the moment it re-enters the
-    // active fleet — where the pause actually means something.
-    if (schedule.archived) {
-      return {};
+    failed: boolean,
+    scheduledFor: string | undefined,
+    now: Date = new Date(),
+  ): { failureBackoff: ScheduleFailureBackoff | undefined } {
+    if (consecutiveFailures <= 0 || schedule.archived || isRecoveryCriticalSchedule(schedule)) {
+      return { failureBackoff: undefined };
     }
-    const threshold = this.resolveFailureAlertThreshold();
-    if (!shouldAutoPauseForConsecutiveFailures(consecutiveFailures, threshold, schedule.enabled)) {
-      return {};
-    }
-    if (isRecoveryCriticalSchedule(schedule)) {
-      return {};
-    }
-    return {
-      enabled: false,
-      stopReason: 'consecutive_failures',
-      operatorHold: true,
-      // Tag the hold as daemon-set (issue #2520) so re-arm (#2196/#2459) and the
-      // bulk-recovery command can distinguish this automated fail-closed hold
-      // from a human `operator` hold and recover it without touching the latter.
-      holdSource: 'daemon',
-      heldAt: new Date().toISOString(),
-    };
+    if (!failed) return { failureBackoff: schedule.failureBackoff };
+    const anchorMs = Math.max(
+      ...[scheduledFor, schedule.lastScheduledFor]
+        .map((iso) => (iso ? Date.parse(iso) : NaN))
+        .filter((ms) => Number.isFinite(ms) && ms <= now.getTime()),
+      Number.NEGATIVE_INFINITY,
+    );
+    const anchor = Number.isFinite(anchorMs) ? new Date(anchorMs) : now;
+    return { failureBackoff: computeFailureBackoff(schedule.cron, consecutiveFailures, anchor) };
   }
 
   listResponse(): ScheduleListResponse {
@@ -793,46 +764,6 @@ export class ScheduleService {
   }
 
   /**
-   * Pause every still-enabled schedule whose `consecutiveFailures` is already
-   * at/over the threshold (issue #2353). Covers pre-existing thrashing
-   * schedules after deploy (counter was already high but auto-pause did not
-   * yet exist) so the next cron tick cannot waste another slot.
-   */
-  async enforceFailureAutoPauses(): Promise<number> {
-    const threshold = this.resolveFailureAlertThreshold();
-    if (threshold <= 0) return 0;
-    let paused = 0;
-    for (const schedule of this.store.list()) {
-      const count = schedule.consecutiveFailures ?? 0;
-      if (!shouldAutoPauseForConsecutiveFailures(count, threshold, schedule.enabled)) continue;
-      const patch = this.autoPausePatch(schedule, count);
-      // Bootstrap-critical members (#2530) yield an empty patch — they are
-      // never auto-paused. Nothing to enforce; leave them enabled.
-      if (Object.keys(patch).length === 0) continue;
-      const now = new Date().toISOString();
-      this.store.replace({
-        ...schedule,
-        ...patch,
-        updatedAt: now,
-      });
-      // Synthesize a priorCount just under threshold so the edge alert fires
-      // once for this enforce-driven pause (operator visibility).
-      this.emitFailureAlertOnEdge(
-        { ...schedule, consecutiveFailures: Math.max(0, threshold - 1) },
-        count,
-        'Auto-paused: consecutive failure threshold already reached',
-        true,
-      );
-      paused += 1;
-    }
-    if (paused > 0) {
-      await this.store.persist();
-      this.broadcastSchedules();
-    }
-    return paused;
-  }
-
-  /**
    * Lift leftover `consecutive_failures` holds whose last reason was a
    * transient `launch_error` or overlap-skip, once the daemon is healthy
    * (issue #2459). Only holds whose last fire predates {@link getReadyAt}
@@ -848,7 +779,9 @@ export class ScheduleService {
     const ready = readyAt ?? this.getReadyAt?.() ?? this.runnerStartedAt;
     const rearmed: Array<{ id: string; name: string; reasonCode?: string }> = [];
     for (const schedule of this.store.list()) {
-      const reasonCode = schedule.latestExecution?.reasonCode;
+      // A run that reached its task records `reasonCode: 'none'` and keeps the
+      // real cause (e.g. `timeout`) on `terminalReason` (issue #4186).
+      const reasonCode = resolveExecutionReasonCode(schedule.latestExecution);
       const decision = decideTransientFailureRearm(
         {
           id: schedule.id,
@@ -1048,6 +981,8 @@ export class ScheduleService {
           consecutiveFailures: 0,
           updatedAt: new Date().toISOString(),
         };
+        // A re-enable restarts the schedule at its configured cadence (#4186).
+        delete cleared.failureBackoff;
         if (cleared.stopReason === 'consecutive_failures') {
           delete cleared.stopReason;
         }
@@ -1500,7 +1435,7 @@ export class ScheduleService {
     const consecutiveFailures = isFailure
       ? nextConsecutiveFailures(schedule.consecutiveFailures, 'failed')
       : schedule.consecutiveFailures ?? 0;
-    const autoPause = this.autoPausePatch(schedule, consecutiveFailures);
+    const backoff = this.failureBackoffPatch(schedule, consecutiveFailures, isFailure, receipt.scheduledFor);
     // Issue #2568: merely omitting lastRunStatus on a skip leaves a prior
     // `failed` in place via `...schedule`. The merge watchdog (bootstrap-
     // critical, never auto-paused) then keeps showing lastRunStatus=failed
@@ -1545,9 +1480,8 @@ export class ScheduleService {
         ? { recentProviderFailures: nextProviderFailures }
         : {}),
       ...consumeCronTrigger(schedule, receipt.trigger, outcome === 'dispatch_failed', evaluatedAt),
-      // Auto-pause (issue #2353) wins over a still-enabled trigger-budget
-      // residual: fail-closed parking stops further fires until re-enable.
-      ...autoPause,
+      // Cadence decay (issue #4186): a failing schedule is slowed, not paused.
+      ...backoff,
       latestExecution: {
         receiptId,
         executionToken: receipt.executionToken,
@@ -1584,7 +1518,7 @@ export class ScheduleService {
     });
     await this.store.persist();
     this.broadcastSchedules();
-    this.emitFailureAlertOnEdge(schedule, consecutiveFailures, message, Object.keys(autoPause).length > 0);
+    this.emitFailureAlertOnEdge(schedule, consecutiveFailures, message);
   }
 
   /**
@@ -1608,6 +1542,8 @@ export class ScheduleService {
       lastRunStatus: 'completed',
       lastRunTaskId: undefined,
       consecutiveFailures,
+      // A successful run ends the failure streak and its cadence decay (#4186).
+      failureBackoff: undefined,
       ...consumeCronTrigger(schedule, receipt.trigger, true, evaluatedAt),
       latestExecution: {
         receiptId,
@@ -1714,7 +1650,12 @@ export class ScheduleService {
         : genuineFailure
           ? nextConsecutiveFailures(schedule.consecutiveFailures, 'failed')
           : schedule.consecutiveFailures ?? 0;
-    const autoPause = this.autoPausePatch(schedule, consecutiveFailures);
+    const backoff = this.failureBackoffPatch(
+      schedule,
+      consecutiveFailures,
+      genuineFailure,
+      schedule.latestExecution?.scheduledFor,
+    );
 
     this.store.replace({
       ...schedule,
@@ -1722,7 +1663,7 @@ export class ScheduleService {
       lastRunTaskId: taskId,
       lastRunStatus: status,
       consecutiveFailures,
-      ...autoPause,
+      ...backoff,
       latestExecution: {
         ...schedule.latestExecution,
         outcome: status,
@@ -1751,7 +1692,7 @@ export class ScheduleService {
     // an auto-pause page names WHY the belt died (timeout / provider_failure /
     // unknown), not just the failure count. Resolved above (#2877) but was being
     // dropped here.
-    this.emitFailureAlertOnEdge(schedule, consecutiveFailures, undefined, Object.keys(autoPause).length > 0, terminalReason);
+    this.emitFailureAlertOnEdge(schedule, consecutiveFailures, undefined, terminalReason);
   }
 
   async reconcileOnStartup(taskStore: TaskStore): Promise<void> {
@@ -1928,14 +1869,19 @@ export class ScheduleService {
             : genuineReconciledFailure
               ? nextConsecutiveFailures(schedule.consecutiveFailures, 'failed')
               : schedule.consecutiveFailures ?? 0;
-        const autoPause = this.autoPausePatch(schedule, reconciledFailures);
+        const backoff = this.failureBackoffPatch(
+          schedule,
+          reconciledFailures,
+          genuineReconciledFailure && scheduleOutcome !== 'completed',
+          latest.scheduledFor,
+        );
         this.store.replace({
           ...schedule,
           lastRunAt: task.updatedAt.toISOString(),
           lastRunTaskId: task.id,
           lastRunStatus: scheduleOutcome,
           consecutiveFailures: reconciledFailures,
-          ...autoPause,
+          ...backoff,
           latestExecution: {
             ...latest,
             outcome: scheduleOutcome,
@@ -1965,7 +1911,6 @@ export class ScheduleService {
           schedule,
           reconciledFailures,
           undefined,
-          Object.keys(autoPause).length > 0,
           reconciledTerminalReason,
         );
       }

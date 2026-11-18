@@ -1313,7 +1313,7 @@ Do dependency-gated work.
     expect(after.consecutiveFailures ?? 0).toBe(0);
   });
 
-  it('re-arms a leftover launch_error pause on tick when the daemon is healthy (issue #2459)', async () => {
+  it('re-arms a leftover legacy launch_error pause on tick when the daemon is healthy (issue #2459 / #4186)', async () => {
     const healthyService = new ScheduleService({
       store,
       validator,
@@ -1341,6 +1341,17 @@ Do dependency-gated work.
         'Initial prompt submission was not confirmed',
       );
     }
+    expect(store.get(schedule.id)!.enabled).toBe(true);
+    // Issue #4186: the daemon no longer auto-pauses on a failure streak, so the
+    // failures above only leave evidence (latestExecution, counter, backoff).
+    // Seed the LEGACY pre-#4186 daemon hold that persisted state can still carry.
+    replaceSchedule(schedule.id, {
+      enabled: false,
+      stopReason: 'consecutive_failures',
+      operatorHold: true,
+      holdSource: 'daemon',
+      heldAt: '2026-08-12T13:00:00.000Z',
+    });
     expect(store.get(schedule.id)!.enabled).toBe(false);
     expect(store.get(schedule.id)!.operatorHold).toBe(true);
     const paused = store.get(schedule.id)!;
@@ -1359,9 +1370,10 @@ Do dependency-gated work.
     expect(after.operatorHold).toBeUndefined();
     expect(after.stopReason).toBeUndefined();
     expect(after.consecutiveFailures).toBe(0);
+    expect(after.failureBackoff).toBeUndefined();
   });
 
-  it('does not re-arm a live launch_error pause that happened after ready (issue #2459 / #2353)', async () => {
+  it('does not re-arm a legacy launch_error pause whose last failure came after ready (issue #2459 / #2353 / #4186)', async () => {
     const healthyService = new ScheduleService({
       store,
       validator,
@@ -1385,16 +1397,29 @@ Do dependency-gated work.
         'Initial prompt submission was not confirmed',
       );
     }
-    expect(store.get(schedule.id)!.enabled).toBe(false);
+    // Issue #4186: the daemon no longer auto-pauses on a failure streak, so the
+    // failures above only leave evidence (latestExecution, counter, backoff).
+    // Seed the LEGACY pre-#4186 daemon hold that persisted state can still carry.
+    replaceSchedule(schedule.id, {
+      enabled: false,
+      stopReason: 'consecutive_failures',
+      operatorHold: true,
+      holdSource: 'daemon',
+      heldAt: '2026-08-13T13:00:00.000Z',
+    });
+    // The last failure was evaluated after the daemon became ready: a real,
+    // still-failing loop, not a leftover from before boot.
+    expect(store.get(schedule.id)!.latestExecution!.evaluatedAt! >= '2026-08-12T08:00:00.000Z').toBe(true);
 
     const runner = createRunner({ service: healthyService });
     await runner.tick();
 
     expect(store.get(schedule.id)!.enabled).toBe(false);
     expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
+    expect(store.get(schedule.id)!.operatorHold).toBe(true);
   });
 
-  it('does not re-arm a cancelled-timeout pause on a healthy tick (issue #2459 / #2353)', async () => {
+  it('does not re-arm a legacy cancelled-timeout pause on a healthy tick (issue #2459 / #2353 / #4186)', async () => {
     const healthyService = new ScheduleService({
       store,
       validator,
@@ -1414,7 +1439,17 @@ Do dependency-gated work.
       await healthyService.markExecutionAccepted(schedule.id, receipt.id, `timeout-${i}`, false);
       await healthyService.recordTaskTerminalOutcome(`timeout-${i}`, 'cancelled', 'timeout');
     }
-    expect(store.get(schedule.id)!.enabled).toBe(false);
+    expect(store.get(schedule.id)!.enabled).toBe(true);
+    // Issue #4186: the daemon no longer auto-pauses on a failure streak, so the
+    // failures above only leave evidence (latestExecution, counter, backoff).
+    // Seed the LEGACY pre-#4186 daemon hold that persisted state can still carry.
+    replaceSchedule(schedule.id, {
+      enabled: false,
+      stopReason: 'consecutive_failures',
+      operatorHold: true,
+      holdSource: 'daemon',
+      heldAt: '2026-08-12T10:10:00.000Z',
+    });
 
     const runner = createRunner({ service: healthyService });
     await runner.tick();
@@ -3651,14 +3686,58 @@ Do the plugin thing.
       expect(store.get(slow.id)!.currentExecution?.status).toBe('reserved');
     });
 
-    it('a repeatedly failing schedule does not starve other due schedules across ticks', async () => {
+    it('does not fire a default-policy schedule again while its failure backoff runs (issue #4186)', async () => {
+      const failDir = join(dir, 'fail-backoff');
+      await mkdir(failDir, { recursive: true });
+      const bad = makeDue('Bad', {
+        cwd: failDir,
+        playbook: { path: 'test.md', parameters: {}, scope: 'project', sourceCwd: dir },
+      });
+      let badAttempts = 0;
+      const runner = createRunner({
+        launcher: async () => {
+          badAttempts += 1;
+          throw new Error('boom');
+        },
+      });
+
+      await runner.tick();
+      expect(badAttempts).toBe(1);
+      const slowed = store.get(bad.id)!;
+      expect(slowed.enabled).toBe(true);
+      expect(slowed.failureBackoff?.level).toBe(1);
+      expect(Date.parse(slowed.failureBackoff!.notBefore)).toBeGreaterThan(Date.now());
+
+      // Its cron occurrences are due again, but the backoff keeps it quiet.
+      rearm(bad.id);
+      await runner.tick();
+      expect(badAttempts).toBe(1);
+
+      // Once the backoff has elapsed it fires again, still armed.
+      store.replace({
+        ...store.get(bad.id)!,
+        failureBackoff: { level: 1, notBefore: new Date(Date.now() - 60_000).toISOString() },
+      });
+      rearm(bad.id);
+      await runner.tick();
+      expect(badAttempts).toBe(2);
+      expect(store.get(bad.id)!.enabled).toBe(true);
+      expect(store.get(bad.id)!.failureBackoff?.level).toBe(2);
+    });
+
+    it('a repeatedly failing schedule does not starve other due schedules across ticks (issue #2773 / #4186)', async () => {
       const failDir = join(dir, 'fail');
       await mkdir(failDir, { recursive: true });
       // Distinct cwd so the launcher can key on it, but resolve the shared
       // playbook from the project tier at `dir` (sourceCwd), not the empty cwd.
+      // recovery_critical: since issue #4186 a default schedule is slowed down
+      // by failure backoff after its first failure, so it would not compete for
+      // the budget on tick 2. A recovery-critical schedule keeps its cadence and
+      // re-fires on every occurrence — the worst case for starvation.
       const bad = makeDue('Bad', {
         cwd: failDir,
         playbook: { path: 'test.md', parameters: {}, scope: 'project', sourceCwd: dir },
+        failurePolicy: 'recovery_critical',
       });
       const b = makeDue('B');
       const c = makeDue('C');
@@ -3681,6 +3760,7 @@ Do the plugin thing.
 
       // Tick 1: [Bad, B, C] with budget 2 → Bad fires+fails, B fires; C deferred.
       await runner.tick();
+      expect(store.get(bad.id)!.failureBackoff).toBeUndefined(); // not slowed: still competes
       rearm(bad.id); // Bad comes due again — it keeps failing on every occurrence.
       // Tick 2: cursor starts at the deferred C → C fires, and Bad fires+fails
       // again (2nd failure). B already fired this occurrence.
@@ -3688,7 +3768,8 @@ Do the plugin thing.
 
       // Bad failed on more than one tick, yet both B and C still fired: the
       // failing schedule never monopolized the budget nor starved its peers.
-      expect(badAttempts).toBeGreaterThanOrEqual(2);
+      expect(badAttempts).toBe(2);
+      expect(store.get(bad.id)!.enabled).toBe(true);
       expect(store.get(bad.id)!.latestExecution?.outcome).toBe('dispatch_failed');
       expect(store.get(b.id)!.latestExecution?.taskId).toBeTruthy();
       expect(store.get(c.id)!.latestExecution?.taskId).toBeTruthy();
