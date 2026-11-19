@@ -6,7 +6,7 @@
  * Claude-shaped hook payloads into `kookr-hook-writer`, so inbound events reuse
  * the Claude hook normaliser (`parseHookEvent`). Modelled on GrokBuildAdapter.
  * Resume: the conversation DB lives in a per-task persistent data dir (opencode-task-data.ts) and a
- * resumed launch runs `opencode --session <ses_id> <cwd>`.
+ * resumed launch runs `opencode --session <ses_id> <cwd>` and types the resume continuation message.
  */
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
@@ -43,6 +43,7 @@ import type {
   PreflightResult,
   ResumeContext,
 } from './agent-adapter.js';
+import { DEFAULT_RESUME_CONTINUATION_MESSAGE } from './agent-adapter.js';
 import {
   buildAgentLaunchContext,
   deliverInitialPromptToSession,
@@ -419,11 +420,13 @@ export class OpenCodeAdapter implements AgentAdapter {
     let deliveryResult: InitialPromptDeliveryResult | undefined;
     try {
       deliveryResult = await raceAgainstLaunchAbort(
-        opencodeSessionId
-          // Resume: the conversation already holds the original prompt (Claude does the same); just
-          // wait for the composer so the session registers healthy.
-          ? this.waitForComposerReady(tmuxName).then(() => undefined)
-          : this.runAgentBootSequence(tmuxName, prompt, submitConfirmed),
+        // A resumed conversation already holds the original prompt, but with nothing typed it idles at the
+        // composer. It gets the continuation message instead, through the same confirmed delivery (as Claude does).
+        this.runAgentBootSequence(
+          tmuxName,
+          opencodeSessionId ? (resume?.continuationMessage ?? DEFAULT_RESUME_CONTINUATION_MESSAGE) : prompt,
+          submitConfirmed,
+        ),
         opts?.signal,
         tmuxName,
       );

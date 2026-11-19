@@ -43,9 +43,9 @@ export interface ResumeContext {
    * First message typed into the resumed conversation. A resumed agent gets no
    * prompt of its own, so without this it sits idle at the composer. It also
    * tells the agent what the interruption destroyed (background shells,
-   * timers, locks) and where its work lives. Only the Claude Code adapter
-   * delivers it today, sending {@link DEFAULT_RESUME_CONTINUATION_MESSAGE}
-   * when this is absent; other resume-capable adapters (opencode) ignore it.
+   * timers, locks) and where its work lives. The Claude Code and opencode
+   * adapters deliver it, sending {@link DEFAULT_RESUME_CONTINUATION_MESSAGE}
+   * when this is absent.
    */
   continuationMessage?: string;
 }

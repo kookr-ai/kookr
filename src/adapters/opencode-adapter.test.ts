@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { LaunchAbortedError } from './launch-abort.js';
+import { DEFAULT_RESUME_CONTINUATION_MESSAGE } from './agent-adapter.js';
 import { composeOpenCodeSession } from './opencode-home-composer.js';
 import { OpenCodeAdapter, OpenCodeSessionUnreadableError, parseRamLimitMb, type OpenCodeAdapterOptions } from './opencode-adapter.js';
 import type { OpenCodeProfile } from './opencode-kookr-hooks.js';
@@ -441,26 +442,71 @@ describe('OpenCodeAdapter', () => {
       expect(taskStore.getTask(task.id)!.metadata?.opencodeSessionId).toBe('ses_abc123');
     });
 
-    test('resume launches `--session <id> <cwd>` against the same data dir and delivers no prompt', async () => {
+    test('resume launches `--session <id> <cwd>` against the same data dir and delivers the continuation, not the prompt', async () => {
       const adapter = makeAdapter();
       const { task, id } = await launch(adapter);
       stageSessions(dataHomeOf(id), [['ses_abc123', null, 5]]);
       const firstData = dataHomeOf(id);
       await adapter.stop(id);
 
-      const id2 = await adapter.launch(task.id, 'do it', '/workspace', { sessionId: 'kookr-oc1' }, { tmuxName: 'kookr-oc2' });
+      const id2 = await adapter.launch(
+        task.id, 'do it', '/workspace',
+        { sessionId: 'kookr-oc1', continuationMessage: 'resumed: re-check the worktree' },
+        { tmuxName: 'kookr-oc2' },
+      );
       const spec = backend.sessions.get(id2)!.spec;
       expect(spec.args).toEqual(['--session', 'ses_abc123', '/workspace']);
       expect(spec.env!.XDG_DATA_HOME).toBe(firstData);
-      expect(backend.getWrittenBytes(id2)).toHaveLength(0); // no initial prompt re-delivery
-      expect(backend.sessions.get(id2)!.paneContent).not.toContain('do it');
+      // The continuation is typed into the resumed conversation; the original prompt is not re-delivered.
+      const pane = backend.sessions.get(id2)!.paneContent;
+      expect(pane).toContain('resumed: re-check the worktree');
+      expect(pane).not.toContain('do it');
       const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === id2)!;
-      expect(session.promptDelivery).toBeUndefined();
+      expect(session.promptDelivery).toBeDefined();
       // Links the resumed session to the conversation it continues (a pending `kookr ask` follows it).
       expect(session.resumedConversationId).toBe('kookr-oc1');
       // The session config is re-composed (plugin + hooks env) for the new session.
       expect(readFileSync(join(spec.env!.OPENCODE_CONFIG_DIR!, 'plugins', 'kookr.js'), 'utf8')).toContain('kookr-oc2');
       expect(readFileSync(join(spec.env!.OPENCODE_CONFIG_DIR!, 'plugins', 'kookr.js'), 'utf8')).toContain(task.id);
+    });
+
+    test('resume without a continuation message delivers the default one', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      stageSessions(dataHomeOf(id), [['ses_abc123', null, 5]]);
+      await adapter.stop(id);
+      const id2 = await adapter.launch(task.id, 'do it', '/workspace', { sessionId: 'kookr-oc1' }, { tmuxName: 'kookr-oc2' });
+      expect(backend.sessions.get(id2)!.spec.args).toEqual(['--session', 'ses_abc123', '/workspace']);
+      const pane = backend.sessions.get(id2)!.paneContent;
+      expect(pane).toContain(DEFAULT_RESUME_CONTINUATION_MESSAGE);
+      expect(pane).not.toContain('do it');
+      expect(taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === id2)!.promptDelivery).toBeDefined();
+    });
+
+    test('the resume continuation is confirmed by the UserPromptSubmit hook (bracketed paste)', async () => {
+      const first = makeAdapter();
+      const { task, id } = await launch(first);
+      stageSessions(dataHomeOf(id), [['ses_abc123', null, 5]]);
+      await first.stop(id);
+      const adapter = makeAdapter({ promptBracketedPaste: true, promptSubmitConfirmTimeoutMs: 2000 });
+      const pending = adapter.launch(task.id, 'do it', '/workspace', { sessionId: 'kookr-oc1', continuationMessage: 'carry on' }, { tmuxName: 'kookr-oc2' });
+      await vi.waitFor(() => expect(backend.sessions.get('kookr-oc2')?.paneContent).toContain('carry on'));
+      adapter.injectHookEvent('kookr-oc2', hook('UserPromptSubmit', { prompt: 'carry on' }, 'kookr-oc2'));
+      const id2 = await pending;
+      expect(backend.sessions.get(id2)!.spec.args).toEqual(['--session', 'ses_abc123', '/workspace']);
+      expect(taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === id2)!.promptDelivery?.status).toBe('confirmed');
+    });
+
+    test('an unacknowledged resume continuation fails the launch but keeps the conversation data', async () => {
+      const first = makeAdapter();
+      const { task, id } = await launch(first);
+      stageSessions(dataHomeOf(id), [['ses_abc123', null, 5]]);
+      await first.stop(id);
+      const adapter = makeAdapter({ promptBracketedPaste: true });
+      await expect(adapter.launch(task.id, 'do it', '/workspace', { sessionId: 'kookr-oc1' }, { tmuxName: 'kookr-oc2' }))
+        .rejects.toThrow(/did not acknowledge the initial prompt/);
+      expect(await backend.isAlive('kookr-oc2')).toBe(false);
+      expect(existsSync(join(sessionRoot, 'opencode-data', task.id))).toBe(true);
     });
 
     test('a SessionStart that arrives before the session is registered still reaches the session record', async () => {
