@@ -197,7 +197,11 @@ that runs its `.mjs`) run for every session:
   incorrect, `nb merge`/`split` redundant or overloaded entries, and `nb add` at
   most one new lesson (aim ~150 characters; the text also carries the placement
   rule: `<situation>@<slug>` unless the lesson is true in another repo, never
-  `fleet-global` directly) — then allows the stop. A session that opened no shelf
+  `fleet-global` directly) — then allows the stop. A lesson must stay true at
+  another commit and on another task (how to build, test or run the code, a
+  convention, a tool or environment gotcha), never describe what the session just
+  changed or how its task was fixed: the next task may start from a commit where
+  that code does not exist. A session that opened no shelf
   skips the vote/remove/merge steps but may still add one lesson, so a repo or
   situation with no shelf yet can get its first one from a top-level session. Sentinels older than
   `NB_RETRO_TTL_DAYS` (default 7) are pruned; an event with no `session_id`
@@ -232,7 +236,7 @@ shelf: `nb show <shelf>`, then `nb show <shelf>@$KOOKR_REPO_SLUG` when the slug 
 set and the task works in the session's own repo (the project layer wins on
 conflict). At the end it batch-votes by id, removes with
 `nb rm … --reason wrong|obsolete`, and adds at most one lesson (about 150
-characters) to the project shelf unless the lesson is true in another repo, then
+characters, true at any commit and on any task, as above) to the project shelf unless the lesson is true in another repo, then
 to the unscoped shelf. It never writes `fleet-global`. This is the same placement
 rule the retrospective nudge above states.
 
