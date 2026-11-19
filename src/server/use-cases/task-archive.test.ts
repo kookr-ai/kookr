@@ -11,6 +11,7 @@ import {
   DEFAULT_TASK_ARCHIVE_RETENTION_DAYS,
   readArchivedTaskById,
   readArchivedTasks,
+  readArchivedTasksSince,
 } from './task-archive.js';
 
 const NOW = new Date('2026-09-15T12:00:00Z').getTime();
@@ -344,5 +345,31 @@ describe('readArchivedTaskById', () => {
     expect((await readArchivedTaskById(dir, 'a'))?.prompt).toBe('new copy');
     expect((await readArchivedTaskById(dir, 'b'))?.id).toBe('b');
     expect(await readArchivedTaskById(dir, 'zzz')).toBeUndefined();
+  });
+});
+
+describe('readArchivedTasksSince (issue #4184)', () => {
+  it('reads only the window\'s month segments (one month margin) plus the oldest, dedupes ids, and reports oldestArchivedAt', async () => {
+    const dir = await makeArchiveDir();
+    const at = (iso: string) => () => new Date(iso).getTime();
+    await archiveTerminalTasks(dir, [makeTerminalTask('june', new Date('2026-06-10T12:00:00Z'))], { now: at('2026-06-15T12:00:00Z') });
+    await archiveTerminalTasks(dir, [makeTerminalTask('august', new Date('2026-08-10T12:00:00Z'))], { now: at('2026-08-15T12:00:00Z') });
+    await archiveTerminalTasks(dir, [makeTerminalTask('october', new Date('2026-10-10T12:00:00Z'))], { now: at('2026-10-15T12:00:00Z') });
+    const first = makeTerminalTask('dup', new Date('2026-11-10T12:00:00Z'));
+    await archiveTerminalTasks(dir, [first], { now: at('2026-11-15T12:00:00Z') });
+    const again = makeTerminalTask('dup', new Date('2026-11-11T12:00:00Z'));
+    again.name = 'newer copy';
+    await archiveTerminalTasks(dir, [again], { now: at('2026-11-16T12:00:00Z') });
+
+    const read = await readArchivedTasksSince(dir, new Date('2026-11-05T12:00:00Z').getTime(), (t) => ({ id: t.id, name: t.name }));
+    expect(read.segmentsRead).toBe(3); // 202606 (oldest), 202610 (margin), 202611; 202608 skipped
+    expect(read.entries.map((e) => e.id).sort()).toEqual(['dup', 'june', 'october']);
+    expect(read.entries.find((e) => e.id === 'dup')?.name).toBe('newer copy');
+    expect(read.oldestArchivedAt).toBe('2026-06-15T12:00:00.000Z');
+  });
+
+  it('returns an empty result for a missing archive', async () => {
+    const read = await readArchivedTasksSince(await makeArchiveDir(), 0, (t) => t.id);
+    expect(read).toEqual({ entries: [], oldestArchivedAt: null, segmentsRead: 0, skippedLines: 0 });
   });
 });
