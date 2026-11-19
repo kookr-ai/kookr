@@ -12,7 +12,9 @@ Narration reads the Kokoro model from the folder named by `KOKORO_DIR`.
 - `synth.py`    Library: `bed(duration, bpm, sections, seed)` music bed (A minor, Am-F-C-G5, 2 bars
                 each), 13 SFX functions (`synth.SFX` registry), `reverb()` helper. 48 kHz stereo float32.
 - `mix.py`      CLI mixer: narration + bed + SFX, sidechain ducking, soft limiter, ffmpeg loudnorm.
-- `verify.py`   Numerical quality checks (PASS/FAIL table) against a finished mix.
+- `verify.py`   Numerical quality checks (PASS/FAIL table) of a finished mix's report and stems, then of
+                the synthesizer. Its last check times a fixed 46 s mix and needs two short clips
+                named `d01.wav` and `d02.wav` in the narration folder; without them it is skipped.
 - `demo-timeline.json`  20 s example using every SFX and three energy sections.
 
 ## Timeline contract (extra keys ignored)
@@ -26,14 +28,17 @@ Narration reads the Kokoro model from the folder named by `KOKORO_DIR`.
 Energy: 0 pad only (quiet) / 0.3 + sparse pluck / 0.6 + bass pulse / 1.0 + kick and hats.
 Time outside any section is energy 0. t=0 is a downbeat; keep section edges on beats (60/bpm s).
 SFX `args` go to the function (`whoosh`: duration, direction "up"|"down"; `impact`, `riser`,
-`shimmer`: duration). Without `args.seed`, each event gets `seed + its index`.
+`shimmer`: duration; `vote_up`: step 0..3, which lifts the chime so a run of votes climbs). Without `args.seed`, each event gets `seed + its index`.
 
 ## Commands
+Run from the film folder (the one that holds `audio/`). `build.sh audio` runs the first three.
 ```
-PY=python3; export KOKORO_DIR=/path/to/kokoro-model-folder; cd <film folder>
-$PY audio/narrate.py script.json out/narration am_michael 1.0
-$PY audio/mix.py timeline.json out/narration out/final      # -> out/final.{wav,mp3,report.json,stems/}
-$PY audio/verify.py out/final out/narration                 # run from audio/ (imports synth)
-ffmpeg -i out/final.wav -lavfi showspectrumpic=s=1400x600:legend=1 out/final.png
+PY=python3; export KOKORO_DIR=/path/to/kokoro-model-folder
+$PY audio/narrate.py script.json out/vo am_michael 1.08
+$PY audio/make-timeline.py                                  # writes audio/timeline.json
+$PY audio/mix.py audio/timeline.json out/vo out/mix         # -> out/mix.{wav,mp3,report.json,stems/}
+$PY audio/verify.py out/mix out/vo
+$PY audio/audition.py out/audition george 1.0 0 bm_george   # first three script lines in another voice
+ffmpeg -i out/mix.wav -lavfi showspectrumpic=s=1400x600:legend=1 out/mix-spectrum.png
 ```
 mix.py exits with an error if narration clips overlap or run past `duration`.

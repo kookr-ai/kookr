@@ -49,9 +49,9 @@ on these.
 |---|---|---|
 | ffmpeg and ffprobe | `ffmpeg -version` | muxing, loudness, contact sheets |
 | Node.js 18+ | `node -v` | frame grabber, page builder |
-| A headless Chromium and `playwright-core` | `ls ~/.cache/ms-playwright`; find a `playwright-core` in a nearby `node_modules` | frame capture. Reuse an installed browser; do not run `playwright install` on a shared host |
+| A headless Chromium and `playwright-core` | `ls ~/.cache/ms-playwright` (Linux) or `ls ~/Library/Caches/ms-playwright` (macOS); find a `playwright-core` in a nearby `node_modules` | frame capture. Reuse an installed browser; do not run `playwright install` on a shared host |
 | A local text-to-speech voice | for Kokoro: the ONNX model files and a Python environment with `kokoro_onnx` and `soundfile` | narration. Prefer a local engine: a cloud voice sends the script to a third party |
-| Python with numpy, scipy, soundfile | `python -c "import numpy, scipy, soundfile"` | music, effects, mix |
+| Python with numpy, scipy, soundfile | `python3 -c "import numpy, scipy, soundfile"` | music, effects, mix |
 
 Copy `kit/` from this skill into a working folder inside a fresh worktree of the target repository
 (for example `media/<film-name>/`). `kit/README.md` lists every file and command. Nothing in the
@@ -102,7 +102,7 @@ operator will want to see it.
 
 ### 4. Lock the audio before the picture
 
-1. Write the script: 100-125 spoken words for 45-50 seconds. Commands, symbols and numbers stay on
+1. Write the script: 105-130 spoken words for 45-50 seconds. Commands, symbols and numbers stay on
    screen and out of the narrator's mouth.
 2. Record each line as its own clip (`narrate.py`) and read the measured durations.
 3. Find the pauses inside the long lines (`ffmpeg -af silencedetect`). Picture hits belong on the
@@ -137,7 +137,7 @@ rules that make that true are in `kit/README.md` and in the builder brief.
 
 ### 7. Build the sound (parallel with step 6)
 
-`audio/make-timeline.py` turns the storyboard's times into a cue sheet; `audio/mix.py` places the
+`audio/make-timeline.py` (your copy of `audio/make-timeline.example.py`) holds the storyboard's times as a cue sheet; `audio/mix.py` places the
 narration, synthesizes the music bed and effects (`audio/synth.py`), ducks the music under the
 voice, and normalizes loudness. Read the report it writes and check: duration equals the film's,
 integrated loudness within 0.7 of −16 LUFS, no clipped samples, voice 15-20 dB above the music
@@ -145,7 +145,8 @@ while speaking, no two narration clips overlapping.
 
 ### 8. Assemble and publish draft one
 
-`build.sh` renders all frames in parallel shards, muxes the video and writes a contact sheet.
+`build.sh` renders all frames in parallel shards, muxes the video and writes contact sheets (one
+still per second, 24 per sheet).
 `build-artifact.mjs` packs the same film into one self-contained page that plays live, from a template
 you write (`kit/page.example.html` is the source run's). Open that
 page in the headless browser once and confirm: no console errors, the audio element loads, pressing
@@ -157,8 +158,8 @@ section that says **nobody has listened to it**. Then keep going; do not wait fo
 
 ### 9. Round two: review the rendered cut (parallel)
 
-Reviewers cannot play video. Give them contact sheets (one frame per second, time stamped), the
-narration with its times, and the path to every full-size frame. Spawn at once:
+Reviewers cannot play video. Give them the contact sheets `build.sh sheet` wrote (one frame per
+second, time stamped), the narration with its times, and the path to every full-size frame. Spawn at once:
 
 - **Four or five simulated viewers** who know nothing about the product: a skeptic in the target
   audience, a likely adopter, a newcomer to the whole field, and one on a phone with the sound off
@@ -199,6 +200,6 @@ on with whatever does not depend on the answer.
 The source run used fifteen agents: six experts, one audio engineer, two scene builders (each
 resumed once), four viewers, one critic and one fact-checker (run a second time on draft two). The builders were by far the most
 expensive (several hundred thousand tokens each over two rounds) because they look at their own
-frames; the experts and viewers were small. Frame rendering took about two minutes for 1,440 frames
+frames; the experts and viewers were small. Frame rendering took about two minutes for the first draft's 1,440 frames
 in eight shards on a busy machine. Do not add agents to this roster without a reason: a seventh
 expert adds little, and a third builder adds a seam.

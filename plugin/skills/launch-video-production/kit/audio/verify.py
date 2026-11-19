@@ -1,19 +1,21 @@
 #!/usr/bin/env python
 """Numerical quality checks for synth.py / mix.py. Prints a PASS/FAIL table.
 
-usage: python verify.py <demoBase> <narrationDir>
-   e.g. verify.py ../out/audio-demo/demo ../out/audio-demo/narration
+usage: python audio/verify.py <mixBase> <narrationDir>
+   e.g. python audio/verify.py out/mix out/vo
+
+Checks the report and stems of a finished mix (<mixBase>.report.json, <mixBase>.stems/), then the
+synthesizer itself. The last check times a fixed 46 s mix and needs two short clips named d01.wav
+and d02.wav in <narrationDir>; it is skipped, with a printed reason, when they are not there.
 """
 import json, os, resource, subprocess, sys, tempfile, time
 import numpy as np, soundfile as sf
 from scipy import signal
 import synth
 SR = synth.SR
-rows = []
 
 
 def check(name, ok, val):
-    rows.append((name, "PASS" if ok else "FAIL", val))
     print(f"{'PASS' if ok else 'FAIL'}  {name}: {val}", flush=True)
 
 
@@ -31,7 +33,7 @@ b = synth.bed(46, 100, secs, 7)
 jump = np.abs(np.diff(b, axis=0)).max() / np.abs(b).max()
 check("bed max step < 0.2 of peak", jump < 0.2, round(float(jump), 4))
 check("bed ends at zero", float(np.abs(b[-1]).max()) < 1e-4 and float(np.abs(b[0]).max()) < 1e-3, [float(np.abs(b[0]).max()), float(np.abs(b[-1]).max())])
-worst = max(max(abs(float(f()[0]).__float__()) if False else float(np.abs(f()[[0, -1]]).max()) for f in [fn]) for fn in synth.SFX.values())
+worst = max(float(np.abs(fn()[[0, -1]]).max()) for fn in synth.SFX.values())
 check("every SFX starts/ends within 1e-3 of 0", worst < 1e-3, worst)
 check("determinism: same seed -> identical bytes", b.tobytes() == synth.bed(46, 100, secs, 7).tobytes(), "identical")
 check("different seed differs", b.tobytes() != synth.bed(46, 100, secs, 8).tobytes(), "differs")
@@ -113,7 +115,10 @@ tot = 10 * np.log10(np.mean(b8 ** 2))
 mid = 10 * np.log10(np.mean(signal.sosfilt(signal.butter(4, [1000, 4000], "bandpass", fs=SR, output="sos"), b8) ** 2))
 print(f"info: bed@0.8 mid-band (1-4k) is {tot - mid:.1f} dB below its total power")
 
-# ---- performance: 46 s timeline
+# ---- performance: 46 s timeline (needs the two demo clips; a real film's clips have other ids)
+if not all(os.path.exists(os.path.join(narr, n)) for n in ("d01.wav", "d02.wav")):
+    print("SKIP  46 s mix < 30 s: needs d01.wav and d02.wav in the narration folder (two short demo clips)")
+    sys.exit(0)
 tl = {"duration": 46.0, "bpm": 100, "seed": 7,
       "narration": [{"id": "d01" if i % 2 == 0 else "d02", "start": 0.4 + i * 4.5} for i in range(10)],
       "sfx": [{"type": t, "t": 2 + 2 * i, "gain_db": -8} for i, t in enumerate(synth.SFX)],

@@ -5,7 +5,8 @@ usage (needs a Python with numpy, scipy and soundfile, and ffmpeg on PATH):
     python mix.py <timeline.json> <narrationDir> <outBase>
 
 Writes <outBase>.wav (48 kHz stereo 16-bit), <outBase>.mp3 (128 kbps), <outBase>.report.json and
-<outBase>.stems/{voice,music,sfx}.wav (pre-master, float). Timeline contract: see README.md.
+<outBase>.stems/{voice,music,sfx}.wav (pre-master, float) and <outBase>.stems/limited.wav (the
+master before loudness normalization). Timeline contract: see README.md.
 
 Signal flow:  voice ──────────────────────────────┐
               bed -> sidechain duck (voice env) ──┼─> sum -> soft limiter -> loudnorm 2-pass -> wav/mp3

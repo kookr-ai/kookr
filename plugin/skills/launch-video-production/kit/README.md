@@ -10,19 +10,27 @@ Copy this folder into a working folder inside a fresh worktree of the target rep
 | `film.html` | The film page: a 1920×1080 stage, playback controls, the audio element. Loads the files below. |
 | `film.css` | Design tokens, the stage, the scene base. Replace the tokens with the subject's identity; add shared picture elements. |
 | `engine.js` | The timeline engine. `FILM.scene(id, start, end, build)` registers a scene; `FILM.seek(t)` is the only way time advances. |
-| `player.js` | Live playback: the audio element is the clock. Does nothing in render mode (`?render=1`). |
+| `player.js` | Live playback: the audio element is the clock. In render mode (`?render=1`) it only calls `FILM.ready()`, which defines `window.film` for the frame grabber, so every page must load it. |
 | `captions.example.js` | The verbatim caption track shown under the picture. Copy to `captions.js` and fill from the script. |
+| `captions-to-srt.mjs` | Writes `out/captions.srt` from `captions.js`. |
 | `render.mjs` | Frame grabber: steps `film.seek(t)` in headless Chromium and writes PNGs. |
-| `build.sh` | Narration → mix → frames (parallel shards) → video → contact sheet. |
-| `build-artifact.mjs` | Packs the film and its soundtrack into one self-contained review page from a template. |
+| `build.sh` | Narration → mix → frames (parallel shards) → video → contact sheets (one still per second, 24 per sheet). |
+| `build-artifact.mjs` | Packs the film (every `scenes-*.js` and `scenes-*.css` it finds) and its soundtrack into one self-contained review page from a template. |
+| `page.example.html` | The source run's review-page template, as an example of that template. |
 | `storyboard.example.md` | The source run's second storyboard, as a filled-in example of the build contract. |
 | `lib/fonts.example.css` | `@font-face` rules pointing at local font files, so rendering never needs the network. |
 | `audio/` | Narrator, voice auditions, music and effects synthesizer, mixer, measurement checks. See `audio/README.md`. |
 
-You add: `lib/gsap.min.js` (GSAP 3, one file), the font files named in `lib/fonts.css`,
-`components.js` (elements shared by several scenes, with their geometry fixed in one place),
-one `scenes-<x>.js` and `scenes-<x>.css` per builder, `script.json`, `storyboard.md`, and a
-development page per builder (a copy of `film.html` that loads only that builder's files).
+You add:
+
+- `lib/gsap.min.js` (GSAP 3, one file), and `lib/fonts.css` (copy `lib/fonts.example.css`) with the font files it names;
+- `components.js`: elements shared by several scenes, with their geometry fixed in one place;
+- one `scenes-<x>.js` and `scenes-<x>.css` per builder. `film.html` lists `scenes-a` and `scenes-b`:
+  edit its `<link>` and `<script>` tags to match the builders you have. A development page per
+  builder is a copy of `film.html` that loads only that builder's files;
+- `script.json` (`{"lines": [{"id": "l01", "text": "..."}]}`), `captions.js`, `storyboard.md`;
+- `audio/make-timeline.py`: copy `audio/make-timeline.example.py` and replace its times with your storyboard's;
+- `page.html`, the review-page template (see the last section).
 
 ## The rule every scene obeys
 
@@ -48,11 +56,15 @@ AT=0,0.9,2.1 node render.mjs film.html out/stills
 # a burst at 10 fps between two times, to judge motion
 node render.mjs film.html out/burst 10 21.8 23.2
 
-# narration, then the mix (needs KOKORO_DIR and a Python with kokoro_onnx, numpy, scipy, soundfile)
+# narration, then the mix (needs KOKORO_DIR and a Python with kokoro_onnx, numpy, scipy, soundfile).
+# Narration is recorded again only when VOICE, SPEED or script.json changed.
 PY=python3 KOKORO_DIR=/path/to/model ./build.sh audio
 
-# all frames in 8 parallel shards, then the video and a contact sheet
+# all frames in 8 parallel shards, then the video and the contact sheets
 SHARDS=8 ./build.sh frames && OUT=my-film ./build.sh video && ./build.sh sheet
+
+# a subtitle file from captions.js
+node captions-to-srt.mjs captions.js out/my-film.srt
 
 # the playable review page
 OUT=my-film node build-artifact.mjs page.html out/artifact/my-film.html

@@ -1,4 +1,5 @@
-/* Verbatim narration captions, shown under the picture (never inside it) and exported as .srt.
+/* Verbatim narration captions, shown under the picture (never inside it). `captions-to-srt.mjs`
+ * turns this file into a subtitle file.
  * Times are film seconds; they follow the narration starts in storyboard.md and the measured
  * pauses inside each recorded line. */
 FILM.captions = [

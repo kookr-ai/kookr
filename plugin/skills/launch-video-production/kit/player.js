@@ -1,5 +1,5 @@
-/* Live playback shell. In render mode (?render=1) it does nothing: the frame grabber calls
- * film.seek(t) itself. Otherwise the audio element is the clock, so picture and sound cannot
+/* Live playback shell. In render mode (?render=1) it only calls FILM.ready(), which defines
+ * window.film; the frame grabber then calls film.seek(t) itself. Otherwise the audio element is the clock, so picture and sound cannot
  * drift apart; without audio it falls back to the performance clock. */
 (function () {
   const render = /[?&]render=1/.test(location.search);
@@ -15,9 +15,9 @@
   window.addEventListener('resize', fit);
   if (window.ResizeObserver) new ResizeObserver(fit).observe(frame);
 
+  let booted = false;
   window.addEventListener('DOMContentLoaded', boot);
   if (document.readyState !== 'loading') boot();
-  let booted = false;
   function boot() {
     if (booted) return; booted = true;
     FILM.ready();

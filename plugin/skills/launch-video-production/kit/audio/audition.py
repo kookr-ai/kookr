@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Voice audition clips, including Kokoro voice blends (a weighted sum of two voice embeddings).
 usage: audition.py <outDir> <name> <speed> <soften:0|1> <voice[:weight]> [<voice:weight> ...]
-Renders script lines l01, l03 and l11 as <outDir>/<name>-<id>.wav. `soften` turns ". " into "... ",
+Renders the first three lines of script.json as <outDir>/<name>-<id>.wav. `soften` turns ". " into "... ",
 the longer sentence pause Kookr's speech service applies to Kokoro voices."""
 import json, os, re, sys
 import soundfile as sf
@@ -12,9 +12,10 @@ m = os.environ.get("KOKORO_DIR") or sys.exit("Set KOKORO_DIR to the folder holdi
 k = Kokoro(f"{m}/kokoro-v1.0.int8.onnx", f"{m}/voices-v1.0.bin")
 style = sum(w * k.get_voice_style(v) for v, w in recipe)
 here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-lines = {l["id"]: l["text"] for l in json.load(open(os.path.join(here, "script.json")))["lines"]}
+lines = json.load(open(os.path.join(here, "script.json")))["lines"][:3]
 os.makedirs(out, exist_ok=True)
-for i in ("l01", "l03", "l11"):
-    text = re.sub(r"\.\s+", "... ", lines[i]) if soften else lines[i]
+for line in lines:
+    i = line["id"]
+    text = re.sub(r"\.\s+", "... ", line["text"]) if soften else line["text"]
     y, sr = k.create(text, voice=style, speed=speed, lang="en-us")
     sf.write(f"{out}/{name}-{i}.wav", y, sr); print(name, i, round(len(y) / sr, 2), flush=True)

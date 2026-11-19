@@ -27,7 +27,8 @@ function findChromium() {
   const home = process.env.HOME || '';
   for (const cache of [path.join(home, '.cache/ms-playwright'), path.join(home, 'Library/Caches/ms-playwright')]) {
     if (!fs.existsSync(cache)) continue;
-    const shells = fs.readdirSync(cache).filter((d) => d.startsWith('chromium_headless_shell-')).sort().reverse();
+    const build = (d) => Number(d.split('-').pop()) || 0;
+    const shells = fs.readdirSync(cache).filter((d) => d.startsWith('chromium_headless_shell-')).sort((a, b) => build(b) - build(a));
     for (const d of shells) {
       for (const sub of fs.readdirSync(path.join(cache, d))) {
         const bin = path.join(cache, d, sub, 'chrome-headless-shell');
