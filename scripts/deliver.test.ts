@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,8 @@ const CMDS: Commands = { bash: 'bash', node: 'node', repoRoot: '/repo' };
 const HEAD = 'a'.repeat(40);
 const OLD_HEAD = 'b'.repeat(40);
 const BODY = '/tmp/body.md';
+/** Git root of the current directory in the fakes: a checkout other than the script's own `/repo`. */
+const WORKTREE = '/work';
 
 function verdictComment(verdict: 'pass' | 'block', sha: string, createdAt: string) {
   return {
@@ -52,6 +54,8 @@ interface FakeOptions {
   views?: string[];
   existingPr?: string;
   bodyExists?: boolean;
+  /** stdout of `git rev-parse --show-toplevel`; default WORKTREE. */
+  toplevel?: string;
 }
 
 function fakeDeps(o: FakeOptions = {}) {
@@ -71,6 +75,7 @@ function fakeDeps(o: FakeOptions = {}) {
       const code = o.codes?.[l] ?? 0;
       let stdout = '';
       if (l === 'git rev-parse --abbrev-ref') stdout = 'feat/x\n';
+      else if (l === 'git rev-parse --show-toplevel') stdout = o.toplevel ?? `${WORKTREE}\n`;
       else if (l === 'git log -1') stdout = 'feat(x): do it\n';
       else if (l === 'gh pr list') stdout = o.existingPr ?? (created ? '42\n' : '');
       else if (l === 'gh pr create') created = true;
@@ -270,36 +275,85 @@ describe('pnpm deliver run', () => {
   });
 });
 
-describe('default PR body file (issue #4200)', () => {
+describe('default PR body file (issues #4200, #4209)', () => {
   const REAL_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-  const DEFAULT_BODY = '/repo/.tmp/kookr-deliver-feat_x.md';
+  const DEFAULT_BODY = `${WORKTREE}/.tmp/kookr-deliver-feat_x.md`;
+  const isInside = (root: string, file: string) => {
+    const rel = relative(root, file);
+    return !rel.startsWith('..') && !isAbsolute(rel);
+  };
 
-  test('without --body-file, pr-body scaffolds and verifies a file inside the repository root', async () => {
+  test('without --body-file, pr-body scaffolds and verifies a file inside the git root of the current directory', async () => {
     const { deps, writes, argvOf } = fakeDeps();
-    const code = await deliver(parseArgs(['--from', 'pr-body', '--to', 'pr-body']), deps, CMDS);
+    const code = await deliver(parseArgs(['--from', 'pr-body', '--to', 'pr']), deps, CMDS);
     expect(code).toBe(EXIT_OK);
     expect(writes).toEqual([DEFAULT_BODY]);
     expect(argvOf('kookr pr-checklist verify')).toContain(DEFAULT_BODY);
-    const rel = relative(CMDS.repoRoot, DEFAULT_BODY);
-    expect(rel.startsWith('..') || isAbsolute(rel)).toBe(false);
+    expect(argvOf('gh pr create')).toContain(DEFAULT_BODY);
+    // The script's own checkout (`/repo`) still provides bin/kookr.js…
+    expect(argvOf('kookr pr-checklist verify')[1]).toBe('/repo/bin/kookr.js');
+    // …but the body file is in the checkout being delivered, where verify accepts it.
+    expect(isInside(WORKTREE, DEFAULT_BODY)).toBe(true);
+    expect(isInside(CMDS.repoRoot, DEFAULT_BODY)).toBe(false);
+  });
+
+  test('run from another checkout, the default body file lands in that checkout, not the script\'s', async () => {
+    // A real second repository, as `node /other-checkout/scripts/deliver.ts` run from
+    // a different worktree sees it: the script lives in REAL_ROOT, the cwd is `other`.
+    const other = mkdtempSync(join(tmpdir(), 'deliver-other-checkout-'));
+    try {
+      execFileSync('git', ['init', '-q', other]);
+      const sub = join(other, 'nested', 'dir');
+      mkdirSync(sub, { recursive: true });
+      const otherRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: other, encoding: 'utf8' }).trim();
+      const { deps, writes, argvOf } = fakeDeps();
+      const fakeRun = deps.run;
+      // Only the root lookup is real, run from a subdirectory of the other checkout.
+      deps.run = (cmd, args, o) =>
+        cmd === 'git' && args[1] === '--show-toplevel'
+          ? { code: 0, stdout: execFileSync(cmd, args, { cwd: sub, encoding: 'utf8' }) }
+          : fakeRun(cmd, args, o);
+      const cmds: Commands = { bash: 'bash', node: 'node', repoRoot: REAL_ROOT };
+      expect(await deliver(parseArgs(['--from', 'pr-body', '--to', 'pr-body']), deps, cmds)).toBe(EXIT_OK);
+      const file = join(otherRoot, '.tmp', 'kookr-deliver-feat_x.md');
+      expect(writes).toEqual([file]);
+      expect(argvOf('kookr pr-checklist verify')).toContain(file);
+      expect(isInside(REAL_ROOT, writes[0])).toBe(false);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  test('outside a git repository the default body file stops the run with exit 4, before any write', async () => {
+    const { deps, calls, writes, logs } = fakeDeps({ codes: { 'git rev-parse --show-toplevel': 128 }, toplevel: '' });
+    expect(await deliver(parseArgs(['--from', 'pr-body']), deps, CMDS)).toBe(EXIT_NEEDS_DECISION);
+    expect(writes).toEqual([]);
+    expect(calls).not.toContain('kookr pr-checklist scaffold');
+    expect(logs.at(-1)).toContain('stopped at pr-body: step pr-body: cannot resolve the git root of the current directory');
+  });
+
+  test('--body-file needs no git root lookup', async () => {
+    const { deps, calls } = fakeDeps();
+    expect(await deliver(opts('--from', 'pr-body', '--to', 'pr'), deps, CMDS)).toBe(EXIT_OK);
+    expect(calls).not.toContain('git rev-parse --show-toplevel');
   });
 
   test('the default path is inside the real checkout and git-ignored, so it never changes the commit', () => {
-    const file = bodyFilePath(parseArgs([]), { bash: 'bash', node: 'node', repoRoot: REAL_ROOT }, 'fix/issue-1');
+    const file = bodyFilePath(parseArgs([]), REAL_ROOT, 'fix/issue-1');
     const rel = relative(REAL_ROOT, file);
     expect(rel).toBe(join('.tmp', 'kookr-deliver-fix_issue-1.md'));
     // `git check-ignore` exits 0 when the path is ignored and throws otherwise.
     expect(() => execFileSync('git', ['check-ignore', '-q', rel], { cwd: REAL_ROOT })).not.toThrow();
   });
 
-  test('--dry-run prints the in-repo default body file', async () => {
+  test('--dry-run prints the default body file under a checkout-root placeholder', async () => {
     const logs: string[] = [];
     const { deps } = fakeDeps();
     deps.log = (l) => logs.push(l);
     await deliver(parseArgs(['--dry-run', '--from', 'pr-body', '--to', 'pr']), deps, CMDS);
     const text = logs.join('\n');
-    expect(text).toContain('--pr-body /repo/.tmp/kookr-deliver-<current-branch>.md');
-    expect(text).toContain('--body-file /repo/.tmp/kookr-deliver-<current-branch>.md');
+    expect(text).toContain('--pr-body <checkout-root>/.tmp/kookr-deliver-<current-branch>.md');
+    expect(text).toContain('--body-file <checkout-root>/.tmp/kookr-deliver-<current-branch>.md');
   });
 
   test('the real writeFile creates the missing parent directory (fresh worktree, no .tmp/)', () => {
