@@ -4,8 +4,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createLucyInteractionLog } from './lucy-interaction-log.js';
 import {
+  classifyLaunchChannel,
+  isoWeekLabel,
   summarizeLucyInteractionFiles,
   summarizeLucyInteractionLines,
+  summarizeOperatorLaunches,
+  type LaunchTaskFacts,
 } from './lucy-interaction-summary.js';
 
 const NOW = new Date('2026-11-11T12:00:00.000Z');
@@ -319,5 +323,142 @@ describe('summarizeLucyInteractionFiles', () => {
     const s = await summarizeLucyInteractionFiles(join(dir, 'nope.jsonl'), { days: 7, now: NOW });
     expect(s.filesRead).toBe(0);
     expect(s.said.count).toBe(0);
+  });
+});
+
+function action(over: Record<string, unknown>, ts = '2026-11-11T10:00:00.000Z'): string {
+  return JSON.stringify({ v: 1, ts, kind: 'action', actor: 'lucy-operator', conversationId: 'c1', ...over });
+}
+
+describe('lucyActions (issue #4184)', () => {
+  it('counts only event:done action lines in the window, per action, with unknown actions as other', () => {
+    const s = summarizeLucyInteractionLines([
+      action({ event: 'done', action: 'answer' }),
+      action({ event: 'done', action: 'answer' }),
+      action({ event: 'done', action: 'reply' }),
+      action({ event: 'done', action: 'close' }),
+      action({ event: 'done', action: '__proto__' }),
+      action({ event: 'proposed', action: 'reply' }),
+      action({ event: 'refused', action: 'close' }),
+      action({ event: 'declined', action: 'answer' }),
+      action({ event: 'done', action: 'reply' }, '2026-10-01T00:00:00.000Z'),
+    ], { days: 7, now: NOW });
+    expect(s.lucyActions).toEqual({ scope: 'lucy-only', total: 5, byAction: { answer: 2, reply: 1, close: 1, other: 1 } });
+    expect(s.corruptLines).toBe(0);
+  });
+
+  it('treats action and launch lines as valid, not corrupt, and leaves the speech figures alone', () => {
+    const s = summarizeLucyInteractionLines([
+      JSON.stringify({ v: 1, ts: '2026-11-11T10:00:00.000Z', kind: 'launch', conversationId: 'c1', event: 'launched' }),
+      action({ event: 'no_proposal' }),
+      said('ok'),
+    ], { days: 7, now: NOW });
+    expect(s.corruptLines).toBe(0);
+    expect(s.said.count).toBe(1);
+    expect(s.lucyActions.total).toBe(0);
+  });
+});
+
+describe('operator launches by channel (issue #4184)', () => {
+  // Thursday 2026-11-19 12:00 UTC; a 14-day window opens Thursday 2026-11-05 12:00 UTC.
+  const LNOW = new Date('2026-11-19T12:00:00.000Z');
+  let seq = 0;
+  function t(over: Partial<LaunchTaskFacts> & { at?: string } = {}): LaunchTaskFacts {
+    const { at = '2026-11-18T09:00:00.000Z', ...rest } = over;
+    return { id: `t${++seq}`, createdAtMs: Date.parse(at), ...rest };
+  }
+
+  it.each<[Partial<LaunchTaskFacts>, string]>([
+    [{ launchSource: 'api', launchActorId: 'lucy-operator' }, 'lucy'],
+    [{ launchSource: 'websocket' }, 'dashboard'],
+    [{ launchSource: 'ui' }, 'dashboard'],
+    [{ launchSource: 'remote-chat-telegram' }, 'telegram'],
+    [{ launchSource: 'cli' }, 'cli'],
+    [{ launchSource: 'api' }, 'apiOther'],
+    [{ launchSource: 'api', launchActorId: 'kookr' }, 'apiOther'],
+    [{ launchSource: 'api', provenanceKind: 'parent' }, 'agentOrAutomation'],
+    [{ launchSource: 'cli', provenanceKind: 'parent' }, 'agentOrAutomation'],
+    [{ provenanceKind: 'parent' }, 'agentOrAutomation'],
+    [{ launchSource: 'cli', provenanceKind: 'manual' }, 'cli'],
+    [{ launchSource: 'schedule' }, 'agentOrAutomation'],
+    [{ launchSource: 'chain' }, 'agentOrAutomation'],
+    [{ launchSource: 'supervision' }, 'agentOrAutomation'],
+    [{ launchSource: 'idle-refinery' }, 'agentOrAutomation'],
+    [{ launchSource: 'post-recovery' }, 'agentOrAutomation'],
+    [{ launchSource: 'resource-watchdog' }, 'agentOrAutomation'],
+    [{ launchSource: 'remote-relay' }, 'agentOrAutomation'],
+    [{}, 'unknown'],
+    [{ launchSource: 'from-the-future' }, 'unknown'],
+  ])('classifies %j as %s', (facts, channel) => {
+    expect(classifyLaunchChannel({ id: 'x', createdAtMs: 0, ...facts })).toBe(channel);
+  });
+
+  it('counts every channel, computes lucyShare over interactive channels only, and buckets UTC ISO weeks', () => {
+    const live = [
+      t({ launchSource: 'api', launchActorId: 'lucy-operator' }),
+      t({ launchSource: 'api', launchActorId: 'lucy-operator', at: '2026-11-09T00:00:00.000Z' }), // Monday W46
+      t({ launchSource: 'websocket' }),
+      t({ launchSource: 'ui', at: '2026-11-08T23:59:59.000Z' }), // Sunday, still W45
+      t({ launchSource: 'remote-chat-telegram' }),
+      t({ launchSource: 'cli' }),
+      t({ launchSource: 'cli' }),
+      t({ launchSource: 'api' }),
+      t({ launchSource: 'api', provenanceKind: 'parent' }),
+      t({ launchSource: 'schedule' }),
+      t({}),
+      t({ launchSource: 'websocket', at: '2026-11-01T00:00:00.000Z' }), // before the window
+    ];
+    const s = summarizeOperatorLaunches({ liveTasks: live, archivedTasks: [], archiveOldestAt: null, days: 14, now: LNOW });
+    expect(s.counts).toEqual({ lucy: 2, dashboard: 2, telegram: 1, cli: 2, apiOther: 1, agentOrAutomation: 2, unknown: 1 });
+    expect(s.total).toBe(11);
+    // 2 / (2 + 2 + 1): cli, apiOther, parent-spawned and scheduled launches are not in the denominator.
+    expect(s.lucyShare).toBe(0.4);
+    expect(s.weeks.map((w) => [w.week, w.start, w.partial])).toEqual([
+      ['2026-W45', '2026-11-02T00:00:00.000Z', true],
+      ['2026-W46', '2026-11-09T00:00:00.000Z', false],
+      ['2026-W47', '2026-11-16T00:00:00.000Z', true],
+    ]);
+    expect(s.weeks[0].counts.dashboard).toBe(1);
+    expect(s.weeks[0].lucyShare).toBe(0);
+    expect(s.weeks[1].counts.lucy).toBe(1);
+    expect(s.weeks[1].lucyShare).toBe(1);
+    expect(s.weeks[2].counts).toEqual({ lucy: 1, dashboard: 1, telegram: 1, cli: 2, apiOther: 1, agentOrAutomation: 2, unknown: 1 });
+    expect(s.weeks[2].lucyShare).toBe(0.3333);
+  });
+
+  it('reports a null share (not 0) and empty weeks when no interactive launch happened', () => {
+    const s = summarizeOperatorLaunches({
+      liveTasks: [t({ launchSource: 'cli' })], archivedTasks: [], archiveOldestAt: null, days: 7, now: LNOW,
+    });
+    expect(s.lucyShare).toBeNull();
+    expect(s.weeks).toHaveLength(2);
+    expect(s.weeks[0].counts.cli).toBe(0);
+    expect(s.weeks[0].lucyShare).toBeNull();
+  });
+
+  it('includes archived tasks in the window and counts a task in both the store and the archive once', () => {
+    const shared = t({ launchSource: 'api', launchActorId: 'lucy-operator' });
+    const s = summarizeOperatorLaunches({
+      liveTasks: [shared, t({ launchSource: 'websocket' })],
+      archivedTasks: [
+        { ...shared, launchActorId: undefined }, // stale archived copy: the live one wins
+        t({ launchSource: 'websocket', at: '2026-11-10T08:00:00.000Z' }),
+        t({ launchSource: 'websocket', at: '2026-10-01T08:00:00.000Z' }), // archived, outside the window
+      ],
+      archiveOldestAt: '2026-08-20T00:00:00.000Z',
+      days: 14,
+      now: LNOW,
+    });
+    expect(s.counts.lucy).toBe(1);
+    expect(s.counts.apiOther).toBe(0);
+    expect(s.counts.dashboard).toBe(2);
+    expect(s.sources).toEqual({ store: 2, archive: 1 });
+    expect(s.archiveOldestAt).toBe('2026-08-20T00:00:00.000Z');
+  });
+
+  it('labels ISO weeks across a year boundary by their ISO week-year', () => {
+    expect(isoWeekLabel(Date.parse('2026-12-28T00:00:00.000Z'))).toBe('2026-W53'); // holds 2027-01-01
+    expect(isoWeekLabel(Date.parse('2024-12-30T00:00:00.000Z'))).toBe('2025-W01');
+    expect(isoWeekLabel(Date.parse('2026-11-16T00:00:00.000Z'))).toBe('2026-W47');
   });
 });

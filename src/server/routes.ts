@@ -47,7 +47,7 @@ import { registerSessionSharingRecoveryRoutes } from './routes/session-sharing-r
 import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
 import { registerViewerShareRoutes, isViewerShareRoute } from './routes/viewer-share-routes.js';
 import { registerDictationCorpusRoutes } from './routes/dictation-corpus-routes.js';
-import { registerSpeechRoutes } from './routes/speech-routes.js';
+import { lucyLaunchTaskSource, registerSpeechRoutes } from './routes/speech-routes.js';
 import { registerLucyLiveRoutes } from './routes/lucy-live-routes.js';
 import { registerLucyOperatorRoutes } from './routes/lucy-operator-routes.js';
 import { registerLucyPermissionRoutes } from './routes/lucy-permission-routes.js';
@@ -282,6 +282,7 @@ export function createRoutes(deps: RouteDeps): Hono {
     ttsVoice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
     lucyLog: deps.lucyInteractionLog,
     lucyLogPath: deps.lucyInteractionLogPath,
+    launchTaskSource: lucyLaunchTaskSource(sharedDeps.taskStore, sharedDeps.kookrDir),
   });
   registerLucyLiveRoutes(app, { lucyLiveStatus: deps.lucyLiveStatus, getLucyLiveStatus: deps.getLucyLiveStatus });
   const lucyOperator = buildLucyOperator(sharedDeps, { lifecycleCommands: taskLifecycleCommands });

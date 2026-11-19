@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { registerSpeechRoutes } from './speech-routes.js';
+import { lucyLaunchTaskSource, registerSpeechRoutes, type LaunchTaskSource } from './speech-routes.js';
+import { archiveTerminalTasks, TASK_ARCHIVE_DIRNAME } from '../use-cases/task-archive.js';
+import type { Task } from '../../core/tasks.js';
 import { AgentSpeakCache } from '../agent-speak-cache.js';
 import { TaskSpeechSummaryCache } from '../task-speech-summary-cache.js';
 import type { RouteDeps } from './shared.js';
@@ -58,6 +60,7 @@ function mkApp(opts: {
   newRequestId?: () => string;
   lucyLog?: LucyInteractionLog;
   lucyLogPath?: string;
+  launchTaskSource?: LaunchTaskSource;
   ttsVoice?: string;
   settings?: unknown;
 }): Hono {
@@ -77,6 +80,7 @@ function mkApp(opts: {
     newRequestId: opts.newRequestId ?? (() => 'req-fixed'),
     lucyLog: opts.lucyLog,
     lucyLogPath: opts.lucyLogPath,
+    launchTaskSource: opts.launchTaskSource,
     ttsVoice: opts.ttsVoice,
   });
   return app;
@@ -943,6 +947,71 @@ describe('Lucy interaction log wiring', () => {
       const body = await (await app.request(url)).json();
       expect(body.days).toBe(expected);
     });
+  });
+
+  test('summary composes operatorLaunches from the store and the archive (issue #4184)', async () => {
+    // The log file need not exist: a missing log reads as empty.
+    const lucyLogPath = join(tmpdir(), `lucy-route-missing-${process.pid}.jsonl`);
+    const recent = Date.now() - 60_000;
+    let askedSince: number | undefined;
+    const app = mkApp({
+      lucyLogPath,
+      launchTaskSource: {
+        liveTasks: () => [
+          { id: 'a', createdAtMs: recent, launchSource: 'api', launchActorId: 'lucy-operator' },
+          { id: 'b', createdAtMs: recent, launchSource: 'websocket' },
+        ],
+        archivedTasksSince: async (sinceMs) => {
+          askedSince = sinceMs;
+          return {
+            tasks: [
+              { id: 'a', createdAtMs: recent, launchSource: 'api' },
+              { id: 'c', createdAtMs: recent, launchSource: 'remote-chat-telegram' },
+            ],
+            oldestArchivedAt: '2026-01-01T00:00:00.000Z',
+          };
+        },
+      },
+    });
+    const body = await (await app.request('/api/diagnostics/lucy-interactions/summary?days=30')).json();
+    expect(body.schemaVersion).toBe('lucy-interactions-summary.v1');
+    expect(body.lucyActions).toEqual({ scope: 'lucy-only', total: 0, byAction: {} });
+    expect(body.operatorLaunches).toMatchObject({
+      total: 3,
+      counts: { lucy: 1, dashboard: 1, telegram: 1 },
+      lucyShare: 0.3333,
+      archiveOldestAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(Date.parse(body.since)).toBe(askedSince);
+  });
+
+  test('lucyLaunchTaskSource projects store tasks and reads <kookrDir>/task-archive', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'lucy-launch-src-'));
+    try {
+      const created = new Date();
+      const task = (id: string, metadata: Record<string, unknown>, provenance?: Record<string, unknown>) =>
+        ({ id, createdAt: created, updatedAt: created, sessions: [], metadata, ...(provenance ? { provenance } : {}) }) as unknown as Task;
+      await archiveTerminalTasks(join(kookrDir, TASK_ARCHIVE_DIRNAME), [task('arch', { launchSource: 'ui' })]);
+      const source = lucyLaunchTaskSource(
+        { viewTasks: () => [task('live', { launchSource: 'api', launchActorId: 'lucy-operator' }, { kind: 'manual' })] },
+        kookrDir,
+      );
+      expect([...source.liveTasks()]).toEqual([
+        { id: 'live', createdAtMs: created.getTime(), launchSource: 'api', launchActorId: 'lucy-operator', provenanceKind: 'manual' },
+      ]);
+      const archived = await source.archivedTasksSince(created.getTime() - 1000);
+      expect([...archived.tasks]).toEqual([{ id: 'arch', createdAtMs: created.getTime(), launchSource: 'ui' }]);
+      expect(archived.oldestArchivedAt).not.toBeNull();
+      const noDir = await lucyLaunchTaskSource({ viewTasks: () => [] }, undefined).archivedTasksSince(0);
+      expect(noDir).toEqual({ tasks: [], oldestArchivedAt: null });
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
+  });
+
+  test('summary leaves operatorLaunches out when no task source is wired', async () => {
+    const body = await (await mkApp({ lucyLogPath: join(tmpdir(), `lucy-route-missing-${process.pid}.jsonl`) }).request('/api/diagnostics/lucy-interactions/summary')).json();
+    expect(body).not.toHaveProperty('operatorLaunches');
   });
 
   test('summary endpoint is 503 without a configured log path', async () => {

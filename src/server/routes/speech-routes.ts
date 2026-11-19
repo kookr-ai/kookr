@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import type { Context, Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
+import type { TaskStore } from '../../core/tasks.js';
 import { AgentSpeakCache } from '../agent-speak-cache.js';
 import { TaskSpeechSummaryCache, type TaskSpeakResult } from '../task-speech-summary-cache.js';
 import {
@@ -9,7 +11,13 @@ import {
   type LucyInteractionLog,
   type LucySaidRecordInput,
 } from '../lucy-interaction-log.js';
-import { summarizeLucyInteractionFiles } from '../lucy-interaction-summary.js';
+import {
+  summarizeLucyInteractionFiles,
+  summarizeOperatorLaunches,
+  launchTaskFacts,
+  type LaunchTaskFacts,
+} from '../lucy-interaction-summary.js';
+import { readArchivedTasksSince, TASK_ARCHIVE_DIRNAME } from '../use-cases/task-archive.js';
 import { getAgentStateProjected, getTaskAgentsProjected } from '../use-cases/get-snapshot.js';
 import { buildTaskSpeechSubject } from '../use-cases/task-speech-summary-input.js';
 import { TTSClientError } from '../../adapters/tts-client.js';
@@ -69,6 +77,36 @@ export interface SpeechRouteOptions {
   lucyLog?: LucyInteractionLog;
   /** Path of the Lucy log, read by the summary endpoint. Omitted → endpoint reports no log. */
   lucyLogPath?: string;
+  /**
+   * Task records for the summary's `operatorLaunches` section (issue #4184).
+   * Omitted → the section is left out of the response.
+   */
+  launchTaskSource?: LaunchTaskSource;
+}
+
+/** The production {@link LaunchTaskSource}: the task store, and `<kookrDir>/task-archive` when a data dir is known. */
+export function lucyLaunchTaskSource(
+  taskStore: Pick<TaskStore, 'viewTasks'>,
+  kookrDir: string | undefined,
+): LaunchTaskSource {
+  return {
+    liveTasks: () => taskStore.viewTasks().map(launchTaskFacts),
+    archivedTasksSince: async (sinceMs) => {
+      if (!kookrDir) return { tasks: [], oldestArchivedAt: null };
+      const read = await readArchivedTasksSince(join(kookrDir, TASK_ARCHIVE_DIRNAME), sinceMs, launchTaskFacts);
+      return { tasks: read.entries, oldestArchivedAt: read.oldestArchivedAt };
+    },
+  };
+}
+
+/** Where the Lucy summary reads launch records from: the live task store and the task archive. */
+export interface LaunchTaskSource {
+  liveTasks(): Iterable<LaunchTaskFacts>;
+  /**
+   * Archived tasks that may have been created at or after `sinceMs`, in one
+   * bounded pass (see `readArchivedTasksSince`), plus the archive's oldest `archivedAt`.
+   */
+  archivedTasksSince(sinceMs: number): Promise<{ tasks: Iterable<LaunchTaskFacts>; oldestArchivedAt: string | null }>;
 }
 
 const LUCY_SUMMARY_DEFAULT_DAYS = 7;
@@ -413,7 +451,20 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
     }
     await lucyLog.flush();
     const days = parseSummaryDays(c.req.query('days'));
-    return c.json(await summarizeLucyInteractionFiles(options.lucyLogPath, { days }));
+    const now = new Date();
+    const summary = await summarizeLucyInteractionFiles(options.lucyLogPath, { days, now });
+    const source = options.launchTaskSource;
+    if (!source) return c.json(summary);
+    // One bounded archive pass per request: about ceil(days/30) + 2 month segments, read whole.
+    const archived = await source.archivedTasksSince(now.getTime() - days * 24 * 60 * 60 * 1000);
+    const operatorLaunches = summarizeOperatorLaunches({
+      liveTasks: source.liveTasks(),
+      archivedTasks: archived.tasks,
+      archiveOldestAt: archived.oldestArchivedAt,
+      days,
+      now,
+    });
+    return c.json({ ...summary, operatorLaunches });
   });
 
   app.post('/api/tasks/:taskId/speak-summary', async (c) => {

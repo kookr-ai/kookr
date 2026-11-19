@@ -370,6 +370,70 @@ export async function readArchivedTaskById(archiveDir: string, taskId: string): 
   return best?.task;
 }
 
+export interface ReadArchivedTasksSinceResult<T> {
+  /** One projected entry per distinct task id (newest `archivedAt` copy), from the segments read. */
+  entries: T[];
+  /** Earliest `archivedAt` in the whole archive (from its oldest segment); null when the archive is empty. */
+  oldestArchivedAt: string | null;
+  /** Segment files read; at most the window's months plus the oldest one. */
+  segmentsRead: number;
+  /** Malformed lines skipped while reading. */
+  skippedLines: number;
+}
+
+/**
+ * Window-aware single pass over the archive (issue #4184), for consumers that
+ * need every task created since `sinceMs`, not a page.
+ *
+ * A task is archived at or after its creation, so a task created after
+ * `sinceMs` can only sit in a segment whose month is not earlier than
+ * `sinceMs`'s month. Segment names use the server's local month; one extra
+ * month of margin covers any time-zone shift. Older segments are skipped, except
+ * the oldest one, which is read to report `oldestArchivedAt` (where retained
+ * history starts); its records are returned too, the caller filters by
+ * creation time. Each record is projected as it is read, so callers keep only
+ * the fields they need instead of whole tasks.
+ *
+ * Cost: one `readFile` + parse per segment read — about `ceil(days/30) + 2`
+ * month files for a `days` window, never more than the retained archive.
+ */
+export async function readArchivedTasksSince<T>(
+  archiveDir: string,
+  sinceMs: number,
+  project: (task: Task) => T,
+): Promise<ReadArchivedTasksSinceResult<T>> {
+  const segments = (await listSegments(archiveDir)).sort();
+  if (segments.length === 0) return { entries: [], oldestArchivedAt: null, segmentsRead: 0, skippedLines: 0 };
+  const margin = new Date(sinceMs);
+  margin.setDate(1);
+  margin.setMonth(margin.getMonth() - 1);
+  const firstSegment = segmentName(margin.getTime());
+  const toRead = segments.filter((s, i) => i === 0 || s >= firstSegment);
+
+  const latestById = new Map<string, { archivedAt: string; entry: T }>();
+  let oldestArchivedAt: string | null = null;
+  let skippedLines = 0;
+  for (const segment of toRead) {
+    const { records, skippedLines: skipped } = await parseSegment(join(archiveDir, segment));
+    skippedLines += skipped;
+    for (const record of records) {
+      if (segment === segments[0] && (oldestArchivedAt === null || record.archivedAt < oldestArchivedAt)) {
+        oldestArchivedAt = record.archivedAt;
+      }
+      const existing = latestById.get(record.task.id);
+      if (!existing || record.archivedAt >= existing.archivedAt) {
+        latestById.set(record.task.id, { archivedAt: record.archivedAt, entry: project(record.task) });
+      }
+    }
+  }
+  return {
+    entries: Array.from(latestById.values(), (v) => v.entry),
+    oldestArchivedAt,
+    segmentsRead: toRead.length,
+    skippedLines,
+  };
+}
+
 function clampLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_ARCHIVE_PAGE_LIMIT;
   const floored = Math.floor(limit);
