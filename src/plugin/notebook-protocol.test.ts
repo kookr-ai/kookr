@@ -113,6 +113,9 @@ describe('notebook protocol source (plugin/skills/notebook-role-reuse/references
     expect(block).toContain('nb vote <shelf> <id1,id2,…> +1');
     expect(block).toContain('nb rm <shelf> <id> --reason wrong|obsolete');
     expect(block).toMatch(/about 150 characters/);
+    // The durable-lesson rule, worded like the retrospective hook (plugin/hooks/nb-retro.mjs) (#4222).
+    expect(block).toContain('stay true at another commit and on another task');
+    expect(block).toContain('never what you just changed or how this task was fixed');
     expect(block).toContain('example-shelf@$KOOKR_REPO_SLUG` unless it would be true in another repo');
     expect(block).toContain('unscoped `example-shelf` shelf');
     expect(block).toMatch(/Never write `fleet-global` directly/);

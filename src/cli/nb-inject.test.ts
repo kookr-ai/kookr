@@ -72,6 +72,9 @@ describe('nb-inject SessionStart hook', () => {
     // rather than inventing a synonym shelf (issue #4203).
     expect(r.out).toContain('Even if you opened no shelf, add it to a shelf from this index if one fits');
     expect(r.out).toContain('create a new shelf only if none does');
+    // The durable-lesson rule is announced up front, not only at Stop (issue #4222).
+    expect(r.out).toContain('stays true at another commit and on another task');
+    expect(r.out).toContain('never what you just changed or how this task was fixed');
     expect(r.out).toContain('code-review'); // the index itself, from `nb list`
     expect(r.out).toContain('patch-author');
     expect(r.out).toContain('review a diff'); // the description surfaces

@@ -66,6 +66,9 @@ const PREAMBLE =
   `index again and open another shelf.\n` +
   `At the end you will be asked for a short retrospective on the shelves you opened — vote the ` +
   `lessons that helped, \`nb rm\` any that were wrong, and \`nb add\` at most one new lesson (or none). ` +
+  `Keep only a lesson that stays true at another commit and on another task (how to build, test or ` +
+  `run the code, a convention, a tool or environment gotcha), never what you just changed or how this ` +
+  `task was fixed. ` +
   `Even if you opened no shelf, add it to a shelf from this index if one fits; create a new shelf only ` +
   `if none does. ` +
   `Vote by the \`<id>\` \`nb show\` prints at the start of each line, not a fuzzy text query (a ` +
