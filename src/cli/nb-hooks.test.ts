@@ -105,6 +105,10 @@ describe('nb-retro Stop/SubagentStop hook', () => {
     // A session that opened no shelf must still be allowed to seed a first lesson;
     // otherwise an empty store (or a repo with no shelf yet) never gets one.
     expect(r.err).not.toMatch(/skip it entirely/);
+    // A lesson must outlive the commit it was learned at (benchmark runs wrote lessons about code the
+    // session had just added, which later tasks starting from older commits do not have).
+    expect(r.err).toMatch(/stays true at another commit and on another task/);
+    expect(r.err).toMatch(/Never what you just changed or how this task was fixed/);
     expect(r.err).toMatch(/if you opened none, skip them, but step 5 still applies/);
     // ...and that first lesson goes on a fitting existing shelf, not an invented synonym
     // shelf (issue #4203): a new shelf only when no shelf in the session index fits.

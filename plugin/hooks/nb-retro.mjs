@@ -124,6 +124,9 @@ process.stderr.write(
     `only if lessons repeat or one line holds two\n` +
     `  5. nb add  <shelf> "<lesson>"   at MOST one new, non-obvious lesson, or none. ` +
     `Aim for ~150 characters, one clause, no preamble.\n` +
+    `     Keep only what stays true at another commit and on another task: how to build, test or run ` +
+    `the code, a convention, a tool or environment gotcha. Never what you just changed or how this ` +
+    `task was fixed: the next task may start from a commit where that code does not exist.\n` +
     `     Placement: add to <situation>@<slug> (slug = $KOOKR_REPO_SLUG${slugHint}) unless the lesson ` +
     `would be true in another repo, then add it to the unscoped <situation> shelf instead. ` +
     `Never write fleet-global directly.\n` +

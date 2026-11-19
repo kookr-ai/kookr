@@ -72,6 +72,6 @@ A shelf name carries its layer. `design-minimalist@$KOOKR_REPO_SLUG` is the **pr
 
 - `nb vote <shelf> <id1,id2,…> +1` for lessons that helped and `-1` for ones that misled you. An `<id>` is the short token at the start of each `nb show` line; give several ids at once. `<shelf>` is whichever of the two shelves the lesson came from.
 - `nb rm <shelf> <id> --reason wrong|obsolete` for a lesson that is incorrect (`wrong`) or no longer true (`obsolete`).
-- `nb add <shelf> "<lesson>"`: at most one new, non-obvious lesson, about 150 characters, or none. Add it to `design-minimalist@$KOOKR_REPO_SLUG` unless it would be true in another repo, then add it to the unscoped `design-minimalist` shelf instead. With no project shelf available (slug unset, or the task is in another repo), add it to `design-minimalist` only if it is true in any repo.
+- `nb add <shelf> "<lesson>"`: at most one new, non-obvious lesson, about 150 characters, or none. It must stay true at another commit and on another task (how to build, test or run the code, a convention, a tool or environment gotcha), never what you just changed or how this task was fixed. Add it to `design-minimalist@$KOOKR_REPO_SLUG` unless it would be true in another repo, then add it to the unscoped `design-minimalist` shelf instead. With no project shelf available (slug unset, or the task is in another repo), add it to `design-minimalist` only if it is true in any repo.
 
 A multi-step procedure belongs in a skill, not the notebook.
