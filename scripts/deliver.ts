@@ -73,7 +73,7 @@ Options:
                           (for example: independent-review).
   --bypass-reason <text>  Write a bypass review marker with this reason instead.
   --body-file <path>      PR body file (default: .tmp/kookr-deliver-<branch>.md in the
-                          repository root, git-ignored).
+                          root of the checkout you run it from, git-ignored).
   --title <text>          PR title (default: subject of the last commit).
   --base <branch>         PR base branch (default: main).
   --repo <owner/name>     Repository for gh and kookr merge (default: the current one).
@@ -224,7 +224,11 @@ export function realDeps(): DeliverDeps {
 // ---------------------------------------------------------------------------
 // Steps.
 
-/** Where the repo-local scripts and bin/kookr.js live (this file's checkout). */
+/**
+ * Where the repo-local scripts and bin/kookr.js live (this file's checkout). This
+ * is NOT where the default PR body file goes: that is the checkout being delivered,
+ * the git root of the current directory (see `resolveWorktreeRoot`, issue #4209).
+ */
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 export interface Commands {
@@ -245,6 +249,7 @@ interface RunContext {
   cmds: Commands;
   branch?: string;
   pr?: string;
+  worktreeRoot?: string;
 }
 
 interface Step {
@@ -255,6 +260,7 @@ interface Step {
 }
 
 const P_BRANCH = '<current-branch>';
+const P_ROOT = '<checkout-root>';
 const P_PR = '<pr>';
 
 function kookr(cmds: Commands, ...args: string[]): [string, string[]] {
@@ -270,13 +276,15 @@ function sanitize(branch: string): string {
 }
 
 /**
- * The PR body file. The default sits in the repository's git-ignored `.tmp/`:
- * inside the worktree, because `kookr pr-checklist verify` only reads body files
- * there (issue #4200), and ignored by git, so it does not change the commit the
- * markers are bound to. `branch` is null in a dry run, which prints a placeholder.
+ * The PR body file. The default sits in the git-ignored `.tmp/` of `root`, the
+ * checkout being delivered: inside the worktree, because `kookr pr-checklist
+ * verify` only reads body files under the git root of the current directory
+ * (issues #4200, #4209), and ignored by git, so it does not change the commit the
+ * markers are bound to. `root` and `branch` are null in a dry run, which prints
+ * placeholders.
  */
-export function bodyFilePath(opts: DeliverOptions, cmds: Commands, branch: string | null): string {
-  return opts.bodyFile ?? join(cmds.repoRoot, '.tmp', `kookr-deliver-${branch === null ? P_BRANCH : sanitize(branch)}.md`);
+export function bodyFilePath(opts: DeliverOptions, root: string | null, branch: string | null): string {
+  return opts.bodyFile ?? join(root ?? P_ROOT, '.tmp', `kookr-deliver-${branch === null ? P_BRANCH : sanitize(branch)}.md`);
 }
 
 function show(cmd: string, args: string[]): string {
@@ -305,6 +313,34 @@ function resolveBranch(ctx: RunContext): string | null {
   ctx.branch = branch;
   return branch;
 }
+
+/**
+ * The git root of the current directory: the checkout being delivered, and the
+ * root `kookr pr-checklist verify` confines body files to. It can differ from
+ * `cmds.repoRoot` when this script is run from another checkout
+ * (`node /other-checkout/scripts/deliver.ts`, issue #4209). Null outside a repository.
+ */
+function resolveWorktreeRoot(ctx: RunContext): string | null {
+  if (ctx.worktreeRoot) return ctx.worktreeRoot;
+  const r = capture(ctx, 'git', ['rev-parse', '--show-toplevel']);
+  const root = r.stdout.trim();
+  if (r.code !== 0 || !root) return null;
+  ctx.worktreeRoot = root;
+  return root;
+}
+
+/** The PR body file of this run, or null when the default needs a root that cannot be resolved. */
+function resolveBodyFile(ctx: RunContext, branch: string): string | null {
+  if (ctx.opts.bodyFile !== undefined) return ctx.opts.bodyFile;
+  const root = resolveWorktreeRoot(ctx);
+  return root === null ? null : bodyFilePath(ctx.opts, root, branch);
+}
+
+const noRoot = (step: StepName): StepOutcome => ({
+  ok: false,
+  code: EXIT_NEEDS_DECISION,
+  message: `step ${step}: cannot resolve the git root of the current directory — run from the checkout to deliver, or pass --body-file`,
+});
 
 /** The open PR of the current branch, or `--pr`. Null when there is none. */
 function resolvePr(ctx: RunContext): string | null {
@@ -370,7 +406,7 @@ export const STEPS: readonly Step[] = [
   {
     name: 'pr-body',
     plan(opts, cmds) {
-      const file = bodyFilePath(opts, cmds, null);
+      const file = bodyFilePath(opts, null, null);
       return [
         `${show(...kookr(cmds, 'pr-checklist', 'scaffold', '--base', opts.base))} > ${file}   (only if ${file} does not exist)`,
         show(...kookr(cmds, 'pr-checklist', 'verify', '--pr-body', file, '--base', opts.base)),
@@ -379,7 +415,8 @@ export const STEPS: readonly Step[] = [
     async execute(ctx) {
       const branch = resolveBranch(ctx);
       if (!branch) return noBranch('pr-body');
-      const file = bodyFilePath(ctx.opts, ctx.cmds, branch);
+      const file = resolveBodyFile(ctx, branch);
+      if (file === null) return noRoot('pr-body');
       if (ctx.deps.fileExists(file)) {
         // An existing body is the one being edited after an earlier stop: keep it.
         ctx.deps.log(`deliver: PR body ${file} exists — verifying it as is`);
@@ -412,8 +449,8 @@ export const STEPS: readonly Step[] = [
   },
   {
     name: 'pr',
-    plan(opts, cmds) {
-      const file = bodyFilePath(opts, cmds, null);
+    plan(opts) {
+      const file = bodyFilePath(opts, null, null);
       const title = opts.title ?? '<last commit subject>';
       return [
         `${show('gh', ['pr', 'list', '--head', P_BRANCH, '--state', 'open', ...repoArgs(opts)])}   (find the open PR)`,
@@ -424,7 +461,8 @@ export const STEPS: readonly Step[] = [
     async execute(ctx) {
       const branch = resolveBranch(ctx);
       if (!branch) return noBranch('pr');
-      const file = bodyFilePath(ctx.opts, ctx.cmds, branch);
+      const file = resolveBodyFile(ctx, branch);
+      if (file === null) return noRoot('pr');
       if (!ctx.deps.fileExists(file)) {
         return { ok: false, code: EXIT_NEEDS_DECISION, message: `step pr: PR body ${file} is missing — run --from pr-body first` };
       }
