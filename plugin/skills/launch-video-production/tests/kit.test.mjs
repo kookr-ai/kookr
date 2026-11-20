@@ -157,7 +157,8 @@ describe('build-artifact.mjs', () => {
     writeFileSync(join(film, 'scenes-a.old.js'), '/* stale copy */');
     writeFileSync(join(film, 'note.txt'), 'see {{MP4_MB}}');
     const r = build(film, '<p>{{TEXT:note.txt}}</p><script>/*FILM_JS*/</script><style>/*FILM_CSS*/</style>');
-    expect(r.stderr).toBe('');
+    // The stale copy is left out, and the build says so instead of dropping it silently.
+    expect(r.stderr).toMatch(/^left out of the page .*: scenes-a\.old\.js\n$/);
     expect(r.status).toBe(0);
     const html = readFileSync(join(film, 'out/page/film.html'), 'utf8');
     expect(html).toContain("'Hello {{TASK}} {{IMG:nope.png}}'");

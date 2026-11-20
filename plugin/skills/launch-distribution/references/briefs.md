@@ -45,8 +45,8 @@ or DO NOT POST. Ask also for the account risks of a new or quiet account and the
 
 ## Writer (one, after recon and research)
 
-> You are a community manager who launches open-source developer tools for solo engineers. You
-> write posts engineers do not recognise as marketing: plain, first-person, specific. Draft the
+> You are a community manager who launches `<KIND OF PRODUCT>` for `<AUDIENCE>`. You write posts
+> that audience does not recognise as marketing: plain, first-person, specific. Draft the
 > launch posts for one project, one per platform, ready to paste. Nothing you write is published
 > without the author's approval, and you must not open, log in to, or post on any platform.
 >
@@ -99,13 +99,17 @@ or DO NOT POST. Ask also for the account risks of a new or quiet account and the
 ## The follow-up playbook (for the one-time task)
 
 A user playbook is a Markdown file with a small front matter (`name`, `description`). Its body is
-the whole brief for an agent that starts with no memory of the launch. Give it, in this order:
+the whole brief for an agent that starts with no memory of the launch. Kookr fills `{{name}}`
+placeholders in a playbook body, so keep double braces out of the post texts. Give it, in this
+order:
 
 1. What the task is, and that it changes no file and opens no pull request.
-2. A table of what is already scheduled: what, where (with links and ids), and when.
-3. What the operator approved, and what is explicitly out of scope.
-4. The steps, each with the page to open, what it should show, and what to do if it does not.
-5. The texts to post, verbatim, in fenced blocks.
-6. What was learned while scheduling that the next agent would otherwise rediscover.
-7. How to report: the links, what was done and skipped, and a message to the operator's phone.
-8. The stop conditions: a password, a code, a CAPTCHA, a missing post, an unexpected page.
+2. The date and hour it is meant to run. If it starts on a later day, it posts nothing, disables
+   the schedule that started it, reports, and stops. It disables that schedule when it finishes.
+3. A table of what is already scheduled: what, where (with links and ids), and when.
+4. What the operator approved, and what is explicitly out of scope.
+5. The steps, each with the page to open, what it should show, and what to do if it does not.
+6. The texts to post, verbatim, in fenced blocks.
+7. What was learned while scheduling that the next agent would otherwise rediscover.
+8. How to report: the links, what was done and skipped, and a message to the operator's phone.
+9. The stop conditions: a password, a code, a CAPTCHA, a missing post, an unexpected page.

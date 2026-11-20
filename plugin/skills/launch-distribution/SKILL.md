@@ -113,21 +113,35 @@ disclosure answers, anything touching their employer, and when.
 4. **One one-time Kookr task** for the leftovers (replies under a post that could only be
    scheduled alone, links between two videos that require the first to be public, a check that
    everything went out, the links sent to the operator). A Kookr schedule with a cron pinned to
-   the date and `maxTriggers: 1` fires once:
+   the date and `maxTriggers: 1` fires at most once. Write the playbook first (creation checks
+   that it and `cwd` exist), then:
 
    ```sh
    curl -s -X POST "$KOOKR_API_BASE_URL/api/schedules/preview" -H 'content-type: application/json' \
-     -d '{"cron":"5 16 24 11 *","maxTriggers":1}'          # check the next run first
+     -d '{"cron":"5 16 24 11 *"}'                          # check the next run first
    curl -s -X POST "$KOOKR_API_BASE_URL/api/schedules" -H 'content-type: application/json' -d '{
      "name": "launch follow-up (one-time)", "cron": "5 16 24 11 *", "maxTriggers": 1,
      "playbook": {"path": "launch-followup.md", "parameters": {}, "scope": "user"},
-     "cwd": "/path/to/repo", "agentType": "claude-code", "enabled": true}'
+     "cwd": "<ABSOLUTE_PATH_OF_THE_REPO>", "agentType": "claude-code", "enabled": true}'
    ```
 
-   The playbook (a file in `~/.kookr/playbooks/`) must stand alone: what is already scheduled and
-   where, exactly what the operator approved, the texts verbatim, the steps, what to do when
-   something is missing, and how to report. Cron times are in the scheduler's time zone
-   (`GET /api/schedules` shows it).
+   The playbook (a file in `~/.kookr/playbooks/`, or in `$KOOKR_USER_PLAYBOOKS_DIR` when set)
+   must stand alone: what is already scheduled and where, exactly what the operator approved, the
+   texts verbatim, the steps, what to do when something is missing, and how to report. Cron times
+   are in the scheduler's time zone (`GET /api/schedules` shows it).
+
+   **A missed slot does not cancel the task.** If the Kookr server is down at that minute and
+   restarts within 24 hours, the task runs late. After that the run is skipped, the schedule
+   keeps its one trigger, and the same cron matches again a year later. Guard both ends: the
+   playbook's first step compares today's date with the date it was written for and, if it is
+   later, posts nothing, disables its own schedule and reports; and after the slot, you or the
+   operator check `kookr schedule list` and disable or delete the schedule
+   (`DELETE /api/schedules/:id`) if it has not fired. Put that check in the runbook.
+
+   A task that Kookr starts on a schedule does browser work only if it can reach the operator's
+   signed-in browser: before relying on it, start one throwaway Kookr task and confirm it sees
+   the browser tools. Tell the operator what must be running at that time (this machine, Kookr,
+   the browser with its extension).
 5. **Write a runbook** beside the texts: what is scheduled where and for when, how to cancel each
    piece, the ids and links, and what is left. Copy the assets and the runbook outside any worktree
    that the task's completion would remove.
@@ -135,7 +149,7 @@ disclosure answers, anything touching their employer, and when.
 ## What to tell the operator, every time
 
 - What is public, what is only scheduled, and what is still private, each with its link and time.
-- Every setting you chose on their behalf from a recommendation they did not explicitly confirm.
+- Every setting you chose that was not on the plan page they approved.
 - What you could not do and why (a blocked site, a rejected file, a rule that requires their own words).
 - How to cancel each scheduled item.
 - That the first hour after a post is theirs: on most feeds a reply is worth far more than a like,

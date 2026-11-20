@@ -2,8 +2,8 @@
 // video, played live with the audio mix as its clock.
 // usage: node build-artifact.mjs <template.html> <out.html>
 // Template markers:
-//   /*FILM_CSS*/            film.css + every scenes-*.css
-//   /*FILM_JS*/             engine, components, every scenes-*.js, captions, player
+//   /*FILM_CSS*/            film.css + every scenes-<letters or digits>.css
+//   /*FILM_JS*/             engine, components, every scenes-<letters or digits>.js, captions, player
 //   {{AUDIO:path}}          data URI of an audio file (mp3)
 //   {{IMG:path}}            data URI of an image (jpeg/png)
 //   {{TEXT:path}}           HTML-escaped text file
@@ -27,6 +27,8 @@ const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, 
 // Every builder's scene files, in name order: scenes-a.*, scenes-b.*, ... (scenes-<letters or digits> only,
 // so a scenes-a.old.js or scenes-a.test.js beside them is left out)
 const scenes = (ext) => fs.readdirSync(here).filter((f) => /^scenes-[A-Za-z0-9]+\.(js|css)$/.test(f) && f.endsWith(ext)).sort();
+const skipped = fs.readdirSync(here).filter((f) => /^scenes-.*\.(js|css)$/.test(f) && !/^scenes-[A-Za-z0-9]+\.(js|css)$/.test(f));
+if (skipped.length) console.error(`left out of the page (name a scene file scenes-<letters or digits>.js or .css): ${skipped.join(', ')}`);
 if (scenes('.js').length === 0) { console.error('no scenes-*.js file next to build-artifact.mjs'); process.exit(1); }
 const css = ['film.css', ...scenes('.css')].map(read).join('\n');
 // A closing script tag inside inlined JavaScript would end the element early.

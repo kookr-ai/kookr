@@ -15,7 +15,7 @@ Copy this folder into a working folder inside a fresh worktree of the target rep
 | `captions-to-srt.mjs` | Writes `out/captions.srt` from `captions.js`. |
 | `render.mjs` | Frame grabber: steps `film.seek(t)` in headless Chromium and writes PNGs. |
 | `build.sh` | Narration → mix → frames (parallel shards) → video → contact sheets (one still per second, 24 per sheet). |
-| `build-artifact.mjs` | Packs the film (every `scenes-*.js` and `scenes-*.css` it finds) and its soundtrack into one self-contained review page from a template. |
+| `build-artifact.mjs` | Packs the film and its soundtrack into one self-contained review page from a template. It takes every scene file named `scenes-<letters or digits>.js` or `.css` (`scenes-a.js`, `scenes-b2.css`) and prints any other `scenes-*` file it left out. |
 | `page.example.html` | The source run's review-page template, as an example of that template. |
 | `storyboard.example.md` | The source run's second storyboard, as a filled-in example of the build contract. |
 | `lib/fonts.example.css` | `@font-face` rules pointing at local font files, so rendering never needs the network. |

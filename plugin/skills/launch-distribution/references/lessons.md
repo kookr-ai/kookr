@@ -83,7 +83,10 @@ the page shows.
 ## Scheduling and hand-off
 
 - **Kookr has no "run once at" command, and does not need one**: a schedule whose cron names the
-  day and month, with `maxTriggers: 1`, fires once. Preview it before creating it.
+  day and month, with `maxTriggers: 1`, fires at most once. Preview it before creating it.
+- **A missed one-time slot stays armed.** A server restart within 24 hours runs it late; after that
+  the run is skipped and the same cron matches a year later. The playbook checks the date before
+  it does anything, and the schedule is disabled once the slot has passed.
 - **The follow-up playbook is read by an agent with no memory of this task.** Put in it what is
   already scheduled, what was approved, the texts verbatim, and what to do when a step cannot be done.
 - **Worktrees may be removed when a task completes.** Copy assets, texts and the runbook somewhere
