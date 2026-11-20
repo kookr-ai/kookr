@@ -34,6 +34,7 @@ audio() {
 frames() {
   mkdir -p out/frames
   find out/frames -name 'f*.png' -delete
+  find out -maxdepth 1 -name 'frames.*.log' -delete
   local dur i from to failed=0 pids=()
   dur=$("$PY" -c "import json;print(json.load(open('audio/timeline.json'))['duration'])")
   for i in $(seq 0 $((SHARDS - 1))); do

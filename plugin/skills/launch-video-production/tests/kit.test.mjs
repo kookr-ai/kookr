@@ -2,13 +2,14 @@
 // The heavy tools (headless Chromium, ffmpeg, the speech model) are replaced by stubs that
 // record how they were called, so this checks the wiring, not the rendering.
 import { spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeEach, describe, expect, test } from 'vitest';
 
-const KIT = dirname(fileURLToPath(import.meta.url));
+// The test lives beside kit/, not inside it: kit/ is copied whole into other repositories.
+const KIT = join(dirname(fileURLToPath(import.meta.url)), '..', 'kit');
 const made = [];
 
 /** A copy of the kit in a folder whose name contains a space, plus a bin/ of recording stubs. */
@@ -99,12 +100,12 @@ describe('build.sh', () => {
     expect(narrations()).toEqual([]);
 
     ws.reset();
-    ws.run(['audio'], { ...env, VOICE: 'bm_george' });
+    expect(ws.run(['audio'], { ...env, VOICE: 'bm_george' }).status).toBe(0);
     expect(narrations()).toEqual(['py audio/narrate.py script.json out/vo bm_george 1.08']);
 
     ws.reset();
     writeFileSync(join(ws.film, 'script.json'), JSON.stringify({ lines: [{ id: 'l01', text: 'Hello again.' }] }));
-    ws.run(['audio'], { ...env, VOICE: 'bm_george' });
+    expect(ws.run(['audio'], { ...env, VOICE: 'bm_george' }).status).toBe(0);
     expect(narrations().length).toBe(1);
   });
 
@@ -147,6 +148,21 @@ describe('build-artifact.mjs', () => {
     expect(html).toContain('2.0 MB, 2.0');
     expect(html).toContain('data:image/png;base64,AQID');
     expect(html).not.toMatch(/\{\{[A-Z_]+/);
+    expect(html).not.toContain('FILM_CSS');
+  });
+
+  test('film content that looks like a marker is left alone', () => {
+    const film = filmFolder();
+    writeFileSync(join(film, 'scenes-a.js'), "const prompt = 'Hello {{TASK}} {{IMG:nope.png}}';");
+    writeFileSync(join(film, 'scenes-a.old.js'), '/* stale copy */');
+    writeFileSync(join(film, 'note.txt'), 'see {{MP4_MB}}');
+    const r = build(film, '<p>{{TEXT:note.txt}}</p><script>/*FILM_JS*/</script><style>/*FILM_CSS*/</style>');
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    const html = readFileSync(join(film, 'out/page/film.html'), 'utf8');
+    expect(html).toContain("'Hello {{TASK}} {{IMG:nope.png}}'");
+    expect(html).toContain('<p>see {{MP4_MB}}</p>');
+    expect(html).not.toContain('stale copy');
   });
 
   test('stops on a marker it cannot fill, and on a file type it cannot embed', () => {
@@ -176,6 +192,5 @@ describe('captions-to-srt.mjs', () => {
     expect(r.status).toBe(0);
     const srt = readFileSync(out, 'utf8');
     expect(srt.startsWith('1\n00:00:00,250 --> 00:00:03,550\nMonday, your agent hit a trap. Tuesday. Same trap.\n\n2\n')).toBe(true);
-    expect(existsSync(out)).toBe(true);
   });
 });

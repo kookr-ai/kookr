@@ -103,7 +103,7 @@ mag = np.abs(Z)
 cent = float(((ff[:, None] * mag).sum(0) / np.maximum(mag.sum(0), 1e-12)).mean())  # standard frame-mean centroid
 print(f"info: power-weighted centroid {(f * p).sum() / p.sum():.0f} Hz (dominated by bass)")
 check("bed spectral centroid 300-2500 Hz @ energy 0.8 (frame-mean, magnitude)", 300 <= cent <= 2500, round(cent, 1))
-# ---- mid band vs voice on the demo stems
+# ---- mid band vs voice on the stems of the mix under test
 voice, _ = sf.read(base + ".stems/voice.wav"); music, _ = sf.read(base + ".stems/music.wav")
 vm, mm = voice.mean(axis=1), music.mean(axis=1)
 act = np.convolve(vm ** 2, np.ones(960) / 960, mode="same") > 1e-5

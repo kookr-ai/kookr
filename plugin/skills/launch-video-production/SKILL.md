@@ -16,7 +16,7 @@ keywords: >
   tutorial, voice-over, narration, text to speech, Kokoro, storyboard, script, GSAP, headless
   Chromium, frame rendering, ffmpeg, music synthesis, sound effects, audio mix, simulated viewers,
   expert panel, fact check, contact sheet, artifact, README video
-related: adversarial-swarm-analysis, agent-fleet-orchestration, ui-mockup-variants, clear-technical-writing, asking-the-operator
+related: adversarial-swarm-analysis, agent-fleet-orchestration, ui-mockup-variants, clear-technical-writing, asking-the-operator, launch-distribution
 ---
 
 # Launch video production

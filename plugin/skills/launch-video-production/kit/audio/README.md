@@ -39,6 +39,8 @@ $PY audio/make-timeline.py                                  # writes audio/timel
 $PY audio/mix.py audio/timeline.json out/vo out/mix         # -> out/mix.{wav,mp3,report.json,stems/}
 $PY audio/verify.py out/mix out/vo
 $PY audio/audition.py out/audition george 1.0 0 bm_george   # first three script lines in another voice
+$PY audio/audition.py out/audition blend 1.0 0 af_heart:0.5 af_sky:0.5        # ... or in a blend of two
+VOICE=af_heart:0.5+af_sky:0.5 ./build.sh audio             # the whole narration in that blend
 ffmpeg -i out/mix.wav -lavfi showspectrumpic=s=1400x600:legend=1 out/mix-spectrum.png
 ```
 mix.py exits with an error if narration clips overlap or run past `duration`.

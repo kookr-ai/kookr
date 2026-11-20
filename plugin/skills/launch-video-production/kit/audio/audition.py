@@ -17,5 +17,6 @@ os.makedirs(out, exist_ok=True)
 for line in lines:
     i = line["id"]
     text = re.sub(r"\.\s+", "... ", line["text"]) if soften else line["text"]
-    y, sr = k.create(text, voice=style, speed=speed, lang="en-us")
+    # same rule as narrate.py: a British voice (name starting with "b") reads with British pronunciation
+    y, sr = k.create(text, voice=style, speed=speed, lang="en-gb" if recipe[0][0].startswith("b") else "en-us")
     sf.write(f"{out}/{name}-{i}.wav", y, sr); print(name, i, round(len(y) / sr, 2), flush=True)

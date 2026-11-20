@@ -24,21 +24,30 @@ const dataUri = (p) => {
 };
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-// Every builder's scene files, in name order: scenes-a.*, scenes-b.*, ...
-const scenes = (ext) => fs.readdirSync(here).filter((f) => f.startsWith('scenes-') && f.endsWith(ext)).sort();
+// Every builder's scene files, in name order: scenes-a.*, scenes-b.*, ... (scenes-<letters or digits> only,
+// so a scenes-a.old.js or scenes-a.test.js beside them is left out)
+const scenes = (ext) => fs.readdirSync(here).filter((f) => /^scenes-[A-Za-z0-9]+\.(js|css)$/.test(f) && f.endsWith(ext)).sort();
 if (scenes('.js').length === 0) { console.error('no scenes-*.js file next to build-artifact.mjs'); process.exit(1); }
 const css = ['film.css', ...scenes('.css')].map(read).join('\n');
 // A closing script tag inside inlined JavaScript would end the element early.
 const js = ['engine.js', 'components.js', ...scenes('.js'), 'captions.js', 'player.js']
   .map((f) => `/* ---- ${f} ---- */\n${read(f)}`).join('\n').replace(/<\/script/gi, '<\\/script');
 
-let html = fs.readFileSync(tplPath, 'utf8');
-html = html.replace('/*FILM_CSS*/', () => css).replace('/*FILM_JS*/', () => js);
-html = html.replace(/\{\{(AUDIO|IMG):([^}]+)\}\}/g, (_, kind, p) => dataUri(p.trim()));
-html = html.replaceAll('{{MP4_MB}}', () => (fs.statSync(path.join(here, `out/${process.env.OUT || 'film'}.mp4`)).size / 1048576).toFixed(1));
-html = html.replace(/\{\{TEXT:([^}]+)\}\}/g, (_, p) => esc(read(p.trim())));
-const left = html.match(/\{\{[A-Z_]+(:[^}]*)?\}\}|\/\*FILM_(CSS|JS)\*\//);
-if (left) { console.error('unresolved marker: ' + left[0]); process.exit(1); }
+// One pass over the template: each marker is replaced where it stands, and what is put in its
+// place is never scanned again. Film content may therefore contain text that looks like a marker
+// (a prompt template with {{PLACEHOLDERS}}, for example) without stopping the build.
+const template = fs.readFileSync(tplPath, 'utf8');
+const html = template.replace(/\/\*FILM_(CSS|JS)\*\/|\{\{([A-Z0-9_]+)(?::([^}]*))?\}\}/g, (marker, film, kind, arg) => {
+  if (film === 'CSS') return css;
+  if (film === 'JS') return js;
+  if ((kind === 'AUDIO' || kind === 'IMG') && arg) return dataUri(arg.trim());
+  if (kind === 'TEXT' && arg) return esc(read(arg.trim()));
+  if (kind === 'MP4_MB' && arg === undefined) {
+    return (fs.statSync(path.join(here, `out/${process.env.OUT || 'film'}.mp4`)).size / 1048576).toFixed(1);
+  }
+  console.error('unresolved marker: ' + marker);
+  process.exit(1);
+});
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
 fs.writeFileSync(outPath, html);
 console.log(`${outPath}  ${(html.length / 1048576).toFixed(2)} MB`);
