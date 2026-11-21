@@ -162,6 +162,28 @@ export interface PeekSnapshotAgent {
   turnState?: TurnState;
   anomaly?: { type?: string; subType?: string; explanation?: string } | null;
   sessionHealth?: { classification?: string } | null;
+  /** A pending close and any keep-alive (issue #4241). */
+  reapWarning?: {
+    kind?: string;
+    remainingMs?: number;
+    keptAliveBy?: { actorName?: string; reason?: string; untilMs?: number };
+  } | null;
+}
+
+/**
+ * One line for a pending close (issue #4241), e.g.
+ * `closing in 4m (hung_suspect_ttl) · kept alive by lead until 14:30: waiting on CI`.
+ * Undefined when the task is not warned.
+ */
+export function formatPeekReapWarning(warning: PeekSnapshotAgent['reapWarning']): string | undefined {
+  if (!warning || typeof warning.remainingMs !== 'number') return undefined;
+  const minutes = Math.max(0, Math.round(warning.remainingMs / 60_000));
+  const head = `closing in ${minutes}m${warning.kind ? ` (${warning.kind})` : ''}`;
+  const k = warning.keptAliveBy;
+  if (!k || typeof k.untilMs !== 'number') return head;
+  const d = new Date(k.untilMs);
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `${head} · kept alive by ${k.actorName ?? 'unknown'} until ${hhmm}: ${k.reason ?? ''}`.trimEnd();
 }
 
 function isPeekSnapshotAgent(value: unknown): value is PeekSnapshotAgent {
@@ -529,6 +551,7 @@ export async function runPeekCli(argv: string[], io: PeekCliIo = {}): Promise<nu
           headline: verdict.headline,
           signals: verdict.signals,
           anomalyExplanation: agent?.anomaly?.explanation,
+          reapWarning: agent?.reapWarning ?? undefined,
           transcriptSource: 'source' in transcript ? transcript.source : undefined,
           transcriptUnavailable: unavailableReason,
           // Apply --max-chars (tail-kept) in JSON too, so the flag behaves the
@@ -555,6 +578,8 @@ export async function runPeekCli(argv: string[], io: PeekCliIo = {}): Promise<nu
   ].filter(Boolean);
   out.log(`  signals: ${signalBits.length > 0 ? signalBits.join('  ') : '(task not in live snapshot)'}  ·  (not a heartbeat)`);
   if (agent?.anomaly?.explanation) out.log(`  note: ${agent.anomaly.explanation}`);
+  const reapLine = formatPeekReapWarning(agent?.reapWarning);
+  if (reapLine) out.log(`  ${reapLine}`);
   out.log('');
 
   if (view.lastAssistant === undefined) {

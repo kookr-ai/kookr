@@ -1688,6 +1688,51 @@ timeout (the server was reachable but did not answer in time; the abort may stil
 be completing, so re-run to confirm), `5` ambiguous port (two instances reachable;
 set `KOOKR_PORT` to choose one).
 
+## `kookr keep-alive`
+
+Keep a task that Kookr is about to close from being closed (issue #4241).
+
+When the hungSuspect TTL reclaim selects a silent task, it first warns it for
+`hungSuspectTtlReclaimGraceSeconds` (default 5 minutes). If the task has a live
+parent task, Kookr types one line into the parent:
+
+```text
+[kookr] worker eval worker (a1b2c3d4) has been silent 26 min and will be closed at 14:05. If it is waiting on purpose: kookr keep-alive a1b2c3d4 --for 30m --reason "<why>". It started: python eval.py (pid 4343, 40m).
+```
+
+The parent knows whether the silence is intended (a review, a remote job, a
+slow evaluation). If it is, the parent runs:
+
+```bash
+kookr keep-alive <taskId|id8> --for <dur> --reason "<text>" [--json]
+kookr keep-alive a1b2c3d4 --for 30m --reason "waiting on the GPU eval"
+```
+
+The task can be named by its full id or by a prefix of at least 8 characters
+that matches one task.
+
+**Who may call it.** The command sends the caller's `KOOKR_TASK_ID`. The server
+accepts the call from the warned task's parent, and from the operator (a shell
+with no `KOOKR_TASK_ID`). It refuses the task itself (a silent task that could
+extend itself would never be closed) and any other task, with HTTP 403. The
+server listens on loopback without per-task credentials, so the caller id is
+taken on trust: the rule stops an agent from extending a task by mistake.
+
+**Limits.** One call extends by at most 60 minutes. A warning takes at most 3
+extensions, dashboard "Keep it alive" clicks included. No deadline goes past 12
+hours of silence (`longRunningJobReclaimCapHours`, the cap #4237 set for the
+long-running-job hold). Past either cap the call is refused with a message
+naming the deadline, and the close goes ahead then.
+
+**Where it shows.** The keep-alive (who, until when, why) appears in the
+dashboard banner, in `kookr peek`, in the `task.hungSuspectTtlReapKeptAlive`
+audit row, and in the task's disposition if it is closed later. The same
+command also extends a warning from the 3-hour hung-task reaper.
+
+Exit codes: `0` kept alive, `2` usage error, `3` no server reachable, `4`
+server error, `5` two servers reachable (set `KOOKR_PORT`), `6` refused (not
+the parent, the task itself, unknown task, nothing pending, or a cap reached).
+
 ## `kookr queue`
 
 Show and edit the ready queue (issue #3933): launches stored with

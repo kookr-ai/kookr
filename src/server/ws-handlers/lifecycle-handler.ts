@@ -69,6 +69,8 @@ export interface LifecycleHandlerDeps {
   reapWarningCoordinator?: ReapWarningCoordinator;
   /** FAA ack-path reap coordinator for the `keepTaskAlive` veto (issue #2170). */
   faaAckReapWarningCoordinator?: ReapWarningCoordinator;
+  /** hungSuspect TTL reclaim coordinator for the `keepTaskAlive` veto (issue #4241). */
+  hungSuspectTtlReapWarningCoordinator?: ReapWarningCoordinator;
   /** Where feedback bundles are written. Typically `<kookrDir>/feedback`. Optional — feedback is fail-open. */
   feedbackDir?: string;
   /** Where anytime task snapshot bundles are written. Typically `<kookrDir>/task-snapshots`. */
@@ -459,13 +461,17 @@ export class LifecycleHandler {
     // reaper so the trail distinguishes a hung veto from an ack-path veto.
     const hungCoordinator = this.deps.reapWarningCoordinator;
     const faaCoordinator = this.deps.faaAckReapWarningCoordinator;
-    const coordinator = hungCoordinator?.getWarning(taskId)
-      ? hungCoordinator
-      : faaCoordinator?.getWarning(taskId)
-        ? faaCoordinator
-        : hungCoordinator ?? faaCoordinator;
+    const ttlCoordinator = this.deps.hungSuspectTtlReapWarningCoordinator;
+    const coordinator = ttlCoordinator?.getWarning(taskId)
+      ? ttlCoordinator
+      : hungCoordinator?.getWarning(taskId)
+        ? hungCoordinator
+        : faaCoordinator?.getWarning(taskId)
+          ? faaCoordinator
+          : hungCoordinator ?? faaCoordinator ?? ttlCoordinator;
     if (!coordinator) return;
     const isFaaVeto = coordinator === faaCoordinator;
+    const isTtlVeto = coordinator === ttlCoordinator;
 
     const task = this.deps.taskStore.getTask(taskId);
     if (!task || task.status !== 'inProgress') {
@@ -482,11 +488,15 @@ export class LifecycleHandler {
     const result = coordinator.veto(taskId, Date.now());
     if (result.accepted) {
       console.log(
-        `[${isFaaVeto ? 'faa-ack-reaper' : 'reap-warning'}] task ${taskId} kept alive by user `
+        `[${isFaaVeto ? 'faa-ack-reaper' : isTtlVeto ? 'hung-suspect-ttl' : 'reap-warning'}] task ${taskId} kept alive by user `
         + `(extension #${result.warning.keptAliveCount})`,
       );
       await appendAuditRow(this.deps.auditLogPath, {
-        type: isFaaVeto ? 'task.finishedAwaitingAckReapVetoed' : 'task.hungTaskReapVetoed',
+        type: isFaaVeto
+          ? 'task.finishedAwaitingAckReapVetoed'
+          : isTtlVeto
+            ? 'task.hungSuspectTtlReapVetoed'
+            : 'task.hungTaskReapVetoed',
         timestamp: nowISO(),
         actor: 'user',
         taskId,

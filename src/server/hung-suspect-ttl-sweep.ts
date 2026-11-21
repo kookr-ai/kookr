@@ -17,11 +17,26 @@ import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
 import { reaperEvidence, describeReaperEvidenceFailure, writeReaperAuditRow } from './bounded-reaper-evidence.js';
 import {
   formatReclaimKillLine,
+  formatReclaimWarningLine,
   toKilledProcesses,
   type KilledProcess,
   type SessionJob,
 } from '../core/long-running-jobs.js';
 import { liveSessionIdOf, type SessionJobSnapshotter } from './session-job-snapshot.js';
+import type { ReapWarning, ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
+import { appendAuditRow } from '../core/audit-log.js';
+
+/** Default grace (seconds) between the TTL reclaim warning and the close (issue #4241). */
+export const DEFAULT_HUNG_SUSPECT_TTL_GRACE_SECONDS = 300;
+
+/**
+ * After a terminate fails, the next pass re-warns the task (the failed reap
+ * consumed its warning). Inside this window the re-warn writes no audit row and
+ * types no parent line, so a wedged task does not flood its parent (#3156
+ * pattern).
+ */
+export const HUNG_SUSPECT_TTL_REWARN_SUPPRESS_MS = 15 * 60_000;
+const failedReapAtByCoordinator = new WeakMap<ReapWarningCoordinator, Map<string, number>>();
 
 /** Cap last-pass outcome samples on health (issue #2072 task-id audit). */
 const MAX_LAST_OUTCOMES = 16;
@@ -321,6 +336,17 @@ export interface ReclaimHungSuspectTasksDeps {
    * reclaim killed. Omitted ⇒ no parent notification.
    */
   sendLineToSession?: (sessionId: string, line: string) => Promise<void>;
+  /**
+   * Warned phase before the reclaim (issue #4241). When set and the grace is
+   * above zero, a selected task is warned first, its parent is told, and it is
+   * closed only once the (possibly kept-alive) deadline passes. Omitted ⇒ the
+   * selected task is closed on this pass, as before.
+   */
+  reapWarningCoordinator?: ReapWarningCoordinator;
+  /** Live grace (ms) between warning and close. `0` turns the warned phase off. */
+  getGraceMs?: () => number;
+  /** Whether a live dashboard connection currently has this task selected. */
+  isTaskSelectedByAnyConnection?: (taskId: string) => boolean;
   metrics?: Pick<
     HungSuspectTtlReclaimMetrics,
     'recordReclaimed' | 'recordAttempted' | 'recordSelection' | 'recordReclaimFailure'
@@ -329,6 +355,8 @@ export interface ReclaimHungSuspectTasksDeps {
 
 export interface ReclaimHungSuspectTasksResult {
   reclaimedTaskIds: string[];
+  /** Tasks newly warned on this pass (issue #4241). */
+  warnedTaskIds?: string[];
   /** Selection snapshot from this pass (for tests / residual alerter). */
   selection?: {
     candidatesConsidered: number;
@@ -409,6 +437,7 @@ export function buildHungSuspectTtlDisposition(
   merged: MergedPrAttribution | null | undefined,
   at: string,
   killedProcesses: readonly KilledProcess[] = [],
+  warning?: Pick<ReapWarning, 'keptAliveBy'>,
 ): TaskDisposition {
   const outcome: TaskReapOutcome = merged ? 'delivered_then_hung' : 'terminated';
   const disposition: TaskDisposition = {
@@ -431,7 +460,16 @@ export function buildHungSuspectTtlDisposition(
   if (killedProcesses.length > 0) {
     disposition.killedProcesses = killedProcesses.map((p) => ({ ...p }));
   }
+  const keptAlive = describeKeepAlive(warning);
+  if (keptAlive) disposition.detail = `${disposition.detail} ${keptAlive}`;
   return disposition;
+}
+
+/** `Kept alive by <name> until <iso>: <reason>.`, or undefined when never kept alive. */
+export function describeKeepAlive(warning?: Pick<ReapWarning, 'keptAliveBy'>): string | undefined {
+  const k = warning?.keptAliveBy;
+  if (!k) return undefined;
+  return `Kept alive by ${k.actorName} until ${new Date(k.until).toISOString()}: ${k.reason}.`;
 }
 
 /**
@@ -485,6 +523,7 @@ export async function reclaimAgedHungSuspectTasks(
   deps.metrics?.recordAttempted(selection.expired.length);
 
   const reclaimedTaskIds: string[] = [];
+  const warnedTaskIds: string[] = [];
   let incompleteEvidenceTasks = 0;
   let timedOutWrites = 0;
   let unattemptedWrites = 0;
@@ -492,8 +531,43 @@ export async function reclaimAgedHungSuspectTasks(
     task: Task;
     silentForMs: number;
     storeMerged: MergedPrAttribution | null;
+    warning?: ReapWarning;
   }> = [];
+
+  // Warned phase (issue #4241). A warning whose task the selector no longer
+  // returns (it spoke, gained a hold, or ended) is dropped first.
+  const coordinator = deps.reapWarningCoordinator;
+  const graceMs = Math.max(0, deps.getGraceMs?.() ?? DEFAULT_HUNG_SUSPECT_TTL_GRACE_SECONDS * 1000);
+  const warnedPhase = coordinator !== undefined && graceMs > 0;
+  if (coordinator) {
+    await clearUnselectedWarnings(coordinator, selection.expired, deps, warnedPhase);
+  }
+  const failedReapAt = coordinator ? failedReapAtFor(coordinator) : undefined;
+
   for (const { task, silentForMs } of selection.expired) {
+    let warning: ReapWarning | undefined;
+    if (warnedPhase && coordinator) {
+      const advance = coordinator.advance({
+        taskId: task.id,
+        agentId: liveSessionIdOf(task) ?? task.id,
+        silentForMs,
+        now: now.getTime(),
+        graceMs,
+        present: deps.isTaskSelectedByAnyConnection?.(task.id) ?? false,
+      });
+      if (advance.action === 'wait') continue;
+      if (advance.action === 'warn') {
+        const lastFailure = failedReapAt?.get(task.id);
+        if (lastFailure !== undefined && now.getTime() - lastFailure < HUNG_SUSPECT_TTL_REWARN_SUPPRESS_MS) {
+          continue;
+        }
+        warnedTaskIds.push(task.id);
+        await warnHungSuspectTask(task, advance.warning, sessionJobs.get(task.id) ?? [], graceMs, ttlMs, deps);
+        continue;
+      }
+      warning = advance.warning;
+    }
+
     // Attribute delivery BEFORE terminating so a task that already merged its
     // PR is recorded as delivered_then_hung rather than masking delivery.
     const storeMerged = readStoreDeliveredPr(task, deps.resolveMergedPr, '[hung-suspect-ttl]');
@@ -511,13 +585,15 @@ export async function reclaimAgedHungSuspectTasks(
       // "still under TTL" from "terminate keeps throwing." Continue so a
       // later candidate in this pass can still be reclaimed (#3254).
       deps.metrics?.recordReclaimFailure(err, now.getTime());
+      if (warning) failedReapAt?.set(task.id, now.getTime());
       console.warn(
         `[hung-suspect-ttl] could not reclaim task ${task.id}:`,
         err instanceof Error ? err.message : err,
       );
       continue;
     }
-    terminated.push({ task, silentForMs, storeMerged });
+    failedReapAt?.delete(task.id);
+    terminated.push({ task, silentForMs, storeMerged, ...(warning ? { warning } : {}) });
   }
 
   // The in-memory attribution can miss a PR the task really merged (issue
@@ -531,12 +607,12 @@ export async function reclaimAgedHungSuspectTasks(
       })),
   );
 
-  for (const [index, { task, silentForMs }] of terminated.entries()) {
+  for (const [index, { task, silentForMs, warning }] of terminated.entries()) {
     const merged = deliveredPrs[index] ?? null;
     // Issue #4237: the jobs snapshotted before the terminate are what the
     // process-tree kill took with the agent.
     const killedProcesses = toKilledProcesses(sessionJobs.get(task.id) ?? []);
-    const disposition = buildHungSuspectTtlDisposition(merged, now.toISOString(), killedProcesses);
+    const disposition = buildHungSuspectTtlDisposition(merged, now.toISOString(), killedProcesses, warning);
     const outcome = disposition.outcome ?? 'terminated';
     deps.taskStore.setDisposition(task.id, disposition);
 
@@ -544,7 +620,7 @@ export async function reclaimAgedHungSuspectTasks(
     const dispositionPersistence = deps.dispositionLedgerPath
       ? await reaperEvidence.write(
           'disposition',
-          () => writeHungSuspectDispositionEntry(task.id, disposition, outcome, silentForMs, deps, now),
+          () => writeHungSuspectDispositionEntry(task.id, disposition, outcome, silentForMs, deps, now, warning),
           logPrefix,
         )
       : 'skipped';
@@ -564,6 +640,13 @@ export async function reclaimAgedHungSuspectTasks(
       outcome,
       ...(disposition.deliveredPr ? { deliveredPr: disposition.deliveredPr } : {}),
       ...(killedProcesses.length > 0 ? { killedProcesses } : {}),
+      ...(warning
+        ? {
+            warnedAt: warning.warnedAt,
+            keptAliveCount: warning.keptAliveCount,
+            ...(warning.keptAliveBy ? { keptAliveBy: { ...warning.keptAliveBy } } : {}),
+          }
+        : {}),
       ttlMs,
       ...(describeReaperEvidenceFailure('disposition', dispositionPersistence)
         ? { dispositionPersistence }
@@ -606,6 +689,7 @@ export async function reclaimAgedHungSuspectTasks(
 
   return {
     reclaimedTaskIds,
+    warnedTaskIds,
     selection: {
       candidatesConsidered: selection.candidatesConsidered,
       skips: selection.skips,
@@ -648,6 +732,102 @@ async function snapshotPastTtlCandidateJobs(
   }
 }
 
+function failedReapAtFor(coordinator: ReapWarningCoordinator): Map<string, number> {
+  let map = failedReapAtByCoordinator.get(coordinator);
+  if (!map) {
+    map = new Map();
+    failedReapAtByCoordinator.set(coordinator, map);
+  }
+  return map;
+}
+
+/**
+ * Drop every warning whose task this pass did not select (issue #4241): the
+ * task spoke, gained a hold (open PR, long job, provider pause) or ended. When
+ * the warned phase is off, every warning goes.
+ */
+async function clearUnselectedWarnings(
+  coordinator: ReapWarningCoordinator,
+  expired: ReadonlyArray<{ task: Task }>,
+  deps: ReclaimHungSuspectTasksDeps,
+  warnedPhase: boolean,
+): Promise<void> {
+  const selected = new Set(expired.map(({ task }) => task.id));
+  for (const taskId of coordinator.warnedTaskIds()) {
+    if (warnedPhase && selected.has(taskId)) continue;
+    const task = deps.taskStore.getTask(taskId);
+    const reason = !warnedPhase ? 'disabled' : !task || task.status !== 'inProgress' ? 'gone' : 'recovered';
+    if (!coordinator.clear(taskId, reason)) continue;
+    await appendAuditRow(deps.auditLogPath, {
+      type: 'task.hungSuspectTtlReapWarningCleared',
+      timestamp: nowISO(),
+      actor: 'system:hung-suspect-ttl',
+      taskId,
+      reason,
+    });
+  }
+}
+
+/**
+ * Record the warning and tell the worker's live parent, with one typed line
+ * that names the deadline and the `kookr keep-alive` command (issue #4241).
+ */
+async function warnHungSuspectTask(
+  task: Task,
+  warning: ReapWarning,
+  jobs: readonly SessionJob[],
+  graceMs: number,
+  ttlMs: number,
+  deps: ReclaimHungSuspectTasksDeps,
+): Promise<void> {
+  console.warn(
+    `[hung-suspect-ttl] warned task ${task.id} — close in ${Math.round(graceMs / 1000)}s ` +
+      `unless kept alive (silent ${Math.round(warning.silentForMs / 60_000)}m)`,
+  );
+  const parentNotified = await notifyParentOfWarning(task, warning, jobs, deps);
+  await appendAuditRow(deps.auditLogPath, {
+    type: 'task.hungSuspectTtlReapWarned',
+    timestamp: nowISO(),
+    actor: 'system:hung-suspect-ttl',
+    taskId: task.id,
+    silentForMs: warning.silentForMs,
+    graceMs,
+    ttlMs,
+    deadlineAt: new Date(warning.deadlineAt).toISOString(),
+    ...(task.parentTaskId ? { parentTaskId: task.parentTaskId, parentNotified } : {}),
+  });
+}
+
+async function notifyParentOfWarning(
+  task: Task,
+  warning: ReapWarning,
+  jobs: readonly SessionJob[],
+  deps: ReclaimHungSuspectTasksDeps,
+): Promise<boolean> {
+  if (!task.parentTaskId || !deps.sendLineToSession) return false;
+  const parent = deps.taskStore.getTask(task.parentTaskId);
+  if (!parent || parent.status !== 'inProgress') return false;
+  const sessionId = liveSessionIdOf(parent);
+  if (!sessionId) return false;
+  const line = formatReclaimWarningLine({
+    workerName: task.name || task.id,
+    taskId: task.id,
+    silentForMs: warning.silentForMs,
+    deadlineAtMs: warning.deadlineAt,
+    jobs,
+  });
+  try {
+    await deps.sendLineToSession(sessionId, line);
+    return true;
+  } catch (err) {
+    console.warn(
+      `[hung-suspect-ttl] could not warn parent ${parent.id} about closing ${task.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
+}
+
 /**
  * Tell the reclaimed worker's parent what the reclaim killed (issue #4237),
  * with one typed line. Only a live parent (inProgress, with a live session)
@@ -682,6 +862,7 @@ async function writeHungSuspectDispositionEntry(
   silentForMs: number,
   deps: ReclaimHungSuspectTasksDeps,
   now: Date,
+  warning?: ReapWarning,
 ): Promise<void> {
   if (!deps.dispositionLedgerPath) return;
   const silentMinutes = Math.round(silentForMs / 60_000);
@@ -709,9 +890,11 @@ async function writeHungSuspectDispositionEntry(
           source: 'hung-suspect-ttl',
           at: now.toISOString(),
         };
+  const keptAlive = describeKeepAlive(warning);
+  const withKeepAlive: DispositionEntry = keptAlive ? { ...base, detail: `${base.detail}; ${keptAlive}` } : base;
   const entry: DispositionEntry = killed && killed.length > 0
-    ? { ...base, killedProcesses: killed.map((p) => ({ ...p })) }
-    : base;
+    ? { ...withKeepAlive, killedProcesses: killed.map((p) => ({ ...p })) }
+    : withKeepAlive;
   await appendDispositionEntry(deps.dispositionLedgerPath, entry);
 }
 

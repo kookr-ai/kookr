@@ -23,6 +23,7 @@ Usage:
   kookr supervision status|end [id] [--json]  Show attached supervisions (health, next wake), or end one.
   kookr peek <taskId|name> [--max-chars N] [--json]  Show a task's run-state and its FULL last assistant message.
   kookr stop|abort <taskId>... [--reason <text>]  Abort (terminate) running task(s).
+  kookr keep-alive <taskId> --for <dur> --reason <text> [--json]  Keep a warned task from being closed (its parent or the operator).
   kookr queue list|remove <id> [--json]  Show or edit the ready queue that \`kookr spawn --queue\` fills.
   kookr doctor [--json]         Run launch preflight checks (human table or JSON).
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
@@ -65,7 +66,7 @@ Options:
   -v, --version                 Print the installed Kookr version.
   -h, --help                    Show this help.
 
-Use --json for one machine-readable output envelope with: spawn, stop, queue, open, reply, reopen, account, interrupted, ask, supervise, supervision status, peek, status, doctor,
+Use --json for one machine-readable output envelope with: spawn, stop, keep-alive, queue, open, reply, reopen, account, interrupted, ask, supervise, supervision status, peek, status, doctor,
 signal, ralph, issue, schedule, playbook, chain, drain, resume, brief, ops digest, ops timers, github, opinion, logs, containers,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
@@ -231,6 +232,12 @@ async function main({
   if (command === 'stop' || command === 'abort') {
     const { runStopCommand } = await import('./kookr-stop.js');
     return exit(await runStopCommand(rest, { env, out, err }));
+  }
+
+  // Keep a warned task from being closed (issue #4241). Thin HTTP client over
+  // POST /api/tasks/:id/keep-alive; the caller's KOOKR_TASK_ID names it.
+  if (command === 'keep-alive') {
+    return exit(await runTsCliModule('kookr-keep-alive', 'runKeepAliveCli', rest, { env, out, err }));
   }
 
   // Playbook chains (RFC rfc-playbook-chains): thin HTTP client over
@@ -879,6 +886,20 @@ async function runSupervisionCommand(argv, { env = process.env, out = console, e
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runSupervisionCli(argv, { env, out, err });
+}
+
+async function runTsCliModule(name, exportName, argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', `${name}.js`);
+  const sourceEntry = join(here, '..', 'src', 'cli', `${name}.ts`);
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error(`[kookr] ${name} module not found at ${entry}`);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    return 1;
+  }
+  const mod = await importMaybeTs(entry);
+  return mod[exportName](argv, { env, out, err });
 }
 
 async function runPeekCommand(argv, { env = process.env, out = console, err = console } = {}) {

@@ -177,6 +177,8 @@ export interface WsConnectionDeps {
   reapWarningCoordinator?: import('../core/reap-warning-coordinator.js').ReapWarningCoordinator;
   /** FAA ack-path reap coordinator for the `keepTaskAlive` veto (issue #2170). */
   faaAckReapWarningCoordinator?: import('../core/reap-warning-coordinator.js').ReapWarningCoordinator;
+  /** hungSuspect TTL reclaim coordinator for the `keepTaskAlive` veto (issue #4241). */
+  hungSuspectTtlReapWarningCoordinator?: import('../core/reap-warning-coordinator.js').ReapWarningCoordinator;
   terminalInputCoordinator?: TerminalInputCoordinatorPort;
   /** Where task feedback bundles are written. */
   feedbackDir?: string;
@@ -306,6 +308,7 @@ export function handleWsConnection(
     selectionController: deps.selectionController,
     reapWarningCoordinator: deps.reapWarningCoordinator,
     faaAckReapWarningCoordinator: deps.faaAckReapWarningCoordinator,
+    hungSuspectTtlReapWarningCoordinator: deps.hungSuspectTtlReapWarningCoordinator,
     terminalInputCoordinator: deps.terminalInputCoordinator,
     userInputDeliveries: deps.userInputDeliveries,
     getDrainStatus: deps.getDrainStatus,

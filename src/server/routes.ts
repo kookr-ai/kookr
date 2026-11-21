@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { registerDiagnosticsRoutes } from './routes/diagnostics-routes.js';
+import { registerKeepAliveRoutes } from './routes/keep-alive-routes.js';
 import { registerObservedActivityRoutes } from './routes/observed-activity-routes.js';
 import { registerDelegationRoutes } from './delegation/routes.js';
 import { registerMetricsRoutes } from './routes/metrics-routes.js';
@@ -183,6 +184,8 @@ export function createRoutes(deps: RouteDeps): Hono {
   // routes, and Lucy's close action once the operator has confirmed its card.
   const taskLifecycleCommands = createTaskRouteLifecycleCommands(taskRouteDeps);
   registerTaskRoutes(app, { ...taskRouteDeps, lifecycleCommands: taskLifecycleCommands });
+  // Issue #4241: a parent task or the operator extends a warned task's deadline.
+  registerKeepAliveRoutes(app, sharedDeps);
   if (sharedDeps.interruptedTasks) {
     sharedDeps.interruptedTasks.bindReopen((taskId) =>
       taskLifecycleCommands.reopenTask(taskId, { actor: { source: 'api', actorId: 'kookr:interrupted-tasks' } }));

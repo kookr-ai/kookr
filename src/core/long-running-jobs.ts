@@ -206,3 +206,36 @@ export function formatReclaimKillLine(input: {
   const line = `[kookr] worker ${name} was reclaimed after ${minutes} min of silence; it killed: ${items.join('; ')}`;
   return sanitizeCommand(line, MAX_PARENT_LINE_CHARS);
 }
+
+/** `HH:MM` in the server's local time zone, for a deadline in ms since epoch. */
+export function formatClockTime(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * The one line typed into the parent task when the hungSuspect TTL reclaim
+ * warns one of its workers (issue #4241):
+ * `[kookr] worker <name> (<id8>) has been silent <N> min and will be closed at HH:MM. If it is
+ * waiting on purpose: kookr keep-alive <id8> --for 30m --reason "<why>". It started: <jobs>.`
+ * The jobs come last so a long list is what truncation cuts, never the command.
+ */
+export function formatReclaimWarningLine(input: {
+  workerName: string;
+  taskId: string;
+  silentForMs: number;
+  deadlineAtMs: number;
+  jobs: readonly SessionJob[];
+}): string {
+  const name = sanitizeCommand(input.workerName, 80) || 'unnamed';
+  const id8 = input.taskId.slice(0, 8);
+  const minutes = Math.round(input.silentForMs / 60_000);
+  const jobs = toKilledProcesses(input.jobs).map((p) =>
+    `${sanitizeCommand(p.command, 80)} (pid ${p.pid}, ${formatAge(p.ageSeconds)}${p.holdsGpu ? ', GPU' : ''})`);
+  const started = jobs.length > 0 ? ` It started: ${jobs.join('; ')}.` : ' It started no long-running process.';
+  const line =
+    `[kookr] worker ${name} (${id8}) has been silent ${minutes} min and will be closed at ` +
+    `${formatClockTime(input.deadlineAtMs)}. If it is waiting on purpose: ` +
+    `kookr keep-alive ${id8} --for 30m --reason "<why>".${started}`;
+  return sanitizeCommand(line, MAX_PARENT_LINE_CHARS);
+}

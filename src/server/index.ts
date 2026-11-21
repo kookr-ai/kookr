@@ -694,6 +694,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // capacity classes), so one snapshot `reapWarning` field carries either — the
   // projection below stamps `kind` from whichever coordinator holds it.
   const faaAckReapWarningCoordinator = new ReapWarningCoordinator();
+  // hungSuspect TTL reclaim (issue #4241): a third grace/veto coordinator for
+  // the short silence reclaim, so its warnings never meet the 3h reaper's
+  // maintenance pass. A parent task or the operator extends it over
+  // POST /api/tasks/:id/keep-alive.
+  const hungSuspectTtlReapWarningCoordinator = new ReapWarningCoordinator();
   const faaAckReaperMetrics = new FinishedAwaitingAckAckReaperMetrics();
   // Hung-task reap-failure counters (issue #3154): a single process-lifetime
   // instance shared by the reaper (writes on a terminate rejection) and
@@ -701,6 +706,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const hungTaskReaperMetrics = new HungTaskReaperMetrics();
   setReapWarningProvider({
     view(taskId: string, nowMs: number) {
+      const ttl = hungSuspectTtlReapWarningCoordinator.view(taskId, nowMs);
+      if (ttl) return { ...ttl, kind: 'hung_suspect_ttl' as const };
       const hung = reapWarningCoordinator.view(taskId, nowMs);
       if (hung) return { ...hung, kind: 'hung_task' as const };
       const faa = faaAckReapWarningCoordinator.view(taskId, nowMs);
@@ -3285,6 +3292,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     opsStatusWriter,
     reapWarningCoordinator,
     faaAckReapWarningCoordinator,
+    hungSuspectTtlReapWarningCoordinator,
+    getLongRunningJobReclaimCapMs: () => currentSettings.longRunningJobReclaimCapHours * 3_600_000,
     faaAckReaperMetrics,
     hungTaskReaperMetrics,
     lucyPermissionNotices: lucyPermissionNotifier,
@@ -4273,6 +4282,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     selectionController,
     reapWarningCoordinator,
     faaAckReapWarningCoordinator,
+    hungSuspectTtlReapWarningCoordinator,
     terminalInputCoordinator,
     userInputDeliveries,
     buildScopedSnapshot,
@@ -4400,6 +4410,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       finishedAwaitingAckTtlReclaimMetrics,
       getHungSuspectTtlMs,
       hungSuspectTtlReclaimMetrics,
+      // Issue #4241: warned phase + parent notice before the TTL reclaim.
+      hungSuspectTtlReapWarningCoordinator,
+      getHungSuspectTtlReclaimGraceMs: () => currentSettings.hungSuspectTtlReclaimGraceSeconds * 1000,
       // Issue #4237: hold a silent task that owns a live long-running job, and
       // report what a reclaim killed to the disposition ledger and the parent.
       snapshotSessionJobs: createSessionJobSnapshotter({

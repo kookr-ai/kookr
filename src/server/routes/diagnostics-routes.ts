@@ -1540,6 +1540,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         warningMetrics: deps.faaAckReapWarningCoordinator?.getMetrics() ?? null,
         reaperMetrics: deps.faaAckReaperMetrics?.getSnapshot() ?? null,
       },
+      // issue #4241: the hungSuspect TTL reclaim's warned phase and keep-alives.
+      hungSuspectTtlReclaim: {
+        active: deps.hungSuspectTtlReapWarningCoordinator?.snapshotState(nowMs) ?? [],
+        warningMetrics: deps.hungSuspectTtlReapWarningCoordinator?.getMetrics() ?? null,
+      },
     });
   });
 

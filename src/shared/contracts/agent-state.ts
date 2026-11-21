@@ -192,10 +192,13 @@ export interface ReapWarningState {
    *  - `'finished_awaiting_ack'` — the FAA ack-path reaper (#2170): the task
    *    already FINISHED and raised `completion_ready`; it is being force-closed
    *    to free its slot. No work is lost — only the ack is missing.
-   * The two never coexist for one task (hung and finishedAwaitingAck are
-   * mutually exclusive capacity classes), so a single field carries either.
+   *  - `'hung_suspect_ttl'` — the hungSuspect TTL reclaim (#4241): the task
+   *    has been silent past `hungSuspectTtlMinutes` and will be closed. Its
+   *    parent task is told and may extend it with `kookr keep-alive`.
+   * The 3-hour reaper and the TTL reclaim can both warn a silent task; the
+   * snapshot carries whichever deadline is sooner.
    */
-  kind?: 'hung_task' | 'finished_awaiting_ack';
+  kind?: 'hung_task' | 'finished_awaiting_ack' | 'hung_suspect_ttl';
   /** Milliseconds until the reap deadline, at snapshot-build time. */
   remainingMs: number;
   /**
@@ -210,4 +213,10 @@ export interface ReapWarningState {
   vetoCapReached: boolean;
   /** True while the deadline is being auto-held because a live dashboard has the task open. */
   heldByPresence: boolean;
+  /**
+   * The latest keep-alive asked for over `POST /api/tasks/:id/keep-alive`
+   * (issue #4241): who asked (parent task name or `operator`), why, and the
+   * deadline it set (ms since epoch).
+   */
+  keptAliveBy?: { actorName: string; reason: string; untilMs: number };
 }

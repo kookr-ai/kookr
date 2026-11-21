@@ -99,6 +99,11 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--reason', '--json', '-h', '--help'],
   },
   {
+    // Issue #4241; keep in sync with src/cli/kookr-keep-alive.ts.
+    name: 'keep-alive',
+    flags: ['--for', '--reason', '--json', '-h', '--help'],
+  },
+  {
     // Ready queue (#3933); keep in sync with src/cli/kookr-queue.ts.
     name: 'queue',
     subcommands: ['list', 'remove'],
@@ -521,6 +526,7 @@ function renderBashCompletion(): string {
   const spawnFlags = flagsFor('spawn');
   const stopFlags = flagsFor('stop');
   const abortFlags = flagsFor('abort');
+  const keepAliveFlags = flagsFor('keep-alive');
   const queueSubcommands = subcommandsFor('queue');
   const queueFlags = flagsFor('queue');
   const interruptedSubcommands = subcommandsFor('interrupted');
@@ -676,6 +682,9 @@ _kookr()
       ;;
     abort)
       COMPREPLY=( $(compgen -W "${abortFlags}" -- "\${cur}") )
+      ;;
+    keep-alive)
+      COMPREPLY=( $(compgen -W "${keepAliveFlags}" -- "\${cur}") )
       ;;
     queue)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
@@ -962,6 +971,7 @@ function renderZshCompletion(): string {
   const spawnFlags = flagsFor('spawn');
   const stopFlags = flagsFor('stop');
   const abortFlags = flagsFor('abort');
+  const keepAliveFlags = flagsFor('keep-alive');
   const queueSubcommands = subcommandsFor('queue');
   const queueFlags = flagsFor('queue');
   const interruptedSubcommands = subcommandsFor('interrupted');
@@ -1073,6 +1083,9 @@ _kookr()
       ;;
     abort)
       compadd -- ${abortFlags}
+      ;;
+    keep-alive)
+      compadd -- ${keepAliveFlags}
       ;;
     queue)
       if (( CURRENT == 3 )); then

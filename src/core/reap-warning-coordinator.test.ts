@@ -7,6 +7,7 @@ import {
   clampReapGraceSeconds,
   MIN_REAP_GRACE_SECONDS,
   MAX_REAP_GRACE_SECONDS,
+  MAX_AGENT_KEEP_ALIVE_MS,
 } from './reap-warning-coordinator.js';
 
 const GRACE = 120_000;
@@ -193,5 +194,91 @@ describe('clampReapGraceSeconds', () => {
     expect(clampReapGraceSeconds(1)).toBe(MIN_REAP_GRACE_SECONDS);
     expect(clampReapGraceSeconds(99_999)).toBe(MAX_REAP_GRACE_SECONDS);
     expect(clampReapGraceSeconds(120.4)).toBe(120);
+  });
+});
+
+describe('ReapWarningCoordinator.agentVeto (issue #4241)', () => {
+  const NOW = 1_000_000;
+  const FAR = NOW + 24 * 60 * 60_000;
+  const veto = (over: Partial<Parameters<ReapWarningCoordinator['agentVeto']>[1]> = {}) => ({
+    now: NOW,
+    extensionMs: 30 * 60_000,
+    ceilingAt: FAR,
+    actor: 'task:lead',
+    actorName: 'lead',
+    reason: 'waiting on CI',
+    ...over,
+  });
+
+  it('extends the deadline by the asked duration and records who, why and until when', () => {
+    const c = new ReapWarningCoordinator();
+    c.advance(base({ now: NOW, silentForMs: 26 * 60_000 }));
+    const r = c.agentVeto('t1', veto());
+    expect(r.accepted).toBe(true);
+    if (!r.accepted) return;
+    expect(r.warning.deadlineAt).toBe(NOW + 30 * 60_000);
+    expect(r.warning.keptAliveCount).toBe(1);
+    expect(r.warning.keptAliveBy).toEqual({
+      actor: 'task:lead', actorName: 'lead', reason: 'waiting on CI', until: NOW + 30 * 60_000, at: NOW,
+    });
+    expect(c.view('t1', NOW)?.keptAliveBy).toEqual({ actorName: 'lead', reason: 'waiting on CI', untilMs: NOW + 30 * 60_000 });
+  });
+
+  it('records when the silence began, so the absolute cap can be anchored on it', () => {
+    const c = new ReapWarningCoordinator();
+    c.advance(base({ now: NOW, silentForMs: 26 * 60_000 }));
+    expect(c.getWarning('t1')?.silentSinceAt).toBe(NOW - 26 * 60_000);
+  });
+
+  it('clamps one extension to 60 minutes', () => {
+    const c = new ReapWarningCoordinator();
+    c.advance(base({ now: NOW }));
+    const r = c.agentVeto('t1', veto({ extensionMs: 5 * 60 * 60_000 }));
+    expect(r.accepted && r.warning.deadlineAt).toBe(NOW + MAX_AGENT_KEEP_ALIVE_MS);
+  });
+
+  it('clamps the deadline to the absolute ceiling, then refuses once the ceiling is spent', () => {
+    const c = new ReapWarningCoordinator();
+    c.advance(base({ now: NOW }));
+    const ceilingAt = NOW + 10 * 60_000;
+    const first = c.agentVeto('t1', veto({ ceilingAt }));
+    expect(first.accepted && first.warning.deadlineAt).toBe(ceilingAt);
+    const second = c.agentVeto('t1', veto({ ceilingAt }));
+    expect(second).toMatchObject({ accepted: false, reason: 'ceiling_reached' });
+    expect(c.getWarning('t1')?.deadlineAt).toBe(ceilingAt);
+    expect(c.getWarning('t1')?.keptAliveCount).toBe(1);
+  });
+
+  it('shares the per-cycle cap with the dashboard veto', () => {
+    const c = new ReapWarningCoordinator();
+    c.advance(base({ now: NOW }));
+    c.veto('t1', NOW);
+    for (let i = 1; i < MAX_REAP_VETOES; i++) {
+      expect(c.agentVeto('t1', veto({ now: NOW + i })).accepted).toBe(true);
+    }
+    const r = c.agentVeto('t1', veto({ now: NOW + 10 }));
+    expect(r).toMatchObject({ accepted: false, reason: 'cap_reached' });
+  });
+
+  it('refuses when there is no warning', () => {
+    const c = new ReapWarningCoordinator();
+    expect(c.agentVeto('t1', veto())).toEqual({ accepted: false, reason: 'no_warning' });
+    expect(c.getMetrics().vetoRejectedTotal).toBe(1);
+  });
+
+  it('a later dashboard veto never shortens a longer agent keep-alive', () => {
+    const c = new ReapWarningCoordinator();
+    c.advance(base({ now: NOW }));
+    c.agentVeto('t1', veto({ extensionMs: 60 * 60_000 }));
+    c.veto('t1', NOW + 1_000);
+    expect(c.getWarning('t1')?.deadlineAt).toBe(NOW + 60 * 60_000);
+  });
+
+  it('the kept-alive deadline is honoured by advance: wait until it, reap after', () => {
+    const c = new ReapWarningCoordinator();
+    c.advance(base({ now: NOW, graceMs: GRACE }));
+    c.agentVeto('t1', veto({ extensionMs: 30 * 60_000 }));
+    expect(c.advance(base({ now: NOW + GRACE + 1 })).action).toBe('wait');
+    expect(c.advance(base({ now: NOW + 30 * 60_000 })).action).toBe('reap');
   });
 });

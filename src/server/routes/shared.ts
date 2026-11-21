@@ -1049,6 +1049,13 @@ export interface RouteDeps {
   diskAdmissionTracker?: DataDirectoryDiskAdmissionTracker;
   /** Shared reap-warning coordinator — surfaced read-only via /api/diagnostics/reap-warnings (RFC rfc-reap-grace-warning.md). */
   reapWarningCoordinator?: import('../../core/reap-warning-coordinator.js').ReapWarningCoordinator;
+  /**
+   * hungSuspect TTL reclaim coordinator (issue #4241): surfaced via
+   * /api/diagnostics/reap-warnings and extended by POST /api/tasks/:id/keep-alive.
+   */
+  hungSuspectTtlReapWarningCoordinator?: import('../../core/reap-warning-coordinator.js').ReapWarningCoordinator;
+  /** Live getter — the 12h silence cap shared by the job hold (#4237) and keep-alive (#4241). */
+  getLongRunningJobReclaimCapMs?: () => number;
   /** FAA ack-path reap coordinator — surfaced read-only via /api/diagnostics/reap-warnings (issue #2170). */
   faaAckReapWarningCoordinator?: import('../../core/reap-warning-coordinator.js').ReapWarningCoordinator;
   /** FAA ack-path reaper counters — surfaced read-only via /api/diagnostics/reap-warnings (issue #2170). */

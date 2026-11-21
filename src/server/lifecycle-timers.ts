@@ -492,6 +492,16 @@ export interface TimerDeps {
    * existing wirings/tests skip the fast path and keep the strict TTL backstop.
    */
   faaAckReapWarningCoordinator?: import('../core/reap-warning-coordinator.js').ReapWarningCoordinator;
+  /**
+   * hungSuspect TTL reclaim warned phase (issue #4241): its own coordinator,
+   * so a TTL warning never meets the hung reaper's maintenance pass. While it
+   * holds a live warning for a task, the 3h hung-task reaper leaves the task
+   * alone, so a keep-alive the parent asked for is honoured. Optional: absent ⇒
+   * the TTL reclaim closes a selected task at once, as before.
+   */
+  hungSuspectTtlReapWarningCoordinator?: import('../core/reap-warning-coordinator.js').ReapWarningCoordinator;
+  /** Live getter — TTL reclaim grace, in milliseconds. `0` turns the warned phase off. */
+  getHungSuspectTtlReclaimGraceMs?: () => number;
   /** Live getter — ack-path reaper enabled flag (kill switch). Defaults to enabled when absent. */
   getFinishedAwaitingAckAckReaperEnabled?: () => boolean;
   /** Live getter — ack-path hard reap deadline, in milliseconds. */
@@ -932,6 +942,19 @@ export async function maybeReapHungTask(
       );
       return clearedWarning !== undefined;
     }
+  }
+
+  // Issue #4241: the hungSuspect TTL reclaim owns a task it has warned (and
+  // that its parent may have kept alive). Up to 3 one-hour keep-alives can
+  // carry a task past this reaper's 3h threshold; it must not cut the
+  // keep-alive short. The TTL deadline and the 12h cap still bound the task.
+  const ttlWarning = deps.hungSuspectTtlReapWarningCoordinator?.getWarning(task.id);
+  if (ttlWarning && ttlWarning.deadlineAt > nowDate.getTime()) {
+    const clearedWarning = deps.reapWarningCoordinator?.clear(task.id, 'recovered');
+    if (clearedWarning) {
+      await appendReapWarningClearedAudit(deps.auditLogPath, task.id, 'recovered');
+    }
+    return clearedWarning !== undefined;
   }
 
   // Grace-period warning phase (RFC rfc-reap-grace-warning.md). Composed AFTER
@@ -2210,6 +2233,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             resolveMergedPrByBranch: deps.resolveMergedPrByBranch,
             snapshotSessionJobs: deps.snapshotSessionJobs,
             sendLineToSession: deps.sendLineToSession,
+            reapWarningCoordinator: deps.hungSuspectTtlReapWarningCoordinator,
+            getGraceMs: deps.getHungSuspectTtlReclaimGraceMs,
+            isTaskSelectedByAnyConnection: deps.isTaskSelectedByAnyConnection,
             metrics: deps.hungSuspectTtlReclaimMetrics,
           },
           {

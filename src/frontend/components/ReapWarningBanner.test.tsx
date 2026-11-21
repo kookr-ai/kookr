@@ -40,6 +40,26 @@ describe('ReapWarningBanners', () => {
     expect(container.querySelector('.reap-warning-banner')).toBeNull();
   });
 
+  test('shows who kept a TTL-warned task alive, until when and why (issue #4241)', () => {
+    const until = new Date(2026, 7, 3, 14, 30).getTime();
+    const agent = agentWithWarning({
+      reapWarning: {
+        kind: 'hung_suspect_ttl',
+        remainingMs: 30 * 60_000,
+        silentForMs: 26 * 60_000,
+        keptAliveCount: 1,
+        vetoCapReached: false,
+        heldByPresence: false,
+        keptAliveBy: { actorName: 'the lead', reason: 'waiting on CI', untilMs: until },
+      },
+    });
+    act(() => root.render(<ReapWarningBanners agents={[agent]} send={vi.fn()} />));
+    const text = container.querySelector('.reap-warning-banner')!.textContent;
+    expect(text).toContain('no activity for 26m');
+    expect(container.querySelector('.reap-warning-kept-alive')!.textContent)
+      .toBe('Kept alive by the lead until 14:30: waiting on CI');
+  });
+
   test('renders a countdown banner and a keep-alive button for a warned task', () => {
     const agent = agentWithWarning({
       reapWarning: { remainingMs: 90_000, silentForMs: 3 * 3_600_000, keptAliveCount: 0, vetoCapReached: false, heldByPresence: false },

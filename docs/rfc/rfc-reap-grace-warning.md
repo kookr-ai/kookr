@@ -357,6 +357,66 @@ want it tighter/looser.
   input for `hungTaskReapGraceSeconds`, beside the existing reaper controls,
   with help text noting the slot-occupancy cost of repeated vetoes.
 
+## Extension: the hungSuspect TTL reclaim and agent keep-alive (issue #4241)
+
+The design above covered only the 3-hour hung-task reaper, warned only the
+dashboard, and accepted a veto only as a websocket message, which no agent can
+send. Most silent workers are closed earlier, by the hungSuspect TTL reclaim
+(25–60 min), and the party that knows whether a worker's silence is intended is
+the lead that started it. Issue #4241 closes those three gaps.
+
+**A warned phase for the TTL reclaim.** `reclaimAgedHungSuspectTasks` takes its
+own `ReapWarningCoordinator` (a third instance at the composition root, so its
+warnings never meet the 3h reaper's maintenance pass). A task the selector
+returns is advanced through the coordinator: `warn` on first sight, `wait`
+until the deadline, then the unchanged reclaim. At the start of each pass, a
+warning whose task the selector no longer returns (it spoke, gained a hold, or
+ended) is cleared with an audit row. The grace is
+`hungSuspectTtlReclaimGraceSeconds` (default `300`, `10`–`600`; `0` turns the
+warned phase off and restores the immediate reclaim — the rollback lever). After
+a failed terminate, the re-warn writes no audit row and types no parent line for
+15 minutes (the #3156 pattern).
+
+**The parent is told.** At warn time, if the task has a live parent, one line is
+typed into the parent through the choice-dialog guard (`sendLineToSession`, as
+#4237 does for the kill report). It names the worker and its 8-character id, the
+silence, the deadline as `HH:MM` in server time, the `kookr keep-alive` command
+to run, and the worker's live long-running processes. The jobs come last, so a
+long list is what the 600-character bound cuts.
+
+**An agent can veto.** `POST /api/tasks/:id/keep-alive` (`kookr keep-alive`)
+calls a new `coordinator.agentVeto(taskId, { now, extensionMs, ceilingAt, actor,
+actorName, reason })`:
+
+- **Who:** the operator (no `callerTaskId`) or the target's parent. The task
+  itself and unrelated tasks get 403 (`core/keep-alive-policy.ts`). The caller id
+  is taken on trust, as the server has no per-task credentials on loopback.
+- **Bounded:** one extension is clamped to 60 min (`MAX_AGENT_KEEP_ALIVE_MS`); it
+  counts against the same `MAX_REAP_VETOES` (3) as the dashboard click; the new
+  deadline is clamped to the silence start plus `longRunningJobReclaimCapHours`
+  (12 h, shared with #4237's hold). A call that cannot move the deadline is
+  refused (`ceiling_reached`) instead of reporting a success.
+- **Recorded:** the caller, reason and new deadline go into the warning
+  (`keptAliveBy`), the audit row, the snapshot (`AgentState.reapWarning`, shown
+  in the banner and `kookr peek`), and — if the task is later closed — the
+  disposition detail, the ledger entry and the `task.hungSuspectTtlReclaimed` row.
+
+A dashboard veto no longer shortens a deadline: `veto()` now keeps the later of
+the current deadline and `now + REAP_VETO_EXTENSION_MS`.
+
+**The 3h reaper honours it.** Three one-hour keep-alives on top of a 25-minute
+TTL can carry a task past 3 hours of silence. While the TTL coordinator holds a
+warning whose deadline is still ahead, `maybeReapHungTask` leaves the task
+alone (and drops any 3h warning it had raised). The route also extends a 3h
+reaper warning, so one command covers both.
+
+**Not done here.** Point 4 of the issue — a sentinel watching a lead calling the
+same route when the lead itself is reclaimed — needs a server-side record of
+which sentinel watches which lead. The sentinel (#4239) is still dry-run only
+and keeps its state outside the server, so the route accepts the operator and
+the parent for now; the sentinel's "Keep waiting" answer should call this route
+once it acts.
+
 ## Delivery sequencing (delivery review)
 
 Three stages, each independently verifiable; the safety-relevant change lands and
