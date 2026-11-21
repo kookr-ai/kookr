@@ -173,6 +173,14 @@ export interface ClaudeCodeAdapterOptions {
   /** Override `~/.claude.json`. Tests inject a temp path. */
   claudeConfigPath?: string;
   /**
+   * Picks the Claude account a launch runs on (account switching, see
+   * src/server/claude-account-launch.ts) and returns the env that selects it,
+   * which is merged over every other launch env. May throw to refuse the
+   * launch (an unreadable registry, or a pinned account that was removed).
+   * Unset — the default, and what unit tests get — leaves the host login.
+   */
+  resolveClaudeAccount?: (taskId: string) => { account: string; env: Record<string, string> };
+  /**
    * Live getter for the configured per-agent-type effort default for
    * claude-code (#681). Called on every launch; returning a value pushes
    * `--effort <level>` into the argv (unless a per-task override is supplied
@@ -285,6 +293,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private promptReadySettleMs?: number;
   private trustWorkspace: boolean;
   private claudeConfigPath?: string;
+  private resolveClaudeAccount?: ClaudeCodeAdapterOptions['resolveClaudeAccount'];
   private resolveDefaultEffort?: () => string | undefined;
   private inputWriter: TerminalInputWriterPort;
 
@@ -313,6 +322,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.promptReadySettleMs = options?.promptReadySettleMs;
     this.trustWorkspace = options?.trustWorkspace ?? false;
     this.claudeConfigPath = options?.claudeConfigPath;
+    this.resolveClaudeAccount = options?.resolveClaudeAccount;
     this.resolveDefaultEffort = options?.resolveDefaultEffort;
   }
 
@@ -332,6 +342,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
    * Returns the session id (historically called `tmuxName`).
    */
   async launch(taskId: string, prompt: string, cwd: string, resume?: ResumeContext, opts?: AdapterLaunchOptions): Promise<string> {
+    // Resolve the Claude account first: a refusal (removed account, unreadable
+    // registry) must fail the launch before anything is spawned or registered.
+    const accountLaunch = this.resolveClaudeAccount?.(taskId);
+    if (accountLaunch && accountLaunch.account !== 'host') {
+      console.log(`[claude-code-adapter] task ${taskId} launches on Claude account "${accountLaunch.account}"`);
+    }
     const tmuxName = opts?.tmuxName ?? `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
@@ -483,7 +499,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       id: tmuxName,
       command: this.agentBin,
       args,
-      env: { ...launchContext.env, ...(opts?.extraEnv ?? {}) },
+      // The account env goes last so neither the launch context nor a caller's
+      // extraEnv can put the session on a different subscription.
+      env: { ...launchContext.env, ...(opts?.extraEnv ?? {}), ...(accountLaunch?.env ?? {}) },
       cwd,
       size: { cols: 200, rows: 50 },
     });
@@ -645,6 +663,25 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       ...(promptDelivery ? { promptDelivery } : {}),
       ...(useResume ? { resumedConversationId: resume!.sessionId } : {}),
     });
+    // Claude Code emits SessionStart as soon as the CLI boots, usually before
+    // the prompt is acknowledged and this session record exists. The hook
+    // handler then had no session to write the conversation id to, and in
+    // practice the hook-file replay does not deliver it again (it was already
+    // ingested over HTTP), so most tasks never recorded `claudeSessionId` —
+    // and with it lost Reopen's resume and
+    // account switching. The in-memory identity did see the SessionStart, so
+    // copy its parent conversation onto the record now (same idea as the
+    // opencode adapter's early-start buffer).
+    const earlyParent = this.identities.get(tmuxName);
+    if (earlyParent?.parentSessionId) {
+      const registered = this.taskStore.getTask(taskId)?.sessions.find((s) => s.tmuxSession === tmuxName);
+      if (registered && !registered.claudeSessionId) {
+        this.taskStore.updateSession(taskId, tmuxName, {
+          claudeSessionId: earlyParent.parentSessionId,
+          ...(earlyParent.parentTranscriptPath ? { transcriptPath: earlyParent.parentTranscriptPath } : {}),
+        });
+      }
+    }
 
     // Fire-and-forget: capture git context from CWD
     getGitInfo(cwd)

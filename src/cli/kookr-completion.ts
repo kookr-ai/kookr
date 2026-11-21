@@ -68,6 +68,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       // #1858: surface saturation/dry-run flags agents need under tab-completion.
       // Keep in sync with bin/kookr-spawn.js help + parseArgs.
       '--model',
+      '--account',
       '--wait',
       '--idempotency-key',
       '--playbook',
@@ -120,6 +121,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     // with src/cli/kookr-reopen.ts.
     name: 'reopen',
     flags: ['--json', '-h', '--help'],
+  },
+  {
+    // Named Claude accounts and account switching; keep in sync with src/cli/kookr-account.ts.
+    name: 'account',
+    subcommands: ['list', 'add', 'remove', 'default', 'test', 'switch'],
+    flags: ['--default', '--json', '-h', '--help'],
   },
   {
     // Tasks a crash or reboot interrupted (#4215); keep in sync with src/cli/kookr-interrupted.ts.
@@ -518,6 +525,8 @@ function renderBashCompletion(): string {
   const queueFlags = flagsFor('queue');
   const interruptedSubcommands = subcommandsFor('interrupted');
   const interruptedFlags = flagsFor('interrupted');
+  const accountSubcommands = subcommandsFor('account');
+  const accountFlags = flagsFor('account');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
   const reopenFlags = flagsFor('reopen');
@@ -673,6 +682,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${queueSubcommands} ${queueFlags}" -- "\${cur}") )
       else
         COMPREPLY=( $(compgen -W "${queueFlags}" -- "\${cur}") )
+      fi
+      ;;
+    account)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${accountSubcommands} ${accountFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${accountFlags}" -- "\${cur}") )
       fi
       ;;
     interrupted)
@@ -950,6 +966,8 @@ function renderZshCompletion(): string {
   const queueFlags = flagsFor('queue');
   const interruptedSubcommands = subcommandsFor('interrupted');
   const interruptedFlags = flagsFor('interrupted');
+  const accountSubcommands = subcommandsFor('account');
+  const accountFlags = flagsFor('account');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
   const reopenFlags = flagsFor('reopen');
@@ -1061,6 +1079,13 @@ _kookr()
         compadd -- ${queueSubcommands} ${queueFlags}
       else
         compadd -- ${queueFlags}
+      fi
+      ;;
+    account)
+      if (( CURRENT == 3 )); then
+        compadd -- ${accountSubcommands} ${accountFlags}
+      else
+        compadd -- ${accountFlags}
       fi
       ;;
     interrupted)

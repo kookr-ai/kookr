@@ -6,6 +6,17 @@ import {
 } from './session-spawn-env.js';
 
 describe('stripNonInheritableAgentEnv', () => {
+  test('drops a Claude account token inherited from an agent shell, not one the operator set', () => {
+    expect(stripNonInheritableAgentEnv({
+      PATH: '/usr/bin',
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-from-the-agent',
+      ANTHROPIC_API_KEY: '',
+      KOOKR_CLAUDE_ACCOUNT: 'work',
+    })).toEqual({ PATH: '/usr/bin' });
+    expect(stripNonInheritableAgentEnv({ PATH: '/usr/bin', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-operator' }))
+      .toEqual({ PATH: '/usr/bin', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-operator' });
+  });
+
   test('drops the Claude Code child-session marker', () => {
     const stripped = stripNonInheritableAgentEnv({
       PATH: '/usr/bin',
