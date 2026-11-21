@@ -14,6 +14,12 @@ import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { TaskPriority } from '../../shared/contracts/task.js';
 import type { PlaybookSourceIdentity } from '../../shared/contracts/playbook.js';
 
+/** Named Claude account a claude-code task is pinned to; absent means the host login. */
+function claudeAccountOf(task: Task, agentType: AgentType | undefined): { claudeAccount: string } | Record<string, never> {
+  const account = task.metadata?.claudeAccount;
+  return agentType === 'claude-code' && account ? { claudeAccount: account } : {};
+}
+
 interface SessionSnapshotMeta {
   task: Task;
   taskId: string;
@@ -286,6 +292,7 @@ function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   state.playbookParameterValues = meta.playbookParameterValues;
   state.launchHealthSummary = meta.launchHealthSummary;
   state.launchPermissionPosture = meta.launchPermissionPosture;
+  Object.assign(state, claudeAccountOf(task, meta.agentType));
   state.gitBranch = meta.gitBranch;
   state.gitCommit = meta.gitCommit;
   state.gitIsWorktree = meta.gitIsWorktree;
@@ -345,6 +352,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
     playbookParameterValues: task.playbookParameterValues,
     launchHealthSummary: task.launchHealthSummary,
     launchPermissionPosture: task.metadata?.launchPermissionPosture,
+    ...claudeAccountOf(task, task.agentType),
     projectId: task.projectId,
     projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
     priority: task.priority,
@@ -387,6 +395,7 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     playbookParameterValues: task.playbookParameterValues,
     launchHealthSummary: task.launchHealthSummary,
     launchPermissionPosture: task.metadata?.launchPermissionPosture,
+    ...claudeAccountOf(task, lastSession?.agentType ?? task.agentType),
     projectId: task.projectId,
     projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: lastSession?.cwd ?? task.cwd }),
     priority: task.priority,

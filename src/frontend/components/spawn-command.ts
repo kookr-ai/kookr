@@ -94,6 +94,8 @@ export function buildSpawnCommand(input: {
   cwd: string;
   agentType: AgentSelection;
   criteria?: string;
+  /** Named Claude account picked in the Launch form (claude-code only). */
+  claudeAccount?: string;
 }): SpawnCommandBuild {
   const prompt = input.prompt.trim();
   const cwd = input.cwd.trim();
@@ -104,6 +106,8 @@ export function buildSpawnCommand(input: {
   if (input.agentType !== ROUND_ROBIN_AGENT_TYPE) {
     flags.push(`-a ${input.agentType}`);
   }
+  const claudeAccount = input.claudeAccount?.trim();
+  if (claudeAccount && input.agentType === 'claude-code') flags.push(`--account ${shellArg(claudeAccount)}`);
 
   if (PROMPT_ARGV_UNSAFE.test(prompt)) {
     const spawnFlags = [...flags, '--prompt-file "$prompt_file"'];

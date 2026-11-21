@@ -167,11 +167,11 @@ describe('SettingsDialog tabs', () => {
     await flush();
 
     const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
-    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['General', 'Sharing', 'Hooks', 'Dictation corpus']);
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['General', 'Accounts', 'Sharing', 'Hooks', 'Dictation corpus']);
 
     const generalTab = tabs[0];
-    const sharingTab = tabs[1];
-    const hooksTab = tabs[2];
+    const sharingTab = tabs[2];
+    const hooksTab = tabs[3];
     expect(generalTab?.getAttribute('aria-selected')).toBe('true');
     expect(sharingTab?.getAttribute('aria-selected')).toBe('false');
     expect(hooksTab?.getAttribute('aria-selected')).toBe('false');
@@ -211,6 +211,14 @@ describe('SettingsDialog tabs', () => {
     });
     await flush();
 
+    const accountsTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Accounts');
+    expect(accountsTab?.getAttribute('aria-selected')).toBe('true');
+    await act(async () => {
+      accountsTab!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    await flush();
+
     const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
       .find((tab) => tab.textContent?.trim() === 'Sharing');
     expect(sharingTab?.getAttribute('aria-selected')).toBe('true');
@@ -237,6 +245,12 @@ describe('SettingsDialog tabs', () => {
 
     await act(async () => {
       sharingTab!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    });
+    await flush();
+    expect(accountsTab?.getAttribute('aria-selected')).toBe('true');
+
+    await act(async () => {
+      accountsTab!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
     });
     await flush();
 
@@ -613,6 +627,33 @@ describe('SettingsDialog tabs', () => {
     expect(input!.value).toBe('90');
     expect(input!.min).toBe('0');
     expect(input!.max).toBe('100');
+  });
+
+  test('opened at claudeAccounts, the Accounts tab shows once and a later settings change does not pull it back', async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    act(() => {
+      root.render(React.createElement(SettingsDialog, { onClose: vi.fn(), focusField: 'claudeAccounts' }));
+    });
+    await flush();
+    const tab = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((t) => t.textContent?.trim() === label)!;
+    expect(tab('Accounts').getAttribute('aria-selected')).toBe('true');
+
+    await act(async () => {
+      tab('General').click();
+    });
+    await flush();
+    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle GitHub polling"]');
+    expect(toggle).not.toBeNull();
+    await act(async () => {
+      toggle!.click();
+    });
+    await flush();
+    expect(tab('General').getAttribute('aria-selected')).toBe('true');
+    expect(tab('Accounts').getAttribute('aria-selected')).toBe('false');
   });
 
   test('saving quota headroom 0 turns the check off and 90 restores the default (#3408)', async () => {
@@ -1464,6 +1505,23 @@ describe('SettingsDialog tabs', () => {
     const nonMatchingRow = rows.find((row) => !row.textContent?.includes('SessionStart'));
     expect(nonMatchingRow).toBeDefined();
     expect(nonMatchingRow!.style.display).toBe('none');
+  });
+
+  test('search switches to the Accounts tab for account terms', async () => {
+    await flush();
+
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search settings"]');
+    await act(async () => {
+      changeInput(search!, 'setup-token');
+    });
+    await flush();
+
+    const accountsTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Accounts');
+    expect(accountsTab?.getAttribute('aria-selected')).toBe('true');
+    const addSection = sectionByTitle(container, 'Add your second account');
+    expect(addSection).toBeDefined();
+    expect(addSection!.style.display).not.toBe('none');
   });
 
   test('search switches to the Sharing tab when the only match lives there', async () => {

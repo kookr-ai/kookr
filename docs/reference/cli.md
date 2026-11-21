@@ -1738,6 +1738,7 @@ Manage named Claude Code accounts and move tasks between them. See
 ```bash
 claude setup-token | kookr account add work   # register an account (token on stdin)
 kookr account add personal --default          # paste the token; make it the default
+kookr account add work --label me@work.com    # a display name, shown by `list` and in the dashboard
 kookr account list [--json]                   # accounts and the default, never the tokens
 kookr account test work                       # one tiny `claude -p` request on that account
 kookr account default host                    # new tasks use the host's own claude login
@@ -1754,8 +1755,8 @@ continuing its conversation; any other task keeps the new account for its next
 launch. `kookr spawn --account <name>` picks the account of a new task (and
 implies `--agent claude-code`).
 
-Exit codes: `0` success, `1` `test` found that the account does not
-authenticate, `2` usage error (including an unknown account or a refused
+Exit codes: `0` success, `1` `test` found that the account did not answer
+(out of quota, sign-in failed or another error), `2` usage error (including an unknown account or a refused
 switch), `3` no server reachable, `4` server/HTTP error, `5` ambiguous port.
 
 ## `kookr reopen`

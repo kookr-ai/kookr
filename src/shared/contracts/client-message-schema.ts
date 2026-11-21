@@ -164,6 +164,7 @@ const ClientMessageSchemaImpl = z.union([
     dependencies: z.array(launchDependency).optional(),
     effort: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
+    claudeAccount: z.string().trim().min(1).max(200).optional(),
     disableDedup: z.boolean().optional(),
     metadataIntent: z.literal('keep_as_duplicate').optional(),
     parentTaskId: z.string().min(1).optional(),

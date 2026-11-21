@@ -3,7 +3,7 @@
  * them (account switching; docs/reference/claude-accounts.md).
  *
  *   kookr account list [--json]
- *   kookr account add <name> [--default]      token on stdin, or pasted at a prompt
+ *   kookr account add <name> [--default] [--label <text>]   token on stdin, or pasted at a prompt
  *   kookr account remove <name>
  *   kookr account default <name|host>
  *   kookr account test <name|host>            one tiny `claude -p` request on that account
@@ -19,11 +19,9 @@
  * process on the host and lands in shell history) and never printed.
  */
 
-import { spawnSync } from 'node:child_process';
 import {
   ClaudeAccountError,
   HOST_CLAUDE_ACCOUNT,
-  assertKnownAccount,
   extractClaudeOAuthToken,
   loadClaudeAccounts,
   resolveClaudeAccountsFile,
@@ -33,7 +31,7 @@ import {
   withDefaultAccount,
   withoutAccount,
 } from '../core/claude-accounts.js';
-import { claudeAccountLaunchEnv, stripInheritedClaudeAccountEnv } from '../adapters/claude-account-env.js';
+import { testClaudeAccount, type ClaudeProbeRunner } from '../adapters/claude-account-test.js';
 import { SUPERVISOR_ACTOR_HEADER } from '../shared/contracts/supervisor-actions.js';
 import { resolveStopBaseUrl } from './kookr-stop.js';
 
@@ -47,13 +45,12 @@ export const EXIT_AMBIGUOUS = 5;
 // A switch of a running task awaits its relaunch, which can take up to the
 // default launch timeout (180 s), like `kookr reopen`.
 const SWITCH_TIMEOUT_MS = 240_000;
-const TEST_TIMEOUT_MS = 120_000;
 
 export const ACCOUNT_HELP_TEXT = `kookr account — named Claude Code accounts, and moving tasks between them.
 
 Usage:
   kookr account list [--json]
-  kookr account add <name> [--default]
+  kookr account add <name> [--default] [--label <text>]
   kookr account remove <name>
   kookr account default <name|host>
   kookr account test <name|host>
@@ -80,11 +77,13 @@ Switching:
 Commands:
   list      Show accounts (never the tokens) and which one is the default.
   add       Register an account, or replace its token. --default also makes it
-            the default for new tasks.
+            the default for new tasks; --label <text> sets a display name
+            (for example the account's email) shown here and in the dashboard.
   remove    Forget an account. Tasks pinned to it fail to launch until switched.
   default   Choose the account new tasks run on.
   test      Send one tiny \`claude -p\` request on that account and report
-            whether it authenticates. Uses a few tokens of that account.
+            whether it answers, is out of quota, or fails to sign in. Uses a
+            few tokens of that account.
   switch    Move a task to another account (needs a running server).
 
 Environment:
@@ -94,7 +93,7 @@ Environment:
                               Server selection and auth for \`switch\`.
 
 Exit codes:
-  0  Success.   1  test: the account did not authenticate.   2  User error.
+  0  Success.   1  test: the account did not answer (out of quota, sign-in failed, error).   2  User error.
   3  No server reachable.   4  Server/HTTP error.   5  Ambiguous port.
 `;
 
@@ -105,8 +104,8 @@ export interface AccountCliIo {
   fetchImpl?: typeof fetch;
   /** Reads the token for `add`. Default: all of stdin, or a hidden prompt on a TTY. */
   readSecret?: () => Promise<string>;
-  /** Runs `claude -p` for `test`. Default: spawnSync. */
-  runClaude?: (bin: string, args: string[], env: NodeJS.ProcessEnv) => { status: number | null; stdout: string; stderr: string };
+  /** Runs `claude -p` for `test`. Default: an async child process. */
+  runClaude?: ClaudeProbeRunner;
 }
 
 interface Parsed {
@@ -114,14 +113,21 @@ interface Parsed {
   positionals: string[];
   json: boolean;
   makeDefault: boolean;
+  label?: string;
   help: boolean;
   error?: string;
 }
 
 export function parseAccountArgs(argv: string[]): Parsed {
   const out: Parsed = { positionals: [], json: false, makeDefault: false, help: false };
-  for (const tok of argv) {
-    if (tok === '--json') out.json = true;
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i]!;
+    if (tok === '--label') {
+      const value = argv[++i];
+      if (value === undefined) out.error = '--label needs a value';
+      else out.label = value;
+    } else if (tok.startsWith('--label=')) out.label = tok.slice('--label='.length);
+    else if (tok === '--json') out.json = true;
     else if (tok === '--default') out.makeDefault = true;
     else if (tok === '-h' || tok === '--help') out.help = true;
     else if (tok.startsWith('-')) out.error = `unknown option: ${tok}`;
@@ -178,15 +184,6 @@ function defaultReadSecret(): Promise<string> {
   return readAllStdin();
 }
 
-function defaultRunClaude(bin: string, args: string[], env: NodeJS.ProcessEnv) {
-  const res = spawnSync(bin, args, { env, encoding: 'utf-8', timeout: TEST_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
-  return {
-    status: res.status,
-    stdout: res.stdout ?? '',
-    stderr: res.error ? `${res.stderr ?? ''}${res.error.message}` : (res.stderr ?? ''),
-  };
-}
-
 function authHeaders(env: NodeJS.ProcessEnv): Record<string, string> {
   const supervisor = env.KOOKR_SUPERVISOR_TOKEN?.trim();
   if (supervisor) return { Authorization: `Bearer ${supervisor}` };
@@ -236,13 +233,13 @@ export async function runAccountCli(argv: string[], io: AccountCliIo = {}): Prom
           const mark = row.isDefault ? '*' : ' ';
           const detail = row.name === HOST_CLAUDE_ACCOUNT
             ? "the host's own claude login"
-            : `token ${row.tokenHint}${row.addedAt ? `, added ${row.addedAt.slice(0, 10)}` : ''}`;
+            : `${row.label ? `${row.label}, ` : ''}token ${row.tokenHint}${row.addedAt ? `, added ${row.addedAt.slice(0, 10)}` : ''}`;
           return `${mark} ${row.name.padEnd(16)} ${detail}`;
         });
         return succeed([...lines, '', '* = default for new tasks'].join('\n'));
       }
       case 'add': {
-        const usage = need(1, 'add <name> [--default]');
+        const usage = need(1, 'add <name> [--default] [--label <text>]');
         if (usage) return fail(EXIT_USER_ERROR, 'USER_ERROR', usage);
         const name = args.positionals[0]!;
         const raw = await (io.readSecret ?? defaultReadSecret)();
@@ -252,7 +249,7 @@ export async function runAccountCli(argv: string[], io: AccountCliIo = {}): Prom
         }
         const before = loadClaudeAccounts(file);
         const replaced = Object.prototype.hasOwnProperty.call(before.accounts, name);
-        let next = withAccount(before, name, token);
+        let next = withAccount(before, name, token, args.label);
         if (args.makeDefault) next = withDefaultAccount(next, name);
         saveClaudeAccounts(next, file);
         return succeed(
@@ -285,24 +282,13 @@ export async function runAccountCli(argv: string[], io: AccountCliIo = {}): Prom
         const usage = need(1, 'test <name|host>');
         if (usage) return fail(EXIT_USER_ERROR, 'USER_ERROR', usage);
         const name = args.positionals[0]!;
-        const registry = loadClaudeAccounts(file);
-        assertKnownAccount(registry, name);
-        // From an agent shell on another account the inherited token would
-        // otherwise answer for `host`.
-        const childEnv: NodeJS.ProcessEnv = { ...stripInheritedClaudeAccountEnv(env), ...claudeAccountLaunchEnv(registry, name) };
-        delete childEnv.CLAUDE_CODE_CHILD_SESSION;
-        const bin = env.KOOKR_AGENT_BIN?.trim() || 'claude';
-        const res = (io.runClaude ?? defaultRunClaude)(
-          bin,
-          ['-p', 'Reply with the single word OK.', '--max-turns', '1', '--model', 'haiku'],
-          childEnv,
-        );
-        const output = `${res.stdout}\n${res.stderr}`.trim();
-        if (res.status === 0 && !/failed to authenticate|invalid|401|403/i.test(output)) {
-          return succeed(`Claude account "${name}" works.`, { name });
+        const result = await testClaudeAccount(loadClaudeAccounts(file), name, { env, ...(io.runClaude ? { run: io.runClaude } : {}) });
+        if (result.outcome === 'ok') return succeed(`Claude account "${name}" works.`, { name, outcome: 'ok' });
+        if (result.outcome === 'usage_limited') {
+          return fail(EXIT_FAILED, 'USAGE_LIMITED', `Claude account "${name}" is out of quota: ${result.message}`, { name, outcome: result.outcome });
         }
-        const firstLine = output.split('\n').find((line) => line.trim() !== '') ?? `exit status ${String(res.status)}`;
-        return fail(EXIT_FAILED, 'AUTH_FAILED', `Claude account "${name}" did not answer: ${firstLine.slice(0, 300)}`, { name });
+        const code = result.outcome === 'auth_failed' ? 'AUTH_FAILED' : 'ERROR';
+        return fail(EXIT_FAILED, code, `Claude account "${name}" did not answer: ${result.message}`, { name, outcome: result.outcome });
       }
       case 'switch':
         return await runSwitch(args, env, io, fail, succeed);

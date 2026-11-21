@@ -92,6 +92,17 @@ describe('LifecycleHandler lifecycle commands', () => {
     const opts = launchTask.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(opts).not.toHaveProperty('effort');
     expect(opts).not.toHaveProperty('model');
+    expect(opts).not.toHaveProperty('claudeAccount');
+  });
+
+  test('forwards the Claude account picked in the Launch form', async () => {
+    const launchTask = vi.fn().mockResolvedValue({ task: { id: 't1' }, queued: false });
+    const { deps } = makeDeps(new TaskStore(), { launchTask });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'launch', prompt: 'on pro', cwd: '/tmp', agentType: 'claude-code', claudeAccount: 'pro' });
+
+    expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({ prompt: 'on pro', claudeAccount: 'pro' }));
   });
 
   test('forwards the per-task cleanup override to the shared lifecycle', async () => {

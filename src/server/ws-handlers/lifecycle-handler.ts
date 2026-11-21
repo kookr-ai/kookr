@@ -184,6 +184,7 @@ export class LifecycleHandler {
           dependencies: msg.dependencies,
           ...(msg.effort ? { effort: msg.effort } : {}),
           ...(msg.model ? { model: msg.model } : {}),
+          ...(msg.claudeAccount ? { claudeAccount: msg.claudeAccount } : {}),
           disableDedup: msg.parentTaskId !== undefined ? true : msg.disableDedup,
           metadataIntent: msg.metadataIntent,
           parentTaskId: msg.parentTaskId,

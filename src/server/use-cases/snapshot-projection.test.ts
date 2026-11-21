@@ -901,4 +901,38 @@ describe('snapshot projection', () => {
       projectDisplayLabel: 'webapp',
     });
   });
+
+  it('projects the pinned Claude account onto pending, live and terminal rows, and omits it for the host', () => {
+    const taskStore = new TaskStore();
+    const mk = (status: 'pending' | 'inProgress' | 'completed', account?: string) => {
+      const task = createTaskForMutation(taskStore, 'Task', '/cwd');
+      taskStore.getTaskForMutation(task.id)!.status = status;
+      if (account) taskStore.setClaudeAccount(task.id, account);
+      return task.id;
+    };
+    const pending = mk('pending', 'work');
+    const terminal = mk('completed', 'personal');
+    const host = mk('pending');
+    const live = mk('inProgress', 'work');
+    taskStore.addSession(live, { tmuxSession: 'agent-live', agentType: 'claude-code', cwd: '/cwd', createdAt: new Date() });
+    const agents = project(taskStore, [liveAgent('agent-live')]);
+    const of = (id: string) => agents.find((a) => a.taskId === id);
+    expect(of(pending)?.claudeAccount).toBe('work');
+    expect(of(terminal)?.claudeAccount).toBe('personal');
+    expect(of(live)?.claudeAccount).toBe('work');
+    expect(of(host)).toBeDefined();
+    expect(of(host)).not.toHaveProperty('claudeAccount');
+  });
+
+  it('does not project a Claude account onto a non-claude-code task', () => {
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'Codex', '/cwd');
+    const stored = taskStore.getTaskForMutation(task.id)!;
+    stored.status = 'pending';
+    stored.agentType = 'codex-cli';
+    taskStore.setClaudeAccount(task.id, 'work');
+    const row = project(taskStore).find((a) => a.taskId === task.id);
+    expect(row).toBeDefined();
+    expect(row).not.toHaveProperty('claudeAccount');
+  });
 });

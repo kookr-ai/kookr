@@ -1421,6 +1421,20 @@ working. It is the first step of the ordered disable. Errors are always
 | `GET /api/github/status` | GitHub scanner status |
 | `GET /api/github/:taskId` | PR or issue state for one task. In a repository with an integration branch, each PR carries `delivery`: `stage` (`pr-open`, `in-staging`, `on-main`, `reverted`), `integrationBranch`, the times `openedAt`, `mergedAt`, `onMainAt` and `revertedAt` when known, `mergedIntoMain` and `skippedTrain` for a PR merged straight into `main`, and for a revert `revert` (`revertCommit`, `attempt`, `maxAttempts`, `fixTaskKey`, `needsHuman`, `failingTests`). See the user guide, "Where A Task's Change Is" |
 
+## Claude Accounts
+
+Manage the named Claude accounts of [Claude accounts](claude-accounts.md) from the dashboard (Settings -> Accounts). Wire types: `src/shared/contracts/claude-accounts.ts`. Tokens are write-only: a request may carry one, no response, error message or audit row ever does. Owner-only: viewer-share and other non-owner credentials get `403`. Every mutation appends a `claude-account.mutation` row (actor from `X-Kookr-Actor`, account name, label; never the token) to `audit.jsonl`.
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/claude-accounts` | List accounts: `{ accounts: [{ name, label?, isDefault, tokenHint?, addedAt? }], default }`, `host` first, then registered accounts by name. `500 { error, code: "malformed_registry" }` when the registry file cannot be parsed |
+| `POST /api/claude-accounts` | Add an account or replace its token and label. Body `{ name, token, label?, makeDefault? }`; `token` is the bare token or the whole `claude setup-token` output, `label` 1-120 characters (re-adding without a label keeps the old one). `201` with the same body as `GET`; `400 { error, code }` with `code` one of `invalid_name`, `reserved_name` (`host`), `invalid_token`, `invalid_label`, `invalid_body`; `500` `malformed_registry` (the file is never overwritten) |
+| `DELETE /api/claude-accounts/:name` | Forget an account (resets the default to `host` if it was the default). `200` with the same body as `GET`; `400 reserved_name` for `host`; `404 unknown_account` |
+| `PUT /api/claude-accounts/default` | Choose the account new tasks run on. Body `{ name }` (`host` allowed). `200` with the same body as `GET`; `400 unknown_account` for an unregistered name, `400 invalid_body` |
+| `POST /api/claude-accounts/:name/test` | Send one tiny `claude -p` request on the account (uses a few tokens of it; concurrent tests of one account share a single request). `200 { name, outcome, message, testedAt }` where `outcome` is `ok`, `usage_limited` (out of plan quota), `auth_failed` (token refused) or `error`, and `message` is one secret-free line of at most 300 characters; `404 unknown_account` |
+
+Error bodies are `{ error, code }`.
+
 ## Settings And Infrastructure
 
 | Endpoint | Description |
