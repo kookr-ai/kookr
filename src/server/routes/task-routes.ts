@@ -1283,14 +1283,6 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     }
   });
 
-  // Reopen a terminal task from the CLI (issue #3671): the same
-  // `reopenTask` lifecycle command as the dashboard's Reopen button. The task is
-  // re-queued and relaunched (immediately when a slot is free), and `resume`
-  // reports whether the relaunch continues the prior conversation, starts
-  // fresh by design, or cannot resume it and why. Supervisor-gated like
-  // `/complete`, since it launches an agent on an existing task, and audited
-  // the same way: every outcome is a `task.reopen` row attributed via
-  // `X-Kookr-Actor`.
   // Move a claude-code task to another named Claude account (account
   // switching; see docs/reference/claude-accounts.md). A running task is
   // stopped and relaunched in place, resuming its conversation on the new
@@ -1327,6 +1319,14 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     }
   });
 
+  // Reopen a terminal task from the CLI (issue #3671): the same
+  // `reopenTask` lifecycle command as the dashboard's Reopen button. The task is
+  // re-queued and relaunched (immediately when a slot is free), and `resume`
+  // reports whether the relaunch continues the prior conversation, starts
+  // fresh by design, or cannot resume it and why. Supervisor-gated like
+  // `/complete`, since it launches an agent on an existing task, and audited
+  // the same way: every outcome is a `task.reopen` row attributed via
+  // `X-Kookr-Actor`.
   app.post('/api/tasks/:id/reopen', async (c) => {
     if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
       return supervisorUnauthorizedResponse(c);

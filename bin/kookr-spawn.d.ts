@@ -178,6 +178,10 @@ export interface PostTaskArgs {
   /** #3644: sent as `playbook.parameterValues`. */
   playbookParams?: Record<string, string> | null;
 }
+/** The JSON body `POST /api/tasks` receives; shared by the launch path and --dry-run. */
+export function buildTaskPostBody(
+  args: Partial<Omit<PostTaskArgs, 'baseUrl'>> & { prompt: string | null; cwd: string },
+): Record<string, unknown>;
 
 export interface TaskPayload {
   id?: string;

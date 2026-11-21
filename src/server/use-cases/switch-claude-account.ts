@@ -30,6 +30,7 @@ import type { Task, TaskStore } from '../../core/tasks.js';
 import { TaskCleanupInProgressError } from '../../core/tasks.js';
 import { nowISO } from '../../core/interaction-log.js';
 import {
+  HOST_CLAUDE_ACCOUNT,
   assertKnownAccount,
   effectiveClaudeAccount,
   type ClaudeAccountRegistry,
@@ -97,16 +98,21 @@ async function switchInner(
     return { outcome: 'invalid', code: 'invalid_claude_account', error: err instanceof Error ? err.message : String(err) };
   }
 
-  // A task that never launched under the registry has no pin; it is on
-  // whatever the default resolves to now.
-  const from = effectiveClaudeAccount(registry, task.metadata?.claudeAccount);
-  if (from === account && task.metadata?.claudeAccount !== undefined) {
-    return { outcome: 'unchanged', task, from, to: account };
+  // Where the task is now. A pin says it. A task without one that already
+  // launched did so while no account was registered (launches pin otherwise,
+  // see claude-account-launch.ts), so it ran on the host login. One that never
+  // launched will get whatever the default resolves to.
+  const pinned = task.metadata?.claudeAccount;
+  const from = pinned
+    ?? (task.sessions.length > 0 ? HOST_CLAUDE_ACCOUNT : effectiveClaudeAccount(registry, undefined));
+  if (from === account) {
+    // Nothing to move. Record the pin so later default changes keep it there.
+    const current = pinned === undefined ? taskStore.setClaudeAccount(taskId, account) : task;
+    return { outcome: 'unchanged', task: current, from, to: account };
   }
 
   if (task.status !== 'inProgress') {
-    const pinned = taskStore.setClaudeAccount(taskId, account);
-    return { outcome: from === account ? 'unchanged' : 'pinned', task: pinned, from, to: account };
+    return { outcome: 'pinned', task: taskStore.setClaudeAccount(taskId, account), from, to: account };
   }
 
   if (task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused') {

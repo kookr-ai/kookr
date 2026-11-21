@@ -47,12 +47,13 @@ and dev on 4801), like `~/.claude` is. `KOOKR_CLAUDE_ACCOUNTS_FILE` moves it.
 
 ```bash
 kookr account default work                 # new tasks run on "work"
-kookr spawn --account personal "Fix #123"  # this task runs on "personal"
+kookr spawn --account personal "Tidy the docs"  # this task runs on "personal"
 kookr account default host                 # back to the host login
 ```
 
-A task is pinned to an account at its first launch (the `--account` it was
-spawned with, else the default at that moment), stored as
+`--account` implies `--agent claude-code`. A task is pinned to an account at
+its first launch (the `--account` it was spawned with, else the default at
+that moment; nothing is pinned while no account is registered), stored as
 `metadata.claudeAccount`. Changing the default later does not move tasks that
 already started; crash recovery, queue promotion and Reopen all relaunch a task
 on its pinned account.
@@ -65,7 +66,9 @@ kookr account switch <taskId> personal
 
 - **Running task:** Kookr stops its agent and relaunches it in place on the new
   account, continuing its conversation. The task keeps its worktree, branch,
-  issue claims and parent; it is never cancelled. The agent is told the process
+  issue claims and parent; the switch itself never cancels it. (If the
+  relaunch then fails, the task is cancelled like any failed launch, and the
+  command reports `relaunch_failed`.) The agent is told the process
   was restarted and to re-check its state, and an agent that was waiting for an
   answer is told to ask again. If no slot is free the task waits in the queue
   and the command says so. The resume request of a queued task is held in

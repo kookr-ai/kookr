@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { TaskStore } from '../../core/tasks.js';
 import { Monitor } from '../../core/monitor.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
-import { emptyClaudeAccountRegistry, withAccount, type ClaudeAccountRegistry } from '../../core/claude-accounts.js';
+import { emptyClaudeAccountRegistry, withAccount, withDefaultAccount, type ClaudeAccountRegistry } from '../../core/claude-accounts.js';
 import { switchClaudeAccount, type SwitchClaudeAccountDeps } from './switch-claude-account.js';
 
 const TOKEN_WORK = 'sk-ant-oat01-' + 'w'.repeat(40);
@@ -210,6 +210,50 @@ describe('switchClaudeAccount', () => {
     });
 
     expect(await switchClaudeAccount(deps, taskId, 'work')).toMatchObject({ outcome: 'invalid', code: 'task_changed' });
+  });
+
+  test('leaves an earlier finished session alone', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix the flaky test', '/repo');
+    taskStore.addSession(task.id, { tmuxSession: 'kookr-first', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+    taskStore.updateSession(task.id, 'kookr-first', { lastStatus: 'completed' });
+    taskStore.addSession(task.id, { tmuxSession: 'kookr-old', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+    taskStore.updateSession(task.id, 'kookr-old', { claudeSessionId: 'conv-2' });
+    const { deps, stop } = makeDeps(taskStore);
+
+    expect((await switchClaudeAccount(deps, task.id, 'work')).outcome).toBe('queued');
+    expect(stop.mock.calls.map((c) => c[0])).toEqual(['kookr-old']);
+    const sessions = taskStore.getTask(task.id)!.sessions;
+    expect(sessions.find((s) => s.tmuxSession === 'kookr-first')?.lastStatus).toBe('completed');
+    expect(sessions.find((s) => s.tmuxSession === 'kookr-old')?.lastStatus).toBe('aborted');
+  });
+
+  test('a running task with no pin is on host, whatever the default says', async () => {
+    const taskStore = new TaskStore();
+    const taskId = runningTask(taskStore);
+    const { deps, stop } = makeDeps(taskStore, {
+      loadClaudeAccounts: () => withDefaultAccount(registryWithWork(), 'work'),
+    });
+
+    // Switching it to host changes nothing: the agent keeps running.
+    expect(await switchClaudeAccount(deps, taskId, 'host')).toMatchObject({ outcome: 'unchanged', from: 'host', to: 'host' });
+    expect(stop).not.toHaveBeenCalled();
+    expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
+    expect(taskStore.getTask(taskId)?.metadata?.claudeAccount).toBe('host');
+
+    // Switching it to the default really moves it, and says where from.
+    expect(await switchClaudeAccount(deps, taskId, 'work')).toMatchObject({ outcome: 'queued', from: 'host', to: 'work' });
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('a task that never launched is on the current default', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('later', '/repo');
+    const { deps } = makeDeps(taskStore, {
+      loadClaudeAccounts: () => withDefaultAccount(registryWithWork(), 'work'),
+    });
+
+    expect(await switchClaudeAccount(deps, task.id, 'host')).toMatchObject({ outcome: 'pinned', from: 'work', to: 'host' });
   });
 
   test('returns not_found for an unknown task', async () => {

@@ -80,7 +80,7 @@ export interface LaunchOpts {
   /**
    * Named Claude Code account to launch on (claude-code only). Must be `host`
    * or an account registered with `kookr account add`; validated in
-   * `launchTask` (`ClaudeAccountError`, API -> 400) and persisted as
+   * `launchTask` (`ClaudeAccountValidationError`, API -> 400) and persisted as
    * `metadata.claudeAccount`. When absent the registry default applies.
    */
   claudeAccount?: string;

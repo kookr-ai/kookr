@@ -245,9 +245,10 @@ Options:
       --profile <id>       opencode worker profile (scoped-fix, reviewer,
                            test-auditor); requires --agent opencode. The
                            server validates the id.
-      --account <name>     Claude account to run on (claude-code only): "host"
-                           or a name from \`kookr account list\`. Default:
-                           the account set with \`kookr account default\`.
+      --account <name>     Claude account to run on: "host" or a name from
+                           \`kookr account list\`. Implies --agent claude-code.
+                           Default: the account set with
+                           \`kookr account default\`.
       --model-tier <tier>  Portable model intent resolved after agent choice.
                            small = Haiku, Luna/high, or Grok 4.6.
                            Codex requires the Kookr fork; stock/older binaries
@@ -539,6 +540,9 @@ function parseArgs(argv) {
     }
   }
   const ACCEPTED_AGENTS = new Set(['claude-code', 'codex-cli', 'grok-build', 'opencode']);
+  // A Claude account only means something for Claude Code, so --account
+  // without --agent picks it instead of letting round-robin land elsewhere.
+  if (out.claudeAccount !== null && out.agent === null) out.agent = 'claude-code';
   if (out.agent !== null && !ACCEPTED_AGENTS.has(out.agent)) {
     throw new UsageError(
       `--agent must be "claude-code", "codex-cli", "grok-build", or "opencode" (got: ${out.agent})`,

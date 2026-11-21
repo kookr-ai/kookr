@@ -910,17 +910,17 @@ installed `kookr` as well as from a source checkout.
 
 ## Server Discovery
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr reopen`, `kookr ask`, `kookr peek`, `kookr signal`, `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr reopen`, `kookr account switch`, `kookr ask`, `kookr peek`, `kookr signal`, `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
 3. Probe local ports `4800` and `4801`
 
-Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr reply` / `kookr reopen` / `kookr peek` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
+Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr reply` / `kookr reopen` / `kookr account switch` / `kookr peek` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr brief`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
 
 ## JSON Output
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr reopen`, `kookr ask`, `kookr peek`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr reopen`, `kookr account`, `kookr ask`, `kookr peek`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -1751,7 +1751,8 @@ the path with `KOOKR_CLAUDE_ACCOUNTS_FILE`). `switch` calls
 [`POST /api/tasks/:id/claude-account`](./api.md#post-apitasksidclaude-account):
 a running task is stopped and relaunched in place on the new account,
 continuing its conversation; any other task keeps the new account for its next
-launch. `kookr spawn --account <name>` picks the account of a new task.
+launch. `kookr spawn --account <name>` picks the account of a new task (and
+implies `--agent claude-code`).
 
 Exit codes: `0` success, `1` `test` found that the account does not
 authenticate, `2` usage error (including an unknown account or a refused

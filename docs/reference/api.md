@@ -421,8 +421,8 @@ defines delivery. The `kookr-spawn --profile <id>` flag maps to this field.
 `kookr account add`. It is only valid when the task resolves to `claude-code`;
 an unregistered name, an empty value or another agent returns
 `400 {"error", "code": "invalid_claude_account"}` without launching a task. It
-is stored as `metadata.claudeAccount`. Without it the task is pinned to the
-registry default at its first launch. A launch on an account other than `host`
+is stored as `metadata.claudeAccount`. Without it, once at least one account
+is registered, the task is pinned to the registry default at its first launch. A launch on an account other than `host`
 skips the host-only plan-quota admission gate. `kookr spawn --account <name>`
 maps to this field.
 
@@ -717,8 +717,10 @@ The account is pinned on the task (`metadata.claudeAccount`). A task that is
 `inProgress` is relaunched in place: it moves to `pending` with a resume
 request, its live sessions are stopped (their status becomes `aborted`), and
 promotion relaunches it with `claude --resume <id> --fork-session` on the new
-account. The task keeps its worktree leases and issue claims; it is not
-cancelled. The response waits for that launch attempt. Any other status only
+account. The switch keeps the task's worktree leases and issue claims and
+never cancels it; if the relaunch then fails, promotion cancels the task as for
+any failed launch (`relaunch_failed` below). The response waits for that launch
+attempt. Any other status only
 changes the pin, which the next launch uses.
 
 Success returns `200 {"ok": true, "outcome", "from", "to", "task"}`, where
