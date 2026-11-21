@@ -130,6 +130,13 @@ describe('parseTranscriptFacts', () => {
     ]);
   });
 
+  it('equal latest timestamps tie-break on the larger size, in either line order', () => {
+    const a = assistant('17:00:00', usage(1, 60_000, 0));
+    const b = assistant('17:00:00', usage(1, 61_000, 0));
+    expect(parseTranscriptFacts(`${a}\n${b}`).contextTokens).toBe(61_001);
+    expect(parseTranscriptFacts(`${b}\n${a}`).contextTokens).toBe(61_001);
+  });
+
   it('property: shuffling the lines never changes the facts', () => {
     const lines = [
       user('08:00:00', 'go'),

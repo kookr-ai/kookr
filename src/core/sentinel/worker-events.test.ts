@@ -52,6 +52,14 @@ describe('workerEvents', () => {
     expect(line.kind === 'type-line' && line.text).toBe('[kookr sentinel] worker w1 ended at 10:05 (cancelled). Check its job.');
   });
 
+  it('holds ends while the lead is terminal and reports them once it is live again', () => {
+    const children = [ended('w1', 10, 'hung-suspect-ttl')];
+    const held = workerEvents(sentinelFacts({ children, lead: { live: false } }), sentinelState(), at(12));
+    expect(held.decision).toMatchObject({ decision: 'not-live', effects: [] });
+    expect(held.state.workerEvents.reported).toEqual([]);
+    expect(workerEvents(sentinelFacts({ children }), held.state, at(40)).decision.decision).toBe('report');
+  });
+
   it('unknown workers report nothing', () => {
     expect(workerEvents(sentinelFacts({ children: UNKNOWN }), sentinelState(), at(5)).decision.decision).toBe('children-unknown');
   });

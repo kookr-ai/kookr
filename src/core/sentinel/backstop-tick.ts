@@ -59,7 +59,9 @@ export function backstopTick(facts: SentinelFacts, state: SentinelState, nowMs: 
     return done('unresponsive', `no sign of life for ${silentMin} min, ${minutes(sinceTick)} min after the backstop tick; ${anchorNote}`, [{
       kind: 'ask',
       trigger: 'unresponsive',
-      question: `Lead ${lead.name} unresponsive for ${silentMin} min (last sign of life ${hhmm(anchor)}).${processNote}`,
+      question: isKnown(signOfLife)
+        ? `Lead ${lead.name} unresponsive for ${silentMin} min (last sign of life ${hhmm(anchor)}).${processNote}`
+        : `Lead ${lead.name} unresponsive for ${silentMin} min (no sign of life seen since the sentinel started at ${hhmm(anchor)}).${processNote}`,
       options,
       allowFreeText: true,
       dedupKey: `unresponsive:${lead.taskId}:${anchor}`,

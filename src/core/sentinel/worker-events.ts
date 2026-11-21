@@ -36,6 +36,8 @@ export function workerEvents(facts: SentinelFacts, state: SentinelState, nowMs: 
     decision: { duty: 'worker-events', decision, reason, effects },
     state: next,
   });
+  // Held, not dropped: a reopened lead still hears about the ends that happened while it was gone.
+  if (!facts.lead.live) return result('not-live', 'the lead is terminal; worker ends are held until it is live again');
   if (!isKnown(facts.children)) return result('children-unknown', "the lead's workers could not be read");
 
   const reported = new Set(state.workerEvents.reported);

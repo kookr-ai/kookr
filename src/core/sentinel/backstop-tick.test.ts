@@ -55,6 +55,8 @@ describe('backstopTick', () => {
     expect(r.decision.decision).toBe('tick-due');
     expect(r.decision.reason).toContain('sign of life unknown');
     const ask = backstopTick(facts, r.state, at(41)).decision.effects[0];
+    expect(ask.kind === 'ask' && ask.question).toContain('no sign of life seen since the sentinel started at 10:00');
+    expect(ask.kind === 'ask' && ask.question).not.toContain('last sign of life');
     expect(ask.kind === 'ask' && ask.question).toContain('live processes are unknown');
   });
 

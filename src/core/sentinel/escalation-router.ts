@@ -92,7 +92,9 @@ export function routeDecisions(input: {
 
   const boundaries = facts.transcript.compactBoundariesAtMs;
   const latestBoundary = isKnown(boundaries) && boundaries.length > 0 ? Math.max(...boundaries) : undefined;
-  let resumePending = latestBoundary !== undefined && latestBoundary > (input.state.lastGuardLineAtMs ?? -Infinity);
+  // A boundary from before the sentinel started predates any handoff it asked for.
+  let resumePending = latestBoundary !== undefined
+    && latestBoundary > Math.max(input.state.lastGuardLineAtMs ?? -Infinity, input.state.startedAtMs);
   let typed = false;
 
   const actions: RoutedAction[] = [];

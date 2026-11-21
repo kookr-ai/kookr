@@ -56,6 +56,12 @@ describe('routeDecisions', () => {
     expect(next.actions[0].text).toBe('[kookr sentinel] x');
   });
 
+  it('a boundary from before the sentinel started adds no prefix', () => {
+    const facts = sentinelFacts({ transcript: { compactBoundariesAtMs: [at(-30)] } });
+    const r = routeDecisions({ decisions: [line('[kookr sentinel] x')], facts, state: sentinelState(), nowMs: at(6) });
+    expect(r.actions[0].text).toBe('[kookr sentinel] x');
+  });
+
   it('never prefixes a /compact command', () => {
     const facts = sentinelFacts({ transcript: { compactBoundariesAtMs: [at(5)] } });
     const r = routeDecisions({ decisions: [line('/compact keep it')], facts, state: sentinelState(), nowMs: at(6) });
