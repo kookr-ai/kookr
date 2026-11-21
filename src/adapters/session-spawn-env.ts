@@ -31,6 +31,7 @@
 // backend rather than in one adapter.
 
 import { ensureInteractiveTermEnv } from './session-term-env.js';
+import { stripInheritedClaudeAccountEnv } from './claude-account-env.js';
 
 /**
  * Environment variables describing the *server's* process-tree position, which
@@ -56,7 +57,10 @@ export const NON_INHERITABLE_AGENT_ENV_VARS: readonly string[] = [
  * the server's own environment.
  */
 export function stripNonInheritableAgentEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const next: NodeJS.ProcessEnv = { ...env };
+  // A named Claude account's token inherited from the agent shell that
+  // restarted the server is the same kind of leak: it describes that agent,
+  // not this server (see stripInheritedClaudeAccountEnv).
+  const next: NodeJS.ProcessEnv = stripInheritedClaudeAccountEnv({ ...env });
   for (const name of NON_INHERITABLE_AGENT_ENV_VARS) delete next[name];
   return next;
 }

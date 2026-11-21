@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
 import type { GrokInstalledState } from '../../adapters/grok-build-preflight.js';
 import { TaskStore } from '../../core/tasks.js';
+import { emptyClaudeAccountRegistry, saveClaudeAccounts, withAccount, withDefaultAccount } from '../../core/claude-accounts.js';
 import { createAgentRuntime, resolveAdvisorModel, DEFAULT_ADVISOR_MODEL, type AgentRuntimeDeps } from './create-agent-runtime.js';
 
 /**
@@ -78,6 +79,26 @@ describe('createAgentRuntime — grok-build registration policy', () => {
       ...overrides,
     };
   }
+
+  test('wires the Claude account registry into the claude-code adapter', async () => {
+    const accountsFile = join(settingsDir, 'claude-accounts.json');
+    saveClaudeAccounts(
+      withDefaultAccount(withAccount(emptyClaudeAccountRegistry(), 'work', 'sk-ant-oat01-' + 'w'.repeat(40)), 'work'),
+      accountsFile,
+    );
+    const deps = baseDeps({ claudeAccountsFile: accountsFile });
+    const runtime = await createAgentRuntime(deps);
+    const task = deps.taskStore.createTask('x', '/repo');
+    // A real launch here would also pre-trust the cwd in the operator's
+    // ~/.claude.json, so call the resolver the adapter launches with.
+    const adapter = runtime.adapterRegistry.get('claude-code') as unknown as {
+      resolveClaudeAccount?: (taskId: string) => { account: string; env: Record<string, string> };
+    };
+    const resolved = adapter.resolveClaudeAccount?.(task.id);
+    expect(resolved?.account).toBe('work');
+    expect(resolved?.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-' + 'w'.repeat(40));
+    expect(deps.taskStore.getTask(task.id)?.metadata?.claudeAccount).toBe('work');
+  });
 
   test('registers grok-build when the binary preflight passes', async () => {
     const runtime = await createAgentRuntime(

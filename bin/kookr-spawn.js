@@ -245,6 +245,10 @@ Options:
       --profile <id>       opencode worker profile (scoped-fix, reviewer,
                            test-auditor); requires --agent opencode. The
                            server validates the id.
+      --account <name>     Claude account to run on: "host" or a name from
+                           \`kookr account list\`. Implies --agent claude-code.
+                           Default: the account set with
+                           \`kookr account default\`.
       --model-tier <tier>  Portable model intent resolved after agent choice.
                            small = Haiku, Luna/high, or Grok 4.6.
                            Codex requires the Kookr fork; stock/older binaries
@@ -397,6 +401,7 @@ function parseArgs(argv) {
     model: null,
     modelTier: null,
     profile: null,
+    claudeAccount: null,
     criteria: null,
     dedupe: 'warn',
     idempotencyKey: null,
@@ -457,6 +462,10 @@ function parseArgs(argv) {
       out.profile = eat();
     } else if (tok.startsWith('--profile=')) {
       out.profile = tok.slice('--profile='.length);
+    } else if (tok === '--account') {
+      out.claudeAccount = eat();
+    } else if (tok.startsWith('--account=')) {
+      out.claudeAccount = tok.slice('--account='.length);
     } else if (tok === '--criteria') {
       out.criteria = eat();
     } else if (tok === '--dedupe') {
@@ -531,6 +540,9 @@ function parseArgs(argv) {
     }
   }
   const ACCEPTED_AGENTS = new Set(['claude-code', 'codex-cli', 'grok-build', 'opencode']);
+  // A Claude account only means something for Claude Code, so --account
+  // without --agent picks it instead of letting round-robin land elsewhere.
+  if (out.claudeAccount !== null && out.agent === null) out.agent = 'claude-code';
   if (out.agent !== null && !ACCEPTED_AGENTS.has(out.agent)) {
     throw new UsageError(
       `--agent must be "claude-code", "codex-cli", "grok-build", or "opencode" (got: ${out.agent})`,
@@ -573,6 +585,16 @@ function parseArgs(argv) {
     }
     if (out.agent !== 'opencode') {
       throw new UsageError('--profile is only valid with --agent opencode');
+    }
+  }
+  if (out.claudeAccount !== null) {
+    // Charset mirror of the account-name rule in src/core/claude-accounts.ts;
+    // the server checks the account is registered.
+    if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(out.claudeAccount)) {
+      throw new UsageError(`--account must be a Claude account name like "work" (got: ${out.claudeAccount})`);
+    }
+    if (out.agent !== null && out.agent !== 'claude-code') {
+      throw new UsageError('--account is only valid with --agent claude-code');
     }
   }
   if (out.modelTier !== null && !MODEL_TIERS.has(out.modelTier)) {
@@ -1598,6 +1620,7 @@ function buildTaskPostBody({
   model = null,
   modelTier = null,
   profile = null,
+  claudeAccount = null,
   criteria = null,
   disableDedup = false,
   metadataIntent = null,
@@ -1626,6 +1649,7 @@ function buildTaskPostBody({
   if (model) body.model = model;
   if (modelTier) body.modelTier = modelTier;
   if (profile) body.profile = profile;
+  if (claudeAccount) body.claudeAccount = claudeAccount;
   if (disableDedup) body.disableDedup = true;
   if (metadataIntent) body.metadata = { intent: metadataIntent };
   if (parentTaskId) body.parentTaskId = parentTaskId;
@@ -1826,7 +1850,7 @@ function formatDryRunPreview({ baseUrl, cwdAbs, promptSource, body, matchingTask
   return lines.join('\n');
 }
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, modelTier = null, profile = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null, playbook = null, playbookScope = null, playbookParams = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, modelTier = null, profile = null, claudeAccount = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null, playbook = null, playbookScope = null, playbookParams = null }) {
   const body = buildTaskPostBody({
     prompt,
     cwd,
@@ -1835,6 +1859,7 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
     model,
     modelTier,
     profile,
+    claudeAccount,
     criteria,
     disableDedup,
     metadataIntent,
@@ -2899,6 +2924,7 @@ async function main({
       model: args.model,
       modelTier: args.modelTier,
       profile: args.profile,
+      claudeAccount: args.claudeAccount,
       playbook: args.playbook,
       playbookScope: args.playbookScope ?? (args.playbook ? 'project' : null),
       playbookParams: args.playbookParams,
@@ -2923,6 +2949,7 @@ async function main({
           model: args.model,
           modelTier: args.modelTier,
           profile: args.profile,
+          claudeAccount: args.claudeAccount,
           playbook: args.playbook,
           playbookScope: args.playbookScope ?? (args.playbook ? 'project' : null),
           playbookParams: args.playbookParams,
@@ -2957,6 +2984,7 @@ async function main({
       model: args.model,
       modelTier: args.modelTier,
       profile: args.profile,
+      claudeAccount: args.claudeAccount,
       criteria: args.criteria,
       disableDedup: args.dedupe === 'skip',
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
@@ -2995,6 +3023,7 @@ async function main({
       model: args.model,
       modelTier: args.modelTier,
       profile: args.profile,
+      claudeAccount: args.claudeAccount,
       criteria: args.criteria,
       disableDedup: args.dedupe === 'skip',
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
@@ -3023,6 +3052,7 @@ async function main({
         model: args.model,
         modelTier: args.modelTier,
         profile: args.profile,
+        claudeAccount: args.claudeAccount,
         criteria: args.criteria,
         disableDedup: args.dedupe === 'skip',
         metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
@@ -3227,6 +3257,7 @@ async function main({
           model: args.model,
           modelTier: args.modelTier,
           profile: args.profile,
+          claudeAccount: args.claudeAccount,
           criteria: args.criteria,
           disableDedup: true,
           metadataIntent: 'keep_as_duplicate',
