@@ -131,7 +131,9 @@ So there is one way to start a sentinel and one way to end it, with no orphaned 
 
 **CLI.** A thin wrapper over that resource:
 
-- `kookr sentinel start --target <id> [--for 1h..7d] [--dry-run | --live <duties>]`.
+- `kookr sentinel start --target <id> [--for 1h..7d] [--dry-run | --live <duties>] [--no-telegram]`.
+  - **Duty names**, used by `--live`: `backstop` (the backstop tick, the unresponsive check and the
+    reap exemption), `crash-recovery`, `worker-events`, `compaction`, `progress` and `expiry`.
   - **The default is live for every duty that has shipped as live.** During P0 none has, so every
     sentinel starts as a dry run. `--dry-run` forces a dry run, and the skill rule uses the default.
   - The flags work like this: `--live backstop,worker-events` turns duties on one at a time, and
@@ -172,7 +174,7 @@ babysit, drive or watch something for hours or days runs
 | `TaskFacts` | the task store, including the last screen-change time | Status, and the terminal reason plus its **disposition source** from the disposition ledger (`hung-suspect-ttl`, `hung-task-reaper`, `crash-recovery`, operator, `completion_ready`). The source is a structured field, never prose. |
 | `TranscriptFacts` | the transcript path from the hook stream's `transcript_path` | **Context size:** last assistant entry with non-zero usage, `input + cache_read + cache_creation`. **Last turn end:** last `turn_duration`. **Last assistant entry time.** **`compact_boundary` times.** Every read filters by timestamp, because the file is not chronological. A missing value is `unknown`, never 0. |
 | `ChildEvents` | the task store's `parentTaskId` | Ends, reclaims and starts of the lead's workers, with disposition source. |
-| `OperatorActivity` | the user-input delivery log by `source` | The operator's own inputs count: dashboard, Telegram `directReply`, the operator's CLI, and `operator-via-sentinel`. Sentinel input (`source: 'sentinel'`) does not. The guard types only through `GuardedInputSender`, which writes this log. Sentinel asks are system asks and never type into the lead, so a Telegram `directReply` is always the operator. Until the tag ships, operator activity is `unknown`, which counts as "not quiet". |
+| `OperatorActivity` | the user-input delivery log by `source` | The operator's own inputs count: dashboard, Telegram `directReply`, Lucy (`lucy_operator`) and `operator-via-sentinel`. **CLI input is not covered.** `kookr reply` goes through `sendDirectAgentInput`, which writes no delivery record, and an operator's `kookr reply` cannot be told from another task's. Until CLI input carries an actor (a design choice for P0), an operator conversation held over the CLI is invisible to this port. Sentinel input (`source: 'sentinel'`) does not. The guard types only through `GuardedInputSender`, which writes this log. Sentinel asks are system asks and never type into the lead, so a Telegram `directReply` is always the operator. Until the tag ships, operator activity is `unknown`, which counts as "not quiet". |
 
 ### 2. Duties (pure functions of facts and the sentinel's state)
 
@@ -298,7 +300,8 @@ the auditor checks those instead.
 
 `AskService` cannot route single options of one ask to different handlers. A task ask's answer is
 typed into the task; a system ask's answer goes to its owner. So **every sentinel ask is a system ask
-owned by the guard**, under its own system id `system:sentinel-<id>`. The guard carries out each answer
+owned by the guard**, under its own system id `sentinel-<short id>`. `createSystem` accepts only `[a-z0-9-]{1,40}`, so the
+id is the first 8 characters of the sentinel id. The guard carries out each answer
 itself, including the options that type text into the lead. The router is therefore the only path
 from the sentinel to the operator and to the lead, and dry run, SAFE MODE and dedup apply to all of
 it.
@@ -416,7 +419,10 @@ launched supervisions untouched. `kookr sentinel live <id> none` (back to dry ru
   with a `source`. Supervision switches to it, with pin tests first.
 - `src/core/sentinel/crash-recovery.ts`, with the backstop and unresponsive rules in
   `backstop-tick.ts`.
-- `src/server/hung-suspect-ttl-sweep.ts`: one more input to the injected exemption predicate.
+- `src/server/hung-suspect-ttl-sweep.ts` and its wiring in `src/server/lifecycle-timers.ts`
+  (`isSupervisorAwaitingScheduledWake`): one more input to the injected exemption predicate.
+- `src/server/routes/agent-routes.ts` (`sendDirectAgentInput`): record CLI input with an actor, if P0
+  chooses that fix for `OperatorActivity`.
 - **Reused:** the operational-alert emitter, `AskService.createSystem`, and the terminate and reopen
   use cases. Asks are reached through a small port over `AskService`, with rate-limit results passed
   back to the caller.
@@ -489,14 +495,17 @@ launched supervisions untouched. `kookr sentinel live <id> none` (back to dry ru
   (`completion-digest` has `prUrls`). Until a per-lead PR signal is confirmed, progress rests on
   worker completions with a delivered result, plus declared jobs. PR head changes are added once
   attribution exists.
-- O8. **Night-time alerts.** Should *unresponsive*, *reopen failed* and *crash-loop* alerts bypass
-  quiet hours? Supervision alerts carry a server-internal `bypassQuietHours`, used only after
-  self-healing fails. G1's 45 minutes holds overnight only if these alerts may wake the operator.
+- O8. **Night-time alerts.** `bypassQuietHours` is proposed in `rfc-attachable-task-supervisor.md`
+  but is not implemented. Today, server-side quiet hours hold back only ask reminders
+  (`AskService.sendDueReminders`), so sentinel alerts and new asks already reach the operator at
+  night. Should some of them be held back into a morning digest, while *unresponsive*,
+  *reopen failed* and *crash-loop* alerts stay immediate?
 - **Not verified at source:**
   - listing the lead's live descendant processes;
   - the last screen-change time in `TaskFacts`;
   - that the lifecycle health check can alert on a stale sentinel tick;
-  - the stop-nudge hook reading a task flag.
+  - the stop-nudge hook reading a task flag;
+  - identifying the operator's own CLI input (see `OperatorActivity`).
 
   P0 confirms or replaces each one.
 
