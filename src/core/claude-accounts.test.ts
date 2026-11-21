@@ -121,7 +121,7 @@ describe('claude account registry', () => {
 
   test('the file location honours the override variable', () => {
     expect(resolveClaudeAccountsFile({ KOOKR_CLAUDE_ACCOUNTS_FILE: '/x/y.json' })).toBe('/x/y.json');
-    expect(resolveClaudeAccountsFile({ HOME: '/home/op' })).toBe('/home/op/.kookr/claude-accounts.json');
+    expect(resolveClaudeAccountsFile({ HOME: '/srv/op-home' })).toBe('/srv/op-home/.kookr/claude-accounts.json');
   });
 
   test('a save replaces the file atomically and leaves no temp file', () => {
