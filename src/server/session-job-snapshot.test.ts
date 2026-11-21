@@ -33,7 +33,41 @@ describe('createSessionJobSnapshotter (issue #4237)', () => {
     expect(readGpuPids).toHaveBeenCalledTimes(1);
   });
 
-  it('does not query the GPU when no task has a job', async () => {
+  it('finds a GPU holder that the age filters alone would drop (started with the session)', async () => {
+    const rows = table(false);
+    rows.push({ pid: 202, ppid: 101, comm: 'python', command: 'python eval.py', startedAtMs: NOW - 5 * HOUR + 60_000 });
+    const snapshot = createSessionJobSnapshotter({
+      getSessionRootPid: async () => 100,
+      readProcessTable: () => rows,
+      readGpuPids: async () => new Set([202]),
+      now: () => NOW,
+    });
+    expect((await snapshot([task('t1')])).get('t1')).toEqual([expect.objectContaining({ pid: 202, holdsGpu: true })]);
+  });
+
+  it('resolves the latest live session, skipping crash-recovered and stale earlier records', async () => {
+    const getSessionRootPid = vi.fn(async (id: string) => (id === 'kookr-new' ? 100 : null));
+    const snapshot = createSessionJobSnapshotter({
+      getSessionRootPid,
+      readProcessTable: () => table(true),
+      readGpuPids: async () => new Set(),
+      now: () => NOW,
+    });
+    const relaunched = aTask({
+      id: 'ralph',
+      status: 'inProgress',
+      sessions: [
+        aSession({ tmuxSession: 'kookr-old', lastStatus: undefined }),
+        aSession({ tmuxSession: 'kookr-crashed', lastStatus: 'inProgress', crashRecovered: true }),
+        aSession({ tmuxSession: 'kookr-new', lastStatus: 'inProgress' }),
+      ],
+    });
+    expect((await snapshot([relaunched])).get('ralph')).toEqual([expect.objectContaining({ pid: 201 })]);
+    expect(getSessionRootPid).toHaveBeenCalledWith('kookr-new');
+    expect(getSessionRootPid).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not query the GPU when no session has anything below its agent', async () => {
     const readGpuPids = vi.fn().mockResolvedValue(new Set());
     const snapshot = createSessionJobSnapshotter({
       getSessionRootPid: async () => 100,

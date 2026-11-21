@@ -22,9 +22,17 @@ export interface SessionJobSnapshotDeps {
   now?: () => number;
 }
 
-/** The task's live session id: the first session not yet completed or aborted. */
+/**
+ * The task's live session id: the latest session that is not completed,
+ * aborted or crash-recovered. Latest, because a relaunch (a Ralph iteration)
+ * can leave an earlier record without a terminal status.
+ */
 export function liveSessionIdOf(task: Pick<Task, 'sessions'>): string | undefined {
-  return task.sessions.find((s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted')?.tmuxSession;
+  for (let i = task.sessions.length - 1; i >= 0; i--) {
+    const s = task.sessions[i]!;
+    if (s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && !s.crashRecovered) return s.tmuxSession;
+  }
+  return undefined;
 }
 
 export function createSessionJobSnapshotter(deps: SessionJobSnapshotDeps): SessionJobSnapshotter {
@@ -55,7 +63,14 @@ export function createSessionJobSnapshotter(deps: SessionJobSnapshotDeps): Sessi
       rootPid,
       jobs: selectSessionJobs(rootPid, table, { nowMs }),
     }));
-    if (!withoutGpu.some((r) => r.jobs.length > 0)) return out;
+    // Query the GPU whenever a session has anything below its agent: a GPU
+    // holder is a job even when the filters above dropped it (started with the
+    // session, unknown start time).
+    const agentPids = new Set(
+      table.filter((p) => roots.some((r) => r.rootPid === p.ppid)).map((p) => p.pid),
+    );
+    const anyBelowAgent = table.some((p) => agentPids.has(p.ppid));
+    if (!anyBelowAgent) return out;
 
     let gpuPids: ReadonlySet<number> = new Set();
     try {

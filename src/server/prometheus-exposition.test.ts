@@ -40,6 +40,18 @@ describe('renderPrometheusExposition', () => {
     expect(render({})).toContain(`${series} 0`);
   });
 
+  test('renders the hungSuspect long-running-job skip reason, defaulting to 0 when absent (issue #4237)', () => {
+    const series = 'kookr_hung_suspect_ttl_reclaim_skipped_total{reason="long_running_job"}';
+    const render = (extra: { skippedLongRunningJob?: number }) =>
+      renderPrometheusExposition({
+        requestDurations: EMPTY_REQUEST_DURATIONS,
+        circuitBreakers: [],
+        hungSuspectReclaim: { reclaimedTotal: 0, ...extra },
+      }).split('\n');
+    expect(render({ skippedLongRunningJob: 4 })).toContain(`${series} 4`);
+    expect(render({})).toContain(`${series} 0`);
+  });
+
   test('renders the aggregate boot-health signal as an unlabeled process counter', () => {
     const metric = 'kookr_agent_boot_latency_all_launchable_deprioritized_total';
     for (const total of [0, 3]) {
