@@ -31,7 +31,7 @@
 // backend rather than in one adapter.
 
 import { ensureInteractiveTermEnv } from './session-term-env.js';
-import { stripInheritedClaudeAccountEnv } from '../core/claude-accounts.js';
+import { stripInheritedClaudeAccountEnv } from './claude-account-env.js';
 
 /**
  * Environment variables describing the *server's* process-tree position, which

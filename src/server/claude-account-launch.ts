@@ -10,11 +10,11 @@
 import type { TaskStore } from '../core/tasks.js';
 import {
   HOST_CLAUDE_ACCOUNT,
-  claudeAccountLaunchEnv,
   effectiveClaudeAccount,
   loadClaudeAccounts,
   type ClaudeAccountRegistry,
 } from '../core/claude-accounts.js';
+import { claudeAccountLaunchEnv } from '../adapters/claude-account-env.js';
 
 export interface ClaudeAccountLaunch {
   account: string;

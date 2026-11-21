@@ -5,14 +5,12 @@ import { join } from 'node:path';
 import {
   ClaudeAccountError,
   HOST_CLAUDE_ACCOUNT,
-  claudeAccountLaunchEnv,
   effectiveClaudeAccount,
   emptyClaudeAccountRegistry,
   extractClaudeOAuthToken,
   loadClaudeAccounts,
   resolveClaudeAccountsFile,
   saveClaudeAccounts,
-  stripInheritedClaudeAccountEnv,
   summarizeClaudeAccounts,
   withAccount,
   withDefaultAccount,
@@ -35,7 +33,6 @@ describe('claude account registry', () => {
     const registry = loadClaudeAccounts(file);
     expect(registry.accounts).toEqual({});
     expect(effectiveClaudeAccount(registry, undefined)).toBe(HOST_CLAUDE_ACCOUNT);
-    expect(claudeAccountLaunchEnv(registry, HOST_CLAUDE_ACCOUNT)).toEqual({});
   });
 
   test('round-trips through disk with owner-only permissions', () => {
@@ -47,37 +44,12 @@ describe('claude account registry', () => {
     expect(loaded.accounts.work?.token).toBe(TOKEN_A);
   });
 
-  test('a registered account selects its token and blanks the variables that outrank it', () => {
-    const registry = withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN_A);
-    expect(claudeAccountLaunchEnv(registry, 'work')).toEqual({
-      CLAUDE_CODE_OAUTH_TOKEN: TOKEN_A,
-      ANTHROPIC_API_KEY: '',
-      ANTHROPIC_AUTH_TOKEN: '',
-      KOOKR_CLAUDE_ACCOUNT: 'work',
-    });
-  });
-
-  test('a process that inherited an account launch env drops it, an operator token stays', () => {
-    const inherited = {
-      PATH: '/bin',
-      ...claudeAccountLaunchEnv(withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN_A), 'work'),
-    };
-    expect(stripInheritedClaudeAccountEnv(inherited)).toEqual({ PATH: '/bin' });
-    const operator = { PATH: '/bin', CLAUDE_CODE_OAUTH_TOKEN: TOKEN_B, ANTHROPIC_API_KEY: 'sk-ant-api03-real' };
-    expect(stripInheritedClaudeAccountEnv(operator)).toEqual(operator);
-  });
-
   test('a pinned account wins over the default; the default wins over host', () => {
     let registry = withAccount(withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN_A), 'personal', TOKEN_B);
     registry = withDefaultAccount(registry, 'work');
     expect(effectiveClaudeAccount(registry, undefined)).toBe('work');
     expect(effectiveClaudeAccount(registry, 'personal')).toBe('personal');
     expect(effectiveClaudeAccount(registry, HOST_CLAUDE_ACCOUNT)).toBe(HOST_CLAUDE_ACCOUNT);
-  });
-
-  test('a removed account refuses to launch instead of falling back to host', () => {
-    const registry = withoutAccount(withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN_A), 'work');
-    expect(() => claudeAccountLaunchEnv(registry, 'work')).toThrow(/no longer registered/);
   });
 
   test('removing the default account makes host the default again', () => {

@@ -24,17 +24,16 @@ import {
   ClaudeAccountError,
   HOST_CLAUDE_ACCOUNT,
   assertKnownAccount,
-  claudeAccountLaunchEnv,
   extractClaudeOAuthToken,
   loadClaudeAccounts,
   resolveClaudeAccountsFile,
   saveClaudeAccounts,
-  stripInheritedClaudeAccountEnv,
   summarizeClaudeAccounts,
   withAccount,
   withDefaultAccount,
   withoutAccount,
 } from '../core/claude-accounts.js';
+import { claudeAccountLaunchEnv, stripInheritedClaudeAccountEnv } from '../adapters/claude-account-env.js';
 import { SUPERVISOR_ACTOR_HEADER } from '../shared/contracts/supervisor-actions.js';
 import { resolveStopBaseUrl } from './kookr-stop.js';
 
