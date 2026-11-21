@@ -33,6 +33,7 @@ import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPrefligh
 import { CLI_INSTALL_BANNER_ID, CliInstallGuidanceBanner } from './CliInstallGuidanceBanner.js';
 import { LAUNCH_BUSY_DIRECTORY_BANNER_ID, LaunchBusyDirectoryBanner } from './LaunchBusyDirectoryBanner.js';
 import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
+import { LaunchClaudeAccountPicker } from './LaunchClaudeAccountPicker.js';
 import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.js';
 import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
 import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
@@ -226,6 +227,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     if (lastUsed && agentOptions.some((opt) => opt.type === lastUsed)) return lastUsed;
     return serverDefaultAgentType ?? 'claude-code';
   });
+  // '' = the registry default; only sent for claude-code launches.
+  const [claudeAccount, setClaudeAccount] = useState('');
   const [initialPins] = useState(() => restoreLastLaunchPins(agentType));
   const [effort, setEffort] = useState(initialPins.effort);
   const [model, setModel] = useState(initialPins.model);
@@ -399,6 +402,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       agentType,
       ...(relaunchParentTaskId ? { parentTaskId: relaunchParentTaskId } : {}),
       ...optionalLaunchPins(effort, model),
+      ...(agentType === 'claude-code' && claudeAccount ? { claudeAccount } : {}),
       ...(keepAsDuplicate
         ? { disableDedup: true, metadataIntent: 'keep_as_duplicate' as const }
         : {}),
@@ -471,7 +475,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
   async function handleCopySpawn() {
     if (!canCopySpawn) return;
-    const built = buildSpawnCommand({ prompt, cwd, agentType, criteria });
+    const built = buildSpawnCommand({ prompt, cwd, agentType, criteria, claudeAccount });
     try {
       await copyText(built.command);
       setSpawnCopied(true);
@@ -853,6 +857,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               onEffortChange={setEffort}
               onModelChange={setModel}
             />
+            {agentType === 'claude-code' && (
+              <LaunchClaudeAccountPicker value={claudeAccount} onChange={setClaudeAccount} />
+            )}
             {showGrokAuthBanner && grokAuth?.message && (
               <GrokAuthPreflightBanner message={grokAuth.message} />
             )}

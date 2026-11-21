@@ -34,6 +34,14 @@ describe('buildSpawnCommand — argv (quoted one-liner) path', () => {
     );
   });
 
+  test('a picked Claude account becomes --account, for claude-code only', () => {
+    const base = { prompt: 'tidy the docs', cwd: CWD, claudeAccount: 'pro' };
+    expect(buildSpawnCommand({ ...base, agentType: 'claude-code' }).command).toBe(
+      'kookr spawn -C /home/user/proj -a claude-code --account pro "tidy the docs"',
+    );
+    expect(buildSpawnCommand({ ...base, agentType: 'codex' }).command).not.toContain('--account');
+  });
+
   test('criteria is appended as a quoted --criteria flag', () => {
     const built = buildSpawnCommand({
       prompt: 'fix the auth bug',

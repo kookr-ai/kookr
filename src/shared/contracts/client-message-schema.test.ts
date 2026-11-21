@@ -155,6 +155,12 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(true);
   });
 
+  test('keeps a launch message claudeAccount and rejects an empty one', () => {
+    const ok = ClientMessageSchema.safeParse({ type: 'launch', prompt: 'hi', cwd: '/tmp', claudeAccount: 'pro' });
+    expect(ok.success && ok.data.type === 'launch' ? ok.data.claudeAccount : undefined).toBe('pro');
+    expect(ClientMessageSchema.safeParse({ type: 'launch', prompt: 'hi', cwd: '/tmp', claudeAccount: ' ' }).success).toBe(false);
+  });
+
   test('accepts a launch message with KB dependency declaration', () => {
     const result = ClientMessageSchema.safeParse({
       type: 'launch',

@@ -669,6 +669,8 @@ export type ClientMessage =
       effort?: string;
       /** Optional per-task model pin (#2448). Omitted ⇒ agent CLI / env default. */
       model?: string;
+      /** Named Claude account for a claude-code task (see docs/reference/claude-accounts.md). Omitted ⇒ registry default. */
+      claudeAccount?: string;
       /** When true, create a new task even if an active duplicate exists. */
       disableDedup?: boolean;
       /** Required with disableDedup: marks the launch as an intentional duplicate. */

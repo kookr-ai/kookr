@@ -102,6 +102,18 @@ host account: the timers that reclaim a provider-paused task use the host's
 reset times. For a task on another account they can hold or release it at the
 wrong moment, but never past the usual hard limit (2 hours by default).
 
+## From the dashboard
+
+Everything above except switching a task's account also works without a terminal:
+
+- **Settings -> Accounts** lists the accounts (never a token), marks the default, and lets you add an account, replace its token, give it a label (for example its email address), choose the default and remove it. Paste the whole output of `claude setup-token`; Kookr finds the token inside it. A token is write-only: once saved it is never shown again, only its last four characters.
+- **Test** on an account sends one tiny request and reports one of three results: `ok`, **out of quota** (the account signed in but its plan limit is reached; the line shows when it resets), or **sign-in failed** (the token was refused: expired, revoked or mistyped). Anything else (the `claude` CLI missing, a timeout) shows as an error with its first line.
+- The **sidebar footer** shows the account new tasks will run on and lets you change it. Tasks already started keep their account.
+- A claude-code task that runs on a named account shows an **account badge**; a task on the host login shows none.
+- `kookr account add <name> --label <text>` sets the same label from the terminal, and `kookr account list` shows it.
+
+The dashboard changes the same registry file as the CLI, through the owner-only [`/api/claude-accounts`](./api.md#claude-accounts) routes.
+
 ## Limits and safety
 
 - Removing an account (`kookr account remove`) does not touch running agents,

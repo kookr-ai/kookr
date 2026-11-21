@@ -360,6 +360,8 @@ export interface DeployRouteDeps {
 }
 
 export interface RouteDeps {
+  /** Named Claude accounts registry access for `/api/claude-accounts`; defaults to `~/.kookr/claude-accounts.json`. */
+  claudeAccounts?: import('./claude-account-routes.js').ClaudeAccountStore;
   /**
    * Ready queue (issue #3933): GET/POST /api/ready-queue, DELETE
    * /api/ready-queue/:id, and the `readyQueue` block of /api/health.

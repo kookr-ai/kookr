@@ -16,6 +16,7 @@ import { registerPluginAutoUpdateRoutes } from './routes/plugin-auto-update-rout
 import { PluginMutationService } from './plugin-manager/mutation-service.js';
 import { registerScheduleRoutes } from './routes/schedule-routes.js';
 import { registerSettingsRoutes } from './routes/settings-routes.js';
+import { registerClaudeAccountRoutes } from './routes/claude-account-routes.js';
 import { registerOrchestrationRoutes } from './routes/orchestration-routes.js';
 import { createTaskRouteLifecycleCommands, registerTaskRoutes } from './routes/task-routes.js';
 import { applyDefaultAgentUpdate } from './settings-service.js';
@@ -167,6 +168,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerMetricsRoutes(app, sharedDeps);
   registerAdminRoutes(app, sharedDeps);
   registerSettingsRoutes(app, sharedDeps);
+  registerClaudeAccountRoutes(app, sharedDeps);
   registerOrchestrationRoutes(app, sharedDeps);
   registerRalphRoutes(app, sharedDeps);
   registerPlaybookChainRoutes(app, sharedDeps);

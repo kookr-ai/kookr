@@ -83,6 +83,8 @@ export interface AgentState {
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;
   launchPermissionPosture?: TaskLaunchPermissionPosture;
+  /** Named Claude account this claude-code task is pinned to; absent means the host's own login. */
+  claudeAccount?: string;
   tokenUsage?: TokenUsage;
   /**
    * Model pinned at launch (`launchIntent.model`), as the operator requested

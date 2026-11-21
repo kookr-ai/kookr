@@ -17991,3 +17991,150 @@ button.coordinator-chain-member:focus-visible {
   .topbar-right .follow-pill,
   .topbar-right .dnd-pill { padding-left: 6px; padding-right: 6px; }
 }
+
+/* Named Claude accounts: Settings tab, footer switcher, task badge. */
+.claude-account-row {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border-dim);
+}
+.claude-account-row:last-child { border-bottom: none; }
+.claude-account-radio { margin-top: 3px; accent-color: var(--teal); }
+.claude-account-info { flex: 1; min-width: 0; }
+.claude-account-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.claude-account-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-bright);
+}
+.claude-account-default {
+  font-size: 12px;
+  color: var(--teal);
+}
+.claude-account-meta { overflow-wrap: anywhere; }
+.claude-account-quota { margin-top: 6px; max-width: 360px; }
+.claude-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.claude-account-status { color: var(--text-muted); }
+.claude-account-status--ok { color: var(--green); border-color: var(--green); }
+.claude-account-status--warn { color: var(--amber); border-color: var(--amber); }
+.claude-account-status--bad { color: var(--red); border-color: var(--red); }
+.claude-account-steps { max-width: none; margin-bottom: 6px; }
+.claude-account-steps code { font-family: var(--font-mono); font-size: 12px; color: var(--text-bright); }
+.settings-button.primary {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: var(--bg);
+}
+
+.account-chip-wrap { display: flex; justify-content: center; }
+.account-chip {
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--border-dim);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.account-chip:hover { color: var(--text-bright); border-color: var(--teal); }
+.account-chip:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.account-chip-short { display: none; }
+.usage-summary--nav .account-chip-full { display: none; }
+.usage-summary--nav .account-chip-short { display: inline; }
+.usage-summary--nav .usage-quota-caption { display: none; }
+.usage-quota-caption { font-size: 12px; color: var(--text-muted); }
+@media (min-width: 1280px) {
+  .project-sidebar.labelled .usage-summary--nav .account-chip-wrap { justify-content: flex-start; }
+  .project-sidebar.labelled .usage-summary--nav .account-chip-full { display: inline; }
+  .project-sidebar.labelled .usage-summary--nav .account-chip-short { display: none; }
+  .project-sidebar.labelled .usage-summary--nav .usage-quota-caption { display: block; }
+}
+.account-popover {
+  position: fixed;
+  z-index: 60;
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  text-align: left;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.account-popover-title { font-size: 12px; font-weight: 600; color: var(--text-bright); }
+.account-popover-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+}
+.account-popover-row input[type='radio'] { accent-color: var(--teal); }
+.account-popover-row .claude-account-status { font-size: 12px; }
+.account-popover-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-popover-manage { align-self: flex-start; }
+
+.task-account { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+.task-account-badge {
+  border: 1px solid var(--border-dim);
+  background: none;
+  color: var(--text-secondary);
+  text-transform: none;
+  cursor: pointer;
+}
+.task-account-badge:hover { color: var(--text-bright); border-color: var(--teal); }
+.task-account-badge:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.task-account-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 60;
+  min-width: 240px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.task-account-menu-title { font-size: 12px; font-weight: 600; color: var(--text-bright); }
+.task-account-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-bright);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.task-account-item:hover:not(:disabled) { background: var(--bg-card-hover); }
+.task-account-item:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+.task-account-item:disabled { cursor: default; opacity: 0.7; }
+.task-account-current { font-size: 12px; color: var(--teal); }
+.task-account-result { font-size: 12px; font-weight: 400; text-transform: none; }
+.task-account-result--ok { color: var(--green); }
+.task-account-result--error { color: var(--red); }
+.task-account-banner { display: flex; flex-direction: column; gap: 6px; }
+.task-account-banner-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

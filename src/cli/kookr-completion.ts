@@ -126,7 +126,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     // Named Claude accounts and account switching; keep in sync with src/cli/kookr-account.ts.
     name: 'account',
     subcommands: ['list', 'add', 'remove', 'default', 'test', 'switch'],
-    flags: ['--default', '--json', '-h', '--help'],
+    flags: ['--default', '--label', '--json', '-h', '--help'],
   },
   {
     // Tasks a crash or reboot interrupted (#4215); keep in sync with src/cli/kookr-interrupted.ts.

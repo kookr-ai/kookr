@@ -424,6 +424,10 @@ export function App() {
   const [confirmAction, setConfirmAction] = useState<'cancel' | 'complete' | null>(null);
   const [cleanupWorktreeOnComplete, setCleanupWorktreeOnComplete] = useState<boolean | undefined>(undefined);
   const [settingsFocus, setSettingsFocus] = useState<SettingsFocusField | undefined>(undefined);
+  const openSettingsAtAccounts = () => {
+    setSettingsFocus('claudeAccounts');
+    openModal('settings');
+  };
   // Seed for opening the Schedules dialog straight into a pre-filled create form
   // from a task-panel "schedule this playbook" button. Null = manual open.
   const [schedulePrefill, setSchedulePrefill] = useState<SchedulePrefill | null>(null);
@@ -1583,6 +1587,7 @@ export function App() {
       onLaunchSample={openLaunchWithSample}
       onLaunchPlaybooks={(playbookId) => openLaunchFromPalette('playbooks', 'overview_recent_playbook', playbookId)}
       onOpenSchedules={() => openModal('schedules')}
+      onOpenAccountSettings={openSettingsAtAccounts}
       onCheckSetup={() => setShowOperations(true)}
       onOpenCostComparison={() => openModal('costComparison')}
       onExpandCompleted={expandCompletedRail}
@@ -1630,6 +1635,7 @@ export function App() {
       onOpenDiagnostics={openDiagnostics}
       onExpandCompleted={expandCompletedRail}
       onOpenQuotaSettings={openSettingsAtQuotaHeadroom}
+      onOpenAccountSettings={openSettingsAtAccounts}
     />
   );
   const projectSidebar = !terminalFocusActive && (

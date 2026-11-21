@@ -103,3 +103,48 @@ describe('claude account registry', () => {
     expect(readFileSync(file, 'utf-8')).not.toContain(TOKEN_A);
   });
 });
+
+describe('claude account labels', () => {
+  test('a label is trimmed, stored, summarized and survives a save/load round trip', () => {
+    const registry = withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN_A, '  me@work.com ');
+    expect(registry.accounts.work?.label).toBe('me@work.com');
+    expect(summarizeClaudeAccounts(registry)[1]?.label).toBe('me@work.com');
+    saveClaudeAccounts(registry, file);
+    expect(loadClaudeAccounts(file).accounts.work?.label).toBe('me@work.com');
+  });
+
+  test('re-adding replaces the token and label; without a label the old one is kept', () => {
+    let registry = withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN_A, 'first');
+    registry = withAccount(registry, 'work', TOKEN_B);
+    expect(registry.accounts.work).toMatchObject({ token: TOKEN_B, label: 'first' });
+    registry = withAccount(registry, 'work', TOKEN_B, 'second');
+    expect(registry.accounts.work?.label).toBe('second');
+  });
+
+  test('an account without a label has no label key', () => {
+    const registry = withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN_A);
+    expect(registry.accounts.work).not.toHaveProperty('label');
+    expect(summarizeClaudeAccounts(registry)[1]).not.toHaveProperty('label');
+  });
+
+  test.each(['', '   ', 'x'.repeat(121), 'bad\nlabel', 'bell\u0007'])('rejects label %j', (label) => {
+    try {
+      withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN_A, label);
+      throw new Error('expected a throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ClaudeAccountError);
+      expect((err as ClaudeAccountError).code).toBe('invalid_label');
+    }
+  });
+
+  test('accepts a 120-character label', () => {
+    expect(withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN_A, 'x'.repeat(120)).accounts.work?.label).toHaveLength(120);
+  });
+
+  test('a registry file written before labels existed still loads', () => {
+    writeFileSync(file.replace('nested/', ''), JSON.stringify({ version: 1, accounts: { work: { token: TOKEN_A, addedAt: '2026-01-01T00:00:00.000Z' } } }));
+    const registry = loadClaudeAccounts(file.replace('nested/', ''));
+    expect(registry.accounts.work?.token).toBe(TOKEN_A);
+    expect(registry.accounts.work).not.toHaveProperty('label');
+  });
+});

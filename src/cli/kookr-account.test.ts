@@ -75,4 +75,27 @@ describe('kookr account', () => {
     expect(await runAccountCli(['switch', 't-1', 'work', '--json'], io({ fetchImpl }))).toBe(EXIT_USER_ERROR);
     expect(JSON.parse(logs[0]!)).toMatchObject({ ok: false, code: 'NOT_RESUMABLE' });
   });
+
+  test('add --label stores the label and list shows it', async () => {
+    const readSecret = async () => TOKEN;
+    expect(await runAccountCli(['add', 'work', '--label', 'me@work.com'], io({ readSecret }))).toBe(EXIT_OK);
+    expect(await runAccountCli(['add', 'alt', '--label=Alt plan'], io({ readSecret }))).toBe(EXIT_OK);
+    logs = [];
+    expect(await runAccountCli(['list'], io())).toBe(EXIT_OK);
+    expect(logs[0]).toContain('me@work.com, token');
+    expect(logs[0]).toContain('Alt plan, token');
+  });
+
+  test('add --label with a bad or missing value is a user error', async () => {
+    const readSecret = async () => TOKEN;
+    expect(await runAccountCli(['add', 'work', '--label'], io({ readSecret }))).toBe(EXIT_USER_ERROR);
+    expect(await runAccountCli(['add', 'work', '--label', 'x'.repeat(121)], io({ readSecret }))).toBe(EXIT_USER_ERROR);
+  });
+
+  test('test reports an out-of-quota account clearly', async () => {
+    await runAccountCli(['add', 'work'], io({ readSecret: async () => TOKEN }));
+    const runClaude = vi.fn(async () => ({ status: 1, stdout: "You've hit your limit - resets 3pm", stderr: '' }));
+    expect(await runAccountCli(['test', 'work'], io({ runClaude }))).toBe(EXIT_FAILED);
+    expect(errors.join('\n')).toContain('Claude account "work" is out of quota: You\'ve hit your limit - resets 3pm');
+  });
 });

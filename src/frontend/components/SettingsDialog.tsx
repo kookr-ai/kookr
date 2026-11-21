@@ -34,6 +34,7 @@ import { applyQuotaHeadroomThreshold } from '../store/quota-headroom-threshold.j
 import { updateAvatarPanelPrefs, useAvatarPanelPrefs } from '../store/avatar-panel-prefs.js';
 import { setTerminalEmptyEnterAdvance, useTerminalEmptyEnterAdvance } from '../store/terminal-empty-enter-pref.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { ClaudeAccountsSection } from './ClaudeAccountsSection.js';
 import { HookInventorySection } from './HookInventorySection.js';
 import { DictationCorpusPanel } from './DictationCorpusPanel.js';
 import { QUOTA_NO_HEADROOM_UTILIZATION } from '../../shared/quota-headroom-admission.js';
@@ -136,7 +137,7 @@ const LUCY_AUTONOMY_CHOICES: ReadonlyArray<{ value: LucyAutonomy; label: string;
 const HANDS_OFF_WARNING =
   'Hands-off removes agent permission prompts for every task Lucy starts: Claude Code runs with --dangerously-skip-permissions and Codex CLI with --dangerously-bypass-approvals-and-sandbox. It intentionally removes a safeguard, so use it only for controlled local sessions.';
 
-export type SettingsFocusField = 'maxActiveTasks' | 'quotaHeadroomThreshold' | 'relayConnection';
+export type SettingsFocusField = 'maxActiveTasks' | 'quotaHeadroomThreshold' | 'relayConnection' | 'claudeAccounts';
 
 interface Props {
   onClose: () => void;
@@ -149,9 +150,9 @@ interface Props {
   focusField?: SettingsFocusField;
 }
 
-type SettingsTab = 'general' | 'sharing' | 'hooks' | 'corpus';
+type SettingsTab = 'general' | 'accounts' | 'sharing' | 'hooks' | 'corpus';
 
-const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'sharing', 'hooks', 'corpus'];
+const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'accounts', 'sharing', 'hooks', 'corpus'];
 
 // Searchable terms per tab, used only to decide which tab to switch to when the
 // active tab has no visible match for the search query. The actual show/hide of
@@ -172,6 +173,10 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, readonly string[]> = {
     'keyboard shortcuts', 'enter in an empty terminal', 'platform defaults', 'github polling', 'enable polling',
     'polling interval', 'oss sources', 'auto-watch local sources',
   ],
+  accounts: [
+    'claude accounts', 'account', 'accounts', 'claude', 'quota', 'switch', 'token', 'email',
+    'add account', 'account for new tasks', 'setup-token',
+  ],
   sharing: [
     'relay connection', 'relay url', 'node id', 'node token', 'relay admin token',
     'account token', 'display name', 'hosted relay', 'session sharing recovery',
@@ -189,6 +194,15 @@ const FOCUS_FIELD_TAB: Record<SettingsFocusField, SettingsTab> = {
   maxActiveTasks: 'general',
   quotaHeadroomThreshold: 'general',
   relayConnection: 'sharing',
+  claudeAccounts: 'accounts',
+};
+
+const SETTINGS_TAB_LABELS: Record<SettingsTab, string> = {
+  general: 'General',
+  accounts: 'Accounts',
+  sharing: 'Sharing',
+  hooks: 'Hooks',
+  corpus: 'Dictation corpus',
 };
 
 const SHORTCUT_PLATFORM = detectShortcutPlatform();
@@ -1159,7 +1173,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
         <div className="dialog-tabs settings-dialog-tabs" role="tablist" aria-label="Settings sections">
           {SETTINGS_TABS.map((tab) => {
             const isActive = activeTab === tab;
-            const label = tab === 'general' ? 'General' : tab === 'sharing' ? 'Sharing' : tab === 'hooks' ? 'Hooks' : 'Dictation corpus';
+            const label = SETTINGS_TAB_LABELS[tab];
             return (
               <button
                 key={tab}
@@ -2092,6 +2106,12 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                   </div>
                 </>
               )}
+            </div>
+          )}
+
+          {activeTab === 'accounts' && (
+            <div role="tabpanel" id="settings-panel-accounts" aria-labelledby="settings-tab-accounts">
+              <ClaudeAccountsSection />
             </div>
           )}
 

@@ -63,6 +63,8 @@ export interface ClaudeAccountRecord {
   token: string;
   /** ISO timestamp the account was added or its token last replaced. */
   addedAt: string;
+  /** Operator-chosen display label (for example the account's email address). */
+  label?: string;
 }
 
 export interface ClaudeAccountRegistry {
@@ -79,11 +81,12 @@ export interface ClaudeAccountSummary {
   /** `host` has no token; others show the last four characters so two entries can be told apart. */
   tokenHint?: string;
   addedAt?: string;
+  label?: string;
 }
 
 export class ClaudeAccountError extends Error {
   constructor(
-    readonly code: 'invalid_name' | 'reserved_name' | 'unknown_account' | 'invalid_token' | 'malformed_registry',
+    readonly code: 'invalid_name' | 'reserved_name' | 'unknown_account' | 'invalid_token' | 'invalid_label' | 'malformed_registry',
     message: string,
   ) {
     super(message);
@@ -112,6 +115,21 @@ export function assertValidAccountName(name: string): void {
       `invalid account name "${name}": use 1-40 lower-case letters, digits, "-" or "_", starting with a letter or digit`,
     );
   }
+}
+
+const MAX_LABEL_LENGTH = 120;
+
+/** Trim and validate a display label; throws `invalid_label` when empty, too long or holding control characters. */
+export function normalizeAccountLabel(label: string): string {
+  const trimmed = label.trim();
+  // eslint-disable-next-line no-control-regex
+  if (trimmed === '' || trimmed.length > MAX_LABEL_LENGTH || /[\u0000-\u001f\u007f-\u009f]/.test(trimmed)) {
+    throw new ClaudeAccountError(
+      'invalid_label',
+      `invalid label: use 1-${MAX_LABEL_LENGTH} characters with no control characters`,
+    );
+  }
+  return trimmed;
 }
 
 /**
@@ -159,6 +177,8 @@ function parseRegistry(raw: string, path: string): ClaudeAccountRegistry {
     accounts[name] = {
       token: record.token.trim(),
       addedAt: typeof record.addedAt === 'string' ? record.addedAt : '',
+      // A hand-edited or corrupt label is dropped rather than failing the whole registry.
+      ...(typeof record.label === 'string' && record.label.trim() !== '' ? { label: record.label.trim().slice(0, MAX_LABEL_LENGTH) } : {}),
     };
   }
   const registry: ClaudeAccountRegistry = { version: REGISTRY_VERSION, accounts };
@@ -205,14 +225,19 @@ export function saveClaudeAccounts(
   renameSync(tmp, path);
 }
 
-/** Add an account, or replace its token when the name exists. Returns a new registry. */
+/**
+ * Add an account, or replace its token when the name exists. A label replaces
+ * the old one; re-adding without a label keeps the old label. Returns a new registry.
+ */
 export function withAccount(
   registry: ClaudeAccountRegistry,
   name: string,
   token: string,
+  label?: string,
   now: Date = new Date(),
 ): ClaudeAccountRegistry {
   assertValidAccountName(name);
+  const nextLabel = label !== undefined ? normalizeAccountLabel(label) : registry.accounts[name]?.label;
   const trimmed = token.trim();
   if (!extractClaudeOAuthToken(trimmed) || extractClaudeOAuthToken(trimmed) !== trimmed) {
     throw new ClaudeAccountError(
@@ -222,7 +247,7 @@ export function withAccount(
   }
   return {
     ...registry,
-    accounts: { ...registry.accounts, [name]: { token: trimmed, addedAt: now.toISOString() } },
+    accounts: { ...registry.accounts, [name]: { token: trimmed, addedAt: now.toISOString(), ...(nextLabel ? { label: nextLabel } : {}) } },
   };
 }
 
@@ -279,6 +304,7 @@ export function summarizeClaudeAccounts(registry: ClaudeAccountRegistry): Claude
       isDefault: defaultName === name,
       tokenHint: `…${record.token.slice(-4)}`,
       ...(record.addedAt ? { addedAt: record.addedAt } : {}),
+      ...(record.label ? { label: record.label } : {}),
     });
   }
   return rows;

@@ -27,3 +27,4 @@ export * from './playbooks.js';
 export * from './panels.js';
 export * from './files.js';
 export * from './sessions.js';
+export * from './claude-accounts.js';

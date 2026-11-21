@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, Suspense, type ComponentType, type LazyExoticComponent } from 'react';
+import { TaskAccountBadge, TaskAccountBanner } from './DetailPanel/TaskAccountControls.js';
 import type { ChangesPanel as ChangesPanelComponent } from './ChangesPanel.js';
 import type { ChangesEdit } from './ChangesPanel.js';
 import { splitOwnPullRequests } from '../../shared/task-own-pull-requests.js';
@@ -105,6 +106,8 @@ interface Props {
   onLaunchPlaybooks?: (playbookId?: string) => void;
   /** Opens the existing Schedules dialog from the overview next-run row. */
   onOpenSchedules?: () => void;
+  /** Opens Settings on the Accounts tab (provider-paused banner, no second account yet). */
+  onOpenAccountSettings?: () => void;
   /** Opens Diagnostics from the first-run empty-state "Check setup" control. */
   onCheckSetup?: () => void;
   /**
@@ -275,7 +278,7 @@ function TaskNextActionsPanel({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPlaybooks, onOpenSchedules, onCheckSetup, onOpenCostComparison, onExpandCompleted, onExpandHealthy, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPlaybooks, onOpenSchedules, onOpenAccountSettings, onCheckSetup, onOpenCostComparison, onExpandCompleted, onExpandHealthy, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -1094,6 +1097,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                   Permissions bypassed
                 </span>
               )}
+              <TaskAccountBadge agent={agent} />
               {operatorNeeded && (
                 <span
                   className="detail-badge permission"
@@ -1139,6 +1143,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
       <div className="detail-body">
       <div className="detail-body-main">
       {hasAgentNotices && !noticesInCard && renderAgentNotices('banner')}
+      <TaskAccountBanner agent={agent} onOpenAccountSettings={onOpenAccountSettings} />
       {agent.taskId && (
         <TaskShareModal
           taskId={agent.taskId}
