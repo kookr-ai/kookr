@@ -1881,6 +1881,23 @@ describe('ClaudeCodeAdapter', () => {
       });
     }
 
+    test('records the conversation of a SessionStart that arrives before the session is registered', async () => {
+      // Claude Code boots and fires SessionStart before the prompt is acked,
+      // i.e. before launch() registers the session on the task.
+      const createSession = backend.createSession.bind(backend) as (...args: unknown[]) => Promise<void>;
+      (backend as unknown as { createSession: (...args: unknown[]) => Promise<void> }).createSession = async (...args: unknown[]) => {
+        await createSession(...args);
+        const spec = args[0] as { id: string };
+        adapter.injectHookEvent(spec.id, sessionStart('early-parent'));
+      };
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.claudeSessionId).toBe('early-parent');
+      expect(session.transcriptPath).toBe('/t/early-parent.jsonl');
+    });
+
     test('first SessionStart claims parent and freezes it against four reviewer sessions', async () => {
       const task = taskStore.createTask('Fix bug', '/cwd');
       const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');

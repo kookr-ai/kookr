@@ -663,6 +663,24 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       ...(promptDelivery ? { promptDelivery } : {}),
       ...(useResume ? { resumedConversationId: resume!.sessionId } : {}),
     });
+    // Claude Code emits SessionStart as soon as the CLI boots, usually before
+    // the prompt is acknowledged and this session record exists. The hook
+    // handler then had no session to write the conversation id to, and the
+    // hook-file replay skips the already-ingested event, so most tasks never
+    // recorded `claudeSessionId` — and with it lost Reopen's resume and
+    // account switching. The in-memory identity did see the SessionStart, so
+    // copy its parent conversation onto the record now (same idea as the
+    // opencode adapter's early-start buffer).
+    const earlyParent = this.identities.get(tmuxName);
+    if (earlyParent?.parentSessionId) {
+      const registered = this.taskStore.getTask(taskId)?.sessions.find((s) => s.tmuxSession === tmuxName);
+      if (registered && !registered.claudeSessionId) {
+        this.taskStore.updateSession(taskId, tmuxName, {
+          claudeSessionId: earlyParent.parentSessionId,
+          ...(earlyParent.parentTranscriptPath ? { transcriptPath: earlyParent.parentTranscriptPath } : {}),
+        });
+      }
+    }
 
     // Fire-and-forget: capture git context from CWD
     getGitInfo(cwd)
