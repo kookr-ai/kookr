@@ -815,6 +815,10 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
       input.focus({ preventScroll: true });
       input.select();
       didFocusRef.current = true;
+    } else if (focusField !== 'maxActiveTasks' && focusField !== 'quotaHeadroomThreshold') {
+      // A tab-only target (no input to focus) is done once its tab is shown;
+      // otherwise every settings change would pull the dialog back to it.
+      didFocusRef.current = true;
     }
   }, [focusField, settings]);
 

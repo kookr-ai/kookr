@@ -89,6 +89,22 @@ describe('LaunchTaskDialog Claude account picker', () => {
     expect(sent[0]).toMatchObject({ type: 'launch', agentType: 'claude-code', claudeAccount: 'work' });
   });
 
+  test('an account picked for Claude Code is not sent once the agent is switched to another one', async () => {
+    useKookrStore.setState({
+      availableAgentTypes: [{ type: 'claude-code', label: 'Claude Code' }, { type: 'codex-cli', label: 'Codex CLI' }],
+    } as never);
+    installFakeAccountsServer(['pro', 'work'], 'pro');
+    await mount();
+    await act(async () => { setValue(accountSelect()!, 'work'); });
+    const agentSelect = Array.from(container.querySelectorAll<HTMLSelectElement>('.agent-type-select select'))
+      .find((sel) => Array.from(sel.options).some((o) => o.value === 'codex-cli'))!;
+    await act(async () => { setValue(agentSelect, 'codex-cli'); });
+    await flush();
+    await submit();
+    expect(sent[0]).toMatchObject({ type: 'launch', agentType: 'codex-cli' });
+    expect(sent[0]).not.toHaveProperty('claudeAccount');
+  });
+
   test('leaving it on Default sends no claudeAccount so the server default applies', async () => {
     installFakeAccountsServer(['pro'], 'pro');
     await mount();

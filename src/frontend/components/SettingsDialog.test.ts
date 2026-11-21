@@ -629,6 +629,33 @@ describe('SettingsDialog tabs', () => {
     expect(input!.max).toBe('100');
   });
 
+  test('opened at claudeAccounts, the Accounts tab shows once and a later settings change does not pull it back', async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    act(() => {
+      root.render(React.createElement(SettingsDialog, { onClose: vi.fn(), focusField: 'claudeAccounts' }));
+    });
+    await flush();
+    const tab = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((t) => t.textContent?.trim() === label)!;
+    expect(tab('Accounts').getAttribute('aria-selected')).toBe('true');
+
+    await act(async () => {
+      tab('General').click();
+    });
+    await flush();
+    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle GitHub polling"]');
+    expect(toggle).not.toBeNull();
+    await act(async () => {
+      toggle!.click();
+    });
+    await flush();
+    expect(tab('General').getAttribute('aria-selected')).toBe('true');
+    expect(tab('Accounts').getAttribute('aria-selected')).toBe('false');
+  });
+
   test('saving quota headroom 0 turns the check off and 90 restores the default (#3408)', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.mocked(fetch);

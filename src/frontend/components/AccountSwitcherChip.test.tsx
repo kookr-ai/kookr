@@ -25,11 +25,13 @@ describe('footer account switcher', () => {
     await flush();
   };
 
-  async function mount(onOpenAccountSettings?: () => void) {
+  async function mount(onOpenAccountSettings?: () => void, { withQuota = true }: { withQuota?: boolean } = {}) {
     const fresh = createKookrStore().getState();
     useKookrStore.setState({
       ...Object.fromEntries(Object.entries(fresh).filter(([, v]) => typeof v !== 'function')),
-      quotaStatus: { fiveHour: { utilization: 40, resetsAt: new Date(Date.now() + 3_600_000).toISOString() }, updatedAt: Date.now() },
+      ...(withQuota
+        ? { quotaStatus: { fiveHour: { utilization: 40, resetsAt: new Date(Date.now() + 3_600_000).toISOString() }, updatedAt: Date.now() } }
+        : {}),
     } as never);
     act(() => {
       root.render(React.createElement(UsageSummary, { placement: 'nav', onOpenAccountSettings }));
@@ -55,6 +57,13 @@ describe('footer account switcher', () => {
     expect(server.calls.length).toBeGreaterThan(0);
     expect(q('[data-testid="account-chip"]')).toBeNull();
     expect(q('[data-testid="usage-quota-host-caption"]')).toBeNull();
+  });
+
+  test('still shows the chip when there is no quota or spend to show', async () => {
+    server = installFakeAccountsServer(['pro', 'work'], 'pro');
+    await mount(undefined, { withQuota: false });
+    expect(useKookrStore.getState().quotaStatus).toBeFalsy();
+    expect(q('[data-testid="account-chip"]')!.textContent).toContain('New tasks: pro');
   });
 
   test('names the default account and captions the quota as the host login when it is not host', async () => {

@@ -104,12 +104,14 @@ wrong moment, but never past the usual hard limit (2 hours by default).
 
 ## From the dashboard
 
-Everything above except switching a task's account also works without a terminal:
+Everything above also works without a terminal:
 
 - **Settings -> Accounts** lists the accounts (never a token), marks the default, and lets you add an account, replace its token, give it a label (for example its email address), choose the default and remove it. Paste the whole output of `claude setup-token`; Kookr finds the token inside it. A token is write-only: once saved it is never shown again, only its last four characters.
-- **Test** on an account sends one tiny request and reports one of three results: `ok`, **out of quota** (the account signed in but its plan limit is reached; the line shows when it resets), or **sign-in failed** (the token was refused: expired, revoked or mistyped). Anything else (the `claude` CLI missing, a timeout) shows as an error with its first line.
-- The **sidebar footer** shows the account new tasks will run on and lets you change it. Tasks already started keep their account.
-- A claude-code task that runs on a named account shows an **account badge**; a task on the host login shows none.
+- **Test** on an account sends one tiny request and reports one of four results: **works**, **out of quota** (the account signed in but its plan limit is reached; the line shows when it resets), **sign-in failed** (the token was refused: expired, revoked or mistyped), or **test failed** for anything else (the `claude` CLI missing, a timeout), with its first line. An account that is out of quota keeps its Test button, so you can check whether its quota is back.
+- The **sidebar footer** shows the account new tasks will run on and lets you change it, once a second account exists. Tasks already started keep their account.
+- A claude-code task shows an **account badge** once a second account exists. Its menu moves the task to another account, as `kookr account switch` does: a running task restarts in place and continues its conversation. A task stopped by a usage limit shows a banner offering to continue on an account not known to be out of quota.
+- The **Launch** form has a **Claude account** picker for claude-code tasks; leaving it on *Default* uses the default at launch time.
+- Moving a task from the dashboard calls the supervisor endpoint `POST /api/tasks/:id/claude-account`, so it only works while `KOOKR_SUPERVISOR_TOKEN` is unset (the default); with that token set, use `kookr account switch`.
 - `kookr account add <name> --label <text>` sets the same label from the terminal, and `kookr account list` shows it.
 
 The dashboard changes the same registry file as the CLI, through the owner-only [`/api/claude-accounts`](./api.md#claude-accounts) routes.

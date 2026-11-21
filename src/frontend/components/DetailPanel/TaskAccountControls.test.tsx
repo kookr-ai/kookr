@@ -96,6 +96,15 @@ describe('task account controls', () => {
     expect(buttonByText('Test host')).toBeDefined();
   });
 
+  test('no banner on a claude-code task that is not provider-paused', async () => {
+    server = installFakeAccountsServer(['pro']);
+    await mount(<><TaskAccountBanner agent={agent()} /><TaskAccountBanner agent={agent({ stuckReason: 'hung_suspect' })} /></>);
+    expect(q('[data-testid="task-account-banner"]')).toBeNull();
+    // The badge still renders, so the account list did load.
+    await mount(<TaskAccountBadge agent={agent()} />);
+    expect(buttonByText('Account')).toBeDefined();
+  });
+
   test('banner offers Add an account when only host exists', async () => {
     server = installFakeAccountsServer([]);
     const onOpen = vi.fn();
