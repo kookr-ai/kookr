@@ -272,15 +272,6 @@ describe('isOrchestrationPaused / orchestratorShouldSpawn', () => {
 });
 
 describe('resolveDefaultAgentQuotaSample', () => {
-  it('does not describe tasks on another Claude account with the host login quota', () => {
-    const quota = { fiveHour: { utilization: 99, resetsAt: '2026-01-01T00:00:00Z' }, sevenDay: null } as never;
-    const s = resolveDefaultAgentQuotaSample('claude-code', quota, { defaultClaudeAccount: 'work' });
-    expect(s.supported).toBe(false);
-    expect(s.utilization).toBeUndefined();
-    expect(s.reason).toContain('"work"');
-    expect(resolveDefaultAgentQuotaSample('claude-code', quota, { defaultClaudeAccount: 'host' }).utilization).toBe(99);
-  });
-
   it('reports grok-build unsupported without leaking XAI_API_KEY guidance', () => {
     const s = resolveDefaultAgentQuotaSample('grok-build', null);
     expect(s.supported).toBe(false);

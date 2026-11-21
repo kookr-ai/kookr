@@ -23,7 +23,6 @@ export interface ParsedArgs {
   model: string | null;
   modelTier: 'small' | null;
   profile: string | null;
-  claudeAccount: string | null;
   criteria: string | null;
   dedupe: 'warn' | 'block' | 'skip';
   idempotencyKey: string | null;
@@ -165,7 +164,6 @@ export interface PostTaskArgs {
   model?: string | null;
   modelTier?: 'small' | null;
   profile?: string | null;
-  claudeAccount?: string | null;
   criteria: string | null;
   disableDedup?: boolean;
   metadataIntent?: 'keep_as_duplicate' | null;
@@ -178,10 +176,6 @@ export interface PostTaskArgs {
   /** #3644: sent as `playbook.parameterValues`. */
   playbookParams?: Record<string, string> | null;
 }
-/** The JSON body `POST /api/tasks` receives; shared by the launch path and --dry-run. */
-export function buildTaskPostBody(
-  args: Partial<Omit<PostTaskArgs, 'baseUrl'>> & { prompt: string | null; cwd: string },
-): Record<string, unknown>;
 
 export interface TaskPayload {
   id?: string;

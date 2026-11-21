@@ -48,7 +48,6 @@ import {
   resolvePrompt,
   resolvePromptSource,
   waitForTaskReady,
-  buildTaskPostBody,
 } from '../../bin/kookr-spawn.js';
 
 type StdinLike = NodeJS.ReadableStream & { isTTY?: boolean };
@@ -291,20 +290,6 @@ describe('parseArgs', () => {
     for (const bad of ['', 'Scoped', '../x', 'a b', '-x', 'x'.repeat(41)]) {
       expect(() => parseArgs(['-a', 'opencode', '--profile', bad])).toThrow(UsageError);
     }
-  });
-
-  it('parses --account, implies claude-code, and puts it in the request body', () => {
-    expect(parseArgs([]).claudeAccount).toBeNull();
-    const parsed = parseArgs(['--account', 'work', 'do it']);
-    expect(parsed.claudeAccount).toBe('work');
-    expect(parsed.agent).toBe('claude-code');
-    expect(parseArgs(['-a', 'claude-code', '--account=personal']).claudeAccount).toBe('personal');
-    expect(() => parseArgs(['-a', 'codex-cli', '--account', 'work'])).toThrow(UsageError);
-    for (const bad of ['', 'Work', '../x', 'a b', '-x', 'x'.repeat(41)]) {
-      expect(() => parseArgs(['--account', bad])).toThrow(UsageError);
-    }
-    expect(buildTaskPostBody({ prompt: 'p', cwd: '/r', agent: 'claude-code', claudeAccount: 'work' }).claudeAccount).toBe('work');
-    expect('claudeAccount' in buildTaskPostBody({ prompt: 'p', cwd: '/r' })).toBe(false);
   });
 
   it('keeps the --profile id charset in parity with OPENCODE_PROFILE_ID_PATTERN', () => {

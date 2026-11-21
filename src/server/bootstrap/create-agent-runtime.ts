@@ -24,16 +24,12 @@ import {
   type PreflightLogger,
 } from '../agent-preflight.js';
 import { runAgentLauncherPreflight } from '../agent-launcher-preflight.js';
-import { resolveClaudeAccountsFile } from '../../core/claude-accounts.js';
-import { claudeAccountLoader, resolveClaudeAccountLaunch } from '../claude-account-launch.js';
 
 export interface AgentRuntimeDeps {
   terminalBackend: TerminalBackend;
   terminalInputWriter?: TerminalInputWriterPort;
   taskStore: TaskStore;
   hooksDir: string;
-  /** Claude account registry path; defaults to `~/.kookr/claude-accounts.json` outside Vitest. */
-  claudeAccountsFile?: string;
   settingsDir: string;
   serverPort: number;
   agentBin?: string;
@@ -109,10 +105,6 @@ export function resolveAdvisorModel(env: NodeJS.ProcessEnv): string | undefined 
 
 export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentRuntime> {
   const terminalInputWriter = deps.terminalInputWriter ?? asTerminalInputWriterPort(deps.terminalBackend);
-  // Named Claude accounts (account switching). Off under Vitest unless a test
-  // passes a registry path, so the suite never reads the operator's real tokens.
-  const claudeAccountsFile = deps.claudeAccountsFile
-    ?? (process.env.VITEST ? undefined : resolveClaudeAccountsFile());
   const claudeCodeAdapter = new ClaudeCodeAdapter(deps.terminalBackend, deps.taskStore, {
     terminalInputWriter,
     hooksDir: deps.hooksDir,
@@ -128,9 +120,6 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     // Code does not paint a "No, exit" workspace-trust dialog that Kookr
     // would confirm after the paste-ready timeout.
     trustWorkspace: true,
-    ...(claudeAccountsFile
-      ? { resolveClaudeAccount: (taskId: string) => resolveClaudeAccountLaunch(deps.taskStore, taskId, claudeAccountLoader(claudeAccountsFile)) }
-      : {}),
   });
   const codexCliAdapter = new CodexCliAdapter(deps.terminalBackend, deps.taskStore, {
     terminalInputWriter,

@@ -1,5 +1,4 @@
 import { dirname, join } from 'node:path';
-import { loadClaudeAccounts, resolveClaudeAccountsFile } from '../core/claude-accounts.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
@@ -4169,10 +4168,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Operator-tunable admission threshold (issue #2185); 0 disables the gate.
     launchServiceDeps.getQuotaHeadroomThreshold = () =>
       currentSettings.quotaHeadroomThreshold;
-    // Named Claude accounts: validate `claudeAccount` launches and keep the
-    // host-only quota gate above off launches on another account.
-    const claudeAccountsFile = resolveClaudeAccountsFile();
-    launchServiceDeps.loadClaudeAccounts = () => loadClaudeAccounts(claudeAccountsFile);
   }
 
   // `kookr ask` in the dashboard: Lucy shows and asks the same questions Telegram

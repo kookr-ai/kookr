@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { emptyClaudeAccountRegistry, withAccount, withDefaultAccount } from '../core/claude-accounts.js';
 import { mkdtemp, mkdir, rm, symlink, writeFile, readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -5052,61 +5051,6 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
         ...extras,
       };
     }
-
-    describe('named Claude accounts', () => {
-      const exhausted = {
-        fiveHour: { utilization: 100, resetsAt: '2026-08-04T12:00:00.000Z' },
-        sevenDay: { utilization: 40, resetsAt: '2026-08-09T00:00:00Z' },
-      };
-      const registry = () =>
-        withAccount(emptyClaudeAccountRegistry(), 'work', 'sk-ant-oat01-' + 'w'.repeat(40));
-
-      it('does not gate or rotate a launch on another account by the host account quota', async () => {
-        const store = new TaskStore();
-        const deps = quotaDeps(store, exhausted, { loadClaudeAccounts: registry });
-        const result = await launchTask(deps, {
-          prompt: 'run on the work subscription',
-          cwd: '/tmp',
-          agentType: 'claude-code',
-          claudeAccount: 'work',
-        });
-        expect(result.task.agentType).toBe('claude-code');
-        expect(result.task.metadata?.claudeAccount).toBe('work');
-        expect(deps.getLiveQuotaHeadroom).not.toHaveBeenCalled();
-      });
-
-      it('skips the host gate when the registry default is another account', async () => {
-        const store = new TaskStore();
-        const deps = quotaDeps(store, exhausted, {
-          loadClaudeAccounts: () => withDefaultAccount(registry(), 'work'),
-        });
-        const result = await launchTask(deps, { prompt: 'default account', cwd: '/tmp', agentType: 'claude-code' });
-        expect(result.task.agentType).toBe('claude-code');
-        expect(deps.getLiveQuotaHeadroom).not.toHaveBeenCalled();
-      });
-
-      it('still gates a launch on the host account', async () => {
-        const store = new TaskStore();
-        const deps = quotaDeps(store, exhausted, { loadClaudeAccounts: registry });
-        const result = await launchTask(deps, {
-          prompt: 'host account',
-          cwd: '/tmp',
-          agentType: 'claude-code',
-          claudeAccount: 'host',
-        });
-        expect(result.task.agentType).toBe('codex-cli');
-        expect(result.task.metadata?.claudeAccount).toBeUndefined();
-      });
-
-      it('rejects an unregistered account and a non-claude agent', async () => {
-        const store = new TaskStore();
-        const deps = { ...makeDeps(store), loadClaudeAccounts: registry };
-        await expect(launchTask(deps, { prompt: 'x', cwd: '/tmp', agentType: 'claude-code', claudeAccount: 'nope' }))
-          .rejects.toMatchObject({ code: 'invalid_claude_account' });
-        await expect(launchTask(deps, { prompt: 'y', cwd: '/tmp', agentType: 'codex-cli', claudeAccount: 'work' }))
-          .rejects.toMatchObject({ code: 'invalid_claude_account' });
-      });
-    });
 
     it('rotates to a healthy alternate when plan quota is exhausted (issue #1936)', async () => {
       const store = new TaskStore();

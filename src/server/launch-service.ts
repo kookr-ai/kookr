@@ -1,10 +1,3 @@
-import {
-  HOST_CLAUDE_ACCOUNT,
-  assertKnownAccount,
-  effectiveClaudeAccount,
-  emptyClaudeAccountRegistry,
-  type ClaudeAccountRegistry,
-} from '../core/claude-accounts.js';
 import { isOpenCodeProfileError, resolveOpenCodeProfile } from '../adapters/opencode-profiles.js';
 import { stat } from 'node:fs/promises';
 import { expandConfiguredCwd } from './cwd-paths.js';
@@ -414,13 +407,6 @@ export interface LaunchServiceDeps {
    */
   getQuotaHeadroomThreshold?: () => number;
   /**
-   * Reads the named Claude account registry (account switching). Used to
-   * validate `LaunchOpts.claudeAccount` and to keep the host-only plan-quota
-   * gate off launches that run on another account. Absent (tests) means only
-   * `host` exists.
-   */
-  loadClaudeAccounts?: () => ClaudeAccountRegistry;
-  /**
    * Hot-path issue claim (RFC PR 1b). When provided AND the launch opts carry
    * `claimIssue`, {@link launchTask} interleaves a synchronous CAS with
    * `createTask`. Absent (flag off / older wiring) ⇒ claimIssue is a no-op
@@ -779,39 +765,6 @@ export class ProfileValidationError extends Error {
 
 export function isProfileValidationError(err: unknown): err is ProfileValidationError {
   return err instanceof ProfileValidationError;
-}
-
-/**
- * Thrown by {@link launchTask} when `claudeAccount` names an account that is
- * not registered, or is combined with a non-claude-code agent. The API maps
- * this to HTTP 400.
- */
-export class ClaudeAccountValidationError extends Error {
-  readonly code = 'invalid_claude_account';
-  constructor(message: string) {
-    super(message);
-    this.name = 'ClaudeAccountValidationError';
-  }
-}
-
-export function isClaudeAccountValidationError(err: unknown): err is ClaudeAccountValidationError {
-  return err instanceof ClaudeAccountValidationError;
-}
-
-/**
- * Whether a claude-code launch runs on the host's own `claude login`. The
- * plan-quota gate polls only that account's usage, so it must not refuse (or
- * rotate away) a launch that will run on a different subscription. An
- * unreadable registry counts as the host account: the launch will then fail
- * in the adapter with the real error, and the gate keeps its old behavior.
- */
-function launchUsesHostClaudeAccount(deps: LaunchServiceDeps, requested: string | undefined): boolean {
-  if (!deps.loadClaudeAccounts) return requested === undefined || requested === HOST_CLAUDE_ACCOUNT;
-  try {
-    return effectiveClaudeAccount(deps.loadClaudeAccounts(), requested) === HOST_CLAUDE_ACCOUNT;
-  } catch {
-    return true;
-  }
 }
 
 /** Invalid or ambiguous provider-neutral model-tier request. */
@@ -1729,25 +1682,6 @@ async function launchTaskCore(
     }
   }
 
-  if (opts.claudeAccount !== undefined) {
-    if (agentType !== 'claude-code') {
-      throw new ClaudeAccountValidationError(
-        `claudeAccount is only valid with agentType "claude-code" (resolved agent: ${agentType})`,
-      );
-    }
-    let registry: ClaudeAccountRegistry;
-    try {
-      registry = deps.loadClaudeAccounts?.() ?? emptyClaudeAccountRegistry();
-    } catch (err) {
-      throw new ClaudeAccountValidationError(err instanceof Error ? err.message : String(err));
-    }
-    try {
-      assertKnownAccount(registry, opts.claudeAccount);
-    } catch (err) {
-      throw new ClaudeAccountValidationError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
   // R19 trust-boundary check (rfc-remote-chat-trigger §4): Telegram-spawned
   // Codex is opt-in because its permission model is more permissive than
   // Claude Code's supervised path. The integration checks this before
@@ -1901,8 +1835,7 @@ async function launchTaskCore(
   if (
     quotaHeadroomThreshold > 0 &&
     (deps.getLiveQuotaHeadroom || deps.planQuotaBindingCache) &&
-    agentType === 'claude-code' &&
-    launchUsesHostClaudeAccount(deps, opts.claudeAccount)
+    agentType === 'claude-code'
   ) {
     const cache = deps.planQuotaBindingCache;
     const cached = cache?.get() ?? null;
@@ -2208,9 +2141,8 @@ async function launchTaskCore(
       // pendings as self-releasing. Additive — absent when no source was given.
       // agentSubstitutionChain (issue #2001): full schedule_sub + quota_rotate
       // hops so receipts match the final agentType after multi-hop cascade.
-      metadata: (opts.metadataIntent || opts.launchSource || opts.launchActorId || serverOpts.bypassPermissions !== undefined || opts.userInitiatedRelaunch || opts.profile || opts.issue !== undefined || agentSubstitutionChain.length > 0 || (opts.claudeAccount !== undefined && agentType === 'claude-code'))
+      metadata: (opts.metadataIntent || opts.launchSource || opts.launchActorId || serverOpts.bypassPermissions !== undefined || opts.userInitiatedRelaunch || opts.profile || opts.issue !== undefined || agentSubstitutionChain.length > 0)
         ? {
-            ...(opts.claudeAccount !== undefined && agentType === 'claude-code' ? { claudeAccount: opts.claudeAccount } : {}),
             ...(opts.profile ? { opencodeProfile: opts.profile } : {}),
             ...(opts.issue !== undefined ? { opencodeIssue: opts.issue } : {}),
             ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),

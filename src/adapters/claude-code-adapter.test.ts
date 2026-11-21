@@ -1836,41 +1836,6 @@ describe('ClaudeCodeAdapter', () => {
     });
   });
 
-  describe('Claude account selection (account switching)', () => {
-    test('merges the account env last, so neither the launch context nor extraEnv can override it', async () => {
-      const accountAdapter = new ClaudeCodeAdapter(backend, taskStore, {
-        resolveClaudeAccount: () => ({
-          account: 'work',
-          env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-work', ANTHROPIC_API_KEY: '' },
-        }),
-      });
-      const task = taskStore.createTask('Fix bug', '/cwd');
-      const sessionId = await accountAdapter.launch(task.id, 'Fix bug', '/cwd', undefined, {
-        extraEnv: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-other', ANTHROPIC_API_KEY: 'sk-ant-api03-x' },
-      });
-      const spec = backend.sessions.get(sessionId)!.spec;
-      expect(spec.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-work');
-      expect(spec.env?.ANTHROPIC_API_KEY).toBe('');
-    });
-
-    test('a refused account fails the launch before any session is created', async () => {
-      const accountAdapter = new ClaudeCodeAdapter(backend, taskStore, {
-        resolveClaudeAccount: () => {
-          throw new Error('account "gone" is no longer registered');
-        },
-      });
-      const task = taskStore.createTask('Fix bug', '/cwd');
-      await expect(accountAdapter.launch(task.id, 'Fix bug', '/cwd')).rejects.toThrow(/no longer registered/);
-      expect(backend.sessions.size).toBe(0);
-    });
-
-    test('without a resolver the launch env carries no account token', async () => {
-      const task = taskStore.createTask('Fix bug', '/cwd');
-      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
-      expect(backend.sessions.get(sessionId)!.spec.env?.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    });
-  });
-
   describe('parent runtime session freezing (rfc-activity-log-reliability §2)', () => {
     function sessionStart(sessionId: string, transcriptPath = `/t/${sessionId}.jsonl`) {
       return JSON.stringify({
@@ -1880,23 +1845,6 @@ describe('ClaudeCodeAdapter', () => {
         hook_event_name: 'SessionStart',
       });
     }
-
-    test('records the conversation of a SessionStart that arrives before the session is registered', async () => {
-      // Claude Code boots and fires SessionStart before the prompt is acked,
-      // i.e. before launch() registers the session on the task.
-      const createSession = backend.createSession.bind(backend) as (...args: unknown[]) => Promise<void>;
-      (backend as unknown as { createSession: (...args: unknown[]) => Promise<void> }).createSession = async (...args: unknown[]) => {
-        await createSession(...args);
-        const spec = args[0] as { id: string };
-        adapter.injectHookEvent(spec.id, sessionStart('early-parent'));
-      };
-      const task = taskStore.createTask('Fix bug', '/cwd');
-      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
-
-      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
-      expect(session.claudeSessionId).toBe('early-parent');
-      expect(session.transcriptPath).toBe('/t/early-parent.jsonl');
-    });
 
     test('first SessionStart claims parent and freezes it against four reviewer sessions', async () => {
       const task = taskStore.createTask('Fix bug', '/cwd');

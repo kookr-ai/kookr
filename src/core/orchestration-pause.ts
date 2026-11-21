@@ -408,19 +408,7 @@ export function orchestratorShouldSpawn(input: {
 export function resolveDefaultAgentQuotaSample(
   agentType: string,
   quota: QuotaStatus | null,
-  opts: { defaultClaudeAccount?: string } = {},
 ): OrchestrationQuotaSample {
-  // The poller reads only the host's own `claude login`. When new tasks run on
-  // another named Claude account (src/core/claude-accounts.ts), the host's
-  // utilization says nothing about them, so it must not drive a soft-quota
-  // pause.
-  if (agentType === 'claude-code' && opts.defaultClaudeAccount && opts.defaultClaudeAccount !== 'host') {
-    return {
-      agentType,
-      supported: false,
-      reason: `new tasks run on Claude account "${opts.defaultClaudeAccount}"; Kookr reads the quota of the host login only`,
-    };
-  }
   if (agentType !== 'claude-code') {
     const reason =
       agentType === 'grok-build'

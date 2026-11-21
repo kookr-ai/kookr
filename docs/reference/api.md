@@ -255,7 +255,6 @@ capacity).
 | `DELETE /api/ready-queue/:id` | Remove one ready-queue entry. `200 { ok, id }`; `404 not_found`; `409 launching` while it is being started |
 | `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive), tear down its idle session, and apply the saved worktree-cleanup policy. Supervisor endpoint — see below |
 | `POST /api/tasks/:id/reopen` | Reopen a terminal task (the dashboard's Reopen button) and report whether its relaunch resumes the prior conversation. Supervisor endpoint — see below |
-| `POST /api/tasks/:id/claude-account` | Move a claude-code task to another named Claude account; a running task is relaunched in place and resumes its conversation. Supervisor endpoint — see below |
 | `POST /api/tasks/:id/signal` | Raise an agent → user signal (e.g. `completion_ready`); schedules delayed auto-completion when the task opted into `autoCloseOnSignal` |
 | `POST /api/tasks/abort` | Idempotent batch abort: cancel the given `taskIds` (with an optional operator `reason`), interrupting each live session. Returns a per-task result (`aborted`/`already_terminal`/`not_found`/`failed`) and a summary; retries are safe. Supervisor endpoint — see below |
 | `POST /api/tasks/completion-ready/ack-all` | Complete every stale `completion_ready` task in one call (`{"force": true}` to ignore auto-close policy). Supervisor endpoint — see below |
@@ -397,7 +396,7 @@ GET /api/tasks?limit=50&offset=100
 ### `POST /api/tasks` body fields
 
 `prompt` (required, except for a `playbook` launch, see below) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
-`agentType`, `modelTier`, `effort`, `model`, `profile`, `claudeAccount`, `issue`, `disableDedup`, `metadata`,
+`agentType`, `modelTier`, `effort`, `model`, `profile`, `issue`, `disableDedup`, `metadata`,
 `dependencies`, `autoCloseOnSignal`, `unattended`, `idempotencyKey`, and `playbook`.
 
 `agentType: "opencode"` launches the opt-in opencode agent. It is only
@@ -415,16 +414,6 @@ stored as `metadata.opencodeProfile`, so queued promotion and relaunch launch
 with the same profile. A profiled launch skips the generic worktree/delivery
 preamble: the caller prepares the checkout and the profile's deliverable gate
 defines delivery. The `kookr-spawn --profile <id>` flag maps to this field.
-
-`claudeAccount` (optional, string) runs the task on a named Claude account
-(see [Claude accounts](claude-accounts.md)): `host` or a name registered with
-`kookr account add`. It is only valid when the task resolves to `claude-code`;
-an unregistered name, an empty value or another agent returns
-`400 {"error", "code": "invalid_claude_account"}` without launching a task. It
-is stored as `metadata.claudeAccount`. Without it, once at least one account
-is registered, the task is pinned to the registry default at its first launch. A launch on an account other than `host`
-skips the host-only plan-quota admission gate. `kookr spawn --account <name>`
-maps to this field.
 
 `issue` (optional, positive integer) is the issue number an opencode task
 closes. A value that is not a positive
@@ -705,53 +694,6 @@ Worktree-lease release and pending-task promotion run on the periodic
 reconcile/liveness pass rather than inline (the lease service and adapter
 registry are not wired into the route layer — same as `DELETE`); the
 dashboard's WebSocket complete action does both inline.
-
-### `POST /api/tasks/:id/claude-account`
-
-A [supervisor endpoint](#supervisor-surface), gated like
-`POST /api/tasks/:id/reopen`. Body: `{"account": "<name>"}`, where the name is
-`host` or a registered [Claude account](claude-accounts.md). It is what
-[`kookr account switch`](./cli.md#kookr-account) calls.
-
-The account is pinned on the task (`metadata.claudeAccount`). A task that is
-`inProgress` is relaunched in place: it moves to `pending` with a resume
-request, its live sessions are stopped (their status becomes `aborted`), and
-promotion relaunches it with `claude --resume <id> --fork-session` on the new
-account. The switch keeps the task's worktree leases and issue claims and
-never cancels it; if the relaunch then fails, promotion cancels the task as for
-any failed launch (`relaunch_failed` below). The response waits for that launch
-attempt. Any other status only
-changes the pin, which the next launch uses.
-
-Success returns `200 {"ok": true, "outcome", "from", "to", "task"}`, where
-`outcome` is:
-
-- `relaunched`: the running task was relaunched on the new account.
-- `queued`: its agent was stopped but no slot was free; it relaunches when one
-  frees (`task.status` is `pending`).
-- `pinned`: the task was not running; the new account applies at its next launch.
-- `unchanged`: the task was already pinned to that account.
-
-Error responses:
-
-- Unknown id returns `404`; a `shared:` id returns `403`.
-- A missing or empty `account`, or an unregistered name, returns
-  `400 {"error", "code": "invalid_claude_account"}`.
-- `409 {"error", "code"}` when the switch is refused: `not_claude_task`,
-  `ralph_loop_active`, `not_resumable` (a running task with no recorded
-  conversation, or whose transcript is gone, so a relaunch would start over
-  from the prompt), `task_cleanup_in_progress`, `task_changed` (the task
-  changed state during the switch, or after its agent was stopped ended
-  neither running nor queued), or `relaunch_failed` (the agent was stopped but
-  the relaunch failed and cancelled the task; the error carries the launch
-  error).
-
-The resume request of a `queued` task is held in server memory, as for
-`/reopen`: a task still `pending` when the server restarts launches fresh.
-
-Every call that reaches the command writes a `task.claudeAccountSwitch` row to
-`audit.jsonl` with `taskId`, `account`, `outcome`, the actor, and `from`,
-`status`, `code` and `error` when they apply.
 
 ### `POST /api/tasks/:id/reopen`
 
