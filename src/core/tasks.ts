@@ -1625,6 +1625,25 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /**
+   * Pin (or, with `undefined`, unpin) the Claude account this task launches on
+   * (`metadata.claudeAccount`). Takes effect at the next launch of the task.
+   */
+  setClaudeAccount(taskId: string, account: string | undefined): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (account !== undefined) {
+      task.metadata = { ...(task.metadata ?? {}), claudeAccount: account };
+    } else if (task.metadata?.claudeAccount !== undefined) {
+      const metadata = structuredClone(task.metadata);
+      delete metadata.claudeAccount;
+      task.metadata = Object.keys(metadata).length > 0 ? metadata : undefined;
+    }
+    task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
+    return cloneTask(task);
+  }
+
   /** Record opencode's own session id on the task metadata (used by resume). No-op for an unknown task. */
   recordOpenCodeSessionId(taskId: string, sessionId: string): void {
     const task = this.tasks.get(taskId);

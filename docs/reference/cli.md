@@ -1730,6 +1730,33 @@ adds the wait reason once the oldest entry has waited 15 minutes.
 Exit codes: `0` success, `2` usage error, `3` no server reachable, `4`
 server/HTTP error (including an unknown entry id), `5` ambiguous port.
 
+## `kookr account`
+
+Manage named Claude Code accounts and move tasks between them. See
+[Claude accounts](claude-accounts.md) for the full picture.
+
+```bash
+claude setup-token | kookr account add work   # register an account (token on stdin)
+kookr account add personal --default          # paste the token; make it the default
+kookr account list [--json]                   # accounts and the default, never the tokens
+kookr account test work                       # one tiny `claude -p` request on that account
+kookr account default host                    # new tasks use the host's own claude login
+kookr account remove personal
+kookr account switch <taskId> personal [--json]
+```
+
+`list`, `add`, `remove`, `default` and `test` edit or read
+`~/.kookr/claude-accounts.json` directly and need no running server (override
+the path with `KOOKR_CLAUDE_ACCOUNTS_FILE`). `switch` calls
+[`POST /api/tasks/:id/claude-account`](./api.md#post-apitasksidclaude-account):
+a running task is stopped and relaunched in place on the new account,
+continuing its conversation; any other task keeps the new account for its next
+launch. `kookr spawn --account <name>` picks the account of a new task.
+
+Exit codes: `0` success, `1` `test` found that the account does not
+authenticate, `2` usage error (including an unknown account or a refused
+switch), `3` no server reachable, `4` server/HTTP error, `5` ambiguous port.
+
 ## `kookr reopen`
 
 Reopen a `completed`, `terminated`, or `cancelled` task from the terminal,

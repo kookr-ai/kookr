@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { emptyClaudeAccountRegistry } from '../../core/claude-accounts.js';
 import { join } from 'node:path';
 import { extractEmbeddedTaskName } from '../../core/task-naming.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
@@ -24,6 +25,7 @@ import {
   isEffortValidationError,
   isModelValidationError,
   isProfileValidationError,
+  isClaudeAccountValidationError,
   isModelTierValidationError,
   isPendingQueueFullError,
   isSpawnBurstLimitError,
@@ -165,6 +167,8 @@ export function createTaskRouteLifecycleCommands(deps: TaskRouteDeps): TaskLifec
     broadcastToAll,
     activityMetaProvider: hookIngestion,
     auditLogPath,
+    // Read lazily: the server wires the loader after the routes are built.
+    loadClaudeAccounts: () => (deps.launchServiceDeps?.loadClaudeAccounts ?? emptyClaudeAccountRegistry)(),
     getLifecycleDeps: () => ({
       adapter,
       monitor,
@@ -761,6 +765,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         effort?: unknown;
         model?: unknown;
         profile?: unknown;
+        claudeAccount?: unknown;
         issue?: unknown;
         modelTier?: unknown;
         disableDedup?: unknown;
@@ -847,6 +852,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       }
       if (body.profile !== undefined && (typeof body.profile !== 'string' || body.profile.trim() === '')) {
         return c.json({ error: 'profile must be a non-empty string', code: 'invalid_profile' }, 400);
+      }
+      if (body.claudeAccount !== undefined && (typeof body.claudeAccount !== 'string' || body.claudeAccount.trim() === '')) {
+        return c.json({ error: 'claudeAccount must be a non-empty string', code: 'invalid_claude_account' }, 400);
       }
       if (body.model !== undefined && typeof body.model !== 'string') {
         return c.json({ error: 'model must be a string' }, 400);
@@ -971,6 +979,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         effort: typeof body.effort === 'string' ? body.effort : undefined,
         model: typeof body.model === 'string' ? body.model : undefined,
         profile: typeof body.profile === 'string' ? body.profile : undefined,
+        claudeAccount: typeof body.claudeAccount === 'string' ? body.claudeAccount.trim() : undefined,
         issue: typeof body.issue === 'number' ? body.issue : undefined,
         disableDedup: body.disableDedup === true,
         metadataIntent,
@@ -1077,6 +1086,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         return c.json({ error: err.message, code: err.code }, 400);
       }
       if (isProfileValidationError(err)) {
+        return c.json({ error: err.message, code: err.code }, 400);
+      }
+      if (isClaudeAccountValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
       }
       if (isModelValidationError(err)) {
@@ -1279,6 +1291,42 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // `/complete`, since it launches an agent on an existing task, and audited
   // the same way: every outcome is a `task.reopen` row attributed via
   // `X-Kookr-Actor`.
+  // Move a claude-code task to another named Claude account (account
+  // switching; see docs/reference/claude-accounts.md). A running task is
+  // stopped and relaunched in place, resuming its conversation on the new
+  // account; any other task just gets the new pin for its next launch.
+  // Supervisor-gated like `/reopen`, since it relaunches an agent.
+  app.post('/api/tasks/:id/claude-account', async (c) => {
+    if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
+      return supervisorUnauthorizedResponse(c);
+    }
+    const id = c.req.param('id');
+    if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
+    let body: { account?: unknown };
+    try {
+      body = await c.req.json() as { account?: unknown };
+    } catch {
+      return c.json({ error: 'body must be JSON: { "account": "<name>" }' }, 400);
+    }
+    if (typeof body.account !== 'string' || body.account.trim() === '') {
+      return c.json({ error: 'account must be a non-empty string', code: 'invalid_claude_account' }, 400);
+    }
+    try {
+      const result = await lifecycleCommands.switchClaudeAccount(id, body.account.trim(), { actor: actorFromRequest(c) });
+      if (result.outcome === 'not_found') return c.json({ error: 'Task not found' }, 404);
+      if (result.outcome === 'invalid') {
+        if (result.code === 'relaunch_failed') broadcastSnapshotWithCoordinator();
+        const status = result.code === 'invalid_claude_account' ? 400 : 409;
+        return c.json({ error: result.error, code: result.code }, status);
+      }
+      broadcastSnapshotWithCoordinator();
+      return c.json({ ok: true, outcome: result.outcome, from: result.from, to: result.to, task: result.task });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
   app.post('/api/tasks/:id/reopen', async (c) => {
     if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
       return supervisorUnauthorizedResponse(c);

@@ -1836,6 +1836,41 @@ describe('ClaudeCodeAdapter', () => {
     });
   });
 
+  describe('Claude account selection (account switching)', () => {
+    test('merges the account env last, so neither the launch context nor extraEnv can override it', async () => {
+      const accountAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+        resolveClaudeAccount: () => ({
+          account: 'work',
+          env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-work', ANTHROPIC_API_KEY: '' },
+        }),
+      });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await accountAdapter.launch(task.id, 'Fix bug', '/cwd', undefined, {
+        extraEnv: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-other', ANTHROPIC_API_KEY: 'sk-ant-api03-x' },
+      });
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-work');
+      expect(spec.env?.ANTHROPIC_API_KEY).toBe('');
+    });
+
+    test('a refused account fails the launch before any session is created', async () => {
+      const accountAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+        resolveClaudeAccount: () => {
+          throw new Error('account "gone" is no longer registered');
+        },
+      });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      await expect(accountAdapter.launch(task.id, 'Fix bug', '/cwd')).rejects.toThrow(/no longer registered/);
+      expect(backend.sessions.size).toBe(0);
+    });
+
+    test('without a resolver the launch env carries no account token', async () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+      expect(backend.sessions.get(sessionId)!.spec.env?.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    });
+  });
+
   describe('parent runtime session freezing (rfc-activity-log-reliability §2)', () => {
     function sessionStart(sessionId: string, transcriptPath = `/t/${sessionId}.jsonl`) {
       return JSON.stringify({

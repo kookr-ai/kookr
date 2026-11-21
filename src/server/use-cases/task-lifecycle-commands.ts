@@ -29,6 +29,11 @@ import { describeReopenResume, hasResumableSession } from '../resume-context.js'
 import type { ReopenResumeReport } from '../../shared/contracts/supervisor-actions.js';
 import { hungTaskReportPrefix } from '../hung-task-report-paths.js';
 import { firstHookMissReportPrefix } from '../first-hook-miss-report-paths.js';
+import { emptyClaudeAccountRegistry, type ClaudeAccountRegistry } from '../../core/claude-accounts.js';
+import {
+  switchClaudeAccount as switchClaudeAccountImpl,
+  type SwitchClaudeAccountResult,
+} from './switch-claude-account.js';
 
 type RuntimeLifecycleDeps = LifecycleDeps & DeleteTaskDeps;
 
@@ -62,6 +67,8 @@ export interface TaskLifecycleCommandDeps {
   hooksDir?: string;
   auditLogPath?: string;
   readInteractionLogSnapshot?: () => Promise<import('../../core/interaction-log.js').InteractionEvent[]>;
+  /** Named Claude account registry (account switching). Absent means only `host` exists. */
+  loadClaudeAccounts?: () => ClaudeAccountRegistry;
 }
 
 export interface TaskDeletionAuditActor {
@@ -372,6 +379,30 @@ export class TaskLifecycleCommands {
       };
     }
     return { outcome: 'reopened', task: reopened, resume };
+  }
+
+  /**
+   * Move a claude-code task to another named Claude account; a running task is
+   * relaunched in place and resumes its conversation. See
+   * {@link switchClaudeAccountImpl}. Audited as a `task.claudeAccountSwitch` row.
+   */
+  async switchClaudeAccount(
+    taskId: string,
+    account: string,
+    opts: TaskDeletionAuditOpts = {},
+  ): Promise<SwitchClaudeAccountResult> {
+    return switchClaudeAccountImpl(
+      {
+        taskStore: this.deps.taskStore,
+        loadClaudeAccounts: this.deps.loadClaudeAccounts ?? emptyClaudeAccountRegistry,
+        getLifecycleDeps: this.deps.getLifecycleDeps,
+        ...(this.deps.tryPromotePending ? { tryPromotePending: this.deps.tryPromotePending } : {}),
+        ...(this.deps.auditLogPath ? { auditLogPath: this.deps.auditLogPath } : {}),
+      },
+      taskId,
+      account,
+      opts.actor ? { actor: opts.actor } : {},
+    );
   }
 
   /**
