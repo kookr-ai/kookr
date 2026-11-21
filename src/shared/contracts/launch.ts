@@ -77,6 +77,13 @@ export interface LaunchOpts {
   profile?: string;
   /** Issue number an opencode task closes; exported to the worker's gate as KOOKR_OPENCODE_ISSUE. opencode only. */
   issue?: number;
+  /**
+   * Named Claude Code account to launch on (claude-code only). Must be `host`
+   * or an account registered with `kookr account add`; validated in
+   * `launchTask` (`ClaudeAccountValidationError`, API -> 400) and persisted as
+   * `metadata.claudeAccount`. When absent the registry default applies.
+   */
+  claudeAccount?: string;
   /** When true, always create a new task instead of returning an existing active duplicate. */
   disableDedup?: boolean;
   /** Explicit operator intent for duplicate-preserving launches. */

@@ -117,6 +117,13 @@ export interface TaskMetadata {
    * relation projections, but autonomous parent policy is not inherited.
    */
   userInitiatedRelaunch?: true;
+  /**
+   * Named Claude Code account this task runs on (claude-code only; see
+   * src/core/claude-accounts.ts). Pinned at the first launch, from the launch
+   * request or the registry default, and changed only by an account switch.
+   * Absent means the host's own `claude login`.
+   */
+  claudeAccount?: string;
   /** opencode worker profile id this task launched with (agentType 'opencode' only). */
   opencodeProfile?: string;
   /** How this opencode task launches: host TUI (default) or worker container (RFC #3541). Persisted so a relaunch never switches mode silently. */

@@ -29,7 +29,16 @@ function buildService(deps: RouteDeps): OrchestrationPauseService | null {
     ...(settings.getLoadError ? { getSettingsLoadError: () => settings.getLoadError!() } : {}),
     getQuotaSample: () => {
       const agentType = deps.getDefaultAgentType?.() ?? settings.get().defaultAgentType;
-      return resolveDefaultAgentQuotaSample(agentType, deps.getQuotaStatus?.() ?? null);
+      let defaultClaudeAccount: string | undefined;
+      try {
+        defaultClaudeAccount = deps.launchServiceDeps?.loadClaudeAccounts?.().default;
+      } catch {
+        // An unreadable registry fails claude launches with its own error; the
+        // quota sample keeps describing the host login.
+      }
+      return resolveDefaultAgentQuotaSample(agentType, deps.getQuotaStatus?.() ?? null, {
+        ...(defaultClaudeAccount ? { defaultClaudeAccount } : {}),
+      });
     },
   });
 }
