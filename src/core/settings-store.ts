@@ -353,6 +353,14 @@ export interface KookrSettings {
    */
   hungSuspectTtlMinutes: number;
   /**
+   * Hard cap, in hours of all-channel silence, on the long-running-job hold
+   * (issue #4237). A silent task whose session owns a live worker job older
+   * than 10 minutes, or one holding the GPU, is not reclaimed by the
+   * hungSuspect TTL sweep or the hung-task reaper until it has been silent
+   * this long; then normal reclaim resumes. Default 12h; clamped to 1-48h.
+   */
+  longRunningJobReclaimCapHours: number;
+  /**
    * Post-spawn first-hook ack deadline (seconds), issue #2036. After a
    * successful adapter launch, a session that never emits SessionStart / any
    * agent hook within this window is terminated (disposition `first_hook_miss`)
@@ -508,6 +516,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   finishedAwaitingAckAckReapMinutes: DEFAULT_FAA_ACK_REAP_DEADLINE_MS / 60_000,
   finishedAwaitingAckAckReapGraceSeconds: DEFAULT_FAA_ACK_REAP_GRACE_SECONDS,
   hungSuspectTtlMinutes: 25,
+  longRunningJobReclaimCapHours: 12,
   firstHookDeadlineSeconds: 180,
   spawnBurstLimit: 30,
   spawnBurstWindowMinutes: 10,
@@ -604,6 +613,8 @@ const MAX_FINISHED_AWAITING_ACK_TTL_MIN = 30;
 // while still allowing long-tool grace.
 const MIN_HUNG_SUSPECT_TTL_MIN = 10;
 const MAX_HUNG_SUSPECT_TTL_MIN = 60;
+const MIN_LONG_RUNNING_JOB_CAP_HOURS = 1;
+const MAX_LONG_RUNNING_JOB_CAP_HOURS = 48;
 // Per-source spawn-budget bounds (issue #1526 Phase C / C3). Limit floor of 5
 // keeps interactive use workable; ceiling of 500 keeps the budget meaningful.
 // Window floor of 1 minute, ceiling of 120 minutes (2h).
@@ -828,6 +839,17 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     hungSuspectTtlMinutes = Math.max(
       MIN_HUNG_SUSPECT_TTL_MIN,
       Math.min(MAX_HUNG_SUSPECT_TTL_MIN, Math.round(raw.hungSuspectTtlMinutes)),
+    );
+  }
+
+  let longRunningJobReclaimCapHours = DEFAULT_SETTINGS.longRunningJobReclaimCapHours;
+  if (
+    typeof raw.longRunningJobReclaimCapHours === 'number'
+    && Number.isFinite(raw.longRunningJobReclaimCapHours)
+  ) {
+    longRunningJobReclaimCapHours = Math.max(
+      MIN_LONG_RUNNING_JOB_CAP_HOURS,
+      Math.min(MAX_LONG_RUNNING_JOB_CAP_HOURS, Math.round(raw.longRunningJobReclaimCapHours)),
     );
   }
 
@@ -1120,6 +1142,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       finishedAwaitingAckAckReapMinutes,
       finishedAwaitingAckAckReapGraceSeconds,
       hungSuspectTtlMinutes,
+      longRunningJobReclaimCapHours,
       firstHookDeadlineSeconds,
       spawnBurstLimit,
       spawnBurstWindowMinutes,

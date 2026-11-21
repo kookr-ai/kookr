@@ -15,6 +15,13 @@ import { appendDispositionEntry, type DispositionEntry } from '../core/dispositi
 import { nowISO } from '../core/interaction-log.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
 import { reaperEvidence, describeReaperEvidenceFailure, writeReaperAuditRow } from './bounded-reaper-evidence.js';
+import {
+  formatReclaimKillLine,
+  toKilledProcesses,
+  type KilledProcess,
+  type SessionJob,
+} from '../core/long-running-jobs.js';
+import { liveSessionIdOf, type SessionJobSnapshotter } from './session-job-snapshot.js';
 
 /** Cap last-pass outcome samples on health (issue #2072 task-id audit). */
 const MAX_LAST_OUTCOMES = 16;
@@ -60,6 +67,11 @@ export interface HungSuspectTtlReclaimMetricsSnapshot {
    * {@link lastOutcomes}.
    */
   skippedSupervisionWakeScheduled: number;
+  /**
+   * Tasks left alone because they own a live long-running job (older than
+   * 10 min, or holding the GPU) and are still under the hold cap (issue #4237).
+   */
+  skippedLongRunningJob: number;
   /** Last selection pass: how many hungSuspect candidates were considered. */
   lastCandidatesConsidered: number;
   /**
@@ -210,6 +222,7 @@ export class HungSuspectTtlReclaimMetrics {
     this.skips.skipped_exempt_anomaly += selection.skips.skipped_exempt_anomaly;
     this.skips.skipped_provider_paused += selection.skips.skipped_provider_paused;
     this.skips.skipped_supervision_wake_scheduled += selection.skips.skipped_supervision_wake_scheduled;
+    this.skips.skipped_long_running_job += selection.skips.skipped_long_running_job;
     const outcomes = selection.outcomes ?? [];
     this.lastOutcomes = outcomes.slice(0, MAX_LAST_OUTCOMES).map((o) => ({ ...o }));
     this.lastAttemptedTaskIds = outcomes
@@ -231,6 +244,7 @@ export class HungSuspectTtlReclaimMetrics {
       skippedExemptAnomaly: this.skips.skipped_exempt_anomaly,
       skippedProviderPaused: this.skips.skipped_provider_paused,
       skippedSupervisionWakeScheduled: this.skips.skipped_supervision_wake_scheduled,
+      skippedLongRunningJob: this.skips.skipped_long_running_job,
       lastCandidatesConsidered: this.lastCandidatesConsidered,
       lastOutcomes: this.lastOutcomes.map((o) => ({ ...o })),
       lastAttemptedTaskIds: [...this.lastAttemptedTaskIds],
@@ -295,6 +309,18 @@ export interface ReclaimHungSuspectTasksDeps {
    * disposition label only; it never completes a task.
    */
   resolveMergedPrByBranch?: (task: Task) => Promise<MergedPrAttribution | null>;
+  /**
+   * Snapshot of the worker jobs under each past-TTL candidate's session
+   * (issue #4237). Drives both the long-running-job hold and the record of
+   * what a reclaim killed. Omitted ⇒ no hold, nothing recorded.
+   */
+  snapshotSessionJobs?: SessionJobSnapshotter;
+  /**
+   * Type one line into a live session (issue #4237), through the
+   * choice-dialog guard. Used to tell a reclaimed worker's parent what the
+   * reclaim killed. Omitted ⇒ no parent notification.
+   */
+  sendLineToSession?: (sessionId: string, line: string) => Promise<void>;
   metrics?: Pick<
     HungSuspectTtlReclaimMetrics,
     'recordReclaimed' | 'recordAttempted' | 'recordSelection' | 'recordReclaimFailure'
@@ -382,6 +408,7 @@ export function readStoreDeliveredPr(
 export function buildHungSuspectTtlDisposition(
   merged: MergedPrAttribution | null | undefined,
   at: string,
+  killedProcesses: readonly KilledProcess[] = [],
 ): TaskDisposition {
   const outcome: TaskReapOutcome = merged ? 'delivered_then_hung' : 'terminated';
   const disposition: TaskDisposition = {
@@ -400,6 +427,9 @@ export function buildHungSuspectTtlDisposition(
   } else {
     disposition.detail =
       'Reclaimed after hungSuspect TTL silence with no confirmed delivery — needs human review.';
+  }
+  if (killedProcesses.length > 0) {
+    disposition.killedProcesses = killedProcesses.map((p) => ({ ...p }));
   }
   return disposition;
 }
@@ -429,14 +459,16 @@ export function buildHungSuspectTtlDisposition(
  */
 export async function reclaimAgedHungSuspectTasks(
   deps: ReclaimHungSuspectTasksDeps,
-  opts: { now?: Date; ttlMs?: number } = {},
+  opts: { now?: Date; ttlMs?: number; longRunningJobCapMs?: number } = {},
 ): Promise<ReclaimHungSuspectTasksResult> {
   const lifecycleDeps = deps.lifecycleDeps;
   if (!lifecycleDeps) return { reclaimedTaskIds: [] };
 
   const now = opts.now ?? new Date();
   const ttlMs = opts.ttlMs ?? DEFAULT_HUNG_SUSPECT_TTL_MS;
-  const selection = selectExpiredHungSuspectTasks(deps.taskStore.viewTasks(), {
+  const tasks = deps.taskStore.viewTasks();
+  const sessionJobs = await snapshotPastTtlCandidateJobs(tasks, deps, now.getTime(), ttlMs);
+  const selection = selectExpiredHungSuspectTasks(tasks, {
     now,
     ttlMs,
     isHungSuspect: deps.isHungSuspect,
@@ -445,6 +477,8 @@ export async function reclaimAgedHungSuspectTasks(
     isProviderPaused: deps.isProviderPaused,
     isHoldingOpenPr: deps.isHoldingOpenPr,
     isAwaitingScheduledWake: deps.isAwaitingScheduledWake,
+    getSessionJobs: (task) => sessionJobs.get(task.id),
+    longRunningJobCapMs: opts.longRunningJobCapMs,
   });
 
   deps.metrics?.recordSelection(selection);
@@ -499,7 +533,10 @@ export async function reclaimAgedHungSuspectTasks(
 
   for (const [index, { task, silentForMs }] of terminated.entries()) {
     const merged = deliveredPrs[index] ?? null;
-    const disposition = buildHungSuspectTtlDisposition(merged, now.toISOString());
+    // Issue #4237: the jobs snapshotted before the terminate are what the
+    // process-tree kill took with the agent.
+    const killedProcesses = toKilledProcesses(sessionJobs.get(task.id) ?? []);
+    const disposition = buildHungSuspectTtlDisposition(merged, now.toISOString(), killedProcesses);
     const outcome = disposition.outcome ?? 'terminated';
     deps.taskStore.setDisposition(task.id, disposition);
 
@@ -526,6 +563,7 @@ export async function reclaimAgedHungSuspectTasks(
       silentForMs,
       outcome,
       ...(disposition.deliveredPr ? { deliveredPr: disposition.deliveredPr } : {}),
+      ...(killedProcesses.length > 0 ? { killedProcesses } : {}),
       ttlMs,
       ...(describeReaperEvidenceFailure('disposition', dispositionPersistence)
         ? { dispositionPersistence }
@@ -540,6 +578,10 @@ export async function reclaimAgedHungSuspectTasks(
     }
     timedOutWrites += statuses.filter((status) => status === 'timeout').length;
     unattemptedWrites += statuses.filter((status) => status === 'busy').length;
+
+    if (killedProcesses.length > 0) {
+      await notifyParentOfKilledJobs(task, silentForMs, killedProcesses, deps);
+    }
   }
 
   deps.metrics?.recordReclaimed(reclaimedTaskIds.length);
@@ -573,6 +615,66 @@ export async function reclaimAgedHungSuspectTasks(
   };
 }
 
+/**
+ * Snapshot worker jobs for the candidates the selector may pick: inProgress,
+ * no completion_ready, hungSuspect, and silent at least the TTL. Restricting
+ * to past-TTL tasks keeps the `/proc` scan off the common tick. Any failure
+ * means "no jobs", which is the pre-#4237 behaviour.
+ */
+async function snapshotPastTtlCandidateJobs(
+  tasks: readonly Task[],
+  deps: ReclaimHungSuspectTasksDeps,
+  nowMs: number,
+  ttlMs: number,
+): Promise<Map<string, SessionJob[]>> {
+  if (!deps.snapshotSessionJobs) return new Map();
+  const candidates = tasks.filter((task) => {
+    if (task.status !== 'inProgress' || task.pendingSignal?.kind === 'completion_ready') return false;
+    if (!deps.isHungSuspect(task)) return false;
+    const liveness = deps.getLiveness(task);
+    if (!liveness) return false;
+    const last = Math.max(liveness.lastHookEventAt, liveness.lastPaneChangeAt, liveness.lastTokenActivityAt);
+    return last > 0 && nowMs - last >= ttlMs;
+  });
+  if (candidates.length === 0) return new Map();
+  try {
+    return await deps.snapshotSessionJobs(candidates);
+  } catch (err) {
+    console.warn(
+      '[hung-suspect-ttl] session job snapshot failed; reclaiming without the long-running-job hold:',
+      err instanceof Error ? err.message : err,
+    );
+    return new Map();
+  }
+}
+
+/**
+ * Tell the reclaimed worker's parent what the reclaim killed (issue #4237),
+ * with one typed line. Only a live parent (inProgress, with a live session)
+ * is told; any failure is logged and swallowed — the slot is already free.
+ */
+async function notifyParentOfKilledJobs(
+  task: Task,
+  silentForMs: number,
+  killed: readonly KilledProcess[],
+  deps: ReclaimHungSuspectTasksDeps,
+): Promise<void> {
+  if (!task.parentTaskId || !deps.sendLineToSession) return;
+  const parent = deps.taskStore.getTask(task.parentTaskId);
+  if (!parent || parent.status !== 'inProgress') return;
+  const sessionId = liveSessionIdOf(parent);
+  if (!sessionId) return;
+  const line = formatReclaimKillLine({ workerName: task.name || task.id, silentForMs, killed });
+  try {
+    await deps.sendLineToSession(sessionId, line);
+  } catch (err) {
+    console.warn(
+      `[hung-suspect-ttl] could not tell parent ${parent.id} what reclaiming ${task.id} killed:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 async function writeHungSuspectDispositionEntry(
   taskId: string,
   taskDisposition: TaskDisposition,
@@ -583,7 +685,8 @@ async function writeHungSuspectDispositionEntry(
 ): Promise<void> {
   if (!deps.dispositionLedgerPath) return;
   const silentMinutes = Math.round(silentForMs / 60_000);
-  const entry: DispositionEntry =
+  const killed = taskDisposition.killedProcesses;
+  const base: DispositionEntry =
     outcome === 'delivered_then_hung'
       ? {
           schemaVersion: 'disposition-ledger.v1',
@@ -606,6 +709,9 @@ async function writeHungSuspectDispositionEntry(
           source: 'hung-suspect-ttl',
           at: now.toISOString(),
         };
+  const entry: DispositionEntry = killed && killed.length > 0
+    ? { ...base, killedProcesses: killed.map((p) => ({ ...p })) }
+    : base;
   await appendDispositionEntry(deps.dispositionLedgerPath, entry);
 }
 

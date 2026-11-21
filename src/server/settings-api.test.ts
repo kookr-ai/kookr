@@ -93,6 +93,7 @@ describe('Settings API', () => {
       finishedAwaitingAckAckReapMinutes: 5,
       finishedAwaitingAckAckReapGraceSeconds: 60,
       hungSuspectTtlMinutes: 25,
+      longRunningJobReclaimCapHours: 12,
       firstHookDeadlineSeconds: 180,
       spawnBurstLimit: 30,
       spawnBurstWindowMinutes: 10,

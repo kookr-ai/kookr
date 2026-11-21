@@ -8,7 +8,13 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { collectProcessTree, killProcessTree, readProcessStartTimeMs } from './process-tree.js';
+import {
+  collectProcessTree,
+  killProcessTree,
+  readGpuComputePids,
+  readProcessStartTimeMs,
+  readProcessTable,
+} from './process-tree.js';
 
 const HAS_PROC = existsSync('/proc/self');
 const onLinux = HAS_PROC ? it : it.skip;
@@ -146,5 +152,24 @@ describe('killProcessTree', () => {
     await expect(killProcessTree(1)).resolves.toBeUndefined();
     await expect(killProcessTree(0)).resolves.toBeUndefined();
     await expect(killProcessTree(-1)).resolves.toBeUndefined();
+  });
+});
+
+describe('readProcessTable (issue #4237)', () => {
+  it.runIf(process.platform === 'linux')('includes this process with its parent, command and a past start time', () => {
+    const table = readProcessTable();
+    const self = table.find((p) => p.pid === process.pid);
+    expect(self).toBeDefined();
+    expect(self!.ppid).toBe(process.ppid);
+    expect(self!.command.length).toBeGreaterThan(0);
+    expect(self!.startedAtMs).not.toBeNull();
+    expect(self!.startedAtMs!).toBeLessThanOrEqual(Date.now() + 1_000);
+  });
+});
+
+describe('readGpuComputePids (issue #4237)', () => {
+  it('never rejects, and yields positive integer pids', async () => {
+    const pids = await readGpuComputePids(2_000);
+    for (const pid of pids) expect(Number.isInteger(pid) && pid > 0).toBe(true);
   });
 });

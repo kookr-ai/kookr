@@ -45,6 +45,9 @@ import { InventPriorityHealthRefresher } from './invent-priority-health-refreshe
 import { cancelTask, completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
+import { createSessionJobSnapshotter } from './session-job-snapshot.js';
+import { readGpuComputePids, readProcessTable } from '../adapters/process-tree.js';
+import { guardChoiceDialog } from '../core/choice-dialog-guard.js';
 import { FirstHookMissMetrics } from './first-hook-deadline-sweep.js';
 import { WatchdogSweepMetrics } from './watchdog-sweep-metrics.js';
 import {
@@ -4397,6 +4400,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       finishedAwaitingAckTtlReclaimMetrics,
       getHungSuspectTtlMs,
       hungSuspectTtlReclaimMetrics,
+      // Issue #4237: hold a silent task that owns a live long-running job, and
+      // report what a reclaim killed to the disposition ledger and the parent.
+      snapshotSessionJobs: createSessionJobSnapshotter({
+        getSessionRootPid: async (sessionId) => (await terminalBackend.getSessionRootPid?.(sessionId)) ?? null,
+        readProcessTable,
+        readGpuPids: () => readGpuComputePids(),
+      }),
+      getLongRunningJobReclaimCapMs: () => currentSettings.longRunningJobReclaimCapHours * 3_600_000,
+      sendLineToSession: async (sessionId, line) => {
+        const opts = guardChoiceDialog(sessionId, (id) => monitor.isAwaitingChoice(id));
+        await (opts ? adapter.sendInput(sessionId, line, opts) : adapter.sendInput(sessionId, line));
+      },
       getFirstHookDeadlineMs,
       firstHookMissMetrics,
       // issue #2770: watchdog sweep fairness — per-probe deadline + rotating

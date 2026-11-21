@@ -568,6 +568,15 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
   getSessionStartedAt?(id: SessionId): Promise<number | null>;
 
   /**
+   * Optional. Pid of the process at the root of this session's process tree
+   * (the dtach master for `LocalDtachBackend`), or `null` when unknown. The
+   * reclaim sweeps use it to see what a kill would take with it before they
+   * terminate a task (issue #4237). An absent implementation or `null` means
+   * "no jobs visible", never an error.
+   */
+  getSessionRootPid?(id: SessionId): Promise<number | null>;
+
+  /**
    * Optional boot-only handoff for restart-safe launch abandonment (issue
    * #2762). A backend compares its prior-process, not-yet-adopted launch
    * markers with exact session ids durably owned by live tasks. It preserves

@@ -423,6 +423,15 @@ describe('validateSettings', () => {
     expect(validateSettings({ hungSuspectTtlMinutes: 'forever' }).hungSuspectTtlMinutes).toBe(25);
   });
 
+  it('defaults longRunningJobReclaimCapHours to 12 and clamps to 1-48 (issue #4237)', () => {
+    expect(DEFAULT_SETTINGS.longRunningJobReclaimCapHours).toBe(12);
+    expect(validateSettings({}).longRunningJobReclaimCapHours).toBe(12);
+    expect(validateSettings({ longRunningJobReclaimCapHours: 6 }).longRunningJobReclaimCapHours).toBe(6);
+    expect(validateSettings({ longRunningJobReclaimCapHours: 0 }).longRunningJobReclaimCapHours).toBe(1);
+    expect(validateSettings({ longRunningJobReclaimCapHours: 500 }).longRunningJobReclaimCapHours).toBe(48);
+    expect(validateSettings({ longRunningJobReclaimCapHours: 'long' }).longRunningJobReclaimCapHours).toBe(12);
+  });
+
   it('defaults firstHookDeadlineSeconds to 180 and clamps to the 30–900 range (issue #2036)', () => {
     expect(validateSettings({}).firstHookDeadlineSeconds).toBe(180);
     expect(DEFAULT_SETTINGS.firstHookDeadlineSeconds).toBe(180);
@@ -939,6 +948,7 @@ describe('loadSettings / saveSettings', () => {
       finishedAwaitingAckAckReapMinutes: 3,
       finishedAwaitingAckAckReapGraceSeconds: 45,
       hungSuspectTtlMinutes: 30,
+      longRunningJobReclaimCapHours: 6,
       firstHookDeadlineSeconds: 240,
       spawnBurstLimit: 60,
       spawnBurstWindowMinutes: 15,

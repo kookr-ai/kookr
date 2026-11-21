@@ -669,6 +669,13 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
    * `null` when there is no entry or `startedAt` fails to parse. Used by the
    * orphan/terminal-task session reaper (issue #1720) to age-gate reaping.
    */
+  async getSessionRootPid(id: SessionId): Promise<number | null> {
+    const entry = await this.readEntry(id);
+    if (!entry || entry.status === 'pending') return null;
+    const pid = entry.pid > 0 ? entry.pid : this.findDtachMasterPidSync(entry.sock);
+    return pid > 0 ? pid : null;
+  }
+
   async getSessionStartedAt(id: SessionId): Promise<number | null> {
     const entry = await this.readEntry(id);
     if (!entry) return null;

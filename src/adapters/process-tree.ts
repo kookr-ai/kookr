@@ -20,8 +20,9 @@
  * kill list. On platforms without `/proc` (macOS) the snapshot degrades to just
  * the root pid — no worse than the previous master-only behavior.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
+import type { ProcessInfo } from '../core/long-running-jobs.js';
 
 /** Default grace period between the SIGTERM sweep and the SIGKILL sweep. */
 const DEFAULT_GRACE_MS = 10_000;
@@ -144,6 +145,87 @@ export function readProcessStartTimeMs(pid: number): number | null {
   // callers degrade to their fallback instead of a false PID-recycle verdict.
   if (startMs > Date.now() + 60_000) return null;
   return startMs;
+}
+
+/**
+ * Read the whole process table from `/proc` once: pid, ppid, comm, command
+ * line and start time (issue #4237). Returns `[]` where `/proc` is missing
+ * (macOS), so callers see "no jobs" rather than an error. A process that
+ * exits mid-scan is skipped.
+ */
+export function readProcessTable(): ProcessInfo[] {
+  if (process.platform !== 'linux') return [];
+  let names: string[];
+  try {
+    names = readdirSync('/proc');
+  } catch {
+    return [];
+  }
+  const bootMs = readLinuxBootTimeMs();
+  const out: ProcessInfo[] = [];
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    const pid = Number(name);
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+      const fields = parseProcStatFields(stat);
+      if (!fields) continue;
+      const ppid = Number(fields[1]);
+      if (!Number.isInteger(ppid)) continue;
+      const lparen = stat.indexOf('(');
+      const rparen = stat.lastIndexOf(')');
+      const comm = lparen >= 0 && rparen > lparen ? stat.slice(lparen + 1, rparen) : '';
+      const ticks = Number(fields[19]);
+      const startedAtMs = bootMs !== null && Number.isFinite(ticks) && ticks >= 0
+        ? Math.floor(bootMs + (ticks / USER_HZ) * 1000)
+        : null;
+      let command = '';
+      try {
+        command = readFileSync(`/proc/${pid}/cmdline`, 'utf-8').replace(/\0+$/, '').replace(/\0/g, ' ');
+      } catch {
+        // cmdline unreadable — keep comm only.
+      }
+      out.push({ pid, ppid, comm, command, startedAtMs });
+    } catch {
+      // Process exited between readdir and read — skip it.
+    }
+  }
+  return out;
+}
+
+/** Upper bound on one `nvidia-smi` call. */
+const NVIDIA_SMI_TIMEOUT_MS = 5_000;
+
+/**
+ * Pids of processes using the GPU, from
+ * `nvidia-smi --query-compute-apps=pid --format=csv,noheader` (issue #4237).
+ * Never throws: a host without `nvidia-smi`, a timeout or a parse failure all
+ * yield an empty set.
+ */
+export function readGpuComputePids(timeoutMs: number = NVIDIA_SMI_TIMEOUT_MS): Promise<Set<number>> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        'nvidia-smi',
+        ['--query-compute-apps=pid', '--format=csv,noheader'],
+        { encoding: 'utf-8', timeout: timeoutMs },
+        (err, stdout) => {
+          if (err) {
+            resolve(new Set());
+            return;
+          }
+          const pids = new Set<number>();
+          for (const line of String(stdout).split('\n')) {
+            const pid = Number(line.trim());
+            if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+          }
+          resolve(pids);
+        },
+      );
+    } catch {
+      resolve(new Set());
+    }
+  });
 }
 
 /**

@@ -787,6 +787,47 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
     expect(taskStore.getTask(task.id)?.status).toBe('terminated');
   });
 
+  test('issue #4237: holds a silent task that owns a live long-running job, until the cap', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-gpu-1';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const job = { pid: 4242, command: 'python train.py', ageMs: REAP_THRESHOLD_MS, holdsGpu: true };
+    const snapshotSessionJobs = vi.fn(async () => new Map([[task.id, [job]]]));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const held = await maybeReapHungTask(
+        agentId,
+        'frozen pane',
+        timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS, snapshotSessionJobs }),
+        taskStore,
+        lifecycleDeps(taskStore),
+        now,
+      );
+      expect(held).toBe(false);
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+
+      // Past the cap, the normal reap resumes.
+      const reaped = await maybeReapHungTask(
+        agentId,
+        'frozen pane',
+        timerDeps({
+          watchdog,
+          getHungTaskReapMs: () => REAP_THRESHOLD_MS,
+          snapshotSessionJobs,
+          getLongRunningJobReclaimCapMs: () => REAP_THRESHOLD_MS,
+        }),
+        taskStore,
+        lifecycleDeps(taskStore),
+        now,
+      );
+      expect(reaped).toBe(true);
+      expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test('issue #3154: a terminate rejection increments hungTaskReaperMetrics through the sweep wiring', async () => {
     // Covers the TimerDeps → reapHungTask wiring (`metrics: deps.hungTaskReaperMetrics`)
     // at the actual watchdog-sweep entry point, which the reaper-level tests
