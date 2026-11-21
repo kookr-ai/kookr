@@ -31,7 +31,7 @@
  * delivery bridge drains). No second outbound path exists here.
  */
 
-import { AgentInputRefusedError, asInputRefusal, guardChoiceDialog } from '../core/choice-dialog-guard.js';
+import { GuardedInputSender } from './guarded-input-sender.js';
 import { mayAutonomousActuate, EMPTY_PAUSED_PROJECT_IDS } from '../core/automation-kill-switch.js';
 import type { Monitor } from '../core/monitor.js';
 import {
@@ -197,7 +197,14 @@ export class SupervisionService {
   /** Per-supervision gate result of the last tick, for status. */
   private readonly gateByProject = new Map<string, boolean>();
 
-  constructor(private readonly deps: SupervisionServiceDeps) {}
+  private readonly sender: GuardedInputSender;
+
+  constructor(private readonly deps: SupervisionServiceDeps) {
+    this.sender = new GuardedInputSender({
+      adapter: deps.adapter,
+      isAwaitingChoice: (id) => deps.monitor.isAwaitingChoice(id),
+    });
+  }
 
   /** True once startup recovery has completed and the post-recovery settle window has passed. */
   private recoverySettled(): boolean {
@@ -436,19 +443,10 @@ export class SupervisionService {
     const sessionId = this.activeSessionId(state.supervisorTaskId);
     if (sessionId === undefined) return 'refused';
     const line = formatWakeLine(kind, state, supervisionBriefPath(this.deps.dataDir, state.supervisionId));
-    try {
-      const opts = guardChoiceDialog(sessionId, (id) => this.deps.monitor.isAwaitingChoice(id));
-      try {
-        await (opts ? this.deps.adapter.sendInput(sessionId, line, opts) : this.deps.adapter.sendInput(sessionId, line));
-      } catch (err) {
-        throw asInputRefusal(err, sessionId);
-      }
-      return 'sent';
-    } catch (err) {
-      this.log(`${kind} wake for ${state.supervisionId} not delivered: ${err instanceof Error ? err.message : String(err)}`);
-      // A guard refusal definitely typed nothing submittable; any other error is ambiguous.
-      return err instanceof AgentInputRefusedError ? 'refused' : 'failed';
-    }
+    // No `source`: a supervision wake writes no user-input delivery record, as before #4239.
+    const result = await this.sender.send(sessionId, line);
+    if (result.outcome !== 'sent') this.log(`${kind} wake for ${state.supervisionId} not delivered: ${result.error}`);
+    return result.outcome;
   }
 
   private raiseAlert(state: SupervisionState, reason: string): void {

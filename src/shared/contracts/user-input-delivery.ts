@@ -1,13 +1,26 @@
 export type UserInputDeliveryStatus = 'queued' | 'submitted_by_agent' | 'failed';
 
-/** `lucy_operator`: a reply Lucy typed for the operator after they confirmed its card (`lucy-action.ts`). */
-export type UserInputDeliverySource = 'respond' | 'directReply' | 'github_watcher' | 'lucy_operator';
+/**
+ * `lucy_operator`: a reply Lucy typed for the operator after they confirmed its card (`lucy-action.ts`).
+ * `sentinel`: a line the supervisor sentinel's guard typed on its own (issue #4239).
+ * `operator-via-sentinel`: an operator answer to a sentinel ask that the guard relayed into the lead;
+ * it counts as operator activity, while `sentinel` does not.
+ */
+export type UserInputDeliverySource =
+  | 'respond'
+  | 'directReply'
+  | 'github_watcher'
+  | 'lucy_operator'
+  | 'sentinel'
+  | 'operator-via-sentinel';
 
 export const DELIVERY_SOURCE_LABEL: Record<UserInputDeliverySource, string> = {
   respond: 'You',
   directReply: 'You',
   github_watcher: 'Kookr watcher',
   lucy_operator: 'Lucy',
+  sentinel: 'Kookr sentinel',
+  'operator-via-sentinel': 'You (via sentinel)',
 };
 
 export interface UserInputDeliverySnapshot {
