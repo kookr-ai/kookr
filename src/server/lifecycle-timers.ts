@@ -125,6 +125,8 @@ import {
 } from '../core/finished-awaiting-ack-ttl.js';
 import { restoreExpiredSnoozes } from './snooze-restore.js';
 import { runPersistenceSaveTick } from './persistence-save-tick.js';
+import type { SessionJobSnapshotter } from './session-job-snapshot.js';
+import { evaluateLongRunningJobHold } from '../core/long-running-jobs.js';
 import {
   runScheduledMaintenancePrune,
   runScheduledRelayOrphanSweep,
@@ -342,6 +344,17 @@ export interface TimerDeps {
    * to the module default (25m) when absent.
    */
   getHungSuspectTtlMs?: () => number;
+  /**
+   * Snapshot of worker jobs under task sessions (issue #4237). Lets the
+   * hungSuspect TTL sweep and the hung-task reaper hold a task that owns a
+   * live long-running job, and lets the TTL sweep record what a reclaim
+   * killed. Absent ⇒ both reapers behave as before.
+   */
+  snapshotSessionJobs?: SessionJobSnapshotter;
+  /** Live getter — hard cap on the long-running-job hold, in ms of silence (issue #4237). */
+  getLongRunningJobReclaimCapMs?: () => number;
+  /** Type one line into a live session through the choice-dialog guard (issue #4237 parent notice). */
+  sendLineToSession?: (sessionId: string, line: string) => Promise<void>;
   /** Optional counter for the hungSuspect TTL reclaim, exposed via `/metrics` (issue #1935). */
   hungSuspectTtlReclaimMetrics?: Pick<
     HungSuspectTtlReclaimMetrics,
@@ -892,6 +905,33 @@ export async function maybeReapHungTask(
       + `(${pause.detail ?? 'billing/quota'}); freeing slot + lease for auto-resume`,
     );
     // fall through to the normal reap below
+  }
+
+  // Issue #4237: a worker silently waiting on its own long job (a GPU run) is
+  // not hung, and reaping it would kill the job with it. Same hold and cap as
+  // the hungSuspect TTL sweep. A snapshot failure means "no job" (old behaviour).
+  if (deps.snapshotSessionJobs) {
+    let jobs;
+    try {
+      jobs = (await deps.snapshotSessionJobs([task])).get(task.id);
+    } catch {
+      jobs = undefined;
+    }
+    const hold = evaluateLongRunningJobHold(jobs, {
+      silentForMs: verdict.silentForMs,
+      capMs: deps.getLongRunningJobReclaimCapMs?.(),
+    });
+    if (hold.hold) {
+      const clearedWarning = deps.reapWarningCoordinator?.clear(task.id, 'recovered');
+      if (clearedWarning) {
+        await appendReapWarningClearedAudit(deps.auditLogPath, task.id, 'recovered');
+      }
+      console.warn(
+        `[hung-task-reaper] skipping reap for task ${task.id} — it owns a live long-running job `
+        + `(pid ${hold.job.pid}, ${Math.round(hold.job.ageMs / 60_000)}m${hold.job.holdsGpu ? ', GPU' : ''})`,
+      );
+      return clearedWarning !== undefined;
+    }
   }
 
   // Grace-period warning phase (RFC rfc-reap-grace-warning.md). Composed AFTER
@@ -2168,9 +2208,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             isAwaitingScheduledWake: deps.isSupervisorAwaitingScheduledWake,
             resolveMergedPr: deps.resolveMergedPr,
             resolveMergedPrByBranch: deps.resolveMergedPrByBranch,
+            snapshotSessionJobs: deps.snapshotSessionJobs,
+            sendLineToSession: deps.sendLineToSession,
             metrics: deps.hungSuspectTtlReclaimMetrics,
           },
-          { ttlMs: deps.getHungSuspectTtlMs?.() },
+          {
+            ttlMs: deps.getHungSuspectTtlMs?.(),
+            longRunningJobCapMs: deps.getLongRunningJobReclaimCapMs?.(),
+          },
         );
         // A completed pass (even a zero-reclaim one) clears any prior
         // current-error state; the cumulative failure count is retained.

@@ -328,6 +328,16 @@ export interface TaskDisposition {
     number: number;
     url?: string;
   };
+  /**
+   * Worker jobs the reclaim's process-tree kill took with the agent (issue
+   * #4237). Present only on a `hung_suspect_ttl` reclaim that killed some.
+   */
+  killedProcesses?: Array<{
+    pid: number;
+    command: string;
+    ageSeconds: number;
+    holdsGpu: boolean;
+  }>;
 }
 
 /**

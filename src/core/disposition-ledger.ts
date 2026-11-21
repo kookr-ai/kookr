@@ -1,6 +1,7 @@
 import { mkdir, open, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createLogger } from './logger.js';
+import type { KilledProcess } from './long-running-jobs.js';
 
 const logger = createLogger('disposition-ledger');
 
@@ -57,6 +58,12 @@ export interface DispositionEntry {
   source: string;
   /** ISO-8601 timestamp the disposition was recorded. */
   at: string;
+  /**
+   * Worker jobs the reclaim's process-tree kill took with the agent (issue
+   * #4237): pid, sanitized command, age and GPU use, snapshotted just before
+   * the kill. Absent when the kill took nothing but the agent and its shells.
+   */
+  killedProcesses?: KilledProcess[];
 }
 
 /** A task a recovery path cancelled or degraded, for {@link auditRecoveryDispositions} to check. */

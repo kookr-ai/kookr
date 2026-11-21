@@ -1,5 +1,6 @@
 import type { Task } from './task-read-model.js';
 import type { HungTaskLivenessEvidence } from './hung-task-reaper.js';
+import { evaluateLongRunningJobHold, type SessionJob } from './long-running-jobs.js';
 
 /**
  * hungSuspect TTL reclaim (issue #1935 / residual metrics #2045 / reclaim
@@ -85,7 +86,8 @@ export type HungSuspectReclaimSkipReason =
   | 'skipped_under_ttl'
   | 'skipped_exempt_anomaly'
   | 'skipped_provider_paused'
-  | 'skipped_supervision_wake_scheduled';
+  | 'skipped_supervision_wake_scheduled'
+  | 'skipped_long_running_job';
 
 export const HUNG_SUSPECT_RECLAIM_SKIP_REASONS: readonly HungSuspectReclaimSkipReason[] = [
   'skipped_no_liveness',
@@ -95,6 +97,7 @@ export const HUNG_SUSPECT_RECLAIM_SKIP_REASONS: readonly HungSuspectReclaimSkipR
   'skipped_exempt_anomaly',
   'skipped_provider_paused',
   'skipped_supervision_wake_scheduled',
+  'skipped_long_running_job',
 ] as const;
 
 export type HungSuspectReclaimSkipCounts = Record<HungSuspectReclaimSkipReason, number>;
@@ -108,6 +111,7 @@ export function emptyHungSuspectReclaimSkipCounts(): HungSuspectReclaimSkipCount
     skipped_exempt_anomaly: 0,
     skipped_provider_paused: 0,
     skipped_supervision_wake_scheduled: 0,
+    skipped_long_running_job: 0,
   };
 }
 
@@ -129,6 +133,8 @@ export interface HungSuspectReclaimCandidateOutcome {
   outcome: 'selected' | HungSuspectReclaimSkipReason;
   /** Present when silence age was computed (not for no-liveness). */
   silentForMs?: number;
+  /** For `skipped_long_running_job`: the job that holds the task (issue #4237). */
+  jobPid?: number;
 }
 
 /** Full selection result for one reclaim pass (issues #2045 / #2072). */
@@ -209,6 +215,15 @@ export interface ListExpiredHungSuspectTasksOpts {
    * other task, keep the normal TTL.
    */
   isAwaitingScheduledWake?: (task: Task) => boolean | undefined;
+  /**
+   * Worker jobs under the task's live session, snapshotted by the caller
+   * (issue #4237). A job older than 10 minutes, or one holding the GPU,
+   * exempts the task until it has been silent for
+   * {@link longRunningJobCapMs}. Omitted or `undefined` ⇒ no jobs, no hold.
+   */
+  getSessionJobs?: (task: Task) => readonly SessionJob[] | undefined;
+  /** Hard cap on the long-running-job hold, as silence age (default 12h). */
+  longRunningJobCapMs?: number;
 }
 
 /**
@@ -229,6 +244,8 @@ export interface ListExpiredHungSuspectTasksOpts {
  * - silence under TTL → `skipped_under_ttl`;
  * - supervisor waiting on a scheduled Kookr wake (`isAwaitingScheduledWake`
  *   returns `true`) → `skipped_supervision_wake_scheduled` (issue #4162);
+ * - a live worker job older than 10 min or holding the GPU, while silence is
+ *   under the cap → `skipped_long_running_job` (issue #4237);
  * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
  *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
  * - otherwise selected (including long-silent needs_input / permission_blocked
@@ -294,6 +311,23 @@ export function selectExpiredHungSuspectTasks(
         taskId: task.id,
         outcome: 'skipped_supervision_wake_scheduled',
         silentForMs,
+      });
+      continue;
+    }
+
+    // Issue #4237: the worker is waiting on its own long job (a GPU run).
+    // Reclaiming would kill the job with the task, so hold until the cap.
+    const jobHold = evaluateLongRunningJobHold(opts.getSessionJobs?.(task), {
+      silentForMs,
+      capMs: opts.longRunningJobCapMs,
+    });
+    if (jobHold.hold) {
+      skips.skipped_long_running_job += 1;
+      outcomes.push({
+        taskId: task.id,
+        outcome: 'skipped_long_running_job',
+        silentForMs,
+        jobPid: jobHold.job.pid,
       });
       continue;
     }

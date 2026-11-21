@@ -467,6 +467,7 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
       skipped_exempt_anomaly: 0,
       skipped_provider_paused: 1,
       skipped_supervision_wake_scheduled: 0,
+      skipped_long_running_job: 0,
     });
     // Task-id outcomes cover every candidate (issue #2072 audit).
     expect(sel.outcomes).toHaveLength(6);
@@ -579,5 +580,58 @@ describe('selectExpiredHungSuspectTasks supervisor-wake exemption (issue #4162)'
       { ...base, isAwaitingScheduledWake: (task) => task.id === 'supervisor' },
     );
     expect(sel.expired.map((e) => e.task.id)).toEqual(['worker']);
+  });
+});
+
+describe('selectExpiredHungSuspectTasks long-running-job hold (issue #4237)', () => {
+  const HOUR = 60 * 60_000;
+  const base = {
+    now: NOW,
+    ttlMs: TTL_MS,
+    isHungSuspect: alwaysHung,
+    getLiveness: () => silentFor(TTL_MS + 60_000),
+    isHoldingOpenPr: () => false as const,
+  };
+  const oldJob = { pid: 77, command: 'python train.py', ageMs: 2 * HOUR, holdsGpu: false };
+
+  it('skips a past-TTL task that owns a job older than 10 minutes', () => {
+    const sel = selectExpiredHungSuspectTasks([hungTask({ id: 'trainer' })], {
+      ...base,
+      getSessionJobs: () => [oldJob],
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips).toEqual({ ...emptyHungSuspectReclaimSkipCounts(), skipped_long_running_job: 1 });
+    expect(sel.outcomes).toEqual([
+      { taskId: 'trainer', outcome: 'skipped_long_running_job', silentForMs: TTL_MS + 60_000, jobPid: 77 },
+    ]);
+  });
+
+  it('selects when the only job is young, when there are none, and once the cap is reached', () => {
+    const young = { ...oldJob, ageMs: 60_000 };
+    for (const [jobs, getLiveness, capMs] of [
+      [[young], base.getLiveness, undefined],
+      [[], base.getLiveness, undefined],
+      [undefined, base.getLiveness, undefined],
+      [[oldJob], () => silentFor(3 * HOUR), 3 * HOUR],
+    ] as const) {
+      const sel = selectExpiredHungSuspectTasks([hungTask({ id: 't' })], {
+        ...base,
+        getLiveness,
+        getSessionJobs: () => jobs,
+        longRunningJobCapMs: capMs,
+      });
+      expect(sel.expired.map((e) => e.task.id)).toEqual(['t']);
+    }
+  });
+
+  it('is only consulted past the TTL', () => {
+    const getSessionJobs = vi.fn(() => [oldJob]);
+    const sel = selectExpiredHungSuspectTasks([hungTask({ id: 'young' })], {
+      ...base,
+      getLiveness: () => silentFor(TTL_MS - 60_000),
+      getSessionJobs,
+    });
+    expect(sel.skips.skipped_under_ttl).toBe(1);
+    expect(getSessionJobs).not.toHaveBeenCalled();
   });
 });

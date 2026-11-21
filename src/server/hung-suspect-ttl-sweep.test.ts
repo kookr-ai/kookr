@@ -1164,6 +1164,165 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
     }
   });
 
+  describe('long-running jobs (issue #4237)', () => {
+    const trainJob = { pid: 4242, command: 'python train.py', ageMs: 2 * 60 * 60_000, holdsGpu: true };
+    const youngJob = { pid: 4343, command: 'python quick.py', ageMs: 3 * 60_000, holdsGpu: false };
+
+    it('holds a task that owns a live long-running job and records the skip', async () => {
+      const task = makeHungTask({ id: 'gpu-worker' });
+      const other = makeHungTask({ id: 'idle-worker', sessions: [aSession({ tmuxSession: 'kookr-idle', lastStatus: 'inProgress' })] });
+      const taskStore = makeMockTaskStore([task, other]);
+      const lifecycleDeps = makeLifecycleDeps(taskStore);
+      const metrics = new HungSuspectTtlReclaimMetrics();
+      const snapshotSessionJobs = vi.fn(async () => new Map([['gpu-worker', [trainJob]]]));
+      const result = await reclaimAgedHungSuspectTasks(
+        {
+          taskStore, lifecycleDeps, metrics, snapshotSessionJobs,
+          isHungSuspect: () => true,
+          getLiveness: () => silentFor(TTL_MS + 60_000),
+          isHoldingOpenPr: () => false,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      );
+      expect(result.reclaimedTaskIds).toEqual(['idle-worker']);
+      expect(taskStore.terminateTask).not.toHaveBeenCalledWith('gpu-worker', expect.anything());
+      expect(metrics.getSnapshot()).toMatchObject({
+        skippedLongRunningJob: 1,
+        lastOutcomes: expect.arrayContaining([
+          { taskId: 'gpu-worker', outcome: 'skipped_long_running_job', silentForMs: TTL_MS + 60_000, jobPid: 4242 },
+        ]),
+      });
+    });
+
+    it('only snapshots past-TTL hungSuspect candidates', async () => {
+      const task = makeHungTask();
+      const taskStore = makeMockTaskStore([task]);
+      const snapshotSessionJobs = vi.fn(async () => new Map());
+      await reclaimAgedHungSuspectTasks(
+        {
+          taskStore, lifecycleDeps: makeLifecycleDeps(taskStore), snapshotSessionJobs,
+          isHungSuspect: () => true,
+          getLiveness: () => silentFor(TTL_MS - 60_000),
+          isHoldingOpenPr: () => false,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      );
+      expect(snapshotSessionJobs).not.toHaveBeenCalled();
+    });
+
+    it('reclaims past the cap and records the killed list in the disposition, ledger and audit row', async () => {
+      const task = makeHungTask();
+      const taskStore = makeMockTaskStore([task]);
+      const result = await reclaimAgedHungSuspectTasks(
+        {
+          taskStore, lifecycleDeps: makeLifecycleDeps(taskStore), auditLogPath, dispositionLedgerPath,
+          snapshotSessionJobs: async () => new Map([['task-1', [trainJob, youngJob]]]),
+          isHungSuspect: () => true,
+          getLiveness: () => silentFor(3 * 60 * 60_000),
+          isHoldingOpenPr: () => false,
+        },
+        { now: NOW, ttlMs: TTL_MS, longRunningJobCapMs: 2 * 60 * 60_000 },
+      );
+      expect(result.reclaimedTaskIds).toEqual(['task-1']);
+      const killedProcesses = [
+        { pid: 4242, command: 'python train.py', ageSeconds: 7200, holdsGpu: true },
+        { pid: 4343, command: 'python quick.py', ageSeconds: 180, holdsGpu: false },
+      ];
+      expect(taskStore.setDisposition).toHaveBeenCalledWith('task-1', expect.objectContaining({ killedProcesses }));
+      const ledgerRows = (await readFile(dispositionLedgerPath, 'utf-8')).trim().split('\n').map((l) => JSON.parse(l));
+      expect(ledgerRows).toEqual([expect.objectContaining({ taskId: 'task-1', killedProcesses })]);
+      const auditRows = (await readFile(auditLogPath, 'utf-8')).trim().split('\n').map((l) => JSON.parse(l));
+      expect(auditRows[0]).toMatchObject({ killedProcesses });
+    });
+
+    it('records no killed list when the kill took only the agent', async () => {
+      const task = makeHungTask();
+      const taskStore = makeMockTaskStore([task]);
+      await reclaimAgedHungSuspectTasks(
+        {
+          taskStore, lifecycleDeps: makeLifecycleDeps(taskStore), dispositionLedgerPath,
+          snapshotSessionJobs: async () => new Map(),
+          isHungSuspect: () => true,
+          getLiveness: () => silentFor(TTL_MS + 60_000),
+          isHoldingOpenPr: () => false,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      );
+      expect(taskStore.setDisposition.mock.calls[0][1]).not.toHaveProperty('killedProcesses');
+      const ledgerRows = (await readFile(dispositionLedgerPath, 'utf-8')).trim().split('\n').map((l) => JSON.parse(l));
+      expect(ledgerRows[0]).not.toHaveProperty('killedProcesses');
+    });
+
+    it.each([
+      ['a live parent', { status: 'inProgress' as const, lastStatus: 'inProgress' as const }, 1],
+      ['a parent with no live session', { status: 'inProgress' as const, lastStatus: 'completed' as const }, 0],
+      ['a finished parent', { status: 'completed' as const, lastStatus: 'inProgress' as const }, 0],
+    ])('types what the kill took into %s only when live', async (_label, parentState, expectedCalls) => {
+      const parent = aTask({
+        id: 'lead',
+        status: parentState.status,
+        sessions: [aSession({ tmuxSession: 'kookr-lead', lastStatus: parentState.lastStatus })],
+      });
+      const worker = makeHungTask({ id: 'worker', name: 'eval worker', parentTaskId: 'lead' });
+      const taskStore = makeMockTaskStore([parent, worker]);
+      const sendLineToSession = vi.fn().mockResolvedValue(undefined);
+      await reclaimAgedHungSuspectTasks(
+        {
+          taskStore, lifecycleDeps: makeLifecycleDeps(taskStore), sendLineToSession,
+          snapshotSessionJobs: async () => new Map([['worker', [youngJob]]]),
+          isHungSuspect: (task) => task.id === 'worker',
+          getLiveness: () => silentFor(TTL_MS + 60_000),
+          isHoldingOpenPr: () => false,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      );
+      expect(sendLineToSession).toHaveBeenCalledTimes(expectedCalls);
+      if (expectedCalls > 0) {
+        expect(sendLineToSession).toHaveBeenCalledWith(
+          'kookr-lead',
+          '[kookr] worker eval worker was reclaimed after 26 min of silence; it killed: python quick.py (pid 4343, 3m)',
+        );
+      }
+    });
+
+    it('a failing parent notice or snapshot never stops the reclaim', async () => {
+      const parent = aTask({ id: 'lead', status: 'inProgress', sessions: [aSession({ tmuxSession: 'kookr-lead', lastStatus: 'inProgress' })] });
+      const worker = makeHungTask({ id: 'worker', parentTaskId: 'lead' });
+      const other = makeHungTask({ id: 'other', sessions: [aSession({ tmuxSession: 'kookr-o', lastStatus: 'inProgress' })] });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const taskStore = makeMockTaskStore([parent, worker]);
+        const result = await reclaimAgedHungSuspectTasks(
+          {
+            taskStore, lifecycleDeps: makeLifecycleDeps(taskStore),
+            sendLineToSession: vi.fn().mockRejectedValue(new Error('choice dialog open')),
+            snapshotSessionJobs: async () => new Map([['worker', [youngJob]]]),
+            isHungSuspect: (task) => task.id === 'worker',
+            getLiveness: () => silentFor(TTL_MS + 60_000),
+            isHoldingOpenPr: () => false,
+          },
+          { now: NOW, ttlMs: TTL_MS },
+        );
+        expect(result.reclaimedTaskIds).toEqual(['worker']);
+
+        const store2 = makeMockTaskStore([other]);
+        const result2 = await reclaimAgedHungSuspectTasks(
+          {
+            taskStore: store2, lifecycleDeps: makeLifecycleDeps(store2),
+            snapshotSessionJobs: async () => { throw new Error('proc scan failed'); },
+            isHungSuspect: () => true,
+            getLiveness: () => silentFor(TTL_MS + 60_000),
+            isHoldingOpenPr: () => false,
+          },
+          { now: NOW, ttlMs: TTL_MS },
+        );
+        expect(result2.reclaimedTaskIds).toEqual(['other']);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
   it('does not reclaim a task that is not classified hungSuspect', async () => {
     const task = makeHungTask({ id: 'working' });
     const taskStore = makeMockTaskStore([task]);
