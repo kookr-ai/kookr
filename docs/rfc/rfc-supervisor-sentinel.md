@@ -481,7 +481,7 @@ launched supervisions untouched. `kookr sentinel live <id> none` (back to dry ru
   handoff? P-1 and P2 measure this.
 - O5. Should a second fleet need it, `fleet-state.json` could declare its own progress sources for
   the auditor.
-- O6. **Out of scope here, recommended as a follow-up issue.** Should Kookr's idle reaper reclaim a
+- O6. **Out of scope here; tracked in #4237.** Should Kookr's idle reaper reclaim a
   task that owns a live, long-running descendant process (a GPU job) at all? Or should it reclaim
   without killing such a process? This RFC mitigates the problem (the detach rule, reclaim warnings,
   reclaim loops counted as stalls), but the cause sits in the reaper.
